@@ -50,8 +50,10 @@ The game is **nearly perfect information**. The only hidden information is each 
 
 For the engine, we model this as:
 - `GameState` always contains the actual card identities
-- A `visible_to: Option<PlayerId>` field on Order cards controls UI visibility
+- `PlayerState.starting_order: Option<OrderCardId>` tracks which card is hidden
+- The AI knows 2 of 3 Order cards each opponent holds (only starting card is uncertain)
 - For MCTS search, we treat the game as perfect information (the AI knows all cards)
+- UI layer uses `starting_order` to hide card details from other players
 
 ### Global Components (in GameState)
 These are not naturally per-area or per-player:
@@ -602,6 +604,22 @@ impl BoardLayoutBuilder {
             }
         }
 
+        // Validate: all areas have 5-Power tokens (Canal excluded)
+        for (area, config) in &self.areas {
+            if config.area_type != AreaType::Canal {
+                if !self.five_power_tokens.contains_key(area) {
+                    return Err(BoardLayoutError::MissingFivePowerToken(*area));
+                }
+            }
+        }
+
+        // Validate: 5-Power tokens only placed on valid areas
+        for area in self.five_power_tokens.keys() {
+            if !self.areas.contains_key(area) {
+                return Err(BoardLayoutError::InvalidFivePowerTokenArea(*area));
+            }
+        }
+
         // Validate: all adjacency references valid areas
         for (area, neighbors) in &self.adjacency {
             if !self.areas.contains_key(area) {
@@ -635,6 +653,8 @@ impl BoardLayoutBuilder {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum BoardLayoutError {
     MissingBuildingSite(AreaId),
+    MissingFivePowerToken(AreaId),
+    InvalidFivePowerTokenArea(AreaId),
     InvalidAreaReference(AreaId),
     InvalidCanalCrossing(AreaId, AreaId),
 }
@@ -643,6 +663,8 @@ impl std::fmt::Display for BoardLayoutError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::MissingBuildingSite(a) => write!(f, "Area {:?} missing building site", a),
+            Self::MissingFivePowerToken(a) => write!(f, "Area {:?} missing 5-Power token", a),
+            Self::InvalidFivePowerTokenArea(a) => write!(f, "5-Power token on invalid area: {:?}", a),
             Self::InvalidAreaReference(a) => write!(f, "Invalid area reference: {:?}", a),
             Self::InvalidCanalCrossing(a, b) => write!(f, "Invalid canal crossing: {:?} <-> {:?}", a, b),
         }
@@ -870,6 +892,10 @@ pub struct PlayerState {
 
     // Cards
     pub order_cards_in_hand: Vec<OrderCardId>,
+    /// The starting Order card (hidden from other players).
+    /// This is the only hidden information in base Yokohama.
+    /// None if not yet assigned (pre-setup) or if revealed for some reason.
+    pub starting_order: Option<OrderCardId>,
     pub completed_orders: Vec<OrderCardId>,
     pub technologies: Vec<TechCardId>,
 

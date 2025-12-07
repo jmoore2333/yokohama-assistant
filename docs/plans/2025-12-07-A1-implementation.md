@@ -3953,10 +3953,10 @@ fn test_port_second_card_payment() {
 **Files:** `crates/yokohama-core/src/game/actions/cards.rs`
 
 **Requirements:**
-- [ ] Base industry: Power (max 5)
-- [ ] Bonus industry: +0.5 per 2 Yen spent, +1 per Imported Good spent
-- [ ] Position surcharges: Slots 3-4 add +1/+2 to cost
-- [ ] Fifth tech penalty: 5th+ tech costs extra 2 Yen OR 1 Imported Good
+- [ ] Base industry: Power (max 5) converts 1:1 to Industry Value
+- [ ] Bonus industry: 2 Yen = 1 IV, 1 Imported Good = 1 IV (no fractional IV)
+- [ ] Position surcharges: Slots 3-4 add +1/+2 to card's printed Industry cost
+- [ ] Fifth tech penalty: 5th+ tech costs extra 2 Yen OR 1 Imported Good (per card)
 - [ ] Card sliding: After taking, cards slide left, refill from right
 
 **Tests to add:**
