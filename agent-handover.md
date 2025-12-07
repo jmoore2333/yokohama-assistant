@@ -1,7 +1,9 @@
 # Agent Handover: Yokohama AI Assistant
 
 **Last Updated:** 2025-12-07
-**Session Summary:** Completed detailed A1 implementation plans (Foundation + Implementation) with multiple review iterations
+**Session Summary:** Plans COMPLETE - integrated v3 feedback, rulebook corrections, and technical audit. Ready for A1 implementation.
+
+**Next Action:** Execute A1-Foundation (Tasks 1-10), then A1-Implementation (Tasks 1-16)
 
 ---
 
@@ -156,36 +158,53 @@ Complete game rules engine:
 
 ---
 
-## How to Continue: Execute A1 Plans
+## Next Steps: Execute A1 Implementation
 
-### Option 1: Use Claude Code with Superpowers
-The plans include instructions for Claude Code:
-```
-> **For Claude:** REQUIRED SUB-SKILL: Use superpowers:executing-plans to implement this plan task-by-task.
-```
+### Status: Plans Complete, Ready for Coding
 
-Start with:
+All planning and review is **DONE**. The implementation plans have been through:
+- Initial design review
+- v2 feedback (IV math, validations)
+- v3 feedback (rulebook edge cases)
+- Technical audit (Trading House income, movement rules)
+- Rulebook corrections (5-Power tokens, mercenaries, Employment Agency)
+
+**No more planning needed** - proceed directly to implementation.
+
+### Recommended Execution Order
+
+**Phase 1: Foundation (A1-Foundation, Tasks 1-10)**
 ```bash
 cd /home/jmoore/Documents/yokohama
+
 # Read the foundation plan
 cat docs/plans/2025-12-07-A1-foundation.md
-# Execute task by task
+
+# Start with Task 1: Initialize Cargo workspace
+# Each task has exact file paths, code samples, and commit commands
 ```
 
-### Option 2: Manual Implementation
-Each task in the plans includes:
-- Exact file paths to create
-- Complete code samples
-- Commit commands
-- Test verification steps
+**Phase 2: Game Logic (A1-Implementation, Tasks 1-16)**
+```bash
+# After foundation is complete
+cat docs/plans/2025-12-07-A1-implementation.md
 
-Start with Task 1 (Cargo workspace) and proceed sequentially.
+# Task 16 is the comprehensive "catch-all" with 16 subtasks
+# Execute 16.1-16.16 to complete all edge cases
+```
 
-### Reference Documents
-While implementing, cross-reference:
+### For Claude Code Users
+The plans are structured for task-by-task execution:
+```
+> Use superpowers:executing-plans to implement this plan task-by-task.
+```
+
+Or use `/superpowers:execute-plan` slash command.
+
+### Reference Documents (use during implementation)
 - `analysis-1/yokohama-kb/02-quick-reference.md` - Power tables, reward values
 - `analysis-1/yokohama-kb/01-rules-reference.md` - Rule clarifications
-- `analysis-1/00-yokohama-rulebook.pdf` - Original source
+- `analysis-1/00-yokohama-rulebook.pdf` - Original source (PDF)
 
 ---
 
@@ -223,34 +242,57 @@ Once A1 is complete, parallel work can begin on:
 
 ## Notes for Next Agent
 
-- **Plans are detailed and reviewed** - Follow them task-by-task
+**Implementation guidance:**
+- **Plans are COMPLETE** - No more review needed, just execute task-by-task
 - **Use the yokohama-kb** - It has accurate rule lookups (Church Power 2 = 1 Faith, etc.)
-- **Task 16 is comprehensive** - All remaining TODOs are captured there
+- **Task 16 has 16 subtasks** - All edge cases, tech effects, and audit findings are there
 - **CV safety matters** - Use `try_new()` for IDs from external data
 - **The user knows Yokohama well** - Leverage his expertise for evaluator weights
-- **30-second thinking time is fine** - Don't over-optimize initially
-- **Vertical slice first** - Get working E2E before polishing
+
+**Critical rules to remember (commonly missed):**
+- Trading House Passive Income: other TH owners get 1 Yen when you act in their area
+- 5-Power Movement token moves ASSISTANTS, not President
+- Mercenaries bypass opponent Presidents (no blocking, no payment)
+- Church Power 2 → only 1 Faith (not 2)
+- President cannot return to starting area in same turn
+
+**Performance targets:**
+- 10,000+ apply_move calls/second for MCTS
+- `GameState` cheap to clone
+- Zero allocations in hot path
 
 ---
 
 ## Recent Commits
 
 ```
+bde80d4 Integrate v3 feedback and technical audit into A1 plans
 ac6a005 Address A1 plan v2 feedback: IV math, validations, hidden order
 e45f30f Address A1 plan feedback: safe constructors, builders, task 16
 51bb6d3 Add knowledge base and A1 implementation plans
 7a6af2f Expand design document with critical details
-d5ae312 Add Yokohama AI Assistant design document
 ```
 
 ---
 
 ## Quick Start Checklist
 
+**Foundation (do first):**
 - [ ] Read `docs/plans/2025-12-07-A1-foundation.md`
-- [ ] Execute Task 1: Initialize Cargo workspace
-- [ ] Execute Task 2: Define ID types
-- [ ] Continue through all 10 Foundation tasks
+- [ ] Task 1: Initialize Cargo workspace
+- [ ] Task 2: Define ID types with TryFrom
+- [ ] Task 3: Define board types with BoardLayoutBuilder
+- [ ] Task 4-10: Complete remaining foundation types
+- [ ] Verify: `cargo build -p yokohama-core`
+
+**Implementation (do second):**
 - [ ] Read `docs/plans/2025-12-07-A1-implementation.md`
-- [ ] Execute Tasks 1-16
-- [ ] Run full test suite: `cargo test -p yokohama-core`
+- [ ] Tasks 1-15: Core game logic
+- [ ] Task 16: All 16 subtasks (edge cases, tech effects, audit fixes)
+- [ ] Verify: `cargo test -p yokohama-core`
+
+**Done when:**
+- [ ] All tests pass
+- [ ] `get_legal_moves()` returns valid moves for any state
+- [ ] `apply_move()` correctly transitions state
+- [ ] End game detection works for all 5 triggers
