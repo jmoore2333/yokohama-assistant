@@ -735,6 +735,22 @@ git commit -m "feat: add commercial area actions (Bank, Employment, Chinatown)"
 
 Reference: `01-rules-reference.md` "Port" section
 
+**Critical rulebook requirements (v3 feedback):**
+
+**Port:**
+- **Hand limit**: Cannot exceed **3 Order cards** in hand; must enforce before taking
+- **Slot access by power**: Power 2 = Low only; Power 3 = Low+Mid; Power 4-5 = All slots
+- **Max cards per action**: **2 cards maximum**
+- **Second card cost**: **2 Yen OR 1 Imported Good** (player's choice)
+- **Power 5 bonus**: +3 VP immediately when taking card(s) at Power 5
+- **Slide/refill**: After taking, cards slide left to fill gaps; new cards refill from deck to rightmost empty slots
+
+**Laboratory:**
+- **Industry Value calculation**: Power contributes **1:1 IV (max 5)**; **2 Yen = 1 IV**; **1 Imported Good = 1 IV**; no fractional IV
+- **Position surcharges**: Slot 3 = +1 cost; Slot 4 = +2 cost (added to card's printed Industry cost)
+- **Fifth-tech penalty**: 5th+ tech costs additional **2 Yen OR 1 Imported Good** (per card, not once per game)
+- **Card sliding**: After taking, cards slide left; new card fills rightmost slot from deck
+
 ```rust
 //! Port and Laboratory actions.
 
@@ -898,18 +914,26 @@ git commit -m "feat: add Port and Laboratory action logic"
 
 Reference: `02-quick-reference.md` "CHURCH" and "CUSTOMS" sections
 
+**Critical rulebook requirements (v3 feedback):**
+- Church Faith-from-power mapping: 1→1, **2→1** (special case!), 3→3, 4→4, 5→5
+- Both Church and Customs require spending an **assistant FROM HAND** to place on track
+- At most one of each good type (Copper, Silk, Tea, Seafood, Yen, Imported Good) may be contributed per Church action
+- Customs payment is **LIMITED BY POWER** (power 2→max 1 IG, power 3→max 2 IG, etc.)
+- Apply Winery (+3 VP) on Church placement, Brickyard (+4 VP) on Customs placement
+
 ```rust
 //! Church and Customs track actions.
 
 use crate::types::{ChurchTrack, CustomsTrack, GameState, PlayerId};
 
 /// Calculate Faith value from power.
-/// Note: Power 2 gives only 1 Faith (not 2). This is per rulebook p.14.
+/// CRITICAL: Power 2 gives only 1 Faith (not 2). This is per rulebook p.14.
+/// Mapping: 1→1, 2→1, 3→3, 4→4, 5→5
 pub fn church_faith_from_power(power: u8) -> u8 {
     match power {
         0 => 0,
         1 => 1,
-        2 => 1, // Note: power 2 gives 1 Faith, not 2
+        2 => 1, // CRITICAL: power 2 gives 1 Faith, not 2 (rulebook p.14)
         3 => 3,
         4 => 4,
         _ => 5,
@@ -1081,6 +1105,16 @@ git commit -m "feat: add Church and Customs action logic"
 **Step 1: Implement movement validation**
 
 Reference: `01-rules-reference.md` "B2. Movement Step" section
+
+**Critical rulebook requirements (v3 feedback):**
+- **Assistant-chain validation**: Must verify assistants exist along ENTIRE path, not just at destination
+- **Canal tolls**: 1 Yen per canal crossing
+- **President entry fees**: 1 Yen to enter (not pass through) area with opponent President
+- **Tech effects that modify movement:**
+  - **Stagecoach**: Free passage through opponent Presidents (no fees to pass; fees may still apply to enter destination without Stagecoach)
+  - **Postal System**: May stop AND act in an area with opponent President (normally cannot stop)
+  - **Station**: Owner may teleport to Station area regardless of opponent Presidents; +1 power for ALL players in that area
+- **Tram**: Move President to any area without opponent President (free teleport, separate from Station)
 
 ```rust
 //! President movement and pathfinding.
@@ -1322,6 +1356,28 @@ git commit -m "feat: add movement and pathfinding logic"
 - Create: `crates/yokohama-core/src/game/legal_moves.rs`
 
 **Step 1: Implement legal move generator**
+
+**Critical rulebook requirements (v3 feedback):**
+- **Default placement**: Either 3 different areas (1 each) OR 2 in same area
+- **Newspaper (tech)**: Option A allows up to **4 different areas** (not 3)
+- **Telegram (tech)**: After placing 2 in same area, may place **1 additional assistant in an adjacent area** (bonus placement respecting board adjacency)
+- **President entry fees**: 1 Yen to place assistant in area with opponent President
+- **Combinatorial concern**: With Newspaper (4 areas) or Telegram (adjacency bonus), move generation can explode. Consider pruning strategies or lazy evaluation for MCTS performance.
+
+**Architectural Notes (critical edge cases):**
+
+**1. Zero-Assistant Soft-Lock Prevention (Page 6, Step 2b):**
+If a player has 0 assistants in hand AND their President is in an area with no assistants (and no reachable areas via assistant chain), they are physically stuck.
+- **Solution:** `generate_movement_moves` MUST always include `Move::ReturnPresidentToHand` as an "emergency exit"
+- This move returns President to hand and recovers all assistants from ALL areas (not just current area)
+- Verify this option is available even when no other legal movement exists
+
+**2. Canal Traversal Logic:**
+The Canal area type cannot be a valid action area (no assistants can be placed there).
+- `is_possible_action_area` correctly returns `false` for Canal (assistants check fails)
+- **VERIFY:** `find_reachable_areas` must allow **traversing** the Canal node even though `is_possible_action_area` returns false
+- Pathfinding should treat Canal as a passable waypoint (costs 1 Yen) but not a destination
+- Test: Player can move from Area A → Canal → Area B if they have assistants in A and B
 
 ```rust
 //! Legal move generation for each turn phase.
@@ -1921,9 +1977,107 @@ fn apply_area_action(state: &mut GameState, action: &AreaAction) -> Result<(), &
             let reward = bank_reward(power);
             state.player_mut(player).money += reward as u32;
         }
+
+        // Employment Agency - retrieve items from warehouse
+        // Rulebook Page 12, Source 706-718
+        AreaAction::EmploymentAgency { assistants, shophouses, trading_houses } => {
+            apply_employment_agency(state, player, power, *assistants, *shophouses, *trading_houses)?;
+        }
+
         // Other actions would be implemented similarly
-        _ => {} // TODO: implement remaining actions
+        _ => {} // TODO: implement Port, Lab, Church, Customs, Chinatown
     }
+
+    Ok(())
+}
+
+/// Employment Agency: retrieve items from warehouse to hand/board.
+/// Rulebook Page 12 (Source 706-718).
+///
+/// Power determines total items allowed:
+/// - Power 1: 0 items
+/// - Power 2: 1 item
+/// - Power 3: 2 items
+/// - Power 4: 3 items
+/// - Power 5: 4 items
+///
+/// Costs:
+/// - Assistants: FREE
+/// - Shophouses: 2 Yen each
+/// - Trading Houses: 4, 5, 6, 7 Yen (based on how many already built)
+fn apply_employment_agency(
+    state: &mut GameState,
+    player: PlayerId,
+    power: u8,
+    assistants: u8,
+    shophouses: u8,
+    trading_houses: u8,
+) -> Result<(), &'static str> {
+    // Calculate max items allowed based on power
+    let max_items = match power {
+        0..=1 => 0,
+        2 => 1,
+        3 => 2,
+        4 => 3,
+        _ => 4, // Power 5
+    };
+
+    let total_items = assistants + shophouses + trading_houses;
+    if total_items > max_items {
+        return Err("Exceeds maximum items for power level");
+    }
+
+    let p = state.player(player);
+
+    // Validate availability in warehouse
+    if assistants > p.assistants.in_warehouse {
+        return Err("Not enough assistants in warehouse");
+    }
+    if shophouses > p.shophouses.in_warehouse {
+        return Err("Not enough shophouses in warehouse");
+    }
+    if trading_houses > p.trading_houses.in_warehouse {
+        return Err("Not enough trading houses in warehouse");
+    }
+
+    // Calculate total cost
+    let shophouse_cost = shophouses as u32 * 2; // 2 Yen each
+
+    // Trading house cost: 4, 5, 6, 7 Yen based on how many already built
+    let already_built = p.trading_houses.total_built();
+    let mut th_cost = 0u32;
+    for i in 0..trading_houses {
+        let th_index = already_built + i as usize;
+        th_cost += match th_index {
+            0 => 4,
+            1 => 5,
+            2 => 6,
+            _ => 7, // 3rd and beyond
+        };
+    }
+
+    let total_cost = shophouse_cost + th_cost; // Assistants are FREE
+
+    if p.money < total_cost {
+        return Err("Not enough Yen to pay for items");
+    }
+
+    // Apply the action
+    let p = state.player_mut(player);
+    p.money -= total_cost;
+
+    // Move assistants: warehouse -> hand
+    p.assistants.in_warehouse -= assistants;
+    p.assistants.in_hand += assistants;
+
+    // Move shophouses: warehouse -> hand
+    p.shophouses.in_warehouse -= shophouses;
+    p.shophouses.in_hand += shophouses;
+
+    // Trading houses stay in warehouse until built (they go warehouse -> board directly)
+    // Actually per rulebook, they just become "available" - but we track in_warehouse vs built
+    // For simplicity, trading houses retrieved here are just marked as available
+    // (no change needed - they're already in warehouse, just "unlocked" for building)
 
     Ok(())
 }
@@ -4018,23 +4172,67 @@ fn test_telephone_leaves_one() {
 }
 ```
 
-### 16.7 Scoring: Country Set Fix
+### 16.7 Scoring: Country Set Distinctness Constraint
 
 **Files:** `crates/yokohama-core/src/game/scoring.rs`
 
-**Requirements:**
-- [ ] Each icon used at most once across all sets
-- [ ] No duplicate countries within a single set
-- [ ] Optimize for largest sets first
+**Requirements (v3 feedback - critical fix):**
+- [ ] **Sets MUST consist of DISTINCT countries** - no duplicate countries within a set
+- [ ] Each country icon may be used **at most once** across ALL sets
+- [ ] Scoring: 2 different = 2 VP, 3 different = 4 VP, 4 different = 8 VP, 5 different = 12 VP
+- [ ] **Greedy matching**: Form largest sets first (5-set worth 12 VP is better than two 3-sets worth 8 VP total)
 
-**Current bug:** Greedy algorithm may count same country twice.
+**Current bug:** Greedy algorithm may incorrectly form sets using multiple icons from same country.
+
+**Correct algorithm:**
+```rust
+// Greedy largest-to-smallest packing
+loop {
+    // Count distinct countries with available icons
+    let available_countries: Vec<Country> = country_counts
+        .iter()
+        .filter(|(_, &count)| count > 0)
+        .map(|(&country, _)| country)
+        .collect();
+
+    let set_size = available_countries.len();
+    if set_size < 2 { break; }
+
+    // Award VP based on DISTINCT country count (not total icons)
+    let vp = match set_size {
+        5 => 12,
+        4 => 8,
+        3 => 4,
+        2 => 2,
+        _ => 0,
+    };
+    total_vp += vp;
+
+    // Consume ONE icon from each DISTINCT country
+    for country in &available_countries {
+        *country_counts.get_mut(country).unwrap() -= 1;
+    }
+}
+```
 
 **Tests to add:**
 ```rust
 #[test]
-fn test_country_set_no_duplicates() {
-    // Setup: player has 3 English, 1 French, 1 German
-    // Verify: scores for one 3-set (Eng, Fr, Ger), not 5-set
+fn test_country_set_distinct_countries_only() {
+    // Setup: player has 3 English, 1 French, 1 German (5 total icons, 3 distinct countries)
+    // Verify: scores for one 3-set (3 distinct) = 4 VP, not 5-set
+}
+
+#[test]
+fn test_country_set_multiple_sets() {
+    // Setup: player has 2 of each country (10 total icons, 5 distinct)
+    // Verify: scores two 5-sets = 24 VP (not one 10-icon mess)
+}
+
+#[test]
+fn test_country_set_greedy_largest_first() {
+    // Setup: 5 distinct countries with 1 icon each
+    // Verify: forms one 5-set (12 VP), not multiple smaller sets
 }
 ```
 
@@ -4077,8 +4275,8 @@ fn test_winery_church_bonus() {
 **Files:** `crates/yokohama-core/src/game/end_game.rs`
 
 **Requirements:**
-- [ ] Trigger when order deck is empty AND a Port slot is empty
-- [ ] Check AFTER card removals and refills
+- [ ] Trigger when order deck is empty AND a Port slot is empty (post-replenish condition)
+- [ ] Check AFTER card removals and refills (not before)
 
 **Tests to add:**
 ```rust
@@ -4086,7 +4284,431 @@ fn test_winery_church_bonus() {
 fn test_order_deck_empty_trigger() {
     // Setup: deck has 1 card, all port slots full
     // Action: take last card
-    // Verify: triggers end game (deck empty + slot empty)
+    // Verify: triggers end game (deck empty + slot empty after refill attempt)
+}
+```
+
+### 16.10 Setup Configuration (2p/3p Variants)
+
+**Files:**
+- `crates/yokohama-core/src/types/state.rs` (enhance `GameConfig`)
+- Create: `crates/yokohama-core/src/game/setup.rs`
+
+**Requirements (v3 feedback):**
+Connect `GameConfig` to player-count-specific setup:
+
+| Setting | 2 Players | 3 Players | 4 Players |
+|---------|-----------|-----------|-----------|
+| Areas removed | Lab B, Port B, Chinatown, Canal, 1 of each production | Lab B, 1 of each production | None |
+| Order cards removed | 16 | 5 | 0 |
+| Track trigger | 4 assistants | 5 assistants | 6 assistants |
+| Starting yen | 3 (start player) / 4 (others) | Same | Same |
+| Port B present | No | Yes | Yes |
+| Lab B present | No | No | Yes |
+
+- [ ] Add `removed_areas: Vec<AreaId>` to GameConfig or compute from player_count
+- [ ] Add `has_port_b: bool` and `has_lab_b: bool` fields to GameConfig
+- [ ] Implement `GameConfig::for_player_count(count: u8)` constructor
+- [ ] Add validation: BoardLayoutBuilder should reject areas that should be removed for player count
+- [ ] Add setup validators that ensure configuration matches player count
+
+**Tests to add:**
+```rust
+#[test]
+fn test_2p_setup_removes_correct_areas() {
+    let config = GameConfig::for_player_count(2);
+    assert!(!config.has_port_b);
+    assert!(!config.has_lab_b);
+    assert_eq!(config.track_trigger(), 4);
+}
+
+#[test]
+fn test_4p_setup_has_all_areas() {
+    let config = GameConfig::for_player_count(4);
+    assert!(config.has_port_b);
+    assert!(config.has_lab_b);
+    assert_eq!(config.track_trigger(), 6);
+}
+```
+
+### 16.11 Mercenary: Opponent President Rules (RESOLVED)
+
+**Files:** `crates/yokohama-core/src/game/apply_move.rs`, `crates/yokohama-core/src/game/legal_moves.rs`
+
+**RULEBOOK CLARIFICATION (Page 8, Source 392-394):**
+> "It is possible to choose an Area that contains another player's President pawn. If you choose an Area that contains another player's President pawn, **you do not need to pay them any money.**"
+
+The rules are now explicit:
+
+| Rule | Answer |
+|------|--------|
+| Opponent President blocks Mercenary? | **NO** - explicitly allowed |
+| Pay 1 Yen to opponent when using Mercenary in their area? | **NO** - explicitly exempt |
+| Own President blocks Mercenary? | **YES** - cannot use Mercenary where your own President is |
+
+**Requirements:**
+- [ ] **Allow** target areas with opponent Presidents (no blocking check)
+- [ ] **Skip** the 1 Yen payment when using Mercenary (unlike normal placement/movement)
+- [ ] **Enforce** that target area does NOT contain player's OWN President (Source 392)
+- [ ] Ensure mercenary action returns to correct additional-action phase (already implemented)
+- [ ] Add test for mercenary once-per-turn across BOTH additional-action halves
+
+**Implementation update in `apply_mercenary`:**
+```rust
+// Validate: target area has player's assistant but NOT OWN president
+// NOTE: Opponent Presidents do NOT block mercenaries (rulebook p.8)
+if let PresidentLocation::OnBoard(loc) = p.president_location {
+    if loc == target_area {
+        return Err("Target area cannot have YOUR OWN president");
+    }
+}
+// NOTE: No opponent President check needed - mercenaries bypass this
+// NOTE: No 1 Yen payment to opponents - mercenaries are exempt
+```
+
+**Tests to add:**
+```rust
+#[test]
+fn test_mercenary_allowed_with_opponent_president() {
+    // Setup: opponent president in target area, player has assistant there
+    // Verify: mercenary action IS valid (not blocked)
+}
+
+#[test]
+fn test_mercenary_no_payment_to_opponent() {
+    // Setup: opponent president in target area
+    // Action: use mercenary
+    // Verify: player's Yen unchanged (no 1 Yen fee)
+}
+
+#[test]
+fn test_mercenary_blocked_by_own_president() {
+    // Setup: player's OWN president in target area
+    // Verify: mercenary action is INVALID
+}
+
+#[test]
+fn test_mercenary_once_per_turn_both_phases() {
+    // Use mercenary in AdditionalActionFirst
+    // Verify: cannot use again in AdditionalActionSecond
+}
+```
+
+### 16.12 Five-Power Movement Token Effect (CORRECTED)
+
+**Files:** `crates/yokohama-core/src/game/apply_move.rs`
+
+**RULEBOOK CORRECTION (Page 10, Source 532):**
+> "Movement icon: **Move an Assistant pawn** from your hand or from an Area to another Area."
+
+The Movement token does **NOT** move the President. It is a tactical **Assistant repositioning** tool.
+
+**Requirements:**
+- [ ] `FivePowerEffect::Movement(n)`: Move up to `n` assistants (typically 2-3) between areas or from hand to board
+- [ ] Movement ignores adjacency - can teleport assistants anywhere
+- [ ] Movement ignores President fees - no cost to place in opponent's President area
+- [ ] Can move from Hand → Board, or Board → Board (different area)
+- [ ] Cannot move assistants FROM an area with your President (they'd be recovered anyway)
+- [ ] Ensure taken-once semantics (token removed from board, count incremented)
+
+**Implementation:**
+```rust
+/// Apply 5-Power Movement token effect.
+/// Moves assistants (NOT President) - teleport repositioning.
+fn apply_movement_token_effect(
+    state: &mut GameState,
+    player: PlayerId,
+    moves: Vec<AssistantMove>, // Vec of (from: Option<AreaId>, to: AreaId)
+    max_moves: u8,
+) -> Result<(), &'static str> {
+    if moves.len() > max_moves as usize {
+        return Err("Exceeds movement token limit");
+    }
+
+    let p = state.player_mut(player);
+    for mv in moves {
+        match mv.from {
+            None => {
+                // Hand -> Board
+                if p.assistants.in_hand < 1 {
+                    return Err("No assistant in hand");
+                }
+                p.assistants.in_hand -= 1;
+                *p.assistants.on_board.entry(mv.to).or_insert(0) += 1;
+            }
+            Some(from_area) => {
+                // Board -> Board (different area)
+                let count = p.assistants.on_board.get(&from_area).copied().unwrap_or(0);
+                if count < 1 {
+                    return Err("No assistant in source area");
+                }
+                *p.assistants.on_board.get_mut(&from_area).unwrap() -= 1;
+                *p.assistants.on_board.entry(mv.to).or_insert(0) += 1;
+            }
+        }
+    }
+    Ok(())
+}
+```
+
+**Tests to add:**
+```rust
+#[test]
+fn test_movement_token_moves_assistants_not_president() {
+    // Claim 5-Power Movement(2) token
+    // Verify: can move 2 assistants from hand/board to any area
+    // Verify: President location unchanged
+}
+
+#[test]
+fn test_movement_token_ignores_adjacency() {
+    // Setup: assistant in area A, want to move to non-adjacent area Z
+    // Verify: movement succeeds (teleport allowed)
+}
+
+#[test]
+fn test_movement_token_no_president_fee() {
+    // Setup: opponent President in target area
+    // Verify: no Yen charged when placing assistant via movement token
+}
+
+#[test]
+fn test_five_power_token_claimed_only_once() {
+    // Setup: player at 5 power, token present
+    // Action: claim token
+    // Verify: token removed from board, count incremented
+    // Action: another player achieves 5 power in same area
+    // Verify: no token to claim
+}
+```
+
+### 16.13 Building Power Thresholds
+
+**Files:** `crates/yokohama-core/src/game/legal_moves.rs`, `crates/yokohama-core/src/game/apply_move.rs`
+
+**Requirements (v3 feedback):**
+Enforce power thresholds for building:
+
+- [ ] **Shophouse**: Requires Power **4+** at action area
+- [ ] **Trading House**: Requires Power **5** at action area (only at max power)
+- [ ] Already tracking `current_action_power` in state - use for validation
+
+**Tests to add:**
+```rust
+#[test]
+fn test_shophouse_requires_power_4() {
+    // Setup: player has power 3 at area
+    // Verify: BuildShophouse not in legal moves
+}
+
+#[test]
+fn test_trading_house_requires_power_5() {
+    // Setup: player has power 4 at area
+    // Verify: BuildTradingHouse not in legal moves
+}
+```
+
+### 16.14 Trading House Passive Income (CRITICAL)
+
+**Files:** `crates/yokohama-core/src/game/apply_move.rs`
+
+**AUDIT FINDING (Section 3.5.1):**
+> "If there are any Trading Houses owned by other players in the Area... the owner receives 1 Yen from the bank."
+
+This is the **primary economic engine** for long-term strategy - incentivizes building on high-traffic areas (Bank, Port, Lab).
+
+**Requirements:**
+- [ ] When a player executes an area action, check for Trading Houses owned by OTHER players in that area
+- [ ] Each other player with a Trading House in that area receives **1 Yen from bank**
+- [ ] This happens regardless of whether the acting player has a Trading House there
+- [ ] Applies to ALL area actions (production, commercial, Church, Customs, etc.)
+
+**Implementation:**
+```rust
+/// Apply passive income to Trading House owners when area is used.
+/// Returns list of (PlayerId, amount) for UI notification.
+fn apply_trading_house_income(
+    state: &mut GameState,
+    active_player: PlayerId,
+    area: AreaId,
+) -> Vec<(PlayerId, u32)> {
+    let mut payouts = Vec::new();
+
+    // Find all Trading Houses in this area owned by OTHER players
+    for player in &mut state.players {
+        if player.id != active_player {
+            if player.trading_houses.built.contains(&area) {
+                player.money += 1;
+                payouts.push((player.id, 1));
+            }
+        }
+    }
+
+    payouts
+}
+```
+
+**Integration point in `apply_area_action`:**
+```rust
+fn apply_area_action(state: &mut GameState, action: &AreaAction) -> Result<(), &'static str> {
+    let player = state.current_player;
+    let area = get_action_area(state)?;
+
+    // FIRST: Pay passive income to other Trading House owners
+    let _payouts = apply_trading_house_income(state, player, area);
+
+    // THEN: Execute the area action
+    match action {
+        // ... existing action handling
+    }
+}
+```
+
+**AI Implications:**
+- Without this, MCTS will **systematically undervalue** Trading House construction
+- AI sees high cost (4-7 Yen) without recurring revenue
+- This creates a "positive interaction loop" - building on high-traffic areas is an investment
+
+**Tests to add:**
+```rust
+#[test]
+fn test_trading_house_passive_income() {
+    // Setup: Player B has Trading House in Bank area
+    // Action: Player A uses Bank action
+    // Verify: Player B gains 1 Yen, Player A gains their Bank reward
+}
+
+#[test]
+fn test_trading_house_income_multiple_owners() {
+    // Setup: Players B and C each have Trading House in Port area
+    // Action: Player A uses Port action
+    // Verify: Both B and C gain 1 Yen each
+}
+
+#[test]
+fn test_trading_house_no_self_income() {
+    // Setup: Player A has Trading House in Bank area
+    // Action: Player A uses Bank action
+    // Verify: Player A does NOT gain passive income from own Trading House
+}
+```
+
+### 16.15 Movement: Start Area Return Prohibition
+
+**Files:** `crates/yokohama-core/src/game/movement.rs`, `crates/yokohama-core/src/game/legal_moves.rs`
+
+**AUDIT FINDING (Section 3.4.1):**
+> "The President pawn may not return to the Area that it started in."
+
+Without this constraint, a player could "pass" by moving to adjacent tile and back.
+
+**Requirements:**
+- [ ] Track `president_start_area: Option<AreaId>` in turn state (set at start of Movement phase)
+- [ ] Path validator must reject paths where `destination == president_start_area`
+- [ ] Clear `president_start_area` at end of Movement phase
+
+**Implementation:**
+```rust
+/// Check if movement destination is valid (not start area).
+pub fn validate_movement_destination(
+    state: &GameState,
+    destination: AreaId,
+) -> Result<(), &'static str> {
+    if let Some(start) = state.president_start_area {
+        if destination == start {
+            return Err("Cannot return to starting area in same turn");
+        }
+    }
+    Ok(())
+}
+```
+
+**Tests to add:**
+```rust
+#[test]
+fn test_cannot_return_to_start_area() {
+    // Setup: President starts in Bank area
+    // Action: Try to move Bank -> Port -> Bank
+    // Verify: Move is rejected
+}
+
+#[test]
+fn test_can_return_to_start_on_different_turn() {
+    // Setup: President ended previous turn in Bank
+    // Action: New turn, move to Port, then next turn move back to Bank
+    // Verify: Move is allowed (different turn)
+}
+```
+
+### 16.16 Placement Cost Validation in Legal Moves
+
+**Files:** `crates/yokohama-core/src/game/legal_moves.rs`
+
+**AUDIT FINDING (Section 3.3.2):**
+> "Placement is not always free. If there is a President pawn in the area... you have to pay 1 Yen for each Assistant pawn you place."
+
+The legal_moves generator must check affordability.
+
+**Requirements:**
+- [ ] For each placement combination, calculate total cost (1 Yen per area with opponent President)
+- [ ] Only include placement moves the player can **afford**
+- [ ] This affects both `PlaceThreeAreas` and `PlaceTwoSameArea` variants
+
+**Implementation:**
+```rust
+/// Calculate placement cost for a set of areas.
+fn calculate_placement_cost(
+    state: &GameState,
+    player: PlayerId,
+    placements: &[AreaId],
+) -> u32 {
+    let mut cost = 0;
+    for &area in placements {
+        // Check if any opponent has President in this area
+        for other in &state.players {
+            if other.id != player {
+                if other.president_location == PresidentLocation::OnBoard(area) {
+                    cost += 1;
+                    break; // Only pay once per area, not per opponent
+                }
+            }
+        }
+    }
+    cost
+}
+
+// In generate_placement_moves:
+fn generate_placement_moves(state: &GameState) -> Vec<Move> {
+    let player = state.current_player;
+    let p = state.player(player);
+    let mut moves = Vec::new();
+
+    // ... generate candidate placements ...
+
+    // Filter by affordability
+    for placement in candidate_placements {
+        let cost = calculate_placement_cost(state, player, &placement);
+        if p.money >= cost {
+            moves.push(Move::PlaceThreeAreas { placements: placement });
+        }
+    }
+
+    moves
+}
+```
+
+**Tests to add:**
+```rust
+#[test]
+fn test_placement_cost_opponent_president() {
+    // Setup: Opponent President in Bank, player has 0 Yen
+    // Verify: Cannot place in Bank (filtered from legal moves)
+}
+
+#[test]
+fn test_placement_cost_multiple_areas() {
+    // Setup: Opponent Presidents in Bank and Port, player has 1 Yen
+    // Verify: Can place in Bank OR Port (1 Yen), but not both (2 Yen)
 }
 ```
 
@@ -4119,14 +4741,58 @@ This plan implements the complete game rules for Yokohama:
 | `game/achievements.rs` | Achievement validation |
 | `game/tech_effects.rs` | Technology effect helpers |
 | `game/end_game.rs` | End game trigger detection |
+| `game/setup.rs` | Setup configuration by player count |
 | `tests/integration.rs` | Integration test scenarios |
 
-**Fully covered:**
-- All 5 end game triggers with proper final round handling
-- Order card fulfillment with tech bonuses (Ball, Language School)
+**Fully covered (including v3 feedback + rulebook corrections):**
+- All 5 end game triggers with proper final round handling (post-replenish Order deck condition)
+- Order card fulfillment with tech bonuses (Ball +2 VP, Language School +1 Yen)
 - Achievement validation for all 12 types
-- Technology effects (20 cards worth of effects)
-- Country set scoring with proper greedy matching
-- Technology bonus with industry value sum and tiebreaker
+- Technology effects (20 cards worth of effects) including movement/placement modifiers
+- Country set scoring with **distinct-country constraint** and greedy largest-first matching
+- Technology majority bonus with industry value sum and **closest-to-start-player tiebreaker**
+- Church/Customs majority bonus with **rightmost-assistant tiebreaker**
+- Church Faith calculation including **power=2 → 1 Faith special case**
+- Assistant-from-hand requirement for Church/Customs placement
+- Winery (+3 VP) and Brickyard (+4 VP) bonuses on track placement
+- Port hand limit (3), second card payment, Power 5 +3 VP bonus
+- Laboratory Industry Value calculation (power cap, 2Y=1IV, 1IG=1IV, position surcharges, fifth-tech penalty)
+- Movement tech hooks (Stagecoach free passage, Postal System stopping, Station teleport)
+- Placement tech hooks (Newspaper 4-area, Telegram adjacent bonus)
+- Building power thresholds (Shophouse 4+, Trading House 5)
+- Setup configuration by player count (area removals, Port B/Lab B presence)
+- Mercenary once-per-turn across both additional-action phases
+
+**Rulebook corrections (critical fixes):**
+- **5-Power Movement token**: Moves **ASSISTANTS** (not President) - tactical repositioning, ignores adjacency/fees
+- **Mercenary rules**: Opponent Presidents do NOT block; NO 1 Yen payment; only OWN President blocks
+- **Employment Agency**: Full implementation with power-based limits and specific costs (Assistants free, Shophouses 2¥, TH 4/5/6/7¥)
+
+**Architectural edge cases:**
+- Zero-assistant soft-lock prevention: `ReturnPresidentToHand` always available as emergency exit
+- Canal traversal: pathfinding allows crossing (1¥) without stopping
+
+**Task 16 Subtasks (v3 additions + audit findings):**
+- 16.1 Movement: Tech-aware traversal (Stagecoach, Postal, Station)
+- 16.2 Placement: Tech-aware limits (Newspaper, Telegram)
+- 16.3 Port: Complete validation (hand limit, payments, slots)
+- 16.4 Laboratory: Industry Value calculation
+- 16.5 Building: Tech bonuses (Gaslight, Electrical Light)
+- 16.6 Recovery: Telephone effect
+- 16.7 Scoring: Country set distinctness constraint
+- 16.8 Additional tech effects (20 technologies)
+- 16.9 End game trigger: Order deck empty (post-replenish)
+- 16.10 Setup configuration (2p/3p/4p variants)
+- 16.11 Mercenary: Opponent president rules (RESOLVED - not blocked, no payment)
+- 16.12 Five-Power Movement token (CORRECTED - moves Assistants, not President)
+- 16.13 Building power thresholds (Shophouse 4+, Trading House 5)
+- **16.14 Trading House Passive Income (CRITICAL - audit finding)**
+- **16.15 Movement: Start Area Return Prohibition (audit finding)**
+- **16.16 Placement Cost Validation (audit finding)**
+
+**Audit-Derived Additions:**
+- Trading House passive income: Other players' TH owners get 1 Yen when you act in their area
+- Start area prohibition: President cannot return to starting area in same turn
+- Placement cost filtering: legal_moves must check affordability (1 Yen per opponent President area)
 
 **Next modules:** A2 (MCTS), A3 (Heuristic Evaluator), A4 (PyO3 Bindings)

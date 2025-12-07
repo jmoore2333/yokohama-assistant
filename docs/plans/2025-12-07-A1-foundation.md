@@ -94,8 +94,15 @@ Setup varies by player count. `GameConfig` captures these differences:
 | Order cards removed | 16 | 5 | 0 |
 | Track trigger | 4 assistants | 5 assistants | 6 assistants |
 | Starting yen | 3 (start) / 4 (other) | Same | Same |
+| Port B present | No | Yes | Yes |
+| Lab B present | No | No | Yes |
 
 `GameState::new(config: GameConfig)` consumes this configuration rather than hard-coding assumptions.
+
+**v3 additions:**
+- Add `has_port_b: bool` and `has_lab_b: bool` to `GameConfig`
+- Add `GameConfig::for_player_count(count: u8)` constructor that sets up all fields correctly
+- `BoardLayoutBuilder` should validate that removed areas are not present in the layout
 
 ---
 
