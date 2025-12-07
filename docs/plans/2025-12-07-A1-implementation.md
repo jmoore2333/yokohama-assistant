@@ -204,34 +204,47 @@ Reference: `02-quick-reference.md` "Power Calculation" section
 use crate::types::{AreaId, BoardLayout, GameState, PlayerId};
 
 /// Calculate power for a player in an area.
+///
+/// Power calculation order (per rulebook):
+/// 1. President pawn (+1)
+/// 2. Assistants (+1 each)
+/// 3. Shophouse (+1)
+/// 4. Trading House (+1)
+/// 5. Station token (+1 for ALL players if present)
+/// 6. Tech modifiers (future: if any tech adds power)
+/// 7. Cap at 5 (ALWAYS applied last)
+///
+/// Note: All modifiers are applied BEFORE the cap.
 pub fn calculate_power(state: &GameState, player: PlayerId, area: AreaId) -> u8 {
     let player_state = state.player(player);
     let mut power: u8 = 0;
 
-    // President pawn (+1)
+    // 1. President pawn (+1)
     if player_state.president_location == crate::types::PresidentLocation::OnBoard(area) {
         power += 1;
     }
 
-    // Assistants (+1 each)
+    // 2. Assistants (+1 each)
     power += player_state.assistants.in_area(area);
 
-    // Shophouse (+1)
+    // 3. Shophouse (+1)
     if player_state.shophouses.built.contains_key(&area) {
         power += 1;
     }
 
-    // Trading House (+1)
+    // 4. Trading House (+1)
     if player_state.trading_houses.built.contains(&area) {
         power += 1;
     }
 
-    // Station token (+1 for ALL players if present)
+    // 5. Station token (+1 for ALL players if present)
     if state.station_location == Some(area) {
         power += 1;
     }
 
-    // Cap at 5
+    // 6. Tech modifiers would go here (none in base game add power)
+
+    // 7. Cap at 5 (ALWAYS applied last, after all modifiers)
     power.min(5)
 }
 
@@ -3836,6 +3849,253 @@ cargo test -p yokohama-core --test integration
 ```bash
 git add crates/yokohama-core/tests/
 git commit -m "test: add integration test scenarios"
+```
+
+---
+
+## Task 16: Complete Missing Features and Edge Cases
+
+**Goal:** Address all remaining TODOs and edge cases identified in code review.
+
+### 16.1 Movement: Tech-Aware Traversal
+
+**Files:** `crates/yokohama-core/src/game/movement.rs`
+
+**Requirements:**
+- [ ] Stagecoach: Pass through opponent Presidents without paying
+- [ ] Postal System: Allow stopping in opponent President areas
+- [ ] Station teleport: Free movement to Station area (owner only, when taking that action)
+- [ ] Path validation: Verify assistants exist along ENTIRE path, not just destination
+- [ ] Movement costs: Include opponent President fees (1 Yen each)
+
+**Tests to add:**
+```rust
+#[test]
+fn test_stagecoach_free_passage() {
+    // Setup: opponent president in path
+    // Verify: player with Stagecoach doesn't pay
+}
+
+#[test]
+fn test_postal_system_allows_stopping() {
+    // Setup: opponent president in destination
+    // Verify: player with Postal System can stop there
+}
+
+#[test]
+fn test_station_teleport() {
+    // Setup: player owns Station, station at area X
+    // Verify: can move directly to X regardless of path
+}
+
+#[test]
+fn test_path_requires_assistants_throughout() {
+    // Setup: assistants at start and end, but gap in middle
+    // Verify: move is illegal
+}
+```
+
+### 16.2 Placement: Tech-Aware Limits
+
+**Files:** `crates/yokohama-core/src/game/legal_moves.rs`
+
+**Requirements:**
+- [ ] Newspaper: Option A allows 4 areas (not 3)
+- [ ] Telegram: After placing 2 in same area, may place 1 in adjacent
+- [ ] President fees: Charge 1 Yen to enter area with opponent President
+
+**Tests to add:**
+```rust
+#[test]
+fn test_newspaper_four_areas() {
+    // Verify: player with Newspaper can use Option A with 4 different areas
+}
+
+#[test]
+fn test_telegram_adjacent_bonus() {
+    // Verify: after placing 2 in area X, can place 1 in adjacent area
+}
+```
+
+### 16.3 Port Action: Complete Implementation
+
+**Files:** `crates/yokohama-core/src/game/actions/cards.rs`
+
+**Requirements:**
+- [ ] Hand limit: Cannot take cards if would exceed 3 in hand
+- [ ] Second card cost: 2 Yen OR 1 Imported Good
+- [ ] Power 5 bonus: +3 VP when taking cards at Power 5
+- [ ] Slot validation: Can only take from occupied slots
+- [ ] Position-based access: Power 2 = low only, Power 3 = low+mid, Power 4+ = all
+
+**Tests to add:**
+```rust
+#[test]
+fn test_port_hand_limit() {
+    // Setup: player has 2 orders in hand
+    // Verify: can take 1 card, cannot take 2
+}
+
+#[test]
+fn test_port_power_5_vp() {
+    // Setup: player has power 5 at Port
+    // Verify: gains +3 VP when taking order card(s)
+}
+
+#[test]
+fn test_port_second_card_payment() {
+    // Verify: taking 2 cards requires payment
+}
+```
+
+### 16.4 Laboratory Action: Industry Value Calculation
+
+**Files:** `crates/yokohama-core/src/game/actions/cards.rs`
+
+**Requirements:**
+- [ ] Base industry: Power (max 5)
+- [ ] Bonus industry: +0.5 per 2 Yen spent, +1 per Imported Good spent
+- [ ] Position surcharges: Slots 3-4 add +1/+2 to cost
+- [ ] Fifth tech penalty: 5th+ tech costs extra 2 Yen OR 1 Imported Good
+- [ ] Card sliding: After taking, cards slide left, refill from right
+
+**Tests to add:**
+```rust
+#[test]
+fn test_lab_industry_from_power() {
+    // Verify: base industry = min(power, 5)
+}
+
+#[test]
+fn test_lab_fifth_tech_penalty() {
+    // Setup: player has 4 techs
+    // Verify: 5th tech requires extra payment
+}
+
+#[test]
+fn test_lab_position_surcharge() {
+    // Verify: rightmost slots cost extra
+}
+```
+
+### 16.5 Building: Tech Bonuses
+
+**Files:** `crates/yokohama-core/src/game/apply_move.rs`
+
+**Requirements:**
+- [ ] Gaslight: +2 VP when building Shophouse
+- [ ] Electrical Light: +3 VP when building Trading House
+- [ ] Trading House costs: 4, 5, 6, 7 Yen for 1st, 2nd, 3rd, 4th
+
+**Tests to add:**
+```rust
+#[test]
+fn test_gaslight_shophouse_bonus() {
+    // Setup: player has Gaslight tech
+    // Verify: building shophouse grants +2 VP
+}
+
+#[test]
+fn test_electrical_light_trading_house_bonus() {
+    // Setup: player has Electrical Light tech
+    // Verify: building trading house grants +3 VP
+}
+```
+
+### 16.6 Recovery: Telephone Effect
+
+**Files:** `crates/yokohama-core/src/game/apply_move.rs`
+
+**Requirements:**
+- [ ] Telephone: May leave 1 assistant in area after recovery
+
+**Tests to add:**
+```rust
+#[test]
+fn test_telephone_leaves_one() {
+    // Setup: player has Telephone, 3 assistants in area
+    // Verify: after recovery, 1 remains (not 0)
+}
+```
+
+### 16.7 Scoring: Country Set Fix
+
+**Files:** `crates/yokohama-core/src/game/scoring.rs`
+
+**Requirements:**
+- [ ] Each icon used at most once across all sets
+- [ ] No duplicate countries within a single set
+- [ ] Optimize for largest sets first
+
+**Current bug:** Greedy algorithm may count same country twice.
+
+**Tests to add:**
+```rust
+#[test]
+fn test_country_set_no_duplicates() {
+    // Setup: player has 3 English, 1 French, 1 German
+    // Verify: scores for one 3-set (Eng, Fr, Ger), not 5-set
+}
+```
+
+### 16.8 Additional Tech Effects
+
+**Files:** `crates/yokohama-core/src/game/tech_effects.rs`
+
+**Requirements:**
+- [ ] Mining Technology: +1 copper when receiving copper
+- [ ] Spinning Mill: Once per turn, discard 1 silk → gain 2 Yen
+- [ ] Ball: +2 VP when completing order
+- [ ] Language School: +1 Yen when completing order
+- [ ] Patent System: +2 VP when acquiring technology
+- [ ] Letterpress Printing: +1 Yen when acquiring technology
+- [ ] Winery: +3 VP when placing assistant on Church
+- [ ] Brickyard: +4 VP when placing assistant on Customs
+- [ ] System of Stock: At turn start, if Yen ≤ 1, refill to 2
+- [ ] University: Once per turn, pay 1 Yen → take assistant from warehouse
+
+**Tests to add:**
+```rust
+#[test]
+fn test_mining_technology_bonus() {
+    // Verify: receiving copper gives +1 extra
+}
+
+#[test]
+fn test_ball_order_bonus() {
+    // Verify: completing order gives +2 VP
+}
+
+#[test]
+fn test_winery_church_bonus() {
+    // Verify: placing on Church gives +3 VP
+}
+```
+
+### 16.9 End Game Trigger: Order Deck Empty
+
+**Files:** `crates/yokohama-core/src/game/end_game.rs`
+
+**Requirements:**
+- [ ] Trigger when order deck is empty AND a Port slot is empty
+- [ ] Check AFTER card removals and refills
+
+**Tests to add:**
+```rust
+#[test]
+fn test_order_deck_empty_trigger() {
+    // Setup: deck has 1 card, all port slots full
+    // Action: take last card
+    // Verify: triggers end game (deck empty + slot empty)
+}
+```
+
+### Step: Commit All Fixes
+
+```bash
+cargo test -p yokohama-core
+git add crates/yokohama-core/src/game/
+git commit -m "feat: complete remaining features and edge cases"
 ```
 
 ---

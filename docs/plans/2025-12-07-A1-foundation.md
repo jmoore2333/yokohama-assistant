@@ -213,6 +213,22 @@ git commit -m "chore: initialize Cargo workspace with yokohama-core crate"
 
 use serde::{Deserialize, Serialize};
 
+/// Error type for invalid ID construction.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct InvalidIdError {
+    pub type_name: &'static str,
+    pub value: u8,
+    pub max: u8,
+}
+
+impl std::fmt::Display for InvalidIdError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{} must be 0-{}, got {}", self.type_name, self.max - 1, self.value)
+    }
+}
+
+impl std::error::Error for InvalidIdError {}
+
 /// Player identifier (0-3 for up to 4 players).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Default)]
 pub struct PlayerId(pub u8);
@@ -224,9 +240,26 @@ impl PlayerId {
         Self(id)
     }
 
+    /// Try to create a PlayerId, returning error for invalid values.
+    /// Use this for CV-ingested data to avoid panics.
+    pub fn try_new(id: u8) -> Result<Self, InvalidIdError> {
+        if id < 4 {
+            Ok(Self(id))
+        } else {
+            Err(InvalidIdError { type_name: "PlayerId", value: id, max: 4 })
+        }
+    }
+
     /// Create a PlayerId without validation (for deserialization).
     pub const fn unchecked(id: u8) -> Self {
         Self(id)
+    }
+}
+
+impl TryFrom<u8> for PlayerId {
+    type Error = InvalidIdError;
+    fn try_from(value: u8) -> Result<Self, Self::Error> {
+        Self::try_new(value)
     }
 }
 
@@ -241,9 +274,26 @@ impl AreaId {
         Self(id)
     }
 
+    /// Try to create an AreaId, returning error for invalid values.
+    /// Use this for CV-ingested data to avoid panics.
+    pub fn try_new(id: u8) -> Result<Self, InvalidIdError> {
+        if id < 18 {
+            Ok(Self(id))
+        } else {
+            Err(InvalidIdError { type_name: "AreaId", value: id, max: 18 })
+        }
+    }
+
     /// Create an AreaId without validation (for deserialization).
     pub const fn unchecked(id: u8) -> Self {
         Self(id)
+    }
+}
+
+impl TryFrom<u8> for AreaId {
+    type Error = InvalidIdError;
+    fn try_from(value: u8) -> Result<Self, Self::Error> {
+        Self::try_new(value)
     }
 }
 
@@ -495,6 +545,111 @@ impl BoardLayout {
         self.canal_crossings.contains(&(from, to)) || self.canal_crossings.contains(&(to, from))
     }
 }
+
+/// Builder for validated BoardLayout construction.
+/// Ensures adjacency is bidirectional, sites exist for all areas, etc.
+#[derive(Debug, Default)]
+pub struct BoardLayoutBuilder {
+    areas: HashMap<AreaId, AreaConfig>,
+    adjacency: HashMap<AreaId, Vec<AreaId>>,
+    canal_crossings: Vec<(AreaId, AreaId)>,
+    building_sites: HashMap<AreaId, BuildingSite>,
+    five_power_tokens: HashMap<AreaId, Option<FivePowerEffect>>,
+}
+
+impl BoardLayoutBuilder {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Add an area to the board.
+    pub fn add_area(&mut self, id: AreaId, config: AreaConfig) -> &mut Self {
+        self.areas.insert(id, config);
+        self
+    }
+
+    /// Add bidirectional adjacency between two areas.
+    pub fn add_adjacency(&mut self, a: AreaId, b: AreaId) -> &mut Self {
+        self.adjacency.entry(a).or_default().push(b);
+        self.adjacency.entry(b).or_default().push(a);
+        self
+    }
+
+    /// Mark a canal crossing between two areas (1 Yen toll).
+    pub fn add_canal_crossing(&mut self, a: AreaId, b: AreaId) -> &mut Self {
+        self.canal_crossings.push((a, b));
+        self
+    }
+
+    /// Set building site for an area.
+    pub fn set_building_site(&mut self, area: AreaId, site: BuildingSite) -> &mut Self {
+        self.building_sites.insert(area, site);
+        self
+    }
+
+    /// Place a 5-power token on an area.
+    pub fn set_five_power_token(&mut self, area: AreaId, effect: FivePowerEffect) -> &mut Self {
+        self.five_power_tokens.insert(area, Some(effect));
+        self
+    }
+
+    /// Build and validate the BoardLayout.
+    pub fn build(self) -> Result<BoardLayout, BoardLayoutError> {
+        // Validate: all areas have building sites
+        for area in self.areas.keys() {
+            if !self.building_sites.contains_key(area) {
+                return Err(BoardLayoutError::MissingBuildingSite(*area));
+            }
+        }
+
+        // Validate: all adjacency references valid areas
+        for (area, neighbors) in &self.adjacency {
+            if !self.areas.contains_key(area) {
+                return Err(BoardLayoutError::InvalidAreaReference(*area));
+            }
+            for neighbor in neighbors {
+                if !self.areas.contains_key(neighbor) {
+                    return Err(BoardLayoutError::InvalidAreaReference(*neighbor));
+                }
+            }
+        }
+
+        // Validate: canal crossings reference valid areas
+        for (a, b) in &self.canal_crossings {
+            if !self.areas.contains_key(a) || !self.areas.contains_key(b) {
+                return Err(BoardLayoutError::InvalidCanalCrossing(*a, *b));
+            }
+        }
+
+        Ok(BoardLayout {
+            areas: self.areas,
+            adjacency: self.adjacency,
+            canal_crossings: self.canal_crossings,
+            building_sites: self.building_sites,
+            five_power_tokens: self.five_power_tokens,
+        })
+    }
+}
+
+/// Errors from BoardLayout validation.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum BoardLayoutError {
+    MissingBuildingSite(AreaId),
+    InvalidAreaReference(AreaId),
+    InvalidCanalCrossing(AreaId, AreaId),
+}
+
+impl std::fmt::Display for BoardLayoutError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::MissingBuildingSite(a) => write!(f, "Area {:?} missing building site", a),
+            Self::InvalidAreaReference(a) => write!(f, "Invalid area reference: {:?}", a),
+            Self::InvalidCanalCrossing(a, b) => write!(f, "Invalid canal crossing: {:?} <-> {:?}", a, b),
+        }
+    }
+}
+
+impl std::error::Error for BoardLayoutError {}
 ```
 
 **Step 2: Verify it compiles**
