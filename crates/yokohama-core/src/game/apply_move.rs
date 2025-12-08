@@ -15,26 +15,36 @@ pub fn apply_move(state: &GameState, mv: &Move) -> Result<GameState, &'static st
 
         Move::PlaceThreeAreas { placements } => {
             apply_placement(&mut new_state, placements)?;
+            // Record president's starting area for this turn's movement
+            set_president_start_area(&mut new_state);
             new_state.turn_phase = TurnPhase::Movement;
         }
 
         Move::PlaceTwoSameArea { area } => {
             apply_placement_same_area(&mut new_state, *area)?;
+            // Record president's starting area for this turn's movement
+            set_president_start_area(&mut new_state);
             new_state.turn_phase = TurnPhase::Movement;
         }
 
         Move::MovePresident { path, destination } => {
+            // Validate: cannot return to starting area
+            validate_movement_destination(&new_state, *destination)?;
             apply_movement(&mut new_state, path, *destination)?;
+            new_state.president_start_area = None; // Clear after movement
             new_state.turn_phase = TurnPhase::AreaAction;
         }
 
         Move::PlacePresident { destination } => {
+            // Note: PlacePresident is for placing from hand - no start area restriction
             apply_place_president(&mut new_state, *destination)?;
+            new_state.president_start_area = None; // Clear after placement
             new_state.turn_phase = TurnPhase::AreaAction;
         }
 
         Move::ReturnPresidentToHand { recover_assistants_from } => {
             apply_return_to_hand(&mut new_state, recover_assistants_from)?;
+            new_state.president_start_area = None; // Clear after return
             // Skip to Additional Action Second
             new_state.turn_phase = TurnPhase::AdditionalActionSecond;
         }
@@ -108,6 +118,29 @@ pub fn apply_move(state: &GameState, mv: &Move) -> Result<GameState, &'static st
     check_end_game_triggers(&mut new_state);
 
     Ok(new_state)
+}
+
+/// Set president's starting area for movement restriction.
+/// Called when entering Movement phase.
+fn set_president_start_area(state: &mut GameState) {
+    let player = state.current_player;
+    let p = state.player(player);
+
+    state.president_start_area = match p.president_location {
+        PresidentLocation::OnBoard(area) => Some(area),
+        PresidentLocation::InHand => None,
+    };
+}
+
+/// Validate that movement destination is not the starting area.
+/// "The President pawn may not return to the Area that it started in."
+fn validate_movement_destination(state: &GameState, destination: AreaId) -> Result<(), &'static str> {
+    if let Some(start) = state.president_start_area {
+        if destination == start {
+            return Err("Cannot return to starting area in same turn");
+        }
+    }
+    Ok(())
 }
 
 fn advance_phase(state: &mut GameState) {
@@ -733,6 +766,7 @@ mod tests {
             is_mercenary_action: false,
             mercenary_target_area: None,
             mercenary_return_phase: None,
+            president_start_area: None,
             port_state: PortState::new(player_count >= 3),
             lab_state: LabState::new(player_count >= 4),
             order_deck_remaining: 20,
@@ -1062,5 +1096,119 @@ mod tests {
 
         // Player 1 should receive passive income even during mercenary action
         assert_eq!(new_state.players[1].money, player1_initial_money + 1);
+    }
+
+    #[test]
+    fn test_cannot_return_to_start_area() {
+        let mut state = create_minimal_state(2);
+
+        // Set up board with connected areas: 0 -- 1 -- 2
+        state.board_layout.areas.insert(AreaId::new(0), AreaConfig {
+            area_type: AreaType::Bank,
+            grid_position: (0, 0),
+        });
+        state.board_layout.areas.insert(AreaId::new(1), AreaConfig {
+            area_type: AreaType::CopperMine,
+            grid_position: (0, 1),
+        });
+        state.board_layout.areas.insert(AreaId::new(2), AreaConfig {
+            area_type: AreaType::SilkMill,
+            grid_position: (0, 2),
+        });
+        state.board_layout.adjacency.insert(AreaId::new(0), vec![AreaId::new(1)]);
+        state.board_layout.adjacency.insert(AreaId::new(1), vec![AreaId::new(0), AreaId::new(2)]);
+        state.board_layout.adjacency.insert(AreaId::new(2), vec![AreaId::new(1)]);
+
+        // President starts in area 0
+        state.players[0].president_location = PresidentLocation::OnBoard(AreaId::new(0));
+        state.players[0].assistants.on_board.insert(AreaId::new(0), 1);
+        state.players[0].assistants.on_board.insert(AreaId::new(1), 1);
+
+        // Simulate entering Movement phase (set start area)
+        state.turn_phase = TurnPhase::Placement;
+        let result = apply_move(&state, &Move::PlaceThreeAreas { placements: vec![] });
+        assert!(result.is_ok());
+        let state = result.unwrap();
+
+        // president_start_area should be set to area 0
+        assert_eq!(state.president_start_area, Some(AreaId::new(0)));
+        assert_eq!(state.turn_phase, TurnPhase::Movement);
+
+        // Try to move back to area 0 (should fail)
+        let result = apply_move(&state, &Move::MovePresident {
+            path: vec![AreaId::new(1), AreaId::new(0)],
+            destination: AreaId::new(0),
+        });
+        assert!(result.is_err());
+        assert_eq!(result.unwrap_err(), "Cannot return to starting area in same turn");
+    }
+
+    #[test]
+    fn test_can_move_to_different_area() {
+        let mut state = create_minimal_state(2);
+
+        // Set up board
+        state.board_layout.areas.insert(AreaId::new(0), AreaConfig {
+            area_type: AreaType::Bank,
+            grid_position: (0, 0),
+        });
+        state.board_layout.areas.insert(AreaId::new(1), AreaConfig {
+            area_type: AreaType::CopperMine,
+            grid_position: (0, 1),
+        });
+        state.board_layout.adjacency.insert(AreaId::new(0), vec![AreaId::new(1)]);
+        state.board_layout.adjacency.insert(AreaId::new(1), vec![AreaId::new(0)]);
+
+        // President starts in area 0
+        state.players[0].president_location = PresidentLocation::OnBoard(AreaId::new(0));
+        state.players[0].assistants.on_board.insert(AreaId::new(0), 1);
+        state.players[0].assistants.on_board.insert(AreaId::new(1), 1);
+
+        // Enter Movement phase
+        state.turn_phase = TurnPhase::Placement;
+        let result = apply_move(&state, &Move::PlaceThreeAreas { placements: vec![] });
+        assert!(result.is_ok());
+        let state = result.unwrap();
+
+        // Move to area 1 (different from start) - should succeed
+        let result = apply_move(&state, &Move::MovePresident {
+            path: vec![AreaId::new(1)],
+            destination: AreaId::new(1),
+        });
+        assert!(result.is_ok());
+
+        let new_state = result.unwrap();
+        // president_start_area should be cleared after movement
+        assert_eq!(new_state.president_start_area, None);
+        assert_eq!(new_state.turn_phase, TurnPhase::AreaAction);
+    }
+
+    #[test]
+    fn test_president_from_hand_no_start_restriction() {
+        let mut state = create_minimal_state(2);
+
+        // President is in hand
+        state.players[0].president_location = PresidentLocation::InHand;
+        state.players[0].assistants.on_board.insert(AreaId::new(0), 1);
+
+        state.board_layout.areas.insert(AreaId::new(0), AreaConfig {
+            area_type: AreaType::Bank,
+            grid_position: (0, 0),
+        });
+
+        // Enter Movement phase (no start area since president is in hand)
+        state.turn_phase = TurnPhase::Placement;
+        let result = apply_move(&state, &Move::PlaceThreeAreas { placements: vec![] });
+        assert!(result.is_ok());
+        let state = result.unwrap();
+
+        // No start area should be set
+        assert_eq!(state.president_start_area, None);
+
+        // Place president - should succeed (no start area restriction)
+        let result = apply_move(&state, &Move::PlacePresident {
+            destination: AreaId::new(0),
+        });
+        assert!(result.is_ok());
     }
 }

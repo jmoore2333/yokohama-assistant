@@ -51,6 +51,7 @@ pub fn create_test_game_state(player_count: u8) -> GameState {
         is_mercenary_action: false,
         mercenary_target_area: None,
         mercenary_return_phase: None,
+        president_start_area: None,
         port_state: create_port_state(&config),
         lab_state: create_lab_state(&config),
         order_deck_remaining: 24 - config.order_cards_to_remove(),

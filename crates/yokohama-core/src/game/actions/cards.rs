@@ -356,6 +356,7 @@ mod tests {
             is_mercenary_action: false,
             mercenary_target_area: None,
             mercenary_return_phase: None,
+            president_start_area: None,
             port_state: PortState::new(false),
             lab_state: LabState::new(false),
             order_deck_remaining: 20,

@@ -176,6 +176,10 @@ pub struct GameState {
     /// Which Additional Action phase to return to after mercenary sub-turn.
     pub mercenary_return_phase: Option<TurnPhase>,
 
+    // Movement tracking
+    /// President's starting area for this turn (cannot return here during movement).
+    pub president_start_area: Option<AreaId>,
+
     // Shared card pools
     pub port_state: PortState,
     pub lab_state: LabState,
