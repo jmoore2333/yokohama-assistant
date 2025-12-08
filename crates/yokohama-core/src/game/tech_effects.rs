@@ -154,3 +154,355 @@ pub fn customs_vp_bonus(
         0
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::HashMap;
+
+    fn create_test_state() -> GameState {
+        let config = GameConfig::new(
+            2,
+            vec![PlayerColor::Red, PlayerColor::Blue],
+            PlayerId::new(0),
+        );
+
+        let board_layout = BoardLayout {
+            areas: HashMap::new(),
+            adjacency: HashMap::new(),
+            canal_crossings: vec![],
+            building_sites: HashMap::new(),
+            five_power_tokens: HashMap::new(),
+        };
+
+        let players = vec![
+            PlayerState::new(PlayerId::new(0), PlayerColor::Red, true),
+            PlayerState::new(PlayerId::new(1), PlayerColor::Blue, false),
+        ];
+
+        GameState {
+            config,
+            board_layout,
+            players,
+            current_player: PlayerId::new(0),
+            turn_phase: TurnPhase::Building,
+            turn_number: 1,
+            additional_action_state: AdditionalActionState::new(),
+            current_action_power: None,
+            is_mercenary_action: false,
+            mercenary_target_area: None,
+            mercenary_return_phase: None,
+            port_state: PortState::new(false),
+            lab_state: LabState::new(false),
+            order_deck_remaining: 20,
+            tech_deck_remaining: 20,
+            church_track: ChurchTrack::new(),
+            customs_track: CustomsTrack::new(),
+            achievements: [
+                AchievementCard::new(AchievementType::Copper5),
+                AchievementCard::new(AchievementType::Money10),
+                AchievementCard::new(AchievementType::Production4),
+            ],
+            mercenary_supply: MercenarySupply::new(),
+            station_location: None,
+            end_game_triggered: false,
+            trigger_reason: None,
+            final_round: false,
+            trigger_player: None,
+        }
+    }
+
+    #[test]
+    fn test_gaslight_shophouse_bonus() {
+        let mut state = create_test_state();
+        let player = PlayerId::new(0);
+
+        // Create registry with Gaslight tech
+        let mut tech_registry = TechRegistry::new();
+        let gaslight = TechCard {
+            id: TechCardId(1),
+            name: "Gaslight".to_string(),
+            country: Country::English,
+            industry_cost: 3,
+            effect: TechEffect::Gaslight,
+        };
+        tech_registry.insert(gaslight, "tech_gaslight");
+
+        // Without tech - no bonus
+        assert_eq!(building_vp_bonus(&state, player, true, &tech_registry), 0);
+
+        // Give player the tech
+        state.players[0].technologies.push(TechCardId(1));
+
+        // With Gaslight - +2 VP for shophouse
+        assert_eq!(building_vp_bonus(&state, player, true, &tech_registry), 2);
+    }
+
+    #[test]
+    fn test_electrical_light_trading_house_bonus() {
+        let mut state = create_test_state();
+        let player = PlayerId::new(0);
+
+        // Create registry with Electrical Light tech
+        let mut tech_registry = TechRegistry::new();
+        let electrical = TechCard {
+            id: TechCardId(2),
+            name: "Electrical Light".to_string(),
+            country: Country::American,
+            industry_cost: 4,
+            effect: TechEffect::ElectricalLight,
+        };
+        tech_registry.insert(electrical, "tech_electrical");
+
+        // Without tech - no bonus
+        assert_eq!(building_vp_bonus(&state, player, false, &tech_registry), 0);
+
+        // Give player the tech
+        state.players[0].technologies.push(TechCardId(2));
+
+        // With Electrical Light - +3 VP for trading house
+        assert_eq!(building_vp_bonus(&state, player, false, &tech_registry), 3);
+    }
+
+    #[test]
+    fn test_winery_church_bonus() {
+        let mut state = create_test_state();
+        let player = PlayerId::new(0);
+
+        let mut tech_registry = TechRegistry::new();
+        let winery = TechCard {
+            id: TechCardId(3),
+            name: "Winery".to_string(),
+            country: Country::French,
+            industry_cost: 2,
+            effect: TechEffect::Winery,
+        };
+        tech_registry.insert(winery, "tech_winery");
+
+        // Without tech
+        assert_eq!(church_vp_bonus(&state, player, &tech_registry), 0);
+
+        // With tech
+        state.players[0].technologies.push(TechCardId(3));
+        assert_eq!(church_vp_bonus(&state, player, &tech_registry), 3);
+    }
+
+    #[test]
+    fn test_brickyard_customs_bonus() {
+        let mut state = create_test_state();
+        let player = PlayerId::new(0);
+
+        let mut tech_registry = TechRegistry::new();
+        let brickyard = TechCard {
+            id: TechCardId(4),
+            name: "Brickyard".to_string(),
+            country: Country::German,
+            industry_cost: 3,
+            effect: TechEffect::Brickyard,
+        };
+        tech_registry.insert(brickyard, "tech_brickyard");
+
+        // Without tech
+        assert_eq!(customs_vp_bonus(&state, player, &tech_registry), 0);
+
+        // With tech
+        state.players[0].technologies.push(TechCardId(4));
+        assert_eq!(customs_vp_bonus(&state, player, &tech_registry), 4);
+    }
+
+    #[test]
+    fn test_mining_technology_bonus() {
+        let mut state = create_test_state();
+        let player = PlayerId::new(0);
+
+        let mut tech_registry = TechRegistry::new();
+        let mining = TechCard {
+            id: TechCardId(5),
+            name: "Mining Technology".to_string(),
+            country: Country::Dutch,
+            industry_cost: 2,
+            effect: TechEffect::MiningTechnology,
+        };
+        tech_registry.insert(mining, "tech_mining");
+
+        // Without tech - no bonus
+        assert_eq!(copper_bonus(&state, player, 3, &tech_registry), 0);
+
+        // With tech - +1 copper when receiving copper
+        state.players[0].technologies.push(TechCardId(5));
+        assert_eq!(copper_bonus(&state, player, 3, &tech_registry), 1);
+
+        // But not if base copper is 0
+        assert_eq!(copper_bonus(&state, player, 0, &tech_registry), 0);
+    }
+
+    #[test]
+    fn test_tech_acquisition_bonuses() {
+        let mut state = create_test_state();
+        let player = PlayerId::new(0);
+
+        let mut tech_registry = TechRegistry::new();
+        let patent = TechCard {
+            id: TechCardId(6),
+            name: "Patent System".to_string(),
+            country: Country::English,
+            industry_cost: 3,
+            effect: TechEffect::PatentSystem,
+        };
+        let letterpress = TechCard {
+            id: TechCardId(7),
+            name: "Letter Press Printing".to_string(),
+            country: Country::American,
+            industry_cost: 2,
+            effect: TechEffect::LetterPressPrinting,
+        };
+        tech_registry.insert(patent, "tech_patent");
+        tech_registry.insert(letterpress, "tech_letterpress");
+
+        // Without tech - no bonuses
+        let (vp, yen) = tech_acquisition_bonuses(&state, player, &tech_registry);
+        assert_eq!(vp, 0);
+        assert_eq!(yen, 0);
+
+        // With Patent System - +2 VP
+        state.players[0].technologies.push(TechCardId(6));
+        let (vp, yen) = tech_acquisition_bonuses(&state, player, &tech_registry);
+        assert_eq!(vp, 2);
+        assert_eq!(yen, 0);
+
+        // With both - +2 VP and +1 Yen
+        state.players[0].technologies.push(TechCardId(7));
+        let (vp, yen) = tech_acquisition_bonuses(&state, player, &tech_registry);
+        assert_eq!(vp, 2);
+        assert_eq!(yen, 1);
+    }
+
+    #[test]
+    fn test_placement_limit() {
+        let mut state = create_test_state();
+        let player = PlayerId::new(0);
+
+        let mut tech_registry = TechRegistry::new();
+        let newspaper = TechCard {
+            id: TechCardId(8),
+            name: "Newspaper".to_string(),
+            country: Country::French,
+            industry_cost: 2,
+            effect: TechEffect::Newspaper,
+        };
+        tech_registry.insert(newspaper, "tech_newspaper");
+
+        // Without tech - 3 areas
+        assert_eq!(placement_limit(&state, player, &tech_registry), 3);
+
+        // With Newspaper - 4 areas
+        state.players[0].technologies.push(TechCardId(8));
+        assert_eq!(placement_limit(&state, player, &tech_registry), 4);
+    }
+
+    #[test]
+    fn test_movement_tech_effects() {
+        let mut state = create_test_state();
+        let player = PlayerId::new(0);
+
+        let mut tech_registry = TechRegistry::new();
+        let postal = TechCard {
+            id: TechCardId(9),
+            name: "Postal System".to_string(),
+            country: Country::German,
+            industry_cost: 3,
+            effect: TechEffect::PostalSystem,
+        };
+        let stagecoach = TechCard {
+            id: TechCardId(10),
+            name: "Stagecoach".to_string(),
+            country: Country::Dutch,
+            industry_cost: 2,
+            effect: TechEffect::Stagecoach,
+        };
+        tech_registry.insert(postal, "tech_postal");
+        tech_registry.insert(stagecoach, "tech_stagecoach");
+
+        // Without tech
+        assert!(!can_stop_with_opponent(&state, player, &tech_registry));
+        assert!(!free_passage(&state, player, &tech_registry));
+
+        // With Postal System
+        state.players[0].technologies.push(TechCardId(9));
+        assert!(can_stop_with_opponent(&state, player, &tech_registry));
+        assert!(!free_passage(&state, player, &tech_registry));
+
+        // With both
+        state.players[0].technologies.push(TechCardId(10));
+        assert!(can_stop_with_opponent(&state, player, &tech_registry));
+        assert!(free_passage(&state, player, &tech_registry));
+    }
+
+    #[test]
+    fn test_telephone_effect() {
+        let mut state = create_test_state();
+        let player = PlayerId::new(0);
+
+        let mut tech_registry = TechRegistry::new();
+        let telephone = TechCard {
+            id: TechCardId(11),
+            name: "Telephone".to_string(),
+            country: Country::English,
+            industry_cost: 4,
+            effect: TechEffect::Telephone,
+        };
+        tech_registry.insert(telephone, "tech_telephone");
+
+        // Without tech
+        assert!(!can_leave_assistant(&state, player, &tech_registry));
+
+        // With Telephone
+        state.players[0].technologies.push(TechCardId(11));
+        assert!(can_leave_assistant(&state, player, &tech_registry));
+    }
+
+    #[test]
+    fn test_system_of_stock_turn_start() {
+        let mut state = create_test_state();
+        let player = PlayerId::new(0);
+
+        let mut tech_registry = TechRegistry::new();
+        let stock = TechCard {
+            id: TechCardId(12),
+            name: "System of Stock".to_string(),
+            country: Country::American,
+            industry_cost: 3,
+            effect: TechEffect::SystemOfStock,
+        };
+        tech_registry.insert(stock, "tech_stock");
+
+        // Player with 0 yen
+        state.players[0].money = 0;
+
+        // Without tech - no change
+        apply_turn_start_effects(&mut state, player, &tech_registry);
+        assert_eq!(state.players[0].money, 0);
+
+        // Give player the tech
+        state.players[0].technologies.push(TechCardId(12));
+
+        // With 0 yen - should become 2
+        apply_turn_start_effects(&mut state, player, &tech_registry);
+        assert_eq!(state.players[0].money, 2);
+
+        // With 1 yen - should become 2
+        state.players[0].money = 1;
+        apply_turn_start_effects(&mut state, player, &tech_registry);
+        assert_eq!(state.players[0].money, 2);
+
+        // With 2 yen - stays at 2
+        state.players[0].money = 2;
+        apply_turn_start_effects(&mut state, player, &tech_registry);
+        assert_eq!(state.players[0].money, 2);
+
+        // With 5 yen - stays at 5
+        state.players[0].money = 5;
+        apply_turn_start_effects(&mut state, player, &tech_registry);
+        assert_eq!(state.players[0].money, 5);
+    }
+}

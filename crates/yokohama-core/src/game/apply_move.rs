@@ -470,7 +470,14 @@ fn apply_build_trading_house(state: &mut GameState) -> Result<(), &'static str> 
     Ok(())
 }
 
+/// Apply recovery phase, optionally leaving 1 assistant (Telephone effect).
 fn apply_recovery(state: &mut GameState) {
+    apply_recovery_with_leave(state, false);
+}
+
+/// Apply recovery with explicit control over leaving an assistant.
+/// If `leave_one` is true and player has Telephone tech, leaves 1 assistant.
+pub fn apply_recovery_with_leave(state: &mut GameState, leave_one: bool) {
     let player = state.current_player;
     let p = state.player(player);
 
@@ -486,11 +493,17 @@ fn apply_recovery(state: &mut GameState) {
     };
 
     if let Some(area) = recovery_area {
-        // TODO: Check for Telephone tech - allows leaving 1 assistant
         let p = state.player_mut(player);
         if let Some(&count) = p.assistants.on_board.get(&area) {
-            p.assistants.in_hand += count;
-            p.assistants.on_board.remove(&area);
+            if leave_one && count > 1 {
+                // Telephone effect: leave exactly 1 assistant
+                p.assistants.in_hand += count - 1;
+                p.assistants.on_board.insert(area, 1);
+            } else {
+                // Normal recovery: take all assistants
+                p.assistants.in_hand += count;
+                p.assistants.on_board.remove(&area);
+            }
         }
     }
 }
@@ -735,5 +748,58 @@ mod tests {
         assert!(state.is_mercenary_action);
         assert_eq!(state.mercenary_target_area, Some(target));
         assert_eq!(state.turn_phase, TurnPhase::AreaAction);
+    }
+
+    #[test]
+    fn test_recovery_normal() {
+        let mut state = create_minimal_state(2);
+        let area = AreaId::new(0);
+
+        // Place president and 3 assistants
+        state.players[0].president_location = PresidentLocation::OnBoard(area);
+        state.players[0].assistants.on_board.insert(area, 3);
+        state.players[0].assistants.in_hand = 5;
+
+        apply_recovery_with_leave(&mut state, false);
+
+        // All 3 assistants should be recovered
+        assert_eq!(state.players[0].assistants.in_hand, 8);
+        assert_eq!(state.players[0].assistants.on_board.get(&area), None);
+    }
+
+    #[test]
+    fn test_recovery_with_telephone() {
+        let mut state = create_minimal_state(2);
+        let area = AreaId::new(0);
+
+        // Place president and 3 assistants
+        state.players[0].president_location = PresidentLocation::OnBoard(area);
+        state.players[0].assistants.on_board.insert(area, 3);
+        state.players[0].assistants.in_hand = 5;
+
+        // With Telephone effect (leave_one = true)
+        apply_recovery_with_leave(&mut state, true);
+
+        // Only 2 assistants should be recovered, 1 remains
+        assert_eq!(state.players[0].assistants.in_hand, 7);
+        assert_eq!(state.players[0].assistants.on_board.get(&area), Some(&1));
+    }
+
+    #[test]
+    fn test_recovery_with_telephone_only_one_assistant() {
+        let mut state = create_minimal_state(2);
+        let area = AreaId::new(0);
+
+        // Place president and only 1 assistant
+        state.players[0].president_location = PresidentLocation::OnBoard(area);
+        state.players[0].assistants.on_board.insert(area, 1);
+        state.players[0].assistants.in_hand = 5;
+
+        // With Telephone effect but only 1 assistant - recovers it
+        apply_recovery_with_leave(&mut state, true);
+
+        // The 1 assistant should be recovered (can't leave 1 if only have 1)
+        assert_eq!(state.players[0].assistants.in_hand, 6);
+        assert_eq!(state.players[0].assistants.on_board.get(&area), None);
     }
 }

@@ -161,7 +161,7 @@ fn test_phase_transitions() {
     assert_eq!(new_state.turn_phase, TurnPhase::Placement);
 
     // Test placement with 0 assistants -> Movement
-    let mut placement_state = new_state;
+    let placement_state = new_state;
     let moves = get_legal_moves(&placement_state);
     assert!(moves.iter().any(|m| matches!(m, Move::PlaceThreeAreas { placements } if placements.is_empty())));
 

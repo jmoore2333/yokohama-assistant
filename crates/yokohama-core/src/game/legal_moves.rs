@@ -5,11 +5,16 @@ use crate::game::*;
 
 /// Generate all legal moves for the current game state.
 pub fn get_legal_moves(state: &GameState) -> Vec<Move> {
+    get_legal_moves_with_tech(state, None)
+}
+
+/// Generate all legal moves with technology awareness.
+pub fn get_legal_moves_with_tech(state: &GameState, tech_registry: Option<&TechRegistry>) -> Vec<Move> {
     match state.turn_phase {
         TurnPhase::AdditionalActionFirst | TurnPhase::AdditionalActionSecond => {
             generate_additional_action_moves(state)
         }
-        TurnPhase::Placement => generate_placement_moves(state),
+        TurnPhase::Placement => generate_placement_moves_with_tech(state, tech_registry),
         TurnPhase::Movement => generate_movement_moves(state),
         TurnPhase::AreaAction => generate_area_action_moves(state),
         TurnPhase::FivePowerBonus => generate_five_power_moves(state),
@@ -68,7 +73,7 @@ fn generate_additional_action_moves(state: &GameState) -> Vec<Move> {
     moves
 }
 
-fn generate_placement_moves(state: &GameState) -> Vec<Move> {
+fn generate_placement_moves_with_tech(state: &GameState, tech_registry: Option<&TechRegistry>) -> Vec<Move> {
     let mut moves = Vec::new();
     let player = state.current_player;
     let p = state.player(player);
@@ -79,6 +84,14 @@ fn generate_placement_moves(state: &GameState) -> Vec<Move> {
         return moves;
     }
 
+    // Check for Newspaper technology (allows 4 areas instead of 3)
+    let has_newspaper = tech_registry.is_some_and(|registry| {
+        p.technologies.iter().any(|&tech_id| {
+            registry.get(tech_id).map(|t| t.effect == TechEffect::Newspaper).unwrap_or(false)
+        })
+    });
+    let max_areas = if has_newspaper { 4 } else { 3 };
+
     // Get all placeable areas (not Canal)
     let placeable_areas: Vec<AreaId> = state
         .board_layout
@@ -88,9 +101,8 @@ fn generate_placement_moves(state: &GameState) -> Vec<Move> {
         .map(|(&id, _)| id)
         .collect();
 
-    // Option A: 1 assistant in each of 1-3 different areas
-    // We generate combinations
-    for i in 0..=placeable_areas.len().min(3).min(p.assistants.in_hand as usize) {
+    // Option A: 1 assistant in each of 1-N different areas (N = 3 or 4 with Newspaper)
+    for i in 0..=placeable_areas.len().min(max_areas).min(p.assistants.in_hand as usize) {
         if i == 0 {
             moves.push(Move::PlaceThreeAreas { placements: vec![] });
         } else if i == 1 {
@@ -114,6 +126,19 @@ fn generate_placement_moves(state: &GameState) -> Vec<Move> {
                         moves.push(Move::PlaceThreeAreas {
                             placements: vec![area1, area2, area3],
                         });
+                    }
+                }
+            }
+        } else if i == 4 && p.assistants.in_hand >= 4 && has_newspaper {
+            // 4-area placement with Newspaper
+            for (j, &area1) in placeable_areas.iter().enumerate() {
+                for (k, &area2) in placeable_areas[j + 1..].iter().enumerate() {
+                    for (l, &area3) in placeable_areas[j + k + 2..].iter().enumerate() {
+                        for &area4 in &placeable_areas[j + k + l + 3..] {
+                            moves.push(Move::PlaceThreeAreas {
+                                placements: vec![area1, area2, area3, area4],
+                            });
+                        }
                     }
                 }
             }
@@ -367,7 +392,7 @@ mod tests {
     #[test]
     fn test_placement_moves_with_assistants() {
         let state = create_test_state();
-        let moves = generate_placement_moves(&state);
+        let moves = generate_placement_moves_with_tech(&state, None);
 
         // Should have placement options
         assert!(!moves.is_empty());
