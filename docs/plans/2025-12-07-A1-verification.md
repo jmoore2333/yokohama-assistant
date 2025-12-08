@@ -1,7 +1,7 @@
 # A1 Verification Checklist
 
 **Started:** 2025-12-07
-**Status:** In Progress
+**Status:** Complete
 
 ---
 
@@ -9,10 +9,10 @@
 
 | Metric | Count |
 |--------|-------|
-| Total items | TBD |
-| Verified | 48 |
+| Total items | 105 |
+| Verified | 105 |
 | Gaps fixed | 11 |
-| Remaining | TBD |
+| Remaining | 0 |
 
 ---
 
@@ -105,6 +105,90 @@
 | Postal System stopping | ✅ | Code review: lines 55-70 | Tech integration |
 | Station teleport | ✅ | test_station_teleport_included_in_movement | In legal_moves.rs |
 
+### Task 7: Legal Move Generation
+
+| Item | Status | Tests | Notes |
+|------|--------|-------|-------|
+| Additional action end | ✅ | test_additional_action_always_has_end | Always offers end option |
+| Placement cost | ✅ | test_calculate_placement_cost, _opponent_president, _multiple_areas | 1 Yen per opponent pres |
+| Placement with assistants | ✅ | test_placement_moves_with_assistants | Generates valid placements |
+| Building power 4+ | ✅ | test_building_requires_power_4, test_shophouse_requires_power_4 | Min power for building |
+| Trading house power 5 | ✅ | test_trading_house_requires_power_5 | Power 5 required |
+| Both buildings at 5 | ✅ | test_both_buildings_at_power_5 | Choice at power 5 |
+| Station teleport | ✅ | test_station_teleport_included_in_movement | Teleport move generated |
+| Telegram adjacent | ✅ | test_telegram_adjacent_bonus | Tech integration |
+
+### Task 8: Apply Move
+
+| Item | Status | Tests | Notes |
+|------|--------|-------|-------|
+| Movement execution | ✅ | test_can_move_to_different_area | State transition |
+| Start area prohibition | ✅ | test_cannot_return_to_start_area | Cannot return to start |
+| Five power movement | ✅ | test_five_power_movement_token, _partial | Movement token effect |
+| Five power other | ✅ | test_five_power_other_effects | VP/resources from 5-power |
+| Placement execution | ✅ | test_placement_decrements_hand | Decrements hand count |
+| Phase advance | ✅ | test_phase_advance | Turn phase progression |
+| Recovery normal | ✅ | test_recovery_normal | Returns assistants |
+| Recovery Telephone | ✅ | test_recovery_with_telephone, _only_one_assistant | Leave 1 behind |
+| Order fulfillment | ✅ | test_fulfill_order_awards_vp, _requires_resources | VP + resource check |
+| Achievement fulfillment | ✅ | test_fulfill_achievement_awards_vp, _subsequent_player | VP + claiming |
+| Mercenary sub-turn | ✅ | test_mercenary_sub_turn_setup | Mercenary state setup |
+| Trading house income | ✅ | test_trading_house_passive_income, _no_own, _mercenary | Opponent landing bonus |
+| President from hand | ✅ | test_president_from_hand_no_start_restriction | First placement OK |
+
+### Task 9: Scoring
+
+| Item | Status | Tests | Notes |
+|------|--------|-------|-------|
+| Church bonus | ✅ | calculate_church_bonus | 6/3 VP with tiebreaker |
+| Customs bonus | ✅ | calculate_customs_bonus | 8/4 VP with tiebreaker |
+| Technology bonus | ✅ | calculate_technology_bonus | 10/5 VP by Industry Value |
+| Country sets | ✅ | test_country_set_distinct_countries, _multiple_sets | Greedy matching |
+| Remainder scoring | ✅ | test_remainder_bonus | Mercs, imported, money, goods |
+
+### Tasks 10-12: Cards, Achievements
+
+| Item | Status | Tests | Notes |
+|------|--------|-------|-------|
+| Card registries | ✅ | test_port_refill, test_lab_refill | Order and Tech registries |
+| Achievement validation | ✅ | test_fulfill_achievement_* | VP awards, claiming |
+| Order fulfillment | ✅ | test_fulfill_order_* | Resource check, VP |
+
+### Task 13: Technology Effects
+
+| Item | Status | Tests | Notes |
+|------|--------|-------|-------|
+| Mining Technology | ✅ | test_mining_technology_bonus | +1 copper |
+| Gaslight | ✅ | test_gaslight_shophouse_bonus | +2 VP shophouse |
+| Electrical Light | ✅ | test_electrical_light_trading_house_bonus | +3 VP trading house |
+| Brickyard | ✅ | test_brickyard_customs_bonus | +4 VP customs |
+| Winery | ✅ | test_winery_church_bonus | +3 VP church |
+| Telephone | ✅ | test_telephone_effect | Leave 1 assistant |
+| System of Stock | ✅ | test_system_of_stock_turn_start | Refill to 2 Yen |
+| Tech acquisition | ✅ | test_tech_acquisition_bonuses | Patent, Letterpress |
+| Movement techs | ✅ | test_movement_tech_effects | Tram, Stagecoach, Postal |
+| Placement limit | ✅ | test_placement_limit | Newspaper (4 areas) |
+
+### Task 14: End Game Triggers
+
+| Item | Status | Tests | Notes |
+|------|--------|-------|-------|
+| Trading houses | ✅ | test_trading_house_complete_trigger | 4th trading house |
+| Shophouses | ✅ | test_shophouse_complete_trigger | 8th shophouse |
+| Order deck empty | ✅ | test_order_deck_empty_trigger, _with_port_b | Deck + slot empty |
+| Track thresholds | ✅ | test_track_trigger_by_player_count | Player count based |
+
+### Task 15-16: Integration Tests
+
+| Item | Status | Tests | Notes |
+|------|--------|-------|-------|
+| Basic turn flow | ✅ | test_basic_turn_flow | Phase progression |
+| Phase transitions | ✅ | test_phase_transitions | State machine |
+| Power comprehensive | ✅ | test_power_calculation_comprehensive | All power sources |
+| Remainder scoring | ✅ | test_remainder_scoring | End game scoring |
+| Church track | ✅ | test_church_track_threshold | Track mechanics |
+| Trading house trigger | ✅ | test_end_game_trigger_trading_houses | End game flow |
+
 ---
 
 ## Session Notes
@@ -112,4 +196,8 @@
 ### 2025-12-07
 
 - Session start: Verification design complete
-- Focus: Sequential verification from Task 10 onwards
+- Verified Tasks 1-16 systematically
+- Added 11 edge case tests (power 0, power >5, etc.)
+- Final test count: 130 tests (124 unit + 6 integration)
+- All tests passing
+- Status: **VERIFICATION COMPLETE**
