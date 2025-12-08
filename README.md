@@ -53,25 +53,26 @@ An AR-powered AI assistant for the board game **Yokohama** that observes the phy
 | Tech Effects | ✅ Done | `game/tech_effects.rs` |
 | End Game Triggers | ✅ Done | `game/end_game.rs` |
 | Board Generation | ✅ Done | `game/board_gen.rs` |
-| **Order Cards Data** | 🔄 Extracting | ~36 cards from TTS |
-| **Tech Cards Data** | 🔄 Extracting | Country pairings needed |
-| **Building Sites Data** | 🔄 Extracting | VP configurations |
-| **5-Power Tokens Data** | 🔄 Extracting | Types and counts |
+| Area Tiles | ✅ Verified | 10/14/18 for 2P/3P/4P |
+| **Order Cards (36)** | 📷 Extracted | Need transcription |
+| **Tech Cards (20)** | 📷 Extracted | Need transcription |
+| **Building Sites (24)** | 📷 Extracted | Need transcription |
+| **5-Power Tokens** | ⚠️ Incomplete | Only 8/17 found in TTS |
 
 **Tests:** 153 passing (147 unit + 6 integration)
 
 ## What's Blocking A2/A3
 
-The game engine logic is complete, but we need **concrete game data** before MCTS can run realistic simulations:
+The game engine logic is complete. TTS extraction is done, but we need to:
 
-| Data Needed | Why It Matters | Source |
-|-------------|----------------|--------|
-| Order Cards | Can't simulate order fulfillment | TTS extraction |
-| Tech Card Countries | Can't calculate mercenary eligibility | TTS extraction |
-| Building Site VP Values | Can't score building actions | TTS extraction |
-| 5-Power Token Effects | Can't resolve 5-power bonuses | TTS extraction |
+| Task | Status | Blocker |
+|------|--------|---------|
+| Verify 5-power tokens | ⚠️ Blocking | Only 8/17 found in TTS - need physical game |
+| Transcribe Order Cards | ⏳ Pending | 36 cards from sprite sheet |
+| Transcribe Tech Cards | ⏳ Pending | 20 cards from sprite sheet |
+| Transcribe Building Sites | ⏳ Pending | 24 cards from sprite sheet |
 
-**Current approach:** Extracting all assets from a Tabletop Simulator mod.
+**TTS Assets Location:** `tts-assets/organized/`
 
 See [`docs/plans/2025-12-07-A1-data-collection.md`](docs/plans/2025-12-07-A1-data-collection.md) for the full extraction plan.
 

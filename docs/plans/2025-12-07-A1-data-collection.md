@@ -12,11 +12,12 @@
 | Component | Status | Notes |
 |-----------|--------|-------|
 | Board Generation Logic | ✅ DONE | `game/board_gen.rs` - 11 tests |
-| Order Cards (~36) | 🔄 EXTRACTING | From TTS mod |
-| Tech Cards (20) | 🔄 EXTRACTING | Need country pairings |
-| Building Site Cards | 🔄 EXTRACTING | From TTS mod |
-| 5-Power Tokens | 🔄 EXTRACTING | Need types + counts |
-| Tile Count Verification | ⏳ PENDING | Verify 10/14/18 vs 12/15/18 |
+| Order Cards (36) | ✅ EXTRACTED | `tts-assets/organized/cards/order_cards_8x5.jpg` |
+| Tech Cards (20) | ✅ EXTRACTED | `tts-assets/organized/cards/tech_cards_8x4.jpg` |
+| Building Site Cards (24) | ✅ EXTRACTED | `tts-assets/organized/cards/building_site_cards_5x5.jpg` |
+| Area Tiles | ✅ VERIFIED | 10/14/18 for 2P/3P/4P confirmed |
+| 5-Power Tokens | ⚠️ INCOMPLETE | Only 8 found in TTS, need 17 for 4P |
+| Data Transcription | ⏳ PENDING | Need to convert images to YAML/Rust |
 
 ---
 
@@ -342,50 +343,69 @@ How many unique cards? For each:
 ```
 
 ### 4. 5-Power Tokens
-List all token types and how many of each exist:
+
+**EXTRACTED FROM TTS (8 tokens):**
 ```yaml
 - effect: "imported_goods"
-  quantity: 2                # e.g., gain 2 imported goods
-  count: 3                   # 3 tokens of this type in game
+  quantity: 1
+  count: 3
 
-- effect: "victory_points"
+- effect: "silk"
+  quantity: 2
+  count: 2
+
+- effect: "seafood"
+  quantity: 3
+  count: 1
+
+- effect: "money"
   quantity: 3
   count: 2
 ```
 
-**Questions:**
-- Are there combination tokens (e.g., "1 VP + 1 Movement")?
-- Total token count should equal non-Canal area count
+**MISSING - Need to verify from physical game:**
+- Total should be 17 tokens for 4P (one per non-Canal area)
+- TTS only has 8 - where are the other 9?
+- Possible missing types: Copper, Tea, VP, Movement?
+
+**Questions for physical game check:**
+- How many unique 5-power token types exist?
+- What are ALL the effects (not just the 4 from TTS)?
+- How many of each type?
 
 ### 5. Tile Count Verification
-**Critical:** Count the area tiles in TTS
+**✅ VERIFIED from TTS:**
 
-Current implementation assumes:
-- 4P: 18 tiles (confirmed)
-- 3P: 14 tiles (KB says 15 - which is correct?)
-- 2P: 10 tiles (KB says 12 - which is correct?)
+| Player Count | Tile Count | Source |
+|--------------|------------|--------|
+| 2P | 10 | Base tiles only |
+| 3P | 14 | Base + 3+ tiles |
+| 4P | 18 | Base + 3+ + 4P tiles |
 
-If KB is correct (12/15/18), there may be additional production tile duplicates.
+**Area breakdown:**
+- Base (10): Port, Silk Mill, Tea Plantation, Laboratory, Bank, Church, Copper Mine, Customs, Employment Agency, Fishing Ground
+- 3+ tiles (4): Canal, Chinatown, Dock (Port B), Fishing Ground #2
+- 4P tiles (4): Copper Mine #2, Research Center (Lab B), Silk Mill #2, Tea Plantation #2
 
-### 6. Area Tile Duplicates
-How many of each production area exist?
-- Copper Mine: 2? 3?
-- Silk Mill: 2? 3?
-- Tea Plantation: 2? 3?
-- Fishing Ground: 2? 3?
+**Naming differences from code:**
+- Port → PortA, Dock → PortB
+- Laboratory → LaboratoryA, Research Center → LaboratoryB
 
 ---
 
 ## Next Steps
 
 1. [x] ~~Implement board generation~~ → DONE: `game/board_gen.rs`
-2. [ ] Complete TTS asset extraction
-3. [ ] Transcribe extracted data to YAML files
-4. [ ] Implement `FivePowerTokenSet::standard()`
-5. [ ] Implement `BuildingSiteSet::standard()`
-6. [ ] Implement `TechRegistry::standard()`
-7. [ ] Implement `OrderRegistry::standard()`
-8. [ ] Verify tile counts against physical/TTS components
+2. [x] ~~Complete TTS asset extraction~~ → DONE: `tts-assets/organized/`
+3. [x] ~~Verify tile counts~~ → DONE: 10/14/18 confirmed
+4. [ ] **Verify 5-power tokens from physical game** ← BLOCKING
+5. [ ] Transcribe Order Cards (36) from sprite sheet to YAML
+6. [ ] Transcribe Tech Cards (20) from sprite sheet to YAML
+7. [ ] Transcribe Building Sites (24) from sprite sheet to YAML
+8. [ ] Implement `FivePowerTokenSet::standard()`
+9. [ ] Implement `BuildingSiteSet::standard()`
+10. [ ] Implement `TechRegistry::standard()`
+11. [ ] Implement `OrderRegistry::standard()`
 
 ---
 

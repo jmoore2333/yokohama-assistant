@@ -1,45 +1,52 @@
 # Agent Handover: Yokohama AI Assistant
 
 **Last Updated:** 2025-12-07
-**Session Summary:** Board generation implemented. Data collection plan created.
+**Session Summary:** TTS extraction complete. 5-power tokens need physical game verification.
 
-**Status:** A1 LOGIC COMPLETE ✅ | DATA COLLECTION IN PROGRESS 🔄
+**Status:** A1 LOGIC COMPLETE ✅ | TTS EXTRACTED ✅ | TRANSCRIPTION PENDING 🔄
 
 ---
 
 ## Latest Session Work
 
-### Board Generation Implemented
-New module: `game/board_gen.rs`
+### TTS Asset Extraction Complete
+All card sprite sheets extracted to `tts-assets/organized/`:
 
-| Feature | Status |
-|---------|--------|
-| Full tile set (18 tiles) | ✅ |
-| Player count tile removal | ✅ |
-| Grid layout generation | ✅ |
-| Adjacency computation | ✅ |
-| Canal crossing marking | ✅ |
-| Randomization with seeded RNG | ✅ |
-| Tests (11 new) | ✅ |
+| Asset | File | Status |
+|-------|------|--------|
+| Order Cards (36) | `cards/order_cards_8x5.jpg` | ✅ Ready for transcription |
+| Tech Cards (20) | `cards/tech_cards_8x4.jpg` | ✅ Ready for transcription |
+| Building Sites (24) | `cards/building_site_cards_5x5.jpg` | ✅ Ready for transcription |
+| Area Tiles | `boards/area_boards_*.jpg` | ✅ Verified 10/14/18 |
+| 5-Power Tokens | `tokens/5power_*.jpg` | ⚠️ Only 8 found (need 17) |
 
-**Dependencies added:** `rand`, `rand_chacha` (dev)
+### Tile Count VERIFIED ✅
+- **2P:** 10 tiles (Base only)
+- **3P:** 14 tiles (Base + 3+ tiles)
+- **4P:** 18 tiles (Base + 3+ + 4P tiles)
 
-### Tile Count Discrepancy (NEEDS VERIFICATION)
-The KB table says 12/15/18 tiles for 2P/3P/4P, but applying the removal rules gives:
-- 4P: 18 tiles ✅
-- 3P: 14 tiles (18 - LabB - 3 production duplicates)
-- 2P: 10 tiles (18 - 4 fixed - 4 production duplicates)
+**Area naming differences:**
+- TTS "Port" = Code "PortA"
+- TTS "Dock" = Code "PortB"
+- TTS "Laboratory" = Code "LaboratoryA"
+- TTS "Research Center" = Code "LaboratoryB"
 
-**Please verify against physical game components.**
+### 5-Power Tokens - INCOMPLETE ⚠️
+TTS only has 8 tokens, but we need 17 for 4P game:
 
-### Data Collection Plan Created
-See: `docs/plans/2025-12-07-A1-data-collection.md`
+| Token | Effect | Count |
+|-------|--------|-------|
+| 1 Import | 1 Imported Good | 3 |
+| 2 Silk | 2 Silk | 2 |
+| 3 Fish | 3 Seafood | 1 |
+| 3 Yen | 3 Money | 2 |
+| **Total** | | **8** |
 
-Missing data that needs to be extracted from physical game:
-1. **Order Cards (~36)** - Requirements and rewards
-2. **Tech Cards (20)** - Country pairings (effects done)
-3. **Building Site Cards** - VP reward configurations
-4. **5-Power Tokens** - Full effect list with counts
+**BLOCKING:** Need to check physical game for remaining 9 token types.
+
+### Board Generation Working
+Module: `game/board_gen.rs` (11 tests)
+- Full tile set, player count removal, grid layout, adjacency, canal crossings
 
 ---
 
