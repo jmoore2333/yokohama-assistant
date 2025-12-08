@@ -1,0 +1,1 @@
+//! Complete game state representation.
