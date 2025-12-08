@@ -380,7 +380,30 @@ fn apply_take_5_power(state: &mut GameState) -> Result<(), &'static str> {
                     FivePowerEffect::Seafood(n) => p.seafood += n as u32,
                     FivePowerEffect::Money(n) => p.money += n as u32,
                     FivePowerEffect::VictoryPoints(n) => p.victory_points += n as u32,
-                    FivePowerEffect::Movement(_) => {} // TODO: handle movement bonus
+                    FivePowerEffect::Movement(n) => {
+                        // Movement token: recover n assistants from board to hand
+                        // This allows the player to reposition assistants on future turns
+                        let mut remaining = n as u8;
+                        let areas_with_assistants: Vec<AreaId> = p.assistants.on_board
+                            .iter()
+                            .filter(|(_, &count)| count > 0)
+                            .map(|(&area, _)| area)
+                            .collect();
+
+                        for area in areas_with_assistants {
+                            if remaining == 0 {
+                                break;
+                            }
+                            if let Some(count) = p.assistants.on_board.get_mut(&area) {
+                                let to_recover = (*count).min(remaining);
+                                *count -= to_recover;
+                                p.assistants.in_hand += to_recover;
+                                remaining -= to_recover;
+                            }
+                        }
+                        // Clean up empty entries
+                        p.assistants.on_board.retain(|_, &mut count| count > 0);
+                    }
                 }
             }
         }
@@ -801,5 +824,99 @@ mod tests {
         // The 1 assistant should be recovered (can't leave 1 if only have 1)
         assert_eq!(state.players[0].assistants.in_hand, 6);
         assert_eq!(state.players[0].assistants.on_board.get(&area), None);
+    }
+
+    #[test]
+    fn test_five_power_movement_token() {
+        let mut state = create_minimal_state(2);
+        let action_area = AreaId::new(0);
+
+        // Place president and set up 5-power token with Movement effect
+        state.players[0].president_location = PresidentLocation::OnBoard(action_area);
+        state.players[0].assistants.on_board.insert(AreaId::new(1), 2);
+        state.players[0].assistants.on_board.insert(AreaId::new(2), 1);
+        state.players[0].assistants.in_hand = 3;
+        state.current_action_power = Some(5);
+        state.turn_phase = TurnPhase::FivePowerBonus;
+
+        // Add Movement(2) token on action area
+        state.board_layout.five_power_tokens.insert(action_area, Some(FivePowerEffect::Movement(2)));
+
+        // Take the token
+        let result = apply_move(&state, &Move::Take5PowerToken);
+        assert!(result.is_ok());
+
+        let new_state = result.unwrap();
+
+        // Should have recovered 2 assistants from board
+        assert_eq!(new_state.players[0].assistants.in_hand, 5); // 3 + 2 recovered
+        assert_eq!(new_state.players[0].five_power_tokens, 1);
+
+        // Token should be consumed
+        assert_eq!(
+            new_state.board_layout.five_power_tokens.get(&action_area),
+            Some(&None)
+        );
+    }
+
+    #[test]
+    fn test_five_power_movement_token_partial() {
+        let mut state = create_minimal_state(2);
+        let action_area = AreaId::new(0);
+
+        // Place president
+        state.players[0].president_location = PresidentLocation::OnBoard(action_area);
+        // Only 1 assistant on board but Movement(3) token
+        state.players[0].assistants.on_board.insert(AreaId::new(1), 1);
+        state.players[0].assistants.in_hand = 5;
+        state.current_action_power = Some(5);
+        state.turn_phase = TurnPhase::FivePowerBonus;
+
+        // Add Movement(3) token - but only 1 assistant available
+        state.board_layout.five_power_tokens.insert(action_area, Some(FivePowerEffect::Movement(3)));
+
+        let result = apply_move(&state, &Move::Take5PowerToken);
+        assert!(result.is_ok());
+
+        let new_state = result.unwrap();
+
+        // Should have recovered only 1 assistant (all that was available)
+        assert_eq!(new_state.players[0].assistants.in_hand, 6); // 5 + 1 recovered
+        assert!(new_state.players[0].assistants.on_board.get(&AreaId::new(1)).is_none()
+            || *new_state.players[0].assistants.on_board.get(&AreaId::new(1)).unwrap() == 0);
+    }
+
+    #[test]
+    fn test_five_power_other_effects() {
+        let mut state = create_minimal_state(2);
+        let action_area = AreaId::new(0);
+
+        // Place president
+        state.players[0].president_location = PresidentLocation::OnBoard(action_area);
+        state.current_action_power = Some(5);
+        state.turn_phase = TurnPhase::FivePowerBonus;
+
+        // Players start with: 1 copper, 1 silk, 1 tea, 1 seafood, 3 money (start player)
+        // Test various token effects - expected values are base + bonus
+        let test_cases = vec![
+            (FivePowerEffect::Copper(2), 1 + 2, 1, 3, 0u32),       // +2 copper
+            (FivePowerEffect::Silk(1), 1, 1 + 1, 3, 0),            // +1 silk
+            (FivePowerEffect::Money(3), 1, 1, 3 + 3, 0),           // +3 money
+            (FivePowerEffect::VictoryPoints(5), 1, 1, 3, 0 + 5),   // +5 VP
+        ];
+
+        for (effect, exp_copper, exp_silk, exp_money, exp_vp) in test_cases {
+            let mut test_state = state.clone();
+            test_state.board_layout.five_power_tokens.insert(action_area, Some(effect));
+
+            let result = apply_move(&test_state, &Move::Take5PowerToken);
+            assert!(result.is_ok());
+
+            let new_state = result.unwrap();
+            assert_eq!(new_state.players[0].copper, exp_copper);
+            assert_eq!(new_state.players[0].silk, exp_silk);
+            assert_eq!(new_state.players[0].money, exp_money);
+            assert_eq!(new_state.players[0].victory_points, exp_vp);
+        }
     }
 }
