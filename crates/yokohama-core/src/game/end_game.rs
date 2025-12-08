@@ -112,6 +112,59 @@ pub fn check_round_completion(state: &mut GameState) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::HashMap;
+
+    fn create_test_state() -> GameState {
+        let config = GameConfig::new(
+            2,
+            vec![PlayerColor::Red, PlayerColor::Blue],
+            PlayerId::new(0),
+        );
+
+        let board_layout = BoardLayout {
+            areas: HashMap::new(),
+            adjacency: HashMap::new(),
+            canal_crossings: vec![],
+            building_sites: HashMap::new(),
+            five_power_tokens: HashMap::new(),
+        };
+
+        let players = vec![
+            PlayerState::new(PlayerId::new(0), PlayerColor::Red, true),
+            PlayerState::new(PlayerId::new(1), PlayerColor::Blue, false),
+        ];
+
+        GameState {
+            config,
+            board_layout,
+            players,
+            current_player: PlayerId::new(0),
+            turn_phase: TurnPhase::AreaAction,
+            turn_number: 1,
+            additional_action_state: AdditionalActionState::new(),
+            current_action_power: None,
+            is_mercenary_action: false,
+            mercenary_target_area: None,
+            mercenary_return_phase: None,
+            port_state: PortState::new(false),
+            lab_state: LabState::new(false),
+            order_deck_remaining: 20,
+            tech_deck_remaining: 20,
+            church_track: ChurchTrack::new(),
+            customs_track: CustomsTrack::new(),
+            achievements: [
+                AchievementCard::new(AchievementType::Copper5),
+                AchievementCard::new(AchievementType::Money10),
+                AchievementCard::new(AchievementType::Production4),
+            ],
+            mercenary_supply: MercenarySupply::new(),
+            station_location: None,
+            end_game_triggered: false,
+            trigger_reason: None,
+            final_round: false,
+            trigger_player: None,
+        }
+    }
 
     #[test]
     fn test_track_trigger_by_player_count() {
@@ -124,5 +177,85 @@ mod tests {
             PlayerId::new(0),
         );
         assert_eq!(config_3p.track_trigger(), 5);
+    }
+
+    #[test]
+    fn test_order_deck_empty_trigger() {
+        let mut state = create_test_state();
+
+        // Deck has cards, all port slots full - should NOT trigger
+        state.order_deck_remaining = 1;
+        state.port_state.port_a.low = Some(OrderCardId(1));
+        state.port_state.port_a.mid = Some(OrderCardId(2));
+        state.port_state.port_a.high = Some(OrderCardId(3));
+
+        check_end_game_triggers(&mut state);
+        assert!(!state.end_game_triggered);
+
+        // Deck empty but all slots full - should NOT trigger
+        state.order_deck_remaining = 0;
+        check_end_game_triggers(&mut state);
+        assert!(!state.end_game_triggered);
+
+        // Deck empty AND slot empty (post-refill) - should trigger
+        state.port_state.port_a.high = None; // Empty slot after failed refill
+        check_end_game_triggers(&mut state);
+        assert!(state.end_game_triggered);
+        assert!(matches!(state.trigger_reason, Some(EndGameTrigger::OrderDeckEmpty)));
+    }
+
+    #[test]
+    fn test_order_deck_empty_with_port_b() {
+        let mut state = create_test_state();
+        state.port_state.port_b = Some(PortBoard::new()); // Add Port B
+
+        // Deck empty, Port A full, Port B has empty slot
+        state.order_deck_remaining = 0;
+        state.port_state.port_a.low = Some(OrderCardId(1));
+        state.port_state.port_a.mid = Some(OrderCardId(2));
+        state.port_state.port_a.high = Some(OrderCardId(3));
+        // Port B starts empty (new())
+
+        check_end_game_triggers(&mut state);
+        assert!(state.end_game_triggered);
+    }
+
+    #[test]
+    fn test_trading_house_complete_trigger() {
+        let mut state = create_test_state();
+
+        // Player builds 4 trading houses
+        state.players[0].trading_houses.built = vec![
+            AreaId::new(0),
+            AreaId::new(1),
+            AreaId::new(2),
+            AreaId::new(3),
+        ];
+        state.players[0].trading_houses.in_warehouse = 0;
+
+        check_end_game_triggers(&mut state);
+        assert!(state.end_game_triggered);
+        assert!(matches!(
+            state.trigger_reason,
+            Some(EndGameTrigger::TradingHousesComplete(p)) if p == PlayerId::new(0)
+        ));
+    }
+
+    #[test]
+    fn test_shophouse_complete_trigger() {
+        let mut state = create_test_state();
+
+        // Player builds 8 shophouses
+        for i in 0..8 {
+            state.players[0].shophouses.built.insert(AreaId::new(i), 0);
+        }
+        state.players[0].shophouses.in_hand = 0;
+
+        check_end_game_triggers(&mut state);
+        assert!(state.end_game_triggered);
+        assert!(matches!(
+            state.trigger_reason,
+            Some(EndGameTrigger::ShophousesComplete(p)) if p == PlayerId::new(0)
+        ));
     }
 }

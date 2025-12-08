@@ -9,6 +9,7 @@ mod achievements;
 mod tech_effects;
 mod end_game;
 mod scoring;
+mod setup;
 pub mod actions;
 
 pub use power::*;
@@ -20,3 +21,4 @@ pub use achievements::*;
 pub use tech_effects::*;
 pub use end_game::*;
 pub use scoring::*;
+pub use setup::*;

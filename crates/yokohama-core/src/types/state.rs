@@ -14,6 +14,10 @@ pub struct GameConfig {
     pub player_count: u8,
     pub player_colors: Vec<PlayerColor>,
     pub start_player: PlayerId,
+    /// Whether Port B board is in use (3-4 players).
+    pub has_port_b: bool,
+    /// Whether Lab B board is in use (4 players only).
+    pub has_lab_b: bool,
 }
 
 impl GameConfig {
@@ -24,7 +28,21 @@ impl GameConfig {
             player_count,
             player_colors,
             start_player,
+            has_port_b: player_count >= 3,
+            has_lab_b: player_count >= 4,
         }
+    }
+
+    /// Create configuration for a specific player count with default colors.
+    pub fn for_player_count(player_count: u8) -> Self {
+        debug_assert!((2..=4).contains(&player_count));
+        let colors = match player_count {
+            2 => vec![PlayerColor::Red, PlayerColor::Blue],
+            3 => vec![PlayerColor::Red, PlayerColor::Blue, PlayerColor::Yellow],
+            4 => vec![PlayerColor::Red, PlayerColor::Blue, PlayerColor::Yellow, PlayerColor::Green],
+            _ => vec![PlayerColor::Red, PlayerColor::Blue],
+        };
+        Self::new(player_count, colors, PlayerId::new(0))
     }
 
     /// Track trigger threshold for Church/Customs based on player count.
@@ -34,6 +52,33 @@ impl GameConfig {
             3 => 5,
             4 => 6,
             _ => 6,
+        }
+    }
+
+    /// Starting money for a player based on turn order.
+    /// First player: 7 Yen, Others: 8 Yen.
+    pub fn starting_money(&self, player: PlayerId) -> u32 {
+        if player == self.start_player { 7 } else { 8 }
+    }
+
+    /// Number of order cards to remove from deck for this player count.
+    pub fn order_cards_to_remove(&self) -> u8 {
+        match self.player_count {
+            2 => 10,
+            3 => 5,
+            4 => 0,
+            _ => 0,
+        }
+    }
+
+    /// Areas to mark as inactive for this player count.
+    /// Returns area indices that should be removed.
+    pub fn inactive_area_count(&self) -> u8 {
+        match self.player_count {
+            2 => 5,
+            3 => 3,
+            4 => 0,
+            _ => 0,
         }
     }
 }
