@@ -1,13 +1,13 @@
 # Agent Handover: Yokohama AI Assistant
 
 **Last Updated:** 2025-12-07
-**Session Summary:** A1-Implementation Tasks 16.9-16.16 COMPLETE. Remaining gaps identified for final completion.
+**Session Summary:** A1-Implementation ~95% complete. Tech integrations and fulfillment logic done.
 
-**Next Action:** Complete remaining integration gaps (see "Remaining Work" section), then verify full A1 objective completion.
+**Next Action:** Final verification and any remaining edge cases.
 
 ---
 
-## Current Status: A1 Implementation ~90% Complete
+## Current Status: A1 Implementation ~95% Complete
 
 ### Completed This Session (Tasks 16.9-16.16)
 All critical audit findings and edge cases from Tasks 16.9-16.16 are now implemented with tests:
@@ -23,7 +23,7 @@ All critical audit findings and edge cases from Tasks 16.9-16.16 are now impleme
 | 16.15 | Start Area Return Prohibition | ✅ Complete |
 | 16.16 | Placement Cost Validation | ✅ Complete |
 
-**Test count:** 113 tests passing (107 unit + 6 integration)
+**Test count:** 119 tests passing (113 unit + 6 integration)
 
 ### Previously Completed (Tasks 16.3-16.8)
 These sections have helper functions AND tests implemented:
@@ -173,13 +173,13 @@ Building an AR assistant for the board game **Yokohama** that:
 ## Recent Commits
 
 ```
+9df7333 feat(A1): Complete remaining tech integrations and fulfillment logic
+6f0e43a docs: update agent-handover with A1 completion status and remaining gaps
 fca532a feat(A1): Task 16.16 - Placement cost validation
 06500b6 feat(A1): Task 16.15 - Start Area Return Prohibition
 4b04e99 feat(A1): Task 16.14 - Trading House passive income (CRITICAL)
 897e3f3 feat(A1): Task 16.13 - building power thresholds
-979da12 feat(A1): Task 16.12 - Five-Power Movement token effect
-68ae599 feat(A1): Task 16.11 - mercenary opponent president rules
-... (earlier commits for Tasks 16.9, 16.10, and Tasks 1-15)
+... (earlier commits for Tasks 16.9-16.12, and Tasks 1-15)
 ```
 
 ---
@@ -235,18 +235,23 @@ grep -n "\- \[ \]" docs/plans/2025-12-07-A1-implementation.md
 
 ## Completion Checklist
 
-**Remaining Tasks:**
-- [ ] 16.1: Integrate Stagecoach free passage into movement cost calculation
-- [ ] 16.1: Integrate Postal System into action area validation
-- [ ] 16.1: Implement Station teleport movement
-- [ ] 16.1: Implement path validation (assistants along entire path)
-- [ ] 16.2: Implement Telegram adjacent placement bonus
-- [ ] Verify Order VP is awarded when orders are fulfilled
-- [ ] Verify Building VP is awarded when buildings are built
-- [ ] Verify 5-Power token VP is awarded when applicable tokens are claimed
+**Task 16.1 - Movement Tech Integration:**
+- [x] Stagecoach free passage (was already in calculate_movement_cost_full)
+- [x] Postal System action area validation (was already in is_possible_action_area_full)
+- [x] Station teleport movement (added to generate_movement_moves_with_tech)
+- [x] Path validation - assistants along entire path (was already in find_reachable_areas)
+
+**Task 16.2 - Placement Tech Integration:**
+- [x] Telegram adjacent placement bonus (PlaceTwoSameArea now has adjacent_bonus field)
+
+**VP Verification:**
+- [x] Order VP awarded when orders fulfilled (apply_fulfill_order implemented)
+- [x] Achievement VP awarded (apply_fulfill_achievement wired to claim_achievement)
+- [x] Building VP awarded when buildings built (was already working)
+- [x] 5-Power token VP awarded (was already working)
 
 **Final Verification:**
-- [ ] All tests pass: `cargo test -p yokohama-core`
+- [x] All tests pass: `cargo test -p yokohama-core` (119 tests)
 - [ ] `get_legal_moves()` handles all game states correctly
 - [ ] `apply_move()` transitions all move types correctly
 - [ ] End game detection works for all 5 triggers
