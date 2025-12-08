@@ -181,4 +181,63 @@ mod tests {
         let req = TradeGoodRequirement::new(2, 1, 3, 0);
         assert_eq!(req.total(), 6);
     }
+
+    #[test]
+    fn test_game_config_removed_area_types() {
+        let config_2p = GameConfig::for_player_count(2);
+        let removed_2p = config_2p.removed_area_types();
+        assert!(removed_2p.contains(&AreaType::LaboratoryB));
+        assert!(removed_2p.contains(&AreaType::PortB));
+        assert!(removed_2p.contains(&AreaType::Chinatown));
+        assert!(removed_2p.contains(&AreaType::Canal));
+
+        let config_3p = GameConfig::for_player_count(3);
+        let removed_3p = config_3p.removed_area_types();
+        assert!(removed_3p.contains(&AreaType::LaboratoryB));
+        assert!(!removed_3p.contains(&AreaType::PortB)); // Port B is in 3p
+
+        let config_4p = GameConfig::for_player_count(4);
+        let removed_4p = config_4p.removed_area_types();
+        assert!(removed_4p.is_empty()); // Nothing removed for 4p
+    }
+
+    #[test]
+    fn test_board_layout_builder_rejects_invalid_areas_for_player_count() {
+        let config_2p = GameConfig::for_player_count(2);
+        let config_4p = GameConfig::for_player_count(4);
+
+        // Create a builder with a LaboratoryB area (invalid for 2p)
+        let mut builder = BoardLayoutBuilder::new();
+        builder.add_area(
+            AreaId::new(0),
+            AreaConfig {
+                area_type: AreaType::LaboratoryB,
+                grid_position: (0, 0),
+            },
+        );
+        builder.set_building_site(AreaId::new(0), BuildingSite::new([2, 3, 4, 5], 8));
+        builder.set_five_power_token(AreaId::new(0), FivePowerEffect::VictoryPoints(3));
+
+        // build_for_config() should fail for 2p (LaboratoryB is removed)
+        let mut builder_copy = BoardLayoutBuilder::new();
+        builder_copy.add_area(
+            AreaId::new(0),
+            AreaConfig {
+                area_type: AreaType::LaboratoryB,
+                grid_position: (0, 0),
+            },
+        );
+        builder_copy.set_building_site(AreaId::new(0), BuildingSite::new([2, 3, 4, 5], 8));
+        builder_copy.set_five_power_token(AreaId::new(0), FivePowerEffect::VictoryPoints(3));
+
+        let result = builder_copy.build_for_config(&config_2p);
+        assert!(matches!(
+            result,
+            Err(BoardLayoutError::InvalidAreaForPlayerCount(_, AreaType::LaboratoryB, 2))
+        ));
+
+        // build_for_config() should succeed for 4p (all areas allowed)
+        let result = builder.build_for_config(&config_4p);
+        assert!(result.is_ok());
+    }
 }

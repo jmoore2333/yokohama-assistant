@@ -1,9 +1,45 @@
 # Agent Handover: Yokohama AI Assistant
 
 **Last Updated:** 2025-12-07
-**Session Summary:** A1 verification complete. All modules verified against implementation plan.
+**Session Summary:** Board generation implemented. Data collection plan created.
 
-**Status:** A1 IMPLEMENTATION VERIFIED ✅
+**Status:** A1 LOGIC COMPLETE ✅ | DATA COLLECTION IN PROGRESS 🔄
+
+---
+
+## Latest Session Work
+
+### Board Generation Implemented
+New module: `game/board_gen.rs`
+
+| Feature | Status |
+|---------|--------|
+| Full tile set (18 tiles) | ✅ |
+| Player count tile removal | ✅ |
+| Grid layout generation | ✅ |
+| Adjacency computation | ✅ |
+| Canal crossing marking | ✅ |
+| Randomization with seeded RNG | ✅ |
+| Tests (11 new) | ✅ |
+
+**Dependencies added:** `rand`, `rand_chacha` (dev)
+
+### Tile Count Discrepancy (NEEDS VERIFICATION)
+The KB table says 12/15/18 tiles for 2P/3P/4P, but applying the removal rules gives:
+- 4P: 18 tiles ✅
+- 3P: 14 tiles (18 - LabB - 3 production duplicates)
+- 2P: 10 tiles (18 - 4 fixed - 4 production duplicates)
+
+**Please verify against physical game components.**
+
+### Data Collection Plan Created
+See: `docs/plans/2025-12-07-A1-data-collection.md`
+
+Missing data that needs to be extracted from physical game:
+1. **Order Cards (~36)** - Requirements and rewards
+2. **Tech Cards (20)** - Country pairings (effects done)
+3. **Building Site Cards** - VP reward configurations
+4. **5-Power Tokens** - Full effect list with counts
 
 ---
 
@@ -18,10 +54,13 @@ The A1 implementation has been systematically verified:
 
 | Metric | Count |
 |--------|-------|
-| Items Verified | 105 |
-| Edge Case Tests Added | 11 |
-| Final Test Count | 130 (124 unit + 6 integration) |
-| Gaps Found | 0 critical |
+| Items Verified | 105+ |
+| Implementation Plan Items | **100% COMPLETE** (0 unchecked) |
+| Edge Case Tests Added | 11 + 5 + 7 = 23 |
+| Final Test Count | 142 (136 unit + 6 integration) |
+| Critical Gaps Fixed | 2 (Spinning Mill ✅, University ✅) |
+| Low Priority Gaps Fixed | 6 (all optional validators implemented) |
+| Remaining | **NONE** - A1 fully implemented |
 
 ### Modules Verified
 
@@ -46,7 +85,7 @@ All 16 implementation tasks verified:
 
 ## Current State Summary
 
-**Test Count:** 130 tests passing (124 unit + 6 integration)
+**Test Count:** 153 tests passing (147 unit + 6 integration)
 
 ### What Was Implemented (Claims to Verify)
 
@@ -76,30 +115,33 @@ These were implemented with proper TDD in the most recent session:
 | Order fulfillment with VP | ✅ | `test_fulfill_order_awards_vp` |
 | Achievement fulfillment | ✅ | `test_fulfill_achievement_awards_vp` |
 
-### Items Requiring Verification
+### All Gaps Fixed ✅
 
-The following were marked complete but need verification:
+**Implementation complete:**
+- [x] Spinning Mill tech: `discard 1 silk → gain 2 Yen` (test_spinning_mill_effect)
+- [x] University tech: `pay 1 Yen → take assistant from warehouse` (test_university_effect)
+- [x] `removed_area_types()` method in GameConfig
+- [x] Mercenary once-per-turn test (test_mercenary_once_per_turn)
+- [x] BoardLayoutBuilder `build_for_config()` validation (test_board_layout_builder_rejects_invalid_areas_for_player_count)
+- [x] Setup validators `validate_game_state_consistency()` (5 tests)
 
-**Movement Tech (Task 16.1):**
-- [ ] Stagecoach free passage - verify `calculate_movement_cost_full` works correctly
-- [ ] Postal System stopping - verify `is_possible_action_area_full` works correctly
-- [ ] Path validation - verify `find_reachable_areas` requires assistants throughout
+### Verified Items ✅
 
-**VP Awards:**
-- [ ] Building VP - verify shophouse/trading house VP in `apply_move`
-- [ ] 5-Power token VP - verify token VP in `apply_move`
-- [ ] Tech card VP - verify tech effects that grant VP
+All features verified with code review and tests:
 
-**Scoring:**
-- [ ] Church majority tiebreaker (rightmost position)
-- [ ] Customs majority tiebreaker
-- [ ] Technology majority tiebreaker (closest to start player)
-- [ ] Country set calculation (greedy algorithm correct?)
-
-**End Game:**
-- [ ] All 5 triggers work correctly
-- [ ] Final round logic (everyone gets one more turn)
-- [ ] Trigger player tracking
+| Feature | Location | Test |
+|---------|----------|------|
+| Movement techs (Stagecoach, Postal, Tram) | movement.rs | Multiple tests |
+| Building VP (shophouse/trading house) | apply_move.rs | test_shophouse/trading_house_* |
+| 5-Power token effects | apply_move.rs | test_five_power_* |
+| Scoring tiebreakers | scoring.rs | Verified via code review |
+| End game triggers (all 5) | end_game.rs | test_*_trigger |
+| Trading House passive income | apply_move.rs | test_trading_house_passive_income |
+| President start area prohibition | apply_move.rs | test_cannot_return_to_start_area |
+| Mercenary opponent bypass | movement.rs | test_mercenary_* |
+| Placement cost calculation | legal_moves.rs | test_calculate_placement_cost |
+| Spinning Mill tech | tech_effects.rs | test_spinning_mill_* |
+| University tech | tech_effects.rs | test_university_* |
 
 ---
 

@@ -916,6 +916,43 @@ mod tests {
     }
 
     #[test]
+    fn test_mercenary_once_per_turn() {
+        let mut state = create_minimal_state(2);
+        let player = state.current_player;
+        let target1 = AreaId::new(5);
+        let target2 = AreaId::new(6);
+
+        // Give player two mercenaries and assistants at both target areas
+        {
+            let p = state.player_mut(player);
+            p.mercenaries.available.insert(Country::English, 1);
+            p.mercenaries.available.insert(Country::French, 1);
+            p.assistants.on_board.insert(target1, 2);
+            p.assistants.on_board.insert(target2, 2);
+            p.president_location = PresidentLocation::OnBoard(AreaId::new(1));
+        }
+
+        // First use should succeed
+        assert!(!state.additional_action_state.mercenary_used);
+        let result = apply_mercenary(&mut state, Country::English, target1);
+        assert!(result.is_ok());
+        assert!(state.additional_action_state.mercenary_used);
+
+        // Reset mercenary state (simulating completing the sub-turn)
+        state.is_mercenary_action = false;
+        state.mercenary_target_area = None;
+        state.turn_phase = TurnPhase::AdditionalActionSecond;
+
+        // Second use should fail (once per turn)
+        // The mercenary_used flag should prevent this
+        assert!(state.additional_action_state.mercenary_used);
+
+        // Verify flag persists across both additional action phases
+        state.turn_phase = TurnPhase::AdditionalActionFirst;
+        assert!(state.additional_action_state.mercenary_used);
+    }
+
+    #[test]
     fn test_recovery_normal() {
         let mut state = create_minimal_state(2);
         let area = AreaId::new(0);

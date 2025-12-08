@@ -163,11 +163,11 @@ impl BoardLayout {
 /// Ensures adjacency is bidirectional, sites exist for all areas, etc.
 #[derive(Debug, Default)]
 pub struct BoardLayoutBuilder {
-    areas: HashMap<AreaId, AreaConfig>,
-    adjacency: HashMap<AreaId, Vec<AreaId>>,
-    canal_crossings: Vec<(AreaId, AreaId)>,
-    building_sites: HashMap<AreaId, BuildingSite>,
-    five_power_tokens: HashMap<AreaId, Option<FivePowerEffect>>,
+    pub(crate) areas: HashMap<AreaId, AreaConfig>,
+    pub(crate) adjacency: HashMap<AreaId, Vec<AreaId>>,
+    pub(crate) canal_crossings: Vec<(AreaId, AreaId)>,
+    pub(crate) building_sites: HashMap<AreaId, BuildingSite>,
+    pub(crate) five_power_tokens: HashMap<AreaId, Option<FivePowerEffect>>,
 }
 
 impl BoardLayoutBuilder {
@@ -258,6 +258,26 @@ impl BoardLayoutBuilder {
             five_power_tokens: self.five_power_tokens,
         })
     }
+
+    /// Build and validate the BoardLayout for a specific game configuration.
+    /// Checks that the board doesn't contain areas that should be removed for the player count.
+    pub fn build_for_config(self, config: &super::GameConfig) -> Result<BoardLayout, BoardLayoutError> {
+        let removed_types = config.removed_area_types();
+
+        // Validate: no areas that should be removed for this player count
+        for (area, area_config) in &self.areas {
+            if removed_types.contains(&area_config.area_type) {
+                return Err(BoardLayoutError::InvalidAreaForPlayerCount(
+                    *area,
+                    area_config.area_type,
+                    config.player_count,
+                ));
+            }
+        }
+
+        // Then run standard validation
+        self.build()
+    }
 }
 
 /// Errors from BoardLayout validation.
@@ -268,6 +288,8 @@ pub enum BoardLayoutError {
     InvalidFivePowerTokenArea(AreaId),
     InvalidAreaReference(AreaId),
     InvalidCanalCrossing(AreaId, AreaId),
+    /// Area type should be removed for this player count.
+    InvalidAreaForPlayerCount(AreaId, AreaType, u8),
 }
 
 impl std::fmt::Display for BoardLayoutError {
@@ -278,6 +300,9 @@ impl std::fmt::Display for BoardLayoutError {
             Self::InvalidFivePowerTokenArea(a) => write!(f, "5-Power token on invalid area: {:?}", a),
             Self::InvalidAreaReference(a) => write!(f, "Invalid area reference: {:?}", a),
             Self::InvalidCanalCrossing(a, b) => write!(f, "Invalid canal crossing: {:?} <-> {:?}", a, b),
+            Self::InvalidAreaForPlayerCount(a, t, p) => {
+                write!(f, "Area {:?} ({:?}) should be removed for {} players", a, t, p)
+            }
         }
     }
 }

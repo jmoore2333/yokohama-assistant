@@ -108,6 +108,66 @@ pub fn can_leave_assistant(
     has_tech_effect(state, player, TechEffect::Telephone, tech_registry)
 }
 
+/// Check if player can use Spinning Mill this turn.
+/// Requires: has tech, has at least 1 silk, hasn't used this turn.
+pub fn can_use_spinning_mill(
+    state: &GameState,
+    player: PlayerId,
+    tech_registry: &TechRegistry,
+) -> bool {
+    has_tech_effect(state, player, TechEffect::SpinningMill, tech_registry)
+        && state.player(player).silk >= 1
+        && !state.additional_action_state.spinning_mill_used
+}
+
+/// Apply Spinning Mill effect: discard 1 silk → gain 2 Yen.
+pub fn apply_spinning_mill(
+    state: &mut GameState,
+    player: PlayerId,
+) -> Result<(), &'static str> {
+    let p = state.player_mut(player);
+    if p.silk < 1 {
+        return Err("Not enough silk");
+    }
+    p.silk -= 1;
+    p.money += 2;
+    state.additional_action_state.spinning_mill_used = true;
+    Ok(())
+}
+
+/// Check if player can use University this turn.
+/// Requires: has tech, has at least 1 Yen, has assistants in warehouse, hasn't used this turn.
+pub fn can_use_university(
+    state: &GameState,
+    player: PlayerId,
+    tech_registry: &TechRegistry,
+) -> bool {
+    let p = state.player(player);
+    has_tech_effect(state, player, TechEffect::University, tech_registry)
+        && p.money >= 1
+        && p.assistants.in_warehouse > 0
+        && !state.additional_action_state.university_used
+}
+
+/// Apply University effect: pay 1 Yen → take assistant from warehouse to hand.
+pub fn apply_university(
+    state: &mut GameState,
+    player: PlayerId,
+) -> Result<(), &'static str> {
+    let p = state.player_mut(player);
+    if p.money < 1 {
+        return Err("Not enough money");
+    }
+    if p.assistants.in_warehouse < 1 {
+        return Err("No assistants in warehouse");
+    }
+    p.money -= 1;
+    p.assistants.in_warehouse -= 1;
+    p.assistants.in_hand += 1;
+    state.additional_action_state.university_used = true;
+    Ok(())
+}
+
 /// Technology acquisition bonuses.
 pub fn tech_acquisition_bonuses(
     state: &GameState,
@@ -505,5 +565,155 @@ mod tests {
         state.players[0].money = 5;
         apply_turn_start_effects(&mut state, player, &tech_registry);
         assert_eq!(state.players[0].money, 5);
+    }
+
+    #[test]
+    fn test_spinning_mill_effect() {
+        let mut state = create_test_state();
+        let player = PlayerId::new(0);
+
+        let mut tech_registry = TechRegistry::new();
+        let spinning_mill = TechCard {
+            id: TechCardId(13),
+            name: "Spinning Mill".to_string(),
+            country: Country::Dutch,
+            industry_cost: 3,
+            effect: TechEffect::SpinningMill,
+        };
+        tech_registry.insert(spinning_mill, "tech_spinning_mill");
+
+        // Setup: player has 2 silk and 0 money
+        state.players[0].silk = 2;
+        state.players[0].money = 0;
+
+        // Without tech - cannot use
+        assert!(!can_use_spinning_mill(&state, player, &tech_registry));
+
+        // Give player the tech
+        state.players[0].technologies.push(TechCardId(13));
+
+        // With tech - can use
+        assert!(can_use_spinning_mill(&state, player, &tech_registry));
+
+        // Apply effect: discard 1 silk, gain 2 Yen
+        let result = apply_spinning_mill(&mut state, player);
+        assert!(result.is_ok());
+        assert_eq!(state.players[0].silk, 1);
+        assert_eq!(state.players[0].money, 2);
+
+        // Cannot use again this turn (once per turn)
+        assert!(!can_use_spinning_mill(&state, player, &tech_registry));
+
+        // Reset for next turn
+        state.additional_action_state.spinning_mill_used = false;
+
+        // Can use again
+        assert!(can_use_spinning_mill(&state, player, &tech_registry));
+    }
+
+    #[test]
+    fn test_spinning_mill_requires_silk() {
+        let mut state = create_test_state();
+        let player = PlayerId::new(0);
+
+        let mut tech_registry = TechRegistry::new();
+        let spinning_mill = TechCard {
+            id: TechCardId(13),
+            name: "Spinning Mill".to_string(),
+            country: Country::Dutch,
+            industry_cost: 3,
+            effect: TechEffect::SpinningMill,
+        };
+        tech_registry.insert(spinning_mill, "tech_spinning_mill");
+
+        // Give tech but no silk
+        state.players[0].technologies.push(TechCardId(13));
+        state.players[0].silk = 0;
+
+        // Cannot use without silk
+        assert!(!can_use_spinning_mill(&state, player, &tech_registry));
+
+        // Apply should fail
+        let result = apply_spinning_mill(&mut state, player);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_university_effect() {
+        let mut state = create_test_state();
+        let player = PlayerId::new(0);
+
+        let mut tech_registry = TechRegistry::new();
+        let university = TechCard {
+            id: TechCardId(14),
+            name: "University".to_string(),
+            country: Country::French,
+            industry_cost: 4,
+            effect: TechEffect::University,
+        };
+        tech_registry.insert(university, "tech_university");
+
+        // Setup: player has 3 Yen and 2 assistants in warehouse
+        state.players[0].money = 3;
+        state.players[0].assistants.in_warehouse = 2;
+        state.players[0].assistants.in_hand = 5;
+
+        // Without tech - cannot use
+        assert!(!can_use_university(&state, player, &tech_registry));
+
+        // Give player the tech
+        state.players[0].technologies.push(TechCardId(14));
+
+        // With tech - can use
+        assert!(can_use_university(&state, player, &tech_registry));
+
+        // Apply effect: pay 1 Yen, take assistant from warehouse
+        let result = apply_university(&mut state, player);
+        assert!(result.is_ok());
+        assert_eq!(state.players[0].money, 2);
+        assert_eq!(state.players[0].assistants.in_warehouse, 1);
+        assert_eq!(state.players[0].assistants.in_hand, 6);
+
+        // Cannot use again this turn (once per turn)
+        assert!(!can_use_university(&state, player, &tech_registry));
+
+        // Reset for next turn
+        state.additional_action_state.university_used = false;
+
+        // Can use again
+        assert!(can_use_university(&state, player, &tech_registry));
+    }
+
+    #[test]
+    fn test_university_requires_money_and_warehouse() {
+        let mut state = create_test_state();
+        let player = PlayerId::new(0);
+
+        let mut tech_registry = TechRegistry::new();
+        let university = TechCard {
+            id: TechCardId(14),
+            name: "University".to_string(),
+            country: Country::French,
+            industry_cost: 4,
+            effect: TechEffect::University,
+        };
+        tech_registry.insert(university, "tech_university");
+
+        // Give tech
+        state.players[0].technologies.push(TechCardId(14));
+
+        // No money
+        state.players[0].money = 0;
+        state.players[0].assistants.in_warehouse = 2;
+        assert!(!can_use_university(&state, player, &tech_registry));
+
+        // Has money but no warehouse assistants
+        state.players[0].money = 5;
+        state.players[0].assistants.in_warehouse = 0;
+        assert!(!can_use_university(&state, player, &tech_registry));
+
+        // Both requirements met
+        state.players[0].assistants.in_warehouse = 1;
+        assert!(can_use_university(&state, player, &tech_registry));
     }
 }

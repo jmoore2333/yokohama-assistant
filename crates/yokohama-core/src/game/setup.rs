@@ -27,6 +27,39 @@ pub fn create_lab_state(config: &GameConfig) -> LabState {
     LabState::new(config.has_lab_b)
 }
 
+/// Validate that a GameState is consistent with its GameConfig.
+/// Returns Ok(()) if valid, or an error message describing the inconsistency.
+pub fn validate_game_state_consistency(state: &GameState) -> Result<(), &'static str> {
+    let config = &state.config;
+
+    // Validate player count
+    if state.players.len() != config.player_count as usize {
+        return Err("Player count mismatch");
+    }
+
+    // Validate Port B presence
+    let has_port_b = state.port_state.port_b.is_some();
+    if has_port_b != config.has_port_b {
+        return Err("Port B presence mismatch");
+    }
+
+    // Validate Lab B presence
+    let has_lab_b = state.lab_state.lab_b.is_some();
+    if has_lab_b != config.has_lab_b {
+        return Err("Lab B presence mismatch");
+    }
+
+    // Validate board layout doesn't have removed areas
+    let removed_types = config.removed_area_types();
+    for area_config in state.board_layout.areas.values() {
+        if removed_types.contains(&area_config.area_type) {
+            return Err("Board contains area that should be removed for player count");
+        }
+    }
+
+    Ok(())
+}
+
 /// Create a minimal test game state for the given player count.
 /// This is primarily for testing purposes.
 pub fn create_test_game_state(player_count: u8) -> GameState {
@@ -201,5 +234,68 @@ mod tests {
         assert_eq!(players[0].money, 8); // Not start player
         assert_eq!(players[1].money, 7); // Start player
         assert_eq!(players[2].money, 8); // Not start player
+    }
+
+    #[test]
+    fn test_validate_game_state_consistency() {
+        // Valid states should pass
+        let state_2p = create_test_game_state(2);
+        assert!(validate_game_state_consistency(&state_2p).is_ok());
+
+        let state_3p = create_test_game_state(3);
+        assert!(validate_game_state_consistency(&state_3p).is_ok());
+
+        let state_4p = create_test_game_state(4);
+        assert!(validate_game_state_consistency(&state_4p).is_ok());
+    }
+
+    #[test]
+    fn test_validate_detects_player_count_mismatch() {
+        let mut state = create_test_game_state(2);
+        // Add an extra player - should now be invalid
+        state.players.push(PlayerState::new(PlayerId::new(2), PlayerColor::Yellow, false));
+
+        let result = validate_game_state_consistency(&state);
+        assert!(result.is_err());
+        assert_eq!(result.unwrap_err(), "Player count mismatch");
+    }
+
+    #[test]
+    fn test_validate_detects_port_b_mismatch() {
+        let mut state = create_test_game_state(2);
+        // 2p shouldn't have Port B, but let's add it
+        state.port_state.port_b = Some(PortBoard::new());
+
+        let result = validate_game_state_consistency(&state);
+        assert!(result.is_err());
+        assert_eq!(result.unwrap_err(), "Port B presence mismatch");
+    }
+
+    #[test]
+    fn test_validate_detects_lab_b_mismatch() {
+        let mut state = create_test_game_state(3);
+        // 3p shouldn't have Lab B, but let's add it
+        state.lab_state.lab_b = Some(LabBoard::new());
+
+        let result = validate_game_state_consistency(&state);
+        assert!(result.is_err());
+        assert_eq!(result.unwrap_err(), "Lab B presence mismatch");
+    }
+
+    #[test]
+    fn test_validate_detects_invalid_area_for_player_count() {
+        let mut state = create_test_game_state(2);
+        // 2p shouldn't have LaboratoryB
+        state.board_layout.areas.insert(
+            AreaId::new(17), // Valid area ID (0-17 range)
+            AreaConfig {
+                area_type: AreaType::LaboratoryB,
+                grid_position: (0, 0),
+            },
+        );
+
+        let result = validate_game_state_consistency(&state);
+        assert!(result.is_err());
+        assert_eq!(result.unwrap_err(), "Board contains area that should be removed for player count");
     }
 }

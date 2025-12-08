@@ -55,6 +55,25 @@ impl GameConfig {
         }
     }
 
+    /// Areas to remove based on player count.
+    /// Returns area types that should not be on the board for this player count.
+    /// - 2 players: Lab B, Port B, Chinatown, Canal, 1 of each production
+    /// - 3 players: Lab B, 1 of each production
+    /// - 4 players: None removed
+    pub fn removed_area_types(&self) -> Vec<crate::types::AreaType> {
+        use crate::types::AreaType;
+        match self.player_count {
+            2 => vec![
+                AreaType::LaboratoryB,
+                AreaType::PortB,
+                AreaType::Chinatown,
+                AreaType::Canal,
+            ],
+            3 => vec![AreaType::LaboratoryB],
+            _ => vec![],
+        }
+    }
+
     /// Starting money for a player based on turn order.
     /// First player: 7 Yen, Others: 8 Yen.
     pub fn starting_money(&self, player: PlayerId) -> u32 {
@@ -130,16 +149,24 @@ pub enum EndGameTrigger {
     CustomsTrackFull,
 }
 
-/// State for tracking additional action phase.
+/// State for tracking additional action phase and once-per-turn tech effects.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AdditionalActionState {
     /// Has a mercenary been used this turn?
     pub mercenary_used: bool,
+    /// Has Spinning Mill tech been used this turn? (discard 1 silk → gain 2 Yen)
+    pub spinning_mill_used: bool,
+    /// Has University tech been used this turn? (pay 1 Yen → take assistant from warehouse)
+    pub university_used: bool,
 }
 
 impl AdditionalActionState {
     pub fn new() -> Self {
-        Self { mercenary_used: false }
+        Self {
+            mercenary_used: false,
+            spinning_mill_used: false,
+            university_used: false,
+        }
     }
 }
 

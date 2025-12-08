@@ -10,6 +10,7 @@ mod tech_effects;
 mod end_game;
 mod scoring;
 mod setup;
+mod board_gen;
 pub mod actions;
 
 pub use power::*;
@@ -22,3 +23,4 @@ pub use tech_effects::*;
 pub use end_game::*;
 pub use scoring::*;
 pub use setup::*;
+pub use board_gen::*;
