@@ -15,3 +15,6 @@ pub use cards::*;
 pub use tracks::*;
 pub use moves::*;
 pub use state::*;
+
+#[cfg(test)]
+mod tests;
