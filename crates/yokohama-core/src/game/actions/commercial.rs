@@ -135,4 +135,21 @@ mod tests {
         assert!(validate_chinatown_exchanges(&exchanges, 3).is_ok());
         assert!(validate_chinatown_exchanges(&exchanges, 2).is_err());
     }
+
+    #[test]
+    fn test_power_zero_returns_zero() {
+        assert_eq!(bank_reward(0), 0);
+        assert_eq!(employment_agency_tokens_allowed(0), 0);
+    }
+
+    #[test]
+    fn test_employment_agency_full_range() {
+        assert_eq!(employment_agency_tokens_allowed(0), 0);
+        assert_eq!(employment_agency_tokens_allowed(1), 0);
+        assert_eq!(employment_agency_tokens_allowed(2), 1);
+        assert_eq!(employment_agency_tokens_allowed(3), 2);
+        assert_eq!(employment_agency_tokens_allowed(4), 3);
+        assert_eq!(employment_agency_tokens_allowed(5), 4);
+        assert_eq!(employment_agency_tokens_allowed(6), 4); // Capped at 4
+    }
 }

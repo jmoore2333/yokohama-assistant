@@ -103,4 +103,22 @@ mod tests {
             assert_eq!(fishing_ground_reward(power), power);
         }
     }
+
+    #[test]
+    fn test_power_zero_returns_zero() {
+        // All production areas should return 0 at power 0
+        assert_eq!(copper_mine_reward(0), 0);
+        assert_eq!(silk_mill_reward(0), 0);
+        assert_eq!(tea_plantation_reward(0), 0);
+        assert_eq!(fishing_ground_reward(0), 0);
+    }
+
+    #[test]
+    fn test_power_capped_at_five() {
+        // Power above 5 should be treated as 5
+        assert_eq!(copper_mine_reward(6), 3);
+        assert_eq!(silk_mill_reward(6), 4);
+        assert_eq!(tea_plantation_reward(6), 5);
+        assert_eq!(fishing_ground_reward(6), 5);
+    }
 }

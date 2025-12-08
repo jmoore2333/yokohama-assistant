@@ -154,4 +154,16 @@ mod tests {
         assert_eq!(customs_max_imported_goods(4), 3);
         assert_eq!(customs_max_imported_goods(5), 4);
     }
+
+    #[test]
+    fn test_power_zero_edge_cases() {
+        assert_eq!(church_faith_from_power(0), 0);
+        assert_eq!(customs_max_imported_goods(0), 0);
+    }
+
+    #[test]
+    fn test_power_above_five_capped() {
+        assert_eq!(church_faith_from_power(6), 5);
+        assert_eq!(customs_max_imported_goods(6), 4);
+    }
 }

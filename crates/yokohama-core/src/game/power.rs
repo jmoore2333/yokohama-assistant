@@ -158,4 +158,70 @@ mod tests {
         // President (1) + Station (1) = 2
         assert_eq!(calculate_power(&state, player, area), 2);
     }
+
+    #[test]
+    fn test_power_zero_no_presence() {
+        let state = create_test_state();
+        let area = AreaId::new(0);
+        let player = PlayerId::new(0);
+        // Player has no presence in area
+        assert_eq!(calculate_power(&state, player, area), 0);
+    }
+
+    #[test]
+    fn test_power_trading_house_bonus() {
+        let mut state = create_test_state();
+        let area = AreaId::new(0);
+        let player = PlayerId::new(0);
+
+        state.players[0].president_location = PresidentLocation::OnBoard(area);
+        state.players[0].trading_houses.built.push(area);
+        // President (1) + Trading House (1) = 2
+        assert_eq!(calculate_power(&state, player, area), 2);
+    }
+
+    #[test]
+    fn test_power_shophouse_bonus() {
+        let mut state = create_test_state();
+        let area = AreaId::new(0);
+        let player = PlayerId::new(0);
+
+        state.players[0].president_location = PresidentLocation::OnBoard(area);
+        state.players[0].shophouses.built.insert(area, 0);
+        // President (1) + Shophouse (1) = 2
+        assert_eq!(calculate_power(&state, player, area), 2);
+    }
+
+    #[test]
+    fn test_power_station_benefits_all_players() {
+        let mut state = create_test_state();
+        let area = AreaId::new(0);
+
+        // Player 1 places the station and has president there
+        state.players[1].president_location = PresidentLocation::OnBoard(area);
+        state.station_location = Some(area);
+
+        // Player 0 has only an assistant in the area
+        state.players[0].assistants.on_board.insert(area, 1);
+
+        // Player 0: Assistant (1) + Station (1) = 2
+        assert_eq!(calculate_power(&state, PlayerId::new(0), area), 2);
+        // Player 1: President (1) + Station (1) = 2
+        assert_eq!(calculate_power(&state, PlayerId::new(1), area), 2);
+    }
+
+    #[test]
+    fn test_power_all_sources_combined() {
+        let mut state = create_test_state();
+        let area = AreaId::new(0);
+        let player = PlayerId::new(0);
+
+        state.players[0].president_location = PresidentLocation::OnBoard(area);
+        state.players[0].assistants.on_board.insert(area, 1);
+        state.players[0].shophouses.built.insert(area, 0);
+        state.players[0].trading_houses.built.push(area);
+        state.station_location = Some(area);
+        // President (1) + Assistant (1) + Shophouse (1) + Trading House (1) + Station (1) = 5
+        assert_eq!(calculate_power(&state, player, area), 5);
+    }
 }
