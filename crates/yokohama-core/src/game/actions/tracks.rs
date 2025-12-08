@@ -40,6 +40,7 @@ pub fn calculate_church_faith(
 }
 
 /// Validate Church action.
+#[allow(clippy::too_many_arguments)]
 pub fn validate_church_action(
     state: &GameState,
     player: PlayerId,

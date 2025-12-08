@@ -34,7 +34,7 @@ impl ChurchTrack {
 
     /// Convert Faith value (4-11) to slot index (0-7).
     pub fn faith_to_index(faith: u8) -> Option<usize> {
-        if faith >= 4 && faith <= 11 {
+        if (4..=11).contains(&faith) {
             Some((faith - 4) as usize)
         } else {
             None
@@ -110,7 +110,7 @@ impl CustomsTrack {
 
     /// Convert Imported Goods count to slot index.
     pub fn goods_to_index(goods: u8) -> Option<usize> {
-        if goods >= 1 && goods <= 7 {
+        if (1..=7).contains(&goods) {
             Some((goods - 1) as usize)
         } else if goods > 7 {
             Some(6) // Slot 7 handles 7+

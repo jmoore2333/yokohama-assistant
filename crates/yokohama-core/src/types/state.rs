@@ -18,7 +18,7 @@ pub struct GameConfig {
 
 impl GameConfig {
     pub fn new(player_count: u8, player_colors: Vec<PlayerColor>, start_player: PlayerId) -> Self {
-        debug_assert!(player_count >= 2 && player_count <= 4);
+        debug_assert!((2..=4).contains(&player_count));
         debug_assert!(player_colors.len() == player_count as usize);
         Self {
             player_count,

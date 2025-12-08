@@ -103,7 +103,7 @@ impl BuildingSite {
     /// Returns the next available shophouse slot (0-3), or None if full.
     pub fn next_shophouse_slot(&self, player: PlayerId) -> Option<usize> {
         // Player can only have one shophouse per area
-        if self.shophouses_built.iter().any(|&p| p == Some(player)) {
+        if self.shophouses_built.contains(&Some(player)) {
             return None;
         }
         self.shophouses_built.iter().position(|p| p.is_none())
@@ -217,10 +217,10 @@ impl BoardLayoutBuilder {
 
         // Validate: all areas have 5-Power tokens (Canal excluded)
         for (area, config) in &self.areas {
-            if config.area_type != AreaType::Canal {
-                if !self.five_power_tokens.contains_key(area) {
-                    return Err(BoardLayoutError::MissingFivePowerToken(*area));
-                }
+            if config.area_type != AreaType::Canal
+                && !self.five_power_tokens.contains_key(area)
+            {
+                return Err(BoardLayoutError::MissingFivePowerToken(*area));
             }
         }
 

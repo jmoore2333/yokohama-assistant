@@ -1,10 +1,22 @@
 //! President movement and pathfinding.
 
 use std::collections::{HashSet, VecDeque};
-use crate::types::{AreaId, GameState, Move, PlayerId, PresidentLocation};
+use crate::types::{AreaId, GameState, Move, PlayerId, PresidentLocation, TechEffect};
+use super::cards::TechRegistry;
 
 /// Check if an area is a valid destination (Possible Action Area).
+/// Without TechRegistry, assumes no Postal System.
 pub fn is_possible_action_area(state: &GameState, player: PlayerId, area: AreaId) -> bool {
+    is_possible_action_area_with_tech(state, player, area, None)
+}
+
+/// Check if an area is a valid destination with technology awareness.
+pub fn is_possible_action_area_with_tech(
+    state: &GameState,
+    player: PlayerId,
+    area: AreaId,
+    tech_registry: Option<&TechRegistry>,
+) -> bool {
     let p = state.player(player);
 
     // Must have at least 1 assistant
@@ -12,16 +24,20 @@ pub fn is_possible_action_area(state: &GameState, player: PlayerId, area: AreaId
         return false;
     }
 
-    // Check for other Presidents (unless has Postal System)
-    // TODO: check player technologies when TechRegistry is available
-    let has_postal = false;
+    // Check for Postal System technology
+    let has_postal = tech_registry.is_some_and(|registry| {
+        p.technologies.iter().any(|&tech_id| {
+            registry.get(tech_id).map(|t| t.effect == TechEffect::PostalSystem).unwrap_or(false)
+        })
+    });
 
+    // Check for other Presidents (unless has Postal System)
     if !has_postal {
         for (i, other_player) in state.players.iter().enumerate() {
-            if i != player.0 as usize {
-                if other_player.president_location == PresidentLocation::OnBoard(area) {
-                    return false;
-                }
+            if i != player.0 as usize
+                && other_player.president_location == PresidentLocation::OnBoard(area)
+            {
+                return false;
             }
         }
     }
@@ -84,10 +100,23 @@ pub fn can_teleport_to_station(
     state: &GameState,
     player: PlayerId,
 ) -> Option<AreaId> {
-    // TODO: check player technologies when TechRegistry is available
+    can_teleport_to_station_with_tech(state, player, None)
+}
+
+/// Check if player can teleport to Station area with tech awareness.
+pub fn can_teleport_to_station_with_tech(
+    state: &GameState,
+    player: PlayerId,
+    tech_registry: Option<&TechRegistry>,
+) -> Option<AreaId> {
+    let p = state.player(player);
+
     // Must have Station technology
-    let _p = state.player(player);
-    let has_station = false; // Stub until TechRegistry
+    let has_station = tech_registry.is_some_and(|registry| {
+        p.technologies.iter().any(|&tech_id| {
+            registry.get(tech_id).map(|t| t.effect == TechEffect::Station).unwrap_or(false)
+        })
+    });
 
     if !has_station {
         return None;
@@ -97,7 +126,6 @@ pub fn can_teleport_to_station(
     let station_area = state.station_location?;
 
     // Station area must have our assistant
-    let p = state.player(player);
     if p.assistants.in_area(station_area) > 0 {
         Some(station_area)
     } else {
@@ -126,26 +154,43 @@ pub fn generate_station_teleport_move(
 }
 
 /// Calculate movement cost (opponent Presidents and canal tolls).
+/// Without TechRegistry, assumes no Stagecoach.
 pub fn calculate_movement_cost(
     state: &GameState,
     player: PlayerId,
     path: &[AreaId],
 ) -> u32 {
+    calculate_movement_cost_with_tech(state, player, path, None)
+}
+
+/// Calculate movement cost with technology awareness.
+pub fn calculate_movement_cost_with_tech(
+    state: &GameState,
+    player: PlayerId,
+    path: &[AreaId],
+    tech_registry: Option<&TechRegistry>,
+) -> u32 {
     let mut cost: u32 = 0;
-    // TODO: check player technologies when TechRegistry is available
-    let has_stagecoach = false;
+    let p = state.player(player);
+
+    // Check for Stagecoach technology
+    let has_stagecoach = tech_registry.is_some_and(|registry| {
+        p.technologies.iter().any(|&tech_id| {
+            registry.get(tech_id).map(|t| t.effect == TechEffect::Stagecoach).unwrap_or(false)
+        })
+    });
 
     // Check each area in path (except destination)
     let intermediate = if path.len() > 1 { &path[..path.len() - 1] } else { &[] };
 
     for &area in intermediate {
-        // Pay for opponent Presidents
+        // Pay for opponent Presidents (unless has Stagecoach)
         if !has_stagecoach {
             for other_player in &state.players {
-                if other_player.id != player {
-                    if other_player.president_location == PresidentLocation::OnBoard(area) {
-                        cost += 1;
-                    }
+                if other_player.id != player
+                    && other_player.president_location == PresidentLocation::OnBoard(area)
+                {
+                    cost += 1;
                 }
             }
         }
