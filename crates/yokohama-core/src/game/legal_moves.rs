@@ -311,16 +311,18 @@ fn generate_building_moves(state: &GameState) -> Vec<Move> {
         }
     };
 
+    let power = state.current_action_power.unwrap_or(0);
+
     if let Some(site) = state.board_layout.building_sites.get(&area) {
-        // Shophouse
-        if p.shophouses.in_hand > 0 {
+        // Shophouse: requires Power 4+
+        if power >= 4 && p.shophouses.in_hand > 0 {
             if let Some(slot) = site.next_shophouse_slot(player) {
                 moves.push(Move::BuildShophouse { slot: slot as u8 });
             }
         }
 
-        // Trading House
-        if p.trading_houses.in_warehouse > 0 && site.can_build_trading_house() {
+        // Trading House: requires Power 5
+        if power >= 5 && p.trading_houses.in_warehouse > 0 && site.can_build_trading_house() {
             moves.push(Move::BuildTradingHouse);
         }
     }
@@ -429,5 +431,69 @@ mod tests {
         // Should only have Skip
         assert_eq!(moves.len(), 1);
         assert!(matches!(moves[0], Move::SkipBuilding));
+    }
+
+    #[test]
+    fn test_shophouse_requires_power_4() {
+        let mut state = create_test_state();
+        let area = AreaId::new(0);
+        state.turn_phase = TurnPhase::Building;
+        state.players[0].president_location = PresidentLocation::OnBoard(area);
+        state.players[0].shophouses.in_hand = 1;
+
+        // Add a building site (shophouse rewards: [2, 3, 4, 5], trading house reward: 10)
+        state.board_layout.building_sites.insert(area, BuildingSite::new([2, 3, 4, 5], 10));
+
+        // Power 3 - no shophouse option
+        state.current_action_power = Some(3);
+        let moves = get_legal_moves(&state);
+        assert!(!moves.iter().any(|m| matches!(m, Move::BuildShophouse { .. })));
+
+        // Power 4 - shophouse available
+        state.current_action_power = Some(4);
+        let moves = get_legal_moves(&state);
+        assert!(moves.iter().any(|m| matches!(m, Move::BuildShophouse { .. })));
+    }
+
+    #[test]
+    fn test_trading_house_requires_power_5() {
+        let mut state = create_test_state();
+        let area = AreaId::new(0);
+        state.turn_phase = TurnPhase::Building;
+        state.players[0].president_location = PresidentLocation::OnBoard(area);
+        state.players[0].trading_houses.in_warehouse = 1;
+
+        // Add a building site with no trading house yet
+        state.board_layout.building_sites.insert(area, BuildingSite::new([2, 3, 4, 5], 10));
+
+        // Power 4 - trading house NOT available (needs 5)
+        state.current_action_power = Some(4);
+        let moves = get_legal_moves(&state);
+        assert!(!moves.iter().any(|m| matches!(m, Move::BuildTradingHouse)));
+
+        // Power 5 - trading house available
+        state.current_action_power = Some(5);
+        let moves = get_legal_moves(&state);
+        assert!(moves.iter().any(|m| matches!(m, Move::BuildTradingHouse)));
+    }
+
+    #[test]
+    fn test_both_buildings_at_power_5() {
+        let mut state = create_test_state();
+        let area = AreaId::new(0);
+        state.turn_phase = TurnPhase::Building;
+        state.players[0].president_location = PresidentLocation::OnBoard(area);
+        state.players[0].shophouses.in_hand = 1;
+        state.players[0].trading_houses.in_warehouse = 1;
+
+        // Add a building site
+        state.board_layout.building_sites.insert(area, BuildingSite::new([2, 3, 4, 5], 10));
+
+        // Power 5 - both available
+        state.current_action_power = Some(5);
+        let moves = get_legal_moves(&state);
+        assert!(moves.iter().any(|m| matches!(m, Move::BuildShophouse { .. })));
+        assert!(moves.iter().any(|m| matches!(m, Move::BuildTradingHouse)));
+        assert!(moves.iter().any(|m| matches!(m, Move::SkipBuilding)));
     }
 }
