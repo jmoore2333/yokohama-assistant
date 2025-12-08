@@ -15,7 +15,7 @@ pub fn get_legal_moves_with_tech(state: &GameState, tech_registry: Option<&TechR
             generate_additional_action_moves(state)
         }
         TurnPhase::Placement => generate_placement_moves_with_tech(state, tech_registry),
-        TurnPhase::Movement => generate_movement_moves(state),
+        TurnPhase::Movement => generate_movement_moves_with_tech(state, tech_registry),
         TurnPhase::AreaAction => generate_area_action_moves(state),
         TurnPhase::FivePowerBonus => generate_five_power_moves(state),
         TurnPhase::Building => generate_building_moves(state),
@@ -180,11 +180,38 @@ fn generate_placement_moves_with_tech(state: &GameState, tech_registry: Option<&
 
     // Option B: 2 assistants in 1 area (if have at least 2)
     // Cost is 1 Yen if opponent President is in the area
+    // With Telegram tech and 3+ assistants, may also place 1 in adjacent area
+    let has_telegram = tech_registry.is_some_and(|registry| {
+        p.technologies.iter().any(|&tech_id| {
+            registry.get(tech_id).map(|t| t.effect == TechEffect::Telegram).unwrap_or(false)
+        })
+    });
+
     if p.assistants.in_hand >= 2 {
         for &area in &placeable_areas {
             let cost = calculate_placement_cost(state, player, &[area]);
             if player_money >= cost {
-                moves.push(Move::PlaceTwoSameArea { area });
+                // Basic move without Telegram bonus
+                moves.push(Move::PlaceTwoSameArea { area, adjacent_bonus: None });
+
+                // With Telegram and 3+ assistants, offer adjacent placements
+                if has_telegram && p.assistants.in_hand >= 3 {
+                    for &adj_area in state.board_layout.adjacent_areas(area) {
+                        // Adjacent area must be placeable
+                        if let Some(adj_config) = state.board_layout.areas.get(&adj_area) {
+                            if adj_config.area_type.allows_placement() {
+                                // Check cost for adjacent area too
+                                let adj_cost = calculate_placement_cost(state, player, &[adj_area]);
+                                if player_money >= cost + adj_cost {
+                                    moves.push(Move::PlaceTwoSameArea {
+                                        area,
+                                        adjacent_bonus: Some(adj_area),
+                                    });
+                                }
+                            }
+                        }
+                    }
+                }
             }
         }
     }
@@ -192,7 +219,7 @@ fn generate_placement_moves_with_tech(state: &GameState, tech_registry: Option<&
     moves
 }
 
-fn generate_movement_moves(state: &GameState) -> Vec<Move> {
+fn generate_movement_moves_with_tech(state: &GameState, tech_registry: Option<&TechRegistry>) -> Vec<Move> {
     let mut moves = Vec::new();
     let player = state.current_player;
     let p = state.player(player);
@@ -213,6 +240,17 @@ fn generate_movement_moves(state: &GameState) -> Vec<Move> {
                     path,
                     destination: dest,
                 });
+            }
+
+            // Station teleport (free move to station area if player has Station tech)
+            if let Some(station_area) = can_teleport_to_station_with_tech(state, player, tech_registry) {
+                // Only add if not already at station and not already in moves
+                if station_area != current && !moves.iter().any(|m| matches!(m, Move::MovePresident { destination, .. } if *destination == station_area)) {
+                    moves.push(Move::MovePresident {
+                        path: vec![], // Free teleport, no path needed
+                        destination: station_area,
+                    });
+                }
             }
 
             // Return to hand (emergency exit, always available)
@@ -556,7 +594,7 @@ mod tests {
             if placements.len() == 1 && placements[0] == bank_area)));
 
         // Cannot use PlaceTwoSameArea in Bank either
-        assert!(!moves.iter().any(|m| matches!(m, Move::PlaceTwoSameArea { area } if *area == bank_area)));
+        assert!(!moves.iter().any(|m| matches!(m, Move::PlaceTwoSameArea { area, .. } if *area == bank_area)));
 
         // But CAN place in CopperMine (area 1) - no opponent President there
         let mine_area = AreaId::new(1);
@@ -628,5 +666,92 @@ mod tests {
 
         // Empty placement always costs 0
         assert_eq!(calculate_placement_cost(&state, player, &[]), 0);
+    }
+
+    #[test]
+    fn test_station_teleport_included_in_movement() {
+        let mut state = create_test_state();
+        let current_area = AreaId::new(0);
+        let station_area = AreaId::new(2); // Different area
+
+        // Setup: President on board, Station technology, station placed
+        state.turn_phase = TurnPhase::Movement;
+        state.players[0].president_location = PresidentLocation::OnBoard(current_area);
+        state.players[0].assistants.on_board.insert(station_area, 1);
+        state.station_location = Some(station_area);
+
+        // Give player Station tech
+        let station_tech = TechCardId(100); // Arbitrary ID for test
+        state.players[0].technologies.push(station_tech);
+
+        // Create tech registry with Station tech
+        let mut tech_registry = TechRegistry::new();
+        let station_card = TechCard {
+            id: station_tech,
+            name: "Station".to_string(),
+            industry_cost: 4,
+            country: Country::German,
+            effect: TechEffect::Station,
+        };
+        tech_registry.insert(station_card, "tech_station");
+
+        // Get legal moves with tech awareness
+        let moves = get_legal_moves_with_tech(&state, Some(&tech_registry));
+
+        // Should include station teleport move (free move to station area)
+        let has_teleport = moves.iter().any(|m| matches!(m,
+            Move::MovePresident { destination, .. } if *destination == station_area
+        ));
+
+        assert!(has_teleport, "Should include station teleport move to station area");
+    }
+
+    #[test]
+    fn test_telegram_adjacent_bonus() {
+        let mut state = create_test_state();
+        let main_area = AreaId::new(0); // Bank
+        let adjacent_area = AreaId::new(1); // CopperMine
+
+        // Add adjacency: Bank <-> CopperMine
+        state.board_layout.adjacency.insert(main_area, vec![adjacent_area]);
+        state.board_layout.adjacency.insert(adjacent_area, vec![main_area]);
+
+        state.turn_phase = TurnPhase::Placement;
+        state.players[0].assistants.in_hand = 3; // Need 3 for bonus (2 + 1)
+
+        // Without Telegram tech - only basic PlaceTwoSameArea moves
+        let moves_no_tech = get_legal_moves_with_tech(&state, None);
+        let has_adjacent_bonus_without_tech = moves_no_tech.iter().any(|m| matches!(m,
+            Move::PlaceTwoSameArea { area, adjacent_bonus: Some(_) } if *area == main_area
+        ));
+        assert!(!has_adjacent_bonus_without_tech, "Without Telegram, should not have adjacent bonus");
+
+        // With Telegram tech - should have adjacent bonus moves
+        let telegram_tech = TechCardId(101);
+        state.players[0].technologies.push(telegram_tech);
+
+        let mut tech_registry = TechRegistry::new();
+        let telegram_card = TechCard {
+            id: telegram_tech,
+            name: "Telegram".to_string(),
+            industry_cost: 3,
+            country: Country::American,
+            effect: TechEffect::Telegram,
+        };
+        tech_registry.insert(telegram_card, "tech_telegram");
+
+        let moves_with_tech = get_legal_moves_with_tech(&state, Some(&tech_registry));
+
+        // Should have basic move (adjacent_bonus: None)
+        let has_basic = moves_with_tech.iter().any(|m| matches!(m,
+            Move::PlaceTwoSameArea { area, adjacent_bonus: None } if *area == main_area
+        ));
+        assert!(has_basic, "Should have basic PlaceTwoSameArea move");
+
+        // Should have at least one adjacent bonus move
+        let has_adjacent_bonus = moves_with_tech.iter().any(|m| matches!(m,
+            Move::PlaceTwoSameArea { adjacent_bonus: Some(_), .. }
+        ));
+        assert!(has_adjacent_bonus, "With Telegram, should have adjacent bonus options");
     }
 }

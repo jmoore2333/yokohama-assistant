@@ -6,6 +6,15 @@ use crate::game::actions::*;
 
 /// Apply a move to the game state, returning the new state.
 pub fn apply_move(state: &GameState, mv: &Move) -> Result<GameState, &'static str> {
+    apply_move_with_registries(state, mv, None)
+}
+
+/// Apply a move with access to card registries for order/tech fulfillment.
+pub fn apply_move_with_registries(
+    state: &GameState,
+    mv: &Move,
+    order_registry: Option<&OrderRegistry>,
+) -> Result<GameState, &'static str> {
     let mut new_state = state.clone();
 
     match mv {
@@ -20,8 +29,16 @@ pub fn apply_move(state: &GameState, mv: &Move) -> Result<GameState, &'static st
             new_state.turn_phase = TurnPhase::Movement;
         }
 
-        Move::PlaceTwoSameArea { area } => {
+        Move::PlaceTwoSameArea { area, adjacent_bonus } => {
             apply_placement_same_area(&mut new_state, *area)?;
+            // Telegram bonus: place 1 in adjacent area
+            if let Some(adj_area) = adjacent_bonus {
+                let p = new_state.player_mut(new_state.current_player);
+                if p.assistants.in_hand > 0 {
+                    p.assistants.in_hand -= 1;
+                    *p.assistants.on_board.entry(*adj_area).or_insert(0) += 1;
+                }
+            }
             // Record president's starting area for this turn's movement
             set_president_start_area(&mut new_state);
             new_state.turn_phase = TurnPhase::Movement;
@@ -82,7 +99,7 @@ pub fn apply_move(state: &GameState, mv: &Move) -> Result<GameState, &'static st
         }
 
         Move::FulfillOrder { order_id } => {
-            apply_fulfill_order(&mut new_state, *order_id)?;
+            apply_fulfill_order(&mut new_state, *order_id, order_registry)?;
         }
 
         Move::FulfillAchievement { achievement } => {
@@ -663,16 +680,74 @@ fn apply_mercenary(
     Ok(())
 }
 
-fn apply_fulfill_order(_state: &mut GameState, _order_id: OrderCardId) -> Result<(), &'static str> {
-    // TODO: Implement order fulfillment when OrderRegistry is available
+fn apply_fulfill_order(
+    state: &mut GameState,
+    order_id: OrderCardId,
+    order_registry: Option<&OrderRegistry>,
+) -> Result<(), &'static str> {
+    let player = state.current_player;
+    let p = state.player(player);
+
+    // Verify order is in player's hand
+    if !p.order_cards_in_hand.contains(&order_id) {
+        return Err("Order card not in hand");
+    }
+
+    // Look up order details from registry
+    let order = match order_registry {
+        Some(registry) => match registry.get(order_id) {
+            Some(o) => o,
+            None => return Err("Order card not found in registry"),
+        },
+        None => return Err("OrderRegistry required for order fulfillment"),
+    };
+
+    // Clone requirements and rewards before mutable borrow
+    let req = order.requirements;
+    let rewards = order.rewards;
+
+    // Check if player has required trade goods
+    if p.copper < req.copper as u32
+        || p.silk < req.silk as u32
+        || p.tea < req.tea as u32
+        || p.seafood < req.seafood as u32
+    {
+        return Err("Insufficient trade goods to fulfill order");
+    }
+
+    // Deduct trade goods
+    let p = state.player_mut(player);
+    p.copper -= req.copper as u32;
+    p.silk -= req.silk as u32;
+    p.tea -= req.tea as u32;
+    p.seafood -= req.seafood as u32;
+
+    // Award rewards
+    p.victory_points += rewards.victory_points as u32;
+    p.money += rewards.money as u32;
+    p.imported_goods += rewards.imported_goods as u32;
+    p.copper += rewards.copper as u32;
+    p.silk += rewards.silk as u32;
+    p.tea += rewards.tea as u32;
+    p.seafood += rewards.seafood as u32;
+
+    // Handle any_trade_good rewards (player chooses - for now add to copper)
+    // In a full implementation, this would be a separate move type
+    p.copper += rewards.any_trade_good as u32;
+
+    // Move order from hand to completed
+    p.order_cards_in_hand.retain(|&id| id != order_id);
+    p.completed_orders.push(order_id);
+
     Ok(())
 }
 
 fn apply_fulfill_achievement(
-    _state: &mut GameState,
-    _achievement: AchievementType,
+    state: &mut GameState,
+    achievement: AchievementType,
 ) -> Result<(), &'static str> {
-    // TODO: Implement achievement fulfillment
+    let player = state.current_player;
+    claim_achievement(state, player, achievement)?;
     Ok(())
 }
 
@@ -1209,5 +1284,151 @@ mod tests {
             destination: AreaId::new(0),
         });
         assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_fulfill_order_awards_vp() {
+        let mut state = create_minimal_state(2);
+        state.turn_phase = TurnPhase::AdditionalActionFirst;
+
+        // Give player the required resources
+        state.players[0].copper = 2;
+        state.players[0].silk = 1;
+
+        // Create order card
+        let order_id = OrderCardId(42);
+        state.players[0].order_cards_in_hand.push(order_id);
+
+        // Create order registry with the card
+        let mut order_registry = OrderRegistry::new();
+        let order_card = OrderCard {
+            id: order_id,
+            country: Country::English,
+            requirements: TradeGoodRequirement::new(2, 1, 0, 0), // 2 copper, 1 silk
+            rewards: OrderRewards {
+                victory_points: 5,
+                money: 3,
+                imported_goods: 0,
+                copper: 0,
+                silk: 0,
+                tea: 0,
+                seafood: 0,
+                movement: 0,
+                any_trade_good: 0,
+                warehouse_tokens: 0,
+            },
+        };
+        order_registry.insert(order_card, "test_order");
+
+        // Fulfill order
+        let result = apply_move_with_registries(
+            &state,
+            &Move::FulfillOrder { order_id },
+            Some(&order_registry),
+        );
+        assert!(result.is_ok());
+
+        let new_state = result.unwrap();
+
+        // Verify VP awarded
+        assert_eq!(new_state.players[0].victory_points, 5);
+        // Verify money awarded
+        assert_eq!(new_state.players[0].money, 3 + state.players[0].money); // 3 reward + starting money
+        // Verify trade goods deducted
+        assert_eq!(new_state.players[0].copper, 0); // 2 - 2 = 0
+        assert_eq!(new_state.players[0].silk, 0);   // 1 - 1 = 0
+        // Verify order moved to completed
+        assert!(!new_state.players[0].order_cards_in_hand.contains(&order_id));
+        assert!(new_state.players[0].completed_orders.contains(&order_id));
+    }
+
+    #[test]
+    fn test_fulfill_order_requires_resources() {
+        let mut state = create_minimal_state(2);
+        state.turn_phase = TurnPhase::AdditionalActionFirst;
+
+        // Give player INSUFFICIENT resources
+        state.players[0].copper = 1; // Need 2
+        state.players[0].silk = 1;
+
+        let order_id = OrderCardId(42);
+        state.players[0].order_cards_in_hand.push(order_id);
+
+        let mut order_registry = OrderRegistry::new();
+        let order_card = OrderCard {
+            id: order_id,
+            country: Country::English,
+            requirements: TradeGoodRequirement::new(2, 1, 0, 0),
+            rewards: OrderRewards::default(),
+        };
+        order_registry.insert(order_card, "test_order");
+
+        // Fulfill order should fail
+        let result = apply_move_with_registries(
+            &state,
+            &Move::FulfillOrder { order_id },
+            Some(&order_registry),
+        );
+        assert!(result.is_err());
+        assert_eq!(result.unwrap_err(), "Insufficient trade goods to fulfill order");
+    }
+
+    #[test]
+    fn test_fulfill_achievement_awards_vp() {
+        let mut state = create_minimal_state(2);
+        state.turn_phase = TurnPhase::AdditionalActionFirst;
+
+        // Give player enough copper for Copper5 achievement
+        state.players[0].copper = 5;
+        state.players[0].assistants.in_hand = 2;
+
+        // Fulfill achievement
+        let result = apply_move(&state, &Move::FulfillAchievement {
+            achievement: AchievementType::Copper5,
+        });
+        assert!(result.is_ok());
+
+        let new_state = result.unwrap();
+
+        // Verify VP awarded (first place = 8 VP for Category A)
+        assert_eq!(new_state.players[0].victory_points, 8);
+        // Verify assistant locked on achievement
+        assert_eq!(new_state.players[0].assistants.in_hand, 1);
+        assert_eq!(new_state.players[0].assistants.on_achievements, 1);
+        // Verify player added to claimed list
+        assert!(new_state.achievements.iter().any(|a|
+            a.achievement_type == AchievementType::Copper5 &&
+            a.claimed_by.contains(&PlayerId::new(0))
+        ));
+    }
+
+    #[test]
+    fn test_fulfill_achievement_subsequent_player() {
+        let mut state = create_minimal_state(2);
+        state.turn_phase = TurnPhase::AdditionalActionFirst;
+
+        // First player claims achievement
+        state.players[0].copper = 5;
+        state.players[0].assistants.in_hand = 2;
+        let state = apply_move(&state, &Move::FulfillAchievement {
+            achievement: AchievementType::Copper5,
+        }).unwrap();
+
+        // Switch to player 2
+        let mut state = state;
+        state.current_player = PlayerId::new(1);
+        state.players[1].copper = 5;
+        state.players[1].assistants.in_hand = 2;
+
+        // Second player claims same achievement
+        let result = apply_move(&state, &Move::FulfillAchievement {
+            achievement: AchievementType::Copper5,
+        });
+        assert!(result.is_ok());
+
+        let new_state = result.unwrap();
+
+        // Verify subsequent VP (6 VP for Category A)
+        assert_eq!(new_state.players[1].victory_points, 6);
     }
 }

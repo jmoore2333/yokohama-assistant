@@ -55,8 +55,11 @@ pub enum Move {
         placements: Vec<AreaId>, // 0-3 areas
     },
     /// Option B: Place 2 assistants in 1 area.
+    /// With Telegram tech, may also place 1 in an adjacent area.
     PlaceTwoSameArea {
         area: AreaId,
+        /// Telegram bonus: place 1 assistant in adjacent area (None if not using).
+        adjacent_bonus: Option<AreaId>,
     },
 
     // Step 2: Movement
