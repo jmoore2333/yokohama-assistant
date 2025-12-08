@@ -232,6 +232,9 @@ fn apply_area_action(state: &mut GameState, action: &AreaAction) -> Result<(), &
     let player = state.current_player;
     let power = state.current_action_power.unwrap_or(0);
 
+    // Pay Trading House passive income to owner (if not the current player)
+    apply_trading_house_passive_income(state);
+
     match action {
         AreaAction::ProduceCopper => {
             let reward = copper_mine_reward(power);
@@ -283,6 +286,36 @@ fn apply_area_action(state: &mut GameState, action: &AreaAction) -> Result<(), &
     }
 
     Ok(())
+}
+
+/// Pay passive income to Trading House owner (if not the current player).
+/// When a player takes an area action in an area with another player's Trading House,
+/// that Trading House owner receives 1 Yen.
+fn apply_trading_house_passive_income(state: &mut GameState) {
+    let player = state.current_player;
+    let p = state.player(player);
+
+    // Determine the action area (president location or mercenary target)
+    let area = if state.is_mercenary_action {
+        state.mercenary_target_area
+    } else {
+        match p.president_location {
+            PresidentLocation::OnBoard(a) => Some(a),
+            PresidentLocation::InHand => None,
+        }
+    };
+
+    if let Some(area) = area {
+        // Check if there's a trading house in this area owned by another player
+        if let Some(site) = state.board_layout.building_sites.get(&area) {
+            if let Some(th_owner) = site.trading_house_owner {
+                // Pay 1 Yen to the owner if it's not the current player
+                if th_owner != player {
+                    state.player_mut(th_owner).money += 1;
+                }
+            }
+        }
+    }
 }
 
 /// Employment Agency: retrieve items from warehouse to hand/board.
@@ -918,5 +951,116 @@ mod tests {
             assert_eq!(new_state.players[0].money, exp_money);
             assert_eq!(new_state.players[0].victory_points, exp_vp);
         }
+    }
+
+    #[test]
+    fn test_trading_house_passive_income() {
+        let mut state = create_minimal_state(2);
+        let action_area = AreaId::new(0);
+
+        // Player 0 is current player, Player 1 owns trading house at action area
+        state.players[0].president_location = PresidentLocation::OnBoard(action_area);
+        state.players[0].assistants.on_board.insert(action_area, 2);
+        state.current_player = PlayerId::new(0);
+        state.current_action_power = Some(3);
+        state.turn_phase = TurnPhase::AreaAction;
+
+        // Add building site with Player 1's trading house
+        let mut site = BuildingSite::new([2, 3, 4, 5], 10);
+        site.trading_house_owner = Some(PlayerId::new(1));
+        state.board_layout.building_sites.insert(action_area, site);
+        state.board_layout.areas.insert(action_area, AreaConfig {
+            area_type: AreaType::CopperMine,
+            grid_position: (0, 0),
+        });
+
+        // Record initial money
+        let player1_initial_money = state.players[1].money;
+
+        // Player 0 takes action
+        let result = apply_move(&state, &Move::ExecuteAreaAction {
+            action: AreaAction::ProduceCopper,
+        });
+        assert!(result.is_ok());
+
+        let new_state = result.unwrap();
+
+        // Player 1 should have received 1 Yen passive income
+        assert_eq!(new_state.players[1].money, player1_initial_money + 1);
+    }
+
+    #[test]
+    fn test_trading_house_no_passive_income_own_building() {
+        let mut state = create_minimal_state(2);
+        let action_area = AreaId::new(0);
+
+        // Player 0 owns their own trading house at the action area
+        state.players[0].president_location = PresidentLocation::OnBoard(action_area);
+        state.players[0].assistants.on_board.insert(action_area, 2);
+        state.current_player = PlayerId::new(0);
+        state.current_action_power = Some(3);
+        state.turn_phase = TurnPhase::AreaAction;
+
+        // Add building site with Player 0's own trading house
+        let mut site = BuildingSite::new([2, 3, 4, 5], 10);
+        site.trading_house_owner = Some(PlayerId::new(0)); // Own building
+        state.board_layout.building_sites.insert(action_area, site);
+        state.board_layout.areas.insert(action_area, AreaConfig {
+            area_type: AreaType::CopperMine,
+            grid_position: (0, 0),
+        });
+
+        // Record initial money for both players
+        let player0_initial_money = state.players[0].money;
+        let player1_initial_money = state.players[1].money;
+
+        // Player 0 takes action
+        let result = apply_move(&state, &Move::ExecuteAreaAction {
+            action: AreaAction::ProduceCopper,
+        });
+        assert!(result.is_ok());
+
+        let new_state = result.unwrap();
+
+        // Neither player should receive passive income (player 0 owns their own building)
+        // Player 0's money may change due to the action, but player 1 should be unchanged
+        assert_eq!(new_state.players[1].money, player1_initial_money);
+    }
+
+    #[test]
+    fn test_trading_house_passive_income_mercenary_action() {
+        let mut state = create_minimal_state(2);
+        let action_area = AreaId::new(5);
+
+        // Set up mercenary action at area where Player 1 owns trading house
+        state.is_mercenary_action = true;
+        state.mercenary_target_area = Some(action_area);
+        state.current_player = PlayerId::new(0);
+        state.current_action_power = Some(2);
+        state.turn_phase = TurnPhase::AreaAction;
+
+        state.players[0].assistants.on_board.insert(action_area, 1);
+
+        // Add building site with Player 1's trading house
+        let mut site = BuildingSite::new([2, 3, 4, 5], 10);
+        site.trading_house_owner = Some(PlayerId::new(1));
+        state.board_layout.building_sites.insert(action_area, site);
+        state.board_layout.areas.insert(action_area, AreaConfig {
+            area_type: AreaType::Bank,
+            grid_position: (0, 5),
+        });
+
+        let player1_initial_money = state.players[1].money;
+
+        // Player 0 takes mercenary action
+        let result = apply_move(&state, &Move::ExecuteAreaAction {
+            action: AreaAction::Bank,
+        });
+        assert!(result.is_ok());
+
+        let new_state = result.unwrap();
+
+        // Player 1 should receive passive income even during mercenary action
+        assert_eq!(new_state.players[1].money, player1_initial_money + 1);
     }
 }
