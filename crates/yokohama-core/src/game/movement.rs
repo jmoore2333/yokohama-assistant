@@ -7,7 +7,7 @@ use super::cards::TechRegistry;
 /// Check if an area is a valid destination (Possible Action Area).
 /// Without TechRegistry, assumes no Postal System.
 pub fn is_possible_action_area(state: &GameState, player: PlayerId, area: AreaId) -> bool {
-    is_possible_action_area_with_tech(state, player, area, None)
+    is_possible_action_area_full(state, player, area, None, false)
 }
 
 /// Check if an area is a valid destination with technology awareness.
@@ -17,11 +17,38 @@ pub fn is_possible_action_area_with_tech(
     area: AreaId,
     tech_registry: Option<&TechRegistry>,
 ) -> bool {
+    is_possible_action_area_full(state, player, area, tech_registry, false)
+}
+
+/// Check if an area is a valid destination for mercenary action.
+/// Mercenaries ignore opponent president blocking.
+pub fn is_possible_action_area_mercenary(
+    state: &GameState,
+    player: PlayerId,
+    area: AreaId,
+) -> bool {
+    is_possible_action_area_full(state, player, area, None, true)
+}
+
+/// Full version with all options.
+/// - is_mercenary: If true, opponent presidents don't block.
+pub fn is_possible_action_area_full(
+    state: &GameState,
+    player: PlayerId,
+    area: AreaId,
+    tech_registry: Option<&TechRegistry>,
+    is_mercenary: bool,
+) -> bool {
     let p = state.player(player);
 
     // Must have at least 1 assistant
     if p.assistants.in_area(area) < 1 {
         return false;
+    }
+
+    // Mercenaries ignore opponent president blocking
+    if is_mercenary {
+        return true;
     }
 
     // Check for Postal System technology
@@ -160,7 +187,7 @@ pub fn calculate_movement_cost(
     player: PlayerId,
     path: &[AreaId],
 ) -> u32 {
-    calculate_movement_cost_with_tech(state, player, path, None)
+    calculate_movement_cost_full(state, player, path, None, false)
 }
 
 /// Calculate movement cost with technology awareness.
@@ -170,8 +197,33 @@ pub fn calculate_movement_cost_with_tech(
     path: &[AreaId],
     tech_registry: Option<&TechRegistry>,
 ) -> u32 {
+    calculate_movement_cost_full(state, player, path, tech_registry, false)
+}
+
+/// Calculate movement cost for mercenary action.
+/// Mercenaries don't pay for passing through opponent presidents.
+pub fn calculate_movement_cost_mercenary(
+    state: &GameState,
+    player: PlayerId,
+    path: &[AreaId],
+) -> u32 {
+    calculate_movement_cost_full(state, player, path, None, true)
+}
+
+/// Full movement cost calculation with all options.
+/// - is_mercenary: If true, no cost for opponent presidents.
+pub fn calculate_movement_cost_full(
+    state: &GameState,
+    player: PlayerId,
+    path: &[AreaId],
+    tech_registry: Option<&TechRegistry>,
+    is_mercenary: bool,
+) -> u32 {
     let mut cost: u32 = 0;
     let p = state.player(player);
+
+    // Mercenaries don't pay for opponent presidents
+    let skip_president_cost = is_mercenary;
 
     // Check for Stagecoach technology
     let has_stagecoach = tech_registry.is_some_and(|registry| {
@@ -184,8 +236,8 @@ pub fn calculate_movement_cost_with_tech(
     let intermediate = if path.len() > 1 { &path[..path.len() - 1] } else { &[] };
 
     for &area in intermediate {
-        // Pay for opponent Presidents (unless has Stagecoach)
-        if !has_stagecoach {
+        // Pay for opponent Presidents (unless has Stagecoach or is mercenary)
+        if !has_stagecoach && !skip_president_cost {
             for other_player in &state.players {
                 if other_player.id != player
                     && other_player.president_location == PresidentLocation::OnBoard(area)
@@ -196,7 +248,7 @@ pub fn calculate_movement_cost_with_tech(
         }
     }
 
-    // Check for canal crossings
+    // Check for canal crossings (mercenaries still pay canal tolls)
     if path.len() >= 2 {
         for window in path.windows(2) {
             if state.board_layout.is_canal_crossing(window[0], window[1]) {
@@ -364,5 +416,87 @@ mod tests {
 
         let cost = calculate_movement_cost(&state, PlayerId::new(0), &[AreaId::new(0), AreaId::new(1)]);
         assert_eq!(cost, 1); // 1 Yen for canal
+    }
+
+    #[test]
+    fn test_mercenary_ignores_opponent_president_blocking() {
+        let mut state = create_test_state_with_board();
+        let player = PlayerId::new(0);
+        let area = AreaId::new(1);
+
+        // Place assistant on the area
+        state.players[0].assistants.on_board.insert(area, 1);
+
+        // Place opponent president on the same area
+        state.players[1].president_location = PresidentLocation::OnBoard(area);
+
+        // Normal movement: blocked by opponent president
+        assert!(!is_possible_action_area(&state, player, area));
+
+        // Mercenary movement: NOT blocked by opponent president
+        assert!(is_possible_action_area_mercenary(&state, player, area));
+    }
+
+    #[test]
+    fn test_mercenary_no_cost_for_opponent_presidents() {
+        let mut state = create_test_state_with_board();
+        let player = PlayerId::new(0);
+
+        // Place opponent president on intermediate area (area 1)
+        state.players[1].president_location = PresidentLocation::OnBoard(AreaId::new(1));
+
+        // Path through area 1 to area 2
+        let path = vec![AreaId::new(1), AreaId::new(2)];
+
+        // Normal movement: costs 1 Yen for opponent president
+        let normal_cost = calculate_movement_cost(&state, player, &path);
+        assert_eq!(normal_cost, 1);
+
+        // Mercenary movement: no cost for opponent president
+        let merc_cost = calculate_movement_cost_mercenary(&state, player, &path);
+        assert_eq!(merc_cost, 0);
+    }
+
+    #[test]
+    fn test_mercenary_still_pays_canal_toll() {
+        let mut state = create_test_state_with_board();
+        let player = PlayerId::new(0);
+
+        // Add a canal crossing
+        state.board_layout.canal_crossings.push((AreaId::new(1), AreaId::new(2)));
+
+        // Path through canal
+        let path = vec![AreaId::new(1), AreaId::new(2)];
+
+        // Normal movement: costs 1 Yen for canal
+        let normal_cost = calculate_movement_cost(&state, player, &path);
+        assert_eq!(normal_cost, 1);
+
+        // Mercenary movement: still costs 1 Yen for canal (mercenaries pay canal tolls)
+        let merc_cost = calculate_movement_cost_mercenary(&state, player, &path);
+        assert_eq!(merc_cost, 1);
+    }
+
+    #[test]
+    fn test_mercenary_with_opponent_and_canal() {
+        let mut state = create_test_state_with_board();
+        let player = PlayerId::new(0);
+
+        // Place opponent president on intermediate area
+        state.players[1].president_location = PresidentLocation::OnBoard(AreaId::new(1));
+
+        // Add a canal crossing
+        state.board_layout.canal_crossings.push((AreaId::new(1), AreaId::new(2)));
+
+        // Path through both opponent and canal
+        let path = vec![AreaId::new(1), AreaId::new(2)];
+
+        // Normal movement: 1 for opponent + 1 for canal = 2
+        let normal_cost = calculate_movement_cost(&state, player, &path);
+        assert_eq!(normal_cost, 2);
+
+        // Mercenary movement: 0 for opponent + 1 for canal = 1
+        let merc_cost = calculate_movement_cost_mercenary(&state, player, &path);
+        assert_eq!(merc_cost, 1);
     }
 }
