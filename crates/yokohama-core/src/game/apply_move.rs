@@ -1044,8 +1044,7 @@ mod tests {
             grid_position: (0, 0),
         });
 
-        // Record initial money for both players
-        let player0_initial_money = state.players[0].money;
+        // Record initial money for player 1 (we only check that player 1 is unchanged)
         let player1_initial_money = state.players[1].money;
 
         // Player 0 takes action

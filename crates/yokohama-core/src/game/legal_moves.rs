@@ -73,10 +73,33 @@ fn generate_additional_action_moves(state: &GameState) -> Vec<Move> {
     moves
 }
 
+/// Calculate placement cost for a set of areas.
+/// Cost is 1 Yen per area that has an opponent's President.
+fn calculate_placement_cost(
+    state: &GameState,
+    player: PlayerId,
+    placements: &[AreaId],
+) -> u32 {
+    let mut cost = 0;
+    for &area in placements {
+        // Check if any opponent has President in this area
+        for other in &state.players {
+            if other.id != player {
+                if other.president_location == PresidentLocation::OnBoard(area) {
+                    cost += 1;
+                    break; // Only pay once per area, not per opponent
+                }
+            }
+        }
+    }
+    cost
+}
+
 fn generate_placement_moves_with_tech(state: &GameState, tech_registry: Option<&TechRegistry>) -> Vec<Move> {
     let mut moves = Vec::new();
     let player = state.current_player;
     let p = state.player(player);
+    let player_money = p.money;
 
     if p.assistants.in_hand == 0 {
         // Must place 0 (degenerate case)
@@ -102,30 +125,38 @@ fn generate_placement_moves_with_tech(state: &GameState, tech_registry: Option<&
         .collect();
 
     // Option A: 1 assistant in each of 1-N different areas (N = 3 or 4 with Newspaper)
+    // Note: Placement costs 1 Yen per area with opponent President
     for i in 0..=placeable_areas.len().min(max_areas).min(p.assistants.in_hand as usize) {
         if i == 0 {
+            // Empty placement is always free
             moves.push(Move::PlaceThreeAreas { placements: vec![] });
         } else if i == 1 {
             for &area in &placeable_areas {
-                moves.push(Move::PlaceThreeAreas {
-                    placements: vec![area],
-                });
+                let placements = vec![area];
+                let cost = calculate_placement_cost(state, player, &placements);
+                if player_money >= cost {
+                    moves.push(Move::PlaceThreeAreas { placements });
+                }
             }
         } else if i == 2 && p.assistants.in_hand >= 2 {
             for (j, &area1) in placeable_areas.iter().enumerate() {
                 for &area2 in &placeable_areas[j + 1..] {
-                    moves.push(Move::PlaceThreeAreas {
-                        placements: vec![area1, area2],
-                    });
+                    let placements = vec![area1, area2];
+                    let cost = calculate_placement_cost(state, player, &placements);
+                    if player_money >= cost {
+                        moves.push(Move::PlaceThreeAreas { placements });
+                    }
                 }
             }
         } else if i == 3 && p.assistants.in_hand >= 3 {
             for (j, &area1) in placeable_areas.iter().enumerate() {
                 for (k, &area2) in placeable_areas[j + 1..].iter().enumerate() {
                     for &area3 in &placeable_areas[j + k + 2..] {
-                        moves.push(Move::PlaceThreeAreas {
-                            placements: vec![area1, area2, area3],
-                        });
+                        let placements = vec![area1, area2, area3];
+                        let cost = calculate_placement_cost(state, player, &placements);
+                        if player_money >= cost {
+                            moves.push(Move::PlaceThreeAreas { placements });
+                        }
                     }
                 }
             }
@@ -135,9 +166,11 @@ fn generate_placement_moves_with_tech(state: &GameState, tech_registry: Option<&
                 for (k, &area2) in placeable_areas[j + 1..].iter().enumerate() {
                     for (l, &area3) in placeable_areas[j + k + 2..].iter().enumerate() {
                         for &area4 in &placeable_areas[j + k + l + 3..] {
-                            moves.push(Move::PlaceThreeAreas {
-                                placements: vec![area1, area2, area3, area4],
-                            });
+                            let placements = vec![area1, area2, area3, area4];
+                            let cost = calculate_placement_cost(state, player, &placements);
+                            if player_money >= cost {
+                                moves.push(Move::PlaceThreeAreas { placements });
+                            }
                         }
                     }
                 }
@@ -146,9 +179,13 @@ fn generate_placement_moves_with_tech(state: &GameState, tech_registry: Option<&
     }
 
     // Option B: 2 assistants in 1 area (if have at least 2)
+    // Cost is 1 Yen if opponent President is in the area
     if p.assistants.in_hand >= 2 {
         for &area in &placeable_areas {
-            moves.push(Move::PlaceTwoSameArea { area });
+            let cost = calculate_placement_cost(state, player, &[area]);
+            if player_money >= cost {
+                moves.push(Move::PlaceTwoSameArea { area });
+            }
         }
     }
 
@@ -496,5 +533,100 @@ mod tests {
         assert!(moves.iter().any(|m| matches!(m, Move::BuildShophouse { .. })));
         assert!(moves.iter().any(|m| matches!(m, Move::BuildTradingHouse)));
         assert!(moves.iter().any(|m| matches!(m, Move::SkipBuilding)));
+    }
+
+    #[test]
+    fn test_placement_cost_opponent_president() {
+        let mut state = create_test_state();
+        let bank_area = AreaId::new(0);
+
+        // Setup: Opponent President in Bank, player has 0 Yen
+        state.players[1].president_location = PresidentLocation::OnBoard(bank_area);
+        state.players[0].money = 0;
+        state.turn_phase = TurnPhase::Placement;
+
+        let moves = get_legal_moves(&state);
+
+        // Verify: Cannot place in Bank (filtered from legal moves)
+        // Empty placement should still be available
+        assert!(moves.iter().any(|m| matches!(m, Move::PlaceThreeAreas { placements } if placements.is_empty())));
+
+        // Cannot place in Bank (area 0) since it costs 1 Yen and player has 0
+        assert!(!moves.iter().any(|m| matches!(m, Move::PlaceThreeAreas { placements }
+            if placements.len() == 1 && placements[0] == bank_area)));
+
+        // Cannot use PlaceTwoSameArea in Bank either
+        assert!(!moves.iter().any(|m| matches!(m, Move::PlaceTwoSameArea { area } if *area == bank_area)));
+
+        // But CAN place in CopperMine (area 1) - no opponent President there
+        let mine_area = AreaId::new(1);
+        assert!(moves.iter().any(|m| matches!(m, Move::PlaceThreeAreas { placements }
+            if placements.len() == 1 && placements[0] == mine_area)));
+    }
+
+    #[test]
+    fn test_placement_cost_multiple_areas() {
+        let mut state = create_test_state();
+        let bank_area = AreaId::new(0);
+        let mine_area = AreaId::new(1);
+
+        // Setup: Opponent Presidents in Bank AND CopperMine (need 2nd player for this)
+        // Actually, one opponent can only have one president
+        // So let's use: Player 1 president in Bank (costs 1 Yen)
+        state.players[1].president_location = PresidentLocation::OnBoard(bank_area);
+        state.players[0].money = 1;
+        state.turn_phase = TurnPhase::Placement;
+
+        let moves = get_legal_moves(&state);
+
+        // With 1 Yen, can place in Bank alone (costs 1)
+        assert!(moves.iter().any(|m| matches!(m, Move::PlaceThreeAreas { placements }
+            if placements.len() == 1 && placements[0] == bank_area)));
+
+        // Can also place in CopperMine alone (costs 0)
+        assert!(moves.iter().any(|m| matches!(m, Move::PlaceThreeAreas { placements }
+            if placements.len() == 1 && placements[0] == mine_area)));
+
+        // Can place in both Bank AND CopperMine together (costs 1 total - only Bank has opponent)
+        assert!(moves.iter().any(|m| matches!(m, Move::PlaceThreeAreas { placements }
+            if placements.len() == 2 && placements.contains(&bank_area) && placements.contains(&mine_area))));
+
+        // Now with 0 Yen, cannot place in Bank
+        state.players[0].money = 0;
+        let moves = get_legal_moves(&state);
+
+        // Cannot place in Bank alone
+        assert!(!moves.iter().any(|m| matches!(m, Move::PlaceThreeAreas { placements }
+            if placements.len() == 1 && placements[0] == bank_area)));
+
+        // Cannot place in both either (costs 1)
+        assert!(!moves.iter().any(|m| matches!(m, Move::PlaceThreeAreas { placements }
+            if placements.len() == 2 && placements.contains(&bank_area))));
+
+        // But can still place in CopperMine alone (costs 0)
+        assert!(moves.iter().any(|m| matches!(m, Move::PlaceThreeAreas { placements }
+            if placements.len() == 1 && placements[0] == mine_area)));
+    }
+
+    #[test]
+    fn test_calculate_placement_cost() {
+        let mut state = create_test_state();
+        let player = PlayerId::new(0);
+        let bank_area = AreaId::new(0);
+        let mine_area = AreaId::new(1);
+
+        // No opponent presidents - cost is 0
+        assert_eq!(calculate_placement_cost(&state, player, &[bank_area]), 0);
+        assert_eq!(calculate_placement_cost(&state, player, &[mine_area]), 0);
+        assert_eq!(calculate_placement_cost(&state, player, &[bank_area, mine_area]), 0);
+
+        // Opponent president in Bank - cost is 1 for Bank, 0 for Mine
+        state.players[1].president_location = PresidentLocation::OnBoard(bank_area);
+        assert_eq!(calculate_placement_cost(&state, player, &[bank_area]), 1);
+        assert_eq!(calculate_placement_cost(&state, player, &[mine_area]), 0);
+        assert_eq!(calculate_placement_cost(&state, player, &[bank_area, mine_area]), 1);
+
+        // Empty placement always costs 0
+        assert_eq!(calculate_placement_cost(&state, player, &[]), 0);
     }
 }
