@@ -16,7 +16,7 @@
 | Tech Cards (20) | ✅ EXTRACTED | `tts-assets/organized/cards/tech_cards_8x4.jpg` |
 | Building Site Cards (24) | ✅ EXTRACTED | `tts-assets/organized/cards/building_site_cards_5x5.jpg` |
 | Area Tiles | ✅ VERIFIED | 10/14/18 for 2P/3P/4P confirmed |
-| 5-Power Tokens | ⚠️ INCOMPLETE | Only 8 found in TTS, need 17 for 4P |
+| 5-Power Tokens | ✅ VERIFIED | 20 tokens confirmed from physical game |
 | Data Transcription | ⏳ PENDING | Need to convert images to YAML/Rust |
 
 ---
@@ -342,36 +342,39 @@ How many unique cards? For each:
   trading_house_reward: 7
 ```
 
-### 4. 5-Power Tokens
+### 4. 5-Power Tokens - ✅ VERIFIED
 
-**EXTRACTED FROM TTS (8 tokens):**
+**Physical game verification (2025-12-08):**
 ```yaml
-- effect: "imported_goods"
-  quantity: 1
-  count: 3
+five_power_tokens:  # 20 total
+  - effect: "imported_goods"
+    quantity: 1
+    count: 10
 
-- effect: "silk"
-  quantity: 2
-  count: 2
+  - effect: "copper"
+    quantity: 2
+    count: 2
 
-- effect: "seafood"
-  quantity: 3
-  count: 1
+  - effect: "silk"
+    quantity: 2
+    count: 2
 
-- effect: "money"
-  quantity: 3
-  count: 2
+  - effect: "seafood"
+    quantity: 3
+    count: 2
+
+  - effect: "tea"
+    quantity: 3
+    count: 2
+
+  - effect: "money"
+    quantity: 3
+    count: 2
 ```
 
-**MISSING - Need to verify from physical game:**
-- Total should be 17 tokens for 4P (one per non-Canal area)
-- TTS only has 8 - where are the other 9?
-- Possible missing types: Copper, Tea, VP, Movement?
+**Implemented:** `canonical_five_power_tokens()` in `game/board_gen.rs`
 
-**Questions for physical game check:**
-- How many unique 5-power token types exist?
-- What are ALL the effects (not just the 4 from TTS)?
-- How many of each type?
+**Note:** TTS mod only had 8 tokens (incomplete). Physical game has 20.
 
 ### 5. Tile Count Verification
 **✅ VERIFIED from TTS:**
@@ -398,11 +401,11 @@ How many unique cards? For each:
 1. [x] ~~Implement board generation~~ → DONE: `game/board_gen.rs`
 2. [x] ~~Complete TTS asset extraction~~ → DONE: `tts-assets/organized/`
 3. [x] ~~Verify tile counts~~ → DONE: 10/14/18 confirmed
-4. [ ] **Verify 5-power tokens from physical game** ← BLOCKING
-5. [ ] Transcribe Order Cards (36) from sprite sheet to YAML
-6. [ ] Transcribe Tech Cards (20) from sprite sheet to YAML
-7. [ ] Transcribe Building Sites (24) from sprite sheet to YAML
-8. [ ] Implement `FivePowerTokenSet::standard()`
+4. [x] ~~Verify 5-power tokens from physical game~~ → DONE: 20 tokens
+5. [x] ~~Implement `canonical_five_power_tokens()`~~ → DONE: `game/board_gen.rs`
+6. [ ] **Transcribe Order Cards (36)** from sprite sheet
+7. [ ] **Transcribe Tech Cards (20)** from sprite sheet
+8. [ ] **Transcribe Building Sites (24)** from sprite sheet
 9. [ ] Implement `BuildingSiteSet::standard()`
 10. [ ] Implement `TechRegistry::standard()`
 11. [ ] Implement `OrderRegistry::standard()`

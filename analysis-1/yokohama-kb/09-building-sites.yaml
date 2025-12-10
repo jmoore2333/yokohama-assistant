@@ -1,0 +1,257 @@
+# Yokohama Building Site Cards
+# Transcribed from: tts-assets/organized/cards/building_site_cards_5x5.jpg
+# Grid: 5 columns x 5 rows = 25 positions (24 cards + 1 back)
+#
+# Each card has:
+#   - 4 shophouse slots (2x2 grid at top) with VP values
+#   - 1 trading house slot (bottom) with VP value
+#   - Optional resource bonuses on shophouse or trading house slots
+#
+# Slot layout on each card:
+#   [slot1] [slot2]   (top-left, top-right)
+#   [slot3] [slot4]   (bottom-left, bottom-right)
+#   [trading_house]   (bottom large area)
+#
+# Bonus icons: fish, silk, tea, copper, any_resource (multi-colored), import, yen
+#
+# VERIFICATION: Check each card against sprite sheet position (row, col from top-left)
+
+building_sites:
+  # === ROW 0 (top row) ===
+
+  - id: "site_001"
+    position: "0,0"
+    shophouse_vp: [1, 3, 3, 3]
+    shophouse_bonus:
+      slot1: "fish"
+      slot3: "fish"
+    trading_house_vp: 7
+    trading_house_bonus: null
+
+  - id: "site_002"
+    position: "0,1"
+    shophouse_vp: [3, 1, 2, 2]
+    shophouse_bonus:
+      slot1: "fish"
+      slot3: "fish"
+    trading_house_vp: 7
+    trading_house_bonus: null
+
+  - id: "site_003"
+    position: "0,2"
+    shophouse_vp: [3, 4, 2, 2]
+    shophouse_bonus:
+      slot2: "tea"
+      slot4: "tea"
+    trading_house_vp: 9
+    trading_house_bonus: null
+
+  - id: "site_004"
+    position: "0,3"
+    shophouse_vp: [2, 2, 2, 2]
+    shophouse_bonus:
+      slot2: "copper"
+    trading_house_vp: 8
+    trading_house_bonus: "import"
+    note: "Arrow icon at trading house - may indicate import bonus"
+
+  - id: "site_005"
+    position: "0,4"
+    shophouse_vp: [2, 1, 1, 1]
+    shophouse_bonus:
+      slot1: "fish"
+      slot2: "copper"
+    trading_house_vp: 9
+    trading_house_bonus: "copper"
+
+  # === ROW 1 ===
+
+  - id: "site_006"
+    position: "1,0"
+    shophouse_vp: [2, 1, 2, 2]
+    shophouse_bonus:
+      slot1: "copper"
+    trading_house_vp: 9
+    trading_house_bonus: null
+
+  - id: "site_007"
+    position: "1,1"
+    shophouse_vp: [2, 1, 2, 2]
+    shophouse_bonus:
+      slot1: "any_resource"  # multi-colored diamond icon
+    trading_house_vp: 7
+    trading_house_bonus: null
+
+  - id: "site_008"
+    position: "1,2"
+    shophouse_vp: [2, 2, 1, 1]
+    shophouse_bonus:
+      slot2: "silk"
+      slot3: "tea"
+    trading_house_vp: 6
+    trading_house_bonus: null
+
+  - id: "site_009"
+    position: "1,3"
+    shophouse_vp: [2, 4, 2, 2]
+    shophouse_bonus:
+      slot2: "tea"
+    trading_house_vp: 8
+    trading_house_bonus: "copper"
+    note: "Copper bonus at trading house"
+
+  - id: "site_010"
+    position: "1,4"
+    shophouse_vp: [2, 1, 1, 1]
+    shophouse_bonus:
+      slot3: "copper"
+    trading_house_vp: 6
+    trading_house_bonus: "import"
+    note: "Import arrow at trading house"
+
+  # === ROW 2 ===
+
+  - id: "site_011"
+    position: "2,0"
+    shophouse_vp: [1, 2, 2, 2]
+    shophouse_bonus:
+      slot2: "copper"
+      slot4: "yen"
+    trading_house_vp: 7
+    trading_house_bonus: null
+
+  - id: "site_012"
+    position: "2,1"
+    shophouse_vp: [2, 1, 2, 2]
+    shophouse_bonus:
+      slot2: "copper"
+      slot4: "yen"
+    trading_house_vp: 5
+    trading_house_bonus: null
+
+  - id: "site_013"
+    position: "2,2"
+    shophouse_vp: [2, 2, 1, 2]
+    shophouse_bonus:
+      slot2: "copper"
+      slot3: "yen"
+    trading_house_vp: 6
+    trading_house_bonus: "1"
+    note: "Trading house shows number 1 - may be 1 yen bonus"
+
+  - id: "site_014"
+    position: "2,3"
+    shophouse_vp: [3, 1, 2, 2]
+    shophouse_bonus:
+      slot2: "copper"
+      slot4: "yen"
+    trading_house_vp: 5
+    trading_house_bonus: null
+
+  - id: "site_015"
+    position: "2,4"
+    shophouse_vp: [3, 1, 2, 2]
+    shophouse_bonus:
+      slot2: "copper"
+    trading_house_vp: 8
+    trading_house_bonus: "import"
+
+  # === ROW 3 ===
+
+  - id: "site_016"
+    position: "3,0"
+    shophouse_vp: [1, 1, 2, 2]
+    shophouse_bonus:
+      slot2: "copper"
+      slot3: "yen"
+    trading_house_vp: 8
+    trading_house_bonus: null
+
+  - id: "site_017"
+    position: "3,1"
+    shophouse_vp: [1, 1, 2, 1]
+    shophouse_bonus:
+      slot2: "copper"
+      slot4: "yen"
+    trading_house_vp: 9
+    trading_house_bonus: null
+
+  - id: "site_018"
+    position: "3,2"
+    shophouse_vp: [1, 1, 2, 2]
+    shophouse_bonus:
+      slot3: "yen"
+    trading_house_vp: 8
+    trading_house_bonus: null
+
+  - id: "site_019"
+    position: "3,3"
+    shophouse_vp: [1, 1, 2, 2]
+    shophouse_bonus:
+      slot3: "yen"
+    trading_house_vp: 9
+    trading_house_bonus: "yen"
+    note: "Has yen bonus coin at trading house"
+
+  - id: "site_020"
+    position: "3,4"
+    shophouse_vp: [1, 4, 2, 2]
+    shophouse_bonus: null
+    trading_house_vp: 6
+    trading_house_bonus: "yen"
+
+  # === ROW 4 (first 4 cards, then back) ===
+
+  - id: "site_021"
+    position: "4,0"
+    shophouse_vp: [1, 1, 2, 2]
+    shophouse_bonus:
+      slot3: "yen"
+    trading_house_vp: 5
+    trading_house_bonus: null
+
+  - id: "site_022"
+    position: "4,1"
+    shophouse_vp: [1, 1, 4, 2]
+    shophouse_bonus:
+      slot3: "yen"
+    trading_house_vp: 5
+    trading_house_bonus: null
+
+  - id: "site_023"
+    position: "4,2"
+    shophouse_vp: [1, 1, 4, 3]
+    shophouse_bonus: null
+    trading_house_vp: 9
+    trading_house_bonus: null
+
+  - id: "site_024"
+    position: "4,3"
+    shophouse_vp: [1, 1, 3, 2]
+    shophouse_bonus:
+      slot3: "yen"
+    trading_house_vp: 6
+    trading_house_bonus: null
+
+# Summary statistics:
+# Total cards: 24
+#
+# Shophouse VP ranges:
+#   Slot 1: 1-3 VP
+#   Slot 2: 1-4 VP
+#   Slot 3: 1-4 VP
+#   Slot 4: 1-3 VP
+#
+# Trading House VP range: 5-9 VP
+#
+# Common bonuses:
+#   - Copper bonus (most common)
+#   - Yen bonus
+#   - Fish bonus
+#   - Tea bonus
+#   - Silk bonus
+#   - Any resource (multi-colored)
+#   - Import bonus (arrow icon)
+
+# Note: Some VP values and bonuses may need verification against physical cards.
+# The sprite sheet resolution makes some icons difficult to distinguish.

@@ -1,0 +1,461 @@
+# Yokohama Order Cards
+# Transcribed from: tts-assets/organized/cards/order_cards_8x5.jpg
+# Grid: 8 columns x 5 rows = 40 positions (36 cards + 4 backs)
+# Position format: row,col (0-indexed from top-left)
+#
+# Country codes: US=America, DE=Germany, NL=Netherlands, FR=France, GB=Britain
+# Resources: copper, silk, tea, seafood
+# Rewards: vp (Victory Points), yen (Money), import (Imported Goods),
+#          movement, warehouse (return assistant to warehouse)
+#
+# VERIFICATION: Check each card against sprite sheet position
+
+order_cards:
+  # === ROW 0 (top row) ===
+
+  - id: "order_001"
+    position: "0,0"
+    country: "US"
+    requirements:
+      copper: 3
+      silk: 1
+      tea: 2
+      seafood: 0
+    rewards:
+      vp: 8
+      yen: 0
+      import: 1
+
+  - id: "order_002"
+    position: "0,1"
+    country: "DE"
+    requirements:
+      copper: 0
+      silk: 0
+      tea: 1
+      seafood: 3
+    rewards:
+      vp: 0
+      yen: 0
+      movement: 1
+
+  - id: "order_003"
+    position: "0,2"
+    country: "DE"
+    requirements:
+      copper: 1
+      silk: 1
+      tea: 2
+      seafood: 0
+    rewards:
+      vp: 6
+      yen: 2
+
+  - id: "order_004"
+    position: "0,3"
+    country: "NL"
+    requirements:
+      copper: 1
+      silk: 0
+      tea: 1
+      seafood: 1
+    rewards:
+      vp: 5
+
+  - id: "order_005"
+    position: "0,4"
+    country: "US"
+    requirements:
+      copper: 3
+      silk: 0
+      tea: 1
+      seafood: 2
+    rewards:
+      vp: 9
+
+  - id: "order_006"
+    position: "0,5"
+    country: "US"
+    requirements:
+      copper: 0
+      silk: 0
+      tea: 2
+      seafood: 4
+    rewards:
+      vp: 5
+      yen: 2
+      warehouse: 1
+
+  - id: "order_007"
+    position: "0,6"
+    country: "DE"
+    requirements:
+      copper: 2
+      silk: 1
+      tea: 0
+      seafood: 2
+    rewards:
+      vp: 8
+      yen: 1
+
+  - id: "order_008"
+    position: "0,7"
+    country: "NL"
+    requirements:
+      copper: 0
+      silk: 1
+      tea: 1
+      seafood: 0
+    rewards:
+      vp: 3
+
+  # === ROW 1 ===
+
+  - id: "order_009"
+    position: "1,0"
+    country: "DE"
+    requirements:
+      copper: 1
+      silk: 0
+      tea: 0
+      seafood: 3
+    rewards:
+      vp: 2
+      yen: 1
+      import: 1
+
+  - id: "order_010"
+    position: "1,1"
+    country: "DE"
+    requirements:
+      copper: 0
+      silk: 1
+      tea: 1
+      seafood: 2
+    rewards:
+      vp: 5
+      warehouse: 1
+
+  - id: "order_011"
+    position: "1,2"
+    country: "DE"
+    requirements:
+      copper: 0
+      silk: 0
+      tea: 3
+      seafood: 3
+    rewards:
+      vp: 11
+
+  - id: "order_012"
+    position: "1,3"
+    country: "NL"
+    requirements:
+      copper: 1
+      silk: 0
+      tea: 2
+      seafood: 1
+    rewards:
+      vp: 2
+      yen: 1
+      import: 1
+
+  - id: "order_013"
+    position: "1,4"
+    country: "US"
+    requirements:
+      copper: 0
+      silk: 0
+      tea: 4
+      seafood: 1
+    rewards:
+      vp: 7
+      yen: 2
+
+  - id: "order_014"
+    position: "1,5"
+    country: "US"
+    requirements:
+      copper: 0
+      silk: 0
+      tea: 4
+      seafood: 2
+    rewards:
+      vp: 8
+
+  - id: "order_015"
+    position: "1,6"
+    country: "NL"
+    requirements:
+      copper: 0
+      silk: 2
+      tea: 2
+      seafood: 0
+    rewards:
+      vp: 1
+      warehouse: 1
+      yen: 2
+
+  - id: "order_016"
+    position: "1,7"
+    country: "GB"
+    requirements:
+      copper: 0
+      silk: 1
+      tea: 1
+      seafood: 0
+    rewards:
+      vp: 5
+      import: 1
+
+  # === ROW 2 ===
+
+  - id: "order_017"
+    position: "2,0"
+    country: "GB"
+    requirements:
+      copper: 2
+      silk: 0
+      tea: 0
+      seafood: 1
+    rewards:
+      vp: 8
+      import: 1
+
+  - id: "order_018"
+    position: "2,1"
+    country: "GB"
+    requirements:
+      copper: 3
+      silk: 0
+      tea: 0
+      seafood: 1
+    rewards:
+      vp: 2
+      yen: 2
+      warehouse: 1
+
+  - id: "order_019"
+    position: "2,2"
+    country: "GB"
+    requirements:
+      copper: 1
+      silk: 0
+      tea: 0
+      seafood: 2
+    rewards:
+      vp: 4
+      yen: 1
+
+  - id: "order_020"
+    position: "2,3"
+    country: "GB"
+    requirements:
+      copper: 2
+      silk: 0
+      tea: 0
+      seafood: 1
+    rewards:
+      vp: 7
+      yen: 2
+      import: 1
+
+  - id: "order_021"
+    position: "2,4"
+    country: "GB"
+    requirements:
+      copper: 0
+      silk: 0
+      tea: 1
+      seafood: 1
+    rewards:
+      vp: 9
+      import: 1
+
+  - id: "order_022"
+    position: "2,5"
+    country: "US"
+    requirements:
+      copper: 4
+      silk: 0
+      tea: 0
+      seafood: 1
+    rewards:
+      vp: 3
+      warehouse: 1
+      yen: 1
+
+  - id: "order_023"
+    position: "2,6"
+    country: "GB"
+    requirements:
+      copper: 1
+      silk: 1
+      tea: 0
+      seafood: 2
+    rewards:
+      vp: 4
+      yen: 2
+      warehouse: 1
+
+  - id: "order_024"
+    position: "2,7"
+    country: "GB"
+    requirements:
+      copper: 0
+      silk: 2
+      tea: 0
+      seafood: 1
+    rewards:
+      vp: 8
+      yen: 2
+
+  # === ROW 3 ===
+
+  - id: "order_025"
+    position: "3,0"
+    country: "US"
+    requirements:
+      copper: 2
+      silk: 1
+      tea: 0
+      seafood: 0
+    rewards:
+      vp: 1
+      warehouse: 1
+
+  - id: "order_026"
+    position: "3,1"
+    country: "US"
+    requirements:
+      copper: 3
+      silk: 0
+      tea: 0
+      seafood: 2
+    rewards:
+      vp: 6
+      import: 1
+
+  - id: "order_027"
+    position: "3,2"
+    country: "FR"
+    requirements:
+      copper: 2
+      silk: 1
+      tea: 3
+      seafood: 0
+    rewards:
+      vp: 9
+      import: 1
+
+  - id: "order_028"
+    position: "3,3"
+    country: "FR"
+    requirements:
+      copper: 2
+      silk: 0
+      tea: 3
+      seafood: 0
+    rewards:
+      vp: 9
+
+  - id: "order_029"
+    position: "3,4"
+    country: "FR"
+    requirements:
+      copper: 0
+      silk: 3
+      tea: 1
+      seafood: 0
+    rewards:
+      vp: 1
+      yen: 2
+
+  - id: "order_030"
+    position: "3,5"
+    country: "FR"
+    requirements:
+      copper: 0
+      silk: 1
+      tea: 3
+      seafood: 0
+    rewards:
+      vp: 3
+
+  - id: "order_031"
+    position: "3,6"
+    country: "NL"
+    requirements:
+      copper: 1
+      silk: 1
+      tea: 1
+      seafood: 1
+    rewards:
+      vp: 8
+
+  - id: "order_032"
+    position: "3,7"
+    country: "FR"
+    requirements:
+      copper: 0
+      silk: 0
+      tea: 2
+      seafood: 1
+    rewards:
+      vp: 1
+
+  # === ROW 4 (first 4 cards, then backs) ===
+
+  - id: "order_033"
+    position: "4,0"
+    country: "FR"
+    requirements:
+      copper: 0
+      silk: 2
+      tea: 3
+      seafood: 0
+    rewards:
+      vp: 4
+      yen: 2
+
+  - id: "order_034"
+    position: "4,1"
+    country: "NL"
+    requirements:
+      copper: 2
+      silk: 2
+      tea: 2
+      seafood: 0
+    rewards:
+      vp: 11
+
+  - id: "order_035"
+    position: "4,2"
+    country: "FR"
+    requirements:
+      copper: 0
+      silk: 0
+      tea: 1
+      seafood: 2
+    rewards:
+      vp: 3
+
+  - id: "order_036"
+    position: "4,3"
+    country: "FR"
+    requirements:
+      copper: 0
+      silk: 1
+      tea: 4
+      seafood: 0
+    rewards:
+      vp: 8
+
+# Summary statistics (for verification):
+# Total cards: 36
+# By country:
+#   US (America): 10
+#   DE (Germany): 7
+#   NL (Netherlands): 6
+#   FR (France): 8
+#   GB (Britain): 5

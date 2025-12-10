@@ -275,6 +275,70 @@ pub fn generate_board_layout(
     builder.build().map_err(BoardGenerationError::ValidationError)
 }
 
+/// Canonical 5-power token pool from the physical game.
+///
+/// Total: 20 tokens
+/// - 10x Import (1 imported good)
+/// - 2x Copper (2 copper)
+/// - 2x Silk (2 silk)
+/// - 2x Fish (3 seafood)
+/// - 2x Tea (3 tea)
+/// - 2x Yen (3 money)
+pub fn canonical_five_power_tokens() -> Vec<FivePowerEffect> {
+    let mut tokens = Vec::with_capacity(20);
+
+    // 10x Import (1 imported good)
+    for _ in 0..10 {
+        tokens.push(FivePowerEffect::ImportedGoods(1));
+    }
+
+    // 2x Copper (2 copper)
+    for _ in 0..2 {
+        tokens.push(FivePowerEffect::Copper(2));
+    }
+
+    // 2x Silk (2 silk)
+    for _ in 0..2 {
+        tokens.push(FivePowerEffect::Silk(2));
+    }
+
+    // 2x Fish (3 seafood)
+    for _ in 0..2 {
+        tokens.push(FivePowerEffect::Seafood(3));
+    }
+
+    // 2x Tea (3 tea)
+    for _ in 0..2 {
+        tokens.push(FivePowerEffect::Tea(3));
+    }
+
+    // 2x Yen (3 money)
+    for _ in 0..2 {
+        tokens.push(FivePowerEffect::Money(3));
+    }
+
+    tokens
+}
+
+/// Get 5-power tokens needed for a specific player count.
+///
+/// Token requirements by player count (non-canal areas):
+/// - 2P: 10 tokens (10 areas, no canal)
+/// - 3P: 13 tokens (14 areas - 1 canal)
+/// - 4P: 17 tokens (18 areas - 1 canal)
+pub fn five_power_tokens_for_player_count(player_count: u8) -> Vec<FivePowerEffect> {
+    let needed = match player_count {
+        2 => 10,
+        3 => 13,
+        4 => 17,
+        _ => panic!("Invalid player count: {}", player_count),
+    };
+
+    let mut tokens = canonical_five_power_tokens();
+    tokens.truncate(needed);
+    tokens
+}
+
 /// Errors during board generation.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum BoardGenerationError {
@@ -494,6 +558,52 @@ mod tests {
 
         // Same seed should produce same layout
         assert_eq!(layout1.areas, layout2.areas);
+    }
+
+    #[test]
+    fn test_canonical_five_power_tokens_count() {
+        let tokens = canonical_five_power_tokens();
+        // Itemized count: 10 import + 2 each of (copper, silk, fish, tea, yen) = 20
+        assert_eq!(tokens.len(), 20, "Physical game has 20 5-power tokens");
+    }
+
+    #[test]
+    fn test_canonical_five_power_tokens_distribution() {
+        let tokens = canonical_five_power_tokens();
+
+        // Count each type
+        let import_count = tokens.iter()
+            .filter(|t| matches!(t, FivePowerEffect::ImportedGoods(1)))
+            .count();
+        let copper_count = tokens.iter()
+            .filter(|t| matches!(t, FivePowerEffect::Copper(2)))
+            .count();
+        let silk_count = tokens.iter()
+            .filter(|t| matches!(t, FivePowerEffect::Silk(2)))
+            .count();
+        let fish_count = tokens.iter()
+            .filter(|t| matches!(t, FivePowerEffect::Seafood(3)))
+            .count();
+        let tea_count = tokens.iter()
+            .filter(|t| matches!(t, FivePowerEffect::Tea(3)))
+            .count();
+        let money_count = tokens.iter()
+            .filter(|t| matches!(t, FivePowerEffect::Money(3)))
+            .count();
+
+        assert_eq!(import_count, 10, "10x Import tokens");
+        assert_eq!(copper_count, 2, "2x Copper tokens");
+        assert_eq!(silk_count, 2, "2x Silk tokens");
+        assert_eq!(fish_count, 2, "2x Fish tokens");
+        assert_eq!(tea_count, 2, "2x Tea tokens");
+        assert_eq!(money_count, 2, "2x Money tokens");
+    }
+
+    #[test]
+    fn test_five_power_tokens_for_player_count() {
+        assert_eq!(five_power_tokens_for_player_count(2).len(), 10);
+        assert_eq!(five_power_tokens_for_player_count(3).len(), 13);
+        assert_eq!(five_power_tokens_for_player_count(4).len(), 17);
     }
 
     #[test]

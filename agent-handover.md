@@ -1,9 +1,32 @@
 # Agent Handover: Yokohama AI Assistant
 
-**Last Updated:** 2025-12-07
-**Session Summary:** TTS extraction complete. 5-power tokens need physical game verification.
+**Last Updated:** 2025-12-10
+**Session Summary:** Card data transcribed from TTS sprites. Awaiting user verification.
 
-**Status:** A1 LOGIC COMPLETE ✅ | TTS EXTRACTED ✅ | TRANSCRIPTION PENDING 🔄
+**Status:** A1 LOGIC COMPLETE ✅ | TTS EXTRACTED ✅ | TOKENS VERIFIED ✅ | CARD TRANSCRIPTION DONE ✅ | **VERIFICATION PENDING** 🔄
+
+---
+
+## 🚨 NEXT ACTION: Card Data Verification
+
+**What happened:** All card data has been transcribed from TTS sprite sheets to YAML files.
+
+**What's needed:** User verification of transcribed data against sprite sheet images.
+
+**Files to review:**
+1. **Verification Report:** `docs/plans/2025-12-08-card-verification-report.md`
+   - Tables with checkboxes for each card
+   - Corrections log at bottom
+2. **YAML Data Files:**
+   - `analysis-1/yokohama-kb/07-order-cards.yaml` (36 cards)
+   - `analysis-1/yokohama-kb/08-tech-cards.yaml` (20 cards)
+   - `analysis-1/yokohama-kb/09-building-sites.yaml` (24 cards)
+3. **Sprite Sheets to compare:**
+   - `tts-assets/organized/cards/order_cards_8x5.jpg`
+   - `tts-assets/organized/cards/tech_cards_8x4.jpg`
+   - `tts-assets/organized/cards/building_site_cards_5x5.jpg`
+
+**After verification:** Implement Rust registries from verified YAML data.
 
 ---
 
@@ -18,7 +41,7 @@ All card sprite sheets extracted to `tts-assets/organized/`:
 | Tech Cards (20) | `cards/tech_cards_8x4.jpg` | ✅ Ready for transcription |
 | Building Sites (24) | `cards/building_site_cards_5x5.jpg` | ✅ Ready for transcription |
 | Area Tiles | `boards/area_boards_*.jpg` | ✅ Verified 10/14/18 |
-| 5-Power Tokens | `tokens/5power_*.jpg` | ⚠️ Only 8 found (need 17) |
+| 5-Power Tokens | `tokens/5power_*.jpg` | ✅ 20 tokens verified |
 
 ### Tile Count VERIFIED ✅
 - **2P:** 10 tiles (Base only)
@@ -31,18 +54,30 @@ All card sprite sheets extracted to `tts-assets/organized/`:
 - TTS "Laboratory" = Code "LaboratoryA"
 - TTS "Research Center" = Code "LaboratoryB"
 
-### 5-Power Tokens - INCOMPLETE ⚠️
-TTS only has 8 tokens, but we need 17 for 4P game:
+### 5-Power Tokens - VERIFIED ✅
+Physical game verification complete (20 tokens total):
 
 | Token | Effect | Count |
 |-------|--------|-------|
-| 1 Import | 1 Imported Good | 3 |
+| 1 Import | 1 Imported Good | 10 |
+| 2 Copper | 2 Copper | 2 |
 | 2 Silk | 2 Silk | 2 |
-| 3 Fish | 3 Seafood | 1 |
+| 3 Fish | 3 Seafood | 2 |
+| 3 Tea | 3 Tea | 2 |
 | 3 Yen | 3 Money | 2 |
-| **Total** | | **8** |
+| **Total** | | **20** |
 
-**BLOCKING:** Need to check physical game for remaining 9 token types.
+### Foreign Agent Flags (Mercenaries) - VERIFIED ✅
+10 mercenary flags total:
+
+| Country | Count |
+|---------|-------|
+| Germany | 2 |
+| France | 2 |
+| America | 2 |
+| Great Britain | 3 |
+| Netherlands | 1 |
+| **Total** | **10** |
 
 ### Board Generation Working
 Module: `game/board_gen.rs` (11 tests)
