@@ -1,257 +1,239 @@
 # Yokohama Building Site Cards
-# Transcribed from: tts-assets/organized/cards/building_site_cards_5x5.jpg
-# Grid: 5 columns x 5 rows = 25 positions (24 cards + 1 back)
+# verified: 2026-07-17 — three-way (sprites x rulebook x physical), see docs/plans/2026-07-16-card-verification/
 #
-# Each card has:
-#   - 4 shophouse slots (2x2 grid at top) with VP values
-#   - 1 trading house slot (bottom) with VP value
-#   - Optional resource bonuses on shophouse or trading house slots
+# Source sprite sheet: tts-assets/organized/cards/building_site_cards_5x5.jpg (5 cols x 5 rows: 24 cards + 1 back)
 #
-# Slot layout on each card:
-#   [slot1] [slot2]   (top-left, top-right)
-#   [slot3] [slot4]   (bottom-left, bottom-right)
-#   [trading_house]   (bottom large area)
+# Card anatomy (rulebook p.2: "4 Building Sites for Shophouses, and corresponding rewards" +
+# 1 trading-house site): four POSITIONAL shophouse spaces in a 2x2 grid, keyed TL/TR/ML/MR
+# (top-left, top-right, middle-left, middle-right as printed on the portrait card), plus one
+# trading-house space (bottom) whose reward is always plain VP (trading_house_vp).
+# On every card in this set: TL is { vp: 1 } and ML is blank ({}).
+# The key order is POSITION ONLY — no build-order semantics are encoded or implied.
 #
-# Bonus icons: fish, silk, tea, copper, any_resource (multi-colored), import, yen
-#
-# VERIFICATION: Check each card against sprite sheet position (row, col from top-left)
+# A space's reward is a self-describing map; {} = blank space (no printed reward).
+# Reward keys: vp, yen, seafood, tea, silk, copper, any_good (4-color wild square),
+#   shophouse_build (house icon with red arrow), assistants (yellow assistant + arrow onto pad).
+#   Combined rewards are one map, e.g. { vp: 2, yen: 1 }.
+# position = sprite-sheet cell "row,col", 1-based from top-left (traceability only).
 
 building_sites:
-  # === ROW 0 (top row) ===
-
   - id: "site_001"
-    position: "0,0"
-    shophouse_vp: [1, 3, 3, 3]
-    shophouse_bonus:
-      slot1: "fish"
-      slot3: "fish"
+    position: "1,1"
+    spaces:
+      TL: { vp: 1 }
+      TR: { vp: 3 }
+      ML: {}
+      MR: { seafood: 3 }
     trading_house_vp: 7
-    trading_house_bonus: null
 
   - id: "site_002"
-    position: "0,1"
-    shophouse_vp: [3, 1, 2, 2]
-    shophouse_bonus:
-      slot1: "fish"
-      slot3: "fish"
+    position: "1,2"
+    spaces:
+      TL: { vp: 1 }
+      TR: { seafood: 3 }
+      ML: {}
+      MR: { seafood: 2 }
     trading_house_vp: 7
-    trading_house_bonus: null
 
   - id: "site_003"
-    position: "0,2"
-    shophouse_vp: [3, 4, 2, 2]
-    shophouse_bonus:
-      slot2: "tea"
-      slot4: "tea"
-    trading_house_vp: 9
-    trading_house_bonus: null
+    position: "1,3"
+    spaces:
+      TL: { vp: 1 }
+      TR: { vp: 4 }
+      ML: {}
+      MR: { tea: 2 }
+    trading_house_vp: 7
 
   - id: "site_004"
-    position: "0,3"
-    shophouse_vp: [2, 2, 2, 2]
-    shophouse_bonus:
-      slot2: "copper"
+    position: "1,4"
+    spaces:
+      TL: { vp: 1 }
+      TR: { shophouse_build: 2 }
+      ML: {}
+      MR: { tea: 2 }
     trading_house_vp: 8
-    trading_house_bonus: "import"
-    note: "Arrow icon at trading house - may indicate import bonus"
 
   - id: "site_005"
-    position: "0,4"
-    shophouse_vp: [2, 1, 1, 1]
-    shophouse_bonus:
-      slot1: "fish"
-      slot2: "copper"
+    position: "1,5"
+    spaces:
+      TL: { vp: 1 }
+      TR: { silk: 2 }
+      ML: {}
+      MR: { copper: 1 }
     trading_house_vp: 9
-    trading_house_bonus: "copper"
-
-  # === ROW 1 ===
 
   - id: "site_006"
-    position: "1,0"
-    shophouse_vp: [2, 1, 2, 2]
-    shophouse_bonus:
-      slot1: "copper"
+    position: "2,1"
+    spaces:
+      TL: { vp: 1 }
+      TR: { copper: 2 }
+      ML: {}
+      MR: { silk: 2 }
     trading_house_vp: 9
-    trading_house_bonus: null
 
   - id: "site_007"
-    position: "1,1"
-    shophouse_vp: [2, 1, 2, 2]
-    shophouse_bonus:
-      slot1: "any_resource"  # multi-colored diamond icon
+    position: "2,2"
+    spaces:
+      TL: { vp: 1 }
+      TR: { any_good: 2 }
+      ML: {}
+      MR: { any_good: 1 }
     trading_house_vp: 7
-    trading_house_bonus: null
 
   - id: "site_008"
-    position: "1,2"
-    shophouse_vp: [2, 2, 1, 1]
-    shophouse_bonus:
-      slot2: "silk"
-      slot3: "tea"
+    position: "2,3"
+    spaces:
+      TL: { vp: 1 }
+      TR: { any_good: 2 }
+      ML: {}
+      MR: { any_good: 1 }
     trading_house_vp: 6
-    trading_house_bonus: null
 
   - id: "site_009"
-    position: "1,3"
-    shophouse_vp: [2, 4, 2, 2]
-    shophouse_bonus:
-      slot2: "tea"
+    position: "2,4"
+    spaces:
+      TL: { vp: 1 }
+      TR: { vp: 4 }
+      ML: {}
+      MR: { assistants: 2 }
     trading_house_vp: 8
-    trading_house_bonus: "copper"
-    note: "Copper bonus at trading house"
 
   - id: "site_010"
-    position: "1,4"
-    shophouse_vp: [2, 1, 1, 1]
-    shophouse_bonus:
-      slot3: "copper"
+    position: "2,5"
+    spaces:
+      TL: { vp: 1 }
+      TR: { shophouse_build: 2 }
+      ML: {}
+      MR: { assistants: 2 }
     trading_house_vp: 6
-    trading_house_bonus: "import"
-    note: "Import arrow at trading house"
-
-  # === ROW 2 ===
 
   - id: "site_011"
-    position: "2,0"
-    shophouse_vp: [1, 2, 2, 2]
-    shophouse_bonus:
-      slot2: "copper"
-      slot4: "yen"
+    position: "3,1"
+    spaces:
+      TL: { vp: 1 }
+      TR: { shophouse_build: 2 }
+      ML: {}
+      MR: { assistants: 2 }
     trading_house_vp: 7
-    trading_house_bonus: null
 
   - id: "site_012"
-    position: "2,1"
-    shophouse_vp: [2, 1, 2, 2]
-    shophouse_bonus:
-      slot2: "copper"
-      slot4: "yen"
+    position: "3,2"
+    spaces:
+      TL: { vp: 1 }
+      TR: { shophouse_build: 2 }
+      ML: {}
+      MR: { assistants: 2 }
     trading_house_vp: 5
-    trading_house_bonus: null
 
   - id: "site_013"
-    position: "2,2"
-    shophouse_vp: [2, 2, 1, 2]
-    shophouse_bonus:
-      slot2: "copper"
-      slot3: "yen"
+    position: "3,3"
+    spaces:
+      TL: { vp: 1 }
+      TR: { vp: 3, yen: 1 }
+      ML: {}
+      MR: { assistants: 2 }
     trading_house_vp: 6
-    trading_house_bonus: "1"
-    note: "Trading house shows number 1 - may be 1 yen bonus"
 
   - id: "site_014"
-    position: "2,3"
-    shophouse_vp: [3, 1, 2, 2]
-    shophouse_bonus:
-      slot2: "copper"
-      slot4: "yen"
+    position: "3,4"
+    spaces:
+      TL: { vp: 1 }
+      TR: { shophouse_build: 3 }
+      ML: {}
+      MR: { shophouse_build: 2 }
     trading_house_vp: 5
-    trading_house_bonus: null
 
   - id: "site_015"
-    position: "2,4"
-    shophouse_vp: [3, 1, 2, 2]
-    shophouse_bonus:
-      slot2: "copper"
+    position: "3,5"
+    spaces:
+      TL: { vp: 1 }
+      TR: { vp: 3 }
+      ML: {}
+      MR: { shophouse_build: 2 }
     trading_house_vp: 8
-    trading_house_bonus: "import"
-
-  # === ROW 3 ===
 
   - id: "site_016"
-    position: "3,0"
-    shophouse_vp: [1, 1, 2, 2]
-    shophouse_bonus:
-      slot2: "copper"
-      slot3: "yen"
+    position: "4,1"
+    spaces:
+      TL: { vp: 1 }
+      TR: { vp: 2, yen: 1 }
+      ML: {}
+      MR: { shophouse_build: 2 }
     trading_house_vp: 8
-    trading_house_bonus: null
 
   - id: "site_017"
-    position: "3,1"
-    shophouse_vp: [1, 1, 2, 1]
-    shophouse_bonus:
-      slot2: "copper"
-      slot4: "yen"
+    position: "4,2"
+    spaces:
+      TL: { vp: 1 }
+      TR: { vp: 2, yen: 1 }
+      ML: {}
+      MR: { vp: 1, yen: 1 }
     trading_house_vp: 9
-    trading_house_bonus: null
 
   - id: "site_018"
-    position: "3,2"
-    shophouse_vp: [1, 1, 2, 2]
-    shophouse_bonus:
-      slot3: "yen"
+    position: "4,3"
+    spaces:
+      TL: { vp: 1 }
+      TR: { vp: 2, yen: 1 }
+      ML: {}
+      MR: { vp: 2 }
     trading_house_vp: 8
-    trading_house_bonus: null
 
   - id: "site_019"
-    position: "3,3"
-    shophouse_vp: [1, 1, 2, 2]
-    shophouse_bonus:
-      slot3: "yen"
+    position: "4,4"
+    spaces:
+      TL: { vp: 1 }
+      TR: { vp: 4 }
+      ML: {}
+      MR: { yen: 2 }
     trading_house_vp: 9
-    trading_house_bonus: "yen"
-    note: "Has yen bonus coin at trading house"
 
   - id: "site_020"
-    position: "3,4"
-    shophouse_vp: [1, 4, 2, 2]
-    shophouse_bonus: null
+    position: "4,5"
+    spaces:
+      TL: { vp: 1 }
+      TR: { vp: 4 }
+      ML: {}
+      MR: { yen: 2 }
     trading_house_vp: 6
-    trading_house_bonus: "yen"
-
-  # === ROW 4 (first 4 cards, then back) ===
 
   - id: "site_021"
-    position: "4,0"
-    shophouse_vp: [1, 1, 2, 2]
-    shophouse_bonus:
-      slot3: "yen"
+    position: "5,1"
+    spaces:
+      TL: { vp: 1 }
+      TR: { vp: 3 }
+      ML: {}
+      MR: { vp: 1, yen: 2 }
     trading_house_vp: 5
-    trading_house_bonus: null
 
   - id: "site_022"
-    position: "4,1"
-    shophouse_vp: [1, 1, 4, 2]
-    shophouse_bonus:
-      slot3: "yen"
+    position: "5,2"
+    spaces:
+      TL: { vp: 1 }
+      TR: { vp: 4 }
+      ML: {}
+      MR: { vp: 1, yen: 2 }
     trading_house_vp: 5
-    trading_house_bonus: null
 
   - id: "site_023"
-    position: "4,2"
-    shophouse_vp: [1, 1, 4, 3]
-    shophouse_bonus: null
+    position: "5,3"
+    spaces:
+      TL: { vp: 1 }
+      TR: { vp: 4 }
+      ML: {}
+      MR: { vp: 3 }
     trading_house_vp: 9
-    trading_house_bonus: null
 
   - id: "site_024"
-    position: "4,3"
-    shophouse_vp: [1, 1, 3, 2]
-    shophouse_bonus:
-      slot3: "yen"
+    position: "5,4"
+    spaces:
+      TL: { vp: 1 }
+      TR: { vp: 3 }
+      ML: {}
+      MR: { vp: 2 }
     trading_house_vp: 6
-    trading_house_bonus: null
 
-# Summary statistics:
-# Total cards: 24
-#
-# Shophouse VP ranges:
-#   Slot 1: 1-3 VP
-#   Slot 2: 1-4 VP
-#   Slot 3: 1-4 VP
-#   Slot 4: 1-3 VP
-#
-# Trading House VP range: 5-9 VP
-#
-# Common bonuses:
-#   - Copper bonus (most common)
-#   - Yen bonus
-#   - Fish bonus
-#   - Tea bonus
-#   - Silk bonus
-#   - Any resource (multi-colored)
-#   - Import bonus (arrow icon)
-
-# Note: Some VP values and bonuses may need verification against physical cards.
-# The sprite sheet resolution makes some icons difficult to distinguish.
+# Summary statistics (verified against the entries above):
+# Total cards: 24. TL is { vp: 1 } and ML is {} on all 24.
+# Trading-house VP distribution: 5 x4, 6 x5, 7 x5, 8 x5, 9 x5.
+# Note: only 1 building site card is dealt per Area Board at setup; the rest return to the box.

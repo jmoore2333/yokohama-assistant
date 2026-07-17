@@ -1,26 +1,26 @@
 # Yokohama Technology Cards
-# Transcribed from: tts-assets/organized/cards/tech_cards_8x4.jpg
-# Grid: 8 columns x 4 rows = 32 positions (20 unique cards + duplicates + backs)
+# verified: 2026-07-17 — three-way (sprites x rulebook x physical), see docs/plans/2026-07-16-card-verification/
 #
-# Note: TTS sprite sheet contains duplicates. This file lists 20 UNIQUE cards.
-# Some cards appear twice in the game (shown in different positions with same/diff countries)
+# Source sprite sheet: tts-assets/organized/cards/tech_cards_8x4.jpg (8 cols x 4 rows: 30 cards + 2 backs)
 #
-# Country codes: US=America, DE=Germany, NL=Netherlands, FR=France, GB=Britain
-# Industry cost: Number of Industry tokens needed to acquire
+# The physical deck has 30 cards (rulebook: "30 Technology cards"). This file lists the 20 unique
+# titles; `copies` gives the number of physical cards of that title (10 titles x2 + 10 titles x1 = 30).
+# The engine expands entries by `copies` when building the deck.
+# positions = sprite-sheet cells "row,col", 1-based from top-left, one per copy (traceability only).
+# Duplicate copies match their first printing in cost, country, and effect text (verified per cell).
 #
-# Effect codes match TechEffect enum in types/cards.rs:
+# Country codes: US=United States of America, DE=Germany, NL=Netherlands, FR=France, GB=Great Britain
+# industry_cost = the number in the gear at the card's top-left.
+# Effect codes match the TechEffect enum in types/cards.rs:
 #   LanguageSchool, Telegram, Telephone, Newspaper, Exposition, Ball,
 #   Gaslight, Station, University, LetterPressPrinting, PostalSystem,
-#   Winery, ElectricalLight, MiningTechnology, TextileMill (SpinningMill),
-#   PatentSystem, Stagecoach, Tram, Brickyard, StockMarket (SystemOfStock)
-#
-# VERIFICATION: Check each card against sprite sheet
+#   Winery, ElectricalLight, MiningTechnology, SpinningMill (card name "Textile Mill"),
+#   PatentSystem, Stagecoach, Tram, Brickyard, SystemOfStock (card name "Stock Market")
 
 tech_cards:
-  # === ROW 0 (top row) ===
-
   - id: "tech_language_school"
-    position: "0,0"
+    positions: ["1,1", "3,5"]
+    copies: 2
     name: "Language School"
     effect: "LanguageSchool"
     industry_cost: 3
@@ -28,7 +28,8 @@ tech_cards:
     description: "When you fulfill an Order: gain 1 Yen"
 
   - id: "tech_telegram"
-    position: "0,1"
+    positions: ["1,2", "3,6"]
+    copies: 2
     name: "Telegram"
     effect: "Telegram"
     industry_cost: 6
@@ -36,15 +37,18 @@ tech_cards:
     description: "Placement Step: When you place 2 Workers in the same area, you may additionally place 1 Worker in an adjacent area"
 
   - id: "tech_telephone"
-    position: "0,2"
+    positions: ["1,3", "3,7"]
+    copies: 2
     name: "Telephone"
     effect: "Telephone"
     industry_cost: 6
-    country: "NL"
+    country: "US"
     description: "Collection Step: You may leave 1 Worker in an area"
+    note: "Rulebook calls this step the Recovery Step"
 
   - id: "tech_newspaper"
-    position: "0,3"
+    positions: ["1,4", "3,8"]
+    copies: 2
     name: "Newspaper"
     effect: "Newspaper"
     industry_cost: 5
@@ -52,41 +56,45 @@ tech_cards:
     description: "Placement Step: When you place Workers in different areas, you may place 4 Workers instead of 3"
 
   - id: "tech_exposition"
-    position: "0,4"
+    positions: ["1,5", "4,1"]
+    copies: 2
     name: "Exposition"
     effect: "Exposition"
     industry_cost: 5
     country: "DE"
-    description: "Worth 10 VP at end of game"
+    description: "Immediately gain 10 Victory points"
+    note: "Immediate on acquisition (rulebook p.15), not end-game scoring"
 
   - id: "tech_ball"
-    position: "0,5"
+    positions: ["1,6", "4,2"]
+    copies: 2
     name: "Ball"
     effect: "Ball"
     industry_cost: 3
-    country: "DE"
+    country: "GB"
     description: "When you fulfill an Order: gain 2 VP"
 
   - id: "tech_gaslight"
-    position: "0,6"
+    positions: ["1,7", "4,3"]
+    copies: 2
     name: "Gaslight"
     effect: "Gaslight"
     industry_cost: 3
-    country: "GB"
+    country: "FR"
     description: "When you build a Shop (Shophouse): gain 2 VP"
 
   - id: "tech_station"
-    position: "0,7"
+    positions: ["1,8"]
+    copies: 1
     name: "Station"
     effect: "Station"
     industry_cost: 4
     country: "GB"
     description: "When you gain this card, place the Station token. Movement Step: You may move your President to the area containing the Station token for free"
 
-  # === ROW 1 ===
-
   - id: "tech_university"
-    position: "1,0"
+    positions: ["2,1", "4,4"]
+    copies: 2
     name: "University"
     effect: "University"
     industry_cost: 3
@@ -94,15 +102,17 @@ tech_cards:
     description: "Once Per Turn: You may gain a Worker from your Warehouse by paying 1 yen"
 
   - id: "tech_letterpress_printing"
-    position: "1,1"
+    positions: ["2,2", "4,5"]
+    copies: 2
     name: "Letterpress Printing"
     effect: "LetterPressPrinting"
     industry_cost: 3
     country: "NL"
-    description: "When you gain a Technology card: gain 1 VP"
+    description: "When you gain a Technology card: gain 1 Yen"
 
   - id: "tech_postal_system"
-    position: "1,2"
+    positions: ["2,3", "4,6"]
+    copies: 2
     name: "Postal System"
     effect: "PostalSystem"
     industry_cost: 3
@@ -110,7 +120,8 @@ tech_cards:
     description: "Movement Step: You may place your President in an area occupied by another President"
 
   - id: "tech_winery"
-    position: "1,3"
+    positions: ["2,4"]
+    copies: 1
     name: "Winery"
     effect: "Winery"
     industry_cost: 3
@@ -118,15 +129,17 @@ tech_cards:
     description: "When you carry out a Church action: gain 3 VP"
 
   - id: "tech_electrical_light"
-    position: "1,4"
+    positions: ["2,5"]
+    copies: 1
     name: "Electrical Light"
     effect: "ElectricalLight"
     industry_cost: 4
     country: "FR"
-    description: "When you build a Trading House: gain 3 VP and 1 Yen"
+    description: "When you build a Trading House: gain 3 VP"
 
   - id: "tech_mining_technology"
-    position: "1,5"
+    positions: ["2,6"]
+    copies: 1
     name: "Mining Technology"
     effect: "MiningTechnology"
     industry_cost: 3
@@ -134,26 +147,27 @@ tech_cards:
     description: "Whenever you gain one or more Copper: gain 1 additional Copper"
 
   - id: "tech_textile_mill"
-    position: "1,6"
+    positions: ["2,7"]
+    copies: 1
     name: "Textile Mill"
     effect: "SpinningMill"
     industry_cost: 4
-    country: "FR"
-    description: "Once Per Turn: You may exchange 1 Fish for 2 Silk"
-    note: "Called 'Spinning Mill' in code, 'Textile Mill' on card"
+    country: "GB"
+    description: "Once Per Turn: You may discard 1 Silk to gain 2 Yen"
+    note: "Called 'Spinning Mill' in the rulebook, 'Textile Mill' on the card"
 
   - id: "tech_patent_system"
-    position: "1,7"
+    positions: ["2,8"]
+    copies: 1
     name: "Patent System"
     effect: "PatentSystem"
     industry_cost: 3
     country: "FR"
-    description: "When you gain a Technology card: gain 2 VP and 1 Yen"
-
-  # === ROW 2 ===
+    description: "When you gain a Technology card: gain 2 VP"
 
   - id: "tech_stagecoach"
-    position: "2,0"
+    positions: ["3,1"]
+    copies: 1
     name: "Stagecoach"
     effect: "Stagecoach"
     industry_cost: 3
@@ -161,7 +175,8 @@ tech_cards:
     description: "Movement Step: You may move your President over areas occupied by other President markers without paying"
 
   - id: "tech_tram"
-    position: "2,1"
+    positions: ["3,2"]
+    copies: 1
     name: "Tram"
     effect: "Tram"
     industry_cost: 5
@@ -169,7 +184,8 @@ tech_cards:
     description: "Movement Step: You may move your President to any area (except for areas occupied by other Presidents)"
 
   - id: "tech_brickyard"
-    position: "2,2"
+    positions: ["3,3"]
+    copies: 1
     name: "Brickyard"
     effect: "Brickyard"
     industry_cost: 3
@@ -177,37 +193,26 @@ tech_cards:
     description: "When you carry out a Customs action: gain 4 VP"
 
   - id: "tech_stock_market"
-    position: "2,3"
+    positions: ["3,4"]
+    copies: 1
     name: "Stock Market"
     effect: "SystemOfStock"
     industry_cost: 3
     country: "NL"
     description: "Start of Your Turn: If you have less than 2 yen in your hand, increase it to 2 yen"
-    note: "Called 'System of Stock' in code, 'Stock Market' on card"
+    note: "Called 'System of Stock' in the rulebook, 'Stock Market' on the card"
 
-# Duplicate cards in sprite sheet (rows 2-3, positions 4-7 and row 3):
-# - Language School appears at 2,4 (US)
-# - Telegram appears at 2,5 (US)
-# - Telephone appears at 2,6 (US) - different country than 0,2?
-# - Newspaper appears at 2,7 (NL)
-# - Exposition appears at 3,0 (DE)
-# - Ball appears at 3,1 (GB) - different country than 0,5?
-# - Gaslight appears at 3,2 (FR) - different country than 0,6?
-# - University appears at 3,3 (GB)
-# - Letterpress Printing appears at 3,4 (GB) - different country than 1,1?
-# - Postal System appears at 3,5 (GB)
-
-# Summary statistics:
-# Total unique cards: 20
-# By country (first occurrence):
-#   US (America): 3 (Language School, Telegram, Tram)
-#   DE (Germany): 4 (Exposition, Ball, Mining Technology, Brickyard)
-#   NL (Netherlands): 4 (Telephone, Newspaper, Letterpress Printing, Stock Market)
-#   FR (France): 4 (Winery, Electrical Light, Textile Mill, Patent System)
-#   GB (Britain): 5 (Gaslight, Station, University, Postal System, Stagecoach)
-
-# Industry cost distribution:
-#   Cost 3: 12 cards
-#   Cost 4: 3 cards (Station, Electrical Light, Textile Mill)
-#   Cost 5: 3 cards (Newspaper, Exposition, Tram)
-#   Cost 6: 2 cards (Telegram, Telephone)
+# Summary statistics (verified against the entries above):
+# Physical cards: 30 (sum of copies). Unique titles: 20.
+# Copies x2: Language School, Telegram, Telephone, Newspaper, Exposition, Ball, Gaslight,
+#            University, Letterpress Printing, Postal System
+# Copies x1: Station, Winery, Electrical Light, Mining Technology, Textile Mill, Patent System,
+#            Stagecoach, Tram, Brickyard, Stock Market
+# By country (unique titles / physical cards):
+#   US: 4 / 7 (Language School, Telegram, Telephone, Tram)
+#   GB: 6 / 9 (Ball, Station, University, Postal System, Textile Mill, Stagecoach)
+#   NL: 3 / 5 (Newspaper, Letterpress Printing, Stock Market)
+#   DE: 3 / 4 (Exposition, Mining Technology, Brickyard)
+#   FR: 4 / 5 (Gaslight, Winery, Electrical Light, Patent System)
+# Industry cost (unique titles): 3 x12, 4 x3 (Station, Electrical Light, Textile Mill),
+#   5 x3 (Newspaper, Exposition, Tram), 6 x2 (Telegram, Telephone)
