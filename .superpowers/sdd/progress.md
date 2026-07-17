@@ -26,13 +26,13 @@ Untracked files .codex/, .vscode/, AGENTS.md are Jeremy's — never add/commit t
 ## Next (in order)
 
 - **Task 12 wire Lab** (sonnet; brief at .superpowers/sdd/task-12-brief.md). Dispatch amendments (prepared): Move carries card_id → resolve slot by searching THE ACTING AREA'S board only (not both — cross-board buying is illegal; mercenary area resolution like Port's); validate_lab_action currently hard-rejects Lab B / only reads lab_a — rework for the resolved board (now 6 slots); drop tech_deck param (state.tech_deck); acquisition bonuses AFTER success: Patent +2 VP and Letterpress +1 Yen per owned OTHER copy (stack per copy, exclude the just-acquired card), Exposition self-trigger +10 VP (plan gap, rulebook-explicit); Station placement on acquisition = v1 limitation (station_location untouched, comment); check_mercenary_eligibility recheck with card country (make pub(crate) if needed); fifth-tech penalty machinery exists.
-- **Task 13 Church** (sonnet): amendments in plan §Amendments item 6 (2P dummy blocks faith-7; riders no-op; avoid power-2 fixtures; v1 auto-place highest eligible ≤ faith; use calculate_church_faith/faith_to_index/next_arrival_order; Winery +3 VP per plan).
+- **Task 13 Church** (sonnet): amendments in plan §Amendments item 6 (2P dummy blocks faith-7; riders no-op; v1 auto-place highest eligible ≤ faith; use faith_to_index/next_arrival_order; Winery +3 VP per plan). PLUS: fix `calculate_church_faith` to LINEAR power→faith 1,2,3,4,5 (Jeremy-adjudicated; rulebook text was a typo) with a pinning test for power 2 → 2, and correct the KB faith table (01-rules-reference.md ~line 330) in the same commit.
 - **Task 14 Customs** (sonnet): re-model per §Amendments item 7 (7 spaces, cost pairs, riders wh2/¥2/wh1/¥1 via the 7b helpers, 2P dummy space-4, replace goods_to_index/8-array; KB customs table correction in this commit).
 - **Task 15 placement fees + mining** (sonnet, per plan) → **Task 16 Port/Lab enumeration** (sonnet; port test counts re-derived for 6-slot/card-ids) → **Task 17 rest of enumeration** (ORCHESTRATOR FIRST resolves the is-area-action-optional ruling per plan Step 1 note, passes it in dispatch) → **manifest checkpoint** (already VALIDATED, but confirm Jeremy's box-check status) → **Task 18 fuzz gate** (18.1-3 sonnet scaffold, 18.4-5 ORCHESTRATOR-DIRECT debugging; conservation formula per §Amendments 8) → **Task 19 GameRecord** (sonnet) → **Task 20 close-out** (orchestrator).
 
 ## Open items on Jeremy
 
-- Physical box check (exceptions-only): box-audit.html priority items + NEW: church AREA board power-2 faith diamond (board art says 2, rulebook text says 1 — engine currently encodes 1; one-line fix if box says 2) and eyeball the 6-slot port/lab layouts.
+- Physical box check (exceptions-only): box-audit.html priority items (cards) + eyeball the 6-slot port/lab layouts. Church power-2 RESOLVED (linear 1-5, Jeremy 2026-07-17 — fix in Task 13). Port zone access + lab surcharges verbally confirmed by Jeremy same day.
 
 ## Minor findings for the final whole-branch review
 

@@ -34,7 +34,7 @@ Workspace crates: `crates/yokohama-core` (library) and `crates/gen-data` (YAML�
 
 - Complete reference: `analysis-1/yokohama-kb/01-rules-reference.md` (being corrected as board-art verification finds errors — the decision log lists corrections); rulebook PDF in `analysis-1/`; icon glossary is rulebook p.10.
 - Commonly-missed rules that have bitten this project: Trading House passive income (owner gets 1 Yen when another player acts in that area); the 5-Power Movement token moves *assistants*, not the President; mercenaries bypass opponent Presidents (no blocking, no fees); the President may not return to its starting area in the same turn; placement costs 1 Yen per area containing an opponent President; Trading House requires Power 5, Shophouse 4+; port refill is rightmost-first after total left-compaction; Port at 5 Power also grants +3 VP.
-- CONTESTED pending Jeremy's physical box check: Church at power 2 — rulebook text says 1 Faith (engine encodes this), board art says 2.
+- Church faith = power LINEARLY (1,2,3,4,5) plus 1 per distinct payment type (max 1 each of copper/silk/tea/seafood/yen/import). The rulebook text's "2 Power: 1 Faith" is a TYPO (Jeremy-adjudicated 2026-07-17); the engine's `calculate_church_faith` is corrected in Task 13.
 - v1 engine limitations (deliberate, in decision log): movement-icon rewards are no-ops; warehouse-icon rewards auto-take 1 free assistant; any-good rewards auto-pick copper. Choice encoding comes with Phase 2.
 
 ## Conventions
