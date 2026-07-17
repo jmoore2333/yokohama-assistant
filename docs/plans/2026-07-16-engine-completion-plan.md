@@ -10,6 +10,19 @@
 
 **Spec:** `docs/plans/2026-07-16-engine-completion-design.md`. **Two human gates:** Task 6 pauses for Jeremy's card adjudication; the manifest checkpoint before Task 18 requires the content manifest signed off.
 
+## Execution Model (chosen 2026-07-16)
+
+Subagent-driven (superpowers:subagent-driven-development): the orchestrator session (Fable) dispatches one fresh subagent per task via the Agent tool — task text verbatim plus the Global Constraints section — and reviews every diff between tasks. Use the Agent tool's `model` parameter per this table; the plan is written to zero-context detail precisely so cheaper models can execute the scripted middle:
+
+| Tier | Tasks | Why |
+|---|---|---|
+| **Orchestrator-direct** (Fable, no subagent) | 1–3 (trivial — one inline pass); the Step-1 rules rulings of Tasks 13/14 and the optionality ruling in Task 17 (orchestrator resolves them against the KB BEFORE dispatching, and passes the ruling verbatim in the dispatch prompt); Task 18 Steps 4–5 (fuzz-failure diagnosis and fixes — open-ended debugging); both human-gate interactions; Task 20 (gate close-out narrative) | Judgment-heavy, or too small to be worth a dispatch |
+| **Fable subagent** | Task 6 — MUST be a fresh subagent that has never seen the YAML files or `docs/plans/2025-12-08-card-verification-report.md`; blind vision transcription is the entire value (the orchestrator itself is contaminated — it has read rows of the old report) | Ground-truth data; vision accuracy determines everything downstream |
+| **Sonnet subagent** | 4, 5, 7, 9, 11, 12, 15, 16, 17 (implementation steps), 18 Steps 1–3 (harness scaffolding), 19 | Careful mechanical work; the plan supplies the code |
+| **Haiku subagent** | 8, 10 | Fully scripted, low blast radius |
+
+Scheduling: dispatch Task 6 immediately and **in parallel** with Tasks 1–5 (it depends on nothing and gates Task 7). Everything else is sequential. Between tasks the orchestrator reviews the diff, runs the suite, and only then dispatches the next task.
+
 ## Global Constraints
 
 - All engine code stays in `crates/yokohama-core`; `GameState` stays history-free and cheap to clone (no `Rc`, no interior mutability, no move history in state).
@@ -288,6 +301,8 @@ git commit -m "feat: Rules context threaded through legal_moves/apply_move; drop
 ---
 
 ### Task 6: Three-way card verification (spec B2) — ends in a HUMAN GATE
+
+> **Dispatch note:** fresh **Fable** subagent, prompt built ONLY from this task's text — do not include or reference the YAML contents or the 2025-12-08 verification report, and instruct the subagent not to open the YAML until Step 3's diff. Can run in parallel with Tasks 1–5.
 
 **Files:**
 - Create: `docs/plans/2026-07-16-card-verification/retranscription-orders.md`, `retranscription-techs.md`, `retranscription-sites.md`, `content-manifest.md`
@@ -675,7 +690,7 @@ fn lab_action_acquires_tech_and_refills() {
 **Interfaces:**
 - Produces: `pub fn execute_church_action(state: &mut GameState, player: PlayerId, power: u8, copper: bool, silk: bool, tea: bool, seafood: bool, yen: bool, imported_good: bool, rules: &Rules) -> Result<(), &'static str>` — pays goods, spends assistant from hand → `assistants.on_church`, writes `church_track.slots`, pushes `church_positions`, awards VP, Winery +3 VP.
 
-- [ ] **Step 1: Rule check.** Read the Church section of `analysis-1/yokohama-kb/01-rules-reference.md`. Confirm slot-selection rule when the exact faith slot is occupied (expected per rulebook: place on the **highest empty slot with value ≤ earned faith**; faith below 4 or no eligible slot ⇒ Church action yields no placement/VP — confirm exact wording) and confirm whether contributed Yen/goods go to supply. Record the ruling in `guidingpath.md`'s decision log.
+- [ ] **Step 1 [ORCHESTRATOR-DIRECT]: Rule check.** Read the Church section of `analysis-1/yokohama-kb/01-rules-reference.md`. Confirm slot-selection rule when the exact faith slot is occupied (expected per rulebook: place on the **highest empty slot with value ≤ earned faith**; faith below 4 or no eligible slot ⇒ Church action yields no placement/VP — confirm exact wording) and confirm whether contributed Yen/goods go to supply. Record the ruling in `guidingpath.md`'s decision log.
 
 - [ ] **Step 2: Failing test**
 
@@ -714,7 +729,7 @@ Plus: occupied-slot fallback test (faith 5 slot taken → placed at 4, VP for 4)
 **Interfaces:**
 - Produces: `pub fn execute_customs_action(state: &mut GameState, player: PlayerId, power: u8, imported_goods_paid: u8, rules: &Rules) -> Result<(), &'static str>` — mirrors Church: pay imports, assistant hand→`on_customs`, track slot write, `customs_positions` push, VP via `CustomsTrack::vp_reward`, Brickyard +4 VP.
 
-- [ ] **Step 1: Rule + bug check.** Verify against the KB: the customs board's spaces (1..7+ — is it 7 spaces or 8?), the VP table (current code: 1→5, 2→4, 3→10, 4→9, 5→16, 6→15, 7+→22 — the zig-zag needs confirming), and the occupied-slot rule. **Known suspect:** `CustomsTrack::goods_to_index` maps `>7` to `Some(6)` while the array has 8 slots and the comment says index 7 = "7+" — resolve mapping vs. reality, fix + unit-test whichever is right. Record rulings in the decision log.
+- [ ] **Step 1 [ORCHESTRATOR-DIRECT]: Rule + bug check.** Verify against the KB: the customs board's spaces (1..7+ — is it 7 spaces or 8?), the VP table (current code: 1→5, 2→4, 3→10, 4→9, 5→16, 6→15, 7+→22 — the zig-zag needs confirming), and the occupied-slot rule. **Known suspect:** `CustomsTrack::goods_to_index` maps `>7` to `Some(6)` while the array has 8 slots and the comment says index 7 = "7+" — resolve mapping vs. reality, fix + unit-test whichever is right. Record rulings in the decision log.
 
 - [ ] **Step 2: Failing test** (mirror of Church: pay 2 imports at power 3 → slot for 2, VP awarded, assistant moved; plus occupied-slot fallback + Brickyard test).
 
@@ -848,7 +863,7 @@ fn chinatown_enumeration_is_bounded_and_legal() {
 ```
 
 - [ ] **Step 2: FAIL → implement.** Church: iterate the ≤64 bool-combos, filter by stock (`validate_church_action`), require assistant in hand. Customs: `1..=min(customs_max_imported_goods(power), imports)`. Employment: triple loop `a+s+t ≤ allowed`, filter warehouse stock + cost. Chinatown: BFS over exchange sequences to depth 4 on a copied resource tuple, canonicalize as sorted multiset to dedupe, emit `AreaAction::Chinatown { exchanges }`; log the cap once per generation at `debug` level — since the crate has no logger, expose the cap as `pub const CHINATOWN_ENUM_DEPTH: usize = 4;` with a doc comment referencing the spec instead of runtime logging.
-Resolve the "is the area action optional?" rule question from Step 1 uniformly (single `Skip`-style move or empty-subset conventions) and record it in `guidingpath.md`.
+**[ORCHESTRATOR-DIRECT]** Resolve the "is the area action optional?" rule question from Step 1 uniformly (single `Skip`-style move or empty-subset conventions) BEFORE dispatching this task, pass the ruling in the dispatch prompt, and record it in `guidingpath.md`.
 
 - [ ] **Step 3: Green; then delete dead placeholder code + rerun.**
 
@@ -925,7 +940,7 @@ fn fuzz_500_games_per_player_count() {
 }
 ```
 
-- [ ] **Step 4: Run it and fix what it finds.** This step is intentionally iterative: expect phase-machine dead-ends, off-by-ones, and rules gaps to surface. For each failure: minimal reproducing seed → failing focused test → fix → rerun fuzz. One commit per distinct fix (`fix: <what> (found by fuzz seed N)`). Rules ambiguities go to the KB + decision log. Do not weaken invariants to pass.
+- [ ] **Step 4 [ORCHESTRATOR-DIRECT]: Run it and fix what it finds.** This step is intentionally iterative: expect phase-machine dead-ends, off-by-ones, and rules gaps to surface. For each failure: minimal reproducing seed → failing focused test → fix → rerun fuzz. One commit per distinct fix (`fix: <what> (found by fuzz seed N)`). Rules ambiguities go to the KB + decision log. Do not weaken invariants to pass.
 
 - [ ] **Step 5: Full gate run** — `cargo run --release -p yokohama-core --example selfplay -- 5000 4 0` (and 2p/3p): zero failures.
 

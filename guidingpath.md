@@ -70,8 +70,9 @@ The original AR-first design (`docs/plans/2025-12-07-yokohama-assistant-design.m
 
 ## Roadmap
 
-### Phase 0+1 (merged) — Engine completion
+### Phase 0+1 (merged) — Engine completion ← CURRENT
 **Spec:** `docs/plans/2026-07-16-engine-completion-design.md` (environment/doc fixes ordered first, then engine work).
+**Plan:** `docs/plans/2026-07-16-engine-completion-plan.md` — 20 TDD tasks, **ready to execute** via subagent-driven development with tiered models (see the plan's "Execution Model" section: Haiku/Sonnet subagents for scripted tasks, a blind Fable subagent for card transcription, orchestrator-direct for rules rulings and the fuzz-fix loop).
 **Gate:** ≥5,000 seeded random self-play games across 2p/3p/4p complete without panic, with per-step invariants; all five end triggers observed; card data verified; replay determinism (same seed+log → same final state).
 
 ### Phase 2 — CLI game driver
@@ -102,3 +103,4 @@ The 2025-12-07 design doc's VLM pipeline, landing on a proven engine + UI: CV pr
 | 2026-07-16 | Docs: dated specs/plans in `docs/plans/`; workflow brainstorm → spec → plan → TDD implementation | Repo convention continues |
 | 2026-07-16 | Card verification is three-way (TTS sprites × YAML × rulebook/box manifest); physical game is final arbiter; content manifest must be signed off before the self-play gate | TTS mod is fan-made and can itself be wrong (Jeremy) |
 | 2026-07-16 | CLI display language: plain words in prompts, short readable abbreviations in tables; settled by real Phase-2 use; verification-report single-letter legend retired from product use | Single letters not intuitive for CLI manipulation (Jeremy) |
+| 2026-07-16 | Plan execution: subagent-driven with tiered models — Haiku/Sonnet for scripted tasks, blind Fable subagent for card transcription (Task 6), orchestrator-direct for rules rulings, human gates, and fuzz-failure fixes | Frontier capability only where it changes outcomes; the plan's zero-context detail makes the middle cheap (Jeremy) |
