@@ -1,6 +1,6 @@
 //! Display layer for card and site rendering.
 
-use crate::types::{BuildingSite, Country, OrderCard, OrderCardId, OrderRewards, SpaceReward, TradeGoodRequirement};
+use crate::types::{BuildingSite, Country, OrderCard, OrderRewards, SpaceReward, TradeGoodRequirement};
 
 /// Display a country with its full name (prompt).
 fn country_prompt(country: Country) -> &'static str {
@@ -208,6 +208,7 @@ pub fn site_compact_line(index: usize, site: &BuildingSite) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::types::OrderCardId;
 
     #[test]
     fn order_prompt_line_is_plain_words() {
