@@ -14,6 +14,7 @@ mod setup;
 mod board_gen;
 mod rules;
 mod display;
+mod invariants;
 pub mod actions;
 
 pub use power::*;
@@ -29,3 +30,4 @@ pub use setup::*;
 pub use board_gen::*;
 pub use rules::*;
 pub use display::*;
+pub use invariants::*;
