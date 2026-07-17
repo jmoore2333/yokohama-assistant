@@ -86,7 +86,11 @@ pub fn validate_church_action(
 /// rule, not a `slots` entry, so arrival-order and end-trigger pawn counts
 /// (which count real players only) stay untouched. Faith below 4 has no
 /// eligible space; faith above 11 is capped at the top of the track.
-fn highest_eligible_church_space(track: &ChurchTrack, total_faith: u8, player_count: u8) -> Option<u8> {
+///
+/// `pub` (Task 17): reused directly by the Church legal-move generator so
+/// enumeration can never drift from `execute_church_action`'s own
+/// acceptance criteria.
+pub fn highest_eligible_church_space(track: &ChurchTrack, total_faith: u8, player_count: u8) -> Option<u8> {
     let ceiling = total_faith.min(11);
     (4..=ceiling).rev().find(|&faith| {
         if player_count == 2 && faith == 7 {
@@ -219,7 +223,11 @@ pub fn validate_customs_action(
 /// Church faith-7 2P block so arrival order and the end-trigger assistant
 /// count stay untouched. Returns `None` if `cost` doesn't match a printed
 /// cost, or every candidate space is occupied/blocked.
-fn eligible_customs_space_for_cost(track: &CustomsTrack, cost: u8, player_count: u8) -> Option<u8> {
+///
+/// `pub` (Task 17): reused directly by the Customs legal-move generator so
+/// enumeration can never drift from `execute_customs_action`'s own
+/// acceptance criteria.
+pub fn eligible_customs_space_for_cost(track: &CustomsTrack, cost: u8, player_count: u8) -> Option<u8> {
     let candidates = CustomsTrack::spaces_for_cost(cost)?;
     candidates.iter().copied().find(|&space| {
         if player_count == 2 && space == 4 {

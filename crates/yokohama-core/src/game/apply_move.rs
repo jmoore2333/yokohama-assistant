@@ -353,6 +353,12 @@ fn apply_area_action(state: &mut GameState, action: &AreaAction, rules: &Rules) 
             apply_lab_acquisition_bonuses(state, player, *card_id, &rules.techs, &rules.orders);
         }
         AreaAction::Chinatown { exchanges } => {
+            // Task 17 ruling: an empty exchanges list is no longer a legal
+            // encoding of "decline Chinatown" -- Skip is the sole canonical
+            // decline, mirroring Task 16's Port `cards_taken.is_empty()` rule.
+            if exchanges.is_empty() {
+                return Err(MoveError::RuleViolation("Must make at least 1 exchange (use Skip to decline)"));
+            }
             for exchange in exchanges {
                 apply_chinatown_exchange(state, player, *exchange, &rules.techs).map_err(MoveError::RuleViolation)?;
             }
@@ -439,6 +445,11 @@ fn apply_employment_agency(
     let max_items = employment_agency_tokens_allowed(power);
 
     let total_items = assistants + shophouses + trading_houses;
+    // Task 17 ruling: {0,0,0} is no longer a legal encoding of "decline
+    // Employment Agency" -- Skip is the sole canonical decline.
+    if total_items == 0 {
+        return Err(MoveError::RuleViolation("Must take at least 1 item (use Skip to decline)"));
+    }
     if total_items > max_items {
         return Err(MoveError::RuleViolation("Exceeds maximum items for power level"));
     }
@@ -1721,6 +1732,42 @@ mod tests {
     }
 
     #[test]
+    fn test_chinatown_double_yen_to_copper_mining_bonus_stacks_per_exchange() {
+        // Task 17 pin: 2 sequential YenToCopper exchanges in ONE Chinatown
+        // move each independently trigger the per-receipt Mining bonus
+        // (apply_chinatown_exchange recomputes the bonus fresh for every
+        // exchange in the AreaAction::Chinatown loop) -- 2 base copper (1
+        // per exchange) + 2 Mining bonus (1 owned copy x 2 exchanges) = 4.
+        let mut state = create_minimal_state(2);
+        let action_area = AreaId::new(0);
+        state.players[0].president_location = PresidentLocation::OnBoard(action_area);
+        state.current_player = PlayerId::new(0);
+        state.current_action_power = Some(4);
+        state.turn_phase = TurnPhase::AreaAction;
+        state.board_layout.areas.insert(action_area, AreaConfig {
+            area_type: AreaType::Chinatown,
+            grid_position: (0, 0),
+        });
+        state.players[0].money = 4;
+        state.players[0].copper = 0;
+
+        let mut rules = Rules::empty_for_tests();
+        rules.techs.insert(mining_tech_fixture(), "tech_mining");
+        state.players[0].technologies.push(TechCardId(1));
+
+        let result = apply_move(&state, &Move::ExecuteAreaAction {
+            action: AreaAction::Chinatown {
+                exchanges: vec![ChinatownExchange::YenToCopper, ChinatownExchange::YenToCopper],
+            },
+        }, &rules);
+        assert!(result.is_ok());
+        let new_state = result.unwrap();
+
+        assert_eq!(new_state.players[0].copper, 4); // 2 exchanges x (1 base + 1 mining)
+        assert_eq!(new_state.players[0].money, 0); // 4 - 2*2
+    }
+
+    #[test]
     fn test_cannot_return_to_start_area() {
         let mut state = create_minimal_state(2);
 
@@ -2815,5 +2862,77 @@ mod tests {
         let mv = Move::ExecuteAreaAction { action: AreaAction::Skip };
         let result = apply_move(&state, &mv, &rules);
         assert!(result.is_ok());
+    }
+
+    /// Places an Employment Agency area on the board and puts the president there.
+    fn place_president_at_employment_agency(state: &mut GameState) -> AreaId {
+        let area = AreaId::new(0);
+        state.board_layout.areas.insert(area, AreaConfig {
+            area_type: AreaType::EmploymentAgency,
+            grid_position: (0, 0),
+        });
+        state.players[0].president_location = PresidentLocation::OnBoard(area);
+        area
+    }
+
+    /// Places a Chinatown area on the board and puts the president there.
+    fn place_president_at_chinatown(state: &mut GameState) -> AreaId {
+        let area = AreaId::new(0);
+        state.board_layout.areas.insert(area, AreaConfig {
+            area_type: AreaType::Chinatown,
+            grid_position: (0, 0),
+        });
+        state.players[0].president_location = PresidentLocation::OnBoard(area);
+        area
+    }
+
+    #[test]
+    fn chinatown_rejects_empty_exchanges() {
+        // Task 17 ruling: Chinatown{exchanges: []} is no longer a legal
+        // encoding of "decline Chinatown" -- Skip is the sole canonical
+        // decline (mirrors Task 16's Port `cards_taken.is_empty()` rule).
+        let rules = Rules::empty_for_tests();
+        let mut state = create_test_game_state(2);
+        place_president_at_chinatown(&mut state);
+        state.turn_phase = TurnPhase::AreaAction;
+        state.current_action_power = Some(3);
+
+        let mv = Move::ExecuteAreaAction { action: AreaAction::Chinatown { exchanges: vec![] } };
+        let result = apply_move(&state, &mv, &rules);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn employment_agency_rejects_all_zero_items() {
+        // Task 17 ruling: EmploymentAgency{0,0,0} is no longer a legal
+        // encoding of "decline Employment Agency" -- Skip is the sole
+        // canonical decline.
+        let rules = Rules::empty_for_tests();
+        let mut state = create_test_game_state(2);
+        place_president_at_employment_agency(&mut state);
+        state.turn_phase = TurnPhase::AreaAction;
+        state.current_action_power = Some(3);
+
+        let mv = Move::ExecuteAreaAction {
+            action: AreaAction::EmploymentAgency { assistants: 0, shophouses: 0, trading_houses: 0 },
+        };
+        let result = apply_move(&state, &mv, &rules);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn customs_rejects_zero_payment_via_apply_move() {
+        // Move-level symmetry check (executor-level coverage already exists:
+        // test_execute_customs_action_rejects_zero_payment in actions/tracks.rs).
+        let rules = Rules::empty_for_tests();
+        let mut state = create_test_game_state(2);
+        place_president_at_customs(&mut state);
+        state.turn_phase = TurnPhase::AreaAction;
+        state.current_action_power = Some(3);
+        state.players[0].imported_goods = 3;
+
+        let mv = Move::ExecuteAreaAction { action: AreaAction::Customs { imported_goods_paid: 0 } };
+        let result = apply_move(&state, &mv, &rules);
+        assert!(result.is_err());
     }
 }

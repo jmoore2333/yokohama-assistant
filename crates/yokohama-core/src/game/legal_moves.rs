@@ -303,16 +303,41 @@ fn generate_area_action_moves(state: &GameState, rules: &Rules) -> Vec<Move> {
         AreaType::PortA => generate_port_actions(state, player, power, &state.port_state.port_a),
         AreaType::PortB => match &state.port_state.port_b {
             Some(port) => generate_port_actions(state, player, power, port),
-            None => vec![], // Should never happen if state is consistent
+            // Board/layout mismatch (a PortB area exists but its board was
+            // never initialized) is unreachable by construction -- layout
+            // and board state both derive from the same GameConfig. The
+            // empty vec here is DELIBERATE, not a bug: an empty legal-move
+            // list in a non-terminal decision phase is Task 18's designed
+            // fuzz corruption alarm (orchestrator adjudication, Task 16
+            // review) -- emitting Skip instead would let a corrupted board
+            // state fuzz silently to completion rather than tripping it.
+            None => vec![],
         },
         AreaType::LaboratoryA => {
             generate_lab_actions(state, player, power, &state.lab_state.lab_a, rules)
         }
         AreaType::LaboratoryB => match &state.lab_state.lab_b {
             Some(lab) => generate_lab_actions(state, player, power, lab, rules),
-            None => vec![], // Should never happen if state is consistent
+            // Same fallback rationale as PortB above: unreachable by
+            // construction, empty vec is the designed fuzz corruption
+            // alarm -- do NOT paper over with Skip.
+            None => vec![],
         },
-        other => vec![generate_area_action_for_type(other)],
+        AreaType::Church => generate_church_actions(state, player, power),
+        AreaType::Customs => generate_customs_actions(state, player, power),
+        AreaType::EmploymentAgency => generate_employment_agency_actions(state, player, power),
+        AreaType::Chinatown => generate_chinatown_actions(state, player, rules),
+        AreaType::CopperMine => vec![Move::ExecuteAreaAction { action: AreaAction::ProduceCopper }],
+        AreaType::SilkMill => vec![Move::ExecuteAreaAction { action: AreaAction::ProduceSilk }],
+        AreaType::TeaPlantation => vec![Move::ExecuteAreaAction { action: AreaAction::ProduceTea }],
+        AreaType::FishingGround => vec![Move::ExecuteAreaAction { action: AreaAction::ProduceSeafood }],
+        AreaType::Bank => vec![Move::ExecuteAreaAction { action: AreaAction::Bank }],
+        // Canal can never be an acting area: no assistants may ever be
+        // placed there (`allows_placement` excludes it) so it's never a
+        // Possible Action Area, and mercenaries can't select it either
+        // (Task 16 review, orchestrator-adjudicated) -- unreachable by
+        // construction, same fuzz-corruption-alarm rationale as above.
+        AreaType::Canal => vec![],
     }
 }
 
@@ -434,38 +459,290 @@ fn generate_lab_actions(state: &GameState, player: PlayerId, power: u8, lab: &La
     moves
 }
 
-fn generate_area_action_for_type(area_type: AreaType) -> Move {
-    // Simplified: return default action for area type. Port/Laboratory are
-    // handled before this dispatch is reached (see generate_area_action_moves)
-    // since they need real board contents, not just the type.
-    let action = match area_type {
-        AreaType::CopperMine => AreaAction::ProduceCopper,
-        AreaType::SilkMill => AreaAction::ProduceSilk,
-        AreaType::TeaPlantation => AreaAction::ProduceTea,
-        AreaType::FishingGround => AreaAction::ProduceSeafood,
-        AreaType::Bank => AreaAction::Bank,
-        AreaType::PortA | AreaType::PortB | AreaType::LaboratoryA | AreaType::LaboratoryB => {
-            unreachable!("Port/Laboratory are enumerated by generate_port_actions/generate_lab_actions")
+/// Enumerate legal Church moves at `power`: every one of the 64 goods-flag
+/// combinations the player can both AFFORD (stock/assistant, per
+/// `validate_church_action`) and that the executor would actually ACCEPT
+/// (total Faith >= 4 with an eligible empty space, per
+/// `highest_eligible_church_space`) -- reusing both pure executor helpers
+/// directly so enumeration can never drift from `execute_church_action`'s
+/// own acceptance criteria. Skip is always legal and always offered (Task
+/// 16/17 decision-log optionality ruling).
+fn generate_church_actions(state: &GameState, player: PlayerId, power: u8) -> Vec<Move> {
+    let mut moves = Vec::new();
+
+    for mask in 0u8..64 {
+        let copper = mask & 1 != 0;
+        let silk = mask & 2 != 0;
+        let tea = mask & 4 != 0;
+        let seafood = mask & 8 != 0;
+        let yen = mask & 16 != 0;
+        let imported_good = mask & 32 != 0;
+
+        if validate_church_action(state, player, copper, silk, tea, seafood, yen, imported_good).is_err() {
+            continue;
         }
-        AreaType::EmploymentAgency => AreaAction::EmploymentAgency {
-            assistants: 0,
-            shophouses: 0,
-            trading_houses: 0,
-        },
-        AreaType::Chinatown => AreaAction::Chinatown { exchanges: vec![] },
-        AreaType::Church => AreaAction::Church {
-            copper: false,
-            silk: false,
-            tea: false,
-            seafood: false,
-            yen: false,
-            imported_good: false,
-        },
-        AreaType::Customs => AreaAction::Customs { imported_goods_paid: 1 },
-        AreaType::Canal => AreaAction::Bank, // Should never happen
+
+        let total_faith = calculate_church_faith(power, copper, silk, tea, seafood, yen, imported_good);
+        if highest_eligible_church_space(&state.church_track, total_faith, state.config.player_count).is_none() {
+            continue;
+        }
+
+        moves.push(Move::ExecuteAreaAction {
+            action: AreaAction::Church { copper, silk, tea, seafood, yen, imported_good },
+        });
+    }
+
+    moves.push(Move::ExecuteAreaAction { action: AreaAction::Skip });
+    moves
+}
+
+/// Enumerate legal Customs moves at `power`: one move per payable N in
+/// 1..=`customs_max_imported_goods(power)` for which the player both can
+/// legally pay it (`validate_customs_action`, which also gates on assistant
+/// availability) and an eligible empty track space exists
+/// (`eligible_customs_space_for_cost`) -- reusing both pure executor
+/// helpers directly so enumeration can never drift from
+/// `execute_customs_action`'s own acceptance criteria. Skip is always
+/// legal and always offered (Task 16/17 decision-log optionality ruling).
+fn generate_customs_actions(state: &GameState, player: PlayerId, power: u8) -> Vec<Move> {
+    let mut moves = Vec::new();
+
+    for n in 1..=customs_max_imported_goods(power) {
+        if validate_customs_action(state, player, n, power).is_ok()
+            && eligible_customs_space_for_cost(&state.customs_track, n, state.config.player_count).is_some()
+        {
+            moves.push(Move::ExecuteAreaAction { action: AreaAction::Customs { imported_goods_paid: n } });
+        }
+    }
+
+    moves.push(Move::ExecuteAreaAction { action: AreaAction::Skip });
+    moves
+}
+
+/// Enumerate legal Employment Agency moves at `power`: every
+/// (assistants, shophouses, trading_houses) triple with 1 <= total <=
+/// `employment_agency_tokens_allowed(power)`, each component within
+/// warehouse stock, and the total cost affordable -- mirrors
+/// `apply_employment_agency`'s exact cost computation (apply_move.rs:
+/// assistants free, shophouses 2 Yen each, trading houses at the 4/5/6/7
+/// already-built progression) so a change there can't silently drift from
+/// this enumeration. Skip is always legal and always offered (Task 16/17
+/// decision-log optionality ruling).
+fn generate_employment_agency_actions(state: &GameState, player: PlayerId, power: u8) -> Vec<Move> {
+    let p = state.player(player);
+    let allowed = employment_agency_tokens_allowed(power) as u32;
+    let already_built = p.trading_houses.total_built();
+
+    let mut moves = Vec::new();
+
+    for a in 0..=p.assistants.in_warehouse {
+        for s in 0..=p.shophouses.in_warehouse {
+            for t in 0..=p.trading_houses.in_warehouse {
+                let total = a as u32 + s as u32 + t as u32;
+                if total == 0 || total > allowed {
+                    continue;
+                }
+
+                let shophouse_cost = s as u32 * 2;
+                let mut th_cost = 0u32;
+                for i in 0..t {
+                    let th_index = already_built + i as usize;
+                    th_cost += match th_index {
+                        0 => 4,
+                        1 => 5,
+                        2 => 6,
+                        _ => 7,
+                    };
+                }
+
+                if p.money < shophouse_cost + th_cost {
+                    continue;
+                }
+
+                moves.push(Move::ExecuteAreaAction {
+                    action: AreaAction::EmploymentAgency { assistants: a, shophouses: s, trading_houses: t },
+                });
+            }
+        }
+    }
+
+    moves.push(Move::ExecuteAreaAction { action: AreaAction::Skip });
+    moves
+}
+
+/// Documented v1 cap on the length of a single Chinatown move's exchange
+/// sequence, as enumerated by `generate_chinatown_actions`. NOT
+/// power-derived: `apply_chinatown_exchange`/`apply_area_action`'s Chinatown
+/// arm never actually enforces `validate_chinatown_exchanges`'s power-based
+/// count limit (a pre-existing gap outside Task 17's scope, flagged for the
+/// final whole-branch review), so this flat bound exists purely to keep the
+/// enumeration BFS's branching factor finite.
+pub const CHINATOWN_ENUM_DEPTH: usize = 4;
+
+/// The 9 Chinatown exchange kinds, used to drive the enumeration BFS below.
+const ALL_CHINATOWN_EXCHANGES: [ChinatownExchange; 9] = [
+    ChinatownExchange::CopperToYen,
+    ChinatownExchange::SilkToYen,
+    ChinatownExchange::TeaToYen,
+    ChinatownExchange::SeafoodToYen,
+    ChinatownExchange::YenToCopper,
+    ChinatownExchange::YenToSilk,
+    ChinatownExchange::YenToTea,
+    ChinatownExchange::YenToSeafood,
+    ChinatownExchange::YenToImported,
+];
+
+/// Simulated resource snapshot for Chinatown BFS enumeration -- mirrors the
+/// subset of `PlayerState` fields `apply_chinatown_exchange` reads/writes.
+#[derive(Clone, Copy)]
+struct ChinatownResources {
+    copper: u32,
+    silk: u32,
+    tea: u32,
+    seafood: u32,
+    money: u32,
+    imported_goods: u32,
+}
+
+/// Applies `exchange` to `res` exactly as `apply_chinatown_exchange` would,
+/// returning `None` if infeasible (mirrors its cost checks precisely).
+/// `mining_bonus` is the player's fixed per-event Mining Technology bonus
+/// (owned technologies don't change across a sequence of Chinatown
+/// exchanges, so the caller computes this once via `copper_bonus`).
+fn try_apply_chinatown_exchange_simulated(
+    res: ChinatownResources,
+    exchange: ChinatownExchange,
+    mining_bonus: u32,
+) -> Option<ChinatownResources> {
+    let mut r = res;
+    match exchange {
+        ChinatownExchange::CopperToYen => {
+            if r.copper < 1 { return None; }
+            r.copper -= 1;
+            r.money += 2;
+        }
+        ChinatownExchange::SilkToYen => {
+            if r.silk < 1 { return None; }
+            r.silk -= 1;
+            r.money += 2;
+        }
+        ChinatownExchange::TeaToYen => {
+            if r.tea < 1 { return None; }
+            r.tea -= 1;
+            r.money += 1;
+        }
+        ChinatownExchange::SeafoodToYen => {
+            if r.seafood < 1 { return None; }
+            r.seafood -= 1;
+            r.money += 1;
+        }
+        ChinatownExchange::YenToCopper => {
+            if r.money < 2 { return None; }
+            r.money -= 2;
+            r.copper += 1 + mining_bonus;
+        }
+        ChinatownExchange::YenToSilk => {
+            if r.money < 2 { return None; }
+            r.money -= 2;
+            r.silk += 1;
+        }
+        ChinatownExchange::YenToTea => {
+            if r.money < 1 { return None; }
+            r.money -= 1;
+            r.tea += 1;
+        }
+        ChinatownExchange::YenToSeafood => {
+            if r.money < 1 { return None; }
+            r.money -= 1;
+            r.seafood += 1;
+        }
+        ChinatownExchange::YenToImported => {
+            if r.money < 4 { return None; }
+            r.money -= 4;
+            r.imported_goods += 1;
+        }
+    }
+    Some(r)
+}
+
+/// Canonical dedupe key for a multiset of exchanges: a fixed-size count per
+/// variant (order-independent), so two different valid orderings of the
+/// same exchanges collapse to one move.
+fn chinatown_exchange_index(e: ChinatownExchange) -> usize {
+    match e {
+        ChinatownExchange::CopperToYen => 0,
+        ChinatownExchange::SilkToYen => 1,
+        ChinatownExchange::TeaToYen => 2,
+        ChinatownExchange::SeafoodToYen => 3,
+        ChinatownExchange::YenToCopper => 4,
+        ChinatownExchange::YenToSilk => 5,
+        ChinatownExchange::YenToTea => 6,
+        ChinatownExchange::YenToSeafood => 7,
+        ChinatownExchange::YenToImported => 8,
+    }
+}
+
+fn chinatown_multiset_key(exchanges: &[ChinatownExchange]) -> [u8; 9] {
+    let mut counts = [0u8; 9];
+    for &e in exchanges {
+        counts[chinatown_exchange_index(e)] += 1;
+    }
+    counts
+}
+
+/// Enumerate legal Chinatown moves via breadth-first search over exchange
+/// sequences, up to `CHINATOWN_ENUM_DEPTH` exchanges, starting from the
+/// player's actual resource tuple and admitting only exchanges valid on the
+/// running simulated state (mirroring `apply_chinatown_exchange`'s
+/// costs/yields exactly, including the Mining Technology bonus on
+/// YenToCopper). Processing strictly by increasing sequence length means
+/// the first witness recorded for any reachable multiset is always found
+/// at the shortest length that multiset is reachable, though ANY valid
+/// order suffices -- the emitted `exchanges` vec is always the literal BFS
+/// path that reached it (a valid execution order BY CONSTRUCTION), never
+/// independently sorted: sorting a multiset can produce an order that
+/// fails validation (e.g. money 0, 1 copper: [CopperToYen, YenToTea] is
+/// valid, the reverse is not). One move per distinct multiset. Chinatown
+/// places no assistant, so (unlike the other five permissive areas) hand
+/// availability never gates it. Skip is always legal and always offered
+/// (Task 16/17 decision-log optionality ruling).
+fn generate_chinatown_actions(state: &GameState, player: PlayerId, rules: &Rules) -> Vec<Move> {
+    let p = state.player(player);
+    let mining_bonus = copper_bonus(state, player, 1, &rules.techs) as u32;
+    let start = ChinatownResources {
+        copper: p.copper,
+        silk: p.silk,
+        tea: p.tea,
+        seafood: p.seafood,
+        money: p.money,
+        imported_goods: p.imported_goods,
     };
 
-    Move::ExecuteAreaAction { action }
+    let mut moves = Vec::new();
+    let mut seen: std::collections::HashSet<[u8; 9]> = std::collections::HashSet::new();
+    let mut frontier: Vec<(ChinatownResources, Vec<ChinatownExchange>)> = vec![(start, Vec::new())];
+
+    for _ in 0..CHINATOWN_ENUM_DEPTH {
+        let mut next_frontier = Vec::new();
+        for (res, path) in &frontier {
+            for &exchange in &ALL_CHINATOWN_EXCHANGES {
+                if let Some(next_res) = try_apply_chinatown_exchange_simulated(*res, exchange, mining_bonus) {
+                    let mut next_path = path.clone();
+                    next_path.push(exchange);
+                    if seen.insert(chinatown_multiset_key(&next_path)) {
+                        moves.push(Move::ExecuteAreaAction {
+                            action: AreaAction::Chinatown { exchanges: next_path.clone() },
+                        });
+                    }
+                    next_frontier.push((next_res, next_path));
+                }
+            }
+        }
+        frontier = next_frontier;
+    }
+
+    moves.push(Move::ExecuteAreaAction { action: AreaAction::Skip });
+    moves
 }
 
 fn generate_five_power_moves(state: &GameState) -> Vec<Move> {
@@ -1101,6 +1378,340 @@ mod tests {
 
         let moves = get_legal_moves(&state, &rules);
         assert_eq!(moves.len(), 4);
+        assert_all_moves_apply(&state, &moves, &rules);
+    }
+
+    // --- Task 17: Church, Customs, Employment Agency & Chinatown enumeration ---
+
+    /// Places a Church area on the board, puts the president there, and
+    /// enters the AreaAction phase at the given power.
+    fn create_church_area_state(power: u8) -> GameState {
+        let mut state = create_test_state();
+        let area = AreaId::new(5);
+        state.board_layout.areas.insert(area, AreaConfig {
+            area_type: AreaType::Church,
+            grid_position: (0, 5),
+        });
+        state.players[0].president_location = PresidentLocation::OnBoard(area);
+        state.turn_phase = TurnPhase::AreaAction;
+        state.current_action_power = Some(power);
+        state
+    }
+
+    /// Places a Customs area on the board, puts the president there, and
+    /// enters the AreaAction phase at the given power.
+    fn create_customs_area_state(power: u8) -> GameState {
+        let mut state = create_test_state();
+        let area = AreaId::new(5);
+        state.board_layout.areas.insert(area, AreaConfig {
+            area_type: AreaType::Customs,
+            grid_position: (0, 5),
+        });
+        state.players[0].president_location = PresidentLocation::OnBoard(area);
+        state.turn_phase = TurnPhase::AreaAction;
+        state.current_action_power = Some(power);
+        state
+    }
+
+    /// Places an Employment Agency area on the board, puts the president
+    /// there, and enters the AreaAction phase at the given power.
+    fn create_employment_agency_area_state(power: u8) -> GameState {
+        let mut state = create_test_state();
+        let area = AreaId::new(5);
+        state.board_layout.areas.insert(area, AreaConfig {
+            area_type: AreaType::EmploymentAgency,
+            grid_position: (0, 5),
+        });
+        state.players[0].president_location = PresidentLocation::OnBoard(area);
+        state.turn_phase = TurnPhase::AreaAction;
+        state.current_action_power = Some(power);
+        state
+    }
+
+    /// Places a Chinatown area on the board, puts the president there, and
+    /// enters the AreaAction phase (power is irrelevant to Chinatown
+    /// enumeration -- see `CHINATOWN_ENUM_DEPTH`'s doc comment).
+    fn create_chinatown_area_state() -> GameState {
+        let mut state = create_test_state();
+        let area = AreaId::new(5);
+        state.board_layout.areas.insert(area, AreaConfig {
+            area_type: AreaType::Chinatown,
+            grid_position: (0, 5),
+        });
+        state.players[0].president_location = PresidentLocation::OnBoard(area);
+        state.turn_phase = TurnPhase::AreaAction;
+        state.current_action_power = Some(3);
+        state
+    }
+
+    /// Bumps a 2P test state to 3 players (mirrors
+    /// `actions::tracks::tests::create_test_state_3p`).
+    fn make_3p(state: &mut GameState) {
+        state.config.player_count = 3;
+        state.players.push(PlayerState::new(PlayerId::new(2), PlayerColor::Yellow, false));
+    }
+
+    #[test]
+    fn church_enumeration_stock_limited_low_faith() {
+        // 3P, power 3, stock {copper:1, rest 0}, 1 assistant, empty board:
+        // faith 3 (all-false subset) is below the floor of 4 ->
+        // executor-illegal; faith 4 ({copper}) has an eligible empty space
+        // -> 1 substantive move + Skip = 2.
+        let mut state = create_church_area_state(3);
+        make_3p(&mut state);
+        state.players[0].copper = 1;
+        state.players[0].silk = 0;
+        state.players[0].tea = 0;
+        state.players[0].seafood = 0;
+        state.players[0].money = 0;
+        state.players[0].imported_goods = 0;
+        state.players[0].assistants.in_hand = 1;
+        let rules = Rules::empty_for_tests();
+
+        let moves = get_legal_moves(&state, &rules);
+        assert_eq!(moves.len(), 2);
+        assert!(moves.iter().any(|m| matches!(m,
+            Move::ExecuteAreaAction { action: AreaAction::Church {
+                copper: true, silk: false, tea: false, seafood: false, yen: false, imported_good: false,
+            } }
+        )));
+        assert!(!moves.iter().any(|m| matches!(m,
+            Move::ExecuteAreaAction { action: AreaAction::Church {
+                copper: false, silk: false, tea: false, seafood: false, yen: false, imported_good: false,
+            } }
+        )), "faith-3 all-false subset is executor-illegal (below the floor of 4)");
+        assert_all_moves_apply(&state, &moves, &rules);
+    }
+
+    #[test]
+    fn church_enumeration_all_64_subsets_at_power_5() {
+        // 3P, power 5, all six stocks >= 1, assistant, empty board: every
+        // one of the 64 flag combinations reaches faith >= 5 (>= floor 4)
+        // with an empty eligible space (board is empty) -> 64 + Skip = 65.
+        let mut state = create_church_area_state(5);
+        make_3p(&mut state);
+        state.players[0].copper = 1;
+        state.players[0].silk = 1;
+        state.players[0].tea = 1;
+        state.players[0].seafood = 1;
+        state.players[0].money = 1;
+        state.players[0].imported_goods = 1;
+        state.players[0].assistants.in_hand = 1;
+        let rules = Rules::empty_for_tests();
+
+        let moves = get_legal_moves(&state, &rules);
+        assert_eq!(moves.len(), 65);
+        assert_all_moves_apply(&state, &moves, &rules);
+    }
+
+    #[test]
+    fn church_enumeration_no_assistant_is_skip_only() {
+        let mut state = create_church_area_state(5);
+        state.players[0].assistants.in_hand = 0;
+        let rules = Rules::empty_for_tests();
+
+        let moves = get_legal_moves(&state, &rules);
+        assert_eq!(moves.len(), 1);
+        assert!(matches!(&moves[0], Move::ExecuteAreaAction { action: AreaAction::Skip }));
+        assert_all_moves_apply(&state, &moves, &rules);
+    }
+
+    #[test]
+    fn customs_enumeration_fresh_board_power_4() {
+        // 3P, power 4 (cap 3), imports 2, assistant, fresh board -> {1,2} + Skip = 3.
+        let mut state = create_customs_area_state(4);
+        make_3p(&mut state);
+        state.players[0].imported_goods = 2;
+        let rules = Rules::empty_for_tests();
+
+        let moves = get_legal_moves(&state, &rules);
+        assert_eq!(moves.len(), 3);
+        assert_all_moves_apply(&state, &moves, &rules);
+    }
+
+    #[test]
+    fn customs_enumeration_high_n_space_occupied() {
+        // 3P, power 5 (cap 4), imports 4, assistant, space 7 (cost-4's only
+        // space) occupied -> {1,2,3} + Skip = 4.
+        let mut state = create_customs_area_state(5);
+        make_3p(&mut state);
+        state.players[0].imported_goods = 4;
+        let idx7 = CustomsTrack::space_to_index(7).unwrap();
+        state.customs_track.slots[idx7] = Some(CustomsSlot { player: PlayerId::new(1), arrival_order: 0 });
+        state.customs_track.next_arrival_order = 1;
+        let rules = Rules::empty_for_tests();
+
+        let moves = get_legal_moves(&state, &rules);
+        assert_eq!(moves.len(), 4);
+        assert_all_moves_apply(&state, &moves, &rules);
+    }
+
+    #[test]
+    fn customs_enumeration_2p_blocks_dummy_space() {
+        // 2P, power 3 (cap 2), imports 2, assistant, space 3 occupied ->
+        // N=2's fallback (space 4) is the 2P printed dummy -> only {1} + Skip = 2.
+        let mut state = create_customs_area_state(3);
+        state.players[0].imported_goods = 2;
+        let idx3 = CustomsTrack::space_to_index(3).unwrap();
+        state.customs_track.slots[idx3] = Some(CustomsSlot { player: PlayerId::new(1), arrival_order: 0 });
+        state.customs_track.next_arrival_order = 1;
+        let rules = Rules::empty_for_tests();
+
+        let moves = get_legal_moves(&state, &rules);
+        assert_eq!(moves.len(), 2);
+        assert_all_moves_apply(&state, &moves, &rules);
+    }
+
+    #[test]
+    fn customs_enumeration_no_assistant_is_skip_only() {
+        let mut state = create_customs_area_state(4);
+        state.players[0].imported_goods = 3;
+        state.players[0].assistants.in_hand = 0;
+        let rules = Rules::empty_for_tests();
+
+        let moves = get_legal_moves(&state, &rules);
+        assert_eq!(moves.len(), 1);
+        assert!(matches!(&moves[0], Move::ExecuteAreaAction { action: AreaAction::Skip }));
+        assert_all_moves_apply(&state, &moves, &rules);
+    }
+
+    #[test]
+    fn employment_enumeration_bounded_compositions_money_2() {
+        // Power 3 (allowed 2), warehouse 2 assistants/1 shophouse/0 TH,
+        // money 2 -> (1,0,0),(2,0,0),(0,1,0),(1,1,0) + Skip = 5.
+        let mut state = create_employment_agency_area_state(3);
+        state.players[0].assistants.in_warehouse = 2;
+        state.players[0].shophouses.in_warehouse = 1;
+        state.players[0].trading_houses.in_warehouse = 0;
+        state.players[0].money = 2;
+        let rules = Rules::empty_for_tests();
+
+        let moves = get_legal_moves(&state, &rules);
+        assert_eq!(moves.len(), 5);
+        for (a, s, t) in [(1, 0, 0), (2, 0, 0), (0, 1, 0), (1, 1, 0)] {
+            assert!(moves.iter().any(|m| matches!(m,
+                Move::ExecuteAreaAction { action: AreaAction::EmploymentAgency { assistants, shophouses, trading_houses } }
+                if *assistants == a && *shophouses == s && *trading_houses == t
+            )), "expected ({a},{s},{t}) among the generated moves");
+        }
+        assert!(!moves.iter().any(|m| matches!(m,
+            Move::ExecuteAreaAction { action: AreaAction::EmploymentAgency { assistants: 0, shophouses: 0, trading_houses: 0 } }
+        )), "the all-zero encoding must never be emitted (Skip is the sole decline)");
+        assert_all_moves_apply(&state, &moves, &rules);
+    }
+
+    #[test]
+    fn employment_enumeration_shophouse_unaffordable_at_money_1() {
+        let mut state = create_employment_agency_area_state(3);
+        state.players[0].assistants.in_warehouse = 2;
+        state.players[0].shophouses.in_warehouse = 1;
+        state.players[0].trading_houses.in_warehouse = 0;
+        state.players[0].money = 1;
+        let rules = Rules::empty_for_tests();
+
+        let moves = get_legal_moves(&state, &rules);
+        assert_eq!(moves.len(), 3);
+        for (a, s, t) in [(1, 0, 0), (2, 0, 0)] {
+            assert!(moves.iter().any(|m| matches!(m,
+                Move::ExecuteAreaAction { action: AreaAction::EmploymentAgency { assistants, shophouses, trading_houses } }
+                if *assistants == a && *shophouses == s && *trading_houses == t
+            )));
+        }
+        assert_all_moves_apply(&state, &moves, &rules);
+    }
+
+    #[test]
+    fn employment_enumeration_trading_house_progression_money_9() {
+        // Power 5 (allowed 4), warehouse 0/0/2, 0 built, money 9:
+        // (0,0,1) costs 4, (0,0,2) costs 4+5=9 -> both + Skip = 3.
+        let mut state = create_employment_agency_area_state(5);
+        state.players[0].assistants.in_warehouse = 0;
+        state.players[0].shophouses.in_warehouse = 0;
+        state.players[0].trading_houses.in_warehouse = 2;
+        state.players[0].money = 9;
+        let rules = Rules::empty_for_tests();
+
+        let moves = get_legal_moves(&state, &rules);
+        assert_eq!(moves.len(), 3);
+        for t in [1, 2] {
+            assert!(moves.iter().any(|m| matches!(m,
+                Move::ExecuteAreaAction { action: AreaAction::EmploymentAgency { assistants: 0, shophouses: 0, trading_houses } }
+                if *trading_houses == t
+            )));
+        }
+        assert_all_moves_apply(&state, &moves, &rules);
+    }
+
+    #[test]
+    fn employment_enumeration_trading_house_progression_money_8() {
+        let mut state = create_employment_agency_area_state(5);
+        state.players[0].assistants.in_warehouse = 0;
+        state.players[0].shophouses.in_warehouse = 0;
+        state.players[0].trading_houses.in_warehouse = 2;
+        state.players[0].money = 8;
+        let rules = Rules::empty_for_tests();
+
+        let moves = get_legal_moves(&state, &rules);
+        assert_eq!(moves.len(), 2);
+        assert!(moves.iter().any(|m| matches!(m,
+            Move::ExecuteAreaAction { action: AreaAction::EmploymentAgency { assistants: 0, shophouses: 0, trading_houses: 1 } }
+        )));
+        assert_all_moves_apply(&state, &moves, &rules);
+    }
+
+    #[test]
+    fn chinatown_enumeration_hand_derived_small_fixture() {
+        // Fixture: money 1, everything else 0. HAND DERIVATION (full
+        // walk-through in the Task 17 report): the reachable exchange graph
+        // is a 2-leaf star -- R=(money:1) <-> T=(tea:1) via
+        // YenToTea/TeaToYen, and R <-> S=(seafood:1) via
+        // YenToSeafood/SeafoodToYen -- since money never reaches 2 (so the
+        // Copper/Silk/Imported branches are permanently unreachable from
+        // this fixture). Valid walks of length 1..=4 starting at R: 2 + 2 +
+        // 4 + 4 = 12 raw sequences; exactly one collision (the two
+        // length-4 walks that visit both leaves once each collapse to the
+        // same multiset) -> 11 distinct multisets + Skip = 12. This also
+        // pins the depth cap: the R<->T/S cycle is periodic (reachable
+        // indefinitely), so anything beyond 12 here would mean
+        // CHINATOWN_ENUM_DEPTH stopped bounding the search.
+        let mut state = create_chinatown_area_state();
+        state.players[0].copper = 0;
+        state.players[0].silk = 0;
+        state.players[0].tea = 0;
+        state.players[0].seafood = 0;
+        state.players[0].money = 1;
+        state.players[0].imported_goods = 0;
+        let rules = Rules::empty_for_tests();
+
+        let moves = get_legal_moves(&state, &rules);
+        assert_eq!(moves.len(), 12);
+        assert!(!moves.iter().any(|m| matches!(m,
+            Move::ExecuteAreaAction { action: AreaAction::Chinatown { exchanges } } if exchanges.is_empty()
+        )), "the empty encoding must never be emitted (Skip is the sole decline)");
+        assert_all_moves_apply(&state, &moves, &rules);
+    }
+
+    #[test]
+    fn chinatown_enumeration_preserves_valid_execution_order_not_sorted() {
+        // Fixture: 1 copper, money 0, rest 0. [CopperToYen, YenToTea] is a
+        // valid order (sell the copper first, then buy tea with the
+        // proceeds); the reverse [YenToTea, CopperToYen] is NOT valid
+        // (YenToTea needs money >= 1, but money starts at 0) -- the
+        // generator must emit the valid order, never a sorted one.
+        let mut state = create_chinatown_area_state();
+        state.players[0].copper = 1;
+        state.players[0].silk = 0;
+        state.players[0].tea = 0;
+        state.players[0].seafood = 0;
+        state.players[0].money = 0;
+        state.players[0].imported_goods = 0;
+        let rules = Rules::empty_for_tests();
+
+        let moves = get_legal_moves(&state, &rules);
+        assert!(moves.iter().any(|m| matches!(m,
+            Move::ExecuteAreaAction { action: AreaAction::Chinatown { exchanges } }
+            if exchanges == &vec![ChinatownExchange::CopperToYen, ChinatownExchange::YenToTea]
+        )), "expected the valid order [CopperToYen, YenToTea] among the generated moves");
         assert_all_moves_apply(&state, &moves, &rules);
     }
 }
