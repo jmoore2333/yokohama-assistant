@@ -1,6 +1,6 @@
 //! Port and Laboratory actions.
 
-use crate::types::{GameState, PlayerId, PortSlot, PortPayment, OrderCardId, TechCardId};
+use crate::types::{AreaType, GameState, PlayerId, PortSlot, PortPayment, PresidentLocation, TechCardId};
 use crate::game::cards::{refill_port, refill_lab, TechRegistry};
 
 /// Which Port slots are accessible at a given power level.
@@ -67,16 +67,41 @@ pub fn validate_port_action(
 }
 
 /// Execute Port action: take cards, pay for second, apply Power 5 VP bonus.
+///
+/// Resolves the acting Port board (A or B) from the current acting area
+/// (the mercenary target area during a mercenary sub-turn, otherwise the
+/// president's location) and reads/refills `state.order_deck` directly;
+/// callers no longer choose the board or thread the deck themselves.
 pub fn execute_port_action(
     state: &mut GameState,
     player: PlayerId,
     cards_taken: &[PortSlot],
     payment: Option<PortPayment>,
     power: u8,
-    port_is_b: bool,
-    order_deck: &mut Vec<OrderCardId>,
 ) -> Result<(), &'static str> {
-    // Validate first
+    // Resolve acting area: mercenary sub-turns act at the mercenary target
+    // area, not the president's location (mirrors apply_build_shophouse in
+    // apply_move.rs).
+    let area = if state.is_mercenary_action {
+        state.mercenary_target_area.ok_or("No mercenary target area")?
+    } else {
+        match state.player(player).president_location {
+            PresidentLocation::OnBoard(a) => a,
+            _ => return Err("President not on board"),
+        }
+    };
+
+    // Resolve which Port board (A or B) that area refers to.
+    let port_is_b = match state.board_layout.areas.get(&area).map(|c| c.area_type) {
+        Some(AreaType::PortA) => false,
+        Some(AreaType::PortB) => true,
+        _ => return Err("Port action requires a Port area"),
+    };
+    if port_is_b && state.port_state.port_b.is_none() {
+        return Err("Port B not available");
+    }
+
+    // Validate
     validate_port_action(state, player, cards_taken, payment, power)?;
 
     // Pay for second card if taking 2
@@ -89,17 +114,19 @@ pub fn execute_port_action(
         }
     }
 
-    // Get the appropriate port board
+    // Take cards, slide the remainder left, and refill from the deck —
+    // done through one borrow of `port` so it can be handed to refill_port
+    // (which borrows the disjoint state.order_deck field) without
+    // re-resolving the board a second time.
     let port = if port_is_b {
-        match &mut state.port_state.port_b {
-            Some(p) => p,
-            None => return Err("Port B not available"),
-        }
+        state.port_state.port_b.as_mut().unwrap() // presence confirmed above
     } else {
         &mut state.port_state.port_a
     };
 
-    // First, gather all cards to take (without sliding)
+    // Gather all cards to take first (without sliding), so a 2-card take
+    // reads both cards from their original slots rather than a slot that
+    // already slid after the first take.
     let mut taken_cards = Vec::new();
     for &slot in cards_taken {
         let card = match slot {
@@ -112,33 +139,29 @@ pub fn execute_port_action(
         }
     }
 
-    // Now slide cards left to fill gaps
-    if port.low.is_none() && port.mid.is_some() {
-        port.low = port.mid.take();
-    }
+    // Slide left in a single pass: shift High->Mid before Mid->Low so that
+    // two adjacent gaps (e.g. taking both Low and Mid) fully compact rather
+    // than leaving the remaining card stranded in Mid.
     if port.mid.is_none() && port.high.is_some() {
         port.mid = port.high.take();
     }
+    if port.low.is_none() && port.mid.is_some() {
+        port.low = port.mid.take();
+    }
 
-    // Add cards to player's hand
+    // Refill from the state-owned deck (rightmost empty spaces first).
+    refill_port(port, &mut state.order_deck);
+
+    // Add taken cards to player's hand.
     let p = state.player_mut(player);
     for card_id in taken_cards {
         p.order_cards_in_hand.push(card_id);
     }
 
-    // Apply Power 5 VP bonus
+    // Apply Power 5 VP bonus.
     if power >= 5 {
-        let p = state.player_mut(player);
-        p.victory_points += 3;
+        state.player_mut(player).victory_points += 3;
     }
-
-    // Refill port from deck
-    let port = if port_is_b {
-        state.port_state.port_b.as_mut().unwrap()
-    } else {
-        &mut state.port_state.port_a
-    };
-    refill_port(port, order_deck);
 
     Ok(())
 }
@@ -467,18 +490,32 @@ mod tests {
         assert!(result.unwrap_err().contains("Not enough money"));
     }
 
+    /// Places a PortA area on the board and puts the president there, as
+    /// `execute_port_action` now resolves the acting Port board from the
+    /// area (rather than taking a `port_is_b` flag directly).
+    fn place_president_at_port_a(state: &mut GameState) -> AreaId {
+        let port_area = AreaId::new(0);
+        state.board_layout.areas.insert(port_area, AreaConfig {
+            area_type: AreaType::PortA,
+            grid_position: (0, 0),
+        });
+        state.players[0].president_location = PresidentLocation::OnBoard(port_area);
+        port_area
+    }
+
     #[test]
     fn test_port_execute_power_5_vp_bonus() {
         let mut state = create_test_state();
         let player = PlayerId::new(0);
         state.players[0].money = 10;
+        place_president_at_port_a(&mut state);
 
         // Set up port with cards
         state.port_state.port_a.low = Some(OrderCardId(10));
         state.port_state.port_a.mid = Some(OrderCardId(11));
         state.port_state.port_a.high = Some(OrderCardId(12));
 
-        let mut deck: Vec<OrderCardId> = vec![OrderCardId(20), OrderCardId(21)];
+        state.order_deck = vec![OrderCardId(20), OrderCardId(21)];
 
         let initial_vp = state.players[0].victory_points;
 
@@ -489,8 +526,6 @@ mod tests {
             &[PortSlot::Low],
             None,
             5,
-            false,
-            &mut deck,
         );
         assert!(result.is_ok());
         assert_eq!(state.players[0].victory_points, initial_vp + 3);
@@ -501,9 +536,10 @@ mod tests {
         let mut state = create_test_state();
         let player = PlayerId::new(0);
         state.players[0].money = 10;
+        place_president_at_port_a(&mut state);
 
         state.port_state.port_a.low = Some(OrderCardId(10));
-        let mut deck: Vec<OrderCardId> = vec![OrderCardId(20)];
+        state.order_deck = vec![OrderCardId(20)];
 
         let initial_vp = state.players[0].victory_points;
 
@@ -514,8 +550,6 @@ mod tests {
             &[PortSlot::Low],
             None,
             4,
-            false,
-            &mut deck,
         );
         assert!(result.is_ok());
         assert_eq!(state.players[0].victory_points, initial_vp);
@@ -526,10 +560,11 @@ mod tests {
         let mut state = create_test_state();
         let player = PlayerId::new(0);
         state.players[0].money = 10;
+        place_president_at_port_a(&mut state);
 
         state.port_state.port_a.low = Some(OrderCardId(10));
         state.port_state.port_a.mid = Some(OrderCardId(11));
-        let mut deck: Vec<OrderCardId> = vec![OrderCardId(20), OrderCardId(21)];
+        state.order_deck = vec![OrderCardId(20), OrderCardId(21)];
 
         let result = execute_port_action(
             &mut state,
@@ -537,8 +572,6 @@ mod tests {
             &[PortSlot::Low, PortSlot::Mid],
             Some(PortPayment::TwoYen),
             4,
-            false,
-            &mut deck,
         );
         assert!(result.is_ok());
 

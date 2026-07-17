@@ -58,7 +58,7 @@ pub fn apply_move(state: &GameState, mv: &Move, rules: &Rules) -> Result<GameSta
         }
 
         Move::ExecuteAreaAction { action } => {
-            apply_area_action(&mut new_state, action)?;
+            apply_area_action(&mut new_state, action, rules)?;
             new_state.turn_phase = TurnPhase::FivePowerBonus;
         }
 
@@ -269,7 +269,10 @@ fn apply_return_to_hand(
     Ok(())
 }
 
-fn apply_area_action(state: &mut GameState, action: &AreaAction) -> Result<(), MoveError> {
+// `_rules` is unused today (Port doesn't consult a registry) but the
+// parameter is threaded through now so the Laboratory arm can start reading
+// `_rules.techs` without another signature change.
+fn apply_area_action(state: &mut GameState, action: &AreaAction, _rules: &Rules) -> Result<(), MoveError> {
     let player = state.current_player;
     let power = state.current_action_power.unwrap_or(0);
 
@@ -304,8 +307,9 @@ fn apply_area_action(state: &mut GameState, action: &AreaAction) -> Result<(), M
         }
 
         // Other actions - simplified implementations
-        AreaAction::Port { .. } => {
-            // TODO: implement full Port action
+        AreaAction::Port { cards_taken, second_card_payment } => {
+            execute_port_action(state, player, cards_taken, *second_card_payment, power)
+                .map_err(MoveError::RuleViolation)?;
         }
         AreaAction::Laboratory { .. } => {
             // TODO: implement full Laboratory action
@@ -1709,5 +1713,75 @@ mod tests {
 
         assert_eq!(new_state.players[0].victory_points, 4);
         assert_eq!(new_state.players[0].shophouses.built.get(&area), Some(&2));
+    }
+
+    #[test]
+    fn port_action_takes_card_refills_and_pays_second() {
+        let rules = Rules::standard();
+        let mut state = create_test_game_state(2);
+        let port_area = AreaId::new(0);
+        state.board_layout.areas.insert(port_area, AreaConfig {
+            area_type: AreaType::PortA,
+            grid_position: (0, 0),
+        });
+        state.players[0].president_location = PresidentLocation::OnBoard(port_area);
+        state.turn_phase = TurnPhase::AreaAction;
+        state.current_action_power = Some(4);
+        state.port_state.port_a.low = Some(OrderCardId(1));
+        state.port_state.port_a.mid = Some(OrderCardId(2));
+        state.port_state.port_a.high = Some(OrderCardId(3));
+        state.order_deck = vec![OrderCardId(10)];
+        state.players[0].money = 5;
+
+        let mv = Move::ExecuteAreaAction {
+            action: AreaAction::Port {
+                cards_taken: vec![PortSlot::Low, PortSlot::Mid],
+                second_card_payment: Some(PortPayment::TwoYen),
+            },
+        };
+        let next = apply_move(&state, &mv, &rules).unwrap();
+
+        let p = &next.players[0];
+        assert_eq!(p.order_cards_in_hand, vec![OrderCardId(1), OrderCardId(2)]);
+        assert_eq!(p.money, 3); // paid 2 yen for second card
+
+        // Taking Low+Mid empties both, so the untaken High card slides all
+        // the way to Low (rules ref 01-rules-reference.md: "Slide cards
+        // left, refill from deck to rightmost spaces"). With only 1 card in
+        // the deck, refill fills the rightmost empty space (High), leaving
+        // Mid empty.
+        assert_eq!(next.port_state.port_a.low, Some(OrderCardId(3)));
+        assert_eq!(next.port_state.port_a.mid, None);
+        assert_eq!(next.port_state.port_a.high, Some(OrderCardId(10)));
+        assert!(next.order_deck.is_empty());
+    }
+
+    #[test]
+    fn port_action_during_mercenary_sub_turn_resolves_mercenary_target_area() {
+        // President is in hand (default) and never placed anywhere; a Port
+        // action must still work by resolving the acting area from
+        // mercenary_target_area, not president_location.
+        let rules = Rules::standard();
+        let mut state = create_test_game_state(2);
+        let port_area = AreaId::new(5);
+        state.board_layout.areas.insert(port_area, AreaConfig {
+            area_type: AreaType::PortA,
+            grid_position: (0, 5),
+        });
+        state.is_mercenary_action = true;
+        state.mercenary_target_area = Some(port_area);
+        state.turn_phase = TurnPhase::AreaAction;
+        state.current_action_power = Some(2); // power 2 -> Low only, 1 card, free
+        state.port_state.port_a.low = Some(OrderCardId(7));
+
+        let mv = Move::ExecuteAreaAction {
+            action: AreaAction::Port {
+                cards_taken: vec![PortSlot::Low],
+                second_card_payment: None,
+            },
+        };
+        let next = apply_move(&state, &mv, &rules).unwrap();
+
+        assert_eq!(next.players[0].order_cards_in_hand, vec![OrderCardId(7)]);
     }
 }
