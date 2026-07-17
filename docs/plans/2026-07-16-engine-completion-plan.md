@@ -1,5 +1,7 @@
 # Engine Completion Implementation Plan (merged Phases 0+1)
 
+> **STATUS: EXECUTED — COMPLETE (2026-07-17).** Every task done, including the Amendments and the inserted tasks (7b, 11b, 15b, 17b, 18-fix-loop, 19-addendum, 20b). The fuzz gate PASSED: 15,000/15,000 random self-play games with per-move invariants; suite 330 green, zero warnings. Authoritative records: execution ledger `.superpowers/sdd/progress.md` (per-task commits + review outcomes), `guidingpath.md` (current state + decision log). This file is retained as the historical plan; the **Amendments** section documents where execution deviated from the text below, and task text is NOT current guidance.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Make `yokohama-core` play complete, rules-correct games of Yokohama end-to-end, proven by a self-play fuzz gate — plus the environment and documentation fixes to work on it honestly.

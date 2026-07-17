@@ -8,13 +8,15 @@ Rust engine (plus planned CLI tracker and AI player) for the board game **Yokoha
 
 **Read `guidingpath.md` first — it is the authoritative status and roadmap** (its decision log carries every rules ruling). The status tables in README.md and agent-handover.md are historical and overstate completion.
 
-**Engine-completion execution is IN PROGRESS on branch `engine-completion`** via subagent-driven development: the plan is `docs/plans/2026-07-16-engine-completion-plan.md` (read its **Amendments (2026-07-17)** section — it overrides task text), and the live execution state + resume instructions are in `.superpowers/sdd/progress.md`. Untracked `.codex/`, `.vscode/`, `AGENTS.md` belong to Jeremy — never add or commit them.
+**Engine-completion is COMPLETE (2026-07-17) on branch `engine-completion`** — the fuzz gate passed (15,000/15,000 random self-play games, per-move invariants; see guidingpath.md's Current state). The plan (`docs/plans/2026-07-16-engine-completion-plan.md`) and execution ledger (`.superpowers/sdd/progress.md`) are historical records. **Phase 2 (CLI game driver) is next** — see guidingpath.md's roadmap and its Testing path. Untracked `.codex/`, `.vscode/`, `AGENTS.md` belong to Jeremy — never add or commit them.
 
 ## Commands
 
 Toolchain is FIXED (2026-07-17): plain `cargo` works. (History: `~/.cargo/bin/rustup` was a dangling symlink; the durable fix was copying the real Mach-O from `/opt/homebrew/Cellar/rustup/*/libexec/bin/rustup` into `~/.cargo/bin/rustup` — Homebrew's `/opt/homebrew/bin/rustup` is a bash wrapper that resets argv[0] and breaks proxy multiplexing, so never symlink to it.)
 
-- All tests: `cargo test -p yokohama-core` (183 passing as of 2026-07-17, growing per task)
+- All tests: `cargo test -p yokohama-core` (330 passing as of 2026-07-17, zero warnings)
+- Fuzz regression gate (run in release before merges): `cargo test --release -p yokohama-core --test fuzz_full_games -- --ignored` (1,500 games, ~8s)
+- Full self-play sweep: `cargo run --release -p yokohama-core --example selfplay -- 5000 <players> <base_seed>`
 - Single test: `cargo test -p yokohama-core test_name`
 - One module: `cargo test -p yokohama-core board_gen`
 - Regenerate card data after YAML changes: `cargo run -p gen-data` (rewrites `crates/yokohama-core/src/game/data.rs`; never hand-edit it)
@@ -33,7 +35,7 @@ Workspace crates: `crates/yokohama-core` (library) and `crates/gen-data` (YAML�
 ## Rules knowledge
 
 - Complete reference: `analysis-1/yokohama-kb/01-rules-reference.md` (being corrected as board-art verification finds errors — the decision log lists corrections); rulebook PDF in `analysis-1/`; icon glossary is rulebook p.10.
-- Commonly-missed rules that have bitten this project: Trading House passive income (owner gets 1 Yen when another player acts in that area); the 5-Power Movement token moves *assistants*, not the President; mercenaries bypass opponent Presidents (no blocking, no fees); the President may not return to its starting area in the same turn; placement costs 1 Yen per area containing an opponent President; Trading House requires Power 5, Shophouse 4+; port refill is rightmost-first after total left-compaction; Port at 5 Power also grants +3 VP.
+- Commonly-missed rules that have bitten this project: Trading House passive income (owner gets 1 Yen when another player acts in that area); the 5-Power Movement token moves *assistants*, not the President; mercenaries bypass opponent Presidents (no blocking, no fees); the President may not return to its starting area in the same turn; placement AND movement pass-through fees are paid TO the president owners (1 Yen each), not the bank; Trading House requires Power 5, Shophouse 4+; trading-house tokens go warehouse→hand at the Employment Agency (printed 4/5/6/7 take progression) and build FREE from hand; port refill is rightmost-first after total left-compaction; Port at 5 Power also grants +3 VP; Chinatown exchange count is capped by action power; Movement Option B is legal with the President already in hand.
 - Church faith = power LINEARLY (1,2,3,4,5) plus 1 per distinct payment type (max 1 each of copper/silk/tea/seafood/yen/import). The rulebook text's "2 Power: 1 Faith" is a TYPO (Jeremy-adjudicated 2026-07-17); the engine's `calculate_church_faith` is corrected in Task 13.
 - v1 engine limitations (deliberate, in decision log): movement-icon rewards are no-ops; warehouse-icon rewards auto-take 1 free assistant; any-good rewards auto-pick copper. Choice encoding comes with Phase 2.
 

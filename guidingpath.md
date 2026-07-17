@@ -18,29 +18,31 @@ The original AR-first design (`docs/plans/2025-12-07-yokohama-assistant-design.m
 
 ---
 
-## Current state — honest assessment (2026-07-16)
+## Current state — ENGINE COMPLETE, GATE PASSED (2026-07-17)
 
-**Solid foundation:**
-- ~9,000 lines in `crates/yokohama-core`; **156 tests green** (150 unit + 6 integration) on macOS, rustc 1.93.
-- All state types serde-serializable; `GameState` is complete-and-resumable by design.
-- Turn already decomposed into a phase state machine with `get_legal_moves()` / `apply_move()` — the exact contract both a move-entry UI and a search AI need.
-- Board generation (incl. canonical 5-power tokens), power, movement/pathfinding with tech effects, scoring, achievements, end-game triggers: implemented with unit tests.
-- All card data transcribed to YAML (`analysis-1/yokohama-kb/07..09-*.yaml`): 36 orders, 20 techs, 24 building sites — **pending verification**.
-- Only hidden information in the whole game: each player's starting order card.
+**Phase 0+1 is DONE.** `yokohama-core` plays complete, rules-correct games of Yokohama end-to-end, on branch `engine-completion`:
 
-**Not done (despite "A1 COMPLETE" claims elsewhere):**
+- **Fuzz gate PASSED 2026-07-17**: 15,000/15,000 seeded random self-play games complete (5,000 × each of 2p/3p/4p via `cargo run --release -p yokohama-core --example selfplay -- 5000 <players> 0`), nine state invariants checked after every applied move, zero violations. CI-sized slice (`cargo test --release -p yokohama-core --test fuzz_full_games -- --ignored`, 1,500 games) passes in ~8s.
+- **All five end triggers observed**: OrderDeckEmpty + ChurchTrackFull organically; Customs/Shophouses/TradingHouses via seeded near-threshold end-to-end scenarios (decision log 2026-07-17).
+- **Replay determinism**: `GameRecord` {engine_version, seed, config, choices, moves} replays to a PartialEq-identical final state, including through a JSON round-trip; enumeration is fully deterministic (BTreeMap state maps).
+- **Suite: 330 tests green, zero warnings** (316 lib + 6 fuzz + 2 record + 6 integration, +1 ignored release-profile gate).
+- **Perf baseline (2026-07-17, release, 1,000 games each)**: ~875k / 515k / 298k moves/sec at 2p/3p/4p; mean random-game length 276 / 398 / 481 turns; per-phase mean branching factor — Placement 172 / 365 / 787 (2p/3p/4p; THE combinatorial hotspot — Phase-3 search needs progressive widening exactly here), Movement ~3, AreaAction 2–4.5, other phases ~1.
 
-| Gap | Where |
+**The 2026-07-16 "Not done" gaps — all closed:**
+
+| Gap (as of 2026-07-16) | Closed by |
 |---|---|
-| Port/Lab/Church/Customs actions stubbed in the state machine (Port/Lab no-op; Church/Customs never place assistants on tracks) | `apply_move.rs:316-335` |
-| Full Port/Lab executors exist but are unwired — they need real deck contents; `GameState` only stores a count | `actions/cards.rs` vs `types/state.rs` |
-| Legal-move generation for those areas emits one hardcoded placeholder each | `legal_moves.rs:301` |
-| Placement president-fees computed but never charged | `apply_move.rs:206,223` |
-| Card registries have no data (`::standard()` constructors don't exist) | `game/cards.rs` |
+| Port/Lab/Church/Customs actions stubbed | T11 fadc2d7+5a9a266 (Port), T12 a39cde0 (Lab), T13 e397ff1 (Church, linear faith), T14 18da85c (Customs 7-space re-model) |
+| Six-slot port/lab boards (board-art find) | T11b d20b31d |
+| Placeholder legal-move enumeration | T16 afc1d8e (Port/Lab + `AreaAction::Skip`), T17 3316ca2 + 9b6aa2e + 0d614a9 (rest; Chinatown power cap) |
+| Placement fees computed but never charged | T15 bb41b4f (charged AND credited to owners); movement fees e7d404a |
+| Card registries had no data | T6 verification + T7 d4185f5 (`Rules::standard()` from verified YAML) |
+| No complete game ever simulated | T18 scaffold f34faf4 + fix loop 9c31b2c, 8545c65, e7d404a, 99d3aa8, 2b6bf39, 52ab69f, 1aa09d1, 500247f, 3f2943e |
+| No save/replay format | T19 de01ac5 + b3c4646 |
 
-**Consequence:** no complete game has ever been simulated; two of five end-game triggers are unreachable. The missing acceptance gate was always "play thousands of full games."
+**Physical verification aids** (2026-07-17): engine-mapped reference `analysis-1/yokohama-kb/01-rules-reference-engine-mapped.md` (every card/board value from the engine's source of truth, for box comparison) + prioritized checklist `docs/plans/2026-07-16-card-verification/box-check-brief.md`.
 
-**Environment:** `~/.cargo/bin` symlinks are broken on this machine (homebrew rustup artifact) — `cargo` isn't on PATH. Workaround in CLAUDE.md; permanent fix is Part A of the engine-completion spec.
+**Environment:** toolchain FIXED — plain `cargo` works (see CLAUDE.md for the durable-fix history).
 
 ---
 
@@ -70,14 +72,14 @@ The original AR-first design (`docs/plans/2025-12-07-yokohama-assistant-design.m
 
 ## Roadmap
 
-### Phase 0+1 (merged) — Engine completion ← CURRENT
-**Spec:** `docs/plans/2026-07-16-engine-completion-design.md` (environment/doc fixes ordered first, then engine work).
-**Plan:** `docs/plans/2026-07-16-engine-completion-plan.md` — 20 TDD tasks, **ready to execute** via subagent-driven development with tiered models (see the plan's "Execution Model" section: Haiku/Sonnet subagents for scripted tasks, a blind Fable subagent for card transcription, orchestrator-direct for rules rulings and the fuzz-fix loop).
-**Gate:** ≥5,000 seeded random self-play games across 2p/3p/4p complete without panic, with per-step invariants; all five end triggers observed; card data verified; replay determinism (same seed+log → same final state).
+### Phase 0+1 (merged) — Engine completion ✅ COMPLETE (gate passed 2026-07-17)
+**Gate evidence:** 15,000/15,000 random self-play games (5,000 × 2p/3p/4p) with per-move invariants; 1,500-game release-profile gate test green (~8s); all five end triggers observed (two organic + three seeded end-to-end scenarios); card data verified (manifest VALIDATED; physical box-check pending exceptions-only per `box-check-brief.md`); replay determinism proven incl. JSON round-trip.
+**Records:** plan `docs/plans/2026-07-16-engine-completion-plan.md` (annotated EXECUTED; its Amendments section documents every deviation), execution ledger `.superpowers/sdd/progress.md` (per-task commits + reviews), rulings in this file's decision log.
 
-### Phase 2 — CLI game driver
-New-game-from-seed → per-phase prompt with numbered legal options → apply; undo; save/load `GameRecord` JSON; ASCII board & state display; the card display-code "language" for matching physical cards to CLI entries (order cards are the hard case — match by country + requirements).
+### Phase 2 — CLI game driver ← NEXT
+New-game-from-seed → per-phase prompt with numbered legal options → apply; undo; save/load `GameRecord` JSON; ASCII board & state display; the card display-code "language" for matching physical cards to CLI entries (order cards are the hard case — match by printed corner index, now the canonical id).
 **Gate:** track one full physical game live, start to finish, without fighting the tool.
+**Testing path (set 2026-07-17):** every Phase-2 feature lands TDD against the engine's public API; the fuzz corpus is the standing regression suite — run the ignored gate test in release before every merge (`cargo test --release -p yokohama-core --test fuzz_full_games -- --ignored`) and the 5,000-game example sweeps before phase closes; `GameRecord` round-trips are the save/load tests; replay determinism guards every engine change (a diverging replay = a rules change, intentional or not); undo = replay-prefix (drop last move, re-fold — no new state machinery). Live-tracking reconciliation (promote-to-top on observed reveals) gets its own integration tests against `extract_order_from_deck`.
 
 ### Phase 3 — Computer player ladder
 Random → **hand-crafted value function (greedy)** → flat Monte Carlo → **depth-1/2 expectiminimax** → MCTS with truncated heuristic rollouts + progressive widening → *(stretch)* AlphaZero-lite (PyO3→PyTorch, or pure-Rust burn).
