@@ -4,8 +4,8 @@ use serde::{Deserialize, Serialize};
 
 use crate::types::{
     AchievementCard, AreaId, BoardLayout, ChurchTrack, CustomsTrack,
-    LabBoard, MercenarySupply, PlayerId, PlayerColor, PlayerState,
-    PortBoard, TurnPhase,
+    LabBoard, MercenarySupply, OrderCardId, PlayerId, PlayerColor, PlayerState,
+    PortBoard, TechCardId, TurnPhase,
 };
 
 /// Game configuration (immutable after setup).
@@ -18,6 +18,8 @@ pub struct GameConfig {
     pub has_port_b: bool,
     /// Whether Lab B board is in use (4 players only).
     pub has_lab_b: bool,
+    /// Seed used by `new_game` to generate this game's board/decks (0 for legacy/manual construction).
+    pub setup_seed: u64,
 }
 
 impl GameConfig {
@@ -30,6 +32,7 @@ impl GameConfig {
             start_player,
             has_port_b: player_count >= 3,
             has_lab_b: player_count >= 4,
+            setup_seed: 0,
         }
     }
 
@@ -74,16 +77,16 @@ impl GameConfig {
         }
     }
 
-    /// Starting money for a player based on turn order.
-    /// First player: 7 Yen, Others: 8 Yen.
+    /// Starting money for a player based on turn order (rulebook setup step 9).
+    /// Start player: 3 Yen, Others: 4 Yen.
     pub fn starting_money(&self, player: PlayerId) -> u32 {
-        if player == self.start_player { 7 } else { 8 }
+        if player == self.start_player { 3 } else { 4 }
     }
 
-    /// Number of order cards to remove from deck for this player count.
+    /// Number of order cards to remove from deck for this player count (rulebook setup step 12).
     pub fn order_cards_to_remove(&self) -> u8 {
         match self.player_count {
-            2 => 10,
+            2 => 16,
             3 => 5,
             4 => 0,
             _ => 0,
@@ -210,8 +213,14 @@ pub struct GameState {
     // Shared card pools
     pub port_state: PortState,
     pub lab_state: LabState,
-    pub order_deck_remaining: u8,
-    pub tech_deck_remaining: u8,
+    /// Order card deck; last element is the top (drawn via `Vec::pop`).
+    pub order_deck: Vec<OrderCardId>,
+    /// Tech card deck; last element is the top (drawn via `Vec::pop`).
+    pub tech_deck: Vec<TechCardId>,
+    /// Order cards removed from play at setup (unused player-count reduction) or discarded
+    /// as the "other" card in a revealed starting-order deal. Hidden-information bookkeeping:
+    /// every card is in exactly one of `order_deck`, a player's hand, or here.
+    pub orders_removed: Vec<OrderCardId>,
 
     // Tracks
     pub church_track: ChurchTrack,

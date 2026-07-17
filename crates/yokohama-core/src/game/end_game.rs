@@ -25,7 +25,7 @@ pub fn check_end_game_triggers(state: &mut GameState) {
     }
 
     // 3. Order deck empty AND a Port slot is empty
-    if state.order_deck_remaining == 0 {
+    if state.order_deck.is_empty() {
         let port_has_empty_slot = check_port_empty_slot(state);
         if port_has_empty_slot {
             trigger_end_game(state, EndGameTrigger::OrderDeckEmpty, state.current_player);
@@ -149,8 +149,9 @@ mod tests {
             president_start_area: None,
             port_state: PortState::new(false),
             lab_state: LabState::new(false),
-            order_deck_remaining: 20,
-            tech_deck_remaining: 20,
+            order_deck: vec![],
+            tech_deck: vec![],
+            orders_removed: vec![],
             church_track: ChurchTrack::new(),
             customs_track: CustomsTrack::new(),
             achievements: [
@@ -185,7 +186,7 @@ mod tests {
         let mut state = create_test_state();
 
         // Deck has cards, all port slots full - should NOT trigger
-        state.order_deck_remaining = 1;
+        state.order_deck = vec![OrderCardId(1)];
         state.port_state.port_a.low = Some(OrderCardId(1));
         state.port_state.port_a.mid = Some(OrderCardId(2));
         state.port_state.port_a.high = Some(OrderCardId(3));
@@ -194,7 +195,7 @@ mod tests {
         assert!(!state.end_game_triggered);
 
         // Deck empty but all slots full - should NOT trigger
-        state.order_deck_remaining = 0;
+        state.order_deck = vec![];
         check_end_game_triggers(&mut state);
         assert!(!state.end_game_triggered);
 
@@ -211,7 +212,7 @@ mod tests {
         state.port_state.port_b = Some(PortBoard::new()); // Add Port B
 
         // Deck empty, Port A full, Port B has empty slot
-        state.order_deck_remaining = 0;
+        state.order_deck = vec![];
         state.port_state.port_a.low = Some(OrderCardId(1));
         state.port_state.port_a.mid = Some(OrderCardId(2));
         state.port_state.port_a.high = Some(OrderCardId(3));

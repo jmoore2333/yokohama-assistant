@@ -53,8 +53,12 @@ fn setup_2p_game() -> (GameState, OrderRegistry, TechRegistry) {
         president_start_area: None,
         port_state: PortState::new(false),
         lab_state: LabState::new(false),
-        order_deck_remaining: 20,
-        tech_deck_remaining: 20,
+        // Non-empty by default so `check_end_game_triggers` doesn't spuriously fire the
+        // order-deck-empty condition (Port A starts with all slots empty too) for tests
+        // that aren't exercising that trigger specifically.
+        order_deck: vec![OrderCardId(1)],
+        tech_deck: vec![],
+        orders_removed: vec![],
         church_track: ChurchTrack::new(),
         customs_track: CustomsTrack::new(),
         achievements: [

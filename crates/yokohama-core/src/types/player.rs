@@ -192,6 +192,9 @@ pub struct PlayerState {
     /// This is the only hidden information in base Yokohama.
     /// None if not yet assigned (pre-setup) or if revealed for some reason.
     pub starting_order: Option<OrderCardId>,
+    /// True when this player chose to keep their starting order deal hidden (live-tracked
+    /// opponent): the card's identity is not recorded anywhere in this state.
+    pub starting_order_hidden: bool,
     pub completed_orders: Vec<OrderCardId>,
     pub technologies: Vec<TechCardId>,
 
@@ -223,6 +226,7 @@ impl PlayerState {
             imported_goods: 0,
             order_cards_in_hand: Vec::new(),
             starting_order: None,
+            starting_order_hidden: false,
             completed_orders: Vec::new(),
             technologies: Vec::new(),
             five_power_tokens: 0,

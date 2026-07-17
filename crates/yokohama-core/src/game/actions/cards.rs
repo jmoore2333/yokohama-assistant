@@ -140,9 +140,6 @@ pub fn execute_port_action(
     };
     refill_port(port, order_deck);
 
-    // Update deck count
-    state.order_deck_remaining = order_deck.len() as u8;
-
     Ok(())
 }
 
@@ -312,9 +309,6 @@ pub fn execute_lab_action(
     };
     refill_lab(lab, tech_deck);
 
-    // Update deck count
-    state.tech_deck_remaining = tech_deck.len() as u8;
-
     Ok(())
 }
 
@@ -359,8 +353,9 @@ mod tests {
             president_start_area: None,
             port_state: PortState::new(false),
             lab_state: LabState::new(false),
-            order_deck_remaining: 20,
-            tech_deck_remaining: 20,
+            order_deck: vec![],
+            tech_deck: vec![],
+            orders_removed: vec![],
             church_track: ChurchTrack::new(),
             customs_track: CustomsTrack::new(),
             achievements: [
