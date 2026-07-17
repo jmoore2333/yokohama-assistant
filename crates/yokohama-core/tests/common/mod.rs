@@ -46,15 +46,6 @@ pub struct GameStats {
     pub branching_by_phase: HashMap<TurnPhase, (u64, u64)>,
 }
 
-impl GameStats {
-    pub fn mean_branching(&self, phase: TurnPhase) -> f64 {
-        match self.branching_by_phase.get(&phase) {
-            Some(&(sum, count)) if count > 0 => sum as f64 / count as f64,
-            _ => 0.0,
-        }
-    }
-}
-
 /// Play one random game to completion (or to a hard failure) from a seed.
 ///
 /// Deterministic: the same `(seed, players)` pair always plays the same
@@ -102,6 +93,20 @@ pub fn run_random_game_from(
     let mut move_log: Vec<Move> = Vec::new();
     let mut branching_by_phase: HashMap<TurnPhase, (u64, u64)> = HashMap::new();
     let mut moves_applied: u64 = 0;
+
+    // Guard the INCOMING state: corruption from setup or a scenario test's
+    // surgical construction must be reported as such, not misattributed to
+    // whichever move happens to be applied first (Task 18 scaffold-review
+    // finding).
+    if let Err(reason) = check_invariants(&state, rules) {
+        return Err(dump_failure(
+            seed,
+            players,
+            &format!("corrupt starting state (invariant violated before any move): {reason}"),
+            &state,
+            &move_log,
+        ));
+    }
 
     loop {
         if is_game_over(&state) {

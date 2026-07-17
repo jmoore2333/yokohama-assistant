@@ -209,6 +209,25 @@ fn scenario_trading_houses_complete_trigger_end_to_end() {
     assert!(matches!(stats.trigger, Some(EndGameTrigger::TradingHousesComplete(_))));
 }
 
+#[test]
+fn corrupt_starting_state_is_reported_as_such_not_blamed_on_a_move() {
+    // A state that is corrupt BEFORE any move (here: one assistant simply
+    // vanished) must be reported as a corrupt starting state, not
+    // misattributed to whichever move gets applied first (Task 18 scaffold
+    // review finding: setup/surgery corruption would otherwise send
+    // debugging into move-application logic).
+    let (mut state, mut rng, rules) = fresh_2p(104);
+    state.players[0].assistants.in_hand -= 1; // total 19 != 20
+
+    let err = run_random_game_from(state, &mut rng, 104, 2, &rules)
+        .expect_err("corrupt state must not play");
+    assert!(
+        err.contains("corrupt starting state"),
+        "misattributed corruption: {}",
+        err.lines().take(2).collect::<Vec<_>>().join(" | ")
+    );
+}
+
 /// The gate's generated-move soundness property on a small corpus slice,
 /// kept non-ignored: every move `get_legal_moves` offers must apply cleanly
 /// (this is implicit in every completed game above, but a dedicated name
