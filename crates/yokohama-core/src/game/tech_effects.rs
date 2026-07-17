@@ -54,18 +54,23 @@ pub fn building_vp_bonus(
     }
 }
 
-/// Calculate copper bonus from Mining Technology.
+/// Calculate copper bonus from Mining Technology: "Whenever you gain one or
+/// more Copper: gain 1 additional Copper" (KB 08-tech-cards.yaml:147),
+/// stacking per owned physical copy (consistent with the Winery/Brickyard/
+/// Letterpress precedent). Fires only on actual receipt — zero base copper
+/// means zero bonus even with copies owned.
 pub fn copper_bonus(
     state: &GameState,
     player: PlayerId,
     base_copper: u8,
     tech_registry: &TechRegistry,
 ) -> u8 {
-    if base_copper > 0 && has_tech_effect(state, player, TechEffect::MiningTechnology, tech_registry) {
-        1
-    } else {
-        0
+    if base_copper == 0 {
+        return 0;
     }
+    state.player(player).technologies.iter()
+        .filter(|&&tech_id| tech_registry.get(tech_id).map(|t| t.effect == TechEffect::MiningTechnology).unwrap_or(false))
+        .count() as u8
 }
 
 /// Calculate placement limit (3 or 4 with Newspaper).
@@ -414,6 +419,45 @@ mod tests {
         assert_eq!(copper_bonus(&state, player, 3, &tech_registry), 1);
 
         // But not if base copper is 0
+        assert_eq!(copper_bonus(&state, player, 0, &tech_registry), 0);
+    }
+
+    #[test]
+    fn test_mining_technology_bonus_stacks_per_owned_copy() {
+        // Standard data has only 1 physical Mining Technology, so stacking is
+        // proven with a hand-rolled two-copy registry fixture (mirrors the
+        // Winery/Brickyard stacking precedent).
+        let mut state = create_test_state();
+        let player = PlayerId::new(0);
+
+        let mut tech_registry = TechRegistry::new();
+        let mining_1 = TechCard {
+            id: TechCardId(15),
+            name: "Mining Technology".to_string(),
+            country: Country::German,
+            industry_cost: 3,
+            effect: TechEffect::MiningTechnology,
+        };
+        let mining_2 = TechCard {
+            id: TechCardId(31),
+            name: "Mining Technology".to_string(),
+            country: Country::German,
+            industry_cost: 3,
+            effect: TechEffect::MiningTechnology,
+        };
+        tech_registry.insert(mining_1, "tech_mining_1");
+        tech_registry.insert(mining_2, "tech_mining_2");
+
+        // With one owned copy - +1 copper
+        state.players[0].technologies.push(TechCardId(15));
+        assert_eq!(copper_bonus(&state, player, 3, &tech_registry), 1);
+
+        // With both owned copies - stacks to +2 copper
+        state.players[0].technologies.push(TechCardId(31));
+        assert_eq!(copper_bonus(&state, player, 3, &tech_registry), 2);
+
+        // Still gated on receipt: zero base copper means zero bonus even with
+        // two copies owned.
         assert_eq!(copper_bonus(&state, player, 0, &tech_registry), 0);
     }
 

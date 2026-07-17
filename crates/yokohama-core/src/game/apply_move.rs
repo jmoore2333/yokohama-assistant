@@ -22,13 +22,12 @@ pub fn apply_move(state: &GameState, mv: &Move, rules: &Rules) -> Result<GameSta
 
         Move::PlaceTwoSameArea { area, adjacent_bonus } => {
             apply_placement_same_area(&mut new_state, *area)?;
-            // Telegram bonus: place 1 in adjacent area
+            // Telegram bonus: place 1 in adjacent area, under the same fee
+            // rules as ordinary placement. Reusing apply_placement guarantees
+            // this never drifts from generate_placement_moves's cost + adj_cost
+            // affordability check.
             if let Some(adj_area) = adjacent_bonus {
-                let p = new_state.player_mut(new_state.current_player);
-                if p.assistants.in_hand > 0 {
-                    p.assistants.in_hand -= 1;
-                    *p.assistants.on_board.entry(*adj_area).or_insert(0) += 1;
-                }
+                apply_placement(&mut new_state, &[*adj_area])?;
             }
             // Record president's starting area for this turn's movement
             set_president_start_area(&mut new_state);
@@ -185,35 +184,72 @@ fn advance_phase(state: &mut GameState) {
 
 fn apply_placement(state: &mut GameState, placements: &[AreaId]) -> Result<(), MoveError> {
     let player = state.current_player;
-    let p = state.player_mut(player);
+    let p = state.player(player);
 
+    if (placements.len() as u8) > p.assistants.in_hand {
+        return Err(MoveError::RuleViolation("Not enough assistants in hand"));
+    }
+
+    // Validate affordability before any mutation (matches calculate_placement_cost,
+    // the same function generate_placement_moves used to price this move).
+    let cost = calculate_placement_cost(state, player, placements);
+    if state.player(player).money < cost {
+        return Err(MoveError::NotEnoughMoney);
+    }
+
+    let p = state.player_mut(player);
+    p.money -= cost;
     for &area in placements {
-        if p.assistants.in_hand < 1 {
-            return Err(MoveError::RuleViolation("Not enough assistants in hand"));
-        }
         p.assistants.in_hand -= 1;
         *p.assistants.on_board.entry(area).or_insert(0) += 1;
-
-        // TODO: Check and pay President fees
     }
+
+    credit_placement_fees(state, player, placements);
 
     Ok(())
 }
 
 fn apply_placement_same_area(state: &mut GameState, area: AreaId) -> Result<(), MoveError> {
     let player = state.current_player;
-    let p = state.player_mut(player);
+    let p = state.player(player);
 
     if p.assistants.in_hand < 2 {
         return Err(MoveError::RuleViolation("Not enough assistants in hand"));
     }
 
+    // Validate affordability before any mutation. Priced as a single-area
+    // toll (calculate_placement_cost(&[area])), matching generate_placement_moves -
+    // not doubled for the 2 assistants placed here.
+    let cost = calculate_placement_cost(state, player, &[area]);
+    if state.player(player).money < cost {
+        return Err(MoveError::NotEnoughMoney);
+    }
+
+    let p = state.player_mut(player);
+    p.money -= cost;
     p.assistants.in_hand -= 2;
     *p.assistants.on_board.entry(area).or_insert(0) += 2;
 
-    // TODO: Check and pay President fees
+    credit_placement_fees(state, player, &[area]);
 
     Ok(())
+}
+
+/// Credit 1 Yen to each opponent President owner per assistant the payer
+/// placed into that owner's President's area. Mirrors calculate_placement_cost's
+/// (area, opponent) pairing exactly, so the payer's deduction there and the
+/// sum of credits here always match (KB: "pay 1 Yen to each President's
+/// owner per assistant placed").
+fn credit_placement_fees(state: &mut GameState, payer: PlayerId, placements: &[AreaId]) {
+    for &area in placements {
+        let owners: Vec<PlayerId> = state.players.iter()
+            .filter(|p| p.id != payer && p.president_location == PresidentLocation::OnBoard(area))
+            .map(|p| p.id)
+            .collect();
+        for owner in owners {
+            state.player_mut(owner).money += 1;
+        }
+    }
 }
 
 fn apply_movement(
@@ -279,7 +315,8 @@ fn apply_area_action(state: &mut GameState, action: &AreaAction, rules: &Rules) 
     match action {
         AreaAction::ProduceCopper => {
             let reward = copper_mine_reward(power);
-            state.player_mut(player).copper += reward as u32;
+            let bonus = copper_bonus(state, player, reward, &rules.techs);
+            state.player_mut(player).copper += (reward + bonus) as u32;
         }
         AreaAction::ProduceSilk => {
             let reward = silk_mill_reward(power);
@@ -937,6 +974,147 @@ mod tests {
     }
 
     #[test]
+    fn test_placement_charges_fee_to_payer_and_credits_single_owner() {
+        let mut state = create_minimal_state(2);
+        let area = AreaId::new(0);
+        state.board_layout.areas.insert(area, AreaConfig {
+            area_type: AreaType::Bank,
+            grid_position: (0, 0),
+        });
+        state.turn_phase = TurnPhase::Placement;
+        state.players[1].president_location = PresidentLocation::OnBoard(area);
+        state.players[0].money = 3;
+        let owner_money_before = state.players[1].money;
+
+        let rules = Rules::empty_for_tests();
+        let result = apply_move(&state, &Move::PlaceThreeAreas { placements: vec![area] }, &rules);
+        assert!(result.is_ok());
+        let next = result.unwrap();
+
+        assert_eq!(next.players[0].money, 2);
+        assert_eq!(next.players[1].money, owner_money_before + 1);
+    }
+
+    #[test]
+    fn test_placement_insufficient_money_rejected_zero_mutation() {
+        let mut state = create_minimal_state(2);
+        let area = AreaId::new(0);
+        state.board_layout.areas.insert(area, AreaConfig {
+            area_type: AreaType::Bank,
+            grid_position: (0, 0),
+        });
+        state.players[1].president_location = PresidentLocation::OnBoard(area);
+        state.players[0].money = 0;
+
+        let hand_before = state.players[0].assistants.in_hand;
+        let board_before = state.players[0].assistants.on_board.clone();
+        let money_before = state.players[0].money;
+        let owner_money_before = state.players[1].money;
+
+        let result = apply_placement(&mut state, &[area]);
+        assert_eq!(result, Err(MoveError::NotEnoughMoney));
+
+        // Zero mutation: a rejected placement must leave everything as it was.
+        assert_eq!(state.players[0].assistants.in_hand, hand_before);
+        assert_eq!(state.players[0].assistants.on_board, board_before);
+        assert_eq!(state.players[0].money, money_before);
+        assert_eq!(state.players[1].money, owner_money_before);
+    }
+
+    #[test]
+    fn test_placement_multi_president_area_charges_and_credits_each_owner() {
+        // Two different opponents' Presidents both sit in the same area.
+        let mut state = create_minimal_state(3);
+        let area = AreaId::new(0);
+        state.board_layout.areas.insert(area, AreaConfig {
+            area_type: AreaType::Bank,
+            grid_position: (0, 0),
+        });
+        state.turn_phase = TurnPhase::Placement;
+        state.players[1].president_location = PresidentLocation::OnBoard(area);
+        state.players[2].president_location = PresidentLocation::OnBoard(area);
+        state.players[0].money = 5;
+        let owner1_money_before = state.players[1].money;
+        let owner2_money_before = state.players[2].money;
+
+        let rules = Rules::empty_for_tests();
+        let result = apply_move(&state, &Move::PlaceThreeAreas { placements: vec![area] }, &rules);
+        assert!(result.is_ok());
+        let next = result.unwrap();
+
+        assert_eq!(next.players[0].money, 3); // paid 1 to each of 2 owners
+        assert_eq!(next.players[1].money, owner1_money_before + 1);
+        assert_eq!(next.players[2].money, owner2_money_before + 1);
+    }
+
+    #[test]
+    fn test_place_two_same_area_charges_fee_once_not_per_assistant() {
+        let mut state = create_minimal_state(2);
+        let area = AreaId::new(0);
+        state.board_layout.areas.insert(area, AreaConfig {
+            area_type: AreaType::Bank,
+            grid_position: (0, 0),
+        });
+        state.turn_phase = TurnPhase::Placement;
+        state.players[1].president_location = PresidentLocation::OnBoard(area);
+        state.players[0].money = 3;
+        let owner_money_before = state.players[1].money;
+
+        let rules = Rules::empty_for_tests();
+        let result = apply_move(
+            &state,
+            &Move::PlaceTwoSameArea { area, adjacent_bonus: None },
+            &rules,
+        );
+        assert!(result.is_ok());
+        let next = result.unwrap();
+
+        // 2 assistants land in `area`, but the fee is the same flat per-area
+        // toll generate_placement_moves prices via calculate_placement_cost(&[area])
+        // - it is not doubled for the 2 assistants.
+        assert_eq!(next.players[0].money, 2);
+        assert_eq!(next.players[1].money, owner_money_before + 1);
+        assert_eq!(next.players[0].assistants.on_board.get(&area), Some(&2));
+    }
+
+    #[test]
+    fn test_place_two_same_area_telegram_bonus_charges_both_areas() {
+        let mut state = create_minimal_state(3);
+        let main_area = AreaId::new(0);
+        let adj_area = AreaId::new(1);
+        state.board_layout.areas.insert(main_area, AreaConfig {
+            area_type: AreaType::Bank,
+            grid_position: (0, 0),
+        });
+        state.board_layout.areas.insert(adj_area, AreaConfig {
+            area_type: AreaType::CopperMine,
+            grid_position: (0, 1),
+        });
+        state.turn_phase = TurnPhase::Placement;
+        state.players[1].president_location = PresidentLocation::OnBoard(main_area);
+        state.players[2].president_location = PresidentLocation::OnBoard(adj_area);
+        state.players[0].money = 5;
+        let owner1_money_before = state.players[1].money;
+        let owner2_money_before = state.players[2].money;
+
+        let rules = Rules::empty_for_tests();
+        let result = apply_move(
+            &state,
+            &Move::PlaceTwoSameArea { area: main_area, adjacent_bonus: Some(adj_area) },
+            &rules,
+        );
+        assert!(result.is_ok());
+        let next = result.unwrap();
+
+        // Both areas' fees charged independently (1 to each owner).
+        assert_eq!(next.players[0].money, 3);
+        assert_eq!(next.players[1].money, owner1_money_before + 1);
+        assert_eq!(next.players[2].money, owner2_money_before + 1);
+        assert_eq!(next.players[0].assistants.on_board.get(&main_area), Some(&2));
+        assert_eq!(next.players[0].assistants.on_board.get(&adj_area), Some(&1));
+    }
+
+    #[test]
     fn test_mercenary_sub_turn_setup() {
         let mut state = create_minimal_state(2);
         let player = state.current_player;
@@ -1257,6 +1435,78 @@ mod tests {
 
         // Player 1 should receive passive income even during mercenary action
         assert_eq!(new_state.players[1].money, player1_initial_money + 1);
+    }
+
+    #[test]
+    fn test_produce_copper_mining_technology_bonus_at_power_3() {
+        let mut state = create_minimal_state(2);
+        let action_area = AreaId::new(0);
+        state.players[0].president_location = PresidentLocation::OnBoard(action_area);
+        state.current_player = PlayerId::new(0);
+        state.current_action_power = Some(3);
+        state.turn_phase = TurnPhase::AreaAction;
+        state.board_layout.areas.insert(action_area, AreaConfig {
+            area_type: AreaType::CopperMine,
+            grid_position: (0, 0),
+        });
+
+        let mut rules = Rules::empty_for_tests();
+        let mining = TechCard {
+            id: TechCardId(1),
+            name: "Mining Technology".to_string(),
+            country: Country::German,
+            industry_cost: 3,
+            effect: TechEffect::MiningTechnology,
+        };
+        rules.techs.insert(mining, "tech_mining");
+
+        // Without the tech: power 3 -> base copper_mine_reward = 1, no bonus.
+        let result = apply_move(&state, &Move::ExecuteAreaAction {
+            action: AreaAction::ProduceCopper,
+        }, &rules);
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap().players[0].copper, state.players[0].copper + 1);
+
+        // With the tech: +1 additional copper on receipt (2 total).
+        state.players[0].technologies.push(TechCardId(1));
+        let result = apply_move(&state, &Move::ExecuteAreaAction {
+            action: AreaAction::ProduceCopper,
+        }, &rules);
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap().players[0].copper, state.players[0].copper + 2);
+    }
+
+    #[test]
+    fn test_produce_copper_mining_technology_no_bonus_at_power_2_zero_receipt() {
+        let mut state = create_minimal_state(2);
+        let action_area = AreaId::new(0);
+        state.players[0].president_location = PresidentLocation::OnBoard(action_area);
+        state.current_player = PlayerId::new(0);
+        state.current_action_power = Some(2);
+        state.turn_phase = TurnPhase::AreaAction;
+        state.board_layout.areas.insert(action_area, AreaConfig {
+            area_type: AreaType::CopperMine,
+            grid_position: (0, 0),
+        });
+
+        let mut rules = Rules::empty_for_tests();
+        let mining = TechCard {
+            id: TechCardId(1),
+            name: "Mining Technology".to_string(),
+            country: Country::German,
+            industry_cost: 3,
+            effect: TechEffect::MiningTechnology,
+        };
+        rules.techs.insert(mining, "tech_mining");
+        state.players[0].technologies.push(TechCardId(1));
+
+        // Power 2 -> copper_mine_reward = 0 (nothing received), so Mining's
+        // "on receipt" bonus does not fire even though the tech is owned.
+        let result = apply_move(&state, &Move::ExecuteAreaAction {
+            action: AreaAction::ProduceCopper,
+        }, &rules);
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap().players[0].copper, state.players[0].copper);
     }
 
     #[test]

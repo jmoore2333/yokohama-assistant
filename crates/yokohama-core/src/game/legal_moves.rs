@@ -69,21 +69,26 @@ fn generate_additional_action_moves(state: &GameState) -> Vec<Move> {
 }
 
 /// Calculate placement cost for a set of areas.
-/// Cost is 1 Yen per area that has an opponent's President.
-fn calculate_placement_cost(
+/// `placements` lists one entry per assistant placed (distinct areas for
+/// Option A; a single-element slice per area-toll call for Option B/Telegram
+/// bonus). KB (01-rules-reference.md:97): "If any President pawn(s) occupy
+/// the target area, pay 1 Yen to each President's owner per assistant
+/// placed" — so cost sums 1 Yen per (area, opponent-president) pair. Two
+/// different opponents can both have a President in the same area (nothing
+/// forces either to leave when the other arrives), in which case both are
+/// owed a fee. Callers that credit these fees to owners (`apply_move.rs`'s
+/// `credit_placement_fees`) must mirror this exact pairing so the payer's
+/// deduction and the sum of owner credits always match.
+pub(crate) fn calculate_placement_cost(
     state: &GameState,
     player: PlayerId,
     placements: &[AreaId],
 ) -> u32 {
     let mut cost = 0;
     for &area in placements {
-        // Check if any opponent has President in this area
         for other in &state.players {
-            if other.id != player {
-                if other.president_location == PresidentLocation::OnBoard(area) {
-                    cost += 1;
-                    break; // Only pay once per area, not per opponent
-                }
+            if other.id != player && other.president_location == PresidentLocation::OnBoard(area) {
+                cost += 1;
             }
         }
     }
@@ -671,6 +676,26 @@ mod tests {
 
         // Empty placement always costs 0
         assert_eq!(calculate_placement_cost(&state, player, &[]), 0);
+    }
+
+    #[test]
+    fn test_calculate_placement_cost_sums_per_distinct_opponent_sharing_area() {
+        // KB (01-rules-reference.md:97): "If any President pawn(s) occupy the
+        // target area, pay 1 Yen to each President's owner per assistant
+        // placed." Two DIFFERENT opponents' Presidents can both sit in the
+        // same area (each owns only one President, but nothing forces either
+        // to leave when the other arrives), so the cost must sum per distinct
+        // opponent owner in that area, not cap at 1 per area.
+        let mut state = create_test_state();
+        state.players.push(PlayerState::new(PlayerId::new(2), PlayerColor::Yellow, false));
+        let player = PlayerId::new(0);
+        let bank_area = AreaId::new(0);
+
+        // Both opponents' Presidents in Bank.
+        state.players[1].president_location = PresidentLocation::OnBoard(bank_area);
+        state.players[2].president_location = PresidentLocation::OnBoard(bank_area);
+
+        assert_eq!(calculate_placement_cost(&state, player, &[bank_area]), 2);
     }
 
     #[test]
