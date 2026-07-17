@@ -1,9 +1,13 @@
 # Agent Handover: Yokohama AI Assistant
 
+> **Status note (2026-07-16):** The status tables below are historical and overstate completion.
+> `guidingpath.md` is the authoritative status and roadmap; the engine-completion work is specified
+> in `docs/plans/2026-07-16-engine-completion-design.md`.
+
 **Last Updated:** 2025-12-10
 **Session Summary:** Card data transcribed from TTS sprites. Awaiting user verification.
 
-**Status:** A1 LOGIC COMPLETE ✅ | TTS EXTRACTED ✅ | TOKENS VERIFIED ✅ | CARD TRANSCRIPTION DONE ✅ | **VERIFICATION PENDING** 🔄
+**Status:** A1 LOGIC COMPLETE ✅ | TTS EXTRACTED ✅ | TOKENS VERIFIED ✅ | CARD TRANSCRIPTION DONE ✅ | **VERIFICATION PENDING** 🔄 | SUPERSEDED BY guidingpath.md
 
 ---
 
