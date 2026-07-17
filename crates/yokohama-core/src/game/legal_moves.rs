@@ -8,7 +8,7 @@ use crate::game::actions::*;
 pub fn get_legal_moves(state: &GameState, rules: &Rules) -> Vec<Move> {
     match state.turn_phase {
         TurnPhase::AdditionalActionFirst | TurnPhase::AdditionalActionSecond => {
-            generate_additional_action_moves(state)
+            generate_additional_action_moves(state, rules)
         }
         TurnPhase::Placement => generate_placement_moves_with_tech(state, Some(&rules.techs)),
         TurnPhase::Movement => generate_movement_moves_with_tech(state, Some(&rules.techs)),
@@ -20,7 +20,7 @@ pub fn get_legal_moves(state: &GameState, rules: &Rules) -> Vec<Move> {
     }
 }
 
-fn generate_additional_action_moves(state: &GameState) -> Vec<Move> {
+fn generate_additional_action_moves(state: &GameState, rules: &Rules) -> Vec<Move> {
     let mut moves = Vec::new();
     let player = state.current_player;
     let p = state.player(player);
@@ -50,16 +50,18 @@ fn generate_additional_action_moves(state: &GameState) -> Vec<Move> {
         }
     }
 
-    // Fulfill Orders
+    // Fulfill Orders — only those the player can actually pay for
+    // (legal == applicable; apply_fulfill_order re-checks and must agree).
     for &order_id in &p.order_cards_in_hand {
-        // Would need to check if requirements met
-        // Simplified: always offer the option, validation happens on execution
-        moves.push(Move::FulfillOrder { order_id });
+        if can_fulfill_order(state, player, order_id, &rules.orders) {
+            moves.push(Move::FulfillOrder { order_id });
+        }
     }
 
-    // Fulfill Achievements
+    // Fulfill Achievements — can_claim_achievement covers already-claimed,
+    // assistant-in-hand, and the per-type requirement.
     for achievement in &state.achievements {
-        if !achievement.claimed_by.contains(&player) {
+        if can_claim_achievement(state, player, achievement.achievement_type) {
             moves.push(Move::FulfillAchievement {
                 achievement: achievement.achievement_type,
             });
@@ -913,6 +915,68 @@ mod tests {
 
         // Should always include EndAdditionalPhase
         assert!(moves.iter().any(|m| matches!(m, Move::EndAdditionalPhase)));
+    }
+
+    #[test]
+    fn test_additional_action_offers_only_fulfillable_orders() {
+        let mut state = create_test_state();
+        state.turn_phase = TurnPhase::AdditionalActionFirst;
+        let mut rules = Rules::empty_for_tests();
+        rules.orders.insert(
+            OrderCard {
+                id: OrderCardId(1),
+                country: Country::English,
+                requirements: TradeGoodRequirement::new(2, 0, 0, 0),
+                rewards: OrderRewards { victory_points: 5, ..Default::default() },
+            },
+            "O1",
+        );
+        state.players[0].order_cards_in_hand.push(OrderCardId(1));
+
+        state.players[0].copper = 0;
+        let moves = get_legal_moves(&state, &rules);
+        assert!(
+            !moves.iter().any(|m| matches!(m, Move::FulfillOrder { .. })),
+            "order with unmet requirements must not be offered"
+        );
+
+        state.players[0].copper = 2;
+        let moves = get_legal_moves(&state, &rules);
+        assert!(moves
+            .iter()
+            .any(|m| matches!(m, Move::FulfillOrder { order_id } if *order_id == OrderCardId(1))));
+    }
+
+    #[test]
+    fn test_additional_action_offers_only_claimable_achievements() {
+        let mut state = create_test_state();
+        state.turn_phase = TurnPhase::AdditionalActionFirst;
+        let rules = Rules::empty_for_tests();
+        state.achievements = [
+            AchievementCard { achievement_type: AchievementType::Copper5, claimed_by: vec![] },
+            AchievementCard { achievement_type: AchievementType::Silk6, claimed_by: vec![] },
+            AchievementCard { achievement_type: AchievementType::Tea7, claimed_by: vec![] },
+        ];
+        state.players[0].assistants.in_hand = 1;
+
+        state.players[0].copper = 0;
+        let moves = get_legal_moves(&state, &rules);
+        assert!(
+            !moves.iter().any(|m| matches!(m, Move::FulfillAchievement { .. })),
+            "achievement with unmet requirements must not be offered"
+        );
+
+        state.players[0].copper = 5;
+        let moves = get_legal_moves(&state, &rules);
+        assert!(moves.iter().any(|m| matches!(
+            m,
+            Move::FulfillAchievement { achievement: AchievementType::Copper5 }
+        )));
+
+        // Requirements met but no assistant in hand to lock on the card:
+        state.players[0].assistants.in_hand = 0;
+        let moves = get_legal_moves(&state, &rules);
+        assert!(!moves.iter().any(|m| matches!(m, Move::FulfillAchievement { .. })));
     }
 
     #[test]
