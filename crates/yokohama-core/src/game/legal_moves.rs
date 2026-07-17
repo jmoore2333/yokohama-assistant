@@ -237,12 +237,20 @@ fn generate_movement_moves_with_tech(state: &GameState, tech_registry: Option<&T
             }
         }
         PresidentLocation::OnBoard(current) => {
-            // Move to reachable areas
+            // Move to reachable areas the player can afford: price each path
+            // with the same tech-aware cost apply_movement charges
+            // (president pass-through fees + canal tolls), so legal ==
+            // applicable. One path per destination (BFS order) - a cheaper
+            // alternate route to the same destination is not searched for.
             for (dest, path) in find_reachable_areas(state, player, current) {
-                moves.push(Move::MovePresident {
-                    path,
-                    destination: dest,
-                });
+                if calculate_movement_cost_with_tech(state, player, &path, tech_registry)
+                    <= p.money
+                {
+                    moves.push(Move::MovePresident {
+                        path,
+                        destination: dest,
+                    });
+                }
             }
 
             // Station teleport (free move to station area if player has Station tech)
@@ -915,6 +923,39 @@ mod tests {
 
         // Should always include EndAdditionalPhase
         assert!(moves.iter().any(|m| matches!(m, Move::EndAdditionalPhase)));
+    }
+
+    #[test]
+    fn test_movement_moves_priced_by_president_pass_through_fees() {
+        let mut state = create_test_state();
+        state.turn_phase = TurnPhase::Movement;
+        let rules = Rules::empty_for_tests();
+        // Chain 0 - 1 - 2: president at 0, opponent president at 1 (1 Yen
+        // toll to pass), own assistants at 1 and 2 make 2 reachable.
+        state.board_layout.areas.insert(
+            AreaId::new(2),
+            AreaConfig { area_type: AreaType::SilkMill, grid_position: (0, 2) },
+        );
+        state.board_layout.adjacency.insert(AreaId::new(0), vec![AreaId::new(1)]);
+        state.board_layout.adjacency.insert(AreaId::new(1), vec![AreaId::new(0), AreaId::new(2)]);
+        state.board_layout.adjacency.insert(AreaId::new(2), vec![AreaId::new(1)]);
+        state.players[0].president_location = PresidentLocation::OnBoard(AreaId::new(0));
+        state.players[0].assistants.on_board.insert(AreaId::new(1), 1);
+        state.players[0].assistants.on_board.insert(AreaId::new(2), 1);
+        state.players[1].president_location = PresidentLocation::OnBoard(AreaId::new(1));
+
+        state.players[0].money = 0;
+        let moves = get_legal_moves(&state, &rules);
+        assert!(
+            !moves.iter().any(|m| matches!(m, Move::MovePresident { destination, .. } if *destination == AreaId::new(2))),
+            "unaffordable pass-through move must not be offered"
+        );
+
+        state.players[0].money = 1;
+        let moves = get_legal_moves(&state, &rules);
+        assert!(moves
+            .iter()
+            .any(|m| matches!(m, Move::MovePresident { destination, .. } if *destination == AreaId::new(2))));
     }
 
     #[test]

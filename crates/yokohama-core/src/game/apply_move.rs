@@ -37,7 +37,7 @@ pub fn apply_move(state: &GameState, mv: &Move, rules: &Rules) -> Result<GameSta
         Move::MovePresident { path, destination } => {
             // Validate: cannot return to starting area
             validate_movement_destination(&new_state, *destination)?;
-            apply_movement(&mut new_state, path, *destination)?;
+            apply_movement(&mut new_state, path, *destination, Some(&rules.techs))?;
             new_state.president_start_area = None; // Clear after movement
             new_state.turn_phase = TurnPhase::AreaAction;
         }
@@ -259,16 +259,20 @@ fn apply_movement(
     state: &mut GameState,
     path: &[AreaId],
     destination: AreaId,
+    tech_registry: Option<&TechRegistry>,
 ) -> Result<(), MoveError> {
     let player = state.current_player;
 
-    // Pay movement costs
-    let cost = calculate_movement_cost(state, player, path);
-    let p = state.player_mut(player);
-    if p.money < cost {
+    // Pay movement costs with the same tech-aware pricing the generator
+    // uses (Stagecoach waives president fees); reject before any mutation.
+    let cost = calculate_movement_cost_with_tech(state, player, path, tech_registry);
+    if state.player(player).money < cost {
         return Err(MoveError::RuleViolation("Not enough money for movement"));
     }
-    p.money -= cost;
+    state.player_mut(player).money -= cost;
+    credit_movement_president_fees(state, player, path, tech_registry);
+
+    let p = state.player_mut(player);
     p.president_location = PresidentLocation::OnBoard(destination);
 
     // Calculate and store power for this action
@@ -276,6 +280,40 @@ fn apply_movement(
     state.current_action_power = Some(power);
 
     Ok(())
+}
+
+/// Credit 1 Yen to each opponent President's owner passed through on the
+/// path (intermediate areas only - the destination cannot hold one).
+/// Mirrors calculate_movement_cost_full's president component exactly:
+/// Stagecoach waives the fee entirely (nothing charged, nothing credited)
+/// and canal tolls are NOT credited (they go to the bank), so the payer's
+/// deduction and the sum of owner credits always match.
+fn credit_movement_president_fees(
+    state: &mut GameState,
+    payer: PlayerId,
+    path: &[AreaId],
+    tech_registry: Option<&TechRegistry>,
+) {
+    let p = state.player(payer);
+    let has_stagecoach = tech_registry.is_some_and(|registry| {
+        p.technologies.iter().any(|&tech_id| {
+            registry.get(tech_id).map(|t| t.effect == TechEffect::Stagecoach).unwrap_or(false)
+        })
+    });
+    if has_stagecoach {
+        return;
+    }
+
+    let intermediate: &[AreaId] = if path.len() > 1 { &path[..path.len() - 1] } else { &[] };
+    for &area in intermediate {
+        let owners: Vec<PlayerId> = state.players.iter()
+            .filter(|o| o.id != payer && o.president_location == PresidentLocation::OnBoard(area))
+            .map(|o| o.id)
+            .collect();
+        for owner in owners {
+            state.player_mut(owner).money += 1;
+        }
+    }
 }
 
 fn apply_place_president(state: &mut GameState, destination: AreaId) -> Result<(), MoveError> {
@@ -1041,6 +1079,79 @@ mod tests {
 
         assert_eq!(state.turn_phase, TurnPhase::TurnEnd);
         assert!(state.is_game_over());
+    }
+
+    fn movement_toll_fixture() -> GameState {
+        // Chain 0 - 1 - 2: president at 0, opponent president at 1 (toll),
+        // own assistants at 1 and 2 so 2 is reachable through 1.
+        let mut state = create_minimal_state(2);
+        for (id, ty) in [(0, AreaType::Bank), (1, AreaType::CopperMine), (2, AreaType::SilkMill)] {
+            state.board_layout.areas.insert(
+                AreaId::new(id),
+                AreaConfig { area_type: ty, grid_position: (0, id) },
+            );
+        }
+        state.board_layout.adjacency.insert(AreaId::new(0), vec![AreaId::new(1)]);
+        state.board_layout.adjacency.insert(AreaId::new(1), vec![AreaId::new(0), AreaId::new(2)]);
+        state.board_layout.adjacency.insert(AreaId::new(2), vec![AreaId::new(1)]);
+        state.turn_phase = TurnPhase::Movement;
+        state.current_player = PlayerId::new(0);
+        state.players[0].president_location = PresidentLocation::OnBoard(AreaId::new(0));
+        state.players[0].assistants.on_board.insert(AreaId::new(1), 1);
+        state.players[0].assistants.on_board.insert(AreaId::new(2), 1);
+        state.players[1].president_location = PresidentLocation::OnBoard(AreaId::new(1));
+        state
+    }
+
+    #[test]
+    fn test_movement_pass_through_fee_paid_to_president_owner() {
+        let mut state = movement_toll_fixture();
+        state.players[0].money = 2;
+        state.players[1].money = 0;
+        let rules = Rules::empty_for_tests();
+
+        let mv = Move::MovePresident {
+            path: vec![AreaId::new(1), AreaId::new(2)],
+            destination: AreaId::new(2),
+        };
+        let next = apply_move(&state, &mv, &rules).unwrap();
+
+        assert_eq!(next.players[0].money, 1);
+        assert_eq!(
+            next.players[1].money, 1,
+            "pass-through fee is paid TO the president's owner, not the bank"
+        );
+    }
+
+    #[test]
+    fn test_movement_with_stagecoach_is_free_and_uncredited() {
+        // Stagecoach waives president pass-through fees entirely; apply must
+        // price with the same tech-aware cost the generator uses so a
+        // Stagecoach owner's generated move applies even at 0 money.
+        let mut state = movement_toll_fixture();
+        state.players[0].money = 0;
+        state.players[1].money = 0;
+        let mut rules = Rules::empty_for_tests();
+        rules.techs.insert(
+            TechCard {
+                id: TechCardId(1),
+                name: "Stagecoach".to_string(),
+                country: Country::German,
+                industry_cost: 3,
+                effect: TechEffect::Stagecoach,
+            },
+            "T1",
+        );
+        state.players[0].technologies.push(TechCardId(1));
+
+        let mv = Move::MovePresident {
+            path: vec![AreaId::new(1), AreaId::new(2)],
+            destination: AreaId::new(2),
+        };
+        let next = apply_move(&state, &mv, &rules).unwrap();
+
+        assert_eq!(next.players[0].money, 0);
+        assert_eq!(next.players[1].money, 0, "no fee waived by Stagecoach is credited");
     }
 
     #[test]
