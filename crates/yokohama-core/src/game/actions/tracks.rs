@@ -1,8 +1,12 @@
 //! Church and Customs track actions.
 
-use crate::types::{AreaType, ChurchSlot, ChurchTrack, GameState, PlayerId, PresidentLocation};
+use crate::types::{
+    AreaType, ChurchSlot, ChurchTrack, CustomsSlot, CustomsTrack, GameState, PlayerId,
+    PresidentLocation,
+};
+use crate::game::apply_move::apply_warehouse_takes;
 use crate::game::rules::Rules;
-use crate::game::tech_effects::church_vp_bonus;
+use crate::game::tech_effects::{church_vp_bonus, customs_vp_bonus};
 
 /// Calculate Faith value from power. Faith scales LINEARLY with power:
 /// 1,2,3,4,5 (capped at 5 for power above 5). Jeremy-adjudicated
@@ -207,6 +211,90 @@ pub fn validate_customs_action(
     Ok(())
 }
 
+/// Empty Customs space for an exact printed cost, preferring the higher-VP
+/// (leftmost) space of the matching pair and falling back to the other
+/// space of the pair if it's occupied (cost 4 has no pair -- space 7
+/// alone). In 2-player games space 4 (VP 9) is pre-blocked by a printed
+/// dummy pawn -- an eligibility rule, not a `slots` entry, mirroring the
+/// Church faith-7 2P block so arrival order and the end-trigger assistant
+/// count stay untouched. Returns `None` if `cost` doesn't match a printed
+/// cost, or every candidate space is occupied/blocked.
+fn eligible_customs_space_for_cost(track: &CustomsTrack, cost: u8, player_count: u8) -> Option<u8> {
+    let candidates = CustomsTrack::spaces_for_cost(cost)?;
+    candidates.iter().copied().find(|&space| {
+        if player_count == 2 && space == 4 {
+            return false;
+        }
+        let index = CustomsTrack::space_to_index(space).expect("space always in 1..=7");
+        track.slots[index].is_none()
+    })
+}
+
+/// Execute Customs action: resolve the acting area (mirrors
+/// `execute_church_action` -- a mercenary sub-turn acts at the mercenary
+/// target area, not the president's), validate the payment and assistant,
+/// find the eligible space for the exact printed cost (auto-placing on the
+/// higher-VP/leftmost space of the matching pair), pay imported goods,
+/// lock the assistant, award VP (plus Brickyard bonus per owned copy), and
+/// apply the space's rider -- warehouse-takes and/or Yen, via the same
+/// Task 7b `apply_warehouse_takes` helper Church-adjacent reward code uses
+/// (no new reward machinery).
+///
+/// If the payment doesn't exactly match a printed cost, every space at
+/// that cost is occupied or blocked, or the player has no assistant in
+/// hand, the action is ILLEGAL (v1 semantic, same as Church: imported
+/// goods are never paid for a placement that doesn't happen).
+pub fn execute_customs_action(
+    state: &mut GameState,
+    player: PlayerId,
+    power: u8,
+    imported_goods_paid: u8,
+    rules: &Rules,
+) -> Result<(), &'static str> {
+    let area = if state.is_mercenary_action {
+        state.mercenary_target_area.ok_or("No mercenary target area")?
+    } else {
+        match state.player(player).president_location {
+            PresidentLocation::OnBoard(a) => a,
+            _ => return Err("President not on board"),
+        }
+    };
+    match state.board_layout.areas.get(&area).map(|c| c.area_type) {
+        Some(AreaType::Customs) => {}
+        _ => return Err("Customs action requires the Customs area"),
+    }
+
+    validate_customs_action(state, player, imported_goods_paid, power)?;
+
+    let target_space = eligible_customs_space_for_cost(
+        &state.customs_track,
+        imported_goods_paid,
+        state.config.player_count,
+    )
+    .ok_or("No eligible Customs space for this payment")?;
+
+    // Computed via immutable borrows before any mutation below.
+    let brickyard_bonus = customs_vp_bonus(state, player, &rules.techs);
+    let base_vp = CustomsTrack::vp_reward(target_space) as u32;
+    let (warehouse_takes, yen_rider) = CustomsTrack::rider(target_space);
+    let index = CustomsTrack::space_to_index(target_space).expect("target_space always in 1..=7");
+    let arrival_order = state.customs_track.next_arrival_order;
+
+    state.customs_track.slots[index] = Some(CustomsSlot { player, arrival_order });
+    state.customs_track.next_arrival_order += 1;
+
+    let p = state.player_mut(player);
+    p.imported_goods -= imported_goods_paid as u32;
+    p.assistants.in_hand -= 1;
+    p.assistants.on_customs += 1;
+    p.customs_positions.push(target_space);
+    p.victory_points += base_vp + brickyard_bonus;
+    p.money += yen_rider as u32;
+    apply_warehouse_takes(p, warehouse_takes);
+
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -277,6 +365,30 @@ mod tests {
         });
         state.players[0].president_location = PresidentLocation::OnBoard(area);
         area
+    }
+
+    /// Places a Customs area on the board and puts player 0's president there.
+    fn place_president_at_customs(state: &mut GameState) -> AreaId {
+        let area = AreaId::new(0);
+        state.board_layout.areas.insert(area, AreaConfig {
+            area_type: AreaType::Customs,
+            grid_position: (0, 0),
+        });
+        state.players[0].president_location = PresidentLocation::OnBoard(area);
+        area
+    }
+
+    /// Like `create_test_state`, but with 3 players -- needed to prove
+    /// non-2P fallback behaves normally (2P blocks Customs space 4).
+    fn create_test_state_3p() -> GameState {
+        let mut state = create_test_state();
+        state.config = GameConfig::new(
+            3,
+            vec![PlayerColor::Red, PlayerColor::Blue, PlayerColor::Yellow],
+            PlayerId::new(0),
+        );
+        state.players.push(PlayerState::new(PlayerId::new(2), PlayerColor::Yellow, false));
+        state
     }
 
     fn make_test_tech_card(id: u8, effect: TechEffect) -> TechCard {
@@ -539,6 +651,301 @@ mod tests {
         assert_eq!(customs_max_imported_goods(3), 2);
         assert_eq!(customs_max_imported_goods(4), 3);
         assert_eq!(customs_max_imported_goods(5), 4);
+    }
+
+    #[test]
+    fn test_eligible_customs_space_for_cost_basic() {
+        let track = CustomsTrack::new();
+        assert_eq!(eligible_customs_space_for_cost(&track, 1, 3), Some(1));
+        assert_eq!(eligible_customs_space_for_cost(&track, 2, 3), Some(3));
+        assert_eq!(eligible_customs_space_for_cost(&track, 3, 3), Some(5));
+        assert_eq!(eligible_customs_space_for_cost(&track, 4, 3), Some(7));
+    }
+
+    #[test]
+    fn test_eligible_customs_space_for_cost_falls_back_when_occupied() {
+        let mut track = CustomsTrack::new();
+        let idx1 = CustomsTrack::space_to_index(1).unwrap();
+        track.slots[idx1] = Some(CustomsSlot { player: PlayerId::new(1), arrival_order: 0 });
+        assert_eq!(eligible_customs_space_for_cost(&track, 1, 3), Some(2));
+    }
+
+    #[test]
+    fn test_eligible_customs_space_for_cost_both_occupied_is_none() {
+        let mut track = CustomsTrack::new();
+        for space in [1, 2] {
+            let idx = CustomsTrack::space_to_index(space).unwrap();
+            track.slots[idx] = Some(CustomsSlot { player: PlayerId::new(1), arrival_order: 0 });
+        }
+        assert_eq!(eligible_customs_space_for_cost(&track, 1, 3), None);
+    }
+
+    #[test]
+    fn test_eligible_customs_space_for_cost_invalid_cost_is_none() {
+        let track = CustomsTrack::new();
+        assert_eq!(eligible_customs_space_for_cost(&track, 0, 3), None);
+        assert_eq!(eligible_customs_space_for_cost(&track, 5, 3), None);
+    }
+
+    #[test]
+    fn test_eligible_customs_space_for_cost_2p_blocks_space4() {
+        let mut track = CustomsTrack::new();
+        let idx3 = CustomsTrack::space_to_index(3).unwrap();
+        track.slots[idx3] = Some(CustomsSlot { player: PlayerId::new(1), arrival_order: 0 });
+        assert_eq!(eligible_customs_space_for_cost(&track, 2, 2), None);
+        // 3P (and 4P): no dummy pawn, space 4 is reachable.
+        assert_eq!(eligible_customs_space_for_cost(&track, 2, 3), Some(4));
+    }
+
+    #[test]
+    fn test_execute_customs_action_places_assistant_and_awards_vp() {
+        let rules = Rules::empty_for_tests();
+        let mut state = create_test_state();
+        place_president_at_customs(&mut state);
+        state.players[0].imported_goods = 1;
+        state.players[0].assistants.in_warehouse = 3;
+
+        // Power 3 (max 2), pay 1 -> cost pair {1,2}; space 1 is leftmost/default.
+        let result = execute_customs_action(&mut state, PlayerId::new(0), 3, 1, &rules);
+        assert!(result.is_ok());
+
+        let p = &state.players[0];
+        assert_eq!(p.assistants.in_hand, 9); // 8 - 1 (placement) + 2 (warehouse-take rider)
+        assert_eq!(p.assistants.on_customs, 1);
+        assert_eq!(p.assistants.in_warehouse, 1); // 3 - 2
+        assert_eq!(p.imported_goods, 0);
+        assert_eq!(p.customs_positions, vec![1]);
+        assert_eq!(p.victory_points, CustomsTrack::vp_reward(1) as u32);
+        assert_eq!(
+            state.customs_track.slots[CustomsTrack::space_to_index(1).unwrap()].unwrap().player,
+            PlayerId::new(0)
+        );
+    }
+
+    #[test]
+    fn test_execute_customs_action_falls_back_to_other_space_and_applies_yen_rider() {
+        let rules = Rules::empty_for_tests();
+        let mut state = create_test_state_3p();
+        place_president_at_customs(&mut state);
+        // Another player already occupies space 3.
+        let idx3 = CustomsTrack::space_to_index(3).unwrap();
+        state.customs_track.slots[idx3] = Some(CustomsSlot { player: PlayerId::new(1), arrival_order: 0 });
+        state.customs_track.next_arrival_order = 1;
+        state.players[0].imported_goods = 2;
+
+        // Power 4 (max 3), pay 2 -> cost pair {3,4}; space 3 taken -> falls to space 4.
+        let result = execute_customs_action(&mut state, PlayerId::new(0), 4, 2, &rules);
+        assert!(result.is_ok());
+
+        let p = &state.players[0];
+        assert_eq!(p.customs_positions, vec![4]);
+        assert_eq!(p.victory_points, CustomsTrack::vp_reward(4) as u32);
+        assert_eq!(p.money, 4); // starting 3 (first player) + space 4 rider: +1 Yen
+        assert_eq!(p.imported_goods, 0);
+    }
+
+    #[test]
+    fn test_execute_customs_action_rejects_both_spaces_of_pair_occupied() {
+        let rules = Rules::empty_for_tests();
+        let mut state = create_test_state();
+        place_president_at_customs(&mut state);
+        state.players[0].imported_goods = 1;
+        for space in [1, 2] {
+            let idx = CustomsTrack::space_to_index(space).unwrap();
+            state.customs_track.slots[idx] = Some(CustomsSlot { player: PlayerId::new(1), arrival_order: 0 });
+        }
+        state.customs_track.next_arrival_order = 2;
+
+        let result = execute_customs_action(&mut state, PlayerId::new(0), 3, 1, &rules);
+        assert!(result.is_err());
+        // Nothing paid or placed on rejection.
+        assert_eq!(state.players[0].imported_goods, 1);
+        assert_eq!(state.players[0].assistants.in_hand, 8);
+    }
+
+    #[test]
+    fn test_execute_customs_action_2p_blocks_space4_when_space3_occupied() {
+        let rules = Rules::empty_for_tests();
+        let mut state = create_test_state(); // 2-player fixture
+        place_president_at_customs(&mut state);
+        state.players[0].imported_goods = 2;
+        let idx3 = CustomsTrack::space_to_index(3).unwrap();
+        state.customs_track.slots[idx3] = Some(CustomsSlot { player: PlayerId::new(1), arrival_order: 0 });
+        state.customs_track.next_arrival_order = 1;
+
+        // Space 3 taken; space 4 would normally be the fallback but is
+        // pre-blocked by the printed dummy pawn in 2P games.
+        let result = execute_customs_action(&mut state, PlayerId::new(0), 4, 2, &rules);
+        assert!(result.is_err());
+        assert_eq!(state.players[0].imported_goods, 2);
+        assert_eq!(state.players[0].assistants.in_hand, 8);
+    }
+
+    #[test]
+    fn test_execute_customs_action_rejects_power_cap_exceeded() {
+        let rules = Rules::empty_for_tests();
+        let mut state = create_test_state();
+        place_president_at_customs(&mut state);
+        state.players[0].imported_goods = 5;
+
+        // Power 2 caps at 1 imported good; paying 2 exceeds it.
+        let result = execute_customs_action(&mut state, PlayerId::new(0), 2, 2, &rules);
+        assert!(result.is_err());
+        assert_eq!(state.players[0].imported_goods, 5);
+        assert_eq!(state.players[0].assistants.in_hand, 8);
+        assert_eq!(state.customs_track.total_assistants(), 0);
+    }
+
+    #[test]
+    fn test_execute_customs_action_rejects_insufficient_stock() {
+        let rules = Rules::empty_for_tests();
+        let mut state = create_test_state();
+        place_president_at_customs(&mut state);
+        state.players[0].imported_goods = 0;
+
+        let result = execute_customs_action(&mut state, PlayerId::new(0), 5, 1, &rules);
+        assert!(result.is_err());
+        assert_eq!(state.players[0].assistants.in_hand, 8);
+    }
+
+    #[test]
+    fn test_execute_customs_action_rejects_zero_payment() {
+        let rules = Rules::empty_for_tests();
+        let mut state = create_test_state();
+        place_president_at_customs(&mut state);
+        state.players[0].imported_goods = 3;
+
+        let result = execute_customs_action(&mut state, PlayerId::new(0), 5, 0, &rules);
+        assert!(result.is_err());
+        assert_eq!(state.players[0].imported_goods, 3);
+    }
+
+    #[test]
+    fn test_execute_customs_action_rejects_no_assistant_in_hand() {
+        let rules = Rules::empty_for_tests();
+        let mut state = create_test_state();
+        place_president_at_customs(&mut state);
+        state.players[0].imported_goods = 1;
+        state.players[0].assistants.in_hand = 0;
+
+        let result = execute_customs_action(&mut state, PlayerId::new(0), 3, 1, &rules);
+        assert!(result.is_err());
+        assert_eq!(state.players[0].imported_goods, 1);
+    }
+
+    #[test]
+    fn test_execute_customs_action_during_mercenary_sub_turn_resolves_target_area() {
+        // President stays in hand (default) and is never placed; a Customs
+        // action must still work by resolving the acting area from
+        // mercenary_target_area, not president_location.
+        let rules = Rules::empty_for_tests();
+        let mut state = create_test_state();
+        let customs_area = AreaId::new(9);
+        state.board_layout.areas.insert(customs_area, AreaConfig {
+            area_type: AreaType::Customs,
+            grid_position: (0, 9),
+        });
+        state.is_mercenary_action = true;
+        state.mercenary_target_area = Some(customs_area);
+        state.players[0].imported_goods = 1;
+
+        let result = execute_customs_action(&mut state, PlayerId::new(0), 3, 1, &rules);
+        assert!(result.is_ok());
+        assert_eq!(state.players[0].customs_positions, vec![1]);
+    }
+
+    #[test]
+    fn test_execute_customs_action_rejects_when_not_on_customs_area() {
+        let rules = Rules::empty_for_tests();
+        let mut state = create_test_state();
+        let bank_area = AreaId::new(0);
+        state.board_layout.areas.insert(bank_area, AreaConfig {
+            area_type: AreaType::Bank,
+            grid_position: (0, 0),
+        });
+        state.players[0].president_location = PresidentLocation::OnBoard(bank_area);
+        state.players[0].imported_goods = 1;
+
+        let result = execute_customs_action(&mut state, PlayerId::new(0), 3, 1, &rules);
+        assert!(result.is_err());
+        assert_eq!(state.players[0].imported_goods, 1);
+        assert_eq!(state.players[0].assistants.in_hand, 8);
+    }
+
+    #[test]
+    fn test_execute_customs_action_arrival_order() {
+        let rules = Rules::empty_for_tests();
+        let mut state = create_test_state();
+        let area = place_president_at_customs(&mut state);
+        state.players[1].president_location = PresidentLocation::OnBoard(area);
+        state.players[0].imported_goods = 1;
+        state.players[1].imported_goods = 3;
+
+        execute_customs_action(&mut state, PlayerId::new(0), 3, 1, &rules).unwrap(); // -> space 1
+        execute_customs_action(&mut state, PlayerId::new(1), 5, 3, &rules).unwrap(); // -> space 5
+
+        let idx1 = CustomsTrack::space_to_index(1).unwrap();
+        let idx5 = CustomsTrack::space_to_index(5).unwrap();
+        assert_eq!(state.customs_track.slots[idx1].unwrap().arrival_order, 0);
+        assert_eq!(state.customs_track.slots[idx5].unwrap().arrival_order, 1);
+        assert_eq!(state.customs_track.next_arrival_order, 2);
+    }
+
+    #[test]
+    fn test_execute_customs_action_warehouse_rider_zero_stock_tolerance() {
+        let rules = Rules::empty_for_tests();
+        let mut state = create_test_state();
+        place_president_at_customs(&mut state);
+        state.players[0].imported_goods = 1;
+        state.players[0].assistants.in_warehouse = 0;
+
+        // Space 1's rider is +2 warehouse-takes; warehouse is empty.
+        let result = execute_customs_action(&mut state, PlayerId::new(0), 3, 1, &rules);
+        assert!(result.is_ok());
+        let p = &state.players[0];
+        assert_eq!(p.assistants.in_warehouse, 0);
+        assert_eq!(p.assistants.in_hand, 7); // only the -1 placement; rider tolerated 0 stock
+    }
+
+    #[test]
+    fn test_execute_customs_action_no_rider_on_high_spaces() {
+        let rules = Rules::empty_for_tests();
+        let mut state = create_test_state();
+        place_president_at_customs(&mut state);
+        state.players[0].imported_goods = 3;
+        state.players[0].assistants.in_warehouse = 5;
+
+        // Cost 3 -> space 5 (no rider).
+        let result = execute_customs_action(&mut state, PlayerId::new(0), 5, 3, &rules);
+        assert!(result.is_ok());
+        let p = &state.players[0];
+        assert_eq!(p.customs_positions, vec![5]);
+        assert_eq!(p.money, 3); // starting 3 (first player), no rider
+        assert_eq!(p.assistants.in_warehouse, 5); // untouched
+        assert_eq!(p.victory_points, CustomsTrack::vp_reward(5) as u32);
+    }
+
+    #[test]
+    fn test_execute_customs_action_brickyard_bonus_stacks_per_owned_copy() {
+        // Standard data has only 1 physical Brickyard, so stacking is proven
+        // with a hand-rolled two-copy registry fixture (mirrors Task 13's
+        // Winery stacking precedent).
+        let mut tech_registry = TechRegistry::new();
+        tech_registry.insert(make_test_tech_card(1, TechEffect::Brickyard), "brickyard_1");
+        tech_registry.insert(make_test_tech_card(2, TechEffect::Brickyard), "brickyard_2");
+        let mut rules = Rules::empty_for_tests();
+        rules.techs = tech_registry;
+
+        let mut state = create_test_state();
+        place_president_at_customs(&mut state);
+        state.players[0].imported_goods = 3;
+        state.players[0].technologies = vec![TechCardId(1), TechCardId(2)]; // owns BOTH copies
+
+        let result = execute_customs_action(&mut state, PlayerId::new(0), 5, 3, &rules);
+        assert!(result.is_ok());
+
+        let base_vp = CustomsTrack::vp_reward(5) as u32;
+        assert_eq!(state.players[0].victory_points, base_vp + 8); // 2 copies x 4 VP
     }
 
     #[test]

@@ -326,8 +326,8 @@ fn apply_area_action(state: &mut GameState, action: &AreaAction, rules: &Rules) 
             ).map_err(MoveError::RuleViolation)?;
         }
         AreaAction::Customs { imported_goods_paid } => {
-            validate_customs_action(state, player, *imported_goods_paid, power).map_err(MoveError::RuleViolation)?;
-            // TODO: implement full customs placement
+            execute_customs_action(state, player, power, *imported_goods_paid, rules)
+                .map_err(MoveError::RuleViolation)?;
         }
     }
 
@@ -695,7 +695,7 @@ fn apply_any_good(p: &mut PlayerState, n: u8) {
 /// at Employment Agency cost. Assistants are the free option and taking one
 /// is weakly dominant, so v1 always takes assistants; shophouse/trading-house
 /// takes are unmodeled until Phase 2 choice encoding.
-fn apply_warehouse_takes(p: &mut PlayerState, n: u8) {
+pub fn apply_warehouse_takes(p: &mut PlayerState, n: u8) {
     let take = n.min(p.assistants.in_warehouse);
     p.assistants.in_warehouse -= take;
     p.assistants.in_hand += take;
@@ -2063,5 +2063,68 @@ mod tests {
         let next = apply_move(&state, &mv, &rules).unwrap();
 
         assert_eq!(next.players[0].church_positions, vec![4]);
+    }
+
+    /// Places a Customs area on the board and puts the president there.
+    fn place_president_at_customs(state: &mut GameState) -> AreaId {
+        let customs_area = AreaId::new(0);
+        state.board_layout.areas.insert(customs_area, AreaConfig {
+            area_type: AreaType::Customs,
+            grid_position: (0, 0),
+        });
+        state.players[0].president_location = PresidentLocation::OnBoard(customs_area);
+        customs_area
+    }
+
+    #[test]
+    fn customs_action_places_assistant_and_awards_vp() {
+        let rules = Rules::empty_for_tests();
+        let mut state = create_test_game_state(2);
+        place_president_at_customs(&mut state);
+        state.turn_phase = TurnPhase::AreaAction;
+        state.current_action_power = Some(3);
+        state.players[0].imported_goods = 1;
+
+        let mv = Move::ExecuteAreaAction {
+            action: AreaAction::Customs { imported_goods_paid: 1 },
+        };
+        let next = apply_move(&state, &mv, &rules).unwrap();
+
+        let p = &next.players[0];
+        assert_eq!(p.assistants.on_customs, 1);
+        assert_eq!(p.imported_goods, 0);
+        assert_eq!(
+            next.customs_track.slots[CustomsTrack::space_to_index(1).unwrap()].unwrap().player,
+            p.id
+        );
+        assert_eq!(p.customs_positions, vec![1]);
+        assert_eq!(p.victory_points, CustomsTrack::vp_reward(1) as u32);
+    }
+
+    #[test]
+    fn customs_action_during_mercenary_sub_turn_resolves_mercenary_target_area() {
+        // President is in hand (default) and never placed anywhere; a
+        // Customs action must still work by resolving the acting area from
+        // mercenary_target_area, not president_location.
+        let rules = Rules::empty_for_tests();
+        let mut state = create_test_game_state(2);
+        let customs_area = AreaId::new(5);
+        state.board_layout.areas.insert(customs_area, AreaConfig {
+            area_type: AreaType::Customs,
+            grid_position: (0, 5),
+        });
+        state.is_mercenary_action = true;
+        state.mercenary_target_area = Some(customs_area);
+        state.turn_phase = TurnPhase::AreaAction;
+        state.current_action_power = Some(4);
+        state.players[0].imported_goods = 2;
+
+        let mv = Move::ExecuteAreaAction {
+            action: AreaAction::Customs { imported_goods_paid: 2 },
+        };
+        let next = apply_move(&state, &mv, &rules).unwrap();
+
+        // Power 4 (max 3), pay 2 -> cost pair {3,4}; space 3 is leftmost/default.
+        assert_eq!(next.players[0].customs_positions, vec![3]);
     }
 }

@@ -204,17 +204,19 @@ pub fn church_vp_bonus(
     winery_copies * 3
 }
 
-/// Customs placement bonus (Brickyard).
+/// Customs placement bonus (Brickyard): +4 VP per owned Brickyard copy --
+/// stacks per physical copy the player owns (Task 14, consistent with the
+/// Church Winery precedent).
 pub fn customs_vp_bonus(
     state: &GameState,
     player: PlayerId,
     tech_registry: &TechRegistry,
 ) -> u32 {
-    if has_tech_effect(state, player, TechEffect::Brickyard, tech_registry) {
-        4
-    } else {
-        0
-    }
+    let p = state.player(player);
+    let brickyard_copies = p.technologies.iter()
+        .filter(|&&tech_id| tech_registry.get(tech_id).map(|t| t.effect == TechEffect::Brickyard).unwrap_or(false))
+        .count() as u32;
+    brickyard_copies * 4
 }
 
 #[cfg(test)]

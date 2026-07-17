@@ -98,9 +98,50 @@ mod tests {
 
     #[test]
     fn test_customs_track_rewards() {
+        // Board-art verified 2026-07-17: 7 spaces keyed by space number
+        // (SUPERSEDES the old goods-keyed 8-slot model).
         assert_eq!(CustomsTrack::vp_reward(1), 5);
+        assert_eq!(CustomsTrack::vp_reward(2), 4);
+        assert_eq!(CustomsTrack::vp_reward(3), 10);
+        assert_eq!(CustomsTrack::vp_reward(4), 9);
+        assert_eq!(CustomsTrack::vp_reward(5), 16);
+        assert_eq!(CustomsTrack::vp_reward(6), 15);
         assert_eq!(CustomsTrack::vp_reward(7), 22);
-        assert_eq!(CustomsTrack::vp_reward(10), 22); // 7+ all same
+        assert_eq!(CustomsTrack::vp_reward(8), 0); // no such space
+    }
+
+    #[test]
+    fn test_customs_track_space_index_roundtrip() {
+        assert_eq!(CustomsTrack::space_to_index(1), Some(0));
+        assert_eq!(CustomsTrack::space_to_index(7), Some(6));
+        assert_eq!(CustomsTrack::space_to_index(0), None);
+        assert_eq!(CustomsTrack::space_to_index(8), None);
+        assert_eq!(CustomsTrack::index_to_space(0), 1);
+        assert_eq!(CustomsTrack::index_to_space(6), 7);
+    }
+
+    #[test]
+    fn test_customs_track_spaces_for_cost() {
+        // Cost pairs: 1+2 cost 1, 3+4 cost 2, 5+6 cost 3, 7 alone costs 4.
+        // Leftmost of each pair is listed first (higher VP / v1 default).
+        assert_eq!(CustomsTrack::spaces_for_cost(1), Some(&[1, 2][..]));
+        assert_eq!(CustomsTrack::spaces_for_cost(2), Some(&[3, 4][..]));
+        assert_eq!(CustomsTrack::spaces_for_cost(3), Some(&[5, 6][..]));
+        assert_eq!(CustomsTrack::spaces_for_cost(4), Some(&[7][..]));
+        assert_eq!(CustomsTrack::spaces_for_cost(0), None);
+        assert_eq!(CustomsTrack::spaces_for_cost(5), None);
+    }
+
+    #[test]
+    fn test_customs_track_rider() {
+        // (warehouse_takes, yen) per space; spaces 5-7 carry no rider.
+        assert_eq!(CustomsTrack::rider(1), (2, 0));
+        assert_eq!(CustomsTrack::rider(2), (0, 2));
+        assert_eq!(CustomsTrack::rider(3), (1, 0));
+        assert_eq!(CustomsTrack::rider(4), (0, 1));
+        assert_eq!(CustomsTrack::rider(5), (0, 0));
+        assert_eq!(CustomsTrack::rider(6), (0, 0));
+        assert_eq!(CustomsTrack::rider(7), (0, 0));
     }
 
     #[test]

@@ -381,16 +381,19 @@ Pay Imported Goods to advance on Customs Management Board.
 3. Gain reward shown on that space
 4. Assistant is locked permanently
 
-**Customs Management Board rewards:**
-| Imported Goods | VP | Bonus |
-|----------------|-----|-------|
-| 1 | 5 | 2 Yen |
-| 2 | 4 | 2 Yen |
-| 3 | 10 | 1 Imported Good |
-| 4 | 9 | 1 Imported Good |
-| 5 | 16 | - |
-| 6 | 15 | - |
-| 7+ | 22 | - |
+**Customs Management Board rewards (board-art verified 2026-07-17 — CORRECTS the table below, which previously modeled a goods-keyed 8-slot track with 1/3/4-Imported-Good bonuses that don't exist on the physical board):**
+
+7 printed spaces, numbered 1-7 left to right, each with a fixed printed cost (Imported Goods) and VP reward. A payment must EXACTLY match a space's printed cost — both spaces of a cost pair filled means that payment is unplaceable. v1 auto-places on the higher-VP (leftmost) empty space of the matching pair, falling back to the other space of the pair if it's occupied. In 2-player games, space 4 (9 VP) is pre-blocked by a printed dummy pawn.
+
+| Space | Cost (Imported Goods) | VP | Rider |
+|-------|------------------------|-----|-------|
+| 1 | 1 | 5 | +2 Warehouse takes |
+| 2 | 1 | 4 | +2 Yen |
+| 3 | 2 | 10 | +1 Warehouse take |
+| 4 | 2 | 9 | +1 Yen |
+| 5 | 3 | 16 | - |
+| 6 | 3 | 15 | - |
+| 7 | 4 | 22 | - |
 
 #### Canal (not in 2P)
 - No pawns or tokens may be placed
