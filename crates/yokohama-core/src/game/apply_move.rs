@@ -5,7 +5,7 @@ use crate::game::*;
 use crate::game::actions::*;
 
 /// Apply a move to the game state, returning the new state.
-pub fn apply_move(state: &GameState, mv: &Move) -> Result<GameState, &'static str> {
+pub fn apply_move(state: &GameState, mv: &Move) -> Result<GameState, MoveError> {
     apply_move_with_registries(state, mv, None)
 }
 
@@ -14,7 +14,7 @@ pub fn apply_move_with_registries(
     state: &GameState,
     mv: &Move,
     order_registry: Option<&OrderRegistry>,
-) -> Result<GameState, &'static str> {
+) -> Result<GameState, MoveError> {
     let mut new_state = state.clone();
 
     match mv {
@@ -151,10 +151,10 @@ fn set_president_start_area(state: &mut GameState) {
 
 /// Validate that movement destination is not the starting area.
 /// "The President pawn may not return to the Area that it started in."
-fn validate_movement_destination(state: &GameState, destination: AreaId) -> Result<(), &'static str> {
+fn validate_movement_destination(state: &GameState, destination: AreaId) -> Result<(), MoveError> {
     if let Some(start) = state.president_start_area {
         if destination == start {
-            return Err("Cannot return to starting area in same turn");
+            return Err(MoveError::RuleViolation("Cannot return to starting area in same turn"));
         }
     }
     Ok(())
@@ -192,13 +192,13 @@ fn advance_phase(state: &mut GameState) {
     };
 }
 
-fn apply_placement(state: &mut GameState, placements: &[AreaId]) -> Result<(), &'static str> {
+fn apply_placement(state: &mut GameState, placements: &[AreaId]) -> Result<(), MoveError> {
     let player = state.current_player;
     let p = state.player_mut(player);
 
     for &area in placements {
         if p.assistants.in_hand < 1 {
-            return Err("Not enough assistants in hand");
+            return Err(MoveError::RuleViolation("Not enough assistants in hand"));
         }
         p.assistants.in_hand -= 1;
         *p.assistants.on_board.entry(area).or_insert(0) += 1;
@@ -209,12 +209,12 @@ fn apply_placement(state: &mut GameState, placements: &[AreaId]) -> Result<(), &
     Ok(())
 }
 
-fn apply_placement_same_area(state: &mut GameState, area: AreaId) -> Result<(), &'static str> {
+fn apply_placement_same_area(state: &mut GameState, area: AreaId) -> Result<(), MoveError> {
     let player = state.current_player;
     let p = state.player_mut(player);
 
     if p.assistants.in_hand < 2 {
-        return Err("Not enough assistants in hand");
+        return Err(MoveError::RuleViolation("Not enough assistants in hand"));
     }
 
     p.assistants.in_hand -= 2;
@@ -229,14 +229,14 @@ fn apply_movement(
     state: &mut GameState,
     path: &[AreaId],
     destination: AreaId,
-) -> Result<(), &'static str> {
+) -> Result<(), MoveError> {
     let player = state.current_player;
 
     // Pay movement costs
     let cost = calculate_movement_cost(state, player, path);
     let p = state.player_mut(player);
     if p.money < cost {
-        return Err("Not enough money for movement");
+        return Err(MoveError::RuleViolation("Not enough money for movement"));
     }
     p.money -= cost;
     p.president_location = PresidentLocation::OnBoard(destination);
@@ -248,7 +248,7 @@ fn apply_movement(
     Ok(())
 }
 
-fn apply_place_president(state: &mut GameState, destination: AreaId) -> Result<(), &'static str> {
+fn apply_place_president(state: &mut GameState, destination: AreaId) -> Result<(), MoveError> {
     let player = state.current_player;
     let p = state.player_mut(player);
     p.president_location = PresidentLocation::OnBoard(destination);
@@ -262,7 +262,7 @@ fn apply_place_president(state: &mut GameState, destination: AreaId) -> Result<(
 fn apply_return_to_hand(
     state: &mut GameState,
     areas: &[AreaId],
-) -> Result<(), &'static str> {
+) -> Result<(), MoveError> {
     let player = state.current_player;
     let p = state.player_mut(player);
 
@@ -278,7 +278,7 @@ fn apply_return_to_hand(
     Ok(())
 }
 
-fn apply_area_action(state: &mut GameState, action: &AreaAction) -> Result<(), &'static str> {
+fn apply_area_action(state: &mut GameState, action: &AreaAction) -> Result<(), MoveError> {
     let player = state.current_player;
     let power = state.current_action_power.unwrap_or(0);
 
@@ -321,16 +321,17 @@ fn apply_area_action(state: &mut GameState, action: &AreaAction) -> Result<(), &
         }
         AreaAction::Chinatown { exchanges } => {
             for exchange in exchanges {
-                apply_chinatown_exchange(state, player, *exchange)?;
+                apply_chinatown_exchange(state, player, *exchange).map_err(MoveError::RuleViolation)?;
             }
         }
         AreaAction::Church { copper, silk, tea, seafood, yen, imported_good } => {
             // Validate and apply church action
-            validate_church_action(state, player, *copper, *silk, *tea, *seafood, *yen, *imported_good)?;
+            validate_church_action(state, player, *copper, *silk, *tea, *seafood, *yen, *imported_good)
+                .map_err(MoveError::RuleViolation)?;
             // TODO: implement full church placement
         }
         AreaAction::Customs { imported_goods_paid } => {
-            validate_customs_action(state, player, *imported_goods_paid, power)?;
+            validate_customs_action(state, player, *imported_goods_paid, power).map_err(MoveError::RuleViolation)?;
             // TODO: implement full customs placement
         }
     }
@@ -376,25 +377,25 @@ fn apply_employment_agency(
     assistants: u8,
     shophouses: u8,
     trading_houses: u8,
-) -> Result<(), &'static str> {
+) -> Result<(), MoveError> {
     let max_items = employment_agency_tokens_allowed(power);
 
     let total_items = assistants + shophouses + trading_houses;
     if total_items > max_items {
-        return Err("Exceeds maximum items for power level");
+        return Err(MoveError::RuleViolation("Exceeds maximum items for power level"));
     }
 
     let p = state.player(player);
 
     // Validate availability in warehouse
     if assistants > p.assistants.in_warehouse {
-        return Err("Not enough assistants in warehouse");
+        return Err(MoveError::RuleViolation("Not enough assistants in warehouse"));
     }
     if shophouses > p.shophouses.in_warehouse {
-        return Err("Not enough shophouses in warehouse");
+        return Err(MoveError::RuleViolation("Not enough shophouses in warehouse"));
     }
     if trading_houses > p.trading_houses.in_warehouse {
-        return Err("Not enough trading houses in warehouse");
+        return Err(MoveError::RuleViolation("Not enough trading houses in warehouse"));
     }
 
     // Calculate total cost
@@ -416,7 +417,7 @@ fn apply_employment_agency(
     let total_cost = shophouse_cost + th_cost; // Assistants are FREE
 
     if p.money < total_cost {
-        return Err("Not enough Yen to pay for items");
+        return Err(MoveError::RuleViolation("Not enough Yen to pay for items"));
     }
 
     // Apply the action
@@ -434,7 +435,7 @@ fn apply_employment_agency(
     Ok(())
 }
 
-fn apply_take_5_power(state: &mut GameState) -> Result<(), &'static str> {
+fn apply_take_5_power(state: &mut GameState) -> Result<(), MoveError> {
     let player = state.current_player;
     let p = state.player(player);
 
@@ -495,17 +496,17 @@ fn apply_take_5_power(state: &mut GameState) -> Result<(), &'static str> {
     Ok(())
 }
 
-fn apply_build_shophouse(state: &mut GameState, slot: u8) -> Result<(), &'static str> {
+fn apply_build_shophouse(state: &mut GameState, slot: u8) -> Result<(), MoveError> {
     let player = state.current_player;
     let p = state.player(player);
 
     // For mercenary sub-turns, use the mercenary target area
     let area = if state.is_mercenary_action {
-        state.mercenary_target_area.ok_or("No mercenary target area")?
+        state.mercenary_target_area.ok_or(MoveError::RuleViolation("No mercenary target area"))?
     } else {
         match p.president_location {
             PresidentLocation::OnBoard(a) => a,
-            _ => return Err("President not on board"),
+            _ => return Err(MoveError::RuleViolation("President not on board")),
         }
     };
 
@@ -519,7 +520,7 @@ fn apply_build_shophouse(state: &mut GameState, slot: u8) -> Result<(), &'static
 
     let p = state.player_mut(player);
     if p.shophouses.in_hand < 1 {
-        return Err("No shophouse in hand");
+        return Err(MoveError::RuleViolation("No shophouse in hand"));
     }
     p.shophouses.in_hand -= 1;
     p.shophouses.built.insert(area, slot);
@@ -533,17 +534,17 @@ fn apply_build_shophouse(state: &mut GameState, slot: u8) -> Result<(), &'static
     Ok(())
 }
 
-fn apply_build_trading_house(state: &mut GameState) -> Result<(), &'static str> {
+fn apply_build_trading_house(state: &mut GameState) -> Result<(), MoveError> {
     let player = state.current_player;
     let p = state.player(player);
 
     // For mercenary sub-turns, use the mercenary target area
     let area = if state.is_mercenary_action {
-        state.mercenary_target_area.ok_or("No mercenary target area")?
+        state.mercenary_target_area.ok_or(MoveError::RuleViolation("No mercenary target area"))?
     } else {
         match p.president_location {
             PresidentLocation::OnBoard(a) => a,
-            _ => return Err("President not on board"),
+            _ => return Err(MoveError::RuleViolation("President not on board")),
         }
     };
 
@@ -556,12 +557,12 @@ fn apply_build_trading_house(state: &mut GameState) -> Result<(), &'static str> 
 
     let p = state.player_mut(player);
     if p.trading_houses.in_warehouse < 1 {
-        return Err("No trading house in warehouse");
+        return Err(MoveError::RuleViolation("No trading house in warehouse"));
     }
 
     let cost = p.trading_houses.next_cost();
     if p.money < cost as u32 {
-        return Err("Not enough money for trading house");
+        return Err(MoveError::RuleViolation("Not enough money for trading house"));
     }
 
     p.money -= cost as u32;
@@ -618,29 +619,29 @@ fn apply_mercenary(
     state: &mut GameState,
     country: Country,
     target_area: AreaId,
-) -> Result<(), &'static str> {
+) -> Result<(), MoveError> {
     let player = state.current_player;
     let p = state.player(player);
 
     // Validate: mercenary not already used this turn
     if state.additional_action_state.mercenary_used {
-        return Err("Mercenary already used this turn");
+        return Err(MoveError::RuleViolation("Mercenary already used this turn"));
     }
 
     // Validate: player has this mercenary available
     let available = p.mercenaries.available.get(&country).copied().unwrap_or(0);
     if available == 0 {
-        return Err("No available mercenary of this country");
+        return Err(MoveError::RuleViolation("No available mercenary of this country"));
     }
 
     // Validate: target area has player's assistant but NOT president
     let assistant_count = p.assistants.on_board.get(&target_area).copied().unwrap_or(0);
     if assistant_count == 0 {
-        return Err("Target area must have your assistant");
+        return Err(MoveError::RuleViolation("Target area must have your assistant"));
     }
     if let PresidentLocation::OnBoard(loc) = p.president_location {
         if loc == target_area {
-            return Err("Target area cannot have your president");
+            return Err(MoveError::RuleViolation("Target area cannot have your president"));
         }
     }
 
@@ -684,22 +685,22 @@ fn apply_fulfill_order(
     state: &mut GameState,
     order_id: OrderCardId,
     order_registry: Option<&OrderRegistry>,
-) -> Result<(), &'static str> {
+) -> Result<(), MoveError> {
     let player = state.current_player;
     let p = state.player(player);
 
     // Verify order is in player's hand
     if !p.order_cards_in_hand.contains(&order_id) {
-        return Err("Order card not in hand");
+        return Err(MoveError::RuleViolation("Order card not in hand"));
     }
 
     // Look up order details from registry
     let order = match order_registry {
         Some(registry) => match registry.get(order_id) {
             Some(o) => o,
-            None => return Err("Order card not found in registry"),
+            None => return Err(MoveError::RuleViolation("Order card not found in registry")),
         },
-        None => return Err("OrderRegistry required for order fulfillment"),
+        None => return Err(MoveError::RuleViolation("OrderRegistry required for order fulfillment")),
     };
 
     // Clone requirements and rewards before mutable borrow
@@ -712,7 +713,7 @@ fn apply_fulfill_order(
         || p.tea < req.tea as u32
         || p.seafood < req.seafood as u32
     {
-        return Err("Insufficient trade goods to fulfill order");
+        return Err(MoveError::RuleViolation("Insufficient trade goods to fulfill order"));
     }
 
     // Deduct trade goods
@@ -745,9 +746,9 @@ fn apply_fulfill_order(
 fn apply_fulfill_achievement(
     state: &mut GameState,
     achievement: AchievementType,
-) -> Result<(), &'static str> {
+) -> Result<(), MoveError> {
     let player = state.current_player;
-    claim_achievement(state, player, achievement)?;
+    claim_achievement(state, player, achievement).map_err(MoveError::RuleViolation)?;
     Ok(())
 }
 
@@ -1251,7 +1252,10 @@ mod tests {
             destination: AreaId::new(0),
         });
         assert!(result.is_err());
-        assert_eq!(result.unwrap_err(), "Cannot return to starting area in same turn");
+        assert!(matches!(
+            result,
+            Err(MoveError::RuleViolation("Cannot return to starting area in same turn"))
+        ));
     }
 
     #[test]
@@ -1407,7 +1411,10 @@ mod tests {
             Some(&order_registry),
         );
         assert!(result.is_err());
-        assert_eq!(result.unwrap_err(), "Insufficient trade goods to fulfill order");
+        assert!(matches!(
+            result,
+            Err(MoveError::RuleViolation("Insufficient trade goods to fulfill order"))
+        ));
     }
 
     #[test]
