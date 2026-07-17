@@ -157,26 +157,29 @@ fn advance_phase(state: &mut GameState) {
             // End of turn - handle end game logic
             let next_player = state.next_player();
 
-            // Check if game should end after this turn
             if state.final_round && next_player == state.config.start_player {
-                // Final round completed - game over
-                return; // Stay in AdditionalActionSecond, game is over
-            }
-
-            // Check if we should start the final round
-            if state.end_game_triggered && !state.final_round {
-                // Current round completes when we return to start player
-                if next_player == state.config.start_player {
+                // Final round completed - the game ends here (rulebook p.9:
+                // finish the trigger round, one full final round, equal
+                // turns for all). TurnEnd is what both is_game_over impls
+                // key on; nothing else ever assigns it.
+                TurnPhase::TurnEnd
+            } else {
+                // Trigger round completes when the turn passes back to the
+                // start player - the next full round is the final one.
+                if state.end_game_triggered
+                    && !state.final_round
+                    && next_player == state.config.start_player
+                {
                     state.final_round = true;
                 }
-            }
 
-            // Advance to next player
-            state.current_player = next_player;
-            state.turn_number += 1;
-            state.additional_action_state = AdditionalActionState::new();
-            state.current_action_power = None;
-            TurnPhase::AdditionalActionFirst
+                // Advance to next player
+                state.current_player = next_player;
+                state.turn_number += 1;
+                state.additional_action_state = AdditionalActionState::new();
+                state.current_action_power = None;
+                TurnPhase::AdditionalActionFirst
+            }
         }
         other => other, // Should not happen
     };
@@ -1016,6 +1019,46 @@ mod tests {
 
         advance_phase(&mut state);
         assert_eq!(state.turn_phase, TurnPhase::Placement);
+    }
+
+    #[test]
+    fn test_final_round_completion_reaches_turn_end() {
+        // Last player of the final round finishing their turn: the phase
+        // machine must land on TurnEnd so is_game_over can ever be true
+        // (rulebook p.9: finish the trigger round, one full final round,
+        // equal turns for all).
+        let mut state = create_minimal_state(2);
+        state.turn_phase = TurnPhase::AdditionalActionSecond;
+        state.end_game_triggered = true;
+        state.final_round = true;
+        // check_end_game_triggers always records the trigger player alongside
+        // the flag; is_game_over requires it.
+        state.trigger_player = Some(PlayerId::new(0));
+        // With 2 players and start_player 0, current 1 -> next_player() == 0 == start.
+        state.current_player = PlayerId::new(1);
+
+        advance_phase(&mut state);
+
+        assert_eq!(state.turn_phase, TurnPhase::TurnEnd);
+        assert!(state.is_game_over());
+    }
+
+    #[test]
+    fn test_trigger_round_completion_starts_final_round() {
+        // Trigger fired mid-round: when the turn passes back to the start
+        // player, final_round begins (and the game does NOT end yet).
+        let mut state = create_minimal_state(2);
+        state.turn_phase = TurnPhase::AdditionalActionSecond;
+        state.end_game_triggered = true;
+        state.final_round = false;
+        state.current_player = PlayerId::new(1);
+
+        advance_phase(&mut state);
+
+        assert!(state.final_round);
+        assert_eq!(state.turn_phase, TurnPhase::AdditionalActionFirst);
+        assert_eq!(state.current_player, PlayerId::new(0));
+        assert!(!state.is_game_over());
     }
 
     #[test]

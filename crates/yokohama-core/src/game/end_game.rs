@@ -91,21 +91,6 @@ pub fn is_game_over(state: &GameState) -> bool {
 }
 
 /// Advance to final round after completing current round.
-pub fn check_round_completion(state: &mut GameState) {
-    if !state.end_game_triggered || state.final_round {
-        return;
-    }
-
-    // Current round ends when we reach the player before start player at TurnEnd
-    let player_before_start = PlayerId::new(
-        (state.config.start_player.0 + state.config.player_count - 1) % state.config.player_count,
-    );
-
-    if state.current_player == player_before_start && state.turn_phase == TurnPhase::TurnEnd {
-        state.final_round = true;
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
