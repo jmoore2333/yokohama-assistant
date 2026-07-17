@@ -307,7 +307,7 @@ pub fn validate_movement(
 mod tests {
     use super::*;
     use crate::types::*;
-    use std::collections::HashMap;
+    use std::collections::BTreeMap;
 
     fn create_test_state_with_board() -> GameState {
         let config = GameConfig::new(
@@ -317,12 +317,12 @@ mod tests {
         );
 
         // Create a simple 3-area board: 0 -- 1 -- 2
-        let mut areas = HashMap::new();
+        let mut areas = BTreeMap::new();
         areas.insert(AreaId::new(0), AreaConfig { area_type: AreaType::Bank, grid_position: (0, 0) });
         areas.insert(AreaId::new(1), AreaConfig { area_type: AreaType::CopperMine, grid_position: (0, 1) });
         areas.insert(AreaId::new(2), AreaConfig { area_type: AreaType::SilkMill, grid_position: (0, 2) });
 
-        let mut adjacency = HashMap::new();
+        let mut adjacency = BTreeMap::new();
         adjacency.insert(AreaId::new(0), vec![AreaId::new(1)]);
         adjacency.insert(AreaId::new(1), vec![AreaId::new(0), AreaId::new(2)]);
         adjacency.insert(AreaId::new(2), vec![AreaId::new(1)]);
@@ -331,8 +331,8 @@ mod tests {
             areas,
             adjacency,
             canal_crossings: vec![],
-            building_sites: HashMap::new(),
-            five_power_tokens: HashMap::new(),
+            building_sites: BTreeMap::new(),
+            five_power_tokens: BTreeMap::new(),
         };
 
         let players = vec![

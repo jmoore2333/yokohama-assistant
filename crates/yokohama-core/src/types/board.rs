@@ -1,7 +1,7 @@
 //! Board layout and area definitions.
 
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::collections::BTreeMap;
 
 use crate::types::{AreaId, PlayerId};
 
@@ -177,19 +177,19 @@ pub enum FivePowerEffect {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct BoardLayout {
     /// Area tiles and their configurations.
-    pub areas: HashMap<AreaId, AreaConfig>,
+    pub areas: BTreeMap<AreaId, AreaConfig>,
 
     /// Adjacency graph (bidirectional).
-    pub adjacency: HashMap<AreaId, Vec<AreaId>>,
+    pub adjacency: BTreeMap<AreaId, Vec<AreaId>>,
 
     /// Canal crossings that require 1 Yen payment.
     pub canal_crossings: Vec<(AreaId, AreaId)>,
 
     /// Building sites per area.
-    pub building_sites: HashMap<AreaId, BuildingSite>,
+    pub building_sites: BTreeMap<AreaId, BuildingSite>,
 
     /// 5-Power tokens (None if already claimed).
-    pub five_power_tokens: HashMap<AreaId, Option<FivePowerEffect>>,
+    pub five_power_tokens: BTreeMap<AreaId, Option<FivePowerEffect>>,
 }
 
 impl BoardLayout {
@@ -208,11 +208,11 @@ impl BoardLayout {
 /// Ensures adjacency is bidirectional, sites exist for all areas, etc.
 #[derive(Debug, Default)]
 pub struct BoardLayoutBuilder {
-    pub(crate) areas: HashMap<AreaId, AreaConfig>,
-    pub(crate) adjacency: HashMap<AreaId, Vec<AreaId>>,
+    pub(crate) areas: BTreeMap<AreaId, AreaConfig>,
+    pub(crate) adjacency: BTreeMap<AreaId, Vec<AreaId>>,
     pub(crate) canal_crossings: Vec<(AreaId, AreaId)>,
-    pub(crate) building_sites: HashMap<AreaId, BuildingSite>,
-    pub(crate) five_power_tokens: HashMap<AreaId, Option<FivePowerEffect>>,
+    pub(crate) building_sites: BTreeMap<AreaId, BuildingSite>,
+    pub(crate) five_power_tokens: BTreeMap<AreaId, Option<FivePowerEffect>>,
 }
 
 impl BoardLayoutBuilder {

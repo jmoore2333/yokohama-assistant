@@ -94,7 +94,7 @@ pub fn is_game_over(state: &GameState) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::collections::HashMap;
+    use std::collections::BTreeMap;
 
     fn create_test_state() -> GameState {
         let config = GameConfig::new(
@@ -104,11 +104,11 @@ mod tests {
         );
 
         let board_layout = BoardLayout {
-            areas: HashMap::new(),
-            adjacency: HashMap::new(),
+            areas: BTreeMap::new(),
+            adjacency: BTreeMap::new(),
             canal_crossings: vec![],
-            building_sites: HashMap::new(),
-            five_power_tokens: HashMap::new(),
+            building_sites: BTreeMap::new(),
+            five_power_tokens: BTreeMap::new(),
         };
 
         let players = vec![

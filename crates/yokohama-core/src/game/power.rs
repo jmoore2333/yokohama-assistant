@@ -52,7 +52,7 @@ pub fn calculate_power(state: &GameState, player: PlayerId, area: AreaId) -> u8 
 mod tests {
     use super::*;
     use crate::types::*;
-    use std::collections::HashMap;
+    use std::collections::BTreeMap;
 
     fn create_test_state() -> GameState {
         let config = GameConfig::new(
@@ -61,7 +61,7 @@ mod tests {
             PlayerId::new(0),
         );
 
-        let mut areas = HashMap::new();
+        let mut areas = BTreeMap::new();
         areas.insert(AreaId::new(0), AreaConfig {
             area_type: AreaType::Bank,
             grid_position: (0, 0),
@@ -69,10 +69,10 @@ mod tests {
 
         let board_layout = BoardLayout {
             areas,
-            adjacency: HashMap::new(),
+            adjacency: BTreeMap::new(),
             canal_crossings: vec![],
-            building_sites: HashMap::new(),
-            five_power_tokens: HashMap::new(),
+            building_sites: BTreeMap::new(),
+            five_power_tokens: BTreeMap::new(),
         };
 
         let players = vec![

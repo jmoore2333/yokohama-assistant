@@ -8,7 +8,7 @@ use rand::seq::SliceRandom;
 use rand::SeedableRng;
 use rand_chacha::ChaCha8Rng;
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::collections::BTreeMap;
 
 /// Create initial player states for a game configuration.
 pub fn create_players(config: &GameConfig) -> Vec<PlayerState> {
@@ -244,11 +244,11 @@ pub fn create_test_game_state(player_count: u8) -> GameState {
     GameState {
         config: config.clone(),
         board_layout: BoardLayout {
-            areas: HashMap::new(),
-            adjacency: HashMap::new(),
+            areas: BTreeMap::new(),
+            adjacency: BTreeMap::new(),
             canal_crossings: vec![],
-            building_sites: HashMap::new(),
-            five_power_tokens: HashMap::new(),
+            building_sites: BTreeMap::new(),
+            five_power_tokens: BTreeMap::new(),
         },
         players,
         current_player: config.start_player,

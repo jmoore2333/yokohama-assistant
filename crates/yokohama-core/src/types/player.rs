@@ -1,7 +1,7 @@
 //! Player state and resource tracking.
 
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::collections::BTreeMap;
 
 use crate::types::{AreaId, Country, OrderCardId, PlayerId, PlayerColor, TechCardId};
 
@@ -18,7 +18,7 @@ pub struct AssistantState {
     pub in_hand: u8,
     pub in_warehouse: u8,
     /// Count per area on the main board.
-    pub on_board: HashMap<AreaId, u8>,
+    pub on_board: BTreeMap<AreaId, u8>,
     /// Locked on Achievement cards.
     pub on_achievements: u8,
     /// Locked on Church Management Board.
@@ -33,7 +33,7 @@ impl AssistantState {
         Self {
             in_hand: 8,
             in_warehouse: 12,
-            on_board: HashMap::new(),
+            on_board: BTreeMap::new(),
             on_achievements: 0,
             on_church: 0,
             on_customs: 0,
@@ -68,7 +68,7 @@ pub struct ShophouseState {
     pub in_hand: u8,
     pub in_warehouse: u8,
     /// Areas where shophouses are built (area -> slot index 0-3).
-    pub built: HashMap<AreaId, u8>,
+    pub built: BTreeMap<AreaId, u8>,
 }
 
 impl ShophouseState {
@@ -76,7 +76,7 @@ impl ShophouseState {
         Self {
             in_hand: 2,
             in_warehouse: 6,
-            built: HashMap::new(),
+            built: BTreeMap::new(),
         }
     }
 
@@ -133,16 +133,16 @@ impl Default for TradingHouseState {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MercenaryState {
     /// Face-up (usable) mercenaries by country.
-    pub available: HashMap<Country, u8>,
+    pub available: BTreeMap<Country, u8>,
     /// Face-down (used) mercenaries by country.
-    pub used: HashMap<Country, u8>,
+    pub used: BTreeMap<Country, u8>,
 }
 
 impl MercenaryState {
     pub fn new() -> Self {
         Self {
-            available: HashMap::new(),
-            used: HashMap::new(),
+            available: BTreeMap::new(),
+            used: BTreeMap::new(),
         }
     }
 

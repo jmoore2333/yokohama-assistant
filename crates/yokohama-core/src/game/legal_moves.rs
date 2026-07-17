@@ -835,7 +835,7 @@ fn generate_building_moves(state: &GameState) -> Vec<Move> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::collections::HashMap;
+    use std::collections::BTreeMap;
 
     fn create_test_state() -> GameState {
         let config = GameConfig::new(
@@ -844,16 +844,16 @@ mod tests {
             PlayerId::new(0),
         );
 
-        let mut areas = HashMap::new();
+        let mut areas = BTreeMap::new();
         areas.insert(AreaId::new(0), AreaConfig { area_type: AreaType::Bank, grid_position: (0, 0) });
         areas.insert(AreaId::new(1), AreaConfig { area_type: AreaType::CopperMine, grid_position: (0, 1) });
 
         let board_layout = BoardLayout {
             areas,
-            adjacency: HashMap::new(),
+            adjacency: BTreeMap::new(),
             canal_crossings: vec![],
-            building_sites: HashMap::new(),
-            five_power_tokens: HashMap::new(),
+            building_sites: BTreeMap::new(),
+            five_power_tokens: BTreeMap::new(),
         };
 
         let players = vec![
@@ -923,6 +923,28 @@ mod tests {
 
         // Should always include EndAdditionalPhase
         assert!(moves.iter().any(|m| matches!(m, Move::EndAdditionalPhase)));
+    }
+
+    #[test]
+    fn test_enumeration_is_deterministic_across_identical_constructions() {
+        // Two states built identically (same seed) must enumerate identical
+        // move LISTS - same set AND same order. HashMap iteration order is
+        // per-instance random, which breaks replay determinism and
+        // minimal-repro fuzz seeds; every map that feeds enumeration is a
+        // BTreeMap for exactly this reason.
+        let rules = Rules::standard();
+        let build = || {
+            let config = GameConfig::for_player_count(4);
+            let pending = new_game(config, &rules, 7).unwrap();
+            let choices: Vec<StartingOrderChoice> =
+                (0..4).map(|_| StartingOrderChoice::Keep(0)).collect();
+            let state = finalize_setup(pending, &choices).unwrap();
+            // Advance into Placement, where enumeration iterates the board.
+            apply_move(&state, &Move::EndAdditionalPhase, &rules).unwrap()
+        };
+        let a = build();
+        let b = build();
+        assert_eq!(get_legal_moves(&a, &rules), get_legal_moves(&b, &rules));
     }
 
     #[test]

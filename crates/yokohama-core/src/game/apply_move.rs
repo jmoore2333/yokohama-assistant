@@ -983,7 +983,7 @@ fn check_end_game_triggers(state: &mut GameState) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::collections::HashMap;
+    use std::collections::BTreeMap;
 
     fn create_minimal_state(player_count: u8) -> GameState {
         let colors = match player_count {
@@ -997,11 +997,11 @@ mod tests {
         let config = GameConfig::new(actual_count, colors, PlayerId::new(0));
 
         let board_layout = BoardLayout {
-            areas: HashMap::new(),
-            adjacency: HashMap::new(),
+            areas: BTreeMap::new(),
+            adjacency: BTreeMap::new(),
             canal_crossings: vec![],
-            building_sites: HashMap::new(),
-            five_power_tokens: HashMap::new(),
+            building_sites: BTreeMap::new(),
+            five_power_tokens: BTreeMap::new(),
         };
 
         let players: Vec<PlayerState> = (0..actual_count)

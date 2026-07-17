@@ -1,7 +1,7 @@
 //! Integration tests for complete game scenarios.
 
 use yokohama_core::*;
-use std::collections::HashMap;
+use std::collections::BTreeMap;
 
 fn setup_2p_game() -> (GameState, OrderRegistry, TechRegistry) {
     // Create minimal 2-player game state for testing
@@ -11,7 +11,7 @@ fn setup_2p_game() -> (GameState, OrderRegistry, TechRegistry) {
         PlayerId::new(0),
     );
 
-    let mut areas = HashMap::new();
+    let mut areas = BTreeMap::new();
     areas.insert(AreaId::new(0), AreaConfig {
         area_type: AreaType::Bank,
         grid_position: (0, 0),
@@ -21,7 +21,7 @@ fn setup_2p_game() -> (GameState, OrderRegistry, TechRegistry) {
         grid_position: (0, 1),
     });
 
-    let mut adjacency = HashMap::new();
+    let mut adjacency = BTreeMap::new();
     adjacency.insert(AreaId::new(0), vec![AreaId::new(1)]);
     adjacency.insert(AreaId::new(1), vec![AreaId::new(0)]);
 
@@ -29,8 +29,8 @@ fn setup_2p_game() -> (GameState, OrderRegistry, TechRegistry) {
         areas,
         adjacency,
         canal_crossings: vec![],
-        building_sites: HashMap::new(),
-        five_power_tokens: HashMap::new(),
+        building_sites: BTreeMap::new(),
+        five_power_tokens: BTreeMap::new(),
     };
 
     let players = vec![
