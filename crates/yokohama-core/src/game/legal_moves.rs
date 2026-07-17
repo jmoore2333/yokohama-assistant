@@ -326,7 +326,7 @@ fn generate_area_action_moves(state: &GameState, rules: &Rules) -> Vec<Move> {
         AreaType::Church => generate_church_actions(state, player, power),
         AreaType::Customs => generate_customs_actions(state, player, power),
         AreaType::EmploymentAgency => generate_employment_agency_actions(state, player, power),
-        AreaType::Chinatown => generate_chinatown_actions(state, player, rules),
+        AreaType::Chinatown => generate_chinatown_actions(state, player, power, rules),
         AreaType::CopperMine => vec![Move::ExecuteAreaAction { action: AreaAction::ProduceCopper }],
         AreaType::SilkMill => vec![Move::ExecuteAreaAction { action: AreaAction::ProduceSilk }],
         AreaType::TeaPlantation => vec![Move::ExecuteAreaAction { action: AreaAction::ProduceTea }],
@@ -571,12 +571,17 @@ fn generate_employment_agency_actions(state: &GameState, player: PlayerId, power
 }
 
 /// Documented v1 cap on the length of a single Chinatown move's exchange
-/// sequence, as enumerated by `generate_chinatown_actions`. NOT
-/// power-derived: `apply_chinatown_exchange`/`apply_area_action`'s Chinatown
-/// arm never actually enforces `validate_chinatown_exchanges`'s power-based
-/// count limit (a pre-existing gap outside Task 17's scope, flagged for the
-/// final whole-branch review), so this flat bound exists purely to keep the
-/// enumeration BFS's branching factor finite.
+/// sequence, as enumerated by `generate_chinatown_actions`. The KB rule
+/// ("Number of exchanges = Power level", 07-rules-reference.md line 312)
+/// is now enforced end-to-end (Task 17b): `apply_area_action`'s Chinatown
+/// arm calls `validate_chinatown_exchanges` before any exchange executes,
+/// and the generator caps its own BFS depth at
+/// `min(power.min(5) as usize, CHINATOWN_ENUM_DEPTH)`. This constant only
+/// actually bites at power 5: a legal 5-exchange move exists per the rule
+/// there but is deliberately NOT enumerated (a plan-sanctioned v1
+/// enumeration bound, not a rules gap). At every power below 5, `power`
+/// itself is the binding constraint and this constant never limits
+/// anything.
 pub const CHINATOWN_ENUM_DEPTH: usize = 4;
 
 /// The 9 Chinatown exchange kinds, used to drive the enumeration BFS below.
@@ -691,9 +696,12 @@ fn chinatown_multiset_key(exchanges: &[ChinatownExchange]) -> [u8; 9] {
 }
 
 /// Enumerate legal Chinatown moves via breadth-first search over exchange
-/// sequences, up to `CHINATOWN_ENUM_DEPTH` exchanges, starting from the
-/// player's actual resource tuple and admitting only exchanges valid on the
-/// running simulated state (mirroring `apply_chinatown_exchange`'s
+/// sequences, up to `min(power.min(5) as usize, CHINATOWN_ENUM_DEPTH)`
+/// exchanges (Task 17b: the KB caps the exchange count at the acting
+/// power, exactly mirroring `validate_chinatown_exchanges`, which
+/// `apply_area_action`'s Chinatown arm now enforces), starting from the
+/// player's actual resource tuple and admitting only exchanges valid on
+/// the running simulated state (mirroring `apply_chinatown_exchange`'s
 /// costs/yields exactly, including the Mining Technology bonus on
 /// YenToCopper). Processing strictly by increasing sequence length means
 /// the first witness recorded for any reachable multiset is always found
@@ -706,7 +714,7 @@ fn chinatown_multiset_key(exchanges: &[ChinatownExchange]) -> [u8; 9] {
 /// places no assistant, so (unlike the other five permissive areas) hand
 /// availability never gates it. Skip is always legal and always offered
 /// (Task 16/17 decision-log optionality ruling).
-fn generate_chinatown_actions(state: &GameState, player: PlayerId, rules: &Rules) -> Vec<Move> {
+fn generate_chinatown_actions(state: &GameState, player: PlayerId, power: u8, rules: &Rules) -> Vec<Move> {
     let p = state.player(player);
     let mining_bonus = copper_bonus(state, player, 1, &rules.techs) as u32;
     let start = ChinatownResources {
@@ -717,12 +725,13 @@ fn generate_chinatown_actions(state: &GameState, player: PlayerId, rules: &Rules
         money: p.money,
         imported_goods: p.imported_goods,
     };
+    let depth = (power.min(5) as usize).min(CHINATOWN_ENUM_DEPTH);
 
     let mut moves = Vec::new();
     let mut seen: std::collections::HashSet<[u8; 9]> = std::collections::HashSet::new();
     let mut frontier: Vec<(ChinatownResources, Vec<ChinatownExchange>)> = vec![(start, Vec::new())];
 
-    for _ in 0..CHINATOWN_ENUM_DEPTH {
+    for _ in 0..depth {
         let mut next_frontier = Vec::new();
         for (res, path) in &frontier {
             for &exchange in &ALL_CHINATOWN_EXCHANGES {
@@ -1429,9 +1438,10 @@ mod tests {
     }
 
     /// Places a Chinatown area on the board, puts the president there, and
-    /// enters the AreaAction phase (power is irrelevant to Chinatown
-    /// enumeration -- see `CHINATOWN_ENUM_DEPTH`'s doc comment).
-    fn create_chinatown_area_state() -> GameState {
+    /// enters the AreaAction phase at the given power (Task 17b: power now
+    /// caps the BFS enumeration depth -- see `CHINATOWN_ENUM_DEPTH`'s doc
+    /// comment).
+    fn create_chinatown_area_state(power: u8) -> GameState {
         let mut state = create_test_state();
         let area = AreaId::new(5);
         state.board_layout.areas.insert(area, AreaConfig {
@@ -1440,7 +1450,7 @@ mod tests {
         });
         state.players[0].president_location = PresidentLocation::OnBoard(area);
         state.turn_phase = TurnPhase::AreaAction;
-        state.current_action_power = Some(3);
+        state.current_action_power = Some(power);
         state
     }
 
@@ -1660,21 +1670,24 @@ mod tests {
     }
 
     #[test]
-    fn chinatown_enumeration_hand_derived_small_fixture() {
-        // Fixture: money 1, everything else 0. HAND DERIVATION (full
-        // walk-through in the Task 17 report): the reachable exchange graph
-        // is a 2-leaf star -- R=(money:1) <-> T=(tea:1) via
-        // YenToTea/TeaToYen, and R <-> S=(seafood:1) via
-        // YenToSeafood/SeafoodToYen -- since money never reaches 2 (so the
-        // Copper/Silk/Imported branches are permanently unreachable from
-        // this fixture). Valid walks of length 1..=4 starting at R: 2 + 2 +
-        // 4 + 4 = 12 raw sequences; exactly one collision (the two
-        // length-4 walks that visit both leaves once each collapse to the
-        // same multiset) -> 11 distinct multisets + Skip = 12. This also
-        // pins the depth cap: the R<->T/S cycle is periodic (reachable
-        // indefinitely), so anything beyond 12 here would mean
-        // CHINATOWN_ENUM_DEPTH stopped bounding the search.
-        let mut state = create_chinatown_area_state();
+    fn chinatown_enumeration_hand_derived_small_fixture_power_3() {
+        // Fixture: money 1, everything else 0, power 3 (Task 17b: depth cap
+        // = min(3,4) = 3). HAND DERIVATION (full walk-through in the Task
+        // 17/17b report): the reachable exchange graph is a 2-leaf star --
+        // R=(money:1) <-> T=(tea:1) via YenToTea/TeaToYen, and R <->
+        // S=(seafood:1) via YenToSeafood/SeafoodToYen -- since money never
+        // reaches 2 (so the Copper/Silk/Imported branches are permanently
+        // unreachable from this fixture). Valid walks of length L starting
+        // at R number 2^ceil(L/2) (one binary choice -- Tea-branch or
+        // Seafood-branch -- per odd step, with the following even step
+        // forced back to R): L=1 -> 2, L=2 -> 2, L=3 -> 4. The length-4
+        // collision (the two walks that visit both leaves once each
+        // collapse to the same multiset) never happens at depth <= 3, so
+        // all 2+2+4 = 8 raw sequences are distinct multisets -> 8 + Skip =
+        // 9. This also pins the depth cap: the R<->T/S cycle is periodic
+        // (reachable indefinitely), so anything beyond 9 here would mean
+        // the power-capped depth stopped bounding the search.
+        let mut state = create_chinatown_area_state(3);
         state.players[0].copper = 0;
         state.players[0].silk = 0;
         state.players[0].tea = 0;
@@ -1684,7 +1697,7 @@ mod tests {
         let rules = Rules::empty_for_tests();
 
         let moves = get_legal_moves(&state, &rules);
-        assert_eq!(moves.len(), 12);
+        assert_eq!(moves.len(), 9);
         assert!(!moves.iter().any(|m| matches!(m,
             Move::ExecuteAreaAction { action: AreaAction::Chinatown { exchanges } } if exchanges.is_empty()
         )), "the empty encoding must never be emitted (Skip is the sole decline)");
@@ -1692,13 +1705,34 @@ mod tests {
     }
 
     #[test]
+    fn chinatown_enumeration_hand_derived_small_fixture_power_2_caps_depth() {
+        // Same fixture as the power-3 pin above, at power 2 (depth cap =
+        // min(2,4) = 2): only the L=1 (2 raw) and L=2 (2 raw) walks survive
+        // -- {YenToTea}, {YenToSeafood}, {YenToTea,TeaToYen},
+        // {YenToSeafood,SeafoodToYen} -- all 4 distinct (no collision is
+        // possible below length 4). 4 + Skip = 5.
+        let mut state = create_chinatown_area_state(2);
+        state.players[0].copper = 0;
+        state.players[0].silk = 0;
+        state.players[0].tea = 0;
+        state.players[0].seafood = 0;
+        state.players[0].money = 1;
+        state.players[0].imported_goods = 0;
+        let rules = Rules::empty_for_tests();
+
+        let moves = get_legal_moves(&state, &rules);
+        assert_eq!(moves.len(), 5);
+        assert_all_moves_apply(&state, &moves, &rules);
+    }
+
+    #[test]
     fn chinatown_enumeration_preserves_valid_execution_order_not_sorted() {
-        // Fixture: 1 copper, money 0, rest 0. [CopperToYen, YenToTea] is a
-        // valid order (sell the copper first, then buy tea with the
-        // proceeds); the reverse [YenToTea, CopperToYen] is NOT valid
-        // (YenToTea needs money >= 1, but money starts at 0) -- the
+        // Fixture: 1 copper, money 0, rest 0, power 3. [CopperToYen,
+        // YenToTea] is a valid order (sell the copper first, then buy tea
+        // with the proceeds); the reverse [YenToTea, CopperToYen] is NOT
+        // valid (YenToTea needs money >= 1, but money starts at 0) -- the
         // generator must emit the valid order, never a sorted one.
-        let mut state = create_chinatown_area_state();
+        let mut state = create_chinatown_area_state(3);
         state.players[0].copper = 1;
         state.players[0].silk = 0;
         state.players[0].tea = 0;
@@ -1712,6 +1746,108 @@ mod tests {
             Move::ExecuteAreaAction { action: AreaAction::Chinatown { exchanges } }
             if exchanges == &vec![ChinatownExchange::CopperToYen, ChinatownExchange::YenToTea]
         )), "expected the valid order [CopperToYen, YenToTea] among the generated moves");
+        assert_all_moves_apply(&state, &moves, &rules);
+    }
+
+    #[test]
+    fn chinatown_enumeration_mining_bonus_reachable_in_bfs() {
+        // Player owns 1 Mining Technology copy, money 4, copper 0, power 2
+        // (depth cap = min(2,4) = 2 -- just enough to reach this 2-exchange
+        // multiset). At the start, only YenToCopper is resource-valid
+        // (copper=0 blocks CopperToYen/etc.; money=4 covers YenToCopper's
+        // cost of 2). The BFS's simulated YenToCopper must apply the same
+        // Mining bonus `apply_chinatown_exchange` would (1 base + 1 mining
+        // = 2 copper), landing on a state with copper=2, from which
+        // CopperToYen (needs copper>=1) is reachable at depth 2 --
+        // confirming the generator's simulation actually threads the
+        // mining bonus through rather than silently using a stale/zeroed
+        // value.
+        let mut state = create_chinatown_area_state(2);
+        state.players[0].copper = 0;
+        state.players[0].silk = 0;
+        state.players[0].tea = 0;
+        state.players[0].seafood = 0;
+        state.players[0].money = 4;
+        state.players[0].imported_goods = 0;
+
+        let mut rules = Rules::empty_for_tests();
+        let mining = TechCard {
+            id: TechCardId(1),
+            name: "Mining Technology".to_string(),
+            country: Country::German,
+            industry_cost: 3,
+            effect: TechEffect::MiningTechnology,
+        };
+        rules.techs.insert(mining, "tech_mining");
+        state.players[0].technologies.push(TechCardId(1));
+
+        let moves = get_legal_moves(&state, &rules);
+        assert!(moves.iter().any(|m| matches!(m,
+            Move::ExecuteAreaAction { action: AreaAction::Chinatown { exchanges } }
+            if exchanges == &vec![ChinatownExchange::YenToCopper, ChinatownExchange::CopperToYen]
+        )), "expected [YenToCopper, CopperToYen] among the generated moves");
+        assert_all_moves_apply(&state, &moves, &rules);
+    }
+
+    #[test]
+    fn church_enumeration_2p_blocks_faith_7_discriminating_pair() {
+        // 2P, power 5, stock exactly {copper:1, silk:1, rest 0}, assistant,
+        // church spaces 4/5/6 occupied (7-11 empty). Only 4 stock-valid
+        // combos exist: {} (faith 5), {c} (faith 6), {s} (faith 6), {c,s}
+        // (faith 7). {}/{c}/{s} all fall through occupied spaces 5/6/4 with
+        // nothing left above -> None. {c,s}'s faith-7 slot is empty but 2P
+        // blocks it outright (printed dummy) -> also None. Every combo is
+        // executor-illegal -> Skip only = 1.
+        let mut state = create_church_area_state(5);
+        state.players[0].copper = 1;
+        state.players[0].silk = 1;
+        state.players[0].tea = 0;
+        state.players[0].seafood = 0;
+        state.players[0].money = 0;
+        state.players[0].imported_goods = 0;
+        state.players[0].assistants.in_hand = 1;
+        for faith in [4, 5, 6] {
+            let idx = ChurchTrack::faith_to_index(faith).unwrap();
+            state.church_track.slots[idx] = Some(ChurchSlot { player: PlayerId::new(1), arrival_order: 0 });
+        }
+        state.church_track.next_arrival_order = 3;
+        let rules = Rules::empty_for_tests();
+
+        let moves = get_legal_moves(&state, &rules);
+        assert_eq!(moves.len(), 1);
+        assert!(matches!(&moves[0], Move::ExecuteAreaAction { action: AreaAction::Skip }));
+        assert_all_moves_apply(&state, &moves, &rules);
+    }
+
+    #[test]
+    fn church_enumeration_3p_allows_faith_7_discriminating_pair() {
+        // Identical fixture to the 2P pin above, but 3P: {c,s}'s faith-7
+        // slot is empty and NOT blocked (no 2P dummy) -> eligible. {}/{c}/{s}
+        // still fall through the occupied 4/5/6 spaces -> None. Result:
+        // {c,s} + Skip = 2.
+        let mut state = create_church_area_state(5);
+        make_3p(&mut state);
+        state.players[0].copper = 1;
+        state.players[0].silk = 1;
+        state.players[0].tea = 0;
+        state.players[0].seafood = 0;
+        state.players[0].money = 0;
+        state.players[0].imported_goods = 0;
+        state.players[0].assistants.in_hand = 1;
+        for faith in [4, 5, 6] {
+            let idx = ChurchTrack::faith_to_index(faith).unwrap();
+            state.church_track.slots[idx] = Some(ChurchSlot { player: PlayerId::new(1), arrival_order: 0 });
+        }
+        state.church_track.next_arrival_order = 3;
+        let rules = Rules::empty_for_tests();
+
+        let moves = get_legal_moves(&state, &rules);
+        assert_eq!(moves.len(), 2);
+        assert!(moves.iter().any(|m| matches!(m,
+            Move::ExecuteAreaAction { action: AreaAction::Church {
+                copper: true, silk: true, tea: false, seafood: false, yen: false, imported_good: false,
+            } }
+        )));
         assert_all_moves_apply(&state, &moves, &rules);
     }
 }

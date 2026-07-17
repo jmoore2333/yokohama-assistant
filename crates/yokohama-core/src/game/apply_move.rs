@@ -359,6 +359,12 @@ fn apply_area_action(state: &mut GameState, action: &AreaAction, rules: &Rules) 
             if exchanges.is_empty() {
                 return Err(MoveError::RuleViolation("Must make at least 1 exchange (use Skip to decline)"));
             }
+            // Task 17b (KB 07-rules-reference.md line 312: "Number of
+            // exchanges = Power level"): the exchange count is capped by
+            // the acting power, exactly like every other area action --
+            // checked before any exchange executes so a rejected move
+            // mutates nothing.
+            validate_chinatown_exchanges(exchanges, power).map_err(MoveError::RuleViolation)?;
             for exchange in exchanges {
                 apply_chinatown_exchange(state, player, *exchange, &rules.techs).map_err(MoveError::RuleViolation)?;
             }
@@ -2900,6 +2906,36 @@ mod tests {
         let mv = Move::ExecuteAreaAction { action: AreaAction::Chinatown { exchanges: vec![] } };
         let result = apply_move(&state, &mv, &rules);
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn chinatown_rejects_exchange_count_over_power() {
+        // Task 17b (KB 07-rules-reference.md line 312: "Number of exchanges
+        // = Power level"): 3 exchanges at power 2 exceeds the cap and must
+        // be rejected -- before any exchange executes, so nothing mutates.
+        // Each individual exchange is otherwise resource-valid (money=10 is
+        // plenty for 3 x YenToTea), so the ONLY reason for rejection is the
+        // count cap, not an incidental resource shortfall.
+        let rules = Rules::empty_for_tests();
+        let mut state = create_test_game_state(2);
+        place_president_at_chinatown(&mut state);
+        state.turn_phase = TurnPhase::AreaAction;
+        state.current_action_power = Some(2);
+        state.players[0].money = 10;
+        let money_before = state.players[0].money;
+        let tea_before = state.players[0].tea;
+
+        let mv = Move::ExecuteAreaAction {
+            action: AreaAction::Chinatown {
+                exchanges: vec![ChinatownExchange::YenToTea, ChinatownExchange::YenToTea, ChinatownExchange::YenToTea],
+            },
+        };
+        let result = apply_move(&state, &mv, &rules);
+        assert!(result.is_err());
+        // Zero mutation: the original state (passed by shared reference)
+        // is untouched, and there is no successful new state to inspect.
+        assert_eq!(state.players[0].money, money_before);
+        assert_eq!(state.players[0].tea, tea_before);
     }
 
     #[test]
