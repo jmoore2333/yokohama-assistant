@@ -352,17 +352,17 @@ Contribute Faith value to advance on Church Management Board.
 3. Gain reward shown on that space
 4. Assistant is locked permanently
 
-**Church Management Board rewards:**
+**Church Management Board rewards** (Bonus column corrected 2026-07-17 from board art — every space carries a movement rider, values 1,1,2,2,2,2,3,3; see `guidingpath.md` decision log):
 | Faith | VP | Bonus |
 |-------|-----|-------|
-| 4 | 3 | - |
-| 5 | 4 | - |
+| 4 | 3 | 1 Movement |
+| 5 | 4 | 1 Movement |
 | 6 | 5 | 2 Movement |
-| 7 | 6 | 1 Yen |
-| 8 | 7 | 1 Movement |
-| 9 | 8 | 1 Imported Good |
-| 10 | 11 | - |
-| 11 | 14 | - |
+| 7 | 6 | 2 Movement |
+| 8 | 7 | 2 Movement |
+| 9 | 8 | 2 Movement |
+| 10 | 11 | 3 Movement |
+| 11 | 14 | 3 Movement |
 
 #### Customs
 Pay Imported Goods to advance on Customs Management Board.
