@@ -1750,19 +1750,28 @@ mod tests {
     }
 
     #[test]
-    fn chinatown_enumeration_mining_bonus_reachable_in_bfs() {
-        // Player owns 1 Mining Technology copy, money 4, copper 0, power 2
-        // (depth cap = min(2,4) = 2 -- just enough to reach this 2-exchange
-        // multiset). At the start, only YenToCopper is resource-valid
-        // (copper=0 blocks CopperToYen/etc.; money=4 covers YenToCopper's
-        // cost of 2). The BFS's simulated YenToCopper must apply the same
-        // Mining bonus `apply_chinatown_exchange` would (1 base + 1 mining
-        // = 2 copper), landing on a state with copper=2, from which
-        // CopperToYen (needs copper>=1) is reachable at depth 2 --
-        // confirming the generator's simulation actually threads the
-        // mining bonus through rather than silently using a stale/zeroed
-        // value.
-        let mut state = create_chinatown_area_state(2);
+    fn chinatown_enumeration_mining_bonus_three_exchange_chain_discriminates_drop() {
+        // Player owns 1 Mining Technology copy, money 4, copper 0, power 3
+        // (depth cap = min(3,4) = 3). At the start, only YenToCopper is
+        // resource-valid (copper=0 blocks CopperToYen/etc.; money=4 covers
+        // YenToCopper's cost of 2).
+        //
+        // This targets the 3-exchange multiset {YenToCopper:1,
+        // CopperToYen:2}, which GENUINELY discriminates a dropped Mining
+        // bonus -- unlike a 2-exchange [YenToCopper, CopperToYen] pin
+        // (reachable either way, since base copper alone is enough to
+        // unlock a single CopperToYen):
+        //   WITH the bonus: step1 YenToCopper -> money 2, copper 2 (1 base
+        //   + 1 mining); step2 CopperToYen -> copper 1, money 4; step3
+        //   CopperToYen -> copper 0, money 6 -- all three steps valid.
+        //   WITHOUT the bonus: step1 YenToCopper -> copper 1 (base only);
+        //   step2 CopperToYen -> copper 0; step3 CopperToYen requires
+        //   copper >= 1 -- UNREACHABLE.
+        // The only valid execution order for this multiset is
+        // [YenToCopper, CopperToYen, CopperToYen] (leading with CopperToYen
+        // is impossible since copper starts at 0), so the exact-vector
+        // match below pins the same fact a multiset check would.
+        let mut state = create_chinatown_area_state(3);
         state.players[0].copper = 0;
         state.players[0].silk = 0;
         state.players[0].tea = 0;
@@ -1784,8 +1793,12 @@ mod tests {
         let moves = get_legal_moves(&state, &rules);
         assert!(moves.iter().any(|m| matches!(m,
             Move::ExecuteAreaAction { action: AreaAction::Chinatown { exchanges } }
-            if exchanges == &vec![ChinatownExchange::YenToCopper, ChinatownExchange::CopperToYen]
-        )), "expected [YenToCopper, CopperToYen] among the generated moves");
+            if exchanges == &vec![
+                ChinatownExchange::YenToCopper,
+                ChinatownExchange::CopperToYen,
+                ChinatownExchange::CopperToYen,
+            ]
+        )), "expected [YenToCopper, CopperToYen, CopperToYen] among the generated moves");
         assert_all_moves_apply(&state, &moves, &rules);
     }
 
