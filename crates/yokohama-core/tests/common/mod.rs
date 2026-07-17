@@ -23,7 +23,15 @@ use yokohama_core::{
 
 /// Turn cap: exceeding this without `is_game_over` returning true is treated
 /// as a non-termination failure rather than looping forever.
-pub const MAX_TURNS: u32 = 500;
+///
+/// 2000, not the plan's original 500 (orchestrator-adjudicated during Task
+/// 18.4): random play converges slowly - hands fill, fulfillment is rare,
+/// so deck-drain and track triggers arrive late. Observed completions once
+/// every legal==applicable and trigger bug was fixed: 2p seed 18 -> 638
+/// turns, 3p seed 9 -> 513, 4p seed 0 -> 504 (the old cap interrupted that
+/// one FOUR turns from its legitimate end, mid final-round). Real games
+/// end far sooner; this bound exists purely to catch true non-termination.
+pub const MAX_TURNS: u32 = 2000;
 
 /// Summary statistics for one completed random self-play game.
 #[derive(Debug, Clone)]
