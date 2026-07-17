@@ -18,7 +18,7 @@ use rand_chacha::ChaCha8Rng;
 
 use yokohama_core::{
     apply_move, check_invariants, finalize_setup, get_legal_moves, is_game_over, new_game,
-    EndGameTrigger, GameConfig, GameState, Move, Rules, StartingOrderChoice, TurnPhase,
+    EndGameTrigger, GameConfig, GameRecord, GameState, Move, Rules, StartingOrderChoice, TurnPhase,
 };
 
 /// Turn cap: exceeding this without `is_game_over` returning true is treated
@@ -170,6 +170,70 @@ pub fn run_random_game_from(
             }
         }
     }
+}
+
+/// Number of moves to record for `run_recorded_game`'s "short" game --
+/// enough to cross several turns and phases (placement, movement, area
+/// action, building, additional actions) but far short of a full game
+/// (which averages hundreds of turns, per Task 18's fuzz gate), so Task
+/// 19's determinism tests stay fast.
+pub const RECORDED_GAME_MOVES: u32 = 40;
+
+/// Like `run_random_game`, but captures every applied move into a
+/// `GameRecord` alongside the resulting state (Task 19, spec F3). Same
+/// seeded `ChaCha8Rng` and choice-drawing order as `run_random_game`
+/// (starting-order keep choice per player, then one move choice per
+/// decision), so a given seed plays the identical game -- but stops after
+/// `RECORDED_GAME_MOVES` applied moves (or sooner, if the game legitimately
+/// ends first) rather than running to completion.
+///
+/// Panics rather than returning `Result`: this is test-only setup
+/// infrastructure for the replay-determinism tests, not the fuzz driver
+/// under test, so a hard failure here should surface immediately.
+pub fn run_recorded_game(seed: u64, players: u8, rules: &Rules) -> (GameState, GameRecord) {
+    let mut rng = ChaCha8Rng::seed_from_u64(seed);
+
+    let config = GameConfig::for_player_count(players);
+    let pending = match new_game(config, rules, seed) {
+        Ok(p) => p,
+        Err(e) => panic!("seed={seed} players={players}p: new_game failed: {e}"),
+    };
+    let record_config = pending.state.config.clone();
+
+    let choices: Vec<StartingOrderChoice> =
+        (0..players).map(|_| StartingOrderChoice::Keep(rng.gen_range(0..2u8))).collect();
+    let mut record = GameRecord::new(seed, record_config, choices.clone());
+
+    let mut state = match finalize_setup(pending, &choices) {
+        Ok(s) => s,
+        Err(e) => panic!("seed={seed} players={players}p: finalize_setup failed: {e}"),
+    };
+
+    for _ in 0..RECORDED_GAME_MOVES {
+        if is_game_over(&state) {
+            break;
+        }
+        let moves = get_legal_moves(&state, rules);
+        if moves.is_empty() {
+            panic!(
+                "seed={seed} players={players}p turn={}: dead end, get_legal_moves returned empty in a non-terminal state",
+                state.turn_number,
+            );
+        }
+        let mv = moves[rng.gen_range(0..moves.len())].clone();
+        match apply_move(&state, &mv, rules) {
+            Ok(next_state) => {
+                state = next_state;
+                record.push_move(mv);
+            }
+            Err(e) => panic!(
+                "seed={seed} players={players}p turn={}: apply_move failed for a move get_legal_moves offered: {e}",
+                state.turn_number,
+            ),
+        }
+    }
+
+    (state, record)
 }
 
 /// Build a full failure report: seed/turn/phase header, the driver-side
