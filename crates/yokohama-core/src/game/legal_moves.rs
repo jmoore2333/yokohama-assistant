@@ -229,12 +229,30 @@ fn generate_movement_moves_with_tech(state: &GameState, tech_registry: Option<&T
 
     match p.president_location {
         PresidentLocation::InHand => {
-            // Place president on any Possible Action Area
+            // Option A: place president on any Possible Action Area
             for &area in state.board_layout.areas.keys() {
                 if is_possible_action_area(state, player, area) {
                     moves.push(Move::PlacePresident { destination: area });
                 }
             }
+
+            // Option B is always available (rulebook B2 makes the Movement
+            // step required with a choice of TWO options, and Option B's
+            // recover-assistants clause is not conditioned on the president
+            // being on the board). From hand this means "stay in hand,
+            // recover any assistants" - and it guarantees the required
+            // Movement step can never dead-end when no Possible Action
+            // Area exists.
+            let areas_with_assistants: Vec<AreaId> = p
+                .assistants
+                .on_board
+                .iter()
+                .filter(|(_, &count)| count > 0)
+                .map(|(&area, _)| area)
+                .collect();
+            moves.push(Move::ReturnPresidentToHand {
+                recover_assistants_from: areas_with_assistants,
+            });
         }
         PresidentLocation::OnBoard(current) => {
             // Move to reachable areas the player can afford: price each path
@@ -923,6 +941,34 @@ mod tests {
 
         // Should always include EndAdditionalPhase
         assert!(moves.iter().any(|m| matches!(m, Move::EndAdditionalPhase)));
+    }
+
+    #[test]
+    fn test_movement_from_hand_always_offers_option_b() {
+        // President in hand and every area holding our assistants also
+        // holds an opponent president: no Possible Action Area exists, so
+        // Option A (place) has zero targets. The Movement step is required
+        // and Option B's recover clause is not conditioned on the president
+        // being on the board - staying in hand (recovering any assistants)
+        // must be offered, or the phase machine dead-ends (found by fuzz:
+        // 3p seed 1, turn 177).
+        let mut state = create_test_state();
+        state.turn_phase = TurnPhase::Movement;
+        let rules = Rules::empty_for_tests();
+        state.players[0].president_location = PresidentLocation::InHand;
+        state.players[0].assistants.on_board.insert(AreaId::new(1), 1);
+        state.players[1].president_location = PresidentLocation::OnBoard(AreaId::new(1));
+
+        let moves = get_legal_moves(&state, &rules);
+
+        assert!(
+            !moves.iter().any(|m| matches!(m, Move::PlacePresident { .. })),
+            "no possible action area exists"
+        );
+        assert!(
+            moves.iter().any(|m| matches!(m, Move::ReturnPresidentToHand { .. })),
+            "Option B (stay in hand, recover assistants) must be offered"
+        );
     }
 
     #[test]
