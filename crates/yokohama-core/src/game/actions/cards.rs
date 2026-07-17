@@ -1,6 +1,6 @@
 //! Port and Laboratory actions.
 
-use crate::types::{AreaType, GameState, PlayerId, PortSlot, PortPayment, PresidentLocation, TechCardId};
+use crate::types::{AreaType, GameState, OrderCardId, PlayerId, PortSlot, PortPayment, PresidentLocation, TechCardId};
 use crate::game::cards::{refill_port, refill_lab, TechRegistry};
 
 /// Which Port slots are accessible at a given power level.
@@ -139,15 +139,20 @@ pub fn execute_port_action(
         }
     }
 
-    // Slide left in a single pass: shift High->Mid before Mid->Low so that
-    // two adjacent gaps (e.g. taking both Low and Mid) fully compact rather
-    // than leaving the remaining card stranded in Mid.
-    if port.mid.is_none() && port.high.is_some() {
-        port.mid = port.high.take();
-    }
-    if port.low.is_none() && port.mid.is_some() {
-        port.low = port.mid.take();
-    }
+    // Slide left via total compaction: collect the remaining cards in
+    // left-to-right order and reassign them starting at Low. A fixed
+    // two-step shift order (either direction) only handles some gap
+    // patterns correctly — e.g. shifting High->Mid before Mid->Low
+    // compacts a Low+Mid take correctly but strands the old High card
+    // when only Low was taken (and vice versa for the opposite order).
+    // Full compaction handles every combination of taken slots uniformly.
+    let remaining: Vec<OrderCardId> = [port.low.take(), port.mid.take(), port.high.take()]
+        .into_iter()
+        .flatten()
+        .collect();
+    port.low = remaining.first().copied();
+    port.mid = remaining.get(1).copied();
+    port.high = remaining.get(2).copied();
 
     // Refill from the state-owned deck (rightmost empty spaces first).
     refill_port(port, &mut state.order_deck);
@@ -581,6 +586,85 @@ mod tests {
 
         // Check payment was deducted
         assert_eq!(state.players[0].money, 8); // 10 - 2
+    }
+
+    #[test]
+    fn test_port_execute_take_low_slides_remaining_cards_left() {
+        // Regression pin for a slide bug: taking only Low must shift both
+        // remaining cards down one slot each (Mid's card to Low, High's
+        // card to Mid), leaving only High empty for refill. An earlier
+        // buggy single-pass implementation left the High card stranded and
+        // refilled Mid instead.
+        let mut state = create_test_state();
+        let player = PlayerId::new(0);
+        state.players[0].money = 10;
+        place_president_at_port_a(&mut state);
+
+        state.port_state.port_a.low = Some(OrderCardId(1));
+        state.port_state.port_a.mid = Some(OrderCardId(2));
+        state.port_state.port_a.high = Some(OrderCardId(3));
+        state.order_deck = vec![OrderCardId(20)];
+
+        let result = execute_port_action(&mut state, player, &[PortSlot::Low], None, 2);
+        assert!(result.is_ok());
+
+        assert_eq!(state.port_state.port_a.low, Some(OrderCardId(2)));
+        assert_eq!(state.port_state.port_a.mid, Some(OrderCardId(3)));
+        assert_eq!(state.port_state.port_a.high, Some(OrderCardId(20)));
+        assert!(state.order_deck.is_empty());
+    }
+
+    #[test]
+    fn test_port_execute_take_mid_slides_high_left_low_unchanged() {
+        let mut state = create_test_state();
+        let player = PlayerId::new(0);
+        state.players[0].money = 10;
+        place_president_at_port_a(&mut state);
+
+        state.port_state.port_a.low = Some(OrderCardId(1));
+        state.port_state.port_a.mid = Some(OrderCardId(2));
+        state.port_state.port_a.high = Some(OrderCardId(3));
+        state.order_deck = vec![OrderCardId(20)];
+
+        let result = execute_port_action(&mut state, player, &[PortSlot::Mid], None, 3);
+        assert!(result.is_ok());
+
+        // Low is untouched; High's card slides down to fill Mid; the
+        // vacated High refills from the deck.
+        assert_eq!(state.port_state.port_a.low, Some(OrderCardId(1)));
+        assert_eq!(state.port_state.port_a.mid, Some(OrderCardId(3)));
+        assert_eq!(state.port_state.port_a.high, Some(OrderCardId(20)));
+        assert!(state.order_deck.is_empty());
+    }
+
+    #[test]
+    fn test_port_execute_take_low_and_high_noncontiguous_compacts_and_refills_both_gaps() {
+        // Non-contiguous take (Low and High, leaving Mid): only Mid's card
+        // survives and it must compact all the way to Low. Both vacated
+        // slots (Mid, High) refill from a 2-card deck, rightmost first.
+        let mut state = create_test_state();
+        let player = PlayerId::new(0);
+        state.players[0].money = 10;
+        place_president_at_port_a(&mut state);
+
+        state.port_state.port_a.low = Some(OrderCardId(1));
+        state.port_state.port_a.mid = Some(OrderCardId(2));
+        state.port_state.port_a.high = Some(OrderCardId(3));
+        state.order_deck = vec![OrderCardId(20), OrderCardId(21)]; // top = 21
+
+        let result = execute_port_action(
+            &mut state,
+            player,
+            &[PortSlot::Low, PortSlot::High],
+            Some(PortPayment::TwoYen),
+            4,
+        );
+        assert!(result.is_ok());
+
+        assert_eq!(state.port_state.port_a.low, Some(OrderCardId(2)));
+        assert_eq!(state.port_state.port_a.mid, Some(OrderCardId(20)));
+        assert_eq!(state.port_state.port_a.high, Some(OrderCardId(21)));
+        assert!(state.order_deck.is_empty());
     }
 
     #[test]
