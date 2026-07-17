@@ -938,47 +938,9 @@ fn apply_fulfill_achievement(
     Ok(())
 }
 
-fn check_end_game_triggers(state: &mut GameState) {
-    if state.end_game_triggered {
-        return;
-    }
-
-    let player = state.current_player;
-
-    // Check Trading Houses (4 built)
-    for p in &state.players {
-        if p.trading_houses.total_built() >= 4 {
-            state.end_game_triggered = true;
-            state.trigger_reason = Some(EndGameTrigger::TradingHousesComplete(p.id));
-            state.trigger_player = Some(p.id);
-            return;
-        }
-    }
-
-    // Check Shophouses (8 built)
-    for p in &state.players {
-        if p.shophouses.total_built() >= 8 {
-            state.end_game_triggered = true;
-            state.trigger_reason = Some(EndGameTrigger::ShophousesComplete(p.id));
-            state.trigger_player = Some(p.id);
-            return;
-        }
-    }
-
-    // Check Church track
-    if state.church_track.total_assistants() >= state.config.track_trigger() {
-        state.end_game_triggered = true;
-        state.trigger_reason = Some(EndGameTrigger::ChurchTrackFull);
-        state.trigger_player = Some(player);
-    }
-
-    // Check Customs track
-    if state.customs_track.total_assistants() >= state.config.track_trigger() {
-        state.end_game_triggered = true;
-        state.trigger_reason = Some(EndGameTrigger::CustomsTrackFull);
-        state.trigger_player = Some(player);
-    }
-}
+// End-game trigger detection lives in end_game.rs (check_end_game_triggers,
+// all FIVE triggers incl. OrderDeckEmpty). A private 4-trigger copy here
+// used to shadow it; deleted after fuzz surfaced 500-turn non-terminations.
 
 #[cfg(test)]
 mod tests {
@@ -1079,6 +1041,24 @@ mod tests {
 
         assert_eq!(state.turn_phase, TurnPhase::TurnEnd);
         assert!(state.is_game_over());
+    }
+
+    #[test]
+    fn test_order_deck_empty_trigger_fires_through_apply_move() {
+        // The complete 5-trigger checker lives in end_game.rs; apply_move
+        // used to shadow it with a private 4-trigger copy that could never
+        // fire OrderDeckEmpty (found by fuzz: 500-turn non-terminations
+        // with trigger_reason null).
+        let mut state = create_minimal_state(2);
+        state.turn_phase = TurnPhase::AdditionalActionFirst;
+        state.order_deck = vec![];
+        // port_a's six slots start empty in this fixture
+        let rules = Rules::empty_for_tests();
+
+        let next = apply_move(&state, &Move::EndAdditionalPhase, &rules).unwrap();
+
+        assert!(next.end_game_triggered);
+        assert!(matches!(next.trigger_reason, Some(EndGameTrigger::OrderDeckEmpty)));
     }
 
     fn movement_toll_fixture() -> GameState {
