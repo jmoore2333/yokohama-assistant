@@ -10,7 +10,7 @@ pub fn apply_move(state: &GameState, mv: &Move, rules: &Rules) -> Result<GameSta
 
     match mv {
         Move::EndAdditionalPhase => {
-            advance_phase(&mut new_state);
+            advance_phase(&mut new_state, Some(&rules.techs));
         }
 
         Move::PlaceThreeAreas { placements } => {
@@ -89,7 +89,7 @@ pub fn apply_move(state: &GameState, mv: &Move, rules: &Rules) -> Result<GameSta
         }
 
         Move::FulfillOrder { order_id } => {
-            apply_fulfill_order(&mut new_state, *order_id, Some(&rules.orders))?;
+            apply_fulfill_order(&mut new_state, *order_id, Some(&rules.orders), &rules.techs)?;
         }
 
         Move::FulfillAchievement { achievement } => {
@@ -150,7 +150,7 @@ fn validate_movement_destination(state: &GameState, destination: AreaId) -> Resu
     Ok(())
 }
 
-fn advance_phase(state: &mut GameState) {
+fn advance_phase(state: &mut GameState, tech_registry: Option<&TechRegistry>) {
     state.turn_phase = match state.turn_phase {
         TurnPhase::AdditionalActionFirst => TurnPhase::Placement,
         TurnPhase::AdditionalActionSecond => {
@@ -178,6 +178,14 @@ fn advance_phase(state: &mut GameState) {
                 state.turn_number += 1;
                 state.additional_action_state = AdditionalActionState::new();
                 state.current_action_power = None;
+
+                // System of Stock (KB 08-tech-cards.yaml tech_stock_market):
+                // "Start of Your Turn: if you have less than 2 yen, increase
+                // to 2 yen" - automatic, no player choice.
+                if let Some(registry) = tech_registry {
+                    apply_turn_start_effects(state, next_player, registry);
+                }
+
                 TurnPhase::AdditionalActionFirst
             }
         }
@@ -869,6 +877,7 @@ fn apply_fulfill_order(
     state: &mut GameState,
     order_id: OrderCardId,
     order_registry: Option<&OrderRegistry>,
+    tech_registry: &TechRegistry,
 ) -> Result<(), MoveError> {
     let player = state.current_player;
     let p = state.player(player);
@@ -887,9 +896,10 @@ fn apply_fulfill_order(
         None => return Err(MoveError::RuleViolation("OrderRegistry required for order fulfillment")),
     };
 
-    // Clone requirements and rewards before mutable borrow
+    // Clone requirements, rewards and country before mutable borrow
     let req = order.requirements;
     let rewards = order.rewards;
+    let country = order.country;
 
     // Check if player has required trade goods
     if p.copper < req.copper as u32
@@ -928,6 +938,21 @@ fn apply_fulfill_order(
     // Move order from hand to completed
     p.order_cards_in_hand.retain(|&id| id != order_id);
     p.completed_orders.push(order_id);
+
+    // Ball (+2 VP) and Language School (+1 Yen) trigger on every completed
+    // Order, stacking per owned physical copy (see ball_vp_bonus /
+    // language_school_yen_bonus).
+    let ball_bonus = ball_vp_bonus(state, player, tech_registry);
+    state.player_mut(player).victory_points += ball_bonus;
+    let language_school_bonus = language_school_yen_bonus(state, player, tech_registry);
+    state.player_mut(player).money += language_school_bonus;
+
+    // Foreign Mercenary eligibility (rulebook p.8 "Matching Country icons"):
+    // re-run the same country-icon check Lab acquisition uses
+    // (apply_lab_acquisition_bonuses), for the just-completed order's country.
+    if let Some(order_registry) = order_registry {
+        check_mercenary_eligibility(state, player, country, order_registry, tech_registry);
+    }
 
     Ok(())
 }
@@ -1020,8 +1045,32 @@ mod tests {
         let mut state = create_minimal_state(2);
         state.turn_phase = TurnPhase::AdditionalActionFirst;
 
-        advance_phase(&mut state);
+        advance_phase(&mut state, None);
         assert_eq!(state.turn_phase, TurnPhase::Placement);
+    }
+
+    #[test]
+    fn test_advance_phase_applies_system_of_stock_at_the_incoming_players_turn_start() {
+        // KB 08-tech-cards.yaml tech_stock_market ("System of Stock" in the
+        // rulebook): "Start of Your Turn: if you have less than 2 yen,
+        // increase to 2 yen" - fully automatic, no player choice. Pins that
+        // advance_phase's next-player transition is the wiring point.
+        let mut state = create_minimal_state(2);
+        state.turn_phase = TurnPhase::AdditionalActionSecond;
+        state.current_player = PlayerId::new(0);
+        state.players[1].technologies.push(TechCardId(1));
+        state.players[1].money = 0;
+
+        let mut tech_registry = TechRegistry::new();
+        tech_registry.insert(
+            TechCard { id: TechCardId(1), name: "Stock Market".to_string(), industry_cost: 3, country: Country::Dutch, effect: TechEffect::SystemOfStock },
+            "tech_stock_market",
+        );
+
+        advance_phase(&mut state, Some(&tech_registry));
+
+        assert_eq!(state.current_player, PlayerId::new(1));
+        assert_eq!(state.players[1].money, 2);
     }
 
     #[test]
@@ -1040,7 +1089,7 @@ mod tests {
         // With 2 players and start_player 0, current 1 -> next_player() == 0 == start.
         state.current_player = PlayerId::new(1);
 
-        advance_phase(&mut state);
+        advance_phase(&mut state, None);
 
         assert_eq!(state.turn_phase, TurnPhase::TurnEnd);
         assert!(state.is_game_over());
@@ -1229,7 +1278,7 @@ mod tests {
         state.final_round = false;
         state.current_player = PlayerId::new(1);
 
-        advance_phase(&mut state);
+        advance_phase(&mut state, None);
 
         assert!(state.final_round);
         assert_eq!(state.turn_phase, TurnPhase::AdditionalActionFirst);
@@ -2363,6 +2412,134 @@ mod tests {
 
         // v1 policy: Movement icon is a documented no-op (see apply_fulfill_order).
         assert_eq!(new_state.players[0].assistants, before);
+    }
+
+    #[test]
+    fn test_fulfill_order_awards_ball_and_language_school_bonuses() {
+        let mut state = create_minimal_state(2);
+        state.turn_phase = TurnPhase::AdditionalActionFirst;
+        state.players[0].technologies.push(TechCardId(100));
+        state.players[0].technologies.push(TechCardId(101));
+
+        let order_id = OrderCardId(42);
+        state.players[0].order_cards_in_hand.push(order_id);
+        let starting_money = state.players[0].money;
+
+        let mut order_registry = OrderRegistry::new();
+        let order_card = OrderCard {
+            id: order_id,
+            country: Country::English,
+            requirements: TradeGoodRequirement::default(),
+            rewards: OrderRewards { victory_points: 5, money: 3, ..Default::default() },
+        };
+        order_registry.insert(order_card, "test_order");
+
+        let mut tech_registry = TechRegistry::new();
+        tech_registry.insert(
+            TechCard { id: TechCardId(100), name: "Ball".to_string(), country: Country::English, industry_cost: 5, effect: TechEffect::Ball },
+            "tech_ball",
+        );
+        tech_registry.insert(
+            TechCard { id: TechCardId(101), name: "Language School".to_string(), country: Country::American, industry_cost: 3, effect: TechEffect::LanguageSchool },
+            "tech_language_school",
+        );
+
+        let mut rules = Rules::empty_for_tests();
+        rules.orders = order_registry;
+        rules.techs = tech_registry;
+
+        let result = apply_move(&state, &Move::FulfillOrder { order_id }, &rules);
+        assert!(result.is_ok());
+        let new_state = result.unwrap();
+
+        // Base 5 VP reward + Ball's +2 VP.
+        assert_eq!(new_state.players[0].victory_points, 5 + 2);
+        // Starting money + 3 reward + Language School's +1 Yen.
+        assert_eq!(new_state.players[0].money, starting_money + 3 + 1);
+    }
+
+    #[test]
+    fn test_fulfill_order_awards_mercenary_at_every_second_completed_order_of_a_country() {
+        // Rulebook p.8 "Matching Country icons": a mercenary of that country
+        // is awarded once completed-order + owned-tech country icons reach
+        // each even count (2, 4, 6, ...) — pinning check_mercenary_eligibility's
+        // real semantics (game/cards.rs), not redesigning them.
+        let mut state = create_minimal_state(2);
+        state.turn_phase = TurnPhase::AdditionalActionFirst;
+
+        let country = Country::English;
+        let mut order_registry = OrderRegistry::new();
+        for i in 1..=4u8 {
+            order_registry.insert(
+                OrderCard {
+                    id: OrderCardId(i),
+                    country,
+                    requirements: TradeGoodRequirement::default(),
+                    rewards: OrderRewards::default(),
+                },
+                &format!("test_order_{i}"),
+            );
+        }
+        let mut rules = Rules::empty_for_tests();
+        rules.orders = order_registry;
+
+        let starting_supply = state.mercenary_supply.english;
+
+        // 1st completed order of this country: count=1, no award.
+        state.players[0].order_cards_in_hand.push(OrderCardId(1));
+        state = apply_move(&state, &Move::FulfillOrder { order_id: OrderCardId(1) }, &rules).unwrap();
+        assert_eq!(state.players[0].mercenaries.total(), 0);
+
+        // 2nd: count=2 -> first mercenary awarded.
+        state.players[0].order_cards_in_hand.push(OrderCardId(2));
+        state = apply_move(&state, &Move::FulfillOrder { order_id: OrderCardId(2) }, &rules).unwrap();
+        assert_eq!(state.players[0].mercenaries.available.get(&country).copied().unwrap_or(0), 1);
+        assert_eq!(state.mercenary_supply.english, starting_supply - 1);
+
+        // 3rd: count=3 -> no NEW award (multiples-of-2 rule).
+        state.players[0].order_cards_in_hand.push(OrderCardId(3));
+        state = apply_move(&state, &Move::FulfillOrder { order_id: OrderCardId(3) }, &rules).unwrap();
+        assert_eq!(state.players[0].mercenaries.available.get(&country).copied().unwrap_or(0), 1);
+        assert_eq!(state.mercenary_supply.english, starting_supply - 1);
+
+        // 4th: count=4 -> second mercenary awarded.
+        state.players[0].order_cards_in_hand.push(OrderCardId(4));
+        state = apply_move(&state, &Move::FulfillOrder { order_id: OrderCardId(4) }, &rules).unwrap();
+        assert_eq!(state.players[0].mercenaries.available.get(&country).copied().unwrap_or(0), 2);
+        assert_eq!(state.mercenary_supply.english, starting_supply - 2);
+    }
+
+    #[test]
+    fn test_fulfill_order_no_mercenary_award_when_supply_empty() {
+        let mut state = create_minimal_state(2);
+        state.turn_phase = TurnPhase::AdditionalActionFirst;
+        state.mercenary_supply.dutch = 0; // deplete supply before any awards are due
+
+        let country = Country::Dutch;
+        let mut order_registry = OrderRegistry::new();
+        for i in 1..=2u8 {
+            order_registry.insert(
+                OrderCard {
+                    id: OrderCardId(i),
+                    country,
+                    requirements: TradeGoodRequirement::default(),
+                    rewards: OrderRewards::default(),
+                },
+                &format!("test_dutch_order_{i}"),
+            );
+        }
+        let mut rules = Rules::empty_for_tests();
+        rules.orders = order_registry;
+
+        state.players[0].order_cards_in_hand.push(OrderCardId(1));
+        state = apply_move(&state, &Move::FulfillOrder { order_id: OrderCardId(1) }, &rules).unwrap();
+        state.players[0].order_cards_in_hand.push(OrderCardId(2));
+        state = apply_move(&state, &Move::FulfillOrder { order_id: OrderCardId(2) }, &rules).unwrap();
+
+        // Count reached 2 (would normally award), but supply is empty:
+        // no award, no panic, supply stays at zero.
+        assert_eq!(state.players[0].mercenaries.total(), 0);
+        assert_eq!(state.mercenary_supply.dutch, 0);
     }
 
     #[test]

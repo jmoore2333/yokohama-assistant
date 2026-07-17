@@ -224,6 +224,35 @@ pub fn customs_vp_bonus(
     brickyard_copies * 4
 }
 
+/// Order-completion VP bonus (Ball): +2 VP per owned Ball copy — stacks per
+/// physical copy the player owns (Task 20c, consistent with the
+/// Winery/Brickyard precedent).
+pub fn ball_vp_bonus(
+    state: &GameState,
+    player: PlayerId,
+    tech_registry: &TechRegistry,
+) -> u32 {
+    let p = state.player(player);
+    let ball_copies = p.technologies.iter()
+        .filter(|&&tech_id| tech_registry.get(tech_id).map(|t| t.effect == TechEffect::Ball).unwrap_or(false))
+        .count() as u32;
+    ball_copies * 2
+}
+
+/// Order-completion Yen bonus (Language School): +1 Yen per owned copy —
+/// stacks per physical copy the player owns (Task 20c, consistent with the
+/// Winery/Brickyard precedent).
+pub fn language_school_yen_bonus(
+    state: &GameState,
+    player: PlayerId,
+    tech_registry: &TechRegistry,
+) -> u32 {
+    let p = state.player(player);
+    p.technologies.iter()
+        .filter(|&&tech_id| tech_registry.get(tech_id).map(|t| t.effect == TechEffect::LanguageSchool).unwrap_or(false))
+        .count() as u32
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -394,6 +423,79 @@ mod tests {
         // With tech
         state.players[0].technologies.push(TechCardId(4));
         assert_eq!(customs_vp_bonus(&state, player, &tech_registry), 4);
+    }
+
+    #[test]
+    fn test_ball_vp_bonus_stacks_per_owned_copy() {
+        // Standard data has 2 physical Ball copies, but a hand-rolled
+        // fixture pins the stacking semantics generically (Task 20c,
+        // mirrors the Winery/Brickyard/Mining Technology precedent).
+        let mut state = create_test_state();
+        let player = PlayerId::new(0);
+
+        let mut tech_registry = TechRegistry::new();
+        let ball_1 = TechCard {
+            id: TechCardId(20),
+            name: "Ball".to_string(),
+            country: Country::English,
+            industry_cost: 5,
+            effect: TechEffect::Ball,
+        };
+        let ball_2 = TechCard {
+            id: TechCardId(21),
+            name: "Ball".to_string(),
+            country: Country::English,
+            industry_cost: 5,
+            effect: TechEffect::Ball,
+        };
+        tech_registry.insert(ball_1, "tech_ball_1");
+        tech_registry.insert(ball_2, "tech_ball_2");
+
+        // Without tech
+        assert_eq!(ball_vp_bonus(&state, player, &tech_registry), 0);
+
+        // With one owned copy
+        state.players[0].technologies.push(TechCardId(20));
+        assert_eq!(ball_vp_bonus(&state, player, &tech_registry), 2);
+
+        // With both owned copies - stacks
+        state.players[0].technologies.push(TechCardId(21));
+        assert_eq!(ball_vp_bonus(&state, player, &tech_registry), 4);
+    }
+
+    #[test]
+    fn test_language_school_yen_bonus_stacks_per_owned_copy() {
+        let mut state = create_test_state();
+        let player = PlayerId::new(0);
+
+        let mut tech_registry = TechRegistry::new();
+        let ls_1 = TechCard {
+            id: TechCardId(22),
+            name: "Language School".to_string(),
+            country: Country::American,
+            industry_cost: 3,
+            effect: TechEffect::LanguageSchool,
+        };
+        let ls_2 = TechCard {
+            id: TechCardId(23),
+            name: "Language School".to_string(),
+            country: Country::American,
+            industry_cost: 3,
+            effect: TechEffect::LanguageSchool,
+        };
+        tech_registry.insert(ls_1, "tech_ls_1");
+        tech_registry.insert(ls_2, "tech_ls_2");
+
+        // Without tech
+        assert_eq!(language_school_yen_bonus(&state, player, &tech_registry), 0);
+
+        // With one owned copy
+        state.players[0].technologies.push(TechCardId(22));
+        assert_eq!(language_school_yen_bonus(&state, player, &tech_registry), 1);
+
+        // With both owned copies - stacks
+        state.players[0].technologies.push(TechCardId(23));
+        assert_eq!(language_school_yen_bonus(&state, player, &tech_registry), 2);
     }
 
     #[test]

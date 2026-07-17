@@ -231,7 +231,7 @@ fn generate_movement_moves_with_tech(state: &GameState, tech_registry: Option<&T
         PresidentLocation::InHand => {
             // Option A: place president on any Possible Action Area
             for &area in state.board_layout.areas.keys() {
-                if is_possible_action_area(state, player, area) {
+                if is_possible_action_area_with_tech(state, player, area, tech_registry) {
                     moves.push(Move::PlacePresident { destination: area });
                 }
             }
@@ -260,7 +260,7 @@ fn generate_movement_moves_with_tech(state: &GameState, tech_registry: Option<&T
             // (president pass-through fees + canal tolls), so legal ==
             // applicable. One path per destination (BFS order) - a cheaper
             // alternate route to the same destination is not searched for.
-            for (dest, path) in find_reachable_areas(state, player, current) {
+            for (dest, path) in find_reachable_areas_with_tech(state, player, current, tech_registry) {
                 if calculate_movement_cost_with_tech(state, player, &path, tech_registry)
                     <= p.money
                 {
@@ -1046,6 +1046,125 @@ mod tests {
         assert!(
             !moves.iter().any(|m| matches!(m, Move::MovePresident { destination, .. } if *destination == AreaId::new(2))),
             "unaffordable pass-through move must not be offered"
+        );
+
+        state.players[0].money = 1;
+        let moves = get_legal_moves(&state, &rules);
+        assert!(moves
+            .iter()
+            .any(|m| matches!(m, Move::MovePresident { destination, .. } if *destination == AreaId::new(2))));
+    }
+
+    fn postal_system_tech_registry(id: TechCardId) -> TechRegistry {
+        let mut tech_registry = TechRegistry::new();
+        tech_registry.insert(
+            TechCard {
+                id,
+                name: "Postal System".to_string(),
+                industry_cost: 3,
+                country: Country::English,
+                effect: TechEffect::PostalSystem,
+            },
+            "tech_postal_system",
+        );
+        tech_registry
+    }
+
+    #[test]
+    fn test_postal_system_allows_stopping_in_opponent_occupied_area() {
+        // KB 08-tech-cards.yaml tech_postal_system: "Movement Step: You may
+        // place your President in an area occupied by another President."
+        // President at 0, own assistant at 1, opponent president ALSO at 1.
+        let mut state = create_test_state();
+        state.turn_phase = TurnPhase::Movement;
+        state.board_layout.adjacency.insert(AreaId::new(0), vec![AreaId::new(1)]);
+        state.board_layout.adjacency.insert(AreaId::new(1), vec![AreaId::new(0)]);
+        state.players[0].president_location = PresidentLocation::OnBoard(AreaId::new(0));
+        state.players[0].assistants.on_board.insert(AreaId::new(1), 1);
+        state.players[1].president_location = PresidentLocation::OnBoard(AreaId::new(1));
+
+        let rules = Rules::empty_for_tests();
+        let moves = get_legal_moves(&state, &rules);
+        assert!(
+            !moves.iter().any(|m| matches!(m, Move::MovePresident { destination, .. } if *destination == AreaId::new(1))),
+            "without Postal System, an opponent-occupied area is not a Possible Action Area"
+        );
+
+        state.players[0].technologies.push(TechCardId(200));
+        let mut rules = Rules::empty_for_tests();
+        rules.techs = postal_system_tech_registry(TechCardId(200));
+
+        let moves = get_legal_moves(&state, &rules);
+        let mv = moves
+            .iter()
+            .find(|m| matches!(m, Move::MovePresident { destination, .. } if *destination == AreaId::new(1)))
+            .expect("Postal System owner should be offered a stop in the opponent-occupied area")
+            .clone();
+
+        let result = apply_move(&state, &mv, &rules);
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap().players[0].president_location, PresidentLocation::OnBoard(AreaId::new(1)));
+    }
+
+    #[test]
+    fn test_postal_system_allows_placement_from_hand_into_opponent_occupied_area() {
+        let mut state = create_test_state();
+        state.turn_phase = TurnPhase::Movement;
+        state.players[0].president_location = PresidentLocation::InHand;
+        state.players[0].assistants.on_board.insert(AreaId::new(1), 1);
+        state.players[1].president_location = PresidentLocation::OnBoard(AreaId::new(1));
+
+        let rules = Rules::empty_for_tests();
+        let moves = get_legal_moves(&state, &rules);
+        assert!(
+            !moves.iter().any(|m| matches!(m, Move::PlacePresident { destination } if *destination == AreaId::new(1))),
+            "without Postal System, cannot place president into an opponent-occupied area"
+        );
+
+        state.players[0].technologies.push(TechCardId(201));
+        let mut rules = Rules::empty_for_tests();
+        rules.techs = postal_system_tech_registry(TechCardId(201));
+
+        let moves = get_legal_moves(&state, &rules);
+        let mv = moves
+            .iter()
+            .find(|m| matches!(m, Move::PlacePresident { destination } if *destination == AreaId::new(1)))
+            .expect("Postal System owner should be able to place president into the opponent-occupied area")
+            .clone();
+
+        let result = apply_move(&state, &mv, &rules);
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap().players[0].president_location, PresidentLocation::OnBoard(AreaId::new(1)));
+    }
+
+    #[test]
+    fn test_postal_system_does_not_waive_pass_through_fees() {
+        // Postal System's KB text is purely about stopping rights; the
+        // separate pass-through toll (calculate_movement_cost_full) checks
+        // only Stagecoach, so it must still apply unchanged.
+        let mut state = create_test_state();
+        state.turn_phase = TurnPhase::Movement;
+        state.board_layout.areas.insert(
+            AreaId::new(2),
+            AreaConfig { area_type: AreaType::SilkMill, grid_position: (0, 2) },
+        );
+        state.board_layout.adjacency.insert(AreaId::new(0), vec![AreaId::new(1)]);
+        state.board_layout.adjacency.insert(AreaId::new(1), vec![AreaId::new(0), AreaId::new(2)]);
+        state.board_layout.adjacency.insert(AreaId::new(2), vec![AreaId::new(1)]);
+        state.players[0].president_location = PresidentLocation::OnBoard(AreaId::new(0));
+        state.players[0].assistants.on_board.insert(AreaId::new(1), 1);
+        state.players[0].assistants.on_board.insert(AreaId::new(2), 1);
+        state.players[1].president_location = PresidentLocation::OnBoard(AreaId::new(1));
+
+        state.players[0].technologies.push(TechCardId(202));
+        let mut rules = Rules::empty_for_tests();
+        rules.techs = postal_system_tech_registry(TechCardId(202));
+
+        state.players[0].money = 0;
+        let moves = get_legal_moves(&state, &rules);
+        assert!(
+            !moves.iter().any(|m| matches!(m, Move::MovePresident { destination, .. } if *destination == AreaId::new(2))),
+            "pass-through fee must still apply even though the mover owns Postal System"
         );
 
         state.players[0].money = 1;

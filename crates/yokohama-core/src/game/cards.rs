@@ -145,67 +145,6 @@ pub fn can_fulfill_order(
     }
 }
 
-/// Fulfill an Order card, paying costs and receiving rewards.
-pub fn fulfill_order(
-    state: &mut GameState,
-    player: PlayerId,
-    order_id: OrderCardId,
-    order_registry: &OrderRegistry,
-    tech_registry: &TechRegistry,
-) -> Result<(), &'static str> {
-    if !can_fulfill_order(state, player, order_id, order_registry) {
-        return Err("Cannot fulfill order: missing requirements");
-    }
-
-    let card = order_registry.get(order_id).unwrap();
-    let req = card.requirements;
-    let rewards = card.rewards;
-    let country = card.country;
-
-    let p = state.player_mut(player);
-
-    // Pay costs
-    p.copper -= req.copper as u32;
-    p.silk -= req.silk as u32;
-    p.tea -= req.tea as u32;
-    p.seafood -= req.seafood as u32;
-
-    // Remove from hand, add to completed
-    p.order_cards_in_hand.retain(|&id| id != order_id);
-    p.completed_orders.push(order_id);
-
-    // Receive rewards
-    p.victory_points += rewards.victory_points as u32;
-    p.money += rewards.money as u32;
-    p.imported_goods += rewards.imported_goods as u32;
-    p.copper += rewards.copper as u32;
-    p.silk += rewards.silk as u32;
-    p.tea += rewards.tea as u32;
-    p.seafood += rewards.seafood as u32;
-
-    // Check for Ball technology bonus (+2 VP)
-    let has_ball = p.technologies.iter().any(|&tech_id| {
-        tech_registry.get(tech_id).map(|t| t.effect == TechEffect::Ball).unwrap_or(false)
-    });
-    if has_ball {
-        let p = state.player_mut(player);
-        p.victory_points += 2;
-    }
-
-    // Check for Language School technology bonus (+1 Yen)
-    let has_language_school = state.player(player).technologies.iter().any(|&tech_id| {
-        tech_registry.get(tech_id).map(|t| t.effect == TechEffect::LanguageSchool).unwrap_or(false)
-    });
-    if has_language_school {
-        state.player_mut(player).money += 1;
-    }
-
-    // Check for Foreign Mercenary eligibility
-    check_mercenary_eligibility(state, player, country, order_registry, tech_registry);
-
-    Ok(())
-}
-
 /// Check and award Foreign Mercenary if player has reached threshold.
 pub(crate) fn check_mercenary_eligibility(
     state: &mut GameState,

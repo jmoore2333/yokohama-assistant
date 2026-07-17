@@ -73,11 +73,25 @@ pub fn is_possible_action_area_full(
 }
 
 /// Find all areas reachable from current position via assistant chain.
-/// Returns list of (destination, path_to_reach).
+/// Returns list of (destination, path_to_reach). Without TechRegistry,
+/// assumes no Postal System.
 pub fn find_reachable_areas(
     state: &GameState,
     player: PlayerId,
     from: AreaId,
+) -> Vec<(AreaId, Vec<AreaId>)> {
+    find_reachable_areas_with_tech(state, player, from, None)
+}
+
+/// Find all areas reachable from current position via assistant chain, with
+/// technology awareness (Postal System lets the destination check tolerate
+/// an opponent President already there).
+/// Returns list of (destination, path_to_reach).
+pub fn find_reachable_areas_with_tech(
+    state: &GameState,
+    player: PlayerId,
+    from: AreaId,
+    tech_registry: Option<&TechRegistry>,
 ) -> Vec<(AreaId, Vec<AreaId>)> {
     let p = state.player(player);
     let mut reachable = Vec::new();
@@ -101,7 +115,7 @@ pub fn find_reachable_areas(
         visited.insert(current);
 
         // Is this a valid destination?
-        if is_possible_action_area(state, player, current) && current != from {
+        if is_possible_action_area_with_tech(state, player, current, tech_registry) && current != from {
             reachable.push((current, path.clone()));
         }
 
