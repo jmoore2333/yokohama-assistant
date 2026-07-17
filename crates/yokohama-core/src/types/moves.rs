@@ -156,6 +156,14 @@ pub enum AreaAction {
     Customs {
         imported_goods_paid: u8,
     },
+
+    /// Carry out the area action while declining all optional components:
+    /// grants no cards, goods, or VP. Legal only at the six areas with
+    /// optional components — Port A/B, Laboratory A/B, Employment Agency,
+    /// Chinatown, Church, Customs (rulebook p.7/p.11-12 optionality ruling,
+    /// decision log 2026-07-17). Illegal at production areas and the Bank,
+    /// whose imperative "Gain ..." move is their only legal action.
+    Skip,
 }
 
 /// Payment type for second Port card.

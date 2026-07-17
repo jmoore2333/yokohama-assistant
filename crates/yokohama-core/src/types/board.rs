@@ -66,6 +66,25 @@ impl AreaType {
     pub fn has_building_site(&self) -> bool {
         !matches!(self, AreaType::Canal)
     }
+
+    /// Returns true if this area's action may be declined via
+    /// `AreaAction::Skip` (rulebook p.7/p.11-12 optionality ruling, decision
+    /// log 2026-07-17): the six areas with optional components. Production
+    /// areas and the Bank have no optional component — their imperative
+    /// "Gain ..." move is the only legal action there.
+    pub fn allows_area_action_skip(&self) -> bool {
+        matches!(
+            self,
+            AreaType::PortA
+                | AreaType::PortB
+                | AreaType::LaboratoryA
+                | AreaType::LaboratoryB
+                | AreaType::EmploymentAgency
+                | AreaType::Chinatown
+                | AreaType::Church
+                | AreaType::Customs
+        )
+    }
 }
 
 /// Configuration for a single area on the board.

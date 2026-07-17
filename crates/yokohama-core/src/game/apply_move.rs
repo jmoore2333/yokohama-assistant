@@ -366,6 +366,32 @@ fn apply_area_action(state: &mut GameState, action: &AreaAction, rules: &Rules) 
             execute_customs_action(state, player, power, *imported_goods_paid, rules)
                 .map_err(MoveError::RuleViolation)?;
         }
+
+        // Carry out the area action while declining all optional
+        // components: grants nothing (no cards, goods, or VP — a 5-power
+        // Port Skip does NOT get the +3 VP bonus, since that requires an
+        // actual take). Legal only at the six areas with optional
+        // components; phase bookkeeping otherwise proceeds exactly like a
+        // substantive action (current_action_power and the acting area were
+        // already set by the preceding Movement/mercenary step, and
+        // Recovery/5-Power/Building gate off those regardless of which
+        // AreaAction variant ran).
+        AreaAction::Skip => {
+            let area = if state.is_mercenary_action {
+                state.mercenary_target_area.ok_or(MoveError::RuleViolation("No mercenary target area"))?
+            } else {
+                match state.player(player).president_location {
+                    PresidentLocation::OnBoard(a) => a,
+                    _ => return Err(MoveError::RuleViolation("President not on board")),
+                }
+            };
+            let area_type = state.board_layout.areas.get(&area)
+                .map(|c| c.area_type)
+                .ok_or(MoveError::RuleViolation("Unknown acting area"))?;
+            if !area_type.allows_area_action_skip() {
+                return Err(MoveError::RuleViolation("Skip is not legal for this area"));
+            }
+        }
     }
 
     Ok(())
@@ -2661,5 +2687,133 @@ mod tests {
 
         // Power 4 (max 3), pay 2 -> cost pair {3,4}; space 3 is leftmost/default.
         assert_eq!(next.players[0].customs_positions, vec![3]);
+    }
+
+    #[test]
+    fn skip_is_legal_at_each_permissive_area() {
+        // Task 16 optionality ruling: Skip is legal at the six areas with
+        // optional components, in a 4-player game so PortB/LaboratoryB
+        // boards exist too.
+        let rules = Rules::empty_for_tests();
+        let permissive = [
+            AreaType::PortA,
+            AreaType::PortB,
+            AreaType::LaboratoryA,
+            AreaType::LaboratoryB,
+            AreaType::EmploymentAgency,
+            AreaType::Chinatown,
+            AreaType::Church,
+            AreaType::Customs,
+        ];
+
+        for (i, &area_type) in permissive.iter().enumerate() {
+            let mut state = create_test_game_state(4);
+            let area = AreaId::new(i as u8);
+            state.board_layout.areas.insert(area, AreaConfig { area_type, grid_position: (0, i as u8) });
+            state.players[0].president_location = PresidentLocation::OnBoard(area);
+            state.turn_phase = TurnPhase::AreaAction;
+            state.current_action_power = Some(3);
+
+            let mv = Move::ExecuteAreaAction { action: AreaAction::Skip };
+            let result = apply_move(&state, &mv, &rules);
+            assert!(result.is_ok(), "Skip should be legal at {area_type:?}: {result:?}");
+        }
+    }
+
+    #[test]
+    fn skip_is_illegal_at_production_areas_and_bank() {
+        // Production areas and the Bank have no optional component: their
+        // imperative "Gain ..." move is the only legal action there.
+        let rules = Rules::empty_for_tests();
+        let no_skip = [
+            AreaType::CopperMine,
+            AreaType::SilkMill,
+            AreaType::TeaPlantation,
+            AreaType::FishingGround,
+            AreaType::Bank,
+        ];
+
+        for (i, &area_type) in no_skip.iter().enumerate() {
+            let mut state = create_test_game_state(2);
+            let area = AreaId::new(i as u8);
+            state.board_layout.areas.insert(area, AreaConfig { area_type, grid_position: (0, i as u8) });
+            state.players[0].president_location = PresidentLocation::OnBoard(area);
+            state.turn_phase = TurnPhase::AreaAction;
+            state.current_action_power = Some(3);
+
+            let mv = Move::ExecuteAreaAction { action: AreaAction::Skip };
+            let result = apply_move(&state, &mv, &rules);
+            assert!(result.is_err(), "Skip should be illegal at {area_type:?}");
+        }
+    }
+
+    #[test]
+    fn skip_grants_nothing() {
+        // Skip carries out the area action while declining every optional
+        // component: no cards, goods, or VP change hands.
+        let rules = Rules::empty_for_tests();
+        let mut state = create_test_game_state(2);
+        let area = AreaId::new(0);
+        state.board_layout.areas.insert(area, AreaConfig { area_type: AreaType::Church, grid_position: (0, 0) });
+        state.players[0].president_location = PresidentLocation::OnBoard(area);
+        state.turn_phase = TurnPhase::AreaAction;
+        state.current_action_power = Some(3);
+        state.players[0].money = 5;
+        state.players[0].copper = 2;
+        state.players[0].imported_goods = 1;
+        let before = state.players[0].clone();
+
+        let mv = Move::ExecuteAreaAction { action: AreaAction::Skip };
+        let next = apply_move(&state, &mv, &rules).unwrap();
+
+        let after = &next.players[0];
+        assert_eq!(after.money, before.money);
+        assert_eq!(after.copper, before.copper);
+        assert_eq!(after.imported_goods, before.imported_goods);
+        assert_eq!(after.victory_points, before.victory_points);
+        assert_eq!(after.order_cards_in_hand, before.order_cards_in_hand);
+        assert_eq!(after.technologies, before.technologies);
+    }
+
+    #[test]
+    fn skip_at_power_5_port_does_not_grant_vp_bonus() {
+        // v1 ruling: Skip declines all optional components, including the
+        // Port power-5 +3 VP bonus, which requires an actual take.
+        let rules = Rules::empty_for_tests();
+        let mut state = create_test_game_state(2);
+        let area = AreaId::new(0);
+        state.board_layout.areas.insert(area, AreaConfig { area_type: AreaType::PortA, grid_position: (0, 0) });
+        state.players[0].president_location = PresidentLocation::OnBoard(area);
+        state.turn_phase = TurnPhase::AreaAction;
+        state.current_action_power = Some(5);
+        let starting_vp = state.players[0].victory_points;
+
+        let mv = Move::ExecuteAreaAction { action: AreaAction::Skip };
+        let next = apply_move(&state, &mv, &rules).unwrap();
+
+        assert_eq!(next.players[0].victory_points, starting_vp);
+    }
+
+    #[test]
+    fn skip_legal_during_mercenary_sub_turn_resolves_mercenary_target_area() {
+        // President is in hand (default) and never placed anywhere; Skip
+        // must still work by resolving the acting area from
+        // mercenary_target_area, not president_location (mirrors the
+        // Customs mercenary sub-turn test above).
+        let rules = Rules::empty_for_tests();
+        let mut state = create_test_game_state(2);
+        let church_area = AreaId::new(5);
+        state.board_layout.areas.insert(church_area, AreaConfig {
+            area_type: AreaType::Church,
+            grid_position: (0, 5),
+        });
+        state.is_mercenary_action = true;
+        state.mercenary_target_area = Some(church_area);
+        state.turn_phase = TurnPhase::AreaAction;
+        state.current_action_power = Some(2);
+
+        let mv = Move::ExecuteAreaAction { action: AreaAction::Skip };
+        let result = apply_move(&state, &mv, &rules);
+        assert!(result.is_ok());
     }
 }

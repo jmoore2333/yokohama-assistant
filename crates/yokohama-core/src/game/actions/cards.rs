@@ -33,6 +33,12 @@ pub fn validate_port_action(
     let p = state.player(player);
     let accessible = port_accessible_zones(power);
 
+    // Task 16 ruling: Skip is the only legal way to decline a Port take;
+    // an explicit empty take is no longer a legal encoding of "take nothing".
+    if cards_taken.is_empty() {
+        return Err("Must take 1-2 cards from Port (use Skip to decline)");
+    }
+
     // Check cards are distinct (can't take the same physical card twice)
     if cards_taken.len() == 2 && cards_taken[0] == cards_taken[1] {
         return Err("Cannot take the same card twice");
@@ -533,6 +539,18 @@ mod tests {
         let result = validate_port_action(&state, player, &port, &[OrderCardId(99)], None, 4);
         assert!(result.is_err());
         assert!(result.unwrap_err().contains("not found"));
+    }
+
+    #[test]
+    fn test_port_validate_rejects_empty_take() {
+        // Task 16 ruling: Skip is now the only legal way to decline a Port
+        // take; an explicit empty `cards_taken` is no longer legal.
+        let state = create_test_state();
+        let player = PlayerId::new(0);
+        let port = seeded_port([1, 2, 3, 4, 5, 6]);
+
+        let result = validate_port_action(&state, player, &port, &[], None, 4);
+        assert!(result.is_err());
     }
 
     #[test]

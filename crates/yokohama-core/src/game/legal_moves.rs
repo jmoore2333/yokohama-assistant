@@ -2,6 +2,7 @@
 
 use crate::types::*;
 use crate::game::*;
+use crate::game::actions::*;
 
 /// Generate all legal moves for the current game state.
 pub fn get_legal_moves(state: &GameState, rules: &Rules) -> Vec<Move> {
@@ -11,7 +12,7 @@ pub fn get_legal_moves(state: &GameState, rules: &Rules) -> Vec<Move> {
         }
         TurnPhase::Placement => generate_placement_moves_with_tech(state, Some(&rules.techs)),
         TurnPhase::Movement => generate_movement_moves_with_tech(state, Some(&rules.techs)),
-        TurnPhase::AreaAction => generate_area_action_moves(state),
+        TurnPhase::AreaAction => generate_area_action_moves(state, rules),
         TurnPhase::FivePowerBonus => generate_five_power_moves(state),
         TurnPhase::Building => generate_building_moves(state),
         TurnPhase::Recovery => vec![], // Automatic, no moves
@@ -271,9 +272,7 @@ fn generate_movement_moves_with_tech(state: &GameState, tech_registry: Option<&T
     moves
 }
 
-fn generate_area_action_moves(state: &GameState) -> Vec<Move> {
-    // This is complex - depends on area type and player resources
-    // Simplified: return single action based on area type
+fn generate_area_action_moves(state: &GameState, rules: &Rules) -> Vec<Move> {
     let player = state.current_player;
     let p = state.player(player);
 
@@ -295,29 +294,159 @@ fn generate_area_action_moves(state: &GameState) -> Vec<Move> {
         None => return vec![],
     };
 
-    vec![generate_area_action_for_type(area_config.area_type)]
+    let power = state.current_action_power.unwrap_or(0);
+
+    // Port and Laboratory need the actual board contents (which slots are
+    // filled, and by which A/B board) to enumerate real moves, so they're
+    // resolved here rather than by the type-only placeholder dispatch below.
+    match area_config.area_type {
+        AreaType::PortA => generate_port_actions(state, player, power, &state.port_state.port_a),
+        AreaType::PortB => match &state.port_state.port_b {
+            Some(port) => generate_port_actions(state, player, power, port),
+            None => vec![], // Should never happen if state is consistent
+        },
+        AreaType::LaboratoryA => {
+            generate_lab_actions(state, player, power, &state.lab_state.lab_a, rules)
+        }
+        AreaType::LaboratoryB => match &state.lab_state.lab_b {
+            Some(lab) => generate_lab_actions(state, player, power, lab, rules),
+            None => vec![], // Should never happen if state is consistent
+        },
+        other => vec![generate_area_action_for_type(other)],
+    }
+}
+
+/// Enumerate legal Port moves at `power` against the resolved acting board
+/// (Port A or B -- the caller has already resolved which one from the
+/// acting area, mirroring `execute_port_action`'s own resolution). Accessible
+/// cards are the `Some` slots within power-accessible zones. Singles need
+/// hand length + 1 <= 3; pairs need hand length + 2 <= 3 and offer one move
+/// per affordable payment (TwoYen iff money >= 2, OneImportedGood iff
+/// imported goods >= 1). Skip is always legal and always offered (Task 16 /
+/// decision-log optionality ruling).
+fn generate_port_actions(state: &GameState, player: PlayerId, power: u8, port: &PortBoard) -> Vec<Move> {
+    let p = state.player(player);
+    let hand_len = p.order_cards_in_hand.len();
+    let accessible_zones = port_accessible_zones(power);
+
+    // Accessible cards, in board slot order (canonical order for pairs below).
+    let accessible: Vec<OrderCardId> = port.slots.iter().enumerate()
+        .filter_map(|(i, slot)| {
+            if accessible_zones.contains(&PortBoard::zone_of(i)) { *slot } else { None }
+        })
+        .collect();
+
+    let mut moves = Vec::new();
+
+    if hand_len < 3 {
+        for &card in &accessible {
+            moves.push(Move::ExecuteAreaAction {
+                action: AreaAction::Port { cards_taken: vec![card], second_card_payment: None },
+            });
+        }
+    }
+
+    if hand_len + 2 <= 3 {
+        for i in 0..accessible.len() {
+            let first = accessible[i];
+            for &second in &accessible[i + 1..] {
+                if p.money >= 2 {
+                    moves.push(Move::ExecuteAreaAction {
+                        action: AreaAction::Port {
+                            cards_taken: vec![first, second],
+                            second_card_payment: Some(PortPayment::TwoYen),
+                        },
+                    });
+                }
+                if p.imported_goods >= 1 {
+                    moves.push(Move::ExecuteAreaAction {
+                        action: AreaAction::Port {
+                            cards_taken: vec![first, second],
+                            second_card_payment: Some(PortPayment::OneImportedGood),
+                        },
+                    });
+                }
+            }
+        }
+    }
+
+    moves.push(Move::ExecuteAreaAction { action: AreaAction::Skip });
+    moves
+}
+
+/// Enumerate legal Laboratory moves at `power` against the resolved acting
+/// board (Lab A or B -- mirrors `execute_lab_action`'s own resolution). For
+/// each filled slot, emits every exact-cover payment mix for the Industry
+/// Value deficit (no overpays: `extra_imported = k`, `extra_yen =
+/// 2*(deficit-k)` for every affordable `k` in `0..=deficit`), forking into
+/// affordable `fifth_tech_payment` variants once the player owns 4+
+/// technologies (a mix with neither payment affordable emits nothing). Skip
+/// is always legal and always offered (Task 16 / decision-log optionality
+/// ruling).
+fn generate_lab_actions(state: &GameState, player: PlayerId, power: u8, lab: &LabBoard, rules: &Rules) -> Vec<Move> {
+    let p = state.player(player);
+    let needs_fifth_payment = p.technologies.len() >= 4;
+
+    let mut moves = Vec::new();
+
+    for (slot_index, slot) in lab.slots.iter().enumerate() {
+        let Some(card_id) = *slot else { continue };
+        let Some(tech_card) = rules.techs.get(card_id) else { continue };
+
+        let required = tech_card.industry_cost + lab_position_surcharge(slot_index);
+        let deficit = required.saturating_sub(power.min(5));
+
+        for k in 0..=deficit {
+            if (k as u32) > p.imported_goods {
+                continue;
+            }
+            let extra_yen = 2 * (deficit - k);
+            if (extra_yen as u32) > p.money {
+                continue;
+            }
+
+            if needs_fifth_payment {
+                if p.money >= extra_yen as u32 + 2 {
+                    moves.push(Move::ExecuteAreaAction {
+                        action: AreaAction::Laboratory {
+                            card_id, extra_yen, extra_imported: k, fifth_tech_payment: Some(true),
+                        },
+                    });
+                }
+                if p.imported_goods > k as u32 {
+                    moves.push(Move::ExecuteAreaAction {
+                        action: AreaAction::Laboratory {
+                            card_id, extra_yen, extra_imported: k, fifth_tech_payment: Some(false),
+                        },
+                    });
+                }
+            } else {
+                moves.push(Move::ExecuteAreaAction {
+                    action: AreaAction::Laboratory {
+                        card_id, extra_yen, extra_imported: k, fifth_tech_payment: None,
+                    },
+                });
+            }
+        }
+    }
+
+    moves.push(Move::ExecuteAreaAction { action: AreaAction::Skip });
+    moves
 }
 
 fn generate_area_action_for_type(area_type: AreaType) -> Move {
-    // Simplified: return default action for area type
+    // Simplified: return default action for area type. Port/Laboratory are
+    // handled before this dispatch is reached (see generate_area_action_moves)
+    // since they need real board contents, not just the type.
     let action = match area_type {
         AreaType::CopperMine => AreaAction::ProduceCopper,
         AreaType::SilkMill => AreaAction::ProduceSilk,
         AreaType::TeaPlantation => AreaAction::ProduceTea,
         AreaType::FishingGround => AreaAction::ProduceSeafood,
         AreaType::Bank => AreaAction::Bank,
-        AreaType::PortA | AreaType::PortB => AreaAction::Port {
-            // Placeholder: this generator only sees `area_type`, not the
-            // actual board contents, so it can't name a real card id here.
-            cards_taken: vec![],
-            second_card_payment: None,
-        },
-        AreaType::LaboratoryA | AreaType::LaboratoryB => AreaAction::Laboratory {
-            card_id: TechCardId(0), // Placeholder
-            extra_yen: 0,
-            extra_imported: 0,
-            fifth_tech_payment: None,
-        },
+        AreaType::PortA | AreaType::PortB | AreaType::LaboratoryA | AreaType::LaboratoryB => {
+            unreachable!("Port/Laboratory are enumerated by generate_port_actions/generate_lab_actions")
+        }
         AreaType::EmploymentAgency => AreaAction::EmploymentAgency {
             assistants: 0,
             shophouses: 0,
@@ -788,5 +917,190 @@ mod tests {
             Move::PlaceTwoSameArea { adjacent_bonus: Some(_), .. }
         ));
         assert!(has_adjacent_bonus, "With Telegram, should have adjacent bonus options");
+    }
+
+    // --- Task 16: Port & Laboratory enumeration -----------------------
+
+    /// Builds a 6-slot PortBoard with the given card ids seeded left to
+    /// right (index 0..5) -- mirrors `actions::cards::tests::seeded_port`,
+    /// duplicated locally since that helper is private to its own module.
+    fn seeded_port(ids: [u8; 6]) -> PortBoard {
+        PortBoard { slots: ids.map(|id| Some(OrderCardId(id))) }
+    }
+
+    /// Places a PortA area on the board, seeds it, puts the president
+    /// there, and enters the AreaAction phase at the given power.
+    fn create_port_area_state(power: u8, port: PortBoard) -> GameState {
+        let mut state = create_test_state();
+        let port_area = AreaId::new(5);
+        state.board_layout.areas.insert(port_area, AreaConfig {
+            area_type: AreaType::PortA,
+            grid_position: (0, 5),
+        });
+        state.players[0].president_location = PresidentLocation::OnBoard(port_area);
+        state.turn_phase = TurnPhase::AreaAction;
+        state.current_action_power = Some(power);
+        state.port_state.port_a = port;
+        state
+    }
+
+    /// Places a LaboratoryA area on the board, puts the president there,
+    /// and enters the AreaAction phase at the given power (slots left empty
+    /// for the caller to fill).
+    fn create_lab_area_state(power: u8) -> GameState {
+        let mut state = create_test_state();
+        let lab_area = AreaId::new(5);
+        state.board_layout.areas.insert(lab_area, AreaConfig {
+            area_type: AreaType::LaboratoryA,
+            grid_position: (0, 5),
+        });
+        state.players[0].president_location = PresidentLocation::OnBoard(lab_area);
+        state.turn_phase = TurnPhase::AreaAction;
+        state.current_action_power = Some(power);
+        state
+    }
+
+    fn make_test_tech_card(id: u8, cost: u8) -> TechCard {
+        TechCard {
+            id: TechCardId(id),
+            name: "Test Tech".to_string(),
+            country: Country::English,
+            industry_cost: cost,
+            effect: TechEffect::Tram,
+        }
+    }
+
+    /// Task 16 "every-move-applies" property: every move a generator emits
+    /// must independently pass `apply_move`. The fuzz suite (Task 18)
+    /// enforces this globally; this is the focused per-test version.
+    fn assert_all_moves_apply(state: &GameState, moves: &[Move], rules: &Rules) {
+        for m in moves {
+            let result = apply_move(state, m, rules);
+            assert!(result.is_ok(), "generated move failed to apply: {m:?} ({result:?})");
+        }
+    }
+
+    #[test]
+    fn port_enumeration_power_4_all_slots_singles_pairs_and_skip() {
+        // Power 4, all 6 slots filled, hand empty, money >= 2, imports >= 1:
+        // 6 singles + C(6,2)=15 pairs x 2 payments + 1 Skip = 37.
+        let mut state = create_port_area_state(4, seeded_port([1, 2, 3, 4, 5, 6]));
+        state.players[0].money = 2;
+        state.players[0].imported_goods = 1;
+        let rules = Rules::empty_for_tests();
+
+        let moves = get_legal_moves(&state, &rules);
+        assert_eq!(moves.len(), 37);
+        assert_all_moves_apply(&state, &moves, &rules);
+    }
+
+    #[test]
+    fn port_enumeration_power_2_low_zone_only() {
+        // Power 2 -> only Low zone (slots 0-1) accessible: 2 singles + 1
+        // pair x 2 payments + 1 Skip = 5.
+        let mut state = create_port_area_state(2, seeded_port([1, 2, 3, 4, 5, 6]));
+        state.players[0].money = 2;
+        state.players[0].imported_goods = 1;
+        let rules = Rules::empty_for_tests();
+
+        let moves = get_legal_moves(&state, &rules);
+        assert_eq!(moves.len(), 5);
+        assert_all_moves_apply(&state, &moves, &rules);
+    }
+
+    #[test]
+    fn port_enumeration_power_2_hand_2_only_singles() {
+        // Hand already holds 2 orders: singles (2+1=3, OK) but pairs
+        // (2+2=4 > 3) would exceed the hand limit, so only singles + Skip
+        // appear: 2 + 0 + 1 = 3.
+        let mut state = create_port_area_state(2, seeded_port([1, 2, 3, 4, 5, 6]));
+        state.players[0].money = 2;
+        state.players[0].imported_goods = 1;
+        state.players[0].order_cards_in_hand = vec![OrderCardId(200), OrderCardId(201)];
+        let rules = Rules::empty_for_tests();
+
+        let moves = get_legal_moves(&state, &rules);
+        assert_eq!(moves.len(), 3);
+        assert_all_moves_apply(&state, &moves, &rules);
+    }
+
+    #[test]
+    fn port_enumeration_power_1_is_skip_only() {
+        // Power 1 -> no zone accessible: Skip is the only legal move.
+        let state = create_port_area_state(1, seeded_port([1, 2, 3, 4, 5, 6]));
+        let rules = Rules::empty_for_tests();
+
+        let moves = get_legal_moves(&state, &rules);
+        assert_eq!(moves.len(), 1);
+        assert!(matches!(&moves[0], Move::ExecuteAreaAction { action: AreaAction::Skip }));
+        assert_all_moves_apply(&state, &moves, &rules);
+    }
+
+    #[test]
+    fn port_enumeration_includes_same_zone_pair() {
+        // Power 2: the only possible pair is the two Low-zone cards (slots
+        // 0,1) -- pins the same-zone double-take case.
+        let mut state = create_port_area_state(2, seeded_port([1, 2, 3, 4, 5, 6]));
+        state.players[0].money = 2;
+        let rules = Rules::empty_for_tests();
+
+        let moves = get_legal_moves(&state, &rules);
+        let has_same_zone_pair = moves.iter().any(|m| matches!(m,
+            Move::ExecuteAreaAction {
+                action: AreaAction::Port {
+                    cards_taken,
+                    second_card_payment: Some(PortPayment::TwoYen),
+                }
+            } if cards_taken == &vec![OrderCardId(1), OrderCardId(2)]
+        ));
+        assert!(has_same_zone_pair, "expected a pair move taking both Low-zone cards {{1,2}}");
+        assert_all_moves_apply(&state, &moves, &rules);
+    }
+
+    #[test]
+    fn port_enumeration_during_mercenary_sub_turn_resolves_mercenary_target_area() {
+        // President is in hand (never placed) -- Port enumeration must
+        // resolve the acting area from mercenary_target_area, mirroring how
+        // execute_port_action resolves the acting board during a mercenary
+        // sub-turn. Same resources as the power-2 pin: 2 + 1x2 + 1 = 5.
+        let mut state = create_test_state();
+        let port_area = AreaId::new(5);
+        state.board_layout.areas.insert(port_area, AreaConfig {
+            area_type: AreaType::PortA,
+            grid_position: (0, 5),
+        });
+        state.port_state.port_a = seeded_port([1, 2, 3, 4, 5, 6]);
+        state.is_mercenary_action = true;
+        state.mercenary_target_area = Some(port_area);
+        state.turn_phase = TurnPhase::AreaAction;
+        state.current_action_power = Some(2);
+        state.players[0].money = 2;
+        state.players[0].imported_goods = 1;
+        let rules = Rules::empty_for_tests();
+
+        let moves = get_legal_moves(&state, &rules);
+        assert_eq!(moves.len(), 5);
+        assert_all_moves_apply(&state, &moves, &rules);
+    }
+
+    #[test]
+    fn lab_enumeration_power_3_two_deficits_no_overpay() {
+        // Power 3: slot0 cost 3 (deficit 0) -> 1 move; slot2 cost 3 +
+        // surcharge 1 = required 4 (deficit 1) -> 2 exact-cover moves
+        // ({extra_yen:2},{extra_imported:1}); + 1 Skip = 4. <4 techs owned,
+        // so fifth_tech_payment stays None throughout.
+        let mut state = create_lab_area_state(3);
+        state.lab_state.lab_a.slots[0] = Some(TechCardId(1));
+        state.lab_state.lab_a.slots[2] = Some(TechCardId(2));
+        state.players[0].money = 2;
+        state.players[0].imported_goods = 1;
+
+        let mut rules = Rules::empty_for_tests();
+        rules.techs.insert(make_test_tech_card(1, 3), "tech_1");
+        rules.techs.insert(make_test_tech_card(2, 3), "tech_2");
+
+        let moves = get_legal_moves(&state, &rules);
+        assert_eq!(moves.len(), 4);
+        assert_all_moves_apply(&state, &moves, &rules);
     }
 }

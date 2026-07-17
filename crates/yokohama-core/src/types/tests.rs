@@ -42,6 +42,29 @@ mod tests {
     }
 
     #[test]
+    fn test_area_type_allows_skip_only_at_permissive_areas() {
+        // Task 16 optionality ruling: Skip is legal only at the six areas
+        // with optional components; production areas and the Bank have no
+        // optional component (their imperative "Gain ..." move is the only
+        // legal action there).
+        assert!(AreaType::PortA.allows_area_action_skip());
+        assert!(AreaType::PortB.allows_area_action_skip());
+        assert!(AreaType::LaboratoryA.allows_area_action_skip());
+        assert!(AreaType::LaboratoryB.allows_area_action_skip());
+        assert!(AreaType::EmploymentAgency.allows_area_action_skip());
+        assert!(AreaType::Chinatown.allows_area_action_skip());
+        assert!(AreaType::Church.allows_area_action_skip());
+        assert!(AreaType::Customs.allows_area_action_skip());
+
+        assert!(!AreaType::CopperMine.allows_area_action_skip());
+        assert!(!AreaType::SilkMill.allows_area_action_skip());
+        assert!(!AreaType::TeaPlantation.allows_area_action_skip());
+        assert!(!AreaType::FishingGround.allows_area_action_skip());
+        assert!(!AreaType::Bank.allows_area_action_skip());
+        assert!(!AreaType::Canal.allows_area_action_skip());
+    }
+
+    #[test]
     fn test_building_site_slot_allocation() {
         let mut site = BuildingSite::new([3, 1, 8, 4], 9);
         let player = PlayerId::new(0);
