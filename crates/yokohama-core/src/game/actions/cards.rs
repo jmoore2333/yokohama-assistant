@@ -1,7 +1,7 @@
 //! Port and Laboratory actions.
 
-use crate::types::{AreaType, GameState, OrderCardId, PlayerId, PortBoard, PortZone, PortPayment, PresidentLocation, TechCardId};
-use crate::game::cards::{refill_port, refill_lab, TechRegistry};
+use crate::types::{AreaType, GameState, LabBoard, MoveError, OrderCardId, PlayerId, PortBoard, PortZone, PortPayment, PresidentLocation, TechCardId, TechEffect};
+use crate::game::cards::{check_mercenary_eligibility, refill_port, refill_lab, remove_and_slide_lab, OrderRegistry, TechRegistry};
 
 /// Which Port zones are accessible at a given power level.
 pub fn port_accessible_zones(power: u8) -> Vec<PortZone> {
@@ -218,11 +218,15 @@ pub fn lab_position_surcharge(slot_index: usize) -> u8 {
     }
 }
 
-/// Validate Laboratory action.
+/// Validate Laboratory action against the resolved board. `lab` must already
+/// be the board `slot_index` refers to (the acting Lab board — A or B — is
+/// resolved by the caller; buying across boards is illegal, so this function
+/// never assumes Lab A).
 #[allow(clippy::too_many_arguments)]
 pub fn validate_lab_action(
     state: &GameState,
     player: PlayerId,
+    lab: &LabBoard,
     slot_index: usize,
     extra_yen: u8,
     extra_imported: u8,
@@ -232,20 +236,16 @@ pub fn validate_lab_action(
 ) -> Result<u8, &'static str> {
     let p = state.player(player);
 
-    // Get the tech card from the appropriate slot
-    let lab = if slot_index >= 6 {
-        // slot_index 6-11 would be Lab B
+    if slot_index >= 6 {
         return Err("Invalid slot index");
-    } else {
-        &state.lab_state.lab_a
-    };
+    }
 
-    let tech_id = lab.slots[slot_index % 6].ok_or("No card in slot")?;
+    let tech_id = lab.slots[slot_index].ok_or("No card in slot")?;
     let tech_card = tech_registry.get(tech_id).ok_or("Tech card not found in registry")?;
 
     // Calculate required industry value
     let required_iv = tech_card.industry_cost;
-    let position_surcharge = lab_position_surcharge(slot_index % 6);
+    let position_surcharge = lab_position_surcharge(slot_index);
     let total_required = required_iv + position_surcharge;
 
     // Calculate available industry value
@@ -285,77 +285,128 @@ pub fn validate_lab_action(
     Ok(total_required)
 }
 
-/// Execute Laboratory action: acquire tech card, pay costs.
+/// Execute Laboratory action: resolve the acting Lab board (A or B) from the
+/// current acting area — mirrors `execute_port_action`'s area resolution, so
+/// a mercenary sub-turn acts at the mercenary target area, not the
+/// president's — find `card_id` on THAT board only (cross-board buying is
+/// illegal, hence the typed `MoveError::CardNotFound` rather than a generic
+/// message), then acquire it and refill from `state.tech_deck`.
 #[allow(clippy::too_many_arguments)]
 pub fn execute_lab_action(
     state: &mut GameState,
     player: PlayerId,
-    slot_index: usize,
+    card_id: TechCardId,
     extra_yen: u8,
     extra_imported: u8,
     fifth_tech_payment: Option<bool>,
     power: u8,
-    lab_is_b: bool,
     tech_registry: &TechRegistry,
-    tech_deck: &mut Vec<TechCardId>,
-) -> Result<(), &'static str> {
-    // Validate first
-    let _required_iv = validate_lab_action(
-        state,
-        player,
-        slot_index,
-        extra_yen,
-        extra_imported,
-        fifth_tech_payment,
-        power,
-        tech_registry,
-    )?;
+) -> Result<(), MoveError> {
+    // Resolve acting area: mercenary sub-turns act at the mercenary target
+    // area, not the president's location (mirrors execute_port_action).
+    let area = if state.is_mercenary_action {
+        state.mercenary_target_area.ok_or(MoveError::RuleViolation("No mercenary target area"))?
+    } else {
+        match state.player(player).president_location {
+            PresidentLocation::OnBoard(a) => a,
+            _ => return Err(MoveError::RuleViolation("President not on board")),
+        }
+    };
 
-    // Check fifth tech penalty and calculate costs
+    // Resolve which Lab board (A or B) that area refers to.
+    let lab_is_b = match state.board_layout.areas.get(&area).map(|c| c.area_type) {
+        Some(AreaType::LaboratoryA) => false,
+        Some(AreaType::LaboratoryB) => true,
+        _ => return Err(MoveError::RuleViolation("Laboratory action requires a Laboratory area")),
+    };
+    if lab_is_b && state.lab_state.lab_b.is_none() {
+        return Err(MoveError::RuleViolation("Lab B not available"));
+    }
+
+    // Find the card on the acting board ONLY — cross-board buying is illegal.
+    let lab_ref = if lab_is_b {
+        state.lab_state.lab_b.as_ref().unwrap() // presence confirmed above
+    } else {
+        &state.lab_state.lab_a
+    };
+    let slot_index = lab_ref.slots.iter().position(|s| *s == Some(card_id))
+        .ok_or(MoveError::CardNotFound)?;
+
+    // Validate against the resolved board.
+    validate_lab_action(
+        state, player, lab_ref, slot_index, extra_yen, extra_imported,
+        fifth_tech_payment, power, tech_registry,
+    ).map_err(MoveError::RuleViolation)?;
+
+    // Costs (mirrors validate_lab_action's own calculation).
     let yen_cost = extra_yen as u32
         + if fifth_tech_payment == Some(true) { 2 } else { 0 };
     let imported_cost = extra_imported as u32
         + if fifth_tech_payment == Some(false) { 1 } else { 0 };
 
-    // Get the appropriate lab board
-    let lab = if lab_is_b {
-        match &mut state.lab_state.lab_b {
-            Some(l) => l,
-            None => return Err("Lab B not available"),
-        }
-    } else {
-        &mut state.lab_state.lab_a
-    };
-
-    // Take the tech card
-    let tech_id = lab.slots[slot_index].take().ok_or("No card in slot")?;
-
-    // Slide remaining cards (single-gap shift: only one card leaves per
-    // Laboratory action, unlike Port which can vacate 2 non-contiguous
-    // slots and needs full compaction — see execute_port_action).
-    for i in slot_index..5 {
-        if lab.slots[i].is_none() && lab.slots[i + 1].is_some() {
-            lab.slots[i] = lab.slots[i + 1].take();
-        }
-    }
-
-    // Pay costs
-    let p = state.player_mut(player);
-    p.money -= yen_cost;
-    p.imported_goods -= imported_cost;
-
-    // Add tech to player
-    p.technologies.push(tech_id);
-
-    // Refill lab
+    // Take the card, slide the remainder left, and refill from the
+    // state-owned deck — one borrow of `lab` so refill_lab (which borrows
+    // the disjoint state.tech_deck field) doesn't need the board resolved
+    // a second time.
     let lab = if lab_is_b {
         state.lab_state.lab_b.as_mut().unwrap()
     } else {
         &mut state.lab_state.lab_a
     };
-    refill_lab(lab, tech_deck);
+    let _ = remove_and_slide_lab(lab, slot_index);
+    refill_lab(lab, &mut state.tech_deck);
+
+    // Pay costs, grant the tech.
+    let p = state.player_mut(player);
+    p.money -= yen_cost;
+    p.imported_goods -= imported_cost;
+    p.technologies.push(card_id);
 
     Ok(())
+}
+
+/// Post-purchase acquisition bonuses (called after `execute_lab_action`
+/// succeeds — purchase completes, then bonuses). Patent System (+2 VP) and
+/// Letter Press Printing (+1 Yen) stack per OTHER copy the buyer already
+/// owns — the just-acquired physical card never counts towards its own
+/// bonus. Exposition is a one-shot +10 VP self-trigger when the ACQUIRED
+/// card itself carries that effect. Titles are identified via `TechEffect`,
+/// not name strings.
+///
+/// Station's token placement on acquisition is a deliberate v1 engine
+/// limitation: `station_location` is intentionally left untouched here.
+///
+/// Finishes by re-running the same country-icon mercenary-eligibility check
+/// order fulfillment uses, for the acquired card's country.
+pub fn apply_lab_acquisition_bonuses(
+    state: &mut GameState,
+    player: PlayerId,
+    acquired: TechCardId,
+    tech_registry: &TechRegistry,
+    order_registry: &OrderRegistry,
+) {
+    let Some(acquired_card) = tech_registry.get(acquired) else { return; };
+    let country = acquired_card.country;
+    let acquired_is_exposition = acquired_card.effect == TechEffect::Exposition;
+
+    let p = state.player(player);
+    let other_patent_system = p.technologies.iter()
+        .filter(|&&id| id != acquired)
+        .filter(|&&id| tech_registry.get(id).map(|c| c.effect == TechEffect::PatentSystem).unwrap_or(false))
+        .count() as u32;
+    let other_letter_press = p.technologies.iter()
+        .filter(|&&id| id != acquired)
+        .filter(|&&id| tech_registry.get(id).map(|c| c.effect == TechEffect::LetterPressPrinting).unwrap_or(false))
+        .count() as u32;
+
+    let p = state.player_mut(player);
+    p.victory_points += other_patent_system * 2;
+    p.money += other_letter_press;
+    if acquired_is_exposition {
+        p.victory_points += 10;
+    }
+
+    check_mercenary_eligibility(state, player, country, order_registry, tech_registry);
 }
 
 #[cfg(test)]
@@ -821,21 +872,21 @@ mod tests {
 
         // Power 3 = 3 IV, enough for card cost 3
         let result = validate_lab_action(
-            &state, player, 0, 0, 0, None, 3, &tech_registry,
+            &state, player, &state.lab_state.lab_a, 0, 0, 0, None, 3, &tech_registry,
         );
         assert!(result.is_ok());
 
         // Put in slot 2 (surcharge +1) = needs 4 IV
         state.lab_state.lab_a.slots[2] = Some(TechCardId(1));
         let result = validate_lab_action(
-            &state, player, 2, 0, 0, None, 3, &tech_registry,
+            &state, player, &state.lab_state.lab_a, 2, 0, 0, None, 3, &tech_registry,
         );
         assert!(result.is_err());
         assert!(result.unwrap_err().contains("Insufficient industry value"));
 
         // Pay 2 extra Yen for +1 IV
         let result = validate_lab_action(
-            &state, player, 2, 2, 0, None, 3, &tech_registry,
+            &state, player, &state.lab_state.lab_a, 2, 2, 0, None, 3, &tech_registry,
         );
         assert!(result.is_ok());
     }
@@ -867,22 +918,46 @@ mod tests {
 
         // Without fifth tech payment - should fail
         let result = validate_lab_action(
-            &state, player, 0, 0, 0, None, 3, &tech_registry,
+            &state, player, &state.lab_state.lab_a, 0, 0, 0, None, 3, &tech_registry,
         );
         assert!(result.is_err());
         assert!(result.unwrap_err().contains("fifth tech penalty"));
 
         // With 2 Yen payment - should succeed
         let result = validate_lab_action(
-            &state, player, 0, 0, 0, Some(true), 3, &tech_registry,
+            &state, player, &state.lab_state.lab_a, 0, 0, 0, Some(true), 3, &tech_registry,
         );
         assert!(result.is_ok());
 
         // With 1 Imported Good payment - should succeed
         let result = validate_lab_action(
-            &state, player, 0, 0, 0, Some(false), 3, &tech_registry,
+            &state, player, &state.lab_state.lab_a, 0, 0, 0, Some(false), 3, &tech_registry,
         );
         assert!(result.is_ok());
+    }
+
+    /// Places a LaboratoryA area on the board and puts the president there,
+    /// as `execute_lab_action` resolves the acting Lab board from the area
+    /// (rather than taking a `lab_is_b` flag directly) — mirrors
+    /// `place_president_at_port_a`.
+    fn place_president_at_lab_a(state: &mut GameState) -> AreaId {
+        let lab_area = AreaId::new(0);
+        state.board_layout.areas.insert(lab_area, AreaConfig {
+            area_type: AreaType::LaboratoryA,
+            grid_position: (0, 0),
+        });
+        state.players[0].president_location = PresidentLocation::OnBoard(lab_area);
+        lab_area
+    }
+
+    fn make_test_tech_card(id: u8, cost: u8, effect: TechEffect) -> TechCard {
+        TechCard {
+            id: TechCardId(id),
+            name: "Test Tech".to_string(),
+            country: Country::English,
+            industry_cost: cost,
+            effect,
+        }
     }
 
     #[test]
@@ -891,36 +966,143 @@ mod tests {
         let player = PlayerId::new(0);
         state.players[0].money = 10;
         state.players[0].imported_goods = 5;
+        place_president_at_lab_a(&mut state);
 
-        // Create a tech registry with a test card
         let mut tech_registry = TechRegistry::new();
-        let tech_card = TechCard {
-            id: TechCardId(1),
-            name: "Test Tech".to_string(),
-            country: Country::English,
-            industry_cost: 2,
-            effect: TechEffect::Tram,
-        };
-        tech_registry.insert(tech_card, "tech_test");
+        tech_registry.insert(make_test_tech_card(1, 2, TechEffect::Tram), "tech_test");
 
         state.lab_state.lab_a.slots[0] = Some(TechCardId(1));
-        let mut deck: Vec<TechCardId> = vec![TechCardId(20)];
+        state.tech_deck = vec![TechCardId(20)];
 
         let result = execute_lab_action(
             &mut state,
             player,
-            0, // slot index
-            0, // extra yen
-            0, // extra imported
+            TechCardId(1),
+            0,    // extra yen
+            0,    // extra imported
             None, // fifth tech payment
-            3, // power
-            false, // not lab B
+            3,    // power
             &tech_registry,
-            &mut deck,
         );
         assert!(result.is_ok());
 
         // Check tech is in player's collection
         assert!(state.players[0].technologies.contains(&TechCardId(1)));
+        // Refilled from state.tech_deck: only slot 0 was occupied, so taking
+        // it leaves the whole board empty, and refill picks the rightmost
+        // empty slot (index 5).
+        assert_eq!(state.lab_state.lab_a.slots[5], Some(TechCardId(20)));
+        assert!(state.tech_deck.is_empty());
+    }
+
+    #[test]
+    fn test_lab_execute_rejects_card_on_other_board() {
+        // Cross-board buying is illegal: the president acts at Lab A, but
+        // the named card only exists on Lab B, so resolution must search
+        // the ACTING board only and report CardNotFound (not "no card in
+        // slot" or a silent lab_a/lab_b fallback).
+        let mut state = create_test_state();
+        let player = PlayerId::new(0);
+        state.players[0].money = 10;
+        place_president_at_lab_a(&mut state);
+        state.lab_state.lab_b = Some(LabBoard::new());
+        state.lab_state.lab_b.as_mut().unwrap().slots[0] = Some(TechCardId(1));
+
+        let mut tech_registry = TechRegistry::new();
+        tech_registry.insert(make_test_tech_card(1, 2, TechEffect::Tram), "tech_test");
+
+        let result = execute_lab_action(
+            &mut state, player, TechCardId(1), 0, 0, None, 3, &tech_registry,
+        );
+        assert!(matches!(result, Err(MoveError::CardNotFound)));
+    }
+
+    #[test]
+    fn test_lab_execute_tolerates_empty_deck() {
+        let mut state = create_test_state();
+        let player = PlayerId::new(0);
+        state.players[0].money = 10;
+        place_president_at_lab_a(&mut state);
+
+        let mut tech_registry = TechRegistry::new();
+        tech_registry.insert(make_test_tech_card(1, 2, TechEffect::Tram), "tech_test");
+        state.lab_state.lab_a.slots[0] = Some(TechCardId(1));
+        // state.tech_deck stays empty (create_test_state() default).
+
+        let result = execute_lab_action(
+            &mut state, player, TechCardId(1), 0, 0, None, 3, &tech_registry,
+        );
+        assert!(result.is_ok());
+        assert!(state.players[0].technologies.contains(&TechCardId(1)));
+        assert!(state.lab_state.lab_a.slots.iter().all(|s| s.is_none()));
+    }
+
+    /// Registry with two Patent System copies (ids 1,2), one Letter Press
+    /// Printing copy (id 3), one Exposition (id 4), and an unrelated tech
+    /// (id 5) — used to pin acquisition-bonus semantics generically,
+    /// independent of the real standard registry's exact copy counts.
+    fn make_bonus_tech_registry() -> TechRegistry {
+        let mut r = TechRegistry::new();
+        r.insert(make_test_tech_card(1, 3, TechEffect::PatentSystem), "patent_1");
+        r.insert(make_test_tech_card(2, 3, TechEffect::PatentSystem), "patent_2");
+        r.insert(make_test_tech_card(3, 3, TechEffect::LetterPressPrinting), "letterpress_1");
+        r.insert(make_test_tech_card(4, 5, TechEffect::Exposition), "exposition_1");
+        r.insert(make_test_tech_card(5, 5, TechEffect::Tram), "tram_1");
+        r
+    }
+
+    #[test]
+    fn test_lab_acquisition_bonus_patent_system_stacks_per_owned_copy() {
+        let mut state = create_test_state();
+        let player = PlayerId::new(0);
+        let tech_registry = make_bonus_tech_registry();
+        let order_registry = OrderRegistry::new();
+        // Owns BOTH Patent System copies already; just acquired an unrelated tech.
+        state.players[0].technologies = vec![TechCardId(1), TechCardId(2), TechCardId(5)];
+
+        apply_lab_acquisition_bonuses(&mut state, player, TechCardId(5), &tech_registry, &order_registry);
+
+        assert_eq!(state.players[0].victory_points, 4); // 2 owned copies x 2 VP
+    }
+
+    #[test]
+    fn test_lab_acquisition_bonus_excludes_just_acquired_card() {
+        let mut state = create_test_state();
+        let player = PlayerId::new(0);
+        let tech_registry = make_bonus_tech_registry();
+        let order_registry = OrderRegistry::new();
+        // The ONLY Patent System copy owned is the one just acquired: no bonus.
+        state.players[0].technologies = vec![TechCardId(1)];
+
+        apply_lab_acquisition_bonuses(&mut state, player, TechCardId(1), &tech_registry, &order_registry);
+
+        assert_eq!(state.players[0].victory_points, 0);
+    }
+
+    #[test]
+    fn test_lab_acquisition_letterpress_bonus_grants_yen_per_owned_copy() {
+        let mut state = create_test_state();
+        let player = PlayerId::new(0);
+        let tech_registry = make_bonus_tech_registry();
+        let order_registry = OrderRegistry::new();
+        state.players[0].technologies = vec![TechCardId(3), TechCardId(5)];
+        let starting_money = state.players[0].money;
+
+        apply_lab_acquisition_bonuses(&mut state, player, TechCardId(5), &tech_registry, &order_registry);
+
+        assert_eq!(state.players[0].money, starting_money + 1);
+    }
+
+    #[test]
+    fn test_lab_acquisition_exposition_self_trigger() {
+        let mut state = create_test_state();
+        let player = PlayerId::new(0);
+        let tech_registry = make_bonus_tech_registry();
+        let order_registry = OrderRegistry::new();
+        state.players[0].technologies = vec![TechCardId(4)]; // just-acquired Exposition itself
+
+        apply_lab_acquisition_bonuses(&mut state, player, TechCardId(4), &tech_registry, &order_registry);
+
+        assert_eq!(state.players[0].victory_points, 10);
     }
 }

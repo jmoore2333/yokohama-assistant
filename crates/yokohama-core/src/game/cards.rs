@@ -207,7 +207,7 @@ pub fn fulfill_order(
 }
 
 /// Check and award Foreign Mercenary if player has reached threshold.
-fn check_mercenary_eligibility(
+pub(crate) fn check_mercenary_eligibility(
     state: &mut GameState,
     player: PlayerId,
     _country: Country,

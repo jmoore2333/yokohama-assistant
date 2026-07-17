@@ -269,10 +269,7 @@ fn apply_return_to_hand(
     Ok(())
 }
 
-// `_rules` is unused today (Port doesn't consult a registry) but the
-// parameter is threaded through now so the Laboratory arm can start reading
-// `_rules.techs` without another signature change.
-fn apply_area_action(state: &mut GameState, action: &AreaAction, _rules: &Rules) -> Result<(), MoveError> {
+fn apply_area_action(state: &mut GameState, action: &AreaAction, rules: &Rules) -> Result<(), MoveError> {
     let player = state.current_player;
     let power = state.current_action_power.unwrap_or(0);
 
@@ -311,8 +308,12 @@ fn apply_area_action(state: &mut GameState, action: &AreaAction, _rules: &Rules)
             execute_port_action(state, player, cards_taken, *second_card_payment, power)
                 .map_err(MoveError::RuleViolation)?;
         }
-        AreaAction::Laboratory { .. } => {
-            // TODO: implement full Laboratory action
+        AreaAction::Laboratory { card_id, extra_yen, extra_imported, fifth_tech_payment } => {
+            execute_lab_action(
+                state, player, *card_id, *extra_yen, *extra_imported, *fifth_tech_payment,
+                power, &rules.techs,
+            )?;
+            apply_lab_acquisition_bonuses(state, player, *card_id, &rules.techs, &rules.orders);
         }
         AreaAction::Chinatown { exchanges } => {
             for exchange in exchanges {
@@ -1790,5 +1791,210 @@ mod tests {
         let next = apply_move(&state, &mv, &rules).unwrap();
 
         assert_eq!(next.players[0].order_cards_in_hand, vec![OrderCardId(7)]);
+    }
+
+    /// Places a LaboratoryA area on the board and puts the president there.
+    fn place_president_at_lab_a(state: &mut GameState) -> AreaId {
+        let lab_area = AreaId::new(0);
+        state.board_layout.areas.insert(lab_area, AreaConfig {
+            area_type: AreaType::LaboratoryA,
+            grid_position: (0, 0),
+        });
+        state.players[0].president_location = PresidentLocation::OnBoard(lab_area);
+        lab_area
+    }
+
+    #[test]
+    fn lab_action_acquires_tech_and_refills() {
+        let rules = Rules::standard();
+        let mut state = create_test_game_state(2);
+        place_president_at_lab_a(&mut state);
+        state.turn_phase = TurnPhase::AreaAction;
+        state.current_action_power = Some(3);
+        // TechCardId(24) = Mining Technology, German, industry_cost 3 (data.rs) —
+        // an unrelated tech, so this test stays focused on wiring + refill.
+        state.lab_state.lab_a.slots[0] = Some(TechCardId(24));
+        state.tech_deck = vec![TechCardId(200)];
+
+        let mv = Move::ExecuteAreaAction {
+            action: AreaAction::Laboratory {
+                card_id: TechCardId(24), extra_yen: 0, extra_imported: 0, fifth_tech_payment: None,
+            },
+        };
+        let next = apply_move(&state, &mv, &rules).unwrap();
+
+        assert!(next.players[0].technologies.contains(&TechCardId(24)));
+        // Only slot 0 was occupied; taking it leaves the whole board empty,
+        // so refill picks the rightmost empty slot (index 5).
+        assert_eq!(next.lab_state.lab_a.slots[5], Some(TechCardId(200)));
+        assert!(next.tech_deck.is_empty());
+    }
+
+    #[test]
+    fn lab_action_during_mercenary_sub_turn_resolves_mercenary_target_area() {
+        // President is in hand (default) and never placed anywhere; a
+        // Laboratory action must still work by resolving the acting area
+        // from mercenary_target_area, not president_location.
+        let rules = Rules::standard();
+        let mut state = create_test_game_state(2);
+        let lab_area = AreaId::new(5);
+        state.board_layout.areas.insert(lab_area, AreaConfig {
+            area_type: AreaType::LaboratoryA,
+            grid_position: (0, 5),
+        });
+        state.is_mercenary_action = true;
+        state.mercenary_target_area = Some(lab_area);
+        state.turn_phase = TurnPhase::AreaAction;
+        state.current_action_power = Some(3);
+        state.lab_state.lab_a.slots[0] = Some(TechCardId(24));
+
+        let mv = Move::ExecuteAreaAction {
+            action: AreaAction::Laboratory {
+                card_id: TechCardId(24), extra_yen: 0, extra_imported: 0, fifth_tech_payment: None,
+            },
+        };
+        let next = apply_move(&state, &mv, &rules).unwrap();
+
+        assert!(next.players[0].technologies.contains(&TechCardId(24)));
+    }
+
+    #[test]
+    fn lab_action_rejects_card_on_other_lab_board() {
+        // Cross-board buying is illegal: the president acts at Lab A, but
+        // the named card lives only on Lab B, so apply_move must surface the
+        // typed MoveError::CardNotFound, not a generic RuleViolation.
+        let rules = Rules::standard();
+        let mut state = create_test_game_state(2);
+        place_president_at_lab_a(&mut state);
+        state.turn_phase = TurnPhase::AreaAction;
+        state.current_action_power = Some(3);
+        state.lab_state.lab_b = Some(LabBoard::new());
+        state.lab_state.lab_b.as_mut().unwrap().slots[0] = Some(TechCardId(24));
+
+        let mv = Move::ExecuteAreaAction {
+            action: AreaAction::Laboratory {
+                card_id: TechCardId(24), extra_yen: 0, extra_imported: 0, fifth_tech_payment: None,
+            },
+        };
+        let result = apply_move(&state, &mv, &rules);
+        assert!(matches!(result, Err(MoveError::CardNotFound)));
+    }
+
+    #[test]
+    fn lab_action_awards_patent_system_vp_bonus() {
+        let rules = Rules::standard();
+        let mut state = create_test_game_state(2);
+        place_president_at_lab_a(&mut state);
+        state.turn_phase = TurnPhase::AreaAction;
+        state.current_action_power = Some(3);
+        // TechCardId(26) = Patent System (real data; only 1 physical copy).
+        state.players[0].technologies = vec![TechCardId(26)];
+        let starting_vp = state.players[0].victory_points;
+        state.lab_state.lab_a.slots[0] = Some(TechCardId(24)); // unrelated tech being bought
+
+        let mv = Move::ExecuteAreaAction {
+            action: AreaAction::Laboratory {
+                card_id: TechCardId(24), extra_yen: 0, extra_imported: 0, fifth_tech_payment: None,
+            },
+        };
+        let next = apply_move(&state, &mv, &rules).unwrap();
+
+        assert!(next.players[0].technologies.contains(&TechCardId(24)));
+        assert_eq!(next.players[0].victory_points, starting_vp + 2);
+    }
+
+    #[test]
+    fn lab_action_awards_letterpress_yen_bonus_stacking_two_owned_copies() {
+        let rules = Rules::standard();
+        let mut state = create_test_game_state(2);
+        place_president_at_lab_a(&mut state);
+        state.turn_phase = TurnPhase::AreaAction;
+        state.current_action_power = Some(3);
+        // TechCardId(18)/(19) = both real Letterpress Printing physical copies.
+        state.players[0].technologies = vec![TechCardId(18), TechCardId(19)];
+        let starting_money = state.players[0].money;
+        state.lab_state.lab_a.slots[0] = Some(TechCardId(24));
+
+        let mv = Move::ExecuteAreaAction {
+            action: AreaAction::Laboratory {
+                card_id: TechCardId(24), extra_yen: 0, extra_imported: 0, fifth_tech_payment: None,
+            },
+        };
+        let next = apply_move(&state, &mv, &rules).unwrap();
+
+        // Cost is fully covered by power alone (0 extra yen), so the only
+        // money change is +1 Yen per owned Letterpress copy (2 owned).
+        assert_eq!(next.players[0].money, starting_money + 2);
+    }
+
+    #[test]
+    fn lab_action_exposition_self_trigger_awards_10_vp() {
+        let rules = Rules::standard();
+        let mut state = create_test_game_state(2);
+        place_president_at_lab_a(&mut state);
+        state.turn_phase = TurnPhase::AreaAction;
+        state.current_action_power = Some(5); // Exposition costs 5, slot 0 has no surcharge.
+        let starting_vp = state.players[0].victory_points;
+        // TechCardId(9) = Exposition (real data), being bought.
+        state.lab_state.lab_a.slots[0] = Some(TechCardId(9));
+
+        let mv = Move::ExecuteAreaAction {
+            action: AreaAction::Laboratory {
+                card_id: TechCardId(9), extra_yen: 0, extra_imported: 0, fifth_tech_payment: None,
+            },
+        };
+        let next = apply_move(&state, &mv, &rules).unwrap();
+
+        assert!(next.players[0].technologies.contains(&TechCardId(9)));
+        assert_eq!(next.players[0].victory_points, starting_vp + 10);
+    }
+
+    #[test]
+    fn lab_action_reruns_mercenary_eligibility_for_acquired_country() {
+        let rules = Rules::standard();
+        let mut state = create_test_game_state(2);
+        place_president_at_lab_a(&mut state);
+        state.turn_phase = TurnPhase::AreaAction;
+        state.current_action_power = Some(3);
+        // TechCardId(29) = Brickyard, German (already owned).
+        state.players[0].technologies = vec![TechCardId(29)];
+        // TechCardId(24) = Mining Technology, German (being bought) -> 2 German icons.
+        state.lab_state.lab_a.slots[0] = Some(TechCardId(24));
+
+        let mv = Move::ExecuteAreaAction {
+            action: AreaAction::Laboratory {
+                card_id: TechCardId(24), extra_yen: 0, extra_imported: 0, fifth_tech_payment: None,
+            },
+        };
+        let next = apply_move(&state, &mv, &rules).unwrap();
+
+        assert_eq!(next.players[0].mercenaries.available.get(&Country::German), Some(&1));
+        assert_eq!(next.mercenary_supply.german, 1); // started at 2, one awarded
+    }
+
+    #[test]
+    fn lab_action_wires_fifth_tech_payment() {
+        let rules = Rules::standard();
+        let mut state = create_test_game_state(2);
+        place_president_at_lab_a(&mut state);
+        state.turn_phase = TurnPhase::AreaAction;
+        state.current_action_power = Some(3);
+        state.players[0].money = 10;
+        // 4 existing techs -> the 5th acquisition requires the penalty.
+        state.players[0].technologies =
+            vec![TechCardId(1), TechCardId(2), TechCardId(3), TechCardId(4)];
+        state.lab_state.lab_a.slots[0] = Some(TechCardId(24)); // cost 3, covered by power alone
+
+        let mv = Move::ExecuteAreaAction {
+            action: AreaAction::Laboratory {
+                card_id: TechCardId(24), extra_yen: 0, extra_imported: 0,
+                fifth_tech_payment: Some(true), // pay 2 Yen
+            },
+        };
+        let next = apply_move(&state, &mv, &rules).unwrap();
+
+        assert!(next.players[0].technologies.contains(&TechCardId(24)));
+        assert_eq!(next.players[0].technologies.len(), 5);
+        assert_eq!(next.players[0].money, 10 - 2);
     }
 }
