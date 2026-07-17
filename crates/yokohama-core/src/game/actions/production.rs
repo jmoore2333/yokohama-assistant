@@ -1,22 +1,5 @@
 //! Production area actions (Copper Mine, Silk Mill, Tea Plantation, Fishing Ground).
 
-use crate::types::{GameState, PlayerId};
-
-/// Result of a production action.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ProductionResult {
-    pub copper: u8,
-    pub silk: u8,
-    pub tea: u8,
-    pub seafood: u8,
-}
-
-impl ProductionResult {
-    pub fn empty() -> Self {
-        Self { copper: 0, silk: 0, tea: 0, seafood: 0 }
-    }
-}
-
 /// Calculate Copper Mine rewards based on power.
 pub fn copper_mine_reward(power: u8) -> u8 {
     match power {
@@ -46,26 +29,6 @@ pub fn tea_plantation_reward(power: u8) -> u8 {
 /// Calculate Fishing Ground rewards based on power.
 pub fn fishing_ground_reward(power: u8) -> u8 {
     power.min(5) // 1:1, capped at 5
-}
-
-/// Apply production rewards to player state, accounting for Mining Technology.
-pub fn apply_production(
-    state: &mut GameState,
-    player: PlayerId,
-    result: &ProductionResult,
-) {
-    let player_state = &mut state.players[player.0 as usize];
-
-    // Check for Mining Technology bonus
-    // TODO: implement proper tech lookup when TechRegistry is available
-    let has_mining_tech = false;
-
-    let copper_bonus = if has_mining_tech && result.copper > 0 { 1 } else { 0 };
-
-    player_state.copper += result.copper as u32 + copper_bonus as u32;
-    player_state.silk += result.silk as u32;
-    player_state.tea += result.tea as u32;
-    player_state.seafood += result.seafood as u32;
 }
 
 #[cfg(test)]

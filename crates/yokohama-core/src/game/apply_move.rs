@@ -62,7 +62,7 @@ pub fn apply_move(state: &GameState, mv: &Move, rules: &Rules) -> Result<GameSta
         }
 
         Move::Take5PowerToken => {
-            apply_take_5_power(&mut new_state)?;
+            apply_take_5_power(&mut new_state, rules)?;
             new_state.turn_phase = TurnPhase::Building;
         }
 
@@ -71,7 +71,7 @@ pub fn apply_move(state: &GameState, mv: &Move, rules: &Rules) -> Result<GameSta
         }
 
         Move::BuildShophouse { slot } => {
-            apply_build_shophouse(&mut new_state, *slot)?;
+            apply_build_shophouse(&mut new_state, *slot, rules)?;
             new_state.turn_phase = TurnPhase::Recovery;
         }
 
@@ -354,7 +354,7 @@ fn apply_area_action(state: &mut GameState, action: &AreaAction, rules: &Rules) 
         }
         AreaAction::Chinatown { exchanges } => {
             for exchange in exchanges {
-                apply_chinatown_exchange(state, player, *exchange).map_err(MoveError::RuleViolation)?;
+                apply_chinatown_exchange(state, player, *exchange, &rules.techs).map_err(MoveError::RuleViolation)?;
             }
         }
         AreaAction::Church { copper, silk, tea, seafood, yen, imported_good } => {
@@ -467,7 +467,7 @@ fn apply_employment_agency(
     Ok(())
 }
 
-fn apply_take_5_power(state: &mut GameState) -> Result<(), MoveError> {
+fn apply_take_5_power(state: &mut GameState, rules: &Rules) -> Result<(), MoveError> {
     let player = state.current_player;
     let p = state.player(player);
 
@@ -484,13 +484,22 @@ fn apply_take_5_power(state: &mut GameState) -> Result<(), MoveError> {
     if let Some(area) = area {
         if let Some(effect_opt) = state.board_layout.five_power_tokens.get_mut(&area) {
             if let Some(effect) = effect_opt.take() {
+                // Mining Technology bonus (KB "applies to": 5-Power tokens)
+                // fires only for the Copper variant. Computed here, after the
+                // board_layout borrow above ends but before the player is
+                // mutably borrowed below.
+                let mining_bonus = match effect {
+                    FivePowerEffect::Copper(n) => copper_bonus(state, player, n, &rules.techs),
+                    _ => 0,
+                };
+
                 let p = state.player_mut(player);
                 p.five_power_tokens += 1;
 
                 // Apply effect
                 match effect {
                     FivePowerEffect::ImportedGoods(n) => p.imported_goods += n as u32,
-                    FivePowerEffect::Copper(n) => p.copper += n as u32,
+                    FivePowerEffect::Copper(n) => p.copper += n as u32 + mining_bonus as u32,
                     FivePowerEffect::Silk(n) => p.silk += n as u32,
                     FivePowerEffect::Tea(n) => p.tea += n as u32,
                     FivePowerEffect::Seafood(n) => p.seafood += n as u32,
@@ -528,7 +537,7 @@ fn apply_take_5_power(state: &mut GameState) -> Result<(), MoveError> {
     Ok(())
 }
 
-fn apply_build_shophouse(state: &mut GameState, slot: u8) -> Result<(), MoveError> {
+fn apply_build_shophouse(state: &mut GameState, slot: u8, rules: &Rules) -> Result<(), MoveError> {
     let player = state.current_player;
     let p = state.player(player);
 
@@ -550,13 +559,22 @@ fn apply_build_shophouse(state: &mut GameState, slot: u8) -> Result<(), MoveErro
         .map(|site| site.spaces[slot as usize])
         .unwrap_or_default();
 
+    // Mining Technology bonus (KB "applies to": Building Site rewards) fires
+    // on any copper received from this space, whether via the explicit
+    // copper field or the any-good-auto-copper simplification (apply_any_good
+    // always resolves any_good to copper in v1). Combined into a single
+    // receipt total so a space with both fields doesn't double the flat
+    // per-copy bonus. Computed before the player is mutably borrowed below.
+    let total_base_copper = reward.copper + reward.any_good;
+    let mining_bonus = copper_bonus(state, player, total_base_copper, &rules.techs);
+
     let p = state.player_mut(player);
     if p.shophouses.in_hand < 1 {
         return Err(MoveError::RuleViolation("No shophouse in hand"));
     }
     p.shophouses.in_hand -= 1;
     p.shophouses.built.insert(area, slot);
-    apply_space_reward(p, &reward);
+    apply_space_reward(p, &reward, mining_bonus);
 
     // Update building site
     if let Some(site) = state.board_layout.building_sites.get_mut(&area) {
@@ -739,7 +757,11 @@ pub fn apply_warehouse_takes(p: &mut PlayerState, n: u8) {
 }
 
 /// Applies a Shophouse space's full reward when a Shophouse is built there.
-fn apply_space_reward(p: &mut PlayerState, reward: &SpaceReward) {
+/// `mining_bonus` is the caller-precomputed Mining Technology flat bonus (see
+/// `copper_bonus`) for this reward's total copper receipt — combining the
+/// explicit `copper` field and the any_good-auto-copper simplification so it
+/// isn't double-applied; computed before the player was mutably borrowed.
+fn apply_space_reward(p: &mut PlayerState, reward: &SpaceReward, mining_bonus: u8) {
     p.victory_points += reward.vp as u32;
     p.money += reward.yen as u32;
     p.seafood += reward.seafood as u32;
@@ -747,6 +769,7 @@ fn apply_space_reward(p: &mut PlayerState, reward: &SpaceReward) {
     p.silk += reward.silk as u32;
     p.copper += reward.copper as u32;
     apply_any_good(p, reward.any_good);
+    p.copper += mining_bonus as u32;
     apply_warehouse_takes(p, reward.warehouse_tokens);
     // Movement icon (rulebook p.10): documented no-op in v1. The icon grants
     // an optional assistant move the player may decline, and declining is a
@@ -1019,6 +1042,51 @@ mod tests {
         assert_eq!(state.players[0].assistants.on_board, board_before);
         assert_eq!(state.players[0].money, money_before);
         assert_eq!(state.players[1].money, owner_money_before);
+    }
+
+    #[test]
+    fn test_placement_own_president_in_area_costs_nothing_no_self_credit() {
+        let mut state = create_minimal_state(2);
+        let area = AreaId::new(0);
+        state.board_layout.areas.insert(area, AreaConfig {
+            area_type: AreaType::Bank,
+            grid_position: (0, 0),
+        });
+        state.turn_phase = TurnPhase::Placement;
+        // The CURRENT player's own President is already in the target area.
+        state.players[0].president_location = PresidentLocation::OnBoard(area);
+        state.players[0].money = 3;
+
+        let rules = Rules::empty_for_tests();
+        let result = apply_move(&state, &Move::PlaceThreeAreas { placements: vec![area] }, &rules);
+        assert!(result.is_ok());
+        let next = result.unwrap();
+
+        // Own President in the area is not an opponent President: no fee, no self-credit.
+        assert_eq!(next.players[0].money, 3);
+    }
+
+    #[test]
+    fn test_placement_money_exactly_equal_to_fee_succeeds_with_zero_left() {
+        let mut state = create_minimal_state(2);
+        let area = AreaId::new(0);
+        state.board_layout.areas.insert(area, AreaConfig {
+            area_type: AreaType::Bank,
+            grid_position: (0, 0),
+        });
+        state.turn_phase = TurnPhase::Placement;
+        state.players[1].president_location = PresidentLocation::OnBoard(area);
+        // Fee for 1 opponent President in the area is exactly 1 Yen.
+        state.players[0].money = 1;
+        let owner_money_before = state.players[1].money;
+
+        let rules = Rules::empty_for_tests();
+        let result = apply_move(&state, &Move::PlaceThreeAreas { placements: vec![area] }, &rules);
+        assert!(result.is_ok());
+        let next = result.unwrap();
+
+        assert_eq!(next.players[0].money, 0);
+        assert_eq!(next.players[1].money, owner_money_before + 1);
     }
 
     #[test]
@@ -1325,6 +1393,52 @@ mod tests {
     }
 
     #[test]
+    fn test_five_power_copper_token_mining_technology_bonus() {
+        let mut state = create_minimal_state(2);
+        let action_area = AreaId::new(0);
+        state.players[0].president_location = PresidentLocation::OnBoard(action_area);
+        state.current_action_power = Some(5);
+        state.turn_phase = TurnPhase::FivePowerBonus;
+        state.board_layout.five_power_tokens.insert(action_area, Some(FivePowerEffect::Copper(2)));
+
+        let mut rules = Rules::empty_for_tests();
+        rules.techs.insert(mining_tech_fixture(), "tech_mining");
+        state.players[0].technologies.push(TechCardId(1));
+
+        let starting_copper = state.players[0].copper;
+        let result = apply_move(&state, &Move::Take5PowerToken, &rules);
+        assert!(result.is_ok());
+        let new_state = result.unwrap();
+
+        // Base +2 copper from the token + 1 Mining bonus (1 owned copy).
+        assert_eq!(new_state.players[0].copper, starting_copper + 3);
+    }
+
+    #[test]
+    fn test_five_power_silk_token_mining_technology_no_bonus() {
+        let mut state = create_minimal_state(2);
+        let action_area = AreaId::new(0);
+        state.players[0].president_location = PresidentLocation::OnBoard(action_area);
+        state.current_action_power = Some(5);
+        state.turn_phase = TurnPhase::FivePowerBonus;
+        state.board_layout.five_power_tokens.insert(action_area, Some(FivePowerEffect::Silk(2)));
+
+        let mut rules = Rules::empty_for_tests();
+        rules.techs.insert(mining_tech_fixture(), "tech_mining");
+        state.players[0].technologies.push(TechCardId(1));
+
+        let starting_copper = state.players[0].copper;
+        let starting_silk = state.players[0].silk;
+        let result = apply_move(&state, &Move::Take5PowerToken, &rules);
+        assert!(result.is_ok());
+        let new_state = result.unwrap();
+
+        // A non-copper token effect through the same function must not trigger Mining.
+        assert_eq!(new_state.players[0].silk, starting_silk + 2);
+        assert_eq!(new_state.players[0].copper, starting_copper);
+    }
+
+    #[test]
     fn test_trading_house_passive_income() {
         let mut state = create_minimal_state(2);
         let action_area = AreaId::new(0);
@@ -1507,6 +1621,77 @@ mod tests {
         }, &rules);
         assert!(result.is_ok());
         assert_eq!(result.unwrap().players[0].copper, state.players[0].copper);
+    }
+
+    fn mining_tech_fixture() -> TechCard {
+        TechCard {
+            id: TechCardId(1),
+            name: "Mining Technology".to_string(),
+            country: Country::German,
+            industry_cost: 3,
+            effect: TechEffect::MiningTechnology,
+        }
+    }
+
+    #[test]
+    fn test_chinatown_yen_to_copper_mining_technology_bonus() {
+        let mut state = create_minimal_state(2);
+        let action_area = AreaId::new(0);
+        state.players[0].president_location = PresidentLocation::OnBoard(action_area);
+        state.current_player = PlayerId::new(0);
+        state.current_action_power = Some(2);
+        state.turn_phase = TurnPhase::AreaAction;
+        state.board_layout.areas.insert(action_area, AreaConfig {
+            area_type: AreaType::Chinatown,
+            grid_position: (0, 0),
+        });
+        state.players[0].money = 10;
+
+        let mut rules = Rules::empty_for_tests();
+        rules.techs.insert(mining_tech_fixture(), "tech_mining");
+        state.players[0].technologies.push(TechCardId(1));
+
+        let starting_copper = state.players[0].copper;
+        let result = apply_move(&state, &Move::ExecuteAreaAction {
+            action: AreaAction::Chinatown { exchanges: vec![ChinatownExchange::YenToCopper] },
+        }, &rules);
+        assert!(result.is_ok());
+        let new_state = result.unwrap();
+
+        // Base 1 copper from the exchange + 1 Mining bonus (1 owned copy).
+        assert_eq!(new_state.players[0].copper, starting_copper + 2);
+        assert_eq!(new_state.players[0].money, 8); // still pays the normal 2 Yen
+    }
+
+    #[test]
+    fn test_chinatown_yen_to_silk_mining_technology_no_bonus() {
+        let mut state = create_minimal_state(2);
+        let action_area = AreaId::new(0);
+        state.players[0].president_location = PresidentLocation::OnBoard(action_area);
+        state.current_player = PlayerId::new(0);
+        state.current_action_power = Some(2);
+        state.turn_phase = TurnPhase::AreaAction;
+        state.board_layout.areas.insert(action_area, AreaConfig {
+            area_type: AreaType::Chinatown,
+            grid_position: (0, 0),
+        });
+        state.players[0].money = 10;
+
+        let mut rules = Rules::empty_for_tests();
+        rules.techs.insert(mining_tech_fixture(), "tech_mining");
+        state.players[0].technologies.push(TechCardId(1));
+
+        let starting_copper = state.players[0].copper;
+        let starting_silk = state.players[0].silk;
+        let result = apply_move(&state, &Move::ExecuteAreaAction {
+            action: AreaAction::Chinatown { exchanges: vec![ChinatownExchange::YenToSilk] },
+        }, &rules);
+        assert!(result.is_ok());
+        let new_state = result.unwrap();
+
+        // A non-copper exchange through the same function must not trigger Mining.
+        assert_eq!(new_state.players[0].silk, starting_silk + 1);
+        assert_eq!(new_state.players[0].copper, starting_copper);
     }
 
     #[test]
@@ -1963,6 +2148,106 @@ mod tests {
 
         assert_eq!(new_state.players[0].victory_points, 4);
         assert_eq!(new_state.players[0].shophouses.built.get(&area), Some(&2));
+    }
+
+    #[test]
+    fn test_build_shophouse_copper_reward_mining_technology_bonus() {
+        let mut state = create_minimal_state(2);
+        let area = AreaId::new(0);
+        state.players[0].president_location = PresidentLocation::OnBoard(area);
+        let starting_copper = state.players[0].copper;
+
+        let mut site = BuildingSite::new([0, 0, 0, 0], 10);
+        site.spaces[0] = SpaceReward { copper: 2, ..Default::default() };
+        state.board_layout.building_sites.insert(area, site);
+
+        let mut rules = Rules::empty_for_tests();
+        rules.techs.insert(mining_tech_fixture(), "tech_mining");
+        state.players[0].technologies.push(TechCardId(1));
+
+        let result = apply_move(&state, &Move::BuildShophouse { slot: 0 }, &rules);
+        assert!(result.is_ok());
+        let new_state = result.unwrap();
+
+        // Base 2 copper from the explicit copper field + 1 Mining bonus (1 owned copy).
+        assert_eq!(new_state.players[0].copper, starting_copper + 3);
+    }
+
+    #[test]
+    fn test_build_shophouse_any_good_reward_mining_technology_bonus() {
+        let mut state = create_minimal_state(2);
+        let area = AreaId::new(0);
+        state.players[0].president_location = PresidentLocation::OnBoard(area);
+        let starting_copper = state.players[0].copper;
+
+        let mut site = BuildingSite::new([0, 0, 0, 0], 10);
+        site.spaces[0] = SpaceReward { any_good: 1, ..Default::default() };
+        state.board_layout.building_sites.insert(area, site);
+
+        let mut rules = Rules::empty_for_tests();
+        rules.techs.insert(mining_tech_fixture(), "tech_mining");
+        state.players[0].technologies.push(TechCardId(1));
+
+        let result = apply_move(&state, &Move::BuildShophouse { slot: 0 }, &rules);
+        assert!(result.is_ok());
+        let new_state = result.unwrap();
+
+        // any_good auto-resolves to 1 copper (v1 simplification) + 1 Mining bonus.
+        // Mining applies here because the auto-picked good IS copper received
+        // from a Building Site reward (KB "applies to" list).
+        assert_eq!(new_state.players[0].copper, starting_copper + 2);
+    }
+
+    #[test]
+    fn test_build_shophouse_non_copper_reward_mining_technology_no_bonus() {
+        let mut state = create_minimal_state(2);
+        let area = AreaId::new(0);
+        state.players[0].president_location = PresidentLocation::OnBoard(area);
+        let starting_copper = state.players[0].copper;
+        let starting_tea = state.players[0].tea;
+
+        let mut site = BuildingSite::new([0, 0, 0, 0], 10);
+        site.spaces[0] = SpaceReward { tea: 2, ..Default::default() };
+        state.board_layout.building_sites.insert(area, site);
+
+        let mut rules = Rules::empty_for_tests();
+        rules.techs.insert(mining_tech_fixture(), "tech_mining");
+        state.players[0].technologies.push(TechCardId(1));
+
+        let result = apply_move(&state, &Move::BuildShophouse { slot: 0 }, &rules);
+        assert!(result.is_ok());
+        let new_state = result.unwrap();
+
+        // A reward with no copper and no any_good must not trigger Mining.
+        assert_eq!(new_state.players[0].tea, starting_tea + 2);
+        assert_eq!(new_state.players[0].copper, starting_copper);
+    }
+
+    #[test]
+    fn test_build_shophouse_copper_and_any_good_combined_mining_bonus_not_doubled() {
+        // Guards against computing the Mining bonus separately for the copper
+        // field and the any_good field and summing both: that would double
+        // the flat per-copy bonus when a single space grants copper via two
+        // icons in the same reward. It must fire once per receipt event.
+        let mut state = create_minimal_state(2);
+        let area = AreaId::new(0);
+        state.players[0].president_location = PresidentLocation::OnBoard(area);
+        let starting_copper = state.players[0].copper;
+
+        let mut site = BuildingSite::new([0, 0, 0, 0], 10);
+        site.spaces[0] = SpaceReward { copper: 1, any_good: 1, ..Default::default() };
+        state.board_layout.building_sites.insert(area, site);
+
+        let mut rules = Rules::empty_for_tests();
+        rules.techs.insert(mining_tech_fixture(), "tech_mining");
+        state.players[0].technologies.push(TechCardId(1));
+
+        let result = apply_move(&state, &Move::BuildShophouse { slot: 0 }, &rules);
+        assert!(result.is_ok());
+        let new_state = result.unwrap();
+
+        // 1 (copper field) + 1 (any_good auto-copper) + 1 Mining bonus ONCE = 3.
+        assert_eq!(new_state.players[0].copper, starting_copper + 3);
     }
 
     #[test]
