@@ -11,6 +11,7 @@ mod end_game;
 mod scoring;
 mod setup;
 mod board_gen;
+mod rules;
 pub mod actions;
 
 pub use power::*;
@@ -24,3 +25,4 @@ pub use end_game::*;
 pub use scoring::*;
 pub use setup::*;
 pub use board_gen::*;
+pub use rules::*;

@@ -81,7 +81,8 @@ fn test_basic_turn_flow() {
     assert_eq!(state.turn_phase, TurnPhase::AdditionalActionFirst);
 
     // Get legal moves
-    let moves = get_legal_moves(&state);
+    let rules = Rules::empty_for_tests();
+    let moves = get_legal_moves(&state, &rules);
     assert!(!moves.is_empty());
 
     // Should include EndAdditionalPhase
@@ -157,16 +158,17 @@ fn test_phase_transitions() {
     let (mut state, _, _) = setup_2p_game();
 
     // End Additional Action First -> Placement
+    let rules = Rules::empty_for_tests();
     state.turn_phase = TurnPhase::AdditionalActionFirst;
-    let new_state = apply_move(&state, &Move::EndAdditionalPhase).unwrap();
+    let new_state = apply_move(&state, &Move::EndAdditionalPhase, &rules).unwrap();
     assert_eq!(new_state.turn_phase, TurnPhase::Placement);
 
     // Test placement with 0 assistants -> Movement
     let placement_state = new_state;
-    let moves = get_legal_moves(&placement_state);
+    let moves = get_legal_moves(&placement_state, &rules);
     assert!(moves.iter().any(|m| matches!(m, Move::PlaceThreeAreas { placements } if placements.is_empty())));
 
-    let after_placement = apply_move(&placement_state, &Move::PlaceThreeAreas { placements: vec![] }).unwrap();
+    let after_placement = apply_move(&placement_state, &Move::PlaceThreeAreas { placements: vec![] }, &rules).unwrap();
     assert_eq!(after_placement.turn_phase, TurnPhase::Movement);
 }
 

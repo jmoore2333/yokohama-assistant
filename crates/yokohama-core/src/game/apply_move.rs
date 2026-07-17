@@ -5,16 +5,7 @@ use crate::game::*;
 use crate::game::actions::*;
 
 /// Apply a move to the game state, returning the new state.
-pub fn apply_move(state: &GameState, mv: &Move) -> Result<GameState, MoveError> {
-    apply_move_with_registries(state, mv, None)
-}
-
-/// Apply a move with access to card registries for order/tech fulfillment.
-pub fn apply_move_with_registries(
-    state: &GameState,
-    mv: &Move,
-    order_registry: Option<&OrderRegistry>,
-) -> Result<GameState, MoveError> {
+pub fn apply_move(state: &GameState, mv: &Move, rules: &Rules) -> Result<GameState, MoveError> {
     let mut new_state = state.clone();
 
     match mv {
@@ -99,7 +90,7 @@ pub fn apply_move_with_registries(
         }
 
         Move::FulfillOrder { order_id } => {
-            apply_fulfill_order(&mut new_state, *order_id, order_registry)?;
+            apply_fulfill_order(&mut new_state, *order_id, Some(&rules.orders))?;
         }
 
         Move::FulfillAchievement { achievement } => {
@@ -1021,9 +1012,10 @@ mod tests {
 
         // Add Movement(2) token on action area
         state.board_layout.five_power_tokens.insert(action_area, Some(FivePowerEffect::Movement(2)));
+        let rules = Rules::empty_for_tests();
 
         // Take the token
-        let result = apply_move(&state, &Move::Take5PowerToken);
+        let result = apply_move(&state, &Move::Take5PowerToken, &rules);
         assert!(result.is_ok());
 
         let new_state = result.unwrap();
@@ -1054,8 +1046,9 @@ mod tests {
 
         // Add Movement(3) token - but only 1 assistant available
         state.board_layout.five_power_tokens.insert(action_area, Some(FivePowerEffect::Movement(3)));
+        let rules = Rules::empty_for_tests();
 
-        let result = apply_move(&state, &Move::Take5PowerToken);
+        let result = apply_move(&state, &Move::Take5PowerToken, &rules);
         assert!(result.is_ok());
 
         let new_state = result.unwrap();
@@ -1084,12 +1077,13 @@ mod tests {
             (FivePowerEffect::Money(3), 1, 1, 3 + 3, 0),           // +3 money
             (FivePowerEffect::VictoryPoints(5), 1, 1, 3, 0 + 5),   // +5 VP
         ];
+        let rules = Rules::empty_for_tests();
 
         for (effect, exp_copper, exp_silk, exp_money, exp_vp) in test_cases {
             let mut test_state = state.clone();
             test_state.board_layout.five_power_tokens.insert(action_area, Some(effect));
 
-            let result = apply_move(&test_state, &Move::Take5PowerToken);
+            let result = apply_move(&test_state, &Move::Take5PowerToken, &rules);
             assert!(result.is_ok());
 
             let new_state = result.unwrap();
@@ -1123,11 +1117,12 @@ mod tests {
 
         // Record initial money
         let player1_initial_money = state.players[1].money;
+        let rules = Rules::empty_for_tests();
 
         // Player 0 takes action
         let result = apply_move(&state, &Move::ExecuteAreaAction {
             action: AreaAction::ProduceCopper,
-        });
+        }, &rules);
         assert!(result.is_ok());
 
         let new_state = result.unwrap();
@@ -1159,11 +1154,12 @@ mod tests {
 
         // Record initial money for player 1 (we only check that player 1 is unchanged)
         let player1_initial_money = state.players[1].money;
+        let rules = Rules::empty_for_tests();
 
         // Player 0 takes action
         let result = apply_move(&state, &Move::ExecuteAreaAction {
             action: AreaAction::ProduceCopper,
-        });
+        }, &rules);
         assert!(result.is_ok());
 
         let new_state = result.unwrap();
@@ -1197,11 +1193,12 @@ mod tests {
         });
 
         let player1_initial_money = state.players[1].money;
+        let rules = Rules::empty_for_tests();
 
         // Player 0 takes mercenary action
         let result = apply_move(&state, &Move::ExecuteAreaAction {
             action: AreaAction::Bank,
-        });
+        }, &rules);
         assert!(result.is_ok());
 
         let new_state = result.unwrap();
@@ -1238,7 +1235,8 @@ mod tests {
 
         // Simulate entering Movement phase (set start area)
         state.turn_phase = TurnPhase::Placement;
-        let result = apply_move(&state, &Move::PlaceThreeAreas { placements: vec![] });
+        let rules = Rules::empty_for_tests();
+        let result = apply_move(&state, &Move::PlaceThreeAreas { placements: vec![] }, &rules);
         assert!(result.is_ok());
         let state = result.unwrap();
 
@@ -1250,7 +1248,7 @@ mod tests {
         let result = apply_move(&state, &Move::MovePresident {
             path: vec![AreaId::new(1), AreaId::new(0)],
             destination: AreaId::new(0),
-        });
+        }, &rules);
         assert!(result.is_err());
         assert!(matches!(
             result,
@@ -1281,7 +1279,8 @@ mod tests {
 
         // Enter Movement phase
         state.turn_phase = TurnPhase::Placement;
-        let result = apply_move(&state, &Move::PlaceThreeAreas { placements: vec![] });
+        let rules = Rules::empty_for_tests();
+        let result = apply_move(&state, &Move::PlaceThreeAreas { placements: vec![] }, &rules);
         assert!(result.is_ok());
         let state = result.unwrap();
 
@@ -1289,7 +1288,7 @@ mod tests {
         let result = apply_move(&state, &Move::MovePresident {
             path: vec![AreaId::new(1)],
             destination: AreaId::new(1),
-        });
+        }, &rules);
         assert!(result.is_ok());
 
         let new_state = result.unwrap();
@@ -1313,7 +1312,8 @@ mod tests {
 
         // Enter Movement phase (no start area since president is in hand)
         state.turn_phase = TurnPhase::Placement;
-        let result = apply_move(&state, &Move::PlaceThreeAreas { placements: vec![] });
+        let rules = Rules::empty_for_tests();
+        let result = apply_move(&state, &Move::PlaceThreeAreas { placements: vec![] }, &rules);
         assert!(result.is_ok());
         let state = result.unwrap();
 
@@ -1323,7 +1323,7 @@ mod tests {
         // Place president - should succeed (no start area restriction)
         let result = apply_move(&state, &Move::PlacePresident {
             destination: AreaId::new(0),
-        });
+        }, &rules);
         assert!(result.is_ok());
     }
 
@@ -1360,12 +1360,14 @@ mod tests {
             },
         };
         order_registry.insert(order_card, "test_order");
+        let mut rules = Rules::empty_for_tests();
+        rules.orders = order_registry;
 
         // Fulfill order
-        let result = apply_move_with_registries(
+        let result = apply_move(
             &state,
             &Move::FulfillOrder { order_id },
-            Some(&order_registry),
+            &rules,
         );
         assert!(result.is_ok());
 
@@ -1403,12 +1405,14 @@ mod tests {
             rewards: OrderRewards::default(),
         };
         order_registry.insert(order_card, "test_order");
+        let mut rules = Rules::empty_for_tests();
+        rules.orders = order_registry;
 
         // Fulfill order should fail
-        let result = apply_move_with_registries(
+        let result = apply_move(
             &state,
             &Move::FulfillOrder { order_id },
-            Some(&order_registry),
+            &rules,
         );
         assert!(result.is_err());
         assert!(matches!(
@@ -1425,11 +1429,12 @@ mod tests {
         // Give player enough copper for Copper5 achievement
         state.players[0].copper = 5;
         state.players[0].assistants.in_hand = 2;
+        let rules = Rules::empty_for_tests();
 
         // Fulfill achievement
         let result = apply_move(&state, &Move::FulfillAchievement {
             achievement: AchievementType::Copper5,
-        });
+        }, &rules);
         assert!(result.is_ok());
 
         let new_state = result.unwrap();
@@ -1454,9 +1459,10 @@ mod tests {
         // First player claims achievement
         state.players[0].copper = 5;
         state.players[0].assistants.in_hand = 2;
+        let rules = Rules::empty_for_tests();
         let state = apply_move(&state, &Move::FulfillAchievement {
             achievement: AchievementType::Copper5,
-        }).unwrap();
+        }, &rules).unwrap();
 
         // Switch to player 2
         let mut state = state;
@@ -1467,7 +1473,7 @@ mod tests {
         // Second player claims same achievement
         let result = apply_move(&state, &Move::FulfillAchievement {
             achievement: AchievementType::Copper5,
-        });
+        }, &rules);
         assert!(result.is_ok());
 
         let new_state = result.unwrap();

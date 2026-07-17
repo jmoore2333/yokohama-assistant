@@ -4,18 +4,13 @@ use crate::types::*;
 use crate::game::*;
 
 /// Generate all legal moves for the current game state.
-pub fn get_legal_moves(state: &GameState) -> Vec<Move> {
-    get_legal_moves_with_tech(state, None)
-}
-
-/// Generate all legal moves with technology awareness.
-pub fn get_legal_moves_with_tech(state: &GameState, tech_registry: Option<&TechRegistry>) -> Vec<Move> {
+pub fn get_legal_moves(state: &GameState, rules: &Rules) -> Vec<Move> {
     match state.turn_phase {
         TurnPhase::AdditionalActionFirst | TurnPhase::AdditionalActionSecond => {
             generate_additional_action_moves(state)
         }
-        TurnPhase::Placement => generate_placement_moves_with_tech(state, tech_registry),
-        TurnPhase::Movement => generate_movement_moves_with_tech(state, tech_registry),
+        TurnPhase::Placement => generate_placement_moves_with_tech(state, Some(&rules.techs)),
+        TurnPhase::Movement => generate_movement_moves_with_tech(state, Some(&rules.techs)),
         TurnPhase::AreaAction => generate_area_action_moves(state),
         TurnPhase::FivePowerBonus => generate_five_power_moves(state),
         TurnPhase::Building => generate_building_moves(state),
@@ -489,8 +484,9 @@ mod tests {
     fn test_additional_action_always_has_end() {
         let mut state = create_test_state();
         state.turn_phase = TurnPhase::AdditionalActionFirst;
+        let rules = Rules::empty_for_tests();
 
-        let moves = get_legal_moves(&state);
+        let moves = get_legal_moves(&state, &rules);
 
         // Should always include EndAdditionalPhase
         assert!(moves.iter().any(|m| matches!(m, Move::EndAdditionalPhase)));
@@ -501,8 +497,9 @@ mod tests {
         let mut state = create_test_state();
         state.turn_phase = TurnPhase::Building;
         state.current_action_power = Some(3); // Not enough
+        let rules = Rules::empty_for_tests();
 
-        let moves = get_legal_moves(&state);
+        let moves = get_legal_moves(&state, &rules);
 
         // Should only have Skip
         assert_eq!(moves.len(), 1);
@@ -519,15 +516,16 @@ mod tests {
 
         // Add a building site (shophouse rewards: [2, 3, 4, 5], trading house reward: 10)
         state.board_layout.building_sites.insert(area, BuildingSite::new([2, 3, 4, 5], 10));
+        let rules = Rules::empty_for_tests();
 
         // Power 3 - no shophouse option
         state.current_action_power = Some(3);
-        let moves = get_legal_moves(&state);
+        let moves = get_legal_moves(&state, &rules);
         assert!(!moves.iter().any(|m| matches!(m, Move::BuildShophouse { .. })));
 
         // Power 4 - shophouse available
         state.current_action_power = Some(4);
-        let moves = get_legal_moves(&state);
+        let moves = get_legal_moves(&state, &rules);
         assert!(moves.iter().any(|m| matches!(m, Move::BuildShophouse { .. })));
     }
 
@@ -541,15 +539,16 @@ mod tests {
 
         // Add a building site with no trading house yet
         state.board_layout.building_sites.insert(area, BuildingSite::new([2, 3, 4, 5], 10));
+        let rules = Rules::empty_for_tests();
 
         // Power 4 - trading house NOT available (needs 5)
         state.current_action_power = Some(4);
-        let moves = get_legal_moves(&state);
+        let moves = get_legal_moves(&state, &rules);
         assert!(!moves.iter().any(|m| matches!(m, Move::BuildTradingHouse)));
 
         // Power 5 - trading house available
         state.current_action_power = Some(5);
-        let moves = get_legal_moves(&state);
+        let moves = get_legal_moves(&state, &rules);
         assert!(moves.iter().any(|m| matches!(m, Move::BuildTradingHouse)));
     }
 
@@ -564,10 +563,11 @@ mod tests {
 
         // Add a building site
         state.board_layout.building_sites.insert(area, BuildingSite::new([2, 3, 4, 5], 10));
+        let rules = Rules::empty_for_tests();
 
         // Power 5 - both available
         state.current_action_power = Some(5);
-        let moves = get_legal_moves(&state);
+        let moves = get_legal_moves(&state, &rules);
         assert!(moves.iter().any(|m| matches!(m, Move::BuildShophouse { .. })));
         assert!(moves.iter().any(|m| matches!(m, Move::BuildTradingHouse)));
         assert!(moves.iter().any(|m| matches!(m, Move::SkipBuilding)));
@@ -582,8 +582,9 @@ mod tests {
         state.players[1].president_location = PresidentLocation::OnBoard(bank_area);
         state.players[0].money = 0;
         state.turn_phase = TurnPhase::Placement;
+        let rules = Rules::empty_for_tests();
 
-        let moves = get_legal_moves(&state);
+        let moves = get_legal_moves(&state, &rules);
 
         // Verify: Cannot place in Bank (filtered from legal moves)
         // Empty placement should still be available
@@ -614,8 +615,9 @@ mod tests {
         state.players[1].president_location = PresidentLocation::OnBoard(bank_area);
         state.players[0].money = 1;
         state.turn_phase = TurnPhase::Placement;
+        let rules = Rules::empty_for_tests();
 
-        let moves = get_legal_moves(&state);
+        let moves = get_legal_moves(&state, &rules);
 
         // With 1 Yen, can place in Bank alone (costs 1)
         assert!(moves.iter().any(|m| matches!(m, Move::PlaceThreeAreas { placements }
@@ -631,7 +633,7 @@ mod tests {
 
         // Now with 0 Yen, cannot place in Bank
         state.players[0].money = 0;
-        let moves = get_legal_moves(&state);
+        let moves = get_legal_moves(&state, &rules);
 
         // Cannot place in Bank alone
         assert!(!moves.iter().any(|m| matches!(m, Move::PlaceThreeAreas { placements }
@@ -696,7 +698,9 @@ mod tests {
         tech_registry.insert(station_card, "tech_station");
 
         // Get legal moves with tech awareness
-        let moves = get_legal_moves_with_tech(&state, Some(&tech_registry));
+        let mut rules = Rules::empty_for_tests();
+        rules.techs = tech_registry;
+        let moves = get_legal_moves(&state, &rules);
 
         // Should include station teleport move (free move to station area)
         let has_teleport = moves.iter().any(|m| matches!(m,
@@ -720,7 +724,8 @@ mod tests {
         state.players[0].assistants.in_hand = 3; // Need 3 for bonus (2 + 1)
 
         // Without Telegram tech - only basic PlaceTwoSameArea moves
-        let moves_no_tech = get_legal_moves_with_tech(&state, None);
+        let rules_no_tech = Rules::empty_for_tests();
+        let moves_no_tech = get_legal_moves(&state, &rules_no_tech);
         let has_adjacent_bonus_without_tech = moves_no_tech.iter().any(|m| matches!(m,
             Move::PlaceTwoSameArea { area, adjacent_bonus: Some(_) } if *area == main_area
         ));
@@ -740,7 +745,9 @@ mod tests {
         };
         tech_registry.insert(telegram_card, "tech_telegram");
 
-        let moves_with_tech = get_legal_moves_with_tech(&state, Some(&tech_registry));
+        let mut rules_with_tech = Rules::empty_for_tests();
+        rules_with_tech.techs = tech_registry;
+        let moves_with_tech = get_legal_moves(&state, &rules_with_tech);
 
         // Should have basic move (adjacent_bonus: None)
         let has_basic = moves_with_tech.iter().any(|m| matches!(m,
