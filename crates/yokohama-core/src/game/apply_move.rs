@@ -501,13 +501,13 @@ fn apply_build_shophouse(state: &mut GameState, slot: u8) -> Result<(), MoveErro
         }
     };
 
-    // Get VP reward
-    let vp = state
+    // Get the space's full reward (before the mutable borrow of the player).
+    let reward = state
         .board_layout
         .building_sites
         .get(&area)
-        .map(|site| site.spaces[slot as usize].vp)
-        .unwrap_or(0);
+        .map(|site| site.spaces[slot as usize])
+        .unwrap_or_default();
 
     let p = state.player_mut(player);
     if p.shophouses.in_hand < 1 {
@@ -515,7 +515,7 @@ fn apply_build_shophouse(state: &mut GameState, slot: u8) -> Result<(), MoveErro
     }
     p.shophouses.in_hand -= 1;
     p.shophouses.built.insert(area, slot);
-    p.victory_points += vp as u32;
+    apply_space_reward(p, &reward);
 
     // Update building site
     if let Some(site) = state.board_layout.building_sites.get_mut(&area) {
@@ -672,6 +672,48 @@ fn apply_mercenary(
     Ok(())
 }
 
+/// Applies "any trade good" reward tokens (order `any_trade_good`, space
+/// `any_good`).
+///
+/// v1 simplification: the player should choose which of the four trade goods
+/// to receive; for now we auto-assign to copper. A full implementation would
+/// need a separate move type to let the player pick.
+fn apply_any_good(p: &mut PlayerState, n: u8) {
+    p.copper += n as u32;
+}
+
+/// Applies Warehouse reward icons (order `warehouse_tokens`, space
+/// `warehouse_tokens`): moves up to `n` assistants from warehouse to hand
+/// (fewer if the warehouse runs out; never an error).
+///
+/// v1 simplification: the rulebook Warehouse icon (p.10) lets the player take
+/// any one token (assistant, shophouse, or trading house) from the Warehouse
+/// at Employment Agency cost. Assistants are the free option and taking one
+/// is weakly dominant, so v1 always takes assistants; shophouse/trading-house
+/// takes are unmodeled until Phase 2 choice encoding.
+fn apply_warehouse_takes(p: &mut PlayerState, n: u8) {
+    let take = n.min(p.assistants.in_warehouse);
+    p.assistants.in_warehouse -= take;
+    p.assistants.in_hand += take;
+}
+
+/// Applies a Shophouse space's full reward when a Shophouse is built there.
+fn apply_space_reward(p: &mut PlayerState, reward: &SpaceReward) {
+    p.victory_points += reward.vp as u32;
+    p.money += reward.yen as u32;
+    p.seafood += reward.seafood as u32;
+    p.tea += reward.tea as u32;
+    p.silk += reward.silk as u32;
+    p.copper += reward.copper as u32;
+    apply_any_good(p, reward.any_good);
+    apply_warehouse_takes(p, reward.warehouse_tokens);
+    // Movement icon (rulebook p.10): documented no-op in v1. The icon grants
+    // an optional assistant move the player may decline, and declining is a
+    // legal play; v1 has no move encoding for that choice, and auto-resolving
+    // it (e.g. recovering assistants to hand) could actively harm the player.
+    // Choice encoding is scheduled for Phase 2.
+}
+
 fn apply_fulfill_order(
     state: &mut GameState,
     order_id: OrderCardId,
@@ -723,9 +765,14 @@ fn apply_fulfill_order(
     p.tea += rewards.tea as u32;
     p.seafood += rewards.seafood as u32;
 
-    // Handle any_trade_good rewards (player chooses - for now add to copper)
-    // In a full implementation, this would be a separate move type
-    p.copper += rewards.any_trade_good as u32;
+    apply_any_good(p, rewards.any_trade_good);
+    apply_warehouse_takes(p, rewards.warehouse_tokens);
+
+    // Movement icon (rulebook p.10): documented no-op in v1. The icon grants
+    // an optional assistant move the player may decline, and declining is a
+    // legal play; v1 has no move encoding for that choice, and auto-resolving
+    // it (e.g. recovering assistants to hand) could actively harm the player.
+    // Choice encoding is scheduled for Phase 2.
 
     // Move order from hand to completed
     p.order_cards_in_hand.retain(|&id| id != order_id);
@@ -1480,5 +1527,186 @@ mod tests {
 
         // Verify subsequent VP (6 VP for Category A)
         assert_eq!(new_state.players[1].victory_points, 6);
+    }
+
+    #[test]
+    fn test_fulfill_order_warehouse_tokens_takes_assistant() {
+        let mut state = create_minimal_state(2);
+        state.turn_phase = TurnPhase::AdditionalActionFirst;
+
+        let order_id = OrderCardId(42);
+        state.players[0].order_cards_in_hand.push(order_id);
+        let initial_hand = state.players[0].assistants.in_hand;
+        let initial_warehouse = state.players[0].assistants.in_warehouse;
+
+        let mut order_registry = OrderRegistry::new();
+        let order_card = OrderCard {
+            id: order_id,
+            country: Country::English,
+            requirements: TradeGoodRequirement::default(),
+            rewards: OrderRewards {
+                warehouse_tokens: 1,
+                ..Default::default()
+            },
+        };
+        order_registry.insert(order_card, "test_order");
+        let mut rules = Rules::empty_for_tests();
+        rules.orders = order_registry;
+
+        let result = apply_move(&state, &Move::FulfillOrder { order_id }, &rules);
+        assert!(result.is_ok());
+        let new_state = result.unwrap();
+
+        // 1 assistant moved warehouse -> hand
+        assert_eq!(new_state.players[0].assistants.in_hand, initial_hand + 1);
+        assert_eq!(new_state.players[0].assistants.in_warehouse, initial_warehouse - 1);
+    }
+
+    #[test]
+    fn test_fulfill_order_warehouse_tokens_empty_warehouse_is_ok() {
+        let mut state = create_minimal_state(2);
+        state.turn_phase = TurnPhase::AdditionalActionFirst;
+        state.players[0].assistants.in_warehouse = 0;
+
+        let order_id = OrderCardId(42);
+        state.players[0].order_cards_in_hand.push(order_id);
+        let initial_hand = state.players[0].assistants.in_hand;
+
+        let mut order_registry = OrderRegistry::new();
+        let order_card = OrderCard {
+            id: order_id,
+            country: Country::English,
+            requirements: TradeGoodRequirement::default(),
+            rewards: OrderRewards {
+                warehouse_tokens: 3,
+                ..Default::default()
+            },
+        };
+        order_registry.insert(order_card, "test_order");
+        let mut rules = Rules::empty_for_tests();
+        rules.orders = order_registry;
+
+        let result = apply_move(&state, &Move::FulfillOrder { order_id }, &rules);
+        assert!(result.is_ok());
+        let new_state = result.unwrap();
+
+        // Warehouse already empty: never an error, counts just stay put.
+        assert_eq!(new_state.players[0].assistants.in_warehouse, 0);
+        assert_eq!(new_state.players[0].assistants.in_hand, initial_hand);
+    }
+
+    #[test]
+    fn test_fulfill_order_movement_is_documented_noop() {
+        let mut state = create_minimal_state(2);
+        state.turn_phase = TurnPhase::AdditionalActionFirst;
+        state.players[0].assistants.on_board.insert(AreaId::new(0), 2);
+
+        let order_id = OrderCardId(42);
+        state.players[0].order_cards_in_hand.push(order_id);
+        let before = state.players[0].assistants.clone();
+
+        let mut order_registry = OrderRegistry::new();
+        let order_card = OrderCard {
+            id: order_id,
+            country: Country::English,
+            requirements: TradeGoodRequirement::default(),
+            rewards: OrderRewards {
+                movement: 2,
+                ..Default::default()
+            },
+        };
+        order_registry.insert(order_card, "test_order");
+        let mut rules = Rules::empty_for_tests();
+        rules.orders = order_registry;
+
+        let result = apply_move(&state, &Move::FulfillOrder { order_id }, &rules);
+        assert!(result.is_ok());
+        let new_state = result.unwrap();
+
+        // v1 policy: Movement icon is a documented no-op (see apply_fulfill_order).
+        assert_eq!(new_state.players[0].assistants, before);
+    }
+
+    #[test]
+    fn test_build_shophouse_awards_trade_good_space_reward() {
+        let mut state = create_minimal_state(2);
+        let area = AreaId::new(0);
+        state.players[0].president_location = PresidentLocation::OnBoard(area);
+        let starting_tea = state.players[0].tea;
+
+        let mut site = BuildingSite::new([0, 0, 0, 0], 10);
+        site.spaces[0] = SpaceReward { tea: 2, ..Default::default() };
+        state.board_layout.building_sites.insert(area, site);
+        let rules = Rules::empty_for_tests();
+
+        let result = apply_move(&state, &Move::BuildShophouse { slot: 0 }, &rules);
+        assert!(result.is_ok());
+        let new_state = result.unwrap();
+
+        assert_eq!(new_state.players[0].tea, starting_tea + 2);
+        assert_eq!(new_state.players[0].victory_points, 0);
+    }
+
+    #[test]
+    fn test_build_shophouse_awards_vp_and_yen_space_reward() {
+        let mut state = create_minimal_state(2);
+        let area = AreaId::new(0);
+        state.players[0].president_location = PresidentLocation::OnBoard(area);
+        let starting_money = state.players[0].money;
+
+        let mut site = BuildingSite::new([0, 0, 0, 0], 10);
+        site.spaces[1] = SpaceReward { vp: 2, yen: 1, ..Default::default() };
+        state.board_layout.building_sites.insert(area, site);
+        let rules = Rules::empty_for_tests();
+
+        let result = apply_move(&state, &Move::BuildShophouse { slot: 1 }, &rules);
+        assert!(result.is_ok());
+        let new_state = result.unwrap();
+
+        assert_eq!(new_state.players[0].victory_points, 2);
+        assert_eq!(new_state.players[0].money, starting_money + 1);
+    }
+
+    #[test]
+    fn test_build_shophouse_awards_any_good_and_warehouse_space_reward() {
+        let mut state = create_minimal_state(2);
+        let area = AreaId::new(0);
+        state.players[0].president_location = PresidentLocation::OnBoard(area);
+        let starting_copper = state.players[0].copper;
+        let starting_hand = state.players[0].assistants.in_hand;
+        let starting_warehouse = state.players[0].assistants.in_warehouse;
+
+        let mut site = BuildingSite::new([0, 0, 0, 0], 10);
+        site.spaces[2] = SpaceReward { any_good: 1, warehouse_tokens: 1, ..Default::default() };
+        state.board_layout.building_sites.insert(area, site);
+        let rules = Rules::empty_for_tests();
+
+        let result = apply_move(&state, &Move::BuildShophouse { slot: 2 }, &rules);
+        assert!(result.is_ok());
+        let new_state = result.unwrap();
+
+        assert_eq!(new_state.players[0].copper, starting_copper + 1);
+        assert_eq!(new_state.players[0].assistants.in_hand, starting_hand + 1);
+        assert_eq!(new_state.players[0].assistants.in_warehouse, starting_warehouse - 1);
+    }
+
+    #[test]
+    fn test_build_shophouse_vp_only_space_unchanged_by_refactor() {
+        // Regression pin: no test previously exercised apply_build_shophouse
+        // directly (this file's other BuildingSite::new([2,3,4,5], 10) users
+        // are the trading-house passive-income tests). Confirms the
+        // apply_space_reward refactor doesn't change vp-only building payout.
+        let mut state = create_minimal_state(2);
+        let area = AreaId::new(0);
+        state.players[0].president_location = PresidentLocation::OnBoard(area);
+        state.board_layout.building_sites.insert(area, BuildingSite::new([2, 3, 4, 5], 10));
+        let rules = Rules::empty_for_tests();
+
+        let result = apply_move(&state, &Move::BuildShophouse { slot: 2 }, &rules);
+        assert!(result.is_ok());
+        let new_state = result.unwrap();
+
+        assert_eq!(new_state.players[0].victory_points, 4);
+        assert_eq!(new_state.players[0].shophouses.built.get(&area), Some(&2));
     }
 }
