@@ -189,17 +189,19 @@ pub fn tech_acquisition_bonuses(
     (vp_bonus, yen_bonus)
 }
 
-/// Church placement bonus (Winery).
+/// Church placement bonus (Winery): +3 VP per owned Winery copy — stacks
+/// per physical copy the player owns (Task 13, consistent with the Lab
+/// acquisition bonus precedent for Patent System/Letter Press Printing).
 pub fn church_vp_bonus(
     state: &GameState,
     player: PlayerId,
     tech_registry: &TechRegistry,
 ) -> u32 {
-    if has_tech_effect(state, player, TechEffect::Winery, tech_registry) {
-        3
-    } else {
-        0
-    }
+    let p = state.player(player);
+    let winery_copies = p.technologies.iter()
+        .filter(|&&tech_id| tech_registry.get(tech_id).map(|t| t.effect == TechEffect::Winery).unwrap_or(false))
+        .count() as u32;
+    winery_copies * 3
 }
 
 /// Customs placement bonus (Brickyard).
@@ -327,26 +329,41 @@ mod tests {
     }
 
     #[test]
-    fn test_winery_church_bonus() {
+    fn test_winery_church_bonus_stacks_per_owned_copy() {
+        // Standard data has only 1 physical Winery, so stacking is proven
+        // with a hand-rolled two-copy registry fixture (Task 13, mirrors
+        // Task 12's Patent System stacking precedent).
         let mut state = create_test_state();
         let player = PlayerId::new(0);
 
         let mut tech_registry = TechRegistry::new();
-        let winery = TechCard {
+        let winery_1 = TechCard {
             id: TechCardId(3),
             name: "Winery".to_string(),
             country: Country::French,
             industry_cost: 2,
             effect: TechEffect::Winery,
         };
-        tech_registry.insert(winery, "tech_winery");
+        let winery_2 = TechCard {
+            id: TechCardId(30),
+            name: "Winery".to_string(),
+            country: Country::French,
+            industry_cost: 2,
+            effect: TechEffect::Winery,
+        };
+        tech_registry.insert(winery_1, "tech_winery_1");
+        tech_registry.insert(winery_2, "tech_winery_2");
 
         // Without tech
         assert_eq!(church_vp_bonus(&state, player, &tech_registry), 0);
 
-        // With tech
+        // With one owned copy
         state.players[0].technologies.push(TechCardId(3));
         assert_eq!(church_vp_bonus(&state, player, &tech_registry), 3);
+
+        // With both owned copies - stacks
+        state.players[0].technologies.push(TechCardId(30));
+        assert_eq!(church_vp_bonus(&state, player, &tech_registry), 6);
     }
 
     #[test]

@@ -333,7 +333,7 @@ Contribute Faith value to advance on Church Management Board.
 | Source | Faith Value | Restriction |
 |--------|-------------|-------------|
 | 1 Power | 1 | - |
-| 2 Power | 1 | - |
+| 2 Power | 2 | - |
 | 3 Power | 3 | - |
 | 4 Power | 4 | - |
 | 5 Power | 5 | - |
@@ -343,6 +343,8 @@ Contribute Faith value to advance on Church Management Board.
 | 1 Seafood | 1 | Max 1 per turn |
 | 1 Yen | 1 | Max 1 per turn |
 | 1 Imported Good | 1 | Max 1 per turn |
+
+**Correction (Jeremy-adjudicated 2026-07-17):** Faith from Power scales linearly (1,2,3,4,5). An earlier version of this table read "2 Power: 1 Faith" — that is a rulebook text typo, not the actual rule; see `guidingpath.md` decision log.
 
 **Process:**
 1. Calculate total Faith value

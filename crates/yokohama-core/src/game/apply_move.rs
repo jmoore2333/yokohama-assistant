@@ -321,10 +321,9 @@ fn apply_area_action(state: &mut GameState, action: &AreaAction, rules: &Rules) 
             }
         }
         AreaAction::Church { copper, silk, tea, seafood, yen, imported_good } => {
-            // Validate and apply church action
-            validate_church_action(state, player, *copper, *silk, *tea, *seafood, *yen, *imported_good)
-                .map_err(MoveError::RuleViolation)?;
-            // TODO: implement full church placement
+            execute_church_action(
+                state, player, power, *copper, *silk, *tea, *seafood, *yen, *imported_good, rules,
+            ).map_err(MoveError::RuleViolation)?;
         }
         AreaAction::Customs { imported_goods_paid } => {
             validate_customs_action(state, player, *imported_goods_paid, power).map_err(MoveError::RuleViolation)?;
@@ -1996,5 +1995,73 @@ mod tests {
         assert!(next.players[0].technologies.contains(&TechCardId(24)));
         assert_eq!(next.players[0].technologies.len(), 5);
         assert_eq!(next.players[0].money, 10 - 2);
+    }
+
+    /// Places a Church area on the board and puts the president there.
+    fn place_president_at_church(state: &mut GameState) -> AreaId {
+        let church_area = AreaId::new(0);
+        state.board_layout.areas.insert(church_area, AreaConfig {
+            area_type: AreaType::Church,
+            grid_position: (0, 0),
+        });
+        state.players[0].president_location = PresidentLocation::OnBoard(church_area);
+        church_area
+    }
+
+    #[test]
+    fn church_action_places_assistant_and_awards_vp() {
+        let rules = Rules::empty_for_tests();
+        let mut state = create_test_game_state(2);
+        place_president_at_church(&mut state);
+        state.turn_phase = TurnPhase::AreaAction;
+        state.current_action_power = Some(3);
+        state.players[0].copper = 1;
+        state.players[0].silk = 1;
+
+        let mv = Move::ExecuteAreaAction {
+            action: AreaAction::Church {
+                copper: true, silk: true, tea: false, seafood: false, yen: false, imported_good: false,
+            },
+        };
+        let next = apply_move(&state, &mv, &rules).unwrap();
+
+        let p = &next.players[0];
+        assert_eq!(p.assistants.in_hand, 7);
+        assert_eq!(p.assistants.on_church, 1);
+        assert_eq!(p.copper, 0);
+        assert_eq!(p.silk, 0);
+        assert_eq!(
+            next.church_track.slots[ChurchTrack::faith_to_index(5).unwrap()].unwrap().player,
+            p.id
+        );
+        assert_eq!(p.church_positions, vec![5]);
+        assert_eq!(p.victory_points, ChurchTrack::vp_reward(5) as u32);
+    }
+
+    #[test]
+    fn church_action_during_mercenary_sub_turn_resolves_mercenary_target_area() {
+        // President is in hand (default) and never placed anywhere; a
+        // Church action must still work by resolving the acting area from
+        // mercenary_target_area, not president_location.
+        let rules = Rules::empty_for_tests();
+        let mut state = create_test_game_state(2);
+        let church_area = AreaId::new(5);
+        state.board_layout.areas.insert(church_area, AreaConfig {
+            area_type: AreaType::Church,
+            grid_position: (0, 5),
+        });
+        state.is_mercenary_action = true;
+        state.mercenary_target_area = Some(church_area);
+        state.turn_phase = TurnPhase::AreaAction;
+        state.current_action_power = Some(4);
+
+        let mv = Move::ExecuteAreaAction {
+            action: AreaAction::Church {
+                copper: false, silk: false, tea: false, seafood: false, yen: false, imported_good: false,
+            },
+        };
+        let next = apply_move(&state, &mv, &rules).unwrap();
+
+        assert_eq!(next.players[0].church_positions, vec![4]);
     }
 }
