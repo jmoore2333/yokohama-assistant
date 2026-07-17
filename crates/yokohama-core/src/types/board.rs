@@ -76,11 +76,30 @@ pub struct AreaConfig {
     pub grid_position: (u8, u8),
 }
 
+/// Reward printed on a single Shophouse space of a Building Site card.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub struct SpaceReward {
+    pub vp: u8,
+    pub yen: u8,
+    pub seafood: u8,
+    pub tea: u8,
+    pub silk: u8,
+    pub copper: u8,
+    /// Wild trade-good token (any one of the four goods).
+    pub any_good: u8,
+    /// Movement icon (rulebook p.10 "Description of the Icons"): move an
+    /// assistant from hand or an area to another area; no President fees.
+    pub movement: u8,
+    /// Warehouse icon (rulebook p.10): take a token (assistant/shophouse/
+    /// trading house) from the Warehouse tile to hand, at Employment Agency cost.
+    pub warehouse_tokens: u8,
+}
+
 /// Building site card placed on an area.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct BuildingSite {
-    /// VP rewards for Shophouse slots 1-4.
-    pub shophouse_rewards: [u8; 4],
+    /// Rewards for the four Shophouse spaces, in TL, TR, ML, MR order.
+    pub spaces: [SpaceReward; 4],
     /// VP reward for Trading House.
     pub trading_house_reward: u8,
     /// Which player owns shophouse in each slot (0-3), None if empty.
@@ -90,10 +109,17 @@ pub struct BuildingSite {
 }
 
 impl BuildingSite {
-    /// Create a new empty building site with given VP values.
-    pub fn new(shophouse_rewards: [u8; 4], trading_house_reward: u8) -> Self {
+    /// Create a new empty building site from VP-only rewards: a convenience
+    /// constructor (each value becomes a SpaceReward with only `vp` set) for
+    /// callers that don't care about the non-VP parts of a space's reward.
+    pub fn new(vps: [u8; 4], trading_house_reward: u8) -> Self {
         Self {
-            shophouse_rewards,
+            spaces: [
+                SpaceReward { vp: vps[0], ..Default::default() },
+                SpaceReward { vp: vps[1], ..Default::default() },
+                SpaceReward { vp: vps[2], ..Default::default() },
+                SpaceReward { vp: vps[3], ..Default::default() },
+            ],
             trading_house_reward,
             shophouses_built: [None; 4],
             trading_house_owner: None,

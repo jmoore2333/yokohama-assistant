@@ -1,7 +1,7 @@
 //! Static game data bundled for the engine API.
 
 use crate::game::board_gen::canonical_five_power_tokens;
-use crate::game::cards::{OrderRegistry, TechRegistry};
+use crate::game::cards::{standard_building_sites, OrderRegistry, TechRegistry};
 use crate::types::{BuildingSite, FivePowerEffect};
 
 /// All static card/token data the engine needs. Built once, passed by reference.
@@ -20,6 +20,16 @@ impl Rules {
             orders: OrderRegistry::new(),
             techs: TechRegistry::new(),
             building_sites: Vec::new(),
+            five_power_tokens: canonical_five_power_tokens(),
+        }
+    }
+
+    /// Full standard card data and canonical tokens (verified 2026-07-17).
+    pub fn standard() -> Self {
+        Self {
+            orders: OrderRegistry::standard(),
+            techs: TechRegistry::standard(),
+            building_sites: standard_building_sites(),
             five_power_tokens: canonical_five_power_tokens(),
         }
     }

@@ -5,6 +5,7 @@ mod movement;
 mod legal_moves;
 mod apply_move;
 mod cards;
+mod data;
 mod achievements;
 mod tech_effects;
 mod end_game;

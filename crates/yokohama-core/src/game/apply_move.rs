@@ -506,7 +506,7 @@ fn apply_build_shophouse(state: &mut GameState, slot: u8) -> Result<(), MoveErro
         .board_layout
         .building_sites
         .get(&area)
-        .map(|site| site.shophouse_rewards[slot as usize])
+        .map(|site| site.spaces[slot as usize].vp)
         .unwrap_or(0);
 
     let p = state.player_mut(player);

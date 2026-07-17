@@ -91,6 +91,34 @@ impl Default for TechRegistry {
     }
 }
 
+impl OrderRegistry {
+    /// The standard 36-card Order deck (verified 2026-07-17 against physical components).
+    pub fn standard() -> Self {
+        let mut r = Self::new();
+        for (card, code) in crate::game::data::standard_orders() {
+            r.insert(card, code);
+        }
+        r
+    }
+}
+
+impl TechRegistry {
+    /// The standard 30-card Technology deck: 20 unique titles, 10 of which have
+    /// a duplicate physical card (verified 2026-07-17 against physical components).
+    pub fn standard() -> Self {
+        let mut r = Self::new();
+        for (card, code) in crate::game::data::standard_techs() {
+            r.insert(card, code);
+        }
+        r
+    }
+}
+
+/// The standard 24 Building Site cards (verified 2026-07-17 against physical components).
+pub fn standard_building_sites() -> Vec<BuildingSite> {
+    crate::game::data::standard_sites()
+}
+
 /// Check if player can fulfill an Order card.
 pub fn can_fulfill_order(
     state: &GameState,
@@ -382,5 +410,53 @@ mod tests {
         // Rightmost empty slot filled
         assert_eq!(lab.slots[3], Some(TechCardId(10)));
         assert_eq!(lab.slots[2], None); // Only one card added per call
+    }
+
+    #[test]
+    fn standard_registries_have_full_counts() {
+        assert_eq!(OrderRegistry::standard().iter().count(), 36);
+        assert_eq!(TechRegistry::standard().iter().count(), 30); // 30 physical cards
+        assert_eq!(standard_building_sites().len(), 24);
+    }
+
+    #[test]
+    fn order_ids_are_printed_corner_indices() {
+        let orders = OrderRegistry::standard();
+        let mut ids: Vec<u8> = orders.iter().map(|c| c.id.0).collect();
+        ids.sort_unstable();
+        assert_eq!(ids, (1..=36).collect::<Vec<u8>>());
+        // Documented non-uniqueness of country+requirements: the GB twins.
+        let (a, b) = (orders.get(OrderCardId(10)).unwrap(), orders.get(OrderCardId(32)).unwrap());
+        assert_eq!(a.country, Country::English);
+        assert_eq!(a.country, b.country);
+        assert_eq!(a.requirements, b.requirements);
+        assert_ne!(a.rewards, b.rewards);
+    }
+
+    #[test]
+    fn tech_registry_models_30_card_deck() {
+        let techs = TechRegistry::standard();
+        let mut ids: Vec<u8> = techs.iter().map(|c| c.id.0).collect();
+        ids.sort_unstable();
+        assert_eq!(ids, (1..=30).collect::<Vec<u8>>());
+        let mut by_name = std::collections::HashMap::new();
+        for c in techs.iter() { *by_name.entry(c.name.clone()).or_insert(0u8) += 1; }
+        assert_eq!(by_name.len(), 20);
+        assert_eq!(by_name.values().filter(|&&n| n == 2).count(), 10);
+    }
+
+    #[test]
+    fn building_sites_match_adjudicated_anatomy() {
+        let sites = standard_building_sites();
+        assert!(sites.iter().all(|s| s.spaces[0] == SpaceReward { vp: 1, ..Default::default() }));
+        assert!(sites.iter().all(|s| s.spaces[2] == SpaceReward::default())); // ML blank
+        // site_003 regression: TH 7 with TR vp4, MR tea2
+        assert!(sites.iter().any(|s| s.trading_house_reward == 7
+            && s.spaces[1] == SpaceReward { vp: 4, ..Default::default() }
+            && s.spaces[3] == SpaceReward { tea: 2, ..Default::default() }));
+        let mut th: Vec<u8> = sites.iter().map(|s| s.trading_house_reward).collect();
+        th.sort_unstable();
+        let dist: Vec<(u8, usize)> = [5u8, 6, 7, 8, 9].iter().map(|&v| (v, th.iter().filter(|&&x| x == v).count())).collect();
+        assert_eq!(dist, vec![(5, 4), (6, 5), (7, 5), (8, 5), (9, 5)]);
     }
 }

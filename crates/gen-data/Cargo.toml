@@ -1,0 +1,9 @@
+[package]
+name = "gen-data"
+version.workspace = true
+edition.workspace = true
+publish = false
+
+[dependencies]
+serde = { workspace = true }
+serde_yaml = "0.9"
