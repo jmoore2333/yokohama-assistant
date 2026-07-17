@@ -1,15 +1,15 @@
 //! Port and Laboratory actions.
 
-use crate::types::{AreaType, GameState, OrderCardId, PlayerId, PortSlot, PortPayment, PresidentLocation, TechCardId};
+use crate::types::{AreaType, GameState, OrderCardId, PlayerId, PortBoard, PortZone, PortPayment, PresidentLocation, TechCardId};
 use crate::game::cards::{refill_port, refill_lab, TechRegistry};
 
-/// Which Port slots are accessible at a given power level.
-pub fn port_accessible_slots(power: u8) -> Vec<PortSlot> {
+/// Which Port zones are accessible at a given power level.
+pub fn port_accessible_zones(power: u8) -> Vec<PortZone> {
     match power {
         0..=1 => vec![],
-        2 => vec![PortSlot::Low],
-        3 => vec![PortSlot::Low, PortSlot::Mid],
-        _ => vec![PortSlot::Low, PortSlot::Mid, PortSlot::High], // 4-5
+        2 => vec![PortZone::Low],
+        3 => vec![PortZone::Low, PortZone::Mid],
+        _ => vec![PortZone::Low, PortZone::Mid, PortZone::High], // 4-5
     }
 }
 
@@ -18,21 +18,35 @@ pub fn port_power_5_bonus_vp(power: u8) -> u8 {
     if power >= 5 { 3 } else { 0 }
 }
 
-/// Validate Port action.
+/// Validate Port action. Cards are named by id (not slot, since slots shift
+/// under compaction/refill): each must be present on `port`, in a zone
+/// accessible at `power`, distinct from each other, within the ≤2-card and
+/// hand-limit caps, and paid for if taking a second card.
 pub fn validate_port_action(
     state: &GameState,
     player: PlayerId,
-    cards_taken: &[PortSlot],
+    port: &PortBoard,
+    cards_taken: &[OrderCardId],
     payment: Option<PortPayment>,
     power: u8,
 ) -> Result<(), &'static str> {
     let p = state.player(player);
-    let accessible = port_accessible_slots(power);
+    let accessible = port_accessible_zones(power);
 
-    // Check all slots are accessible
-    for slot in cards_taken {
-        if !accessible.contains(slot) {
-            return Err("Slot not accessible at this power level");
+    // Check cards are distinct (can't take the same physical card twice)
+    if cards_taken.len() == 2 && cards_taken[0] == cards_taken[1] {
+        return Err("Cannot take the same card twice");
+    }
+
+    // Check every named card is present on this board and in an accessible zone
+    for &card_id in cards_taken {
+        match port.find_card(card_id) {
+            None => return Err("Card not found on Port board"),
+            Some(index) => {
+                if !accessible.contains(&PortBoard::zone_of(index)) {
+                    return Err("Card's zone not accessible at this power level");
+                }
+            }
         }
     }
 
@@ -75,7 +89,7 @@ pub fn validate_port_action(
 pub fn execute_port_action(
     state: &mut GameState,
     player: PlayerId,
-    cards_taken: &[PortSlot],
+    cards_taken: &[OrderCardId],
     payment: Option<PortPayment>,
     power: u8,
 ) -> Result<(), &'static str> {
@@ -101,8 +115,13 @@ pub fn execute_port_action(
         return Err("Port B not available");
     }
 
-    // Validate
-    validate_port_action(state, player, cards_taken, payment, power)?;
+    // Validate against the resolved board.
+    let port_ref = if port_is_b {
+        state.port_state.port_b.as_ref().unwrap() // presence confirmed above
+    } else {
+        &state.port_state.port_a
+    };
+    validate_port_action(state, player, port_ref, cards_taken, payment, power)?;
 
     // Pay for second card if taking 2
     if cards_taken.len() == 2 {
@@ -124,35 +143,31 @@ pub fn execute_port_action(
         &mut state.port_state.port_a
     };
 
-    // Gather all cards to take first (without sliding), so a 2-card take
+    // Gather all named cards first (without sliding), so a 2-card take
     // reads both cards from their original slots rather than a slot that
-    // already slid after the first take.
+    // already slid after the first take. Presence was already confirmed by
+    // validate_port_action above.
     let mut taken_cards = Vec::new();
-    for &slot in cards_taken {
-        let card = match slot {
-            PortSlot::Low => port.low.take(),
-            PortSlot::Mid => port.mid.take(),
-            PortSlot::High => port.high.take(),
-        };
-        if let Some(card_id) = card {
-            taken_cards.push(card_id);
+    for &card_id in cards_taken {
+        if let Some(index) = port.find_card(card_id) {
+            if let Some(card) = port.slots[index].take() {
+                taken_cards.push(card);
+            }
         }
     }
 
     // Slide left via total compaction: collect the remaining cards in
-    // left-to-right order and reassign them starting at Low. A fixed
-    // two-step shift order (either direction) only handles some gap
-    // patterns correctly — e.g. shifting High->Mid before Mid->Low
-    // compacts a Low+Mid take correctly but strands the old High card
-    // when only Low was taken (and vice versa for the opposite order).
-    // Full compaction handles every combination of taken slots uniformly.
-    let remaining: Vec<OrderCardId> = [port.low.take(), port.mid.take(), port.high.take()]
-        .into_iter()
-        .flatten()
-        .collect();
-    port.low = remaining.first().copied();
-    port.mid = remaining.get(1).copied();
-    port.high = remaining.get(2).copied();
+    // left-to-right order and reassign them starting at slot 0. A fixed
+    // adjacent-slot shift only handles some gap patterns correctly — e.g.
+    // shifting slot 5->4 before 4->3 compacts a contiguous take correctly
+    // but strands cards when 2 non-contiguous slots are vacated in the same
+    // action. Full compaction handles every combination of taken slots
+    // uniformly (same principle as commit 5a9a266's 3-slot fix, generalized
+    // to 6 slots).
+    let remaining: Vec<OrderCardId> = port.slots.iter_mut().filter_map(|s| s.take()).collect();
+    for (i, card_id) in remaining.into_iter().enumerate() {
+        port.slots[i] = Some(card_id);
+    }
 
     // Refill from the state-owned deck (rightmost empty spaces first).
     refill_port(port, &mut state.order_deck);
@@ -192,12 +207,13 @@ pub fn fifth_tech_penalty_required(tech_count: usize) -> bool {
     tech_count >= 4
 }
 
-/// Lab position surcharge: positions 0-1 are free, position 2 costs +1, position 3 costs +2.
+/// Lab position surcharge: positions 0-1 are free, 2-3 cost +1, 4-5 cost +2
+/// (board art: `.superpowers/sdd/asset-sweep-report.md` Q4).
 pub fn lab_position_surcharge(slot_index: usize) -> u8 {
     match slot_index {
         0 | 1 => 0,
-        2 => 1,
-        3 => 2,
+        2 | 3 => 1,
+        4 | 5 => 2,
         _ => 0, // Out of bounds - shouldn't happen
     }
 }
@@ -217,19 +233,19 @@ pub fn validate_lab_action(
     let p = state.player(player);
 
     // Get the tech card from the appropriate slot
-    let lab = if slot_index >= 4 {
-        // slot_index 4-7 would be Lab B
+    let lab = if slot_index >= 6 {
+        // slot_index 6-11 would be Lab B
         return Err("Invalid slot index");
     } else {
         &state.lab_state.lab_a
     };
 
-    let tech_id = lab.slots[slot_index % 4].ok_or("No card in slot")?;
+    let tech_id = lab.slots[slot_index % 6].ok_or("No card in slot")?;
     let tech_card = tech_registry.get(tech_id).ok_or("Tech card not found in registry")?;
 
     // Calculate required industry value
     let required_iv = tech_card.industry_cost;
-    let position_surcharge = lab_position_surcharge(slot_index % 4);
+    let position_surcharge = lab_position_surcharge(slot_index % 6);
     let total_required = required_iv + position_surcharge;
 
     // Calculate available industry value
@@ -314,8 +330,10 @@ pub fn execute_lab_action(
     // Take the tech card
     let tech_id = lab.slots[slot_index].take().ok_or("No card in slot")?;
 
-    // Slide remaining cards
-    for i in slot_index..3 {
+    // Slide remaining cards (single-gap shift: only one card leaves per
+    // Laboratory action, unlike Port which can vacate 2 non-contiguous
+    // slots and needs full compaction — see execute_port_action).
+    for i in slot_index..5 {
         if lab.slots[i].is_none() && lab.slots[i + 1].is_some() {
             lab.slots[i] = lab.slots[i + 1].take();
         }
@@ -400,14 +418,32 @@ mod tests {
         }
     }
 
+    /// Builds a 6-slot PortBoard with the given card ids seeded left to
+    /// right (index 0..5), for tests that need known cards at known
+    /// positions — and thus known zones (0,1=Low; 2,3=Mid; 4,5=High).
+    fn seeded_port(ids: [u8; 6]) -> PortBoard {
+        PortBoard { slots: ids.map(|id| Some(OrderCardId(id))) }
+    }
+
     #[test]
-    fn test_port_accessible_slots() {
-        assert!(port_accessible_slots(1).is_empty());
-        assert_eq!(port_accessible_slots(2), vec![PortSlot::Low]);
-        assert_eq!(port_accessible_slots(3), vec![PortSlot::Low, PortSlot::Mid]);
+    fn test_port_zone_of_maps_six_slots_two_per_zone() {
+        // Board art (asset-sweep-report.md Q3): LOW,LOW,MID,MID,HIGH,HIGH.
+        assert_eq!(PortBoard::zone_of(0), PortZone::Low);
+        assert_eq!(PortBoard::zone_of(1), PortZone::Low);
+        assert_eq!(PortBoard::zone_of(2), PortZone::Mid);
+        assert_eq!(PortBoard::zone_of(3), PortZone::Mid);
+        assert_eq!(PortBoard::zone_of(4), PortZone::High);
+        assert_eq!(PortBoard::zone_of(5), PortZone::High);
+    }
+
+    #[test]
+    fn test_port_accessible_zones() {
+        assert!(port_accessible_zones(1).is_empty());
+        assert_eq!(port_accessible_zones(2), vec![PortZone::Low]);
+        assert_eq!(port_accessible_zones(3), vec![PortZone::Low, PortZone::Mid]);
         assert_eq!(
-            port_accessible_slots(4),
-            vec![PortSlot::Low, PortSlot::Mid, PortSlot::High]
+            port_accessible_zones(4),
+            vec![PortZone::Low, PortZone::Mid, PortZone::High]
         );
     }
 
@@ -418,20 +454,70 @@ mod tests {
     }
 
     #[test]
+    fn test_port_validate_zone_accessibility_by_power() {
+        let state = create_test_state();
+        let player = PlayerId::new(0);
+        // slots: Low(1), Low(2), Mid(3), Mid(4), High(5), High(6)
+        let port = seeded_port([1, 2, 3, 4, 5, 6]);
+
+        // Power 2: only Low cards accessible
+        assert!(validate_port_action(&state, player, &port, &[OrderCardId(1)], None, 2).is_ok());
+        assert!(validate_port_action(&state, player, &port, &[OrderCardId(3)], None, 2).is_err());
+        assert!(validate_port_action(&state, player, &port, &[OrderCardId(5)], None, 2).is_err());
+
+        // Power 3: Low + Mid accessible, High still not
+        assert!(validate_port_action(&state, player, &port, &[OrderCardId(3)], None, 3).is_ok());
+        assert!(validate_port_action(&state, player, &port, &[OrderCardId(5)], None, 3).is_err());
+
+        // Power 4: every zone accessible
+        assert!(validate_port_action(&state, player, &port, &[OrderCardId(5)], None, 4).is_ok());
+    }
+
+    #[test]
+    fn test_port_validate_rejects_card_not_on_board() {
+        let state = create_test_state();
+        let player = PlayerId::new(0);
+        let port = seeded_port([1, 2, 3, 4, 5, 6]);
+
+        let result = validate_port_action(&state, player, &port, &[OrderCardId(99)], None, 4);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("not found"));
+    }
+
+    #[test]
+    fn test_port_validate_rejects_duplicate_card() {
+        let state = create_test_state();
+        let player = PlayerId::new(0);
+        let port = seeded_port([1, 2, 3, 4, 5, 6]);
+
+        let result = validate_port_action(
+            &state,
+            player,
+            &port,
+            &[OrderCardId(1), OrderCardId(1)],
+            Some(PortPayment::TwoYen),
+            4,
+        );
+        assert!(result.is_err());
+    }
+
+    #[test]
     fn test_port_hand_limit_validation() {
         let mut state = create_test_state();
         let player = PlayerId::new(0);
+        let port = seeded_port([1, 2, 3, 4, 5, 6]);
 
         // Player already has 2 cards - can take 1 more
-        state.players[0].order_cards_in_hand = vec![OrderCardId(1), OrderCardId(2)];
-        let result = validate_port_action(&state, player, &[PortSlot::Low], None, 3);
+        state.players[0].order_cards_in_hand = vec![OrderCardId(100), OrderCardId(101)];
+        let result = validate_port_action(&state, player, &port, &[OrderCardId(1)], None, 3);
         assert!(result.is_ok());
 
         // Player already has 2 cards - cannot take 2 more (would exceed 3)
         let result = validate_port_action(
             &state,
             player,
-            &[PortSlot::Low, PortSlot::Mid],
+            &port,
+            &[OrderCardId(1), OrderCardId(3)],
             Some(PortPayment::TwoYen),
             3,
         );
@@ -439,8 +525,9 @@ mod tests {
         assert!(result.unwrap_err().contains("hand limit"));
 
         // Player has 3 cards - cannot take any
-        state.players[0].order_cards_in_hand = vec![OrderCardId(1), OrderCardId(2), OrderCardId(3)];
-        let result = validate_port_action(&state, player, &[PortSlot::Low], None, 3);
+        state.players[0].order_cards_in_hand =
+            vec![OrderCardId(100), OrderCardId(101), OrderCardId(102)];
+        let result = validate_port_action(&state, player, &port, &[OrderCardId(1)], None, 3);
         assert!(result.is_err());
     }
 
@@ -450,12 +537,14 @@ mod tests {
         let player = PlayerId::new(0);
         state.players[0].money = 10;
         state.players[0].imported_goods = 2;
+        let port = seeded_port([1, 2, 3, 4, 5, 6]);
 
         // Taking 2 cards requires payment
         let result = validate_port_action(
             &state,
             player,
-            &[PortSlot::Low, PortSlot::Mid],
+            &port,
+            &[OrderCardId(1), OrderCardId(3)],
             None, // No payment specified
             4,
         );
@@ -466,7 +555,8 @@ mod tests {
         let result = validate_port_action(
             &state,
             player,
-            &[PortSlot::Low, PortSlot::Mid],
+            &port,
+            &[OrderCardId(1), OrderCardId(3)],
             Some(PortPayment::TwoYen),
             4,
         );
@@ -476,7 +566,8 @@ mod tests {
         let result = validate_port_action(
             &state,
             player,
-            &[PortSlot::Low, PortSlot::Mid],
+            &port,
+            &[OrderCardId(1), OrderCardId(3)],
             Some(PortPayment::OneImportedGood),
             4,
         );
@@ -487,7 +578,8 @@ mod tests {
         let result = validate_port_action(
             &state,
             player,
-            &[PortSlot::Low, PortSlot::Mid],
+            &port,
+            &[OrderCardId(1), OrderCardId(3)],
             Some(PortPayment::TwoYen),
             4,
         );
@@ -496,7 +588,7 @@ mod tests {
     }
 
     /// Places a PortA area on the board and puts the president there, as
-    /// `execute_port_action` now resolves the acting Port board from the
+    /// `execute_port_action` resolves the acting Port board from the
     /// area (rather than taking a `port_is_b` flag directly).
     fn place_president_at_port_a(state: &mut GameState) -> AreaId {
         let port_area = AreaId::new(0);
@@ -515,23 +607,13 @@ mod tests {
         state.players[0].money = 10;
         place_president_at_port_a(&mut state);
 
-        // Set up port with cards
-        state.port_state.port_a.low = Some(OrderCardId(10));
-        state.port_state.port_a.mid = Some(OrderCardId(11));
-        state.port_state.port_a.high = Some(OrderCardId(12));
-
+        state.port_state.port_a = seeded_port([10, 11, 12, 13, 14, 15]);
         state.order_deck = vec![OrderCardId(20), OrderCardId(21)];
 
         let initial_vp = state.players[0].victory_points;
 
         // Execute at power 5 - should get +3 VP
-        let result = execute_port_action(
-            &mut state,
-            player,
-            &[PortSlot::Low],
-            None,
-            5,
-        );
+        let result = execute_port_action(&mut state, player, &[OrderCardId(10)], None, 5);
         assert!(result.is_ok());
         assert_eq!(state.players[0].victory_points, initial_vp + 3);
     }
@@ -543,38 +625,31 @@ mod tests {
         state.players[0].money = 10;
         place_president_at_port_a(&mut state);
 
-        state.port_state.port_a.low = Some(OrderCardId(10));
+        state.port_state.port_a = seeded_port([10, 11, 12, 13, 14, 15]);
         state.order_deck = vec![OrderCardId(20)];
 
         let initial_vp = state.players[0].victory_points;
 
         // Execute at power 4 - should NOT get VP bonus
-        let result = execute_port_action(
-            &mut state,
-            player,
-            &[PortSlot::Low],
-            None,
-            4,
-        );
+        let result = execute_port_action(&mut state, player, &[OrderCardId(10)], None, 4);
         assert!(result.is_ok());
         assert_eq!(state.players[0].victory_points, initial_vp);
     }
 
     #[test]
-    fn test_port_execute_takes_cards_to_hand() {
+    fn test_port_execute_takes_named_cards_to_hand() {
         let mut state = create_test_state();
         let player = PlayerId::new(0);
         state.players[0].money = 10;
         place_president_at_port_a(&mut state);
 
-        state.port_state.port_a.low = Some(OrderCardId(10));
-        state.port_state.port_a.mid = Some(OrderCardId(11));
+        state.port_state.port_a = seeded_port([10, 11, 12, 13, 14, 15]);
         state.order_deck = vec![OrderCardId(20), OrderCardId(21)];
 
         let result = execute_port_action(
             &mut state,
             player,
-            &[PortSlot::Low, PortSlot::Mid],
+            &[OrderCardId(10), OrderCardId(12)], // Low(10) + Mid(12)
             Some(PortPayment::TwoYen),
             4,
         );
@@ -582,88 +657,109 @@ mod tests {
 
         // Check cards are in hand
         assert!(state.players[0].order_cards_in_hand.contains(&OrderCardId(10)));
-        assert!(state.players[0].order_cards_in_hand.contains(&OrderCardId(11)));
+        assert!(state.players[0].order_cards_in_hand.contains(&OrderCardId(12)));
 
         // Check payment was deducted
         assert_eq!(state.players[0].money, 8); // 10 - 2
     }
 
     #[test]
-    fn test_port_execute_take_low_slides_remaining_cards_left() {
-        // Regression pin for a slide bug: taking only Low must shift both
-        // remaining cards down one slot each (Mid's card to Low, High's
-        // card to Mid), leaving only High empty for refill. An earlier
-        // buggy single-pass implementation left the High card stranded and
-        // refilled Mid instead.
+    fn test_port_execute_take_one_card_compacts_all_six_and_refills_rightmost() {
+        // Regression pin, generalized to 6 slots: taking a single named
+        // card must fully compact the remaining 5 down to indices 0-4,
+        // leaving only index 5 empty for refill. An earlier buggy 3-slot
+        // implementation shifted adjacent slots in a fixed order rather
+        // than doing full compaction, stranding cards for some patterns.
         let mut state = create_test_state();
         let player = PlayerId::new(0);
         state.players[0].money = 10;
         place_president_at_port_a(&mut state);
 
-        state.port_state.port_a.low = Some(OrderCardId(1));
-        state.port_state.port_a.mid = Some(OrderCardId(2));
-        state.port_state.port_a.high = Some(OrderCardId(3));
+        state.port_state.port_a = seeded_port([1, 2, 3, 4, 5, 6]);
         state.order_deck = vec![OrderCardId(20)];
 
-        let result = execute_port_action(&mut state, player, &[PortSlot::Low], None, 2);
+        // Card 1 sits at index 0 (zone Low).
+        let result = execute_port_action(&mut state, player, &[OrderCardId(1)], None, 2);
         assert!(result.is_ok());
 
-        assert_eq!(state.port_state.port_a.low, Some(OrderCardId(2)));
-        assert_eq!(state.port_state.port_a.mid, Some(OrderCardId(3)));
-        assert_eq!(state.port_state.port_a.high, Some(OrderCardId(20)));
+        assert_eq!(
+            state.port_state.port_a.slots,
+            [
+                Some(OrderCardId(2)),
+                Some(OrderCardId(3)),
+                Some(OrderCardId(4)),
+                Some(OrderCardId(5)),
+                Some(OrderCardId(6)),
+                Some(OrderCardId(20)),
+            ]
+        );
         assert!(state.order_deck.is_empty());
     }
 
     #[test]
-    fn test_port_execute_take_mid_slides_high_left_low_unchanged() {
+    fn test_port_execute_take_middle_card_compacts_cards_right_of_it() {
         let mut state = create_test_state();
         let player = PlayerId::new(0);
         state.players[0].money = 10;
         place_president_at_port_a(&mut state);
 
-        state.port_state.port_a.low = Some(OrderCardId(1));
-        state.port_state.port_a.mid = Some(OrderCardId(2));
-        state.port_state.port_a.high = Some(OrderCardId(3));
+        state.port_state.port_a = seeded_port([1, 2, 3, 4, 5, 6]);
         state.order_deck = vec![OrderCardId(20)];
 
-        let result = execute_port_action(&mut state, player, &[PortSlot::Mid], None, 3);
+        // Card 3 sits at index 2 (zone Mid) — needs power 3.
+        let result = execute_port_action(&mut state, player, &[OrderCardId(3)], None, 3);
         assert!(result.is_ok());
 
-        // Low is untouched; High's card slides down to fill Mid; the
-        // vacated High refills from the deck.
-        assert_eq!(state.port_state.port_a.low, Some(OrderCardId(1)));
-        assert_eq!(state.port_state.port_a.mid, Some(OrderCardId(3)));
-        assert_eq!(state.port_state.port_a.high, Some(OrderCardId(20)));
+        // Cards left of the taken slot are untouched; everything right of
+        // it slides down one, and the vacated rightmost slot refills.
+        assert_eq!(
+            state.port_state.port_a.slots,
+            [
+                Some(OrderCardId(1)),
+                Some(OrderCardId(2)),
+                Some(OrderCardId(4)),
+                Some(OrderCardId(5)),
+                Some(OrderCardId(6)),
+                Some(OrderCardId(20)),
+            ]
+        );
         assert!(state.order_deck.is_empty());
     }
 
     #[test]
-    fn test_port_execute_take_low_and_high_noncontiguous_compacts_and_refills_both_gaps() {
-        // Non-contiguous take (Low and High, leaving Mid): only Mid's card
-        // survives and it must compact all the way to Low. Both vacated
-        // slots (Mid, High) refill from a 2-card deck, rightmost first.
+    fn test_port_execute_take_two_noncontiguous_cards_compacts_and_refills_both_gaps() {
+        // Non-contiguous take (index 0 and index 4): the 4 surviving cards
+        // compact to indices 0-3, and the 2 vacated slots (indices 4, 5)
+        // refill from a 2-card deck, rightmost first.
         let mut state = create_test_state();
         let player = PlayerId::new(0);
         state.players[0].money = 10;
         place_president_at_port_a(&mut state);
 
-        state.port_state.port_a.low = Some(OrderCardId(1));
-        state.port_state.port_a.mid = Some(OrderCardId(2));
-        state.port_state.port_a.high = Some(OrderCardId(3));
+        state.port_state.port_a = seeded_port([1, 2, 3, 4, 5, 6]);
         state.order_deck = vec![OrderCardId(20), OrderCardId(21)]; // top = 21
 
+        // Card 1 (index 0, Low) + card 5 (index 4, High) — needs power 4.
         let result = execute_port_action(
             &mut state,
             player,
-            &[PortSlot::Low, PortSlot::High],
+            &[OrderCardId(1), OrderCardId(5)],
             Some(PortPayment::TwoYen),
             4,
         );
         assert!(result.is_ok());
 
-        assert_eq!(state.port_state.port_a.low, Some(OrderCardId(2)));
-        assert_eq!(state.port_state.port_a.mid, Some(OrderCardId(20)));
-        assert_eq!(state.port_state.port_a.high, Some(OrderCardId(21)));
+        assert_eq!(
+            state.port_state.port_a.slots,
+            [
+                Some(OrderCardId(2)),
+                Some(OrderCardId(3)),
+                Some(OrderCardId(4)),
+                Some(OrderCardId(6)),
+                Some(OrderCardId(20)),
+                Some(OrderCardId(21)),
+            ]
+        );
         assert!(state.order_deck.is_empty());
     }
 
@@ -697,7 +793,9 @@ mod tests {
         assert_eq!(lab_position_surcharge(0), 0);
         assert_eq!(lab_position_surcharge(1), 0);
         assert_eq!(lab_position_surcharge(2), 1);
-        assert_eq!(lab_position_surcharge(3), 2);
+        assert_eq!(lab_position_surcharge(3), 1);
+        assert_eq!(lab_position_surcharge(4), 2);
+        assert_eq!(lab_position_surcharge(5), 2);
     }
 
     #[test]

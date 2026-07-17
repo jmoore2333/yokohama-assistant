@@ -147,16 +147,18 @@ pub fn new_game(mut config: GameConfig, rules: &Rules, seed: u64) -> Result<Pend
         trigger_player: None,
     };
 
-    // Initial fills: Port A/B to 3 cards, Lab A/B to 4 cards.
+    // Initial fills: Port A/B and Lab A/B each to their full 6 slots.
+    // refill_port fills every empty slot in one call; refill_lab only fills
+    // the single rightmost empty slot per call, so it needs one call per slot.
     refill_port(&mut state.port_state.port_a, &mut state.order_deck);
     if let Some(port_b) = state.port_state.port_b.as_mut() {
         refill_port(port_b, &mut state.order_deck);
     }
-    for _ in 0..4 {
+    for _ in 0..6 {
         refill_lab(&mut state.lab_state.lab_a, &mut state.tech_deck);
     }
     if let Some(lab_b) = state.lab_state.lab_b.as_mut() {
-        for _ in 0..4 {
+        for _ in 0..6 {
             refill_lab(lab_b, &mut state.tech_deck);
         }
     }
@@ -480,11 +482,11 @@ mod tests {
         let b = new_game(GameConfig::for_player_count(4), &rules, 42).unwrap();
         assert_eq!(a.state, b.state);
         assert_eq!(a.deals, b.deals);
-        // 4p: 36 orders - 0 removed - 8 dealt (2x4) - 6 port fill (A+B) = 22 in deck
-        assert_eq!(a.state.order_deck.len(), 22);
-        // 30 techs - 8 lab fill (A+B, 4 each) = 22
-        assert_eq!(a.state.tech_deck.len(), 22);
-        assert!(a.state.port_state.port_a.low.is_some());
+        // 4p: 36 orders - 0 removed - 8 dealt (2x4) - 12 port fill (6 each, A+B) = 16 in deck
+        assert_eq!(a.state.order_deck.len(), 16);
+        // 30 techs - 12 lab fill (6 each, A+B) = 18
+        assert_eq!(a.state.tech_deck.len(), 18);
+        assert!(a.state.port_state.port_a.is_full());
         assert!(a.state.lab_state.lab_b.as_ref().unwrap().slots.iter().all(|s| s.is_some()));
     }
 

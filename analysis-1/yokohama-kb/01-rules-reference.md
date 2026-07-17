@@ -243,12 +243,15 @@ Return ALL assistant pawns from the action area to your hand.
 #### Port (A and B)
 Take Order cards from the corresponding Port Order Form Board.
 
-| Power | Available Rows |
+**Layout (board-art verified):** each Port board has SIX card spaces, two per
+zone, in order Low, Low, Mid, Mid, High, High (left to right).
+
+| Power | Available Zones |
 |-------|----------------|
 | 1 | Cannot take |
-| 2 | Low only |
-| 3 | Low, Mid |
-| 4 | Low, Mid, High |
+| 2 | Low only (2 spaces) |
+| 3 | Low, Mid (4 spaces) |
+| 4 | Low, Mid, High (all 6 spaces) |
 | 5 | Low, Mid, High + 3 VP |
 
 **Card options:**
@@ -257,12 +260,15 @@ Take Order cards from the corresponding Port Order Form Board.
 
 **Hand limit:** Maximum 3 Order cards. Cannot take if would exceed.
 
-**Replenishment:** Slide cards left, refill from deck to rightmost spaces.
+**Replenishment:** Slide cards left (full compaction across all 6 spaces), refill from deck to rightmost spaces.
 
 #### Laboratory (A and B)
 Acquire Technology cards from the corresponding Technology Card Placement Area.
 
-**Industry Value required** = Card's printed cost + Board position modifier (+1 or +2 for rightmost positions)
+**Layout (board-art verified):** each Laboratory board has SIX tech slots.
+Slots 1-2 carry no surcharge; +1 on the 3rd and 4th spaces, +2 on the 5th and 6th.
+
+**Industry Value required** = Card's printed cost + Board position modifier (+1 on the 3rd and 4th spaces, +2 on the 5th and 6th)
 
 **Industry Value sources:**
 | Source | Industry Value |

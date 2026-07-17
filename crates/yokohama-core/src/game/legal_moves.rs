@@ -302,7 +302,9 @@ fn generate_area_action_for_type(area_type: AreaType) -> Move {
         AreaType::FishingGround => AreaAction::ProduceSeafood,
         AreaType::Bank => AreaAction::Bank,
         AreaType::PortA | AreaType::PortB => AreaAction::Port {
-            cards_taken: vec![PortSlot::Low],
+            // Placeholder: this generator only sees `area_type`, not the
+            // actual board contents, so it can't name a real card id here.
+            cards_taken: vec![],
             second_card_payment: None,
         },
         AreaType::LaboratoryA | AreaType::LaboratoryB => AreaAction::Laboratory {

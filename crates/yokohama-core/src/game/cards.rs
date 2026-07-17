@@ -259,56 +259,34 @@ fn check_mercenary_eligibility(
     }
 }
 
-/// Remove a card from Port and slide remaining cards left.
-/// Rulebook p.12: Cards slide left to fill gaps, new cards fill rightmost slots.
-pub fn remove_and_slide_port(port: &mut PortBoard, slot: PortSlot) -> Option<OrderCardId> {
-    let taken = match slot {
-        PortSlot::Low => port.low.take(),
-        PortSlot::Mid => port.mid.take(),
-        PortSlot::High => port.high.take(),
-    };
-
-    // Slide cards left to fill gaps
-    // Low <- Mid <- High <- (new card from deck)
-    if port.low.is_none() && port.mid.is_some() {
-        port.low = port.mid.take();
-    }
-    if port.mid.is_none() && port.high.is_some() {
-        port.mid = port.high.take();
-    }
-    // Note: port.high is now None, will be filled by refill_port
-
-    taken
-}
-
-/// Refill Port board from deck, placing new cards in rightmost empty slots.
+/// Refill Port board from deck, placing new cards in rightmost empty slots
+/// first. Also serves setup's initial fill: called against an empty board
+/// with a sufficiently large deck, it fills all 6 slots.
 pub fn refill_port(
     port: &mut PortBoard,
     deck: &mut Vec<OrderCardId>,
 ) {
-    // Fill slots from right to left (high first, then mid, then low)
-    if port.high.is_none() && !deck.is_empty() {
-        port.high = deck.pop();
-    }
-    if port.mid.is_none() && !deck.is_empty() {
-        port.mid = deck.pop();
-    }
-    if port.low.is_none() && !deck.is_empty() {
-        port.low = deck.pop();
+    for i in (0..6).rev() {
+        if port.slots[i].is_none() {
+            port.slots[i] = deck.pop();
+        }
     }
 }
 
-/// Remove a card from Lab and slide remaining cards left.
-/// Rulebook p.13: Cards slide left, position affects cost (+0, +0, +1, +2).
+/// Remove a card from Lab and slide remaining cards left to fill the gap.
+/// Rulebook p.13: Cards slide left, position affects cost (+0, +0, +1, +1, +2, +2).
+/// Only one card leaves the Lab per action, so a single-gap shift suffices
+/// (unlike Port, which can remove 2 non-contiguous cards in one action and
+/// needs full compaction — see `execute_port_action`).
 pub fn remove_and_slide_lab(lab: &mut LabBoard, slot_index: usize) -> Option<TechCardId> {
-    if slot_index >= 4 {
+    if slot_index >= 6 {
         return None;
     }
 
     let taken = lab.slots[slot_index].take();
 
     // Slide cards left to fill the gap
-    for i in slot_index..3 {
+    for i in slot_index..5 {
         if lab.slots[i].is_none() && lab.slots[i + 1].is_some() {
             lab.slots[i] = lab.slots[i + 1].take();
         }
@@ -318,13 +296,13 @@ pub fn remove_and_slide_lab(lab: &mut LabBoard, slot_index: usize) -> Option<Tec
     taken
 }
 
-/// Refill Lab board from deck, placing new card in rightmost slot.
+/// Refill Lab board from deck, placing new card in rightmost empty slot.
 pub fn refill_lab(
     lab: &mut LabBoard,
     deck: &mut Vec<TechCardId>,
 ) {
     // Find rightmost empty slot and fill from deck
-    for i in (0..4).rev() {
+    for i in (0..6).rev() {
         if lab.slots[i].is_none() && !deck.is_empty() {
             lab.slots[i] = deck.pop();
             break; // Only fill one slot per refill
@@ -337,24 +315,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_port_slide() {
-        let mut port = PortBoard {
-            low: Some(OrderCardId(1)),
-            mid: Some(OrderCardId(2)),
-            high: Some(OrderCardId(3)),
-        };
-
-        // Take mid card
-        let taken = remove_and_slide_port(&mut port, PortSlot::Mid);
-        assert_eq!(taken, Some(OrderCardId(2)));
-
-        // High should slide to mid
-        assert_eq!(port.low, Some(OrderCardId(1)));
-        assert_eq!(port.mid, Some(OrderCardId(3)));
-        assert_eq!(port.high, None);
-    }
-
-    #[test]
     fn test_lab_slide() {
         let mut lab = LabBoard {
             slots: [
@@ -362,6 +322,8 @@ mod tests {
                 Some(TechCardId(2)),
                 Some(TechCardId(3)),
                 Some(TechCardId(4)),
+                Some(TechCardId(5)),
+                Some(TechCardId(6)),
             ],
         };
 
@@ -369,28 +331,48 @@ mod tests {
         let taken = remove_and_slide_lab(&mut lab, 1);
         assert_eq!(taken, Some(TechCardId(2)));
 
-        // Cards should slide left
+        // Cards should slide left, rightmost slot now empty
         assert_eq!(lab.slots[0], Some(TechCardId(1)));
         assert_eq!(lab.slots[1], Some(TechCardId(3)));
         assert_eq!(lab.slots[2], Some(TechCardId(4)));
-        assert_eq!(lab.slots[3], None);
+        assert_eq!(lab.slots[3], Some(TechCardId(5)));
+        assert_eq!(lab.slots[4], Some(TechCardId(6)));
+        assert_eq!(lab.slots[5], None);
     }
 
     #[test]
-    fn test_port_refill() {
+    fn test_port_refill_fills_rightmost_empty_slots_first() {
         let mut port = PortBoard {
-            low: Some(OrderCardId(1)),
-            mid: None,
-            high: None,
+            slots: [Some(OrderCardId(1)), None, None, None, None, None],
         };
-        let mut deck = vec![OrderCardId(10), OrderCardId(11)];
+        let mut deck = vec![OrderCardId(10), OrderCardId(11), OrderCardId(12)]; // top = 12
 
         refill_port(&mut port, &mut deck);
 
-        // High filled first, then mid
-        assert_eq!(port.high, Some(OrderCardId(11)));
-        assert_eq!(port.mid, Some(OrderCardId(10)));
+        // Rightmost 3 empty slots filled first (indices 5, 4, 3); the
+        // 2 leftmost gaps (indices 1, 2) stay empty since the deck ran out.
+        assert_eq!(port.slots, [
+            Some(OrderCardId(1)),
+            None,
+            None,
+            Some(OrderCardId(10)),
+            Some(OrderCardId(11)),
+            Some(OrderCardId(12)),
+        ]);
         assert!(deck.is_empty());
+    }
+
+    #[test]
+    fn test_port_refill_fills_all_six_from_empty() {
+        // Also exercises setup's initial-fill use of refill_port: an empty
+        // board with a sufficiently large deck fills every slot.
+        let mut port = PortBoard::new();
+        let mut deck: Vec<OrderCardId> = (1..=10).map(OrderCardId).collect();
+
+        refill_port(&mut port, &mut deck);
+
+        assert!(port.is_full());
+        assert_eq!(deck.len(), 4);
     }
 
     #[test]
@@ -401,6 +383,8 @@ mod tests {
                 Some(TechCardId(2)),
                 None,
                 None,
+                None,
+                None,
             ],
         };
         let mut deck = vec![TechCardId(10)];
@@ -408,8 +392,10 @@ mod tests {
         refill_lab(&mut lab, &mut deck);
 
         // Rightmost empty slot filled
-        assert_eq!(lab.slots[3], Some(TechCardId(10)));
-        assert_eq!(lab.slots[2], None); // Only one card added per call
+        assert_eq!(lab.slots[5], Some(TechCardId(10)));
+        assert_eq!(lab.slots[4], None); // Only one card added per call
+        assert_eq!(lab.slots[2], None);
+        assert_eq!(lab.slots[3], None);
     }
 
     #[test]

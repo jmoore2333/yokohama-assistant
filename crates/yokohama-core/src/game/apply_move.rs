@@ -1727,32 +1727,39 @@ mod tests {
         state.players[0].president_location = PresidentLocation::OnBoard(port_area);
         state.turn_phase = TurnPhase::AreaAction;
         state.current_action_power = Some(4);
-        state.port_state.port_a.low = Some(OrderCardId(1));
-        state.port_state.port_a.mid = Some(OrderCardId(2));
-        state.port_state.port_a.high = Some(OrderCardId(3));
+        // 6 slots: Low(1,2), Mid(3,4), High(5,6).
+        state.port_state.port_a.slots = [1, 2, 3, 4, 5, 6].map(|id| Some(OrderCardId(id)));
         state.order_deck = vec![OrderCardId(10)];
         state.players[0].money = 5;
 
         let mv = Move::ExecuteAreaAction {
             action: AreaAction::Port {
-                cards_taken: vec![PortSlot::Low, PortSlot::Mid],
+                cards_taken: vec![OrderCardId(1), OrderCardId(3)], // Low(1) + Mid(3)
                 second_card_payment: Some(PortPayment::TwoYen),
             },
         };
         let next = apply_move(&state, &mv, &rules).unwrap();
 
         let p = &next.players[0];
-        assert_eq!(p.order_cards_in_hand, vec![OrderCardId(1), OrderCardId(2)]);
+        assert_eq!(p.order_cards_in_hand, vec![OrderCardId(1), OrderCardId(3)]);
         assert_eq!(p.money, 3); // paid 2 yen for second card
 
-        // Taking Low+Mid empties both, so the untaken High card slides all
-        // the way to Low (rules ref 01-rules-reference.md: "Slide cards
-        // left, refill from deck to rightmost spaces"). With only 1 card in
-        // the deck, refill fills the rightmost empty space (High), leaving
-        // Mid empty.
-        assert_eq!(next.port_state.port_a.low, Some(OrderCardId(3)));
-        assert_eq!(next.port_state.port_a.mid, None);
-        assert_eq!(next.port_state.port_a.high, Some(OrderCardId(10)));
+        // Taking indices 0 and 2 leaves cards 2,4,5,6, which compact to
+        // indices 0-3 (rules ref 01-rules-reference.md: "Slide cards left,
+        // refill from deck to rightmost spaces"). With only 1 card in the
+        // deck, refill fills the rightmost empty space (index 5), leaving
+        // index 4 empty.
+        assert_eq!(
+            next.port_state.port_a.slots,
+            [
+                Some(OrderCardId(2)),
+                Some(OrderCardId(4)),
+                Some(OrderCardId(5)),
+                Some(OrderCardId(6)),
+                None,
+                Some(OrderCardId(10)),
+            ]
+        );
         assert!(next.order_deck.is_empty());
     }
 
@@ -1772,11 +1779,11 @@ mod tests {
         state.mercenary_target_area = Some(port_area);
         state.turn_phase = TurnPhase::AreaAction;
         state.current_action_power = Some(2); // power 2 -> Low only, 1 card, free
-        state.port_state.port_a.low = Some(OrderCardId(7));
+        state.port_state.port_a.slots[0] = Some(OrderCardId(7));
 
         let mv = Move::ExecuteAreaAction {
             action: AreaAction::Port {
-                cards_taken: vec![PortSlot::Low],
+                cards_taken: vec![OrderCardId(7)],
                 second_card_payment: None,
             },
         };

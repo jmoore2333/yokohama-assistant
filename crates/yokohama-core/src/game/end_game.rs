@@ -55,16 +55,13 @@ fn trigger_end_game(state: &mut GameState, reason: EndGameTrigger, trigger_playe
 
 fn check_port_empty_slot(state: &GameState) -> bool {
     // Check Port A
-    if state.port_state.port_a.low.is_none()
-        || state.port_state.port_a.mid.is_none()
-        || state.port_state.port_a.high.is_none()
-    {
+    if state.port_state.port_a.has_empty_slot() {
         return true;
     }
 
     // Check Port B if exists
     if let Some(ref port_b) = state.port_state.port_b {
-        if port_b.low.is_none() || port_b.mid.is_none() || port_b.high.is_none() {
+        if port_b.has_empty_slot() {
             return true;
         }
     }
@@ -185,11 +182,10 @@ mod tests {
     fn test_order_deck_empty_trigger() {
         let mut state = create_test_state();
 
-        // Deck has cards, all port slots full - should NOT trigger
+        // Deck has cards, all 6 port slots full - should NOT trigger
         state.order_deck = vec![OrderCardId(1)];
-        state.port_state.port_a.low = Some(OrderCardId(1));
-        state.port_state.port_a.mid = Some(OrderCardId(2));
-        state.port_state.port_a.high = Some(OrderCardId(3));
+        state.port_state.port_a.slots =
+            [1, 2, 3, 4, 5, 6].map(|id| Some(OrderCardId(id)));
 
         check_end_game_triggers(&mut state);
         assert!(!state.end_game_triggered);
@@ -199,8 +195,8 @@ mod tests {
         check_end_game_triggers(&mut state);
         assert!(!state.end_game_triggered);
 
-        // Deck empty AND slot empty (post-refill) - should trigger
-        state.port_state.port_a.high = None; // Empty slot after failed refill
+        // Deck empty AND a slot empty (post-refill) - should trigger
+        state.port_state.port_a.slots[5] = None; // Empty slot after failed refill
         check_end_game_triggers(&mut state);
         assert!(state.end_game_triggered);
         assert!(matches!(state.trigger_reason, Some(EndGameTrigger::OrderDeckEmpty)));
@@ -211,11 +207,10 @@ mod tests {
         let mut state = create_test_state();
         state.port_state.port_b = Some(PortBoard::new()); // Add Port B
 
-        // Deck empty, Port A full, Port B has empty slot
+        // Deck empty, Port A full, Port B has empty slots
         state.order_deck = vec![];
-        state.port_state.port_a.low = Some(OrderCardId(1));
-        state.port_state.port_a.mid = Some(OrderCardId(2));
-        state.port_state.port_a.high = Some(OrderCardId(3));
+        state.port_state.port_a.slots =
+            [1, 2, 3, 4, 5, 6].map(|id| Some(OrderCardId(id)));
         // Port B starts empty (new())
 
         check_end_game_triggers(&mut state);

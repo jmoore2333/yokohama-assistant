@@ -113,10 +113,14 @@ mod tests {
 
     #[test]
     fn test_lab_position_modifier() {
+        // Board art (asset-sweep-report.md Q4): 6 slots, surcharges +1,+1,+2,+2
+        // on slots 3-6 (1-indexed) i.e. indices 2-5.
         assert_eq!(LabBoard::position_modifier(0), 0);
         assert_eq!(LabBoard::position_modifier(1), 0);
         assert_eq!(LabBoard::position_modifier(2), 1);
-        assert_eq!(LabBoard::position_modifier(3), 2);
+        assert_eq!(LabBoard::position_modifier(3), 1);
+        assert_eq!(LabBoard::position_modifier(4), 2);
+        assert_eq!(LabBoard::position_modifier(5), 2);
     }
 
     #[test]

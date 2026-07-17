@@ -3,7 +3,7 @@
 use serde::{Deserialize, Serialize};
 
 use crate::types::{
-    AchievementType, AreaId, Country, OrderCardId, PortSlot, TechCardId,
+    AchievementType, AreaId, Country, OrderCardId, TechCardId,
 };
 
 /// Turn phases in order of execution.
@@ -110,9 +110,11 @@ pub enum AreaAction {
     // Bank - just take money based on power
     Bank,
 
-    // Port - choose which cards to take
+    // Port - choose which cards to take, named by card id (not slot: slots
+    // shift under compaction/refill, so a card id is the only stable
+    // reference a caller/CLI tracker can use across a take).
     Port {
-        cards_taken: Vec<PortSlot>,
+        cards_taken: Vec<OrderCardId>,
         /// Payment for second card: Some(true) = 2 Yen, Some(false) = 1 Imported Good, None = only 1 card
         second_card_payment: Option<PortPayment>,
     },
