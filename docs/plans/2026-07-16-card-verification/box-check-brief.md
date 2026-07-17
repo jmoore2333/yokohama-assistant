@@ -24,6 +24,7 @@ Open the mapped reference's **Boards** section and compare each physical board:
 ## Priority 3 — setup constants (rulebook-backed, lowest risk)
 
 12. 2P removes 16 order cards (not 10); starting money 3 (start player) / 4 (others); per-player 8 assistants in hand + 12 warehouse, 2 shophouses hand + 6 warehouse, 4 trading houses warehouse; 1 of each trade good; draw 2 orders keep 1.
+13. **Count the area tiles**: after removals the table should hold 10 / 14 / 18 tiles at 2P/3P/4P (2P removes Lab B, Port B, Chinatown, Canal + one of each production area; 3P removes Lab B + one copper/silk/tea). The KB's old component row said 12/15/18 — corrected 2026-07-17; the removal lists and the engine both say 10/14/18, but the physical count is the arbiter.
 
 ## How to report
 

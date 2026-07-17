@@ -16,7 +16,7 @@
 
 | Component | 2P | 3P | 4P |
 |-----------|----|----|-----|
-| Area Boards | 12 | 15 | 18 |
+| Area Boards | 10 | 14 | 18 |
 | Laboratories | 1 (A only) | 1 (A only) | 2 (A and B) |
 | Ports | 1 (A only) | 2 (A and B) | 2 (A and B) |
 | Order cards in deck | 20 | 31 | 36 |
@@ -599,7 +599,7 @@ Highest VP wins. Tiebreaker: Closest to Start Player (clockwise).
 
 ### Order/Tech Acquisition Technologies
 
-**Ball** (Industry 5)
+**Ball** (Industry 3)
 - When completing Order card: +2 VP
 
 **Language School** (Industry ?)
@@ -616,7 +616,7 @@ Highest VP wins. Tiebreaker: Closest to Start Player (clockwise).
 **Winery** (Industry ?)
 - When placing assistant on Church: +3 VP
 
-**Brickyard** (Industry 4)
+**Brickyard** (Industry 3)
 - When placing assistant on Customs: +4 VP
 
 ### Economy Technologies
