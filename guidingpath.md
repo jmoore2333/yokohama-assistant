@@ -100,3 +100,5 @@ The 2025-12-07 design doc's VLM pipeline, landing on a proven engine + UI: CV pr
 | 2026-07-16 | First AI milestone: provably purposeful play (flags, positions, endgame timing, lookahead), not beats-random | Yokohama is deep; random-vs-random proves nothing (Jeremy) |
 | 2026-07-16 | Keep current `Move` granularity; split composite moves into micro-decisions only when the MCTS rung demands it | Phase machine already decomposes turns; avoid speculative refactor |
 | 2026-07-16 | Docs: dated specs/plans in `docs/plans/`; workflow brainstorm → spec → plan → TDD implementation | Repo convention continues |
+| 2026-07-16 | Card verification is three-way (TTS sprites × YAML × rulebook/box manifest); physical game is final arbiter; content manifest must be signed off before the self-play gate | TTS mod is fan-made and can itself be wrong (Jeremy) |
+| 2026-07-16 | CLI display language: plain words in prompts, short readable abbreviations in tables; settled by real Phase-2 use; verification-report single-letter legend retired from product use | Single letters not intuitive for CLI manipulation (Jeremy) |

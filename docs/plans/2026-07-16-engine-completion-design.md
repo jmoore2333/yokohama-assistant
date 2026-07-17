@@ -1,7 +1,7 @@
 # Engine Completion Design (merged Phases 0+1)
 
 **Date:** 2026-07-16
-**Status:** Design approved in principle; awaiting spec review, then implementation plan
+**Status:** Approved 2026-07-16 after review, with revisions: intuitive CLI display language (B4), rulebook/box cross-validation (B2), content-manifest checkpoint before the gate (pre-F)
 **Goal:** `yokohama-core` can play complete, rules-correct games of Yokohama end-to-end — proven by a self-play fuzz gate — plus the environment and documentation fixes needed to work on it honestly.
 
 ## Context
@@ -34,14 +34,16 @@ The engine's logic modules are individually solid (156 tests), but four area act
   ```
   API becomes `get_legal_moves(&GameState, &Rules)` and `apply_move(&GameState, &Move, &Rules)`. One breaking change, done first, all call sites and tests updated in the same sweep. While the API is open, `apply_move`'s error type upgrades from `&'static str` to a `MoveError` enum (the CLI and AI both want typed, matchable errors).
 
-- **B2. Card verification without the chore.** Claude re-transcribes the three sprite sheets (`tts-assets/organized/cards/*.jpg`) fresh — without looking at the YAML — then diffs against `analysis-1/yokohama-kb/07..09-*.yaml` and produces a mismatch report. Jeremy adjudicates **only the mismatches**, with the physical game as ground truth where images are ambiguous. Each YAML file then gains a `verified: 2026-MM-DD` header. During this pass, confirm the assumption that *country + requirements* uniquely identifies every order card; if any two collide, note the disambiguating reward in the report (this matters for B4).
+- **B2. Card verification without the chore — three-way, not two-way.** Claude re-transcribes the three sprite sheets (`tts-assets/organized/cards/*.jpg`) fresh — without looking at the YAML — then diffs against `analysis-1/yokohama-kb/07..09-*.yaml` and produces a mismatch report. Jeremy adjudicates **only the mismatches**. Crucially, the sprites come from a fan-made TTS mod and can themselves be wrong, so the pass also reconciles against what the rules and box claim *should* exist: the rulebook's component manifest (counts and distributions — 36 orders / 20 techs / 24 sites / 20 five-power tokens / 10 mercenary flags, order-country distribution, tech effect list) plus any published card lists. **The physical game is the final arbiter** for any conflict. Output: a **content manifest** with three-way status per component (sprites × rulebook/box × YAML); each YAML file then gains a `verified: 2026-MM-DD` header. During this pass, confirm that *country + requirements* uniquely identifies every order card; if any two collide, note the disambiguating reward in the report (this matters for B4).
 
 - **B3. Registry generation.** A small workspace tool crate (`crates/gen-data`, run via `cargo run -p gen-data`) renders the verified YAML into a checked-in `game/data.rs` providing `OrderRegistry::standard()`, `TechRegistry::standard()`, `BuildingSiteSet::standard()`. The generated file carries a DO-NOT-EDIT header; YAML remains the source of truth. (Data-in-code was already the December decision — this keeps it while making regeneration mechanical.)
 
-- **B4. Card display codes — the table↔CLI "language."** Stored in the registries now, exercised by Phase 2. ASCII-first (per the CLI direction). Legend matches the existing verification report: C=Copper, S=Silk, T=Tea, F=Seafood; VP, Y=Yen, I=Import, M=Movement, W=Warehouse.
-  - **Order cards** — the hard case at the table. Canonical id `O01..O36` plus a human-matchable line built from what's *visible on the card*: country + requirements → rewards. Example: `O17  GB  C2 F1 -> 8VP +1I`. Entry flows match by country + requirements (B2 verifies uniqueness).
+- **B4. Card display language — the table↔CLI "language."** Stored with the registries now; usability-tested by real use in Phase 2. ASCII-first. Rendered by display functions from card data — never hardcoded strings — so the format can change cheaply when CLI use teaches us better. Two layers from the same data:
+  - *Prompt layer* (default; optimized for intuitiveness): plain words. `O17 [Britain]  needs 2 copper + 1 fish  ->  8 VP + 1 import`.
+  - *Table/log layer* (compact lists): short readable abbreviations — starting proposal `cop / silk / tea / fish` and `vp / yen / imp / move / wh` — settled during Phase 2 use. The single-letter legend from the 2025-12-08 verification report was judged unintuitive and stays confined to that historical report.
+  - **Order cards** — the hard case at the table. Canonical id `O01..O36`; entry flows match by what's visible on the card: country + requirements (B2 verifies uniqueness).
   - **Tech cards** — by name (`Tram`, `Telegram`, …); names are unique.
-  - **Building sites** — `S01..S24` plus VP signature, e.g. `S03  [2,3,4,5] TH:7`.
+  - **Building sites** — `S01..S24` plus VP signature, e.g. `S03 shops[2,3,4,5] TH:7`.
 
 ## Part C — Decks & chance
 
@@ -102,6 +104,10 @@ TDD throughout (repo convention). All 156 existing tests stay green through the 
 - **API-change churn** → B1 does the whole breaking sweep (`Rules` + `MoveError`) once, first.
 - **Enumeration blowups (Chinatown, Lab payments)** → minimal-cost/bounded enumeration with logged caps; revisit at MCTS time.
 
+## Checkpoint before Part F
+
+Proceed to the gate only once the **content manifest from B2 is signed off as matching the rulebook/box** — i.e., the game's *should-exist* contents are independently validated, not merely sprite-derived. If any component remains unvalidated when E completes (missing or ambiguous sprites, unresolved conflicts), **check in with Jeremy before running F**; if the manifest is fully validated, continue straight into F.
+
 ## Execution order
 
-A → B1 → (B2 ∥ B3 prep) → C → D → E → F. B2 (verification diff) can start immediately and run in parallel with anything.
+A → B1 → (B2 ∥ B3 prep) → C → D → E → [manifest checkpoint] → F. B2 (verification diff + rulebook/box reconciliation) can start immediately and run in parallel with anything.
