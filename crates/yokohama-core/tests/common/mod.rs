@@ -81,9 +81,24 @@ pub fn run_random_game(seed: u64, players: u8, rules: &Rules) -> Result<GameStat
 
     let choices: Vec<StartingOrderChoice> =
         (0..players).map(|_| StartingOrderChoice::Keep(rng.gen_range(0..2u8))).collect();
-    let mut state = finalize_setup(pending, &choices)
+    let state = finalize_setup(pending, &choices)
         .map_err(|e| format!("seed={seed} players={players}p: finalize_setup failed: {e}"))?;
 
+    run_random_game_from(state, &mut rng, seed, players, rules)
+}
+
+/// Random-play an ALREADY-CONSTRUCTED state to completion under the same
+/// contract as `run_random_game` (same failure modes, same invariant checks
+/// after every apply). Used by the seeded near-threshold trigger scenarios,
+/// which surgically construct a legal state, fire a specific trigger through
+/// `apply_move`, and then let random play finish the final round.
+pub fn run_random_game_from(
+    mut state: GameState,
+    rng: &mut ChaCha8Rng,
+    seed: u64,
+    players: u8,
+    rules: &Rules,
+) -> Result<GameStats, String> {
     let mut move_log: Vec<Move> = Vec::new();
     let mut branching_by_phase: HashMap<TurnPhase, (u64, u64)> = HashMap::new();
     let mut moves_applied: u64 = 0;
@@ -104,7 +119,7 @@ pub fn run_random_game(seed: u64, players: u8, rules: &Rules) -> Result<GameStat
             return Err(dump_failure(
                 seed,
                 players,
-                "non-termination: turn_number exceeded 500 without is_game_over becoming true",
+                "non-termination: turn_number exceeded MAX_TURNS without is_game_over becoming true",
                 &state,
                 &move_log,
             ));
