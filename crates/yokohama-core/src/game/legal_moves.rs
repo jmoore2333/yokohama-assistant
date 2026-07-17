@@ -559,7 +559,7 @@ fn generate_customs_actions(state: &GameState, player: PlayerId, power: u8) -> V
 fn generate_employment_agency_actions(state: &GameState, player: PlayerId, power: u8) -> Vec<Move> {
     let p = state.player(player);
     let allowed = employment_agency_tokens_allowed(power) as u32;
-    let already_built = p.trading_houses.total_built();
+    let already_taken = p.trading_houses.in_hand as usize + p.trading_houses.total_built();
 
     let mut moves = Vec::new();
 
@@ -574,7 +574,7 @@ fn generate_employment_agency_actions(state: &GameState, player: PlayerId, power
                 let shophouse_cost = s as u32 * 2;
                 let mut th_cost = 0u32;
                 for i in 0..t {
-                    let th_index = already_built + i as usize;
+                    let th_index = already_taken + i as usize;
                     th_cost += match th_index {
                         0 => 4,
                         1 => 5,
@@ -841,8 +841,9 @@ fn generate_building_moves(state: &GameState) -> Vec<Move> {
             }
         }
 
-        // Trading House: requires Power 5
-        if power >= 5 && p.trading_houses.in_warehouse > 0 && site.can_build_trading_house() {
+        // Trading House: requires Power 5; built from HAND for free (the
+        // cost was paid at the Employment Agency take)
+        if power >= 5 && p.trading_houses.in_hand > 0 && site.can_build_trading_house() {
             moves.push(Move::BuildTradingHouse);
         }
     }
@@ -941,6 +942,34 @@ mod tests {
 
         // Should always include EndAdditionalPhase
         assert!(moves.iter().any(|m| matches!(m, Move::EndAdditionalPhase)));
+    }
+
+    #[test]
+    fn test_building_offers_trading_house_iff_token_in_hand() {
+        // Build is free-from-hand (cost was paid at the Employment take):
+        // money is irrelevant, a hand token is required.
+        let mut state = create_test_state();
+        let area = AreaId::new(0);
+        state.turn_phase = TurnPhase::Building;
+        state.current_action_power = Some(5);
+        state.players[0].president_location = PresidentLocation::OnBoard(area);
+        state.board_layout.building_sites.insert(area, BuildingSite::new([1, 2, 3, 4], 7));
+        let rules = Rules::empty_for_tests();
+
+        state.players[0].money = 100;
+        state.players[0].trading_houses.in_hand = 0;
+        state.players[0].trading_houses.in_warehouse = 4;
+        let moves = get_legal_moves(&state, &rules);
+        assert!(
+            !moves.iter().any(|m| matches!(m, Move::BuildTradingHouse)),
+            "no token in hand: cannot build regardless of money"
+        );
+
+        state.players[0].money = 0;
+        state.players[0].trading_houses.in_hand = 1;
+        state.players[0].trading_houses.in_warehouse = 3;
+        let moves = get_legal_moves(&state, &rules);
+        assert!(moves.iter().any(|m| matches!(m, Move::BuildTradingHouse)));
     }
 
     #[test]
@@ -1131,7 +1160,7 @@ mod tests {
         let area = AreaId::new(0);
         state.turn_phase = TurnPhase::Building;
         state.players[0].president_location = PresidentLocation::OnBoard(area);
-        state.players[0].trading_houses.in_warehouse = 1;
+        state.players[0].trading_houses.in_hand = 1;
 
         // Add a building site with no trading house yet
         state.board_layout.building_sites.insert(area, BuildingSite::new([2, 3, 4, 5], 10));
@@ -1155,7 +1184,7 @@ mod tests {
         state.turn_phase = TurnPhase::Building;
         state.players[0].president_location = PresidentLocation::OnBoard(area);
         state.players[0].shophouses.in_hand = 1;
-        state.players[0].trading_houses.in_warehouse = 1;
+        state.players[0].trading_houses.in_hand = 1;
 
         // Add a building site
         state.board_layout.building_sites.insert(area, BuildingSite::new([2, 3, 4, 5], 10));

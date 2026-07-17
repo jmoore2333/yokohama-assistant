@@ -517,11 +517,12 @@ fn apply_employment_agency(
     // Calculate total cost
     let shophouse_cost = shophouses as u32 * 2; // 2 Yen each
 
-    // Trading house cost: based on how many already built
-    let already_built = p.trading_houses.total_built();
+    // Trading house cost: the printed take progression (4/5/6/7), indexed
+    // by how many tokens have already left the warehouse (hand + built).
+    let already_taken = p.trading_houses.in_hand as usize + p.trading_houses.total_built();
     let mut th_cost = 0u32;
     for i in 0..trading_houses {
-        let th_index = already_built + i as usize;
+        let th_index = already_taken + i as usize;
         th_cost += match th_index {
             0 => 4,
             1 => 5,
@@ -547,6 +548,11 @@ fn apply_employment_agency(
     // Move shophouses: warehouse -> hand
     p.shophouses.in_warehouse -= shophouses;
     p.shophouses.in_hand += shophouses;
+
+    // Move trading houses: warehouse -> hand (built later, for free, in the
+    // Building step - the cost was just charged above)
+    p.trading_houses.in_warehouse -= trading_houses;
+    p.trading_houses.in_hand += trading_houses;
 
     Ok(())
 }
@@ -690,17 +696,14 @@ fn apply_build_trading_house(state: &mut GameState) -> Result<(), MoveError> {
         .unwrap_or(0);
 
     let p = state.player_mut(player);
-    if p.trading_houses.in_warehouse < 1 {
-        return Err(MoveError::RuleViolation("No trading house in warehouse"));
+    if p.trading_houses.in_hand < 1 {
+        return Err(MoveError::RuleViolation("No trading house in hand"));
     }
 
-    let cost = p.trading_houses.next_cost();
-    if p.money < cost as u32 {
-        return Err(MoveError::RuleViolation("Not enough money for trading house"));
-    }
-
-    p.money -= cost as u32;
-    p.trading_houses.in_warehouse -= 1;
+    // Building is FREE - the take progression (4/5/6/7) was paid at the
+    // Employment Agency when the token moved warehouse -> hand
+    // (rulebook p.7: "Place a Trading House token from your hand").
+    p.trading_houses.in_hand -= 1;
     p.trading_houses.built.push(area);
     p.victory_points += vp as u32;
 
@@ -1041,6 +1044,88 @@ mod tests {
 
         assert_eq!(state.turn_phase, TurnPhase::TurnEnd);
         assert!(state.is_game_over());
+    }
+
+    #[test]
+    fn test_employment_agency_th_take_moves_token_to_hand_with_take_progression() {
+        // Rulebook: Employment Agency moves tokens warehouse -> hand, paying
+        // the printed take progression (4/5/6/7 per trading house taken);
+        // Building later places from HAND for free. The old model charged
+        // at build time and never delivered the employment take at all.
+        let mut state = create_minimal_state(2);
+        let area = AreaId::new(0);
+        state.board_layout.areas.insert(area, AreaConfig {
+            area_type: AreaType::EmploymentAgency,
+            grid_position: (0, 0),
+        });
+        state.turn_phase = TurnPhase::AreaAction;
+        state.current_player = PlayerId::new(0);
+        state.current_action_power = Some(5); // allowed 4 items
+        state.players[0].president_location = PresidentLocation::OnBoard(area);
+        state.players[0].money = 9;
+        state.players[0].trading_houses.in_warehouse = 4;
+        state.players[0].trading_houses.in_hand = 0;
+        let rules = Rules::empty_for_tests();
+
+        let mv = Move::ExecuteAreaAction {
+            action: AreaAction::EmploymentAgency { assistants: 0, shophouses: 0, trading_houses: 2 },
+        };
+        let next = apply_move(&state, &mv, &rules).unwrap();
+        let th = &next.players[0].trading_houses;
+
+        assert_eq!(th.in_warehouse, 2);
+        assert_eq!(th.in_hand, 2, "taken tokens must land in hand");
+        assert_eq!(next.players[0].money, 0, "1st take costs 4, 2nd costs 5");
+        assert_eq!(th.total_built(), 0);
+    }
+
+    #[test]
+    fn test_build_trading_house_places_from_hand_free() {
+        let mut state = create_minimal_state(2);
+        let area = AreaId::new(0);
+        state.board_layout.areas.insert(area, AreaConfig {
+            area_type: AreaType::Bank,
+            grid_position: (0, 0),
+        });
+        state.board_layout.building_sites.insert(area, BuildingSite::new([1, 2, 3, 4], 7));
+        state.turn_phase = TurnPhase::Building;
+        state.current_player = PlayerId::new(0);
+        state.current_action_power = Some(5);
+        state.players[0].president_location = PresidentLocation::OnBoard(area);
+        state.players[0].money = 0; // build is FREE - cost was paid at Employment
+        state.players[0].trading_houses.in_hand = 1;
+        state.players[0].trading_houses.in_warehouse = 3;
+        let rules = Rules::empty_for_tests();
+
+        let next = apply_move(&state, &Move::BuildTradingHouse, &rules).unwrap();
+        let th = &next.players[0].trading_houses;
+
+        assert_eq!(th.in_hand, 0);
+        assert_eq!(th.in_warehouse, 3, "warehouse untouched by building");
+        assert_eq!(th.built, vec![area]);
+        assert_eq!(next.players[0].money, 0, "no charge at build time");
+        assert_eq!(next.players[0].victory_points, 7);
+    }
+
+    #[test]
+    fn test_build_trading_house_requires_token_in_hand() {
+        let mut state = create_minimal_state(2);
+        let area = AreaId::new(0);
+        state.board_layout.areas.insert(area, AreaConfig {
+            area_type: AreaType::Bank,
+            grid_position: (0, 0),
+        });
+        state.board_layout.building_sites.insert(area, BuildingSite::new([1, 2, 3, 4], 7));
+        state.turn_phase = TurnPhase::Building;
+        state.current_player = PlayerId::new(0);
+        state.current_action_power = Some(5);
+        state.players[0].president_location = PresidentLocation::OnBoard(area);
+        state.players[0].money = 100;
+        state.players[0].trading_houses.in_hand = 0;
+        state.players[0].trading_houses.in_warehouse = 4;
+        let rules = Rules::empty_for_tests();
+
+        assert!(apply_move(&state, &Move::BuildTradingHouse, &rules).is_err());
     }
 
     #[test]

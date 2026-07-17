@@ -40,15 +40,19 @@ pub fn check_invariants(state: &GameState, rules: &Rules) -> Result<(), String> 
                 p.id.0, p.shophouses.in_hand, p.shophouses.in_warehouse, p.shophouses.built.len()
             ));
         }
-        // Trading houses: PlayerState's TradingHouseState has no in_hand
-        // zone (confirmed by inspection: only `in_warehouse` and `built`
-        // exist) -- Building buys directly from the warehouse. So the
-        // conservation total has two terms, not three.
-        let th_total = p.trading_houses.in_warehouse as usize + p.trading_houses.built.len();
+        // Trading houses: three zones since the staging re-model - the
+        // Employment Agency takes warehouse -> hand (paying the printed
+        // 4/5/6/7 progression) and the Building step places from hand free.
+        let th_total = p.trading_houses.in_hand as usize
+            + p.trading_houses.in_warehouse as usize
+            + p.trading_houses.built.len();
         if th_total != 4 {
             return Err(format!(
-                "P{} trading house total {th_total} != 4 (in_warehouse={} built={})",
-                p.id.0, p.trading_houses.in_warehouse, p.trading_houses.built.len()
+                "P{} trading house total {th_total} != 4 (in_hand={} in_warehouse={} built={})",
+                p.id.0,
+                p.trading_houses.in_hand,
+                p.trading_houses.in_warehouse,
+                p.trading_houses.built.len()
             ));
         }
     }

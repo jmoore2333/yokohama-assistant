@@ -92,24 +92,32 @@ impl Default for ShophouseState {
 }
 
 /// Tracking of Trading House token locations.
+/// Staging mirrors the physical flow (rulebook p.7 + p.12): the Employment
+/// Agency moves tokens warehouse -> hand at the printed take progression;
+/// the Building step places from HAND for free.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TradingHouseState {
+    /// Tokens taken from the warehouse (via Employment Agency) but not yet built.
+    pub in_hand: u8,
     pub in_warehouse: u8,
-    /// Areas where trading houses are built (order matters for cost).
+    /// Areas where trading houses are built (in build order).
     pub built: Vec<AreaId>,
 }
 
 impl TradingHouseState {
     pub fn new() -> Self {
         Self {
+            in_hand: 0,
             in_warehouse: 4,
             built: Vec::new(),
         }
     }
 
-    /// Cost to purchase next trading house from warehouse.
+    /// Employment Agency cost of the NEXT trading house taken from the
+    /// warehouse: the printed 4/5/6/7 progression, indexed by how many
+    /// tokens have already left the warehouse (in hand + built).
     pub fn next_cost(&self) -> u8 {
-        match self.built.len() {
+        match self.in_hand as usize + self.built.len() {
             0 => 4,
             1 => 5,
             2 => 6,
