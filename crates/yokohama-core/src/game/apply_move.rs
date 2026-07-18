@@ -228,10 +228,11 @@ fn apply_placement_same_area(state: &mut GameState, area: AreaId) -> Result<(), 
         return Err(MoveError::RuleViolation("Not enough assistants in hand"));
     }
 
-    // Validate affordability before any mutation. Priced as a single-area
-    // toll (calculate_placement_cost(&[area])), matching generate_placement_moves -
-    // not doubled for the 2 assistants placed here.
-    let cost = calculate_placement_cost(state, player, &[area]);
+    // Validate affordability before any mutation. Priced per assistant
+    // placed (KB: "pay 1 Yen to each President's owner per assistant
+    // placed") - 2 assistants land in `area`, so calculate_placement_cost
+    // gets a 2-element slice, matching generate_placement_moves.
+    let cost = calculate_placement_cost(state, player, &[area, area]);
     if state.player(player).money < cost {
         return Err(MoveError::NotEnoughMoney);
     }
@@ -241,7 +242,7 @@ fn apply_placement_same_area(state: &mut GameState, area: AreaId) -> Result<(), 
     p.assistants.in_hand -= 2;
     *p.assistants.on_board.entry(area).or_insert(0) += 2;
 
-    credit_placement_fees(state, player, &[area]);
+    credit_placement_fees(state, player, &[area, area]);
 
     Ok(())
 }
@@ -1427,7 +1428,13 @@ mod tests {
     }
 
     #[test]
-    fn test_place_two_same_area_charges_fee_once_not_per_assistant() {
+    fn test_place_two_same_area_charges_fee_per_assistant_placed() {
+        // KB (01-rules-reference.md:97) / rulebook p.5: pay 1 Yen to the
+        // President's owner PER ASSISTANT PLACED. Option B places 2
+        // assistants in `area`, so 1 opponent President there means a fee of
+        // 2, not 1 (C1 final-review finding: the plan's Task 15 instruction
+        // baked in the pre-existing mispricing, and both the payer's charge
+        // and the owner's credit were wrong).
         let mut state = create_minimal_state(2);
         let area = AreaId::new(0);
         state.board_layout.areas.insert(area, AreaConfig {
@@ -1448,12 +1455,35 @@ mod tests {
         assert!(result.is_ok());
         let next = result.unwrap();
 
-        // 2 assistants land in `area`, but the fee is the same flat per-area
-        // toll generate_placement_moves prices via calculate_placement_cost(&[area])
-        // - it is not doubled for the 2 assistants.
-        assert_eq!(next.players[0].money, 2);
-        assert_eq!(next.players[1].money, owner_money_before + 1);
+        // 2 assistants land in `area` with 1 opponent President there: fee
+        // is 1 Yen PER assistant placed = 2 total.
+        assert_eq!(next.players[0].money, 1);
+        assert_eq!(next.players[1].money, owner_money_before + 2);
         assert_eq!(next.players[0].assistants.on_board.get(&area), Some(&2));
+    }
+
+    #[test]
+    fn test_place_two_same_area_rejects_when_money_insufficient_for_per_assistant_fee() {
+        // Same fixture as above but with only 1 Yen: the correct fee (2) is
+        // unaffordable even though the old (buggy) per-area-flat fee (1)
+        // would have been affordable.
+        let mut state = create_minimal_state(2);
+        let area = AreaId::new(0);
+        state.board_layout.areas.insert(area, AreaConfig {
+            area_type: AreaType::Bank,
+            grid_position: (0, 0),
+        });
+        state.turn_phase = TurnPhase::Placement;
+        state.players[1].president_location = PresidentLocation::OnBoard(area);
+        state.players[0].money = 1;
+
+        let rules = Rules::empty_for_tests();
+        let result = apply_move(
+            &state,
+            &Move::PlaceTwoSameArea { area, adjacent_bonus: None },
+            &rules,
+        );
+        assert!(matches!(result, Err(MoveError::NotEnoughMoney)));
     }
 
     #[test]
@@ -1485,9 +1515,10 @@ mod tests {
         assert!(result.is_ok());
         let next = result.unwrap();
 
-        // Both areas' fees charged independently (1 to each owner).
-        assert_eq!(next.players[0].money, 3);
-        assert_eq!(next.players[1].money, owner1_money_before + 1);
+        // main_area gets 2 assistants (fee 2, 1 per assistant) + adj_area
+        // gets 1 assistant via the Telegram bonus (fee 1) = 3 total.
+        assert_eq!(next.players[0].money, 2);
+        assert_eq!(next.players[1].money, owner1_money_before + 2);
         assert_eq!(next.players[2].money, owner2_money_before + 1);
         assert_eq!(next.players[0].assistants.on_board.get(&main_area), Some(&2));
         assert_eq!(next.players[0].assistants.on_board.get(&adj_area), Some(&1));

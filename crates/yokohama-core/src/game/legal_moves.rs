@@ -192,7 +192,10 @@ fn generate_placement_moves_with_tech(state: &GameState, tech_registry: Option<&
 
     if p.assistants.in_hand >= 2 {
         for &area in &placeable_areas {
-            let cost = calculate_placement_cost(state, player, &[area]);
+            // 2 assistants land in `area`: price per assistant placed (a
+            // 2-element slice), matching apply_placement_same_area/
+            // credit_placement_fees exactly (C1 final-review fix).
+            let cost = calculate_placement_cost(state, player, &[area, area]);
             if player_money >= cost {
                 // Basic move without Telegram bonus
                 moves.push(Move::PlaceTwoSameArea { area, adjacent_bonus: None });
@@ -1315,6 +1318,33 @@ mod tests {
         assert!(moves.iter().any(|m| matches!(m, Move::BuildShophouse { .. })));
         assert!(moves.iter().any(|m| matches!(m, Move::BuildTradingHouse)));
         assert!(moves.iter().any(|m| matches!(m, Move::SkipBuilding)));
+    }
+
+    #[test]
+    fn test_place_two_same_area_enumeration_prices_per_assistant_placed() {
+        // C1 final-review fix: Option B places 2 assistants in `area`, so 1
+        // opponent President there costs 2 Yen (1 per assistant placed), not
+        // 1. At money=1 the move must not be offered; at money=2 it must.
+        let mut state = create_test_state();
+        let bank_area = AreaId::new(0);
+        state.players[1].president_location = PresidentLocation::OnBoard(bank_area);
+        state.players[0].assistants.in_hand = 2;
+        state.turn_phase = TurnPhase::Placement;
+        let rules = Rules::empty_for_tests();
+
+        state.players[0].money = 1;
+        let moves = get_legal_moves(&state, &rules);
+        assert!(
+            !moves.iter().any(|m| matches!(m, Move::PlaceTwoSameArea { area, .. } if *area == bank_area)),
+            "money 1 must not afford the 2-assistant fee of 2"
+        );
+
+        state.players[0].money = 2;
+        let moves = get_legal_moves(&state, &rules);
+        assert!(
+            moves.iter().any(|m| matches!(m, Move::PlaceTwoSameArea { area, .. } if *area == bank_area)),
+            "money 2 must afford the 2-assistant fee of 2"
+        );
     }
 
     #[test]
