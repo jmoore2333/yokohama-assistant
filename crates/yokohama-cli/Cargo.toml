@@ -9,3 +9,7 @@ authors.workspace = true
 yokohama-core = { path = "../yokohama-core" }
 serde.workspace = true
 serde_json.workspace = true
+
+[dev-dependencies]
+rand.workspace = true
+rand_chacha.workspace = true
