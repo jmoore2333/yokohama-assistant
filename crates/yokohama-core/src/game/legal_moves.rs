@@ -854,9 +854,11 @@ fn generate_building_moves(state: &GameState) -> Vec<Move> {
             }
         }
 
-        // Trading House: requires Power 5; built from HAND for free (the
-        // cost was paid at the Employment Agency take)
-        if power >= 5 && p.trading_houses.in_hand > 0 && site.can_build_trading_house() {
+        // Trading House: requires Power 4+ (rulebook p.5/p.7 - the same gate
+        // as Shophouse, offered as a choice with no further power tier);
+        // built from HAND for free (the cost was paid at the Employment
+        // Agency take).
+        if power >= 4 && p.trading_houses.in_hand > 0 && site.can_build_trading_house() {
             moves.push(Move::BuildTradingHouse);
         }
     }
@@ -1287,7 +1289,13 @@ mod tests {
     }
 
     #[test]
-    fn test_trading_house_requires_power_5() {
+    fn test_trading_house_requires_power_4() {
+        // Rulebook p.5/p.7: step 5 requires a 4+ Power action, then offers a
+        // CHOICE of Shophouse or Trading House with no further power gate
+        // (the p.7 Seiji example, at 4 Power, is "unable to build either"
+        // solely for lack of tokens). The KB and the branch's own
+        // engine-mapped reference both say 4+ (C3 final-review fix; the
+        // engine had wrongly gated Trading House at 5).
         let mut state = create_test_state();
         let area = AreaId::new(0);
         state.turn_phase = TurnPhase::Building;
@@ -1298,12 +1306,17 @@ mod tests {
         state.board_layout.building_sites.insert(area, BuildingSite::new([2, 3, 4, 5], 10));
         let rules = Rules::empty_for_tests();
 
-        // Power 4 - trading house NOT available (needs 5)
-        state.current_action_power = Some(4);
+        // Power 3 - trading house NOT available (needs 4+)
+        state.current_action_power = Some(3);
         let moves = get_legal_moves(&state, &rules);
         assert!(!moves.iter().any(|m| matches!(m, Move::BuildTradingHouse)));
 
-        // Power 5 - trading house available
+        // Power 4 - trading house available
+        state.current_action_power = Some(4);
+        let moves = get_legal_moves(&state, &rules);
+        assert!(moves.iter().any(|m| matches!(m, Move::BuildTradingHouse)));
+
+        // Power 5 - still available
         state.current_action_power = Some(5);
         let moves = get_legal_moves(&state, &rules);
         assert!(moves.iter().any(|m| matches!(m, Move::BuildTradingHouse)));
