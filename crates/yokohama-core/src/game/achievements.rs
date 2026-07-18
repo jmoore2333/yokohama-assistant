@@ -146,10 +146,147 @@ pub fn claim_achievement(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::BTreeMap;
 
     #[test]
     fn test_achievement_first_vs_subsequent() {
         assert_eq!(AchievementType::Copper5.first_place_vp(), 8);
         assert_eq!(AchievementType::Copper5.subsequent_vp(), 6);
+    }
+
+    fn create_test_state() -> GameState {
+        let config = GameConfig::new(
+            2,
+            vec![PlayerColor::Red, PlayerColor::Blue],
+            PlayerId::new(0),
+        );
+
+        let board_layout = BoardLayout {
+            areas: BTreeMap::new(),
+            adjacency: BTreeMap::new(),
+            canal_crossings: vec![],
+            building_sites: BTreeMap::new(),
+            five_power_tokens: BTreeMap::new(),
+        };
+
+        let players = vec![
+            PlayerState::new(PlayerId::new(0), PlayerColor::Red, true),
+            PlayerState::new(PlayerId::new(1), PlayerColor::Blue, false),
+        ];
+
+        GameState {
+            config,
+            board_layout,
+            players,
+            current_player: PlayerId::new(0),
+            turn_phase: TurnPhase::AdditionalActionFirst,
+            turn_number: 1,
+            additional_action_state: AdditionalActionState::new(),
+            current_action_power: None,
+            is_mercenary_action: false,
+            mercenary_target_area: None,
+            mercenary_return_phase: None,
+            president_start_area: None,
+            port_state: PortState::new(false),
+            lab_state: LabState::new(false),
+            order_deck: vec![],
+            tech_deck: vec![],
+            orders_removed: vec![],
+            church_track: ChurchTrack::new(),
+            customs_track: CustomsTrack::new(),
+            achievements: [
+                AchievementCard::new(AchievementType::Copper5),
+                AchievementCard::new(AchievementType::Money10),
+                AchievementCard::new(AchievementType::Production4),
+            ],
+            mercenary_supply: MercenarySupply::new(),
+            station_location: None,
+            end_game_triggered: false,
+            trigger_reason: None,
+            final_round: false,
+            trigger_player: None,
+        }
+    }
+
+    /// Jeremy-adjudicated 2026-07-18: Category-C achievements ("Buildings in
+    /// N distinct areas") count Shophouses AND Trading Houses the same way -
+    /// pins that `count_production_buildings`/`count_commercial_buildings`
+    /// already tally both (they did before this pin was added; this guards
+    /// against a future regression, e.g. someone "simplifying" away the
+    /// trading_houses.built loop).
+    #[test]
+    fn test_count_production_buildings_counts_trading_houses_too() {
+        let mut state = create_test_state();
+        let mine_area = AreaId::new(0);
+        let mill_area = AreaId::new(1);
+        state.board_layout.areas.insert(mine_area, AreaConfig {
+            area_type: AreaType::CopperMine,
+            grid_position: (0, 0),
+        });
+        state.board_layout.areas.insert(mill_area, AreaConfig {
+            area_type: AreaType::SilkMill,
+            grid_position: (0, 1),
+        });
+        // A Shophouse in one production area, a Trading House (no
+        // Shophouse) in another distinct production area: both must count.
+        state.players[0].shophouses.built.insert(mine_area, 0);
+        state.players[0].trading_houses.built.push(mill_area);
+
+        assert_eq!(count_production_buildings(&state, PlayerId::new(0)), 2);
+    }
+
+    #[test]
+    fn test_count_commercial_buildings_counts_trading_houses_too() {
+        let mut state = create_test_state();
+        let bank_area = AreaId::new(0);
+        let port_area = AreaId::new(1);
+        state.board_layout.areas.insert(bank_area, AreaConfig {
+            area_type: AreaType::Bank,
+            grid_position: (0, 0),
+        });
+        state.board_layout.areas.insert(port_area, AreaConfig {
+            area_type: AreaType::PortA,
+            grid_position: (0, 1),
+        });
+        state.players[0].shophouses.built.insert(bank_area, 0);
+        state.players[0].trading_houses.built.push(port_area);
+
+        assert_eq!(count_commercial_buildings(&state, PlayerId::new(0)), 2);
+    }
+
+    #[test]
+    fn test_count_production_buildings_does_not_double_count_area_with_both() {
+        // A single area holding BOTH a Shophouse and a Trading House is one
+        // distinct area, not two - the achievement counts distinct AREAS,
+        // not distinct buildings.
+        let mut state = create_test_state();
+        let mine_area = AreaId::new(0);
+        state.board_layout.areas.insert(mine_area, AreaConfig {
+            area_type: AreaType::CopperMine,
+            grid_position: (0, 0),
+        });
+        state.players[0].shophouses.built.insert(mine_area, 0);
+        state.players[0].trading_houses.built.push(mine_area);
+
+        assert_eq!(count_production_buildings(&state, PlayerId::new(0)), 1);
+    }
+
+    #[test]
+    fn test_production4_achievement_claimable_via_trading_houses_alone() {
+        // End-to-end through can_claim_achievement: 4 Trading Houses (no
+        // Shophouses at all) in 4 distinct production areas must satisfy
+        // Production4, exactly as 4 Shophouses would.
+        let mut state = create_test_state();
+        state.players[0].assistants.in_hand = 1;
+        for i in 0..4u8 {
+            let area = AreaId::new(i);
+            state.board_layout.areas.insert(area, AreaConfig {
+                area_type: AreaType::CopperMine,
+                grid_position: (0, i),
+            });
+            state.players[0].trading_houses.built.push(area);
+        }
+
+        assert!(can_claim_achievement(&state, PlayerId::new(0), AchievementType::Production4));
     }
 }
