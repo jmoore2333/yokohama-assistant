@@ -81,13 +81,18 @@ impl Repl {
     /// before `parse`, `Result` matches instead of `unwrap`).
     pub fn step(&mut self, line: &str) -> StepOutput {
         let line = line.trim();
-        if self.locked && !matches!(line, "save" | "log" | "quit") && !line.starts_with("save ") {
+        let words: Vec<&str> = line.split_whitespace().collect();
+        // Tokenized once, up front, so the lockdown allow-list sees exactly
+        // what the dispatch below sees (same split_whitespace tokens) --
+        // matching against the raw `line` string here previously missed the
+        // `q` alias `["quit"] | ["q"]` honors below, and could disagree with
+        // the dispatch on anything but single-space-separated input.
+        if self.locked && !matches!(words.as_slice(), ["save"] | ["save", _] | ["log"] | ["quit"] | ["q"]) {
             return self.out(
                 "session locked after a driver/engine fault — only save/log/quit".to_string(),
                 false,
             );
         }
-        let words: Vec<&str> = line.split_whitespace().collect();
         match words.as_slice() {
             [] => self.out(String::new(), false),
             ["quit"] | ["q"] => StepOutput { text: "bye\n".to_string(), quit: true },
@@ -479,5 +484,37 @@ mod tests {
             let p1 = r.step("more").text;
             assert_ne!(p0, p1);
         }
+    }
+
+    /// Lockdown restricts to exactly `save`/`log`/`quit` (and the `q` alias
+    /// the normal dispatch already honors) -- view commands and numeric
+    /// picks are rejected and change nothing, while `log`/`save` still work.
+    #[test]
+    fn locked_mode_allows_only_save_log_quit_and_honors_q_alias() {
+        let mut r = repl_2p(4);
+        r.locked = true;
+        let events_before = r.session.record().events.len();
+        let state_before = r.session.state().clone();
+
+        let out = r.step("board");
+        assert!(out.text.contains("locked"), "{}", out.text);
+        assert_eq!(*r.session.state(), state_before);
+        assert_eq!(r.session.record().events.len(), events_before);
+
+        let out = r.step("0");
+        assert!(out.text.contains("locked"), "{}", out.text);
+        assert_eq!(*r.session.state(), state_before);
+        assert_eq!(r.session.record().events.len(), events_before);
+
+        let out = r.step("log");
+        assert!(!out.text.contains("only save/log/quit"), "{}", out.text);
+
+        let path = std::env::temp_dir().join(format!("yokohama_repl_locked_{}.json", std::process::id()));
+        let out = r.step(&format!("save {}", path.display()));
+        assert!(out.text.contains("Saved"), "{}", out.text);
+        assert!(path.exists());
+        std::fs::remove_file(&path).ok();
+
+        assert!(r.step("q").quit, "'q' must quit while locked, same as 'quit'");
     }
 }
