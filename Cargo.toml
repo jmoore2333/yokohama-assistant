@@ -3,6 +3,7 @@ resolver = "2"
 members = [
     "crates/yokohama-core",
     "crates/gen-data",
+    "crates/yokohama-cli",
 ]
 
 [workspace.package]
