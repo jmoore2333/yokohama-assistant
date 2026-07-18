@@ -1,6 +1,7 @@
 //! Pending-choice queue mechanics (design 2026-07-18 §5.1).
 use crate::types::*;
 use crate::game::*;
+use crate::game::actions::*;
 
 /// Resolution moves for the HEAD pending choice. Non-empty by construction
 /// (every choice type offers decline or has >=1 outcome, else it was
@@ -37,6 +38,12 @@ fn generate_choice_resolutions_for(state: &GameState, choice: &PendingChoice, _r
                 .collect();
             moves.push(Move::DeclineAssistantMove);
             moves
+        }
+        PendingChoice::ChurchSpace { total_faith } => {
+            eligible_church_spaces(&state.church_track, *total_faith, state.config.player_count)
+                .into_iter()
+                .map(|space| Move::ChooseChurchSpace { space })
+                .collect()
         }
     }
 }
@@ -168,6 +175,9 @@ pub fn resolve_choice_move(state: &mut GameState, mv: &Move, rules: &Rules) -> R
             *p.assistants.on_board.entry(*to).or_insert(0) += 1;
         }
         (PendingChoice::AssistantMove, Move::DeclineAssistantMove) => {}
+        (PendingChoice::ChurchSpace { .. }, Move::ChooseChurchSpace { space }) => {
+            place_church_assistant(state, player, *space, rules);
+        }
         _ => unreachable!("membership check above guarantees type match"),
     }
     Ok(())

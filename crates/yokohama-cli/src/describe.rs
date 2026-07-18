@@ -287,6 +287,9 @@ pub fn describe_move(mv: &Move, state: &GameState, rules: &Rules) -> String {
             format!("Move an assistant from {from_label} to {} (reward move)", area_label(state, *to))
         }
         Move::DeclineAssistantMove => "Decline the assistant move".to_string(),
+        Move::ChooseChurchSpace { space } => {
+            format!("Place on Church faith-{space} space ({} VP)", ChurchTrack::vp_reward(*space))
+        }
     }
 }
 
@@ -380,6 +383,16 @@ mod tests {
         assert!(!from_area.contains("hand"), "{from_area}");
 
         assert_eq!(describe_move(&Move::DeclineAssistantMove, &state, &rules), "Decline the assistant move");
+    }
+
+    #[test]
+    fn church_space_choice_reads_as_plain_words_with_vp() {
+        let state = state_2p();
+        let rules = Rules::standard();
+        assert_eq!(
+            describe_move(&Move::ChooseChurchSpace { space: 6 }, &state, &rules),
+            format!("Place on Church faith-6 space ({} VP)", ChurchTrack::vp_reward(6))
+        );
     }
 
     #[test]

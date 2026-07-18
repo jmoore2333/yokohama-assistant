@@ -548,10 +548,12 @@ fn generate_lab_actions(state: &GameState, player: PlayerId, power: u8, lab: &La
 /// combinations the player can both AFFORD (stock/assistant - hand OR the
 /// acting area itself, per `validate_church_action`) and that the executor
 /// would actually ACCEPT (total Faith >= 4 with an eligible empty space, per
-/// `highest_eligible_church_space`) -- reusing both pure executor helpers
-/// directly so enumeration can never drift from `execute_church_action`'s
-/// own acceptance criteria. Skip is always legal and always offered (Task
-/// 16/17 decision-log optionality ruling).
+/// `eligible_church_spaces` -- feasibility only, not WHICH space; Task 4
+/// defers that pick to a `ChooseChurchSpace` follow-up move when >=2
+/// qualify) -- reusing both pure executor helpers directly so enumeration
+/// can never drift from `execute_church_action`'s own acceptance criteria.
+/// Skip is always legal and always offered (Task 16/17 decision-log
+/// optionality ruling).
 fn generate_church_actions(state: &GameState, player: PlayerId, power: u8, area: AreaId) -> Vec<Move> {
     let mut moves = Vec::new();
 
@@ -568,7 +570,7 @@ fn generate_church_actions(state: &GameState, player: PlayerId, power: u8, area:
         }
 
         let total_faith = calculate_church_faith(power, copper, silk, tea, seafood, yen, imported_good);
-        if highest_eligible_church_space(&state.church_track, total_faith, state.config.player_count).is_none() {
+        if eligible_church_spaces(&state.church_track, total_faith, state.config.player_count).is_empty() {
             continue;
         }
 

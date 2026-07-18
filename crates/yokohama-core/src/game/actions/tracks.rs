@@ -113,26 +113,29 @@ pub fn validate_church_action(
     Ok(())
 }
 
-/// Highest empty Church space with value <= `total_faith` (v1 auto-place:
-/// choosing a lower space is weakly dominated and unmodeled; any faith
-/// beyond the chosen space's value is lost). In 2-player games the
-/// faith-7 space is pre-blocked by a printed dummy pawn — an eligibility
-/// rule, not a `slots` entry, so arrival-order and end-trigger pawn counts
-/// (which count real players only) stay untouched. Faith below 4 has no
-/// eligible space; faith above 11 is capped at the top of the track.
+/// Empty Church spaces with value <= `total_faith`, ascending. In
+/// 2-player games the faith-7 space is pre-blocked by a printed dummy pawn
+/// — an eligibility rule, not a `slots` entry, so arrival-order and
+/// end-trigger pawn counts (which count real players only) stay untouched.
+/// Faith below 4 yields no eligible space; faith above 11 is capped at the
+/// top of the track.
 ///
-/// `pub` (Task 17): reused directly by the Church legal-move generator so
-/// enumeration can never drift from `execute_church_action`'s own
-/// acceptance criteria.
-pub fn highest_eligible_church_space(track: &ChurchTrack, total_faith: u8, player_count: u8) -> Option<u8> {
+/// `pub` (Task 17, extended Task 4): reused directly by the Church
+/// legal-move generator (feasibility only) and by `execute_church_action` /
+/// the `ChurchSpace` choice generator (the actual candidate set), so
+/// enumeration can never drift from the executor's own acceptance criteria.
+/// Supersedes `highest_eligible_church_space`: choosing a lower space is no
+/// longer auto-decided by the executor — Task 4 defers that pick to the
+/// player via `PendingChoice::ChurchSpace` whenever >=2 spaces qualify.
+pub fn eligible_church_spaces(track: &ChurchTrack, total_faith: u8, player_count: u8) -> Vec<u8> {
     let ceiling = total_faith.min(11);
-    (4..=ceiling).rev().find(|&faith| {
+    (4..=ceiling).filter(|&faith| {
         if player_count == 2 && faith == 7 {
             return false;
         }
         let index = ChurchTrack::faith_to_index(faith).expect("4..=11 always maps to a valid index");
         track.slots[index].is_none()
-    })
+    }).collect()
 }
 
 /// Execute Church action: resolve the acting area (mirrors
@@ -140,17 +143,16 @@ pub fn highest_eligible_church_space(track: &ChurchTrack, total_faith: u8, playe
 /// at the mercenary target area, not the president's; Church has only one
 /// area, so this resolution exists solely to confirm the actor is
 /// actually there), validate contributions/assistant, compute total
-/// Faith, auto-place on the highest empty eligible space, pay contributed
-/// goods, lock the assistant, and award VP (plus Winery bonus per owned
-/// copy).
+/// Faith, pay contributed goods, and either place inline (exactly one
+/// eligible space) or defer the pick to the player via
+/// `PendingChoice::ChurchSpace` (design 2026-07-18 §5.2, Task 4) — the
+/// assistant is NOT consumed yet in the deferred case; see
+/// `place_church_assistant`.
 ///
 /// If total Faith < 4, no eligible empty space exists, or the player has
-/// no assistant in hand, the action is ILLEGAL (v1 semantic: goods are
-/// never paid for a placement that doesn't happen, keeping the legal-move
-/// projection conservative).
-///
-/// Per-space movement riders (faith 4-11: 1,1,2,2,2,2,3,3) are v1 no-ops,
-/// consistent with the standing movement-icon policy — unmodeled here.
+/// no assistant available (hand or acting area), the action is ILLEGAL
+/// (v1 semantic: goods are never paid for a placement that doesn't happen,
+/// keeping the legal-move projection conservative).
 #[allow(clippy::too_many_arguments)]
 pub fn execute_church_action(
     state: &mut GameState,
@@ -180,19 +182,14 @@ pub fn execute_church_action(
     validate_church_action(state, player, area, copper, silk, tea, seafood, yen, imported_good)?;
 
     let total_faith = calculate_church_faith(power, copper, silk, tea, seafood, yen, imported_good);
-    let target_faith =
-        highest_eligible_church_space(&state.church_track, total_faith, state.config.player_count)
-            .ok_or("No eligible Church space for this Faith total")?;
+    let spaces = eligible_church_spaces(&state.church_track, total_faith, state.config.player_count);
+    if spaces.is_empty() {
+        return Err("No eligible Church space for this Faith total");
+    }
 
-    // Computed via immutable borrows before any mutation below.
-    let winery_bonus = church_vp_bonus(state, player, &rules.techs);
-    let base_vp = ChurchTrack::vp_reward(target_faith) as u32;
-    let index = ChurchTrack::faith_to_index(target_faith).expect("target_faith always in 4..=11");
-    let arrival_order = state.church_track.next_arrival_order;
-
-    state.church_track.slots[index] = Some(ChurchSlot { player, arrival_order });
-    state.church_track.next_arrival_order += 1;
-
+    // Pay contributed goods now, regardless of whether placement resolves
+    // inline below or is deferred behind a ChurchSpace choice -- the
+    // player already committed these when taking the action.
     let p = state.player_mut(player);
     if copper { p.copper -= 1; }
     if silk { p.silk -= 1; }
@@ -200,12 +197,54 @@ pub fn execute_church_action(
     if seafood { p.seafood -= 1; }
     if yen { p.money -= 1; }
     if imported_good { p.imported_goods -= 1; }
-    take_church_or_customs_assistant(p, area);
-    p.assistants.on_church += 1;
-    p.church_positions.push(target_faith);
-    p.victory_points += base_vp + winery_bonus;
+
+    match spaces.len() {
+        0 => unreachable!("validated non-empty above"),
+        1 => place_church_assistant(state, player, spaces[0], rules),
+        _ => state.pending_choices.push(PendingChoice::ChurchSpace { total_faith }),
+    }
 
     Ok(())
+}
+
+/// Placement tail for a resolved Church space: called either inline from
+/// `execute_church_action` (exactly one eligible space) or from
+/// `ChooseChurchSpace` resolution (`game::choices::resolve_choice_move`).
+/// Consumes the assistant (hand-preferred, acting-area fallback per I3 —
+/// the acting area is resolved via the SAME mercenary-aware idiom
+/// `execute_church_action` uses, since a deferred resolution can land in a
+/// later `apply_move` call after the triggering action), records the slot
+/// with arrival order, awards the space's VP plus Winery bonus per owned
+/// copy, then queues the space's movement riders (`ChurchTrack::movement_rider`)
+/// as `AssistantMove` choices (design 2026-07-18 §5.2).
+pub fn place_church_assistant(state: &mut GameState, player: PlayerId, space: u8, rules: &Rules) {
+    let area = if state.is_mercenary_action {
+        state.mercenary_target_area.expect("mercenary sub-turn always has a target area")
+    } else {
+        match state.player(player).president_location {
+            PresidentLocation::OnBoard(a) => a,
+            _ => unreachable!("execute_church_action already validated the president is on board"),
+        }
+    };
+
+    // Computed via immutable borrow before any mutation below.
+    let winery_bonus = church_vp_bonus(state, player, &rules.techs);
+    let base_vp = ChurchTrack::vp_reward(space) as u32;
+    let index = ChurchTrack::faith_to_index(space).expect("space always in 4..=11");
+    let arrival_order = state.church_track.next_arrival_order;
+
+    state.church_track.slots[index] = Some(ChurchSlot { player, arrival_order });
+    state.church_track.next_arrival_order += 1;
+
+    let p = state.player_mut(player);
+    take_church_or_customs_assistant(p, area);
+    p.assistants.on_church += 1;
+    p.church_positions.push(space);
+    p.victory_points += base_vp + winery_bonus;
+
+    for _ in 0..ChurchTrack::movement_rider(space) {
+        push_choice(state, PendingChoice::AssistantMove, rules);
+    }
 }
 
 /// Maximum imported goods payable at Customs based on power.
@@ -355,6 +394,7 @@ mod tests {
     use crate::types::*;
     use crate::game::apply_move::apply_move;
     use crate::game::cards::TechRegistry;
+    use crate::game::get_legal_moves;
     use std::collections::BTreeMap;
 
     fn create_test_state() -> GameState {
@@ -458,41 +498,41 @@ mod tests {
     }
 
     #[test]
-    fn test_highest_eligible_church_space_basic() {
+    fn test_eligible_church_spaces_basic() {
         let track = ChurchTrack::new();
-        assert_eq!(highest_eligible_church_space(&track, 5, 3), Some(5));
+        assert_eq!(eligible_church_spaces(&track, 5, 3), vec![4, 5]);
     }
 
     #[test]
-    fn test_highest_eligible_church_space_falls_back_when_occupied() {
+    fn test_eligible_church_spaces_excludes_occupied() {
         let mut track = ChurchTrack::new();
         let idx5 = ChurchTrack::faith_to_index(5).unwrap();
         track.slots[idx5] = Some(ChurchSlot { player: PlayerId::new(1), arrival_order: 0 });
-        assert_eq!(highest_eligible_church_space(&track, 5, 3), Some(4));
+        assert_eq!(eligible_church_spaces(&track, 5, 3), vec![4]);
     }
 
     #[test]
-    fn test_highest_eligible_church_space_below_4_is_none() {
+    fn test_eligible_church_spaces_below_4_is_empty() {
         let track = ChurchTrack::new();
-        assert_eq!(highest_eligible_church_space(&track, 3, 3), None);
+        assert_eq!(eligible_church_spaces(&track, 3, 3), Vec::<u8>::new());
     }
 
     #[test]
-    fn test_highest_eligible_church_space_none_when_all_occupied() {
+    fn test_eligible_church_spaces_empty_when_all_occupied() {
         let mut track = ChurchTrack::new();
         for faith in 4..=5 {
             let idx = ChurchTrack::faith_to_index(faith).unwrap();
             track.slots[idx] = Some(ChurchSlot { player: PlayerId::new(1), arrival_order: 0 });
         }
-        assert_eq!(highest_eligible_church_space(&track, 5, 3), None);
+        assert_eq!(eligible_church_spaces(&track, 5, 3), Vec::<u8>::new());
     }
 
     #[test]
-    fn test_highest_eligible_church_space_2p_blocks_faith_7() {
+    fn test_eligible_church_spaces_2p_blocks_faith_7() {
         let track = ChurchTrack::new();
-        assert_eq!(highest_eligible_church_space(&track, 7, 2), Some(6));
+        assert_eq!(eligible_church_spaces(&track, 7, 2), vec![4, 5, 6]);
         // 3P (and 4P): no dummy pawn, faith-7 is reachable.
-        assert_eq!(highest_eligible_church_space(&track, 7, 3), Some(7));
+        assert_eq!(eligible_church_spaces(&track, 7, 3), vec![4, 5, 6, 7]);
     }
 
     #[test]
@@ -503,17 +543,25 @@ mod tests {
         state.players[0].copper = 1;
         state.players[0].silk = 1;
 
-        // Power 3 + copper + silk = faith 5.
+        // Power 3 + copper + silk = faith 5 -> 2 eligible spaces (4,5) on a
+        // fresh track -> goods paid, placement deferred behind a
+        // ChurchSpace choice (design §5.2); the assistant is not consumed yet.
         let result = execute_church_action(
             &mut state, PlayerId::new(0), 3, true, true, false, false, false, false, &rules,
         );
         assert!(result.is_ok());
+        assert_eq!(state.pending_choices, vec![PendingChoice::ChurchSpace { total_faith: 5 }]);
+        assert_eq!(state.players[0].copper, 0);
+        assert_eq!(state.players[0].silk, 0);
+        assert_eq!(state.players[0].assistants.in_hand, 8, "not consumed until the space choice resolves");
+
+        // Resolve as if the player picked space 5 -- proves the full
+        // placement tail (assistant consumption, VP, slot, arrival order).
+        place_church_assistant(&mut state, PlayerId::new(0), 5, &rules);
 
         let p = &state.players[0];
         assert_eq!(p.assistants.in_hand, 7); // started at 8
         assert_eq!(p.assistants.on_church, 1);
-        assert_eq!(p.copper, 0);
-        assert_eq!(p.silk, 0);
         assert_eq!(p.church_positions, vec![5]);
         assert_eq!(p.victory_points, ChurchTrack::vp_reward(5) as u32);
         assert_eq!(
@@ -603,10 +651,15 @@ mod tests {
         state.players[0].assistants.in_hand = 0;
         state.players[0].assistants.on_board.insert(area, 2);
 
+        // Power 5, no goods = faith 5 -> 2 eligible spaces -> defers to a
+        // ChurchSpace choice; the I3 fallback happens at placement (below).
         let result = execute_church_action(
             &mut state, PlayerId::new(0), 5, false, false, false, false, false, false, &rules,
         );
         assert!(result.is_ok());
+        assert_eq!(state.players[0].assistants.on_board.get(&area), Some(&2), "not consumed until placement resolves");
+
+        place_church_assistant(&mut state, PlayerId::new(0), 5, &rules);
 
         let p = &state.players[0];
         assert_eq!(p.assistants.in_hand, 0, "hand was already empty and stays empty");
@@ -630,6 +683,9 @@ mod tests {
             &mut state, PlayerId::new(0), 5, false, false, false, false, false, false, &rules,
         );
         assert!(result.is_ok());
+
+        place_church_assistant(&mut state, PlayerId::new(0), 5, &rules);
+
         assert_eq!(state.players[0].assistants.on_board.get(&area), None);
         assert_eq!(state.players[0].assistants.on_church, 1);
     }
@@ -649,6 +705,8 @@ mod tests {
             &mut state, PlayerId::new(0), 5, false, false, false, false, false, false, &rules,
         );
         assert!(result.is_ok());
+
+        place_church_assistant(&mut state, PlayerId::new(0), 5, &rules);
 
         let p = &state.players[0];
         assert_eq!(p.assistants.in_hand, 2, "hand pawn spent, not the acting-area one");
@@ -699,6 +757,7 @@ mod tests {
         execute_church_action(
             &mut state, PlayerId::new(0), 5, false, false, false, false, false, false, &rules,
         ).unwrap();
+        place_church_assistant(&mut state, PlayerId::new(0), 5, &rules);
         assert_eq!(state.players[0].assistants.on_church, 1);
         assert_eq!(state.players[0].assistants.on_board.get(&area), None);
 
@@ -718,11 +777,19 @@ mod tests {
         state.players[0].copper = 1;
         state.players[0].silk = 1;
 
-        // Power 5 + copper + silk = faith 7, but 2P blocks the faith-7 space.
+        // Power 5 + copper + silk = faith 7, but 2P blocks the faith-7 space
+        // -- 3 spaces (4,5,6) remain eligible, so placement defers to a
+        // ChurchSpace choice (design §5.2) rather than auto-placing.
         let result = execute_church_action(
             &mut state, PlayerId::new(0), 5, true, true, false, false, false, false, &rules,
         );
         assert!(result.is_ok());
+        assert_eq!(state.pending_choices, vec![PendingChoice::ChurchSpace { total_faith: 7 }]);
+        let legal = get_legal_moves(&state, &rules);
+        assert!(!legal.contains(&Move::ChooseChurchSpace { space: 7 }), "2P dummy pawn must exclude faith-7");
+
+        // Resolve to space 6 (the old auto-place target) to prove placement still works end to end.
+        place_church_assistant(&mut state, PlayerId::new(0), 6, &rules);
         assert_eq!(state.players[0].church_positions, vec![6]);
     }
 
@@ -788,6 +855,183 @@ mod tests {
 
         let base_vp = ChurchTrack::vp_reward(4) as u32;
         assert_eq!(state.players[0].victory_points, base_vp + 6); // 2 copies x 3 VP
+    }
+
+    // --- Task 4: ChurchSpace choice + movement riders (design 2026-07-18 §5.2) ---
+
+    /// Church move shared by the ChurchSpace-choice fixtures below: fixed
+    /// contributions of copper+silk+tea (+3 Faith) so `church_fixture` /
+    /// `church_2p_fixture` can reach Faith totals above the power cap of 5
+    /// (`church_faith_from_power` caps at 5) by varying ONLY
+    /// `current_action_power` -- the single lever those fixtures tune.
+    fn church_power_only_move() -> Move {
+        Move::ExecuteAreaAction {
+            action: AreaAction::Church {
+                copper: true, silk: true, tea: true,
+                seafood: false, yen: false, imported_good: false,
+            },
+        }
+    }
+
+    /// Church area + president there (3P, so the 2P faith-7 dummy never
+    /// interferes), player 0 stocked with the 3 goods `church_power_only_move`
+    /// spends, `current_action_power` set so Faith = power + 3 lands on
+    /// `total_faith` (power = total_faith - 3, always <= 5 for the Faith
+    /// values these tests use). Fresh (empty) Church track --
+    /// `eligible_church_spaces`'s ceiling at `total_faith` naturally limits
+    /// which spaces are ever considered, so nothing needs pre-occupying.
+    fn church_fixture(total_faith: u8) -> (GameState, Rules) {
+        let rules = Rules::empty_for_tests();
+        let mut state = create_test_state_3p();
+        place_president_at_church(&mut state);
+        state.turn_phase = TurnPhase::AreaAction;
+        state.current_action_power = Some(total_faith - 3);
+        state.players[0].copper = 1;
+        state.players[0].silk = 1;
+        state.players[0].tea = 1;
+        (state, rules)
+    }
+
+    /// Faith 4 via the shared move (power 1): a fresh Church track's ceiling
+    /// at Faith 4 naturally admits only space 4 -- the singleton-placement
+    /// case.
+    fn church_single_space_fixture() -> (GameState, Rules) {
+        church_fixture(4)
+    }
+
+    /// 2-player Church fixture at the given Faith total (`create_test_state`
+    /// is the 2P base) -- exercises the printed faith-7 dummy block.
+    fn church_2p_fixture(total_faith: u8) -> (GameState, Rules) {
+        let rules = Rules::empty_for_tests();
+        let mut state = create_test_state(); // 2P by construction
+        place_president_at_church(&mut state);
+        state.turn_phase = TurnPhase::AreaAction;
+        state.current_action_power = Some(total_faith - 3);
+        state.players[0].copper = 1;
+        state.players[0].silk = 1;
+        state.players[0].tea = 1;
+        (state, rules)
+    }
+
+    #[test]
+    fn church_movement_riders_match_decision_log() {
+        assert_eq!((4..=11).map(ChurchTrack::movement_rider).collect::<Vec<_>>(), vec![1,1,2,2,2,2,3,3]);
+    }
+
+    #[test]
+    fn church_with_multiple_eligible_spaces_queues_space_choice() {
+        // Faith 6, spaces 4,5,6 empty -> 3 eligible -> queue, nothing placed yet.
+        let (state, rules) = church_fixture(/*faith yields*/ 6);
+        let s = apply_move(&state, &church_power_only_move(), &rules).unwrap();
+        assert_eq!(s.pending_choices, vec![PendingChoice::ChurchSpace { total_faith: 6 }]);
+        assert_eq!(s.church_track.total_assistants(), 0);
+        let legal = get_legal_moves(&s, &rules);
+        assert_eq!(legal, vec![
+            Move::ChooseChurchSpace { space: 4 },
+            Move::ChooseChurchSpace { space: 5 },
+            Move::ChooseChurchSpace { space: 6 },
+        ]);
+    }
+
+    #[test]
+    fn choosing_church_space_places_scores_and_queues_riders() {
+        let (state, rules) = church_fixture(6);
+        let mid = apply_move(&state, &church_power_only_move(), &rules).unwrap();
+        let s = apply_move(&mid, &Move::ChooseChurchSpace { space: 6 }, &rules).unwrap();
+        assert_eq!(s.church_track.total_assistants(), 1);
+        // faith-6 space: 5 VP (existing vp table) + rider move 2 queued
+        assert_eq!(s.pending_choices, vec![PendingChoice::AssistantMove, PendingChoice::AssistantMove]);
+    }
+
+    #[test]
+    fn church_with_single_eligible_space_places_inline_no_choice_event() {
+        // Faith 4, only space 4 empty-eligible -> inline placement (singleton, design §5.1).
+        let (state, rules) = church_single_space_fixture();
+        let s = apply_move(&state, &church_power_only_move(), &rules).unwrap();
+        assert_eq!(s.church_track.total_assistants(), 1);
+        assert!(s.pending_choices.iter().all(|c| !matches!(c, PendingChoice::ChurchSpace { .. })));
+    }
+
+    #[test]
+    fn church_2p_faith7_dummy_space_never_offered() {
+        let (state, rules) = church_2p_fixture(/*faith*/ 8);
+        let s = apply_move(&state, &church_power_only_move(), &rules).unwrap();
+        let legal = get_legal_moves(&s, &rules);
+        assert!(!legal.contains(&Move::ChooseChurchSpace { space: 7 }));
+    }
+
+    #[test]
+    fn church_space_choice_deferred_across_mercenary_sub_turn_return() {
+        // Task 1 review M3 + I3 coverage: a mercenary Church action with
+        // >=2 eligible spaces queues ChurchSpace; the mercenary sub-turn's
+        // return to the additional-action window must NOT fire until the
+        // WHOLE cascade -- the space choice AND its movement riders -- has
+        // drained (the apply_move deferral gate keys the mercenary teardown
+        // on pending_choices.is_empty() && turn_phase == Recovery, not on
+        // the choice queue alone). Also exercises I3's acting-area fallback
+        // under a mercenary sub-turn: hand is empty, so the assistant must
+        // come from mercenary_target_area (which holds the player's
+        // assistant by definition -- apply_mercenary validates this before
+        // starting the sub-turn).
+        let rules = Rules::empty_for_tests();
+        let mut state = create_test_state_3p();
+        let church_area = AreaId::new(0);
+        let other_area = AreaId::new(1);
+        state.board_layout.areas.insert(church_area, AreaConfig { area_type: AreaType::Church, grid_position: (0, 0) });
+        state.board_layout.areas.insert(other_area, AreaConfig { area_type: AreaType::Bank, grid_position: (0, 1) });
+        state.is_mercenary_action = true;
+        state.mercenary_target_area = Some(church_area);
+        state.mercenary_return_phase = Some(TurnPhase::AdditionalActionSecond);
+        state.turn_phase = TurnPhase::AreaAction;
+        state.current_action_power = Some(3); // + 3 fixed goods (church_power_only_move) = faith 6
+        state.players[0].copper = 1;
+        state.players[0].silk = 1;
+        state.players[0].tea = 1;
+        state.players[0].assistants.in_hand = 0; // I3: forces the acting-area fallback
+        state.players[0].assistants.on_board.insert(church_area, 2); // 1 for placement, 1 left for the rider
+
+        // Church action: pays goods, faith 6 -> 3 eligible spaces -> queues ChurchSpace, places nothing yet.
+        let mid = apply_move(&state, &church_power_only_move(), &rules).unwrap();
+        assert_eq!(mid.pending_choices, vec![PendingChoice::ChurchSpace { total_faith: 6 }]);
+        assert!(mid.is_mercenary_action, "mercenary sub-turn must not have torn down mid-cascade");
+        assert_eq!(mid.turn_phase, TurnPhase::FivePowerBonus);
+
+        // Resolve the space choice: I3 fallback takes the assistant from
+        // the mercenary target area (hand is empty), then queues 2
+        // movement riders (faith-6 rider count) -- still not torn down.
+        let after_space = apply_move(&mid, &Move::ChooseChurchSpace { space: 6 }, &rules).unwrap();
+        assert_eq!(after_space.players[0].assistants.on_board.get(&church_area), Some(&1), "I3 fallback: 1 of 2 area assistants consumed");
+        assert_eq!(after_space.pending_choices, vec![PendingChoice::AssistantMove, PendingChoice::AssistantMove]);
+        assert!(after_space.is_mercenary_action, "still mid-cascade after the space choice");
+        assert_eq!(after_space.turn_phase, TurnPhase::FivePowerBonus);
+
+        // Resolve the first rider: one choice still pending -- sub-turn still up.
+        let after_rider_1 = apply_move(&after_space, &Move::DeclineAssistantMove, &rules).unwrap();
+        assert_eq!(after_rider_1.pending_choices, vec![PendingChoice::AssistantMove]);
+        assert!(after_rider_1.is_mercenary_action, "still mid-cascade after the first rider");
+
+        // Resolve the last rider: the choice queue drains, but turn_phase
+        // is still FivePowerBonus (Choose* moves never touch turn_phase),
+        // so the mercenary return does NOT fire yet -- it's gated on
+        // turn_phase == Recovery, not merely on an empty queue.
+        let after_rider_2 = apply_move(&after_rider_1, &Move::DeclineAssistantMove, &rules).unwrap();
+        assert!(after_rider_2.pending_choices.is_empty());
+        assert!(after_rider_2.is_mercenary_action, "queue drained but still FivePowerBonus, not Recovery yet");
+        assert_eq!(after_rider_2.turn_phase, TurnPhase::FivePowerBonus);
+
+        // Walk the remaining deterministic phase steps (no more choices
+        // queue from these): Skip5PowerBonus -> Building -> SkipBuilding ->
+        // Recovery, whose automatic post-processing gate (pending_choices
+        // empty AND turn_phase == Recovery) fires the mercenary return in
+        // this same call.
+        let after_5power = apply_move(&after_rider_2, &Move::Skip5PowerBonus, &rules).unwrap();
+        assert_eq!(after_5power.turn_phase, TurnPhase::Building);
+        assert!(after_5power.is_mercenary_action);
+
+        let returned = apply_move(&after_5power, &Move::SkipBuilding, &rules).unwrap();
+        assert!(!returned.is_mercenary_action, "mercenary sub-turn torn down once Recovery's gate fires");
+        assert_eq!(returned.turn_phase, TurnPhase::AdditionalActionSecond, "returned to the stored mercenary_return_phase");
+        assert_eq!(returned.mercenary_target_area, None);
     }
 
     #[test]

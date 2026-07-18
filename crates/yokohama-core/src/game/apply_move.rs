@@ -100,7 +100,8 @@ pub fn apply_move(state: &GameState, mv: &Move, rules: &Rules) -> Result<GameSta
         | Move::ChooseWarehouseTake { .. }
         | Move::DeclineWarehouseTake
         | Move::ChooseAssistantMove { .. }
-        | Move::DeclineAssistantMove => {
+        | Move::DeclineAssistantMove
+        | Move::ChooseChurchSpace { .. } => {
             crate::game::choices::resolve_choice_move(&mut new_state, mv, rules)?;
         }
     }
@@ -3271,7 +3272,11 @@ mod tests {
                 copper: true, silk: true, tea: false, seafood: false, yen: false, imported_good: false,
             },
         };
-        let next = apply_move(&state, &mv, &rules).unwrap();
+        let mid = apply_move(&state, &mv, &rules).unwrap();
+        // Faith 5 -> 2 eligible spaces (4,5) on a fresh track -> goods paid,
+        // placement deferred behind a ChurchSpace choice (design §5.2).
+        assert_eq!(mid.pending_choices, vec![PendingChoice::ChurchSpace { total_faith: 5 }]);
+        let next = apply_move(&mid, &Move::ChooseChurchSpace { space: 5 }, &rules).unwrap();
 
         let p = &next.players[0];
         assert_eq!(p.assistants.in_hand, 7);

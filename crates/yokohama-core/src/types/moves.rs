@@ -104,6 +104,7 @@ pub enum Move {
     DeclineWarehouseTake,
     ChooseAssistantMove { from: MoveSource, to: AreaId },
     DeclineAssistantMove,
+    ChooseChurchSpace { space: u8 },
 }
 
 /// Specific area actions.

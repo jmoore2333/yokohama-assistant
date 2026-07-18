@@ -73,6 +73,18 @@ impl ChurchTrack {
     pub fn total_assistants(&self) -> u8 {
         self.slots.iter().filter(|s| s.is_some()).count() as u8
     }
+
+    /// Movement-icon riders per Faith space (decision log 2026-07-17):
+    /// Faith 4-11 -> 1,1,2,2,2,2,3,3. Zero for any other input (no printed
+    /// rider off the track).
+    pub fn movement_rider(space: u8) -> u8 {
+        match space {
+            4 | 5 => 1,
+            6 | 7 | 8 | 9 => 2,
+            10 | 11 => 3,
+            _ => 0,
+        }
+    }
 }
 
 impl Default for ChurchTrack {
