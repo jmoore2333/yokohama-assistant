@@ -3,7 +3,7 @@
 use serde::{Deserialize, Serialize};
 
 use crate::types::{
-    AchievementType, AreaId, Country, OrderCardId, TechCardId,
+    AchievementType, AreaId, Country, OrderCardId, TechCardId, TradeGood,
 };
 
 /// Turn phases in order of execution.
@@ -96,6 +96,10 @@ pub enum Move {
     SkipBuilding,
 
     // Step 6: Recovery is automatic (no move needed)
+
+    // Choice resolutions (design 2026-07-18): legal only while the matching
+    // PendingChoice heads GameState::pending_choices.
+    ChooseAnyGood { good: TradeGood },
 }
 
 /// Specific area actions.

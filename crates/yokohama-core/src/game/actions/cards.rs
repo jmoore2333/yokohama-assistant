@@ -484,6 +484,7 @@ mod tests {
             trigger_reason: None,
             final_round: false,
             trigger_player: None,
+            pending_choices: Vec::new(),
         }
     }
 

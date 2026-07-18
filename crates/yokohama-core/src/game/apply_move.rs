@@ -89,16 +89,22 @@ pub fn apply_move(state: &GameState, mv: &Move, rules: &Rules) -> Result<GameSta
         }
 
         Move::FulfillOrder { order_id } => {
-            apply_fulfill_order(&mut new_state, *order_id, Some(&rules.orders), &rules.techs)?;
+            apply_fulfill_order(&mut new_state, *order_id, rules)?;
         }
 
         Move::FulfillAchievement { achievement } => {
             apply_fulfill_achievement(&mut new_state, *achievement)?;
         }
+
+        Move::ChooseAnyGood { .. } => {
+            crate::game::choices::resolve_choice_move(&mut new_state, mv, rules)?;
+        }
     }
 
-    // Handle Recovery phase automatically
-    if new_state.turn_phase == TurnPhase::Recovery {
+    // Handle Recovery phase automatically -- deferred while a choice from
+    // this turn's reward is still unresolved (design 2026-07-18 §5.1-5.2):
+    // resolving the last queued choice runs Recovery in that same apply.
+    if new_state.pending_choices.is_empty() && new_state.turn_phase == TurnPhase::Recovery {
         apply_recovery(&mut new_state);
 
         // Check if this was a mercenary sub-turn
@@ -715,13 +721,12 @@ fn apply_build_shophouse(state: &mut GameState, slot: u8, rules: &Rules) -> Resu
         .unwrap_or_default();
 
     // Mining Technology bonus (KB "applies to": Building Site rewards) fires
-    // on any copper received from this space, whether via the explicit
-    // copper field or the any-good-auto-copper simplification (apply_any_good
-    // always resolves any_good to copper in v1). Combined into a single
-    // receipt total so a space with both fields doesn't double the flat
-    // per-copy bonus. Computed before the player is mutably borrowed below.
-    let total_base_copper = reward.copper + reward.any_good;
-    let mining_bonus = copper_bonus(state, player, total_base_copper, &rules.techs);
+    // on the EXPLICIT copper field only. any_good no longer auto-resolves to
+    // copper -- it queues a player choice instead, and (if later resolved to
+    // Copper) is its OWN separate receipt, mining-bonused independently at
+    // resolution time (design 2026-07-18 §5.3-2). Computed before the player
+    // is mutably borrowed below.
+    let mining_bonus = copper_bonus(state, player, reward.copper, &rules.techs);
     // Gaslight (C4 final-review fix): pure passive, no player choice, same
     // class as Winery/Brickyard - computed before the mutable borrow below.
     let gaslight_bonus = building_vp_bonus(state, player, true, &rules.techs);
@@ -732,8 +737,8 @@ fn apply_build_shophouse(state: &mut GameState, slot: u8, rules: &Rules) -> Resu
     }
     p.shophouses.in_hand -= 1;
     p.shophouses.built.insert(area, slot);
-    apply_space_reward(p, &reward, mining_bonus);
-    p.victory_points += gaslight_bonus;
+    apply_space_reward(state, player, &reward, mining_bonus);
+    state.player_mut(player).victory_points += gaslight_bonus;
 
     // Update building site
     if let Some(site) = state.board_layout.building_sites.get_mut(&area) {
@@ -891,16 +896,6 @@ fn apply_mercenary(
     Ok(())
 }
 
-/// Applies "any trade good" reward tokens (order `any_trade_good`, space
-/// `any_good`).
-///
-/// v1 simplification: the player should choose which of the four trade goods
-/// to receive; for now we auto-assign to copper. A full implementation would
-/// need a separate move type to let the player pick.
-fn apply_any_good(p: &mut PlayerState, n: u8) {
-    p.copper += n as u32;
-}
-
 /// Applies Warehouse reward icons (order `warehouse_tokens`, space
 /// `warehouse_tokens`): moves up to `n` assistants from warehouse to hand
 /// (fewer if the warehouse runs out; never an error).
@@ -918,31 +913,33 @@ pub fn apply_warehouse_takes(p: &mut PlayerState, n: u8) {
 
 /// Applies a Shophouse space's full reward when a Shophouse is built there.
 /// `mining_bonus` is the caller-precomputed Mining Technology flat bonus (see
-/// `copper_bonus`) for this reward's total copper receipt — combining the
-/// explicit `copper` field and the any_good-auto-copper simplification so it
-/// isn't double-applied; computed before the player was mutably borrowed.
-fn apply_space_reward(p: &mut PlayerState, reward: &SpaceReward, mining_bonus: u8) {
+/// `copper_bonus`) for the reward's EXPLICIT copper field only; any_good no
+/// longer auto-resolves to copper here -- it queues an `AnyGood` choice per
+/// icon instead (design 2026-07-18 §5.1/§5.3-2), which is its own separate
+/// receipt if later resolved to Copper (see `resolve_choice_move`).
+fn apply_space_reward(state: &mut GameState, player: PlayerId, reward: &SpaceReward, mining_bonus: u8) {
+    let p = state.player_mut(player);
     p.victory_points += reward.vp as u32;
     p.money += reward.yen as u32;
     p.seafood += reward.seafood as u32;
     p.tea += reward.tea as u32;
     p.silk += reward.silk as u32;
-    p.copper += reward.copper as u32;
-    apply_any_good(p, reward.any_good);
-    p.copper += mining_bonus as u32;
+    p.copper += reward.copper as u32 + mining_bonus as u32;
     apply_warehouse_takes(p, reward.warehouse_tokens);
     // Movement icon (rulebook p.10): documented no-op in v1. The icon grants
     // an optional assistant move the player may decline, and declining is a
     // legal play; v1 has no move encoding for that choice, and auto-resolving
     // it (e.g. recovering assistants to hand) could actively harm the player.
     // Choice encoding is scheduled for Phase 2.
+    for _ in 0..reward.any_good {
+        state.pending_choices.push(PendingChoice::AnyGood);
+    }
 }
 
 fn apply_fulfill_order(
     state: &mut GameState,
     order_id: OrderCardId,
-    order_registry: Option<&OrderRegistry>,
-    tech_registry: &TechRegistry,
+    rules: &Rules,
 ) -> Result<(), MoveError> {
     let player = state.current_player;
     let p = state.player(player);
@@ -953,12 +950,9 @@ fn apply_fulfill_order(
     }
 
     // Look up order details from registry
-    let order = match order_registry {
-        Some(registry) => match registry.get(order_id) {
-            Some(o) => o,
-            None => return Err(MoveError::RuleViolation("Order card not found in registry")),
-        },
-        None => return Err(MoveError::RuleViolation("OrderRegistry required for order fulfillment")),
+    let order = match rules.orders.get(order_id) {
+        Some(o) => o,
+        None => return Err(MoveError::RuleViolation("Order card not found in registry")),
     };
 
     // Clone requirements, rewards and country before mutable borrow
@@ -975,6 +969,12 @@ fn apply_fulfill_order(
         return Err(MoveError::RuleViolation("Insufficient trade goods to fulfill order"));
     }
 
+    // Mining Technology bonus for the EXPLICIT copper reward -- its own
+    // receipt, fired here at the triggering move. Any any_trade_good the
+    // player later resolves to Copper is a SEPARATE receipt, mining-bonused
+    // independently at choice-resolution time (design 2026-07-18 §5.3-2).
+    let mining_bonus = copper_bonus(state, player, rewards.copper, &rules.techs);
+
     // Deduct trade goods
     let p = state.player_mut(player);
     p.copper -= req.copper as u32;
@@ -986,12 +986,11 @@ fn apply_fulfill_order(
     p.victory_points += rewards.victory_points as u32;
     p.money += rewards.money as u32;
     p.imported_goods += rewards.imported_goods as u32;
-    p.copper += rewards.copper as u32;
+    p.copper += rewards.copper as u32 + mining_bonus as u32;
     p.silk += rewards.silk as u32;
     p.tea += rewards.tea as u32;
     p.seafood += rewards.seafood as u32;
 
-    apply_any_good(p, rewards.any_trade_good);
     apply_warehouse_takes(p, rewards.warehouse_tokens);
 
     // Movement icon (rulebook p.10): documented no-op in v1. The icon grants
@@ -1004,20 +1003,23 @@ fn apply_fulfill_order(
     p.order_cards_in_hand.retain(|&id| id != order_id);
     p.completed_orders.push(order_id);
 
+    // Any-good reward: one AnyGood choice per icon (design 2026-07-18 §5.1).
+    for _ in 0..rewards.any_trade_good {
+        push_choice(state, PendingChoice::AnyGood, rules);
+    }
+
     // Ball (+2 VP) and Language School (+1 Yen) trigger on every completed
     // Order, stacking per owned physical copy (see ball_vp_bonus /
     // language_school_yen_bonus).
-    let ball_bonus = ball_vp_bonus(state, player, tech_registry);
+    let ball_bonus = ball_vp_bonus(state, player, &rules.techs);
     state.player_mut(player).victory_points += ball_bonus;
-    let language_school_bonus = language_school_yen_bonus(state, player, tech_registry);
+    let language_school_bonus = language_school_yen_bonus(state, player, &rules.techs);
     state.player_mut(player).money += language_school_bonus;
 
     // Foreign Mercenary eligibility (rulebook p.8 "Matching Country icons"):
     // re-run the same country-icon check Lab acquisition uses
     // (apply_lab_acquisition_bonuses), for the just-completed order's country.
-    if let Some(order_registry) = order_registry {
-        check_mercenary_eligibility(state, player, country, order_registry, tech_registry);
-    }
+    check_mercenary_eligibility(state, player, country, &rules.orders, &rules.techs);
 
     Ok(())
 }
@@ -1102,6 +1104,7 @@ mod tests {
             trigger_reason: None,
             final_round: false,
             trigger_player: None,
+            pending_choices: Vec::new(),
         }
     }
 
@@ -2845,11 +2848,19 @@ mod tests {
 
         let result = apply_move(&state, &Move::BuildShophouse { slot: 2 }, &rules);
         assert!(result.is_ok());
-        let new_state = result.unwrap();
+        let mid = result.unwrap();
 
-        assert_eq!(new_state.players[0].copper, starting_copper + 1);
-        assert_eq!(new_state.players[0].assistants.in_hand, starting_hand + 1);
-        assert_eq!(new_state.players[0].assistants.in_warehouse, starting_warehouse - 1);
+        // any_good no longer auto-grants copper (design §5.3-2): it queues a
+        // choice instead. warehouse_tokens is unaffected -- it still takes
+        // immediately, since it isn't part of the choice queue.
+        assert_eq!(mid.pending_choices, vec![PendingChoice::AnyGood]);
+        assert_eq!(mid.players[0].copper, starting_copper);
+        assert_eq!(mid.players[0].assistants.in_hand, starting_hand + 1);
+        assert_eq!(mid.players[0].assistants.in_warehouse, starting_warehouse - 1);
+
+        let done = apply_move(&mid, &Move::ChooseAnyGood { good: TradeGood::Copper }, &rules).unwrap();
+        assert_eq!(done.players[0].copper, starting_copper + 1);
+        assert!(done.pending_choices.is_empty());
     }
 
     #[test]
@@ -2910,14 +2921,16 @@ mod tests {
         rules.techs.insert(mining_tech_fixture(), "tech_mining");
         state.players[0].technologies.push(TechCardId(1));
 
-        let result = apply_move(&state, &Move::BuildShophouse { slot: 0 }, &rules);
-        assert!(result.is_ok());
-        let new_state = result.unwrap();
+        let mid = apply_move(&state, &Move::BuildShophouse { slot: 0 }, &rules).unwrap();
+        // any_good queues a choice instead of auto-granting copper at build
+        // time (design §5.3-2).
+        assert_eq!(mid.pending_choices, vec![PendingChoice::AnyGood]);
+        assert_eq!(mid.players[0].copper, starting_copper);
 
-        // any_good auto-resolves to 1 copper (v1 simplification) + 1 Mining bonus.
-        // Mining applies here because the auto-picked good IS copper received
-        // from a Building Site reward (KB "applies to" list).
-        assert_eq!(new_state.players[0].copper, starting_copper + 2);
+        // Resolving the choice as Copper: 1 base + 1 Mining bonus (1 owned
+        // copy). Mining applies because the CHOSEN good IS copper.
+        let done = apply_move(&mid, &Move::ChooseAnyGood { good: TradeGood::Copper }, &rules).unwrap();
+        assert_eq!(done.players[0].copper, starting_copper + 2);
     }
 
     #[test]
@@ -2946,11 +2959,15 @@ mod tests {
     }
 
     #[test]
-    fn test_build_shophouse_copper_and_any_good_combined_mining_bonus_not_doubled() {
-        // Guards against computing the Mining bonus separately for the copper
-        // field and the any_good field and summing both: that would double
-        // the flat per-copy bonus when a single space grants copper via two
-        // icons in the same reward. It must fire once per receipt event.
+    fn test_build_shophouse_copper_and_any_good_are_separate_mining_receipts() {
+        // Design 2026-07-18 §5.3-2: Mining Technology receipts are per-icon.
+        // A space with BOTH an explicit copper field and an any_good field
+        // now produces TWO separate copper-receipt events -- the explicit
+        // field at build time, and (if resolved to Copper) the any-good
+        // choice at resolution time -- each independently eligible for the
+        // flat per-copy Mining bonus. This supersedes the old "combined
+        // receipt" precompute that fired the bonus once for both fields
+        // together (that precompute is dismantled by this task).
         let mut state = create_minimal_state(2);
         let area = AreaId::new(0);
         state.players[0].president_location = PresidentLocation::OnBoard(area);
@@ -2964,12 +2981,14 @@ mod tests {
         rules.techs.insert(mining_tech_fixture(), "tech_mining");
         state.players[0].technologies.push(TechCardId(1));
 
-        let result = apply_move(&state, &Move::BuildShophouse { slot: 0 }, &rules);
-        assert!(result.is_ok());
-        let new_state = result.unwrap();
+        let mid = apply_move(&state, &Move::BuildShophouse { slot: 0 }, &rules).unwrap();
+        // Explicit copper receipt fires immediately: 1 base + 1 Mining bonus.
+        assert_eq!(mid.players[0].copper, starting_copper + 2);
+        assert_eq!(mid.pending_choices, vec![PendingChoice::AnyGood]);
 
-        // 1 (copper field) + 1 (any_good auto-copper) + 1 Mining bonus ONCE = 3.
-        assert_eq!(new_state.players[0].copper, starting_copper + 3);
+        let done = apply_move(&mid, &Move::ChooseAnyGood { good: TradeGood::Copper }, &rules).unwrap();
+        // Any-good-as-copper is its OWN receipt: another 1 base + 1 Mining bonus.
+        assert_eq!(done.players[0].copper, starting_copper + 4);
     }
 
     #[test]
@@ -3613,5 +3632,140 @@ mod tests {
         let mv = Move::ExecuteAreaAction { action: AreaAction::Customs { imported_goods_paid: 0 } };
         let result = apply_move(&state, &mv, &rules);
         assert!(result.is_err());
+    }
+
+    // --- Pending-choice queue + AnyGood (design 2026-07-18 §5.1-5.2) ---
+
+    /// Order O01 in hand, rewarding `any_trade_good` icons and nothing else
+    /// (default requirements so the reward path is reachable unconditionally).
+    fn any_good_order_fixture(any_trade_good: u8) -> (GameState, Rules) {
+        let mut state = create_minimal_state(2);
+        state.turn_phase = TurnPhase::AdditionalActionFirst;
+        let order_id = OrderCardId(1);
+        state.players[0].order_cards_in_hand.push(order_id);
+
+        let mut order_registry = OrderRegistry::new();
+        order_registry.insert(
+            OrderCard {
+                id: order_id,
+                country: Country::English,
+                requirements: TradeGoodRequirement::default(),
+                rewards: OrderRewards { any_trade_good, ..Default::default() },
+            },
+            "test_any_good_order",
+        );
+        let mut rules = Rules::empty_for_tests();
+        rules.orders = order_registry;
+
+        (state, rules)
+    }
+
+    /// The acting area shared by `building_any_good_fixture` and its test --
+    /// a free function (not a state field) so the test can name it without
+    /// holding a reference into the fixture's state.
+    fn acting_area() -> AreaId {
+        AreaId::new(0)
+    }
+
+    /// Building phase, president on `acting_area()`, whose site TR space
+    /// (`spaces[1]`) grants 1 any_good. Player holds a shophouse in hand and
+    /// an assistant on the acting area, so Recovery deferral is observable.
+    fn building_any_good_fixture() -> (GameState, Rules) {
+        let mut state = create_minimal_state(2);
+        let area = acting_area();
+        state.board_layout.areas.insert(area, AreaConfig { area_type: AreaType::Bank, grid_position: (0, 0) });
+        let mut site = BuildingSite::new([0, 0, 0, 0], 0);
+        site.spaces[1] = SpaceReward { any_good: 1, ..Default::default() }; // TR
+        state.board_layout.building_sites.insert(area, site);
+        state.turn_phase = TurnPhase::Building;
+        state.current_player = PlayerId::new(0);
+        state.current_action_power = Some(4); // Shophouse requires Power 4+
+        state.players[0].president_location = PresidentLocation::OnBoard(area);
+        state.players[0].shophouses.in_hand = 1;
+        state.players[0].assistants.on_board.insert(area, 1);
+        let rules = Rules::empty_for_tests();
+        (state, rules)
+    }
+
+    /// Order O01 in hand, rewarding 1 explicit copper + 1 any_trade_good;
+    /// player owns 1 Mining Technology copy.
+    fn mining_any_good_fixture() -> (GameState, Rules) {
+        let mut state = create_minimal_state(2);
+        state.turn_phase = TurnPhase::AdditionalActionFirst;
+        let order_id = OrderCardId(1);
+        state.players[0].order_cards_in_hand.push(order_id);
+        state.players[0].technologies.push(TechCardId(1));
+
+        let mut order_registry = OrderRegistry::new();
+        order_registry.insert(
+            OrderCard {
+                id: order_id,
+                country: Country::English,
+                requirements: TradeGoodRequirement::default(),
+                rewards: OrderRewards { copper: 1, any_trade_good: 1, ..Default::default() },
+            },
+            "test_mining_any_good_order",
+        );
+        let mut rules = Rules::empty_for_tests();
+        rules.orders = order_registry;
+        rules.techs.insert(mining_tech_fixture(), "tech_mining");
+
+        (state, rules)
+    }
+
+    #[test]
+    fn fulfill_order_with_any_good_queues_choice_and_gates_legal_moves() {
+        // Fixture: an order whose rewards have any_trade_good: 2, player holds it + goods.
+        let (mut state, rules) = any_good_order_fixture(2); // helper below
+        state.turn_phase = TurnPhase::AdditionalActionFirst;
+        let after = apply_move(&state, &Move::FulfillOrder { order_id: OrderCardId(1) }, &rules).unwrap();
+        assert_eq!(after.pending_choices, vec![PendingChoice::AnyGood, PendingChoice::AnyGood]);
+        let legal = get_legal_moves(&after, &rules);
+        assert_eq!(legal.len(), 4); // exactly the four ChooseAnyGood moves, nothing else
+        assert!(legal.iter().all(|m| matches!(m, Move::ChooseAnyGood { .. })));
+        // No copper was auto-granted:
+        assert_eq!(after.current_player().copper, state.current_player().copper - 0);
+    }
+
+    #[test]
+    fn choose_any_good_resolves_head_and_grants_chosen_good() {
+        let (state, rules) = any_good_order_fixture(1);
+        let mut s = apply_move(&state, &Move::FulfillOrder { order_id: OrderCardId(1) }, &rules).unwrap();
+        let silk_before = s.current_player().silk;
+        s = apply_move(&s, &Move::ChooseAnyGood { good: TradeGood::Silk }, &rules).unwrap();
+        assert_eq!(s.current_player().silk, silk_before + 1);
+        assert!(s.pending_choices.is_empty());
+    }
+
+    #[test]
+    fn choice_moves_illegal_when_no_choice_pending_and_wrong_choice_rejected() {
+        let (state, rules) = any_good_order_fixture(1);
+        assert!(apply_move(&state, &Move::ChooseAnyGood { good: TradeGood::Tea }, &rules).is_err());
+    }
+
+    #[test]
+    fn shophouse_space_any_good_queues_and_defers_recovery() {
+        // Fixture: Building phase, president on an area whose site TR space has any_good: 1,
+        // player has a shophouse in hand and an assistant on the acting area.
+        let (state, rules) = building_any_good_fixture();
+        let mid = apply_move(&state, &Move::BuildShophouse { slot: 1 }, &rules).unwrap();
+        assert_eq!(mid.pending_choices, vec![PendingChoice::AnyGood]);
+        // Recovery DEFERRED: the acting-area assistant has NOT been recovered yet.
+        assert!(mid.current_player().assistants.on_board.contains_key(&acting_area()));
+        let done = apply_move(&mid, &Move::ChooseAnyGood { good: TradeGood::Copper }, &rules).unwrap();
+        // Resolving the last choice runs the deferred Recovery + transition in the same apply.
+        assert!(!done.current_player().assistants.on_board.contains_key(&acting_area()));
+        assert_eq!(done.turn_phase, TurnPhase::AdditionalActionSecond);
+    }
+
+    #[test]
+    fn any_good_copper_choice_fires_mining_bonus_per_icon() {
+        // Player owns 1 Mining Technology; order rewards: copper 1, any_trade_good 1.
+        let (state, rules) = mining_any_good_fixture();
+        let s1 = apply_move(&state, &Move::FulfillOrder { order_id: OrderCardId(1) }, &rules).unwrap();
+        // Explicit copper receipt fired at the trigger: +1 copper +1 mining.
+        let s2 = apply_move(&s1, &Move::ChooseAnyGood { good: TradeGood::Copper }, &rules).unwrap();
+        // Any-good-as-copper is its OWN receipt: +1 copper +1 mining again (design §5.3-2).
+        assert_eq!(s2.current_player().copper, state.current_player().copper + 4);
     }
 }

@@ -145,6 +145,7 @@ pub fn new_game(mut config: GameConfig, rules: &Rules, seed: u64) -> Result<Pend
         trigger_reason: None,
         final_round: false,
         trigger_player: None,
+        pending_choices: Vec::new(),
     };
 
     // Initial fills: Port A/B and Lab A/B each to their full 6 slots.
@@ -597,6 +598,7 @@ pub fn create_test_game_state(player_count: u8) -> GameState {
         trigger_reason: None,
         final_round: false,
         trigger_player: None,
+        pending_choices: Vec::new(),
     }
 }
 

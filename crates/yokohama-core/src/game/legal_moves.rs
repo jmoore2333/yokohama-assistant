@@ -6,6 +6,10 @@ use crate::game::actions::*;
 
 /// Generate all legal moves for the current game state.
 pub fn get_legal_moves(state: &GameState, rules: &Rules) -> Vec<Move> {
+    if let Some(head) = state.pending_choices.first() {
+        return crate::game::choices::generate_choice_resolutions(state, head, rules);
+    }
+
     match state.turn_phase {
         TurnPhase::AdditionalActionFirst | TurnPhase::AdditionalActionSecond => {
             generate_additional_action_moves(state, rules)
@@ -966,6 +970,7 @@ mod tests {
             trigger_reason: None,
             final_round: false,
             trigger_player: None,
+            pending_choices: Vec::new(),
         }
     }
 

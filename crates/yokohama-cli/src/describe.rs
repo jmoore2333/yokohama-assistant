@@ -74,6 +74,16 @@ pub fn achievement_desc(a: AchievementType) -> String {
     }
 }
 
+/// Plain-words name of a trade good, for `Move::ChooseAnyGood`.
+fn trade_good_name(g: TradeGood) -> &'static str {
+    match g {
+        TradeGood::Copper => "copper",
+        TradeGood::Silk => "silk",
+        TradeGood::Tea => "tea",
+        TradeGood::Seafood => "fish",
+    }
+}
+
 /// Plain-words trade text for a single Chinatown exchange.
 fn chinatown_exchange_text(exchange: ChinatownExchange) -> &'static str {
     match exchange {
@@ -237,6 +247,7 @@ pub fn describe_move(mv: &Move, state: &GameState, rules: &Rules) -> String {
         Move::BuildShophouse { slot } => format!("Build a Shophouse (space {})", slot + 1),
         Move::BuildTradingHouse => "Build a Trading House".to_string(),
         Move::SkipBuilding => "Skip building".to_string(),
+        Move::ChooseAnyGood { good } => format!("Take 1 {} (any-good reward)", trade_good_name(*good)),
     }
 }
 
