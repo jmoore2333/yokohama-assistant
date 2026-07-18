@@ -1,0 +1,234 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Yokohama CLI — Tester's Guide</title>
+<style>
+  :root { --fg:#1a1a1a; --bg:#ffffff; --accent:#8a5a00; --warn-bg:#fff3d6; --warn-border:#e0a800;
+          --code-bg:#f4f2ee; --border:#d8d4cc; --muted:#666; }
+  @media (prefers-color-scheme: dark) {
+    :root { --fg:#e8e6e3; --bg:#191919; --accent:#e0b34d; --warn-bg:#3a2f14; --warn-border:#a07c1f;
+            --code-bg:#242424; --border:#3a3a3a; --muted:#9a9a9a; }
+  }
+  html { background:var(--bg); color:var(--fg); }
+  body { font-family: Georgia, 'Times New Roman', serif; line-height:1.55; max-width:52rem;
+         margin:0 auto; padding:2rem 1.25rem 4rem; }
+  h1 { font-size:1.7rem; border-bottom:2px solid var(--accent); padding-bottom:.4rem; }
+  h2 { font-size:1.25rem; margin-top:2.2rem; color:var(--accent); }
+  h3 { font-size:1.05rem; margin-top:1.6rem; }
+  p.lede { color:var(--muted); font-style:italic; }
+  code, pre { font-family: ui-monospace, 'SF Mono', Menlo, Consolas, monospace; font-size:.88em;
+              background:var(--code-bg); border-radius:3px; }
+  code { padding:.08em .3em; }
+  pre { padding:.8em 1em; overflow-x:auto; border:1px solid var(--border); }
+  pre code { background:none; padding:0; }
+  table { border-collapse:collapse; margin:.8em 0; width:100%; }
+  th, td { border:1px solid var(--border); padding:.35em .6em; text-align:left; vertical-align:top; }
+  th { background:var(--code-bg); }
+  .warn { background:var(--warn-bg); }
+  .difftag { display:inline-block; background:var(--warn-border); color:#fff; font-family:sans-serif;
+             font-size:.7rem; font-weight:bold; padding:.05em .45em; border-radius:3px;
+             vertical-align:middle; margin-right:.35em; }
+  .callout { border-left:4px solid var(--warn-border); background:var(--warn-bg);
+             padding:.6em 1em; margin:1em 0; }
+  .muted { color:var(--muted); }
+</style>
+</head>
+<body>
+
+<h1>Yokohama CLI — Tester's Guide</h1>
+<p class="lede">For the Phase-2 game driver (<code>yokohama-cli</code>), 2026-07-18. Audience: playtesters tracking or simulating games of Yokohama (Hisashi Hayashi, 2016). You need the physical rules in your head; this guide covers how the tool speaks about them — and <strong>flags every place its language or behavior differs from the rulebook</strong> with a <span class="difftag">DIFFERS</span> tag.</p>
+
+<h2>1. What this is</h2>
+<p>A terminal program backed by the full Yokohama rules engine. Two modes:</p>
+<ul>
+  <li><strong>Simulation</strong> — the program deals everything from a seed and you play moves for every seat. Good for learning the tool.</li>
+  <li><strong>Live tracking</strong> — you play a <em>physical</em> game at the table and enter each move; the engine validates it, tracks all state, and asks you to type in cards as they're physically revealed (port refills, tech refills, 5-Power tokens, hidden starting orders).</li>
+</ul>
+<p>The engine only ever offers <strong>legal</strong> moves. If the tool won't offer a move you believe is legal at the table, that is exactly the kind of bug this testing round exists to find — save the game and report it (§9).</p>
+<div class="callout"><strong>Testing-round caveat:</strong> a handful of rules choices are auto-resolved in v1 (§8.6). Live-tracking a full physical game is expected to hit those spots; the follow-up "choice encoding" work removes them.</div>
+
+<h2>2. Running it</h2>
+<pre><code># from the repo root
+cargo run -p yokohama-cli              # start the setup wizard
+cargo run -p yokohama-cli -- save.json # resume a saved game</code></pre>
+<p>Rust toolchain required (plain <code>cargo</code> works on the project machine). The game autosaves after <strong>every</strong> applied move once a save path is set (the wizard sets one by default), so a crash loses at most the move you were typing — rerun with the save file to resume.</p>
+
+<h2>3. The setup wizard</h2>
+<p>Questions are asked one at a time. Each question allows <strong>3 tries</strong>; a third invalid answer aborts setup (rerun to start over).</p>
+<table>
+  <tr><th>Question</th><th>Answer</th></tr>
+  <tr><td>Mode</td><td><code>sim</code> or <code>live</code></td></tr>
+  <tr><td>Players</td><td><code>2</code>, <code>3</code>, or <code>4</code></td></tr>
+  <tr><td>Color, per seat</td><td><code>red</code>, <code>blue</code>, <code>yellow</code>, <code>green</code> (no repeats)</td></tr>
+  <tr><td>Start seat</td><td>seat index, <code>0</code>-based (e.g. <code>1</code> = second seat listed)</td></tr>
+  <tr><td>Seed</td><td>any integer, or <strong>blank</strong> for a time-derived one (it echoes <code>seed: N</code> — write it down; it is the game's identity)</td></tr>
+  <tr><td>Save path</td><td>a path, or <strong>blank</strong> for <code>yokohama-game-&lt;seed&gt;.json</code> in the current directory</td></tr>
+</table>
+<p><strong>Sim tail:</strong> for each seat the two dealt order cards are shown (<code>O07 [Britain]  needs …  -&gt;  …</code>); answer <code>keep 0/1</code> with <code>0</code> or <code>1</code>.</p>
+<p><strong>Live tail</strong> (you're describing the physical table):</p>
+<ol>
+  <li>Per seat: <code>known</code> (your own seat — then type its two dealt cards and the keep choice) or <code>hidden</code> (opponents whose starting order you can't see).</li>
+  <li><strong>Tiles</strong>: for each board cell, the area tile physically there, by abbreviation: <code>cm sm tp fg bank pa pb la lb ea ct ch cu canal</code> (§8.5 maps them).</li>
+  <li><strong>Building-site cards</strong>: per non-Canal cell, the site card's number <code>S&lt;n&gt;</code> or bare <code>n</code> (printed index on the card).</li>
+  <li><strong>Achievements</strong>: a numbered menu of all 12 is printed; type the shown name for each of the 3 in play (no duplicates).</li>
+  <li><strong>Port contents</strong>: the 6 order cards on Port A left→right as <code>O&lt;n&gt;</code>; Port B is only asked at 3-4 players.</li>
+  <li><strong>Lab contents</strong>: the 6 tech cards on Laboratory A left→right, by <code>T&lt;id&gt;</code> or a <strong>name prefix</strong> (prefer names — see §8.2); Lab B only at 4 players.</li>
+</ol>
+<div class="callout"><strong>Quirk (known):</strong> some typos (an order id that isn't in the deck, a duplicated card) are only caught at the <em>end</em> of the live tail, which aborts setup after all ~30 questions. Double-check card entries as you go. Fixing this is top of the follow-up backlog.</div>
+
+<h2>4. Playing: the prompt and entering moves</h2>
+<p>Every screen ends with a status header, the numbered legal options, and a hint line:</p>
+<pre><code>Turn 1 | Red | Additional actions (before) | 3 yen 0 VP | c1 s2 t0 f1 i0 | hand 1
+[0] End additional-action phase
+&gt; enter a number, 'a'/'b' for placement, or a command ('help' for the list)</code></pre>
+<p>Header anatomy: turn number | whose turn | phase (§8.4) | money and VP | goods <code>c</code>opper <code>s</code>ilk <code>t</code>ea <code>f</code>ish(=Seafood) <code>i</code>mports | order cards in hand.</p>
+<p><strong>Choosing a move:</strong> type the option's number. Long lists show 20 per page — <code>more</code> pages forward (wrapping), <code>list</code> returns to page 0.</p>
+<p><strong>Placement shorthand</strong> (the one phase with too many options to number usefully):</p>
+<ul>
+  <li><code>a</code> — place nothing (legal per the rules: 0–3 assistants)</li>
+  <li><code>a 4 9 12</code> — Option A: 1 assistant in each listed area (area ids <code>0</code>–<code>17</code> as shown on the board grid, up to 3)</li>
+  <li><code>b 7</code> — Option B: 2 assistants in area 7</li>
+  <li><code>b 7 t 8</code> — Option B plus the <strong>Telegram</strong> tech bonus assistant in adjacent area 8</li>
+</ul>
+<p>Order of ids in <code>a</code> doesn't matter; the tool matches your entry against the legal list and refuses anything the engine didn't offer.</p>
+
+<h2>5. Commands</h2>
+<pre><code>&lt;number&gt;        apply the numbered legal option
+a [id id id]    Placement Option A: place 1 assistant in each of 0-3 areas
+b &lt;id&gt;          Placement Option B: place 2 assistants in one area
+b &lt;id&gt; t &lt;adj&gt;  Placement Option B with the Telegram bonus: +1 assistant in an adjacent area
+board           show the area grid
+players         show each player's resources, hand, tech, tokens, President
+ports           show both Port boards and the order-deck size
+labs            show both Laboratory boards and the tech-deck size
+tracks          show the Church and Customs tracks
+hand            show the current player's order-card hand
+score           show current VP/money (or the final scores once the game is over)
+log             show the tail of the move/event log
+more            show the next page of legal options (wraps to page 0)
+list            reset to the first page of legal options
+undo            undo the last move (and any reveals bound to it)
+save [path]     save to path (or to the last-used path if omitted)
+reveal &lt;seat&gt; &lt;O..&gt;  live mode: make a hidden opponent starting order public
+cancel          live mode: abort an in-progress card/token reveal prompt
+help            show this text
+quit            exit the REPL</code></pre>
+<p>After each applied move the tool prints a <strong>delta summary</strong> — what changed (money, VP, goods, hand, tech, President location, phase, deck sizes, end-trigger announcements) — then the next prompt.</p>
+
+<h2>6. Live tracking: reveals</h2>
+<p>In live mode, whenever a move would draw hidden cards, the tool <strong>does not apply it yet</strong> — it asks what physically appeared:</p>
+<ul>
+  <li><strong>Port take</strong> → for each refilled slot, right-to-left (the physical refill order): <code>What card is now in slot N (Zone)? Enter as 'O&lt;id&gt;' or '&lt;id&gt;'</code>. Type the order card's <strong>corner number</strong>.</li>
+  <li><strong>Lab take</strong> → the one refilled tech slot: enter <code>T&lt;id&gt;</code> or a unique <strong>name prefix</strong> (e.g. <code>postal</code>).</li>
+  <li><strong>5-Power token</strong> (taken at 5 power) → one letter for the face-down token you flipped: <code>i</code> = 1 Imported Good, <code>c</code> = 2 Copper, <code>s</code> = 2 Silk, <code>t</code> = 3 Tea, <code>f</code> = 3 Seafood, <code>y</code> = 3 Yen.</li>
+  <li><code>cancel</code> at any of these aborts the move entirely (nothing is applied or recorded).</li>
+</ul>
+<p>Once all reveals are typed, the move + reveals commit <strong>as one atomic unit</strong> — and one <code>undo</code> removes the whole unit.</p>
+<p><strong>Hidden starting orders:</strong> when an opponent's starting order becomes public at the table (they fulfill it), enter <code>reveal &lt;seat&gt; O&lt;n&gt;</code> — e.g. <code>reveal 1 O23</code> → <code>Seat 1 revealed O23 as their starting order.</code></p>
+<p><strong>Desync guard:</strong> after applying, the tool verifies the typed cards are really where the board says. If not, you'll see:</p>
+<pre><code>CRITICAL: desync detected -- the revealed card(s) do not match the board after applying the move. Session locked.</code></pre>
+<p>A locked session accepts only <code>save</code>, <code>log</code>, and <code>quit</code>. This means tracked state and reality have diverged (mis-entry somewhere upstream, or a tool bug). <strong>Save immediately</strong> and report with the file (§9).</p>
+
+<h2>7. Save, load, undo</h2>
+<ul>
+  <li><code>save</code> / autosave writes the full game record as JSON — seed, setup, every move and reveal. Saves are atomic (a crash mid-save can't corrupt the previous good file).</li>
+  <li>Resume: <code>cargo run -p yokohama-cli -- &lt;file&gt;</code>. The game replays deterministically to exactly where you left off.</li>
+  <li><code>undo</code> works all the way back to the first move, one entry at a time (a live move takes its bound reveals with it). Page position resets after each undo.</li>
+  <li>If <code>save &lt;path&gt;</code> fails (bad directory), the previous save path is kept — autosave keeps working against the old target.</li>
+</ul>
+
+<h2>8. LANGUAGE: how the CLI names things vs. the rulebook</h2>
+<p>The engine's canonical vocabulary differs from the rulebook's in places. <strong>Differences carry the <span class="difftag">DIFFERS</span> tag.</strong></p>
+
+<h3>8.1 Order cards</h3>
+<table>
+  <tr><th>CLI</th><th>Physical card / rulebook</th></tr>
+  <tr class="warn"><td><code>O01</code>–<code>O36</code></td><td><span class="difftag">DIFFERS</span> The rulebook has no card numbering. The number <strong>is printed in the card's corner</strong> — that corner index is the CLI's card identity. Find the corner number, type it.</td></tr>
+  <tr><td><code>O17 GB  2cop 1fish -&gt; 8vp 1imp</code> (compact)</td><td>The card's country flag, required goods, and rewards.</td></tr>
+  <tr><td><code>O17 [Britain]  needs 2 copper + 1 fish  -&gt;  8 VP + 1 import</code> (long form)</td><td>Same, in words.</td></tr>
+</table>
+
+<h3>8.2 Technology cards</h3>
+<table>
+  <tr><th>CLI</th><th>Physical card / rulebook</th></tr>
+  <tr><td>Card <strong>names</strong> (<code>Postal System</code>, <code>Winery</code>, …)</td><td>Match the printed card titles.</td></tr>
+  <tr class="warn"><td><code>Textile Mill</code></td><td><span class="difftag">DIFFERS</span> The printed card title. <strong>The rulebook text calls this card "Spinning Mill"</strong> — same card, one name on cardboard, another in the book. The CLI follows the cardboard.</td></tr>
+  <tr class="warn"><td><code>T&lt;id&gt;</code> input form (e.g. <code>T12</code>)</td><td><span class="difftag">DIFFERS</span> Engine-internal numbering — <strong>not printed anywhere on the physical card</strong>. When entering techs, prefer a name prefix (<code>postal</code>, <code>tex</code>, <code>winery</code>); use <code>T&lt;id&gt;</code> only when copying an id the CLI itself displayed. At wizard time an ambiguous prefix is rejected (both copies of a title can be on the boards); mid-game a prefix resolves to the lowest matching id in the deck.</td></tr>
+  <tr><td>20 titles, 30 physical cards</td><td>Ten titles exist as two copies each. The rules allow a player to own only one card <em>of the same name</em>; the engine enforces that.</td></tr>
+</table>
+
+<h3>8.3 Goods and resources</h3>
+<table>
+  <tr><th>CLI (compact / header letter)</th><th>Rulebook term</th></tr>
+  <tr><td><code>cop</code> / <code>c</code></td><td>Copper</td></tr>
+  <tr><td><code>silk</code> / <code>s</code></td><td>Silk</td></tr>
+  <tr><td><code>tea</code> / <code>t</code></td><td>Tea</td></tr>
+  <tr class="warn"><td><code>fish</code> / <code>f</code></td><td><span class="difftag">DIFFERS</span> <strong>Seafood</strong> (the Fishing Ground good — the CLI abbreviates it "fish")</td></tr>
+  <tr><td><code>imp</code> / <code>i</code></td><td>Imported Goods</td></tr>
+  <tr><td><code>yen</code> / <code>y</code></td><td>Yen (money)</td></tr>
+  <tr><td><code>vp</code></td><td>Victory Points</td></tr>
+  <tr class="warn"><td><code>wh</code></td><td><span class="difftag">DIFFERS</span> The <strong>Warehouse icon</strong> (take 1 token from your Warehouse tile to hand, paying the Employment Agency cost). See §8.6 — v1 auto-resolves it.</td></tr>
+  <tr class="warn"><td><code>any</code></td><td><span class="difftag">DIFFERS</span> An "any good of your choice" reward. See §8.6 — v1 auto-picks Copper.</td></tr>
+  <tr class="warn"><td><code>move</code></td><td><span class="difftag">DIFFERS</span> The <strong>Movement icon</strong> (move an assistant). See §8.6 — v1 treats it as no effect.</td></tr>
+</table>
+
+<h3>8.4 Countries and turn phases</h3>
+<p>Countries: <code>GB</code>=Britain, <code>US</code>=America, <code>FR</code>=France, <code>DE</code>=Germany, <code>NL</code>=Netherlands (flags on the order cards).</p>
+<table>
+  <tr><th>CLI phase</th><th>Rulebook</th></tr>
+  <tr class="warn"><td><code>Additional actions (before)</code> / <code>(after)</code></td><td><span class="difftag">DIFFERS</span> Not a rulebook step name — the windows in which an Additional Action (fulfilling orders, mercenary use, achievement claims) may be taken before/after the main turn.</td></tr>
+  <tr><td><code>Placement</code></td><td>Step 1 — place assistants (Option A / Option B).</td></tr>
+  <tr><td><code>Movement</code></td><td>Step 2 — move the President (Option A / Option B).</td></tr>
+  <tr><td><code>Area action</code></td><td>Step 3 — carry out the action of the President's area.</td></tr>
+  <tr class="warn"><td><code>5-Power bonus</code></td><td><span class="difftag">DIFFERS</span> Steps 4–5 (both optional, both at 5 power): take the area's 5-Power token / claim achievements.</td></tr>
+  <tr><td><code>Building</code></td><td>The optional build (Shophouse or Trading House, 4+ power).</td></tr>
+  <tr><td><code>Recovery</code></td><td>Step 6 — automatic; the CLI performs it without asking.</td></tr>
+  <tr><td><code>Turn end</code></td><td>Bookkeeping between turns.</td></tr>
+</table>
+<div class="callout"><span class="difftag">DIFFERS</span> <strong><code>Skip</code> option:</strong> in the six "may"-worded areas (Port, Laboratory, Employment Agency, Chinatown, Church, Customs) the CLI offers an explicit <code>Skip</code> move = carry out the area action declining its optional parts. The rulebook has no named "skip" — it's the engine's encoding of "you may". Note v1's conservative reading: taking <code>Skip</code> at a 5-power Port forgoes the +3 VP bonus.</div>
+
+<h3>8.5 Areas, boards, and tracks</h3>
+<table>
+  <tr><th>Area</th><th>Grid</th><th>Wizard</th></tr>
+  <tr><td>Copper Mine</td><td><code>CuM</code></td><td><code>cm</code></td></tr>
+  <tr><td>Silk Mill</td><td><code>SiM</code></td><td><code>sm</code></td></tr>
+  <tr><td>Tea Plantation</td><td><code>TeaP</code></td><td><code>tp</code></td></tr>
+  <tr><td>Fishing Ground</td><td><code>FishG</code></td><td><code>fg</code></td></tr>
+  <tr><td>Bank</td><td><code>Bank</code></td><td><code>bank</code></td></tr>
+  <tr><td>Port A / B</td><td><code>PortA</code>/<code>PortB</code></td><td><code>pa</code>/<code>pb</code></td></tr>
+  <tr><td>Laboratory A / B</td><td><code>LabA</code>/<code>LabB</code></td><td><code>la</code>/<code>lb</code></td></tr>
+  <tr><td>Employment Agency</td><td><code>EmpAg</code></td><td><code>ea</code></td></tr>
+  <tr><td>Chinatown</td><td><code>Chna</code></td><td><code>ct</code></td></tr>
+  <tr><td>Church</td><td><code>Chrch</code></td><td><code>ch</code></td></tr>
+  <tr><td>Customs</td><td><code>Cstms</code></td><td><code>cu</code></td></tr>
+  <tr><td>Canal</td><td><code>Canal</code></td><td><code>canal</code></td></tr>
+</table>
+<p>Board-grid cells also show: <code>P:</code> line (Presidents present, by color letter), assistants (<code>R2 B1</code> = 2 red, 1 blue), buildings (<code>sh RB | th Y</code> = shophouses by owner color, trading house owner), and <code>*</code> = this area's 5-Power token is still unclaimed.</p>
+<p>Building sites: <code>S03  [1vp 2vp+1yen - 2tea]  TH 8vp</code> = site card 3, its four shophouse spaces' printed rewards (top-left, top-right, mid-left, mid-right; <code>-</code> = blank), and the trading-house VP.</p>
+<p>Tracks (<code>tracks</code> view): Church spaces by faith value 4–11; Customs spaces 1–7 with printed goods-costs <code>[1,1,2,2,3,3,4]</code>. In 2-player games <code>X</code> marks the pre-blocked dummy space (Customs space 4). <span class="difftag">DIFFERS</span> <strong>Known display gap:</strong> the 2-player Church dummy block (faith-7 space) is <em>enforced by the engine but not marked in the <code>tracks</code> view</em> — it renders <code>-</code> (open). Don't be surprised when placement there isn't offered at 2p.</p>
+
+<h3>8.6 <span class="difftag">DIFFERS</span> v1 behavior differences — the CLI will not offer some choices the rules give you</h3>
+<p>These are deliberate, logged engine limitations ("choice encoding" removes them next). <strong>In a live game these are the spots where tracked state can drift from your table</strong> — if one bites, note it and keep going if the auto-resolution happens to match what was played, or stop and report if it doesn't:</p>
+<ol>
+  <li><strong>"Any good" rewards auto-pick Copper.</strong> The rules let you choose.</li>
+  <li><strong>Warehouse-icon rewards auto-take 1 assistant</strong> (free). The rules let you take an assistant, shophouse, or trading house at the Employment Agency cost.</li>
+  <li><strong>Movement-icon rewards do nothing.</strong> The rules move an assistant per icon.</li>
+  <li><strong>Church and Customs placements auto-pick the space</strong> (highest eligible faith space / higher-VP space of the cost pair). The rules let you choose any eligible space.</li>
+  <li><strong>University, Textile Mill ("Spinning Mill"), and Telephone's Recovery choice are never offered</strong> — their once-per-turn/optional effects have no move encoding yet. (Their passive cousins — Winery, Brickyard, Gaslight, Electrical Light, Stagecoach, Station, Tram, Postal System, etc. — all work.)</li>
+  <li>The <strong>5-Power Movement token</strong> applies its existing recover-to-hand behavior rather than offering the full assistant-move choice.</li>
+</ol>
+
+<h2>9. Reporting problems</h2>
+<p>Every save file is a complete reproduction: seed + setup + every move/reveal. When something looks wrong:</p>
+<ol>
+  <li><code>save</code> (if the session locked itself, <code>save</code> still works),</li>
+  <li>note what the table said should happen vs. what the tool did (<code>log</code> shows the recent entries),</li>
+  <li>send the JSON file + the seed + your note.</li>
+</ol>
+<p>A <code>CRITICAL: desync</code> lockdown or an <code>INVARIANT VIOLATION</code> message is always report-worthy. So is any legal table move the tool refused, any illegal move it offered, and any place its wording confused you — the display language is part of what's under test.</p>
+<p class="muted"><em>Happy testing. The engine has survived 15,000 random self-play games; you are here to be meaner than random.</em></p>
+
+</body>
+</html>
