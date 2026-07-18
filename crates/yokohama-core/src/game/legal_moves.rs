@@ -285,6 +285,41 @@ fn generate_movement_moves_with_tech(state: &GameState, tech_registry: Option<&T
                 }
             }
 
+            // Tram (I1 final-review fix): rulebook p.16 - move the President
+            // to ANY area without another player's President; no assistant
+            // is needed at the destination (unlike ordinary movement's
+            // assistant-chain requirement) and there's no further movement
+            // this turn (inherent - one Movement-step move per turn).
+            // Emitted the same way as Station's teleport: free (empty path),
+            // skipped if a move to that destination is already offered.
+            let has_tram = tech_registry.is_some_and(|registry| {
+                p.technologies.iter().any(|&tech_id| {
+                    registry.get(tech_id).map(|t| t.effect == TechEffect::Tram).unwrap_or(false)
+                })
+            });
+            if has_tram {
+                for &area in state.board_layout.areas.keys() {
+                    if area == current {
+                        continue;
+                    }
+                    let allows_president = state.board_layout.areas.get(&area)
+                        .map(|c| c.area_type.allows_placement()) // excludes Canal
+                        .unwrap_or(false);
+                    if !allows_president {
+                        continue;
+                    }
+                    let opponent_present = state.players.iter().any(|o| {
+                        o.id != player && o.president_location == PresidentLocation::OnBoard(area)
+                    });
+                    if opponent_present {
+                        continue;
+                    }
+                    if !moves.iter().any(|m| matches!(m, Move::MovePresident { destination, .. } if *destination == area)) {
+                        moves.push(Move::MovePresident { path: vec![], destination: area });
+                    }
+                }
+            }
+
             // Return to hand (emergency exit, always available)
             let areas_with_assistants: Vec<AreaId> = p
                 .assistants
@@ -1525,6 +1560,84 @@ mod tests {
         ));
 
         assert!(has_teleport, "Should include station teleport move to station area");
+    }
+
+    fn tram_tech_registry(id: TechCardId) -> TechRegistry {
+        let mut tech_registry = TechRegistry::new();
+        tech_registry.insert(
+            TechCard {
+                id,
+                name: "Tram".to_string(),
+                industry_cost: 5,
+                country: Country::American,
+                effect: TechEffect::Tram,
+            },
+            "tech_tram",
+        );
+        tech_registry
+    }
+
+    #[test]
+    fn test_tram_allows_free_move_to_president_free_area_with_no_own_assistant() {
+        // I1 final-review fix: rulebook p.16 - Tram may move the President
+        // to ANY area without another player's President; no assistant is
+        // needed AT THE DESTINATION (unlike ordinary movement, which
+        // requires an assistant chain). `target` has neither the mover's
+        // assistant nor an opponent President, so ordinary movement would
+        // never reach it.
+        let mut state = create_test_state();
+        let current_area = AreaId::new(0);
+        let target = AreaId::new(1);
+        state.turn_phase = TurnPhase::Movement;
+        state.players[0].president_location = PresidentLocation::OnBoard(current_area);
+
+        let no_tram_rules = Rules::empty_for_tests();
+        let moves = get_legal_moves(&state, &no_tram_rules);
+        assert!(
+            !moves.iter().any(|m| matches!(m, Move::MovePresident { destination, .. } if *destination == target)),
+            "without Tram, an area with no assistant chain is unreachable"
+        );
+
+        let tram_tech = TechCardId(103);
+        state.players[0].technologies.push(tram_tech);
+        let mut rules = Rules::empty_for_tests();
+        rules.techs = tram_tech_registry(tram_tech);
+
+        let moves = get_legal_moves(&state, &rules);
+        let mv = moves
+            .iter()
+            .find(|m| matches!(m, Move::MovePresident { destination, .. } if *destination == target))
+            .expect("Tram owner should be offered a free move to a president-free area")
+            .clone();
+        assert!(matches!(&mv, Move::MovePresident { path, .. } if path.is_empty()), "Tram move is a free teleport");
+
+        let result = apply_move(&state, &mv, &rules);
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap().players[0].president_location, PresidentLocation::OnBoard(target));
+    }
+
+    #[test]
+    fn test_tram_does_not_bypass_opponent_president_blocking() {
+        // Tram still requires the destination to be president-free - unlike
+        // Postal System, it does not let the mover stop where an opponent
+        // President already is.
+        let mut state = create_test_state();
+        let current_area = AreaId::new(0);
+        let occupied = AreaId::new(1);
+        state.turn_phase = TurnPhase::Movement;
+        state.players[0].president_location = PresidentLocation::OnBoard(current_area);
+        state.players[1].president_location = PresidentLocation::OnBoard(occupied);
+
+        let tram_tech = TechCardId(104);
+        state.players[0].technologies.push(tram_tech);
+        let mut rules = Rules::empty_for_tests();
+        rules.techs = tram_tech_registry(tram_tech);
+
+        let moves = get_legal_moves(&state, &rules);
+        assert!(
+            !moves.iter().any(|m| matches!(m, Move::MovePresident { destination, .. } if *destination == occupied)),
+            "Tram must not offer a move into an opponent-occupied area"
+        );
     }
 
     #[test]
