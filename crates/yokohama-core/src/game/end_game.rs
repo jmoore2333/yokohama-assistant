@@ -25,7 +25,7 @@ pub fn check_end_game_triggers(state: &mut GameState) {
     }
 
     // 3. Order deck empty AND a Port slot is empty
-    if state.order_deck_remaining == 0 {
+    if state.order_deck.is_empty() {
         let port_has_empty_slot = check_port_empty_slot(state);
         if port_has_empty_slot {
             trigger_end_game(state, EndGameTrigger::OrderDeckEmpty, state.current_player);
@@ -55,16 +55,13 @@ fn trigger_end_game(state: &mut GameState, reason: EndGameTrigger, trigger_playe
 
 fn check_port_empty_slot(state: &GameState) -> bool {
     // Check Port A
-    if state.port_state.port_a.low.is_none()
-        || state.port_state.port_a.mid.is_none()
-        || state.port_state.port_a.high.is_none()
-    {
+    if state.port_state.port_a.has_empty_slot() {
         return true;
     }
 
     // Check Port B if exists
     if let Some(ref port_b) = state.port_state.port_b {
-        if port_b.low.is_none() || port_b.mid.is_none() || port_b.high.is_none() {
+        if port_b.has_empty_slot() {
             return true;
         }
     }
@@ -94,25 +91,10 @@ pub fn is_game_over(state: &GameState) -> bool {
 }
 
 /// Advance to final round after completing current round.
-pub fn check_round_completion(state: &mut GameState) {
-    if !state.end_game_triggered || state.final_round {
-        return;
-    }
-
-    // Current round ends when we reach the player before start player at TurnEnd
-    let player_before_start = PlayerId::new(
-        (state.config.start_player.0 + state.config.player_count - 1) % state.config.player_count,
-    );
-
-    if state.current_player == player_before_start && state.turn_phase == TurnPhase::TurnEnd {
-        state.final_round = true;
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::collections::HashMap;
+    use std::collections::BTreeMap;
 
     fn create_test_state() -> GameState {
         let config = GameConfig::new(
@@ -122,11 +104,11 @@ mod tests {
         );
 
         let board_layout = BoardLayout {
-            areas: HashMap::new(),
-            adjacency: HashMap::new(),
+            areas: BTreeMap::new(),
+            adjacency: BTreeMap::new(),
             canal_crossings: vec![],
-            building_sites: HashMap::new(),
-            five_power_tokens: HashMap::new(),
+            building_sites: BTreeMap::new(),
+            five_power_tokens: BTreeMap::new(),
         };
 
         let players = vec![
@@ -149,8 +131,9 @@ mod tests {
             president_start_area: None,
             port_state: PortState::new(false),
             lab_state: LabState::new(false),
-            order_deck_remaining: 20,
-            tech_deck_remaining: 20,
+            order_deck: vec![],
+            tech_deck: vec![],
+            orders_removed: vec![],
             church_track: ChurchTrack::new(),
             customs_track: CustomsTrack::new(),
             achievements: [
@@ -184,22 +167,21 @@ mod tests {
     fn test_order_deck_empty_trigger() {
         let mut state = create_test_state();
 
-        // Deck has cards, all port slots full - should NOT trigger
-        state.order_deck_remaining = 1;
-        state.port_state.port_a.low = Some(OrderCardId(1));
-        state.port_state.port_a.mid = Some(OrderCardId(2));
-        state.port_state.port_a.high = Some(OrderCardId(3));
+        // Deck has cards, all 6 port slots full - should NOT trigger
+        state.order_deck = vec![OrderCardId(1)];
+        state.port_state.port_a.slots =
+            [1, 2, 3, 4, 5, 6].map(|id| Some(OrderCardId(id)));
 
         check_end_game_triggers(&mut state);
         assert!(!state.end_game_triggered);
 
         // Deck empty but all slots full - should NOT trigger
-        state.order_deck_remaining = 0;
+        state.order_deck = vec![];
         check_end_game_triggers(&mut state);
         assert!(!state.end_game_triggered);
 
-        // Deck empty AND slot empty (post-refill) - should trigger
-        state.port_state.port_a.high = None; // Empty slot after failed refill
+        // Deck empty AND a slot empty (post-refill) - should trigger
+        state.port_state.port_a.slots[5] = None; // Empty slot after failed refill
         check_end_game_triggers(&mut state);
         assert!(state.end_game_triggered);
         assert!(matches!(state.trigger_reason, Some(EndGameTrigger::OrderDeckEmpty)));
@@ -210,11 +192,10 @@ mod tests {
         let mut state = create_test_state();
         state.port_state.port_b = Some(PortBoard::new()); // Add Port B
 
-        // Deck empty, Port A full, Port B has empty slot
-        state.order_deck_remaining = 0;
-        state.port_state.port_a.low = Some(OrderCardId(1));
-        state.port_state.port_a.mid = Some(OrderCardId(2));
-        state.port_state.port_a.high = Some(OrderCardId(3));
+        // Deck empty, Port A full, Port B has empty slots
+        state.order_deck = vec![];
+        state.port_state.port_a.slots =
+            [1, 2, 3, 4, 5, 6].map(|id| Some(OrderCardId(id)));
         // Port B starts empty (new())
 
         check_end_game_triggers(&mut state);

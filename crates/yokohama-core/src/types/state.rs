@@ -4,8 +4,8 @@ use serde::{Deserialize, Serialize};
 
 use crate::types::{
     AchievementCard, AreaId, BoardLayout, ChurchTrack, CustomsTrack,
-    LabBoard, MercenarySupply, PlayerId, PlayerColor, PlayerState,
-    PortBoard, TurnPhase,
+    LabBoard, MercenarySupply, OrderCardId, PlayerId, PlayerColor, PlayerState,
+    PortBoard, TechCardId, TurnPhase,
 };
 
 /// Game configuration (immutable after setup).
@@ -18,6 +18,8 @@ pub struct GameConfig {
     pub has_port_b: bool,
     /// Whether Lab B board is in use (4 players only).
     pub has_lab_b: bool,
+    /// Seed used by `new_game` to generate this game's board/decks (0 for legacy/manual construction).
+    pub setup_seed: u64,
 }
 
 impl GameConfig {
@@ -30,6 +32,7 @@ impl GameConfig {
             start_player,
             has_port_b: player_count >= 3,
             has_lab_b: player_count >= 4,
+            setup_seed: 0,
         }
     }
 
@@ -74,16 +77,16 @@ impl GameConfig {
         }
     }
 
-    /// Starting money for a player based on turn order.
-    /// First player: 7 Yen, Others: 8 Yen.
+    /// Starting money for a player based on turn order (rulebook setup step 9).
+    /// Start player: 3 Yen, Others: 4 Yen.
     pub fn starting_money(&self, player: PlayerId) -> u32 {
-        if player == self.start_player { 7 } else { 8 }
+        if player == self.start_player { 3 } else { 4 }
     }
 
-    /// Number of order cards to remove from deck for this player count.
+    /// Number of order cards to remove from deck for this player count (rulebook setup step 12).
     pub fn order_cards_to_remove(&self) -> u8 {
         match self.player_count {
-            2 => 10,
+            2 => 16,
             3 => 5,
             4 => 0,
             _ => 0,
@@ -210,8 +213,14 @@ pub struct GameState {
     // Shared card pools
     pub port_state: PortState,
     pub lab_state: LabState,
-    pub order_deck_remaining: u8,
-    pub tech_deck_remaining: u8,
+    /// Order card deck; last element is the top (drawn via `Vec::pop`).
+    pub order_deck: Vec<OrderCardId>,
+    /// Tech card deck; last element is the top (drawn via `Vec::pop`).
+    pub tech_deck: Vec<TechCardId>,
+    /// Order cards removed from play at setup (unused player-count reduction) or discarded
+    /// as the "other" card in a revealed starting-order deal. Hidden-information bookkeeping:
+    /// every card is in exactly one of `order_deck`, a player's hand, or here.
+    pub orders_removed: Vec<OrderCardId>,
 
     // Tracks
     pub church_track: ChurchTrack,
@@ -285,5 +294,102 @@ impl GameState {
         }
 
         false
+    }
+
+    /// Promote an order card to the top of the deck by swapping it with the current top card.
+    /// The named card's position and the deck's top position are exchanged; deck length unchanged.
+    pub fn promote_order_to_top(&mut self, card: OrderCardId) -> Result<(), crate::types::MoveError> {
+        let position = self.order_deck.iter().position(|&id| id == card)
+            .ok_or(crate::types::MoveError::CardNotFound)?;
+        let last_index = self.order_deck.len() - 1;
+        self.order_deck.swap(position, last_index);
+        Ok(())
+    }
+
+    /// Promote a tech card to the top of the deck by swapping it with the current top card.
+    /// The named card's position and the deck's top position are exchanged; deck length unchanged.
+    pub fn promote_tech_to_top(&mut self, card: TechCardId) -> Result<(), crate::types::MoveError> {
+        let position = self.tech_deck.iter().position(|&id| id == card)
+            .ok_or(crate::types::MoveError::CardNotFound)?;
+        let last_index = self.tech_deck.len() - 1;
+        self.tech_deck.swap(position, last_index);
+        Ok(())
+    }
+
+    /// Extract an order card from the deck or removed pile.
+    /// Searches `self.order_deck` first, then `self.orders_removed` if not found.
+    /// Removes the card from whichever pile contains it.
+    /// Returns `Err(MoveError::CardNotFound)` if the card is in neither pile.
+    ///
+    /// Rationale: when a live-tracked opponent kept their starting order hidden, `finalize_setup`
+    /// parked both dealt cards in `orders_removed` (the kept card's identity was unknowable).
+    /// A later reveal of that card must be able to pull it from `orders_removed`.
+    pub fn extract_order_from_deck(&mut self, card: OrderCardId) -> Result<(), crate::types::MoveError> {
+        // Try to find and remove from order_deck first
+        if let Some(position) = self.order_deck.iter().position(|&id| id == card) {
+            self.order_deck.remove(position);
+            return Ok(());
+        }
+
+        // If not in order_deck, try orders_removed
+        if let Some(position) = self.orders_removed.iter().position(|&id| id == card) {
+            self.orders_removed.remove(position);
+            return Ok(());
+        }
+
+        Err(crate::types::MoveError::CardNotFound)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::game::create_test_game_state;
+
+    #[test]
+    fn promote_order_to_top_swaps_within_deck() {
+        let mut state = create_test_game_state(2);
+        state.order_deck = vec![OrderCardId(1), OrderCardId(2), OrderCardId(3)]; // 3 = top
+        state.promote_order_to_top(OrderCardId(1)).unwrap();
+        assert_eq!(state.order_deck.last(), Some(&OrderCardId(1)));
+        assert_eq!(state.order_deck.len(), 3);
+        assert!(state.promote_order_to_top(OrderCardId(9)).is_err());
+    }
+
+    #[test]
+    fn promote_tech_to_top_swaps_within_deck() {
+        let mut state = create_test_game_state(2);
+        state.tech_deck = vec![TechCardId(1), TechCardId(2), TechCardId(3)]; // 3 = top
+        state.promote_tech_to_top(TechCardId(2)).unwrap();
+        assert_eq!(state.tech_deck.last(), Some(&TechCardId(2)));
+        assert_eq!(state.tech_deck.len(), 3);
+        assert!(state.promote_tech_to_top(TechCardId(9)).is_err());
+    }
+
+    #[test]
+    fn extract_order_from_deck_removes_from_deck() {
+        let mut state = create_test_game_state(2);
+        state.order_deck = vec![OrderCardId(1), OrderCardId(2), OrderCardId(3)];
+        state.extract_order_from_deck(OrderCardId(2)).unwrap();
+        assert_eq!(state.order_deck, vec![OrderCardId(1), OrderCardId(3)]);
+        assert!(state.extract_order_from_deck(OrderCardId(9)).is_err());
+    }
+
+    #[test]
+    fn extract_order_from_deck_searches_removed_pile() {
+        let mut state = create_test_game_state(2);
+        state.order_deck = vec![OrderCardId(1), OrderCardId(2)];
+        state.orders_removed = vec![OrderCardId(10), OrderCardId(11)];
+
+        // Extract from removed pile
+        state.extract_order_from_deck(OrderCardId(10)).unwrap();
+        assert_eq!(state.orders_removed, vec![OrderCardId(11)]);
+
+        // Extract from deck if not in removed
+        state.extract_order_from_deck(OrderCardId(1)).unwrap();
+        assert_eq!(state.order_deck, vec![OrderCardId(2)]);
+
+        // Error if in neither
+        assert!(state.extract_order_from_deck(OrderCardId(99)).is_err());
     }
 }

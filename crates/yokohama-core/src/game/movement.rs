@@ -20,16 +20,6 @@ pub fn is_possible_action_area_with_tech(
     is_possible_action_area_full(state, player, area, tech_registry, false)
 }
 
-/// Check if an area is a valid destination for mercenary action.
-/// Mercenaries ignore opponent president blocking.
-pub fn is_possible_action_area_mercenary(
-    state: &GameState,
-    player: PlayerId,
-    area: AreaId,
-) -> bool {
-    is_possible_action_area_full(state, player, area, None, true)
-}
-
 /// Full version with all options.
 /// - is_mercenary: If true, opponent presidents don't block.
 pub fn is_possible_action_area_full(
@@ -73,11 +63,25 @@ pub fn is_possible_action_area_full(
 }
 
 /// Find all areas reachable from current position via assistant chain.
-/// Returns list of (destination, path_to_reach).
+/// Returns list of (destination, path_to_reach). Without TechRegistry,
+/// assumes no Postal System.
 pub fn find_reachable_areas(
     state: &GameState,
     player: PlayerId,
     from: AreaId,
+) -> Vec<(AreaId, Vec<AreaId>)> {
+    find_reachable_areas_with_tech(state, player, from, None)
+}
+
+/// Find all areas reachable from current position via assistant chain, with
+/// technology awareness (Postal System lets the destination check tolerate
+/// an opponent President already there).
+/// Returns list of (destination, path_to_reach).
+pub fn find_reachable_areas_with_tech(
+    state: &GameState,
+    player: PlayerId,
+    from: AreaId,
+    tech_registry: Option<&TechRegistry>,
 ) -> Vec<(AreaId, Vec<AreaId>)> {
     let p = state.player(player);
     let mut reachable = Vec::new();
@@ -101,7 +105,7 @@ pub fn find_reachable_areas(
         visited.insert(current);
 
         // Is this a valid destination?
-        if is_possible_action_area(state, player, current) && current != from {
+        if is_possible_action_area_with_tech(state, player, current, tech_registry) && current != from {
             reachable.push((current, path.clone()));
         }
 
@@ -248,6 +252,27 @@ pub fn calculate_movement_cost_full(
         }
     }
 
+    // Destination stop fee (Postal System, rulebook p.15: "You may end your
+    // movement in an Area occupied by another President pawn... You must
+    // still pay these players (unless you also own the Stagecoach)").
+    // Without Postal System such a destination is never reachable in the
+    // first place, so this is vacuous for everyone else. A non-empty path's
+    // last area is where the President ends this move; an EMPTY path is a
+    // free teleport (Station/Tram) and is exempt - Station's card text is
+    // unconditionally "for free... regardless of other President pawns",
+    // and Tram's destination is guaranteed president-free by construction.
+    if !has_stagecoach && !skip_president_cost {
+        if let Some(&destination) = path.last() {
+            for other_player in &state.players {
+                if other_player.id != player
+                    && other_player.president_location == PresidentLocation::OnBoard(destination)
+                {
+                    cost += 1;
+                }
+            }
+        }
+    }
+
     // Check for canal crossings (mercenaries still pay canal tolls)
     if path.len() >= 2 {
         for window in path.windows(2) {
@@ -260,54 +285,38 @@ pub fn calculate_movement_cost_full(
     cost
 }
 
-/// Validate a movement action.
-pub fn validate_movement(
+/// Fee for placing the President from hand directly into `destination`
+/// (Movement Option A) - 1 Yen per opponent President already there,
+/// waived by Stagecoach (I2 final-review fix). Such a destination is only
+/// reachable at all with Postal System, whose card text is explicit: "You
+/// must still pay these players (unless you also own the Stagecoach)."
+/// Shared by the legal-move generator (pricing gate) and
+/// `apply_place_president` (the charge), so they can never drift apart.
+pub fn calculate_place_president_fee(
     state: &GameState,
     player: PlayerId,
-    path: &[AreaId],
     destination: AreaId,
-) -> Result<(), &'static str> {
+    tech_registry: Option<&TechRegistry>,
+) -> u32 {
     let p = state.player(player);
-
-    // Check we can afford the movement
-    let cost = calculate_movement_cost(state, player, path);
-    if p.money < cost {
-        return Err("Not enough money to pay movement costs");
+    let has_stagecoach = tech_registry.is_some_and(|registry| {
+        p.technologies.iter().any(|&tech_id| {
+            registry.get(tech_id).map(|t| t.effect == TechEffect::Stagecoach).unwrap_or(false)
+        })
+    });
+    if has_stagecoach {
+        return 0;
     }
-
-    // Check destination is reachable and valid
-    if !is_possible_action_area(state, player, destination) {
-        return Err("Destination is not a valid action area");
-    }
-
-    // Verify path connectivity
-    let current_pos = match p.president_location {
-        PresidentLocation::OnBoard(area) => area,
-        PresidentLocation::InHand => {
-            return Err("President must be on board to move (use place instead)");
-        }
-    };
-
-    // Check path starts adjacent to current position
-    if let Some(&first) = path.first() {
-        if !state.board_layout.adjacent_areas(current_pos).contains(&first) {
-            return Err("Path must start adjacent to current position");
-        }
-    }
-
-    // Check destination matches end of path
-    if path.last() != Some(&destination) && !path.is_empty() {
-        return Err("Path must end at destination");
-    }
-
-    Ok(())
+    state.players.iter()
+        .filter(|o| o.id != player && o.president_location == PresidentLocation::OnBoard(destination))
+        .count() as u32
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::types::*;
-    use std::collections::HashMap;
+    use std::collections::BTreeMap;
 
     fn create_test_state_with_board() -> GameState {
         let config = GameConfig::new(
@@ -317,12 +326,12 @@ mod tests {
         );
 
         // Create a simple 3-area board: 0 -- 1 -- 2
-        let mut areas = HashMap::new();
+        let mut areas = BTreeMap::new();
         areas.insert(AreaId::new(0), AreaConfig { area_type: AreaType::Bank, grid_position: (0, 0) });
         areas.insert(AreaId::new(1), AreaConfig { area_type: AreaType::CopperMine, grid_position: (0, 1) });
         areas.insert(AreaId::new(2), AreaConfig { area_type: AreaType::SilkMill, grid_position: (0, 2) });
 
-        let mut adjacency = HashMap::new();
+        let mut adjacency = BTreeMap::new();
         adjacency.insert(AreaId::new(0), vec![AreaId::new(1)]);
         adjacency.insert(AreaId::new(1), vec![AreaId::new(0), AreaId::new(2)]);
         adjacency.insert(AreaId::new(2), vec![AreaId::new(1)]);
@@ -331,8 +340,8 @@ mod tests {
             areas,
             adjacency,
             canal_crossings: vec![],
-            building_sites: HashMap::new(),
-            five_power_tokens: HashMap::new(),
+            building_sites: BTreeMap::new(),
+            five_power_tokens: BTreeMap::new(),
         };
 
         let players = vec![
@@ -355,8 +364,9 @@ mod tests {
             president_start_area: None,
             port_state: PortState::new(false),
             lab_state: LabState::new(false),
-            order_deck_remaining: 20,
-            tech_deck_remaining: 20,
+            order_deck: vec![],
+            tech_deck: vec![],
+            orders_removed: vec![],
             church_track: ChurchTrack::new(),
             customs_track: CustomsTrack::new(),
             achievements: [
@@ -417,25 +427,6 @@ mod tests {
 
         let cost = calculate_movement_cost(&state, PlayerId::new(0), &[AreaId::new(0), AreaId::new(1)]);
         assert_eq!(cost, 1); // 1 Yen for canal
-    }
-
-    #[test]
-    fn test_mercenary_ignores_opponent_president_blocking() {
-        let mut state = create_test_state_with_board();
-        let player = PlayerId::new(0);
-        let area = AreaId::new(1);
-
-        // Place assistant on the area
-        state.players[0].assistants.on_board.insert(area, 1);
-
-        // Place opponent president on the same area
-        state.players[1].president_location = PresidentLocation::OnBoard(area);
-
-        // Normal movement: blocked by opponent president
-        assert!(!is_possible_action_area(&state, player, area));
-
-        // Mercenary movement: NOT blocked by opponent president
-        assert!(is_possible_action_area_mercenary(&state, player, area));
     }
 
     #[test]

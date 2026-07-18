@@ -53,7 +53,8 @@ impl TryFrom<u8> for PlayerId {
 }
 
 /// Area tile identifier on the board.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Default)]
+/// Ord: BTreeMap keys in game state (deterministic enumeration order).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize, Default)]
 pub struct AreaId(pub u8);
 
 impl AreaId {
@@ -114,7 +115,8 @@ impl PlayerColor {
 }
 
 /// Countries for set collection and Foreign Mercenaries.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+/// Ord: BTreeMap keys in game state (deterministic enumeration order).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub enum Country {
     English,
     American,

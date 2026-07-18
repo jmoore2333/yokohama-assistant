@@ -1,0 +1,213 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Yokohama card audit — box cross-check</title>
+<style>
+  :root {
+    --bg: #ffffff; --fg: #1a1a1a; --muted: #6b6b6b; --line: #d9d9d9;
+    --accent: #0b5fa5; --flag-bg: #fff3cd; --flag-line: #d4a017;
+    --match-bg: #eef7ee; --was: #9a3b3b; --head-bg: #f4f4f4;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #16181c; --fg: #e6e6e6; --muted: #9aa0a6; --line: #3a3f46;
+      --accent: #6db3e8; --flag-bg: #3a3010; --flag-line: #d4a017;
+      --match-bg: #1d2b1d; --was: #e08585; --head-bg: #22252b;
+    }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0 auto; padding: 24px 20px 80px; max-width: 1150px;
+         font: 15px/1.45 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+         background: var(--bg); color: var(--fg); }
+  h1 { font-size: 24px; margin: 0 0 4px; }
+  h2 { font-size: 19px; margin: 36px 0 8px; border-bottom: 2px solid var(--line); padding-bottom: 4px; }
+  h3 { font-size: 16px; margin: 20px 0 6px; }
+  .sub { color: var(--muted); margin: 0 0 18px; }
+  .box { border: 1px solid var(--line); border-radius: 8px; padding: 12px 16px; margin: 14px 0; }
+  .box.flagged { background: var(--flag-bg); border-color: var(--flag-line); }
+  .box code, td code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 13px; }
+  table { border-collapse: collapse; width: 100%; margin: 10px 0 4px; }
+  th, td { border: 1px solid var(--line); padding: 5px 8px; text-align: left; vertical-align: top; }
+  th { background: var(--head-bg); font-size: 13px; text-transform: uppercase; letter-spacing: .03em; }
+  tr.match td { background: var(--match-bg); }
+  tr.flag td { background: var(--flag-bg); }
+  .was { display: block; color: var(--was); font-size: 12.5px; margin-top: 2px; }
+  .ok { color: #2e7d32; font-weight: 600; }
+  .num { font-weight: 700; font-variant-numeric: tabular-nums; }
+  .g { display: inline-block; padding: 0 6px; border-radius: 4px; margin: 1px 2px 1px 0;
+       font-size: 13px; font-weight: 600; white-space: nowrap; border: 1px solid rgba(0,0,0,.15); }
+  .fish   { background: #cfe6f7; color: #0b3d5c; }
+  .tea    { background: #d7ecd0; color: #1e4d1e; }
+  .silk   { background: #f2f0ea; color: #4a4335; }
+  .copper { background: #f3d3c4; color: #6e2a12; }
+  .wild   { background: linear-gradient(135deg,#e8c8f0 25%,#f3d3c4 25% 50%,#d7ecd0 50% 75%,#f2f0ea 75%); color: #333; }
+  .vp     { background: #d6dff7; color: #17306e; }
+  .yen    { background: #f5e5b8; color: #6a4e00; }
+  .imp    { background: #f9e2a8; color: #6b4c00; border-style: dashed; }
+  .house  { background: #e3d1bd; color: #58371c; }
+  .asst   { background: #fbf0c4; color: #6b5500; }
+  .blank  { background: transparent; color: var(--muted); font-weight: 400; border-style: dotted; }
+  @media (prefers-color-scheme: dark) {
+    .fish{background:#173b52;color:#bfe0f5}.tea{background:#1e3a1e;color:#cdebc6}
+    .silk{background:#3c3a33;color:#e8e4d8}.copper{background:#4c2313;color:#f3c9b6}
+    .vp{background:#1d2c5e;color:#ccd9fb}.yen{background:#4a3a08;color:#f3e3ae}
+    .imp{background:#4a3c0a;color:#f5e3ad}.house{background:#42301d;color:#e6d2bb}
+    .asst{background:#4a4208;color:#f7ecba}.wild{background:linear-gradient(135deg,#4a2d52 25%,#4c2313 25% 50%,#1e3a1e 50% 75%,#3c3a33 75%);color:#eee}
+  }
+  @media print {
+    body { max-width: none; font-size: 12px; }
+    .g { border: 1px solid #999; }
+    h2 { page-break-after: avoid; }
+    tr { page-break-inside: avoid; }
+  }
+</style>
+</head>
+<body>
+
+<h1>Yokohama card audit — physical box cross-check</h1>
+<p class="sub">2026-07-17 · blind re-transcription of the TTS sprite sheets, adopted as the new source of truth pending your box check · full diff detail in <code>docs/plans/2026-07-16-card-verification/content-manifest.md</code></p>
+
+<div class="box">
+  <strong>How to give feedback (minimal):</strong> check cards against the tables below and reply in chat with <em>only the deviations</em> — silence on a row means confirmed. Reference orders by printed corner number, techs by name, sites by trading-house VP + rewards. Examples:
+  <code>#14: rewards also has imports</code> · <code>Ball: cost 4 not 3</code> · <code>TH7 fish(3)/fish(2) card: TR is fish(2)</code>.
+  A quick “box matches everything” (or just the priority items below) is all that's needed. Photos welcome for anything ambiguous.
+</div>
+
+<div class="box flagged">
+  <strong>Priority checks (4)</strong> — the only items with real uncertainty:
+  <ol style="margin:6px 0 0 18px; padding:0;">
+    <li><strong>Corner index #2</strong> — the France card needing <span class="g fish">1 fish</span><span class="g tea">2 tea</span> → <span class="g vp">3 VP</span>: its printed corner number was very faint (read as 2, also forced by elimination). Same for <strong>#30</strong> (France, <span class="g tea">3 tea</span><span class="g silk">2 silk</span> → <span class="g vp">4 VP</span><span class="g yen">2 yen</span>), faint but consistent.</li>
+    <li><strong>Building site with trading-house 9, rewards silk(2)/copper(1)</strong> — the copper(1) ingot is printed pale on a red square; confirm it's copper, not silk.</li>
+    <li><strong>Order country counts</strong> — sort the 36 orders by flag and count: expect <strong>US 8 · Germany 7 · Netherlands 5 · Great Britain 8 · France 8</strong>.</li>
+    <li><strong>The GB twins #10 and #32</strong> — both need <span class="g fish">1 fish</span><span class="g tea">1 tea</span><span class="g copper">2 copper</span>. #10 pays <span class="g vp">4 VP</span><span class="g asst">2 assistants</span>; #32 pays <span class="g vp">5 VP</span><span class="g imp">imports</span>. Confirm both exist as described (this drives the card-ID scheme).</li>
+    <li><strong>(added 07-17) Church area board, power-2 faith — ✅ RESOLVED</strong>: Jeremy confirmed from the board that faith is linear 1,2,3,4,5 (rulebook text was a typo). Engine fix lands in Task 13; nothing left to check here.</li>
+    <li><strong>(added 07-17) Six-slot boards</strong> — quick eyeball: each Port board has 6 card spaces (2 per LOW/MID/HIGH) and each Laboratory board 6 tech slots (+1,+1,+2,+2 surcharges on the last four). Already re-modeled in the engine from board art; just confirm.</li>
+  </ol>
+</div>
+
+<h2>Order cards (36) — sorted by printed corner number</h2>
+<p class="sub">Green rows already matched the old YAML (only 3 did). Red “was:” notes show what the old YAML claimed — for context only; the box check is against the main row values.</p>
+<table>
+<thead><tr><th>#</th><th>Country</th><th>Requirements</th><th>Rewards</th><th>Sheet pos</th></tr></thead>
+<tbody>
+<tr><td class="num">1</td><td>United States</td><td><span class="g fish">2 fish</span><span class="g tea">1 tea</span></td><td><span class="g vp">1 VP</span><span class="g house">shophouse build</span><span class="was">was: req 2 copper 1 silk; reward “warehouse”</span></td><td>(4,1)</td></tr>
+<tr class="flag"><td class="num">2</td><td>France</td><td><span class="g fish">1 fish</span><span class="g tea">2 tea</span></td><td><span class="g vp">3 VP</span><span class="was">was: req 1 tea 2 fish · corner # faint — priority check 1</span></td><td>(5,3)</td></tr>
+<tr><td class="num">3</td><td>Great Britain</td><td><span class="g fish">1 fish</span><span class="g copper">2 copper</span></td><td><span class="g vp">4 VP</span><span class="g yen">1 yen</span><span class="was">was: req 1 copper 2 fish</span></td><td>(3,3)</td></tr>
+<tr><td class="num">4</td><td>Germany</td><td><span class="g fish">1 fish</span><span class="g tea">1 tea</span><span class="g silk">2 silk</span></td><td><span class="g vp">5 VP</span><span class="g house">shophouse build</span><span class="was">was: req 1 silk 1 tea 2 fish</span></td><td>(2,2)</td></tr>
+<tr><td class="num">5</td><td>France</td><td><span class="g tea">2 tea</span><span class="g copper">1 copper</span></td><td><span class="g vp">1 VP</span><span class="g imp">imports</span><span class="was">was: req 2 tea 1 fish; no imports</span></td><td>(4,8)</td></tr>
+<tr><td class="num">6</td><td>Netherlands</td><td><span class="g fish">2 fish</span><span class="g tea">1 tea</span><span class="g copper">1 copper</span></td><td><span class="g vp">2 VP</span><span class="g yen">1 yen</span><span class="g imp">imports</span><span class="was">was: req 1 copper 2 tea 1 fish</span></td><td>(2,4)</td></tr>
+<tr><td class="num">7</td><td>France</td><td><span class="g tea">3 tea</span><span class="g copper">1 copper</span></td><td><span class="g vp">3 VP</span><span class="g imp">imports</span><span class="was">was: req 1 silk 3 tea; no imports</span></td><td>(4,6)</td></tr>
+<tr><td class="num">8</td><td>Netherlands</td><td><span class="g tea">1 tea</span><span class="g silk">1 silk</span><span class="g copper">1 copper</span></td><td><span class="g vp">3 VP</span><span class="g imp">imports</span><span class="was">was: req 1 silk 1 tea only; no imports</span></td><td>(1,8)</td></tr>
+<tr><td class="num">9</td><td>Germany</td><td><span class="g fish">1 fish</span><span class="g silk">3 silk</span></td><td><span class="g vp">2 VP</span><span class="g yen">1 yen</span><span class="g imp">imports</span><span class="was">was: req 1 copper 3 fish</span></td><td>(2,1)</td></tr>
+<tr class="flag"><td class="num">10</td><td>Great Britain</td><td><span class="g fish">1 fish</span><span class="g tea">1 tea</span><span class="g copper">2 copper</span></td><td><span class="g vp">4 VP</span><span class="g asst">2 assistants</span><span class="was">was: req 1 copper 1 silk 2 fish; reward yen+warehouse · twin of #32 — priority check 4</span></td><td>(3,7)</td></tr>
+<tr><td class="num">11</td><td>Netherlands</td><td><span class="g fish">1 fish</span><span class="g tea">1 tea</span><span class="g silk">1 silk</span></td><td><span class="g vp">5 VP</span><span class="was">was: req 1 copper 1 tea 1 fish</span></td><td>(1,4)</td></tr>
+<tr><td class="num">12</td><td>United States</td><td><span class="g fish">3 fish</span><span class="g tea">1 tea</span><span class="g silk">2 silk</span></td><td><span class="g vp">9 VP</span><span class="g yen">1 yen</span><span class="was">was: req 3 copper 1 tea 2 fish; yen missing</span></td><td>(1,5)</td></tr>
+<tr><td class="num">13</td><td>Great Britain</td><td><span class="g fish">2 fish</span><span class="g silk">1 silk</span><span class="g copper">2 copper</span></td><td><span class="g vp">8 VP</span><span class="g imp">imports</span><span class="was">was: req 2 copper 1 fish</span></td><td>(3,1)</td></tr>
+<tr><td class="num">14</td><td>Germany</td><td><span class="g tea">2 tea</span><span class="g silk">2 silk</span><span class="g copper">1 copper</span></td><td><span class="g vp">6 VP</span><span class="g yen">2 yen</span><span class="was">was: req 1 copper 1 silk 2 tea</span></td><td>(1,3)</td></tr>
+<tr><td class="num">15</td><td>Great Britain</td><td><span class="g tea">1 tea</span><span class="g silk">1 silk</span><span class="g copper">3 copper</span></td><td><span class="g vp">9 VP</span><span class="g imp">imports</span><span class="was">was: req 1 tea 1 fish only</span></td><td>(3,5)</td></tr>
+<tr><td class="num">16</td><td>United States</td><td><span class="g fish">3 fish</span><span class="g tea">2 tea</span><span class="g copper">1 copper</span></td><td><span class="g vp">8 VP</span><span class="g imp">imports</span><span class="was">was: req 3 copper 1 silk 2 tea</span></td><td>(1,1)</td></tr>
+<tr><td class="num">17</td><td>Germany</td><td><span class="g fish">2 fish</span><span class="g silk">2 silk</span><span class="g copper">1 copper</span></td><td><span class="g vp">8 VP</span><span class="g yen">1 yen</span><span class="was">was: req 2 copper 1 silk 2 fish</span></td><td>(1,7)</td></tr>
+<tr><td class="num">18</td><td>United States</td><td><span class="g fish">3 fish</span><span class="g copper">2 copper</span></td><td><span class="g vp">6 VP</span><span class="g imp">imports</span><span class="was">was: req 3 copper 2 fish</span></td><td>(4,2)</td></tr>
+<tr class="match"><td class="num">19</td><td>Netherlands</td><td><span class="g fish">1 fish</span><span class="g tea">1 tea</span><span class="g silk">1 silk</span><span class="g copper">1 copper</span></td><td><span class="g vp">8 VP</span> <span class="ok">✓ matched YAML</span></td><td>(4,7)</td></tr>
+<tr><td class="num">20</td><td>Great Britain</td><td><span class="g tea">2 tea</span><span class="g silk">1 silk</span><span class="g copper">2 copper</span></td><td><span class="g vp">8 VP</span><span class="g imp">imports</span><span class="was">was: req 2 silk 1 fish; reward 2 yen</span></td><td>(3,8)</td></tr>
+<tr><td class="num">21</td><td>Netherlands</td><td><span class="g fish">2 fish</span><span class="g tea">2 tea</span><span class="g silk">2 silk</span></td><td><span class="g vp">11 VP</span><span class="was">was: req 2 copper 2 silk 2 tea</span></td><td>(5,2)</td></tr>
+<tr><td class="num">22</td><td>United States</td><td><span class="g fish">4 fish</span><span class="g copper">1 copper</span></td><td><span class="g vp">8 VP</span><span class="was">was: req 4 tea 2 fish</span></td><td>(2,6)</td></tr>
+<tr><td class="num">23</td><td>France</td><td><span class="g tea">3 tea</span><span class="g silk">2 silk</span><span class="g copper">1 copper</span></td><td><span class="g vp">9 VP</span><span class="g imp">imports</span><span class="was">was: req 2 copper 1 silk 3 tea</span></td><td>(4,3)</td></tr>
+<tr><td class="num">24</td><td>Great Britain</td><td><span class="g fish">2 fish</span><span class="g silk">1 silk</span><span class="g copper">3 copper</span></td><td><span class="g vp">7 VP</span><span class="g yen">2 yen</span><span class="g imp">imports</span><span class="was">was: req 2 copper 1 fish</span></td><td>(3,4)</td></tr>
+<tr><td class="num">25</td><td>Germany</td><td><span class="g tea">1 tea</span><span class="g silk">3 silk</span></td><td><span class="g vp">4 VP</span><span class="g imp">imports</span><span class="was">was: req 1 tea 3 fish; reward “0 VP + movement 1” (no such icon exists)</span></td><td>(1,2)</td></tr>
+<tr><td class="num">26</td><td>France</td><td><span class="g fish">1 fish</span><span class="g tea">3 tea</span></td><td><span class="g vp">1 VP</span><span class="g yen">2 yen</span><span class="was">was: req 3 silk 1 tea</span></td><td>(4,5)</td></tr>
+<tr><td class="num">27</td><td>Great Britain</td><td><span class="g fish">2 fish</span><span class="g copper">2 copper</span></td><td><span class="g vp">1 VP</span><span class="g house">shophouse build</span><span class="g yen">2 yen</span><span class="was">was: country Netherlands; req 2 silk 2 tea</span></td><td>(2,7)</td></tr>
+<tr><td class="num">28</td><td>United States</td><td><span class="g fish">4 fish</span><span class="g silk">1 silk</span></td><td><span class="g vp">3 VP</span><span class="g imp">imports</span><span class="g house">shophouse build</span><span class="was">was: req 4 copper 1 fish; reward warehouse + 1 yen</span></td><td>(3,6)</td></tr>
+<tr class="match"><td class="num">29</td><td>France</td><td><span class="g tea">4 tea</span><span class="g silk">1 silk</span></td><td><span class="g vp">8 VP</span> <span class="ok">✓ matched YAML</span></td><td>(5,4)</td></tr>
+<tr class="match flag"><td class="num">30</td><td>France</td><td><span class="g tea">3 tea</span><span class="g silk">2 silk</span></td><td><span class="g vp">4 VP</span><span class="g yen">2 yen</span> <span class="ok">✓ matched YAML</span><span class="was">corner # faint — priority check 1</span></td><td>(5,1)</td></tr>
+<tr><td class="num">31</td><td>United States</td><td><span class="g fish">3 fish</span><span class="g copper">1 copper</span></td><td><span class="g vp">2 VP</span><span class="g asst">2 assistants</span><span class="was">was: country GB; req 3 copper 1 fish; reward 2 yen + warehouse</span></td><td>(3,2)</td></tr>
+<tr class="flag"><td class="num">32</td><td>Great Britain</td><td><span class="g fish">1 fish</span><span class="g tea">1 tea</span><span class="g copper">2 copper</span></td><td><span class="g vp">5 VP</span><span class="g imp">imports</span><span class="was">was: req 1 silk 1 tea only · twin of #10 — priority check 4</span></td><td>(2,8)</td></tr>
+<tr><td class="num">33</td><td>Germany</td><td><span class="g tea">3 tea</span><span class="g silk">3 silk</span></td><td><span class="g vp">11 VP</span><span class="was">was: req 3 tea 3 fish</span></td><td>(2,3)</td></tr>
+<tr><td class="num">34</td><td>France</td><td><span class="g tea">3 tea</span><span class="g copper">2 copper</span></td><td><span class="g vp">9 VP</span><span class="g imp">imports</span><span class="was">was: req 2 copper 3 tea (same) but imports missing</span></td><td>(4,4)</td></tr>
+<tr><td class="num">35</td><td>United States</td><td><span class="g fish">4 fish</span><span class="g silk">2 silk</span></td><td><span class="g vp">7 VP</span><span class="g yen">2 yen</span><span class="was">was: req 4 tea 1 fish</span></td><td>(2,5)</td></tr>
+<tr><td class="num">36</td><td>Germany</td><td><span class="g tea">2 tea</span><span class="g silk">4 silk</span></td><td><span class="g vp">5 VP</span><span class="g yen">2 yen</span><span class="g house">shophouse build</span><span class="was">was: country US; req 2 tea 4 fish</span></td><td>(1,6)</td></tr>
+</tbody>
+</table>
+<p class="sub">Expected totals: US 8 · DE 7 · NL 5 · GB 8 · FR 8. Fish/tea always print on the upper requirements row, silk/copper on the lower.</p>
+
+<h2>Technology cards (30 physical = 20 titles, 10 duplicated)</h2>
+<p class="sub">Old YAML modeled only 20 cards — the deck really has 30 (rulebook agrees: “30 Technology cards”). Red notes show corrections vs the old YAML; unmarked rows matched.</p>
+<table>
+<thead><tr><th>Name</th><th>Copies</th><th>Cost</th><th>Country</th><th>Effect (card text)</th></tr></thead>
+<tbody>
+<tr><td>Ball</td><td>×2</td><td class="num">3</td><td>Great Britain<span class="was">was: Germany</span></td><td>When you fulfill an Order: +2 VP</td></tr>
+<tr><td>Brickyard</td><td>×1</td><td class="num">3</td><td>Germany</td><td>When you carry out a Customs action: +4 VP</td></tr>
+<tr><td>Electrical Light</td><td>×1</td><td class="num">4</td><td>France</td><td>When you build a Trading House: +3 VP<span class="was">was: “+3 VP and 1 Yen” — the yen is phantom</span></td></tr>
+<tr><td>Exposition</td><td>×2</td><td class="num">5</td><td>Germany</td><td>Immediately gain 10 VP<span class="was">was: “worth 10 VP at end of game” — it's immediate (rulebook confirms)</span></td></tr>
+<tr><td>Gaslight</td><td>×2</td><td class="num">3</td><td>France<span class="was">was: Great Britain</span></td><td>When you build a Shop(house): +2 VP</td></tr>
+<tr><td>Language School</td><td>×2</td><td class="num">3</td><td>United States</td><td>When you fulfill an Order: +1 Yen</td></tr>
+<tr><td>Letterpress Printing</td><td>×2</td><td class="num">3</td><td>Netherlands</td><td>When you gain a Technology card: +1 Yen<span class="was">was: “+1 VP” — it's yen (rulebook confirms)</span></td></tr>
+<tr><td>Mining Technology</td><td>×1</td><td class="num">3</td><td>Germany</td><td>Whenever you gain one or more Copper: +1 Copper</td></tr>
+<tr><td>Newspaper</td><td>×2</td><td class="num">5</td><td>Netherlands</td><td>Placement Step: place 4 Workers in different areas instead of 3</td></tr>
+<tr><td>Patent System</td><td>×1</td><td class="num">3</td><td>France</td><td>When you gain a Technology card: +2 VP<span class="was">was: “+2 VP and 1 Yen” — the yen is phantom</span></td></tr>
+<tr><td>Postal System</td><td>×2</td><td class="num">3</td><td>Great Britain</td><td>Movement Step: may place President in an area occupied by another President</td></tr>
+<tr><td>Stagecoach</td><td>×1</td><td class="num">3</td><td>Great Britain</td><td>Movement Step: may move President over President-occupied areas without paying</td></tr>
+<tr><td>Station</td><td>×1</td><td class="num">4</td><td>Great Britain</td><td>On gain: place Station token. Movement Step: may move President to the Station area free</td></tr>
+<tr><td>Stock Market</td><td>×1</td><td class="num">3</td><td>Netherlands</td><td>Start of turn: if under 2 Yen, refill to 2 Yen (rulebook name: “System of Stock”)</td></tr>
+<tr><td>Telegram</td><td>×2</td><td class="num">6</td><td>United States</td><td>Placement Step: when placing 2 Workers in one area, may also place 1 in an adjacent area</td></tr>
+<tr><td>Telephone</td><td>×2</td><td class="num">6</td><td>United States<span class="was">was: Netherlands</span></td><td>Collection/Recovery Step: may leave 1 Worker in an area</td></tr>
+<tr><td>Textile Mill</td><td>×1</td><td class="num">4</td><td>Great Britain<span class="was">was: France</span></td><td>Once per turn: discard 1 Silk → +2 Yen<span class="was">was: “exchange 1 Fish for 2 Silk” — wrong (rulebook name: “Spinning Mill”)</span></td></tr>
+<tr><td>Tram</td><td>×1</td><td class="num">5</td><td>United States</td><td>Movement Step: may move President to any area (except President-occupied)</td></tr>
+<tr><td>University</td><td>×2</td><td class="num">3</td><td>Great Britain</td><td>Once per turn: gain a Worker from Warehouse for 1 Yen</td></tr>
+<tr><td>Winery</td><td>×1</td><td class="num">3</td><td>France</td><td>When you carry out a Church action: +3 VP</td></tr>
+</tbody>
+</table>
+<p class="sub">Duplicated titles (×2): Language School, Telegram, Telephone, Newspaper, Exposition, Ball, Gaslight, University, Letterpress Printing, Postal System. Both copies match in cost/country/effect.</p>
+
+<h2>Building site cards (24) — sorted by trading-house VP</h2>
+<p class="sub">The old YAML's model was structurally wrong for all 24 (it forced four VP numbers per card), so there are no per-row “was” notes — treat this whole table as new. Every card: top-left is <span class="g vp">1 VP</span>, middle-left is <span class="g blank">blank</span>; only TR (2nd space), MR (4th space), and the trading-house number vary. To find a card: sort your stack by the big bottom number, then match TR/MR.</p>
+<table>
+<thead><tr><th>TH VP</th><th>TR (2nd shophouse space)</th><th>MR (4th shophouse space)</th><th>Sheet pos</th></tr></thead>
+<tbody>
+<tr><td class="num">5</td><td><span class="g house">shophouse build (2)</span></td><td><span class="g asst">2 assistants</span></td><td>(3,2)</td></tr>
+<tr><td class="num">5</td><td><span class="g house">shophouse build (3)</span></td><td><span class="g house">shophouse build (2)</span></td><td>(3,4)</td></tr>
+<tr><td class="num">5</td><td><span class="g vp">3 VP</span></td><td><span class="g vp">1 VP</span> + <span class="g yen">2 yen</span></td><td>(5,1)</td></tr>
+<tr><td class="num">5</td><td><span class="g vp">4 VP</span></td><td><span class="g vp">1 VP</span> + <span class="g yen">2 yen</span></td><td>(5,2)</td></tr>
+<tr><td class="num">6</td><td><span class="g wild">any-good (2)</span></td><td><span class="g wild">any-good (1)</span></td><td>(2,3)</td></tr>
+<tr><td class="num">6</td><td><span class="g house">shophouse build (2)</span></td><td><span class="g asst">2 assistants</span></td><td>(2,5)</td></tr>
+<tr><td class="num">6</td><td><span class="g vp">3 VP</span> + <span class="g yen">1 yen</span></td><td><span class="g asst">2 assistants</span></td><td>(3,3)</td></tr>
+<tr><td class="num">6</td><td><span class="g vp">4 VP</span></td><td><span class="g yen">2 yen</span></td><td>(4,5)</td></tr>
+<tr><td class="num">6</td><td><span class="g vp">3 VP</span></td><td><span class="g vp">2 VP</span></td><td>(5,4)</td></tr>
+<tr><td class="num">7</td><td><span class="g vp">3 VP</span></td><td><span class="g fish">3 fish</span></td><td>(1,1)</td></tr>
+<tr><td class="num">7</td><td><span class="g fish">3 fish</span></td><td><span class="g fish">2 fish</span></td><td>(1,2)</td></tr>
+<tr><td class="num">7</td><td><span class="g vp">4 VP</span></td><td><span class="g tea">2 tea</span> <em>(old YAML said TH 9 — card says 7)</em></td><td>(1,3)</td></tr>
+<tr><td class="num">7</td><td><span class="g wild">any-good (2)</span></td><td><span class="g wild">any-good (1)</span></td><td>(2,2)</td></tr>
+<tr><td class="num">7</td><td><span class="g house">shophouse build (2)</span></td><td><span class="g asst">2 assistants</span></td><td>(3,1)</td></tr>
+<tr><td class="num">8</td><td><span class="g house">shophouse build (2)</span></td><td><span class="g tea">2 tea</span></td><td>(1,4)</td></tr>
+<tr><td class="num">8</td><td><span class="g vp">4 VP</span></td><td><span class="g asst">2 assistants</span></td><td>(2,4)</td></tr>
+<tr><td class="num">8</td><td><span class="g vp">3 VP</span></td><td><span class="g house">shophouse build (2)</span></td><td>(3,5)</td></tr>
+<tr><td class="num">8</td><td><span class="g vp">2 VP</span> + <span class="g yen">1 yen</span></td><td><span class="g house">shophouse build (2)</span></td><td>(4,1)</td></tr>
+<tr><td class="num">8</td><td><span class="g vp">2 VP</span> + <span class="g yen">1 yen</span></td><td><span class="g vp">2 VP</span></td><td>(4,3)</td></tr>
+<tr class="flag"><td class="num">9</td><td><span class="g silk">2 silk</span></td><td><span class="g copper">1 copper</span> — priority check 2 (pale ingot)</td><td>(1,5)</td></tr>
+<tr><td class="num">9</td><td><span class="g copper">2 copper</span></td><td><span class="g silk">2 silk</span></td><td>(2,1)</td></tr>
+<tr><td class="num">9</td><td><span class="g vp">2 VP</span> + <span class="g yen">1 yen</span></td><td><span class="g vp">1 VP</span> + <span class="g yen">1 yen</span></td><td>(4,2)</td></tr>
+<tr><td class="num">9</td><td><span class="g vp">4 VP</span></td><td><span class="g yen">2 yen</span></td><td>(4,4)</td></tr>
+<tr><td class="num">9</td><td><span class="g vp">4 VP</span></td><td><span class="g vp">3 VP</span></td><td>(5,3)</td></tr>
+</tbody>
+</table>
+<p class="sub">Distribution check: TH-VP 5 ×4 · 6 ×5 · 7 ×5 · 8 ×5 · 9 ×5. (One of the “5”s vs “6”s counts differs from the agent's summary line by one — the table above is the per-card truth; a quick stack count settles it.)</p>
+
+<h2>Global facts to confirm incidentally</h2>
+<table>
+<thead><tr><th>Item</th><th>Adopted value</th><th>Old value</th></tr></thead>
+<tbody>
+<tr><td>Order cards removed at setup (2P / 3P / 4P)</td><td class="num">16 / 5 / 0</td><td><span class="was">code said 10 / 5 / 0</span></td></tr>
+<tr><td>Starting money (start player / others)</td><td class="num">3 / 4 Yen</td><td><span class="was">engine used 7 / 8</span></td></tr>
+<tr><td>Tech deck size</td><td class="num">30 cards (20 titles)</td><td><span class="was">YAML/engine said 20</span></td></tr>
+<tr><td>Mercenary flags</td><td>3 GB · 2 US · 2 FR · 2 DE · 1 NL (10 total)</td><td>—</td></tr>
+<tr><td>5-Power tokens</td><td class="num">20</td><td>—</td></tr>
+<tr><td>Assistants per player</td><td>20 (8 hand + 12 warehouse)</td><td>✓ code correct</td></tr>
+</tbody>
+</table>
+
+<p class="sub" style="margin-top:28px">Engine work continues on the adopted values while you check — any deviation you report gets patched into the YAML and regenerated data. Card IDs in the engine will use the printed corner numbers (1–36).</p>
+
+</body>
+</html>

@@ -147,21 +147,48 @@ pub struct TechCard {
     pub effect: TechEffect,
 }
 
-/// Port board state (3 card slots).
+/// Port board state: 6 card slots, 2 per zone, left to right as
+/// Low, Low, Mid, Mid, High, High (board-art verified 2026-07-17;
+/// see `.superpowers/sdd/asset-sweep-report.md` Q3).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PortBoard {
-    pub low: Option<OrderCardId>,
-    pub mid: Option<OrderCardId>,
-    pub high: Option<OrderCardId>,
+    /// Indices 0-1 = Low, 2-3 = Mid, 4-5 = High.
+    pub slots: [Option<OrderCardId>; 6],
 }
 
 impl PortBoard {
     pub fn new() -> Self {
-        Self {
-            low: None,
-            mid: None,
-            high: None,
+        Self { slots: [None; 6] }
+    }
+
+    /// Zone for a given slot index (0-5). Indices 0,1 = Low; 2,3 = Mid; 4,5 = High.
+    /// The mapping is positional and fixed regardless of board contents.
+    pub fn zone_of(index: usize) -> PortZone {
+        match index {
+            0 | 1 => PortZone::Low,
+            2 | 3 => PortZone::Mid,
+            _ => PortZone::High,
         }
+    }
+
+    /// Find the slot index holding the given card, if it's present on this board.
+    pub fn find_card(&self, card_id: OrderCardId) -> Option<usize> {
+        self.slots.iter().position(|slot| *slot == Some(card_id))
+    }
+
+    /// True if every slot is occupied.
+    pub fn is_full(&self) -> bool {
+        self.slots.iter().all(|s| s.is_some())
+    }
+
+    /// True if every slot is empty.
+    pub fn is_empty(&self) -> bool {
+        self.slots.iter().all(|s| s.is_none())
+    }
+
+    /// True if at least one slot is empty (drives the Order-deck-empty end game trigger).
+    pub fn has_empty_slot(&self) -> bool {
+        self.slots.iter().any(|s| s.is_none())
     }
 }
 
@@ -171,33 +198,35 @@ impl Default for PortBoard {
     }
 }
 
-/// Port slot identifier.
+/// Zone on a Port board. Each zone spans 2 physical slots.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
-pub enum PortSlot {
+pub enum PortZone {
     Low,
     Mid,
     High,
 }
 
-/// Laboratory board state (4 card slots).
+/// Laboratory board state: 6 tech slots, with Industry surcharges +1,+1,+2,+2
+/// on slots 3-6 / 1-indexed (board-art verified 2026-07-17; see
+/// `.superpowers/sdd/asset-sweep-report.md` Q4).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct LabBoard {
-    /// 4 slots, index 0 is leftmost (no position modifier).
-    /// Position modifiers: slot 2 = +1, slot 3 = +2.
-    pub slots: [Option<TechCardId>; 4],
+    /// 6 slots, index 0 is leftmost (no position modifier).
+    /// Position modifiers: slots 0-1 = +0, slots 2-3 = +1, slots 4-5 = +2.
+    pub slots: [Option<TechCardId>; 6],
 }
 
 impl LabBoard {
     pub fn new() -> Self {
-        Self { slots: [None; 4] }
+        Self { slots: [None; 6] }
     }
 
-    /// Returns the position cost modifier for a slot (0, 0, 1, or 2).
+    /// Returns the position cost modifier for a slot (0, 0, 1, 1, 2, or 2).
     pub fn position_modifier(slot: usize) -> u8 {
         match slot {
             0 | 1 => 0,
-            2 => 1,
-            3 => 2,
+            2 | 3 => 1,
+            4 | 5 => 2,
             _ => 0,
         }
     }

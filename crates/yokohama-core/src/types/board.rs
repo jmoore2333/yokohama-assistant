@@ -1,7 +1,7 @@
 //! Board layout and area definitions.
 
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::collections::BTreeMap;
 
 use crate::types::{AreaId, PlayerId};
 
@@ -66,6 +66,25 @@ impl AreaType {
     pub fn has_building_site(&self) -> bool {
         !matches!(self, AreaType::Canal)
     }
+
+    /// Returns true if this area's action may be declined via
+    /// `AreaAction::Skip` (rulebook p.7/p.11-12 optionality ruling, decision
+    /// log 2026-07-17): the six areas with optional components. Production
+    /// areas and the Bank have no optional component — their imperative
+    /// "Gain ..." move is the only legal action there.
+    pub fn allows_area_action_skip(&self) -> bool {
+        matches!(
+            self,
+            AreaType::PortA
+                | AreaType::PortB
+                | AreaType::LaboratoryA
+                | AreaType::LaboratoryB
+                | AreaType::EmploymentAgency
+                | AreaType::Chinatown
+                | AreaType::Church
+                | AreaType::Customs
+        )
+    }
 }
 
 /// Configuration for a single area on the board.
@@ -76,11 +95,30 @@ pub struct AreaConfig {
     pub grid_position: (u8, u8),
 }
 
+/// Reward printed on a single Shophouse space of a Building Site card.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub struct SpaceReward {
+    pub vp: u8,
+    pub yen: u8,
+    pub seafood: u8,
+    pub tea: u8,
+    pub silk: u8,
+    pub copper: u8,
+    /// Wild trade-good token (any one of the four goods).
+    pub any_good: u8,
+    /// Movement icon (rulebook p.10 "Description of the Icons"): move an
+    /// assistant from hand or an area to another area; no President fees.
+    pub movement: u8,
+    /// Warehouse icon (rulebook p.10): take a token (assistant/shophouse/
+    /// trading house) from the Warehouse tile to hand, at Employment Agency cost.
+    pub warehouse_tokens: u8,
+}
+
 /// Building site card placed on an area.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct BuildingSite {
-    /// VP rewards for Shophouse slots 1-4.
-    pub shophouse_rewards: [u8; 4],
+    /// Rewards for the four Shophouse spaces, in TL, TR, ML, MR order.
+    pub spaces: [SpaceReward; 4],
     /// VP reward for Trading House.
     pub trading_house_reward: u8,
     /// Which player owns shophouse in each slot (0-3), None if empty.
@@ -90,10 +128,17 @@ pub struct BuildingSite {
 }
 
 impl BuildingSite {
-    /// Create a new empty building site with given VP values.
-    pub fn new(shophouse_rewards: [u8; 4], trading_house_reward: u8) -> Self {
+    /// Create a new empty building site from VP-only rewards: a convenience
+    /// constructor (each value becomes a SpaceReward with only `vp` set) for
+    /// callers that don't care about the non-VP parts of a space's reward.
+    pub fn new(vps: [u8; 4], trading_house_reward: u8) -> Self {
         Self {
-            shophouse_rewards,
+            spaces: [
+                SpaceReward { vp: vps[0], ..Default::default() },
+                SpaceReward { vp: vps[1], ..Default::default() },
+                SpaceReward { vp: vps[2], ..Default::default() },
+                SpaceReward { vp: vps[3], ..Default::default() },
+            ],
             trading_house_reward,
             shophouses_built: [None; 4],
             trading_house_owner: None,
@@ -132,19 +177,19 @@ pub enum FivePowerEffect {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct BoardLayout {
     /// Area tiles and their configurations.
-    pub areas: HashMap<AreaId, AreaConfig>,
+    pub areas: BTreeMap<AreaId, AreaConfig>,
 
     /// Adjacency graph (bidirectional).
-    pub adjacency: HashMap<AreaId, Vec<AreaId>>,
+    pub adjacency: BTreeMap<AreaId, Vec<AreaId>>,
 
     /// Canal crossings that require 1 Yen payment.
     pub canal_crossings: Vec<(AreaId, AreaId)>,
 
     /// Building sites per area.
-    pub building_sites: HashMap<AreaId, BuildingSite>,
+    pub building_sites: BTreeMap<AreaId, BuildingSite>,
 
     /// 5-Power tokens (None if already claimed).
-    pub five_power_tokens: HashMap<AreaId, Option<FivePowerEffect>>,
+    pub five_power_tokens: BTreeMap<AreaId, Option<FivePowerEffect>>,
 }
 
 impl BoardLayout {
@@ -163,11 +208,11 @@ impl BoardLayout {
 /// Ensures adjacency is bidirectional, sites exist for all areas, etc.
 #[derive(Debug, Default)]
 pub struct BoardLayoutBuilder {
-    pub(crate) areas: HashMap<AreaId, AreaConfig>,
-    pub(crate) adjacency: HashMap<AreaId, Vec<AreaId>>,
+    pub(crate) areas: BTreeMap<AreaId, AreaConfig>,
+    pub(crate) adjacency: BTreeMap<AreaId, Vec<AreaId>>,
     pub(crate) canal_crossings: Vec<(AreaId, AreaId)>,
-    pub(crate) building_sites: HashMap<AreaId, BuildingSite>,
-    pub(crate) five_power_tokens: HashMap<AreaId, Option<FivePowerEffect>>,
+    pub(crate) building_sites: BTreeMap<AreaId, BuildingSite>,
+    pub(crate) five_power_tokens: BTreeMap<AreaId, Option<FivePowerEffect>>,
 }
 
 impl BoardLayoutBuilder {

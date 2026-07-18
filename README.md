@@ -1,5 +1,9 @@
 # Yokohama AI Assistant
 
+> **Status note (2026-07-16):** The status tables below are historical and overstate completion.
+> `guidingpath.md` is the authoritative status and roadmap; the engine-completion work is specified
+> in `docs/plans/2026-07-16-engine-completion-design.md`.
+
 An AR-powered AI assistant for the board game **Yokohama** that observes the physical tabletop, extracts game state, and provides real-time strategic recommendations.
 
 ## Project Vision

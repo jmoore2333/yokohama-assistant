@@ -1,6 +1,8 @@
 //! Commercial area actions (Bank, Employment Agency, Chinatown).
 
 use crate::types::{ChinatownExchange, GameState, PlayerId};
+use crate::game::cards::TechRegistry;
+use crate::game::tech_effects::copper_bonus;
 
 /// Bank reward: 1 Yen per power.
 pub fn bank_reward(power: u8) -> u8 {
@@ -23,7 +25,17 @@ pub fn apply_chinatown_exchange(
     state: &mut GameState,
     player: PlayerId,
     exchange: ChinatownExchange,
+    tech_registry: &TechRegistry,
 ) -> Result<(), &'static str> {
+    // Mining Technology bonus (KB "applies to": Chinatown) fires on the
+    // YenToCopper exchange, which always receives exactly 1 base Copper.
+    // Computed before the player is mutably borrowed below.
+    let mining_bonus = if exchange == ChinatownExchange::YenToCopper {
+        copper_bonus(state, player, 1, tech_registry)
+    } else {
+        0
+    };
+
     let p = &mut state.players[player.0 as usize];
 
     match exchange {
@@ -60,7 +72,7 @@ pub fn apply_chinatown_exchange(
                 return Err("Not enough money");
             }
             p.money -= 2;
-            p.copper += 1;
+            p.copper += 1 + mining_bonus as u32;
         }
         ChinatownExchange::YenToSilk => {
             if p.money < 2 {

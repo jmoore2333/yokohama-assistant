@@ -1,7 +1,7 @@
 //! Player state and resource tracking.
 
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::collections::BTreeMap;
 
 use crate::types::{AreaId, Country, OrderCardId, PlayerId, PlayerColor, TechCardId};
 
@@ -18,7 +18,7 @@ pub struct AssistantState {
     pub in_hand: u8,
     pub in_warehouse: u8,
     /// Count per area on the main board.
-    pub on_board: HashMap<AreaId, u8>,
+    pub on_board: BTreeMap<AreaId, u8>,
     /// Locked on Achievement cards.
     pub on_achievements: u8,
     /// Locked on Church Management Board.
@@ -33,7 +33,7 @@ impl AssistantState {
         Self {
             in_hand: 8,
             in_warehouse: 12,
-            on_board: HashMap::new(),
+            on_board: BTreeMap::new(),
             on_achievements: 0,
             on_church: 0,
             on_customs: 0,
@@ -68,7 +68,7 @@ pub struct ShophouseState {
     pub in_hand: u8,
     pub in_warehouse: u8,
     /// Areas where shophouses are built (area -> slot index 0-3).
-    pub built: HashMap<AreaId, u8>,
+    pub built: BTreeMap<AreaId, u8>,
 }
 
 impl ShophouseState {
@@ -76,7 +76,7 @@ impl ShophouseState {
         Self {
             in_hand: 2,
             in_warehouse: 6,
-            built: HashMap::new(),
+            built: BTreeMap::new(),
         }
     }
 
@@ -92,24 +92,32 @@ impl Default for ShophouseState {
 }
 
 /// Tracking of Trading House token locations.
+/// Staging mirrors the physical flow (rulebook p.7 + p.12): the Employment
+/// Agency moves tokens warehouse -> hand at the printed take progression;
+/// the Building step places from HAND for free.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TradingHouseState {
+    /// Tokens taken from the warehouse (via Employment Agency) but not yet built.
+    pub in_hand: u8,
     pub in_warehouse: u8,
-    /// Areas where trading houses are built (order matters for cost).
+    /// Areas where trading houses are built (in build order).
     pub built: Vec<AreaId>,
 }
 
 impl TradingHouseState {
     pub fn new() -> Self {
         Self {
+            in_hand: 0,
             in_warehouse: 4,
             built: Vec::new(),
         }
     }
 
-    /// Cost to purchase next trading house from warehouse.
+    /// Employment Agency cost of the NEXT trading house taken from the
+    /// warehouse: the printed 4/5/6/7 progression, indexed by how many
+    /// tokens have already left the warehouse (in hand + built).
     pub fn next_cost(&self) -> u8 {
-        match self.built.len() {
+        match self.in_hand as usize + self.built.len() {
             0 => 4,
             1 => 5,
             2 => 6,
@@ -133,16 +141,16 @@ impl Default for TradingHouseState {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MercenaryState {
     /// Face-up (usable) mercenaries by country.
-    pub available: HashMap<Country, u8>,
+    pub available: BTreeMap<Country, u8>,
     /// Face-down (used) mercenaries by country.
-    pub used: HashMap<Country, u8>,
+    pub used: BTreeMap<Country, u8>,
 }
 
 impl MercenaryState {
     pub fn new() -> Self {
         Self {
-            available: HashMap::new(),
-            used: HashMap::new(),
+            available: BTreeMap::new(),
+            used: BTreeMap::new(),
         }
     }
 
@@ -192,6 +200,9 @@ pub struct PlayerState {
     /// This is the only hidden information in base Yokohama.
     /// None if not yet assigned (pre-setup) or if revealed for some reason.
     pub starting_order: Option<OrderCardId>,
+    /// True when this player chose to keep their starting order deal hidden (live-tracked
+    /// opponent): the card's identity is not recorded anywhere in this state.
+    pub starting_order_hidden: bool,
     pub completed_orders: Vec<OrderCardId>,
     pub technologies: Vec<TechCardId>,
 
@@ -223,6 +234,7 @@ impl PlayerState {
             imported_goods: 0,
             order_cards_in_hand: Vec::new(),
             starting_order: None,
+            starting_order_hidden: false,
             completed_orders: Vec::new(),
             technologies: Vec::new(),
             five_power_tokens: 0,

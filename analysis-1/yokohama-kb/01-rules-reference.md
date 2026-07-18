@@ -16,7 +16,7 @@
 
 | Component | 2P | 3P | 4P |
 |-----------|----|----|-----|
-| Area Boards | 12 | 15 | 18 |
+| Area Boards | 10 | 14 | 18 |
 | Laboratories | 1 (A only) | 1 (A only) | 2 (A and B) |
 | Ports | 1 (A only) | 2 (A and B) | 2 (A and B) |
 | Order cards in deck | 20 | 31 | 36 |
@@ -96,7 +96,7 @@ Choose ONE option:
 ### Placement Rules
 - **President blocking payment:** If any President pawn(s) occupy the target area, pay 1 Yen to each President's owner per assistant placed
 - **Canal restriction:** Cannot place assistants in the Canal
-- **Minimum placement:** May place 0, 1, 2, or 3 assistants (not required to place all)
+- **Minimum placement:** May place 0, 1, 2, or 3 assistants (not required to place all) — ruled legal explicitly 2026-07-18 (final whole-branch review finding I5) after this line sat unconnected to any decision-log row; see `guidingpath.md` decision log
 - **Source restriction:** Must place from hand only (not from warehouse or management boards)
 
 ---
@@ -243,12 +243,15 @@ Return ALL assistant pawns from the action area to your hand.
 #### Port (A and B)
 Take Order cards from the corresponding Port Order Form Board.
 
-| Power | Available Rows |
+**Layout (board-art verified):** each Port board has SIX card spaces, two per
+zone, in order Low, Low, Mid, Mid, High, High (left to right).
+
+| Power | Available Zones |
 |-------|----------------|
 | 1 | Cannot take |
-| 2 | Low only |
-| 3 | Low, Mid |
-| 4 | Low, Mid, High |
+| 2 | Low only (2 spaces) |
+| 3 | Low, Mid (4 spaces) |
+| 4 | Low, Mid, High (all 6 spaces) |
 | 5 | Low, Mid, High + 3 VP |
 
 **Card options:**
@@ -257,12 +260,17 @@ Take Order cards from the corresponding Port Order Form Board.
 
 **Hand limit:** Maximum 3 Order cards. Cannot take if would exceed.
 
-**Replenishment:** Slide cards left, refill from deck to rightmost spaces.
+**Replenishment:** Slide cards left (full compaction across all 6 spaces), refill from deck to rightmost spaces.
 
 #### Laboratory (A and B)
 Acquire Technology cards from the corresponding Technology Card Placement Area.
 
-**Industry Value required** = Card's printed cost + Board position modifier (+1 or +2 for rightmost positions)
+**Ownership limit (added 2026-07-17 — omitted from this reference until the final whole-branch review found the engine had no ownership check at all):** Players may only own 1 Technology card of the same name at a time (rulebook General Rules: "There is no limit to the number of Technology cards in each player's hand. However, players may only own 1 card of the same name."). Ten of the 20 titles circulate as 2 physical copies each (Language School, Telegram, Telephone, Newspaper, Exposition, Ball, Gaslight, University, Letterpress Printing, Postal System) precisely so different players can each own one — but a single player may never acquire both. See `guidingpath.md` decision log.
+
+**Layout (board-art verified):** each Laboratory board has SIX tech slots.
+Slots 1-2 carry no surcharge; +1 on the 3rd and 4th spaces, +2 on the 5th and 6th.
+
+**Industry Value required** = Card's printed cost + Board position modifier (+1 on the 3rd and 4th spaces, +2 on the 5th and 6th)
 
 **Industry Value sources:**
 | Source | Industry Value |
@@ -327,7 +335,7 @@ Contribute Faith value to advance on Church Management Board.
 | Source | Faith Value | Restriction |
 |--------|-------------|-------------|
 | 1 Power | 1 | - |
-| 2 Power | 1 | - |
+| 2 Power | 2 | - |
 | 3 Power | 3 | - |
 | 4 Power | 4 | - |
 | 5 Power | 5 | - |
@@ -338,23 +346,25 @@ Contribute Faith value to advance on Church Management Board.
 | 1 Yen | 1 | Max 1 per turn |
 | 1 Imported Good | 1 | Max 1 per turn |
 
+**Correction (Jeremy-adjudicated 2026-07-17):** Faith from Power scales linearly (1,2,3,4,5). An earlier version of this table read "2 Power: 1 Faith" — that is a rulebook text typo, not the actual rule; see `guidingpath.md` decision log.
+
 **Process:**
 1. Calculate total Faith value
 2. Place 1 assistant on Church Management Board at corresponding space
 3. Gain reward shown on that space
 4. Assistant is locked permanently
 
-**Church Management Board rewards:**
+**Church Management Board rewards** (Bonus column corrected 2026-07-17 from board art — every space carries a movement rider, values 1,1,2,2,2,2,3,3; see `guidingpath.md` decision log):
 | Faith | VP | Bonus |
 |-------|-----|-------|
-| 4 | 3 | - |
-| 5 | 4 | - |
+| 4 | 3 | 1 Movement |
+| 5 | 4 | 1 Movement |
 | 6 | 5 | 2 Movement |
-| 7 | 6 | 1 Yen |
-| 8 | 7 | 1 Movement |
-| 9 | 8 | 1 Imported Good |
-| 10 | 11 | - |
-| 11 | 14 | - |
+| 7 | 6 | 2 Movement |
+| 8 | 7 | 2 Movement |
+| 9 | 8 | 2 Movement |
+| 10 | 11 | 3 Movement |
+| 11 | 14 | 3 Movement |
 
 #### Customs
 Pay Imported Goods to advance on Customs Management Board.
@@ -373,16 +383,19 @@ Pay Imported Goods to advance on Customs Management Board.
 3. Gain reward shown on that space
 4. Assistant is locked permanently
 
-**Customs Management Board rewards:**
-| Imported Goods | VP | Bonus |
-|----------------|-----|-------|
-| 1 | 5 | 2 Yen |
-| 2 | 4 | 2 Yen |
-| 3 | 10 | 1 Imported Good |
-| 4 | 9 | 1 Imported Good |
-| 5 | 16 | - |
-| 6 | 15 | - |
-| 7+ | 22 | - |
+**Customs Management Board rewards (board-art verified 2026-07-17 — CORRECTS the table below, which previously modeled a goods-keyed 8-slot track with 1/3/4-Imported-Good bonuses that don't exist on the physical board):**
+
+7 printed spaces, numbered 1-7 left to right, each with a fixed printed cost (Imported Goods) and VP reward. A payment must EXACTLY match a space's printed cost — both spaces of a cost pair filled means that payment is unplaceable. v1 auto-places on the higher-VP (leftmost) empty space of the matching pair, falling back to the other space of the pair if it's occupied. In 2-player games, space 4 (9 VP) is pre-blocked by a printed dummy pawn.
+
+| Space | Cost (Imported Goods) | VP | Rider |
+|-------|------------------------|-----|-------|
+| 1 | 1 | 5 | +2 Warehouse takes |
+| 2 | 1 | 4 | +2 Yen |
+| 3 | 2 | 10 | +1 Warehouse take |
+| 4 | 2 | 9 | +1 Yen |
+| 5 | 3 | 16 | - |
+| 6 | 3 | 15 | - |
+| 7 | 4 | 22 | - |
 
 #### Canal (not in 2P)
 - No pawns or tokens may be placed
@@ -588,7 +601,7 @@ Highest VP wins. Tiebreaker: Closest to Start Player (clockwise).
 
 ### Order/Tech Acquisition Technologies
 
-**Ball** (Industry 5)
+**Ball** (Industry 3)
 - When completing Order card: +2 VP
 
 **Language School** (Industry ?)
@@ -605,7 +618,7 @@ Highest VP wins. Tiebreaker: Closest to Start Player (clockwise).
 **Winery** (Industry ?)
 - When placing assistant on Church: +3 VP
 
-**Brickyard** (Industry 4)
+**Brickyard** (Industry 3)
 - When placing assistant on Customs: +4 VP
 
 ### Economy Technologies

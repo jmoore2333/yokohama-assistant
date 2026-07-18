@@ -7,6 +7,7 @@ mod cards;
 mod tracks;
 mod moves;
 mod state;
+mod errors;
 
 pub use ids::*;
 pub use player::*;
@@ -15,6 +16,7 @@ pub use cards::*;
 pub use tracks::*;
 pub use moves::*;
 pub use state::*;
+pub use errors::*;
 
 #[cfg(test)]
 mod tests;

@@ -86,16 +86,18 @@ impl Default for ChurchTrack {
 pub struct CustomsSlot {
     /// Player who placed here.
     pub player: PlayerId,
-    /// Arrival order for tie-breaking.
+    /// Arrival order for tie-breaking (higher = later = wins ties).
     pub arrival_order: u8,
 }
 
-/// Customs Management Board state.
-/// Slots correspond to Imported Goods paid 1-7+.
+/// Customs Management Board state. Board-art verified 2026-07-17: 7 printed
+/// spaces numbered 1-7 left to right, each with a fixed printed cost
+/// (imported goods) and VP reward. SUPERSEDES the earlier goods-keyed
+/// 8-slot model (`goods_to_index` retired).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CustomsTrack {
-    /// 8 slots for Imported Goods 1-7+ (index 7 = 7 or more).
-    pub slots: [Option<CustomsSlot>; 8],
+    /// 7 slots for spaces 1-7. Index 0 = space 1, index 6 = space 7.
+    pub slots: [Option<CustomsSlot>; 7],
     /// Next arrival order number.
     pub next_arrival_order: u8,
 }
@@ -103,32 +105,61 @@ pub struct CustomsTrack {
 impl CustomsTrack {
     pub fn new() -> Self {
         Self {
-            slots: [None; 8],
+            slots: [None; 7],
             next_arrival_order: 0,
         }
     }
 
-    /// Convert Imported Goods count to slot index.
-    pub fn goods_to_index(goods: u8) -> Option<usize> {
-        if (1..=7).contains(&goods) {
-            Some((goods - 1) as usize)
-        } else if goods > 7 {
-            Some(6) // Slot 7 handles 7+
+    /// Convert space number (1-7) to slot index (0-6).
+    pub fn space_to_index(space: u8) -> Option<usize> {
+        if (1..=7).contains(&space) {
+            Some((space - 1) as usize)
         } else {
             None
         }
     }
 
-    /// VP reward for a given Imported Goods count.
-    pub fn vp_reward(goods: u8) -> u8 {
-        match goods {
+    /// Convert slot index (0-6) to space number (1-7).
+    pub fn index_to_space(index: usize) -> u8 {
+        (index + 1) as u8
+    }
+
+    /// Candidate spaces for a printed imported-goods cost, higher-VP
+    /// (leftmost) space first: cost 1 -> {1,2}; cost 2 -> {3,4}; cost 3 ->
+    /// {5,6}; cost 4 -> {7} alone. `None` for any other cost.
+    pub fn spaces_for_cost(cost: u8) -> Option<&'static [u8]> {
+        match cost {
+            1 => Some(&[1, 2]),
+            2 => Some(&[3, 4]),
+            3 => Some(&[5, 6]),
+            4 => Some(&[7]),
+            _ => None,
+        }
+    }
+
+    /// VP reward for a given space (1-7).
+    pub fn vp_reward(space: u8) -> u8 {
+        match space {
             1 => 5,
             2 => 4,
             3 => 10,
             4 => 9,
             5 => 16,
             6 => 15,
-            _ => 22, // 7+
+            7 => 22,
+            _ => 0,
+        }
+    }
+
+    /// Rider bonus for a given space, as (warehouse_takes, yen). Spaces 5-7
+    /// carry no rider.
+    pub fn rider(space: u8) -> (u8, u8) {
+        match space {
+            1 => (2, 0),
+            2 => (0, 2),
+            3 => (1, 0),
+            4 => (0, 1),
+            _ => (0, 0),
         }
     }
 

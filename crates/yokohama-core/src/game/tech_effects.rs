@@ -31,41 +31,51 @@ pub fn apply_turn_start_effects(
     }
 }
 
-/// Calculate building VP bonus from Gaslight/Electrical Light.
+/// Calculate building VP bonus from Gaslight (+2 VP, Shophouse) / Electrical
+/// Light (+3 VP, Trading House) -- stacks per owned physical copy (Task
+/// 20c/C4 final-review fix, consistent with the Winery/Brickyard/Ball/
+/// Language School/Mining Technology precedent). Gaslight has 2 physical
+/// copies in the standard data, so this matters even though the C2
+/// one-per-title ownership rule makes owning both at once unreachable in
+/// real play -- the convention stays consistent regardless.
 pub fn building_vp_bonus(
     state: &GameState,
     player: PlayerId,
     is_shophouse: bool,
     tech_registry: &TechRegistry,
 ) -> u32 {
+    let p = state.player(player);
     if is_shophouse {
-        if has_tech_effect(state, player, TechEffect::Gaslight, tech_registry) {
-            2
-        } else {
-            0
-        }
+        let copies = p.technologies.iter()
+            .filter(|&&tech_id| tech_registry.get(tech_id).map(|t| t.effect == TechEffect::Gaslight).unwrap_or(false))
+            .count() as u32;
+        copies * 2
     } else {
         // Trading House
-        if has_tech_effect(state, player, TechEffect::ElectricalLight, tech_registry) {
-            3
-        } else {
-            0
-        }
+        let copies = p.technologies.iter()
+            .filter(|&&tech_id| tech_registry.get(tech_id).map(|t| t.effect == TechEffect::ElectricalLight).unwrap_or(false))
+            .count() as u32;
+        copies * 3
     }
 }
 
-/// Calculate copper bonus from Mining Technology.
+/// Calculate copper bonus from Mining Technology: "Whenever you gain one or
+/// more Copper: gain 1 additional Copper" (KB 08-tech-cards.yaml:147),
+/// stacking per owned physical copy (consistent with the Winery/Brickyard/
+/// Letterpress precedent). Fires only on actual receipt — zero base copper
+/// means zero bonus even with copies owned.
 pub fn copper_bonus(
     state: &GameState,
     player: PlayerId,
     base_copper: u8,
     tech_registry: &TechRegistry,
 ) -> u8 {
-    if base_copper > 0 && has_tech_effect(state, player, TechEffect::MiningTechnology, tech_registry) {
-        1
-    } else {
-        0
+    if base_copper == 0 {
+        return 0;
     }
+    state.player(player).technologies.iter()
+        .filter(|&&tech_id| tech_registry.get(tech_id).map(|t| t.effect == TechEffect::MiningTechnology).unwrap_or(false))
+        .count() as u8
 }
 
 /// Calculate placement limit (3 or 4 with Newspaper).
@@ -189,36 +199,69 @@ pub fn tech_acquisition_bonuses(
     (vp_bonus, yen_bonus)
 }
 
-/// Church placement bonus (Winery).
+/// Church placement bonus (Winery): +3 VP per owned Winery copy — stacks
+/// per physical copy the player owns (Task 13, consistent with the Lab
+/// acquisition bonus precedent for Patent System/Letter Press Printing).
 pub fn church_vp_bonus(
     state: &GameState,
     player: PlayerId,
     tech_registry: &TechRegistry,
 ) -> u32 {
-    if has_tech_effect(state, player, TechEffect::Winery, tech_registry) {
-        3
-    } else {
-        0
-    }
+    let p = state.player(player);
+    let winery_copies = p.technologies.iter()
+        .filter(|&&tech_id| tech_registry.get(tech_id).map(|t| t.effect == TechEffect::Winery).unwrap_or(false))
+        .count() as u32;
+    winery_copies * 3
 }
 
-/// Customs placement bonus (Brickyard).
+/// Customs placement bonus (Brickyard): +4 VP per owned Brickyard copy --
+/// stacks per physical copy the player owns (Task 14, consistent with the
+/// Church Winery precedent).
 pub fn customs_vp_bonus(
     state: &GameState,
     player: PlayerId,
     tech_registry: &TechRegistry,
 ) -> u32 {
-    if has_tech_effect(state, player, TechEffect::Brickyard, tech_registry) {
-        4
-    } else {
-        0
-    }
+    let p = state.player(player);
+    let brickyard_copies = p.technologies.iter()
+        .filter(|&&tech_id| tech_registry.get(tech_id).map(|t| t.effect == TechEffect::Brickyard).unwrap_or(false))
+        .count() as u32;
+    brickyard_copies * 4
+}
+
+/// Order-completion VP bonus (Ball): +2 VP per owned Ball copy — stacks per
+/// physical copy the player owns (Task 20c, consistent with the
+/// Winery/Brickyard precedent).
+pub fn ball_vp_bonus(
+    state: &GameState,
+    player: PlayerId,
+    tech_registry: &TechRegistry,
+) -> u32 {
+    let p = state.player(player);
+    let ball_copies = p.technologies.iter()
+        .filter(|&&tech_id| tech_registry.get(tech_id).map(|t| t.effect == TechEffect::Ball).unwrap_or(false))
+        .count() as u32;
+    ball_copies * 2
+}
+
+/// Order-completion Yen bonus (Language School): +1 Yen per owned copy —
+/// stacks per physical copy the player owns (Task 20c, consistent with the
+/// Winery/Brickyard precedent).
+pub fn language_school_yen_bonus(
+    state: &GameState,
+    player: PlayerId,
+    tech_registry: &TechRegistry,
+) -> u32 {
+    let p = state.player(player);
+    p.technologies.iter()
+        .filter(|&&tech_id| tech_registry.get(tech_id).map(|t| t.effect == TechEffect::LanguageSchool).unwrap_or(false))
+        .count() as u32
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::collections::HashMap;
+    use std::collections::BTreeMap;
 
     fn create_test_state() -> GameState {
         let config = GameConfig::new(
@@ -228,11 +271,11 @@ mod tests {
         );
 
         let board_layout = BoardLayout {
-            areas: HashMap::new(),
-            adjacency: HashMap::new(),
+            areas: BTreeMap::new(),
+            adjacency: BTreeMap::new(),
             canal_crossings: vec![],
-            building_sites: HashMap::new(),
-            five_power_tokens: HashMap::new(),
+            building_sites: BTreeMap::new(),
+            five_power_tokens: BTreeMap::new(),
         };
 
         let players = vec![
@@ -255,8 +298,9 @@ mod tests {
             president_start_area: None,
             port_state: PortState::new(false),
             lab_state: LabState::new(false),
-            order_deck_remaining: 20,
-            tech_deck_remaining: 20,
+            order_deck: vec![],
+            tech_deck: vec![],
+            orders_removed: vec![],
             church_track: ChurchTrack::new(),
             customs_track: CustomsTrack::new(),
             achievements: [
@@ -326,26 +370,41 @@ mod tests {
     }
 
     #[test]
-    fn test_winery_church_bonus() {
+    fn test_winery_church_bonus_stacks_per_owned_copy() {
+        // Standard data has only 1 physical Winery, so stacking is proven
+        // with a hand-rolled two-copy registry fixture (Task 13, mirrors
+        // Task 12's Patent System stacking precedent).
         let mut state = create_test_state();
         let player = PlayerId::new(0);
 
         let mut tech_registry = TechRegistry::new();
-        let winery = TechCard {
+        let winery_1 = TechCard {
             id: TechCardId(3),
             name: "Winery".to_string(),
             country: Country::French,
             industry_cost: 2,
             effect: TechEffect::Winery,
         };
-        tech_registry.insert(winery, "tech_winery");
+        let winery_2 = TechCard {
+            id: TechCardId(30),
+            name: "Winery".to_string(),
+            country: Country::French,
+            industry_cost: 2,
+            effect: TechEffect::Winery,
+        };
+        tech_registry.insert(winery_1, "tech_winery_1");
+        tech_registry.insert(winery_2, "tech_winery_2");
 
         // Without tech
         assert_eq!(church_vp_bonus(&state, player, &tech_registry), 0);
 
-        // With tech
+        // With one owned copy
         state.players[0].technologies.push(TechCardId(3));
         assert_eq!(church_vp_bonus(&state, player, &tech_registry), 3);
+
+        // With both owned copies - stacks
+        state.players[0].technologies.push(TechCardId(30));
+        assert_eq!(church_vp_bonus(&state, player, &tech_registry), 6);
     }
 
     #[test]
@@ -372,6 +431,79 @@ mod tests {
     }
 
     #[test]
+    fn test_ball_vp_bonus_stacks_per_owned_copy() {
+        // Standard data has 2 physical Ball copies, but a hand-rolled
+        // fixture pins the stacking semantics generically (Task 20c,
+        // mirrors the Winery/Brickyard/Mining Technology precedent).
+        let mut state = create_test_state();
+        let player = PlayerId::new(0);
+
+        let mut tech_registry = TechRegistry::new();
+        let ball_1 = TechCard {
+            id: TechCardId(20),
+            name: "Ball".to_string(),
+            country: Country::English,
+            industry_cost: 5,
+            effect: TechEffect::Ball,
+        };
+        let ball_2 = TechCard {
+            id: TechCardId(21),
+            name: "Ball".to_string(),
+            country: Country::English,
+            industry_cost: 5,
+            effect: TechEffect::Ball,
+        };
+        tech_registry.insert(ball_1, "tech_ball_1");
+        tech_registry.insert(ball_2, "tech_ball_2");
+
+        // Without tech
+        assert_eq!(ball_vp_bonus(&state, player, &tech_registry), 0);
+
+        // With one owned copy
+        state.players[0].technologies.push(TechCardId(20));
+        assert_eq!(ball_vp_bonus(&state, player, &tech_registry), 2);
+
+        // With both owned copies - stacks
+        state.players[0].technologies.push(TechCardId(21));
+        assert_eq!(ball_vp_bonus(&state, player, &tech_registry), 4);
+    }
+
+    #[test]
+    fn test_language_school_yen_bonus_stacks_per_owned_copy() {
+        let mut state = create_test_state();
+        let player = PlayerId::new(0);
+
+        let mut tech_registry = TechRegistry::new();
+        let ls_1 = TechCard {
+            id: TechCardId(22),
+            name: "Language School".to_string(),
+            country: Country::American,
+            industry_cost: 3,
+            effect: TechEffect::LanguageSchool,
+        };
+        let ls_2 = TechCard {
+            id: TechCardId(23),
+            name: "Language School".to_string(),
+            country: Country::American,
+            industry_cost: 3,
+            effect: TechEffect::LanguageSchool,
+        };
+        tech_registry.insert(ls_1, "tech_ls_1");
+        tech_registry.insert(ls_2, "tech_ls_2");
+
+        // Without tech
+        assert_eq!(language_school_yen_bonus(&state, player, &tech_registry), 0);
+
+        // With one owned copy
+        state.players[0].technologies.push(TechCardId(22));
+        assert_eq!(language_school_yen_bonus(&state, player, &tech_registry), 1);
+
+        // With both owned copies - stacks
+        state.players[0].technologies.push(TechCardId(23));
+        assert_eq!(language_school_yen_bonus(&state, player, &tech_registry), 2);
+    }
+
+    #[test]
     fn test_mining_technology_bonus() {
         let mut state = create_test_state();
         let player = PlayerId::new(0);
@@ -394,6 +526,45 @@ mod tests {
         assert_eq!(copper_bonus(&state, player, 3, &tech_registry), 1);
 
         // But not if base copper is 0
+        assert_eq!(copper_bonus(&state, player, 0, &tech_registry), 0);
+    }
+
+    #[test]
+    fn test_mining_technology_bonus_stacks_per_owned_copy() {
+        // Standard data has only 1 physical Mining Technology, so stacking is
+        // proven with a hand-rolled two-copy registry fixture (mirrors the
+        // Winery/Brickyard stacking precedent).
+        let mut state = create_test_state();
+        let player = PlayerId::new(0);
+
+        let mut tech_registry = TechRegistry::new();
+        let mining_1 = TechCard {
+            id: TechCardId(15),
+            name: "Mining Technology".to_string(),
+            country: Country::German,
+            industry_cost: 3,
+            effect: TechEffect::MiningTechnology,
+        };
+        let mining_2 = TechCard {
+            id: TechCardId(31),
+            name: "Mining Technology".to_string(),
+            country: Country::German,
+            industry_cost: 3,
+            effect: TechEffect::MiningTechnology,
+        };
+        tech_registry.insert(mining_1, "tech_mining_1");
+        tech_registry.insert(mining_2, "tech_mining_2");
+
+        // With one owned copy - +1 copper
+        state.players[0].technologies.push(TechCardId(15));
+        assert_eq!(copper_bonus(&state, player, 3, &tech_registry), 1);
+
+        // With both owned copies - stacks to +2 copper
+        state.players[0].technologies.push(TechCardId(31));
+        assert_eq!(copper_bonus(&state, player, 3, &tech_registry), 2);
+
+        // Still gated on receipt: zero base copper means zero bonus even with
+        // two copies owned.
         assert_eq!(copper_bonus(&state, player, 0, &tech_registry), 0);
     }
 

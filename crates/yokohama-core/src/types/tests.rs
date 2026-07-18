@@ -42,6 +42,29 @@ mod tests {
     }
 
     #[test]
+    fn test_area_type_allows_skip_only_at_permissive_areas() {
+        // Task 16 optionality ruling: Skip is legal only at the six areas
+        // with optional components; production areas and the Bank have no
+        // optional component (their imperative "Gain ..." move is the only
+        // legal action there).
+        assert!(AreaType::PortA.allows_area_action_skip());
+        assert!(AreaType::PortB.allows_area_action_skip());
+        assert!(AreaType::LaboratoryA.allows_area_action_skip());
+        assert!(AreaType::LaboratoryB.allows_area_action_skip());
+        assert!(AreaType::EmploymentAgency.allows_area_action_skip());
+        assert!(AreaType::Chinatown.allows_area_action_skip());
+        assert!(AreaType::Church.allows_area_action_skip());
+        assert!(AreaType::Customs.allows_area_action_skip());
+
+        assert!(!AreaType::CopperMine.allows_area_action_skip());
+        assert!(!AreaType::SilkMill.allows_area_action_skip());
+        assert!(!AreaType::TeaPlantation.allows_area_action_skip());
+        assert!(!AreaType::FishingGround.allows_area_action_skip());
+        assert!(!AreaType::Bank.allows_area_action_skip());
+        assert!(!AreaType::Canal.allows_area_action_skip());
+    }
+
+    #[test]
     fn test_building_site_slot_allocation() {
         let mut site = BuildingSite::new([3, 1, 8, 4], 9);
         let player = PlayerId::new(0);
@@ -98,9 +121,50 @@ mod tests {
 
     #[test]
     fn test_customs_track_rewards() {
+        // Board-art verified 2026-07-17: 7 spaces keyed by space number
+        // (SUPERSEDES the old goods-keyed 8-slot model).
         assert_eq!(CustomsTrack::vp_reward(1), 5);
+        assert_eq!(CustomsTrack::vp_reward(2), 4);
+        assert_eq!(CustomsTrack::vp_reward(3), 10);
+        assert_eq!(CustomsTrack::vp_reward(4), 9);
+        assert_eq!(CustomsTrack::vp_reward(5), 16);
+        assert_eq!(CustomsTrack::vp_reward(6), 15);
         assert_eq!(CustomsTrack::vp_reward(7), 22);
-        assert_eq!(CustomsTrack::vp_reward(10), 22); // 7+ all same
+        assert_eq!(CustomsTrack::vp_reward(8), 0); // no such space
+    }
+
+    #[test]
+    fn test_customs_track_space_index_roundtrip() {
+        assert_eq!(CustomsTrack::space_to_index(1), Some(0));
+        assert_eq!(CustomsTrack::space_to_index(7), Some(6));
+        assert_eq!(CustomsTrack::space_to_index(0), None);
+        assert_eq!(CustomsTrack::space_to_index(8), None);
+        assert_eq!(CustomsTrack::index_to_space(0), 1);
+        assert_eq!(CustomsTrack::index_to_space(6), 7);
+    }
+
+    #[test]
+    fn test_customs_track_spaces_for_cost() {
+        // Cost pairs: 1+2 cost 1, 3+4 cost 2, 5+6 cost 3, 7 alone costs 4.
+        // Leftmost of each pair is listed first (higher VP / v1 default).
+        assert_eq!(CustomsTrack::spaces_for_cost(1), Some(&[1, 2][..]));
+        assert_eq!(CustomsTrack::spaces_for_cost(2), Some(&[3, 4][..]));
+        assert_eq!(CustomsTrack::spaces_for_cost(3), Some(&[5, 6][..]));
+        assert_eq!(CustomsTrack::spaces_for_cost(4), Some(&[7][..]));
+        assert_eq!(CustomsTrack::spaces_for_cost(0), None);
+        assert_eq!(CustomsTrack::spaces_for_cost(5), None);
+    }
+
+    #[test]
+    fn test_customs_track_rider() {
+        // (warehouse_takes, yen) per space; spaces 5-7 carry no rider.
+        assert_eq!(CustomsTrack::rider(1), (2, 0));
+        assert_eq!(CustomsTrack::rider(2), (0, 2));
+        assert_eq!(CustomsTrack::rider(3), (1, 0));
+        assert_eq!(CustomsTrack::rider(4), (0, 1));
+        assert_eq!(CustomsTrack::rider(5), (0, 0));
+        assert_eq!(CustomsTrack::rider(6), (0, 0));
+        assert_eq!(CustomsTrack::rider(7), (0, 0));
     }
 
     #[test]
@@ -113,10 +177,14 @@ mod tests {
 
     #[test]
     fn test_lab_position_modifier() {
+        // Board art (asset-sweep-report.md Q4): 6 slots, surcharges +1,+1,+2,+2
+        // on slots 3-6 (1-indexed) i.e. indices 2-5.
         assert_eq!(LabBoard::position_modifier(0), 0);
         assert_eq!(LabBoard::position_modifier(1), 0);
         assert_eq!(LabBoard::position_modifier(2), 1);
-        assert_eq!(LabBoard::position_modifier(3), 2);
+        assert_eq!(LabBoard::position_modifier(3), 1);
+        assert_eq!(LabBoard::position_modifier(4), 2);
+        assert_eq!(LabBoard::position_modifier(5), 2);
     }
 
     #[test]

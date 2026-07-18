@@ -1,7 +1,7 @@
 //! Integration tests for complete game scenarios.
 
 use yokohama_core::*;
-use std::collections::HashMap;
+use std::collections::BTreeMap;
 
 fn setup_2p_game() -> (GameState, OrderRegistry, TechRegistry) {
     // Create minimal 2-player game state for testing
@@ -11,7 +11,7 @@ fn setup_2p_game() -> (GameState, OrderRegistry, TechRegistry) {
         PlayerId::new(0),
     );
 
-    let mut areas = HashMap::new();
+    let mut areas = BTreeMap::new();
     areas.insert(AreaId::new(0), AreaConfig {
         area_type: AreaType::Bank,
         grid_position: (0, 0),
@@ -21,7 +21,7 @@ fn setup_2p_game() -> (GameState, OrderRegistry, TechRegistry) {
         grid_position: (0, 1),
     });
 
-    let mut adjacency = HashMap::new();
+    let mut adjacency = BTreeMap::new();
     adjacency.insert(AreaId::new(0), vec![AreaId::new(1)]);
     adjacency.insert(AreaId::new(1), vec![AreaId::new(0)]);
 
@@ -29,8 +29,8 @@ fn setup_2p_game() -> (GameState, OrderRegistry, TechRegistry) {
         areas,
         adjacency,
         canal_crossings: vec![],
-        building_sites: HashMap::new(),
-        five_power_tokens: HashMap::new(),
+        building_sites: BTreeMap::new(),
+        five_power_tokens: BTreeMap::new(),
     };
 
     let players = vec![
@@ -53,8 +53,12 @@ fn setup_2p_game() -> (GameState, OrderRegistry, TechRegistry) {
         president_start_area: None,
         port_state: PortState::new(false),
         lab_state: LabState::new(false),
-        order_deck_remaining: 20,
-        tech_deck_remaining: 20,
+        // Non-empty by default so `check_end_game_triggers` doesn't spuriously fire the
+        // order-deck-empty condition (Port A starts with all slots empty too) for tests
+        // that aren't exercising that trigger specifically.
+        order_deck: vec![OrderCardId(1)],
+        tech_deck: vec![],
+        orders_removed: vec![],
         church_track: ChurchTrack::new(),
         customs_track: CustomsTrack::new(),
         achievements: [
@@ -81,7 +85,8 @@ fn test_basic_turn_flow() {
     assert_eq!(state.turn_phase, TurnPhase::AdditionalActionFirst);
 
     // Get legal moves
-    let moves = get_legal_moves(&state);
+    let rules = Rules::empty_for_tests();
+    let moves = get_legal_moves(&state, &rules);
     assert!(!moves.is_empty());
 
     // Should include EndAdditionalPhase
@@ -157,16 +162,17 @@ fn test_phase_transitions() {
     let (mut state, _, _) = setup_2p_game();
 
     // End Additional Action First -> Placement
+    let rules = Rules::empty_for_tests();
     state.turn_phase = TurnPhase::AdditionalActionFirst;
-    let new_state = apply_move(&state, &Move::EndAdditionalPhase).unwrap();
+    let new_state = apply_move(&state, &Move::EndAdditionalPhase, &rules).unwrap();
     assert_eq!(new_state.turn_phase, TurnPhase::Placement);
 
     // Test placement with 0 assistants -> Movement
     let placement_state = new_state;
-    let moves = get_legal_moves(&placement_state);
+    let moves = get_legal_moves(&placement_state, &rules);
     assert!(moves.iter().any(|m| matches!(m, Move::PlaceThreeAreas { placements } if placements.is_empty())));
 
-    let after_placement = apply_move(&placement_state, &Move::PlaceThreeAreas { placements: vec![] }).unwrap();
+    let after_placement = apply_move(&placement_state, &Move::PlaceThreeAreas { placements: vec![] }, &rules).unwrap();
     assert_eq!(after_placement.turn_phase, TurnPhase::Movement);
 }
 

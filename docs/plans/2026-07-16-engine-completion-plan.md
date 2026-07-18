@@ -1,5 +1,7 @@
 # Engine Completion Implementation Plan (merged Phases 0+1)
 
+> **STATUS: EXECUTED — COMPLETE (2026-07-17), FINAL-REVIEW FIX WAVE LANDED (2026-07-18).** Every task done, including the Amendments and the inserted tasks (7b, 11b, 15b, 17b, 18-fix-loop, 19-addendum, 20b). The fuzz gate PASSED: 15,000/15,000 random self-play games with per-move invariants; suite 330 green, zero warnings — at that point. The subsequent final whole-branch review (`.superpowers/sdd/final-review-report.md`) found four Critical rules bugs and several Important gaps the fuzzer structurally cannot see (self-consistent legality + conservation); all were fixed (see `.superpowers/sdd/final-fixes-report.md` and `guidingpath.md`'s decision log), the gate was re-earned, and the suite now stands at 370 green, zero warnings. Authoritative records: execution ledger `.superpowers/sdd/progress.md` (per-task commits + review outcomes), `guidingpath.md` (current state + decision log). This file is retained as the historical plan; the **Amendments** section documents where execution deviated from the text below, and task text is NOT current guidance.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Make `yokohama-core` play complete, rules-correct games of Yokohama end-to-end, proven by a self-play fuzz gate — plus the environment and documentation fixes to work on it honestly.
@@ -22,6 +24,20 @@ Subagent-driven (superpowers:subagent-driven-development): the orchestrator sess
 | **Haiku subagent** | 8, 10 | Fully scripted, low blast radius |
 
 Scheduling: dispatch Task 6 immediately and **in parallel** with Tasks 1–5 (it depends on nothing and gates Task 7). Everything else is sequential. Between tasks the orchestrator reviews the diff, runs the suite, and only then dispatches the next task.
+
+## Amendments (2026-07-17, recorded during execution — these OVERRIDE task text below where they conflict)
+
+Full rulings with rationale live in `guidingpath.md`'s decision log; execution state in `.superpowers/sdd/progress.md`. Summary:
+
+1. **Card data adjudicated (T6)**: re-transcription adopted wholesale. Order ids = printed corner index 1–36 (country+requirements is NOT unique — GB #10/#32 collide; T7's uniqueness test replaced by id-completeness). Tech deck = 30 physical cards (20 titles, `copies:` in YAML). Building sites re-modeled (`SpaceReward` spaces TL/TR/ML/MR + `trading_house_reward`). Jeremy's physical-box spot-check may still patch YAML (see `docs/plans/2026-07-16-card-verification/box-audit.html`).
+2. **Icon semantics (rulebook p.10)**: house-with-arrow = Warehouse icon (take warehouse token at Employment Agency cost); meeple-with-arrow = Movement icon. Engine fields `movement`/`warehouse_tokens` kept; YAML `assistants`/`shophouse_build` map onto them.
+3. **v1 reward-choice simplifications** (T7b, inserted): movement icons no-op; warehouse icons auto-take 1 free assistant; any-good auto-copper. Choice encoding scheduled at Phase 2.
+4. **Port/Lab boards are SIX-slot** (board-art verified, T11b inserted): ports LOW,LOW,MID,MID,HIGH,HIGH; labs 6 slots, surcharges +1,+1,+2,+2 on slots 3–6. `AreaAction::Port` carries `cards_taken: Vec<OrderCardId>` (card ids, not slots). T9's deck arithmetic superseded: 4P after setup = 16 orders / 18 techs in deck. T16's port-enumeration example counts must be re-derived for zones and card ids.
+5. **Port replenishment**: total left-compaction, refill RIGHTMOST empty slots first (KB line 260). T11's in-plan test expectation (`mid` refilled) was a plan-authoring error.
+6. **T13 Church (rule check done)**: board = faith 4–11, VP 3,4,5,6,7,8,11,14 (existing `ChurchTrack` confirmed); place on any empty space ≤ total faith (v1 auto-places highest eligible), excess lost; per-space move-riders 1,1,2,2,2,2,3,3 are v1 no-ops; **2P: faith-7 space pre-blocked by printed dummy**. Church faith from power is LINEAR 1,2,3,4,5 (RESOLVED by Jeremy 2026-07-17; rulebook text's "2 Power: 1 Faith" is a typo) — T13 must fix `calculate_church_faith` and the KB faith table accordingly, with a test pinning power 2 → faith 2.
+7. **T14 Customs (rule check done)**: re-model to 7 spaces, printed costs [1,1,2,2,3,3,4] (payment must exactly match; both of a pair filled ⇒ unplaceable), rewards VP [5,4,10,9,16,15,22] with riders [+2 warehouse-takes, +2 Yen, +1 warehouse-take, +1 Yen, none, none, none] (KB's yen/import bonus table was wrong). v1 auto-places the higher-VP empty space of the matching pair. **2P: space 4 (9 VP) pre-blocked by printed dummy.** `goods_to_index`/8-slot array replaced.
+8. **T18**: order-conservation formula = deck+ports+hands+completed+removed = 36 with NO +1-per-hidden term (the `Unknown` fiction parks both dealt cards in `orders_removed`); port empty-slot check ranges over 6 slots.
+9. **Inserted tasks**: T7b (reward application, done), T11b (six-slot re-model, in flight). Exposition +10 VP self-trigger added to T12's scope (plan gap); Station token placement on acquisition deferred as a v1 limitation.
 
 ## Global Constraints
 
