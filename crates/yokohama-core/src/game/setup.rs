@@ -435,13 +435,90 @@ pub fn reconcile_setup(
     Ok(pending)
 }
 
-/// Board pass — implemented in the next task.
+/// Board pass: re-type the fixed row-major grid to the observed tiles,
+/// reassign building-site cards from registry indices, rebuild the 5-Power
+/// token pool over the new non-Canal cells (seeded values, order preserved),
+/// and recompute Canal crossings from the new Canal cell's orthogonal
+/// neighbors. Adjacency is grid-orthogonal and type-independent, so it is
+/// never touched (design 2026-07-18 §5.2).
 fn reconcile_board(
-    _pending: &mut PendingSetup,
-    _board: &ObservedBoard,
-    _rules: &Rules,
+    pending: &mut PendingSetup,
+    board: &ObservedBoard,
+    rules: &Rules,
 ) -> Result<(), &'static str> {
-    Err("board observations not yet supported")
+    use crate::types::AreaType;
+    let layout = &mut pending.state.board_layout;
+    let n = layout.areas.len();
+    if board.tiles.len() != n {
+        return Err("observed tile count does not match this player count's grid");
+    }
+    if board.sites.len() != n {
+        return Err("observed site list length must match the tile list");
+    }
+    // Multiset equality vs the seeded layout (which already encodes the
+    // player-count removals) — also the physical-verification tripwire
+    // (design 2026-07-18 §5.2).
+    let mut want: Vec<AreaType> = layout.areas.values().map(|a| a.area_type).collect();
+    let mut got: Vec<AreaType> = board.tiles.clone();
+    want.sort_by_key(|t: &AreaType| format!("{t:?}"));
+    got.sort_by_key(|t: &AreaType| format!("{t:?}"));
+    if want != got {
+        return Err("observed tiles are not a permutation of this player count's tile set");
+    }
+    let mut seen_sites = std::collections::BTreeSet::new();
+    for (i, s) in board.sites.iter().enumerate() {
+        match s {
+            None if board.tiles[i] != AreaType::Canal => return Err("missing site on a non-Canal tile"),
+            Some(_) if board.tiles[i] == AreaType::Canal => return Err("Canal cannot carry a building site"),
+            Some(idx) => {
+                if *idx as usize >= rules.building_sites.len() {
+                    return Err("observed building-site index out of range");
+                }
+                if !seen_sites.insert(*idx) {
+                    return Err("duplicate building-site card across cells");
+                }
+            }
+            None => {}
+        }
+    }
+    // Seeded token values, reassigned over the NEW non-Canal ids in order.
+    let tokens: Vec<Option<crate::types::FivePowerEffect>> =
+        layout.five_power_tokens.values().copied().collect();
+    // Re-type areas (grid positions are fixed: AreaId i is cell (i/cols, i%cols)).
+    for (i, t) in board.tiles.iter().enumerate() {
+        layout.areas.get_mut(&AreaId::new(i as u8)).expect("grid area exists").area_type = *t;
+    }
+    // Reassign sites.
+    layout.building_sites.clear();
+    for (i, s) in board.sites.iter().enumerate() {
+        if let Some(idx) = s {
+            layout.building_sites.insert(AreaId::new(i as u8), rules.building_sites[*idx as usize].clone());
+        }
+    }
+    // Reassign tokens over new non-Canal ids.
+    layout.five_power_tokens.clear();
+    let mut token_iter = tokens.into_iter();
+    for (i, t) in board.tiles.iter().enumerate() {
+        if *t != AreaType::Canal {
+            layout.five_power_tokens.insert(
+                AreaId::new(i as u8),
+                token_iter.next().ok_or("token pool smaller than non-Canal cell count")?,
+            );
+        }
+    }
+    // Recompute canal crossings from the new Canal cell (if any).
+    layout.canal_crossings.clear();
+    let (rows, cols) = crate::game::board_gen::grid_dimensions(pending.state.config.player_count);
+    if let Some(ci) = board.tiles.iter().position(|t| *t == AreaType::Canal) {
+        let (r, c) = ((ci / cols as usize) as i16, (ci % cols as usize) as i16);
+        for (nr, nc) in [(r - 1, c), (r + 1, c), (r, c - 1), (r, c + 1)] {
+            if nr >= 0 && nr < rows as i16 && nc >= 0 && nc < cols as i16 {
+                let neighbor = AreaId::new((nr as usize * cols as usize + nc as usize) as u8);
+                layout.canal_crossings.push((AreaId::new(ci as u8), neighbor));
+            }
+        }
+    }
+    Ok(())
 }
 
 /// Validate that a GameState is consistent with its GameConfig.
@@ -816,5 +893,86 @@ mod tests {
         let r = reconcile_setup(pending, &ach, &rules).unwrap();
         assert_eq!(r.state.achievements[0].achievement_type, AchievementType::Silk6);
         assert!(r.state.achievements[0].claimed_by.is_empty());
+    }
+
+    #[test]
+    fn reconcile_board_retypes_grid_sites_and_canal() {
+        let rules = Rules::standard();
+        let pending = new_game(GameConfig::for_player_count(3), &rules, 5).unwrap();
+        // Observed board: the seeded tiles REVERSED (a valid permutation), sites 0..13 in order.
+        let (rows, cols) = crate::game::board_gen::grid_dimensions(3);
+        let n = (rows * cols) as usize;
+        let mut tiles: Vec<AreaType> = (0..n)
+            .map(|i| pending.state.board_layout.areas[&AreaId::new(i as u8)].area_type)
+            .collect();
+        tiles.reverse();
+        let sites: Vec<Option<u8>> = tiles
+            .iter()
+            .scan(0u8, |next, t| {
+                Some(if *t == AreaType::Canal { None } else { let s = *next; *next += 1; Some(s) })
+            })
+            .collect();
+        let obs = SetupObservations {
+            board: Some(ObservedBoard { tiles: tiles.clone(), sites: sites.clone() }),
+            ..Default::default()
+        };
+        let r = reconcile_setup(pending, &obs, &rules).unwrap();
+        let layout = &r.state.board_layout;
+        // Types permuted as observed; grid positions unchanged (row-major ids).
+        for i in 0..n {
+            let id = AreaId::new(i as u8);
+            assert_eq!(layout.areas[&id].area_type, tiles[i]);
+            assert_eq!(layout.areas[&id].grid_position, ((i / cols as usize) as u8, (i % cols as usize) as u8));
+        }
+        // Sites follow the observed assignment; Canal has none.
+        // (No `clone_reset` helper on BuildingSite — compare the printed
+        // fields directly; built-state fields are fresh at setup so
+        // asserting they equal the `BuildingSite::new` defaults suffices.)
+        for i in 0..n {
+            let id = AreaId::new(i as u8);
+            match sites[i] {
+                Some(s) => {
+                    let expected = &rules.building_sites[s as usize];
+                    let got = &layout.building_sites[&id];
+                    assert_eq!(got.spaces, expected.spaces);
+                    assert_eq!(got.trading_house_reward, expected.trading_house_reward);
+                    assert_eq!(got.shophouses_built, [None; 4]);
+                    assert_eq!(got.trading_house_owner, None);
+                }
+                None => assert!(!layout.building_sites.contains_key(&id)),
+            }
+        }
+        // Tokens: same count as before, all on non-Canal areas, all unclaimed.
+        assert_eq!(layout.five_power_tokens.len(), n - 1);
+        assert!(layout.five_power_tokens.values().all(|t| t.is_some()));
+        assert!(!layout.five_power_tokens.contains_key(
+            &AreaId::new(tiles.iter().position(|t| *t == AreaType::Canal).unwrap() as u8)
+        ));
+        // Canal crossings follow the Canal's new cell (its orthogonal neighbors).
+        let canal_i = tiles.iter().position(|t| *t == AreaType::Canal).unwrap();
+        assert!(!layout.canal_crossings.is_empty());
+        assert!(layout.canal_crossings.iter().all(|(a, _)| *a == AreaId::new(canal_i as u8)));
+    }
+
+    #[test]
+    fn reconcile_board_rejects_multiset_and_site_violations() {
+        let rules = Rules::standard();
+        let pending = new_game(GameConfig::for_player_count(2), &rules, 5).unwrap();
+        let n = pending.state.board_layout.areas.len();
+        // Wrong multiset: all Bank tiles.
+        let obs = SetupObservations {
+            board: Some(ObservedBoard { tiles: vec![AreaType::Bank; n], sites: vec![Some(0); n] }),
+            ..Default::default()
+        };
+        assert!(reconcile_setup(pending.clone(), &obs, &rules).is_err());
+        // Duplicate site index.
+        let tiles: Vec<AreaType> = (0..n)
+            .map(|i| pending.state.board_layout.areas[&AreaId::new(i as u8)].area_type)
+            .collect();
+        let obs = SetupObservations {
+            board: Some(ObservedBoard { tiles, sites: vec![Some(0); n] }),
+            ..Default::default()
+        };
+        assert!(reconcile_setup(pending, &obs, &rules).is_err());
     }
 }
