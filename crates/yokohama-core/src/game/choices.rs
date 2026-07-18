@@ -239,4 +239,31 @@ mod tests {
         assert_eq!(s.current_player().money, 4);
         assert!(s.pending_choices.is_empty());
     }
+
+    #[test]
+    fn warehouse_take_shophouse_resolution_charges_and_moves_token() {
+        // Money exactly 2 -- the shophouse-take boundary: affordable, lands on 0.
+        let (state, rules) = warehouse_choice_fixture(2);
+        let starting_hand = state.current_player().shophouses.in_hand;
+        let s = apply_move(&state, &Move::ChooseWarehouseTake { item: WarehouseItem::Shophouse }, &rules).unwrap();
+        assert_eq!(s.current_player().money, 0);
+        assert_eq!(s.current_player().shophouses.in_warehouse, 0);
+        assert_eq!(s.current_player().shophouses.in_hand, starting_hand + 1);
+        assert!(s.pending_choices.is_empty());
+    }
+
+    #[test]
+    fn push_choice_singleton_auto_resolve_leaves_pre_existing_queue_untouched() {
+        // The insert-at-front trick's target scenario: a genuinely different
+        // choice already queued ahead of the new singleton push.
+        let (mut state, rules) = warehouse_choice_base(/*warehouse all zero*/);
+        state.pending_choices.push(PendingChoice::AnyGood);
+        let starting_money = state.current_player().money;
+
+        push_choice(&mut state, PendingChoice::WarehouseTake, &rules);
+
+        // Auto-declined silently: queue and money are exactly what they were before this push.
+        assert_eq!(state.pending_choices, vec![PendingChoice::AnyGood]);
+        assert_eq!(state.current_player().money, starting_money);
+    }
 }
