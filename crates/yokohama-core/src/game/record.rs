@@ -4,18 +4,38 @@
 //! `GameState` is deliberately history-free (see crate docs) so it stays
 //! cheap to clone for future MCTS -- `GameRecord` is the external log that
 //! carries history instead: the seed and `GameConfig` `new_game` used, the
-//! `StartingOrderChoice`s `finalize_setup` applied, and every `Move` applied
-//! after that, in order. `replay` reruns exactly that sequence and (since
-//! `new_game`/`finalize_setup`/`apply_move` are all deterministic pure
-//! functions with no hidden RNG or wall-clock input) reproduces the
-//! original `GameState` exactly, per `GameState`'s full `PartialEq`.
+//! `StartingOrderChoice`s `finalize_setup` applied, and every event applied
+//! after that, in order (ordinary `Move`s plus live-tracking reveal
+//! reconciliations -- `RecordedEvent`). `replay` reruns exactly that
+//! sequence and (since `new_game`/`finalize_setup`/`apply_move` and the
+//! `GameState` reconciliation methods are all deterministic with no hidden
+//! RNG or wall-clock input) reproduces the original `GameState` exactly,
+//! per `GameState`'s full `PartialEq`.
 
 use serde::{Deserialize, Serialize};
 
 use crate::game::apply_move::apply_move;
 use crate::game::rules::Rules;
 use crate::game::setup::{finalize_setup, new_game, StartingOrderChoice};
-use crate::types::{GameConfig, GameState, Move, MoveError};
+use crate::types::{AreaId, FivePowerEffect, GameConfig, GameState, Move, MoveError, OrderCardId, PlayerId, TechCardId};
+
+/// One entry in a `GameRecord`'s event log. `Move` is ordinary play; the
+/// `Reveal*` variants are live-tracking reconciliation events (design
+/// 2026-07-18 §5.2) — they mutate hidden-information fiction (deck order,
+/// hidden starting orders, face-down 5-Power tokens) and MUST be in the
+/// record so `replay` reproduces the reconciled state.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum RecordedEvent {
+    Move(Move),
+    /// The next draws from the order deck are exactly these, in draw order.
+    RevealOrders(Vec<OrderCardId>),
+    /// The next draws from the tech deck are exactly these, in draw order.
+    RevealTechs(Vec<TechCardId>),
+    /// A hidden starting order became public.
+    RevealStartingOrder { player: PlayerId, card: OrderCardId },
+    /// A face-down 5-Power token was revealed at `area`.
+    RevealFivePowerToken { area: AreaId, effect: FivePowerEffect },
+}
 
 /// A complete, replayable record of one game.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -32,32 +52,42 @@ pub struct GameRecord {
     /// Per-player `StartingOrderChoice`s passed to `finalize_setup`, in
     /// `PlayerId` order.
     pub choices: Vec<StartingOrderChoice>,
-    /// Every `Move` applied after setup, in application order.
-    pub moves: Vec<Move>,
+    /// Every event applied after setup, in order — moves plus live-reveal reconciliations
+    pub events: Vec<RecordedEvent>,
 }
 
 impl GameRecord {
     /// Start a record for a game set up via `new_game(config, rules, seed)`
-    /// then `finalize_setup(pending, &choices)`. `moves` starts empty --
-    /// call `push_move` after each `apply_move`.
+    /// then `finalize_setup(pending, &choices)`. `events` starts empty --
+    /// call `push_move` after each `apply_move` (or `push_event` for a
+    /// live-tracking reveal reconciliation).
     pub fn new(seed: u64, config: GameConfig, choices: Vec<StartingOrderChoice>) -> Self {
         Self {
             engine_version: env!("CARGO_PKG_VERSION").to_string(),
             seed,
             config,
             choices,
-            moves: Vec::new(),
+            events: Vec::new(),
         }
     }
 
     /// Append one applied move to the record's log.
     pub fn push_move(&mut self, mv: Move) {
-        self.moves.push(mv);
+        self.events.push(RecordedEvent::Move(mv));
+    }
+
+    /// Append one reconciliation/reveal event to the log.
+    pub fn push_event(&mut self, ev: RecordedEvent) {
+        self.events.push(ev);
     }
 }
 
 /// Reconstruct the `GameState` a `GameRecord` describes: `new_game`,
-/// `finalize_setup`, then fold `apply_move` over `record.moves` in order.
+/// `finalize_setup`, then fold `record.events` over the resulting state in
+/// order -- `RecordedEvent::Move` applies via `apply_move`; each `Reveal*`
+/// variant applies via its matching `GameState` reconciliation method
+/// (`arrange_orders_on_top`, `arrange_techs_on_top`, `reveal_starting_order`,
+/// `reveal_five_power_token`).
 ///
 /// Does not refuse to replay a record written by a different engine
 /// version -- v1 only warns (to stderr) on a mismatch. A future engine
@@ -67,9 +97,9 @@ impl GameRecord {
 /// step, but for now the record replays regardless.
 ///
 /// Returns the first error encountered: a `new_game`/`finalize_setup`
-/// failure surfaces as `MoveError::RuleViolation`; a bad move partway
-/// through `record.moves` surfaces as that move's own `apply_move` error
-/// (via `try_fold`'s short-circuit -- moves after the bad one never run).
+/// failure surfaces as `MoveError::RuleViolation`; a bad event partway
+/// through `record.events` surfaces as that event's own error and
+/// short-circuits the loop -- events after the bad one never run.
 pub fn replay(record: &GameRecord, rules: &Rules) -> Result<GameState, MoveError> {
     let running_version = env!("CARGO_PKG_VERSION");
     if record.engine_version != running_version {
@@ -80,9 +110,33 @@ pub fn replay(record: &GameRecord, rules: &Rules) -> Result<GameState, MoveError
     }
 
     let pending = new_game(record.config.clone(), rules, record.seed).map_err(MoveError::RuleViolation)?;
-    let state = finalize_setup(pending, &record.choices).map_err(MoveError::RuleViolation)?;
-
-    record.moves.iter().try_fold(state, |state, mv| apply_move(&state, mv, rules))
+    let mut state = finalize_setup(pending, &record.choices).map_err(MoveError::RuleViolation)?;
+    for ev in &record.events {
+        state = match ev {
+            RecordedEvent::Move(mv) => apply_move(&state, mv, rules)?,
+            RecordedEvent::RevealOrders(cards) => {
+                let mut s = state;
+                s.arrange_orders_on_top(cards)?;
+                s
+            }
+            RecordedEvent::RevealTechs(cards) => {
+                let mut s = state;
+                s.arrange_techs_on_top(cards)?;
+                s
+            }
+            RecordedEvent::RevealStartingOrder { player, card } => {
+                let mut s = state;
+                s.reveal_starting_order(*player, *card)?;
+                s
+            }
+            RecordedEvent::RevealFivePowerToken { area, effect } => {
+                let mut s = state;
+                s.reveal_five_power_token(*area, *effect)?;
+                s
+            }
+        };
+    }
+    Ok(state)
 }
 
 #[cfg(test)]
@@ -97,14 +151,30 @@ mod tests {
         assert_eq!(record.engine_version, env!("CARGO_PKG_VERSION"));
         assert_eq!(record.seed, 7);
         assert_eq!(record.config, config);
-        assert!(record.moves.is_empty());
+        assert!(record.events.is_empty());
     }
 
     #[test]
     fn push_move_appends_in_order() {
         let mut record = GameRecord::new(0, GameConfig::for_player_count(2), vec![]);
         record.push_move(Move::EndAdditionalPhase);
-        record.push_move(Move::Skip5PowerBonus);
-        assert_eq!(record.moves, vec![Move::EndAdditionalPhase, Move::Skip5PowerBonus]);
+        record.push_event(RecordedEvent::RevealOrders(vec![]));
+        assert_eq!(
+            record.events,
+            vec![RecordedEvent::Move(Move::EndAdditionalPhase), RecordedEvent::RevealOrders(vec![])]
+        );
+    }
+
+    #[test]
+    fn replay_applies_reveal_events() {
+        let rules = Rules::standard();
+        let config = GameConfig::for_player_count(2);
+        let pending = crate::game::setup::new_game(config.clone(), &rules, 3).unwrap();
+        let expected_top = pending.state.order_deck[0]; // bottom card, definitely not next draw
+        let choices = vec![StartingOrderChoice::Keep(0), StartingOrderChoice::Keep(0)];
+        let mut record = GameRecord::new(3, config, choices);
+        record.push_event(RecordedEvent::RevealOrders(vec![expected_top]));
+        let state = replay(&record, &rules).unwrap();
+        assert_eq!(state.order_deck.last(), Some(&expected_top));
     }
 }
