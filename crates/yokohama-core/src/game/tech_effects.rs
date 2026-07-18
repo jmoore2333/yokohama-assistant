@@ -31,26 +31,31 @@ pub fn apply_turn_start_effects(
     }
 }
 
-/// Calculate building VP bonus from Gaslight/Electrical Light.
+/// Calculate building VP bonus from Gaslight (+2 VP, Shophouse) / Electrical
+/// Light (+3 VP, Trading House) -- stacks per owned physical copy (Task
+/// 20c/C4 final-review fix, consistent with the Winery/Brickyard/Ball/
+/// Language School/Mining Technology precedent). Gaslight has 2 physical
+/// copies in the standard data, so this matters even though the C2
+/// one-per-title ownership rule makes owning both at once unreachable in
+/// real play -- the convention stays consistent regardless.
 pub fn building_vp_bonus(
     state: &GameState,
     player: PlayerId,
     is_shophouse: bool,
     tech_registry: &TechRegistry,
 ) -> u32 {
+    let p = state.player(player);
     if is_shophouse {
-        if has_tech_effect(state, player, TechEffect::Gaslight, tech_registry) {
-            2
-        } else {
-            0
-        }
+        let copies = p.technologies.iter()
+            .filter(|&&tech_id| tech_registry.get(tech_id).map(|t| t.effect == TechEffect::Gaslight).unwrap_or(false))
+            .count() as u32;
+        copies * 2
     } else {
         // Trading House
-        if has_tech_effect(state, player, TechEffect::ElectricalLight, tech_registry) {
-            3
-        } else {
-            0
-        }
+        let copies = p.technologies.iter()
+            .filter(|&&tech_id| tech_registry.get(tech_id).map(|t| t.effect == TechEffect::ElectricalLight).unwrap_or(false))
+            .count() as u32;
+        copies * 3
     }
 }
 

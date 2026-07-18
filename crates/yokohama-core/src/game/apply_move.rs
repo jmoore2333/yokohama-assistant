@@ -76,7 +76,7 @@ pub fn apply_move(state: &GameState, mv: &Move, rules: &Rules) -> Result<GameSta
         }
 
         Move::BuildTradingHouse => {
-            apply_build_trading_house(&mut new_state)?;
+            apply_build_trading_house(&mut new_state, rules)?;
             new_state.turn_phase = TurnPhase::Recovery;
         }
 
@@ -666,6 +666,9 @@ fn apply_build_shophouse(state: &mut GameState, slot: u8, rules: &Rules) -> Resu
     // per-copy bonus. Computed before the player is mutably borrowed below.
     let total_base_copper = reward.copper + reward.any_good;
     let mining_bonus = copper_bonus(state, player, total_base_copper, &rules.techs);
+    // Gaslight (C4 final-review fix): pure passive, no player choice, same
+    // class as Winery/Brickyard - computed before the mutable borrow below.
+    let gaslight_bonus = building_vp_bonus(state, player, true, &rules.techs);
 
     let p = state.player_mut(player);
     if p.shophouses.in_hand < 1 {
@@ -674,6 +677,7 @@ fn apply_build_shophouse(state: &mut GameState, slot: u8, rules: &Rules) -> Resu
     p.shophouses.in_hand -= 1;
     p.shophouses.built.insert(area, slot);
     apply_space_reward(p, &reward, mining_bonus);
+    p.victory_points += gaslight_bonus;
 
     // Update building site
     if let Some(site) = state.board_layout.building_sites.get_mut(&area) {
@@ -683,7 +687,7 @@ fn apply_build_shophouse(state: &mut GameState, slot: u8, rules: &Rules) -> Resu
     Ok(())
 }
 
-fn apply_build_trading_house(state: &mut GameState) -> Result<(), MoveError> {
+fn apply_build_trading_house(state: &mut GameState, rules: &Rules) -> Result<(), MoveError> {
     let player = state.current_player;
     let p = state.player(player);
 
@@ -703,6 +707,10 @@ fn apply_build_trading_house(state: &mut GameState) -> Result<(), MoveError> {
         .get(&area)
         .map(|site| site.trading_house_reward)
         .unwrap_or(0);
+    // Electrical Light (C4 final-review fix): pure passive, no player
+    // choice, same class as Winery/Brickyard - computed before the mutable
+    // borrow below.
+    let electrical_light_bonus = building_vp_bonus(state, player, false, &rules.techs);
 
     let p = state.player_mut(player);
     if p.trading_houses.in_hand < 1 {
@@ -714,7 +722,7 @@ fn apply_build_trading_house(state: &mut GameState) -> Result<(), MoveError> {
     // (rulebook p.7: "Place a Trading House token from your hand").
     p.trading_houses.in_hand -= 1;
     p.trading_houses.built.push(area);
-    p.victory_points += vp as u32;
+    p.victory_points += vp as u32 + electrical_light_bonus;
 
     if let Some(site) = state.board_layout.building_sites.get_mut(&area) {
         site.trading_house_owner = Some(player);
@@ -1155,6 +1163,71 @@ mod tests {
         assert_eq!(th.built, vec![area]);
         assert_eq!(next.players[0].money, 0, "no charge at build time");
         assert_eq!(next.players[0].victory_points, 7);
+    }
+
+    fn electrical_light_tech_fixture(id: u8) -> TechCard {
+        TechCard {
+            id: TechCardId(id),
+            name: "Electrical Light".to_string(),
+            country: Country::French,
+            industry_cost: 4,
+            effect: TechEffect::ElectricalLight,
+        }
+    }
+
+    #[test]
+    fn test_build_trading_house_electrical_light_vp_bonus() {
+        // C4 final-review fix: Electrical Light (+3 VP per owned copy when
+        // building a Trading House) was computed by building_vp_bonus but
+        // never called from apply_build_trading_house.
+        let mut state = create_minimal_state(2);
+        let area = AreaId::new(0);
+        state.board_layout.areas.insert(area, AreaConfig {
+            area_type: AreaType::Bank,
+            grid_position: (0, 0),
+        });
+        state.board_layout.building_sites.insert(area, BuildingSite::new([1, 2, 3, 4], 7));
+        state.turn_phase = TurnPhase::Building;
+        state.current_player = PlayerId::new(0);
+        state.current_action_power = Some(5);
+        state.players[0].president_location = PresidentLocation::OnBoard(area);
+        state.players[0].money = 0;
+        state.players[0].trading_houses.in_hand = 1;
+
+        let mut rules = Rules::empty_for_tests();
+        rules.techs.insert(electrical_light_tech_fixture(1), "tech_electrical_light");
+        state.players[0].technologies.push(TechCardId(1));
+
+        let next = apply_move(&state, &Move::BuildTradingHouse, &rules).unwrap();
+        // 7 (site VP) + 3 (Electrical Light, 1 owned copy).
+        assert_eq!(next.players[0].victory_points, 10);
+    }
+
+    #[test]
+    fn test_build_trading_house_electrical_light_bonus_stacks_per_owned_copy() {
+        let mut state = create_minimal_state(2);
+        let area = AreaId::new(0);
+        state.board_layout.areas.insert(area, AreaConfig {
+            area_type: AreaType::Bank,
+            grid_position: (0, 0),
+        });
+        state.board_layout.building_sites.insert(area, BuildingSite::new([1, 2, 3, 4], 7));
+        state.turn_phase = TurnPhase::Building;
+        state.current_player = PlayerId::new(0);
+        state.current_action_power = Some(5);
+        state.players[0].president_location = PresidentLocation::OnBoard(area);
+        state.players[0].money = 0;
+        state.players[0].trading_houses.in_hand = 1;
+
+        let mut rules = Rules::empty_for_tests();
+        rules.techs.insert(electrical_light_tech_fixture(1), "tech_electrical_light_1");
+        rules.techs.insert(electrical_light_tech_fixture(2), "tech_electrical_light_2");
+        state.players[0].technologies.push(TechCardId(1));
+        state.players[0].technologies.push(TechCardId(2));
+
+        let next = apply_move(&state, &Move::BuildTradingHouse, &rules).unwrap();
+        // 7 (site VP) + 6 (Electrical Light, 2 owned copies x 3 VP).
+        assert_eq!(next.players[0].victory_points, 13);
     }
 
     #[test]
@@ -1973,6 +2046,67 @@ mod tests {
             industry_cost: 3,
             effect: TechEffect::MiningTechnology,
         }
+    }
+
+    fn gaslight_tech_fixture(id: u8) -> TechCard {
+        TechCard {
+            id: TechCardId(id),
+            name: "Gaslight".to_string(),
+            country: Country::French,
+            industry_cost: 3,
+            effect: TechEffect::Gaslight,
+        }
+    }
+
+    #[test]
+    fn test_build_shophouse_gaslight_vp_bonus() {
+        // C4 final-review fix: Gaslight (+2 VP per owned copy when building
+        // a Shophouse) was computed by building_vp_bonus but never called
+        // from apply_build_shophouse.
+        let mut state = create_minimal_state(2);
+        let area = AreaId::new(0);
+        state.players[0].president_location = PresidentLocation::OnBoard(area);
+        state.players[0].shophouses.in_hand = 1;
+
+        let mut site = BuildingSite::new([0, 0, 0, 0], 10);
+        site.spaces[0] = SpaceReward { vp: 2, ..Default::default() };
+        state.board_layout.building_sites.insert(area, site);
+
+        let mut rules = Rules::empty_for_tests();
+        rules.techs.insert(gaslight_tech_fixture(1), "tech_gaslight");
+        state.players[0].technologies.push(TechCardId(1));
+
+        let result = apply_move(&state, &Move::BuildShophouse { slot: 0 }, &rules);
+        assert!(result.is_ok());
+        let new_state = result.unwrap();
+
+        // 2 (space VP) + 2 (Gaslight, 1 owned copy).
+        assert_eq!(new_state.players[0].victory_points, 4);
+    }
+
+    #[test]
+    fn test_build_shophouse_gaslight_bonus_stacks_per_owned_copy() {
+        let mut state = create_minimal_state(2);
+        let area = AreaId::new(0);
+        state.players[0].president_location = PresidentLocation::OnBoard(area);
+        state.players[0].shophouses.in_hand = 1;
+
+        let mut site = BuildingSite::new([0, 0, 0, 0], 10);
+        site.spaces[0] = SpaceReward { vp: 2, ..Default::default() };
+        state.board_layout.building_sites.insert(area, site);
+
+        let mut rules = Rules::empty_for_tests();
+        rules.techs.insert(gaslight_tech_fixture(1), "tech_gaslight_1");
+        rules.techs.insert(gaslight_tech_fixture(2), "tech_gaslight_2");
+        state.players[0].technologies.push(TechCardId(1));
+        state.players[0].technologies.push(TechCardId(2));
+
+        let result = apply_move(&state, &Move::BuildShophouse { slot: 0 }, &rules);
+        assert!(result.is_ok());
+        let new_state = result.unwrap();
+
+        // 2 (space VP) + 4 (Gaslight, 2 owned copies x 2 VP).
+        assert_eq!(new_state.players[0].victory_points, 6);
     }
 
     #[test]
