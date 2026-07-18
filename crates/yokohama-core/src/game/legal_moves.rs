@@ -449,6 +449,16 @@ fn generate_lab_actions(state: &GameState, player: PlayerId, power: u8, lab: &La
         let Some(card_id) = *slot else { continue };
         let Some(tech_card) = rules.techs.get(card_id) else { continue };
 
+        // C2: never offer a tech whose title (effect) the player already
+        // owns a copy of - mirrors validate_lab_action's ownership check so
+        // enumeration can't drift from what execute_lab_action would accept.
+        let already_owns_title = p.technologies.iter().any(|&owned_id| {
+            rules.techs.get(owned_id).map(|t| t.effect == tech_card.effect).unwrap_or(false)
+        });
+        if already_owns_title {
+            continue;
+        }
+
         let required = tech_card.industry_cost + lab_position_surcharge(slot_index);
         let deficit = required.saturating_sub(power.min(5));
 
@@ -1738,6 +1748,53 @@ mod tests {
 
         let moves = get_legal_moves(&state, &rules);
         assert_eq!(moves.len(), 4);
+        assert_all_moves_apply(&state, &moves, &rules);
+    }
+
+    #[test]
+    fn lab_enumeration_excludes_slot_whose_title_the_player_already_owns() {
+        // C2 final-review fix: a player may only own 1 Technology card of
+        // the same name/effect. slot0 offers a second Language School copy
+        // the player already owns one of (must be excluded); slot2 offers
+        // an unrelated tech (must still be offered normally). Power 5, ample
+        // money/imports so only ownership gates slot0.
+        let mut state = create_lab_area_state(5);
+        state.players[0].money = 10;
+        state.players[0].imported_goods = 5;
+        state.players[0].technologies = vec![TechCardId(100)];
+        state.lab_state.lab_a.slots[0] = Some(TechCardId(1)); // second Language School copy
+        state.lab_state.lab_a.slots[2] = Some(TechCardId(2)); // unrelated tech
+
+        let mut rules = Rules::empty_for_tests();
+        rules.techs.insert(TechCard {
+            id: TechCardId(100),
+            name: "Language School".to_string(),
+            country: Country::American,
+            industry_cost: 3,
+            effect: TechEffect::LanguageSchool,
+        }, "language_school_owned");
+        rules.techs.insert(TechCard {
+            id: TechCardId(1),
+            name: "Language School".to_string(),
+            country: Country::American,
+            industry_cost: 3,
+            effect: TechEffect::LanguageSchool,
+        }, "language_school_offered");
+        rules.techs.insert(make_test_tech_card(2, 3), "tech_2"); // effect: Tram (unrelated)
+
+        let moves = get_legal_moves(&state, &rules);
+        assert!(
+            !moves.iter().any(|m| matches!(m,
+                Move::ExecuteAreaAction { action: AreaAction::Laboratory { card_id, .. } } if *card_id == TechCardId(1)
+            )),
+            "must not offer a Language School purchase while already owning one"
+        );
+        assert!(
+            moves.iter().any(|m| matches!(m,
+                Move::ExecuteAreaAction { action: AreaAction::Laboratory { card_id, .. } } if *card_id == TechCardId(2)
+            )),
+            "unrelated tech in another slot must still be offered"
+        );
         assert_all_moves_apply(&state, &moves, &rules);
     }
 

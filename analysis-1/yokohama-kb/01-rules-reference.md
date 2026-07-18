@@ -265,6 +265,8 @@ zone, in order Low, Low, Mid, Mid, High, High (left to right).
 #### Laboratory (A and B)
 Acquire Technology cards from the corresponding Technology Card Placement Area.
 
+**Ownership limit (added 2026-07-17 — omitted from this reference until the final whole-branch review found the engine had no ownership check at all):** Players may only own 1 Technology card of the same name at a time (rulebook General Rules: "There is no limit to the number of Technology cards in each player's hand. However, players may only own 1 card of the same name."). Ten of the 20 titles circulate as 2 physical copies each (Language School, Telegram, Telephone, Newspaper, Exposition, Ball, Gaslight, University, Letterpress Printing, Postal System) precisely so different players can each own one — but a single player may never acquire both. See `guidingpath.md` decision log.
+
 **Layout (board-art verified):** each Laboratory board has SIX tech slots.
 Slots 1-2 carry no surcharge; +1 on the 3rd and 4th spaces, +2 on the 5th and 6th.
 

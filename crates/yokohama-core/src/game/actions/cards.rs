@@ -249,6 +249,18 @@ pub fn validate_lab_action(
     let tech_id = lab.slots[slot_index].ok_or("No card in slot")?;
     let tech_card = tech_registry.get(tech_id).ok_or("Tech card not found in registry")?;
 
+    // Rulebook General Rules: "players may only own 1 card of the same
+    // name." Ten titles circulate as 2 physical copies each so different
+    // players can each own one, but a single player may never hold both.
+    // Effects are 1:1 with titles in the standard data, so effect equality
+    // is the ownership-by-title check (C2 final-review finding).
+    let already_owns_title = p.technologies.iter().any(|&owned_id| {
+        tech_registry.get(owned_id).map(|t| t.effect == tech_card.effect).unwrap_or(false)
+    });
+    if already_owns_title {
+        return Err("Already own a Technology card with this name");
+    }
+
     // Calculate required industry value
     let required_iv = tech_card.industry_cost;
     let position_surcharge = lab_position_surcharge(slot_index);
@@ -1053,6 +1065,74 @@ mod tests {
         assert!(result.is_ok());
         assert!(state.players[0].technologies.contains(&TechCardId(1)));
         assert!(state.lab_state.lab_a.slots.iter().all(|s| s.is_none()));
+    }
+
+    #[test]
+    fn test_validate_lab_action_rejects_owning_same_title() {
+        // Rulebook General Rules: "players may only own 1 card of the same
+        // name." Two physical Language School copies circulate on boards
+        // (verified YAML `copies: 2`), but the player may never hold both
+        // (C2 final-review finding). Effects are 1:1 with titles in the
+        // standard data, so effect equality is the ownership check.
+        let mut state = create_test_state();
+        let player = PlayerId::new(0);
+        state.players[0].money = 10;
+
+        let mut tech_registry = TechRegistry::new();
+        tech_registry.insert(make_test_tech_card(1, 3, TechEffect::LanguageSchool), "language_school_1");
+        tech_registry.insert(make_test_tech_card(2, 3, TechEffect::LanguageSchool), "language_school_2");
+
+        // Already owns Language School copy #1.
+        state.players[0].technologies = vec![TechCardId(1)];
+        state.lab_state.lab_a.slots[0] = Some(TechCardId(2));
+
+        let result = validate_lab_action(
+            &state, player, &state.lab_state.lab_a, 0, 0, 0, None, 5, &tech_registry,
+        );
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_validate_lab_action_allows_distinct_titles_even_with_shared_effect_slot() {
+        // Owning an UNRELATED tech must never block a purchase.
+        let mut state = create_test_state();
+        let player = PlayerId::new(0);
+        state.players[0].money = 10;
+
+        let mut tech_registry = TechRegistry::new();
+        tech_registry.insert(make_test_tech_card(1, 3, TechEffect::LanguageSchool), "language_school_1");
+        tech_registry.insert(make_test_tech_card(9, 3, TechEffect::Tram), "tram_1");
+
+        state.players[0].technologies = vec![TechCardId(9)]; // owns Tram, not Language School
+        state.lab_state.lab_a.slots[0] = Some(TechCardId(1));
+
+        let result = validate_lab_action(
+            &state, player, &state.lab_state.lab_a, 0, 0, 0, None, 5, &tech_registry,
+        );
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_lab_execute_rejects_owning_same_title() {
+        let mut state = create_test_state();
+        let player = PlayerId::new(0);
+        state.players[0].money = 10;
+        place_president_at_lab_a(&mut state);
+
+        let mut tech_registry = TechRegistry::new();
+        tech_registry.insert(make_test_tech_card(1, 3, TechEffect::LanguageSchool), "language_school_1");
+        tech_registry.insert(make_test_tech_card(2, 3, TechEffect::LanguageSchool), "language_school_2");
+
+        state.players[0].technologies = vec![TechCardId(1)];
+        state.lab_state.lab_a.slots[0] = Some(TechCardId(2));
+
+        let result = execute_lab_action(
+            &mut state, player, TechCardId(2), 0, 0, None, 5, &tech_registry,
+        );
+        assert!(matches!(result, Err(MoveError::RuleViolation(_))));
+        // Nothing acquired or paid on rejection.
+        assert_eq!(state.players[0].technologies, vec![TechCardId(1)]);
+        assert_eq!(state.players[0].money, 10);
     }
 
     /// Registry with two Patent System copies (ids 1,2), one Letter Press
