@@ -8,13 +8,14 @@ Rust engine (plus planned CLI tracker and AI player) for the board game **Yokoha
 
 **Read `guidingpath.md` first — it is the authoritative status and roadmap** (its decision log carries every rules ruling). The status tables in README.md and agent-handover.md are historical and overstate completion.
 
-**Engine-completion is COMPLETE (2026-07-17) on branch `engine-completion`** — the fuzz gate passed (15,000/15,000 random self-play games, per-move invariants; see guidingpath.md's Current state). The plan (`docs/plans/2026-07-16-engine-completion-plan.md`) and execution ledger (`.superpowers/sdd/progress.md`) are historical records. **Phase 2 (CLI game driver) is next** — see guidingpath.md's roadmap and its Testing path. Untracked `.codex/`, `.vscode/`, `AGENTS.md` belong to Jeremy — never add or commit them.
+**Engine-completion is COMPLETE (2026-07-17) on branch `engine-completion`** — the fuzz gate passed (15,000/15,000 random self-play games, per-move invariants; see guidingpath.md's Current state). **The Phase-2 CLI driver LANDED (2026-07-18) on branch `phase2-cli-driver`** (plan `docs/plans/2026-07-18-phase2-cli-driver-plan.md`, execution ledger `.superpowers/sdd/progress.md`): full simulated games play through the CLI; live-tracking machinery (record v2 reveals, setup reconciliation, desync guard) is built and tested, but the PHASE gate — live-tracking a physical game — intentionally awaits the choice-encoding follow-up plan (guidingpath.md decision log 2026-07-18). Untracked `.codex/`, `.vscode/`, `AGENTS.md` belong to Jeremy — never add or commit them.
 
 ## Commands
 
 Toolchain is FIXED (2026-07-17): plain `cargo` works. (History: `~/.cargo/bin/rustup` was a dangling symlink; the durable fix was copying the real Mach-O from `/opt/homebrew/Cellar/rustup/*/libexec/bin/rustup` into `~/.cargo/bin/rustup` — Homebrew's `/opt/homebrew/bin/rustup` is a bash wrapper that resets argv[0] and breaks proxy multiplexing, so never symlink to it.)
 
-- All tests: `cargo test -p yokohama-core` (330 passing as of 2026-07-17, zero warnings)
+- All tests: `cargo test -p yokohama-core` (390 passing as of 2026-07-18, zero warnings) and `cargo test -p yokohama-cli` (37 passing)
+- Run the CLI driver: `cargo run -p yokohama-cli` (setup wizard → REPL; sim or live tracking); `cargo run -p yokohama-cli -- <save.json>` resumes a saved game
 - Fuzz regression gate (run in release before merges): `cargo test --release -p yokohama-core --test fuzz_full_games -- --ignored` (1,500 games, ~8s)
 - Full self-play sweep: `cargo run --release -p yokohama-core --example selfplay -- 5000 <players> <base_seed>`
 - Single test: `cargo test -p yokohama-core test_name`
@@ -23,7 +24,7 @@ Toolchain is FIXED (2026-07-17): plain `cargo` works. (History: `~/.cargo/bin/ru
 
 ## Architecture
 
-Workspace crates: `crates/yokohama-core` (library) and `crates/gen-data` (YAML→Rust data generator tool).
+Workspace crates: `crates/yokohama-core` (library), `crates/yokohama-cli` (Phase-2 game driver: `describe`/`render`/`session`/`repl`/`wizard` + thin `main`), and `crates/gen-data` (YAML→Rust data generator tool).
 
 - `types/` — serde-serializable state. `GameState` is complete-and-resumable and **history-free by design** — it must stay cheap to clone for future MCTS; move history belongs in an external action log, never in state. `Move`/`AreaAction` enums in `types/moves.rs`. Typed `MoveError` in `types/errors.rs`.
 - `game/` — pure functions over state: `get_legal_moves(&GameState, &Rules) -> Vec<Move>` and `apply_move(&GameState, &Move, &Rules) -> Result<GameState, MoveError>` (clones, never mutates). `Rules` (`game/rules.rs`) bundles static data: `Rules::standard()` from generated registries, `Rules::empty_for_tests()` for fixtures. Setup: seeded `new_game(config, rules, seed) -> PendingSetup` + `finalize_setup(pending, choices)`; decks live IN `GameState` (`order_deck`/`tech_deck`, last element = top; `orders_removed` for conservation).
