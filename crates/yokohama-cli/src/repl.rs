@@ -495,20 +495,23 @@ impl Repl {
         }
     }
 
+    /// `target`'s `save_path` update only happens on the success arm below --
+    /// setting it eagerly (before the write is confirmed) would let a
+    /// typo'd path (e.g. a nonexistent directory) silently redirect every
+    /// future autosave at a target that can never be written.
     fn save_cmd(&mut self, path: Option<&str>) -> StepOutput {
         let target = match path {
-            Some(p) => {
-                let pb = std::path::PathBuf::from(p);
-                self.session.save_path = Some(pb.clone());
-                pb
-            }
+            Some(p) => std::path::PathBuf::from(p),
             None => match self.session.save_path.clone() {
                 Some(p) => p,
                 None => return self.out("No save path set -- use 'save <path>'.\n".to_string(), false),
             },
         };
         match self.session.save(&target) {
-            Ok(()) => self.out(format!("Saved to {}\n", target.display()), false),
+            Ok(()) => {
+                self.session.save_path = Some(target.clone());
+                self.out(format!("Saved to {}\n", target.display()), false)
+            }
             Err(e) => self.out(format!("Save failed: {e}\n"), false),
         }
     }
@@ -817,6 +820,27 @@ mod tests {
         assert!(path.exists());
         std::fs::remove_file(&path).ok();
         assert!(r.step("quit").quit);
+    }
+
+    /// Regression for `save_cmd` setting `save_path` BEFORE the save is
+    /// confirmed to succeed (final-review ledger-minor bundled with the
+    /// autosave-atomicity Important finding): a typo'd `save <bad path>`
+    /// must report the failure and leave `save_path` exactly as it was, so
+    /// every future autosave doesn't get silently redirected at a target
+    /// that can never be written.
+    #[test]
+    fn save_cmd_failure_does_not_clobber_save_path() {
+        let mut r = repl_2p(4);
+        let original = std::env::temp_dir().join(format!("yokohama_repl_original_{}.json", std::process::id()));
+        r.session.save_path = Some(original.clone());
+        let bad = format!("/nonexistent-dir-yokohama-test-{}/should-fail.json", std::process::id());
+        let out = r.step(&format!("save {bad}"));
+        assert!(out.text.contains("Save failed"), "{}", out.text);
+        assert_eq!(
+            r.session.save_path,
+            Some(original),
+            "a failed save must not redirect future autosaves at a bad path"
+        );
     }
 
     #[test]

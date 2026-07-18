@@ -84,9 +84,21 @@ impl Session {
     /// Write the record as pretty-printed JSON to `path`. `load`
     /// reconstructs `state` by replaying the record -- `state` itself is
     /// never serialized.
+    ///
+    /// Atomic write-then-rename: the JSON is written to a sibling `.tmp`
+    /// file first, then renamed onto `path`. A crash mid-write leaves only
+    /// the `.tmp` file corrupt (or absent) and `path` untouched -- `path`
+    /// itself is never opened for writing, so live-mode autosave (which
+    /// rewrites the ONLY copy of a tracked game after every apply) can't
+    /// have its sole save corrupted by a crash mid-write.
     pub fn save(&self, path: &std::path::Path) -> Result<(), String> {
         let text = serde_json::to_string_pretty(&self.record).map_err(|e| e.to_string())?;
-        std::fs::write(path, text).map_err(|e| e.to_string())
+        let mut tmp = path.as_os_str().to_os_string();
+        tmp.push(".tmp");
+        let tmp = std::path::PathBuf::from(tmp);
+        std::fs::write(&tmp, text).map_err(|e| format!("write to {} failed: {e}", tmp.display()))?;
+        std::fs::rename(&tmp, path)
+            .map_err(|e| format!("rename {} -> {} failed: {e}", tmp.display(), path.display()))
     }
 
     pub fn state(&self) -> &GameState {
@@ -284,6 +296,15 @@ mod tests {
         }
         let path = std::env::temp_dir().join(format!("yokohama_test_{}.json", std::process::id()));
         s.save(&path).unwrap();
+        // Atomic write-then-rename (final-review Important finding): the
+        // intermediate ".tmp" file must never survive a successful save --
+        // only the renamed-into-place target should remain.
+        let mut tmp = path.clone().into_os_string();
+        tmp.push(".tmp");
+        assert!(
+            !std::path::Path::new(&tmp).exists(),
+            "a successful save must not leave a .tmp file behind"
+        );
         let loaded = Session::load(&path, Rules::standard()).unwrap();
         assert_eq!(loaded.state(), s.state());
         assert!(matches!(loaded.mode, TrackingMode::Simulation));
