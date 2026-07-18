@@ -27,6 +27,12 @@ Open the mapped reference's **Boards** section and compare each physical board:
 13. **Count the area tiles**: after removals the table should hold 10 / 14 / 18 tiles at 2P/3P/4P (2P removes Lab B, Port B, Chinatown, Canal + one of each production area; 3P removes Lab B + one copper/silk/tea). The KB's old component row said 12/15/18 — corrected 2026-07-17; the removal lists and the engine both say 10/14/18, but the physical count is the arbiter.
 14. **Building Step power gate (added 2026-07-17, final-review finding C3)**: confirm the box/rulebook prints NO separate (higher) power requirement for Trading House vs Shophouse — both require the same 4+ Power action, per the rulebook text and the p.7 Seiji example. The engine previously (wrongly) gated Trading House at 5+; fixed in code, but flagging here in case some edition variant genuinely differs from this printing.
 
+## Added 2026-07-18 (choice-encoding design) — Priority-1-equivalent, feeds imminent implementation
+
+15. **5-Power tokens — count all 20 by face.** The engine's pool: 10× "1 Imported Good", 2× "2 Copper", 2× "2 Silk", 2× "3 Seafood", 2× "3 Tea", 2× "3 Yen" — **no Movement token, no VP token**. The project's rules notes say a Movement token exists (moves assistants, not the President). If any Movement (or other unlisted) face exists: how many copies, and exactly what the face shows (how many assistant-moves?). This decides engine data + the live reveal menu (plan Tasks 3/11).
+16. **Port board power-5 badge**: the printed "3 VP" star at the 5-power position — plus table memory: did a 5-power Port action with NO card taken (full hand) still score the 3 VP at your table? Decides the +3-VP-on-action adjudication (plan Task 8, design §5.3-1).
+17. **Canal crossing** (3–4p boards + rulebook p.6): confirm a President crosses straight across the Canal tile between the two flanking areas for 1 Yen — and that there is no diagonal/other crossing. Decides the adjacency derivation (plan Task 9, design §5.6).
+
 ## How to report
 
 Anything that disagrees: note the component + the mapped-reference row (section + id). The YAML in `analysis-1/yokohama-kb/07..09-*.yaml` gets patched, `cargo run -p gen-data` regenerates the engine data, and the fuzz gate re-runs — that's the whole correction loop.
