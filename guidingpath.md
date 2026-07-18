@@ -18,15 +18,15 @@ The original AR-first design (`docs/plans/2025-12-07-yokohama-assistant-design.m
 
 ---
 
-## Current state — ENGINE COMPLETE, GATE PASSED (2026-07-17)
+## Current state — ENGINE COMPLETE, GATE PASSED (2026-07-17), FINAL-REVIEW FIX WAVE LANDED (2026-07-18)
 
 **Phase 0+1 is DONE.** `yokohama-core` plays complete, rules-correct games of Yokohama end-to-end, on branch `engine-completion`:
 
-- **Fuzz gate PASSED 2026-07-17**: 15,000/15,000 seeded random self-play games complete (5,000 × each of 2p/3p/4p via `cargo run --release -p yokohama-core --example selfplay -- 5000 <players> 0`), nine state invariants checked after every applied move, zero violations. CI-sized slice (`cargo test --release -p yokohama-core --test fuzz_full_games -- --ignored`, 1,500 games) passes in ~8s.
-- **All five end triggers observed**: OrderDeckEmpty + ChurchTrackFull organically; Customs/Shophouses/TradingHouses via seeded near-threshold end-to-end scenarios (decision log 2026-07-17).
+- **Fuzz gate PASSED 2026-07-17, RE-EARNED 2026-07-18**: 15,000/15,000 seeded random self-play games complete (5,000 × each of 2p/3p/4p via `cargo run --release -p yokohama-core --example selfplay -- 5000 <players> 0`), nine state invariants checked after every applied move, zero violations. CI-sized slice (`cargo test --release -p yokohama-core --test fuzz_full_games -- --ignored`, 1,500 games) passes in ~8s. The final whole-branch review (`.superpowers/sdd/final-review-report.md`) found four Critical rules bugs (C1-C4) and several Important gaps (I1-I5) the fuzzer structurally cannot see — self-consistent legality + conservation both held even while mispriced/miswired — all fixed or dispositioned (see `.superpowers/sdd/final-fixes-report.md` and the decision log below), then the gate above was re-run in full and passed clean on the fixed code.
+- **All five end triggers observed**: OrderDeckEmpty + ChurchTrackFull organically at all player counts; **TradingHousesComplete now ALSO fires organically** (2P: 10/5000 games, 3P: 1/5000) since the C3 fix (Trading House build gate corrected from Power 5 to Power 4+) — previously only reachable via a seeded near-threshold scenario. Customs/Shophouses still only observed via seeded end-to-end scenarios (decision log 2026-07-17).
 - **Replay determinism**: `GameRecord` {engine_version, seed, config, choices, moves} replays to a PartialEq-identical final state, including through a JSON round-trip; enumeration is fully deterministic (BTreeMap state maps).
-- **Suite: 330 tests green, zero warnings** (316 lib + 6 fuzz + 2 record + 6 integration, +1 ignored release-profile gate).
-- **Perf baseline (2026-07-17, release, 1,000 games each)**: ~875k / 515k / 298k moves/sec at 2p/3p/4p; mean random-game length 276 / 398 / 481 turns; per-phase mean branching factor — Placement 172 / 365 / 787 (2p/3p/4p; THE combinatorial hotspot — Phase-3 search needs progressive widening exactly here), Movement ~3, AreaAction 2–4.5, other phases ~1.
+- **Suite: 370 tests green, zero warnings** (356 lib + 6 fuzz + 2 record + 6 integration, +1 ignored release-profile gate) — up from 330 at the 2026-07-17 gate; the final-fixes wave added tests per-fix (TDD) plus achievement-count and mercenary-bypass pins.
+- **Perf baseline (2026-07-18, release, 5,000 games each, POST final-fixes wave)**: ~877k / 517k / 301k moves/sec at 2p/3p/4p (materially unchanged from the prior 1,000-game sample's ~875k/515k/298k — the fixes cost no measurable throughput); mean random-game length 250 / 391 / 480 turns (2p notably shorter than the prior 276, consistent with TradingHousesComplete now being a live, faster-firing end path); per-phase mean branching factor — Placement 169 / 362 / 788 (2p/3p/4p; still THE combinatorial hotspot — Phase-3 search needs progressive widening exactly here), Movement 3.6 / 3.1 / 3.2 (up slightly at 2p: Tram (I1) and Postal System's destination stop (I2) both add Movement options when owned), AreaAction 2.0 / 4.6 / 3.6, other phases ~1.
 
 **The 2026-07-16 "Not done" gaps — all closed:**
 
