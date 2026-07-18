@@ -320,4 +320,113 @@ mod tests {
         assert_eq!(replay(s.record(), s.rules()).unwrap(), *s.state());
         assert!(!s.final_scores().is_empty());
     }
+
+    /// Exercises `apply`'s reveal-fold arms and `undo`'s contiguous-bound-
+    /// reveal-popping loop for a group of size > 1 -- every test above this
+    /// one passes `vec![]` reveals, so that path was previously untested.
+    /// An identity order-deck arrangement (name the deck's current top 2
+    /// cards, in draw order -- `order_deck`'s LAST element is the next
+    /// `Vec::pop` draw, per `arrange_orders_on_top`'s doc comment in
+    /// yokohama-core's `types/state.rs`) is a true no-op on deck contents,
+    /// so this isolates "does Session fold/group/undo reveals correctly"
+    /// from "does the reveal itself reorder the deck right" (already
+    /// covered engine-side). A plain first move with no reveals precedes
+    /// the group so a buggy undo that over-pops into the prior group is
+    /// also caught by the event-count and state assertions.
+    #[test]
+    fn apply_with_reveals_undoes_the_whole_group() {
+        let mut s = sim_2p(4);
+        let mv1 = s.legal()[0].clone();
+        s.apply(mv1, vec![]).unwrap();
+        let s1 = s.state().clone();
+        let events_after_first = s.record().events.len();
+
+        let deck = s1.order_deck.clone();
+        let n = deck.len();
+        assert!(n >= 2, "need at least 2 deck cards to name an identity pair");
+        let identity_reveal = vec![deck[n - 1], deck[n - 2]]; // next 2 draws, in draw order
+        let mv2 = s.legal()[0].clone();
+        let delta = s.apply(mv2, vec![RecordedEvent::RevealOrders(identity_reveal.clone())]).unwrap();
+        assert!(!delta.is_empty());
+        assert_ne!(*s.state(), s1);
+        assert_eq!(s.record().events.len(), events_after_first + 2); // reveal + move
+
+        s.undo().unwrap();
+        assert_eq!(*s.state(), s1, "undo must remove the reveal AND the move together");
+        assert_eq!(
+            s.record().events.len(),
+            events_after_first,
+            "undo must not over- or under-pop the group"
+        );
+
+        // A second identical apply still works after the undo -- the
+        // identity arrangement round-tripped the deck cleanly.
+        let mv3 = s.legal()[0].clone();
+        assert!(s.apply(mv3, vec![RecordedEvent::RevealOrders(identity_reveal)]).is_ok());
+    }
+
+    /// Error-path atomicity for `apply_standalone`: in a sim game (both
+    /// players' starting orders are known via `Keep`, never hidden),
+    /// `reveal_starting_order` itself rejects the call -- nothing should be
+    /// recorded or mutated.
+    #[test]
+    fn apply_standalone_reveal_errs_atomically_when_not_hidden() {
+        let mut s = sim_2p(4);
+        let before_state = s.state().clone();
+        let before_events = s.record().events.len();
+        let card = s.state().players[0].starting_order.expect("Keep(0) always sets a starting order");
+        let ev = RecordedEvent::RevealStartingOrder { player: PlayerId::new(0), card };
+        assert!(s.apply_standalone(ev).is_err());
+        assert_eq!(*s.state(), before_state);
+        assert_eq!(s.record().events.len(), before_events);
+    }
+
+    /// The `other =>` reject arm: only `RevealStartingOrder` is a valid
+    /// standalone event -- an ordinary `Move` and a bound reveal (only
+    /// legal inside `apply`'s group) are both rejected, atomically.
+    #[test]
+    fn apply_standalone_rejects_non_standalone_variants() {
+        let mut s = sim_2p(4);
+        let before_state = s.state().clone();
+        let before_events = s.record().events.len();
+        assert!(s.apply_standalone(RecordedEvent::Move(Move::EndAdditionalPhase)).is_err());
+        assert!(s.apply_standalone(RecordedEvent::RevealOrders(vec![])).is_err());
+        assert_eq!(*s.state(), before_state);
+        assert_eq!(s.record().events.len(), before_events);
+    }
+
+    /// Success path for `apply_standalone`, which also doubles as
+    /// `new_live`'s first exercise: a live session where player 1's
+    /// starting order was dealt but kept hidden (`Unknown`), reconciled
+    /// with an all-`None` `SetupObservations` (a true no-op in
+    /// `reconcile_setup` -- see `revealed_hidden_starting_order_replays` in
+    /// yokohama-core's `tests/live_reconciliation.rs`, whose minimal setup
+    /// this mirrors; the observation-reconciliation machinery itself is
+    /// already covered exhaustively there). Revealing player 1's hidden
+    /// card records the event and changes state; `undo` then pops it ALONE
+    /// (a group of one, since it isn't a bound reveal), restoring the exact
+    /// prior state.
+    #[test]
+    fn apply_standalone_reveals_hidden_starting_order_in_a_live_session() {
+        let rules = Rules::standard();
+        let config = GameConfig::for_player_count(2);
+        let seed = 21;
+        let pending = new_game(config.clone(), &rules, seed).unwrap();
+        let hidden_deal = pending.deals[1]; // player 1 will be dealt this pair
+        let choices = vec![StartingOrderChoice::Keep(0), StartingOrderChoice::Unknown];
+        let mut s = Session::new_live(config, seed, SetupObservations::default(), choices, rules).unwrap();
+
+        let before_state = s.state().clone();
+        let before_events = s.record().events.len();
+        let ev = RecordedEvent::RevealStartingOrder { player: PlayerId::new(1), card: hidden_deal[0] };
+        let delta = s.apply_standalone(ev.clone()).unwrap();
+        assert!(!delta.is_empty());
+        assert_ne!(*s.state(), before_state);
+        assert_eq!(s.record().events.last(), Some(&ev));
+        assert_eq!(s.state().players[1].starting_order, Some(hidden_deal[0]));
+
+        s.undo().unwrap();
+        assert_eq!(*s.state(), before_state);
+        assert_eq!(s.record().events.len(), before_events);
+    }
 }
