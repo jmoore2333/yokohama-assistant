@@ -3,4 +3,5 @@
 
 pub mod describe;
 pub mod render;
+pub mod repl;
 pub mod session;
