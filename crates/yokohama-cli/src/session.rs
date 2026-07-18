@@ -31,14 +31,17 @@ pub struct Session {
 impl Session {
     /// Start a new simulated game: `new_game` + `finalize_setup` under a
     /// fresh `GameRecord`. Both players' hidden information is
-    /// engine-generated, so there is nothing to reconcile.
+    /// engine-generated, so there is nothing to reconcile. `config` is taken
+    /// as-built by the caller (mirrors `new_live`) rather than rederived from
+    /// a bare player count, so wizard-collected seat colors/start seat are
+    /// honored instead of silently falling back to `for_player_count`'s
+    /// defaults.
     pub fn new_sim(
-        players: u8,
+        config: GameConfig,
         seed: u64,
         choices: Vec<StartingOrderChoice>,
         rules: Rules,
     ) -> Result<Session, String> {
-        let config = GameConfig::for_player_count(players);
         let pending = new_game(config.clone(), &rules, seed).map_err(|e| e.to_string())?;
         let state = finalize_setup(pending, &choices).map_err(|e| e.to_string())?;
         let record = GameRecord::new(seed, config, choices);
@@ -241,7 +244,7 @@ mod tests {
 
     fn sim_2p(seed: u64) -> Session {
         Session::new_sim(
-            2, seed,
+            GameConfig::for_player_count(2), seed,
             vec![StartingOrderChoice::Keep(0), StartingOrderChoice::Keep(0)],
             Rules::standard(),
         ).unwrap()

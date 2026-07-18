@@ -281,9 +281,13 @@ pub fn run_wizard(
         Ok(crate::repl::Repl::new(session))
     } else {
         // Sim: preview each seat's dealt cards (re-running new_game with the
-        // chosen seed/player-count -- Session::new_sim redoes this internally
-        // too, deterministically, so the preview and the real deal always agree).
-        let pending = new_game(GameConfig::for_player_count(players), &rules, seed).map_err(|e| e.to_string())?;
+        // chosen seed/config -- Session::new_sim redoes this internally too,
+        // deterministically, so the preview and the real deal always agree).
+        let mut config = GameConfig::for_player_count(players);
+        config.player_colors = colors;
+        config.start_player = start_player;
+
+        let pending = new_game(config.clone(), &rules, seed).map_err(|e| e.to_string())?;
         let mut choices: Vec<StartingOrderChoice> = Vec::new();
         for seat in 0..players {
             out(&format!("Seat {seat} dealt:\n"));
@@ -296,7 +300,7 @@ pub fn run_wizard(
             choices.push(StartingOrderChoice::Keep(keep));
         }
 
-        let mut session = Session::new_sim(players, seed, choices, rules)?;
+        let mut session = Session::new_sim(config, seed, choices, rules)?;
         session.save_path = Some(std::path::PathBuf::from(save_path));
         Ok(crate::repl::Repl::new(session))
     }
@@ -487,6 +491,38 @@ mod tests {
         assert!(repl.session.save_path.is_some());
         assert!(!repl.session.legal().is_empty());
         std::fs::remove_file("yokohama-game-42.json").ok(); // in case autosave fired
+    }
+
+    /// Regression for the sim tail silently discarding the wizard's collected
+    /// colors/start-seat answers (final-review Important finding): a
+    /// NON-default color order and a NON-default start seat must both reach
+    /// the built session, and `new_game` seeding `current_player` from
+    /// `config.start_player` (game/setup.rs) means the opening turn must
+    /// honor it too.
+    #[test]
+    fn sim_wizard_honors_start_seat_and_color_choices() {
+        let (repl, _transcript) = feed(&[
+            "sim", "2", "blue", "red", "1", "43", "", // mode players colors(seat0=blue,seat1=red) start=1 seed savepath(default)
+            "0", "1",                                  // keep choices for seats 0 and 1
+        ]);
+        let repl = repl.unwrap();
+        let state = repl.session.state();
+        assert_eq!(
+            state.config.player_colors,
+            vec![PlayerColor::Blue, PlayerColor::Red],
+            "wizard-chosen seat colors must reach the built session"
+        );
+        assert_eq!(
+            state.config.start_player,
+            PlayerId::new(1),
+            "wizard-chosen start seat must reach the built session"
+        );
+        assert_eq!(
+            state.current_player,
+            PlayerId::new(1),
+            "new_game seeds current_player from config.start_player"
+        );
+        std::fs::remove_file("yokohama-game-43.json").ok(); // in case autosave fired
     }
 
     #[test]

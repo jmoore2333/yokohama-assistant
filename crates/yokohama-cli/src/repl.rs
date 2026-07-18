@@ -753,7 +753,7 @@ mod tests {
 
     fn repl_2p(seed: u64) -> Repl {
         Repl::new(Session::new_sim(
-            2, seed,
+            GameConfig::for_player_count(2), seed,
             vec![StartingOrderChoice::Keep(0), StartingOrderChoice::Keep(0)],
             Rules::standard(),
         ).unwrap())
