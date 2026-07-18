@@ -384,15 +384,13 @@ mod tests {
 
     fn make_test_five_power_tokens(count: usize) -> Vec<FivePowerEffect> {
         (0..count)
-            .map(|i| match i % 8 {
+            .map(|i| match i % 6 {
                 0 => FivePowerEffect::ImportedGoods(1),
                 1 => FivePowerEffect::Copper(2),
                 2 => FivePowerEffect::Silk(2),
-                3 => FivePowerEffect::Tea(2),
-                4 => FivePowerEffect::Seafood(2),
-                5 => FivePowerEffect::Money(3),
-                6 => FivePowerEffect::VictoryPoints(3),
-                _ => FivePowerEffect::Movement(2),
+                3 => FivePowerEffect::Seafood(3),
+                4 => FivePowerEffect::Tea(3),
+                _ => FivePowerEffect::Money(3),
             })
             .collect()
     }

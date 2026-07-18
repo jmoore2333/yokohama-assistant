@@ -284,7 +284,7 @@ mod tests {
             },
         );
         builder.set_building_site(AreaId::new(0), BuildingSite::new([2, 3, 4, 5], 8));
-        builder.set_five_power_token(AreaId::new(0), FivePowerEffect::VictoryPoints(3));
+        builder.set_five_power_token(AreaId::new(0), FivePowerEffect::Copper(2));
 
         // build_for_config() should fail for 2p (LaboratoryB is removed)
         let mut builder_copy = BoardLayoutBuilder::new();
@@ -296,7 +296,7 @@ mod tests {
             },
         );
         builder_copy.set_building_site(AreaId::new(0), BuildingSite::new([2, 3, 4, 5], 8));
-        builder_copy.set_five_power_token(AreaId::new(0), FivePowerEffect::VictoryPoints(3));
+        builder_copy.set_five_power_token(AreaId::new(0), FivePowerEffect::Copper(2));
 
         let result = builder_copy.build_for_config(&config_2p);
         assert!(matches!(

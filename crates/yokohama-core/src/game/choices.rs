@@ -30,6 +30,14 @@ fn generate_choice_resolutions_for(state: &GameState, choice: &PendingChoice, _r
             moves.push(Move::DeclineWarehouseTake);
             moves
         }
+        PendingChoice::AssistantMove => {
+            let mut moves: Vec<Move> = assistant_move_options(state)
+                .into_iter()
+                .map(|(from, to)| Move::ChooseAssistantMove { from, to })
+                .collect();
+            moves.push(Move::DeclineAssistantMove);
+            moves
+        }
     }
 }
 
@@ -44,6 +52,36 @@ pub fn warehouse_take_options(p: &PlayerState) -> Vec<WarehouseItem> {
     let already = p.trading_houses.in_hand as usize + p.trading_houses.total_built();
     if p.trading_houses.in_warehouse >= 1 && p.money >= TradingHouseState::take_cost(already) { v.push(WarehouseItem::TradingHouse); }
     v
+}
+
+/// Movement-icon reward options (rulebook p.10): "Move an Assistant pawn
+/// from your hand or from an Area to another Area... You do not need to pay
+/// other President pawns." Sources are the player's hand (if it holds any
+/// assistants) plus every Area currently holding >=1 of the player's own
+/// on-board assistants -- warehouse/management-board assistants are never a
+/// source, since they aren't tracked in `on_board`. Destinations are every
+/// non-Canal Area other than the source Area itself (Hand has no exclusion).
+/// No fees apply, even into an Area occupied by another player's President.
+pub fn assistant_move_options(state: &GameState) -> Vec<(MoveSource, AreaId)> {
+    let p = state.current_player();
+    let non_canal_areas: Vec<AreaId> = state.board_layout.areas.iter()
+        .filter(|(_, cfg)| cfg.area_type != AreaType::Canal)
+        .map(|(&id, _)| id)
+        .collect();
+
+    let mut options = Vec::new();
+    if p.assistants.in_hand >= 1 {
+        options.extend(non_canal_areas.iter().map(|&to| (MoveSource::Hand, to)));
+    }
+    for (&area, &count) in &p.assistants.on_board {
+        if count == 0 {
+            continue;
+        }
+        options.extend(
+            non_canal_areas.iter().filter(|&&to| to != area).map(|&to| (MoveSource::Area(area), to)),
+        );
+    }
+    options
 }
 
 /// Push a choice, auto-resolving singletons inline (design §5.1). For
@@ -114,6 +152,22 @@ pub fn resolve_choice_move(state: &mut GameState, mv: &Move, rules: &Rules) -> R
             }
         }
         (PendingChoice::WarehouseTake, Move::DeclineWarehouseTake) => {}
+        (PendingChoice::AssistantMove, Move::ChooseAssistantMove { from, to }) => {
+            let p = state.player_mut(player);
+            match from {
+                MoveSource::Hand => p.assistants.in_hand -= 1,
+                MoveSource::Area(area) => {
+                    if let Some(count) = p.assistants.on_board.get_mut(area) {
+                        *count -= 1;
+                        if *count == 0 {
+                            p.assistants.on_board.remove(area);
+                        }
+                    }
+                }
+            }
+            *p.assistants.on_board.entry(*to).or_insert(0) += 1;
+        }
+        (PendingChoice::AssistantMove, Move::DeclineAssistantMove) => {}
         _ => unreachable!("membership check above guarantees type match"),
     }
     Ok(())
@@ -265,5 +319,73 @@ mod tests {
         // Auto-declined silently: queue and money are exactly what they were before this push.
         assert_eq!(state.pending_choices, vec![PendingChoice::AnyGood]);
         assert_eq!(state.current_player().money, starting_money);
+    }
+
+    fn area_a() -> AreaId { AreaId::new(0) }
+    fn area_b() -> AreaId { AreaId::new(1) }
+    fn canal_area() -> AreaId { AreaId::new(2) }
+
+    /// 3-area board (incl. a Canal) with the current player holding 1
+    /// assistant in Area A and 1 in hand, AssistantMove already queued as
+    /// head (bypassing push_choice's singleton probe -- that path belongs to
+    /// `assistant_move_auto_declines_when_no_pawn_anywhere` below). An
+    /// opponent President sits in Area B to prove the p.10 "you do not need
+    /// to pay other President pawns" rule applies to this icon.
+    fn assistant_move_fixture() -> (GameState, Rules) {
+        let mut state = create_test_game_state(3);
+        let rules = Rules::empty_for_tests();
+        state.board_layout.areas.insert(area_a(), AreaConfig { area_type: AreaType::CopperMine, grid_position: (0, 0) });
+        state.board_layout.areas.insert(area_b(), AreaConfig { area_type: AreaType::Bank, grid_position: (0, 1) });
+        state.board_layout.areas.insert(canal_area(), AreaConfig { area_type: AreaType::Canal, grid_position: (0, 2) });
+        state.current_player = PlayerId::new(0);
+        state.players[0].assistants.on_board.insert(area_a(), 1);
+        state.players[0].assistants.in_hand = 1;
+        state.players[1].president_location = PresidentLocation::OnBoard(area_b());
+        state.pending_choices.push(PendingChoice::AssistantMove);
+        (state, rules)
+    }
+
+    /// All 20 assistants off the board (hand empty, on_board empty -- i.e.
+    /// all sitting in the warehouse/management-board pool, which is never a
+    /// valid AssistantMove source). Only Decline remains possible.
+    fn no_movable_assistant_fixture() -> (GameState, Rules) {
+        let mut state = create_test_game_state(2);
+        let rules = Rules::empty_for_tests();
+        state.players[0].assistants.in_hand = 0;
+        state.players[0].assistants.in_warehouse = 20;
+        state.players[0].assistants.on_board.clear();
+        (state, rules)
+    }
+
+    #[test]
+    fn assistant_move_options_cover_hand_and_own_areas_excluding_canal() {
+        // 3p board (has Canal). Own assistants: 1 in area A, hand 1. Opponent president in area B.
+        let (state, rules) = assistant_move_fixture();
+        let legal = get_legal_moves(&state, &rules); // AssistantMove head queued
+        // sources: Hand + Area(A); dests: every non-Canal area != source. Decline included.
+        assert!(legal.contains(&Move::ChooseAssistantMove { from: MoveSource::Hand, to: area_b() })); // opp president dest OK, free
+        assert!(legal.iter().all(|m| match m {
+            Move::ChooseAssistantMove { to, .. } => *to != canal_area(),
+            _ => true,
+        }));
+        assert!(legal.contains(&Move::DeclineAssistantMove));
+    }
+
+    #[test]
+    fn assistant_move_is_free_and_conserves_pawns() {
+        let (state, rules) = assistant_move_fixture();
+        let money = state.current_player().money;
+        let s = apply_move(&state, &Move::ChooseAssistantMove { from: MoveSource::Area(area_a()), to: area_b() }, &rules).unwrap();
+        assert_eq!(s.current_player().money, money); // no fees, even into an opponent-president area
+        assert_eq!(s.current_player().assistants.on_board.get(&area_a()), None); // cleaned up at 0
+        assert_eq!(s.current_player().assistants.on_board[&area_b()], 1);
+    }
+
+    #[test]
+    fn assistant_move_auto_declines_when_no_pawn_anywhere() {
+        // All 20 assistants in warehouse/locked: only Decline possible -> singleton auto.
+        let (mut state, rules) = no_movable_assistant_fixture();
+        push_choice(&mut state, PendingChoice::AssistantMove, &rules);
+        assert!(state.pending_choices.is_empty());
     }
 }

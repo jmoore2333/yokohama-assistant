@@ -279,6 +279,14 @@ pub fn describe_move(mv: &Move, state: &GameState, rules: &Rules) -> String {
             format!("Take {} from the warehouse ({cost_text})", warehouse_item_name(*item))
         }
         Move::DeclineWarehouseTake => "Decline the warehouse take".to_string(),
+        Move::ChooseAssistantMove { from, to } => {
+            let from_label = match from {
+                MoveSource::Hand => "hand".to_string(),
+                MoveSource::Area(a) => area_label(state, *a),
+            };
+            format!("Move an assistant from {from_label} to {} (reward move)", area_label(state, *to))
+        }
+        Move::DeclineAssistantMove => "Decline the assistant move".to_string(),
     }
 }
 
@@ -355,6 +363,23 @@ mod tests {
             "Take a trading house from the warehouse (4 yen)"
         );
         assert_eq!(describe_move(&Move::DeclineWarehouseTake, &state, &rules), "Decline the warehouse take");
+    }
+
+    #[test]
+    fn assistant_move_moves_read_as_plain_words() {
+        let state = state_2p();
+        let rules = Rules::standard();
+        let some_area = *state.board_layout.areas.keys().next().unwrap();
+
+        let from_hand = describe_move(&Move::ChooseAssistantMove { from: MoveSource::Hand, to: some_area }, &state, &rules);
+        assert!(from_hand.starts_with("Move an assistant from hand to "), "{from_hand}");
+        assert!(from_hand.ends_with("(reward move)"), "{from_hand}");
+
+        let from_area = describe_move(&Move::ChooseAssistantMove { from: MoveSource::Area(some_area), to: some_area }, &state, &rules);
+        assert!(from_area.contains(&format!("(A{:02})", some_area.0)), "{from_area}");
+        assert!(!from_area.contains("hand"), "{from_area}");
+
+        assert_eq!(describe_move(&Move::DeclineAssistantMove, &state, &rules), "Decline the assistant move");
     }
 
     #[test]

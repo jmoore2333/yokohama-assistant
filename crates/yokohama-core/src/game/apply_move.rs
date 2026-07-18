@@ -96,7 +96,11 @@ pub fn apply_move(state: &GameState, mv: &Move, rules: &Rules) -> Result<GameSta
             apply_fulfill_achievement(&mut new_state, *achievement)?;
         }
 
-        Move::ChooseAnyGood { .. } | Move::ChooseWarehouseTake { .. } | Move::DeclineWarehouseTake => {
+        Move::ChooseAnyGood { .. }
+        | Move::ChooseWarehouseTake { .. }
+        | Move::DeclineWarehouseTake
+        | Move::ChooseAssistantMove { .. }
+        | Move::DeclineAssistantMove => {
             crate::game::choices::resolve_choice_move(&mut new_state, mv, rules)?;
         }
     }
@@ -660,31 +664,6 @@ fn apply_take_5_power(state: &mut GameState, rules: &Rules) -> Result<(), MoveEr
                     FivePowerEffect::Tea(n) => p.tea += n as u32,
                     FivePowerEffect::Seafood(n) => p.seafood += n as u32,
                     FivePowerEffect::Money(n) => p.money += n as u32,
-                    FivePowerEffect::VictoryPoints(n) => p.victory_points += n as u32,
-                    FivePowerEffect::Movement(n) => {
-                        // Movement token: recover n assistants from board to hand
-                        // This allows the player to reposition assistants on future turns
-                        let mut remaining = n as u8;
-                        let areas_with_assistants: Vec<AreaId> = p.assistants.on_board
-                            .iter()
-                            .filter(|(_, &count)| count > 0)
-                            .map(|(&area, _)| area)
-                            .collect();
-
-                        for area in areas_with_assistants {
-                            if remaining == 0 {
-                                break;
-                            }
-                            if let Some(count) = p.assistants.on_board.get_mut(&area) {
-                                let to_recover = (*count).min(remaining);
-                                *count -= to_recover;
-                                p.assistants.in_hand += to_recover;
-                                remaining -= to_recover;
-                            }
-                        }
-                        // Clean up empty entries
-                        p.assistants.on_board.retain(|_, &mut count| count > 0);
-                    }
                 }
             }
         }
@@ -897,9 +876,10 @@ fn apply_mercenary(
 /// longer auto-resolves to copper here -- it queues an `AnyGood` choice per
 /// icon instead (design 2026-07-18 §5.1/§5.3-2), which is its own separate
 /// receipt if later resolved to Copper (see `resolve_choice_move`). Likewise
-/// warehouse_tokens queues a `WarehouseTake` choice per icon (§5.2) instead
-/// of auto-taking an assistant -- both push through `push_choice` so a
-/// singleton option set (e.g. an empty warehouse) auto-resolves uniformly.
+/// warehouse_tokens queues a `WarehouseTake` choice per icon (§5.2), and
+/// movement queues an `AssistantMove` choice per icon (§5.3) instead of
+/// being a no-op -- all three push through `push_choice` so a singleton
+/// option set (e.g. an empty warehouse) auto-resolves uniformly.
 fn apply_space_reward(state: &mut GameState, player: PlayerId, reward: &SpaceReward, mining_bonus: u8, rules: &Rules) {
     let p = state.player_mut(player);
     p.victory_points += reward.vp as u32;
@@ -908,16 +888,14 @@ fn apply_space_reward(state: &mut GameState, player: PlayerId, reward: &SpaceRew
     p.tea += reward.tea as u32;
     p.silk += reward.silk as u32;
     p.copper += reward.copper as u32 + mining_bonus as u32;
-    // Movement icon (rulebook p.10): documented no-op in v1. The icon grants
-    // an optional assistant move the player may decline, and declining is a
-    // legal play; v1 has no move encoding for that choice, and auto-resolving
-    // it (e.g. recovering assistants to hand) could actively harm the player.
-    // Choice encoding is scheduled for Phase 2.
     for _ in 0..reward.warehouse_tokens {
         push_choice(state, PendingChoice::WarehouseTake, rules);
     }
     for _ in 0..reward.any_good {
         push_choice(state, PendingChoice::AnyGood, rules);
+    }
+    for _ in 0..reward.movement {
+        push_choice(state, PendingChoice::AssistantMove, rules);
     }
 }
 
@@ -976,12 +954,6 @@ fn apply_fulfill_order(
     p.tea += rewards.tea as u32;
     p.seafood += rewards.seafood as u32;
 
-    // Movement icon (rulebook p.10): documented no-op in v1. The icon grants
-    // an optional assistant move the player may decline, and declining is a
-    // legal play; v1 has no move encoding for that choice, and auto-resolving
-    // it (e.g. recovering assistants to hand) could actively harm the player.
-    // Choice encoding is scheduled for Phase 2.
-
     // Move order from hand to completed
     p.order_cards_in_hand.retain(|&id| id != order_id);
     p.completed_orders.push(order_id);
@@ -994,6 +966,11 @@ fn apply_fulfill_order(
     // Any-good reward: one AnyGood choice per icon (design 2026-07-18 §5.1).
     for _ in 0..rewards.any_trade_good {
         push_choice(state, PendingChoice::AnyGood, rules);
+    }
+
+    // Movement reward: one AssistantMove choice per icon (design 2026-07-18 §5.3).
+    for _ in 0..rewards.movement {
+        push_choice(state, PendingChoice::AssistantMove, rules);
     }
 
     // Ball (+2 VP) and Language School (+1 Yen) trigger on every completed
@@ -1784,68 +1761,6 @@ mod tests {
     }
 
     #[test]
-    fn test_five_power_movement_token() {
-        let mut state = create_minimal_state(2);
-        let action_area = AreaId::new(0);
-
-        // Place president and set up 5-power token with Movement effect
-        state.players[0].president_location = PresidentLocation::OnBoard(action_area);
-        state.players[0].assistants.on_board.insert(AreaId::new(1), 2);
-        state.players[0].assistants.on_board.insert(AreaId::new(2), 1);
-        state.players[0].assistants.in_hand = 3;
-        state.current_action_power = Some(5);
-        state.turn_phase = TurnPhase::FivePowerBonus;
-
-        // Add Movement(2) token on action area
-        state.board_layout.five_power_tokens.insert(action_area, Some(FivePowerEffect::Movement(2)));
-        let rules = Rules::empty_for_tests();
-
-        // Take the token
-        let result = apply_move(&state, &Move::Take5PowerToken, &rules);
-        assert!(result.is_ok());
-
-        let new_state = result.unwrap();
-
-        // Should have recovered 2 assistants from board
-        assert_eq!(new_state.players[0].assistants.in_hand, 5); // 3 + 2 recovered
-        assert_eq!(new_state.players[0].five_power_tokens, 1);
-
-        // Token should be consumed
-        assert_eq!(
-            new_state.board_layout.five_power_tokens.get(&action_area),
-            Some(&None)
-        );
-    }
-
-    #[test]
-    fn test_five_power_movement_token_partial() {
-        let mut state = create_minimal_state(2);
-        let action_area = AreaId::new(0);
-
-        // Place president
-        state.players[0].president_location = PresidentLocation::OnBoard(action_area);
-        // Only 1 assistant on board but Movement(3) token
-        state.players[0].assistants.on_board.insert(AreaId::new(1), 1);
-        state.players[0].assistants.in_hand = 5;
-        state.current_action_power = Some(5);
-        state.turn_phase = TurnPhase::FivePowerBonus;
-
-        // Add Movement(3) token - but only 1 assistant available
-        state.board_layout.five_power_tokens.insert(action_area, Some(FivePowerEffect::Movement(3)));
-        let rules = Rules::empty_for_tests();
-
-        let result = apply_move(&state, &Move::Take5PowerToken, &rules);
-        assert!(result.is_ok());
-
-        let new_state = result.unwrap();
-
-        // Should have recovered only 1 assistant (all that was available)
-        assert_eq!(new_state.players[0].assistants.in_hand, 6); // 5 + 1 recovered
-        assert!(new_state.players[0].assistants.on_board.get(&AreaId::new(1)).is_none()
-            || *new_state.players[0].assistants.on_board.get(&AreaId::new(1)).unwrap() == 0);
-    }
-
-    #[test]
     fn test_five_power_other_effects() {
         let mut state = create_minimal_state(2);
         let action_area = AreaId::new(0);
@@ -1861,7 +1776,6 @@ mod tests {
             (FivePowerEffect::Copper(2), 1 + 2, 1, 3, 0u32),       // +2 copper
             (FivePowerEffect::Silk(1), 1, 1 + 1, 3, 0),            // +1 silk
             (FivePowerEffect::Money(3), 1, 1, 3 + 3, 0),           // +3 money
-            (FivePowerEffect::VictoryPoints(5), 1, 1, 3, 0 + 5),   // +5 VP
         ];
         let rules = Rules::empty_for_tests();
 
@@ -2633,7 +2547,59 @@ mod tests {
     }
 
     #[test]
-    fn test_fulfill_order_movement_is_documented_noop() {
+    fn test_fulfill_order_movement_queues_assistant_move_choices() {
+        let mut state = create_minimal_state(2);
+        state.turn_phase = TurnPhase::AdditionalActionFirst;
+        state.board_layout.areas.insert(AreaId::new(0), AreaConfig { area_type: AreaType::Bank, grid_position: (0, 0) });
+        state.board_layout.areas.insert(AreaId::new(1), AreaConfig { area_type: AreaType::CopperMine, grid_position: (0, 1) });
+        state.players[0].assistants.on_board.insert(AreaId::new(0), 2);
+        let initial_hand = state.players[0].assistants.in_hand;
+
+        let order_id = OrderCardId(42);
+        state.players[0].order_cards_in_hand.push(order_id);
+
+        let mut order_registry = OrderRegistry::new();
+        let order_card = OrderCard {
+            id: order_id,
+            country: Country::English,
+            requirements: TradeGoodRequirement::default(),
+            rewards: OrderRewards {
+                movement: 2,
+                ..Default::default()
+            },
+        };
+        order_registry.insert(order_card, "test_order");
+        let mut rules = Rules::empty_for_tests();
+        rules.orders = order_registry;
+
+        let result = apply_move(&state, &Move::FulfillOrder { order_id }, &rules);
+        assert!(result.is_ok());
+        let mid = result.unwrap();
+
+        // movement now queues an AssistantMove choice per icon instead of
+        // being a no-op (design 2026-07-18 §5.3) -- two icons here, so two
+        // choices queue.
+        assert_eq!(mid.pending_choices, vec![PendingChoice::AssistantMove, PendingChoice::AssistantMove]);
+
+        let after_first = apply_move(
+            &mid,
+            &Move::ChooseAssistantMove { from: MoveSource::Area(AreaId::new(0)), to: AreaId::new(1) },
+            &rules,
+        ).unwrap();
+        assert_eq!(after_first.pending_choices, vec![PendingChoice::AssistantMove]);
+        assert_eq!(after_first.players[0].assistants.on_board[&AreaId::new(1)], 1);
+
+        let after_second = apply_move(&after_first, &Move::DeclineAssistantMove, &rules).unwrap();
+        assert!(after_second.pending_choices.is_empty());
+        assert_eq!(after_second.players[0].assistants.in_hand, initial_hand);
+    }
+
+    #[test]
+    fn test_fulfill_order_movement_with_no_destinations_auto_declines() {
+        // Degenerate case: create_minimal_state's default board has no areas
+        // at all, so AssistantMove has zero valid destinations and each icon
+        // auto-declines instead of queuing (design §5.1 singleton rule) --
+        // apply_fulfill_order must still succeed and leave assistants intact.
         let mut state = create_minimal_state(2);
         state.turn_phase = TurnPhase::AdditionalActionFirst;
         state.players[0].assistants.on_board.insert(AreaId::new(0), 2);
@@ -2660,7 +2626,7 @@ mod tests {
         assert!(result.is_ok());
         let new_state = result.unwrap();
 
-        // v1 policy: Movement icon is a documented no-op (see apply_fulfill_order).
+        assert!(new_state.pending_choices.is_empty());
         assert_eq!(new_state.players[0].assistants, before);
     }
 

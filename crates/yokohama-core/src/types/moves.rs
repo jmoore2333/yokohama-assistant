@@ -3,7 +3,7 @@
 use serde::{Deserialize, Serialize};
 
 use crate::types::{
-    AchievementType, AreaId, Country, OrderCardId, TechCardId, TradeGood, WarehouseItem,
+    AchievementType, AreaId, Country, MoveSource, OrderCardId, TechCardId, TradeGood, WarehouseItem,
 };
 
 /// Turn phases in order of execution.
@@ -102,6 +102,8 @@ pub enum Move {
     ChooseAnyGood { good: TradeGood },
     ChooseWarehouseTake { item: WarehouseItem },
     DeclineWarehouseTake,
+    ChooseAssistantMove { from: MoveSource, to: AreaId },
+    DeclineAssistantMove,
 }
 
 /// Specific area actions.

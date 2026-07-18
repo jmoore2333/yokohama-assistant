@@ -696,8 +696,9 @@ fn parse_tech_reveal(words: &[&str], deck: &[TechCardId], techs: &TechRegistry) 
 }
 
 /// Parse a 5-Power token-effect letter into the canonical pool's fixed
-/// magnitude for that kind (only 6 of `FivePowerEffect`'s 8 variants ever
-/// populate the physical token pool -- `VictoryPoints`/`Movement` don't).
+/// magnitude for that kind -- one letter per `FivePowerEffect` variant (the
+/// phantom `VictoryPoints`/`Movement` variants were removed once the
+/// physical box check confirmed only these six faces exist).
 fn parse_token_letter(words: &[&str]) -> Result<FivePowerEffect, String> {
     let usage = "Enter one letter: i/c/s/t/f/y (or 'cancel').".to_string();
     if words.len() != 1 {

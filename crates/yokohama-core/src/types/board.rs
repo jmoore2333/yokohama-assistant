@@ -160,7 +160,9 @@ impl BuildingSite {
     }
 }
 
-/// Effect from a 5-Power token.
+/// Effect from a 5-Power token. Exactly these six faces exist in the
+/// physical 20-token pool (box-verified 2026-07-18) -- earlier `VictoryPoints`
+/// and `Movement` variants were test fiction and have been removed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum FivePowerEffect {
     ImportedGoods(u8),
@@ -169,8 +171,6 @@ pub enum FivePowerEffect {
     Tea(u8),
     Seafood(u8),
     Money(u8),
-    VictoryPoints(u8),
-    Movement(u8),
 }
 
 /// Complete board layout (immutable after game setup).
