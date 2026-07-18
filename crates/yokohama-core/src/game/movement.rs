@@ -20,16 +20,6 @@ pub fn is_possible_action_area_with_tech(
     is_possible_action_area_full(state, player, area, tech_registry, false)
 }
 
-/// Check if an area is a valid destination for mercenary action.
-/// Mercenaries ignore opponent president blocking.
-pub fn is_possible_action_area_mercenary(
-    state: &GameState,
-    player: PlayerId,
-    area: AreaId,
-) -> bool {
-    is_possible_action_area_full(state, player, area, None, true)
-}
-
 /// Full version with all options.
 /// - is_mercenary: If true, opponent presidents don't block.
 pub fn is_possible_action_area_full(
@@ -322,49 +312,6 @@ pub fn calculate_place_president_fee(
         .count() as u32
 }
 
-/// Validate a movement action.
-pub fn validate_movement(
-    state: &GameState,
-    player: PlayerId,
-    path: &[AreaId],
-    destination: AreaId,
-) -> Result<(), &'static str> {
-    let p = state.player(player);
-
-    // Check we can afford the movement
-    let cost = calculate_movement_cost(state, player, path);
-    if p.money < cost {
-        return Err("Not enough money to pay movement costs");
-    }
-
-    // Check destination is reachable and valid
-    if !is_possible_action_area(state, player, destination) {
-        return Err("Destination is not a valid action area");
-    }
-
-    // Verify path connectivity
-    let current_pos = match p.president_location {
-        PresidentLocation::OnBoard(area) => area,
-        PresidentLocation::InHand => {
-            return Err("President must be on board to move (use place instead)");
-        }
-    };
-
-    // Check path starts adjacent to current position
-    if let Some(&first) = path.first() {
-        if !state.board_layout.adjacent_areas(current_pos).contains(&first) {
-            return Err("Path must start adjacent to current position");
-        }
-    }
-
-    // Check destination matches end of path
-    if path.last() != Some(&destination) && !path.is_empty() {
-        return Err("Path must end at destination");
-    }
-
-    Ok(())
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -480,25 +427,6 @@ mod tests {
 
         let cost = calculate_movement_cost(&state, PlayerId::new(0), &[AreaId::new(0), AreaId::new(1)]);
         assert_eq!(cost, 1); // 1 Yen for canal
-    }
-
-    #[test]
-    fn test_mercenary_ignores_opponent_president_blocking() {
-        let mut state = create_test_state_with_board();
-        let player = PlayerId::new(0);
-        let area = AreaId::new(1);
-
-        // Place assistant on the area
-        state.players[0].assistants.on_board.insert(area, 1);
-
-        // Place opponent president on the same area
-        state.players[1].president_location = PresidentLocation::OnBoard(area);
-
-        // Normal movement: blocked by opponent president
-        assert!(!is_possible_action_area(&state, player, area));
-
-        // Mercenary movement: NOT blocked by opponent president
-        assert!(is_possible_action_area_mercenary(&state, player, area));
     }
 
     #[test]

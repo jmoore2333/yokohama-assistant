@@ -1677,6 +1677,32 @@ mod tests {
     }
 
     #[test]
+    fn test_mercenary_sub_turn_ignores_opponent_president_at_target_area() {
+        // "Mercenaries bypass opponent Presidents (no blocking, no fees)"
+        // (CLAUDE.md commonly-missed rule) - pinned through the real
+        // production path. apply_mercenary's own validation checks only
+        // that the MOVER'S OWN President isn't at the target area; an
+        // opponent's President there is not checked at all, so the
+        // sub-turn must start normally regardless.
+        let mut state = create_minimal_state(2);
+        let player = state.current_player;
+        let target = AreaId::new(5);
+
+        {
+            let p = state.player_mut(player);
+            p.mercenaries.available.insert(Country::English, 1);
+            p.assistants.on_board.insert(target, 1);
+            p.president_location = PresidentLocation::OnBoard(AreaId::new(1));
+        }
+        state.players[1].president_location = PresidentLocation::OnBoard(target);
+
+        let result = apply_mercenary(&mut state, Country::English, target);
+        assert!(result.is_ok());
+        assert!(state.is_mercenary_action);
+        assert_eq!(state.mercenary_target_area, Some(target));
+    }
+
+    #[test]
     fn test_mercenary_once_per_turn() {
         let mut state = create_minimal_state(2);
         let player = state.current_player;
