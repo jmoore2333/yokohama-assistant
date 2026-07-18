@@ -1,12 +1,42 @@
 //! Church and Customs track actions.
 
 use crate::types::{
-    AreaType, ChurchSlot, ChurchTrack, CustomsSlot, CustomsTrack, GameState, PlayerId,
-    PresidentLocation,
+    AreaId, AreaType, ChurchSlot, ChurchTrack, CustomsSlot, CustomsTrack, GameState, PlayerId,
+    PlayerState, PresidentLocation,
 };
 use crate::game::apply_move::apply_warehouse_takes;
 use crate::game::rules::Rules;
 use crate::game::tech_effects::{church_vp_bonus, customs_vp_bonus};
+
+/// Take 1 assistant from hand, or (if hand is empty) from the acting area
+/// itself - rulebook p.13/p.14: "place 1 Assistant pawn from the
+/// [Church/Customs] Area or your hand" (I3 final-review fix). Caller's
+/// validator must already have confirmed at least one source has >= 1.
+/// Preferring hand keeps existing hand >= 1 play unchanged (the two sources
+/// are net-identical in v1's same-turn-recovery flow); the acting-area
+/// fallback only engages at hand == 0. Decrementing `on_board[area]` here
+/// (rather than leaving a stale entry) is what keeps the automatic Recovery
+/// step from later double-recovering a pawn that already moved onto the
+/// track.
+fn take_church_or_customs_assistant(p: &mut PlayerState, area: AreaId) {
+    if p.assistants.in_hand >= 1 {
+        p.assistants.in_hand -= 1;
+        return;
+    }
+    if let Some(&count) = p.assistants.on_board.get(&area) {
+        if count > 1 {
+            p.assistants.on_board.insert(area, count - 1);
+        } else {
+            p.assistants.on_board.remove(&area);
+        }
+    }
+}
+
+/// True if the player has an assistant available for a Church/Customs
+/// placement: in hand, or already on the acting area (I3 final-review fix).
+fn has_church_or_customs_assistant(p: &PlayerState, area: AreaId) -> bool {
+    p.assistants.in_hand >= 1 || p.assistants.in_area(area) >= 1
+}
 
 /// Calculate Faith value from power. Faith scales LINEARLY with power:
 /// 1,2,3,4,5 (capped at 5 for power above 5). Jeremy-adjudicated
@@ -38,11 +68,15 @@ pub fn calculate_church_faith(
     faith
 }
 
-/// Validate Church action.
+/// Validate Church action. `area` is the acting Church area (I3
+/// final-review fix): the assistant may come from hand OR from the acting
+/// area itself, per rulebook p.13 ("place 1 Assistant pawn from the Church
+/// Area or your hand").
 #[allow(clippy::too_many_arguments)]
 pub fn validate_church_action(
     state: &GameState,
     player: PlayerId,
+    area: AreaId,
     copper: bool,
     silk: bool,
     tea: bool,
@@ -71,9 +105,9 @@ pub fn validate_church_action(
         return Err("Not enough imported goods");
     }
 
-    // Check assistant available
-    if p.assistants.in_hand < 1 {
-        return Err("No assistant in hand for Church");
+    // Check assistant available: hand, or the acting area itself.
+    if !has_church_or_customs_assistant(p, area) {
+        return Err("No assistant available for Church (hand or acting area)");
     }
 
     Ok(())
@@ -143,7 +177,7 @@ pub fn execute_church_action(
         _ => return Err("Church action requires the Church area"),
     }
 
-    validate_church_action(state, player, copper, silk, tea, seafood, yen, imported_good)?;
+    validate_church_action(state, player, area, copper, silk, tea, seafood, yen, imported_good)?;
 
     let total_faith = calculate_church_faith(power, copper, silk, tea, seafood, yen, imported_good);
     let target_faith =
@@ -166,7 +200,7 @@ pub fn execute_church_action(
     if seafood { p.seafood -= 1; }
     if yen { p.money -= 1; }
     if imported_good { p.imported_goods -= 1; }
-    p.assistants.in_hand -= 1;
+    take_church_or_customs_assistant(p, area);
     p.assistants.on_church += 1;
     p.church_positions.push(target_faith);
     p.victory_points += base_vp + winery_bonus;
@@ -185,10 +219,14 @@ pub fn customs_max_imported_goods(power: u8) -> u8 {
     }
 }
 
-/// Validate Customs action.
+/// Validate Customs action. `area` is the acting Customs area (I3
+/// final-review fix): the assistant may come from hand OR from the acting
+/// area itself, per rulebook p.14 ("place 1 Assistant pawn from the Customs
+/// Area or your hand").
 pub fn validate_customs_action(
     state: &GameState,
     player: PlayerId,
+    area: AreaId,
     imported_goods_to_pay: u8,
     power: u8,
 ) -> Result<(), &'static str> {
@@ -207,9 +245,9 @@ pub fn validate_customs_action(
         return Err("Must pay at least 1 imported good");
     }
 
-    // Check assistant available
-    if p.assistants.in_hand < 1 {
-        return Err("No assistant in hand for Customs");
+    // Check assistant available: hand, or the acting area itself.
+    if !has_church_or_customs_assistant(p, area) {
+        return Err("No assistant available for Customs (hand or acting area)");
     }
 
     Ok(())
@@ -272,7 +310,7 @@ pub fn execute_customs_action(
         _ => return Err("Customs action requires the Customs area"),
     }
 
-    validate_customs_action(state, player, imported_goods_paid, power)?;
+    validate_customs_action(state, player, area, imported_goods_paid, power)?;
 
     let target_space = eligible_customs_space_for_cost(
         &state.customs_track,
@@ -293,7 +331,7 @@ pub fn execute_customs_action(
 
     let p = state.player_mut(player);
     p.imported_goods -= imported_goods_paid as u32;
-    p.assistants.in_hand -= 1;
+    take_church_or_customs_assistant(p, area);
     p.assistants.on_customs += 1;
     p.customs_positions.push(target_space);
     p.victory_points += base_vp + brickyard_bonus;
@@ -536,10 +574,130 @@ mod tests {
         place_president_at_church(&mut state);
         state.players[0].assistants.in_hand = 0;
 
+        // No assistant on the acting area either, so both sources are empty.
         let result = execute_church_action(
             &mut state, PlayerId::new(0), 5, false, false, false, false, false, false, &rules,
         );
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_execute_church_action_allows_assistant_from_acting_area_when_hand_empty() {
+        // I3 final-review fix: rulebook p.13 - "place 1 Assistant pawn from
+        // the Church Area OR your hand." With hand empty but an assistant
+        // already on the acting area, the action must still be legal - it
+        // takes that pawn instead of rejecting.
+        let rules = Rules::empty_for_tests();
+        let mut state = create_test_state();
+        let area = place_president_at_church(&mut state);
+        state.players[0].assistants.in_hand = 0;
+        state.players[0].assistants.on_board.insert(area, 2);
+
+        let result = execute_church_action(
+            &mut state, PlayerId::new(0), 5, false, false, false, false, false, false, &rules,
+        );
+        assert!(result.is_ok());
+
+        let p = &state.players[0];
+        assert_eq!(p.assistants.in_hand, 0, "hand was already empty and stays empty");
+        assert_eq!(p.assistants.on_board.get(&area), Some(&1), "1 pawn taken from the acting area");
+        assert_eq!(p.assistants.on_church, 1);
+        assert_eq!(p.church_positions, vec![5]);
+    }
+
+    #[test]
+    fn test_execute_church_action_from_area_assistant_removes_map_entry_at_zero() {
+        // Same as above but with exactly 1 assistant on the acting area:
+        // the on_board entry must be removed (not left at 0), matching the
+        // convention used elsewhere (e.g. apply_return_to_hand).
+        let rules = Rules::empty_for_tests();
+        let mut state = create_test_state();
+        let area = place_president_at_church(&mut state);
+        state.players[0].assistants.in_hand = 0;
+        state.players[0].assistants.on_board.insert(area, 1);
+
+        let result = execute_church_action(
+            &mut state, PlayerId::new(0), 5, false, false, false, false, false, false, &rules,
+        );
+        assert!(result.is_ok());
+        assert_eq!(state.players[0].assistants.on_board.get(&area), None);
+        assert_eq!(state.players[0].assistants.on_church, 1);
+    }
+
+    #[test]
+    fn test_execute_church_action_prefers_hand_assistant_when_both_sources_available() {
+        // With hand >= 1, the acting-area pawn must be left untouched (the
+        // two sources are net-identical in v1's same-turn-recovery flow, but
+        // this pins WHICH pawn moves so on_board bookkeeping stays exact).
+        let rules = Rules::empty_for_tests();
+        let mut state = create_test_state();
+        let area = place_president_at_church(&mut state);
+        state.players[0].assistants.in_hand = 3;
+        state.players[0].assistants.on_board.insert(area, 2);
+
+        let result = execute_church_action(
+            &mut state, PlayerId::new(0), 5, false, false, false, false, false, false, &rules,
+        );
+        assert!(result.is_ok());
+
+        let p = &state.players[0];
+        assert_eq!(p.assistants.in_hand, 2, "hand pawn spent, not the acting-area one");
+        assert_eq!(p.assistants.on_board.get(&area), Some(&2), "acting-area pawns untouched");
+    }
+
+    #[test]
+    fn test_execute_church_action_during_mercenary_sub_turn_allows_assistant_from_target_area_when_hand_empty() {
+        // The report's headline case: EVERY mercenary sub-turn's target area
+        // has the player's own assistant by definition (apply_mercenary
+        // validates this before starting the sub-turn), so hand-only
+        // validation would wrongly reject a Church action there whenever
+        // hand happens to be empty.
+        let rules = Rules::empty_for_tests();
+        let mut state = create_test_state();
+        let church_area = AreaId::new(9);
+        state.board_layout.areas.insert(church_area, AreaConfig {
+            area_type: AreaType::Church,
+            grid_position: (0, 9),
+        });
+        state.is_mercenary_action = true;
+        state.mercenary_target_area = Some(church_area);
+        state.players[0].assistants.in_hand = 0;
+        state.players[0].assistants.on_board.insert(church_area, 1);
+
+        let result = execute_church_action(
+            &mut state, PlayerId::new(0), 4, false, false, false, false, false, false, &rules,
+        );
+        assert!(result.is_ok());
+        assert_eq!(state.players[0].church_positions, vec![4]);
+        assert_eq!(state.players[0].assistants.on_board.get(&church_area), None);
+    }
+
+    #[test]
+    fn test_execute_church_action_from_area_assistant_then_recovery_does_not_double_recover() {
+        // I3's "recovery must not double-recover" requirement: taking the
+        // assistant from the acting area must decrement on_board there SO
+        // THAT the automatic Recovery step (which recovers whatever remains
+        // in on_board at the acting area) doesn't also return a pawn that
+        // already moved onto the Church track.
+        let rules = Rules::empty_for_tests();
+        let mut state = create_test_state();
+        let area = place_president_at_church(&mut state);
+        state.players[0].president_location = PresidentLocation::OnBoard(area);
+        state.players[0].assistants.in_hand = 0;
+        state.players[0].assistants.on_board.insert(area, 1);
+
+        execute_church_action(
+            &mut state, PlayerId::new(0), 5, false, false, false, false, false, false, &rules,
+        ).unwrap();
+        assert_eq!(state.players[0].assistants.on_church, 1);
+        assert_eq!(state.players[0].assistants.on_board.get(&area), None);
+
+        crate::game::apply_move::apply_recovery_with_leave(&mut state, false);
+
+        // Nothing was left on the board to recover; the Church-locked pawn
+        // must not be pulled back to hand.
+        assert_eq!(state.players[0].assistants.in_hand, 0);
+        assert_eq!(state.players[0].assistants.on_church, 1);
     }
 
     #[test]
@@ -836,9 +994,99 @@ mod tests {
         state.players[0].imported_goods = 1;
         state.players[0].assistants.in_hand = 0;
 
+        // No assistant on the acting area either, so both sources are empty.
         let result = execute_customs_action(&mut state, PlayerId::new(0), 3, 1, &rules);
         assert!(result.is_err());
         assert_eq!(state.players[0].imported_goods, 1);
+    }
+
+    #[test]
+    fn test_execute_customs_action_allows_assistant_from_acting_area_when_hand_empty() {
+        // I3 final-review fix: rulebook p.14 - "place 1 Assistant pawn from
+        // the Customs Area OR your hand." Uses power 5 / pay 3 -> space 5
+        // (no rider), so the assertions below aren't muddied by space 1's
+        // +2-warehouse-takes rider (apply_warehouse_takes moves warehouse
+        // stock to HAND, which would otherwise mask the pawn-source bug
+        // this test targets).
+        let rules = Rules::empty_for_tests();
+        let mut state = create_test_state();
+        let area = place_president_at_customs(&mut state);
+        state.players[0].imported_goods = 3;
+        state.players[0].assistants.in_hand = 0;
+        state.players[0].assistants.on_board.insert(area, 1);
+
+        let result = execute_customs_action(&mut state, PlayerId::new(0), 5, 3, &rules);
+        assert!(result.is_ok());
+
+        let p = &state.players[0];
+        assert_eq!(p.assistants.in_hand, 0);
+        assert_eq!(p.assistants.on_board.get(&area), None, "the sole acting-area pawn is removed, not left at 0");
+        assert_eq!(p.assistants.on_customs, 1);
+        assert_eq!(p.customs_positions, vec![5]);
+    }
+
+    #[test]
+    fn test_execute_customs_action_prefers_hand_assistant_when_both_sources_available() {
+        // Power 5 / pay 3 -> space 5 (no rider); see the acting-area test's
+        // comment for why a rider-free space matters here.
+        let rules = Rules::empty_for_tests();
+        let mut state = create_test_state();
+        let area = place_president_at_customs(&mut state);
+        state.players[0].imported_goods = 3;
+        state.players[0].assistants.in_hand = 3;
+        state.players[0].assistants.on_board.insert(area, 2);
+
+        let result = execute_customs_action(&mut state, PlayerId::new(0), 5, 3, &rules);
+        assert!(result.is_ok());
+
+        let p = &state.players[0];
+        assert_eq!(p.assistants.in_hand, 2, "hand pawn spent, not the acting-area one");
+        assert_eq!(p.assistants.on_board.get(&area), Some(&2), "acting-area pawns untouched");
+    }
+
+    #[test]
+    fn test_execute_customs_action_during_mercenary_sub_turn_allows_assistant_from_target_area_when_hand_empty() {
+        // Same headline case as Church: every mercenary sub-turn's target
+        // area has the player's own assistant by definition. Power 5 / pay
+        // 3 -> space 5 (no rider).
+        let rules = Rules::empty_for_tests();
+        let mut state = create_test_state();
+        let customs_area = AreaId::new(9);
+        state.board_layout.areas.insert(customs_area, AreaConfig {
+            area_type: AreaType::Customs,
+            grid_position: (0, 9),
+        });
+        state.is_mercenary_action = true;
+        state.mercenary_target_area = Some(customs_area);
+        state.players[0].imported_goods = 3;
+        state.players[0].assistants.in_hand = 0;
+        state.players[0].assistants.on_board.insert(customs_area, 1);
+
+        let result = execute_customs_action(&mut state, PlayerId::new(0), 5, 3, &rules);
+        assert!(result.is_ok());
+        assert_eq!(state.players[0].customs_positions, vec![5]);
+        assert_eq!(state.players[0].assistants.on_board.get(&customs_area), None);
+    }
+
+    #[test]
+    fn test_execute_customs_action_from_area_assistant_then_recovery_does_not_double_recover() {
+        // Power 5 / pay 3 -> space 5 (no rider).
+        let rules = Rules::empty_for_tests();
+        let mut state = create_test_state();
+        let area = place_president_at_customs(&mut state);
+        state.players[0].president_location = PresidentLocation::OnBoard(area);
+        state.players[0].imported_goods = 3;
+        state.players[0].assistants.in_hand = 0;
+        state.players[0].assistants.on_board.insert(area, 1);
+
+        execute_customs_action(&mut state, PlayerId::new(0), 5, 3, &rules).unwrap();
+        assert_eq!(state.players[0].assistants.on_customs, 1);
+        assert_eq!(state.players[0].assistants.on_board.get(&area), None);
+
+        crate::game::apply_move::apply_recovery_with_leave(&mut state, false);
+
+        assert_eq!(state.players[0].assistants.in_hand, 0);
+        assert_eq!(state.players[0].assistants.on_customs, 1);
     }
 
     #[test]

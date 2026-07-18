@@ -394,8 +394,8 @@ fn generate_area_action_moves(state: &GameState, rules: &Rules) -> Vec<Move> {
             // alarm -- do NOT paper over with Skip.
             None => vec![],
         },
-        AreaType::Church => generate_church_actions(state, player, power),
-        AreaType::Customs => generate_customs_actions(state, player, power),
+        AreaType::Church => generate_church_actions(state, player, power, area),
+        AreaType::Customs => generate_customs_actions(state, player, power, area),
         AreaType::EmploymentAgency => generate_employment_agency_actions(state, player, power),
         AreaType::Chinatown => generate_chinatown_actions(state, player, power, rules),
         AreaType::CopperMine => vec![Move::ExecuteAreaAction { action: AreaAction::ProduceCopper }],
@@ -541,14 +541,14 @@ fn generate_lab_actions(state: &GameState, player: PlayerId, power: u8, lab: &La
 }
 
 /// Enumerate legal Church moves at `power`: every one of the 64 goods-flag
-/// combinations the player can both AFFORD (stock/assistant, per
-/// `validate_church_action`) and that the executor would actually ACCEPT
-/// (total Faith >= 4 with an eligible empty space, per
+/// combinations the player can both AFFORD (stock/assistant - hand OR the
+/// acting area itself, per `validate_church_action`) and that the executor
+/// would actually ACCEPT (total Faith >= 4 with an eligible empty space, per
 /// `highest_eligible_church_space`) -- reusing both pure executor helpers
 /// directly so enumeration can never drift from `execute_church_action`'s
 /// own acceptance criteria. Skip is always legal and always offered (Task
 /// 16/17 decision-log optionality ruling).
-fn generate_church_actions(state: &GameState, player: PlayerId, power: u8) -> Vec<Move> {
+fn generate_church_actions(state: &GameState, player: PlayerId, power: u8, area: AreaId) -> Vec<Move> {
     let mut moves = Vec::new();
 
     for mask in 0u8..64 {
@@ -559,7 +559,7 @@ fn generate_church_actions(state: &GameState, player: PlayerId, power: u8) -> Ve
         let yen = mask & 16 != 0;
         let imported_good = mask & 32 != 0;
 
-        if validate_church_action(state, player, copper, silk, tea, seafood, yen, imported_good).is_err() {
+        if validate_church_action(state, player, area, copper, silk, tea, seafood, yen, imported_good).is_err() {
             continue;
         }
 
@@ -580,16 +580,16 @@ fn generate_church_actions(state: &GameState, player: PlayerId, power: u8) -> Ve
 /// Enumerate legal Customs moves at `power`: one move per payable N in
 /// 1..=`customs_max_imported_goods(power)` for which the player both can
 /// legally pay it (`validate_customs_action`, which also gates on assistant
-/// availability) and an eligible empty track space exists
-/// (`eligible_customs_space_for_cost`) -- reusing both pure executor
-/// helpers directly so enumeration can never drift from
+/// availability - hand OR the acting area itself) and an eligible empty
+/// track space exists (`eligible_customs_space_for_cost`) -- reusing both
+/// pure executor helpers directly so enumeration can never drift from
 /// `execute_customs_action`'s own acceptance criteria. Skip is always
 /// legal and always offered (Task 16/17 decision-log optionality ruling).
-fn generate_customs_actions(state: &GameState, player: PlayerId, power: u8) -> Vec<Move> {
+fn generate_customs_actions(state: &GameState, player: PlayerId, power: u8, area: AreaId) -> Vec<Move> {
     let mut moves = Vec::new();
 
     for n in 1..=customs_max_imported_goods(power) {
-        if validate_customs_action(state, player, n, power).is_ok()
+        if validate_customs_action(state, player, area, n, power).is_ok()
             && eligible_customs_space_for_cost(&state.customs_track, n, state.config.player_count).is_some()
         {
             moves.push(Move::ExecuteAreaAction { action: AreaAction::Customs { imported_goods_paid: n } });
@@ -2225,6 +2225,22 @@ mod tests {
     }
 
     #[test]
+    fn church_enumeration_hand_empty_but_assistant_on_acting_area_is_not_skip_only() {
+        // I3 final-review fix: rulebook p.13 - "place 1 Assistant pawn from
+        // the Church Area or your hand." Hand empty, but 1 assistant
+        // already on the acting area -> Church must still offer
+        // substantive moves, not just Skip.
+        let mut state = create_church_area_state(5);
+        state.players[0].assistants.in_hand = 0;
+        state.players[0].assistants.on_board.insert(AreaId::new(5), 1);
+        let rules = Rules::empty_for_tests();
+
+        let moves = get_legal_moves(&state, &rules);
+        assert!(moves.len() > 1, "must offer more than just Skip: {moves:?}");
+        assert_all_moves_apply(&state, &moves, &rules);
+    }
+
+    #[test]
     fn customs_enumeration_fresh_board_power_4() {
         // 3P, power 4 (cap 3), imports 2, assistant, fresh board -> {1,2} + Skip = 3.
         let mut state = create_customs_area_state(4);
@@ -2280,6 +2296,21 @@ mod tests {
         let moves = get_legal_moves(&state, &rules);
         assert_eq!(moves.len(), 1);
         assert!(matches!(&moves[0], Move::ExecuteAreaAction { action: AreaAction::Skip }));
+        assert_all_moves_apply(&state, &moves, &rules);
+    }
+
+    #[test]
+    fn customs_enumeration_hand_empty_but_assistant_on_acting_area_is_not_skip_only() {
+        // I3 final-review fix: rulebook p.14 - "place 1 Assistant pawn from
+        // the Customs Area or your hand."
+        let mut state = create_customs_area_state(4);
+        state.players[0].imported_goods = 3;
+        state.players[0].assistants.in_hand = 0;
+        state.players[0].assistants.on_board.insert(AreaId::new(5), 1);
+        let rules = Rules::empty_for_tests();
+
+        let moves = get_legal_moves(&state, &rules);
+        assert!(moves.len() > 1, "must offer more than just Skip: {moves:?}");
         assert_all_moves_apply(&state, &moves, &rules);
     }
 
