@@ -96,7 +96,7 @@ pub fn apply_move(state: &GameState, mv: &Move, rules: &Rules) -> Result<GameSta
             apply_fulfill_achievement(&mut new_state, *achievement)?;
         }
 
-        Move::ChooseAnyGood { .. } => {
+        Move::ChooseAnyGood { .. } | Move::ChooseWarehouseTake { .. } | Move::DeclineWarehouseTake => {
             crate::game::choices::resolve_choice_move(&mut new_state, mv, rules)?;
         }
     }
@@ -594,12 +594,7 @@ fn apply_employment_agency(
     let mut th_cost = 0u32;
     for i in 0..trading_houses {
         let th_index = already_taken + i as usize;
-        th_cost += match th_index {
-            0 => 4,
-            1 => 5,
-            2 => 6,
-            _ => 7,
-        };
+        th_cost += TradingHouseState::take_cost(th_index);
     }
 
     let total_cost = shophouse_cost + th_cost; // Assistants are FREE
@@ -737,7 +732,7 @@ fn apply_build_shophouse(state: &mut GameState, slot: u8, rules: &Rules) -> Resu
     }
     p.shophouses.in_hand -= 1;
     p.shophouses.built.insert(area, slot);
-    apply_space_reward(state, player, &reward, mining_bonus);
+    apply_space_reward(state, player, &reward, mining_bonus, rules);
     state.player_mut(player).victory_points += gaslight_bonus;
 
     // Update building site
@@ -896,28 +891,16 @@ fn apply_mercenary(
     Ok(())
 }
 
-/// Applies Warehouse reward icons (order `warehouse_tokens`, space
-/// `warehouse_tokens`): moves up to `n` assistants from warehouse to hand
-/// (fewer if the warehouse runs out; never an error).
-///
-/// v1 simplification: the rulebook Warehouse icon (p.10) lets the player take
-/// any one token (assistant, shophouse, or trading house) from the Warehouse
-/// at Employment Agency cost. Assistants are the free option and taking one
-/// is weakly dominant, so v1 always takes assistants; shophouse/trading-house
-/// takes are unmodeled until Phase 2 choice encoding.
-pub fn apply_warehouse_takes(p: &mut PlayerState, n: u8) {
-    let take = n.min(p.assistants.in_warehouse);
-    p.assistants.in_warehouse -= take;
-    p.assistants.in_hand += take;
-}
-
 /// Applies a Shophouse space's full reward when a Shophouse is built there.
 /// `mining_bonus` is the caller-precomputed Mining Technology flat bonus (see
 /// `copper_bonus`) for the reward's EXPLICIT copper field only; any_good no
 /// longer auto-resolves to copper here -- it queues an `AnyGood` choice per
 /// icon instead (design 2026-07-18 §5.1/§5.3-2), which is its own separate
-/// receipt if later resolved to Copper (see `resolve_choice_move`).
-fn apply_space_reward(state: &mut GameState, player: PlayerId, reward: &SpaceReward, mining_bonus: u8) {
+/// receipt if later resolved to Copper (see `resolve_choice_move`). Likewise
+/// warehouse_tokens queues a `WarehouseTake` choice per icon (§5.2) instead
+/// of auto-taking an assistant -- both push through `push_choice` so a
+/// singleton option set (e.g. an empty warehouse) auto-resolves uniformly.
+fn apply_space_reward(state: &mut GameState, player: PlayerId, reward: &SpaceReward, mining_bonus: u8, rules: &Rules) {
     let p = state.player_mut(player);
     p.victory_points += reward.vp as u32;
     p.money += reward.yen as u32;
@@ -925,14 +908,16 @@ fn apply_space_reward(state: &mut GameState, player: PlayerId, reward: &SpaceRew
     p.tea += reward.tea as u32;
     p.silk += reward.silk as u32;
     p.copper += reward.copper as u32 + mining_bonus as u32;
-    apply_warehouse_takes(p, reward.warehouse_tokens);
     // Movement icon (rulebook p.10): documented no-op in v1. The icon grants
     // an optional assistant move the player may decline, and declining is a
     // legal play; v1 has no move encoding for that choice, and auto-resolving
     // it (e.g. recovering assistants to hand) could actively harm the player.
     // Choice encoding is scheduled for Phase 2.
+    for _ in 0..reward.warehouse_tokens {
+        push_choice(state, PendingChoice::WarehouseTake, rules);
+    }
     for _ in 0..reward.any_good {
-        state.pending_choices.push(PendingChoice::AnyGood);
+        push_choice(state, PendingChoice::AnyGood, rules);
     }
 }
 
@@ -991,8 +976,6 @@ fn apply_fulfill_order(
     p.tea += rewards.tea as u32;
     p.seafood += rewards.seafood as u32;
 
-    apply_warehouse_takes(p, rewards.warehouse_tokens);
-
     // Movement icon (rulebook p.10): documented no-op in v1. The icon grants
     // an optional assistant move the player may decline, and declining is a
     // legal play; v1 has no move encoding for that choice, and auto-resolving
@@ -1002,6 +985,11 @@ fn apply_fulfill_order(
     // Move order from hand to completed
     p.order_cards_in_hand.retain(|&id| id != order_id);
     p.completed_orders.push(order_id);
+
+    // Warehouse-token reward: one WarehouseTake choice per icon (design 2026-07-18 §5.2).
+    for _ in 0..rewards.warehouse_tokens {
+        push_choice(state, PendingChoice::WarehouseTake, rules);
+    }
 
     // Any-good reward: one AnyGood choice per icon (design 2026-07-18 §5.1).
     for _ in 0..rewards.any_trade_good {
@@ -2592,11 +2580,19 @@ mod tests {
 
         let result = apply_move(&state, &Move::FulfillOrder { order_id }, &rules);
         assert!(result.is_ok());
-        let new_state = result.unwrap();
+        let mid = result.unwrap();
+
+        // warehouse_tokens now queues a WarehouseTake choice instead of
+        // auto-taking (design §5.2) -- resolve it before checking the transfer.
+        assert_eq!(mid.pending_choices, vec![PendingChoice::WarehouseTake]);
+        let new_state = apply_move(
+            &mid, &Move::ChooseWarehouseTake { item: WarehouseItem::Assistant }, &rules,
+        ).unwrap();
 
         // 1 assistant moved warehouse -> hand
         assert_eq!(new_state.players[0].assistants.in_hand, initial_hand + 1);
         assert_eq!(new_state.players[0].assistants.in_warehouse, initial_warehouse - 1);
+        assert!(new_state.pending_choices.is_empty());
     }
 
     #[test]
@@ -2604,6 +2600,8 @@ mod tests {
         let mut state = create_minimal_state(2);
         state.turn_phase = TurnPhase::AdditionalActionFirst;
         state.players[0].assistants.in_warehouse = 0;
+        state.players[0].shophouses.in_warehouse = 0;
+        state.players[0].trading_houses.in_warehouse = 0;
 
         let order_id = OrderCardId(42);
         state.players[0].order_cards_in_hand.push(order_id);
@@ -2627,7 +2625,9 @@ mod tests {
         assert!(result.is_ok());
         let new_state = result.unwrap();
 
-        // Warehouse already empty: never an error, counts just stay put.
+        // Warehouse already empty: every take auto-declines (singleton rule,
+        // design §5.1), so nothing queues and nothing changes.
+        assert!(new_state.pending_choices.is_empty());
         assert_eq!(new_state.players[0].assistants.in_warehouse, 0);
         assert_eq!(new_state.players[0].assistants.in_hand, initial_hand);
     }
@@ -2850,15 +2850,21 @@ mod tests {
         assert!(result.is_ok());
         let mid = result.unwrap();
 
-        // any_good no longer auto-grants copper (design §5.3-2): it queues a
-        // choice instead. warehouse_tokens is unaffected -- it still takes
-        // immediately, since it isn't part of the choice queue.
-        assert_eq!(mid.pending_choices, vec![PendingChoice::AnyGood]);
+        // Neither reward auto-resolves anymore (design §5.1-5.2): both queue,
+        // warehouse-take first (matches the reward struct's push order).
+        assert_eq!(mid.pending_choices, vec![PendingChoice::WarehouseTake, PendingChoice::AnyGood]);
         assert_eq!(mid.players[0].copper, starting_copper);
-        assert_eq!(mid.players[0].assistants.in_hand, starting_hand + 1);
-        assert_eq!(mid.players[0].assistants.in_warehouse, starting_warehouse - 1);
+        assert_eq!(mid.players[0].assistants.in_hand, starting_hand);
+        assert_eq!(mid.players[0].assistants.in_warehouse, starting_warehouse);
 
-        let done = apply_move(&mid, &Move::ChooseAnyGood { good: TradeGood::Copper }, &rules).unwrap();
+        let after_wh = apply_move(
+            &mid, &Move::ChooseWarehouseTake { item: WarehouseItem::Assistant }, &rules,
+        ).unwrap();
+        assert_eq!(after_wh.pending_choices, vec![PendingChoice::AnyGood]);
+        assert_eq!(after_wh.players[0].assistants.in_hand, starting_hand + 1);
+        assert_eq!(after_wh.players[0].assistants.in_warehouse, starting_warehouse - 1);
+
+        let done = apply_move(&after_wh, &Move::ChooseAnyGood { good: TradeGood::Copper }, &rules).unwrap();
         assert_eq!(done.players[0].copper, starting_copper + 1);
         assert!(done.pending_choices.is_empty());
     }

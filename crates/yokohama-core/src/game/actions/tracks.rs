@@ -1,10 +1,10 @@
 //! Church and Customs track actions.
 
 use crate::types::{
-    AreaId, AreaType, ChurchSlot, ChurchTrack, CustomsSlot, CustomsTrack, GameState, PlayerId,
-    PlayerState, PresidentLocation,
+    AreaId, AreaType, ChurchSlot, ChurchTrack, CustomsSlot, CustomsTrack, GameState, PendingChoice,
+    PlayerId, PlayerState, PresidentLocation,
 };
-use crate::game::apply_move::apply_warehouse_takes;
+use crate::game::choices::push_choice;
 use crate::game::rules::Rules;
 use crate::game::tech_effects::{church_vp_bonus, customs_vp_bonus};
 
@@ -282,9 +282,10 @@ pub fn eligible_customs_space_for_cost(track: &CustomsTrack, cost: u8, player_co
 /// find the eligible space for the exact printed cost (auto-placing on the
 /// higher-VP/leftmost space of the matching pair), pay imported goods,
 /// lock the assistant, award VP (plus Brickyard bonus per owned copy), and
-/// apply the space's rider -- warehouse-takes and/or Yen, via the same
-/// Task 7b `apply_warehouse_takes` helper Church-adjacent reward code uses
-/// (no new reward machinery).
+/// apply the space's rider -- warehouse-takes and/or Yen. Warehouse-takes
+/// queue a `PendingChoice::WarehouseTake` per take via `push_choice`, the
+/// same mechanism order/space Warehouse-icon rewards use (design 2026-07-18
+/// §5.2; no new reward machinery).
 ///
 /// If the payment doesn't exactly match a printed cost, every space at
 /// that cost is occupied or blocked, or the player has no assistant in
@@ -336,7 +337,14 @@ pub fn execute_customs_action(
     p.customs_positions.push(target_space);
     p.victory_points += base_vp + brickyard_bonus;
     p.money += yen_rider as u32;
-    apply_warehouse_takes(p, warehouse_takes);
+
+    // Warehouse-take rider: one WarehouseTake choice per printed take
+    // (design 2026-07-18 §5.2) -- queues, or auto-resolves via the
+    // singleton rule (push_choice) if nothing in the warehouse is worth
+    // taking.
+    for _ in 0..warehouse_takes {
+        push_choice(state, PendingChoice::WarehouseTake, rules);
+    }
 
     Ok(())
 }
@@ -345,6 +353,7 @@ pub fn execute_customs_action(
 mod tests {
     use super::*;
     use crate::types::*;
+    use crate::game::apply_move::apply_move;
     use crate::game::cards::TechRegistry;
     use std::collections::BTreeMap;
 
@@ -870,16 +879,22 @@ mod tests {
         let mut state = create_test_state();
         place_president_at_customs(&mut state);
         state.players[0].imported_goods = 1;
-        state.players[0].assistants.in_warehouse = 3;
+        // Warehouse fully empty so space 1's +2-warehouse-takes rider
+        // auto-declines (push_choice singleton rule, design §5.1) instead of
+        // queuing -- rider queueing itself is covered by
+        // customs_space_one_rider_queues_two_warehouse_takes.
+        state.players[0].assistants.in_warehouse = 0;
+        state.players[0].shophouses.in_warehouse = 0;
+        state.players[0].trading_houses.in_warehouse = 0;
 
         // Power 3 (max 2), pay 1 -> cost pair {1,2}; space 1 is leftmost/default.
         let result = execute_customs_action(&mut state, PlayerId::new(0), 3, 1, &rules);
         assert!(result.is_ok());
 
         let p = &state.players[0];
-        assert_eq!(p.assistants.in_hand, 9); // 8 - 1 (placement) + 2 (warehouse-take rider)
+        assert_eq!(p.assistants.in_hand, 7); // 8 - 1 (placement); rider auto-declined
         assert_eq!(p.assistants.on_customs, 1);
-        assert_eq!(p.assistants.in_warehouse, 1); // 3 - 2
+        assert_eq!(p.assistants.in_warehouse, 0);
         assert_eq!(p.imported_goods, 0);
         assert_eq!(p.customs_positions, vec![1]);
         assert_eq!(p.victory_points, CustomsTrack::vp_reward(1) as u32);
@@ -887,6 +902,7 @@ mod tests {
             state.customs_track.slots[CustomsTrack::space_to_index(1).unwrap()].unwrap().player,
             PlayerId::new(0)
         );
+        assert!(state.pending_choices.is_empty());
     }
 
     #[test]
@@ -1006,9 +1022,8 @@ mod tests {
         // I3 final-review fix: rulebook p.14 - "place 1 Assistant pawn from
         // the Customs Area OR your hand." Uses power 5 / pay 3 -> space 5
         // (no rider), so the assertions below aren't muddied by space 1's
-        // +2-warehouse-takes rider (apply_warehouse_takes moves warehouse
-        // stock to HAND, which would otherwise mask the pawn-source bug
-        // this test targets).
+        // +2-warehouse-takes rider (a WarehouseTake choice per take, which
+        // would otherwise mask the pawn-source bug this test targets).
         let rules = Rules::empty_for_tests();
         let mut state = create_test_state();
         let area = place_president_at_customs(&mut state);
@@ -1155,13 +1170,18 @@ mod tests {
         place_president_at_customs(&mut state);
         state.players[0].imported_goods = 1;
         state.players[0].assistants.in_warehouse = 0;
+        state.players[0].shophouses.in_warehouse = 0;
+        state.players[0].trading_houses.in_warehouse = 0;
 
-        // Space 1's rider is +2 warehouse-takes; warehouse is empty.
+        // Space 1's rider is +2 warehouse-takes; the whole warehouse is
+        // empty, so both pushes auto-decline (singleton rule, design §5.1)
+        // rather than queuing a choice with nothing left to take.
         let result = execute_customs_action(&mut state, PlayerId::new(0), 3, 1, &rules);
         assert!(result.is_ok());
         let p = &state.players[0];
         assert_eq!(p.assistants.in_warehouse, 0);
-        assert_eq!(p.assistants.in_hand, 7); // only the -1 placement; rider tolerated 0 stock
+        assert_eq!(p.assistants.in_hand, 7); // only the -1 placement; rider auto-declined
+        assert!(state.pending_choices.is_empty());
     }
 
     #[test]
@@ -1215,5 +1235,30 @@ mod tests {
     fn test_power_above_five_capped() {
         assert_eq!(church_faith_from_power(6), 5);
         assert_eq!(customs_max_imported_goods(6), 4);
+    }
+
+    /// Customs action paying 1 import at power 3 -> cost pair {1,2}; space 1
+    /// wins as leftmost/higher-VP (proven unblocked by
+    /// `customs_action_places_assistant_and_awards_vp` in apply_move.rs),
+    /// carrying the +2-warehouse-takes rider. Player 0's default money (3)
+    /// and warehouse stock leave Assistant and Shophouse both affordable, so
+    /// `warehouse_take_options` returns more than Decline alone and the
+    /// rider's two pushes queue instead of auto-resolving.
+    fn customs_space1_fixture() -> (GameState, Rules) {
+        let rules = Rules::empty_for_tests();
+        let mut state = create_test_state();
+        place_president_at_customs(&mut state);
+        state.turn_phase = TurnPhase::AreaAction;
+        state.current_action_power = Some(3);
+        state.players[0].imported_goods = 1;
+        (state, rules)
+    }
+
+    #[test]
+    fn customs_space_one_rider_queues_two_warehouse_takes() {
+        // Customs action paying 1 import with only space 1 open -> inline place + 2 queued takes.
+        let (state, rules) = customs_space1_fixture();
+        let s = apply_move(&state, &Move::ExecuteAreaAction { action: AreaAction::Customs { imported_goods_paid: 1 } }, &rules).unwrap();
+        assert_eq!(s.pending_choices, vec![PendingChoice::WarehouseTake, PendingChoice::WarehouseTake]);
     }
 }

@@ -84,6 +84,31 @@ fn trade_good_name(g: TradeGood) -> &'static str {
     }
 }
 
+/// Plain-words article + name of a warehouse item, for
+/// `Move::ChooseWarehouseTake` (e.g. "an assistant", "a shophouse").
+fn warehouse_item_name(item: WarehouseItem) -> &'static str {
+    match item {
+        WarehouseItem::Assistant => "an assistant",
+        WarehouseItem::Shophouse => "a shophouse",
+        WarehouseItem::TradingHouse => "a trading house",
+    }
+}
+
+/// Yen cost of taking `item` from the warehouse right now, for describing
+/// `Move::ChooseWarehouseTake` -- assistants free, shophouses 2 Yen, trading
+/// houses at the printed take progression indexed by tokens already out of
+/// the warehouse (mirrors `warehouse_take_options`'s own pricing).
+fn warehouse_item_cost(p: &PlayerState, item: WarehouseItem) -> u32 {
+    match item {
+        WarehouseItem::Assistant => 0,
+        WarehouseItem::Shophouse => 2,
+        WarehouseItem::TradingHouse => {
+            let already = p.trading_houses.in_hand as usize + p.trading_houses.total_built();
+            TradingHouseState::take_cost(already)
+        }
+    }
+}
+
 /// Plain-words trade text for a single Chinatown exchange.
 fn chinatown_exchange_text(exchange: ChinatownExchange) -> &'static str {
     match exchange {
@@ -248,6 +273,12 @@ pub fn describe_move(mv: &Move, state: &GameState, rules: &Rules) -> String {
         Move::BuildTradingHouse => "Build a Trading House".to_string(),
         Move::SkipBuilding => "Skip building".to_string(),
         Move::ChooseAnyGood { good } => format!("Take 1 {} (any-good reward)", trade_good_name(*good)),
+        Move::ChooseWarehouseTake { item } => {
+            let cost = warehouse_item_cost(state.current_player(), *item);
+            let cost_text = if cost == 0 { "free".to_string() } else { format!("{cost} yen") };
+            format!("Take {} from the warehouse ({cost_text})", warehouse_item_name(*item))
+        }
+        Move::DeclineWarehouseTake => "Decline the warehouse take".to_string(),
     }
 }
 
@@ -304,6 +335,26 @@ mod tests {
             &rules,
         );
         assert!(ch.contains("1 copper -> 2 yen"), "{ch}");
+    }
+
+    #[test]
+    fn warehouse_take_moves_read_as_plain_words() {
+        // Fresh game: no trading houses out yet, so the first take is 4 yen.
+        let state = state_2p();
+        let rules = Rules::standard();
+        assert_eq!(
+            describe_move(&Move::ChooseWarehouseTake { item: WarehouseItem::Assistant }, &state, &rules),
+            "Take an assistant from the warehouse (free)"
+        );
+        assert_eq!(
+            describe_move(&Move::ChooseWarehouseTake { item: WarehouseItem::Shophouse }, &state, &rules),
+            "Take a shophouse from the warehouse (2 yen)"
+        );
+        assert_eq!(
+            describe_move(&Move::ChooseWarehouseTake { item: WarehouseItem::TradingHouse }, &state, &rules),
+            "Take a trading house from the warehouse (4 yen)"
+        );
+        assert_eq!(describe_move(&Move::DeclineWarehouseTake, &state, &rules), "Decline the warehouse take");
     }
 
     #[test]

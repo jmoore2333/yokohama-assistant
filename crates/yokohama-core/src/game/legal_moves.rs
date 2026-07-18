@@ -632,12 +632,7 @@ fn generate_employment_agency_actions(state: &GameState, player: PlayerId, power
                 let mut th_cost = 0u32;
                 for i in 0..t {
                     let th_index = already_taken + i as usize;
-                    th_cost += match th_index {
-                        0 => 4,
-                        1 => 5,
-                        2 => 6,
-                        _ => 7,
-                    };
+                    th_cost += TradingHouseState::take_cost(th_index);
                 }
 
                 if p.money < shophouse_cost + th_cost {

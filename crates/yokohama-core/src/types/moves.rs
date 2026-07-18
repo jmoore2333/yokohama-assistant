@@ -3,7 +3,7 @@
 use serde::{Deserialize, Serialize};
 
 use crate::types::{
-    AchievementType, AreaId, Country, OrderCardId, TechCardId, TradeGood,
+    AchievementType, AreaId, Country, OrderCardId, TechCardId, TradeGood, WarehouseItem,
 };
 
 /// Turn phases in order of execution.
@@ -100,6 +100,8 @@ pub enum Move {
     // Choice resolutions (design 2026-07-18): legal only while the matching
     // PendingChoice heads GameState::pending_choices.
     ChooseAnyGood { good: TradeGood },
+    ChooseWarehouseTake { item: WarehouseItem },
+    DeclineWarehouseTake,
 }
 
 /// Specific area actions.

@@ -113,17 +113,17 @@ impl TradingHouseState {
         }
     }
 
+    /// Printed Employment-Agency take progression, indexed by tokens already
+    /// out of the warehouse (hand + built). SINGLE SOURCE (design §5.2).
+    pub fn take_cost(already_taken: usize) -> u32 {
+        match already_taken { 0 => 4, 1 => 5, 2 => 6, _ => 7 }
+    }
+
     /// Employment Agency cost of the NEXT trading house taken from the
     /// warehouse: the printed 4/5/6/7 progression, indexed by how many
     /// tokens have already left the warehouse (in hand + built).
     pub fn next_cost(&self) -> u8 {
-        match self.in_hand as usize + self.built.len() {
-            0 => 4,
-            1 => 5,
-            2 => 6,
-            3 => 7,
-            _ => 0, // No more available
-        }
+        Self::take_cost(self.in_hand as usize + self.built.len()) as u8
     }
 
     pub fn total_built(&self) -> usize {
