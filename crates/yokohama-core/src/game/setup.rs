@@ -975,4 +975,50 @@ mod tests {
         };
         assert!(reconcile_setup(pending, &obs, &rules).is_err());
     }
+
+    #[test]
+    fn reconcile_board_2p_no_canal_keeps_all_tokens_and_empty_crossings() {
+        let rules = Rules::standard();
+        let pending = new_game(GameConfig::for_player_count(2), &rules, 123).unwrap();
+        // 2p never has a Canal tile (tiles_for_player_count strips it).
+        let (rows, cols) = crate::game::board_gen::grid_dimensions(2);
+        let n = (rows * cols) as usize;
+        let mut tiles: Vec<AreaType> = (0..n)
+            .map(|i| pending.state.board_layout.areas[&AreaId::new(i as u8)].area_type)
+            .collect();
+        assert!(!tiles.contains(&AreaType::Canal));
+        tiles.reverse(); // a valid re-permutation (all 2p games share this tile multiset)
+        // Every cell carries a distinct site (no Canal to skip).
+        let sites: Vec<Option<u8>> = (0..n as u8).map(Some).collect();
+        let obs = SetupObservations {
+            board: Some(ObservedBoard { tiles: tiles.clone(), sites: sites.clone() }),
+            ..Default::default()
+        };
+        let r = reconcile_setup(pending, &obs, &rules).unwrap();
+        let layout = &r.state.board_layout;
+        // (c) Types permuted as observed; grid positions unchanged (row-major (2,5) grid).
+        for i in 0..n {
+            let id = AreaId::new(i as u8);
+            assert_eq!(layout.areas[&id].area_type, tiles[i]);
+            assert_eq!(layout.areas[&id].grid_position, ((i / cols as usize) as u8, (i % cols as usize) as u8));
+        }
+        // (d) Sites follow the observed assignment (every cell, since there's no Canal).
+        for i in 0..n {
+            let id = AreaId::new(i as u8);
+            let s = sites[i].expect("no Canal in a 2p board, so every cell has a site");
+            let expected = &rules.building_sites[s as usize];
+            let got = &layout.building_sites[&id];
+            assert_eq!(got.spaces, expected.spaces);
+            assert_eq!(got.trading_house_reward, expected.trading_house_reward);
+            assert_eq!(got.shophouses_built, [None; 4]);
+            assert_eq!(got.trading_house_owner, None);
+        }
+        // (b) Full token reindex: all 10 cells get a token, all unclaimed.
+        assert_eq!(layout.five_power_tokens.len(), 10);
+        assert_eq!(n, 10);
+        assert!(layout.five_power_tokens.values().all(|t| t.is_some()));
+        // (a) No Canal cell exists, so the `if let Some(ci)` branch in
+        // reconcile_board is never taken — crossings stay empty.
+        assert!(layout.canal_crossings.is_empty());
+    }
 }
