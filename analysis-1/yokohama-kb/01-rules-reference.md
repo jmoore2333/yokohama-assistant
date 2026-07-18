@@ -592,8 +592,8 @@ Highest VP wins. Tiebreaker: Closest to Start Player (clockwise).
 ### Production Technologies
 
 **Mining Technology** (Industry 3)
-- When receiving Copper: +1 additional Copper
-- Applies to: Copper Mine, Chinatown, 5-Power tokens, Building Site rewards
+- When receiving Copper: +1 additional Copper (per gain event, not per Copper)
+- Applies to EVERY Copper receipt — verified card text (08-tech-cards.yaml): "Whenever you gain one or more Copper: gain 1 additional Copper". CORRECTED 2026-07-18: this line previously enumerated only "Copper Mine, Chinatown, 5-Power tokens, Building Site rewards" — an incomplete derivation; Order-card copper rewards and any-good icons resolved to Copper also qualify (decision log 2026-07-18)
 
 **Spinning Mill** (Industry 4)
 - Once per turn: Discard 1 Raw Silk → Gain 2 Yen
