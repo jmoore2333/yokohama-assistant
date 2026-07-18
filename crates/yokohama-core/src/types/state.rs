@@ -316,6 +316,40 @@ impl GameState {
         Ok(())
     }
 
+    /// Arrange the order deck so the next `cards.len()` draws (`Vec::pop`) yield
+    /// `cards` in order. Every named card must currently be in `order_deck`
+    /// (the removed pile does not count — arrangement only serves future draws);
+    /// the list must be duplicate-free. No mutation on error. Relative order of
+    /// all unnamed cards is preserved.
+    pub fn arrange_orders_on_top(&mut self, cards: &[OrderCardId]) -> Result<(), crate::types::MoveError> {
+        for (i, c) in cards.iter().enumerate() {
+            if cards[..i].contains(c) {
+                return Err(crate::types::MoveError::RuleViolation("duplicate card in deck arrangement"));
+            }
+        }
+        if !cards.iter().all(|c| self.order_deck.contains(c)) {
+            return Err(crate::types::MoveError::CardNotFound);
+        }
+        self.order_deck.retain(|id| !cards.contains(id));
+        self.order_deck.extend(cards.iter().rev());
+        Ok(())
+    }
+
+    /// Tech-deck analog of `arrange_orders_on_top`, same contract.
+    pub fn arrange_techs_on_top(&mut self, cards: &[TechCardId]) -> Result<(), crate::types::MoveError> {
+        for (i, c) in cards.iter().enumerate() {
+            if cards[..i].contains(c) {
+                return Err(crate::types::MoveError::RuleViolation("duplicate card in deck arrangement"));
+            }
+        }
+        if !cards.iter().all(|c| self.tech_deck.contains(c)) {
+            return Err(crate::types::MoveError::CardNotFound);
+        }
+        self.tech_deck.retain(|id| !cards.contains(id));
+        self.tech_deck.extend(cards.iter().rev());
+        Ok(())
+    }
+
     /// Extract an order card from the deck or removed pile.
     /// Searches `self.order_deck` first, then `self.orders_removed` if not found.
     /// Removes the card from whichever pile contains it.
@@ -391,5 +425,44 @@ mod tests {
 
         // Error if in neither
         assert!(state.extract_order_from_deck(OrderCardId(99)).is_err());
+    }
+
+    #[test]
+    fn arrange_orders_on_top_sets_pop_order_and_preserves_rest() {
+        let mut state = create_test_game_state(2);
+        state.order_deck = vec![OrderCardId(1), OrderCardId(2), OrderCardId(3), OrderCardId(4), OrderCardId(5)];
+        state.arrange_orders_on_top(&[OrderCardId(2), OrderCardId(4)]).unwrap();
+        // Next pops must yield 2 then 4; untouched cards keep relative order 1,3,5.
+        assert_eq!(state.order_deck, vec![OrderCardId(1), OrderCardId(3), OrderCardId(5), OrderCardId(4), OrderCardId(2)]);
+        assert_eq!(state.order_deck.pop(), Some(OrderCardId(2)));
+        assert_eq!(state.order_deck.pop(), Some(OrderCardId(4)));
+    }
+
+    #[test]
+    fn arrange_orders_on_top_rejects_missing_and_duplicate_without_mutation() {
+        let mut state = create_test_game_state(2);
+        state.order_deck = vec![OrderCardId(1), OrderCardId(2)];
+        state.orders_removed = vec![OrderCardId(9)];
+        let before = state.order_deck.clone();
+        // 9 is in orders_removed, not the deck: arrangement only serves future DRAWS.
+        assert_eq!(state.arrange_orders_on_top(&[OrderCardId(9)]), Err(crate::types::MoveError::CardNotFound));
+        assert_eq!(state.order_deck, before);
+        assert!(matches!(
+            state.arrange_orders_on_top(&[OrderCardId(1), OrderCardId(1)]),
+            Err(crate::types::MoveError::RuleViolation(_))
+        ));
+        assert_eq!(state.order_deck, before);
+        assert!(state.arrange_orders_on_top(&[]).is_ok());
+        assert_eq!(state.order_deck, before);
+    }
+
+    #[test]
+    fn arrange_techs_on_top_sets_pop_order() {
+        let mut state = create_test_game_state(2);
+        state.tech_deck = vec![TechCardId(1), TechCardId(2), TechCardId(3)];
+        state.arrange_techs_on_top(&[TechCardId(1)]).unwrap();
+        assert_eq!(state.tech_deck.pop(), Some(TechCardId(1)));
+        assert_eq!(state.tech_deck, vec![TechCardId(2), TechCardId(3)]);
+        assert_eq!(state.arrange_techs_on_top(&[TechCardId(9)]), Err(crate::types::MoveError::CardNotFound));
     }
 }
