@@ -373,6 +373,29 @@ impl GameState {
 
         Err(crate::types::MoveError::CardNotFound)
     }
+
+    /// Make a live-tracked opponent's hidden starting order public: pull `card`
+    /// out of the deck-or-removed fiction (`extract_order_from_deck`) and into
+    /// that player's hand as their revealed starting order.
+    ///
+    /// Deliberately performs no hand-limit check: tracking must never reject
+    /// physical reality, and `check_invariants`' standing hand<=3 rule already
+    /// flags the physically-impossible case loudly (design 2026-07-18, Q12).
+    pub fn reveal_starting_order(&mut self, player: PlayerId, card: OrderCardId) -> Result<(), crate::types::MoveError> {
+        let idx = player.0 as usize;
+        if idx >= self.players.len() {
+            return Err(crate::types::MoveError::RuleViolation("no such player"));
+        }
+        if !self.players[idx].starting_order_hidden {
+            return Err(crate::types::MoveError::RuleViolation("starting order is not hidden for this player"));
+        }
+        self.extract_order_from_deck(card)?;
+        let p = &mut self.players[idx];
+        p.order_cards_in_hand.push(card);
+        p.starting_order = Some(card);
+        p.starting_order_hidden = false;
+        Ok(())
+    }
 }
 
 #[cfg(test)]
@@ -464,5 +487,36 @@ mod tests {
         assert_eq!(state.tech_deck.pop(), Some(TechCardId(1)));
         assert_eq!(state.tech_deck, vec![TechCardId(2), TechCardId(3)]);
         assert_eq!(state.arrange_techs_on_top(&[TechCardId(9)]), Err(crate::types::MoveError::CardNotFound));
+    }
+
+    #[test]
+    fn reveal_starting_order_pulls_from_removed_pile_into_hand() {
+        let mut state = create_test_game_state(2);
+        state.players[1].starting_order_hidden = true;
+        state.orders_removed = vec![OrderCardId(7), OrderCardId(8)];
+        state.reveal_starting_order(PlayerId::new(1), OrderCardId(8)).unwrap();
+        assert_eq!(state.players[1].order_cards_in_hand, vec![OrderCardId(8)]);
+        assert_eq!(state.players[1].starting_order, Some(OrderCardId(8)));
+        assert!(!state.players[1].starting_order_hidden);
+        assert_eq!(state.orders_removed, vec![OrderCardId(7)]);
+    }
+
+    #[test]
+    fn reveal_starting_order_requires_hidden_flag_and_findable_card() {
+        let mut state = create_test_game_state(2);
+        state.orders_removed = vec![OrderCardId(7)];
+        // Not hidden -> RuleViolation, nothing moves.
+        assert!(matches!(
+            state.reveal_starting_order(PlayerId::new(0), OrderCardId(7)),
+            Err(crate::types::MoveError::RuleViolation(_))
+        ));
+        assert!(state.players[0].order_cards_in_hand.is_empty());
+        // Hidden but card nowhere -> CardNotFound, flag stays set.
+        state.players[1].starting_order_hidden = true;
+        assert_eq!(
+            state.reveal_starting_order(PlayerId::new(1), OrderCardId(99)),
+            Err(crate::types::MoveError::CardNotFound)
+        );
+        assert!(state.players[1].starting_order_hidden);
     }
 }
