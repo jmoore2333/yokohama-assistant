@@ -2,3 +2,4 @@
 //! (design docs/plans/2026-07-18-phase2-cli-driver-design.md).
 
 pub mod describe;
+pub mod render;
