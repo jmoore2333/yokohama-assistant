@@ -565,7 +565,7 @@ fn recovery_without_telephone_stays_automatic() {
 
 ### Task 9: Canal topology (final-review I4, in-phase)
 
-**PRE-DISPATCH (ORCHESTRATOR-DIRECT):** the crossing geometry is OWNER-ADJUDICATED — Jeremy's box finding (2026-07-18): **diagonal crossings exist and validity is layout-dependent** ("only valid to take a direction to a tile it can get to"), so the straight-across-only model is wrong. Obtain Jeremy's exact pair rule (which of the canal cell's orthogonal/diagonal neighbors connect across it) BEFORE dispatch, write the decision-log row, paste it verbatim into the dispatch, and rewrite Step 1's `canal_flanking_areas_are_adjacent_and_marked_as_crossings` expected-pair derivation to match. Also confirm in the same ruling: 1 Yen per crossing (each crossing in a path pays) and the toll goes to the bank.
+**PRE-DISPATCH RULING (OWNER-ADJUDICATED, Jeremy 2026-07-18 — RESOLVED, paste verbatim into the dispatch):** crossing = passing through the Canal tile along any of the four colinear lines, INCLUDING the two diagonals. For the Canal cell at grid (r,c), the crossing pairs are: ((r,c-1),(r,c+1)) horizontal, ((r-1,c),(r+1,c)) vertical, ((r-1,c-1),(r+1,c+1)) and ((r-1,c+1),(r+1,c-1)) diagonals — each pair only where BOTH cells exist and hold non-Canal areas ("depends on the board layout": a 2-row 3p grid yields only the horizontal pair; the 3-row 4p grid can yield all four). 1 Yen per crossing, each crossing in a path pays, toll to the bank. Decision-log row is written; the orchestrator re-derives Step 1's expected pairs for the seeded test layout from this rule during dispatch.
 
 **Files:**
 - Modify: `game/board_gen.rs` (shared `derive_canal_crossings`, adjacency edges), `game/setup.rs` (reconcile_board uses the shared fn), `game/movement.rs` (`calculate_movement_cost_full` start-edge fix)
@@ -625,7 +625,7 @@ fn two_player_boards_unchanged() {
 
 Plus a reconcile test: re-typing a 3p board through `reconcile_setup` yields crossings/adjacency identical to generating that layout directly (extend `tests/live_reconciliation.rs`).
 - [ ] **Step 2: RED**. Paste.
-- [ ] **Step 3: Implement**: extract the shared derivation; the crossing pair rule comes VERBATIM from the pre-dispatch owner ruling (see above — do not assume straight-across-only); add each derived pair to the adjacency builder (bidirectional) AND to `canal_crossings`. In `calculate_movement_cost_full`, scan crossings over `[start] ++ path` consecutive pairs instead of `path.windows(2)` alone (the mover's current area is the start — thread it in the same way the president-fee component gets it). Keep tolls uncredited (bank).
+- [ ] **Step 3: Implement**: extract the shared derivation implementing the colinear-lines rule above (4 candidate pairs, existence-filtered); add each derived pair to the adjacency builder (bidirectional) AND to `canal_crossings`. In `calculate_movement_cost_full`, scan crossings over `[start] ++ path` consecutive pairs instead of `path.windows(2)` alone (the mover's current area is the start — thread it in the same way the president-fee component gets it). Keep tolls uncredited (bank).
 - [ ] **Step 4: GREEN** + suites + zero warnings + `cargo test -p yokohama-core --test fuzz_full_games` (non-ignored smoke — movement enumeration grew at 3-4p).
 - [ ] **Step 5: Commit**: `fix: Canal is crossable — flanking adjacency + toll incl. first step (I4, design §5.6)`
 
