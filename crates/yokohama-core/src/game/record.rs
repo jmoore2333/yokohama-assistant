@@ -16,7 +16,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::game::apply_move::apply_move;
 use crate::game::rules::Rules;
-use crate::game::setup::{finalize_setup, new_game, StartingOrderChoice};
+use crate::game::setup::{finalize_setup, new_game, reconcile_setup, SetupObservations, StartingOrderChoice};
 use crate::types::{AreaId, FivePowerEffect, GameConfig, GameState, Move, MoveError, OrderCardId, PlayerId, TechCardId};
 
 /// One entry in a `GameRecord`'s event log. `Move` is ordinary play; the
@@ -54,6 +54,10 @@ pub struct GameRecord {
     pub choices: Vec<StartingOrderChoice>,
     /// Every event applied after setup, in order — moves plus live-reveal reconciliations
     pub events: Vec<RecordedEvent>,
+    /// Live-tracked games: physical-table observations reconciled into the
+    /// seeded PendingSetup before finalize_setup. None = pure simulation.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub setup_observations: Option<SetupObservations>,
 }
 
 impl GameRecord {
@@ -68,6 +72,7 @@ impl GameRecord {
             config,
             choices,
             events: Vec::new(),
+            setup_observations: None,
         }
     }
 
@@ -109,7 +114,10 @@ pub fn replay(record: &GameRecord, rules: &Rules) -> Result<GameState, MoveError
         );
     }
 
-    let pending = new_game(record.config.clone(), rules, record.seed).map_err(MoveError::RuleViolation)?;
+    let mut pending = new_game(record.config.clone(), rules, record.seed).map_err(MoveError::RuleViolation)?;
+    if let Some(obs) = &record.setup_observations {
+        pending = reconcile_setup(pending, obs, rules).map_err(MoveError::RuleViolation)?;
+    }
     let mut state = finalize_setup(pending, &record.choices).map_err(MoveError::RuleViolation)?;
     for ev in &record.events {
         state = match ev {
@@ -176,5 +184,22 @@ mod tests {
         record.push_event(RecordedEvent::RevealOrders(vec![expected_top]));
         let state = replay(&record, &rules).unwrap();
         assert_eq!(state.order_deck.last(), Some(&expected_top));
+    }
+
+    #[test]
+    fn replay_applies_setup_observations() {
+        let rules = Rules::standard();
+        let config = GameConfig::for_player_count(2);
+        let table = crate::game::setup::new_game(config.clone(), &rules, 99).unwrap();
+        let obs = crate::game::setup::SetupObservations {
+            port_a: Some(std::array::from_fn(|i| table.state.port_state.port_a.slots[i].unwrap())),
+            ..Default::default()
+        };
+        let mut record = GameRecord::new(11, config, vec![StartingOrderChoice::Keep(0), StartingOrderChoice::Keep(0)]);
+        record.setup_observations = Some(obs.clone());
+        let state = replay(&record, &rules).unwrap();
+        for i in 0..6 {
+            assert_eq!(state.port_state.port_a.slots[i], Some(obs.port_a.unwrap()[i]));
+        }
     }
 }

@@ -202,6 +202,248 @@ pub fn finalize_setup(
     Ok(state)
 }
 
+/// Physical-table observations to reconcile into a seeded `PendingSetup`
+/// before `finalize_setup` (design 2026-07-18 §5.2). All fields optional so
+/// partial observation works; the live wizard fills everything observable.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SetupObservations {
+    pub board: Option<ObservedBoard>,
+    pub achievements: Option<[AchievementType; 3]>,
+    pub port_a: Option<[OrderCardId; 6]>,
+    pub port_b: Option<[OrderCardId; 6]>,
+    pub lab_a: Option<[TechCardId; 6]>,
+    pub lab_b: Option<[TechCardId; 6]>,
+    /// Observed two-card deals — normally only the tracker's own seat.
+    pub deals: Vec<(PlayerId, [OrderCardId; 2])>,
+}
+
+/// Observed physical board arrangement (handled in reconcile_setup's board
+/// pass): area tile per grid cell and building-site card per grid cell,
+/// row-major over `board_gen::grid_dimensions`. `sites` is None exactly
+/// where the tile carries no site (Canal).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ObservedBoard {
+    pub tiles: Vec<crate::types::AreaType>,
+    pub sites: Vec<Option<u8>>,
+}
+
+/// Every place an order card can sit inside a PendingSetup.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum OrderLoc {
+    Deck(usize),
+    Removed(usize),
+    PortA(usize),
+    PortB(usize),
+    Deal { player: usize, slot: usize },
+}
+
+fn get_order(p: &PendingSetup, loc: OrderLoc) -> OrderCardId {
+    match loc {
+        OrderLoc::Deck(i) => p.state.order_deck[i],
+        OrderLoc::Removed(i) => p.state.orders_removed[i],
+        OrderLoc::PortA(i) => p.state.port_state.port_a.slots[i].expect("setup port slot occupied"),
+        OrderLoc::PortB(i) => p.state.port_state.port_b.as_ref().expect("port B present").slots[i].expect("setup port slot occupied"),
+        OrderLoc::Deal { player, slot } => p.deals[player][slot],
+    }
+}
+
+fn set_order(p: &mut PendingSetup, loc: OrderLoc, card: OrderCardId) {
+    match loc {
+        OrderLoc::Deck(i) => p.state.order_deck[i] = card,
+        OrderLoc::Removed(i) => p.state.orders_removed[i] = card,
+        OrderLoc::PortA(i) => p.state.port_state.port_a.slots[i] = Some(card),
+        OrderLoc::PortB(i) => p.state.port_state.port_b.as_mut().expect("port B present").slots[i] = Some(card),
+        OrderLoc::Deal { player, slot } => p.deals[player][slot] = card,
+    }
+}
+
+fn locate_order(p: &PendingSetup, card: OrderCardId) -> Option<OrderLoc> {
+    if let Some(i) = p.state.order_deck.iter().position(|&c| c == card) {
+        return Some(OrderLoc::Deck(i));
+    }
+    if let Some(i) = p.state.orders_removed.iter().position(|&c| c == card) {
+        return Some(OrderLoc::Removed(i));
+    }
+    if let Some(i) = p.state.port_state.port_a.slots.iter().position(|&s| s == Some(card)) {
+        return Some(OrderLoc::PortA(i));
+    }
+    if let Some(b) = &p.state.port_state.port_b {
+        if let Some(i) = b.slots.iter().position(|&s| s == Some(card)) {
+            return Some(OrderLoc::PortB(i));
+        }
+    }
+    for (player, deal) in p.deals.iter().enumerate() {
+        for slot in 0..2 {
+            if deal[slot] == card {
+                return Some(OrderLoc::Deal { player, slot });
+            }
+        }
+    }
+    None
+}
+
+/// Swap `card` into `dest` from wherever it currently sits. No-op if already there.
+fn place_order(p: &mut PendingSetup, dest: OrderLoc, card: OrderCardId) -> Result<(), &'static str> {
+    let src = locate_order(p, card).ok_or("observed order card not present anywhere in this setup")?;
+    if src == dest {
+        return Ok(());
+    }
+    let displaced = get_order(p, dest);
+    set_order(p, dest, card);
+    set_order(p, src, displaced);
+    Ok(())
+}
+
+/// Every place a tech card can sit inside a PendingSetup.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum TechLoc {
+    Deck(usize),
+    LabA(usize),
+    LabB(usize),
+}
+
+fn get_tech(p: &PendingSetup, loc: TechLoc) -> TechCardId {
+    match loc {
+        TechLoc::Deck(i) => p.state.tech_deck[i],
+        TechLoc::LabA(i) => p.state.lab_state.lab_a.slots[i].expect("setup lab slot occupied"),
+        TechLoc::LabB(i) => p.state.lab_state.lab_b.as_ref().expect("lab B present").slots[i].expect("setup lab slot occupied"),
+    }
+}
+
+fn set_tech(p: &mut PendingSetup, loc: TechLoc, card: TechCardId) {
+    match loc {
+        TechLoc::Deck(i) => p.state.tech_deck[i] = card,
+        TechLoc::LabA(i) => p.state.lab_state.lab_a.slots[i] = Some(card),
+        TechLoc::LabB(i) => p.state.lab_state.lab_b.as_mut().expect("lab B present").slots[i] = Some(card),
+    }
+}
+
+fn locate_tech(p: &PendingSetup, card: TechCardId) -> Option<TechLoc> {
+    if let Some(i) = p.state.tech_deck.iter().position(|&c| c == card) {
+        return Some(TechLoc::Deck(i));
+    }
+    if let Some(i) = p.state.lab_state.lab_a.slots.iter().position(|&s| s == Some(card)) {
+        return Some(TechLoc::LabA(i));
+    }
+    if let Some(b) = &p.state.lab_state.lab_b {
+        if let Some(i) = b.slots.iter().position(|&s| s == Some(card)) {
+            return Some(TechLoc::LabB(i));
+        }
+    }
+    None
+}
+
+/// Swap `card` into `dest` from wherever it currently sits. No-op if already there.
+fn place_tech(p: &mut PendingSetup, dest: TechLoc, card: TechCardId) -> Result<(), &'static str> {
+    let src = locate_tech(p, card).ok_or("observed tech card not present anywhere in this setup")?;
+    if src == dest {
+        return Ok(());
+    }
+    let displaced = get_tech(p, dest);
+    set_tech(p, dest, card);
+    set_tech(p, src, displaced);
+    Ok(())
+}
+
+/// Reconcile physical-table observations into a seeded PendingSetup by
+/// swapping observed cards into their observed zones (conservation by
+/// exchange), replacing achievements, and (board pass) re-typing the grid.
+/// Pure and deterministic; called by `replay` when a record carries
+/// observations, and by the live wizard.
+pub fn reconcile_setup(
+    mut pending: PendingSetup,
+    obs: &SetupObservations,
+    rules: &Rules,
+) -> Result<PendingSetup, &'static str> {
+    // --- validation ---
+    if obs.port_b.is_some() && pending.state.port_state.port_b.is_none() {
+        return Err("port B observed but not in play at this player count");
+    }
+    if obs.lab_b.is_some() && pending.state.lab_state.lab_b.is_none() {
+        return Err("lab B observed but not in play at this player count");
+    }
+    let mut seen_orders = std::collections::BTreeSet::new();
+    let observed_orders: Vec<OrderCardId> = obs
+        .port_a.iter().flatten().copied()
+        .chain(obs.port_b.iter().flatten().copied())
+        .chain(obs.deals.iter().flat_map(|(_, d)| d.iter().copied()))
+        .collect();
+    for c in &observed_orders {
+        if rules.orders.get(*c).is_none() {
+            return Err("observed order card id not in the registry");
+        }
+        if !seen_orders.insert(c.0) {
+            return Err("duplicate order card across observations");
+        }
+    }
+    let mut seen_techs = std::collections::BTreeSet::new();
+    let observed_techs: Vec<TechCardId> =
+        obs.lab_a.iter().flatten().copied().chain(obs.lab_b.iter().flatten().copied()).collect();
+    for c in &observed_techs {
+        if rules.techs.get(*c).is_none() {
+            return Err("observed tech card id not in the registry");
+        }
+        if !seen_techs.insert(c.0) {
+            return Err("duplicate tech card across observations");
+        }
+    }
+    let mut seen_players = std::collections::BTreeSet::new();
+    for (pid, _) in &obs.deals {
+        if pid.0 as usize >= pending.deals.len() {
+            return Err("observed deal for a player not in this game");
+        }
+        if !seen_players.insert(pid.0) {
+            return Err("duplicate player in observed deals");
+        }
+    }
+    if let Some(board) = &obs.board {
+        reconcile_board(&mut pending, board, rules)?; // Task 6; stub errors until then
+    }
+    if let Some(ach) = &obs.achievements {
+        pending.state.achievements = [
+            AchievementCard::new(ach[0]),
+            AchievementCard::new(ach[1]),
+            AchievementCard::new(ach[2]),
+        ];
+    }
+    // --- swaps, fixed order ---
+    if let Some(cards) = &obs.port_a {
+        for (i, c) in cards.iter().enumerate() {
+            place_order(&mut pending, OrderLoc::PortA(i), *c)?;
+        }
+    }
+    if let Some(cards) = &obs.port_b {
+        for (i, c) in cards.iter().enumerate() {
+            place_order(&mut pending, OrderLoc::PortB(i), *c)?;
+        }
+    }
+    for (pid, deal) in &obs.deals {
+        for slot in 0..2 {
+            place_order(&mut pending, OrderLoc::Deal { player: pid.0 as usize, slot }, deal[slot])?;
+        }
+    }
+    if let Some(cards) = &obs.lab_a {
+        for (i, c) in cards.iter().enumerate() {
+            place_tech(&mut pending, TechLoc::LabA(i), *c)?;
+        }
+    }
+    if let Some(cards) = &obs.lab_b {
+        for (i, c) in cards.iter().enumerate() {
+            place_tech(&mut pending, TechLoc::LabB(i), *c)?;
+        }
+    }
+    Ok(pending)
+}
+
+/// Board pass — implemented in the next task.
+fn reconcile_board(
+    _pending: &mut PendingSetup,
+    _board: &ObservedBoard,
+    _rules: &Rules,
+) -> Result<(), &'static str> {
+    Err("board observations not yet supported")
+}
+
 /// Validate that a GameState is consistent with its GameConfig.
 /// Returns Ok(()) if valid, or an error message describing the inconsistency.
 pub fn validate_game_state_consistency(state: &GameState) -> Result<(), &'static str> {
@@ -504,5 +746,75 @@ mod tests {
         assert!(state.players[1].order_cards_in_hand.is_empty());
         assert!(state.players[1].starting_order_hidden);
         assert!(state.orders_removed.contains(&deals[1][0]) && state.orders_removed.contains(&deals[1][1]));
+    }
+
+    fn order_multiset(p: &PendingSetup) -> std::collections::BTreeMap<u8, usize> {
+        let mut m = std::collections::BTreeMap::new();
+        let mut add = |id: OrderCardId| *m.entry(id.0).or_insert(0) += 1;
+        p.state.order_deck.iter().copied().for_each(&mut add);
+        p.state.orders_removed.iter().copied().for_each(&mut add);
+        p.state.port_state.port_a.slots.iter().flatten().copied().for_each(&mut add);
+        if let Some(b) = &p.state.port_state.port_b {
+            b.slots.iter().flatten().copied().for_each(&mut add);
+        }
+        p.deals.iter().flat_map(|d| d.iter()).copied().for_each(&mut add);
+        m
+    }
+
+    #[test]
+    fn reconcile_setup_makes_observed_zones_match_and_conserves_cards() {
+        let rules = Rules::standard();
+        // Two different seeds play the role of "engine fiction" vs "physical table".
+        let pending = new_game(GameConfig::for_player_count(2), &rules, 11).unwrap();
+        let table = new_game(GameConfig::for_player_count(2), &rules, 99).unwrap();
+        let obs = SetupObservations {
+            port_a: Some(std::array::from_fn(|i| table.state.port_state.port_a.slots[i].unwrap())),
+            lab_a: Some(std::array::from_fn(|i| table.state.lab_state.lab_a.slots[i].unwrap())),
+            deals: vec![(PlayerId::new(0), table.deals[0])],
+            ..Default::default()
+        };
+        let before_multiset = order_multiset(&pending);
+        let reconciled = reconcile_setup(pending, &obs, &rules).unwrap();
+        for i in 0..6 {
+            assert_eq!(reconciled.state.port_state.port_a.slots[i], Some(obs.port_a.unwrap()[i]));
+            assert_eq!(reconciled.state.lab_state.lab_a.slots[i], Some(obs.lab_a.unwrap()[i]));
+        }
+        assert_eq!(reconciled.deals[0], table.deals[0]);
+        assert_eq!(order_multiset(&reconciled), before_multiset); // conservation
+        // Determinism: same inputs, same output.
+        let again = reconcile_setup(new_game(GameConfig::for_player_count(2), &rules, 11).unwrap(), &obs, &rules).unwrap();
+        assert_eq!(again, reconciled);
+    }
+
+    #[test]
+    fn reconcile_setup_rejects_bad_observations() {
+        let rules = Rules::standard();
+        let pending = new_game(GameConfig::for_player_count(2), &rules, 11).unwrap();
+        // Duplicate order id across observed zones.
+        let dup = SetupObservations {
+            port_a: Some([OrderCardId(1), OrderCardId(1), OrderCardId(2), OrderCardId(3), OrderCardId(4), OrderCardId(5)]),
+            ..Default::default()
+        };
+        assert!(reconcile_setup(pending.clone(), &dup, &rules).is_err());
+        // Port B observed in a 2p game (no Port B).
+        let no_b = SetupObservations {
+            port_b: Some([OrderCardId(1), OrderCardId(2), OrderCardId(3), OrderCardId(4), OrderCardId(5), OrderCardId(6)]),
+            ..Default::default()
+        };
+        assert!(reconcile_setup(pending.clone(), &no_b, &rules).is_err());
+        // Unknown order id (0 is not a printed corner index; real ids are 1-36).
+        let bad_id = SetupObservations {
+            deals: vec![(PlayerId::new(0), [OrderCardId(0), OrderCardId(2)])],
+            ..Default::default()
+        };
+        assert!(reconcile_setup(pending.clone(), &bad_id, &rules).is_err());
+        // Achievements replacement works.
+        let ach = SetupObservations {
+            achievements: Some([AchievementType::Silk6, AchievementType::Orders5, AchievementType::Commercial4]),
+            ..Default::default()
+        };
+        let r = reconcile_setup(pending, &ach, &rules).unwrap();
+        assert_eq!(r.state.achievements[0].achievement_type, AchievementType::Silk6);
+        assert!(r.state.achievements[0].claimed_by.is_empty());
     }
 }
