@@ -262,6 +262,27 @@ pub fn calculate_movement_cost_full(
         }
     }
 
+    // Destination stop fee (Postal System, rulebook p.15: "You may end your
+    // movement in an Area occupied by another President pawn... You must
+    // still pay these players (unless you also own the Stagecoach)").
+    // Without Postal System such a destination is never reachable in the
+    // first place, so this is vacuous for everyone else. A non-empty path's
+    // last area is where the President ends this move; an EMPTY path is a
+    // free teleport (Station/Tram) and is exempt - Station's card text is
+    // unconditionally "for free... regardless of other President pawns",
+    // and Tram's destination is guaranteed president-free by construction.
+    if !has_stagecoach && !skip_president_cost {
+        if let Some(&destination) = path.last() {
+            for other_player in &state.players {
+                if other_player.id != player
+                    && other_player.president_location == PresidentLocation::OnBoard(destination)
+                {
+                    cost += 1;
+                }
+            }
+        }
+    }
+
     // Check for canal crossings (mercenaries still pay canal tolls)
     if path.len() >= 2 {
         for window in path.windows(2) {
@@ -272,6 +293,33 @@ pub fn calculate_movement_cost_full(
     }
 
     cost
+}
+
+/// Fee for placing the President from hand directly into `destination`
+/// (Movement Option A) - 1 Yen per opponent President already there,
+/// waived by Stagecoach (I2 final-review fix). Such a destination is only
+/// reachable at all with Postal System, whose card text is explicit: "You
+/// must still pay these players (unless you also own the Stagecoach)."
+/// Shared by the legal-move generator (pricing gate) and
+/// `apply_place_president` (the charge), so they can never drift apart.
+pub fn calculate_place_president_fee(
+    state: &GameState,
+    player: PlayerId,
+    destination: AreaId,
+    tech_registry: Option<&TechRegistry>,
+) -> u32 {
+    let p = state.player(player);
+    let has_stagecoach = tech_registry.is_some_and(|registry| {
+        p.technologies.iter().any(|&tech_id| {
+            registry.get(tech_id).map(|t| t.effect == TechEffect::Stagecoach).unwrap_or(false)
+        })
+    });
+    if has_stagecoach {
+        return 0;
+    }
+    state.players.iter()
+        .filter(|o| o.id != player && o.president_location == PresidentLocation::OnBoard(destination))
+        .count() as u32
 }
 
 /// Validate a movement action.

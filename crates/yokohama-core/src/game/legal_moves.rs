@@ -232,10 +232,15 @@ fn generate_movement_moves_with_tech(state: &GameState, tech_registry: Option<&T
 
     match p.president_location {
         PresidentLocation::InHand => {
-            // Option A: place president on any Possible Action Area
+            // Option A: place president on any Possible Action Area, priced
+            // by the same destination stop fee apply_place_president charges
+            // (Postal System, I2 final-review fix), so legal == applicable.
             for &area in state.board_layout.areas.keys() {
                 if is_possible_action_area_with_tech(state, player, area, tech_registry) {
-                    moves.push(Move::PlacePresident { destination: area });
+                    let fee = calculate_place_president_fee(state, player, area, tech_registry);
+                    if fee <= p.money {
+                        moves.push(Move::PlacePresident { destination: area });
+                    }
                 }
             }
 
@@ -1222,6 +1227,165 @@ mod tests {
         assert!(moves
             .iter()
             .any(|m| matches!(m, Move::MovePresident { destination, .. } if *destination == AreaId::new(2))));
+    }
+
+    #[test]
+    fn test_postal_system_stop_fee_charged_and_credited_to_owner() {
+        // I2 final-review fix: rulebook p.15 Postal System - "You may end
+        // your movement in an Area occupied by another President pawn...
+        // You must still pay these players." Stopping there costs 1 Yen per
+        // occupying President, credited to the owner - it is NOT free just
+        // because Postal System lifted the blocking rule.
+        let mut state = create_test_state();
+        state.turn_phase = TurnPhase::Movement;
+        state.board_layout.adjacency.insert(AreaId::new(0), vec![AreaId::new(1)]);
+        state.board_layout.adjacency.insert(AreaId::new(1), vec![AreaId::new(0)]);
+        state.players[0].president_location = PresidentLocation::OnBoard(AreaId::new(0));
+        state.players[0].assistants.on_board.insert(AreaId::new(1), 1);
+        state.players[1].president_location = PresidentLocation::OnBoard(AreaId::new(1));
+        state.players[0].technologies.push(TechCardId(203));
+        let mut rules = Rules::empty_for_tests();
+        rules.techs = postal_system_tech_registry(TechCardId(203));
+        let owner_money_before = state.players[1].money;
+
+        state.players[0].money = 0;
+        let moves = get_legal_moves(&state, &rules);
+        assert!(
+            !moves.iter().any(|m| matches!(m, Move::MovePresident { destination, .. } if *destination == AreaId::new(1))),
+            "money 0 must not afford the destination stop fee of 1"
+        );
+
+        state.players[0].money = 1;
+        let moves = get_legal_moves(&state, &rules);
+        let mv = moves
+            .iter()
+            .find(|m| matches!(m, Move::MovePresident { destination, .. } if *destination == AreaId::new(1)))
+            .expect("money 1 must afford the destination stop fee of 1")
+            .clone();
+
+        let next = apply_move(&state, &mv, &rules).unwrap();
+        assert_eq!(next.players[0].money, 0);
+        assert_eq!(next.players[1].money, owner_money_before + 1);
+    }
+
+    #[test]
+    fn test_postal_system_stop_fee_waived_by_stagecoach() {
+        let mut state = create_test_state();
+        state.turn_phase = TurnPhase::Movement;
+        state.board_layout.adjacency.insert(AreaId::new(0), vec![AreaId::new(1)]);
+        state.board_layout.adjacency.insert(AreaId::new(1), vec![AreaId::new(0)]);
+        state.players[0].president_location = PresidentLocation::OnBoard(AreaId::new(0));
+        state.players[0].assistants.on_board.insert(AreaId::new(1), 1);
+        state.players[1].president_location = PresidentLocation::OnBoard(AreaId::new(1));
+        state.players[0].money = 0;
+        state.players[0].technologies.push(TechCardId(204));
+        state.players[0].technologies.push(TechCardId(205));
+        let owner_money_before = state.players[1].money;
+
+        let mut rules = Rules::empty_for_tests();
+        rules.techs = postal_system_tech_registry(TechCardId(204));
+        rules.techs.insert(
+            TechCard {
+                id: TechCardId(205),
+                name: "Stagecoach".to_string(),
+                industry_cost: 3,
+                country: Country::Dutch,
+                effect: TechEffect::Stagecoach,
+            },
+            "tech_stagecoach",
+        );
+
+        let moves = get_legal_moves(&state, &rules);
+        let mv = moves
+            .iter()
+            .find(|m| matches!(m, Move::MovePresident { destination, .. } if *destination == AreaId::new(1)))
+            .expect("Stagecoach waives the stop fee, so money 0 must still afford it")
+            .clone();
+
+        let next = apply_move(&state, &mv, &rules).unwrap();
+        assert_eq!(next.players[0].money, 0, "Stagecoach waives the destination fee entirely");
+        assert_eq!(next.players[1].money, owner_money_before);
+    }
+
+    #[test]
+    fn test_place_president_into_opponent_occupied_area_charges_and_credits_fee() {
+        // I2 final-review fix: PlacePresident (Movement Option A from hand)
+        // shares the same gap - Postal System lets a player place from hand
+        // into an opponent-occupied area, but that stop still costs 1 Yen
+        // per occupying President.
+        let mut state = create_test_state();
+        state.turn_phase = TurnPhase::Movement;
+        state.players[0].president_location = PresidentLocation::InHand;
+        state.players[0].assistants.on_board.insert(AreaId::new(1), 1);
+        state.players[1].president_location = PresidentLocation::OnBoard(AreaId::new(1));
+        state.players[0].technologies.push(TechCardId(206));
+        let mut rules = Rules::empty_for_tests();
+        rules.techs = postal_system_tech_registry(TechCardId(206));
+        let owner_money_before = state.players[1].money;
+
+        state.players[0].money = 0;
+        let moves = get_legal_moves(&state, &rules);
+        assert!(
+            !moves.iter().any(|m| matches!(m, Move::PlacePresident { destination } if *destination == AreaId::new(1))),
+            "money 0 must not afford the destination stop fee of 1"
+        );
+
+        state.players[0].money = 1;
+        let moves = get_legal_moves(&state, &rules);
+        let mv = moves
+            .iter()
+            .find(|m| matches!(m, Move::PlacePresident { destination } if *destination == AreaId::new(1)))
+            .expect("money 1 must afford the destination stop fee of 1")
+            .clone();
+
+        let next = apply_move(&state, &mv, &rules).unwrap();
+        assert_eq!(next.players[0].money, 0);
+        assert_eq!(next.players[1].money, owner_money_before + 1);
+    }
+
+    #[test]
+    fn test_station_teleport_remains_free_even_onto_opponent_occupied_area() {
+        // Station's card text is "for free... regardless of other President
+        // pawns" (unconditional), unlike Postal System's "you must still
+        // pay" - the new I2 destination fee must NOT apply to Station
+        // teleports.
+        let mut state = create_test_state();
+        let current_area = AreaId::new(0);
+        let station_area = AreaId::new(2);
+        state.turn_phase = TurnPhase::Movement;
+        state.players[0].president_location = PresidentLocation::OnBoard(current_area);
+        state.players[0].assistants.on_board.insert(station_area, 1);
+        state.station_location = Some(station_area);
+        state.players[1].president_location = PresidentLocation::OnBoard(station_area);
+        state.players[0].money = 0;
+
+        let station_tech = TechCardId(207);
+        state.players[0].technologies.push(station_tech);
+        let mut tech_registry = TechRegistry::new();
+        tech_registry.insert(
+            TechCard {
+                id: station_tech,
+                name: "Station".to_string(),
+                industry_cost: 4,
+                country: Country::German,
+                effect: TechEffect::Station,
+            },
+            "tech_station",
+        );
+        let mut rules = Rules::empty_for_tests();
+        rules.techs = tech_registry;
+        let owner_money_before = state.players[1].money;
+
+        let moves = get_legal_moves(&state, &rules);
+        let mv = moves
+            .iter()
+            .find(|m| matches!(m, Move::MovePresident { destination, .. } if *destination == station_area))
+            .expect("Station teleport must be offered regardless of the opponent President there")
+            .clone();
+
+        let next = apply_move(&state, &mv, &rules).unwrap();
+        assert_eq!(next.players[0].money, 0, "Station teleport stays free even onto an opponent-occupied area");
+        assert_eq!(next.players[1].money, owner_money_before);
     }
 
     #[test]

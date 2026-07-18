@@ -44,7 +44,7 @@ pub fn apply_move(state: &GameState, mv: &Move, rules: &Rules) -> Result<GameSta
 
         Move::PlacePresident { destination } => {
             // Note: PlacePresident is for placing from hand - no start area restriction
-            apply_place_president(&mut new_state, *destination)?;
+            apply_place_president(&mut new_state, *destination, Some(&rules.techs))?;
             new_state.president_start_area = None; // Clear after placement
             new_state.turn_phase = TurnPhase::AreaAction;
         }
@@ -292,7 +292,10 @@ fn apply_movement(
 }
 
 /// Credit 1 Yen to each opponent President's owner passed through on the
-/// path (intermediate areas only - the destination cannot hold one).
+/// path, AND (Postal System, I2 final-review fix) to each opponent
+/// President's owner occupying the destination itself - a non-empty path's
+/// last area, since an empty path is a free teleport (Station/Tram) exempt
+/// from this fee (see calculate_movement_cost_full's matching comment).
 /// Mirrors calculate_movement_cost_full's president component exactly:
 /// Stagecoach waives the fee entirely (nothing charged, nothing credited)
 /// and canal tolls are NOT credited (they go to the bank), so the payer's
@@ -323,10 +326,35 @@ fn credit_movement_president_fees(
             state.player_mut(owner).money += 1;
         }
     }
+
+    if let Some(&destination) = path.last() {
+        let owners: Vec<PlayerId> = state.players.iter()
+            .filter(|o| o.id != payer && o.president_location == PresidentLocation::OnBoard(destination))
+            .map(|o| o.id)
+            .collect();
+        for owner in owners {
+            state.player_mut(owner).money += 1;
+        }
+    }
 }
 
-fn apply_place_president(state: &mut GameState, destination: AreaId) -> Result<(), MoveError> {
+fn apply_place_president(
+    state: &mut GameState,
+    destination: AreaId,
+    tech_registry: Option<&TechRegistry>,
+) -> Result<(), MoveError> {
     let player = state.current_player;
+
+    // Postal System destination stop fee (I2 final-review fix): mirrors
+    // calculate_place_president_fee exactly, so the generator's gate and
+    // this charge never drift apart.
+    let fee = calculate_place_president_fee(state, player, destination, tech_registry);
+    if state.player(player).money < fee {
+        return Err(MoveError::NotEnoughMoney);
+    }
+    state.player_mut(player).money -= fee;
+    credit_place_president_fee(state, player, destination, tech_registry);
+
     let p = state.player_mut(player);
     p.president_location = PresidentLocation::OnBoard(destination);
 
@@ -334,6 +362,34 @@ fn apply_place_president(state: &mut GameState, destination: AreaId) -> Result<(
     state.current_action_power = Some(power);
 
     Ok(())
+}
+
+/// Credit 1 Yen to each opponent President's owner occupying `destination`
+/// (mirrors calculate_place_president_fee's Stagecoach-waived pricing
+/// exactly, so the payer's deduction and the sum of owner credits always
+/// match).
+fn credit_place_president_fee(
+    state: &mut GameState,
+    payer: PlayerId,
+    destination: AreaId,
+    tech_registry: Option<&TechRegistry>,
+) {
+    let p = state.player(payer);
+    let has_stagecoach = tech_registry.is_some_and(|registry| {
+        p.technologies.iter().any(|&tech_id| {
+            registry.get(tech_id).map(|t| t.effect == TechEffect::Stagecoach).unwrap_or(false)
+        })
+    });
+    if has_stagecoach {
+        return;
+    }
+    let owners: Vec<PlayerId> = state.players.iter()
+        .filter(|o| o.id != payer && o.president_location == PresidentLocation::OnBoard(destination))
+        .map(|o| o.id)
+        .collect();
+    for owner in owners {
+        state.player_mut(owner).money += 1;
+    }
 }
 
 fn apply_return_to_hand(
