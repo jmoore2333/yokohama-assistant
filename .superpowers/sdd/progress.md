@@ -102,6 +102,13 @@ SCOPE SHIFT: `AreaAction::Skip` variant + apply arm land in T16 (Port/Lab are pe
 - apply_fulfill_order's registry param is Option but callers always pass Some (collapse opportunistically)
 - Final review dispatch: use requesting-code-review skill's template + review-package script vs merge-base master
 
+## Choice-encoding plan (docs/plans/2026-07-18-choice-encoding-plan.md), started 2026-07-18
+
+Branch `choice-encoding` off master f93149a. Design `2026-07-18-choice-encoding-design.md` (Jeremy-approved section-by-section + §6.1 effectiveness-module amendment) + 18-task plan committed; box-check adjudications (2026-07-18, Jeremy at the box) folded in PRE-execution: 5-Power pool verified → T3 amended (phantom Movement/VP variant removal, no token conversion); Port +3 VP take-gated → T8 amended (pin-only, STOP-and-escalate if RED); canal diagonals exist → T9 pre-dispatch geometry ruling OWED (asked with box open). Decision-log rows in guidingpath (choice-encoding-opened row + box-check row).
+Execution model: SDD — one sonnet implementer per task, per-task sonnet reviewer, fable ONLY for the final whole-branch review; ORCHESTRATOR-DIRECT: T9 pre-dispatch ruling, T18 close-out (gates, 5000×3 re-baselines, ~10 decision-log rows, true-ups). Sequencing: T1 first; T2<T5; T3<T4; T10<T11-13; T15-16 after T1-9; T17 after T11/T14; T18 last. Demand literal RED output in every implementer report.
+
+- Task status: (dispatching T1)
+
 ## Phase-2 CLI driver plan (docs/plans/2026-07-18-phase2-cli-driver-plan.md), started 2026-07-18
 - Task 1: complete (commits 32b3815..4938317, review approved). Important(adjudicated, no refix): implementer skipped the literal RED run — future dispatches must paste RED output before implementing. Minors for final review: arrange_* duplication (generic-helper opportunity); tech-variant test shallower than order-variant; report line-count cosmetic.
 - Task 2: complete (commits 4938317..4f22d05, review approved after evidence fix). Important resolved: genuine RED/GREEN re-derived and appended to report. Minors for final review: untested "no such player" guard; player_mut() style nit.

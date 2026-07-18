@@ -341,7 +341,9 @@ NOTE: `push_choice`'s singleton path can CASCADE (an auto-resolution could itsel
 
 ---
 
-### Task 3: AssistantMove + 5-Power Movement token
+### Task 3: AssistantMove (movement icons) + phantom 5-Power variant removal
+
+> **AMENDED 2026-07-18 after Jeremy's box check:** the physical 20-token pool contains NO Movement and NO VP token (it matches the engine's canonical pool exactly). The original "5-Power Movement token queues n moves" scope is DELETED; instead this task REMOVES `FivePowerEffect::Movement` and `FivePowerEffect::VictoryPoints` (test-fiction variants) and updates their fixtures/tests to canonical faces: delete `test_five_power_movement_token` / `test_five_power_movement_token_partial` (apply_move.rs:1796/1830), re-face `make_test_five_power_tokens` (board_gen.rs:385) onto the six real faces, and let the compiler find any stragglers. `movement_token_fixture` / the queue-on-take test below are likewise DELETED from Step 1.
 
 **Files:**
 - Modify: `types/choices.rs` (+`MoveSource`, +`PendingChoice::AssistantMove`), `types/moves.rs` (+`ChooseAssistantMove`/`DeclineAssistantMove`), `game/choices.rs` (arms + `assistant_move_options`), `game/apply_move.rs` (`apply_fulfill_order` movement push, `apply_space_reward` movement push, `apply_take_5_power` Movement arm)
@@ -378,15 +380,8 @@ fn assistant_move_is_free_and_conserves_pawns() {
     assert_eq!(s.current_player().assistants.on_board[&area_b()], 1);
 }
 
-#[test]
-fn five_power_movement_token_queues_n_moves_instead_of_recovering() {
-    // Movement(2) token at the acting area, player has board assistants.
-    let (state, rules) = movement_token_fixture();
-    let s = apply_move(&state, &Move::Take5PowerToken, &rules).unwrap();
-    assert_eq!(s.pending_choices, vec![PendingChoice::AssistantMove, PendingChoice::AssistantMove]);
-    // Nothing was auto-recovered:
-    assert_eq!(s.current_player().assistants.in_hand, state.current_player().assistants.in_hand);
-}
+// (five_power_movement_token test DELETED per the 2026-07-18 amendment above —
+// no Movement token exists physically; the variant is removed in this task.)
 
 #[test]
 fn assistant_move_auto_declines_when_no_pawn_anywhere() {
@@ -398,9 +393,9 @@ fn assistant_move_auto_declines_when_no_pawn_anywhere() {
 ```
 
 - [ ] **Step 2: RED** (compile error). Paste.
-- [ ] **Step 3: Implement.** `assistant_move_options`: sources = `Hand` (if `in_hand >= 1`) plus each area with `on_board >= 1`; dests = every `AreaId` in `board_layout.areas` whose `area_type != AreaType::Canal` and `!= from` (for area sources). Resolution: decrement source (hand or on_board with remove-at-zero, matching `apply_recovery_with_leave`'s cleanup style), increment `on_board[to]`. p.10 semantics in a comment: no President fees, each icon separate. Push sites: `apply_fulfill_order` (`rewards.movement`), `apply_space_reward` (`reward.movement` — delete the two movement no-op comments), `apply_take_5_power`'s `Movement(n)` arm (replace the recover-to-hand loop with the push loop; delete the stale comment). Describe: `"Move an assistant from {hand|area} to {area} (reward move)"` / `"Decline the assistant move"`.
-- [ ] **Step 4: GREEN** + suites + zero warnings. The existing `test_five_power_movement_token`/`_partial` tests will go RED — rewrite them to pin the new queue behavior (decision: design §5.2, rules-correct per p.10; note the rewrite explicitly in the report).
-- [ ] **Step 5: Commit**: `feat: AssistantMove choice encoding; 5-Power Movement token queues real moves (design §5.2)`
+- [ ] **Step 3: Implement.** `assistant_move_options`: sources = `Hand` (if `in_hand >= 1`) plus each area with `on_board >= 1`; dests = every `AreaId` in `board_layout.areas` whose `area_type != AreaType::Canal` and `!= from` (for area sources). Resolution: decrement source (hand or on_board with remove-at-zero, matching `apply_recovery_with_leave`'s cleanup style), increment `on_board[to]`. p.10 semantics in a comment: no President fees, each icon separate. Push sites: `apply_fulfill_order` (`rewards.movement`), `apply_space_reward` (`reward.movement` — delete the two movement no-op comments). Then the variant removal per the amendment: delete `FivePowerEffect::Movement`/`VictoryPoints` and their `apply_take_5_power` arms, re-face the test fixtures, delete the two dead tests. Describe: `"Move an assistant from {hand|area} to {area} (reward move)"` / `"Decline the assistant move"`.
+- [ ] **Step 4: GREEN** + suites + zero warnings.
+- [ ] **Step 5: Commit**: `feat: AssistantMove choice encoding; drop phantom 5-Power Movement/VP variants (design §5.2, §5.3-6 box-verified)`
 
 ---
 
@@ -555,33 +550,22 @@ fn recovery_without_telephone_stays_automatic() {
 
 ---
 
-### Task 8: Port 5-Power +3 VP on the action (adjudication §5.3-1)
+### Task 8: PIN take-gated Port 5-Power +3 VP (owner adjudication §5.3-1)
+
+> **AMENDED 2026-07-18 after Jeremy's box check:** the +3 VP is TAKE-GATED (a full hand bars the action entirely; the VP comes with performing the take at 5 Power). Current engine behavior is CORRECT — this task pins it instead of changing it.
 
 **Files:**
-- Modify: `game/apply_move.rs` (`apply_area_action` — single grant site), `game/actions/` (remove the take-path grant — locate with `grep -rn "3" crates/yokohama-core/src/game/actions/commercial.rs | grep -i vp` / read `execute_port_action`)
+- Modify: `game/legal_moves.rs` or `game/actions/commercial.rs` tests only (find the existing +3 grant in `execute_port_action` and its tests first: `grep -rn "victory_points += 3\|+ 3" crates/yokohama-core/src/game/actions/commercial.rs`)
 
-- [ ] **Step 1: Failing tests**: `skip_at_five_power_port_grants_plus_3vp` (Skip at a Port with power 5 → +3 VP); `port_take_at_five_grants_exactly_once` (take path not double-granted); `port_at_four_power_grants_nothing`; `mercenary_port_action_at_five_grants` (sub-turn path).
-- [ ] **Step 2: RED**. Paste.
-- [ ] **Step 3: Implement**: in `apply_area_action`, after the action match succeeds, compute the acting area type (mercenary-aware, same idiom as the `Skip` arm) and:
-
-```rust
-    // Port 5-Power bonus attaches to the ACTION, not the take (rulebook p.11
-    // "In addition, you gain 3 Victory points"; decision-log 2026-07-18,
-    // supersedes the v1 Skip-forfeits reading).
-    if power == 5 && matches!(area_type, AreaType::PortA | AreaType::PortB) {
-        state.player_mut(player).victory_points += 3;
-    }
-```
-
-and delete the old grant inside the port executor. Any existing test pinning "Skip grants no VP at 5-power Port" gets rewritten with a comment citing the adjudication.
-- [ ] **Step 4: GREEN** + suites + zero warnings.
-- [ ] **Step 5: Commit**: `fix: Port 5-Power +3 VP attaches to the action, not the take (design §5.3-1)`
+- [ ] **Step 1: Write the pinning tests** (RED only if behavior is wrong — in that case STOP and escalate to the orchestrator before changing anything): `port_take_at_five_grants_plus_3vp_exactly_once`; `skip_at_five_power_port_grants_no_vp` (owner-adjudicated 2026-07-18 — cite in a comment); `port_at_four_power_take_grants_no_bonus_vp`; `mercenary_port_take_at_five_grants` (sub-turn path).
+- [ ] **Step 2: Run**: expected all GREEN against current behavior (paste output). If any is RED, report and stop.
+- [ ] **Step 3: Commit**: `test: pin take-gated Port 5-Power +3 VP incl. Skip-forfeits (owner adjudication, design §5.3-1)`
 
 ---
 
 ### Task 9: Canal topology (final-review I4, in-phase)
 
-**PRE-DISPATCH (ORCHESTRATOR-DIRECT):** resolve the rules check against rulebook p.6 + the board art: (a) crossing = straight-across the Canal tile only; (b) 1 Yen per crossing, each crossing in a path pays; (c) the toll goes to the bank. Write the decision-log row; paste the ruling verbatim into the dispatch. Escalate to Jeremy only if the sources conflict.
+**PRE-DISPATCH (ORCHESTRATOR-DIRECT):** the crossing geometry is OWNER-ADJUDICATED — Jeremy's box finding (2026-07-18): **diagonal crossings exist and validity is layout-dependent** ("only valid to take a direction to a tile it can get to"), so the straight-across-only model is wrong. Obtain Jeremy's exact pair rule (which of the canal cell's orthogonal/diagonal neighbors connect across it) BEFORE dispatch, write the decision-log row, paste it verbatim into the dispatch, and rewrite Step 1's `canal_flanking_areas_are_adjacent_and_marked_as_crossings` expected-pair derivation to match. Also confirm in the same ruling: 1 Yen per crossing (each crossing in a path pays) and the toll goes to the bank.
 
 **Files:**
 - Modify: `game/board_gen.rs` (shared `derive_canal_crossings`, adjacency edges), `game/setup.rs` (reconcile_board uses the shared fn), `game/movement.rs` (`calculate_movement_cost_full` start-edge fix)
@@ -641,7 +625,7 @@ fn two_player_boards_unchanged() {
 
 Plus a reconcile test: re-typing a 3p board through `reconcile_setup` yields crossings/adjacency identical to generating that layout directly (extend `tests/live_reconciliation.rs`).
 - [ ] **Step 2: RED**. Paste.
-- [ ] **Step 3: Implement**: extract the shared derivation; for the Canal cell at grid (r,c), the crossing pairs are ((r,c-1),(r,c+1)) and ((r-1,c),(r+1,c)) where both cells exist and are non-Canal areas; add each pair to the adjacency builder (bidirectional) AND to `canal_crossings`. In `calculate_movement_cost_full`, scan crossings over `[start] ++ path` consecutive pairs instead of `path.windows(2)` alone (the mover's current area is the start — thread it in the same way the president-fee component gets it). Keep tolls uncredited (bank).
+- [ ] **Step 3: Implement**: extract the shared derivation; the crossing pair rule comes VERBATIM from the pre-dispatch owner ruling (see above — do not assume straight-across-only); add each derived pair to the adjacency builder (bidirectional) AND to `canal_crossings`. In `calculate_movement_cost_full`, scan crossings over `[start] ++ path` consecutive pairs instead of `path.windows(2)` alone (the mover's current area is the start — thread it in the same way the president-fee component gets it). Keep tolls uncredited (bank).
 - [ ] **Step 4: GREEN** + suites + zero warnings + `cargo test -p yokohama-core --test fuzz_full_games` (non-ignored smoke — movement enumeration grew at 3-4p).
 - [ ] **Step 5: Commit**: `fix: Canal is crossable — flanking adjacency + toll incl. first step (I4, design §5.6)`
 
@@ -664,21 +648,21 @@ Move the reveal machinery (`Pending` enum, `collect_reveal`, `reveal_prompt`, `r
 
 ---
 
-### Task 11: Choice banner + `m` grammar + reveal-menu `m`
+### Task 11: Choice banner + `m` grammar
 
 **Files:**
-- Modify: `crates/yokohama-cli/src/describe.rs` (+`describe_pending_choice`), `repl.rs` (banner in `prompt()`, `m` grammar in `step`), `reveal.rs` (token menu `m`)
+- Modify: `crates/yokohama-cli/src/describe.rs` (+`describe_pending_choice`), `repl.rs` (banner in `prompt()`, `m` grammar in `step`)
 - Test: CLI scripted-session tests (existing pattern)
 
 **Interfaces:**
 - Produces: `describe_pending_choice(head: &PendingChoice, state: &GameState, rules: &Rules) -> String`.
 - Consumes: all engine choice types (Tasks 1-6).
 
-- [ ] **Step 1: Failing scripted tests**: (a) drive a sim session into an AnyGood cascade → prompt contains `Choose:` and `1 choice pending` and the numbered `ChooseAnyGood` options; (b) an AssistantMove head accepts `m 4 9` (applies the matching move) and `m hand 9`; (c) `m 4 99` prints a `not one of the legal assistant moves` explanation and applies nothing; (d) undo mid-cascade steps back exactly one choice (prompt shows the same choice again); (e) live-mode 5-Power flip prompt accepts `m` → `RevealFivePowerToken { effect: Movement(2) }` recorded. Write the input-line vectors concretely against a fixed seed (derive the seed's cascade by running the wizard path once and pinning what it shows — the implementer computes and hard-codes the transcript pins, as every scripted test in this crate does).
+- [ ] **Step 1: Failing scripted tests**: (a) drive a sim session into an AnyGood cascade → prompt contains `Choose:` and `1 choice pending` and the numbered `ChooseAnyGood` options; (b) an AssistantMove head accepts `m 4 9` (applies the matching move) and `m hand 9`; (c) `m 4 99` prints a `not one of the legal assistant moves` explanation and applies nothing; (d) undo mid-cascade steps back exactly one choice (prompt shows the same choice again). *(The former item (e) — an `m` reveal-menu letter — was DELETED 2026-07-18: the box check proved no Movement token exists; the reveal menu stays six letters.)* Write the input-line vectors concretely against a fixed seed (derive the seed's cascade by running the wizard path once and pinning what it shows — the implementer computes and hard-codes the transcript pins, as every scripted test in this crate does).
 - [ ] **Step 2: RED**. Paste.
-- [ ] **Step 3: Implement**: `prompt()` — when `session.state().pending_choices` is non-empty, the header's phase slot renders `Choose: {describe_pending_choice(head)} — {n} choice(s) pending`. `describe_pending_choice` covers all six variants (wildcard-free match, e.g. WarehouseTake lists the live options with costs: `warehouse take (assistant free / shophouse 2¥ / TH {take_cost}¥)`). Grammar: `["m", src, dst]` where src is `hand` or an area number → build `ChooseAssistantMove`, exact-match against `session.legal()` (reuse the placement-grammar match idiom); miss explains. Reveal menu: add `m` → `FivePowerEffect::Movement(2)` beside the existing six letters (design §5.3-6 note in a comment). HELP_TEXT gains the `m <from> <to>` line.
+- [ ] **Step 3: Implement**: `prompt()` — when `session.state().pending_choices` is non-empty, the header's phase slot renders `Choose: {describe_pending_choice(head)} — {n} choice(s) pending`. `describe_pending_choice` covers all six variants (wildcard-free match, e.g. WarehouseTake lists the live options with costs: `warehouse take (assistant free / shophouse 2¥ / TH {take_cost}¥)`). Grammar: `["m", src, dst]` where src is `hand` or an area number → build `ChooseAssistantMove`, exact-match against `session.legal()` (reuse the placement-grammar match idiom); miss explains. HELP_TEXT gains the `m <from> <to>` line.
 - [ ] **Step 4: GREEN** + suites + zero warnings.
-- [ ] **Step 5: Commit**: `feat: choice banner, assistant-move grammar, movement-token reveal letter (design §5.4)`
+- [ ] **Step 5: Commit**: `feat: choice banner + assistant-move grammar (design §5.4)`
 
 ---
 
