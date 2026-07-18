@@ -96,7 +96,7 @@ Choose ONE option:
 ### Placement Rules
 - **President blocking payment:** If any President pawn(s) occupy the target area, pay 1 Yen to each President's owner per assistant placed
 - **Canal restriction:** Cannot place assistants in the Canal
-- **Minimum placement:** May place 0, 1, 2, or 3 assistants (not required to place all)
+- **Minimum placement:** May place 0, 1, 2, or 3 assistants (not required to place all) — ruled legal explicitly 2026-07-18 (final whole-branch review finding I5) after this line sat unconnected to any decision-log row; see `guidingpath.md` decision log
 - **Source restriction:** Must place from hand only (not from warehouse or management boards)
 
 ---
