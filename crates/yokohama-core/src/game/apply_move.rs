@@ -98,11 +98,22 @@ pub fn apply_move(state: &GameState, mv: &Move, rules: &Rules) -> Result<GameSta
 
         Move::UseUniversity => {
             let player = new_state.current_player;
+            // apply_university checks only resource preconditions, not the
+            // once-per-turn flag -- apply_move is the pure authoritative API
+            // (a Phase-3 bot will call it directly, not just via legal-move
+            // pre-filtering), so it must defend the flag itself, mirroring
+            // apply_mercenary's self-defended mercenary_used gate.
+            if !can_use_university(&new_state, player, &rules.techs) {
+                return Err(MoveError::RuleViolation("University not usable this turn"));
+            }
             apply_university(&mut new_state, player).map_err(MoveError::RuleViolation)?;
         }
 
         Move::UseSpinningMill => {
             let player = new_state.current_player;
+            if !can_use_spinning_mill(&new_state, player, &rules.techs) {
+                return Err(MoveError::RuleViolation("Textile Mill not usable this turn"));
+            }
             apply_spinning_mill(&mut new_state, player).map_err(MoveError::RuleViolation)?;
         }
 
@@ -2848,6 +2859,94 @@ mod tests {
         let next = apply_move(&used, &Move::EndAdditionalPhase, &rules).unwrap();
         assert!(!next.additional_action_state.university_used);
         assert!(!next.additional_action_state.spinning_mill_used);
+    }
+
+    #[test]
+    fn apply_university_rejects_second_use_same_turn() {
+        // Resource headroom (money 3, warehouse 2) deliberately survives a
+        // first use (money 2, warehouse 1) with room to spare, so a second
+        // same-turn call submitted directly through apply_move -- without
+        // pre-filtering through get_legal_moves, exactly as a Phase-3 bot
+        // will call this pure API at volume -- can only be blocked by the
+        // university_used flag, not by apply_university's own resource
+        // checks. Mirrors apply_mercenary's self-defended once-per-turn gate.
+        let mut state = create_minimal_state(2);
+        state.players[0].money = 3;
+        state.players[0].assistants.in_warehouse = 2;
+        state.players[0].assistants.in_hand = 5;
+
+        let mut tech_registry = TechRegistry::new();
+        tech_registry.insert(
+            TechCard {
+                id: TechCardId(97),
+                name: "University".to_string(),
+                country: Country::French,
+                industry_cost: 4,
+                effect: TechEffect::University,
+            },
+            "tech_university",
+        );
+        state.players[0].technologies.push(TechCardId(97));
+        let mut rules = Rules::empty_for_tests();
+        rules.techs = tech_registry;
+
+        let after_first = apply_move(&state, &Move::UseUniversity, &rules).unwrap();
+        assert!(after_first.additional_action_state.university_used);
+        let snapshot_money = after_first.players[0].money;
+        let snapshot_warehouse = after_first.players[0].assistants.in_warehouse;
+        let snapshot_hand = after_first.players[0].assistants.in_hand;
+
+        let second = apply_move(&after_first, &Move::UseUniversity, &rules);
+        assert!(
+            matches!(second, Err(MoveError::RuleViolation(_))),
+            "second same-turn use must be rejected, got {second:?}"
+        );
+
+        // apply_move never mutates its input -- this pins that contract
+        // explicitly for this move, on top of the type-level guarantee.
+        assert_eq!(after_first.players[0].money, snapshot_money);
+        assert_eq!(after_first.players[0].assistants.in_warehouse, snapshot_warehouse);
+        assert_eq!(after_first.players[0].assistants.in_hand, snapshot_hand);
+    }
+
+    #[test]
+    fn apply_spinning_mill_rejects_second_use_same_turn() {
+        // Silk headroom (2) deliberately survives a first use (1 remains),
+        // isolating the missing spinning_mill_used guard as the only thing
+        // that can block a second same-turn call -- see
+        // apply_university_rejects_second_use_same_turn for the full
+        // rationale (same shape, mirrored for the other move).
+        let mut state = create_minimal_state(2);
+        state.players[0].silk = 2;
+
+        let mut tech_registry = TechRegistry::new();
+        tech_registry.insert(
+            TechCard {
+                id: TechCardId(98),
+                name: "Textile Mill".to_string(),
+                country: Country::Dutch,
+                industry_cost: 3,
+                effect: TechEffect::SpinningMill,
+            },
+            "tech_spinning_mill",
+        );
+        state.players[0].technologies.push(TechCardId(98));
+        let mut rules = Rules::empty_for_tests();
+        rules.techs = tech_registry;
+
+        let after_first = apply_move(&state, &Move::UseSpinningMill, &rules).unwrap();
+        assert!(after_first.additional_action_state.spinning_mill_used);
+        let snapshot_silk = after_first.players[0].silk;
+        let snapshot_money = after_first.players[0].money;
+
+        let second = apply_move(&after_first, &Move::UseSpinningMill, &rules);
+        assert!(
+            matches!(second, Err(MoveError::RuleViolation(_))),
+            "second same-turn use must be rejected, got {second:?}"
+        );
+
+        assert_eq!(after_first.players[0].silk, snapshot_silk);
+        assert_eq!(after_first.players[0].money, snapshot_money);
     }
 
     #[test]
