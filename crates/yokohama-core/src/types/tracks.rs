@@ -80,7 +80,7 @@ impl ChurchTrack {
     pub fn movement_rider(space: u8) -> u8 {
         match space {
             4 | 5 => 1,
-            6 | 7 | 8 | 9 => 2,
+            6..=9 => 2,
             10 | 11 => 3,
             _ => 0,
         }

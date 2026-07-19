@@ -492,7 +492,7 @@ mod tests {
         let out = r.step(&format!("T{}", top_tech.0));
         assert!(!out.text.contains("Illegal"), "{}", out.text);
         assert_eq!(r.session.record().events.len(), events_before + 2); // RevealTechs + Move
-        assert!(r.session.state().lab_state.lab_a.slots.iter().any(|s| *s == Some(top_tech)));
+        assert!(r.session.state().lab_state.lab_a.slots.contains(&Some(top_tech)));
         assert_eq!(replay(r.session.record(), r.session.rules()).unwrap(), *r.session.state());
     }
 

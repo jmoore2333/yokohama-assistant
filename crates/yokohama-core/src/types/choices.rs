@@ -51,7 +51,7 @@ pub enum PendingChoice {
     /// Choose which eligible Church space (Faith 4-11) to place on, after
     /// goods have been paid and >=2 spaces are reachable at `total_faith`
     /// (design 2026-07-18 §5.2). No decline -- the action already validated
-    /// >=1 eligible space exists; a singleton resolves inline in the
+    /// that at least 1 eligible space exists; a singleton resolves inline in the
     /// executor instead of ever reaching this queue.
     ChurchSpace { total_faith: u8 },
     /// Choose which eligible Customs space to place on for a given exact

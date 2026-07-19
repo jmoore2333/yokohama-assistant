@@ -15,6 +15,7 @@ Rust engine (plus planned CLI tracker and AI player) for the board game **Yokoha
 Toolchain is FIXED (2026-07-17): plain `cargo` works. (History: `~/.cargo/bin/rustup` was a dangling symlink; the durable fix was copying the real Mach-O from `/opt/homebrew/Cellar/rustup/*/libexec/bin/rustup` into `~/.cargo/bin/rustup` — Homebrew's `/opt/homebrew/bin/rustup` is a bash wrapper that resets argv[0] and breaks proxy multiplexing, so never symlink to it.)
 
 - All tests: `cargo test -p yokohama-core` (466 passing as of 2026-07-19 post fix wave: 434 lib + 12 choice_encoding + 20 other integration, zero warnings) and `cargo test -p yokohama-cli` (85 passing)
+- Lint gate (adopted 2026-07-19): `cargo clippy --workspace --all-targets -- -D warnings` must pass. rustfmt is deliberately NOT adopted (would reformat the whole repo, ~1k diff blocks — revisit at a phase boundary; don't run `cargo fmt` casually)
 - Run the CLI driver: `cargo run -p yokohama-cli` (setup wizard → REPL; sim or live tracking); `cargo run -p yokohama-cli -- <save.json>` resumes a saved game
 - Fuzz regression gate (run in release before merges): `cargo test --release -p yokohama-core --test fuzz_full_games -- --ignored` (1,500 games, ~8s)
 - Full self-play sweep: `cargo run --release -p yokohama-core --example selfplay -- 5000 <players> <base_seed>`

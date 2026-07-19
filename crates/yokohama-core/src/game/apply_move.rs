@@ -4079,7 +4079,7 @@ mod tests {
         assert_eq!(legal.len(), 4); // exactly the four ChooseAnyGood moves, nothing else
         assert!(legal.iter().all(|m| matches!(m, Move::ChooseAnyGood { .. })));
         // No copper was auto-granted:
-        assert_eq!(after.current_player().copper, state.current_player().copper - 0);
+        assert_eq!(after.current_player().copper, state.current_player().copper);
     }
 
     #[test]

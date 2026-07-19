@@ -186,7 +186,6 @@ pub fn generate_board_layout(
 
     // Build the layout
     let mut builder = BoardLayoutBuilder::new();
-    let mut area_id = 0u8;
     let mut site_idx = 0;
     let mut token_idx = 0;
     let mut canal_position: Option<(u8, u8)> = None;
@@ -195,7 +194,7 @@ pub fn generate_board_layout(
     for (idx, area_type) in tiles.into_iter().enumerate() {
         let row = (idx / cols as usize) as u8;
         let col = (idx % cols as usize) as u8;
-        let id = AreaId::new(area_id);
+        let id = AreaId::new(idx as u8);
 
         builder.add_area(id, AreaConfig {
             area_type,
@@ -214,7 +213,6 @@ pub fn generate_board_layout(
             token_idx += 1;
         }
 
-        area_id += 1;
     }
 
     // Grid-orthogonal adjacency: the base layer every board sits on.

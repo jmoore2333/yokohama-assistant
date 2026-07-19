@@ -274,8 +274,8 @@ fn locate_order(p: &PendingSetup, card: OrderCardId) -> Option<OrderLoc> {
         }
     }
     for (player, deal) in p.deals.iter().enumerate() {
-        for slot in 0..2 {
-            if deal[slot] == card {
+        for (slot, c) in deal.iter().enumerate() {
+            if *c == card {
                 return Some(OrderLoc::Deal { player, slot });
             }
         }
@@ -419,8 +419,8 @@ pub fn reconcile_setup(
         }
     }
     for (pid, deal) in &obs.deals {
-        for slot in 0..2 {
-            place_order(&mut pending, OrderLoc::Deal { player: pid.0 as usize, slot }, deal[slot])?;
+        for (slot, c) in deal.iter().enumerate() {
+            place_order(&mut pending, OrderLoc::Deal { player: pid.0 as usize, slot }, *c)?;
         }
     }
     if let Some(cards) = &obs.lab_a {
@@ -932,18 +932,18 @@ mod tests {
         let r = reconcile_setup(pending, &obs, &rules).unwrap();
         let layout = &r.state.board_layout;
         // Types permuted as observed; grid positions unchanged (row-major ids).
-        for i in 0..n {
+        for (i, tile) in tiles.iter().enumerate().take(n) {
             let id = AreaId::new(i as u8);
-            assert_eq!(layout.areas[&id].area_type, tiles[i]);
+            assert_eq!(layout.areas[&id].area_type, *tile);
             assert_eq!(layout.areas[&id].grid_position, ((i / cols as usize) as u8, (i % cols as usize) as u8));
         }
         // Sites follow the observed assignment; Canal has none.
         // (No `clone_reset` helper on BuildingSite — compare the printed
         // fields directly; built-state fields are fresh at setup so
         // asserting they equal the `BuildingSite::new` defaults suffices.)
-        for i in 0..n {
+        for (i, site) in sites.iter().enumerate().take(n) {
             let id = AreaId::new(i as u8);
-            match sites[i] {
+            match *site {
                 Some(s) => {
                     let expected = &rules.building_sites[s as usize];
                     let got = &layout.building_sites[&id];
@@ -1021,15 +1021,15 @@ mod tests {
         let r = reconcile_setup(pending, &obs, &rules).unwrap();
         let layout = &r.state.board_layout;
         // (c) Types permuted as observed; grid positions unchanged (row-major (2,5) grid).
-        for i in 0..n {
+        for (i, tile) in tiles.iter().enumerate().take(n) {
             let id = AreaId::new(i as u8);
-            assert_eq!(layout.areas[&id].area_type, tiles[i]);
+            assert_eq!(layout.areas[&id].area_type, *tile);
             assert_eq!(layout.areas[&id].grid_position, ((i / cols as usize) as u8, (i % cols as usize) as u8));
         }
         // (d) Sites follow the observed assignment (every cell, since there's no Canal).
-        for i in 0..n {
+        for (i, site) in sites.iter().enumerate().take(n) {
             let id = AreaId::new(i as u8);
-            let s = sites[i].expect("no Canal in a 2p board, so every cell has a site");
+            let s = site.expect("no Canal in a 2p board, so every cell has a site");
             let expected = &rules.building_sites[s as usize];
             let got = &layout.building_sites[&id];
             assert_eq!(got.spaces, expected.spaces);
