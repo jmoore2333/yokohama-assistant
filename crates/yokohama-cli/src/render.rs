@@ -611,7 +611,7 @@ fn area_abbrev(t: AreaType) -> &'static str {
     }
 }
 
-fn color_name(c: PlayerColor) -> &'static str {
+pub fn color_name(c: PlayerColor) -> &'static str {
     match c {
         PlayerColor::Red => "Red",
         PlayerColor::Blue => "Blue",

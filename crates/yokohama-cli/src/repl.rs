@@ -516,7 +516,7 @@ impl Repl {
     }
 
     /// Current VP + money per player; once `is_over`, the authoritative
-    /// `final_scores()` table instead.
+    /// winner announcement + per-player breakdown table instead.
     fn score_text(&self) -> String {
         if self.session.is_over() {
             self.final_score_table()
@@ -529,10 +529,29 @@ impl Repl {
         }
     }
 
+    /// `WINNER: {color}` followed by one ranked line per standing, each with
+    /// its full `ScoreBreakdown` (`final_result`, scoring.rs) so the reason
+    /// behind the total is visible, not just the number -- the bot phase's
+    /// terminal utility needs the breakdown, and a human reading the
+    /// game-over screen does too.
     fn final_score_table(&self) -> String {
-        let mut out = String::from("Final scores:\n");
-        for (pid, score) in self.session.final_scores() {
-            out.push_str(&format!("  {:?}: {} VP\n", self.session.state().player(pid).color, score));
+        let result = self.session.final_result();
+        let state = self.session.state();
+        let mut out = format!("WINNER: {}\n", render::color_name(state.player(result.winner).color));
+        for s in &result.standings {
+            let b = &s.breakdown;
+            out.push_str(&format!(
+                "#{} {}: {} VP (base {} + church {} + customs {} + tech {} + country {} + remainder {})\n",
+                s.rank,
+                render::color_name(state.player(s.player).color),
+                b.total,
+                b.base_vp,
+                b.church,
+                b.customs,
+                b.technology,
+                b.country,
+                b.remainder,
+            ));
         }
         out
     }
@@ -875,6 +894,30 @@ mod tests {
         assert!(!applied, "GameOver must report applied = false, same as every other error");
         assert!(out.text.contains("game over"), "{}", out.text);
         assert!(!out.text.contains("Illegal"), "{}", out.text);
+    }
+
+    /// Task 10: once the game is over, `score` announces the winner and a
+    /// full per-player breakdown (`final_result`'s `ScoreBreakdown`), not
+    /// just a bare VP total -- this is the bot phase's terminal utility, so
+    /// the CLI needs to show the WHY behind the final number, not just the
+    /// number. Fixture mirrors
+    /// `finish_apply_ex_reports_game_over_plainly_not_illegal_prefixed`
+    /// immediately above.
+    #[test]
+    fn game_over_screen_announces_winner_and_breakdown() {
+        let mut state = create_test_game_state(2);
+        state.end_game_triggered = true;
+        state.final_round = true;
+        state.turn_phase = TurnPhase::TurnEnd;
+        state.current_player = PlayerId::new(1);
+        state.players[0].victory_points = 20;
+        state.players[1].victory_points = 5;
+        assert!(is_game_over(&state), "fixture must actually satisfy is_game_over");
+
+        let mut r = Repl::new(Session::for_test_from_state(state, Rules::empty_for_tests()));
+        let out = r.step("score");
+        assert!(out.text.contains("WINNER"), "{}", out.text);
+        assert!(out.text.contains("church"), "breakdown lines expected: {}", out.text);
     }
 
     /// A `Repl` wrapping a `Session::for_test_from_state`-constructed

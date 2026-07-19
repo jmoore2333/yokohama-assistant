@@ -320,6 +320,15 @@ impl Session {
         calculate_final_scores(&self.state, &self.rules.orders, &self.rules.techs)
     }
 
+    /// The full official result -- per-player `ScoreBreakdown` plus rank,
+    /// winner decided by the KB's clockwise tie-break (`final_result`,
+    /// scoring.rs). What the game-over screen (`Repl::score_text`) renders;
+    /// `final_scores` above stays as the flat `(player, total)` view for
+    /// callers that don't need the breakdown.
+    pub fn final_result(&self) -> GameResult {
+        final_result(&self.state, &self.rules)
+    }
+
     /// Best-effort write to `save_path` (`None` when unset, or when the
     /// write succeeds). A failure is returned rather than swallowed so the
     /// caller can surface it -- a silent autosave failure would mean a
