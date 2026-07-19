@@ -14,10 +14,15 @@
 //!
 //! Every fixture below drives through the public API only
 //! (`get_legal_moves`/`apply_move`/`push_choice` from a `create_test_game_state`
-//! or `new_game`-derived `GameState`) -- no helper internals from
-//! `game/choices.rs` or `game/actions/tracks.rs` are reused (those are
-//! crate-internal `#[cfg(test)]` fixtures this file cannot see anyway, since
-//! integration tests only compile the library's public surface).
+//! or `new_game`-derived `GameState`) -- a deliberate choice, not a
+//! visibility constraint (T15 final-review fix: the other helpers in
+//! `game/choices.rs`/`game/actions/tracks.rs`, e.g. `resolve_choice_move`,
+//! `place_church_assistant`, `place_customs_assistant`, are ordinary
+//! `pub fn`s, not `#[cfg(test)]`-hidden, and reachable from an integration
+//! test like this one via `yokohama_core::game::actions::...`). Sticking to
+//! the same handful of entry points a real caller (the CLI, a future bot)
+//! would use is what proves the choice-encoding behavior end-to-end through
+//! the actual public surface, rather than reaching around it.
 
 mod common;
 use common::run_random_game_observed;

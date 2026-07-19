@@ -371,12 +371,16 @@ impl Repl {
         self.finish_apply_ex(mv, reveals).0
     }
 
-    /// Same as `finish_apply`, but also reports whether the outcome was
-    /// specifically `ApplyError::Illegal` (Task 13) -- `reveal.rs`'s
-    /// `lock_on_order_desync`/`lock_on_tech_desync` need that to key their
-    /// skip-check on the error's TYPE (nothing actually applied, so there is
-    /// no board to re-check) rather than sniffing the formatted text for the
-    /// substring "Illegal:".
+    /// Same as `finish_apply`, but also reports whether the apply actually
+    /// SUCCEEDED (Task 13; inverted to `applied: bool` semantics in the
+    /// I1/I2/I3 final-review fix wave's cheap batch) -- `reveal.rs`'s
+    /// `lock_on_order_desync`/`lock_on_tech_desync` need that to skip their
+    /// post-apply board re-check whenever nothing actually changed. `applied`
+    /// covers EVERY error variant, not just `ApplyError::Illegal`: the
+    /// narrower `was_illegal` flag this replaces would have let a
+    /// `GameOver`/`Reveal` error slip through as "not illegal" and trigger a
+    /// false-positive desync lockdown against a board that was never
+    /// touched.
     pub(crate) fn finish_apply_ex(&mut self, mv: Move, reveals: Vec<RecordedEvent>) -> (StepOutput, bool) {
         match self.session.apply(mv, reveals) {
             Ok(delta) => {
@@ -388,7 +392,7 @@ impl Repl {
                     }
                     text.push_str(&self.final_score_table());
                 }
-                (self.out(text, false), false)
+                (self.out(text, false), true)
             }
             Err(ApplyError::Invariant(msg)) => {
                 self.locked = true;
@@ -396,10 +400,13 @@ impl Repl {
                 text.push_str(&self.lockdown_dump());
                 (self.out(text, false), false)
             }
-            Err(e) => {
-                let was_illegal = matches!(e, ApplyError::Illegal(_));
-                (self.out(format!("Illegal: {e}\n"), false), was_illegal)
-            }
+            // T13 rider (final-review cheap batch): a dedicated arm instead
+            // of falling into the catch-all's "Illegal: {e}" phrasing, which
+            // rendered ApplyError::GameOver's Display text ("the game is
+            // already over") as the confusing "Illegal: the game is already
+            // over".
+            Err(ApplyError::GameOver) => (self.out("game over — commands only\n".to_string(), false), false),
+            Err(e) => (self.out(format!("Illegal: {e}\n"), false), false),
         }
     }
 
@@ -794,6 +801,32 @@ mod tests {
         std::fs::remove_file(&path).ok();
 
         assert!(r.step("q").quit, "'q' must quit while locked, same as 'quit'");
+    }
+
+    /// T13 rider (final-review cheap batch): `finish_apply_ex`'s catch-all
+    /// used to render `ApplyError::GameOver` (Display: "the game is already
+    /// over") as the confusing "Illegal: the game is already over" -- a
+    /// dedicated match arm now reports it plainly instead. `Session::legal()`
+    /// naturally empties out once the game is over (`TurnPhase::TurnEnd`
+    /// offers no moves), so ordinary `step()` dispatch can never reach this
+    /// arm -- exercised directly against `finish_apply_ex`, `pub(crate)` for
+    /// exactly this kind of defensive-API coverage (same reasoning
+    /// `Session::apply`'s own `is_over()` gate documents). Fixture mirrors
+    /// `session.rs`'s `apply_on_finished_game_returns_typed_game_over`.
+    #[test]
+    fn finish_apply_ex_reports_game_over_plainly_not_illegal_prefixed() {
+        let mut state = create_test_game_state(2);
+        state.end_game_triggered = true;
+        state.final_round = true;
+        state.turn_phase = TurnPhase::TurnEnd;
+        state.current_player = PlayerId::new(1);
+        assert!(is_game_over(&state), "fixture must actually satisfy is_game_over");
+
+        let mut r = Repl::new(Session::for_test_from_state(state, Rules::empty_for_tests()));
+        let (out, applied) = r.finish_apply_ex(Move::EndAdditionalPhase, vec![]);
+        assert!(!applied, "GameOver must report applied = false, same as every other error");
+        assert!(out.text.contains("game over"), "{}", out.text);
+        assert!(!out.text.contains("Illegal"), "{}", out.text);
     }
 
     /// A `Repl` wrapping a `Session::for_test_from_state`-constructed

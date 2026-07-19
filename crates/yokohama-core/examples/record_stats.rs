@@ -17,7 +17,7 @@
 mod choice_metrics;
 
 use choice_metrics::ChoiceMetrics;
-use yokohama_core::{apply_move, finalize_setup, new_game, reconcile_setup, GameRecord, RecordedEvent, Rules};
+use yokohama_core::{finalize_setup, new_game, reconcile_setup, replay_from, GameRecord, RecordedEvent, Rules};
 
 fn main() {
     let args: Vec<String> = std::env::args().collect();
@@ -54,45 +54,24 @@ fn main() {
         std::process::exit(1);
     });
 
-    // Mirrors yokohama-core's own replay_from fold (game/record.rs) event by
-    // event, but calls metrics.observe on each Move BEFORE applying it --
-    // replay_from has no hook for that, and adding one would touch src/,
-    // out of scope for this task (disclosed in the Task 16 report).
+    // Calls replay_from per event (a length-1 slice), so the fold itself
+    // can never drift from yokohama-core's own replay logic (M4
+    // final-review fix: the previous version hand-duplicated replay_from's
+    // 5-arm match, a documented drift risk -- see the Task 16 report).
+    // metrics.observe runs on each Move BEFORE its event applies --
+    // replay_from has no hook for that, so it's still done here rather
+    // than folded into the same call; this is the one thing this loop
+    // still does that a single whole-slice replay_from(&state, &record.events, &rules)
+    // couldn't.
     let mut metrics = ChoiceMetrics::new();
     for (i, ev) in record.events.iter().enumerate() {
-        match ev {
-            RecordedEvent::Move(mv) => {
-                metrics.observe(&state, mv, &rules);
-                state = apply_move(&state, mv, &rules).unwrap_or_else(|e| {
-                    eprintln!("event {i}: apply_move failed: {e}");
-                    std::process::exit(1);
-                });
-            }
-            RecordedEvent::RevealOrders(cards) => {
-                state.arrange_orders_on_top(cards).unwrap_or_else(|e| {
-                    eprintln!("event {i}: arrange_orders_on_top failed: {e}");
-                    std::process::exit(1);
-                });
-            }
-            RecordedEvent::RevealTechs(cards) => {
-                state.arrange_techs_on_top(cards).unwrap_or_else(|e| {
-                    eprintln!("event {i}: arrange_techs_on_top failed: {e}");
-                    std::process::exit(1);
-                });
-            }
-            RecordedEvent::RevealStartingOrder { player, card } => {
-                state.reveal_starting_order(*player, *card).unwrap_or_else(|e| {
-                    eprintln!("event {i}: reveal_starting_order failed: {e}");
-                    std::process::exit(1);
-                });
-            }
-            RecordedEvent::RevealFivePowerToken { area, effect } => {
-                state.reveal_five_power_token(*area, *effect).unwrap_or_else(|e| {
-                    eprintln!("event {i}: reveal_five_power_token failed: {e}");
-                    std::process::exit(1);
-                });
-            }
+        if let RecordedEvent::Move(mv) = ev {
+            metrics.observe(&state, mv, &rules);
         }
+        state = replay_from(&state, std::slice::from_ref(ev), &rules).unwrap_or_else(|e| {
+            eprintln!("event {i}: {}", e.message);
+            std::process::exit(1);
+        });
     }
     // Some(&state): unlike selfplay's driver, this loop always ends holding
     // the real resulting GameState (whether or not the replayed game

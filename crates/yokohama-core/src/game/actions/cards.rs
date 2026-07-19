@@ -13,11 +13,6 @@ pub fn port_accessible_zones(power: u8) -> Vec<PortZone> {
     }
 }
 
-/// Does power 5 at Port grant bonus VP?
-pub fn port_power_5_bonus_vp(power: u8) -> u8 {
-    if power >= 5 { 3 } else { 0 }
-}
-
 /// Validate Port action. Cards are named by id (not slot, since slots shift
 /// under compaction/refill): each must be present on `port`, in a zone
 /// accessible at `power`, distinct from each other, within the ≤2-card and
@@ -515,12 +510,6 @@ mod tests {
             port_accessible_zones(4),
             vec![PortZone::Low, PortZone::Mid, PortZone::High]
         );
-    }
-
-    #[test]
-    fn test_port_power_5_bonus() {
-        assert_eq!(port_power_5_bonus_vp(4), 0);
-        assert_eq!(port_power_5_bonus_vp(5), 3);
     }
 
     #[test]
