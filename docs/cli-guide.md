@@ -1,6 +1,6 @@
 # Yokohama CLI — Tester's Guide
 
-*For the Phase-2 game driver (`yokohama-cli`), 2026-07-18. Audience: playtesters tracking or simulating games of Yokohama (Hisashi Hayashi, 2016). You need the physical rules in your head; this guide covers how the tool speaks about them — and **flags every place its language or behavior differs from the rulebook**.*
+*For the Phase-2 game driver (`yokohama-cli`), 2026-07-19. Audience: playtesters tracking or simulating games of Yokohama (Hisashi Hayashi, 2016). You need the physical rules in your head; this guide covers how the tool speaks about them — and **flags every place its language or behavior differs from the rulebook**.*
 
 ---
 
@@ -13,7 +13,7 @@ A terminal program backed by the full Yokohama rules engine. Two modes:
 
 The engine only ever offers **legal** moves. If the tool won't offer a move you believe is legal at the table, that is exactly the kind of bug this testing round exists to find — save the game and report it (§9).
 
-> **Testing-round caveat:** a handful of rules choices are auto-resolved in v1 (§8.6). Live-tracking a full physical game is expected to hit those spots; the follow-up "choice encoding" work removes them.
+> **Testing-round note:** this build carries the full choice-encoding + wizard-robustness work — every reward decision the rulebook gives you is a real prompt now (§8.6), the setup wizard re-asks indefinitely on bad input instead of aborting (§3), and the Canal can be crossed (§8.5). Live-tracking a full physical game start to finish is the point of this round — save and report anything that looks wrong (§9).
 
 ## 2. Running it
 
@@ -27,7 +27,7 @@ Rust toolchain required (plain `cargo` works on the project machine). The game a
 
 ## 3. The setup wizard
 
-Questions are asked one at a time. Each question allows **3 tries**; a third invalid answer aborts setup (rerun to start over). Answers in `[brackets]` are the literal things you type.
+Questions are asked one at a time. An invalid answer re-asks the SAME question and shows why (`  ! '<answer>' is not ...`) — there's no limit on retries. Typing `abort` (case-insensitive) at any question exits setup right away; that's the only other way out mid-wizard. Answers in `[brackets]` are the literal things you type.
 
 | Question | Answer |
 |---|---|
@@ -43,13 +43,20 @@ Questions are asked one at a time. Each question allows **3 tries**; a third inv
 **Live tail** (you're describing the physical table):
 
 1. Per seat: `known` (your own seat — then type its two dealt cards and the keep choice) or `hidden` (opponents whose starting order you can't see).
-2. **Tiles**: for each board cell, the area tile physically there, by abbreviation: `cm sm tp fg bank pa pb la lb ea ct ch cu canal` (§8.5 maps them).
-3. **Building-site cards**: per non-Canal cell, the site card's number `S<n>` or bare `n` (printed index on the card).
-4. **Achievements**: a numbered menu of all 12 is printed; type the shown name for each of the 3 in play (no duplicates).
-5. **Port contents**: the 6 order cards on Port A left→right as `O<n>`; Port B is only asked at 3-4 players.
-6. **Lab contents**: the 6 tech cards on Laboratory A left→right, by `T<id>` or a **name prefix** (prefer names — see §8.2); Lab B only at 4 players.
+2. **Tiles**: for each board cell, the area tile physically there, by abbreviation: `cm sm tp fg bank pa pb la lb ea ct ch cu canal` (§8.5 maps them). Checked live against the legal per-type tile count for this player count — e.g. a second `cm` at 2 players (which only ever has one Copper Mine) is refused on the spot with `no cm tiles remaining for this board`, not after the rest of the tail.
+3. **Building-site cards**: per non-Canal cell, the site card's number `S<n>` or bare `n` (printed index on the card) — checked against the registry and against every other site index already entered.
+4. **Achievements**: a numbered menu of all 12 is printed; type the shown name for each of the 3 in play (a duplicate is refused immediately).
+5. **Port contents**: the 6 order cards on Port A left→right as `O<n>`; Port B is only asked at 3-4 players. Each card is checked against the order registry and against every order id already entered anywhere — both seats' deals, Port A, and Port B share one duplicate check.
+6. **Lab contents**: the 6 tech cards on Laboratory A left→right, by `T<id>` or a **name prefix** (prefer names — see §8.2); Lab B only at 4 players. Checked the same way as orders, with Lab A and Lab B sharing one duplicate check. ⚠ **A name prefix matching more than one card still in play is REJECTED here** (`'<name>' matches more than one tech card -- use T<id>`) — type the exact `T<id>` instead. This is deliberately different from a live-mode reveal prompt (§6), which resolves the same kind of ambiguous prefix automatically to the lowest matching id: the wizard is recording which *physical* card sits where, so a genuine ambiguity has to be settled by you, not guessed.
 
-> **Quirk (known):** some typos (an order id that isn't in the deck, a duplicated card) are only caught at the *end* of the live tail, which aborts setup after all ~30 questions. Double-check card entries as you go. Fixing this is top of the follow-up backlog.
+Every card/tile/site answer above is validated the moment you type it — a bad entry re-asks that same question instead of surfacing at the end of the tail.
+
+**Review before you commit:** once every question is answered, the tool prints a full summary of everything entered so far (`--- Setup review ---`: mode, players, colors, start seat, seed, save path, plus the mode-specific tail) and asks `confirm / edit <section> / abort?`. Only `confirm` starts the game. `edit <section>` re-asks that section's questions from scratch — with the same live validation — then reprints the updated summary; repeat as many times as you like before confirming. Editable sections:
+
+- **live**: `colors`, `seed`, `save`, `deal <seat>`, `tiles`, `sites`, `achievements`, `porta`, `portb` (3-4p only), `laba`, `labb` (4p only)
+- **sim**: `colors`, `seed`, `save`, `deal <seat>`
+
+`mode`, `players`, and the start seat aren't editable sections — they decide the shape of everything asked after them (seat count, grid size, whether Port B/Lab B even exist), so changing one of those means aborting and rerunning the wizard from scratch. Editing `seed` in the **sim** tail re-derives the deal preview from the new seed and re-asks every seat's keep choice against it, so a keep answer never silently survives against a preview you no longer see; in the **live** tail, `seed` is only the save file's identity (plus a throwaway check the wizard uses to validate your tile answers, which doesn't actually depend on which seed you pick for a given player count), so editing it there doesn't re-ask anything else.
 
 ## 4. Playing: the prompt and entering moves
 
@@ -65,6 +72,18 @@ Header anatomy: turn number | whose turn | phase (§8.4) | money and VP | goods 
 
 **Choosing a move:** type the option's number. Long lists show 20 per page — `more` pages forward (wrapping), `list` returns to page 0.
 
+**Choice prompts:** some rewards leave you a decision — which good, which warehouse item, where to move an assistant, which Church/Customs space (full inventory in §8.6). Whenever one or more of these is queued, the phase slot in the header is replaced by a `Choose: ... — N choice(s) pending` banner naming the head choice, and the numbered list below is exactly that choice's options — nothing about entering them differs from any other phase. A captured example, mid-Church-visit:
+
+```
+Turn 1 | Red | Choose: Church space at faith 6 — 1 choice pending | 2 yen 0 VP | c0 s0 t1 f1 i0 | hand 1
+[0] Place on Church faith-4 space (3 VP)
+[1] Place on Church faith-5 space (4 VP)
+[2] Place on Church faith-6 space (5 VP)
+> enter a number, 'a'/'b' for placement, or a command ('help' for the list)
+```
+
+A choice that lets you decline (warehouse take, assistant move) adds `Decline the ...` as one more numbered option; a choice that's purely "which one" (any-good, Church space, Customs space) has none, because the rulebook doesn't give you one there either. Resolving a choice can queue another — picking the Church space above queues its movement-rider(s) next — and the `— N pending` count tracks how many are still stacked up.
+
 **Placement shorthand** (the one phase with too many options to number usefully):
 
 - `a` — place nothing (legal per the rules: 0–3 assistants)
@@ -74,6 +93,8 @@ Header anatomy: turn number | whose turn | phase (§8.4) | money and VP | goods 
 
 Order of ids in `a` doesn't matter; the tool matches your entry against the legal list and refuses anything the engine didn't offer.
 
+**Assistant-move shorthand** (for a pending assistant-move choice — the Movement icon's reward, §8.6): `m <from> <to>` instead of hunting the numbered list, where `<from>` is `hand` or the id of an area holding one of your own on-board assistants, and `<to>` is any area id. Continuing the transcript above once it cascades into an assistant-move choice: `m 8 9` moves the assistant sitting in area 8 to area 9; `m hand 9` moves one from hand to area 9. Like the placement shorthand, `m` only ever matches against the real legal list — a destination the reward doesn't actually allow gets the same rejection a wrong option number would, and there's no `m` shorthand for declining (use the numbered `Decline the assistant move` option). Bad input: `m` alone or `m <one token>` → `Usage: m <from> <to>`; a non-numeric area token → `'<tok>' is not a valid area number`; a well-formed area number that isn't actually offered — including one out of the board's 0-17 range (`m 8 99`), or using `m` when no assistant-move choice is pending at all — → `Illegal: that is not one of the legal assistant moves.` Unlike `a`/`b`, `m` doesn't separately range-check its area numbers first; an out-of-range one just falls through to that same generic rejection.
+
 ## 5. Commands
 
 ```
@@ -81,6 +102,7 @@ Order of ids in `a` doesn't matter; the tool matches your entry against the lega
 a [id id id]    Placement Option A: place 1 assistant in each of 0-3 areas
 b <id>          Placement Option B: place 2 assistants in one area
 b <id> t <adj>  Placement Option B with the Telegram bonus: +1 assistant in an adjacent area
+m <from> <to>   resolve a pending assistant-move choice (<from> is 'hand' or an area id)
 board           show the area grid
 players         show each player's resources, hand, tech, tokens, President
 ports           show both Port boards and the order-deck size
@@ -109,6 +131,8 @@ In live mode, whenever a move would draw hidden cards, the tool **does not apply
 - **Lab take** → the one refilled tech slot: enter `T<id>` or a unique **name prefix** (e.g. `postal`).
 - **5-Power token** (taken at 5 power) → one letter for the face-down token you flipped: `i` = 1 Imported Good, `c` = 2 Copper, `s` = 2 Silk, `t` = 3 Tea, `f` = 3 Seafood, `y` = 3 Yen.
 - `cancel` at any of these aborts the move entirely (nothing is applied or recorded).
+
+While one of these prompts is showing, everything you type is read as the answer to it, not as a command — numbered picks, `m`, and view commands like `board` don't work until the reveal is answered or you `cancel`. (These prompts are unrelated to the choice banner and `m` grammar in §4/§5: reveals are about typing in what physically appeared on a hidden card or token, not about deciding between options the engine already knows.)
 
 Once all reveals are typed, the move + reveals commit **as one atomic unit** — and one `undo` removes the whole unit.
 
@@ -161,9 +185,9 @@ The engine's canonical vocabulary differs from the rulebook's in places. **Diffe
 | `imp` / `i` | Imported Goods |
 | `yen` / `y` | Yen (money) |
 | `vp` | Victory Points |
-| ⚠ `wh` | The **Warehouse icon** (take 1 token from your Warehouse tile to hand, paying the Employment Agency cost). See §8.6 — v1 auto-resolves it. |
-| ⚠ `any` | An "any good of your choice" reward. See §8.6 — v1 auto-picks Copper. |
-| ⚠ `move` | The **Movement icon** (move an assistant). See §8.6 — v1 treats it as no effect. |
+| ⚠ `wh` | The **Warehouse icon** (take 1 token from your Warehouse tile to hand, paying the Employment Agency cost). A real choice prompt — see §8.6. |
+| ⚠ `any` | An "any good of your choice" reward. A real choice prompt — see §8.6. |
+| ⚠ `move` | The **Movement icon** (move an assistant). A real choice prompt (`m <from> <to>`, §4/§5) — see §8.6. |
 
 ### 8.4 Countries and turn phases
 
@@ -209,16 +233,20 @@ Building sites: `S03  [1vp 2vp+1yen - 2tea]  TH 8vp` = site card 3, its four sho
 
 Tracks (`tracks` view): Church spaces by faith value 4–11; Customs spaces 1–7 with printed goods-costs `[1,1,2,2,3,3,4]`. In 2-player games `X` marks the pre-blocked dummy space (Customs space 4). ⚠ **Known display gap:** the 2-player Church dummy block (faith-7 space) is *enforced by the engine but not marked in the `tracks` view* — it renders `-` (open). Don't be surprised when placement there isn't offered at 2p.
 
-### 8.6 ⚠ v1 behavior differences — the CLI will not offer some choices the rules give you
+**Canal crossing:** the Canal tile can never hold an assistant, a President, or a building — that part is unchanged — but President movement can now cross straight through it in a single hop, connecting whichever of its (up to) four flanking pairs actually exist on this board's grid: left↔right, up↔down, and both diagonals. A 3-player board's grid is only 2 rows, so it can only ever have the left↔right pair; a 4-player board's 3-row grid can have all four; 2-player games have no Canal tile at all. Each crossing costs 1 Yen to the bank — a separate, unconditional toll from the opponent-president pass-through fee (which instead goes to that president's owner) — and that includes the very first step out of the President's current area, if that step is itself a crossing. "Bent" transits (entering one flank and exiting anywhere but the exact opposite one) are illegal and never offered: the tool only ever builds the straight-through edges, so there's nothing bent to pick from in the first place. Telegram's adjacent-area placement bonus (§4) does not extend across a canal crossing — it still needs a physically adjoining tile.
 
-These are deliberate, logged engine limitations ("choice encoding" removes them next). **In a live game these are the spots where tracked state can drift from your table** — if one bites, note it and keep going if the auto-resolution happens to match what was played, or stop and report if it doesn't:
+### 8.6 Choice prompts — how reward decisions surface
 
-1. **"Any good" rewards auto-pick Copper.** The rules let you choose.
-2. **Warehouse-icon rewards auto-take 1 assistant** (free). The rules let you take an assistant, shophouse, or trading house at the Employment Agency cost.
-3. **Movement-icon rewards do nothing.** The rules move an assistant per icon.
-4. **Church and Customs placements auto-pick the space** (highest eligible faith space / higher-VP space of the cost pair). The rules let you choose any eligible space.
-5. **University, Textile Mill ("Spinning Mill"), and Telephone's Recovery choice are never offered** — their once-per-turn/optional effects have no move encoding yet. (Their passive cousins — Winery, Brickyard, Gaslight, Electrical Light, Stagecoach, Station, Tram, Postal System, etc. — all work.)
-6. The **5-Power Movement token** applies its existing recover-to-hand behavior rather than offering the full assistant-move choice.
+Every reward the rulebook lets you decide is a real prompt now (§4's `Choose: ... — N pending` banner), not an automatic pick. What queues, and how each resolves:
+
+1. **Any-good reward** (`any` in the compact reward text, §8.3): exactly 4 options — 1 copper, 1 silk, 1 tea, or 1 fish. No decline; only which good is optional, not the gain itself. Two any-good icons on the same reward queue and resolve separately, so you can pick a different good for each.
+2. **Warehouse-icon reward** (`wh`): up to 3 options — an assistant (free), a shophouse (2 yen), or a trading house (the printed 4/5/6/7 take price, whichever is next) — filtered to what's actually in your warehouse and what you can currently afford, plus an always-available `Decline the warehouse take`. The banner prices them live, e.g. `warehouse take (assistant free / shophouse 2¥ / TH 4¥)` on a fresh game's first take.
+3. **Movement-icon reward** (`move`): move one of your own assistants from hand or an on-board area to any other (non-Canal) area — resolve via the numbered list or the `m <from> <to>` shorthand (§4/§5) — or `Decline the assistant move`. One prompt per Movement icon; multiple icons on the same reward resolve independently, same as multiple any-good icons.
+4. **Church and Customs space choice**: after paying, if 2 or more spaces are legally open (Church: at your computed total faith; Customs: at the matching printed-cost pair), you pick which one — numbered by faith/space number and its VP. When only ONE space is open, the tool places you there automatically without a prompt — same as a table player who has no real choice either. A Church placement then queues its space's movement rider(s) as their own assistant-move choice(s), so a single Church visit can cascade through several stacked prompts (the `— N choice(s) pending` count tracks how many are left); a Customs space-1/space-3 placement similarly queues its warehouse-take rider(s).
+5. **Telephone's Recovery choice**: owning Telephone with ≥1 of your own assistants in the just-finished action's area pauses Recovery and asks whether to leave exactly 1 assistant there (`Leave 1 assistant behind (Telephone)`) or recover everyone as usual (`Recover all assistants from the action area`). Without Telephone — or with nothing there to leave — Recovery stays fully automatic, same as always.
+6. **University and Textile Mill ("Spinning Mill")**: no longer queued choices — they're standing options offered directly in both Additional-Action windows (§8.4), like any other move (`Use University: pay 1 yen, take an assistant from the warehouse`; `Use Textile Mill: discard 1 silk, gain 2 yen`), each usable once per turn.
+
+None of this touches the 5-Power token reveal menu (§6): the physical box check found the 20 tokens are only Import/Copper/Silk/Seafood/Tea/Yen faces — there's no "Movement" token in the real game, so the reveal letters stay exactly `i/c/s/t/f/y`.
 
 ## 9. Reporting problems
 

@@ -38,7 +38,7 @@
 <body>
 
 <h1>Yokohama CLI — Tester's Guide</h1>
-<p class="lede">For the Phase-2 game driver (<code>yokohama-cli</code>), 2026-07-18. Audience: playtesters tracking or simulating games of Yokohama (Hisashi Hayashi, 2016). You need the physical rules in your head; this guide covers how the tool speaks about them — and <strong>flags every place its language or behavior differs from the rulebook</strong> with a <span class="difftag">DIFFERS</span> tag.</p>
+<p class="lede">For the Phase-2 game driver (<code>yokohama-cli</code>), 2026-07-19. Audience: playtesters tracking or simulating games of Yokohama (Hisashi Hayashi, 2016). You need the physical rules in your head; this guide covers how the tool speaks about them — and <strong>flags every place its language or behavior differs from the rulebook</strong> with a <span class="difftag">DIFFERS</span> tag.</p>
 
 <h2>1. What this is</h2>
 <p>A terminal program backed by the full Yokohama rules engine. Two modes:</p>
@@ -47,7 +47,7 @@
   <li><strong>Live tracking</strong> — you play a <em>physical</em> game at the table and enter each move; the engine validates it, tracks all state, and asks you to type in cards as they're physically revealed (port refills, tech refills, 5-Power tokens, hidden starting orders).</li>
 </ul>
 <p>The engine only ever offers <strong>legal</strong> moves. If the tool won't offer a move you believe is legal at the table, that is exactly the kind of bug this testing round exists to find — save the game and report it (§9).</p>
-<div class="callout"><strong>Testing-round caveat:</strong> a handful of rules choices are auto-resolved in v1 (§8.6). Live-tracking a full physical game is expected to hit those spots; the follow-up "choice encoding" work removes them.</div>
+<div class="callout"><strong>Testing-round note:</strong> this build carries the full choice-encoding + wizard-robustness work — every reward decision the rulebook gives you is a real prompt now (§8.6), the setup wizard re-asks indefinitely on bad input instead of aborting (§3), and the Canal can be crossed (§8.5). Live-tracking a full physical game start to finish is the point of this round — save and report anything that looks wrong (§9).</div>
 
 <h2>2. Running it</h2>
 <pre><code># from the repo root
@@ -56,7 +56,7 @@ cargo run -p yokohama-cli -- save.json # resume a saved game</code></pre>
 <p>Rust toolchain required (plain <code>cargo</code> works on the project machine). The game autosaves after <strong>every</strong> applied move once a save path is set (the wizard sets one by default), so a crash loses at most the move you were typing — rerun with the save file to resume.</p>
 
 <h2>3. The setup wizard</h2>
-<p>Questions are asked one at a time. Each question allows <strong>3 tries</strong>; a third invalid answer aborts setup (rerun to start over).</p>
+<p>Questions are asked one at a time. An invalid answer re-asks the SAME question and shows why (<code>  ! '&lt;answer&gt;' is not ...</code>) — there's no limit on retries. Typing <code>abort</code> (case-insensitive) at any question exits setup right away; that's the only other way out mid-wizard.</p>
 <table>
   <tr><th>Question</th><th>Answer</th></tr>
   <tr><td>Mode</td><td><code>sim</code> or <code>live</code></td></tr>
@@ -70,13 +70,19 @@ cargo run -p yokohama-cli -- save.json # resume a saved game</code></pre>
 <p><strong>Live tail</strong> (you're describing the physical table):</p>
 <ol>
   <li>Per seat: <code>known</code> (your own seat — then type its two dealt cards and the keep choice) or <code>hidden</code> (opponents whose starting order you can't see).</li>
-  <li><strong>Tiles</strong>: for each board cell, the area tile physically there, by abbreviation: <code>cm sm tp fg bank pa pb la lb ea ct ch cu canal</code> (§8.5 maps them).</li>
-  <li><strong>Building-site cards</strong>: per non-Canal cell, the site card's number <code>S&lt;n&gt;</code> or bare <code>n</code> (printed index on the card).</li>
-  <li><strong>Achievements</strong>: a numbered menu of all 12 is printed; type the shown name for each of the 3 in play (no duplicates).</li>
-  <li><strong>Port contents</strong>: the 6 order cards on Port A left→right as <code>O&lt;n&gt;</code>; Port B is only asked at 3-4 players.</li>
-  <li><strong>Lab contents</strong>: the 6 tech cards on Laboratory A left→right, by <code>T&lt;id&gt;</code> or a <strong>name prefix</strong> (prefer names — see §8.2); Lab B only at 4 players.</li>
+  <li><strong>Tiles</strong>: for each board cell, the area tile physically there, by abbreviation: <code>cm sm tp fg bank pa pb la lb ea ct ch cu canal</code> (§8.5 maps them). Checked live against the legal per-type tile count for this player count — e.g. a second <code>cm</code> at 2 players (which only ever has one Copper Mine) is refused on the spot with <code>no cm tiles remaining for this board</code>, not after the rest of the tail.</li>
+  <li><strong>Building-site cards</strong>: per non-Canal cell, the site card's number <code>S&lt;n&gt;</code> or bare <code>n</code> (printed index on the card) — checked against the registry and against every other site index already entered.</li>
+  <li><strong>Achievements</strong>: a numbered menu of all 12 is printed; type the shown name for each of the 3 in play (a duplicate is refused immediately).</li>
+  <li><strong>Port contents</strong>: the 6 order cards on Port A left→right as <code>O&lt;n&gt;</code>; Port B is only asked at 3-4 players. Each card is checked against the order registry and against every order id already entered anywhere — both seats' deals, Port A, and Port B share one duplicate check.</li>
+  <li><strong>Lab contents</strong>: the 6 tech cards on Laboratory A left→right, by <code>T&lt;id&gt;</code> or a <strong>name prefix</strong> (prefer names — see §8.2); Lab B only at 4 players. Checked the same way as orders, with Lab A and Lab B sharing one duplicate check. <span class="difftag">DIFFERS</span> <strong>A name prefix matching more than one card still in play is REJECTED here</strong> (<code>'&lt;name&gt;' matches more than one tech card -- use T&lt;id&gt;</code>) — type the exact <code>T&lt;id&gt;</code> instead. This is deliberately different from a live-mode reveal prompt (§6), which resolves the same kind of ambiguous prefix automatically to the lowest matching id: the wizard is recording which <em>physical</em> card sits where, so a genuine ambiguity has to be settled by you, not guessed.</li>
 </ol>
-<div class="callout"><strong>Quirk (known):</strong> some typos (an order id that isn't in the deck, a duplicated card) are only caught at the <em>end</em> of the live tail, which aborts setup after all ~30 questions. Double-check card entries as you go. Fixing this is top of the follow-up backlog.</div>
+<p>Every card/tile/site answer above is validated the moment you type it — a bad entry re-asks that same question instead of surfacing at the end of the tail.</p>
+<p><strong>Review before you commit:</strong> once every question is answered, the tool prints a full summary of everything entered so far (<code>--- Setup review ---</code>: mode, players, colors, start seat, seed, save path, plus the mode-specific tail) and asks <code>confirm / edit &lt;section&gt; / abort?</code>. Only <code>confirm</code> starts the game. <code>edit &lt;section&gt;</code> re-asks that section's questions from scratch — with the same live validation — then reprints the updated summary; repeat as many times as you like before confirming. Editable sections:</p>
+<ul>
+  <li><strong>live</strong>: <code>colors</code>, <code>seed</code>, <code>save</code>, <code>deal &lt;seat&gt;</code>, <code>tiles</code>, <code>sites</code>, <code>achievements</code>, <code>porta</code>, <code>portb</code> (3-4p only), <code>laba</code>, <code>labb</code> (4p only)</li>
+  <li><strong>sim</strong>: <code>colors</code>, <code>seed</code>, <code>save</code>, <code>deal &lt;seat&gt;</code></li>
+</ul>
+<p><code>mode</code>, <code>players</code>, and the start seat aren't editable sections — they decide the shape of everything asked after them (seat count, grid size, whether Port B/Lab B even exist), so changing one of those means aborting and rerunning the wizard from scratch. Editing <code>seed</code> in the <strong>sim</strong> tail re-derives the deal preview from the new seed and re-asks every seat's keep choice against it, so a keep answer never silently survives against a preview you no longer see; in the <strong>live</strong> tail, <code>seed</code> is only the save file's identity (plus a throwaway check the wizard uses to validate your tile answers, which doesn't actually depend on which seed you pick for a given player count), so editing it there doesn't re-ask anything else.</p>
 
 <h2>4. Playing: the prompt and entering moves</h2>
 <p>Every screen ends with a status header, the numbered legal options, and a hint line:</p>
@@ -85,6 +91,13 @@ cargo run -p yokohama-cli -- save.json # resume a saved game</code></pre>
 &gt; enter a number, 'a'/'b' for placement, or a command ('help' for the list)</code></pre>
 <p>Header anatomy: turn number | whose turn | phase (§8.4) | money and VP | goods <code>c</code>opper <code>s</code>ilk <code>t</code>ea <code>f</code>ish(=Seafood) <code>i</code>mports | order cards in hand.</p>
 <p><strong>Choosing a move:</strong> type the option's number. Long lists show 20 per page — <code>more</code> pages forward (wrapping), <code>list</code> returns to page 0.</p>
+<p><strong>Choice prompts:</strong> some rewards leave you a decision — which good, which warehouse item, where to move an assistant, which Church/Customs space (full inventory in §8.6). Whenever one or more of these is queued, the phase slot in the header is replaced by a <code>Choose: ... — N choice(s) pending</code> banner naming the head choice, and the numbered list below is exactly that choice's options — nothing about entering them differs from any other phase. A captured example, mid-Church-visit:</p>
+<pre><code>Turn 1 | Red | Choose: Church space at faith 6 — 1 choice pending | 2 yen 0 VP | c0 s0 t1 f1 i0 | hand 1
+[0] Place on Church faith-4 space (3 VP)
+[1] Place on Church faith-5 space (4 VP)
+[2] Place on Church faith-6 space (5 VP)
+&gt; enter a number, 'a'/'b' for placement, or a command ('help' for the list)</code></pre>
+<p>A choice that lets you decline (warehouse take, assistant move) adds <code>Decline the ...</code> as one more numbered option; a choice that's purely "which one" (any-good, Church space, Customs space) has none, because the rulebook doesn't give you one there either. Resolving a choice can queue another — picking the Church space above queues its movement-rider(s) next — and the <code>— N pending</code> count tracks how many are still stacked up.</p>
 <p><strong>Placement shorthand</strong> (the one phase with too many options to number usefully):</p>
 <ul>
   <li><code>a</code> — place nothing (legal per the rules: 0–3 assistants)</li>
@@ -93,12 +106,14 @@ cargo run -p yokohama-cli -- save.json # resume a saved game</code></pre>
   <li><code>b 7 t 8</code> — Option B plus the <strong>Telegram</strong> tech bonus assistant in adjacent area 8</li>
 </ul>
 <p>Order of ids in <code>a</code> doesn't matter; the tool matches your entry against the legal list and refuses anything the engine didn't offer.</p>
+<p><strong>Assistant-move shorthand</strong> (for a pending assistant-move choice — the Movement icon's reward, §8.6): <code>m &lt;from&gt; &lt;to&gt;</code> instead of hunting the numbered list, where <code>&lt;from&gt;</code> is <code>hand</code> or the id of an area holding one of your own on-board assistants, and <code>&lt;to&gt;</code> is any area id. Continuing the transcript above once it cascades into an assistant-move choice: <code>m 8 9</code> moves the assistant sitting in area 8 to area 9; <code>m hand 9</code> moves one from hand to area 9. Like the placement shorthand, <code>m</code> only ever matches against the real legal list — a destination the reward doesn't actually allow gets the same rejection a wrong option number would, and there's no <code>m</code> shorthand for declining (use the numbered <code>Decline the assistant move</code> option). Bad input: <code>m</code> alone or <code>m &lt;one token&gt;</code> → <code>Usage: m &lt;from&gt; &lt;to&gt;</code>; a non-numeric area token → <code>'&lt;tok&gt;' is not a valid area number</code>; a well-formed area number that isn't actually offered — including one out of the board's 0-17 range (<code>m 8 99</code>), or using <code>m</code> when no assistant-move choice is pending at all — → <code>Illegal: that is not one of the legal assistant moves.</code> Unlike <code>a</code>/<code>b</code>, <code>m</code> doesn't separately range-check its area numbers first; an out-of-range one just falls through to that same generic rejection.</p>
 
 <h2>5. Commands</h2>
 <pre><code>&lt;number&gt;        apply the numbered legal option
 a [id id id]    Placement Option A: place 1 assistant in each of 0-3 areas
 b &lt;id&gt;          Placement Option B: place 2 assistants in one area
 b &lt;id&gt; t &lt;adj&gt;  Placement Option B with the Telegram bonus: +1 assistant in an adjacent area
+m &lt;from&gt; &lt;to&gt;   resolve a pending assistant-move choice (&lt;from&gt; is 'hand' or an area id)
 board           show the area grid
 players         show each player's resources, hand, tech, tokens, President
 ports           show both Port boards and the order-deck size
@@ -125,6 +140,7 @@ quit            exit the REPL</code></pre>
   <li><strong>5-Power token</strong> (taken at 5 power) → one letter for the face-down token you flipped: <code>i</code> = 1 Imported Good, <code>c</code> = 2 Copper, <code>s</code> = 2 Silk, <code>t</code> = 3 Tea, <code>f</code> = 3 Seafood, <code>y</code> = 3 Yen.</li>
   <li><code>cancel</code> at any of these aborts the move entirely (nothing is applied or recorded).</li>
 </ul>
+<p>While one of these prompts is showing, everything you type is read as the answer to it, not as a command — numbered picks, <code>m</code>, and view commands like <code>board</code> don't work until the reveal is answered or you <code>cancel</code>. (These prompts are unrelated to the choice banner and <code>m</code> grammar in §4/§5: reveals are about typing in what physically appeared on a hidden card or token, not about deciding between options the engine already knows.)</p>
 <p>Once all reveals are typed, the move + reveals commit <strong>as one atomic unit</strong> — and one <code>undo</code> removes the whole unit.</p>
 <p><strong>Hidden starting orders:</strong> when an opponent's starting order becomes public at the table (they fulfill it), enter <code>reveal &lt;seat&gt; O&lt;n&gt;</code> — e.g. <code>reveal 1 O23</code> → <code>Seat 1 revealed O23 as their starting order.</code></p>
 <p><strong>Desync guard:</strong> after applying, the tool verifies the typed cards are really where the board says. If not, you'll see:</p>
@@ -169,9 +185,9 @@ quit            exit the REPL</code></pre>
   <tr><td><code>imp</code> / <code>i</code></td><td>Imported Goods</td></tr>
   <tr><td><code>yen</code> / <code>y</code></td><td>Yen (money)</td></tr>
   <tr><td><code>vp</code></td><td>Victory Points</td></tr>
-  <tr class="warn"><td><code>wh</code></td><td><span class="difftag">DIFFERS</span> The <strong>Warehouse icon</strong> (take 1 token from your Warehouse tile to hand, paying the Employment Agency cost). See §8.6 — v1 auto-resolves it.</td></tr>
-  <tr class="warn"><td><code>any</code></td><td><span class="difftag">DIFFERS</span> An "any good of your choice" reward. See §8.6 — v1 auto-picks Copper.</td></tr>
-  <tr class="warn"><td><code>move</code></td><td><span class="difftag">DIFFERS</span> The <strong>Movement icon</strong> (move an assistant). See §8.6 — v1 treats it as no effect.</td></tr>
+  <tr class="warn"><td><code>wh</code></td><td><span class="difftag">DIFFERS</span> The <strong>Warehouse icon</strong> (take 1 token from your Warehouse tile to hand, paying the Employment Agency cost). A real choice prompt — see §8.6.</td></tr>
+  <tr class="warn"><td><code>any</code></td><td><span class="difftag">DIFFERS</span> An "any good of your choice" reward. A real choice prompt — see §8.6.</td></tr>
+  <tr class="warn"><td><code>move</code></td><td><span class="difftag">DIFFERS</span> The <strong>Movement icon</strong> (move an assistant). A real choice prompt (<code>m &lt;from&gt; &lt;to&gt;</code>, §4/§5) — see §8.6.</td></tr>
 </table>
 
 <h3>8.4 Countries and turn phases</h3>
@@ -208,17 +224,19 @@ quit            exit the REPL</code></pre>
 <p>Board-grid cells also show: <code>P:</code> line (Presidents present, by color letter), assistants (<code>R2 B1</code> = 2 red, 1 blue), buildings (<code>sh RB | th Y</code> = shophouses by owner color, trading house owner), and <code>*</code> = this area's 5-Power token is still unclaimed.</p>
 <p>Building sites: <code>S03  [1vp 2vp+1yen - 2tea]  TH 8vp</code> = site card 3, its four shophouse spaces' printed rewards (top-left, top-right, mid-left, mid-right; <code>-</code> = blank), and the trading-house VP.</p>
 <p>Tracks (<code>tracks</code> view): Church spaces by faith value 4–11; Customs spaces 1–7 with printed goods-costs <code>[1,1,2,2,3,3,4]</code>. In 2-player games <code>X</code> marks the pre-blocked dummy space (Customs space 4). <span class="difftag">DIFFERS</span> <strong>Known display gap:</strong> the 2-player Church dummy block (faith-7 space) is <em>enforced by the engine but not marked in the <code>tracks</code> view</em> — it renders <code>-</code> (open). Don't be surprised when placement there isn't offered at 2p.</p>
+<p><strong>Canal crossing:</strong> the Canal tile can never hold an assistant, a President, or a building — that part is unchanged — but President movement can now cross straight through it in a single hop, connecting whichever of its (up to) four flanking pairs actually exist on this board's grid: left↔right, up↔down, and both diagonals. A 3-player board's grid is only 2 rows, so it can only ever have the left↔right pair; a 4-player board's 3-row grid can have all four; 2-player games have no Canal tile at all. Each crossing costs 1 Yen to the bank — a separate, unconditional toll from the opponent-president pass-through fee (which instead goes to that president's owner) — and that includes the very first step out of the President's current area, if that step is itself a crossing. "Bent" transits (entering one flank and exiting anywhere but the exact opposite one) are illegal and never offered: the tool only ever builds the straight-through edges, so there's nothing bent to pick from in the first place. Telegram's adjacent-area placement bonus (§4) does not extend across a canal crossing — it still needs a physically adjoining tile.</p>
 
-<h3>8.6 <span class="difftag">DIFFERS</span> v1 behavior differences — the CLI will not offer some choices the rules give you</h3>
-<p>These are deliberate, logged engine limitations ("choice encoding" removes them next). <strong>In a live game these are the spots where tracked state can drift from your table</strong> — if one bites, note it and keep going if the auto-resolution happens to match what was played, or stop and report if it doesn't:</p>
+<h3>8.6 Choice prompts — how reward decisions surface</h3>
+<p>Every reward the rulebook lets you decide is a real prompt now (§4's <code>Choose: ... — N pending</code> banner), not an automatic pick. What queues, and how each resolves:</p>
 <ol>
-  <li><strong>"Any good" rewards auto-pick Copper.</strong> The rules let you choose.</li>
-  <li><strong>Warehouse-icon rewards auto-take 1 assistant</strong> (free). The rules let you take an assistant, shophouse, or trading house at the Employment Agency cost.</li>
-  <li><strong>Movement-icon rewards do nothing.</strong> The rules move an assistant per icon.</li>
-  <li><strong>Church and Customs placements auto-pick the space</strong> (highest eligible faith space / higher-VP space of the cost pair). The rules let you choose any eligible space.</li>
-  <li><strong>University, Textile Mill ("Spinning Mill"), and Telephone's Recovery choice are never offered</strong> — their once-per-turn/optional effects have no move encoding yet. (Their passive cousins — Winery, Brickyard, Gaslight, Electrical Light, Stagecoach, Station, Tram, Postal System, etc. — all work.)</li>
-  <li>The <strong>5-Power Movement token</strong> applies its existing recover-to-hand behavior rather than offering the full assistant-move choice.</li>
+  <li><strong>Any-good reward</strong> (<code>any</code> in the compact reward text, §8.3): exactly 4 options — 1 copper, 1 silk, 1 tea, or 1 fish. No decline; only which good is optional, not the gain itself. Two any-good icons on the same reward queue and resolve separately, so you can pick a different good for each.</li>
+  <li><strong>Warehouse-icon reward</strong> (<code>wh</code>): up to 3 options — an assistant (free), a shophouse (2 yen), or a trading house (the printed 4/5/6/7 take price, whichever is next) — filtered to what's actually in your warehouse and what you can currently afford, plus an always-available <code>Decline the warehouse take</code>. The banner prices them live, e.g. <code>warehouse take (assistant free / shophouse 2¥ / TH 4¥)</code> on a fresh game's first take.</li>
+  <li><strong>Movement-icon reward</strong> (<code>move</code>): move one of your own assistants from hand or an on-board area to any other (non-Canal) area — resolve via the numbered list or the <code>m &lt;from&gt; &lt;to&gt;</code> shorthand (§4/§5) — or <code>Decline the assistant move</code>. One prompt per Movement icon; multiple icons on the same reward resolve independently, same as multiple any-good icons.</li>
+  <li><strong>Church and Customs space choice</strong>: after paying, if 2 or more spaces are legally open (Church: at your computed total faith; Customs: at the matching printed-cost pair), you pick which one — numbered by faith/space number and its VP. When only ONE space is open, the tool places you there automatically without a prompt — same as a table player who has no real choice either. A Church placement then queues its space's movement rider(s) as their own assistant-move choice(s), so a single Church visit can cascade through several stacked prompts (the <code>— N choice(s) pending</code> count tracks how many are left); a Customs space-1/space-3 placement similarly queues its warehouse-take rider(s).</li>
+  <li><strong>Telephone's Recovery choice</strong>: owning Telephone with ≥1 of your own assistants in the just-finished action's area pauses Recovery and asks whether to leave exactly 1 assistant there (<code>Leave 1 assistant behind (Telephone)</code>) or recover everyone as usual (<code>Recover all assistants from the action area</code>). Without Telephone — or with nothing there to leave — Recovery stays fully automatic, same as always.</li>
+  <li><strong>University and Textile Mill ("Spinning Mill")</strong>: no longer queued choices — they're standing options offered directly in both Additional-Action windows (§8.4), like any other move (<code>Use University: pay 1 yen, take an assistant from the warehouse</code>; <code>Use Textile Mill: discard 1 silk, gain 2 yen</code>), each usable once per turn.</li>
 </ol>
+<p>None of this touches the 5-Power token reveal menu (§6): the physical box check found the 20 tokens are only Import/Copper/Silk/Seafood/Tea/Yen faces — there's no "Movement" token in the real game, so the reveal letters stay exactly <code>i/c/s/t/f/y</code>.</p>
 
 <h2>9. Reporting problems</h2>
 <p>Every save file is a complete reproduction: seed + setup + every move/reveal. When something looks wrong:</p>
