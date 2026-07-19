@@ -10,6 +10,24 @@ pub fn apply_move(state: &GameState, mv: &Move, rules: &Rules) -> Result<GameSta
 
     match mv {
         Move::EndAdditionalPhase => {
+            // apply_move is the pure authoritative API (a Phase-3 bot, or a
+            // tampered record, may call it directly, not just via
+            // legal-move pre-filtering) -- self-defended here the same way
+            // UseUniversity/UseSpinningMill defend their once-per-turn flag
+            // and apply_mercenary defends mercenary_used (T7 precedent):
+            // ending the phase with a choice still queued would advance
+            // the turn (handing off to the next player, in the
+            // AdditionalActionSecond case) while a reward from THIS turn
+            // is still unresolved, so a later resolution of the stale
+            // queue would misgrant it to the wrong player (design §5.1
+            // queue invariant, I1(a) final-review fix). The queue-first
+            // gate in get_legal_moves never offers EndAdditionalPhase
+            // mid-queue, so this is unreachable under legal-list play.
+            if !new_state.pending_choices.is_empty() {
+                return Err(MoveError::RuleViolation(
+                    "Cannot end the additional-action phase with a pending choice unresolved",
+                ));
+            }
             advance_phase(&mut new_state, Some(&rules.techs));
         }
 
@@ -1150,6 +1168,31 @@ mod tests {
 
         advance_phase(&mut state, None);
         assert_eq!(state.turn_phase, TurnPhase::Placement);
+    }
+
+    /// I1(a) final-review fix (design §5.1 queue invariant): apply_move is
+    /// the pure authoritative API (a Phase-3 bot, or a tampered record, may
+    /// call it directly, not just via legal-move pre-filtering) -- ending
+    /// the additional-action phase with a choice still queued would
+    /// advance the turn (hand off to the next player, in the
+    /// AdditionalActionSecond case) while a reward from THIS turn is still
+    /// unresolved, so a later resolution of the stale queue would
+    /// misgrant it to the wrong player. Mirrors UseUniversity/
+    /// UseSpinningMill's self-defended once-per-turn gate (T7) / apply_mercenary's
+    /// self-defended mercenary_used gate: the queue-first gate in
+    /// get_legal_moves never offers EndAdditionalPhase while
+    /// pending_choices is non-empty, so this never actually fires under
+    /// legal-list play.
+    #[test]
+    fn end_additional_phase_rejected_with_pending_choice_queued() {
+        let mut state = create_minimal_state(2);
+        state.turn_phase = TurnPhase::AdditionalActionFirst;
+        state.pending_choices.push(PendingChoice::AnyGood);
+        let rules = Rules::empty_for_tests();
+
+        let result = apply_move(&state, &Move::EndAdditionalPhase, &rules);
+        assert!(matches!(result, Err(MoveError::RuleViolation(_))), "{result:?}");
+        assert_eq!(state.turn_phase, TurnPhase::AdditionalActionFirst, "original state must be untouched");
     }
 
     #[test]
