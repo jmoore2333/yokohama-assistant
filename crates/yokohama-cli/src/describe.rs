@@ -290,6 +290,9 @@ pub fn describe_move(mv: &Move, state: &GameState, rules: &Rules) -> String {
         Move::ChooseChurchSpace { space } => {
             format!("Place on Church faith-{space} space ({} VP)", ChurchTrack::vp_reward(*space))
         }
+        Move::ChooseCustomsSpace { space } => {
+            format!("Place on Customs space {space} ({} VP)", CustomsTrack::vp_reward(*space))
+        }
     }
 }
 
@@ -392,6 +395,16 @@ mod tests {
         assert_eq!(
             describe_move(&Move::ChooseChurchSpace { space: 6 }, &state, &rules),
             format!("Place on Church faith-6 space ({} VP)", ChurchTrack::vp_reward(6))
+        );
+    }
+
+    #[test]
+    fn customs_space_choice_reads_as_plain_words_with_vp() {
+        let state = state_2p();
+        let rules = Rules::standard();
+        assert_eq!(
+            describe_move(&Move::ChooseCustomsSpace { space: 3 }, &state, &rules),
+            format!("Place on Customs space 3 ({} VP)", CustomsTrack::vp_reward(3))
         );
     }
 

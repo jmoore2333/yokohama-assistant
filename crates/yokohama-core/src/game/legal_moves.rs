@@ -587,16 +587,18 @@ fn generate_church_actions(state: &GameState, player: PlayerId, power: u8, area:
 /// 1..=`customs_max_imported_goods(power)` for which the player both can
 /// legally pay it (`validate_customs_action`, which also gates on assistant
 /// availability - hand OR the acting area itself) and an eligible empty
-/// track space exists (`eligible_customs_space_for_cost`) -- reusing both
-/// pure executor helpers directly so enumeration can never drift from
-/// `execute_customs_action`'s own acceptance criteria. Skip is always
-/// legal and always offered (Task 16/17 decision-log optionality ruling).
+/// track space exists (`eligible_customs_spaces_for_cost` -- feasibility
+/// only, not WHICH space; Task 5 defers that pick to a `ChooseCustomsSpace`
+/// follow-up move when >=2 qualify) -- reusing both pure executor helpers
+/// directly so enumeration can never drift from `execute_customs_action`'s
+/// own acceptance criteria. Skip is always legal and always offered (Task
+/// 16/17 decision-log optionality ruling).
 fn generate_customs_actions(state: &GameState, player: PlayerId, power: u8, area: AreaId) -> Vec<Move> {
     let mut moves = Vec::new();
 
     for n in 1..=customs_max_imported_goods(power) {
         if validate_customs_action(state, player, area, n, power).is_ok()
-            && eligible_customs_space_for_cost(&state.customs_track, n, state.config.player_count).is_some()
+            && !eligible_customs_spaces_for_cost(&state.customs_track, n, state.config.player_count).is_empty()
         {
             moves.push(Move::ExecuteAreaAction { action: AreaAction::Customs { imported_goods_paid: n } });
         }

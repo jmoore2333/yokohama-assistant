@@ -38,6 +38,29 @@ fn has_church_or_customs_assistant(p: &PlayerState, area: AreaId) -> bool {
     p.assistants.in_hand >= 1 || p.assistants.in_area(area) >= 1
 }
 
+/// Resolve the Area the current Church/Customs action is acting at: the
+/// mercenary target area during a mercenary sub-turn (mercenary sub-turns
+/// bypass the President entirely), else the President's on-board location.
+/// Shared by both executors AND both placement tails (Task 5 review item
+/// 7 -- previously duplicated inline at all four sites) so the
+/// mercenary-aware idiom exists in exactly one place. Executors propagate
+/// the `Err` (recoverable -- the action is simply illegal); placement
+/// tails call this in a LATER `apply_move` (after a deferred choice), where
+/// the queue-first gate in `get_legal_moves` guarantees neither
+/// `is_mercenary_action`/`mercenary_target_area` nor `president_location`
+/// can have drifted since the executor already validated them, so they
+/// `.expect(...)` instead.
+fn resolve_acting_area(state: &GameState, player: PlayerId) -> Result<AreaId, &'static str> {
+    if state.is_mercenary_action {
+        state.mercenary_target_area.ok_or("No mercenary target area")
+    } else {
+        match state.player(player).president_location {
+            PresidentLocation::OnBoard(a) => Ok(a),
+            _ => Err("President not on board"),
+        }
+    }
+}
+
 /// Calculate Faith value from power. Faith scales LINEARLY with power:
 /// 1,2,3,4,5 (capped at 5 for power above 5). Jeremy-adjudicated
 /// 2026-07-17: the rulebook's "2 Power: 1 Faith" text is a typo.
@@ -166,14 +189,7 @@ pub fn execute_church_action(
     imported_good: bool,
     rules: &Rules,
 ) -> Result<(), &'static str> {
-    let area = if state.is_mercenary_action {
-        state.mercenary_target_area.ok_or("No mercenary target area")?
-    } else {
-        match state.player(player).president_location {
-            PresidentLocation::OnBoard(a) => a,
-            _ => return Err("President not on board"),
-        }
-    };
+    let area = resolve_acting_area(state, player)?;
     match state.board_layout.areas.get(&area).map(|c| c.area_type) {
         Some(AreaType::Church) => {}
         _ => return Err("Church action requires the Church area"),
@@ -211,21 +227,15 @@ pub fn execute_church_action(
 /// `execute_church_action` (exactly one eligible space) or from
 /// `ChooseChurchSpace` resolution (`game::choices::resolve_choice_move`).
 /// Consumes the assistant (hand-preferred, acting-area fallback per I3 —
-/// the acting area is resolved via the SAME mercenary-aware idiom
-/// `execute_church_action` uses, since a deferred resolution can land in a
+/// the acting area is resolved via the shared `resolve_acting_area` helper
+/// (Task 5 review item 7), since a deferred resolution can land in a
 /// later `apply_move` call after the triggering action), records the slot
 /// with arrival order, awards the space's VP plus Winery bonus per owned
 /// copy, then queues the space's movement riders (`ChurchTrack::movement_rider`)
 /// as `AssistantMove` choices (design 2026-07-18 §5.2).
 pub fn place_church_assistant(state: &mut GameState, player: PlayerId, space: u8, rules: &Rules) {
-    let area = if state.is_mercenary_action {
-        state.mercenary_target_area.expect("mercenary sub-turn always has a target area")
-    } else {
-        match state.player(player).president_location {
-            PresidentLocation::OnBoard(a) => a,
-            _ => unreachable!("execute_church_action already validated the president is on board"),
-        }
-    };
+    let area = resolve_acting_area(state, player)
+        .expect("execute_church_action already validated the acting area; queue-first gating makes drift impossible here");
 
     // Computed via immutable borrow before any mutation below.
     let winery_bonus = church_vp_bonus(state, player, &rules.techs);
@@ -292,44 +302,52 @@ pub fn validate_customs_action(
     Ok(())
 }
 
-/// Empty Customs space for an exact printed cost, preferring the higher-VP
-/// (leftmost) space of the matching pair and falling back to the other
-/// space of the pair if it's occupied (cost 4 has no pair -- space 7
-/// alone). In 2-player games space 4 (VP 9) is pre-blocked by a printed
-/// dummy pawn -- an eligibility rule, not a `slots` entry, mirroring the
-/// Church faith-7 2P block so arrival order and the end-trigger assistant
-/// count stay untouched. Returns `None` if `cost` doesn't match a printed
+/// Empty, unblocked Customs spaces for an exact printed cost, ordered
+/// LOWER SPACE NUMBER FIRST (which is VP-descending for every printed pair
+/// -- unlike Church, where higher space numbers carry higher VP). In
+/// 2-player games space 4 (VP 9) is pre-blocked by a printed dummy pawn --
+/// an eligibility rule, not a `slots` entry, mirroring the Church faith-7
+/// 2P block so arrival order and the end-trigger assistant count stay
+/// untouched. Returns an empty `Vec` if `cost` doesn't match a printed
 /// cost, or every candidate space is occupied/blocked.
 ///
-/// `pub` (Task 17): reused directly by the Customs legal-move generator so
-/// enumeration can never drift from `execute_customs_action`'s own
-/// acceptance criteria.
-pub fn eligible_customs_space_for_cost(track: &CustomsTrack, cost: u8, player_count: u8) -> Option<u8> {
-    let candidates = CustomsTrack::spaces_for_cost(cost)?;
-    candidates.iter().copied().find(|&space| {
+/// `pub`: reused directly by the Customs legal-move generator (feasibility
+/// only) and by `execute_customs_action` / the `CustomsSpace` choice
+/// generator (the actual candidate set), so enumeration can never drift
+/// from the executor's own acceptance criteria. Supersedes
+/// `eligible_customs_space_for_cost` (Task 17): choosing the higher-VP
+/// space of a pair is no longer auto-decided by the executor -- Task 5
+/// defers that pick to the player via `PendingChoice::CustomsSpace`
+/// whenever >=2 spaces qualify.
+pub fn eligible_customs_spaces_for_cost(track: &CustomsTrack, cost: u8, player_count: u8) -> Vec<u8> {
+    let candidates = match CustomsTrack::spaces_for_cost(cost) {
+        Some(c) => c,
+        None => return Vec::new(),
+    };
+    candidates.iter().copied().filter(|&space| {
         if player_count == 2 && space == 4 {
             return false;
         }
         let index = CustomsTrack::space_to_index(space).expect("space always in 1..=7");
         track.slots[index].is_none()
-    })
+    }).collect()
 }
 
 /// Execute Customs action: resolve the acting area (mirrors
 /// `execute_church_action` -- a mercenary sub-turn acts at the mercenary
-/// target area, not the president's), validate the payment and assistant,
-/// find the eligible space for the exact printed cost (auto-placing on the
-/// higher-VP/leftmost space of the matching pair), pay imported goods,
-/// lock the assistant, award VP (plus Brickyard bonus per owned copy), and
-/// apply the space's rider -- warehouse-takes and/or Yen. Warehouse-takes
-/// queue a `PendingChoice::WarehouseTake` per take via `push_choice`, the
-/// same mechanism order/space Warehouse-icon rewards use (design 2026-07-18
-/// §5.2; no new reward machinery).
+/// target area, not the president's; via the shared `resolve_acting_area`
+/// helper, Task 5 review item 7), validate the payment and assistant,
+/// compute the eligible spaces for the exact printed cost, pay imported
+/// goods, and either place inline (exactly one eligible space) or defer
+/// the pick to the player via `PendingChoice::CustomsSpace` (design
+/// 2026-07-18 §5.2, Task 5) -- the assistant is NOT consumed yet in the
+/// deferred case; see `place_customs_assistant`.
 ///
 /// If the payment doesn't exactly match a printed cost, every space at
-/// that cost is occupied or blocked, or the player has no assistant in
-/// hand, the action is ILLEGAL (v1 semantic, same as Church: imported
-/// goods are never paid for a placement that doesn't happen).
+/// that cost is occupied or blocked, or the player has no assistant
+/// available (hand or acting area), the action is ILLEGAL (v1 semantic,
+/// same as Church: imported goods are never paid for a placement that
+/// doesn't happen).
 pub fn execute_customs_action(
     state: &mut GameState,
     player: PlayerId,
@@ -337,14 +355,7 @@ pub fn execute_customs_action(
     imported_goods_paid: u8,
     rules: &Rules,
 ) -> Result<(), &'static str> {
-    let area = if state.is_mercenary_action {
-        state.mercenary_target_area.ok_or("No mercenary target area")?
-    } else {
-        match state.player(player).president_location {
-            PresidentLocation::OnBoard(a) => a,
-            _ => return Err("President not on board"),
-        }
-    };
+    let area = resolve_acting_area(state, player)?;
     match state.board_layout.areas.get(&area).map(|c| c.area_type) {
         Some(AreaType::Customs) => {}
         _ => return Err("Customs action requires the Customs area"),
@@ -352,28 +363,60 @@ pub fn execute_customs_action(
 
     validate_customs_action(state, player, area, imported_goods_paid, power)?;
 
-    let target_space = eligible_customs_space_for_cost(
+    let spaces = eligible_customs_spaces_for_cost(
         &state.customs_track,
         imported_goods_paid,
         state.config.player_count,
-    )
-    .ok_or("No eligible Customs space for this payment")?;
+    );
+    if spaces.is_empty() {
+        return Err("No eligible Customs space for this payment");
+    }
+
+    // Pay imported goods now, regardless of whether placement resolves
+    // inline below or is deferred behind a CustomsSpace choice -- the
+    // player already committed these when taking the action.
+    let p = state.player_mut(player);
+    p.imported_goods -= imported_goods_paid as u32;
+
+    match spaces.len() {
+        0 => unreachable!("validated non-empty above"),
+        1 => place_customs_assistant(state, player, spaces[0], rules),
+        _ => state.pending_choices.push(PendingChoice::CustomsSpace { cost: imported_goods_paid }),
+    }
+
+    Ok(())
+}
+
+/// Placement tail for a resolved Customs space: called either inline from
+/// `execute_customs_action` (exactly one eligible space) or from
+/// `ChooseCustomsSpace` resolution (`game::choices::resolve_choice_move`).
+/// Consumes the assistant (hand-preferred, acting-area fallback per I3 --
+/// the acting area is resolved via the shared `resolve_acting_area` helper,
+/// since a deferred resolution can land in a later `apply_move` call after
+/// the triggering action), records the slot with arrival order, awards the
+/// space's VP plus Brickyard bonus per owned copy, applies the space's Yen
+/// rider immediately, then queues the space's warehouse-take rider
+/// (`CustomsTrack::rider`) as `WarehouseTake` choices via `push_choice` --
+/// the same mechanism order/space Warehouse-icon rewards use (design
+/// 2026-07-18 §5.2, Task 5; no new reward machinery).
+pub fn place_customs_assistant(state: &mut GameState, player: PlayerId, space: u8, rules: &Rules) {
+    let area = resolve_acting_area(state, player)
+        .expect("execute_customs_action already validated the acting area; queue-first gating makes drift impossible here");
 
     // Computed via immutable borrows before any mutation below.
     let brickyard_bonus = customs_vp_bonus(state, player, &rules.techs);
-    let base_vp = CustomsTrack::vp_reward(target_space) as u32;
-    let (warehouse_takes, yen_rider) = CustomsTrack::rider(target_space);
-    let index = CustomsTrack::space_to_index(target_space).expect("target_space always in 1..=7");
+    let base_vp = CustomsTrack::vp_reward(space) as u32;
+    let (warehouse_takes, yen_rider) = CustomsTrack::rider(space);
+    let index = CustomsTrack::space_to_index(space).expect("space always in 1..=7");
     let arrival_order = state.customs_track.next_arrival_order;
 
     state.customs_track.slots[index] = Some(CustomsSlot { player, arrival_order });
     state.customs_track.next_arrival_order += 1;
 
     let p = state.player_mut(player);
-    p.imported_goods -= imported_goods_paid as u32;
     take_church_or_customs_assistant(p, area);
     p.assistants.on_customs += 1;
-    p.customs_positions.push(target_space);
+    p.customs_positions.push(space);
     p.victory_points += base_vp + brickyard_bonus;
     p.money += yen_rider as u32;
 
@@ -384,8 +427,6 @@ pub fn execute_customs_action(
     for _ in 0..warehouse_takes {
         push_choice(state, PendingChoice::WarehouseTake, rules);
     }
-
-    Ok(())
 }
 
 #[cfg(test)]
@@ -1074,47 +1115,47 @@ mod tests {
     }
 
     #[test]
-    fn test_eligible_customs_space_for_cost_basic() {
+    fn test_eligible_customs_spaces_for_cost_basic() {
         let track = CustomsTrack::new();
-        assert_eq!(eligible_customs_space_for_cost(&track, 1, 3), Some(1));
-        assert_eq!(eligible_customs_space_for_cost(&track, 2, 3), Some(3));
-        assert_eq!(eligible_customs_space_for_cost(&track, 3, 3), Some(5));
-        assert_eq!(eligible_customs_space_for_cost(&track, 4, 3), Some(7));
+        assert_eq!(eligible_customs_spaces_for_cost(&track, 1, 3), vec![1, 2]);
+        assert_eq!(eligible_customs_spaces_for_cost(&track, 2, 3), vec![3, 4]);
+        assert_eq!(eligible_customs_spaces_for_cost(&track, 3, 3), vec![5, 6]);
+        assert_eq!(eligible_customs_spaces_for_cost(&track, 4, 3), vec![7]);
     }
 
     #[test]
-    fn test_eligible_customs_space_for_cost_falls_back_when_occupied() {
+    fn test_eligible_customs_spaces_for_cost_excludes_occupied() {
         let mut track = CustomsTrack::new();
         let idx1 = CustomsTrack::space_to_index(1).unwrap();
         track.slots[idx1] = Some(CustomsSlot { player: PlayerId::new(1), arrival_order: 0 });
-        assert_eq!(eligible_customs_space_for_cost(&track, 1, 3), Some(2));
+        assert_eq!(eligible_customs_spaces_for_cost(&track, 1, 3), vec![2]);
     }
 
     #[test]
-    fn test_eligible_customs_space_for_cost_both_occupied_is_none() {
+    fn test_eligible_customs_spaces_for_cost_both_occupied_is_empty() {
         let mut track = CustomsTrack::new();
         for space in [1, 2] {
             let idx = CustomsTrack::space_to_index(space).unwrap();
             track.slots[idx] = Some(CustomsSlot { player: PlayerId::new(1), arrival_order: 0 });
         }
-        assert_eq!(eligible_customs_space_for_cost(&track, 1, 3), None);
+        assert_eq!(eligible_customs_spaces_for_cost(&track, 1, 3), Vec::<u8>::new());
     }
 
     #[test]
-    fn test_eligible_customs_space_for_cost_invalid_cost_is_none() {
+    fn test_eligible_customs_spaces_for_cost_invalid_cost_is_empty() {
         let track = CustomsTrack::new();
-        assert_eq!(eligible_customs_space_for_cost(&track, 0, 3), None);
-        assert_eq!(eligible_customs_space_for_cost(&track, 5, 3), None);
+        assert_eq!(eligible_customs_spaces_for_cost(&track, 0, 3), Vec::<u8>::new());
+        assert_eq!(eligible_customs_spaces_for_cost(&track, 5, 3), Vec::<u8>::new());
     }
 
     #[test]
-    fn test_eligible_customs_space_for_cost_2p_blocks_space4() {
+    fn test_eligible_customs_spaces_for_cost_2p_blocks_space4() {
         let mut track = CustomsTrack::new();
         let idx3 = CustomsTrack::space_to_index(3).unwrap();
         track.slots[idx3] = Some(CustomsSlot { player: PlayerId::new(1), arrival_order: 0 });
-        assert_eq!(eligible_customs_space_for_cost(&track, 2, 2), None);
+        assert_eq!(eligible_customs_spaces_for_cost(&track, 2, 2), Vec::<u8>::new());
         // 3P (and 4P): no dummy pawn, space 4 is reachable.
-        assert_eq!(eligible_customs_space_for_cost(&track, 2, 3), Some(4));
+        assert_eq!(eligible_customs_spaces_for_cost(&track, 2, 3), vec![4]);
     }
 
     #[test]
@@ -1131,9 +1172,22 @@ mod tests {
         state.players[0].shophouses.in_warehouse = 0;
         state.players[0].trading_houses.in_warehouse = 0;
 
-        // Power 3 (max 2), pay 1 -> cost pair {1,2}; space 1 is leftmost/default.
+        // Power 3 (max 2), pay 1 -> cost pair {1,2}; both empty on a fresh
+        // track -> 2 eligible -> placement deferred behind a CustomsSpace
+        // choice (design §5.2, Task 5) instead of auto-placing.
         let result = execute_customs_action(&mut state, PlayerId::new(0), 3, 1, &rules);
         assert!(result.is_ok());
+        assert_eq!(state.pending_choices, vec![PendingChoice::CustomsSpace { cost: 1 }]);
+        assert_eq!(state.players[0].assistants.in_hand, 8, "not consumed until the space choice resolves");
+        assert_eq!(state.players[0].imported_goods, 0, "imports paid up front regardless of deferral");
+
+        // Resolve as if the player picked space 1 -- proves the full
+        // placement tail (assistant consumption, VP, slot, arrival order,
+        // rider). Calling place_customs_assistant directly, as here, does
+        // NOT pop the queue -- that is resolve_choice_move's job, covered
+        // separately by choosing_customs_space_places_scores_and_applies_riders
+        // -- so the CustomsSpace entry above is still expected below.
+        place_customs_assistant(&mut state, PlayerId::new(0), 1, &rules);
 
         let p = &state.players[0];
         assert_eq!(p.assistants.in_hand, 7); // 8 - 1 (placement); rider auto-declined
@@ -1146,7 +1200,9 @@ mod tests {
             state.customs_track.slots[CustomsTrack::space_to_index(1).unwrap()].unwrap().player,
             PlayerId::new(0)
         );
-        assert!(state.pending_choices.is_empty());
+        // Rider auto-declined (empty warehouse) -> no NEW choice appended
+        // beyond the still-unpopped CustomsSpace entry from above.
+        assert_eq!(state.pending_choices, vec![PendingChoice::CustomsSpace { cost: 1 }]);
     }
 
     #[test]
@@ -1160,7 +1216,8 @@ mod tests {
         state.customs_track.next_arrival_order = 1;
         state.players[0].imported_goods = 2;
 
-        // Power 4 (max 3), pay 2 -> cost pair {3,4}; space 3 taken -> falls to space 4.
+        // Power 4 (max 3), pay 2 -> cost pair {3,4}; space 3 taken -> only
+        // space 4 eligible -> singleton, still places inline.
         let result = execute_customs_action(&mut state, PlayerId::new(0), 4, 2, &rules);
         assert!(result.is_ok());
 
@@ -1264,10 +1321,13 @@ mod tests {
     #[test]
     fn test_execute_customs_action_allows_assistant_from_acting_area_when_hand_empty() {
         // I3 final-review fix: rulebook p.14 - "place 1 Assistant pawn from
-        // the Customs Area OR your hand." Uses power 5 / pay 3 -> space 5
-        // (no rider), so the assertions below aren't muddied by space 1's
-        // +2-warehouse-takes rider (a WarehouseTake choice per take, which
-        // would otherwise mask the pawn-source bug this test targets).
+        // the Customs Area OR your hand." Uses power 5 / pay 3 -> cost pair
+        // {5,6} (neither carries a rider), so the assertions below aren't
+        // muddied by space 1's +2-warehouse-takes rider (a WarehouseTake
+        // choice per take, which would otherwise mask the pawn-source bug
+        // this test targets). Both spaces are open on a fresh track ->
+        // deferred to a CustomsSpace choice; the I3 fallback is exercised
+        // at placement (below), same as Church's analogous test.
         let rules = Rules::empty_for_tests();
         let mut state = create_test_state();
         let area = place_president_at_customs(&mut state);
@@ -1277,6 +1337,9 @@ mod tests {
 
         let result = execute_customs_action(&mut state, PlayerId::new(0), 5, 3, &rules);
         assert!(result.is_ok());
+        assert_eq!(state.players[0].assistants.on_board.get(&area), Some(&1), "not consumed until placement resolves");
+
+        place_customs_assistant(&mut state, PlayerId::new(0), 5, &rules);
 
         let p = &state.players[0];
         assert_eq!(p.assistants.in_hand, 0);
@@ -1287,8 +1350,8 @@ mod tests {
 
     #[test]
     fn test_execute_customs_action_prefers_hand_assistant_when_both_sources_available() {
-        // Power 5 / pay 3 -> space 5 (no rider); see the acting-area test's
-        // comment for why a rider-free space matters here.
+        // Power 5 / pay 3 -> cost pair {5,6} (neither carries a rider); see
+        // the acting-area test's comment for why a rider-free pair matters here.
         let rules = Rules::empty_for_tests();
         let mut state = create_test_state();
         let area = place_president_at_customs(&mut state);
@@ -1299,6 +1362,8 @@ mod tests {
         let result = execute_customs_action(&mut state, PlayerId::new(0), 5, 3, &rules);
         assert!(result.is_ok());
 
+        place_customs_assistant(&mut state, PlayerId::new(0), 5, &rules);
+
         let p = &state.players[0];
         assert_eq!(p.assistants.in_hand, 2, "hand pawn spent, not the acting-area one");
         assert_eq!(p.assistants.on_board.get(&area), Some(&2), "acting-area pawns untouched");
@@ -1308,7 +1373,7 @@ mod tests {
     fn test_execute_customs_action_during_mercenary_sub_turn_allows_assistant_from_target_area_when_hand_empty() {
         // Same headline case as Church: every mercenary sub-turn's target
         // area has the player's own assistant by definition. Power 5 / pay
-        // 3 -> space 5 (no rider).
+        // 3 -> cost pair {5,6} (neither carries a rider), both open -> deferred.
         let rules = Rules::empty_for_tests();
         let mut state = create_test_state();
         let customs_area = AreaId::new(9);
@@ -1324,13 +1389,17 @@ mod tests {
 
         let result = execute_customs_action(&mut state, PlayerId::new(0), 5, 3, &rules);
         assert!(result.is_ok());
+
+        place_customs_assistant(&mut state, PlayerId::new(0), 5, &rules);
+
         assert_eq!(state.players[0].customs_positions, vec![5]);
         assert_eq!(state.players[0].assistants.on_board.get(&customs_area), None);
     }
 
     #[test]
     fn test_execute_customs_action_from_area_assistant_then_recovery_does_not_double_recover() {
-        // Power 5 / pay 3 -> space 5 (no rider).
+        // Power 5 / pay 3 -> cost pair {5,6}, both open -> deferred; resolve
+        // to space 5 (no rider either way in this pair).
         let rules = Rules::empty_for_tests();
         let mut state = create_test_state();
         let area = place_president_at_customs(&mut state);
@@ -1340,6 +1409,7 @@ mod tests {
         state.players[0].assistants.on_board.insert(area, 1);
 
         execute_customs_action(&mut state, PlayerId::new(0), 5, 3, &rules).unwrap();
+        place_customs_assistant(&mut state, PlayerId::new(0), 5, &rules);
         assert_eq!(state.players[0].assistants.on_customs, 1);
         assert_eq!(state.players[0].assistants.on_board.get(&area), None);
 
@@ -1367,6 +1437,9 @@ mod tests {
 
         let result = execute_customs_action(&mut state, PlayerId::new(0), 3, 1, &rules);
         assert!(result.is_ok());
+
+        place_customs_assistant(&mut state, PlayerId::new(0), 1, &rules);
+
         assert_eq!(state.players[0].customs_positions, vec![1]);
     }
 
@@ -1397,8 +1470,12 @@ mod tests {
         state.players[0].imported_goods = 1;
         state.players[1].imported_goods = 3;
 
-        execute_customs_action(&mut state, PlayerId::new(0), 3, 1, &rules).unwrap(); // -> space 1
-        execute_customs_action(&mut state, PlayerId::new(1), 5, 3, &rules).unwrap(); // -> space 5
+        // Both cost pairs are fully open on a fresh track -> both actions
+        // defer; arrival order is pinned by PLACEMENT order, not execute order.
+        execute_customs_action(&mut state, PlayerId::new(0), 3, 1, &rules).unwrap();
+        place_customs_assistant(&mut state, PlayerId::new(0), 1, &rules); // -> space 1
+        execute_customs_action(&mut state, PlayerId::new(1), 5, 3, &rules).unwrap();
+        place_customs_assistant(&mut state, PlayerId::new(1), 5, &rules); // -> space 5
 
         let idx1 = CustomsTrack::space_to_index(1).unwrap();
         let idx5 = CustomsTrack::space_to_index(5).unwrap();
@@ -1417,15 +1494,23 @@ mod tests {
         state.players[0].shophouses.in_warehouse = 0;
         state.players[0].trading_houses.in_warehouse = 0;
 
+        // Cost pair {1,2} both open -> deferred to a CustomsSpace choice.
+        let result = execute_customs_action(&mut state, PlayerId::new(0), 3, 1, &rules);
+        assert!(result.is_ok());
+        assert_eq!(state.pending_choices, vec![PendingChoice::CustomsSpace { cost: 1 }]);
+
         // Space 1's rider is +2 warehouse-takes; the whole warehouse is
         // empty, so both pushes auto-decline (singleton rule, design §5.1)
         // rather than queuing a choice with nothing left to take.
-        let result = execute_customs_action(&mut state, PlayerId::new(0), 3, 1, &rules);
-        assert!(result.is_ok());
+        place_customs_assistant(&mut state, PlayerId::new(0), 1, &rules);
         let p = &state.players[0];
         assert_eq!(p.assistants.in_warehouse, 0);
         assert_eq!(p.assistants.in_hand, 7); // only the -1 placement; rider auto-declined
-        assert!(state.pending_choices.is_empty());
+        // No NEW choice appended (both rider pushes auto-declined); the
+        // CustomsSpace entry above is still unpopped since
+        // place_customs_assistant was called directly rather than via
+        // resolve_choice_move.
+        assert_eq!(state.pending_choices, vec![PendingChoice::CustomsSpace { cost: 1 }]);
     }
 
     #[test]
@@ -1436,9 +1521,12 @@ mod tests {
         state.players[0].imported_goods = 3;
         state.players[0].assistants.in_warehouse = 5;
 
-        // Cost 3 -> space 5 (no rider).
+        // Cost 3 -> cost pair {5,6}, both open -> deferred; resolve to space 5 (no rider).
         let result = execute_customs_action(&mut state, PlayerId::new(0), 5, 3, &rules);
         assert!(result.is_ok());
+
+        place_customs_assistant(&mut state, PlayerId::new(0), 5, &rules);
+
         let p = &state.players[0];
         assert_eq!(p.customs_positions, vec![5]);
         assert_eq!(p.money, 3); // starting 3 (first player), no rider
@@ -1450,7 +1538,9 @@ mod tests {
     fn test_execute_customs_action_brickyard_bonus_stacks_per_owned_copy() {
         // Standard data has only 1 physical Brickyard, so stacking is proven
         // with a hand-rolled two-copy registry fixture (mirrors Task 13's
-        // Winery stacking precedent).
+        // Winery stacking precedent). Cost 3's pair {5,6} is both open on a
+        // fresh track -> deferred; resolving through place_customs_assistant
+        // exercises Brickyard stacking through the choice path (Task 5 item f).
         let mut tech_registry = TechRegistry::new();
         tech_registry.insert(make_test_tech_card(1, TechEffect::Brickyard), "brickyard_1");
         tech_registry.insert(make_test_tech_card(2, TechEffect::Brickyard), "brickyard_2");
@@ -1464,6 +1554,9 @@ mod tests {
 
         let result = execute_customs_action(&mut state, PlayerId::new(0), 5, 3, &rules);
         assert!(result.is_ok());
+        assert_eq!(state.players[0].victory_points, 0, "not awarded until the space choice resolves");
+
+        place_customs_assistant(&mut state, PlayerId::new(0), 5, &rules);
 
         let base_vp = CustomsTrack::vp_reward(5) as u32;
         assert_eq!(state.players[0].victory_points, base_vp + 8); // 2 copies x 4 VP
@@ -1481,13 +1574,12 @@ mod tests {
         assert_eq!(customs_max_imported_goods(6), 4);
     }
 
-    /// Customs action paying 1 import at power 3 -> cost pair {1,2}; space 1
-    /// wins as leftmost/higher-VP (proven unblocked by
-    /// `customs_action_places_assistant_and_awards_vp` in apply_move.rs),
-    /// carrying the +2-warehouse-takes rider. Player 0's default money (3)
-    /// and warehouse stock leave Assistant and Shophouse both affordable, so
-    /// `warehouse_take_options` returns more than Decline alone and the
-    /// rider's two pushes queue instead of auto-resolving.
+    /// Customs action paying 1 import at power 3 -> cost pair {1,2}, both
+    /// empty on a fresh track. Player 0's default money (3) and warehouse
+    /// stock leave Assistant and Shophouse both affordable, so
+    /// `warehouse_take_options` returns more than Decline alone and space
+    /// 1's rider queues 2 WarehouseTake choices instead of auto-resolving
+    /// once chosen.
     fn customs_space1_fixture() -> (GameState, Rules) {
         let rules = Rules::empty_for_tests();
         let mut state = create_test_state();
@@ -1500,9 +1592,139 @@ mod tests {
 
     #[test]
     fn customs_space_one_rider_queues_two_warehouse_takes() {
-        // Customs action paying 1 import with only space 1 open -> inline place + 2 queued takes.
+        // Customs action paying 1 import: cost pair {1,2} both open ->
+        // deferred to a CustomsSpace choice first; choosing space 1 then
+        // queues its +2-warehouse-takes rider.
         let (state, rules) = customs_space1_fixture();
-        let s = apply_move(&state, &Move::ExecuteAreaAction { action: AreaAction::Customs { imported_goods_paid: 1 } }, &rules).unwrap();
+        let mid = apply_move(&state, &Move::ExecuteAreaAction { action: AreaAction::Customs { imported_goods_paid: 1 } }, &rules).unwrap();
+        assert_eq!(mid.pending_choices, vec![PendingChoice::CustomsSpace { cost: 1 }]);
+        let s = apply_move(&mid, &Move::ChooseCustomsSpace { space: 1 }, &rules).unwrap();
         assert_eq!(s.pending_choices, vec![PendingChoice::WarehouseTake, PendingChoice::WarehouseTake]);
+    }
+
+    // --- Task 5: CustomsSpace choice (design 2026-07-18 §5.2) ---
+
+    /// Customs move paying a fixed cost, reused across the
+    /// CustomsSpace-choice fixtures below.
+    fn customs_move(imported_goods_paid: u8) -> Move {
+        Move::ExecuteAreaAction { action: AreaAction::Customs { imported_goods_paid } }
+    }
+
+    /// Customs area + president there (3P, so the 2P space-4 dummy never
+    /// interferes), player 0 with enough imported goods to pay `cost` and
+    /// power 5 (covers every printed cost up to 4). Fresh (empty) Customs
+    /// track -- every cost's full candidate pair/singleton is open, so
+    /// which spaces are ever considered is driven entirely by `cost` itself.
+    fn customs_fixture(cost: u8) -> (GameState, Rules) {
+        let rules = Rules::empty_for_tests();
+        let mut state = create_test_state_3p();
+        place_president_at_customs(&mut state);
+        state.turn_phase = TurnPhase::AreaAction;
+        state.current_action_power = Some(5);
+        state.players[0].imported_goods = cost as u32;
+        (state, rules)
+    }
+
+    #[test]
+    fn customs_with_both_pair_spaces_open_queues_choice() {
+        // Cost 2, spaces 3+4 both open (3P) -> queues, nothing placed yet;
+        // imports are paid up front regardless of the deferral.
+        let (state, rules) = customs_fixture(2);
+        let s = apply_move(&state, &customs_move(2), &rules).unwrap();
+        assert_eq!(s.pending_choices, vec![PendingChoice::CustomsSpace { cost: 2 }]);
+        assert_eq!(s.customs_track.total_assistants(), 0);
+        assert_eq!(s.players[0].imported_goods, 0);
+        let legal = get_legal_moves(&s, &rules);
+        assert_eq!(legal, vec![
+            Move::ChooseCustomsSpace { space: 3 },
+            Move::ChooseCustomsSpace { space: 4 },
+        ]);
+    }
+
+    #[test]
+    fn choosing_customs_space_places_scores_and_applies_riders() {
+        let (state, rules) = customs_fixture(2);
+        let mid = apply_move(&state, &customs_move(2), &rules).unwrap();
+        let s = apply_move(&mid, &Move::ChooseCustomsSpace { space: 3 }, &rules).unwrap();
+        assert_eq!(s.customs_track.total_assistants(), 1);
+        assert_eq!(s.players[0].customs_positions, vec![3]);
+        assert_eq!(s.players[0].victory_points, CustomsTrack::vp_reward(3) as u32);
+        // Space 3's rider is 1 warehouse-take; default stock/money offer
+        // more than Decline alone, so it queues instead of auto-resolving.
+        assert_eq!(s.pending_choices, vec![PendingChoice::WarehouseTake]);
+    }
+
+    #[test]
+    fn customs_with_one_pair_space_open_places_inline() {
+        // Cost 2, space 3 pre-occupied -> only space 4 eligible -> inline
+        // placement, no CustomsSpace event; space 4's rider (+1 Yen) applies
+        // immediately.
+        let (mut state, rules) = customs_fixture(2);
+        let idx3 = CustomsTrack::space_to_index(3).unwrap();
+        state.customs_track.slots[idx3] = Some(CustomsSlot { player: PlayerId::new(1), arrival_order: 0 });
+        state.customs_track.next_arrival_order = 1;
+        let money_before = state.players[0].money;
+
+        let s = apply_move(&state, &customs_move(2), &rules).unwrap();
+        assert_eq!(s.players[0].customs_positions, vec![4]);
+        assert_eq!(s.players[0].money, money_before + 1);
+        assert!(s.pending_choices.is_empty());
+    }
+
+    #[test]
+    fn customs_2p_space4_dummy_never_offered() {
+        // 2P: space 4 is pre-blocked by the printed dummy pawn, so cost 2's
+        // pair {3,4} always collapses to the single real candidate (3) --
+        // inline placement, CustomsSpace choice never reachable. The
+        // "space 3 also occupied -> illegal" companion case is already
+        // pinned by test_execute_customs_action_2p_blocks_space4_when_space3_occupied.
+        let rules = Rules::empty_for_tests();
+        let mut state = create_test_state(); // 2P by construction
+        place_president_at_customs(&mut state);
+        state.turn_phase = TurnPhase::AreaAction;
+        state.current_action_power = Some(5);
+        state.players[0].imported_goods = 2;
+
+        let s = apply_move(&state, &customs_move(2), &rules).unwrap();
+        assert_eq!(s.players[0].customs_positions, vec![3]);
+        assert!(s.pending_choices.iter().all(|c| !matches!(c, PendingChoice::CustomsSpace { .. })));
+    }
+
+    #[test]
+    fn customs_space1_end_to_end_through_apply_move_resolves_both_warehouse_riders() {
+        // Task-2 review m1: restore full end-to-end coverage of the +2
+        // warehouse-take rider. test_execute_customs_action_places_assistant_and_awards_vp
+        // stopped covering resolution once Task 2 converted the rider to a
+        // queued choice (that test now zeroes the warehouse so both takes
+        // auto-decline). Drives the WHOLE cascade through apply_move: cost 1
+        // -> both spaces of the pair open -> CustomsSpace choice -> choose
+        // space 1 -> its rider queues 2 WarehouseTake choices -> resolve one
+        // Assistant take, one Decline -- then assert final
+        // in_hand/in_warehouse/money.
+        let (state, rules) = customs_fixture(1);
+        let starting_hand = state.players[0].assistants.in_hand;
+        let starting_warehouse = state.players[0].assistants.in_warehouse;
+        let starting_money = state.players[0].money;
+
+        let mid = apply_move(&state, &customs_move(1), &rules).unwrap();
+        assert_eq!(mid.pending_choices, vec![PendingChoice::CustomsSpace { cost: 1 }]);
+
+        let placed = apply_move(&mid, &Move::ChooseCustomsSpace { space: 1 }, &rules).unwrap();
+        assert_eq!(placed.pending_choices, vec![PendingChoice::WarehouseTake, PendingChoice::WarehouseTake]);
+        assert_eq!(placed.players[0].customs_positions, vec![1]);
+        assert_eq!(placed.players[0].victory_points, CustomsTrack::vp_reward(1) as u32);
+
+        let after_take = apply_move(
+            &placed, &Move::ChooseWarehouseTake { item: WarehouseItem::Assistant }, &rules,
+        ).unwrap();
+        assert_eq!(after_take.pending_choices, vec![PendingChoice::WarehouseTake]);
+
+        let final_state = apply_move(&after_take, &Move::DeclineWarehouseTake, &rules).unwrap();
+        assert!(final_state.pending_choices.is_empty());
+
+        let p = &final_state.players[0];
+        assert_eq!(p.assistants.in_hand, starting_hand - 1 + 1, "placement spent 1, the Assistant take refunded 1");
+        assert_eq!(p.assistants.in_warehouse, starting_warehouse - 1);
+        assert_eq!(p.money, starting_money, "assistant take is free; decline spends nothing");
     }
 }

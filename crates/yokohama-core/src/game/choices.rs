@@ -45,6 +45,12 @@ fn generate_choice_resolutions_for(state: &GameState, choice: &PendingChoice, _r
                 .map(|space| Move::ChooseChurchSpace { space })
                 .collect()
         }
+        PendingChoice::CustomsSpace { cost } => {
+            eligible_customs_spaces_for_cost(&state.customs_track, *cost, state.config.player_count)
+                .into_iter()
+                .map(|space| Move::ChooseCustomsSpace { space })
+                .collect()
+        }
     }
 }
 
@@ -177,6 +183,9 @@ pub fn resolve_choice_move(state: &mut GameState, mv: &Move, rules: &Rules) -> R
         (PendingChoice::AssistantMove, Move::DeclineAssistantMove) => {}
         (PendingChoice::ChurchSpace { .. }, Move::ChooseChurchSpace { space }) => {
             place_church_assistant(state, player, *space, rules);
+        }
+        (PendingChoice::CustomsSpace { .. }, Move::ChooseCustomsSpace { space }) => {
+            place_customs_assistant(state, player, *space, rules);
         }
         _ => unreachable!("membership check above guarantees type match"),
     }

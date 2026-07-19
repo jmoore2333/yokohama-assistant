@@ -101,7 +101,8 @@ pub fn apply_move(state: &GameState, mv: &Move, rules: &Rules) -> Result<GameSta
         | Move::DeclineWarehouseTake
         | Move::ChooseAssistantMove { .. }
         | Move::DeclineAssistantMove
-        | Move::ChooseChurchSpace { .. } => {
+        | Move::ChooseChurchSpace { .. }
+        | Move::ChooseCustomsSpace { .. } => {
             crate::game::choices::resolve_choice_move(&mut new_state, mv, rules)?;
         }
     }
@@ -3341,7 +3342,11 @@ mod tests {
         let mv = Move::ExecuteAreaAction {
             action: AreaAction::Customs { imported_goods_paid: 1 },
         };
-        let next = apply_move(&state, &mv, &rules).unwrap();
+        let mid = apply_move(&state, &mv, &rules).unwrap();
+        // Cost 1 -> spaces 1,2 both empty on a fresh track -> 2 eligible ->
+        // placement deferred behind a CustomsSpace choice (design §5.2).
+        assert_eq!(mid.pending_choices, vec![PendingChoice::CustomsSpace { cost: 1 }]);
+        let next = apply_move(&mid, &Move::ChooseCustomsSpace { space: 1 }, &rules).unwrap();
 
         let p = &next.players[0];
         assert_eq!(p.assistants.on_customs, 1);
@@ -3377,8 +3382,13 @@ mod tests {
         };
         let next = apply_move(&state, &mv, &rules).unwrap();
 
-        // Power 4 (max 3), pay 2 -> cost pair {3,4}; space 3 is leftmost/default.
+        // Power 4 (max 3), pay 2 -> cost pair {3,4}; this fixture is 2P, so
+        // the printed dummy pawn blocks space 4, leaving space 3 as the
+        // sole candidate -> places inline, no CustomsSpace choice (mirrors
+        // customs_2p_space4_dummy_never_offered in tracks.rs, exercised
+        // here through the mercenary path).
         assert_eq!(next.players[0].customs_positions, vec![3]);
+        assert!(next.pending_choices.iter().all(|c| !matches!(c, PendingChoice::CustomsSpace { .. })));
     }
 
     #[test]
