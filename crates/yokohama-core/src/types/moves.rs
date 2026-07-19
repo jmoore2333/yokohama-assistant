@@ -40,6 +40,12 @@ pub enum Move {
         country: Country,
         target_area: AreaId,
     },
+    /// University (once per turn): pay 1 Yen -> take 1 assistant from warehouse to hand.
+    UseUniversity,
+    /// Textile Mill (once per turn): discard 1 silk -> gain 2 Yen. Printed
+    /// card name is "Textile Mill"; the rulebook text and engine effect enum
+    /// call it "Spinning Mill" -- display follows the cardboard.
+    UseSpinningMill,
     FulfillAchievement {
         achievement: AchievementType,
     },

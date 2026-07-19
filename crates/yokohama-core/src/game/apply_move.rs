@@ -96,6 +96,16 @@ pub fn apply_move(state: &GameState, mv: &Move, rules: &Rules) -> Result<GameSta
             apply_fulfill_achievement(&mut new_state, *achievement)?;
         }
 
+        Move::UseUniversity => {
+            let player = new_state.current_player;
+            apply_university(&mut new_state, player).map_err(MoveError::RuleViolation)?;
+        }
+
+        Move::UseSpinningMill => {
+            let player = new_state.current_player;
+            apply_spinning_mill(&mut new_state, player).map_err(MoveError::RuleViolation)?;
+        }
+
         Move::ChooseAnyGood { .. }
         | Move::ChooseWarehouseTake { .. }
         | Move::DeclineWarehouseTake
@@ -2725,6 +2735,119 @@ mod tests {
         assert_eq!(new_state.players[0].victory_points, 5 + 2);
         // Starting money + 3 reward + Language School's +1 Yen.
         assert_eq!(new_state.players[0].money, starting_money + 3 + 1);
+    }
+
+    #[test]
+    fn apply_university_wiring() {
+        let mut state = create_minimal_state(2);
+        state.players[0].money = 3;
+        state.players[0].assistants.in_warehouse = 2;
+        state.players[0].assistants.in_hand = 5;
+
+        let mut tech_registry = TechRegistry::new();
+        tech_registry.insert(
+            TechCard {
+                id: TechCardId(93),
+                name: "University".to_string(),
+                country: Country::French,
+                industry_cost: 4,
+                effect: TechEffect::University,
+            },
+            "tech_university",
+        );
+        state.players[0].technologies.push(TechCardId(93));
+        let mut rules = Rules::empty_for_tests();
+        rules.techs = tech_registry;
+
+        let before_phase = state.turn_phase;
+        let next = apply_move(&state, &Move::UseUniversity, &rules).unwrap();
+
+        assert_eq!(next.players[0].money, 2);
+        assert_eq!(next.players[0].assistants.in_warehouse, 1);
+        assert_eq!(next.players[0].assistants.in_hand, 6);
+        assert!(next.additional_action_state.university_used);
+        assert_eq!(next.turn_phase, before_phase, "additional-action moves leave turn_phase alone");
+    }
+
+    #[test]
+    fn spinning_mill_offered_and_applies() {
+        let mut state = create_minimal_state(2);
+        state.turn_phase = TurnPhase::AdditionalActionSecond;
+        state.players[0].silk = 1;
+        state.players[0].money = 0;
+
+        let mut tech_registry = TechRegistry::new();
+        tech_registry.insert(
+            TechCard {
+                id: TechCardId(94),
+                name: "Textile Mill".to_string(),
+                country: Country::Dutch,
+                industry_cost: 3,
+                effect: TechEffect::SpinningMill,
+            },
+            "tech_spinning_mill",
+        );
+        state.players[0].technologies.push(TechCardId(94));
+        let mut rules = Rules::empty_for_tests();
+        rules.techs = tech_registry;
+
+        let moves = get_legal_moves(&state, &rules);
+        assert!(
+            moves.iter().any(|m| matches!(m, Move::UseSpinningMill)),
+            "must be offered in AdditionalActionSecond"
+        );
+
+        let next = apply_move(&state, &Move::UseSpinningMill, &rules).unwrap();
+        assert_eq!(next.players[0].silk, 0);
+        assert_eq!(next.players[0].money, 2);
+        assert!(next.additional_action_state.spinning_mill_used);
+        assert_eq!(next.turn_phase, TurnPhase::AdditionalActionSecond, "additional-action moves leave turn_phase alone");
+    }
+
+    #[test]
+    fn once_per_turn_flags_reset_next_turn() {
+        // Drive both moves for real this turn (not a hand-set flag), then
+        // hand off via EndAdditionalPhase and confirm the flags come back
+        // clear (advance_phase's existing AdditionalActionState::new()
+        // reset) so the same wiring can offer them again next turn.
+        let mut state = create_minimal_state(2);
+        state.turn_phase = TurnPhase::AdditionalActionSecond;
+        state.players[0].silk = 1;
+
+        let mut tech_registry = TechRegistry::new();
+        tech_registry.insert(
+            TechCard {
+                id: TechCardId(95),
+                name: "University".to_string(),
+                country: Country::French,
+                industry_cost: 4,
+                effect: TechEffect::University,
+            },
+            "tech_university",
+        );
+        tech_registry.insert(
+            TechCard {
+                id: TechCardId(96),
+                name: "Textile Mill".to_string(),
+                country: Country::Dutch,
+                industry_cost: 3,
+                effect: TechEffect::SpinningMill,
+            },
+            "tech_spinning_mill",
+        );
+        state.players[0].technologies.push(TechCardId(95));
+        state.players[0].technologies.push(TechCardId(96));
+        let mut rules = Rules::empty_for_tests();
+        rules.techs = tech_registry;
+
+        let used = apply_move(&state, &Move::UseUniversity, &rules).unwrap();
+        let used = apply_move(&used, &Move::UseSpinningMill, &rules).unwrap();
+        assert!(used.additional_action_state.university_used);
+        assert!(used.additional_action_state.spinning_mill_used);
+
+        let next = apply_move(&used, &Move::EndAdditionalPhase, &rules).unwrap();
+        assert!(!next.additional_action_state.university_used);
+        assert!(!next.additional_action_state.spinning_mill_used);
     }
 
     #[test]

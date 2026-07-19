@@ -235,6 +235,8 @@ pub fn describe_move(mv: &Move, state: &GameState, rules: &Rules) -> String {
             Some(card) => format!("Fulfill {}", order_prompt_line(card)),
             None => format!("Fulfill order O{:02}", order_id.0),
         },
+        Move::UseUniversity => "Use University: pay 1 yen, take an assistant from the warehouse".to_string(),
+        Move::UseSpinningMill => "Use Textile Mill: discard 1 silk, gain 2 yen".to_string(),
         Move::EndAdditionalPhase => "End additional-action phase".to_string(),
         Move::PlaceThreeAreas { placements } if placements.is_empty() => "Place no assistants".to_string(),
         Move::PlaceThreeAreas { placements } => format!(
@@ -425,6 +427,20 @@ mod tests {
         assert_eq!(
             describe_move(&Move::ChooseRecoveryLeave { leave_one: true }, &state, &rules),
             "Leave 1 assistant behind (Telephone)"
+        );
+    }
+
+    #[test]
+    fn university_and_spinning_mill_read_as_plain_words() {
+        let state = state_2p();
+        let rules = Rules::standard();
+        assert_eq!(
+            describe_move(&Move::UseUniversity, &state, &rules),
+            "Use University: pay 1 yen, take an assistant from the warehouse"
+        );
+        assert_eq!(
+            describe_move(&Move::UseSpinningMill, &state, &rules),
+            "Use Textile Mill: discard 1 silk, gain 2 yen"
         );
     }
 

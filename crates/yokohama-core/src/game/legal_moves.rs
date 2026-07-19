@@ -72,6 +72,16 @@ fn generate_additional_action_moves(state: &GameState, rules: &Rules) -> Vec<Mov
         }
     }
 
+    // University (once per turn): pay 1 Yen -> take 1 assistant from warehouse.
+    if can_use_university(state, player, &rules.techs) {
+        moves.push(Move::UseUniversity);
+    }
+
+    // Textile Mill / Spinning Mill (once per turn): discard 1 silk -> gain 2 Yen.
+    if can_use_spinning_mill(state, player, &rules.techs) {
+        moves.push(Move::UseSpinningMill);
+    }
+
     moves
 }
 
@@ -1001,6 +1011,108 @@ mod tests {
 
         // Should always include EndAdditionalPhase
         assert!(moves.iter().any(|m| matches!(m, Move::EndAdditionalPhase)));
+    }
+
+    #[test]
+    fn university_offered_in_first_window_when_usable() {
+        let mut state = create_test_state();
+        state.turn_phase = TurnPhase::AdditionalActionFirst;
+        state.players[0].money = 3;
+        state.players[0].assistants.in_warehouse = 2;
+
+        let mut tech_registry = TechRegistry::new();
+        tech_registry.insert(
+            TechCard {
+                id: TechCardId(90),
+                name: "University".to_string(),
+                country: Country::French,
+                industry_cost: 4,
+                effect: TechEffect::University,
+            },
+            "tech_university",
+        );
+        state.players[0].technologies.push(TechCardId(90));
+
+        let mut rules = Rules::empty_for_tests();
+        rules.techs = tech_registry;
+
+        let moves = get_legal_moves(&state, &rules);
+        assert!(moves.iter().any(|m| matches!(m, Move::UseUniversity)));
+    }
+
+    #[test]
+    fn university_not_offered_when_used_or_unowned() {
+        let mut state = create_test_state();
+        state.turn_phase = TurnPhase::AdditionalActionFirst;
+        state.players[0].money = 3;
+        state.players[0].assistants.in_warehouse = 2;
+
+        // No tech owned at all -- must never be offered, even with money/warehouse to spare.
+        let rules = Rules::empty_for_tests();
+        let moves = get_legal_moves(&state, &rules);
+        assert!(
+            !moves.iter().any(|m| matches!(m, Move::UseUniversity)),
+            "player without University must never see it offered"
+        );
+
+        // Give the tech: now it must be offered.
+        let mut tech_registry = TechRegistry::new();
+        tech_registry.insert(
+            TechCard {
+                id: TechCardId(91),
+                name: "University".to_string(),
+                country: Country::French,
+                industry_cost: 4,
+                effect: TechEffect::University,
+            },
+            "tech_university",
+        );
+        state.players[0].technologies.push(TechCardId(91));
+        let mut rules = Rules::empty_for_tests();
+        rules.techs = tech_registry;
+
+        let moves = get_legal_moves(&state, &rules);
+        assert!(moves.iter().any(|m| matches!(m, Move::UseUniversity)));
+
+        // Use it once, then confirm the flag blocks a second offer this same turn.
+        let next = apply_move(&state, &Move::UseUniversity, &rules).unwrap();
+        let moves_after = get_legal_moves(&next, &rules);
+        assert!(
+            !moves_after.iter().any(|m| matches!(m, Move::UseUniversity)),
+            "used once this turn: must not be offered again"
+        );
+    }
+
+    #[test]
+    fn spinning_mill_not_offered_without_silk() {
+        let mut state = create_test_state();
+        state.turn_phase = TurnPhase::AdditionalActionSecond;
+        state.players[0].silk = 0;
+
+        let mut tech_registry = TechRegistry::new();
+        tech_registry.insert(
+            TechCard {
+                id: TechCardId(92),
+                name: "Textile Mill".to_string(),
+                country: Country::Dutch,
+                industry_cost: 3,
+                effect: TechEffect::SpinningMill,
+            },
+            "tech_spinning_mill",
+        );
+        state.players[0].technologies.push(TechCardId(92));
+        let mut rules = Rules::empty_for_tests();
+        rules.techs = tech_registry;
+
+        let moves = get_legal_moves(&state, &rules);
+        assert!(
+            !moves.iter().any(|m| matches!(m, Move::UseSpinningMill)),
+            "owns Textile Mill but has no silk: must not be offered"
+        );
+
+        state.players[0].silk = 1;
+        let moves = get_legal_moves(&state, &rules);
+        assert!(moves.iter().any(|m| matches!(m, Move::UseSpinningMill)));
     }
 
     #[test]
