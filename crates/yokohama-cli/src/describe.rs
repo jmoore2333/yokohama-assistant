@@ -252,12 +252,14 @@ pub fn describe_move(mv: &Move, state: &GameState, rules: &Rules) -> String {
             area_label(state, *destination),
             path.iter().map(|a| area_label(state, *a)).collect::<Vec<_>>().join(" -> ")
         ),
-        Move::ReturnPresidentToHand { recover_assistants_from } if recover_assistants_from.is_empty() => {
+        Move::ReturnPresidentToHand { recover } if recover.is_empty() => {
             "Return President to hand (recover no assistants)".to_string()
         }
-        Move::ReturnPresidentToHand { recover_assistants_from } => format!(
+        // Counts encoding (I5 ruling): lists the areas recovered from, not
+        // yet the per-area counts -- Task 8 gives this its real treatment.
+        Move::ReturnPresidentToHand { recover } => format!(
             "Return President to hand, recovering assistants from {}",
-            recover_assistants_from.iter().map(|a| area_label(state, *a)).collect::<Vec<_>>().join(", ")
+            recover.keys().map(|a| area_label(state, *a)).collect::<Vec<_>>().join(", ")
         ),
         Move::PlacePresident { destination } => {
             format!("Place President from hand in {}", area_label(state, *destination))

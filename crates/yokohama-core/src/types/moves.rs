@@ -75,9 +75,11 @@ pub enum Move {
         path: Vec<AreaId>,
         destination: AreaId,
     },
-    /// Return President to hand, optionally recovering assistants.
+    /// Return President to hand, recovering any number of assistants
+    /// (per-area counts; empty = recover none). Owner-ruled 2026-07-19 (I5
+    /// expanded wording); encoding break approved same day.
     ReturnPresidentToHand {
-        recover_assistants_from: Vec<AreaId>,
+        recover: std::collections::BTreeMap<AreaId, u8>,
     },
     /// Place President from hand onto board.
     PlacePresident {

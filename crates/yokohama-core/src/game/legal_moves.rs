@@ -271,16 +271,9 @@ fn generate_movement_moves_with_tech(state: &GameState, tech_registry: Option<&T
             // recover any assistants" - and it guarantees the required
             // Movement step can never dead-end when no Possible Action
             // Area exists.
-            let areas_with_assistants: Vec<AreaId> = p
-                .assistants
-                .on_board
-                .iter()
-                .filter(|(_, &count)| count > 0)
-                .map(|(&area, _)| area)
-                .collect();
-            moves.push(Move::ReturnPresidentToHand {
-                recover_assistants_from: areas_with_assistants,
-            });
+            for recover in enumerate_recovery_options(p) {
+                moves.push(Move::ReturnPresidentToHand { recover });
+            }
         }
         PresidentLocation::OnBoard(current) => {
             // Move to every reachable (destination, fee-vector) label the
@@ -351,21 +344,36 @@ fn generate_movement_moves_with_tech(state: &GameState, tech_registry: Option<&T
             }
 
             // Return to hand (emergency exit, always available)
-            let areas_with_assistants: Vec<AreaId> = p
-                .assistants
-                .on_board
-                .iter()
-                .filter(|(_, &count)| count > 0)
-                .map(|(&area, _)| area)
-                .collect();
-
-            moves.push(Move::ReturnPresidentToHand {
-                recover_assistants_from: areas_with_assistants,
-            });
+            for recover in enumerate_recovery_options(p) {
+                moves.push(Move::ReturnPresidentToHand { recover });
+            }
         }
     }
 
     moves
+}
+
+/// Cartesian product of 0..=count per occupied area (I5 ruling: any number).
+/// Deterministic: BTreeMap area order, counts ascending. Includes the empty
+/// map (recover nothing) and the all-max map (previous sole behavior).
+fn enumerate_recovery_options(p: &PlayerState) -> Vec<std::collections::BTreeMap<AreaId, u8>> {
+    let occupied: Vec<(AreaId, u8)> = p.assistants.on_board.iter()
+        .filter(|(_, &c)| c > 0).map(|(&a, &c)| (a, c)).collect();
+    let mut out = vec![std::collections::BTreeMap::new()];
+    for (area, max) in occupied {
+        let mut next = Vec::with_capacity(out.len() * (max as usize + 1));
+        for base in &out {
+            for k in 0..=max {
+                let mut m = base.clone();
+                if k > 0 {
+                    m.insert(area, k);
+                }
+                next.push(m);
+            }
+        }
+        out = next;
+    }
+    out
 }
 
 fn generate_area_action_moves(state: &GameState, rules: &Rules) -> Vec<Move> {
@@ -1180,6 +1188,33 @@ mod tests {
             moves.iter().any(|m| matches!(m, Move::ReturnPresidentToHand { .. })),
             "Option B (stay in hand, recover assistants) must be offered"
         );
+    }
+
+    #[test]
+    fn option_b_enumerates_every_recovery_combination() {
+        // I5 ruling (2026-07-19): Option B retreat may recover ANY NUMBER
+        // of assistants, not just all-or-nothing. Fixture: current
+        // player's president OnBoard; on_board = {A0: 2, A3: 1}.
+        // Expect (2+1)*(1+1) = 6 ReturnPresidentToHand moves: {}, {A0:1},
+        // {A0:2}, {A3:1}, {A0:1,A3:1}, {A0:2,A3:1}.
+        let mut state = create_test_state();
+        state.turn_phase = TurnPhase::Movement;
+        let rules = Rules::empty_for_tests();
+        let a0 = AreaId::new(0);
+        let a3 = AreaId::new(3);
+        state.players[0].president_location = PresidentLocation::OnBoard(a0);
+        state.players[0].assistants.on_board.insert(a0, 2);
+        state.players[0].assistants.on_board.insert(a3, 1);
+
+        let moves = get_legal_moves(&state, &rules);
+        let retreats: Vec<&Move> = moves.iter()
+            .filter(|m| matches!(m, Move::ReturnPresidentToHand { .. })).collect();
+        assert_eq!(retreats.len(), 6, "{retreats:?}");
+        assert!(retreats.iter().any(|m| matches!(m,
+            Move::ReturnPresidentToHand { recover } if recover.is_empty())));
+        assert!(retreats.iter().any(|m| matches!(m,
+            Move::ReturnPresidentToHand { recover }
+                if recover.get(&a0) == Some(&1) && recover.get(&a3) == Some(&1))));
     }
 
     #[test]

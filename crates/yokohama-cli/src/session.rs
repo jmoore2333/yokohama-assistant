@@ -552,7 +552,7 @@ mod tests {
     fn load_of_tampered_record_returns_typed_error_not_panic() {
         let s = session_with_church_space_choice_queued();
         let mut record = s.record().clone();
-        record.push_move(Move::ReturnPresidentToHand { recover_assistants_from: vec![] });
+        record.push_move(Move::ReturnPresidentToHand { recover: std::collections::BTreeMap::new() });
         record.push_move(Move::ChooseChurchSpace { space: 6 });
 
         let path = std::env::temp_dir().join(format!("yokohama_tampered_{}.json", std::process::id()));

@@ -1117,7 +1117,7 @@ mod tests {
         // is queued (queue-first gate), so checked apply_move now rejects it
         // with NotLegal before ever reaching the raw arm this test exercises.
         let tampered = apply_move_unchecked(
-            &mid, &Move::ReturnPresidentToHand { recover_assistants_from: vec![] }, &rules,
+            &mid, &Move::ReturnPresidentToHand { recover: std::collections::BTreeMap::new() }, &rules,
         ).unwrap();
         assert_eq!(tampered.players[0].president_location, PresidentLocation::InHand);
         assert_eq!(
@@ -1796,7 +1796,7 @@ mod tests {
         // the tamper is the point; checked apply_move would reject it with
         // NotLegal before reaching the raw arm under test.
         let tampered = apply_move_unchecked(
-            &mid, &Move::ReturnPresidentToHand { recover_assistants_from: vec![] }, &rules,
+            &mid, &Move::ReturnPresidentToHand { recover: std::collections::BTreeMap::new() }, &rules,
         ).unwrap();
         assert_eq!(tampered.players[0].president_location, PresidentLocation::InHand);
         assert_eq!(

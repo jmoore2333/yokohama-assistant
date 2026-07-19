@@ -71,8 +71,8 @@ pub fn apply_move_unchecked(state: &GameState, mv: &Move, rules: &Rules) -> Resu
             new_state.turn_phase = TurnPhase::AreaAction;
         }
 
-        Move::ReturnPresidentToHand { recover_assistants_from } => {
-            apply_return_to_hand(&mut new_state, recover_assistants_from)?;
+        Move::ReturnPresidentToHand { recover } => {
+            apply_return_to_hand(&mut new_state, recover)?;
             new_state.president_start_area = None; // Clear after return
             // Skip to Additional Action Second
             new_state.turn_phase = TurnPhase::AdditionalActionSecond;
@@ -424,21 +424,34 @@ fn credit_place_president_fee(
     }
 }
 
+/// Recover `recover[area]` assistants from each listed area back to hand
+/// and return the President to hand (I5 ruling: any number, not just
+/// all-or-nothing per area). Validate-all-then-mutate: every count is
+/// checked against the current on-board count before any mutation runs, so
+/// a rejected move leaves `state` untouched (matches this file's house
+/// pattern, e.g. `apply_placement`'s cost check before the mutating loop).
 fn apply_return_to_hand(
     state: &mut GameState,
-    areas: &[AreaId],
+    recover: &std::collections::BTreeMap<AreaId, u8>,
 ) -> Result<(), MoveError> {
     let player = state.current_player;
-    let p = state.player_mut(player);
-
-    p.president_location = PresidentLocation::InHand;
-
-    for &area in areas {
-        if let Some(&count) = p.assistants.on_board.get(&area) {
-            p.assistants.in_hand += count;
-            p.assistants.on_board.remove(&area);
+    for (&area, &count) in recover {
+        let have = state.player(player).assistants.on_board.get(&area).copied().unwrap_or(0);
+        if count == 0 || count > have {
+            return Err(MoveError::RuleViolation("recovery count exceeds assistants in area"));
         }
     }
+
+    let p = state.player_mut(player);
+    for (&area, &count) in recover {
+        let slot = p.assistants.on_board.get_mut(&area).expect("validated above");
+        *slot -= count;
+        if *slot == 0 {
+            p.assistants.on_board.remove(&area);
+        }
+        p.assistants.in_hand += count;
+    }
+    p.president_location = PresidentLocation::InHand;
 
     Ok(())
 }
@@ -2451,6 +2464,61 @@ mod tests {
             destination: AreaId::new(0),
         }, &rules);
         assert!(result.is_ok());
+    }
+
+    #[test]
+    fn partial_recovery_moves_exactly_the_requested_counts() {
+        // I5 ruling (2026-07-19): recovering a strict subset of one area's
+        // count must leave the remainder on board, untouched -- not the
+        // old all-or-nothing-per-area semantics.
+        let mut state = create_minimal_state(2);
+        let a0 = AreaId::new(0);
+        let a3 = AreaId::new(3);
+        state.players[0].president_location = PresidentLocation::OnBoard(a0);
+        state.players[0].assistants.on_board.insert(a0, 2);
+        state.players[0].assistants.on_board.insert(a3, 1);
+        let hand_before = state.players[0].assistants.in_hand;
+
+        let mut recover = BTreeMap::new();
+        recover.insert(a0, 1);
+        let rules = Rules::empty_for_tests();
+        let result = apply_move_unchecked(&state, &Move::ReturnPresidentToHand { recover }, &rules);
+        let new_state = result.expect("partial recovery within on-board counts should succeed");
+
+        let p = &new_state.players[0];
+        assert_eq!(p.assistants.in_hand, hand_before + 1);
+        assert_eq!(p.assistants.on_board.get(&a0), Some(&1), "1 of 2 remains at A0");
+        assert_eq!(p.assistants.on_board.get(&a3), Some(&1), "A3 untouched");
+        assert_eq!(p.president_location, PresidentLocation::InHand);
+    }
+
+    #[test]
+    fn over_count_recovery_is_rejected_by_the_raw_arm() {
+        // recover {A0: 3} exceeds on_board {A0: 2}. The checked path
+        // already rejects this shape by membership (it's not in
+        // enumerate_recovery_options's cartesian product); this pins the
+        // apply-layer guard directly, per the standing I1 lesson that raw
+        // arms must self-defend rather than relying solely on the
+        // legal-move pre-filter (T1: apply_move_unchecked is called by
+        // prechecked hot paths, but must still refuse an out-of-range
+        // count rather than underflow or over-credit).
+        let mut state = create_minimal_state(2);
+        let a0 = AreaId::new(0);
+        state.players[0].president_location = PresidentLocation::OnBoard(a0);
+        state.players[0].assistants.on_board.insert(a0, 2);
+        let hand_before = state.players[0].assistants.in_hand;
+
+        let mut recover = BTreeMap::new();
+        recover.insert(a0, 3);
+        let rules = Rules::empty_for_tests();
+        let result = apply_move_unchecked(&state, &Move::ReturnPresidentToHand { recover }, &rules);
+
+        assert!(matches!(result, Err(MoveError::RuleViolation(_))), "{result:?}");
+        // The original state (owned by the test, passed by shared
+        // reference) must be untouched.
+        assert_eq!(state.players[0].assistants.in_hand, hand_before);
+        assert_eq!(state.players[0].assistants.on_board.get(&a0), Some(&2));
+        assert_eq!(state.players[0].president_location, PresidentLocation::OnBoard(a0));
     }
 
     #[test]

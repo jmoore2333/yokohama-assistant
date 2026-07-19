@@ -658,9 +658,21 @@ fn mid_cascade_game_record_round_trips_through_json_and_resumes() {
 /// using the same throwaway-probe method: first seen at seed 3 (2p) --
 /// another easy one, like Telephone, since a Laboratory acquisition is a
 /// common random-play move and Station is just 1 of 20 tech titles in
-/// circulation. 300 stays unchanged; AnyGood (seed 222) remains the binding
-/// constraint.
-const CENSUS_SEED_CAP: u64 = 300;
+/// circulation. 300 stayed unchanged there; AnyGood (seed 222) remained the
+/// binding constraint.
+///
+/// Engine-authority Task 7 (Option B recovery counts encoding) re-measured
+/// this with the same throwaway-probe method after enumerating Option B
+/// retreat as the full per-area cartesian product (I5 ruling): AnyGood is
+/// STILL the binding constraint and every other variant's first-seen seed
+/// is unchanged or earlier, but the flat move-list random walk now spends
+/// much more of its probability mass on `ReturnPresidentToHand` whenever a
+/// player's assistants are scattered across several areas (see
+/// `tests/common/mod.rs`'s `MAX_TURNS` doc comment for the same root
+/// cause), pushing AnyGood's organic first-seed from 222 to 317. 430 gives
+/// ~35% headroom over that new observed worst case, matching this
+/// constant's original headroom policy.
+const CENSUS_SEED_CAP: u64 = 430;
 
 /// Every `PendingChoice` variant's census tag. Exhaustive match (no `_`
 /// arm): a newly-added variant fails to compile here instead of silently

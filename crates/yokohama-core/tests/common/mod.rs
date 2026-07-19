@@ -24,14 +24,23 @@ use yokohama_core::{
 /// Turn cap: exceeding this without `is_game_over` returning true is treated
 /// as a non-termination failure rather than looping forever.
 ///
-/// 2000, not the plan's original 500 (orchestrator-adjudicated during Task
-/// 18.4): random play converges slowly - hands fill, fulfillment is rare,
-/// so deck-drain and track triggers arrive late. Observed completions once
-/// every legal==applicable and trigger bug was fixed: 2p seed 18 -> 638
-/// turns, 3p seed 9 -> 513, 4p seed 0 -> 504 (the old cap interrupted that
-/// one FOUR turns from its legitimate end, mid final-round). Real games
-/// end far sooner; this bound exists purely to catch true non-termination.
-pub const MAX_TURNS: u32 = 2000;
+/// 10000, not Task 18.4's 2000 (engine-authority Task 7 re-measurement):
+/// enumerating Option B retreat as the full per-area cartesian product (I5
+/// ruling -- any number of assistants, not all-or-nothing) makes
+/// `ReturnPresidentToHand` the single largest move family whenever a
+/// player's assistants are scattered across several board areas, which
+/// dilutes uniform-random selection AWAY from `MovePresident`/
+/// `PlacePresident`/`ExecuteAreaAction` and measurably slows convergence --
+/// not a dead end (a temporarily-raised cap confirmed every one of the
+/// fuzz gate's 1500 seeds, 500 per player count, still completes), just
+/// slower. Re-measured worst case at that same 1500-seed sample (`cargo run
+/// --release -p yokohama-core --example selfplay -- 500 <players> 0`,
+/// diagnostic max-turns instrumentation, discarded after measuring): 2p
+/// seed 191 -> 6036 turns (mean 1181.6), 3p seed 114 -> 4755 (mean 1625.2),
+/// 4p seed 194 -> 4104 (mean 2126.6). 10000 gives ~65% headroom over the
+/// observed 6036 max. Real games end far sooner; this bound exists purely
+/// to catch true non-termination.
+pub const MAX_TURNS: u32 = 10000;
 
 /// Summary statistics for one completed random self-play game.
 #[derive(Debug, Clone)]
