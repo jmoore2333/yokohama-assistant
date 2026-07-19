@@ -84,11 +84,54 @@ pub fn run_random_game(seed: u64, players: u8, rules: &Rules) -> Result<GameStat
 /// which surgically construct a legal state, fire a specific trigger through
 /// `apply_move`, and then let random play finish the final round.
 pub fn run_random_game_from(
+    state: GameState,
+    rng: &mut ChaCha8Rng,
+    seed: u64,
+    players: u8,
+    rules: &Rules,
+) -> Result<GameStats, String> {
+    run_random_game_from_observed(state, rng, seed, players, rules, |_, _| {})
+}
+
+/// Play a FRESH seeded game to completion (like `run_random_game`), invoking
+/// `observe(state, mv)` immediately before every applied move -- `state` is
+/// the state `mv` is about to be applied to (so `state.pending_choices`
+/// reflects what was pending when `mv` was picked). Twin of
+/// `run_random_game`/`run_random_game_from`, added for Task 15's organic
+/// choice-coverage census: the census needs to see every move as it's
+/// chosen, not just the final outcome.
+pub fn run_random_game_observed(
+    seed: u64,
+    players: u8,
+    rules: &Rules,
+    observe: impl FnMut(&GameState, &Move),
+) -> Result<GameStats, String> {
+    let mut rng = ChaCha8Rng::seed_from_u64(seed);
+
+    let config = GameConfig::for_player_count(players);
+    let pending = new_game(config, rules, seed)
+        .map_err(|e| format!("seed={seed} players={players}p: new_game failed: {e}"))?;
+
+    let choices: Vec<StartingOrderChoice> =
+        (0..players).map(|_| StartingOrderChoice::Keep(rng.gen_range(0..2u8))).collect();
+    let state = finalize_setup(pending, &choices)
+        .map_err(|e| format!("seed={seed} players={players}p: finalize_setup failed: {e}"))?;
+
+    run_random_game_from_observed(state, &mut rng, seed, players, rules, observe)
+}
+
+/// Shared loop behind `run_random_game_from` (no-op observer) and
+/// `run_random_game_observed` (fresh setup, real observer) -- one copy of
+/// the play-to-completion logic so both public entry points stay exactly as
+/// they were (same failure modes, same invariant checks) rather than
+/// drifting apart.
+fn run_random_game_from_observed(
     mut state: GameState,
     rng: &mut ChaCha8Rng,
     seed: u64,
     players: u8,
     rules: &Rules,
+    mut observe: impl FnMut(&GameState, &Move),
 ) -> Result<GameStats, String> {
     let mut move_log: Vec<Move> = Vec::new();
     let mut branching_by_phase: HashMap<TurnPhase, (u64, u64)> = HashMap::new();
@@ -146,6 +189,7 @@ pub fn run_random_game_from(
         }
 
         let choice = moves[rng.gen_range(0..moves.len())].clone();
+        observe(&state, &choice);
         match apply_move(&state, &choice, rules) {
             Ok(next_state) => {
                 if let Err(reason) = check_invariants(&next_state, rules) {
