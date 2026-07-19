@@ -1206,4 +1206,51 @@ mod tests {
         assert_eq!(r.session.record().events.len(), events_before);
         assert_eq!(*r.session.state(), state_before);
     }
+
+    /// Turn-1 setup for the retreat grammar's multi-token case: an Option-A
+    /// placement of exactly 2 areas (1 assistant each) instead of
+    /// `drive_to_movement_with_on_board_assistants`'s single-area/2-count
+    /// shape -- needed to exercise `try_retreat`'s loop across MORE THAN
+    /// ONE `rest` token (the "..." in `r [<area>[:<n>]]...`), which none of
+    /// the single-token tests above touch. Returns the two occupied areas.
+    fn drive_to_movement_with_two_occupied_areas(r: &mut Repl) -> (AreaId, AreaId) {
+        if !r.session.legal().iter().any(|m| matches!(m, Move::PlaceThreeAreas { .. })) {
+            let end = r.session.legal().iter().position(|m| matches!(m, Move::EndAdditionalPhase))
+                .expect("EndAdditionalPhase reaches Placement");
+            r.step(&end.to_string());
+        }
+        let legal = r.session.legal();
+        let place = legal.iter()
+            .position(|m| matches!(m, Move::PlaceThreeAreas { placements } if placements.len() == 2))
+            .expect("a 2-area Option A placement is legal and affordable turn 1 (same reasoning as the Option B fixture -- no President is on board yet to charge a fee)");
+        let (a, b) = match &legal[place] {
+            Move::PlaceThreeAreas { placements } => (placements[0], placements[1]),
+            _ => unreachable!("position() above only matches PlaceThreeAreas"),
+        };
+        r.step(&place.to_string());
+        assert_eq!(r.session.state().turn_phase, TurnPhase::Movement, "placement must reach Movement phase");
+        (a, b)
+    }
+
+    #[test]
+    fn r_grammar_combines_multiple_area_tokens_into_one_retreat() {
+        let mut r = repl_2p(4);
+        let (a, b) = drive_to_movement_with_two_occupied_areas(&mut r);
+        let me = r.session.state().current_player;
+        let events_before = r.session.record().events.len();
+
+        // Mix a bare token (recover ALL there -- 1) with an explicit `:1`
+        // for the other area, in a single command.
+        let out = r.step(&format!("r {} {}:1", a.0, b.0));
+        assert!(!out.text.to_lowercase().contains("illegal"), "{}", out.text);
+        assert!(!out.text.contains("not in the legal list"), "{}", out.text);
+        assert_eq!(r.session.record().events.len(), events_before + 1);
+        assert!(matches!(
+            r.session.record().events.last(),
+            Some(RecordedEvent::Move(Move::ReturnPresidentToHand { recover }))
+                if recover.len() == 2 && recover.get(&a) == Some(&1) && recover.get(&b) == Some(&1)
+        ), "{:?}", r.session.record().events.last());
+        assert_eq!(r.session.state().player(me).assistants.in_area(a), 0);
+        assert_eq!(r.session.state().player(me).assistants.in_area(b), 0);
+    }
 }
