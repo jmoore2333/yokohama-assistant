@@ -65,7 +65,7 @@ Every screen ends with a status header, the numbered legal options, and a hint l
 ```
 Turn 1 | Red | Additional actions (before) | 3 yen 0 VP | c1 s2 t0 f1 i0 | hand 1
 [0] End additional-action phase
-> enter a number, 'a'/'b' for placement, or a command ('help' for the list)
+> enter a number, 'a'/'b' for placement, 'r' to retreat, or a command ('help' for the list)
 ```
 
 Header anatomy: turn number | whose turn | phase (§8.4) | money and VP | goods `c`opper `s`ilk `t`ea `f`ish(=Seafood) `i`mports | order cards in hand.
@@ -79,7 +79,7 @@ Turn 1 | Red | Choose: Church space at faith 6 — 1 choice pending | 2 yen 0 VP
 [0] Place on Church faith-4 space (3 VP)
 [1] Place on Church faith-5 space (4 VP)
 [2] Place on Church faith-6 space (5 VP)
-> enter a number, 'a'/'b' for placement, or a command ('help' for the list)
+> enter a number, 'a'/'b' for placement, 'r' to retreat, or a command ('help' for the list)
 ```
 
 A choice that lets you decline (warehouse take, assistant move) adds `Decline the ...` as one more numbered option; a choice that's purely "which one" (any-good, Church space, Customs space) has none, because the rulebook doesn't give you one there either. Resolving a choice can queue another — picking the Church space above queues its movement-rider(s) next — and the `— N pending` count tracks how many are still stacked up.
@@ -95,6 +95,8 @@ Order of ids in `a` doesn't matter; the tool matches your entry against the lega
 
 **Assistant-move shorthand** (for a pending assistant-move choice — the Movement icon's reward, §8.6): `m <from> <to>` instead of hunting the numbered list, where `<from>` is `hand` or the id of an area holding one of your own on-board assistants, and `<to>` is any area id. Continuing the transcript above once it cascades into an assistant-move choice: `m 8 9` moves the assistant sitting in area 8 to area 9; `m hand 9` moves one from hand to area 9. Like the placement shorthand, `m` only ever matches against the real legal list — a destination the reward doesn't actually allow gets the same rejection a wrong option number would, and there's no `m` shorthand for declining (use the numbered `Decline the assistant move` option). Bad input: `m` alone or `m <one token>` → `Usage: m <from> <to>`; a non-numeric area token → `'<tok>' is not a valid area number`; a well-formed area number that isn't actually offered — including one out of the board's 0-17 range (`m 8 99`), or using `m` when no assistant-move choice is pending at all — → `Illegal: that is not one of the legal assistant moves.` Unlike `a`/`b`, `m` doesn't separately range-check its area numbers first; an out-of-range one just falls through to that same generic rejection.
 
+**Retreat shorthand** (Movement Option B: return the President to hand, optionally recovering assistants — the rulebook's other Step-2 option alongside moving him, §8.4): `r` by itself returns the President to hand recovering no assistants; `r <id>` recovers *every* assistant you currently have on board in area `<id>`; `r <id>:<n>` recovers exactly `n` from area `<id>` (`n` must be ≥ 1). Chain several area tokens in one command: `r 4:1 9` recovers 1 assistant from area 4 *and* every assistant you have in area 9. The numbered list still works too — it now shows each retreat's actual per-area counts (e.g. `Return President to hand, recovering 3 assistant(s) (A04 x1, A09 x2)`) instead of just naming the areas, so two retreats that recover different counts from the same area no longer read identically; with several occupied areas this list can page (§4), which is exactly why the shorthand exists. Like `a`/`b`/`m`, `r` only ever matches against the real legal list — asking for more assistants than are actually there (or any other combination the rules don't offer) gets `That retreat is not in the legal list (check areas/counts).`, the same rejection a wrong option number would get. Bad input: a non-numeric (or out-of-range) area token → `Bad area token '<tok>'. Usage: r [<area>[:<n>]]...`; a zero, negative, or non-numeric count after `:` → `Bad count in '<tok>'.`
+
 ## 5. Commands
 
 ```
@@ -103,6 +105,7 @@ a [id id id]    Placement Option A: place 1 assistant in each of 0-3 areas
 b <id>          Placement Option B: place 2 assistants in one area
 b <id> t <adj>  Placement Option B with the Telegram bonus: +1 assistant in an adjacent area
 m <from> <to>   resolve a pending assistant-move choice (<from> is 'hand' or an area id)
+r [id[:n]]...   Movement Option B: retreat the President, recovering all (bare id) or n assistants per area ('r' alone recovers none)
 board           show the area grid
 players         show each player's resources, hand, tech, tokens, President
 ports           show both Port boards and the order-deck size

@@ -252,15 +252,23 @@ pub fn describe_move(mv: &Move, state: &GameState, rules: &Rules) -> String {
             area_label(state, *destination),
             path.iter().map(|a| area_label(state, *a)).collect::<Vec<_>>().join(" -> ")
         ),
-        Move::ReturnPresidentToHand { recover } if recover.is_empty() => {
-            "Return President to hand (recover no assistants)".to_string()
+        // Counts encoding (I5 ruling): per-area counts, not just which areas
+        // -- two retreats differing only by count (e.g. recover 1 vs 2 from
+        // the same area) must render distinguishably (Task 7's report;
+        // Task 8 gives this its real treatment).
+        Move::ReturnPresidentToHand { recover } => {
+            if recover.is_empty() {
+                "Return President to hand (recover no assistants)".to_string()
+            } else {
+                let total: u32 = recover.values().map(|&c| c as u32).sum();
+                let parts = recover
+                    .iter()
+                    .map(|(a, c)| format!("A{:02} x{}", a.0, c))
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                format!("Return President to hand, recovering {total} assistant(s) ({parts})")
+            }
         }
-        // Counts encoding (I5 ruling): lists the areas recovered from, not
-        // yet the per-area counts -- Task 8 gives this its real treatment.
-        Move::ReturnPresidentToHand { recover } => format!(
-            "Return President to hand, recovering assistants from {}",
-            recover.keys().map(|a| area_label(state, *a)).collect::<Vec<_>>().join(", ")
-        ),
         Move::PlacePresident { destination } => {
             format!("Place President from hand in {}", area_label(state, *destination))
         }
@@ -450,6 +458,24 @@ mod tests {
             describe_move(&Move::ChooseCustomsSpace { space: 3 }, &state, &rules),
             format!("Place on Customs space 3 ({} VP)", CustomsTrack::vp_reward(3))
         );
+    }
+
+    #[test]
+    fn retreat_descriptions_show_counts_or_none() {
+        let state = state_2p();
+        let rules = Rules::standard();
+        let none = describe_move(
+            &Move::ReturnPresidentToHand { recover: std::collections::BTreeMap::new() },
+            &state,
+            &rules,
+        );
+        assert_eq!(none, "Return President to hand (recover no assistants)");
+
+        let mut recover = std::collections::BTreeMap::new();
+        recover.insert(AreaId::new(0), 2);
+        recover.insert(AreaId::new(3), 1);
+        let some = describe_move(&Move::ReturnPresidentToHand { recover }, &state, &rules);
+        assert_eq!(some, "Return President to hand, recovering 3 assistant(s) (A00 x2, A03 x1)");
     }
 
     #[test]

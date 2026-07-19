@@ -88,7 +88,7 @@ cargo run -p yokohama-cli -- save.json # resume a saved game</code></pre>
 <p>Every screen ends with a status header, the numbered legal options, and a hint line:</p>
 <pre><code>Turn 1 | Red | Additional actions (before) | 3 yen 0 VP | c1 s2 t0 f1 i0 | hand 1
 [0] End additional-action phase
-&gt; enter a number, 'a'/'b' for placement, or a command ('help' for the list)</code></pre>
+&gt; enter a number, 'a'/'b' for placement, 'r' to retreat, or a command ('help' for the list)</code></pre>
 <p>Header anatomy: turn number | whose turn | phase (§8.4) | money and VP | goods <code>c</code>opper <code>s</code>ilk <code>t</code>ea <code>f</code>ish(=Seafood) <code>i</code>mports | order cards in hand.</p>
 <p><strong>Choosing a move:</strong> type the option's number. Long lists show 20 per page — <code>more</code> pages forward (wrapping), <code>list</code> returns to page 0.</p>
 <p><strong>Choice prompts:</strong> some rewards leave you a decision — which good, which warehouse item, where to move an assistant, which Church/Customs space (full inventory in §8.6). Whenever one or more of these is queued, the phase slot in the header is replaced by a <code>Choose: ... — N choice(s) pending</code> banner naming the head choice, and the numbered list below is exactly that choice's options — nothing about entering them differs from any other phase. A captured example, mid-Church-visit:</p>
@@ -96,7 +96,7 @@ cargo run -p yokohama-cli -- save.json # resume a saved game</code></pre>
 [0] Place on Church faith-4 space (3 VP)
 [1] Place on Church faith-5 space (4 VP)
 [2] Place on Church faith-6 space (5 VP)
-&gt; enter a number, 'a'/'b' for placement, or a command ('help' for the list)</code></pre>
+&gt; enter a number, 'a'/'b' for placement, 'r' to retreat, or a command ('help' for the list)</code></pre>
 <p>A choice that lets you decline (warehouse take, assistant move) adds <code>Decline the ...</code> as one more numbered option; a choice that's purely "which one" (any-good, Church space, Customs space) has none, because the rulebook doesn't give you one there either. Resolving a choice can queue another — picking the Church space above queues its movement-rider(s) next — and the <code>— N pending</code> count tracks how many are still stacked up.</p>
 <p><strong>Placement shorthand</strong> (the one phase with too many options to number usefully):</p>
 <ul>
@@ -108,12 +108,15 @@ cargo run -p yokohama-cli -- save.json # resume a saved game</code></pre>
 <p>Order of ids in <code>a</code> doesn't matter; the tool matches your entry against the legal list and refuses anything the engine didn't offer.</p>
 <p><strong>Assistant-move shorthand</strong> (for a pending assistant-move choice — the Movement icon's reward, §8.6): <code>m &lt;from&gt; &lt;to&gt;</code> instead of hunting the numbered list, where <code>&lt;from&gt;</code> is <code>hand</code> or the id of an area holding one of your own on-board assistants, and <code>&lt;to&gt;</code> is any area id. Continuing the transcript above once it cascades into an assistant-move choice: <code>m 8 9</code> moves the assistant sitting in area 8 to area 9; <code>m hand 9</code> moves one from hand to area 9. Like the placement shorthand, <code>m</code> only ever matches against the real legal list — a destination the reward doesn't actually allow gets the same rejection a wrong option number would, and there's no <code>m</code> shorthand for declining (use the numbered <code>Decline the assistant move</code> option). Bad input: <code>m</code> alone or <code>m &lt;one token&gt;</code> → <code>Usage: m &lt;from&gt; &lt;to&gt;</code>; a non-numeric area token → <code>'&lt;tok&gt;' is not a valid area number</code>; a well-formed area number that isn't actually offered — including one out of the board's 0-17 range (<code>m 8 99</code>), or using <code>m</code> when no assistant-move choice is pending at all — → <code>Illegal: that is not one of the legal assistant moves.</code> Unlike <code>a</code>/<code>b</code>, <code>m</code> doesn't separately range-check its area numbers first; an out-of-range one just falls through to that same generic rejection.</p>
 
+<p><strong>Retreat shorthand</strong> (Movement Option B: return the President to hand, optionally recovering assistants — the rulebook's other Step-2 option alongside moving him, §8.4): <code>r</code> by itself returns the President to hand recovering no assistants; <code>r &lt;id&gt;</code> recovers <em>every</em> assistant you currently have on board in area <code>&lt;id&gt;</code>; <code>r &lt;id&gt;:&lt;n&gt;</code> recovers exactly <code>n</code> from area <code>&lt;id&gt;</code> (<code>n</code> must be ≥ 1). Chain several area tokens in one command: <code>r 4:1 9</code> recovers 1 assistant from area 4 <em>and</em> every assistant you have in area 9. The numbered list still works too — it now shows each retreat's actual per-area counts (e.g. <code>Return President to hand, recovering 3 assistant(s) (A04 x1, A09 x2)</code>) instead of just naming the areas, so two retreats that recover different counts from the same area no longer read identically; with several occupied areas this list can page (§4), which is exactly why the shorthand exists. Like <code>a</code>/<code>b</code>/<code>m</code>, <code>r</code> only ever matches against the real legal list — asking for more assistants than are actually there (or any other combination the rules don't offer) gets <code>That retreat is not in the legal list (check areas/counts).</code>, the same rejection a wrong option number would get. Bad input: a non-numeric (or out-of-range) area token → <code>Bad area token '&lt;tok&gt;'. Usage: r [&lt;area&gt;[:&lt;n&gt;]]...</code>; a zero, negative, or non-numeric count after <code>:</code> → <code>Bad count in '&lt;tok&gt;'.</code></p>
+
 <h2>5. Commands</h2>
 <pre><code>&lt;number&gt;        apply the numbered legal option
 a [id id id]    Placement Option A: place 1 assistant in each of 0-3 areas
 b &lt;id&gt;          Placement Option B: place 2 assistants in one area
 b &lt;id&gt; t &lt;adj&gt;  Placement Option B with the Telegram bonus: +1 assistant in an adjacent area
 m &lt;from&gt; &lt;to&gt;   resolve a pending assistant-move choice (&lt;from&gt; is 'hand' or an area id)
+r [id[:n]]...   Movement Option B: retreat the President, recovering all (bare id) or n assistants per area ('r' alone recovers none)
 board           show the area grid
 players         show each player's resources, hand, tech, tokens, President
 ports           show both Port boards and the order-deck size

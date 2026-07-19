@@ -153,6 +153,7 @@ impl Repl {
             ["b", rest @ ..] => self.try_placement_b(rest),
             ["m", src, dst] => self.try_assistant_move(src, dst),
             ["m", ..] => self.out("Usage: m <from> <to>\n".to_string(), false),
+            ["r", rest @ ..] => self.try_retreat(rest),
             [_] if words[0].chars().all(|c| c.is_ascii_digit()) => match words[0].parse::<usize>() {
                 Ok(k) => self.pick_option(k),
                 Err(_) => self.out(format!("'{}' is not a valid option number.\n", words[0]), false),
@@ -305,6 +306,48 @@ impl Repl {
         match self.find_placement_match(&candidate) {
             Some(mv) => self.commit(mv),
             None => self.out("Illegal: that is not one of the legal assistant moves.\n".to_string(), false),
+        }
+    }
+
+    /// Parse `r [<area>[:<n>]]...` (Movement Option B: retreat the
+    /// President) into a `ReturnPresidentToHand` candidate and exact-match
+    /// it against `legal()` via `find_placement_match`'s catch-all
+    /// (`BTreeMap` equality is canonical, so plain `==` suffices -- no
+    /// multiset dance like Option A's areas). `r` alone (`rest` empty)
+    /// builds the empty map -- recover nothing. A bare area token recovers
+    /// ALL assistants the current player has there right now (read from
+    /// state); `<area>:<n>` recovers exactly `n` (`n` >= 1; `:0` is
+    /// rejected the same as a non-numeric count, matching
+    /// `ReturnPresidentToHand`'s own invariant that a present entry is
+    /// never zero-valued). Never bypasses the generator: a combination the
+    /// rules don't actually offer -- including a bare area with nothing
+    /// there, which builds a zero-valued entry no legal option ever has --
+    /// gets the same "not in the legal list" rejection regardless of why
+    /// it's wrong.
+    fn try_retreat(&mut self, rest: &[&str]) -> StepOutput {
+        let mut recover = std::collections::BTreeMap::new();
+        let me = self.session.state().current_player;
+        for tok in rest {
+            let (area_tok, count_tok) = match tok.split_once(':') {
+                Some((a, n)) => (a, Some(n)),
+                None => (*tok, None),
+            };
+            let Ok(area) = parse_raw_area_token(area_tok) else {
+                return self.out(format!("Bad area token '{area_tok}'. Usage: r [<area>[:<n>]]...\n"), false);
+            };
+            let count = match count_tok {
+                Some(n) => match n.parse::<u8>() {
+                    Ok(k) if k > 0 => k,
+                    _ => return self.out(format!("Bad count in '{tok}'.\n"), false),
+                },
+                None => self.session.state().player(me).assistants.in_area(area),
+            };
+            recover.insert(area, count);
+        }
+        let candidate = Move::ReturnPresidentToHand { recover };
+        match self.find_placement_match(&candidate) {
+            Some(mv) => self.commit(mv),
+            None => self.out("That retreat is not in the legal list (check areas/counts).\n".to_string(), false),
         }
     }
 
@@ -561,6 +604,7 @@ Commands:
   b <id>          Placement Option B: place 2 assistants in one area
   b <id> t <adj>  Placement Option B with the Telegram bonus: +1 assistant in an adjacent area
   m <from> <to>   resolve a pending assistant-move choice (<from> is 'hand' or an area id)
+  r [id[:n]]...   Movement Option B: retreat the President, recovering all (bare id) or n assistants per area ('r' alone recovers none)
   board           show the area grid
   players         show each player's resources, hand, tech, tokens, President
   ports           show both Port boards and the order-deck size
@@ -582,7 +626,7 @@ Commands:
 /// The one-line trailing hint every prompt screen ends with -- factored out
 /// (Task 13) so `prompt()`'s full block and `out_view`'s hint-only block
 /// agree on its wording verbatim.
-const INPUT_HINT: &str = "> enter a number, 'a'/'b' for placement, or a command ('help' for the list)\n";
+const INPUT_HINT: &str = "> enter a number, 'a'/'b' for placement, 'r' to retreat, or a command ('help' for the list)\n";
 
 #[cfg(test)]
 mod tests {
@@ -1067,6 +1111,98 @@ mod tests {
 
         let out = r.step(&format!("m {} 99", church_area.0));
         assert!(out.text.contains("not one of the legal assistant moves"), "{}", out.text);
+        assert_eq!(r.session.record().events.len(), events_before);
+        assert_eq!(*r.session.state(), state_before);
+    }
+
+    /// Turn-1 setup for the retreat (`r`) grammar tests: reach Movement
+    /// phase via a real, affordable Option-B placement (2 assistants, one
+    /// area) -- same `.position()`-search walking style
+    /// `drive_to_double_assistant_move_cascade` uses, but stops right after
+    /// the placement itself instead of moving the President or triggering
+    /// an AssistantMove cascade, since retreat only needs on-board
+    /// assistants to recover.
+    ///
+    /// Deliberately does NOT try to get the President onto the board first:
+    /// every player's `president_location` starts `InHand`
+    /// (`PlayerState::new`'s default) and stays that way across the
+    /// Placement -> Movement transition (`set_president_start_area` only
+    /// records the OLD location for movement-fee bookkeeping, and
+    /// `PlaceTwoSameArea`'s apply arm never touches `president_location`),
+    /// so a genuine "President already on board" Movement decision needs a
+    /// full extra turn round-trip to reach. `ReturnPresidentToHand` is
+    /// offered either way -- `generate_movement_moves_with_tech`'s
+    /// `enumerate_recovery_options(p)` call is identical in both the
+    /// `InHand` and `OnBoard` arms -- so this simpler turn-1 fixture is
+    /// enough to exercise the grammar. Returns the area the 2 assistants
+    /// landed in.
+    fn drive_to_movement_with_on_board_assistants(r: &mut Repl) -> AreaId {
+        if !r.session.legal().iter().any(|m| matches!(m, Move::PlaceTwoSameArea { .. })) {
+            let end = r.session.legal().iter().position(|m| matches!(m, Move::EndAdditionalPhase))
+                .expect("EndAdditionalPhase reaches Placement");
+            r.step(&end.to_string());
+        }
+        let legal = r.session.legal();
+        let place = legal.iter().position(|m| matches!(m, Move::PlaceTwoSameArea { adjacent_bonus: None, .. }))
+            .expect("some Option B placement is legal and affordable turn 1 (no President is on board yet to charge a fee)");
+        let area = match &legal[place] {
+            Move::PlaceTwoSameArea { area, .. } => *area,
+            _ => unreachable!("position() above only matches PlaceTwoSameArea"),
+        };
+        r.step(&place.to_string());
+        assert_eq!(r.session.state().turn_phase, TurnPhase::Movement, "placement must reach Movement phase");
+        area
+    }
+
+    #[test]
+    fn r_grammar_builds_the_exact_retreat_move_and_applies_it() {
+        let mut r = repl_2p(4);
+        let area = drive_to_movement_with_on_board_assistants(&mut r);
+        let me = r.session.state().current_player;
+        let events_before = r.session.record().events.len();
+
+        let out = r.step(&format!("r {}:1", area.0));
+        assert!(!out.text.to_lowercase().contains("illegal"), "{}", out.text);
+        assert!(!out.text.contains("not in the legal list"), "{}", out.text);
+        assert_eq!(r.session.record().events.len(), events_before + 1);
+        assert!(matches!(
+            r.session.record().events.last(),
+            Some(RecordedEvent::Move(Move::ReturnPresidentToHand { recover }))
+                if recover.len() == 1 && recover.get(&area) == Some(&1)
+        ), "{:?}", r.session.record().events.last());
+        assert_eq!(r.session.state().player(me).assistants.in_area(area), 1);
+    }
+
+    #[test]
+    fn r_with_no_args_is_the_recover_nothing_retreat() {
+        let mut r = repl_2p(4);
+        let area = drive_to_movement_with_on_board_assistants(&mut r);
+        let me = r.session.state().current_player;
+        let events_before = r.session.record().events.len();
+
+        let out = r.step("r");
+        assert!(!out.text.to_lowercase().contains("illegal"), "{}", out.text);
+        assert_eq!(r.session.record().events.len(), events_before + 1);
+        assert!(matches!(
+            r.session.record().events.last(),
+            Some(RecordedEvent::Move(Move::ReturnPresidentToHand { recover })) if recover.is_empty()
+        ), "{:?}", r.session.record().events.last());
+        // Recovering nothing leaves both on-board assistants exactly where
+        // they were -- only the President itself (already in hand turn 1;
+        // see the fixture's doc comment) would move.
+        assert_eq!(r.session.state().player(me).assistants.in_area(area), 2);
+    }
+
+    #[test]
+    fn r_with_bad_count_reports_not_legal_without_applying() {
+        let mut r = repl_2p(4);
+        let area = drive_to_movement_with_on_board_assistants(&mut r);
+        let events_before = r.session.record().events.len();
+        let state_before = r.session.state().clone();
+
+        // Only 2 assistants are on board there -- 9 is never legal.
+        let out = r.step(&format!("r {}:9", area.0));
+        assert!(out.text.contains("not in the legal list"), "{}", out.text);
         assert_eq!(r.session.record().events.len(), events_before);
         assert_eq!(*r.session.state(), state_before);
     }
