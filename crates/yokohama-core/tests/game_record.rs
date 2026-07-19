@@ -3,7 +3,7 @@
 mod common;
 use common::run_recorded_game;
 
-use yokohama_core::{replay, GameRecord, Move, OrderCardId, RecordedEvent, Rules};
+use yokohama_core::{replay, replay_strict, GameRecord, Move, OrderCardId, RecordedEvent, Rules};
 
 #[test]
 fn record_replays_to_identical_state() {
@@ -34,4 +34,34 @@ fn replay_of_mid_list_illegal_move_returns_err_not_panic() {
 
     let result = replay(&record, &rules);
     assert!(result.is_err());
+}
+
+#[test]
+fn strict_replay_matches_normal_replay_on_a_clean_record() {
+    let rules = Rules::standard();
+    let (final_state, record) = common::run_recorded_game(7, 2, &rules);
+    assert_eq!(replay_strict(&record, &rules).unwrap(), final_state);
+}
+
+#[test]
+fn strict_replay_rejects_engine_version_mismatch_instead_of_warning() {
+    let rules = Rules::standard();
+    let (_, mut record) = common::run_recorded_game(7, 2, &rules);
+    record.engine_version = "0.0.0-tampered".into();
+    let err = replay_strict(&record, &rules).unwrap_err();
+    assert_eq!(err.event_index, 0);
+    assert!(err.message.contains("engine_version"));
+    // and the lenient path still replays (warn-and-continue preserved):
+    assert!(replay(&record, &rules).is_ok());
+}
+
+#[test]
+fn strict_replay_rejects_an_out_of_phase_tampered_move_with_its_event_index() {
+    let rules = Rules::standard();
+    let (_, mut record) = common::run_recorded_game(7, 2, &rules);
+    // Overwrite event k with a move that is never legal at that point.
+    let k = 1;
+    record.events[k] = RecordedEvent::Move(Move::Take5PowerToken);
+    let err = replay_strict(&record, &rules).unwrap_err();
+    assert_eq!(err.event_index, k);
 }

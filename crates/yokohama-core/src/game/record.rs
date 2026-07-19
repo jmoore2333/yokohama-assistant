@@ -110,11 +110,48 @@ impl std::fmt::Display for ReplayError {
 
 impl std::error::Error for ReplayError {}
 
-/// Fold `events` over `initial`, in order: `RecordedEvent::Move` applies via
+/// Apply one `RecordedEvent` to `state`: `RecordedEvent::Move` applies via
 /// `apply_move`; each `Reveal*` variant applies via its matching `GameState`
 /// reconciliation method (`arrange_orders_on_top`, `arrange_techs_on_top`,
-/// `reveal_starting_order`, `reveal_five_power_token`). Returns the first
-/// error encountered, tagged with its 0-based index into `events` --
+/// `reveal_starting_order`, `reveal_five_power_token`). Returns the
+/// underlying `MoveError`'s message on failure.
+///
+/// This is the ONE fold implementation (Task 3 -- the a6faa87 lesson was
+/// that a second hand-kept copy of this match drifts from the first):
+/// `replay_from` and `replay_strict` both loop this per event, differing
+/// only in what they do around each step (plain short-circuit vs. also
+/// running `check_invariants`).
+fn fold_one_event(state: &GameState, ev: &RecordedEvent, rules: &Rules) -> Result<GameState, String> {
+    let step: Result<GameState, MoveError> = (|| {
+        Ok(match ev {
+            RecordedEvent::Move(mv) => apply_move(state, mv, rules)?,
+            RecordedEvent::RevealOrders(cards) => {
+                let mut s = state.clone();
+                s.arrange_orders_on_top(cards)?;
+                s
+            }
+            RecordedEvent::RevealTechs(cards) => {
+                let mut s = state.clone();
+                s.arrange_techs_on_top(cards)?;
+                s
+            }
+            RecordedEvent::RevealStartingOrder { player, card } => {
+                let mut s = state.clone();
+                s.reveal_starting_order(*player, *card)?;
+                s
+            }
+            RecordedEvent::RevealFivePowerToken { area, effect } => {
+                let mut s = state.clone();
+                s.reveal_five_power_token(*area, *effect)?;
+                s
+            }
+        })
+    })();
+    step.map_err(|e| e.to_string())
+}
+
+/// Fold `events` over `initial`, in order, via `fold_one_event`. Returns the
+/// first error encountered, tagged with its 0-based index into `events` --
 /// short-circuits the loop, so events after the bad one never run.
 ///
 /// This is `replay`'s event-folding loop, factored out (Task 13) so a
@@ -128,46 +165,39 @@ impl std::error::Error for ReplayError {}
 pub fn replay_from(initial: &GameState, events: &[RecordedEvent], rules: &Rules) -> Result<GameState, ReplayError> {
     let mut state = initial.clone();
     for (i, ev) in events.iter().enumerate() {
-        let step: Result<GameState, MoveError> = (|| {
-            Ok(match ev {
-                RecordedEvent::Move(mv) => apply_move(&state, mv, rules)?,
-                RecordedEvent::RevealOrders(cards) => {
-                    let mut s = state.clone();
-                    s.arrange_orders_on_top(cards)?;
-                    s
-                }
-                RecordedEvent::RevealTechs(cards) => {
-                    let mut s = state.clone();
-                    s.arrange_techs_on_top(cards)?;
-                    s
-                }
-                RecordedEvent::RevealStartingOrder { player, card } => {
-                    let mut s = state.clone();
-                    s.reveal_starting_order(*player, *card)?;
-                    s
-                }
-                RecordedEvent::RevealFivePowerToken { area, effect } => {
-                    let mut s = state.clone();
-                    s.reveal_five_power_token(*area, *effect)?;
-                    s
-                }
-            })
-        })();
-        state = step.map_err(|e| ReplayError { event_index: i, message: e.to_string() })?;
+        state = fold_one_event(&state, ev, rules).map_err(|message| ReplayError { event_index: i, message })?;
     }
     Ok(state)
 }
 
-/// Reconstruct the `GameState` a `GameRecord` describes: `new_game`,
-/// `finalize_setup`, then `replay_from` folds `record.events` over the
-/// resulting state in order.
+/// Reconstruct the pre-event-log `GameState` a `GameRecord` describes:
+/// `new_game`, optional `reconcile_setup` (live-tracked games carrying
+/// `setup_observations`), then `finalize_setup`. Factored out of `replay`
+/// (Task 3) so `replay_strict` shares the exact same setup preamble instead
+/// of a second hand-kept copy. A failure at any of the three steps reports
+/// `event_index: 0` (see `ReplayError`'s doc comment), since no event index
+/// is meaningful before the log starts folding.
+fn rebuild_initial_state(record: &GameRecord, rules: &Rules) -> Result<GameState, ReplayError> {
+    let mut pending = new_game(record.config.clone(), rules, record.seed)
+        .map_err(|e| ReplayError { event_index: 0, message: format!("new_game: {e}") })?;
+    if let Some(obs) = &record.setup_observations {
+        pending = reconcile_setup(pending, obs, rules)
+            .map_err(|e| ReplayError { event_index: 0, message: format!("reconcile_setup: {e}") })?;
+    }
+    finalize_setup(pending, &record.choices)
+        .map_err(|e| ReplayError { event_index: 0, message: format!("finalize_setup: {e}") })
+}
+
+/// Reconstruct the `GameState` a `GameRecord` describes: `rebuild_initial_state`
+/// (`new_game` -> optional `reconcile_setup` -> `finalize_setup`), then
+/// `replay_from` folds `record.events` over the resulting state in order.
 ///
 /// Does not refuse to replay a record written by a different engine
 /// version -- v1 only warns (to stderr) on a mismatch. A future engine
 /// version could change data layout or apply a rules correction in a way
 /// that makes an old record replay to a different state than the one that
-/// produced it; Phase 2 may turn this into a hard error or a migration
-/// step, but for now the record replays regardless.
+/// produced it; `replay_strict` (Task 3) is the hard-rejecting alternative
+/// training pipelines should use instead.
 ///
 /// Returns the first error encountered as a `ReplayError` naming the failed
 /// event's index (see its doc comment) -- a `new_game`/`reconcile_setup`/
@@ -181,15 +211,38 @@ pub fn replay(record: &GameRecord, rules: &Rules) -> Result<GameState, ReplayErr
         );
     }
 
-    let mut pending = new_game(record.config.clone(), rules, record.seed)
-        .map_err(|e| ReplayError { event_index: 0, message: format!("new_game: {e}") })?;
-    if let Some(obs) = &record.setup_observations {
-        pending = reconcile_setup(pending, obs, rules)
-            .map_err(|e| ReplayError { event_index: 0, message: format!("reconcile_setup: {e}") })?;
-    }
-    let state = finalize_setup(pending, &record.choices)
-        .map_err(|e| ReplayError { event_index: 0, message: format!("finalize_setup: {e}") })?;
+    let state = rebuild_initial_state(record, rules)?;
     replay_from(&state, &record.events, rules)
+}
+
+/// Strict replay for training pipelines (design §4.1): reject, don't warn.
+/// - engine_version mismatch => Err at event_index 0
+/// - every Move event goes through the checked `apply_move` (membership)
+/// - `check_invariants` runs after EVERY event
+///
+/// Shares `rebuild_initial_state`/`fold_one_event` with `replay`/`replay_from`
+/// (Task 3) -- there is exactly one setup preamble and one event fold in
+/// this module; strict vs. lenient is purely what each caller does with the
+/// version check and around each folded step.
+pub fn replay_strict(record: &GameRecord, rules: &Rules) -> Result<GameState, ReplayError> {
+    let running = env!("CARGO_PKG_VERSION");
+    if record.engine_version != running {
+        return Err(ReplayError {
+            event_index: 0,
+            message: format!(
+                "engine_version mismatch: record \"{}\" vs running \"{running}\" (strict mode rejects)",
+                record.engine_version
+            ),
+        });
+    }
+    let initial = rebuild_initial_state(record, rules)?;
+    let mut state = initial;
+    for (i, ev) in record.events.iter().enumerate() {
+        state = fold_one_event(&state, ev, rules).map_err(|message| ReplayError { event_index: i, message })?;
+        crate::game::invariants::check_invariants(&state, rules)
+            .map_err(|m| ReplayError { event_index: i, message: format!("invariant violated: {m}") })?;
+    }
+    Ok(state)
 }
 
 #[cfg(test)]
