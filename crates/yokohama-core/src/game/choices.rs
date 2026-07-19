@@ -55,6 +55,10 @@ fn generate_choice_resolutions_for(state: &GameState, choice: &PendingChoice, _r
             Move::ChooseRecoveryLeave { leave_one: false },
             Move::ChooseRecoveryLeave { leave_one: true },
         ],
+        PendingChoice::StationPlace => state.board_layout.areas.iter()
+            .filter(|(_, c)| c.area_type.allows_placement())
+            .map(|(&area, _)| Move::ChooseStationPlace { area })
+            .collect(),
     }
 }
 
@@ -107,6 +111,16 @@ pub fn assistant_move_options(state: &GameState) -> Vec<(MoveSource, AreaId)> {
 /// collapses to Decline alone whenever nothing in the warehouse is worth
 /// taking, and resolves immediately instead of round-tripping through the
 /// caller.
+///
+/// StationPlace (design §4.2, Task 5) is architecturally different from
+/// those two: it has no Decline resolution at all, so a true singleton
+/// (exactly 1 placeable area) auto-resolves to an ACTIVE effect -- the token
+/// silently lands there -- rather than an inert no-op. This is
+/// design-sanctioned ("if exactly one eligible area exists, place inline")
+/// and real-board-unreachable (the smallest generated board has far more
+/// than 1 placeable area), but it means StationPlace is the first variant
+/// whose singleton path is NOT inert; see `choice_encoding.rs`'s
+/// `assert_decline_or_never_singleton` for the full reasoning.
 ///
 /// NOTE: the singleton path calls `resolve_choice_move`, which can itself
 /// push further choices (a cascade) -- bounded by the same small reward
@@ -204,6 +218,9 @@ pub fn resolve_choice_move(state: &mut GameState, mv: &Move, rules: &Rules) -> R
         (PendingChoice::RecoveryLeave, Move::ChooseRecoveryLeave { leave_one }) => {
             apply_recovery_with_leave(state, *leave_one);
             finish_recovery_transition(state);
+        }
+        (PendingChoice::StationPlace, Move::ChooseStationPlace { area }) => {
+            state.station_location = Some(*area);
         }
         _ => unreachable!("membership check above guarantees type match"),
     }

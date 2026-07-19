@@ -146,7 +146,8 @@ pub fn apply_move_unchecked(state: &GameState, mv: &Move, rules: &Rules) -> Resu
         | Move::DeclineAssistantMove
         | Move::ChooseChurchSpace { .. }
         | Move::ChooseCustomsSpace { .. }
-        | Move::ChooseRecoveryLeave { .. } => {
+        | Move::ChooseRecoveryLeave { .. }
+        | Move::ChooseStationPlace { .. } => {
             crate::game::choices::resolve_choice_move(&mut new_state, mv, rules)?;
         }
     }
@@ -511,6 +512,14 @@ fn apply_area_action(state: &mut GameState, action: &AreaAction, rules: &Rules) 
                 power, &rules.techs,
             )?;
             apply_lab_acquisition_bonuses(state, player, *card_id, &rules.techs, &rules.orders);
+
+            // Station (design §4.2): the token is placed on acquisition, as a
+            // queued choice. copies:1, but the is_none() guard is principled.
+            let purchased_effect_is_station =
+                rules.techs.get(*card_id).map(|t| t.effect == TechEffect::Station).unwrap_or(false);
+            if state.station_location.is_none() && purchased_effect_is_station {
+                crate::game::choices::push_choice(state, PendingChoice::StationPlace, rules);
+            }
         }
         AreaAction::Chinatown { exchanges } => {
             // Task 17 ruling: an empty exchanges list is no longer a legal

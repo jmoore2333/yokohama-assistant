@@ -67,4 +67,7 @@ pub enum PendingChoice {
     /// when the current player owns Telephone AND has >=1 own assistant in
     /// the acting area; otherwise Recovery stays fully automatic.
     RecoveryLeave,
+    /// Place the Station token — queued when the Station tech is acquired
+    /// (design §4.2). No Decline: the token must land.
+    StationPlace,
 }

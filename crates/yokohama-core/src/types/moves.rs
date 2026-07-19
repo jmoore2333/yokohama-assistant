@@ -113,6 +113,7 @@ pub enum Move {
     ChooseChurchSpace { space: u8 },
     ChooseCustomsSpace { space: u8 },
     ChooseRecoveryLeave { leave_one: bool },
+    ChooseStationPlace { area: AreaId },
 }
 
 /// Specific area actions.

@@ -41,13 +41,16 @@ fn pending_choice_label(choice: &PendingChoice) -> &'static str {
         PendingChoice::ChurchSpace { .. } => "ChurchSpace",
         PendingChoice::CustomsSpace { .. } => "CustomsSpace",
         PendingChoice::RecoveryLeave => "RecoveryLeave",
+        PendingChoice::StationPlace => "StationPlace",
     }
 }
 
 /// Fixed print order (matches design §5.2's choice-inventory table), not
 /// whatever order a `BTreeMap`'s own key iteration would happen to give.
-const ALL_LABELS: [&str; 6] =
-    ["AnyGood", "WarehouseTake", "AssistantMove", "ChurchSpace", "CustomsSpace", "RecoveryLeave"];
+const ALL_LABELS: [&str; 7] = [
+    "AnyGood", "WarehouseTake", "AssistantMove", "ChurchSpace", "CustomsSpace", "RecoveryLeave",
+    "StationPlace",
+];
 
 fn is_church_or_customs(mv: &Move) -> bool {
     matches!(

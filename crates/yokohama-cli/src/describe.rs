@@ -295,6 +295,9 @@ pub fn describe_move(mv: &Move, state: &GameState, rules: &Rules) -> String {
         Move::ChooseRecoveryLeave { leave_one: true } => {
             "Leave 1 assistant behind (Telephone)".to_string()
         }
+        Move::ChooseStationPlace { area } => {
+            format!("Place the Station token in {}", area_label(state, *area))
+        }
     }
 }
 
@@ -331,6 +334,7 @@ pub fn describe_pending_choice(head: &PendingChoice, state: &GameState, _rules: 
         PendingChoice::ChurchSpace { total_faith } => format!("Church space at faith {total_faith}"),
         PendingChoice::CustomsSpace { cost } => format!("Customs space at cost {cost}"),
         PendingChoice::RecoveryLeave => "Telephone: leave 1 assistant behind, or recover all".to_string(),
+        PendingChoice::StationPlace => "place the Station token (all players gain +1 Power in its area)".to_string(),
     }
 }
 
@@ -461,7 +465,17 @@ mod tests {
     }
 
     #[test]
-    fn describe_pending_choice_covers_all_six_variants() {
+    fn station_place_choice_reads_as_plain_words() {
+        let state = state_2p();
+        let rules = Rules::standard();
+        let some_area = *state.board_layout.areas.keys().next().unwrap();
+        let text = describe_move(&Move::ChooseStationPlace { area: some_area }, &state, &rules);
+        assert!(text.starts_with("Place the Station token in "), "{text}");
+        assert!(text.contains(&format!("(A{:02})", some_area.0)), "{text}");
+    }
+
+    #[test]
+    fn describe_pending_choice_covers_all_seven_variants() {
         let mut state = state_2p();
         let rules = Rules::standard();
         // Fresh game already has >=1 of each warehouse item type (12/6/4 in
@@ -490,6 +504,9 @@ mod tests {
 
         let recovery = describe_pending_choice(&PendingChoice::RecoveryLeave, &state, &rules);
         assert!(recovery.contains("Telephone"), "{recovery}");
+
+        let station = describe_pending_choice(&PendingChoice::StationPlace, &state, &rules);
+        assert!(station.contains("Station") && station.contains("Power"), "{station}");
     }
 
     #[test]

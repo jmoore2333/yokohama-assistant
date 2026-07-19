@@ -386,8 +386,11 @@ pub fn execute_lab_action(
 /// card itself carries that effect. Titles are identified via `TechEffect`,
 /// not name strings.
 ///
-/// Station's token placement on acquisition is a deliberate v1 engine
-/// limitation: `station_location` is intentionally left untouched here.
+/// Station's token placement on acquisition is handled one level up: the
+/// caller's `apply_move.rs` Laboratory arm queues `PendingChoice::
+/// StationPlace` (design §4.2) immediately after this function returns,
+/// using the same acquired `card_id` -- `station_location` is intentionally
+/// left untouched by this function.
 ///
 /// Finishes by re-running the same country-icon mercenary-eligibility check
 /// order fulfillment uses, for the acquired card's country.
@@ -426,6 +429,7 @@ pub fn apply_lab_acquisition_bonuses(
 mod tests {
     use super::*;
     use crate::types::*;
+    use crate::game::{apply_move_unchecked, Rules};
     use std::collections::BTreeMap;
 
     fn create_test_state() -> GameState {
@@ -1069,6 +1073,58 @@ mod tests {
         // empty slot (index 5).
         assert_eq!(state.lab_state.lab_a.slots[5], Some(TechCardId(20)));
         assert!(state.tech_deck.is_empty());
+    }
+
+    /// Same fixture shape as `test_lab_execute_acquires_tech` above (money,
+    /// imported goods, president at Lab A, a minimal custom tech registry,
+    /// lab slot 0 holding the purchased card) but driven through
+    /// `apply_move_unchecked` rather than calling `execute_lab_action`
+    /// directly: the Station-queueing hook (design §4.2) lives one level up,
+    /// in `apply_move.rs`'s `Laboratory` `AreaAction` arm, AFTER
+    /// `execute_lab_action` + `apply_lab_acquisition_bonuses` both run --
+    /// `execute_lab_action` alone never touches `pending_choices`, so only a
+    /// call that reaches the wrapping arm can observe the hook. A second
+    /// placeable area is added (`place_president_at_lab_a` inserts only
+    /// one) so the choice genuinely queues instead of `push_choice`'s
+    /// singleton path silently placing it on the sole placeable area.
+    #[test]
+    fn acquiring_station_queues_a_station_place_choice() {
+        let mut state = create_test_state();
+        state.players[0].money = 10;
+        state.players[0].imported_goods = 5;
+        place_president_at_lab_a(&mut state);
+        state.board_layout.areas.insert(
+            AreaId::new(1),
+            AreaConfig { area_type: AreaType::Bank, grid_position: (0, 1) },
+        );
+        state.current_action_power = Some(4); // Station's industry_cost (data.rs:64)
+
+        let mut tech_registry = TechRegistry::new();
+        tech_registry.insert(make_test_tech_card(15, 4, TechEffect::Station), "tech_station");
+
+        state.lab_state.lab_a.slots[0] = Some(TechCardId(15));
+        state.tech_deck = vec![TechCardId(20)];
+
+        let mut rules = Rules::empty_for_tests();
+        rules.techs = tech_registry;
+
+        let next = apply_move_unchecked(
+            &state,
+            &Move::ExecuteAreaAction {
+                action: AreaAction::Laboratory {
+                    card_id: TechCardId(15),
+                    extra_yen: 0,
+                    extra_imported: 0,
+                    fifth_tech_payment: None,
+                },
+            },
+            &rules,
+        )
+        .unwrap();
+
+        assert!(next.players[0].technologies.contains(&TechCardId(15)));
+        assert_eq!(next.station_location, None, "token placement is a queued choice, not automatic");
+        assert_eq!(next.pending_choices, vec![PendingChoice::StationPlace]);
     }
 
     #[test]

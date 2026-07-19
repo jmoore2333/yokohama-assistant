@@ -1,16 +1,19 @@
 //! Task 15 (design 2026-07-18 §6.1-1): choice-encoding behavioral proof +
-//! organic-coverage census.
+//! organic-coverage census. Extended by engine-authority Task 5 (design
+//! 2026-07-19 §4.2) to add `StationPlace`.
 //!
 //! Choice-type inventory (enumerated from `types/choices.rs` /
 //! `game/choices.rs` / `types/moves.rs` -- the source of truth, not the
-//! task brief): six `PendingChoice` variants --
+//! task brief): seven `PendingChoice` variants --
 //!   `AnyGood`, `WarehouseTake`, `AssistantMove`,
-//!   `ChurchSpace { total_faith }`, `CustomsSpace { cost }`, `RecoveryLeave`
-//! -- resolved by eight `Move` variants (`RecoveryLeave` has two, so nine
+//!   `ChurchSpace { total_faith }`, `CustomsSpace { cost }`, `RecoveryLeave`,
+//!   `StationPlace`
+//! -- resolved by nine `Move` variants (`RecoveryLeave` has two, so ten
 //! resolution shapes total) --
 //!   `ChooseAnyGood`, `ChooseWarehouseTake`, `DeclineWarehouseTake`,
 //!   `ChooseAssistantMove`, `DeclineAssistantMove`, `ChooseChurchSpace`,
-//!   `ChooseCustomsSpace`, `ChooseRecoveryLeave { leave_one: bool }`.
+//!   `ChooseCustomsSpace`, `ChooseRecoveryLeave { leave_one: bool }`,
+//!   `ChooseStationPlace`.
 //!
 //! Every fixture below drives through the public API only
 //! (`get_legal_moves`/`apply_move`/`push_choice` from a `create_test_game_state`
@@ -302,6 +305,41 @@ fn recovery_leave_choice_resolves_via_public_api() {
     assert!(done.pending_choices.is_empty());
 }
 
+/// StationPlace (design §4.2, Task 5): queued when the Station tech is
+/// acquired, one `ChooseStationPlace` per placeable (non-Canal) area, no
+/// Decline. `create_test_game_state`'s board starts empty (its own doc
+/// comment: "minimal test game state"), so this test populates 4 placeable
+/// areas + 1 Canal directly, the same way `order_fixture` does elsewhere in
+/// this file -- exercising resolution in isolation from the Laboratory
+/// acquisition hook (that end-to-end wiring is
+/// `acquiring_station_queues_a_station_place_choice` in
+/// `game/actions/cards.rs`).
+#[test]
+fn station_place_resolutions_cover_all_placeable_areas_and_resolution_sets_the_token() {
+    let rules = Rules::standard();
+    let mut state = create_test_game_state(2);
+    for i in 0..4u8 {
+        state.board_layout.areas.insert(
+            AreaId::new(i),
+            AreaConfig { area_type: AreaType::Bank, grid_position: (0, i) },
+        );
+    }
+    state.board_layout.areas.insert(
+        AreaId::new(4),
+        AreaConfig { area_type: AreaType::Canal, grid_position: (0, 4) },
+    );
+    state.pending_choices.push(PendingChoice::StationPlace);
+    let legal = get_legal_moves(&state, &rules);
+    let placeable: Vec<AreaId> = state.board_layout.areas.iter()
+        .filter(|(_, c)| c.area_type.allows_placement())
+        .map(|(&a, _)| a).collect();
+    assert_eq!(legal.len(), placeable.len(), "one ChooseStationPlace per placeable area, no Decline");
+    let target = placeable[3];
+    let next = apply_move(&state, &Move::ChooseStationPlace { area: target }, &rules).unwrap();
+    assert_eq!(next.station_location, Some(target));
+    assert!(next.pending_choices.is_empty());
+}
+
 // ===========================================================================
 // Movement(2) -> 2 moves cascade (design §6.1-1's third named cascade;
 // AssistantMove's own per-type scenario above uses a single icon, so this
@@ -413,6 +451,19 @@ fn assert_decline_or_never_singleton(head: &PendingChoice, resolutions: &[Move])
                 "RecoveryLeave must always offer its non-cascading leave_one:false resolution"
             );
         }
+        PendingChoice::StationPlace => {
+            // Unlike WarehouseTake/AssistantMove, a true singleton here would
+            // NOT be an inert Decline -- Station has no Decline at all (design
+            // §4.2: "the token must land"), so push_choice's generic singleton
+            // path would silently PLACE the token when exactly 1 area is
+            // placeable. Design §4.2 explicitly sanctions this ("if exactly
+            // one eligible area exists, place inline"); the case is
+            // real-board-unreachable (board_gen.rs's smallest grid is 10
+            // tiles, minus at most 1 Canal), so -- like ChurchSpace/
+            // CustomsSpace's assertion -- this only pins ">=2 whenever
+            // actually queued," not the degenerate case itself.
+            assert!(resolutions.len() >= 2, "StationPlace is only ever queued with >=2 placeable areas (real board)");
+        }
     }
 }
 
@@ -455,6 +506,16 @@ fn push_choice_singletons_are_never_non_decline_effects() {
         let mut state = create_test_game_state(2);
         state.pending_choices.push(PendingChoice::RecoveryLeave);
         assert_decline_or_never_singleton(&PendingChoice::RecoveryLeave, &get_legal_moves(&state, &rules));
+    }
+
+    // StationPlace on a 2-area board: always >=2 when queued.
+    {
+        let mut state = create_test_game_state(2);
+        state.board_layout.areas.insert(AreaId::new(0), AreaConfig { area_type: AreaType::Bank, grid_position: (0, 0) });
+        state.board_layout.areas.insert(AreaId::new(1), AreaConfig { area_type: AreaType::Bank, grid_position: (0, 1) });
+        let head = PendingChoice::StationPlace;
+        state.pending_choices.push(head.clone());
+        assert_decline_or_never_singleton(&head, &get_legal_moves(&state, &rules));
     }
 
     // The direct, stronger proof for the two variants that CAN actually
@@ -584,6 +645,13 @@ fn mid_cascade_game_record_round_trips_through_json_and_resumes() {
 /// 300 gives ~35% headroom over the observed worst case; the early return
 /// below keeps the actual run far shorter in practice (measured wall time
 /// is in this task's report).
+///
+/// Engine-authority Task 5 (design 2026-07-19 §4.2) added `StationPlace`
+/// using the same throwaway-probe method: first seen at seed 3 (2p) --
+/// another easy one, like Telephone, since a Laboratory acquisition is a
+/// common random-play move and Station is just 1 of 20 tech titles in
+/// circulation. 300 stays unchanged; AnyGood (seed 222) remains the binding
+/// constraint.
 const CENSUS_SEED_CAP: u64 = 300;
 
 /// Every `PendingChoice` variant's census tag. Exhaustive match (no `_`
@@ -597,6 +665,7 @@ fn variant_name(choice: &PendingChoice) -> &'static str {
         PendingChoice::ChurchSpace { .. } => "ChurchSpace",
         PendingChoice::CustomsSpace { .. } => "CustomsSpace",
         PendingChoice::RecoveryLeave => "RecoveryLeave",
+        PendingChoice::StationPlace => "StationPlace",
     }
 }
 
@@ -618,6 +687,7 @@ fn choice_move_name(mv: &Move) -> Option<&'static str> {
         Move::ChooseCustomsSpace { .. } => Some("ChooseCustomsSpace"),
         Move::ChooseRecoveryLeave { leave_one: false } => Some("ChooseRecoveryLeave(false)"),
         Move::ChooseRecoveryLeave { leave_one: true } => Some("ChooseRecoveryLeave(true)"),
+        Move::ChooseStationPlace { .. } => Some("ChooseStationPlace"),
         Move::UseMercenary { .. }
         | Move::UseUniversity
         | Move::UseSpinningMill
@@ -638,9 +708,9 @@ fn choice_move_name(mv: &Move) -> Option<&'static str> {
     }
 }
 
-const ALL_PENDING: [&str; 6] =
-    ["AnyGood", "WarehouseTake", "AssistantMove", "ChurchSpace", "CustomsSpace", "RecoveryLeave"];
-const ALL_CHOICE_MOVES: [&str; 9] = [
+const ALL_PENDING: [&str; 7] =
+    ["AnyGood", "WarehouseTake", "AssistantMove", "ChurchSpace", "CustomsSpace", "RecoveryLeave", "StationPlace"];
+const ALL_CHOICE_MOVES: [&str; 10] = [
     "ChooseAnyGood",
     "ChooseWarehouseTake",
     "DeclineWarehouseTake",
@@ -650,6 +720,7 @@ const ALL_CHOICE_MOVES: [&str; 9] = [
     "ChooseCustomsSpace",
     "ChooseRecoveryLeave(false)",
     "ChooseRecoveryLeave(true)",
+    "ChooseStationPlace",
 ];
 
 fn all_variants_seen(seen_pending: &BTreeSet<&'static str>, seen_moves: &BTreeSet<&'static str>) -> bool {
