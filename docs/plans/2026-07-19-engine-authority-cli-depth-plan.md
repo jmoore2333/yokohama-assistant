@@ -609,7 +609,9 @@ Write the fixtures concretely against the module's helpers; each test must name 
 
 - [ ] **Step 5: Commit** — `git add crates/yokohama-core/src/game/movement.rs crates/yokohama-core/src/game/legal_moves.rs crates/yokohama-core/src/game/apply_move.rs && git commit -m "feat: L2 route enumeration — one move per (destination, fee vector); single pricing source"`
 
----### Task 7: Option B recovery — counts encoding + enumeration (engine)
+---
+
+### Task 7: Option B recovery — counts encoding + enumeration (engine)
 
 **Files:**
 - Modify: `crates/yokohama-core/src/types/moves.rs:78-81` (field change — APPROVED schema break)
