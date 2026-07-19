@@ -95,17 +95,15 @@ fn warehouse_item_name(item: WarehouseItem) -> &'static str {
 }
 
 /// Yen cost of taking `item` from the warehouse right now, for describing
-/// `Move::ChooseWarehouseTake` -- assistants free, shophouses 2 Yen, trading
-/// houses at the printed take progression indexed by tokens already out of
-/// the warehouse (mirrors `warehouse_take_options`'s own pricing).
+/// `Move::ChooseWarehouseTake` -- assistants free, shophouses 2 Yen (both via
+/// `WarehouseItem::flat_cost`, T2-m3 single source), trading houses at the
+/// printed take progression indexed by tokens already out of the warehouse
+/// (`TradingHouseState::already_taken`, T2-m2 single source; mirrors
+/// `warehouse_take_options`'s own pricing).
 fn warehouse_item_cost(p: &PlayerState, item: WarehouseItem) -> u32 {
-    match item {
-        WarehouseItem::Assistant => 0,
-        WarehouseItem::Shophouse => 2,
-        WarehouseItem::TradingHouse => {
-            let already = p.trading_houses.in_hand as usize + p.trading_houses.total_built();
-            TradingHouseState::take_cost(already)
-        }
+    match item.flat_cost() {
+        Some(cost) => cost,
+        None => TradingHouseState::take_cost(p.trading_houses.already_taken()),
     }
 }
 

@@ -111,6 +111,30 @@ mod tests {
     }
 
     #[test]
+    fn test_trading_house_already_taken() {
+        // T2-m2: single-source for the "in_hand + total_built()" formula
+        // that was duplicated verbatim at 5 call sites.
+        let mut th = TradingHouseState::new();
+        assert_eq!(th.already_taken(), 0);
+
+        th.in_hand = 2;
+        assert_eq!(th.already_taken(), 2);
+
+        th.built.push(AreaId::new(0));
+        assert_eq!(th.already_taken(), 3);
+    }
+
+    #[test]
+    fn test_warehouse_item_flat_cost() {
+        // T2-m3: single source for the 0 (assistant) / 2 (shophouse) flat
+        // costs the CLI's warehouse_item_cost re-hardcoded separately.
+        // TradingHouse has no flat cost -- it needs already_taken().
+        assert_eq!(WarehouseItem::Assistant.flat_cost(), Some(0));
+        assert_eq!(WarehouseItem::Shophouse.flat_cost(), Some(2));
+        assert_eq!(WarehouseItem::TradingHouse.flat_cost(), None);
+    }
+
+    #[test]
     fn test_church_track_rewards() {
         assert_eq!(ChurchTrack::vp_reward(4), 3);
         assert_eq!(ChurchTrack::vp_reward(11), 14);
@@ -153,6 +177,18 @@ mod tests {
         assert_eq!(CustomsTrack::spaces_for_cost(4), Some(&[7][..]));
         assert_eq!(CustomsTrack::spaces_for_cost(0), None);
         assert_eq!(CustomsTrack::spaces_for_cost(5), None);
+    }
+
+    #[test]
+    fn test_customs_track_space_cost() {
+        // Inverse of spaces_for_cost: the printed cost for each of the 7
+        // spaces, 1-7 in order. SINGLE SOURCE for render.rs's tracks_view,
+        // which previously re-hardcoded this as its own array literal.
+        let expected: [u8; 7] = [1, 1, 2, 2, 3, 3, 4];
+        for (i, &cost) in expected.iter().enumerate() {
+            let space = (i + 1) as u8;
+            assert_eq!(CustomsTrack::space_cost(space), cost, "space {space}");
+        }
     }
 
     #[test]

@@ -65,8 +65,9 @@ fn generate_choice_resolutions_for(state: &GameState, choice: &PendingChoice, _r
 pub fn warehouse_take_options(p: &PlayerState) -> Vec<WarehouseItem> {
     let mut v = Vec::new();
     if p.assistants.in_warehouse >= 1 { v.push(WarehouseItem::Assistant); }
-    if p.shophouses.in_warehouse >= 1 && p.money >= 2 { v.push(WarehouseItem::Shophouse); }
-    let already = p.trading_houses.in_hand as usize + p.trading_houses.total_built();
+    let shophouse_cost = WarehouseItem::Shophouse.flat_cost().expect("Shophouse always has a flat cost");
+    if p.shophouses.in_warehouse >= 1 && p.money >= shophouse_cost { v.push(WarehouseItem::Shophouse); }
+    let already = p.trading_houses.already_taken();
     if p.trading_houses.in_warehouse >= 1 && p.money >= TradingHouseState::take_cost(already) { v.push(WarehouseItem::TradingHouse); }
     v
 }
@@ -161,7 +162,7 @@ pub fn resolve_choice_move(state: &mut GameState, mv: &Move, rules: &Rules) -> R
                     p.shophouses.in_hand += 1;
                 }
                 WarehouseItem::TradingHouse => {
-                    let already = p.trading_houses.in_hand as usize + p.trading_houses.total_built();
+                    let already = p.trading_houses.already_taken();
                     p.money -= TradingHouseState::take_cost(already);
                     p.trading_houses.in_warehouse -= 1;
                     p.trading_houses.in_hand += 1;

@@ -149,6 +149,19 @@ impl CustomsTrack {
         }
     }
 
+    /// Printed imported-goods cost for a given space (1-7) -- the inverse
+    /// of `spaces_for_cost`. SINGLE SOURCE for the CLI's `tracks_view`,
+    /// which previously re-hardcoded this as its own array literal.
+    pub fn space_cost(space: u8) -> u8 {
+        match space {
+            1 | 2 => 1,
+            3 | 4 => 2,
+            5 | 6 => 3,
+            7 => 4,
+            _ => 0,
+        }
+    }
+
     /// VP reward for a given space (1-7).
     pub fn vp_reward(space: u8) -> u8 {
         match space {

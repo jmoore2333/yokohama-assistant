@@ -12,6 +12,23 @@ pub enum TradeGood { Copper, Silk, Tea, Seafood }
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum WarehouseItem { Assistant, Shophouse, TradingHouse }
 
+impl WarehouseItem {
+    /// Flat Yen cost for the item types whose price doesn't depend on
+    /// player state: assistants are free, shophouses cost 2. `None` for
+    /// TradingHouse, whose cost is the printed 4/5/6/7 progression indexed
+    /// by `TradingHouseState::already_taken` (see `TradingHouseState::
+    /// take_cost`). SINGLE SOURCE (T2-m3): both `warehouse_take_options`
+    /// and the CLI's warehouse-item cost display previously re-hardcoded
+    /// these two constants separately.
+    pub fn flat_cost(self) -> Option<u32> {
+        match self {
+            WarehouseItem::Assistant => Some(0),
+            WarehouseItem::Shophouse => Some(2),
+            WarehouseItem::TradingHouse => None,
+        }
+    }
+}
+
 /// Where an Assistant pawn is moved FROM by the movement-icon reward
 /// (rulebook p.10): the player's hand, or an Area currently holding one of
 /// their own on-board assistants.

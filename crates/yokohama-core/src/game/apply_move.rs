@@ -604,7 +604,7 @@ fn apply_employment_agency(
 
     // Trading house cost: the printed take progression (4/5/6/7), indexed
     // by how many tokens have already left the warehouse (hand + built).
-    let already_taken = p.trading_houses.in_hand as usize + p.trading_houses.total_built();
+    let already_taken = p.trading_houses.already_taken();
     let mut th_cost = 0u32;
     for i in 0..trading_houses {
         let th_index = already_taken + i as usize;

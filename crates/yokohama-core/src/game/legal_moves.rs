@@ -636,7 +636,7 @@ fn generate_customs_actions(state: &GameState, player: PlayerId, power: u8, area
 fn generate_employment_agency_actions(state: &GameState, player: PlayerId, power: u8) -> Vec<Move> {
     let p = state.player(player);
     let allowed = employment_agency_tokens_allowed(power) as u32;
-    let already_taken = p.trading_houses.in_hand as usize + p.trading_houses.total_built();
+    let already_taken = p.trading_houses.already_taken();
 
     let mut moves = Vec::new();
 

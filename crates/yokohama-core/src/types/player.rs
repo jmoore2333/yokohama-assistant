@@ -119,11 +119,19 @@ impl TradingHouseState {
         match already_taken { 0 => 4, 1 => 5, 2 => 6, _ => 7 }
     }
 
+    /// Tokens already taken out of the warehouse (in hand + built) -- the
+    /// index into `take_cost`'s progression for the NEXT take. SINGLE
+    /// SOURCE (T2-m2): this exact sum (`in_hand as usize + total_built()`)
+    /// was duplicated verbatim at 5 call sites across the engine and CLI.
+    pub fn already_taken(&self) -> usize {
+        self.in_hand as usize + self.total_built()
+    }
+
     /// Employment Agency cost of the NEXT trading house taken from the
     /// warehouse: the printed 4/5/6/7 progression, indexed by how many
     /// tokens have already left the warehouse (in hand + built).
     pub fn next_cost(&self) -> u8 {
-        Self::take_cost(self.in_hand as usize + self.built.len()) as u8
+        Self::take_cost(self.already_taken()) as u8
     }
 
     pub fn total_built(&self) -> usize {

@@ -549,4 +549,70 @@ mod tests {
         assert_eq!(*s.state(), before_state);
         assert_eq!(s.record().events.len(), before_events);
     }
+
+    /// Task 12: a raw `new_game`+`finalize_setup` state (not `sim_2p`, since
+    /// the choice-move tests below need direct field access to inject a
+    /// `PendingChoice` and its supporting player state before wrapping in a
+    /// `for_test_from_state` session).
+    fn raw_state_2p(seed: u64) -> GameState {
+        let rules = Rules::standard();
+        let pending = new_game(GameConfig::for_player_count(2), &rules, seed).unwrap();
+        finalize_setup(pending, &[StartingOrderChoice::Keep(0), StartingOrderChoice::Keep(0)]).unwrap()
+    }
+
+    /// A board-to-board `ChooseAssistantMove` resolution is unambiguous in
+    /// the state diff (only this reward ever moves an assistant area-to-
+    /// area) -- state injection gives it a queued `PendingChoice::
+    /// AssistantMove` head directly, mirroring the `assistant_move_fixture`
+    /// pattern core's own `choices.rs` tests use, instead of driving a real
+    /// reward-granting sequence.
+    #[test]
+    fn choose_assistant_move_resolution_produces_a_moved_delta_line() {
+        let mut state = raw_state_2p(4);
+        let mut non_canal = state
+            .board_layout
+            .areas
+            .iter()
+            .filter(|(_, cfg)| cfg.area_type != AreaType::Canal)
+            .map(|(&id, _)| id);
+        let from_area = non_canal.next().expect("at least 2 non-Canal areas on a 2p board");
+        let to_area = non_canal.next().expect("at least 2 non-Canal areas on a 2p board");
+
+        state.players[0].assistants.in_hand -= 1;
+        *state.players[0].assistants.on_board.entry(from_area).or_insert(0) += 1;
+        state.pending_choices.push(PendingChoice::AssistantMove);
+
+        let mut s = Session::for_test_from_state(state, Rules::standard());
+        let delta = s
+            .apply(Move::ChooseAssistantMove { from: MoveSource::Area(from_area), to: to_area }, vec![])
+            .unwrap();
+        assert!(delta.iter().any(|l| l.contains("assistant moved")), "{delta:?}");
+    }
+
+    #[test]
+    fn choose_warehouse_take_shophouse_produces_a_took_delta_line() {
+        let mut state = raw_state_2p(4);
+        state.players[0].money = 10; // affordable: assistant/shophouse/TH all offered
+        state.pending_choices.push(PendingChoice::WarehouseTake);
+
+        let mut s = Session::for_test_from_state(state, Rules::standard());
+        let delta = s.apply(Move::ChooseWarehouseTake { item: WarehouseItem::Shophouse }, vec![]).unwrap();
+        assert!(delta.iter().any(|l| l.contains("took shophouse (2 yen)")), "{delta:?}");
+    }
+
+    #[test]
+    fn choose_church_space_produces_a_placed_delta_line() {
+        let mut state = raw_state_2p(4);
+        let some_area = *state.board_layout.areas.keys().next().expect("at least one area");
+        // President on board (any area -- place_church_assistant doesn't
+        // check area type, only that resolve_acting_area succeeds) so the
+        // resolution has an acting area to place at.
+        state.players[0].president_location = PresidentLocation::OnBoard(some_area);
+        state.pending_choices.push(PendingChoice::ChurchSpace { total_faith: 6 });
+
+        let mut s = Session::for_test_from_state(state, Rules::standard());
+        let delta = s.apply(Move::ChooseChurchSpace { space: 6 }, vec![]).unwrap();
+        let expected = format!("placed on Church faith-6 (+{} VP)", ChurchTrack::vp_reward(6));
+        assert!(delta.iter().any(|l| l.contains(&expected)), "{delta:?}");
+    }
 }
