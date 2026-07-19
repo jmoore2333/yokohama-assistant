@@ -44,4 +44,10 @@ pub enum PendingChoice {
     /// singleton resolves inline in the executor instead of ever reaching
     /// this queue.
     CustomsSpace { cost: u8 },
+    /// Telephone: leave 1 assistant in the Recovery acting area
+    /// (`leave_one: true`) instead of recovering all of them
+    /// (`leave_one: false`) (design 2026-07-18 §5.2, Task 6). Queued only
+    /// when the current player owns Telephone AND has >=1 own assistant in
+    /// the acting area; otherwise Recovery stays fully automatic.
+    RecoveryLeave,
 }

@@ -106,6 +106,7 @@ pub enum Move {
     DeclineAssistantMove,
     ChooseChurchSpace { space: u8 },
     ChooseCustomsSpace { space: u8 },
+    ChooseRecoveryLeave { leave_one: bool },
 }
 
 /// Specific area actions.

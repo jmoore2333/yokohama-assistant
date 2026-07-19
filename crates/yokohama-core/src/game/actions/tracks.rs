@@ -49,8 +49,10 @@ fn has_church_or_customs_assistant(p: &PlayerState, area: AreaId) -> bool {
 /// the queue-first gate in `get_legal_moves` guarantees neither
 /// `is_mercenary_action`/`mercenary_target_area` nor `president_location`
 /// can have drifted since the executor already validated them, so they
-/// `.expect(...)` instead.
-fn resolve_acting_area(state: &GameState, player: PlayerId) -> Result<AreaId, &'static str> {
+/// `.expect(...)` instead. `pub(crate)` since `apply_move::resolve_recovery`
+/// (Task 6) also needs the acting area to decide the Telephone Recovery
+/// queue-vs-auto split.
+pub(crate) fn resolve_acting_area(state: &GameState, player: PlayerId) -> Result<AreaId, &'static str> {
     if state.is_mercenary_action {
         state.mercenary_target_area.ok_or("No mercenary target area")
     } else {

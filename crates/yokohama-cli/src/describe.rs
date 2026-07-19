@@ -293,6 +293,12 @@ pub fn describe_move(mv: &Move, state: &GameState, rules: &Rules) -> String {
         Move::ChooseCustomsSpace { space } => {
             format!("Place on Customs space {space} ({} VP)", CustomsTrack::vp_reward(*space))
         }
+        Move::ChooseRecoveryLeave { leave_one: false } => {
+            "Recover all assistants from the action area".to_string()
+        }
+        Move::ChooseRecoveryLeave { leave_one: true } => {
+            "Leave 1 assistant behind (Telephone)".to_string()
+        }
     }
 }
 
@@ -405,6 +411,20 @@ mod tests {
         assert_eq!(
             describe_move(&Move::ChooseCustomsSpace { space: 3 }, &state, &rules),
             format!("Place on Customs space 3 ({} VP)", CustomsTrack::vp_reward(3))
+        );
+    }
+
+    #[test]
+    fn recovery_leave_choice_reads_as_plain_words() {
+        let state = state_2p();
+        let rules = Rules::standard();
+        assert_eq!(
+            describe_move(&Move::ChooseRecoveryLeave { leave_one: false }, &state, &rules),
+            "Recover all assistants from the action area"
+        );
+        assert_eq!(
+            describe_move(&Move::ChooseRecoveryLeave { leave_one: true }, &state, &rules),
+            "Leave 1 assistant behind (Telephone)"
         );
     }
 

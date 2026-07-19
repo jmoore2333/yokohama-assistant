@@ -51,6 +51,10 @@ fn generate_choice_resolutions_for(state: &GameState, choice: &PendingChoice, _r
                 .map(|space| Move::ChooseCustomsSpace { space })
                 .collect()
         }
+        PendingChoice::RecoveryLeave => vec![
+            Move::ChooseRecoveryLeave { leave_one: false },
+            Move::ChooseRecoveryLeave { leave_one: true },
+        ],
     }
 }
 
@@ -186,6 +190,10 @@ pub fn resolve_choice_move(state: &mut GameState, mv: &Move, rules: &Rules) -> R
         }
         (PendingChoice::CustomsSpace { .. }, Move::ChooseCustomsSpace { space }) => {
             place_customs_assistant(state, player, *space, rules);
+        }
+        (PendingChoice::RecoveryLeave, Move::ChooseRecoveryLeave { leave_one }) => {
+            apply_recovery_with_leave(state, *leave_one);
+            finish_recovery_transition(state);
         }
         _ => unreachable!("membership check above guarantees type match"),
     }

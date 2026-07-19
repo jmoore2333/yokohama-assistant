@@ -102,7 +102,8 @@ pub fn apply_move(state: &GameState, mv: &Move, rules: &Rules) -> Result<GameSta
         | Move::ChooseAssistantMove { .. }
         | Move::DeclineAssistantMove
         | Move::ChooseChurchSpace { .. }
-        | Move::ChooseCustomsSpace { .. } => {
+        | Move::ChooseCustomsSpace { .. }
+        | Move::ChooseRecoveryLeave { .. } => {
             crate::game::choices::resolve_choice_move(&mut new_state, mv, rules)?;
         }
     }
@@ -110,27 +111,13 @@ pub fn apply_move(state: &GameState, mv: &Move, rules: &Rules) -> Result<GameSta
     // Handle Recovery phase automatically -- deferred while a choice from
     // this turn's reward is still unresolved (design 2026-07-18 §5.1-5.2):
     // resolving the last queued choice runs Recovery in that same apply.
+    // `resolve_recovery` may itself defer: with Telephone owned it can push
+    // `PendingChoice::RecoveryLeave` and return with turn_phase still
+    // `Recovery` (design §5.3-5), leaving the phase transition for
+    // `ChooseRecoveryLeave`'s resolution to run instead (see
+    // `game::choices::resolve_choice_move`).
     if new_state.pending_choices.is_empty() && new_state.turn_phase == TurnPhase::Recovery {
-        apply_recovery(&mut new_state);
-
-        // Check if this was a mercenary sub-turn
-        if new_state.is_mercenary_action {
-            // Return to the Additional Action phase we came from
-            if let Some(return_phase) = new_state.mercenary_return_phase {
-                new_state.turn_phase = return_phase;
-            } else {
-                // Fallback: if return phase not set, go to AdditionalActionSecond
-                new_state.turn_phase = TurnPhase::AdditionalActionSecond;
-            }
-            // Reset mercenary sub-turn state
-            new_state.is_mercenary_action = false;
-            new_state.mercenary_target_area = None;
-            new_state.mercenary_return_phase = None;
-            new_state.current_action_power = None;
-        } else {
-            // Normal turn flow: Recovery -> AdditionalActionSecond
-            new_state.turn_phase = TurnPhase::AdditionalActionSecond;
-        }
+        resolve_recovery(&mut new_state, rules);
     }
 
     // Check end game triggers
@@ -793,8 +780,11 @@ pub fn apply_recovery_with_leave(state: &mut GameState, leave_one: bool) {
     if let Some(area) = recovery_area {
         let p = state.player_mut(player);
         if let Some(&count) = p.assistants.on_board.get(&area) {
-            if leave_one && count > 1 {
-                // Telephone effect: leave exactly 1 assistant
+            if leave_one && count >= 1 {
+                // Telephone effect: leave exactly 1 assistant, even at
+                // count == 1 -- which recovers zero (owner-adjudicated rules
+                // fix, design 2026-07-18 §5.3-5; the old `count > 1` guard
+                // wrongly force-recovered a lone assistant).
                 p.assistants.in_hand += count - 1;
                 p.assistants.on_board.insert(area, 1);
             } else {
@@ -803,6 +793,63 @@ pub fn apply_recovery_with_leave(state: &mut GameState, leave_one: bool) {
                 p.assistants.on_board.remove(&area);
             }
         }
+    }
+}
+
+/// Recovery-phase entry point (design 2026-07-18 §5.1-5.3, §5.3-5): if the
+/// current player owns Telephone AND has >=1 own assistant in the acting
+/// area, defer to a `RecoveryLeave` choice instead of recovering
+/// automatically -- turn_phase stays `Recovery` until it resolves
+/// (`get_legal_moves`' queue-first gate then surfaces the two
+/// `ChooseRecoveryLeave` options). Otherwise Recovery stays fully
+/// automatic: recover everyone and run the phase transition immediately.
+/// The acting area is resolved via the same shared `resolve_acting_area`
+/// helper `apply_recovery_with_leave` mirrors inline -- an `Err` (President
+/// in hand, no mercenary sub-turn) means no acting area, so there is
+/// nothing to leave behind either way and Recovery is a no-op.
+fn resolve_recovery(state: &mut GameState, rules: &Rules) {
+    let player = state.current_player;
+    let has_telephone = state.player(player).technologies.iter().any(|&tech_id| {
+        rules.techs.get(tech_id).map(|t| t.effect == TechEffect::Telephone).unwrap_or(false)
+    });
+
+    if has_telephone {
+        if let Ok(area) = resolve_acting_area(state, player) {
+            if state.player(player).assistants.in_area(area) >= 1 {
+                push_choice(state, PendingChoice::RecoveryLeave, rules);
+                return;
+            }
+        }
+    }
+
+    apply_recovery(state);
+    finish_recovery_transition(state);
+}
+
+/// Recovery-complete phase transition: return from a mercenary sub-turn to
+/// its stored window (with the sub-turn state cleanup), or advance a normal
+/// turn to `AdditionalActionSecond`. Extracted verbatim from the
+/// end-of-`apply_move` automation block (Task 6) so both the automatic path
+/// (`resolve_recovery`) and the `ChooseRecoveryLeave` resolution
+/// (`game::choices::resolve_choice_move`) share the exact same transition +
+/// cleanup instead of drifting apart.
+pub fn finish_recovery_transition(state: &mut GameState) {
+    if state.is_mercenary_action {
+        // Return to the Additional Action phase we came from
+        if let Some(return_phase) = state.mercenary_return_phase {
+            state.turn_phase = return_phase;
+        } else {
+            // Fallback: if return phase not set, go to AdditionalActionSecond
+            state.turn_phase = TurnPhase::AdditionalActionSecond;
+        }
+        // Reset mercenary sub-turn state
+        state.is_mercenary_action = false;
+        state.mercenary_target_area = None;
+        state.mercenary_return_phase = None;
+        state.current_action_power = None;
+    } else {
+        // Normal turn flow: Recovery -> AdditionalActionSecond
+        state.turn_phase = TurnPhase::AdditionalActionSecond;
     }
 }
 
@@ -1746,6 +1793,11 @@ mod tests {
 
     #[test]
     fn test_recovery_with_telephone_only_one_assistant() {
+        // Corrected per design 2026-07-18 §5.3-5 (owner-adjudicated rules
+        // fix): "may leave 1 assistant in the action area" applies at
+        // count == 1 too, which means recovering ZERO -- not force-recovering
+        // the lone pawn. This pin previously asserted the opposite; that was
+        // the bug Task 6 fixes in `apply_recovery_with_leave`.
         let mut state = create_minimal_state(2);
         let area = AreaId::new(0);
 
@@ -1754,12 +1806,11 @@ mod tests {
         state.players[0].assistants.on_board.insert(area, 1);
         state.players[0].assistants.in_hand = 5;
 
-        // With Telephone effect but only 1 assistant - recovers it
+        // With Telephone effect and only 1 assistant - leaves it, recovers none
         apply_recovery_with_leave(&mut state, true);
 
-        // The 1 assistant should be recovered (can't leave 1 if only have 1)
-        assert_eq!(state.players[0].assistants.in_hand, 6);
-        assert_eq!(state.players[0].assistants.on_board.get(&area), None);
+        assert_eq!(state.players[0].assistants.in_hand, 5);
+        assert_eq!(state.players[0].assistants.on_board.get(&area), Some(&1));
     }
 
     #[test]
@@ -3754,5 +3805,109 @@ mod tests {
         let s2 = apply_move(&s1, &Move::ChooseAnyGood { good: TradeGood::Copper }, &rules).unwrap();
         // Any-good-as-copper is its OWN receipt: +1 copper +1 mining again (design §5.3-2).
         assert_eq!(s2.current_player().copper, state.current_player().copper + 4);
+    }
+
+    // --- RecoveryLeave (Telephone) choice (design 2026-07-18 §5.2, §5.3-5, Task 6) ---
+
+    fn telephone_tech_fixture(id: u8) -> TechCard {
+        TechCard {
+            id: TechCardId(id),
+            name: "Telephone".to_string(),
+            country: Country::American,
+            industry_cost: 6,
+            effect: TechEffect::Telephone,
+        }
+    }
+
+    /// Building phase, president on `acting_area()` with `assistants` of the
+    /// player's own assistants there, no site rewards -- `SkipBuilding`
+    /// drives straight into Recovery with no other choice already queued.
+    fn plain_building_fixture(assistants: u8) -> (GameState, Rules) {
+        let mut state = create_minimal_state(2);
+        let area = acting_area();
+        state.board_layout.areas.insert(area, AreaConfig { area_type: AreaType::Bank, grid_position: (0, 0) });
+        state.turn_phase = TurnPhase::Building;
+        state.current_player = PlayerId::new(0);
+        state.players[0].president_location = PresidentLocation::OnBoard(area);
+        state.players[0].assistants.on_board.insert(area, assistants);
+        let rules = Rules::empty_for_tests();
+        (state, rules)
+    }
+
+    /// `plain_building_fixture` plus the current player owning 1 Telephone.
+    fn telephone_building_fixture(assistants: u8) -> (GameState, Rules) {
+        let (mut state, mut rules) = plain_building_fixture(assistants);
+        rules.techs.insert(telephone_tech_fixture(1), "tech_telephone");
+        state.players[0].technologies.push(TechCardId(1));
+        (state, rules)
+    }
+
+    #[test]
+    fn recovery_with_telephone_queues_leave_choice() {
+        let (state, rules) = telephone_building_fixture(/*assistants on acting area*/ 2);
+        let s = apply_move(&state, &Move::SkipBuilding, &rules).unwrap();
+        assert_eq!(s.turn_phase, TurnPhase::Recovery); // paused, not auto-completed
+        assert_eq!(s.pending_choices, vec![PendingChoice::RecoveryLeave]);
+        assert_eq!(get_legal_moves(&s, &rules), vec![
+            Move::ChooseRecoveryLeave { leave_one: false },
+            Move::ChooseRecoveryLeave { leave_one: true },
+        ]);
+    }
+
+    #[test]
+    fn telephone_leave_one_keeps_lone_assistant() {
+        // count == 1: leaving means recovering ZERO (design §5.3-5; fixes the old pin).
+        let (state, rules) = telephone_building_fixture(1);
+        let mid = apply_move(&state, &Move::SkipBuilding, &rules).unwrap();
+        let s = apply_move(&mid, &Move::ChooseRecoveryLeave { leave_one: true }, &rules).unwrap();
+        assert_eq!(s.current_player().assistants.on_board[&acting_area()], 1);
+        assert_eq!(s.turn_phase, TurnPhase::AdditionalActionSecond);
+    }
+
+    #[test]
+    fn recovery_without_telephone_stays_automatic() {
+        let (state, rules) = plain_building_fixture(2);
+        let s = apply_move(&state, &Move::SkipBuilding, &rules).unwrap();
+        assert_eq!(s.turn_phase, TurnPhase::AdditionalActionSecond); // no pause
+        assert!(s.pending_choices.is_empty());
+    }
+
+    #[test]
+    fn telephone_leave_false_recovers_everyone() {
+        // The complementary resolution to leave_one: true -- recovers all,
+        // same outcome as the no-Telephone automatic path.
+        let (state, rules) = telephone_building_fixture(2);
+        let mid = apply_move(&state, &Move::SkipBuilding, &rules).unwrap();
+        let s = apply_move(&mid, &Move::ChooseRecoveryLeave { leave_one: false }, &rules).unwrap();
+        assert_eq!(s.current_player().assistants.on_board.get(&acting_area()), None);
+        assert_eq!(s.turn_phase, TurnPhase::AdditionalActionSecond);
+    }
+
+    #[test]
+    fn mercenary_sub_turn_telephone_recovery_queues_and_returns_to_window() {
+        // The mercenary sub-turn's acting area is the mercenary target, not
+        // wherever the real President happens to be -- put the President in
+        // hand (irrelevant to a mercenary sub-turn) so a fallback to
+        // president_location would leave nothing to recover and fail below.
+        let (mut state, rules) = telephone_building_fixture(2);
+        let target = acting_area();
+        state.players[0].president_location = PresidentLocation::InHand;
+        state.is_mercenary_action = true;
+        state.mercenary_target_area = Some(target);
+        state.mercenary_return_phase = Some(TurnPhase::AdditionalActionFirst);
+        state.current_action_power = Some(2);
+
+        let mid = apply_move(&state, &Move::SkipBuilding, &rules).unwrap();
+        assert_eq!(mid.turn_phase, TurnPhase::Recovery);
+        assert_eq!(mid.pending_choices, vec![PendingChoice::RecoveryLeave]);
+
+        let s = apply_move(&mid, &Move::ChooseRecoveryLeave { leave_one: true }, &rules).unwrap();
+        assert_eq!(s.current_player().assistants.on_board[&target], 1);
+        // Returns to the STORED mercenary window, not the normal AdditionalActionSecond.
+        assert_eq!(s.turn_phase, TurnPhase::AdditionalActionFirst);
+        assert!(!s.is_mercenary_action);
+        assert_eq!(s.mercenary_target_area, None);
+        assert_eq!(s.mercenary_return_phase, None);
+        assert_eq!(s.current_action_power, None);
     }
 }
