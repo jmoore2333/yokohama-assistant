@@ -555,7 +555,7 @@ fn recovery_without_telephone_stays_automatic() {
 > **AMENDED 2026-07-18 after Jeremy's box check:** the +3 VP is TAKE-GATED (a full hand bars the action entirely; the VP comes with performing the take at 5 Power). Current engine behavior is CORRECT — this task pins it instead of changing it.
 
 **Files:**
-- Modify: `game/legal_moves.rs` or `game/actions/commercial.rs` tests only (find the existing +3 grant in `execute_port_action` and its tests first: `grep -rn "victory_points += 3\|+ 3" crates/yokohama-core/src/game/actions/commercial.rs`)
+- Modify: tests only. (EXECUTED NOTE: the +3 grant lives in `game/actions/cards.rs:187-190` inside `execute_port_action` — this plan's original pointer to `game/actions/commercial.rs` was wrong; corrected post-execution 2026-07-19.)
 
 - [ ] **Step 1: Write the pinning tests** (RED only if behavior is wrong — in that case STOP and escalate to the orchestrator before changing anything): `port_take_at_five_grants_plus_3vp_exactly_once`; `skip_at_five_power_port_grants_no_vp` (owner-adjudicated 2026-07-18 — cite in a comment); `port_at_four_power_take_grants_no_bonus_vp`; `mercenary_port_take_at_five_grants` (sub-turn path).
 - [ ] **Step 2: Run**: expected all GREEN against current behavior (paste output). If any is RED, report and stop.
