@@ -273,12 +273,20 @@ pub fn calculate_movement_cost_full(
         }
     }
 
-    // Check for canal crossings (mercenaries still pay canal tolls)
-    if path.len() >= 2 {
-        for window in path.windows(2) {
-            if state.board_layout.is_canal_crossing(window[0], window[1]) {
-                cost += 1;
-            }
+    // Check for canal crossings (mercenaries still pay canal tolls). The
+    // toll applies to EVERY crossing in the move, including the very first
+    // step out of the President's current area, so the scan must start
+    // from wherever the President currently is, not just within `path`
+    // (regression fix, I4 final-review: `path.windows(2)` alone missed the
+    // start -> path[0] edge). From hand (Movement Option B places, never
+    // traverses), there is no "current area" to prepend.
+    let full_route: Vec<AreaId> = match p.president_location {
+        PresidentLocation::OnBoard(start) => std::iter::once(start).chain(path.iter().copied()).collect(),
+        PresidentLocation::InHand => path.to_vec(),
+    };
+    for window in full_route.windows(2) {
+        if state.board_layout.is_canal_crossing(window[0], window[1]) {
+            cost += 1;
         }
     }
 
@@ -316,6 +324,9 @@ pub fn calculate_place_president_fee(
 mod tests {
     use super::*;
     use crate::types::*;
+    use crate::game::apply_move::apply_move;
+    use crate::game::legal_moves::get_legal_moves;
+    use crate::game::rules::Rules;
     use std::collections::BTreeMap;
 
     fn create_test_state_with_board() -> GameState {
@@ -491,5 +502,151 @@ mod tests {
         // Mercenary movement: 0 for opponent + 1 for canal = 1
         let merc_cost = calculate_movement_cost_mercenary(&state, player, &path);
         assert_eq!(merc_cost, 1);
+    }
+
+    // --- Task 9: Canal crossing is a live, tolled move ------------------
+
+    fn mover() -> PlayerId {
+        PlayerId::new(0)
+    }
+
+    /// Minimal 2-area board: the mover's President sits at `start` (area 0),
+    /// with an own assistant on `far` (area 1). `start` and `far` flank a
+    /// Canal (no Canal-typed cell needs to exist in the fixture - only
+    /// `adjacency`/`canal_crossings`, which the movement code actually
+    /// consults, matter), so crossing between them is a single-hop path
+    /// that tolls 1 Yen to the bank.
+    fn canal_crossing_fixture() -> (GameState, Rules) {
+        let config = GameConfig::new(2, vec![PlayerColor::Red, PlayerColor::Blue], PlayerId::new(0));
+
+        let mut areas = BTreeMap::new();
+        areas.insert(AreaId::new(0), AreaConfig { area_type: AreaType::Bank, grid_position: (0, 0) });
+        areas.insert(AreaId::new(1), AreaConfig { area_type: AreaType::CopperMine, grid_position: (0, 2) });
+
+        let mut adjacency = BTreeMap::new();
+        adjacency.insert(AreaId::new(0), vec![AreaId::new(1)]);
+        adjacency.insert(AreaId::new(1), vec![AreaId::new(0)]);
+
+        let board_layout = BoardLayout {
+            areas,
+            adjacency,
+            canal_crossings: vec![(AreaId::new(0), AreaId::new(1))],
+            building_sites: BTreeMap::new(),
+            five_power_tokens: BTreeMap::new(),
+        };
+
+        let mut players = vec![
+            PlayerState::new(PlayerId::new(0), PlayerColor::Red, true),
+            PlayerState::new(PlayerId::new(1), PlayerColor::Blue, false),
+        ];
+        players[0].president_location = PresidentLocation::OnBoard(AreaId::new(0));
+        players[0].assistants.on_board.insert(AreaId::new(1), 1);
+        players[0].money = 5;
+        players[1].money = 5;
+
+        let state = GameState {
+            config,
+            board_layout,
+            players,
+            current_player: PlayerId::new(0),
+            turn_phase: TurnPhase::Movement,
+            turn_number: 1,
+            additional_action_state: AdditionalActionState::new(),
+            current_action_power: None,
+            is_mercenary_action: false,
+            mercenary_target_area: None,
+            mercenary_return_phase: None,
+            president_start_area: None,
+            port_state: PortState::new(false),
+            lab_state: LabState::new(false),
+            order_deck: vec![],
+            tech_deck: vec![],
+            orders_removed: vec![],
+            church_track: ChurchTrack::new(),
+            customs_track: CustomsTrack::new(),
+            achievements: [
+                AchievementCard::new(AchievementType::Copper5),
+                AchievementCard::new(AchievementType::Money10),
+                AchievementCard::new(AchievementType::Production4),
+            ],
+            mercenary_supply: MercenarySupply::new(),
+            station_location: None,
+            end_game_triggered: false,
+            trigger_reason: None,
+            final_round: false,
+            trigger_player: None,
+            pending_choices: Vec::new(),
+        };
+        (state, Rules::empty_for_tests())
+    }
+
+    fn cross_move() -> Move {
+        Move::MovePresident { path: vec![AreaId::new(1)], destination: AreaId::new(1) }
+    }
+
+    #[test]
+    fn president_can_cross_canal_paying_one_yen_to_bank() {
+        // Own assistant on the far side; path = [far]; start flanks the canal opposite it.
+        let (state, rules) = canal_crossing_fixture();
+        let legal = get_legal_moves(&state, &rules);
+        assert!(legal.contains(&cross_move()));
+        let s = apply_move(&state, &cross_move(), &rules).unwrap();
+        assert_eq!(s.player(mover()).money, state.player(mover()).money - 1); // toll
+        // Bank toll: NOT credited to any player.
+        let others_total: u32 = s.players.iter().filter(|p| p.id != mover()).map(|p| p.money).sum();
+        let others_before: u32 = state.players.iter().filter(|p| p.id != mover()).map(|p| p.money).sum();
+        assert_eq!(others_total, others_before);
+    }
+
+    /// `start`(0) --canal--> `mid`(1) --ordinary adjacency--> `far`(2), with
+    /// own assistants on both `mid` and `far` so the President's move is a
+    /// two-step path [mid, far]. The canal crossing is on start -> path[0]
+    /// (the FIRST step), a regression for the `path.windows(2)` gap that
+    /// misses that edge (only pairs WITHIN `path` were ever scanned).
+    fn canal_first_step_fixture() -> (GameState, Rules) {
+        let (mut state, rules) = canal_crossing_fixture();
+        state.board_layout.areas.insert(AreaId::new(2), AreaConfig { area_type: AreaType::SilkMill, grid_position: (0, 3) });
+        state.board_layout.adjacency.entry(AreaId::new(1)).or_default().push(AreaId::new(2));
+        state.board_layout.adjacency.insert(AreaId::new(2), vec![AreaId::new(1)]);
+        state.players[0].assistants.on_board.insert(AreaId::new(2), 1);
+        (state, rules)
+    }
+
+    fn first_step_cross_move() -> Move {
+        Move::MovePresident { path: vec![AreaId::new(1), AreaId::new(2)], destination: AreaId::new(2) }
+    }
+
+    #[test]
+    fn start_edge_crossing_is_tolled() {
+        // The FIRST step of the path crosses the canal (regression for the
+        // path.windows(2) gap that missed start -> path[0]).
+        let (state, rules) = canal_first_step_fixture();
+        let s = apply_move(&state, &first_step_cross_move(), &rules).unwrap();
+        assert_eq!(s.player(mover()).money, state.player(mover()).money - 1);
+    }
+
+    /// `canal_crossing_fixture` plus the mover holding Stagecoach - which
+    /// waives opponent-President pass-through/destination fees but must NOT
+    /// waive the canal toll (a separate, unconditional charge).
+    fn canal_crossing_with_stagecoach_fixture() -> (GameState, Rules) {
+        let (mut state, mut rules) = canal_crossing_fixture();
+        let stagecoach_id = TechCardId(1);
+        let stagecoach = TechCard {
+            id: stagecoach_id,
+            name: "Stagecoach".to_string(),
+            country: Country::Dutch,
+            industry_cost: 2,
+            effect: TechEffect::Stagecoach,
+        };
+        rules.techs.insert(stagecoach, "tech_stagecoach");
+        state.players[0].technologies.push(stagecoach_id);
+        (state, rules)
+    }
+
+    #[test]
+    fn stagecoach_does_not_waive_canal_toll() {
+        let (state, rules) = canal_crossing_with_stagecoach_fixture();
+        let s = apply_move(&state, &cross_move(), &rules).unwrap();
+        assert_eq!(s.player(mover()).money, state.player(mover()).money - 1);
     }
 }

@@ -439,9 +439,15 @@ pub fn reconcile_setup(
 /// Board pass: re-type the fixed row-major grid to the observed tiles,
 /// reassign building-site cards from registry indices, rebuild the 5-Power
 /// token pool over the new non-Canal cells (seeded values, order preserved),
-/// and recompute Canal crossings from the new Canal cell's orthogonal
-/// neighbors. Adjacency is grid-orthogonal and type-independent, so it is
-/// never touched (design 2026-07-18 §5.2).
+/// and rebuild adjacency and Canal crossings for the new Canal cell. Grid
+/// positions never move (AreaId i is always cell (i/cols, i%cols)), but
+/// flank-pair Canal-crossing adjacency depends on WHICH cell is the Canal,
+/// so a re-type CAN move it (design 2026-07-18 decision log, Task 9 -
+/// supersedes the earlier "adjacency never touched" assumption, which held
+/// only under the old Canal-as-node semantics). Adjacency is rebuilt
+/// wholesale from the same shared helpers `generate_board_layout` uses
+/// (grid-orthogonal edges + `derive_canal_crossings`), so reconciled output
+/// is identical to generating this tile arrangement directly.
 fn reconcile_board(
     pending: &mut PendingSetup,
     board: &ObservedBoard,
@@ -507,16 +513,21 @@ fn reconcile_board(
             );
         }
     }
-    // Recompute canal crossings from the new Canal cell (if any).
-    layout.canal_crossings.clear();
+    // Rebuild adjacency: grid-orthogonal base plus the new Canal cell's
+    // derived flank pairs (both layered exactly the way generation does).
     let (rows, cols) = crate::game::board_gen::grid_dimensions(pending.state.config.player_count);
+    layout.adjacency.clear();
+    for (a, b) in crate::game::board_gen::grid_orthogonal_adjacency(rows, cols) {
+        layout.adjacency.entry(a).or_default().push(b);
+        layout.adjacency.entry(b).or_default().push(a);
+    }
+    layout.canal_crossings.clear();
     if let Some(ci) = board.tiles.iter().position(|t| *t == AreaType::Canal) {
-        let (r, c) = ((ci / cols as usize) as i16, (ci % cols as usize) as i16);
-        for (nr, nc) in [(r - 1, c), (r + 1, c), (r, c - 1), (r, c + 1)] {
-            if nr >= 0 && nr < rows as i16 && nc >= 0 && nc < cols as i16 {
-                let neighbor = AreaId::new((nr as usize * cols as usize + nc as usize) as u8);
-                layout.canal_crossings.push((AreaId::new(ci as u8), neighbor));
-            }
+        let pos = ((ci / cols as usize) as u8, (ci % cols as usize) as u8);
+        for (a, b) in crate::game::board_gen::derive_canal_crossings(pos, rows, cols) {
+            layout.adjacency.entry(a).or_default().push(b);
+            layout.adjacency.entry(b).or_default().push(a);
+            layout.canal_crossings.push((a, b));
         }
     }
     Ok(())
@@ -950,10 +961,21 @@ mod tests {
         assert!(!layout.five_power_tokens.contains_key(
             &AreaId::new(tiles.iter().position(|t| *t == AreaType::Canal).unwrap() as u8)
         ));
-        // Canal crossings follow the Canal's new cell (its orthogonal neighbors).
+        // Canal crossings follow flank-pair semantics (design 2026-07-18
+        // decision log) for the Canal's NEW cell, matching
+        // derive_canal_crossings exactly (this seed's reversal happens to
+        // land the Canal on a grid edge, where every candidate line is
+        // out-of-bounds and the correct answer is legitimately empty - the
+        // both-cells-exist filter doing its job, not a weaker assertion) -
+        // and each pair is bidirectionally adjacent.
         let canal_i = tiles.iter().position(|t| *t == AreaType::Canal).unwrap();
-        assert!(!layout.canal_crossings.is_empty());
-        assert!(layout.canal_crossings.iter().all(|(a, _)| *a == AreaId::new(canal_i as u8)));
+        let canal_pos = ((canal_i / cols as usize) as u8, (canal_i % cols as usize) as u8);
+        let expected = crate::game::board_gen::derive_canal_crossings(canal_pos, rows, cols);
+        assert_eq!(layout.canal_crossings, expected);
+        for &(a, b) in &layout.canal_crossings {
+            assert!(layout.adjacent_areas(a).contains(&b));
+            assert!(layout.adjacent_areas(b).contains(&a));
+        }
     }
 
     #[test]

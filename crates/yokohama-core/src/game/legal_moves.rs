@@ -217,6 +217,12 @@ fn generate_placement_moves_with_tech(state: &GameState, tech_registry: Option<&
                 // With Telegram and 3+ assistants, offer adjacent placements
                 if has_telegram && p.assistants.in_hand >= 3 {
                     for &adj_area in state.board_layout.adjacent_areas(area) {
+                        // Canal crossings are movement-transit edges ONLY
+                        // (design 2026-07-18 decision log, Task 9) - never
+                        // offered for Telegram's adjacent-bonus placement.
+                        if state.board_layout.is_canal_crossing(area, adj_area) {
+                            continue;
+                        }
                         // Adjacent area must be placeable
                         if let Some(adj_config) = state.board_layout.areas.get(&adj_area) {
                             if adj_config.area_type.allows_placement() {
@@ -1970,6 +1976,53 @@ mod tests {
             Move::PlaceTwoSameArea { adjacent_bonus: Some(_), .. }
         ));
         assert!(has_adjacent_bonus, "With Telegram, should have adjacent bonus options");
+    }
+
+    #[test]
+    fn test_telegram_adjacent_bonus_excludes_canal_crossing() {
+        // Canal crossings are movement-transit edges ONLY (design 2026-07-18
+        // decision log, Task 9): Telegram's adjacent-bonus placement must
+        // never be offered across one, even though the two areas are
+        // adjacent in the graph. A genuinely orthogonal neighbor is still offered.
+        let mut state = create_test_state();
+        let main_area = AreaId::new(0); // Bank
+        let across_canal = AreaId::new(1); // CopperMine - flank pair across the Canal
+        let orthogonal = AreaId::new(2); // SilkMill - ordinary grid neighbor
+        state.board_layout.areas.insert(orthogonal, AreaConfig {
+            area_type: AreaType::SilkMill,
+            grid_position: (0, 2),
+        });
+        state.board_layout.adjacency.insert(main_area, vec![across_canal, orthogonal]);
+        state.board_layout.adjacency.insert(across_canal, vec![main_area]);
+        state.board_layout.adjacency.insert(orthogonal, vec![main_area]);
+        state.board_layout.canal_crossings.push((main_area, across_canal));
+
+        state.turn_phase = TurnPhase::Placement;
+        state.players[0].assistants.in_hand = 3; // Need 3 for bonus (2 + 1)
+
+        let telegram_tech = TechCardId(101);
+        state.players[0].technologies.push(telegram_tech);
+        let mut tech_registry = TechRegistry::new();
+        tech_registry.insert(TechCard {
+            id: telegram_tech,
+            name: "Telegram".to_string(),
+            industry_cost: 3,
+            country: Country::American,
+            effect: TechEffect::Telegram,
+        }, "tech_telegram");
+        let mut rules = Rules::empty_for_tests();
+        rules.techs = tech_registry;
+
+        let moves = get_legal_moves(&state, &rules);
+        let offers_across_canal = moves.iter().any(|m| matches!(m,
+            Move::PlaceTwoSameArea { area, adjacent_bonus: Some(a) } if *area == main_area && *a == across_canal
+        ));
+        assert!(!offers_across_canal, "Telegram bonus must never be offered across the Canal");
+
+        let offers_orthogonal = moves.iter().any(|m| matches!(m,
+            Move::PlaceTwoSameArea { area, adjacent_bonus: Some(a) } if *area == main_area && *a == orthogonal
+        ));
+        assert!(offers_orthogonal, "Telegram bonus should still be offered for a physically-orthogonal neighbor");
     }
 
     // --- Task 16: Port & Laboratory enumeration -----------------------
