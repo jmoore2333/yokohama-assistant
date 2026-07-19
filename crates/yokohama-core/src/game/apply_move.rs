@@ -346,49 +346,26 @@ fn apply_movement(
     Ok(())
 }
 
-/// Credit 1 Yen to each opponent President's owner passed through on the
-/// path, AND (Postal System, I2 final-review fix) to each opponent
-/// President's owner occupying the destination itself - a non-empty path's
-/// last area, since an empty path is a free teleport (Station/Tram) exempt
-/// from this fee (see calculate_movement_cost_full's matching comment).
-/// Mirrors calculate_movement_cost_full's president component exactly:
-/// Stagecoach waives the fee entirely (nothing charged, nothing credited)
-/// and canal tolls are NOT credited (they go to the bank), so the payer's
-/// deduction and the sum of owner credits always match.
+/// Credit each fee recipient in `route_fee_vector`'s breakdown for `path`:
+/// `Some(owner)` entries (intermediate pass-through AND, Postal System, the
+/// destination stop -- I2 final-review fix) go to that opponent's
+/// President owner; `None` entries are canal tolls and are NOT credited to
+/// anyone (they go to the bank). Task 6 (L2 route enumeration, design
+/// 2026-07-19 §4.3): this function no longer re-derives who's owed what --
+/// it just pays out exactly what `route_fee_vector` priced (which already
+/// handles Stagecoach waiving president fees, never tolls), so
+/// `apply_movement`'s deduction and the sum of credits here can never
+/// drift apart -- single pricing source, end to end.
 fn credit_movement_president_fees(
     state: &mut GameState,
     payer: PlayerId,
     path: &[AreaId],
     tech_registry: Option<&TechRegistry>,
 ) {
-    let p = state.player(payer);
-    let has_stagecoach = tech_registry.is_some_and(|registry| {
-        p.technologies.iter().any(|&tech_id| {
-            registry.get(tech_id).map(|t| t.effect == TechEffect::Stagecoach).unwrap_or(false)
-        })
-    });
-    if has_stagecoach {
-        return;
-    }
-
-    let intermediate: &[AreaId] = if path.len() > 1 { &path[..path.len() - 1] } else { &[] };
-    for &area in intermediate {
-        let owners: Vec<PlayerId> = state.players.iter()
-            .filter(|o| o.id != payer && o.president_location == PresidentLocation::OnBoard(area))
-            .map(|o| o.id)
-            .collect();
-        for owner in owners {
-            state.player_mut(owner).money += 1;
-        }
-    }
-
-    if let Some(&destination) = path.last() {
-        let owners: Vec<PlayerId> = state.players.iter()
-            .filter(|o| o.id != payer && o.president_location == PresidentLocation::OnBoard(destination))
-            .map(|o| o.id)
-            .collect();
-        for owner in owners {
-            state.player_mut(owner).money += 1;
+    let vector = route_fee_vector(state, payer, path, tech_registry, false);
+    for (recipient, amount) in vector {
+        if let Some(owner) = recipient {
+            state.player_mut(owner).money += amount;
         }
     }
 }

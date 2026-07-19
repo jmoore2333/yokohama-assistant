@@ -19,7 +19,12 @@ impl std::fmt::Display for InvalidIdError {
 impl std::error::Error for InvalidIdError {}
 
 /// Player identifier (0-3 for up to 4 players).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Default)]
+/// Ord: Task 6 (L2 route enumeration) keys `RouteVector` -
+/// `BTreeMap<Option<PlayerId>, u32>` - by fee recipient, which needs a
+/// total order over PlayerId itself (the numeric id order is as good as
+/// any; nothing depends on the specific ordering, only that it's total and
+/// deterministic).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize, Default)]
 pub struct PlayerId(pub u8);
 
 impl PlayerId {

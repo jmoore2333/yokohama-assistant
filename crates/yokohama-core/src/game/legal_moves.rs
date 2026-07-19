@@ -283,12 +283,17 @@ fn generate_movement_moves_with_tech(state: &GameState, tech_registry: Option<&T
             });
         }
         PresidentLocation::OnBoard(current) => {
-            // Move to reachable areas the player can afford: price each path
-            // with the same tech-aware cost apply_movement charges
-            // (president pass-through fees + canal tolls), so legal ==
-            // applicable. One path per destination (BFS order) - a cheaper
-            // alternate route to the same destination is not searched for.
-            for (dest, path) in find_reachable_areas_with_tech(state, player, current, tech_registry) {
+            // Move to every reachable (destination, fee-vector) label the
+            // player can afford: L2 route enumeration (owner-ruled design
+            // 2026-07-19 §4.3) -- a deliberately pricier route that pays a
+            // DIFFERENT recipient than the cheapest one (income-denial
+            // routing) is real, enumerable play, so this offers every
+            // distinct affordable label per destination, not just the
+            // cheapest path. enumerate_president_routes already prunes by
+            // affordability internally; the `<= p.money` re-check here is
+            // belt-and-braces, matching this file's usual style of pricing
+            // a move again right where it's pushed.
+            for (dest, path) in enumerate_president_routes(state, player, current, tech_registry) {
                 if calculate_movement_cost_with_tech(state, player, &path, tech_registry)
                     <= p.money
                 {
