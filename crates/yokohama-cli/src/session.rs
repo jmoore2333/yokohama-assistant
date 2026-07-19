@@ -96,7 +96,7 @@ impl Session {
     ) -> Result<Session, String> {
         let pending = new_game(config.clone(), &rules, seed).map_err(|e| e.to_string())?;
         let state = finalize_setup(pending, &choices).map_err(|e| e.to_string())?;
-        let record = GameRecord::new(seed, config, choices);
+        let record = GameRecord::new(seed, config, choices, &rules);
         Ok(Session { rules, record, state, mode: TrackingMode::Simulation, save_path: None, checkpoint: None })
     }
 
@@ -114,7 +114,7 @@ impl Session {
         let pending = new_game(config.clone(), &rules, seed).map_err(|e| e.to_string())?;
         let pending = reconcile_setup(pending, &obs, &rules).map_err(|e| e.to_string())?;
         let state = finalize_setup(pending, &choices).map_err(|e| e.to_string())?;
-        let mut record = GameRecord::new(seed, config, choices);
+        let mut record = GameRecord::new(seed, config, choices, &rules);
         record.setup_observations = Some(obs);
         Ok(Session { rules, record, state, mode: TrackingMode::Live, save_path: None, checkpoint: None })
     }
@@ -360,7 +360,7 @@ impl Session {
     /// are never saved -- but not a general-purpose checkpoint/resume
     /// feature as-is.
     pub(crate) fn for_test_from_state(state: GameState, rules: Rules) -> Session {
-        let record = GameRecord::new(0, state.config.clone(), Vec::new());
+        let record = GameRecord::new(0, state.config.clone(), Vec::new(), &rules);
         Session {
             rules,
             record,

@@ -65,3 +65,15 @@ fn strict_replay_rejects_an_out_of_phase_tampered_move_with_its_event_index() {
     let err = replay_strict(&record, &rules).unwrap_err();
     assert_eq!(err.event_index, k);
 }
+
+#[test]
+fn records_stamp_the_rules_hash_and_strict_replay_rejects_a_mismatch() {
+    let rules = Rules::standard();
+    let (_, mut record) = common::run_recorded_game(7, 2, &rules);
+    assert_eq!(record.rules_hash, rules.content_hash());
+    record.rules_hash = "deadbeefdeadbeef".into();
+    let err = replay_strict(&record, &rules).unwrap_err();
+    assert_eq!(err.event_index, 0);
+    assert!(err.message.contains("rules_hash"));
+    assert!(replay(&record, &rules).is_ok(), "lenient replay warns but continues");
+}

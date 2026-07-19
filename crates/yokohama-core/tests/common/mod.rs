@@ -280,7 +280,7 @@ pub fn run_recorded_game(seed: u64, players: u8, rules: &Rules) -> (GameState, G
 
     let choices: Vec<StartingOrderChoice> =
         (0..players).map(|_| StartingOrderChoice::Keep(rng.gen_range(0..2u8))).collect();
-    let mut record = GameRecord::new(seed, record_config, choices.clone());
+    let mut record = GameRecord::new(seed, record_config, choices.clone(), rules);
 
     let mut state = match finalize_setup(pending, &choices) {
         Ok(s) => s,

@@ -538,6 +538,7 @@ fn mid_cascade_game_record_round_trips_through_json_and_resumes() {
         0,
         initial.config.clone(),
         vec![StartingOrderChoice::Keep(0), StartingOrderChoice::Keep(0)],
+        &rules,
     );
     record.push_move(Move::FulfillOrder { order_id });
     record.push_move(Move::ChooseWarehouseTake { item: WarehouseItem::Assistant });

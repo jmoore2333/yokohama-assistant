@@ -11,6 +11,10 @@ use crate::types::{
     GameConfig,
 };
 
+/// Bump on ANY change to board topology derivation (adjacency, canal
+/// crossings, tile multisets). Participates in `Rules::content_hash`.
+pub const BOARD_DERIVATION_VERSION: u32 = 1;
+
 /// Complete set of area tiles for a 4-player game.
 ///
 /// Production areas (8 total - 2 of each type):

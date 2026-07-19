@@ -39,6 +39,16 @@ impl OrderRegistry {
     pub fn iter(&self) -> impl Iterator<Item = &OrderCard> {
         self.cards.values()
     }
+
+    /// Cards in ascending `id` order. Registries are small (36 cards) and
+    /// this isn't hot -- collect-and-sort is deliberately simple, used by
+    /// `Rules::content_hash` to make the canonical string order independent
+    /// of `HashMap` iteration order.
+    pub fn iter_sorted_by_id(&self) -> Vec<&OrderCard> {
+        let mut v: Vec<&OrderCard> = self.cards.values().collect();
+        v.sort_unstable_by_key(|c| c.id.0);
+        v
+    }
 }
 
 impl Default for OrderRegistry {
@@ -82,6 +92,16 @@ impl TechRegistry {
 
     pub fn iter(&self) -> impl Iterator<Item = &TechCard> {
         self.cards.values()
+    }
+
+    /// Cards in ascending `id` order. Registries are small (30 cards) and
+    /// this isn't hot -- collect-and-sort is deliberately simple, used by
+    /// `Rules::content_hash` to make the canonical string order independent
+    /// of `HashMap` iteration order.
+    pub fn iter_sorted_by_id(&self) -> Vec<&TechCard> {
+        let mut v: Vec<&TechCard> = self.cards.values().collect();
+        v.sort_unstable_by_key(|c| c.id.0);
+        v
     }
 }
 
