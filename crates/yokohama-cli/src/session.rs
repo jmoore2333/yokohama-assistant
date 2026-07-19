@@ -16,16 +16,29 @@ pub enum TrackingMode {
 
 /// The simulation/live-tracking core: `{Rules, GameRecord, GameState}` kept
 /// in lockstep. Standing invariant: `state` always equals what replaying
-/// `record` against `rules` produces. `apply`/`apply_standalone`/`undo`
-/// maintain it by staging changes on a clone of `state` (or of `record`'s
-/// events, for `undo`) and only committing after every check passes --
-/// nothing is ever recorded/committed on an error path.
+/// `record` against `rules` produces FROM ITS BASE -- for every session
+/// built by `new_sim`/`new_live`/`load` that base is `replay`'s own
+/// `new_game`+`finalize_setup`; for a `for_test_from_state` session
+/// (test-only) it's `checkpoint` instead, since `replay` has no
+/// `(seed, config, choices)` that reconstructs a hand-built state.
+/// `apply`/`apply_standalone`/`undo` maintain it by staging changes on a
+/// clone of `state` (or of `record`'s events, for `undo`) and only
+/// committing after every check passes -- nothing is ever
+/// recorded/committed on an error path.
 pub struct Session {
     rules: Rules,
     record: GameRecord,
     state: GameState,
     pub mode: TrackingMode,
     pub save_path: Option<std::path::PathBuf>,
+    /// Set only by `for_test_from_state` (test-only, Task 11 fix wave):
+    /// the state `undo` bottoms out at once `record.events` is fully
+    /// unwound, in place of `replay`'s normal `new_game`+`finalize_setup`
+    /// base. `None` for every session built by `new_sim`/`new_live`/`load`
+    /// -- those always bottom out at a state `replay` DOES reconstruct
+    /// correctly, so `undo` uses the real `replay` function for them
+    /// unchanged.
+    checkpoint: Option<GameState>,
 }
 
 impl Session {
@@ -45,7 +58,7 @@ impl Session {
         let pending = new_game(config.clone(), &rules, seed).map_err(|e| e.to_string())?;
         let state = finalize_setup(pending, &choices).map_err(|e| e.to_string())?;
         let record = GameRecord::new(seed, config, choices);
-        Ok(Session { rules, record, state, mode: TrackingMode::Simulation, save_path: None })
+        Ok(Session { rules, record, state, mode: TrackingMode::Simulation, save_path: None, checkpoint: None })
     }
 
     /// Start a new live-tracked game: `new_game`, reconcile physical-table
@@ -64,7 +77,7 @@ impl Session {
         let state = finalize_setup(pending, &choices).map_err(|e| e.to_string())?;
         let mut record = GameRecord::new(seed, config, choices);
         record.setup_observations = Some(obs);
-        Ok(Session { rules, record, state, mode: TrackingMode::Live, save_path: None })
+        Ok(Session { rules, record, state, mode: TrackingMode::Live, save_path: None, checkpoint: None })
     }
 
     /// Load a saved `GameRecord` from `path` and replay it to reconstruct
@@ -78,7 +91,7 @@ impl Session {
         let state = replay(&record, &rules).map_err(|e| e.to_string())?;
         check_invariants(&state, &rules)?;
         let mode = if record.setup_observations.is_some() { TrackingMode::Live } else { TrackingMode::Simulation };
-        Ok(Session { rules, record, state, mode, save_path: Some(path.to_path_buf()) })
+        Ok(Session { rules, record, state, mode, save_path: Some(path.to_path_buf()), checkpoint: None })
     }
 
     /// Write the record as pretty-printed JSON to `path`. `load`
@@ -197,7 +210,10 @@ impl Session {
     /// crash) pops alone. Err when the log is empty. This is the one path
     /// that can't stage-then-commit on `state` directly -- undo's job is to
     /// move `state` backward, so it stages on a clone of `record` instead
-    /// and re-derives `state` via `replay`.
+    /// and re-derives `state`: via `replay` (from `new_game`+`finalize_setup`)
+    /// for a normal session, or by folding the truncated `record.events`
+    /// over `checkpoint` for a `for_test_from_state` session -- see
+    /// `replay_from_checkpoint`.
     pub fn undo(&mut self) -> Result<(), String> {
         let mut record = self.record.clone();
         match record.events.pop() {
@@ -214,7 +230,10 @@ impl Session {
             }
             Some(_) => {} // standalone reveal (or an orphaned bound reveal): pops alone
         }
-        let state = replay(&record, &self.rules).map_err(|e| e.to_string())?;
+        let state = match &self.checkpoint {
+            Some(base) => replay_from_checkpoint(base.clone(), &record.events, &self.rules)?,
+            None => replay(&record, &self.rules).map_err(|e| e.to_string())?,
+        };
         self.record = record;
         self.state = state;
         // autosave failure must stay visible, but `undo`'s signature is
@@ -240,6 +259,83 @@ impl Session {
         match self.save(path) {
             Ok(()) => None,
             Err(e) => Some(format!("WARNING: autosave failed: {e}")),
+        }
+    }
+}
+
+/// `undo`'s counterpart to `replay` for a `for_test_from_state` session:
+/// folds `events` over `base` exactly as `replay` folds `record.events`
+/// over a fresh `new_game`+`finalize_setup` state. Mirrors `replay`'s
+/// event-folding loop by hand (kept in sync manually -- `replay` itself
+/// lives in yokohama-core and isn't parameterized over its starting state,
+/// and this crate doesn't touch engine internals) because a hand-built
+/// checkpoint has no `(seed, config, choices)` that `replay` could use
+/// instead.
+fn replay_from_checkpoint(base: GameState, events: &[RecordedEvent], rules: &Rules) -> Result<GameState, String> {
+    let mut state = base;
+    for ev in events {
+        state = match ev {
+            RecordedEvent::Move(mv) => apply_move(&state, mv, rules).map_err(|e| e.to_string())?,
+            RecordedEvent::RevealOrders(cards) => {
+                let mut s = state;
+                s.arrange_orders_on_top(cards).map_err(|e| e.to_string())?;
+                s
+            }
+            RecordedEvent::RevealTechs(cards) => {
+                let mut s = state;
+                s.arrange_techs_on_top(cards).map_err(|e| e.to_string())?;
+                s
+            }
+            RecordedEvent::RevealStartingOrder { player, card } => {
+                let mut s = state;
+                s.reveal_starting_order(*player, *card).map_err(|e| e.to_string())?;
+                s
+            }
+            RecordedEvent::RevealFivePowerToken { area, effect } => {
+                let mut s = state;
+                s.reveal_five_power_token(*area, *effect).map_err(|e| e.to_string())?;
+                s
+            }
+        };
+    }
+    Ok(state)
+}
+
+#[cfg(test)]
+impl Session {
+    /// Test-only (Task 11 fix wave): build a `Session` whose state is
+    /// `state` verbatim -- not derived via `new_game`/`finalize_setup` --
+    /// for scripted tests that need to exercise a rare engine state (e.g.
+    /// a multi-deep `PendingChoice` cascade) with no short, real move
+    /// sequence available to reach it and record instead (see the Task 11
+    /// fix-wave report for the specific case: `PendingChoice::AnyGood`
+    /// needs a Power-4+ Shophouse build, itself needing Telegram tech or
+    /// an already-built Shophouse/Trading House, both multi-turn).
+    ///
+    /// `apply` needs no special-casing -- it only ever transforms
+    /// `self.state` forward via `apply_move`, which doesn't care whether
+    /// `state` came from `new_game` or was hand-built. `undo` does need
+    /// `checkpoint` (see its doc comment): `replay` has no
+    /// `(seed, config, choices)` that would reconstruct a hand-built
+    /// state, so `record`'s seed/config/choices here are placeholders,
+    /// never consulted for a checkpoint session.
+    ///
+    /// Does NOT round-trip through `save`/`load`: `checkpoint` isn't part
+    /// of the serialized `GameRecord`, so a saved-then-reloaded checkpoint
+    /// session's `undo` would silently fall back to normal
+    /// (`new_game`-based) `replay` and produce the wrong state. Fine for
+    /// this constructor's actual use -- short-lived in-test sessions that
+    /// are never saved -- but not a general-purpose checkpoint/resume
+    /// feature as-is.
+    pub(crate) fn for_test_from_state(state: GameState, rules: Rules) -> Session {
+        let record = GameRecord::new(0, state.config.clone(), Vec::new());
+        Session {
+            rules,
+            record,
+            checkpoint: Some(state.clone()),
+            state,
+            mode: TrackingMode::Simulation,
+            save_path: None,
         }
     }
 }

@@ -729,54 +729,45 @@ mod tests {
         assert!(r.step("q").quit, "'q' must quit while locked, same as 'quit'");
     }
 
-    /// Random-but-deterministic walk (same `(seed, rng_seed)` pair every
-    /// run): applies moves via `r.step` by picking a uniformly random legal
-    /// index each turn, until `pending_choices.first()` satisfies `pred`.
+    /// A `Repl` wrapping a `Session::for_test_from_state`-constructed
+    /// session with `pending_choices = [AnyGood, AnyGood]` already
+    /// queued -- the genuine 2-deep cascade a Shophouse-build reward
+    /// produces on a slot worth 2 any-good icons.
     ///
-    /// `PendingChoice::AnyGood` only ever comes from a Shophouse built on
-    /// a lucky Site slot (a small minority of site templates carry an
-    /// any-good icon), which itself needs Power 4+ -- structurally
-    /// impossible turn 1 (max Power without Telegram tech or an
-    /// already-built Shophouse/Trading House there is 1 president + 2
-    /// assistants = 3) and not meaningfully faster over a few hand-picked
-    /// turns either (Telegram costs industry 6, unaffordable early). No
-    /// short hand-authored path reaches it (see Task 11 report for the
-    /// full trace and the empirical search that ruled this out), so this
-    /// replays a random-play recipe discovered once offline instead of a
-    /// hand-scripted one. Still fully deterministic: same crate-pinned
-    /// `ChaCha8Rng` stream every run, forever.
-    fn drive_until_choice(r: &mut Repl, rng_seed: u64, max_steps: u32, pred: impl Fn(&PendingChoice) -> bool) {
-        use rand::{Rng, SeedableRng};
-        use rand_chacha::ChaCha8Rng;
-        let mut rng = ChaCha8Rng::seed_from_u64(rng_seed);
-        for _ in 0..max_steps {
-            if r.session.state().pending_choices.first().is_some_and(|h| pred(h)) {
-                return;
-            }
-            let n = r.session.legal().len();
-            assert!(n > 0, "dead end while driving toward the target pending choice");
-            let k = rng.gen_range(0..n);
-            r.step(&k.to_string());
-        }
-        panic!("did not reach the target pending choice within {max_steps} steps");
+    /// Built via direct state construction (`push_choice`, mirroring the
+    /// exact pattern the engine's own choice tests use --
+    /// `crates/yokohama-core/src/game/choices.rs`) rather than a random
+    /// walk through real gameplay: `PendingChoice::AnyGood` needs a
+    /// Power-4+ Shophouse build, itself needing Telegram tech or an
+    /// already-built Shophouse/Trading House there -- both multi-turn, so
+    /// there is no short REAL move sequence to record instead (Task 11's
+    /// report has the full reachability trace). A prior version of this
+    /// fixture drove a live session through ~971 real moves picked by
+    /// `rng.gen_range(0..legal().len())`; code review correctly flagged
+    /// that as fragile -- it silently re-targets a DIFFERENT state if
+    /// `get_legal_moves`'s enumeration order ever changes (a new Move
+    /// variant, a reordered match arm), since the walk has no idea WHICH
+    /// move index it's picking, only "the k-th one, whatever that is
+    /// today." State injection has no such dependency: it names the exact
+    /// `PendingChoice` variant it wants, twice.
+    ///
+    /// `Rules::empty_for_tests()`, not `Rules::standard()`, is required:
+    /// `create_test_game_state`'s empty decks/board fail `check_invariants`'
+    /// order/tech-conservation checks under the full 36-order/30-tech
+    /// registries (see `invariants.rs`'s own `baseline()` fixture, which
+    /// pairs the two for exactly this reason).
+    fn repl_with_any_good_cascade() -> Repl {
+        let rules = Rules::empty_for_tests();
+        let mut state = create_test_game_state(2);
+        push_choice(&mut state, PendingChoice::AnyGood, &rules);
+        push_choice(&mut state, PendingChoice::AnyGood, &rules);
+        Repl::new(Session::for_test_from_state(state, rules))
     }
-
-    /// Game seed 238's random walk (rng seed `238 ^ 0xA5A5_5A5A`) lands on
-    /// a genuine 2-deep AnyGood cascade (a Shophouse built on a slot worth
-    /// 2 any-good icons) the first time `AnyGood` heads the queue --
-    /// verified offline once (Task 11 report) and stable forever since
-    /// both the game seed and the walk's RNG are crate-pinned.
-    const ANY_GOOD_SEED: u64 = 238;
-    const ANY_GOOD_RNG_SEED: u64 = 238 ^ 0xA5A5_5A5A;
 
     #[test]
     fn any_good_cascade_banner_shows_choose_count_and_numbered_options() {
-        let mut r = repl_2p(ANY_GOOD_SEED);
-        drive_until_choice(&mut r, ANY_GOOD_RNG_SEED, 1500, |h| matches!(h, PendingChoice::AnyGood));
-        assert_eq!(
-            r.session.state().pending_choices.len(), 2,
-            "expected a 2-deep AnyGood cascade at this (seed, rng_seed) pair"
-        );
+        let mut r = repl_with_any_good_cascade();
+        assert_eq!(r.session.state().pending_choices.len(), 2);
 
         // Resolve the first of the two -- lands on exactly "1 choice
         // pending", the substring this test pins.
@@ -804,8 +795,7 @@ mod tests {
 
     #[test]
     fn undo_mid_any_good_cascade_steps_back_exactly_one_choice() {
-        let mut r = repl_2p(ANY_GOOD_SEED);
-        drive_until_choice(&mut r, ANY_GOOD_RNG_SEED, 1500, |h| matches!(h, PendingChoice::AnyGood));
+        let mut r = repl_with_any_good_cascade();
         assert_eq!(r.session.state().pending_choices.len(), 2);
 
         let k = r.session.legal().iter()
@@ -827,6 +817,18 @@ mod tests {
         let p = r.prompt();
         assert!(p.contains("Choose:"), "{p}");
         assert!(p.contains("2 choice"), "{p}");
+
+        // Stronger discriminator (code-review request): undo isn't a no-op
+        // or a fixed reset -- there is nothing LEFT to undo at the
+        // checkpoint (record.events is now empty), so a SECOND undo must
+        // fail distinguishably rather than silently repeating the first
+        // undo's effect (or doing nothing while reporting success).
+        let out2 = r.step("undo");
+        assert!(out2.text.contains("Cannot undo"), "{}", out2.text);
+        assert_eq!(
+            r.session.state().pending_choices.len(), 2,
+            "a failed second undo must not mutate state"
+        );
     }
 
     /// Turn-1 setup shared by the `m`-grammar tests: Option-B-places 2
