@@ -1,6 +1,7 @@
 //! President movement and pathfinding.
 
-use std::collections::{HashSet, VecDeque};
+use std::cmp::Reverse;
+use std::collections::{BTreeMap, BinaryHeap};
 use crate::types::{AreaId, GameState, Move, PlayerId, PresidentLocation, TechEffect};
 use super::cards::TechRegistry;
 
@@ -75,8 +76,36 @@ pub fn find_reachable_areas(
 
 /// Find all areas reachable from current position via assistant chain, with
 /// technology awareness (Postal System lets the destination check tolerate
-/// an opponent President already there).
-/// Returns list of (destination, path_to_reach).
+/// an opponent President already there). Returns one (destination, path)
+/// pair per reachable destination: the MINIMUM-TOTAL-COST path into it
+/// (canal tolls + opponent-president pass-through/destination fees --
+/// `calculate_movement_cost_full`'s exact weighting), not merely the fewest
+/// hops (I3 final-review fix: a canal crossing is always hop-count-shortest,
+/// so a plain BFS would toll a destination even when a longer, toll-free
+/// route through the mover's own assistants also reaches it).
+///
+/// A Dijkstra over the assistant-presence graph: nodes are `from` plus
+/// every area holding >=1 of the mover's own assistants (a path may only
+/// travel through -- and may stop at -- areas holding the mover's own
+/// assistant, same rule the old BFS enforced, so `from` itself never
+/// re-enters as a waypoint). The weight of stepping onto area `b` from `a`
+/// is the canal toll on the (a,b) crossing plus 1 Yen per opponent
+/// President occupying `b` (waived by Stagecoach) -- summing these along a
+/// path reproduces `calculate_movement_cost_full`'s total exactly, since
+/// that function's "intermediate" and "destination" loops together price
+/// every area in `path` once, and its canal-toll loop scans the same
+/// `[from] + path` window sequence this Dijkstra's edges do.
+///
+/// Ties are broken by lexicographically smallest path (`Vec<AreaId>`'s
+/// derived `Ord`), so enumeration stays fully deterministic. This is sound
+/// with plain lazy-deletion Dijkstra (no separate tie-break pass needed):
+/// extending a path by one hop with a non-negative-weight edge always
+/// produces a STRICTLY greater `(cost, path)` key than the path it
+/// extends -- if the edge costs > 0, the cost component alone decides it;
+/// if it costs 0, the cost ties but a proper prefix always sorts before
+/// the longer vector it's a prefix of (`vec![a] < vec![a, b]`). So keys
+/// only ever increase along any walk, meaning the first successful pop for
+/// any area is already that area's global-optimum (cost, path) pair.
 pub fn find_reachable_areas_with_tech(
     state: &GameState,
     player: PlayerId,
@@ -84,44 +113,62 @@ pub fn find_reachable_areas_with_tech(
     tech_registry: Option<&TechRegistry>,
 ) -> Vec<(AreaId, Vec<AreaId>)> {
     let p = state.player(player);
-    let mut reachable = Vec::new();
-    let mut visited = HashSet::new();
-    let mut queue = VecDeque::new();
 
-    // Start from adjacent areas
-    visited.insert(from);
+    let has_stagecoach = tech_registry.is_some_and(|registry| {
+        p.technologies.iter().any(|&tech_id| {
+            registry.get(tech_id).map(|t| t.effect == TechEffect::Stagecoach).unwrap_or(false)
+        })
+    });
+
+    // Mirrors calculate_movement_cost_full's per-area pricing for stepping
+    // onto `to` from `from_area`: canal tolls are never waived; the
+    // opponent-president fee is waived entirely by Stagecoach.
+    let edge_cost = |from_area: AreaId, to: AreaId| -> u32 {
+        let mut cost = 0;
+        if state.board_layout.is_canal_crossing(from_area, to) {
+            cost += 1;
+        }
+        if !has_stagecoach {
+            cost += state.players.iter()
+                .filter(|o| o.id != player && o.president_location == PresidentLocation::OnBoard(to))
+                .count() as u32;
+        }
+        cost
+    };
+
+    let mut best: BTreeMap<AreaId, (u32, Vec<AreaId>)> = BTreeMap::new();
+    let mut heap: BinaryHeap<Reverse<(u32, Vec<AreaId>, AreaId)>> = BinaryHeap::new();
 
     for &adj in state.board_layout.adjacent_areas(from) {
         // Can only move through areas with our assistants
         if p.assistants.in_area(adj) > 0 {
-            queue.push_back((adj, vec![adj]));
+            heap.push(Reverse((edge_cost(from, adj), vec![adj], adj)));
         }
     }
 
-    while let Some((current, path)) = queue.pop_front() {
-        if visited.contains(&current) {
-            continue;
+    while let Some(Reverse((cost, path, area))) = heap.pop() {
+        if best.contains_key(&area) {
+            continue; // a cheaper-or-equal entry already finalized this area (see doc comment)
         }
-        visited.insert(current);
-
-        // Is this a valid destination?
-        if is_possible_action_area_with_tech(state, player, current, tech_registry) && current != from {
-            reachable.push((current, path.clone()));
-        }
+        best.insert(area, (cost, path.clone()));
 
         // Continue exploring if we have assistants here
-        if p.assistants.in_area(current) > 0 {
-            for &adj in state.board_layout.adjacent_areas(current) {
-                if !visited.contains(&adj) && p.assistants.in_area(adj) > 0 {
-                    let mut new_path = path.clone();
-                    new_path.push(adj);
-                    queue.push_back((adj, new_path));
+        if p.assistants.in_area(area) > 0 {
+            for &adj in state.board_layout.adjacent_areas(area) {
+                if adj == from || p.assistants.in_area(adj) == 0 {
+                    continue;
                 }
+                let mut new_path = path.clone();
+                new_path.push(adj);
+                heap.push(Reverse((cost + edge_cost(area, adj), new_path, adj)));
             }
         }
     }
 
-    reachable
+    best.into_iter()
+        .filter(|&(area, _)| is_possible_action_area_with_tech(state, player, area, tech_registry))
+        .map(|(area, (_, path))| (area, path))
+        .collect()
 }
 
 /// Check if player can teleport to Station area (Station technology).
@@ -648,5 +695,135 @@ mod tests {
         let (state, rules) = canal_crossing_with_stagecoach_fixture();
         let s = apply_move(&state, &cross_move(), &rules).unwrap();
         assert_eq!(s.player(mover()).money, state.player(mover()).money - 1);
+    }
+
+    // --- I3 final-review fix: minimum-TOTAL-cost path per destination ----
+
+    /// `start`(0) --canal--> `direct_dest`(1), PLUS a longer, toll-free
+    /// around-route 0-2-3-1 (ordinary adjacency, no canal on 0-2 or 2-3)
+    /// reaching the SAME destination. The mover's own assistants sit on 1,
+    /// 2, AND 3 -- a path must hold the mover's assistant at every hop,
+    /// including the destination (`find_reachable_areas_with_tech`'s doc
+    /// comment). BFS-shortest-HOP-COUNT picks the 1-hop canal path and
+    /// tolls it even though the 3-hop around-route reaches area 1 for
+    /// free -- the bug this fixture reproduces.
+    fn canal_vs_around_fixture() -> (GameState, Rules) {
+        let config = GameConfig::new(2, vec![PlayerColor::Red, PlayerColor::Blue], PlayerId::new(0));
+
+        let mut areas = BTreeMap::new();
+        areas.insert(AreaId::new(0), AreaConfig { area_type: AreaType::Bank, grid_position: (0, 0) });
+        areas.insert(AreaId::new(1), AreaConfig { area_type: AreaType::CopperMine, grid_position: (0, 3) });
+        areas.insert(AreaId::new(2), AreaConfig { area_type: AreaType::SilkMill, grid_position: (0, 1) });
+        areas.insert(AreaId::new(3), AreaConfig { area_type: AreaType::TeaPlantation, grid_position: (0, 2) });
+
+        let mut adjacency = BTreeMap::new();
+        adjacency.insert(AreaId::new(0), vec![AreaId::new(1), AreaId::new(2)]);
+        adjacency.insert(AreaId::new(1), vec![AreaId::new(0), AreaId::new(3)]);
+        adjacency.insert(AreaId::new(2), vec![AreaId::new(0), AreaId::new(3)]);
+        adjacency.insert(AreaId::new(3), vec![AreaId::new(1), AreaId::new(2)]);
+
+        let board_layout = BoardLayout {
+            areas,
+            adjacency,
+            canal_crossings: vec![(AreaId::new(0), AreaId::new(1))],
+            building_sites: BTreeMap::new(),
+            five_power_tokens: BTreeMap::new(),
+        };
+
+        let mut players = vec![
+            PlayerState::new(PlayerId::new(0), PlayerColor::Red, true),
+            PlayerState::new(PlayerId::new(1), PlayerColor::Blue, false),
+        ];
+        players[0].president_location = PresidentLocation::OnBoard(AreaId::new(0));
+        players[0].assistants.on_board.insert(AreaId::new(1), 1);
+        players[0].assistants.on_board.insert(AreaId::new(2), 1);
+        players[0].assistants.on_board.insert(AreaId::new(3), 1);
+        players[0].money = 5;
+        players[1].money = 5;
+
+        let state = GameState {
+            config,
+            board_layout,
+            players,
+            current_player: PlayerId::new(0),
+            turn_phase: TurnPhase::Movement,
+            turn_number: 1,
+            additional_action_state: AdditionalActionState::new(),
+            current_action_power: None,
+            is_mercenary_action: false,
+            mercenary_target_area: None,
+            mercenary_return_phase: None,
+            president_start_area: None,
+            port_state: PortState::new(false),
+            lab_state: LabState::new(false),
+            order_deck: vec![],
+            tech_deck: vec![],
+            orders_removed: vec![],
+            church_track: ChurchTrack::new(),
+            customs_track: CustomsTrack::new(),
+            achievements: [
+                AchievementCard::new(AchievementType::Copper5),
+                AchievementCard::new(AchievementType::Money10),
+                AchievementCard::new(AchievementType::Production4),
+            ],
+            mercenary_supply: MercenarySupply::new(),
+            station_location: None,
+            end_game_triggered: false,
+            trigger_reason: None,
+            final_round: false,
+            trigger_player: None,
+            pending_choices: Vec::new(),
+        };
+        (state, Rules::empty_for_tests())
+    }
+
+    fn only_move_to(legal: &[Move], destination: AreaId) -> Move {
+        let matches_dest: Vec<&Move> = legal.iter()
+            .filter(|m| matches!(m, Move::MovePresident { destination: d, .. } if *d == destination))
+            .collect();
+        assert_eq!(matches_dest.len(), 1, "exactly one path must be offered per destination: {matches_dest:?}");
+        matches_dest[0].clone()
+    }
+
+    #[test]
+    fn movement_prefers_a_free_around_path_over_a_tolled_canal_shortcut() {
+        let (state, rules) = canal_vs_around_fixture();
+        let legal = get_legal_moves(&state, &rules);
+        let mv = only_move_to(&legal, AreaId::new(1));
+        assert_eq!(
+            mv,
+            Move::MovePresident { path: vec![AreaId::new(2), AreaId::new(3), AreaId::new(1)], destination: AreaId::new(1) },
+            "must route around the canal for free instead of the tolled 1-hop shortcut"
+        );
+        let s = apply_move(&state, &mv, &rules).unwrap();
+        assert_eq!(s.player(mover()).money, state.player(mover()).money, "no toll paid via the around-path");
+    }
+
+    /// Reverse pin: same direct-vs-around topology as `canal_vs_around_fixture`,
+    /// but the around-route now ALSO crosses a canal (3 -> 1) and passes an
+    /// opponent President at area 2 -- pricing it at 2 Yen, strictly worse
+    /// than the direct route's 1 Yen toll. Proves the fix genuinely COMPARES
+    /// total cost rather than unconditionally preferring the longer/
+    /// non-direct route (which would be an overcorrection): the
+    /// canal-crossing path must still be the one offered, and still tolled.
+    fn canal_still_cheapest_fixture() -> (GameState, Rules) {
+        let (mut state, rules) = canal_vs_around_fixture();
+        state.board_layout.canal_crossings.push((AreaId::new(3), AreaId::new(1)));
+        state.players[1].president_location = PresidentLocation::OnBoard(AreaId::new(2));
+        (state, rules)
+    }
+
+    #[test]
+    fn movement_still_tolls_the_canal_when_it_is_genuinely_cheapest() {
+        let (state, rules) = canal_still_cheapest_fixture();
+        let legal = get_legal_moves(&state, &rules);
+        let mv = only_move_to(&legal, AreaId::new(1));
+        assert_eq!(
+            mv,
+            Move::MovePresident { path: vec![AreaId::new(1)], destination: AreaId::new(1) },
+            "the direct canal crossing is still strictly cheaper than the now-pricier around-route"
+        );
+        let s = apply_move(&state, &mv, &rules).unwrap();
+        assert_eq!(s.player(mover()).money, state.player(mover()).money - 1, "canal toll still charged");
     }
 }
