@@ -186,24 +186,24 @@ pub fn generate_board_layout(
 
     // Build the layout
     let mut builder = BoardLayoutBuilder::new();
-    let mut area_id = 0u8;
     let mut site_idx = 0;
     let mut token_idx = 0;
+    let mut canal_position: Option<(u8, u8)> = None;
 
-    // Place tiles on grid and compute adjacency
-    let mut grid: Vec<Vec<Option<AreaId>>> = vec![vec![None; cols as usize]; rows as usize];
-
+    // Place tiles on grid.
     for (idx, area_type) in tiles.into_iter().enumerate() {
         let row = (idx / cols as usize) as u8;
         let col = (idx % cols as usize) as u8;
-        let id = AreaId::new(area_id);
+        let id = AreaId::new(idx as u8);
 
         builder.add_area(id, AreaConfig {
             area_type,
             grid_position: (row, col),
         });
 
-        grid[row as usize][col as usize] = Some(id);
+        if area_type == AreaType::Canal {
+            canal_position = Some((row, col));
+        }
 
         // Add building site and 5-power token (Canal is excluded)
         if area_type != AreaType::Canal {
@@ -213,66 +213,83 @@ pub fn generate_board_layout(
             token_idx += 1;
         }
 
-        area_id += 1;
     }
 
-    // Compute adjacencies from grid positions (orthogonal neighbors)
-    for row in 0..rows as usize {
-        for col in 0..cols as usize {
-            if let Some(area) = grid[row][col] {
-                // Check right neighbor
-                if col + 1 < cols as usize {
-                    if let Some(neighbor) = grid[row][col + 1] {
-                        builder.add_adjacency(area, neighbor);
-                    }
-                }
-                // Check bottom neighbor
-                if row + 1 < rows as usize {
-                    if let Some(neighbor) = grid[row + 1][col] {
-                        builder.add_adjacency(area, neighbor);
-                    }
-                }
-            }
-        }
+    // Grid-orthogonal adjacency: the base layer every board sits on.
+    for (a, b) in grid_orthogonal_adjacency(rows, cols) {
+        builder.add_adjacency(a, b);
     }
 
-    // Add canal crossings (all adjacencies involving Canal require toll)
-    // Find Canal area and mark all its adjacencies as canal crossings
-    for row in 0..rows as usize {
-        for col in 0..cols as usize {
-            if let Some(area) = grid[row][col] {
-                // Check if this is the Canal
-                let is_canal = builder.areas.get(&area)
-                    .map(|c| c.area_type == AreaType::Canal)
-                    .unwrap_or(false);
-
-                if is_canal {
-                    // All neighbors of Canal require crossing toll
-                    let neighbors: Vec<AreaId> = [
-                        (row.wrapping_sub(1), col),
-                        (row + 1, col),
-                        (row, col.wrapping_sub(1)),
-                        (row, col + 1),
-                    ]
-                    .iter()
-                    .filter_map(|&(r, c)| {
-                        if r < rows as usize && c < cols as usize {
-                            grid[r][c]
-                        } else {
-                            None
-                        }
-                    })
-                    .collect();
-
-                    for neighbor in neighbors {
-                        builder.add_canal_crossing(area, neighbor);
-                    }
-                }
-            }
+    // Canal crossings: derive the colinear flank pairs (owner-adjudicated
+    // geometry, design 2026-07-18 decision log) and add each pair to BOTH
+    // adjacency (so the movement BFS can traverse straight across the Canal
+    // without stopping on it) and canal_crossings (so crossing it tolls 1
+    // Yen). `derive_canal_crossings` is the single source of truth, also
+    // used by `reconcile_board` when a re-typed board moves the Canal.
+    if let Some(pos) = canal_position {
+        for (a, b) in derive_canal_crossings(pos, rows, cols) {
+            builder.add_adjacency(a, b);
+            builder.add_canal_crossing(a, b);
         }
     }
 
     builder.build().map_err(BoardGenerationError::ValidationError)
+}
+
+/// Grid-orthogonal adjacency edges (right/down neighbors only, each edge
+/// listed once) for a `rows x cols` grid whose AreaIds are assigned
+/// row-major (`AreaId(r*cols+c)`) - the layout every board uses; grid
+/// positions are fixed for the life of a game, so this is unaffected by
+/// re-typing. Callers add each pair bidirectionally. Shared by
+/// `generate_board_layout` and `reconcile_board` so a re-typed board's
+/// adjacency is identical to generating that tile arrangement directly
+/// (design 2026-07-18 decision log).
+pub fn grid_orthogonal_adjacency(rows: u8, cols: u8) -> Vec<(AreaId, AreaId)> {
+    let mut edges = Vec::new();
+    for row in 0..rows {
+        for col in 0..cols {
+            let id = AreaId::new(row * cols + col);
+            if col + 1 < cols {
+                edges.push((id, AreaId::new(row * cols + col + 1)));
+            }
+            if row + 1 < rows {
+                edges.push((id, AreaId::new((row + 1) * cols + col)));
+            }
+        }
+    }
+    edges
+}
+
+/// Derive the Canal's crossing pairs from its grid position (owner-
+/// adjudicated geometry, Jeremy 2026-07-18 decision log): the four
+/// colinear straight-through lines through the Canal cell - horizontal,
+/// vertical, and both diagonals - each included only when BOTH flanking
+/// cells exist on this board's grid (e.g. a 2-row 3p grid can only ever
+/// yield the horizontal pair; a 3-row 4p grid can yield all four). Bent
+/// transits (enter one flank, exit a non-opposite flank) are illegal and
+/// structurally impossible to represent with this pairing, so no extra
+/// filtering is needed for that.
+///
+/// AreaIds are row-major over the fixed grid (`AreaId(r*cols+c)`, the same
+/// convention `grid_orthogonal_adjacency` uses), so "does this cell exist"
+/// reduces to a bounds check - there is exactly one Canal tile per board,
+/// and by construction no flanking cell can ever coincide with it.
+pub fn derive_canal_crossings(canal: (u8, u8), rows: u8, cols: u8) -> Vec<(AreaId, AreaId)> {
+    let (r, c) = (canal.0 as i16, canal.1 as i16);
+    let (rows, cols) = (rows as i16, cols as i16);
+    let id_at = |r: i16, c: i16| -> Option<AreaId> {
+        (r >= 0 && r < rows && c >= 0 && c < cols).then(|| AreaId::new((r * cols + c) as u8))
+    };
+    let lines = [
+        ((r, c - 1), (r, c + 1)),         // horizontal
+        ((r - 1, c), (r + 1, c)),         // vertical
+        ((r - 1, c - 1), (r + 1, c + 1)), // diagonal "\"
+        ((r - 1, c + 1), (r + 1, c - 1)), // diagonal "/"
+    ];
+    lines
+        .into_iter()
+        .filter_map(|((r1, c1), (r2, c2))| Some((id_at(r1, c1)?, id_at(r2, c2)?)))
+        .collect()
 }
 
 /// Canonical 5-power token pool from the physical game.
@@ -384,15 +401,13 @@ mod tests {
 
     fn make_test_five_power_tokens(count: usize) -> Vec<FivePowerEffect> {
         (0..count)
-            .map(|i| match i % 8 {
+            .map(|i| match i % 6 {
                 0 => FivePowerEffect::ImportedGoods(1),
                 1 => FivePowerEffect::Copper(2),
                 2 => FivePowerEffect::Silk(2),
-                3 => FivePowerEffect::Tea(2),
-                4 => FivePowerEffect::Seafood(2),
-                5 => FivePowerEffect::Money(3),
-                6 => FivePowerEffect::VictoryPoints(3),
-                _ => FivePowerEffect::Movement(2),
+                3 => FivePowerEffect::Seafood(3),
+                4 => FivePowerEffect::Tea(3),
+                _ => FivePowerEffect::Money(3),
             })
             .collect()
     }
@@ -517,6 +532,10 @@ mod tests {
 
     #[test]
     fn test_canal_crossings_marked() {
+        // Flank-pair semantics (design 2026-07-18 decision log): the Canal
+        // cell's OWN grid-orthogonal neighbors are ordinary, toll-free
+        // adjacency (the Canal is never itself traversed) - only the
+        // FLANKING pairs across it are crossings.
         let mut rng = ChaCha8Rng::seed_from_u64(42);
         let config = GameConfig::for_player_count(4);
         let building_sites = make_test_building_sites(17);
@@ -530,16 +549,128 @@ mod tests {
             .find(|(_, c)| c.area_type == AreaType::Canal)
             .map(|(id, _)| *id);
 
-        if let Some(canal) = canal_area {
-            // All neighbors of Canal should be marked as canal crossings
-            let neighbors = layout.adjacent_areas(canal);
-            for neighbor in neighbors {
-                assert!(
-                    layout.is_canal_crossing(canal, *neighbor),
-                    "Crossing from Canal to {:?} should require toll", neighbor
-                );
-            }
+        let canal = canal_area.expect("4p board always has a Canal");
+        for neighbor in layout.adjacent_areas(canal) {
+            assert!(
+                !layout.is_canal_crossing(canal, *neighbor),
+                "Canal's own grid-orthogonal neighbor {:?} should NOT be a crossing \
+                 (the Canal cell itself is never traversed)", neighbor
+            );
         }
+        // Every derived crossing pair is bidirectionally adjacent and marked.
+        for &(a, b) in &layout.canal_crossings {
+            assert!(layout.adjacent_areas(a).contains(&b));
+            assert!(layout.adjacent_areas(b).contains(&a));
+            assert!(layout.is_canal_crossing(a, b));
+        }
+    }
+
+    /// Sort each pair's endpoints and sort the resulting list, for
+    /// order-independent comparison of a set of undirected crossing pairs.
+    fn normalize_pairs(pairs: &[(AreaId, AreaId)]) -> Vec<(AreaId, AreaId)> {
+        let mut v: Vec<(AreaId, AreaId)> = pairs
+            .iter()
+            .map(|&(a, b)| if a.0 <= b.0 { (a, b) } else { (b, a) })
+            .collect();
+        v.sort_by_key(|&(a, b)| (a.0, b.0));
+        v
+    }
+
+    /// Seeded 3p layout whose Canal lands at AreaId(3), grid (0,3) (pinned
+    /// against the current `generate_board_layout` rng-consumption order:
+    /// player-count removals -> tile shuffle -> site shuffle -> token
+    /// shuffle). A 3p board (2x7 grid) always has a Canal.
+    fn seeded_3p_layout_with_canal() -> (BoardLayout, GameConfig) {
+        let config = GameConfig::for_player_count(3);
+        let mut rng = ChaCha8Rng::seed_from_u64(1);
+        let building_sites = make_test_building_sites(13);
+        let tokens = make_test_five_power_tokens(13);
+        let layout = generate_board_layout(&config, &mut rng, building_sites, tokens)
+            .expect("should generate valid layout");
+        (layout, config)
+    }
+
+    /// Seeded 2p layout (2p never has a Canal tile at all).
+    fn seeded_2p_layout() -> (BoardLayout, GameConfig) {
+        let config = GameConfig::for_player_count(2);
+        let mut rng = ChaCha8Rng::seed_from_u64(1);
+        let building_sites = make_test_building_sites(10);
+        let tokens = make_test_five_power_tokens(10);
+        let layout = generate_board_layout(&config, &mut rng, building_sites, tokens)
+            .expect("should generate valid layout");
+        (layout, config)
+    }
+
+    #[test]
+    fn canal_flanking_areas_are_adjacent_and_marked_as_crossings() {
+        let (layout, _) = seeded_3p_layout_with_canal();
+        for &(a, b) in &layout.canal_crossings {
+            assert!(layout.adjacent_areas(a).contains(&b));
+            assert!(layout.is_canal_crossing(a, b));
+        }
+        assert!(!layout.canal_crossings.is_empty()); // 3p always has a Canal
+
+        // Pin: seed 1's 3p Canal lands at AreaId(3), grid (0,3) - a 2-row
+        // (2x7) grid only ever yields the horizontal pair (owner-
+        // adjudicated geometry, design 2026-07-18 decision log).
+        assert_eq!(
+            normalize_pairs(&layout.canal_crossings),
+            normalize_pairs(&[(AreaId::new(2), AreaId::new(4))]),
+        );
+    }
+
+    #[test]
+    fn corner_canal_has_no_crossings() {
+        // Seed 5's 3p Canal lands in a grid corner, (0,6): every one of the
+        // four candidate lines runs off the 2x7 grid, so no crossing exists
+        // at all - this is the both-cells-exist filter doing its job, not a
+        // special case.
+        let config = GameConfig::for_player_count(3);
+        let mut rng = ChaCha8Rng::seed_from_u64(5);
+        let building_sites = make_test_building_sites(13);
+        let tokens = make_test_five_power_tokens(13);
+        let layout = generate_board_layout(&config, &mut rng, building_sites, tokens)
+            .expect("should generate valid layout");
+
+        let canal = layout.areas.iter()
+            .find(|(_, c)| c.area_type == AreaType::Canal)
+            .map(|(id, _)| *id);
+        assert_eq!(canal, Some(AreaId::new(6)));
+        assert_eq!(layout.areas[&AreaId::new(6)].grid_position, (0, 6));
+        assert!(layout.canal_crossings.is_empty());
+    }
+
+    #[test]
+    fn four_player_canal_yields_all_four_crossing_pairs() {
+        // Seed 4's 4p Canal lands at AreaId(9), grid (1,3) - the only pin
+        // that exercises the vertical + diagonal pairs (a 2-row 3p grid can
+        // never produce them).
+        let config = GameConfig::for_player_count(4);
+        let mut rng = ChaCha8Rng::seed_from_u64(4);
+        let building_sites = make_test_building_sites(17);
+        let tokens = make_test_five_power_tokens(17);
+        let layout = generate_board_layout(&config, &mut rng, building_sites, tokens)
+            .expect("should generate valid layout");
+
+        let canal = layout.areas.iter()
+            .find(|(_, c)| c.area_type == AreaType::Canal)
+            .map(|(id, _)| *id);
+        assert_eq!(canal, Some(AreaId::new(9)));
+        assert_eq!(layout.areas[&AreaId::new(9)].grid_position, (1, 3));
+
+        let expected = [
+            (AreaId::new(8), AreaId::new(10)),  // horizontal
+            (AreaId::new(3), AreaId::new(15)),  // vertical
+            (AreaId::new(2), AreaId::new(16)),  // diagonal "\"
+            (AreaId::new(4), AreaId::new(14)),  // diagonal "/"
+        ];
+        assert_eq!(normalize_pairs(&layout.canal_crossings), normalize_pairs(&expected));
+    }
+
+    #[test]
+    fn two_player_boards_unchanged() {
+        let (layout, _) = seeded_2p_layout();
+        assert!(layout.canal_crossings.is_empty());
     }
 
     #[test]

@@ -6,6 +6,10 @@ use crate::game::actions::*;
 
 /// Generate all legal moves for the current game state.
 pub fn get_legal_moves(state: &GameState, rules: &Rules) -> Vec<Move> {
+    if let Some(head) = state.pending_choices.first() {
+        return crate::game::choices::generate_choice_resolutions(state, head, rules);
+    }
+
     match state.turn_phase {
         TurnPhase::AdditionalActionFirst | TurnPhase::AdditionalActionSecond => {
             generate_additional_action_moves(state, rules)
@@ -66,6 +70,16 @@ fn generate_additional_action_moves(state: &GameState, rules: &Rules) -> Vec<Mov
                 achievement: achievement.achievement_type,
             });
         }
+    }
+
+    // University (once per turn): pay 1 Yen -> take 1 assistant from warehouse.
+    if can_use_university(state, player, &rules.techs) {
+        moves.push(Move::UseUniversity);
+    }
+
+    // Textile Mill / Spinning Mill (once per turn): discard 1 silk -> gain 2 Yen.
+    if can_use_spinning_mill(state, player, &rules.techs) {
+        moves.push(Move::UseSpinningMill);
     }
 
     moves
@@ -203,6 +217,12 @@ fn generate_placement_moves_with_tech(state: &GameState, tech_registry: Option<&
                 // With Telegram and 3+ assistants, offer adjacent placements
                 if has_telegram && p.assistants.in_hand >= 3 {
                     for &adj_area in state.board_layout.adjacent_areas(area) {
+                        // Canal crossings are movement-transit edges ONLY
+                        // (design 2026-07-18 decision log, Task 9) - never
+                        // offered for Telegram's adjacent-bonus placement.
+                        if state.board_layout.is_canal_crossing(area, adj_area) {
+                            continue;
+                        }
                         // Adjacent area must be placeable
                         if let Some(adj_config) = state.board_layout.areas.get(&adj_area) {
                             if adj_config.area_type.allows_placement() {
@@ -544,10 +564,12 @@ fn generate_lab_actions(state: &GameState, player: PlayerId, power: u8, lab: &La
 /// combinations the player can both AFFORD (stock/assistant - hand OR the
 /// acting area itself, per `validate_church_action`) and that the executor
 /// would actually ACCEPT (total Faith >= 4 with an eligible empty space, per
-/// `highest_eligible_church_space`) -- reusing both pure executor helpers
-/// directly so enumeration can never drift from `execute_church_action`'s
-/// own acceptance criteria. Skip is always legal and always offered (Task
-/// 16/17 decision-log optionality ruling).
+/// `eligible_church_spaces` -- feasibility only, not WHICH space; Task 4
+/// defers that pick to a `ChooseChurchSpace` follow-up move when >=2
+/// qualify) -- reusing both pure executor helpers directly so enumeration
+/// can never drift from `execute_church_action`'s own acceptance criteria.
+/// Skip is always legal and always offered (Task 16/17 decision-log
+/// optionality ruling).
 fn generate_church_actions(state: &GameState, player: PlayerId, power: u8, area: AreaId) -> Vec<Move> {
     let mut moves = Vec::new();
 
@@ -564,7 +586,7 @@ fn generate_church_actions(state: &GameState, player: PlayerId, power: u8, area:
         }
 
         let total_faith = calculate_church_faith(power, copper, silk, tea, seafood, yen, imported_good);
-        if highest_eligible_church_space(&state.church_track, total_faith, state.config.player_count).is_none() {
+        if eligible_church_spaces(&state.church_track, total_faith, state.config.player_count).is_empty() {
             continue;
         }
 
@@ -581,16 +603,18 @@ fn generate_church_actions(state: &GameState, player: PlayerId, power: u8, area:
 /// 1..=`customs_max_imported_goods(power)` for which the player both can
 /// legally pay it (`validate_customs_action`, which also gates on assistant
 /// availability - hand OR the acting area itself) and an eligible empty
-/// track space exists (`eligible_customs_space_for_cost`) -- reusing both
-/// pure executor helpers directly so enumeration can never drift from
-/// `execute_customs_action`'s own acceptance criteria. Skip is always
-/// legal and always offered (Task 16/17 decision-log optionality ruling).
+/// track space exists (`eligible_customs_spaces_for_cost` -- feasibility
+/// only, not WHICH space; Task 5 defers that pick to a `ChooseCustomsSpace`
+/// follow-up move when >=2 qualify) -- reusing both pure executor helpers
+/// directly so enumeration can never drift from `execute_customs_action`'s
+/// own acceptance criteria. Skip is always legal and always offered (Task
+/// 16/17 decision-log optionality ruling).
 fn generate_customs_actions(state: &GameState, player: PlayerId, power: u8, area: AreaId) -> Vec<Move> {
     let mut moves = Vec::new();
 
     for n in 1..=customs_max_imported_goods(power) {
         if validate_customs_action(state, player, area, n, power).is_ok()
-            && eligible_customs_space_for_cost(&state.customs_track, n, state.config.player_count).is_some()
+            && !eligible_customs_spaces_for_cost(&state.customs_track, n, state.config.player_count).is_empty()
         {
             moves.push(Move::ExecuteAreaAction { action: AreaAction::Customs { imported_goods_paid: n } });
         }
@@ -612,7 +636,7 @@ fn generate_customs_actions(state: &GameState, player: PlayerId, power: u8, area
 fn generate_employment_agency_actions(state: &GameState, player: PlayerId, power: u8) -> Vec<Move> {
     let p = state.player(player);
     let allowed = employment_agency_tokens_allowed(power) as u32;
-    let already_taken = p.trading_houses.in_hand as usize + p.trading_houses.total_built();
+    let already_taken = p.trading_houses.already_taken();
 
     let mut moves = Vec::new();
 
@@ -628,12 +652,7 @@ fn generate_employment_agency_actions(state: &GameState, player: PlayerId, power
                 let mut th_cost = 0u32;
                 for i in 0..t {
                     let th_index = already_taken + i as usize;
-                    th_cost += match th_index {
-                        0 => 4,
-                        1 => 5,
-                        2 => 6,
-                        _ => 7,
-                    };
+                    th_cost += TradingHouseState::take_cost(th_index);
                 }
 
                 if p.money < shophouse_cost + th_cost {
@@ -966,6 +985,7 @@ mod tests {
             trigger_reason: None,
             final_round: false,
             trigger_player: None,
+            pending_choices: Vec::new(),
         }
     }
 
@@ -997,6 +1017,108 @@ mod tests {
 
         // Should always include EndAdditionalPhase
         assert!(moves.iter().any(|m| matches!(m, Move::EndAdditionalPhase)));
+    }
+
+    #[test]
+    fn university_offered_in_first_window_when_usable() {
+        let mut state = create_test_state();
+        state.turn_phase = TurnPhase::AdditionalActionFirst;
+        state.players[0].money = 3;
+        state.players[0].assistants.in_warehouse = 2;
+
+        let mut tech_registry = TechRegistry::new();
+        tech_registry.insert(
+            TechCard {
+                id: TechCardId(90),
+                name: "University".to_string(),
+                country: Country::French,
+                industry_cost: 4,
+                effect: TechEffect::University,
+            },
+            "tech_university",
+        );
+        state.players[0].technologies.push(TechCardId(90));
+
+        let mut rules = Rules::empty_for_tests();
+        rules.techs = tech_registry;
+
+        let moves = get_legal_moves(&state, &rules);
+        assert!(moves.iter().any(|m| matches!(m, Move::UseUniversity)));
+    }
+
+    #[test]
+    fn university_not_offered_when_used_or_unowned() {
+        let mut state = create_test_state();
+        state.turn_phase = TurnPhase::AdditionalActionFirst;
+        state.players[0].money = 3;
+        state.players[0].assistants.in_warehouse = 2;
+
+        // No tech owned at all -- must never be offered, even with money/warehouse to spare.
+        let rules = Rules::empty_for_tests();
+        let moves = get_legal_moves(&state, &rules);
+        assert!(
+            !moves.iter().any(|m| matches!(m, Move::UseUniversity)),
+            "player without University must never see it offered"
+        );
+
+        // Give the tech: now it must be offered.
+        let mut tech_registry = TechRegistry::new();
+        tech_registry.insert(
+            TechCard {
+                id: TechCardId(91),
+                name: "University".to_string(),
+                country: Country::French,
+                industry_cost: 4,
+                effect: TechEffect::University,
+            },
+            "tech_university",
+        );
+        state.players[0].technologies.push(TechCardId(91));
+        let mut rules = Rules::empty_for_tests();
+        rules.techs = tech_registry;
+
+        let moves = get_legal_moves(&state, &rules);
+        assert!(moves.iter().any(|m| matches!(m, Move::UseUniversity)));
+
+        // Use it once, then confirm the flag blocks a second offer this same turn.
+        let next = apply_move(&state, &Move::UseUniversity, &rules).unwrap();
+        let moves_after = get_legal_moves(&next, &rules);
+        assert!(
+            !moves_after.iter().any(|m| matches!(m, Move::UseUniversity)),
+            "used once this turn: must not be offered again"
+        );
+    }
+
+    #[test]
+    fn spinning_mill_not_offered_without_silk() {
+        let mut state = create_test_state();
+        state.turn_phase = TurnPhase::AdditionalActionSecond;
+        state.players[0].silk = 0;
+
+        let mut tech_registry = TechRegistry::new();
+        tech_registry.insert(
+            TechCard {
+                id: TechCardId(92),
+                name: "Textile Mill".to_string(),
+                country: Country::Dutch,
+                industry_cost: 3,
+                effect: TechEffect::SpinningMill,
+            },
+            "tech_spinning_mill",
+        );
+        state.players[0].technologies.push(TechCardId(92));
+        let mut rules = Rules::empty_for_tests();
+        rules.techs = tech_registry;
+
+        let moves = get_legal_moves(&state, &rules);
+        assert!(
+            !moves.iter().any(|m| matches!(m, Move::UseSpinningMill)),
+            "owns Textile Mill but has no silk: must not be offered"
+        );
+
+        state.players[0].silk = 1;
+        let moves = get_legal_moves(&state, &rules);
+        assert!(moves.iter().any(|m| matches!(m, Move::UseSpinningMill)));
     }
 
     #[test]
@@ -1854,6 +1976,53 @@ mod tests {
             Move::PlaceTwoSameArea { adjacent_bonus: Some(_), .. }
         ));
         assert!(has_adjacent_bonus, "With Telegram, should have adjacent bonus options");
+    }
+
+    #[test]
+    fn test_telegram_adjacent_bonus_excludes_canal_crossing() {
+        // Canal crossings are movement-transit edges ONLY (design 2026-07-18
+        // decision log, Task 9): Telegram's adjacent-bonus placement must
+        // never be offered across one, even though the two areas are
+        // adjacent in the graph. A genuinely orthogonal neighbor is still offered.
+        let mut state = create_test_state();
+        let main_area = AreaId::new(0); // Bank
+        let across_canal = AreaId::new(1); // CopperMine - flank pair across the Canal
+        let orthogonal = AreaId::new(2); // SilkMill - ordinary grid neighbor
+        state.board_layout.areas.insert(orthogonal, AreaConfig {
+            area_type: AreaType::SilkMill,
+            grid_position: (0, 2),
+        });
+        state.board_layout.adjacency.insert(main_area, vec![across_canal, orthogonal]);
+        state.board_layout.adjacency.insert(across_canal, vec![main_area]);
+        state.board_layout.adjacency.insert(orthogonal, vec![main_area]);
+        state.board_layout.canal_crossings.push((main_area, across_canal));
+
+        state.turn_phase = TurnPhase::Placement;
+        state.players[0].assistants.in_hand = 3; // Need 3 for bonus (2 + 1)
+
+        let telegram_tech = TechCardId(101);
+        state.players[0].technologies.push(telegram_tech);
+        let mut tech_registry = TechRegistry::new();
+        tech_registry.insert(TechCard {
+            id: telegram_tech,
+            name: "Telegram".to_string(),
+            industry_cost: 3,
+            country: Country::American,
+            effect: TechEffect::Telegram,
+        }, "tech_telegram");
+        let mut rules = Rules::empty_for_tests();
+        rules.techs = tech_registry;
+
+        let moves = get_legal_moves(&state, &rules);
+        let offers_across_canal = moves.iter().any(|m| matches!(m,
+            Move::PlaceTwoSameArea { area, adjacent_bonus: Some(a) } if *area == main_area && *a == across_canal
+        ));
+        assert!(!offers_across_canal, "Telegram bonus must never be offered across the Canal");
+
+        let offers_orthogonal = moves.iter().any(|m| matches!(m,
+            Move::PlaceTwoSameArea { area, adjacent_bonus: Some(a) } if *area == main_area && *a == orthogonal
+        ));
+        assert!(offers_orthogonal, "Telegram bonus should still be offered for a physically-orthogonal neighbor");
     }
 
     // --- Task 16: Port & Laboratory enumeration -----------------------

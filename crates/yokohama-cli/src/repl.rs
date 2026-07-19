@@ -1,39 +1,15 @@
 //! Pure REPL step function over a `Session`: numbered-option prompts,
-//! placement grammar, view/utility commands, pagination, and live-mode
-//! reveal choreography (design docs/plans/2026-07-18-phase2-cli-driver-design.md).
+//! placement grammar, view/utility commands, and pagination -- live-mode
+//! reveal choreography lives in `reveal.rs` (moved there at Task 10)
+//! (design docs/plans/2026-07-18-phase2-cli-driver-design.md).
 //! No stdin/stdout -- `main.rs` (Task 13) drives this with real I/O.
 
 use yokohama_core::*;
 
-use crate::session::TrackingMode;
+use crate::input::parse_order_id;
+use crate::reveal::{claimed_token_area, lab_b_changed, refilled_port_slots, Pending};
+use crate::session::{ApplyError, TrackingMode};
 use crate::{describe, render};
-
-/// Live-mode reveal-collection state: while a group is being collected,
-/// `step` routes input to `collect_reveal` instead of normal command
-/// dispatch (see `step`'s pending check) and `out` stops appending the
-/// normal legal-options prompt (see `out`'s pending branch). `mv` is the
-/// move already confirmed legal against a scratch-applied post-reveal
-/// state (`commit`'s `apply_move` call) -- nothing is recorded until the
-/// group completes and runs through `Session::apply` for real. Always
-/// `None` in `TrackingMode::Simulation`.
-enum Pending {
-    None,
-    /// A Port take refilled slot(s) from the order deck. `slots` holds the
-    /// refilled indices on whichever board `board_b` selects, sorted
-    /// DESCENDING (draw order -- `refill_port` fills rightmost-empty-first,
-    /// popping the deck's top card each time). `collected` grows by one
-    /// answer per `collect_reveal` call; the group is complete once its
-    /// length reaches `slots.len()`.
-    OrderReveals { mv: Move, slots: Vec<usize>, board_b: bool, collected: Vec<OrderCardId> },
-    /// A Laboratory action refilled the Lab's one vacated slot from the
-    /// tech deck (only one tech ever leaves the Lab per action -- see
-    /// `remove_and_slide_lab`'s doc comment -- so there's no slot list to
-    /// walk, unlike `OrderReveals`).
-    TechReveal { mv: Move, board_b: bool },
-    /// `Move::Take5PowerToken` just claimed the (always face-down until
-    /// taken) token at `area` -- see `claimed_token_area`.
-    TokenReveal { mv: Move, area: AreaId },
-}
 
 /// One REPL turn's worth of state layered over a `Session`: which options
 /// page is showing, any in-progress live-mode reveal collection, and
@@ -41,14 +17,14 @@ enum Pending {
 pub struct Repl {
     pub session: crate::session::Session,
     page: usize,
-    pending: Pending,
-    /// Set once `finish_apply` sees an `INVARIANT VIOLATION` error from
-    /// `Session::apply`, or once a just-completed live order-reveal group
-    /// fails the post-apply desync assertion (`lock_on_order_desync`) --
-    /// from then on `step` refuses everything except `save`/`log`/`quit`,
-    /// so a desynced session can still be inspected and saved for
-    /// postmortem but never played further.
-    locked: bool,
+    pub(crate) pending: Pending,
+    /// Set once `finish_apply` sees an `ApplyError::Invariant` outcome from
+    /// `Session::apply`, or once a just-completed live reveal group fails
+    /// the post-apply desync assertion (`lock_on_order_desync`/
+    /// `lock_on_tech_desync`) -- from then on `step` refuses everything
+    /// except `save`/`log`/`quit`, so a desynced session can still be
+    /// inspected and saved for postmortem but never played further.
+    pub(crate) locked: bool,
 }
 
 /// The result of one `Repl::step` call: the text to show the user (which
@@ -70,7 +46,18 @@ impl Repl {
     /// `session.legal()`, 20 per page.
     pub fn prompt(&self) -> String {
         let state = self.session.state();
-        let mut out = render::prompt_header(state);
+        let phase_text = match state.pending_choices.first() {
+            Some(head) => {
+                let n = state.pending_choices.len();
+                format!(
+                    "Choose: {} — {n} choice{} pending",
+                    describe::describe_pending_choice(head, state, self.session.rules()),
+                    if n == 1 { "" } else { "s" },
+                )
+            }
+            None => describe::phase_name(state.turn_phase).to_string(),
+        };
+        let mut out = render::prompt_header(state, &phase_text);
         out.push('\n');
         if self.session.is_over() {
             out.push_str("game over — commands only\n");
@@ -94,7 +81,7 @@ impl Repl {
                 }
             }
         }
-        out.push_str("> enter a number, 'a'/'b' for placement, or a command ('help' for the list)\n");
+        out.push_str(INPUT_HINT);
         out
     }
 
@@ -134,15 +121,15 @@ impl Repl {
         match words.as_slice() {
             [] => self.out(String::new(), false),
             ["quit"] | ["q"] => StepOutput { text: "bye\n".to_string(), quit: true },
-            ["help"] => self.out(HELP_TEXT.to_string(), false),
-            ["board"] => self.out(render::board_grid(self.session.state()), false),
-            ["players"] => self.out(render::players_panel(self.session.state(), self.session.rules()), false),
-            ["ports"] => self.out(render::ports_view(self.session.state(), self.session.rules()), false),
-            ["labs"] => self.out(render::labs_view(self.session.state(), self.session.rules()), false),
-            ["tracks"] => self.out(render::tracks_view(self.session.state()), false),
-            ["hand"] => self.out(self.hand_text(), false),
-            ["score"] => self.out(self.score_text(), false),
-            ["log"] => self.out(self.log_tail(), false),
+            ["help"] => self.out_view(HELP_TEXT.to_string()),
+            ["board"] => self.out_view(render::board_grid(self.session.state())),
+            ["players"] => self.out_view(render::players_panel(self.session.state(), self.session.rules())),
+            ["ports"] => self.out_view(render::ports_view(self.session.state(), self.session.rules())),
+            ["labs"] => self.out_view(render::labs_view(self.session.state(), self.session.rules())),
+            ["tracks"] => self.out_view(render::tracks_view(self.session.state())),
+            ["hand"] => self.out_view(self.hand_text()),
+            ["score"] => self.out_view(self.score_text()),
+            ["log"] => self.out_view(self.log_tail()),
             ["more"] => {
                 self.advance_page();
                 self.out(String::new(), false)
@@ -164,6 +151,8 @@ impl Repl {
             ["reveal", ..] => self.out("Usage: reveal <seat> <O..>\n".to_string(), false),
             ["a", rest @ ..] => self.try_placement_a(rest),
             ["b", rest @ ..] => self.try_placement_b(rest),
+            ["m", src, dst] => self.try_assistant_move(src, dst),
+            ["m", ..] => self.out("Usage: m <from> <to>\n".to_string(), false),
             [_] if words[0].chars().all(|c| c.is_ascii_digit()) => match words[0].parse::<usize>() {
                 Ok(k) => self.pick_option(k),
                 Err(_) => self.out(format!("'{}' is not a valid option number.\n", words[0]), false),
@@ -178,7 +167,7 @@ impl Repl {
     /// self-describing message, so every caller that needs it (entering or
     /// continuing a reveal collection) passes it as `text` directly rather
     /// than relying on this wrapper to append it.
-    fn out(&self, mut text: String, quit: bool) -> StepOutput {
+    pub(crate) fn out(&self, mut text: String, quit: bool) -> StepOutput {
         if quit {
             return StepOutput { text, quit: true };
         }
@@ -193,7 +182,30 @@ impl Repl {
         StepOutput { text, quit: false }
     }
 
-    fn lockdown_status(&self) -> String {
+    /// Like `out`, but for read-only VIEW commands (`board`/`players`/
+    /// `ports`/`labs`/`tracks`/`hand`/`score`/`log`/`help`): appends just
+    /// `INPUT_HINT`, not the full header+phase+numbered-options block
+    /// `prompt()` builds (Task 13 test (e)). A view command never changes
+    /// state, so which options are legal never changes either -- reprinting
+    /// up to 20 numbered options after every single glance at the board was
+    /// pure noise (closed a dogfooding friction note). Mirrors `out`'s
+    /// lockdown/pending short-circuits for defense in depth, even though
+    /// today only `log` can reach here while locked (`step`'s lockdown
+    /// allow-list) and no view command is reachable mid-reveal-collection
+    /// (`step`'s pending-active branch routes elsewhere entirely).
+    pub(crate) fn out_view(&self, mut text: String) -> StepOutput {
+        if !text.is_empty() && !text.ends_with('\n') {
+            text.push('\n');
+        }
+        if self.locked {
+            text.push_str(&self.lockdown_status());
+        } else if matches!(self.pending, Pending::None) {
+            text.push_str(INPUT_HINT);
+        }
+        StepOutput { text, quit: false }
+    }
+
+    pub(crate) fn lockdown_status(&self) -> String {
         format!(
             "[locked] turn {} | seed {} | {} logged event(s) -- only 'save', 'log', 'quit' available\n",
             self.session.state().turn_number,
@@ -266,6 +278,36 @@ impl Repl {
         }
     }
 
+    /// Parse `m <src> <dst>` (`src` is `hand` or an area id) into a
+    /// `ChooseAssistantMove` candidate and exact-match it against `legal()`
+    /// via `find_placement_match` (its catch-all arm already does plain
+    /// equality for every non-`PlaceThreeAreas` move, so this reuses it
+    /// as-is rather than duplicating the lookup). Area tokens go through
+    /// `parse_raw_area_token`, not `parse_area_id` -- an out-of-range
+    /// destination like `99` must fall through to the SAME "not one of the
+    /// legal assistant moves" rejection an on-board-but-wrong area gets,
+    /// not a separate range error, and `AreaId::new`'s panic-on->=18 rules
+    /// out using it directly on raw user input.
+    fn try_assistant_move(&mut self, src: &str, dst: &str) -> StepOutput {
+        let from = if src == "hand" {
+            MoveSource::Hand
+        } else {
+            match parse_raw_area_token(src) {
+                Ok(id) => MoveSource::Area(id),
+                Err(e) => return self.out(format!("{e}\n"), false),
+            }
+        };
+        let to = match parse_raw_area_token(dst) {
+            Ok(id) => id,
+            Err(e) => return self.out(format!("{e}\n"), false),
+        };
+        let candidate = Move::ChooseAssistantMove { from, to };
+        match self.find_placement_match(&candidate) {
+            Some(mv) => self.commit(mv),
+            None => self.out("Illegal: that is not one of the legal assistant moves.\n".to_string(), false),
+        }
+    }
+
     /// Find the legal move matching `candidate`: `PlaceThreeAreas` matches
     /// by placement multiset (order-independent), everything else by exact
     /// equality.
@@ -319,12 +361,27 @@ impl Repl {
 
     /// Apply `mv` + `reveals` as one atomic group (`Session::apply`). On
     /// success, reset pagination and report the delta (plus a final-score
-    /// table if the game just ended). On failure, an `INVARIANT VIOLATION`
+    /// table if the game just ended). On failure, an `ApplyError::Invariant`
     /// locks the session down with a postmortem dump; anything else is an
     /// ordinary illegal-move rejection. This is the sim path's entire
-    /// `commit` (reveals always empty there) and the terminal step of
-    /// every live-mode reveal collection.
-    fn finish_apply(&mut self, mv: Move, reveals: Vec<RecordedEvent>) -> StepOutput {
+    /// `commit` (reveals always empty there) and the terminal step of every
+    /// live-mode reveal collection that doesn't need the desync guard (see
+    /// `finish_apply_ex` for the two that do).
+    pub(crate) fn finish_apply(&mut self, mv: Move, reveals: Vec<RecordedEvent>) -> StepOutput {
+        self.finish_apply_ex(mv, reveals).0
+    }
+
+    /// Same as `finish_apply`, but also reports whether the apply actually
+    /// SUCCEEDED (Task 13; inverted to `applied: bool` semantics in the
+    /// I1/I2/I3 final-review fix wave's cheap batch) -- `reveal.rs`'s
+    /// `lock_on_order_desync`/`lock_on_tech_desync` need that to skip their
+    /// post-apply board re-check whenever nothing actually changed. `applied`
+    /// covers EVERY error variant, not just `ApplyError::Illegal`: the
+    /// narrower `was_illegal` flag this replaces would have let a
+    /// `GameOver`/`Reveal` error slip through as "not illegal" and trigger a
+    /// false-positive desync lockdown against a board that was never
+    /// touched.
+    pub(crate) fn finish_apply_ex(&mut self, mv: Move, reveals: Vec<RecordedEvent>) -> (StepOutput, bool) {
         match self.session.apply(mv, reveals) {
             Ok(delta) => {
                 self.page = 0;
@@ -335,142 +392,21 @@ impl Repl {
                     }
                     text.push_str(&self.final_score_table());
                 }
-                self.out(text, false)
+                (self.out(text, false), true)
             }
-            Err(e) => {
-                if e.starts_with("INVARIANT VIOLATION") {
-                    self.locked = true;
-                    let mut text = format!("LOCKDOWN -- {e}\n");
-                    text.push_str(&self.lockdown_dump());
-                    self.out(text, false)
-                } else {
-                    self.out(format!("Illegal: {e}\n"), false)
-                }
+            Err(ApplyError::Invariant(msg)) => {
+                self.locked = true;
+                let mut text = format!("LOCKDOWN -- {msg}\n");
+                text.push_str(&self.lockdown_dump());
+                (self.out(text, false), false)
             }
-        }
-    }
-
-    /// The complete message for whatever reveal is currently pending: what
-    /// changed and exactly what to type (or an empty string when nothing
-    /// is pending). Slots are always shown 1-based; Port slots also carry
-    /// their zone, matching `render::ports_view`'s labeling. Prompts walk
-    /// `OrderReveals`' `slots` in the order they're stored (DESCENDING --
-    /// `commit` sorted them that way), one per `collected.len()`.
-    fn reveal_prompt(&self) -> String {
-        match &self.pending {
-            Pending::None => String::new(),
-            Pending::OrderReveals { slots, board_b, collected, .. } => {
-                let board_name = if *board_b { "Port B" } else { "Port A" };
-                let next_slot = slots[collected.len()];
-                let zone = match PortBoard::zone_of(next_slot) {
-                    PortZone::Low => "Low",
-                    PortZone::Mid => "Mid",
-                    PortZone::High => "High",
-                };
-                format!(
-                    "LIVE: {board_name} refilled {} slot(s) from the order deck -- reveal {} of {}. \
-                     What card is now in slot {} ({zone})? Enter as 'O<id>' or '<id>' (or 'cancel'):\n",
-                    slots.len(), collected.len() + 1, slots.len(), next_slot + 1,
-                )
-            }
-            Pending::TechReveal { board_b, .. } => {
-                let board_name = if *board_b { "Laboratory B" } else { "Laboratory A" };
-                format!(
-                    "LIVE: {board_name} refilled from the tech deck. \
-                     What tech card is now there? Enter as 'T<id>' or a name (or 'cancel'):\n"
-                )
-            }
-            Pending::TokenReveal { area, .. } => format!(
-                "LIVE: 5-Power token claimed at {}. What was it? \
-                 Enter i=Imported c=Copper s=Silk t=Tea f=Seafood y=Yen (or 'cancel'):\n",
-                describe::area_label(self.session.state(), *area),
-            ),
-        }
-    }
-
-    /// Feed one line of input into the in-progress reveal collection.
-    /// Extracts `self.pending` (leaving `Pending::None` behind) so each arm
-    /// owns its fields outright; every non-terminal path restores
-    /// `self.pending` before returning. Never panics -- each parser rejects
-    /// malformed/unknown input as an `Err` re-prompt rather than unwrapping.
-    fn collect_reveal(&mut self, words: &[&str]) -> StepOutput {
-        match std::mem::replace(&mut self.pending, Pending::None) {
-            // Unreachable in practice: `step` only calls this when
-            // `self.pending` just matched `!= Pending::None`. Handled
-            // gracefully (not `unreachable!()`) rather than risk a panic.
-            Pending::None => self.out(String::new(), false),
-            Pending::OrderReveals { mv, slots, board_b, mut collected } => {
-                match parse_order_reveal(words, &self.session.state().order_deck, &collected) {
-                    Ok(card) => {
-                        collected.push(card);
-                        if collected.len() == slots.len() {
-                            let out = self.finish_apply(mv, vec![RecordedEvent::RevealOrders(collected.clone())]);
-                            self.lock_on_order_desync(&slots, &collected, board_b, out)
-                        } else {
-                            self.pending = Pending::OrderReveals { mv, slots, board_b, collected };
-                            self.out(self.reveal_prompt(), false)
-                        }
-                    }
-                    Err(msg) => {
-                        self.pending = Pending::OrderReveals { mv, slots, board_b, collected };
-                        self.out(format!("{msg}\n{}", self.reveal_prompt()), false)
-                    }
-                }
-            }
-            Pending::TechReveal { mv, board_b } => {
-                match parse_tech_reveal(words, &self.session.state().tech_deck, &self.session.rules().techs) {
-                    Ok(card) => self.finish_apply(mv, vec![RecordedEvent::RevealTechs(vec![card])]),
-                    Err(msg) => {
-                        self.pending = Pending::TechReveal { mv, board_b };
-                        self.out(format!("{msg}\n{}", self.reveal_prompt()), false)
-                    }
-                }
-            }
-            Pending::TokenReveal { mv, area } => match parse_token_letter(words) {
-                Ok(effect) => self.finish_apply(mv, vec![RecordedEvent::RevealFivePowerToken { area, effect }]),
-                Err(msg) => {
-                    self.pending = Pending::TokenReveal { mv, area };
-                    self.out(format!("{msg}\n{}", self.reveal_prompt()), false)
-                }
-            },
-        }
-    }
-
-    /// Post-apply desync assertion (design 2026-07-18 §5.2): once a
-    /// completed order-reveal group actually applies, the named board
-    /// slots must hold exactly the typed cards. A mismatch can only mean a
-    /// driver/engine bug -- deck arrangement and board refill are both
-    /// deterministic given the reveal -- so it's treated like an invariant
-    /// violation: lock the session and surface a CRITICAL banner rather
-    /// than silently tracking a board that disagrees with the table.
-    /// No-ops when `finish_apply` already failed or locked -- nothing to
-    /// re-check against a move that never actually applied.
-    fn lock_on_order_desync(
-        &mut self,
-        slots: &[usize],
-        collected: &[OrderCardId],
-        board_b: bool,
-        out: StepOutput,
-    ) -> StepOutput {
-        if out.quit || self.locked || out.text.contains("Illegal:") {
-            return out;
-        }
-        let state = self.session.state();
-        let board = if board_b { state.port_state.port_b.as_ref() } else { Some(&state.port_state.port_a) };
-        let matches_board = board.is_some_and(|b| {
-            slots.iter().zip(collected.iter()).all(|(&slot, &card)| b.slots.get(slot) == Some(&Some(card)))
-        });
-        if matches_board {
-            return out;
-        }
-        self.locked = true;
-        StepOutput {
-            text: format!(
-                "{}CRITICAL: desync detected -- the revealed card(s) do not match the board after applying the move. Session locked.\n{}",
-                out.text,
-                self.lockdown_status(),
-            ),
-            quit: false,
+            // T13 rider (final-review cheap batch): a dedicated arm instead
+            // of falling into the catch-all's "Illegal: {e}" phrasing, which
+            // rendered ApplyError::GameOver's Display text ("the game is
+            // already over") as the confusing "Illegal: the game is already
+            // over".
+            Err(ApplyError::GameOver) => (self.out("game over — commands only\n".to_string(), false), false),
+            Err(e) => (self.out(format!("Illegal: {e}\n"), false), false),
         }
     }
 
@@ -601,121 +537,17 @@ fn parse_area_id(tok: &str) -> Result<AreaId, String> {
     }
 }
 
-/// Which Port board changed, and which of ITS slots now hold a card that
-/// wasn't in `before.order_deck` a moment ago -- an identity-independent
-/// test that survives Port's full-compaction refill (a 2-card take can
-/// vacate non-contiguous slots; `execute_port_action`'s left-compaction can
-/// then reshuffle which physical slot each surviving card ends up in, so
-/// only "did this card just come from the deck" reliably picks out the
-/// refilled slot(s), not "did this slot's card change"). Sorted
-/// DESCENDING -- draw order, since `refill_port` fills rightmost-empty-first
-/// from the deck's top (`Vec::pop`).
-fn refilled_port_slots(before: &GameState, after: &GameState) -> (Vec<usize>, bool) {
-    let board_b = match (&before.port_state.port_b, &after.port_state.port_b) {
-        (Some(b0), Some(b1)) => b0.slots != b1.slots,
-        _ => false,
-    };
-    let after_board = if board_b { after.port_state.port_b.as_ref() } else { Some(&after.port_state.port_a) };
-    let mut slots: Vec<usize> = after_board
-        .map(|board| (0..6).filter(|&i| board.slots[i].is_some_and(|c| before.order_deck.contains(&c))).collect())
-        .unwrap_or_default();
-    slots.sort_unstable_by(|a, b| b.cmp(a));
-    (slots, board_b)
-}
-
-/// Whether Lab B (rather than Lab A) is the board that just refilled.
-fn lab_b_changed(before: &GameState, after: &GameState) -> bool {
-    match (&before.lab_state.lab_b, &after.lab_state.lab_b) {
-        (Some(b0), Some(b1)) => b0.slots != b1.slots,
-        _ => false,
-    }
-}
-
-/// The area whose 5-Power token just went from unclaimed to claimed.
-/// `Move::Take5PowerToken` is only ever legal when the President's area
-/// holds one (`generate_five_power_moves`), so this is `Some` at every real
-/// call site; `None` is a defensive fallback that's never expected to fire.
-fn claimed_token_area(before: &GameState, after: &GameState) -> Option<AreaId> {
-    before.board_layout.five_power_tokens.iter().find_map(|(area, effect)| {
-        (effect.is_some() && after.board_layout.five_power_tokens.get(area) == Some(&None)).then_some(*area)
-    })
-}
-
-/// Parse an order-card token ("O17" or "17") into its numeric id -- no
-/// validation against any deck; callers check membership themselves.
-fn parse_order_id(tok: &str) -> Option<u8> {
-    tok.strip_prefix(['O', 'o']).unwrap_or(tok).parse::<u8>().ok()
-}
-
-/// Parse one order-reveal answer: a real numeric id, currently in `deck`,
-/// and not already in `collected` (a card can't be drawn twice in one refill).
-fn parse_order_reveal(words: &[&str], deck: &[OrderCardId], collected: &[OrderCardId]) -> Result<OrderCardId, String> {
-    if words.len() != 1 {
-        return Err("Enter exactly one order-card code (e.g. 'O17' or '17'), or 'cancel'.".to_string());
-    }
-    let n = match parse_order_id(words[0]) {
-        Some(n) => n,
-        None => return Err(format!("'{}' is not a valid order-card code.", words[0])),
-    };
-    let card = OrderCardId(n);
-    if collected.contains(&card) {
-        return Err(format!("O{n:02} was already recorded for this reveal."));
-    }
-    if !deck.contains(&card) {
-        return Err(format!("O{n:02} is not currently in the order deck."));
-    }
-    Ok(card)
-}
-
-/// Parse one tech-reveal answer: `T<id>` (validated against `deck`) or a
-/// case-insensitive name prefix, resolved to the LOWEST matching id
-/// currently in `deck` (some titles circulate as 2 physical copies).
-fn parse_tech_reveal(words: &[&str], deck: &[TechCardId], techs: &TechRegistry) -> Result<TechCardId, String> {
-    if words.len() != 1 {
-        return Err("Enter exactly one tech code (e.g. 'T05' or a name), or 'cancel'.".to_string());
-    }
-    let tok = words[0];
-    if let Some(rest) = tok.strip_prefix(['T', 't']) {
-        if let Ok(n) = rest.parse::<u8>() {
-            let card = TechCardId(n);
-            return if deck.contains(&card) {
-                Ok(card)
-            } else {
-                Err(format!("T{n:02} is not currently in the tech deck."))
-            };
-        }
-    }
-    let needle = tok.to_lowercase();
-    let mut matches: Vec<TechCardId> = deck
-        .iter()
-        .copied()
-        .filter(|id| techs.get(*id).is_some_and(|c| c.name.to_lowercase().starts_with(&needle)))
-        .collect();
-    matches.sort_unstable_by_key(|id| id.0);
-    matches.into_iter().next().ok_or_else(|| format!("'{tok}' does not match any tech card currently in the deck."))
-}
-
-/// Parse a 5-Power token-effect letter into the canonical pool's fixed
-/// magnitude for that kind (only 6 of `FivePowerEffect`'s 8 variants ever
-/// populate the physical token pool -- `VictoryPoints`/`Movement` don't).
-fn parse_token_letter(words: &[&str]) -> Result<FivePowerEffect, String> {
-    let usage = "Enter one letter: i/c/s/t/f/y (or 'cancel').".to_string();
-    if words.len() != 1 {
-        return Err(usage);
-    }
-    let mut chars = words[0].chars();
-    let (Some(c), None) = (chars.next(), chars.next()) else {
-        return Err(usage);
-    };
-    match c.to_ascii_lowercase() {
-        'i' => Ok(FivePowerEffect::ImportedGoods(1)),
-        'c' => Ok(FivePowerEffect::Copper(2)),
-        's' => Ok(FivePowerEffect::Silk(2)),
-        't' => Ok(FivePowerEffect::Tea(3)),
-        'f' => Ok(FivePowerEffect::Seafood(3)),
-        'y' => Ok(FivePowerEffect::Money(3)),
-        _ => Err(format!("'{}' is not a valid token letter (i/c/s/t/f/y).", words[0])),
-    }
+/// Parse an `m`-grammar area token into a raw, possibly off-board `AreaId`
+/// for legal-move membership testing. Unlike `parse_area_id`, values >=18
+/// are NOT rejected here as a range error -- `AreaId::unchecked` can't
+/// panic on them, so a destination like `99` reaches `try_assistant_move`'s
+/// `legal()` lookup and fails there with "not one of the legal assistant
+/// moves" (its options never include an area that isn't really on the
+/// board) instead of a separate, earlier range error. Only genuinely
+/// unparseable tokens (non-numeric, or too large for `u8`) are rejected
+/// here.
+fn parse_raw_area_token(tok: &str) -> Result<AreaId, String> {
+    tok.parse::<u8>().map(AreaId::unchecked).map_err(|_| format!("'{tok}' is not a valid area number"))
 }
 
 const HELP_TEXT: &str = "\
@@ -724,6 +556,7 @@ Commands:
   a [id id id]    Placement Option A: place 1 assistant in each of 0-3 areas
   b <id>          Placement Option B: place 2 assistants in one area
   b <id> t <adj>  Placement Option B with the Telegram bonus: +1 assistant in an adjacent area
+  m <from> <to>   resolve a pending assistant-move choice (<from> is 'hand' or an area id)
   board           show the area grid
   players         show each player's resources, hand, tech, tokens, President
   ports           show both Port boards and the order-deck size
@@ -739,8 +572,13 @@ Commands:
   reveal <seat> <O..>  live mode: make a hidden opponent starting order public
   cancel          live mode: abort an in-progress card/token reveal prompt
   help            show this text
-  quit            exit the REPL
+  quit            exit the REPL ('q' also works)
 ";
+
+/// The one-line trailing hint every prompt screen ends with -- factored out
+/// (Task 13) so `prompt()`'s full block and `out_view`'s hint-only block
+/// agree on its wording verbatim.
+const INPUT_HINT: &str = "> enter a number, 'a'/'b' for placement, or a command ('help' for the list)\n";
 
 #[cfg(test)]
 mod tests {
@@ -843,6 +681,38 @@ mod tests {
         );
     }
 
+    /// Task 13 test (e): a "view" command (one that only reads current state
+    /// -- never changes it) is followed by just the one-line input hint, not
+    /// the full header+phase+numbered-options block `prompt()` builds. Closes
+    /// a dogfooding friction note: re-showing up to 20 numbered options after
+    /// every single glance at the board/hand/log was pure noise since the
+    /// glance itself never changes which options are legal.
+    #[test]
+    fn view_commands_show_only_the_input_hint_not_the_full_options_block() {
+        let mut r = repl_2p(4);
+        for cmd in ["board", "players", "ports", "labs", "tracks", "hand", "score", "log", "help"] {
+            let out = r.step(cmd);
+            assert!(!out.text.contains("[0]"), "'{cmd}' unexpectedly showed the numbered options block: {}", out.text);
+            assert!(
+                out.text.trim_end().ends_with("('help' for the list)"),
+                "'{cmd}' output is missing the one-line input hint: {}", out.text
+            );
+        }
+    }
+
+    /// Task 13 test (f): `help`'s own text should document the `q` alias for
+    /// `quit` that `step`'s dispatch already honors (`["quit"] | ["q"]`) --
+    /// checked via the quoted form `'q'` (this codebase's convention for a
+    /// literal input token, e.g. reveal.rs's "or 'cancel'") rather than a
+    /// bare `"q"`, which the word "quit" itself already contains and so
+    /// would never have gone RED.
+    #[test]
+    fn help_text_documents_the_q_quit_alias() {
+        let mut r = repl_2p(4);
+        let out = r.step("help");
+        assert!(out.text.contains("'q'"), "{}", out.text);
+    }
+
     #[test]
     fn pagination_pages_through_large_placement_lists() {
         let mut r = repl_2p(4);
@@ -854,64 +724,6 @@ mod tests {
             let p1 = r.step("more").text;
             assert_ne!(p0, p1);
         }
-    }
-
-    fn live_repl() -> (Repl, Vec<OrderCardId>) {
-        let rules = Rules::standard();
-        let config = GameConfig::for_player_count(2);
-        let table = new_game(config.clone(), &rules, 900).unwrap();
-        let obs = SetupObservations {
-            port_a: Some(std::array::from_fn(|i| table.state.port_state.port_a.slots[i].unwrap())),
-            lab_a: Some(std::array::from_fn(|i| table.state.lab_state.lab_a.slots[i].unwrap())),
-            deals: vec![(PlayerId::new(0), table.deals[0])],
-            ..Default::default()
-        };
-        let session = Session::new_live(
-            config, 901, obs,
-            vec![StartingOrderChoice::Keep(0), StartingOrderChoice::Unknown],
-            rules,
-        ).unwrap();
-        let deck_bottom: Vec<OrderCardId> = session.state().order_deck.iter().take(2).copied().collect();
-        (Repl::new(session), deck_bottom)
-    }
-
-    #[test]
-    fn live_port_take_collects_reveals_then_applies_them() {
-        let (mut r, others) = live_repl();
-        // Walk to AreaAction with the President on Port A: end additionals,
-        // then place 1 assistant AT Port A (the brief's literal "place
-        // nothing" script leaves `PlacePresident` with zero legal
-        // destinations -- Option A only offers a "Possible Action Area",
-        // which per movement.rs's `is_possible_action_area_full` requires
-        // the player's own assistant already there; a bare "a" places none
-        // anywhere, so `port_area` can never appear regardless of seed.
-        // Placing 1 assistant there instead is free on turn 1 -- no
-        // president has moved yet, so `calculate_placement_cost` finds no
-        // other president at the area to charge a fee for), then place the
-        // President directly at Port A via the numbered list.
-        let port_area = *r.session.state().board_layout.areas.iter()
-            .find(|(_, c)| c.area_type == AreaType::PortA).unwrap().0;
-        r.step("0");        // EndAdditionalPhase
-        r.step(&format!("a {}", port_area.0)); // place 1 assistant at Port A
-        let k = r.session.legal().iter().position(|m| matches!(
-            m, Move::PlacePresident { destination } if *destination == port_area
-        )).expect("PlacePresident at Port A is legal from hand at game start");
-        r.step(&k.to_string());
-        // Pick a 1-card port take.
-        let take = r.session.legal().iter().position(|m| matches!(
-            m, Move::ExecuteAreaAction { action: AreaAction::Port { cards_taken, .. } } if cards_taken.len() == 1
-        )).expect("1-card port take available");
-        let out = r.step(&take.to_string());
-        // Live mode must now be ASKING for the refill card, not applied yet.
-        assert!(out.text.to_lowercase().contains("slot"), "{}", out.text);
-        let events_before = r.session.record().events.len();
-        // Answer with a DIFFERENT card than the seeded top: bottom-of-deck card.
-        let out = r.step(&format!("O{}", others[0].0));
-        assert!(!out.text.contains("CRITICAL"), "{}", out.text);
-        assert_eq!(r.session.record().events.len(), events_before + 2); // RevealOrders + Move
-        // The typed card is now physically on the Port A board.
-        assert!(r.session.state().port_state.port_a.slots.iter().any(|s| *s == Some(others[0])));
-        assert_eq!(replay(r.session.record(), r.session.rules()).unwrap(), *r.session.state());
     }
 
     #[test]
@@ -930,31 +742,6 @@ mod tests {
         assert!(out.text.contains("revealed"), "{}", out.text);
         assert_eq!(r.session.state().players[1].starting_order, Some(hidden));
         assert_eq!(replay(r.session.record(), r.session.rules()).unwrap(), *r.session.state());
-    }
-
-    #[test]
-    fn undo_after_live_reveal_group_removes_the_whole_group() {
-        let (mut r, others) = live_repl();
-        // See live_port_take_collects_reveals_then_applies_them's comment:
-        // an assistant must land at Port A before PlacePresident can target it.
-        let port_area = *r.session.state().board_layout.areas.iter()
-            .find(|(_, c)| c.area_type == AreaType::PortA).unwrap().0;
-        r.step("0");
-        r.step(&format!("a {}", port_area.0));
-        let k = r.session.legal().iter().position(|m| matches!(
-            m, Move::PlacePresident { destination } if *destination == port_area
-        )).unwrap();
-        r.step(&k.to_string());
-        let before = r.session.state().clone();
-        let events_before = r.session.record().events.len();
-        let take = r.session.legal().iter().position(|m| matches!(
-            m, Move::ExecuteAreaAction { action: AreaAction::Port { cards_taken, .. } } if cards_taken.len() == 1
-        )).unwrap();
-        r.step(&take.to_string());
-        r.step(&format!("O{}", others[0].0));
-        r.step("undo");
-        assert_eq!(*r.session.state(), before);
-        assert_eq!(r.session.record().events.len(), events_before);
     }
 
     /// Sim-mode guard (brief's parenthetical requirement): the identical
@@ -982,90 +769,6 @@ mod tests {
         assert!(!out.text.to_lowercase().contains("slot"), "{}", out.text);
         assert_eq!(r.session.record().events.len(), events_before + 1);
         assert!(matches!(r.pending, Pending::None));
-    }
-
-    /// Not one of the brief's pinned Step-1 tests, but added to exercise the
-    /// `TechReveal` arm the pinned tests never reach (they only drive a Port
-    /// take, so `OrderReveals` is the only variant proven end-to-end by the
-    /// brief itself) -- same shape as `live_port_take_...`, mirrored onto
-    /// Laboratory A instead of Port A.
-    #[test]
-    fn live_lab_action_collects_tech_reveal_then_applies_it() {
-        let (mut r, _others) = live_repl();
-        let lab_area = *r.session.state().board_layout.areas.iter()
-            .find(|(_, c)| c.area_type == AreaType::LaboratoryA).unwrap().0;
-        r.step("0");
-        r.step(&format!("a {}", lab_area.0));
-        let k = r.session.legal().iter().position(|m| matches!(
-            m, Move::PlacePresident { destination } if *destination == lab_area
-        )).expect("PlacePresident at Laboratory A is legal from hand at game start");
-        r.step(&k.to_string());
-        let take = r.session.legal().iter().position(|m| matches!(
-            m, Move::ExecuteAreaAction { action: AreaAction::Laboratory { .. } }
-        )).expect("a Laboratory acquisition is available");
-        let out = r.step(&take.to_string());
-        // Live mode must now be ASKING for the refilled tech card, not applied yet.
-        assert!(out.text.to_lowercase().contains("tech"), "{}", out.text);
-        let events_before = r.session.record().events.len();
-        // Answer with the deck's actual next draw (top = last element) --
-        // TechReveal carries no desync guard to prove wrong, so this just
-        // proves the group applies and the named card lands on the board.
-        let top_tech = *r.session.state().tech_deck.last().unwrap();
-        let out = r.step(&format!("T{}", top_tech.0));
-        assert!(!out.text.contains("Illegal"), "{}", out.text);
-        assert_eq!(r.session.record().events.len(), events_before + 2); // RevealTechs + Move
-        assert!(r.session.state().lab_state.lab_a.slots.iter().any(|s| *s == Some(top_tech)));
-        assert_eq!(replay(r.session.record(), r.session.rules()).unwrap(), *r.session.state());
-    }
-
-    // The three reveal-answer parsers below are pure functions, so their
-    // junk-input handling is tested directly rather than through a full
-    // Repl/Session (cheaper, and pins the exact rejection/resolution rules
-    // rather than just "the REPL didn't crash").
-
-    #[test]
-    fn parse_order_reveal_never_panics_on_junk_and_rejects_correctly() {
-        let deck = vec![OrderCardId(5), OrderCardId(9)];
-        let none: Vec<OrderCardId> = vec![];
-        assert!(parse_order_reveal(&[], &deck, &none).is_err()); // empty input line
-        assert!(parse_order_reveal(&["O"], &deck, &none).is_err());
-        assert!(parse_order_reveal(&["O99999"], &deck, &none).is_err()); // overflows u8
-        assert!(parse_order_reveal(&["🎉"], &deck, &none).is_err());
-        assert!(parse_order_reveal(&["O1"], &deck, &none).is_err()); // valid code, not in deck
-        assert!(parse_order_reveal(&["O5", "O9"], &deck, &none).is_err()); // too many tokens
-        assert_eq!(parse_order_reveal(&["O5"], &deck, &none), Ok(OrderCardId(5)));
-        assert_eq!(parse_order_reveal(&["9"], &deck, &none), Ok(OrderCardId(9))); // bare digits, no 'O'
-        let already = vec![OrderCardId(5)];
-        assert!(parse_order_reveal(&["O5"], &deck, &already).is_err(), "a card can't be drawn twice");
-    }
-
-    #[test]
-    fn parse_tech_reveal_never_panics_on_junk_and_resolves_name_prefix_to_lowest_id() {
-        let rules = Rules::standard();
-        // TechCardId(11) and (12) are both named "Ball" (data.rs) -- one of
-        // the 10 titles that circulate as 2 physical copies.
-        let ball_deck = vec![TechCardId(11), TechCardId(12)];
-        assert!(parse_tech_reveal(&[], &ball_deck, &rules.techs).is_err()); // empty input line
-        assert!(parse_tech_reveal(&["T"], &ball_deck, &rules.techs).is_err()); // no T-named card in THIS deck
-        assert!(parse_tech_reveal(&["T99"], &ball_deck, &rules.techs).is_err()); // valid code, not in deck
-        assert!(parse_tech_reveal(&["🎉"], &ball_deck, &rules.techs).is_err());
-        assert!(parse_tech_reveal(&["Zzzz"], &ball_deck, &rules.techs).is_err()); // no name match
-        assert_eq!(parse_tech_reveal(&["ball"], &ball_deck, &rules.techs), Ok(TechCardId(11)), "ambiguous name resolves to the LOWEST id");
-        assert_eq!(parse_tech_reveal(&["T12"], &ball_deck, &rules.techs), Ok(TechCardId(12)));
-    }
-
-    #[test]
-    fn parse_token_letter_never_panics_on_junk_and_maps_every_kind() {
-        assert!(parse_token_letter(&[]).is_err());
-        assert!(parse_token_letter(&["ix"]).is_err());
-        assert!(parse_token_letter(&["🎉"]).is_err());
-        assert!(parse_token_letter(&["z"]).is_err());
-        assert_eq!(parse_token_letter(&["i"]), Ok(FivePowerEffect::ImportedGoods(1)));
-        assert_eq!(parse_token_letter(&["C"]), Ok(FivePowerEffect::Copper(2)), "letters are case-insensitive");
-        assert_eq!(parse_token_letter(&["s"]), Ok(FivePowerEffect::Silk(2)));
-        assert_eq!(parse_token_letter(&["t"]), Ok(FivePowerEffect::Tea(3)));
-        assert_eq!(parse_token_letter(&["f"]), Ok(FivePowerEffect::Seafood(3)));
-        assert_eq!(parse_token_letter(&["y"]), Ok(FivePowerEffect::Money(3)));
     }
 
     /// Lockdown restricts to exactly `save`/`log`/`quit` (and the `q` alias
@@ -1098,5 +801,269 @@ mod tests {
         std::fs::remove_file(&path).ok();
 
         assert!(r.step("q").quit, "'q' must quit while locked, same as 'quit'");
+    }
+
+    /// T13 rider (final-review cheap batch): `finish_apply_ex`'s catch-all
+    /// used to render `ApplyError::GameOver` (Display: "the game is already
+    /// over") as the confusing "Illegal: the game is already over" -- a
+    /// dedicated match arm now reports it plainly instead. `Session::legal()`
+    /// naturally empties out once the game is over (`TurnPhase::TurnEnd`
+    /// offers no moves), so ordinary `step()` dispatch can never reach this
+    /// arm -- exercised directly against `finish_apply_ex`, `pub(crate)` for
+    /// exactly this kind of defensive-API coverage (same reasoning
+    /// `Session::apply`'s own `is_over()` gate documents). Fixture mirrors
+    /// `session.rs`'s `apply_on_finished_game_returns_typed_game_over`.
+    #[test]
+    fn finish_apply_ex_reports_game_over_plainly_not_illegal_prefixed() {
+        let mut state = create_test_game_state(2);
+        state.end_game_triggered = true;
+        state.final_round = true;
+        state.turn_phase = TurnPhase::TurnEnd;
+        state.current_player = PlayerId::new(1);
+        assert!(is_game_over(&state), "fixture must actually satisfy is_game_over");
+
+        let mut r = Repl::new(Session::for_test_from_state(state, Rules::empty_for_tests()));
+        let (out, applied) = r.finish_apply_ex(Move::EndAdditionalPhase, vec![]);
+        assert!(!applied, "GameOver must report applied = false, same as every other error");
+        assert!(out.text.contains("game over"), "{}", out.text);
+        assert!(!out.text.contains("Illegal"), "{}", out.text);
+    }
+
+    /// A `Repl` wrapping a `Session::for_test_from_state`-constructed
+    /// session with `pending_choices = [AnyGood, AnyGood]` already
+    /// queued -- the genuine 2-deep cascade a Shophouse-build reward
+    /// produces on a slot worth 2 any-good icons.
+    ///
+    /// Built via direct state construction (`push_choice`, mirroring the
+    /// exact pattern the engine's own choice tests use --
+    /// `crates/yokohama-core/src/game/choices.rs`) rather than a random
+    /// walk through real gameplay: `PendingChoice::AnyGood` needs a
+    /// Power-4+ Shophouse build, itself needing Telegram tech or an
+    /// already-built Shophouse/Trading House there -- both multi-turn, so
+    /// there is no short REAL move sequence to record instead (Task 11's
+    /// report has the full reachability trace). A prior version of this
+    /// fixture drove a live session through ~971 real moves picked by
+    /// `rng.gen_range(0..legal().len())`; code review correctly flagged
+    /// that as fragile -- it silently re-targets a DIFFERENT state if
+    /// `get_legal_moves`'s enumeration order ever changes (a new Move
+    /// variant, a reordered match arm), since the walk has no idea WHICH
+    /// move index it's picking, only "the k-th one, whatever that is
+    /// today." State injection has no such dependency: it names the exact
+    /// `PendingChoice` variant it wants, twice.
+    ///
+    /// `Rules::empty_for_tests()`, not `Rules::standard()`, is required:
+    /// `create_test_game_state`'s empty decks/board fail `check_invariants`'
+    /// order/tech-conservation checks under the full 36-order/30-tech
+    /// registries (see `invariants.rs`'s own `baseline()` fixture, which
+    /// pairs the two for exactly this reason).
+    fn repl_with_any_good_cascade() -> Repl {
+        let rules = Rules::empty_for_tests();
+        let mut state = create_test_game_state(2);
+        push_choice(&mut state, PendingChoice::AnyGood, &rules);
+        push_choice(&mut state, PendingChoice::AnyGood, &rules);
+        Repl::new(Session::for_test_from_state(state, rules))
+    }
+
+    #[test]
+    fn any_good_cascade_banner_shows_choose_count_and_numbered_options() {
+        let mut r = repl_with_any_good_cascade();
+        assert_eq!(r.session.state().pending_choices.len(), 2);
+
+        // Resolve the first of the two -- lands on exactly "1 choice
+        // pending", the substring this test pins.
+        let k = r.session.legal().iter()
+            .position(|m| matches!(m, Move::ChooseAnyGood { good: TradeGood::Copper }))
+            .expect("Copper is always one of the four AnyGood options");
+        r.step(&k.to_string());
+        assert_eq!(r.session.state().pending_choices.len(), 1);
+
+        let p = r.prompt();
+        assert!(p.contains("Choose:"), "{p}");
+        assert!(p.contains("1 choice pending"), "{p}");
+        // describe_pending_choice's own AnyGood banner text (the "reward:"
+        // colon form is unique to it -- describe_move's per-option text
+        // below uses "(any-good reward)" in parens instead, so this can't
+        // pass on the numbered options' wording alone).
+        assert!(p.contains("any-good reward: choose"), "{p}");
+        // The four numbered ChooseAnyGood options (describe_move's wording).
+        assert!(p.contains("copper"), "{p}");
+        assert!(p.contains("silk"), "{p}");
+        assert!(p.contains("tea"), "{p}");
+        assert!(p.contains("fish"), "{p}");
+        assert!(p.contains("(any-good reward)"), "{p}");
+    }
+
+    #[test]
+    fn undo_mid_any_good_cascade_steps_back_exactly_one_choice() {
+        let mut r = repl_with_any_good_cascade();
+        assert_eq!(r.session.state().pending_choices.len(), 2);
+
+        let k = r.session.legal().iter()
+            .position(|m| matches!(m, Move::ChooseAnyGood { good: TradeGood::Copper }))
+            .expect("Copper is always one of the four AnyGood options");
+        r.step(&k.to_string());
+        assert_eq!(r.session.state().pending_choices.len(), 1);
+        let events_before = r.session.record().events.len();
+
+        let out = r.step("undo");
+        assert!(out.text.contains("Undid"), "{}", out.text);
+        assert_eq!(r.session.record().events.len(), events_before - 1);
+        assert_eq!(
+            r.session.state().pending_choices.len(), 2,
+            "undo must step back exactly ONE choice (re-queue the cascade), not unwind further"
+        );
+
+        // "the same choice again": still AnyGood, same banner shape.
+        let p = r.prompt();
+        assert!(p.contains("Choose:"), "{p}");
+        assert!(p.contains("2 choice"), "{p}");
+
+        // Stronger discriminator (code-review request): undo isn't a no-op
+        // or a fixed reset -- there is nothing LEFT to undo at the
+        // checkpoint (record.events is now empty), so a SECOND undo must
+        // fail distinguishably rather than silently repeating the first
+        // undo's effect (or doing nothing while reporting success).
+        let out2 = r.step("undo");
+        assert!(out2.text.contains("Cannot undo"), "{}", out2.text);
+        assert_eq!(
+            r.session.state().pending_choices.len(), 2,
+            "a failed second undo must not mutate state"
+        );
+    }
+
+    /// Task 13 rider (T11 review): the checkpoint-fold path (`Session::undo`'s
+    /// `for_test_from_state` branch, now delegating to core's `replay_from`
+    /// instead of a hand-kept CLI-side mirror) exercised with a NON-empty
+    /// events slice. The sibling test above only ever undoes back to an
+    /// EMPTY record (a zero-event fold, since it resolves just ONE of the two
+    /// choices before undoing) -- this resolves BOTH, so the first undo must
+    /// fold exactly 1 event (the first `ChooseAnyGood`) back over the
+    /// checkpoint to re-derive the one-choice-pending state, not just return
+    /// the checkpoint verbatim.
+    #[test]
+    fn undo_after_both_any_good_choices_folds_a_non_empty_checkpoint_slice() {
+        let mut r = repl_with_any_good_cascade();
+        assert_eq!(r.session.state().pending_choices.len(), 2);
+
+        let k1 = r.session.legal().iter()
+            .position(|m| matches!(m, Move::ChooseAnyGood { good: TradeGood::Copper }))
+            .expect("Copper is always one of the four AnyGood options");
+        r.step(&k1.to_string());
+        assert_eq!(r.session.state().pending_choices.len(), 1);
+
+        let k2 = r.session.legal().iter()
+            .position(|m| matches!(m, Move::ChooseAnyGood { good: TradeGood::Silk }))
+            .expect("Silk is always one of the four AnyGood options");
+        r.step(&k2.to_string());
+        assert!(r.session.state().pending_choices.is_empty());
+        assert_eq!(r.session.record().events.len(), 2);
+
+        // Undo #1: folds exactly 1 event (the first ChooseAnyGood) over the
+        // checkpoint -- the non-empty fold this test targets.
+        let out = r.step("undo");
+        assert!(out.text.contains("Undid"), "{}", out.text);
+        assert_eq!(r.session.record().events.len(), 1);
+        assert_eq!(
+            r.session.state().pending_choices.len(), 1,
+            "re-shown state must be exactly what folding 1 event over the checkpoint produces"
+        );
+
+        // Undo #2: folds 0 events -- back to the checkpoint verbatim.
+        let out = r.step("undo");
+        assert!(out.text.contains("Undid"), "{}", out.text);
+        assert_eq!(r.session.record().events.len(), 0);
+        assert_eq!(r.session.state().pending_choices.len(), 2);
+
+        // Undo #3: nothing left to undo.
+        let out = r.step("undo");
+        assert!(out.text.contains("Cannot undo"), "{}", out.text);
+    }
+
+    /// Turn-1 setup shared by the `m`-grammar tests: Option-B-places 2
+    /// assistants at the board's Church area, moves the President there
+    /// too (Power 3 = 1 president + 2 assistants), pays copper+silk+yen (3
+    /// distinct payment types -> Faith = power(3) + 3 = 6), then picks
+    /// Church space 6 specifically (`ChurchTrack::movement_rider(6) ==
+    /// 2`, spaces 4/5 are the OTHER eligible-at-faith-6 spaces but only
+    /// carry 1 rider each) -- lands on a genuine 2-deep AssistantMove
+    /// cascade. Verified deterministic for seed 4 (this file's own
+    /// standard fixture seed, via `repl_2p`) by an offline exploration;
+    /// see Task 11 report. Returns the Church area's id, since the `m`
+    /// grammar needs it as a literal area-number source.
+    fn drive_to_double_assistant_move_cascade(r: &mut Repl) -> AreaId {
+        let church_area = *r.session.state().board_layout.areas.iter()
+            .find(|(_, c)| c.area_type == AreaType::Church)
+            .expect("this board has a Church area").0;
+
+        if !r.session.legal().iter().any(|m| matches!(m, Move::PlaceTwoSameArea { .. })) {
+            let end = r.session.legal().iter().position(|m| matches!(m, Move::EndAdditionalPhase))
+                .expect("EndAdditionalPhase reaches Placement");
+            r.step(&end.to_string());
+        }
+        let place = r.session.legal().iter().position(|m| matches!(m,
+            Move::PlaceTwoSameArea { area, adjacent_bonus: None } if *area == church_area
+        )).expect("Option B at Church is legal turn 1");
+        r.step(&place.to_string());
+
+        let pres = r.session.legal().iter().position(|m| {
+            matches!(m, Move::PlacePresident { destination } if *destination == church_area)
+                || matches!(m, Move::MovePresident { destination, .. } if *destination == church_area)
+        }).expect("President can reach Church turn 1");
+        r.step(&pres.to_string());
+
+        let church_mv = r.session.legal().iter().position(|m| matches!(m, Move::ExecuteAreaAction {
+            action: AreaAction::Church {
+                copper: true, silk: true, tea: false, seafood: false, yen: true, imported_good: false,
+            }
+        })).expect("paying copper+silk+yen is affordable turn 1 (starting resources include 1 of each)");
+        r.step(&church_mv.to_string());
+
+        if matches!(r.session.state().pending_choices.first(), Some(PendingChoice::ChurchSpace { .. })) {
+            let space6 = r.session.legal().iter().position(|m| matches!(m, Move::ChooseChurchSpace { space: 6 }))
+                .expect("space 6 (Faith 6) is reachable and unclaimed turn 1");
+            r.step(&space6.to_string());
+        }
+
+        assert_eq!(
+            r.session.state().pending_choices,
+            vec![PendingChoice::AssistantMove, PendingChoice::AssistantMove],
+            "setup recipe drifted -- re-derive against the current engine before trusting this fixture"
+        );
+        church_area
+    }
+
+    #[test]
+    fn assistant_move_m_grammar_applies_from_area_and_hand() {
+        let mut r = repl_2p(4);
+        let church_area = drive_to_double_assistant_move_cascade(&mut r);
+        let p = r.prompt();
+        assert!(p.contains("Choose:"), "{p}");
+        assert!(p.contains("2 choice"), "{p}");
+        let events_before = r.session.record().events.len();
+
+        // First rider: source is the on-board area holding our assistants.
+        let out = r.step(&format!("m {} 9", church_area.0));
+        assert!(!out.text.to_lowercase().contains("illegal"), "{}", out.text);
+        assert_eq!(r.session.record().events.len(), events_before + 1);
+        assert_eq!(r.session.state().pending_choices, vec![PendingChoice::AssistantMove]);
+
+        // Second rider: source is hand.
+        let out = r.step("m hand 9");
+        assert!(!out.text.to_lowercase().contains("illegal"), "{}", out.text);
+        assert_eq!(r.session.record().events.len(), events_before + 2);
+        assert!(r.session.state().pending_choices.is_empty());
+    }
+
+    #[test]
+    fn assistant_move_m_grammar_rejects_out_of_range_destination() {
+        let mut r = repl_2p(4);
+        let church_area = drive_to_double_assistant_move_cascade(&mut r);
+        let events_before = r.session.record().events.len();
+        let state_before = r.session.state().clone();
+
+        let out = r.step(&format!("m {} 99", church_area.0));
+        assert!(out.text.contains("not one of the legal assistant moves"), "{}", out.text);
+        assert_eq!(r.session.record().events.len(), events_before);
+        assert_eq!(*r.session.state(), state_before);
     }
 }

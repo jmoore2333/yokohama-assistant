@@ -13,11 +13,6 @@ pub fn port_accessible_zones(power: u8) -> Vec<PortZone> {
     }
 }
 
-/// Does power 5 at Port grant bonus VP?
-pub fn port_power_5_bonus_vp(power: u8) -> u8 {
-    if power >= 5 { 3 } else { 0 }
-}
-
 /// Validate Port action. Cards are named by id (not slot, since slots shift
 /// under compaction/refill): each must be present on `port`, in a zone
 /// accessible at `power`, distinct from each other, within the ≤2-card and
@@ -484,6 +479,7 @@ mod tests {
             trigger_reason: None,
             final_round: false,
             trigger_player: None,
+            pending_choices: Vec::new(),
         }
     }
 
@@ -514,12 +510,6 @@ mod tests {
             port_accessible_zones(4),
             vec![PortZone::Low, PortZone::Mid, PortZone::High]
         );
-    }
-
-    #[test]
-    fn test_port_power_5_bonus() {
-        assert_eq!(port_power_5_bonus_vp(4), 0);
-        assert_eq!(port_power_5_bonus_vp(5), 3);
     }
 
     #[test]
@@ -713,6 +703,62 @@ mod tests {
 
         // Execute at power 4 - should NOT get VP bonus
         let result = execute_port_action(&mut state, player, &[OrderCardId(10)], None, 4);
+        assert!(result.is_ok());
+        assert_eq!(state.players[0].victory_points, initial_vp);
+    }
+
+    // Pin task (Task 8, 2026-07-18): owner-adjudicated at the physical box
+    // that the Port Power-5 +3 VP bonus is TAKE-GATED — it fires once per
+    // executed take (never per card), a full hand bars the action entirely,
+    // and Skip forfeits it (design §5.3-1). The four tests below pin that
+    // ruling against current engine behavior; all are expected GREEN.
+
+    #[test]
+    fn port_take_at_five_grants_plus_3vp_exactly_once() {
+        // owner-adjudicated 2026-07-18: the +3 VP is a flat per-action bonus
+        // for acting at Power 5, not per-card — taking 2 cards must still
+        // grant exactly +3, never +6 (design §5.3-1).
+        let mut state = create_test_state();
+        let player = PlayerId::new(0);
+        state.players[0].money = 10;
+        place_president_at_port_a(&mut state);
+
+        state.port_state.port_a = seeded_port([10, 11, 12, 13, 14, 15]);
+        state.order_deck = vec![OrderCardId(20), OrderCardId(21)];
+
+        let initial_vp = state.players[0].victory_points;
+
+        // Take 2 cards (Low + High, both accessible at power 5), paying 2
+        // Yen for the second.
+        let result = execute_port_action(
+            &mut state,
+            player,
+            &[OrderCardId(10), OrderCardId(14)],
+            Some(PortPayment::TwoYen),
+            5,
+        );
+        assert!(result.is_ok());
+        assert_eq!(state.players[0].victory_points, initial_vp + 3);
+    }
+
+    #[test]
+    fn port_at_four_power_take_grants_no_bonus_vp() {
+        // owner-adjudicated 2026-07-18: the bonus requires Power 5 exactly —
+        // a Power 4 take grants nothing extra even when it reaches the High
+        // zone, which power 4 already unlocks (design §5.3-1).
+        let mut state = create_test_state();
+        let player = PlayerId::new(0);
+        state.players[0].money = 10;
+        place_president_at_port_a(&mut state);
+
+        state.port_state.port_a = seeded_port([10, 11, 12, 13, 14, 15]);
+        state.order_deck = vec![OrderCardId(20)];
+
+        let initial_vp = state.players[0].victory_points;
+
+        // OrderCardId(14) sits in the High zone (index 4), reachable at
+        // power 4 -- confirms the gate is on power, not on zone reach.
+        let result = execute_port_action(&mut state, player, &[OrderCardId(14)], None, 4);
         assert!(result.is_ok());
         assert_eq!(state.players[0].victory_points, initial_vp);
     }

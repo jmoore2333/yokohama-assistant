@@ -10,6 +10,24 @@ pub fn apply_move(state: &GameState, mv: &Move, rules: &Rules) -> Result<GameSta
 
     match mv {
         Move::EndAdditionalPhase => {
+            // apply_move is the pure authoritative API (a Phase-3 bot, or a
+            // tampered record, may call it directly, not just via
+            // legal-move pre-filtering) -- self-defended here the same way
+            // UseUniversity/UseSpinningMill defend their once-per-turn flag
+            // and apply_mercenary defends mercenary_used (T7 precedent):
+            // ending the phase with a choice still queued would advance
+            // the turn (handing off to the next player, in the
+            // AdditionalActionSecond case) while a reward from THIS turn
+            // is still unresolved, so a later resolution of the stale
+            // queue would misgrant it to the wrong player (design §5.1
+            // queue invariant, I1(a) final-review fix). The queue-first
+            // gate in get_legal_moves never offers EndAdditionalPhase
+            // mid-queue, so this is unreachable under legal-list play.
+            if !new_state.pending_choices.is_empty() {
+                return Err(MoveError::RuleViolation(
+                    "Cannot end the additional-action phase with a pending choice unresolved",
+                ));
+            }
             advance_phase(&mut new_state, Some(&rules.techs));
         }
 
@@ -89,36 +107,56 @@ pub fn apply_move(state: &GameState, mv: &Move, rules: &Rules) -> Result<GameSta
         }
 
         Move::FulfillOrder { order_id } => {
-            apply_fulfill_order(&mut new_state, *order_id, Some(&rules.orders), &rules.techs)?;
+            apply_fulfill_order(&mut new_state, *order_id, rules)?;
         }
 
         Move::FulfillAchievement { achievement } => {
             apply_fulfill_achievement(&mut new_state, *achievement)?;
         }
+
+        Move::UseUniversity => {
+            let player = new_state.current_player;
+            // apply_university checks only resource preconditions, not the
+            // once-per-turn flag -- apply_move is the pure authoritative API
+            // (a Phase-3 bot will call it directly, not just via legal-move
+            // pre-filtering), so it must defend the flag itself, mirroring
+            // apply_mercenary's self-defended mercenary_used gate.
+            if !can_use_university(&new_state, player, &rules.techs) {
+                return Err(MoveError::RuleViolation("University not usable this turn"));
+            }
+            apply_university(&mut new_state, player).map_err(MoveError::RuleViolation)?;
+        }
+
+        Move::UseSpinningMill => {
+            let player = new_state.current_player;
+            if !can_use_spinning_mill(&new_state, player, &rules.techs) {
+                return Err(MoveError::RuleViolation("Textile Mill not usable this turn"));
+            }
+            apply_spinning_mill(&mut new_state, player).map_err(MoveError::RuleViolation)?;
+        }
+
+        Move::ChooseAnyGood { .. }
+        | Move::ChooseWarehouseTake { .. }
+        | Move::DeclineWarehouseTake
+        | Move::ChooseAssistantMove { .. }
+        | Move::DeclineAssistantMove
+        | Move::ChooseChurchSpace { .. }
+        | Move::ChooseCustomsSpace { .. }
+        | Move::ChooseRecoveryLeave { .. } => {
+            crate::game::choices::resolve_choice_move(&mut new_state, mv, rules)?;
+        }
     }
 
-    // Handle Recovery phase automatically
-    if new_state.turn_phase == TurnPhase::Recovery {
-        apply_recovery(&mut new_state);
-
-        // Check if this was a mercenary sub-turn
-        if new_state.is_mercenary_action {
-            // Return to the Additional Action phase we came from
-            if let Some(return_phase) = new_state.mercenary_return_phase {
-                new_state.turn_phase = return_phase;
-            } else {
-                // Fallback: if return phase not set, go to AdditionalActionSecond
-                new_state.turn_phase = TurnPhase::AdditionalActionSecond;
-            }
-            // Reset mercenary sub-turn state
-            new_state.is_mercenary_action = false;
-            new_state.mercenary_target_area = None;
-            new_state.mercenary_return_phase = None;
-            new_state.current_action_power = None;
-        } else {
-            // Normal turn flow: Recovery -> AdditionalActionSecond
-            new_state.turn_phase = TurnPhase::AdditionalActionSecond;
-        }
+    // Handle Recovery phase automatically -- deferred while a choice from
+    // this turn's reward is still unresolved (design 2026-07-18 §5.1-5.2):
+    // resolving the last queued choice runs Recovery in that same apply.
+    // `resolve_recovery` may itself defer: with Telephone owned it can push
+    // `PendingChoice::RecoveryLeave` and return with turn_phase still
+    // `Recovery` (design §5.3-5), leaving the phase transition for
+    // `ChooseRecoveryLeave`'s resolution to run instead (see
+    // `game::choices::resolve_choice_move`).
+    if new_state.pending_choices.is_empty() && new_state.turn_phase == TurnPhase::Recovery {
+        resolve_recovery(&mut new_state, rules);
     }
 
     // Check end game triggers
@@ -584,16 +622,11 @@ fn apply_employment_agency(
 
     // Trading house cost: the printed take progression (4/5/6/7), indexed
     // by how many tokens have already left the warehouse (hand + built).
-    let already_taken = p.trading_houses.in_hand as usize + p.trading_houses.total_built();
+    let already_taken = p.trading_houses.already_taken();
     let mut th_cost = 0u32;
     for i in 0..trading_houses {
         let th_index = already_taken + i as usize;
-        th_cost += match th_index {
-            0 => 4,
-            1 => 5,
-            2 => 6,
-            _ => 7,
-        };
+        th_cost += TradingHouseState::take_cost(th_index);
     }
 
     let total_cost = shophouse_cost + th_cost; // Assistants are FREE
@@ -659,31 +692,6 @@ fn apply_take_5_power(state: &mut GameState, rules: &Rules) -> Result<(), MoveEr
                     FivePowerEffect::Tea(n) => p.tea += n as u32,
                     FivePowerEffect::Seafood(n) => p.seafood += n as u32,
                     FivePowerEffect::Money(n) => p.money += n as u32,
-                    FivePowerEffect::VictoryPoints(n) => p.victory_points += n as u32,
-                    FivePowerEffect::Movement(n) => {
-                        // Movement token: recover n assistants from board to hand
-                        // This allows the player to reposition assistants on future turns
-                        let mut remaining = n as u8;
-                        let areas_with_assistants: Vec<AreaId> = p.assistants.on_board
-                            .iter()
-                            .filter(|(_, &count)| count > 0)
-                            .map(|(&area, _)| area)
-                            .collect();
-
-                        for area in areas_with_assistants {
-                            if remaining == 0 {
-                                break;
-                            }
-                            if let Some(count) = p.assistants.on_board.get_mut(&area) {
-                                let to_recover = (*count).min(remaining);
-                                *count -= to_recover;
-                                p.assistants.in_hand += to_recover;
-                                remaining -= to_recover;
-                            }
-                        }
-                        // Clean up empty entries
-                        p.assistants.on_board.retain(|_, &mut count| count > 0);
-                    }
                 }
             }
         }
@@ -715,13 +723,12 @@ fn apply_build_shophouse(state: &mut GameState, slot: u8, rules: &Rules) -> Resu
         .unwrap_or_default();
 
     // Mining Technology bonus (KB "applies to": Building Site rewards) fires
-    // on any copper received from this space, whether via the explicit
-    // copper field or the any-good-auto-copper simplification (apply_any_good
-    // always resolves any_good to copper in v1). Combined into a single
-    // receipt total so a space with both fields doesn't double the flat
-    // per-copy bonus. Computed before the player is mutably borrowed below.
-    let total_base_copper = reward.copper + reward.any_good;
-    let mining_bonus = copper_bonus(state, player, total_base_copper, &rules.techs);
+    // on the EXPLICIT copper field only. any_good no longer auto-resolves to
+    // copper -- it queues a player choice instead, and (if later resolved to
+    // Copper) is its OWN separate receipt, mining-bonused independently at
+    // resolution time (design 2026-07-18 §5.3-2). Computed before the player
+    // is mutably borrowed below.
+    let mining_bonus = copper_bonus(state, player, reward.copper, &rules.techs);
     // Gaslight (C4 final-review fix): pure passive, no player choice, same
     // class as Winery/Brickyard - computed before the mutable borrow below.
     let gaslight_bonus = building_vp_bonus(state, player, true, &rules.techs);
@@ -732,8 +739,8 @@ fn apply_build_shophouse(state: &mut GameState, slot: u8, rules: &Rules) -> Resu
     }
     p.shophouses.in_hand -= 1;
     p.shophouses.built.insert(area, slot);
-    apply_space_reward(p, &reward, mining_bonus);
-    p.victory_points += gaslight_bonus;
+    apply_space_reward(state, player, &reward, mining_bonus, rules);
+    state.player_mut(player).victory_points += gaslight_bonus;
 
     // Update building site
     if let Some(site) = state.board_layout.building_sites.get_mut(&area) {
@@ -812,8 +819,11 @@ pub fn apply_recovery_with_leave(state: &mut GameState, leave_one: bool) {
     if let Some(area) = recovery_area {
         let p = state.player_mut(player);
         if let Some(&count) = p.assistants.on_board.get(&area) {
-            if leave_one && count > 1 {
-                // Telephone effect: leave exactly 1 assistant
+            if leave_one && count >= 1 {
+                // Telephone effect: leave exactly 1 assistant, even at
+                // count == 1 -- which recovers zero (owner-adjudicated rules
+                // fix, design 2026-07-18 §5.3-5; the old `count > 1` guard
+                // wrongly force-recovered a lone assistant).
                 p.assistants.in_hand += count - 1;
                 p.assistants.on_board.insert(area, 1);
             } else {
@@ -822,6 +832,63 @@ pub fn apply_recovery_with_leave(state: &mut GameState, leave_one: bool) {
                 p.assistants.on_board.remove(&area);
             }
         }
+    }
+}
+
+/// Recovery-phase entry point (design 2026-07-18 §5.1-5.3, §5.3-5): if the
+/// current player owns Telephone AND has >=1 own assistant in the acting
+/// area, defer to a `RecoveryLeave` choice instead of recovering
+/// automatically -- turn_phase stays `Recovery` until it resolves
+/// (`get_legal_moves`' queue-first gate then surfaces the two
+/// `ChooseRecoveryLeave` options). Otherwise Recovery stays fully
+/// automatic: recover everyone and run the phase transition immediately.
+/// The acting area is resolved via the same shared `resolve_acting_area`
+/// helper `apply_recovery_with_leave` mirrors inline -- an `Err` (President
+/// in hand, no mercenary sub-turn) means no acting area, so there is
+/// nothing to leave behind either way and Recovery is a no-op.
+fn resolve_recovery(state: &mut GameState, rules: &Rules) {
+    let player = state.current_player;
+    let has_telephone = state.player(player).technologies.iter().any(|&tech_id| {
+        rules.techs.get(tech_id).map(|t| t.effect == TechEffect::Telephone).unwrap_or(false)
+    });
+
+    if has_telephone {
+        if let Ok(area) = resolve_acting_area(state, player) {
+            if state.player(player).assistants.in_area(area) >= 1 {
+                push_choice(state, PendingChoice::RecoveryLeave, rules);
+                return;
+            }
+        }
+    }
+
+    apply_recovery(state);
+    finish_recovery_transition(state);
+}
+
+/// Recovery-complete phase transition: return from a mercenary sub-turn to
+/// its stored window (with the sub-turn state cleanup), or advance a normal
+/// turn to `AdditionalActionSecond`. Extracted verbatim from the
+/// end-of-`apply_move` automation block (Task 6) so both the automatic path
+/// (`resolve_recovery`) and the `ChooseRecoveryLeave` resolution
+/// (`game::choices::resolve_choice_move`) share the exact same transition +
+/// cleanup instead of drifting apart.
+pub fn finish_recovery_transition(state: &mut GameState) {
+    if state.is_mercenary_action {
+        // Return to the Additional Action phase we came from
+        if let Some(return_phase) = state.mercenary_return_phase {
+            state.turn_phase = return_phase;
+        } else {
+            // Fallback: if return phase not set, go to AdditionalActionSecond
+            state.turn_phase = TurnPhase::AdditionalActionSecond;
+        }
+        // Reset mercenary sub-turn state
+        state.is_mercenary_action = false;
+        state.mercenary_target_area = None;
+        state.mercenary_return_phase = None;
+        state.current_action_power = None;
+    } else {
+        // Normal turn flow: Recovery -> AdditionalActionSecond
+        state.turn_phase = TurnPhase::AdditionalActionSecond;
     }
 }
 
@@ -891,58 +958,39 @@ fn apply_mercenary(
     Ok(())
 }
 
-/// Applies "any trade good" reward tokens (order `any_trade_good`, space
-/// `any_good`).
-///
-/// v1 simplification: the player should choose which of the four trade goods
-/// to receive; for now we auto-assign to copper. A full implementation would
-/// need a separate move type to let the player pick.
-fn apply_any_good(p: &mut PlayerState, n: u8) {
-    p.copper += n as u32;
-}
-
-/// Applies Warehouse reward icons (order `warehouse_tokens`, space
-/// `warehouse_tokens`): moves up to `n` assistants from warehouse to hand
-/// (fewer if the warehouse runs out; never an error).
-///
-/// v1 simplification: the rulebook Warehouse icon (p.10) lets the player take
-/// any one token (assistant, shophouse, or trading house) from the Warehouse
-/// at Employment Agency cost. Assistants are the free option and taking one
-/// is weakly dominant, so v1 always takes assistants; shophouse/trading-house
-/// takes are unmodeled until Phase 2 choice encoding.
-pub fn apply_warehouse_takes(p: &mut PlayerState, n: u8) {
-    let take = n.min(p.assistants.in_warehouse);
-    p.assistants.in_warehouse -= take;
-    p.assistants.in_hand += take;
-}
-
 /// Applies a Shophouse space's full reward when a Shophouse is built there.
 /// `mining_bonus` is the caller-precomputed Mining Technology flat bonus (see
-/// `copper_bonus`) for this reward's total copper receipt — combining the
-/// explicit `copper` field and the any_good-auto-copper simplification so it
-/// isn't double-applied; computed before the player was mutably borrowed.
-fn apply_space_reward(p: &mut PlayerState, reward: &SpaceReward, mining_bonus: u8) {
+/// `copper_bonus`) for the reward's EXPLICIT copper field only; any_good no
+/// longer auto-resolves to copper here -- it queues an `AnyGood` choice per
+/// icon instead (design 2026-07-18 §5.1/§5.3-2), which is its own separate
+/// receipt if later resolved to Copper (see `resolve_choice_move`). Likewise
+/// warehouse_tokens queues a `WarehouseTake` choice per icon (§5.2), and
+/// movement queues an `AssistantMove` choice per icon (§5.3) instead of
+/// being a no-op -- all three push through `push_choice` so a singleton
+/// option set (e.g. an empty warehouse) auto-resolves uniformly.
+fn apply_space_reward(state: &mut GameState, player: PlayerId, reward: &SpaceReward, mining_bonus: u8, rules: &Rules) {
+    let p = state.player_mut(player);
     p.victory_points += reward.vp as u32;
     p.money += reward.yen as u32;
     p.seafood += reward.seafood as u32;
     p.tea += reward.tea as u32;
     p.silk += reward.silk as u32;
-    p.copper += reward.copper as u32;
-    apply_any_good(p, reward.any_good);
-    p.copper += mining_bonus as u32;
-    apply_warehouse_takes(p, reward.warehouse_tokens);
-    // Movement icon (rulebook p.10): documented no-op in v1. The icon grants
-    // an optional assistant move the player may decline, and declining is a
-    // legal play; v1 has no move encoding for that choice, and auto-resolving
-    // it (e.g. recovering assistants to hand) could actively harm the player.
-    // Choice encoding is scheduled for Phase 2.
+    p.copper += reward.copper as u32 + mining_bonus as u32;
+    for _ in 0..reward.warehouse_tokens {
+        push_choice(state, PendingChoice::WarehouseTake, rules);
+    }
+    for _ in 0..reward.any_good {
+        push_choice(state, PendingChoice::AnyGood, rules);
+    }
+    for _ in 0..reward.movement {
+        push_choice(state, PendingChoice::AssistantMove, rules);
+    }
 }
 
 fn apply_fulfill_order(
     state: &mut GameState,
     order_id: OrderCardId,
-    order_registry: Option<&OrderRegistry>,
-    tech_registry: &TechRegistry,
+    rules: &Rules,
 ) -> Result<(), MoveError> {
     let player = state.current_player;
     let p = state.player(player);
@@ -953,12 +1001,9 @@ fn apply_fulfill_order(
     }
 
     // Look up order details from registry
-    let order = match order_registry {
-        Some(registry) => match registry.get(order_id) {
-            Some(o) => o,
-            None => return Err(MoveError::RuleViolation("Order card not found in registry")),
-        },
-        None => return Err(MoveError::RuleViolation("OrderRegistry required for order fulfillment")),
+    let order = match rules.orders.get(order_id) {
+        Some(o) => o,
+        None => return Err(MoveError::RuleViolation("Order card not found in registry")),
     };
 
     // Clone requirements, rewards and country before mutable borrow
@@ -975,6 +1020,12 @@ fn apply_fulfill_order(
         return Err(MoveError::RuleViolation("Insufficient trade goods to fulfill order"));
     }
 
+    // Mining Technology bonus for the EXPLICIT copper reward -- its own
+    // receipt, fired here at the triggering move. Any any_trade_good the
+    // player later resolves to Copper is a SEPARATE receipt, mining-bonused
+    // independently at choice-resolution time (design 2026-07-18 §5.3-2).
+    let mining_bonus = copper_bonus(state, player, rewards.copper, &rules.techs);
+
     // Deduct trade goods
     let p = state.player_mut(player);
     p.copper -= req.copper as u32;
@@ -986,38 +1037,42 @@ fn apply_fulfill_order(
     p.victory_points += rewards.victory_points as u32;
     p.money += rewards.money as u32;
     p.imported_goods += rewards.imported_goods as u32;
-    p.copper += rewards.copper as u32;
+    p.copper += rewards.copper as u32 + mining_bonus as u32;
     p.silk += rewards.silk as u32;
     p.tea += rewards.tea as u32;
     p.seafood += rewards.seafood as u32;
-
-    apply_any_good(p, rewards.any_trade_good);
-    apply_warehouse_takes(p, rewards.warehouse_tokens);
-
-    // Movement icon (rulebook p.10): documented no-op in v1. The icon grants
-    // an optional assistant move the player may decline, and declining is a
-    // legal play; v1 has no move encoding for that choice, and auto-resolving
-    // it (e.g. recovering assistants to hand) could actively harm the player.
-    // Choice encoding is scheduled for Phase 2.
 
     // Move order from hand to completed
     p.order_cards_in_hand.retain(|&id| id != order_id);
     p.completed_orders.push(order_id);
 
+    // Warehouse-token reward: one WarehouseTake choice per icon (design 2026-07-18 §5.2).
+    for _ in 0..rewards.warehouse_tokens {
+        push_choice(state, PendingChoice::WarehouseTake, rules);
+    }
+
+    // Any-good reward: one AnyGood choice per icon (design 2026-07-18 §5.1).
+    for _ in 0..rewards.any_trade_good {
+        push_choice(state, PendingChoice::AnyGood, rules);
+    }
+
+    // Movement reward: one AssistantMove choice per icon (design 2026-07-18 §5.3).
+    for _ in 0..rewards.movement {
+        push_choice(state, PendingChoice::AssistantMove, rules);
+    }
+
     // Ball (+2 VP) and Language School (+1 Yen) trigger on every completed
     // Order, stacking per owned physical copy (see ball_vp_bonus /
     // language_school_yen_bonus).
-    let ball_bonus = ball_vp_bonus(state, player, tech_registry);
+    let ball_bonus = ball_vp_bonus(state, player, &rules.techs);
     state.player_mut(player).victory_points += ball_bonus;
-    let language_school_bonus = language_school_yen_bonus(state, player, tech_registry);
+    let language_school_bonus = language_school_yen_bonus(state, player, &rules.techs);
     state.player_mut(player).money += language_school_bonus;
 
     // Foreign Mercenary eligibility (rulebook p.8 "Matching Country icons"):
     // re-run the same country-icon check Lab acquisition uses
     // (apply_lab_acquisition_bonuses), for the just-completed order's country.
-    if let Some(order_registry) = order_registry {
-        check_mercenary_eligibility(state, player, country, order_registry, tech_registry);
-    }
+    check_mercenary_eligibility(state, player, country, &rules.orders, &rules.techs);
 
     Ok(())
 }
@@ -1102,6 +1157,7 @@ mod tests {
             trigger_reason: None,
             final_round: false,
             trigger_player: None,
+            pending_choices: Vec::new(),
         }
     }
 
@@ -1112,6 +1168,31 @@ mod tests {
 
         advance_phase(&mut state, None);
         assert_eq!(state.turn_phase, TurnPhase::Placement);
+    }
+
+    /// I1(a) final-review fix (design §5.1 queue invariant): apply_move is
+    /// the pure authoritative API (a Phase-3 bot, or a tampered record, may
+    /// call it directly, not just via legal-move pre-filtering) -- ending
+    /// the additional-action phase with a choice still queued would
+    /// advance the turn (hand off to the next player, in the
+    /// AdditionalActionSecond case) while a reward from THIS turn is still
+    /// unresolved, so a later resolution of the stale queue would
+    /// misgrant it to the wrong player. Mirrors UseUniversity/
+    /// UseSpinningMill's self-defended once-per-turn gate (T7) / apply_mercenary's
+    /// self-defended mercenary_used gate: the queue-first gate in
+    /// get_legal_moves never offers EndAdditionalPhase while
+    /// pending_choices is non-empty, so this never actually fires under
+    /// legal-list play.
+    #[test]
+    fn end_additional_phase_rejected_with_pending_choice_queued() {
+        let mut state = create_minimal_state(2);
+        state.turn_phase = TurnPhase::AdditionalActionFirst;
+        state.pending_choices.push(PendingChoice::AnyGood);
+        let rules = Rules::empty_for_tests();
+
+        let result = apply_move(&state, &Move::EndAdditionalPhase, &rules);
+        assert!(matches!(result, Err(MoveError::RuleViolation(_))), "{result:?}");
+        assert_eq!(state.turn_phase, TurnPhase::AdditionalActionFirst, "original state must be untouched");
     }
 
     #[test]
@@ -1776,6 +1857,11 @@ mod tests {
 
     #[test]
     fn test_recovery_with_telephone_only_one_assistant() {
+        // Corrected per design 2026-07-18 §5.3-5 (owner-adjudicated rules
+        // fix): "may leave 1 assistant in the action area" applies at
+        // count == 1 too, which means recovering ZERO -- not force-recovering
+        // the lone pawn. This pin previously asserted the opposite; that was
+        // the bug Task 6 fixes in `apply_recovery_with_leave`.
         let mut state = create_minimal_state(2);
         let area = AreaId::new(0);
 
@@ -1784,74 +1870,11 @@ mod tests {
         state.players[0].assistants.on_board.insert(area, 1);
         state.players[0].assistants.in_hand = 5;
 
-        // With Telephone effect but only 1 assistant - recovers it
+        // With Telephone effect and only 1 assistant - leaves it, recovers none
         apply_recovery_with_leave(&mut state, true);
 
-        // The 1 assistant should be recovered (can't leave 1 if only have 1)
-        assert_eq!(state.players[0].assistants.in_hand, 6);
-        assert_eq!(state.players[0].assistants.on_board.get(&area), None);
-    }
-
-    #[test]
-    fn test_five_power_movement_token() {
-        let mut state = create_minimal_state(2);
-        let action_area = AreaId::new(0);
-
-        // Place president and set up 5-power token with Movement effect
-        state.players[0].president_location = PresidentLocation::OnBoard(action_area);
-        state.players[0].assistants.on_board.insert(AreaId::new(1), 2);
-        state.players[0].assistants.on_board.insert(AreaId::new(2), 1);
-        state.players[0].assistants.in_hand = 3;
-        state.current_action_power = Some(5);
-        state.turn_phase = TurnPhase::FivePowerBonus;
-
-        // Add Movement(2) token on action area
-        state.board_layout.five_power_tokens.insert(action_area, Some(FivePowerEffect::Movement(2)));
-        let rules = Rules::empty_for_tests();
-
-        // Take the token
-        let result = apply_move(&state, &Move::Take5PowerToken, &rules);
-        assert!(result.is_ok());
-
-        let new_state = result.unwrap();
-
-        // Should have recovered 2 assistants from board
-        assert_eq!(new_state.players[0].assistants.in_hand, 5); // 3 + 2 recovered
-        assert_eq!(new_state.players[0].five_power_tokens, 1);
-
-        // Token should be consumed
-        assert_eq!(
-            new_state.board_layout.five_power_tokens.get(&action_area),
-            Some(&None)
-        );
-    }
-
-    #[test]
-    fn test_five_power_movement_token_partial() {
-        let mut state = create_minimal_state(2);
-        let action_area = AreaId::new(0);
-
-        // Place president
-        state.players[0].president_location = PresidentLocation::OnBoard(action_area);
-        // Only 1 assistant on board but Movement(3) token
-        state.players[0].assistants.on_board.insert(AreaId::new(1), 1);
-        state.players[0].assistants.in_hand = 5;
-        state.current_action_power = Some(5);
-        state.turn_phase = TurnPhase::FivePowerBonus;
-
-        // Add Movement(3) token - but only 1 assistant available
-        state.board_layout.five_power_tokens.insert(action_area, Some(FivePowerEffect::Movement(3)));
-        let rules = Rules::empty_for_tests();
-
-        let result = apply_move(&state, &Move::Take5PowerToken, &rules);
-        assert!(result.is_ok());
-
-        let new_state = result.unwrap();
-
-        // Should have recovered only 1 assistant (all that was available)
-        assert_eq!(new_state.players[0].assistants.in_hand, 6); // 5 + 1 recovered
-        assert!(new_state.players[0].assistants.on_board.get(&AreaId::new(1)).is_none()
-            || *new_state.players[0].assistants.on_board.get(&AreaId::new(1)).unwrap() == 0);
+        assert_eq!(state.players[0].assistants.in_hand, 5);
+        assert_eq!(state.players[0].assistants.on_board.get(&area), Some(&1));
     }
 
     #[test]
@@ -1870,7 +1893,6 @@ mod tests {
             (FivePowerEffect::Copper(2), 1 + 2, 1, 3, 0u32),       // +2 copper
             (FivePowerEffect::Silk(1), 1, 1 + 1, 3, 0),            // +1 silk
             (FivePowerEffect::Money(3), 1, 1, 3 + 3, 0),           // +3 money
-            (FivePowerEffect::VictoryPoints(5), 1, 1, 3, 0 + 5),   // +5 VP
         ];
         let rules = Rules::empty_for_tests();
 
@@ -2589,11 +2611,19 @@ mod tests {
 
         let result = apply_move(&state, &Move::FulfillOrder { order_id }, &rules);
         assert!(result.is_ok());
-        let new_state = result.unwrap();
+        let mid = result.unwrap();
+
+        // warehouse_tokens now queues a WarehouseTake choice instead of
+        // auto-taking (design §5.2) -- resolve it before checking the transfer.
+        assert_eq!(mid.pending_choices, vec![PendingChoice::WarehouseTake]);
+        let new_state = apply_move(
+            &mid, &Move::ChooseWarehouseTake { item: WarehouseItem::Assistant }, &rules,
+        ).unwrap();
 
         // 1 assistant moved warehouse -> hand
         assert_eq!(new_state.players[0].assistants.in_hand, initial_hand + 1);
         assert_eq!(new_state.players[0].assistants.in_warehouse, initial_warehouse - 1);
+        assert!(new_state.pending_choices.is_empty());
     }
 
     #[test]
@@ -2601,6 +2631,8 @@ mod tests {
         let mut state = create_minimal_state(2);
         state.turn_phase = TurnPhase::AdditionalActionFirst;
         state.players[0].assistants.in_warehouse = 0;
+        state.players[0].shophouses.in_warehouse = 0;
+        state.players[0].trading_houses.in_warehouse = 0;
 
         let order_id = OrderCardId(42);
         state.players[0].order_cards_in_hand.push(order_id);
@@ -2624,13 +2656,67 @@ mod tests {
         assert!(result.is_ok());
         let new_state = result.unwrap();
 
-        // Warehouse already empty: never an error, counts just stay put.
+        // Warehouse already empty: every take auto-declines (singleton rule,
+        // design §5.1), so nothing queues and nothing changes.
+        assert!(new_state.pending_choices.is_empty());
         assert_eq!(new_state.players[0].assistants.in_warehouse, 0);
         assert_eq!(new_state.players[0].assistants.in_hand, initial_hand);
     }
 
     #[test]
-    fn test_fulfill_order_movement_is_documented_noop() {
+    fn test_fulfill_order_movement_queues_assistant_move_choices() {
+        let mut state = create_minimal_state(2);
+        state.turn_phase = TurnPhase::AdditionalActionFirst;
+        state.board_layout.areas.insert(AreaId::new(0), AreaConfig { area_type: AreaType::Bank, grid_position: (0, 0) });
+        state.board_layout.areas.insert(AreaId::new(1), AreaConfig { area_type: AreaType::CopperMine, grid_position: (0, 1) });
+        state.players[0].assistants.on_board.insert(AreaId::new(0), 2);
+        let initial_hand = state.players[0].assistants.in_hand;
+
+        let order_id = OrderCardId(42);
+        state.players[0].order_cards_in_hand.push(order_id);
+
+        let mut order_registry = OrderRegistry::new();
+        let order_card = OrderCard {
+            id: order_id,
+            country: Country::English,
+            requirements: TradeGoodRequirement::default(),
+            rewards: OrderRewards {
+                movement: 2,
+                ..Default::default()
+            },
+        };
+        order_registry.insert(order_card, "test_order");
+        let mut rules = Rules::empty_for_tests();
+        rules.orders = order_registry;
+
+        let result = apply_move(&state, &Move::FulfillOrder { order_id }, &rules);
+        assert!(result.is_ok());
+        let mid = result.unwrap();
+
+        // movement now queues an AssistantMove choice per icon instead of
+        // being a no-op (design 2026-07-18 §5.3) -- two icons here, so two
+        // choices queue.
+        assert_eq!(mid.pending_choices, vec![PendingChoice::AssistantMove, PendingChoice::AssistantMove]);
+
+        let after_first = apply_move(
+            &mid,
+            &Move::ChooseAssistantMove { from: MoveSource::Area(AreaId::new(0)), to: AreaId::new(1) },
+            &rules,
+        ).unwrap();
+        assert_eq!(after_first.pending_choices, vec![PendingChoice::AssistantMove]);
+        assert_eq!(after_first.players[0].assistants.on_board[&AreaId::new(1)], 1);
+
+        let after_second = apply_move(&after_first, &Move::DeclineAssistantMove, &rules).unwrap();
+        assert!(after_second.pending_choices.is_empty());
+        assert_eq!(after_second.players[0].assistants.in_hand, initial_hand);
+    }
+
+    #[test]
+    fn test_fulfill_order_movement_with_no_destinations_auto_declines() {
+        // Degenerate case: create_minimal_state's default board has no areas
+        // at all, so AssistantMove has zero valid destinations and each icon
+        // auto-declines instead of queuing (design §5.1 singleton rule) --
+        // apply_fulfill_order must still succeed and leave assistants intact.
         let mut state = create_minimal_state(2);
         state.turn_phase = TurnPhase::AdditionalActionFirst;
         state.players[0].assistants.on_board.insert(AreaId::new(0), 2);
@@ -2657,7 +2743,7 @@ mod tests {
         assert!(result.is_ok());
         let new_state = result.unwrap();
 
-        // v1 policy: Movement icon is a documented no-op (see apply_fulfill_order).
+        assert!(new_state.pending_choices.is_empty());
         assert_eq!(new_state.players[0].assistants, before);
     }
 
@@ -2703,6 +2789,207 @@ mod tests {
         assert_eq!(new_state.players[0].victory_points, 5 + 2);
         // Starting money + 3 reward + Language School's +1 Yen.
         assert_eq!(new_state.players[0].money, starting_money + 3 + 1);
+    }
+
+    #[test]
+    fn apply_university_wiring() {
+        let mut state = create_minimal_state(2);
+        state.players[0].money = 3;
+        state.players[0].assistants.in_warehouse = 2;
+        state.players[0].assistants.in_hand = 5;
+
+        let mut tech_registry = TechRegistry::new();
+        tech_registry.insert(
+            TechCard {
+                id: TechCardId(93),
+                name: "University".to_string(),
+                country: Country::French,
+                industry_cost: 4,
+                effect: TechEffect::University,
+            },
+            "tech_university",
+        );
+        state.players[0].technologies.push(TechCardId(93));
+        let mut rules = Rules::empty_for_tests();
+        rules.techs = tech_registry;
+
+        let before_phase = state.turn_phase;
+        let next = apply_move(&state, &Move::UseUniversity, &rules).unwrap();
+
+        assert_eq!(next.players[0].money, 2);
+        assert_eq!(next.players[0].assistants.in_warehouse, 1);
+        assert_eq!(next.players[0].assistants.in_hand, 6);
+        assert!(next.additional_action_state.university_used);
+        assert_eq!(next.turn_phase, before_phase, "additional-action moves leave turn_phase alone");
+    }
+
+    #[test]
+    fn spinning_mill_offered_and_applies() {
+        let mut state = create_minimal_state(2);
+        state.turn_phase = TurnPhase::AdditionalActionSecond;
+        state.players[0].silk = 1;
+        state.players[0].money = 0;
+
+        let mut tech_registry = TechRegistry::new();
+        tech_registry.insert(
+            TechCard {
+                id: TechCardId(94),
+                name: "Textile Mill".to_string(),
+                country: Country::Dutch,
+                industry_cost: 3,
+                effect: TechEffect::SpinningMill,
+            },
+            "tech_spinning_mill",
+        );
+        state.players[0].technologies.push(TechCardId(94));
+        let mut rules = Rules::empty_for_tests();
+        rules.techs = tech_registry;
+
+        let moves = get_legal_moves(&state, &rules);
+        assert!(
+            moves.iter().any(|m| matches!(m, Move::UseSpinningMill)),
+            "must be offered in AdditionalActionSecond"
+        );
+
+        let next = apply_move(&state, &Move::UseSpinningMill, &rules).unwrap();
+        assert_eq!(next.players[0].silk, 0);
+        assert_eq!(next.players[0].money, 2);
+        assert!(next.additional_action_state.spinning_mill_used);
+        assert_eq!(next.turn_phase, TurnPhase::AdditionalActionSecond, "additional-action moves leave turn_phase alone");
+    }
+
+    #[test]
+    fn once_per_turn_flags_reset_next_turn() {
+        // Drive both moves for real this turn (not a hand-set flag), then
+        // hand off via EndAdditionalPhase and confirm the flags come back
+        // clear (advance_phase's existing AdditionalActionState::new()
+        // reset) so the same wiring can offer them again next turn.
+        let mut state = create_minimal_state(2);
+        state.turn_phase = TurnPhase::AdditionalActionSecond;
+        state.players[0].silk = 1;
+
+        let mut tech_registry = TechRegistry::new();
+        tech_registry.insert(
+            TechCard {
+                id: TechCardId(95),
+                name: "University".to_string(),
+                country: Country::French,
+                industry_cost: 4,
+                effect: TechEffect::University,
+            },
+            "tech_university",
+        );
+        tech_registry.insert(
+            TechCard {
+                id: TechCardId(96),
+                name: "Textile Mill".to_string(),
+                country: Country::Dutch,
+                industry_cost: 3,
+                effect: TechEffect::SpinningMill,
+            },
+            "tech_spinning_mill",
+        );
+        state.players[0].technologies.push(TechCardId(95));
+        state.players[0].technologies.push(TechCardId(96));
+        let mut rules = Rules::empty_for_tests();
+        rules.techs = tech_registry;
+
+        let used = apply_move(&state, &Move::UseUniversity, &rules).unwrap();
+        let used = apply_move(&used, &Move::UseSpinningMill, &rules).unwrap();
+        assert!(used.additional_action_state.university_used);
+        assert!(used.additional_action_state.spinning_mill_used);
+
+        let next = apply_move(&used, &Move::EndAdditionalPhase, &rules).unwrap();
+        assert!(!next.additional_action_state.university_used);
+        assert!(!next.additional_action_state.spinning_mill_used);
+    }
+
+    #[test]
+    fn apply_university_rejects_second_use_same_turn() {
+        // Resource headroom (money 3, warehouse 2) deliberately survives a
+        // first use (money 2, warehouse 1) with room to spare, so a second
+        // same-turn call submitted directly through apply_move -- without
+        // pre-filtering through get_legal_moves, exactly as a Phase-3 bot
+        // will call this pure API at volume -- can only be blocked by the
+        // university_used flag, not by apply_university's own resource
+        // checks. Mirrors apply_mercenary's self-defended once-per-turn gate.
+        let mut state = create_minimal_state(2);
+        state.players[0].money = 3;
+        state.players[0].assistants.in_warehouse = 2;
+        state.players[0].assistants.in_hand = 5;
+
+        let mut tech_registry = TechRegistry::new();
+        tech_registry.insert(
+            TechCard {
+                id: TechCardId(97),
+                name: "University".to_string(),
+                country: Country::French,
+                industry_cost: 4,
+                effect: TechEffect::University,
+            },
+            "tech_university",
+        );
+        state.players[0].technologies.push(TechCardId(97));
+        let mut rules = Rules::empty_for_tests();
+        rules.techs = tech_registry;
+
+        let after_first = apply_move(&state, &Move::UseUniversity, &rules).unwrap();
+        assert!(after_first.additional_action_state.university_used);
+        let snapshot_money = after_first.players[0].money;
+        let snapshot_warehouse = after_first.players[0].assistants.in_warehouse;
+        let snapshot_hand = after_first.players[0].assistants.in_hand;
+
+        let second = apply_move(&after_first, &Move::UseUniversity, &rules);
+        assert!(
+            matches!(second, Err(MoveError::RuleViolation(_))),
+            "second same-turn use must be rejected, got {second:?}"
+        );
+
+        // apply_move never mutates its input -- this pins that contract
+        // explicitly for this move, on top of the type-level guarantee.
+        assert_eq!(after_first.players[0].money, snapshot_money);
+        assert_eq!(after_first.players[0].assistants.in_warehouse, snapshot_warehouse);
+        assert_eq!(after_first.players[0].assistants.in_hand, snapshot_hand);
+    }
+
+    #[test]
+    fn apply_spinning_mill_rejects_second_use_same_turn() {
+        // Silk headroom (2) deliberately survives a first use (1 remains),
+        // isolating the missing spinning_mill_used guard as the only thing
+        // that can block a second same-turn call -- see
+        // apply_university_rejects_second_use_same_turn for the full
+        // rationale (same shape, mirrored for the other move).
+        let mut state = create_minimal_state(2);
+        state.players[0].silk = 2;
+
+        let mut tech_registry = TechRegistry::new();
+        tech_registry.insert(
+            TechCard {
+                id: TechCardId(98),
+                name: "Textile Mill".to_string(),
+                country: Country::Dutch,
+                industry_cost: 3,
+                effect: TechEffect::SpinningMill,
+            },
+            "tech_spinning_mill",
+        );
+        state.players[0].technologies.push(TechCardId(98));
+        let mut rules = Rules::empty_for_tests();
+        rules.techs = tech_registry;
+
+        let after_first = apply_move(&state, &Move::UseSpinningMill, &rules).unwrap();
+        assert!(after_first.additional_action_state.spinning_mill_used);
+        let snapshot_silk = after_first.players[0].silk;
+        let snapshot_money = after_first.players[0].money;
+
+        let second = apply_move(&after_first, &Move::UseSpinningMill, &rules);
+        assert!(
+            matches!(second, Err(MoveError::RuleViolation(_))),
+            "second same-turn use must be rejected, got {second:?}"
+        );
+
+        assert_eq!(after_first.players[0].silk, snapshot_silk);
+        assert_eq!(after_first.players[0].money, snapshot_money);
     }
 
     #[test]
@@ -2845,11 +3132,25 @@ mod tests {
 
         let result = apply_move(&state, &Move::BuildShophouse { slot: 2 }, &rules);
         assert!(result.is_ok());
-        let new_state = result.unwrap();
+        let mid = result.unwrap();
 
-        assert_eq!(new_state.players[0].copper, starting_copper + 1);
-        assert_eq!(new_state.players[0].assistants.in_hand, starting_hand + 1);
-        assert_eq!(new_state.players[0].assistants.in_warehouse, starting_warehouse - 1);
+        // Neither reward auto-resolves anymore (design §5.1-5.2): both queue,
+        // warehouse-take first (matches the reward struct's push order).
+        assert_eq!(mid.pending_choices, vec![PendingChoice::WarehouseTake, PendingChoice::AnyGood]);
+        assert_eq!(mid.players[0].copper, starting_copper);
+        assert_eq!(mid.players[0].assistants.in_hand, starting_hand);
+        assert_eq!(mid.players[0].assistants.in_warehouse, starting_warehouse);
+
+        let after_wh = apply_move(
+            &mid, &Move::ChooseWarehouseTake { item: WarehouseItem::Assistant }, &rules,
+        ).unwrap();
+        assert_eq!(after_wh.pending_choices, vec![PendingChoice::AnyGood]);
+        assert_eq!(after_wh.players[0].assistants.in_hand, starting_hand + 1);
+        assert_eq!(after_wh.players[0].assistants.in_warehouse, starting_warehouse - 1);
+
+        let done = apply_move(&after_wh, &Move::ChooseAnyGood { good: TradeGood::Copper }, &rules).unwrap();
+        assert_eq!(done.players[0].copper, starting_copper + 1);
+        assert!(done.pending_choices.is_empty());
     }
 
     #[test]
@@ -2910,14 +3211,16 @@ mod tests {
         rules.techs.insert(mining_tech_fixture(), "tech_mining");
         state.players[0].technologies.push(TechCardId(1));
 
-        let result = apply_move(&state, &Move::BuildShophouse { slot: 0 }, &rules);
-        assert!(result.is_ok());
-        let new_state = result.unwrap();
+        let mid = apply_move(&state, &Move::BuildShophouse { slot: 0 }, &rules).unwrap();
+        // any_good queues a choice instead of auto-granting copper at build
+        // time (design §5.3-2).
+        assert_eq!(mid.pending_choices, vec![PendingChoice::AnyGood]);
+        assert_eq!(mid.players[0].copper, starting_copper);
 
-        // any_good auto-resolves to 1 copper (v1 simplification) + 1 Mining bonus.
-        // Mining applies here because the auto-picked good IS copper received
-        // from a Building Site reward (KB "applies to" list).
-        assert_eq!(new_state.players[0].copper, starting_copper + 2);
+        // Resolving the choice as Copper: 1 base + 1 Mining bonus (1 owned
+        // copy). Mining applies because the CHOSEN good IS copper.
+        let done = apply_move(&mid, &Move::ChooseAnyGood { good: TradeGood::Copper }, &rules).unwrap();
+        assert_eq!(done.players[0].copper, starting_copper + 2);
     }
 
     #[test]
@@ -2946,11 +3249,15 @@ mod tests {
     }
 
     #[test]
-    fn test_build_shophouse_copper_and_any_good_combined_mining_bonus_not_doubled() {
-        // Guards against computing the Mining bonus separately for the copper
-        // field and the any_good field and summing both: that would double
-        // the flat per-copy bonus when a single space grants copper via two
-        // icons in the same reward. It must fire once per receipt event.
+    fn test_build_shophouse_copper_and_any_good_are_separate_mining_receipts() {
+        // Design 2026-07-18 §5.3-2: Mining Technology receipts are per-icon.
+        // A space with BOTH an explicit copper field and an any_good field
+        // now produces TWO separate copper-receipt events -- the explicit
+        // field at build time, and (if resolved to Copper) the any-good
+        // choice at resolution time -- each independently eligible for the
+        // flat per-copy Mining bonus. This supersedes the old "combined
+        // receipt" precompute that fired the bonus once for both fields
+        // together (that precompute is dismantled by this task).
         let mut state = create_minimal_state(2);
         let area = AreaId::new(0);
         state.players[0].president_location = PresidentLocation::OnBoard(area);
@@ -2964,12 +3271,14 @@ mod tests {
         rules.techs.insert(mining_tech_fixture(), "tech_mining");
         state.players[0].technologies.push(TechCardId(1));
 
-        let result = apply_move(&state, &Move::BuildShophouse { slot: 0 }, &rules);
-        assert!(result.is_ok());
-        let new_state = result.unwrap();
+        let mid = apply_move(&state, &Move::BuildShophouse { slot: 0 }, &rules).unwrap();
+        // Explicit copper receipt fires immediately: 1 base + 1 Mining bonus.
+        assert_eq!(mid.players[0].copper, starting_copper + 2);
+        assert_eq!(mid.pending_choices, vec![PendingChoice::AnyGood]);
 
-        // 1 (copper field) + 1 (any_good auto-copper) + 1 Mining bonus ONCE = 3.
-        assert_eq!(new_state.players[0].copper, starting_copper + 3);
+        let done = apply_move(&mid, &Move::ChooseAnyGood { good: TradeGood::Copper }, &rules).unwrap();
+        // Any-good-as-copper is its OWN receipt: another 1 base + 1 Mining bonus.
+        assert_eq!(done.players[0].copper, starting_copper + 4);
     }
 
     #[test]
@@ -3047,6 +3356,39 @@ mod tests {
         let next = apply_move(&state, &mv, &rules).unwrap();
 
         assert_eq!(next.players[0].order_cards_in_hand, vec![OrderCardId(7)]);
+    }
+
+    #[test]
+    fn mercenary_port_take_at_five_grants() {
+        // Pin task (Task 8, 2026-07-18, design §5.3-1): a mercenary sub-turn
+        // Port take runs through the same execute_port_action path as a
+        // normal turn (area resolved from mercenary_target_area instead of
+        // president_location), so the take-gated Power-5 +3 VP bonus must
+        // fire there too.
+        let rules = Rules::standard();
+        let mut state = create_test_game_state(2);
+        let port_area = AreaId::new(5);
+        state.board_layout.areas.insert(port_area, AreaConfig {
+            area_type: AreaType::PortA,
+            grid_position: (0, 5),
+        });
+        state.is_mercenary_action = true;
+        state.mercenary_target_area = Some(port_area);
+        state.turn_phase = TurnPhase::AreaAction;
+        state.current_action_power = Some(5);
+        state.port_state.port_a.slots[0] = Some(OrderCardId(7));
+        let starting_vp = state.players[0].victory_points;
+
+        let mv = Move::ExecuteAreaAction {
+            action: AreaAction::Port {
+                cards_taken: vec![OrderCardId(7)],
+                second_card_payment: None,
+            },
+        };
+        let next = apply_move(&state, &mv, &rules).unwrap();
+
+        assert_eq!(next.players[0].order_cards_in_hand, vec![OrderCardId(7)]);
+        assert_eq!(next.players[0].victory_points, starting_vp + 3);
     }
 
     /// Places a LaboratoryA area on the board and puts the president there.
@@ -3280,7 +3622,11 @@ mod tests {
                 copper: true, silk: true, tea: false, seafood: false, yen: false, imported_good: false,
             },
         };
-        let next = apply_move(&state, &mv, &rules).unwrap();
+        let mid = apply_move(&state, &mv, &rules).unwrap();
+        // Faith 5 -> 2 eligible spaces (4,5) on a fresh track -> goods paid,
+        // placement deferred behind a ChurchSpace choice (design §5.2).
+        assert_eq!(mid.pending_choices, vec![PendingChoice::ChurchSpace { total_faith: 5 }]);
+        let next = apply_move(&mid, &Move::ChooseChurchSpace { space: 5 }, &rules).unwrap();
 
         let p = &next.players[0];
         assert_eq!(p.assistants.in_hand, 7);
@@ -3345,7 +3691,11 @@ mod tests {
         let mv = Move::ExecuteAreaAction {
             action: AreaAction::Customs { imported_goods_paid: 1 },
         };
-        let next = apply_move(&state, &mv, &rules).unwrap();
+        let mid = apply_move(&state, &mv, &rules).unwrap();
+        // Cost 1 -> spaces 1,2 both empty on a fresh track -> 2 eligible ->
+        // placement deferred behind a CustomsSpace choice (design §5.2).
+        assert_eq!(mid.pending_choices, vec![PendingChoice::CustomsSpace { cost: 1 }]);
+        let next = apply_move(&mid, &Move::ChooseCustomsSpace { space: 1 }, &rules).unwrap();
 
         let p = &next.players[0];
         assert_eq!(p.assistants.on_customs, 1);
@@ -3381,8 +3731,13 @@ mod tests {
         };
         let next = apply_move(&state, &mv, &rules).unwrap();
 
-        // Power 4 (max 3), pay 2 -> cost pair {3,4}; space 3 is leftmost/default.
+        // Power 4 (max 3), pay 2 -> cost pair {3,4}; this fixture is 2P, so
+        // the printed dummy pawn blocks space 4, leaving space 3 as the
+        // sole candidate -> places inline, no CustomsSpace choice (mirrors
+        // customs_2p_space4_dummy_never_offered in tracks.rs, exercised
+        // here through the mercenary path).
         assert_eq!(next.players[0].customs_positions, vec![3]);
+        assert!(next.pending_choices.iter().all(|c| !matches!(c, PendingChoice::CustomsSpace { .. })));
     }
 
     #[test]
@@ -3475,6 +3830,25 @@ mod tests {
     fn skip_at_power_5_port_does_not_grant_vp_bonus() {
         // v1 ruling: Skip declines all optional components, including the
         // Port power-5 +3 VP bonus, which requires an actual take.
+        let rules = Rules::empty_for_tests();
+        let mut state = create_test_game_state(2);
+        let area = AreaId::new(0);
+        state.board_layout.areas.insert(area, AreaConfig { area_type: AreaType::PortA, grid_position: (0, 0) });
+        state.players[0].president_location = PresidentLocation::OnBoard(area);
+        state.turn_phase = TurnPhase::AreaAction;
+        state.current_action_power = Some(5);
+        let starting_vp = state.players[0].victory_points;
+
+        let mv = Move::ExecuteAreaAction { action: AreaAction::Skip };
+        let next = apply_move(&state, &mv, &rules).unwrap();
+
+        assert_eq!(next.players[0].victory_points, starting_vp);
+    }
+
+    #[test]
+    fn skip_at_five_power_port_grants_no_vp() {
+        // owner-adjudicated 2026-07-18: +3 VP is take-gated; full hand bars
+        // the action; Skip grants nothing (design §5.3-1).
         let rules = Rules::empty_for_tests();
         let mut state = create_test_game_state(2);
         let area = AreaId::new(0);
@@ -3613,5 +3987,244 @@ mod tests {
         let mv = Move::ExecuteAreaAction { action: AreaAction::Customs { imported_goods_paid: 0 } };
         let result = apply_move(&state, &mv, &rules);
         assert!(result.is_err());
+    }
+
+    // --- Pending-choice queue + AnyGood (design 2026-07-18 §5.1-5.2) ---
+
+    /// Order O01 in hand, rewarding `any_trade_good` icons and nothing else
+    /// (default requirements so the reward path is reachable unconditionally).
+    fn any_good_order_fixture(any_trade_good: u8) -> (GameState, Rules) {
+        let mut state = create_minimal_state(2);
+        state.turn_phase = TurnPhase::AdditionalActionFirst;
+        let order_id = OrderCardId(1);
+        state.players[0].order_cards_in_hand.push(order_id);
+
+        let mut order_registry = OrderRegistry::new();
+        order_registry.insert(
+            OrderCard {
+                id: order_id,
+                country: Country::English,
+                requirements: TradeGoodRequirement::default(),
+                rewards: OrderRewards { any_trade_good, ..Default::default() },
+            },
+            "test_any_good_order",
+        );
+        let mut rules = Rules::empty_for_tests();
+        rules.orders = order_registry;
+
+        (state, rules)
+    }
+
+    /// The acting area shared by `building_any_good_fixture` and its test --
+    /// a free function (not a state field) so the test can name it without
+    /// holding a reference into the fixture's state.
+    fn acting_area() -> AreaId {
+        AreaId::new(0)
+    }
+
+    /// Building phase, president on `acting_area()`, whose site TR space
+    /// (`spaces[1]`) grants 1 any_good. Player holds a shophouse in hand and
+    /// an assistant on the acting area, so Recovery deferral is observable.
+    fn building_any_good_fixture() -> (GameState, Rules) {
+        let mut state = create_minimal_state(2);
+        let area = acting_area();
+        state.board_layout.areas.insert(area, AreaConfig { area_type: AreaType::Bank, grid_position: (0, 0) });
+        let mut site = BuildingSite::new([0, 0, 0, 0], 0);
+        site.spaces[1] = SpaceReward { any_good: 1, ..Default::default() }; // TR
+        state.board_layout.building_sites.insert(area, site);
+        state.turn_phase = TurnPhase::Building;
+        state.current_player = PlayerId::new(0);
+        state.current_action_power = Some(4); // Shophouse requires Power 4+
+        state.players[0].president_location = PresidentLocation::OnBoard(area);
+        state.players[0].shophouses.in_hand = 1;
+        state.players[0].assistants.on_board.insert(area, 1);
+        let rules = Rules::empty_for_tests();
+        (state, rules)
+    }
+
+    /// Order O01 in hand, rewarding 1 explicit copper + 1 any_trade_good;
+    /// player owns 1 Mining Technology copy.
+    fn mining_any_good_fixture() -> (GameState, Rules) {
+        let mut state = create_minimal_state(2);
+        state.turn_phase = TurnPhase::AdditionalActionFirst;
+        let order_id = OrderCardId(1);
+        state.players[0].order_cards_in_hand.push(order_id);
+        state.players[0].technologies.push(TechCardId(1));
+
+        let mut order_registry = OrderRegistry::new();
+        order_registry.insert(
+            OrderCard {
+                id: order_id,
+                country: Country::English,
+                requirements: TradeGoodRequirement::default(),
+                rewards: OrderRewards { copper: 1, any_trade_good: 1, ..Default::default() },
+            },
+            "test_mining_any_good_order",
+        );
+        let mut rules = Rules::empty_for_tests();
+        rules.orders = order_registry;
+        rules.techs.insert(mining_tech_fixture(), "tech_mining");
+
+        (state, rules)
+    }
+
+    #[test]
+    fn fulfill_order_with_any_good_queues_choice_and_gates_legal_moves() {
+        // Fixture: an order whose rewards have any_trade_good: 2, player holds it + goods.
+        let (mut state, rules) = any_good_order_fixture(2); // helper below
+        state.turn_phase = TurnPhase::AdditionalActionFirst;
+        let after = apply_move(&state, &Move::FulfillOrder { order_id: OrderCardId(1) }, &rules).unwrap();
+        assert_eq!(after.pending_choices, vec![PendingChoice::AnyGood, PendingChoice::AnyGood]);
+        let legal = get_legal_moves(&after, &rules);
+        assert_eq!(legal.len(), 4); // exactly the four ChooseAnyGood moves, nothing else
+        assert!(legal.iter().all(|m| matches!(m, Move::ChooseAnyGood { .. })));
+        // No copper was auto-granted:
+        assert_eq!(after.current_player().copper, state.current_player().copper);
+    }
+
+    #[test]
+    fn choose_any_good_resolves_head_and_grants_chosen_good() {
+        let (state, rules) = any_good_order_fixture(1);
+        let mut s = apply_move(&state, &Move::FulfillOrder { order_id: OrderCardId(1) }, &rules).unwrap();
+        let silk_before = s.current_player().silk;
+        s = apply_move(&s, &Move::ChooseAnyGood { good: TradeGood::Silk }, &rules).unwrap();
+        assert_eq!(s.current_player().silk, silk_before + 1);
+        assert!(s.pending_choices.is_empty());
+    }
+
+    #[test]
+    fn choice_moves_illegal_when_no_choice_pending_and_wrong_choice_rejected() {
+        let (state, rules) = any_good_order_fixture(1);
+        assert!(apply_move(&state, &Move::ChooseAnyGood { good: TradeGood::Tea }, &rules).is_err());
+    }
+
+    #[test]
+    fn shophouse_space_any_good_queues_and_defers_recovery() {
+        // Fixture: Building phase, president on an area whose site TR space has any_good: 1,
+        // player has a shophouse in hand and an assistant on the acting area.
+        let (state, rules) = building_any_good_fixture();
+        let mid = apply_move(&state, &Move::BuildShophouse { slot: 1 }, &rules).unwrap();
+        assert_eq!(mid.pending_choices, vec![PendingChoice::AnyGood]);
+        // Recovery DEFERRED: the acting-area assistant has NOT been recovered yet.
+        assert!(mid.current_player().assistants.on_board.contains_key(&acting_area()));
+        let done = apply_move(&mid, &Move::ChooseAnyGood { good: TradeGood::Copper }, &rules).unwrap();
+        // Resolving the last choice runs the deferred Recovery + transition in the same apply.
+        assert!(!done.current_player().assistants.on_board.contains_key(&acting_area()));
+        assert_eq!(done.turn_phase, TurnPhase::AdditionalActionSecond);
+    }
+
+    #[test]
+    fn any_good_copper_choice_fires_mining_bonus_per_icon() {
+        // Player owns 1 Mining Technology; order rewards: copper 1, any_trade_good 1.
+        let (state, rules) = mining_any_good_fixture();
+        let s1 = apply_move(&state, &Move::FulfillOrder { order_id: OrderCardId(1) }, &rules).unwrap();
+        // Explicit copper receipt fired at the trigger: +1 copper +1 mining.
+        let s2 = apply_move(&s1, &Move::ChooseAnyGood { good: TradeGood::Copper }, &rules).unwrap();
+        // Any-good-as-copper is its OWN receipt: +1 copper +1 mining again (design §5.3-2).
+        assert_eq!(s2.current_player().copper, state.current_player().copper + 4);
+    }
+
+    // --- RecoveryLeave (Telephone) choice (design 2026-07-18 §5.2, §5.3-5, Task 6) ---
+
+    fn telephone_tech_fixture(id: u8) -> TechCard {
+        TechCard {
+            id: TechCardId(id),
+            name: "Telephone".to_string(),
+            country: Country::American,
+            industry_cost: 6,
+            effect: TechEffect::Telephone,
+        }
+    }
+
+    /// Building phase, president on `acting_area()` with `assistants` of the
+    /// player's own assistants there, no site rewards -- `SkipBuilding`
+    /// drives straight into Recovery with no other choice already queued.
+    fn plain_building_fixture(assistants: u8) -> (GameState, Rules) {
+        let mut state = create_minimal_state(2);
+        let area = acting_area();
+        state.board_layout.areas.insert(area, AreaConfig { area_type: AreaType::Bank, grid_position: (0, 0) });
+        state.turn_phase = TurnPhase::Building;
+        state.current_player = PlayerId::new(0);
+        state.players[0].president_location = PresidentLocation::OnBoard(area);
+        state.players[0].assistants.on_board.insert(area, assistants);
+        let rules = Rules::empty_for_tests();
+        (state, rules)
+    }
+
+    /// `plain_building_fixture` plus the current player owning 1 Telephone.
+    fn telephone_building_fixture(assistants: u8) -> (GameState, Rules) {
+        let (mut state, mut rules) = plain_building_fixture(assistants);
+        rules.techs.insert(telephone_tech_fixture(1), "tech_telephone");
+        state.players[0].technologies.push(TechCardId(1));
+        (state, rules)
+    }
+
+    #[test]
+    fn recovery_with_telephone_queues_leave_choice() {
+        let (state, rules) = telephone_building_fixture(/*assistants on acting area*/ 2);
+        let s = apply_move(&state, &Move::SkipBuilding, &rules).unwrap();
+        assert_eq!(s.turn_phase, TurnPhase::Recovery); // paused, not auto-completed
+        assert_eq!(s.pending_choices, vec![PendingChoice::RecoveryLeave]);
+        assert_eq!(get_legal_moves(&s, &rules), vec![
+            Move::ChooseRecoveryLeave { leave_one: false },
+            Move::ChooseRecoveryLeave { leave_one: true },
+        ]);
+    }
+
+    #[test]
+    fn telephone_leave_one_keeps_lone_assistant() {
+        // count == 1: leaving means recovering ZERO (design §5.3-5; fixes the old pin).
+        let (state, rules) = telephone_building_fixture(1);
+        let mid = apply_move(&state, &Move::SkipBuilding, &rules).unwrap();
+        let s = apply_move(&mid, &Move::ChooseRecoveryLeave { leave_one: true }, &rules).unwrap();
+        assert_eq!(s.current_player().assistants.on_board[&acting_area()], 1);
+        assert_eq!(s.turn_phase, TurnPhase::AdditionalActionSecond);
+    }
+
+    #[test]
+    fn recovery_without_telephone_stays_automatic() {
+        let (state, rules) = plain_building_fixture(2);
+        let s = apply_move(&state, &Move::SkipBuilding, &rules).unwrap();
+        assert_eq!(s.turn_phase, TurnPhase::AdditionalActionSecond); // no pause
+        assert!(s.pending_choices.is_empty());
+    }
+
+    #[test]
+    fn telephone_leave_false_recovers_everyone() {
+        // The complementary resolution to leave_one: true -- recovers all,
+        // same outcome as the no-Telephone automatic path.
+        let (state, rules) = telephone_building_fixture(2);
+        let mid = apply_move(&state, &Move::SkipBuilding, &rules).unwrap();
+        let s = apply_move(&mid, &Move::ChooseRecoveryLeave { leave_one: false }, &rules).unwrap();
+        assert_eq!(s.current_player().assistants.on_board.get(&acting_area()), None);
+        assert_eq!(s.turn_phase, TurnPhase::AdditionalActionSecond);
+    }
+
+    #[test]
+    fn mercenary_sub_turn_telephone_recovery_queues_and_returns_to_window() {
+        // The mercenary sub-turn's acting area is the mercenary target, not
+        // wherever the real President happens to be -- put the President in
+        // hand (irrelevant to a mercenary sub-turn) so a fallback to
+        // president_location would leave nothing to recover and fail below.
+        let (mut state, rules) = telephone_building_fixture(2);
+        let target = acting_area();
+        state.players[0].president_location = PresidentLocation::InHand;
+        state.is_mercenary_action = true;
+        state.mercenary_target_area = Some(target);
+        state.mercenary_return_phase = Some(TurnPhase::AdditionalActionFirst);
+        state.current_action_power = Some(2);
+
+        let mid = apply_move(&state, &Move::SkipBuilding, &rules).unwrap();
+        assert_eq!(mid.turn_phase, TurnPhase::Recovery);
+        assert_eq!(mid.pending_choices, vec![PendingChoice::RecoveryLeave]);
+
+        let s = apply_move(&mid, &Move::ChooseRecoveryLeave { leave_one: true }, &rules).unwrap();
+        assert_eq!(s.current_player().assistants.on_board[&target], 1);
+        // Returns to the STORED mercenary window, not the normal AdditionalActionSecond.
+        assert_eq!(s.turn_phase, TurnPhase::AdditionalActionFirst);
+        assert!(!s.is_mercenary_action);
+        assert_eq!(s.mercenary_target_area, None);
+        assert_eq!(s.mercenary_return_phase, None);
+        assert_eq!(s.current_action_power, None);
     }
 }

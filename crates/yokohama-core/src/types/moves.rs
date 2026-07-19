@@ -3,7 +3,7 @@
 use serde::{Deserialize, Serialize};
 
 use crate::types::{
-    AchievementType, AreaId, Country, OrderCardId, TechCardId,
+    AchievementType, AreaId, Country, MoveSource, OrderCardId, TechCardId, TradeGood, WarehouseItem,
 };
 
 /// Turn phases in order of execution.
@@ -40,6 +40,12 @@ pub enum Move {
         country: Country,
         target_area: AreaId,
     },
+    /// University (once per turn): pay 1 Yen -> take 1 assistant from warehouse to hand.
+    UseUniversity,
+    /// Textile Mill (once per turn): discard 1 silk -> gain 2 Yen. Printed
+    /// card name is "Textile Mill"; the rulebook text and engine effect enum
+    /// call it "Spinning Mill" -- display follows the cardboard.
+    UseSpinningMill,
     FulfillAchievement {
         achievement: AchievementType,
     },
@@ -96,6 +102,17 @@ pub enum Move {
     SkipBuilding,
 
     // Step 6: Recovery is automatic (no move needed)
+
+    // Choice resolutions (design 2026-07-18): legal only while the matching
+    // PendingChoice heads GameState::pending_choices.
+    ChooseAnyGood { good: TradeGood },
+    ChooseWarehouseTake { item: WarehouseItem },
+    DeclineWarehouseTake,
+    ChooseAssistantMove { from: MoveSource, to: AreaId },
+    DeclineAssistantMove,
+    ChooseChurchSpace { space: u8 },
+    ChooseCustomsSpace { space: u8 },
+    ChooseRecoveryLeave { leave_one: bool },
 }
 
 /// Specific area actions.

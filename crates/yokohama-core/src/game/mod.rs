@@ -16,6 +16,7 @@ mod rules;
 mod display;
 mod invariants;
 mod record;
+mod choices;
 pub mod actions;
 
 pub use power::*;
@@ -33,3 +34,4 @@ pub use rules::*;
 pub use display::*;
 pub use invariants::*;
 pub use record::*;
+pub use choices::*;

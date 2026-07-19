@@ -121,6 +121,20 @@ pub fn check_invariants(state: &GameState, rules: &Rules) -> Result<(), String> 
         }
     }
 
+    // I1(b) final-review fix (design §5.1 queue invariant): pending_choices
+    // must be empty at TurnEnd -- the phase machine's one player hand-off
+    // point (nothing else ever assigns TurnPhase::TurnEnd; see
+    // apply_move.rs's advance_phase). A stale queue surviving to TurnEnd
+    // would misgrant its reward once resolved, since by then the game has
+    // ended (or, for the mid-game AdditionalActionSecond->AdditionalActionFirst
+    // hand-off, current_player has already moved on). I1(a)'s apply_move
+    // guard on EndAdditionalPhase makes this unreachable via ordinary play
+    // (TurnEnd is only ever reached through that guarded arm) -- this is
+    // the defense-in-depth audit for the fuzz gate.
+    if state.turn_phase == crate::types::TurnPhase::TurnEnd && !state.pending_choices.is_empty() {
+        return Err(format!("pending_choices non-empty at TurnEnd: {:?}", state.pending_choices));
+    }
+
     Ok(())
 }
 
@@ -256,5 +270,20 @@ mod tests {
         state.current_action_power = Some(6);
         let err = check_invariants(&state, &rules).unwrap_err();
         assert!(err.contains("current_action_power"), "expected power-bound error, got: {err}");
+    }
+
+    /// I1(b) final-review fix (design §5.1 queue invariant): a queued
+    /// choice surviving to TurnEnd -- the phase machine's one player
+    /// hand-off point -- is a corrupted-state bug, the same class
+    /// check_invariants already audits for everything else.
+    #[test]
+    fn pending_choices_must_be_empty_at_turn_end() {
+        let (mut state, rules) = baseline();
+        assert!(check_invariants(&state, &rules).is_ok());
+
+        state.turn_phase = crate::types::TurnPhase::TurnEnd;
+        state.pending_choices.push(crate::types::PendingChoice::AnyGood);
+        let err = check_invariants(&state, &rules).unwrap_err();
+        assert!(err.contains("pending_choices") && err.contains("TurnEnd"), "expected a pending-choices-at-TurnEnd error, got: {err}");
     }
 }

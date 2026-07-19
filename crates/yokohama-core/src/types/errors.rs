@@ -5,8 +5,6 @@ use serde::{Deserialize, Serialize};
 /// Why a move could not be applied.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum MoveError {
-    /// Move enum variant does not match the current TurnPhase.
-    WrongPhase,
     NotEnoughMoney,
     NotEnoughAssistants,
     NotEnoughResources,
@@ -22,7 +20,6 @@ pub enum MoveError {
 impl std::fmt::Display for MoveError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            MoveError::WrongPhase => write!(f, "move not legal in current phase"),
             MoveError::NotEnoughMoney => write!(f, "not enough money"),
             MoveError::NotEnoughAssistants => write!(f, "not enough assistants"),
             MoveError::NotEnoughResources => write!(f, "not enough resources"),
@@ -45,6 +42,5 @@ mod tests {
     fn move_error_displays_reason() {
         let e = MoveError::RuleViolation("Not enough assistants in hand");
         assert_eq!(format!("{}", e), "Not enough assistants in hand");
-        assert_eq!(format!("{}", MoveError::WrongPhase), "move not legal in current phase");
     }
 }

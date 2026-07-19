@@ -2,48 +2,84 @@
 //! produces a ready-to-play `Repl` (design docs/plans/2026-07-18-phase2-cli-driver-design.md).
 //! No stdin/stdout of its own -- `main.rs` drives `run_wizard` with real I/O
 //! and `ask`'s `out` closure, same separation as `repl::Repl::step`.
+//!
+//! Robustness rework (design docs/plans/2026-07-18-choice-encoding-design.md
+//! §5.5): every card/tile question validates at parse time against a
+//! running context (registry membership, duplicates, the legal tile
+//! multiset) instead of deferring to `reconcile_setup`'s tail check;
+//! `ask` re-asks indefinitely on invalid input (the only exits are a valid
+//! answer or the literal `abort`); and the wizard ends with a review/edit
+//! loop over a summary of every collected answer before handing off to
+//! `reconcile_setup` + `finalize_setup`.
 
+use std::collections::{BTreeSet, HashMap};
+
+use crate::input::{parse_order_id, parse_tech_entry, tech_name, TechAmbiguity, TechEntryError};
 use crate::session::Session;
 use yokohama_core::*;
 
-/// Ask one question, retrying up to 3 times on invalid input. `parse` reports
-/// success/failure only (`Ok(())`/`Err(reason)`) -- callers capture the
-/// parsed value into a local `Option` from inside the closure, which is
+/// Ask one question, re-asking indefinitely on invalid input. `parse`
+/// reports success/failure only (`Ok(())`/`Err(reason)`) -- callers capture
+/// the parsed value into a local `Option` from inside the closure, which is
 /// guaranteed `Some` once `ask` returns `Ok(())` (the closure only returns
 /// `Ok(())` after setting it). Every prompt and error goes through `out` as
-/// it happens, so scripted tests can assert on the transcript and `main` can
-/// print interactively from the exact same code path.
+/// it happens, so scripted tests can assert on the transcript and `main`
+/// can print interactively from the exact same code path.
+///
+/// The only two exits are a valid answer, or the literal (case-insensitive)
+/// `abort`, checked BEFORE `parse` sees the line so it can never be shadowed
+/// by a question's own validation -- `Err("aborted")` is the sentinel every
+/// caller up to `run_wizard` propagates via `?` (design §5.5 item 2; this
+/// replaces the old 3-strikes give-up).
 fn ask(
     input: &mut dyn Iterator<Item = String>,
     out: &mut dyn FnMut(&str),
     prompt: &str,
     parse: &mut dyn FnMut(&str) -> Result<(), String>,
 ) -> Result<(), String> {
-    for _ in 0..3 {
+    loop {
         out(prompt);
         out("\n");
         let line = input.next().ok_or("input ended mid-wizard")?;
-        match parse(line.trim()) {
+        let line = line.trim();
+        if line.eq_ignore_ascii_case("abort") {
+            return Err("aborted".to_string());
+        }
+        match parse(line) {
             Ok(()) => return Ok(()),
             Err(e) => out(&format!("  ! {e}\n")),
         }
     }
-    Err(format!("gave up after 3 invalid answers to: {prompt}"))
 }
 
 /// Run the interactive setup wizard to completion: mode, player count,
-/// seat colors, start seat, seed, save path, then a mode-specific tail
-/// (sim: per-seat dealt-card preview + keep choice; live: per-seat
-/// known/hidden deal plus full physical-table observations), producing a
-/// `Session` wrapped in a `Repl`. The blank-seed `SystemTime` derivation
-/// below is the only nondeterminism anywhere in this crate -- everything
-/// else is driven entirely by `input`.
+/// seat colors, start seat, seed, save path (the common preamble, none of
+/// which depends on mode), then a mode-specific tail (`run_sim_tail` /
+/// `run_live_tail`) that collects the rest, runs a review/edit loop, and
+/// produces a `Session` wrapped in a `Repl`. The blank-seed `SystemTime`
+/// derivation in `ask_seed` is the only nondeterminism anywhere in this
+/// crate -- everything else is driven entirely by `input`.
 pub fn run_wizard(
     input: &mut dyn Iterator<Item = String>,
     out: &mut dyn FnMut(&str),
 ) -> Result<crate::repl::Repl, String> {
     let rules = Rules::standard();
 
+    let is_live = ask_mode(input, out)?;
+    let players = ask_player_count(input, out)?;
+    let colors = ask_colors(input, out, players)?;
+    let start_player = ask_start_player(input, out, players)?;
+    let seed = ask_seed(input, out)?;
+    let save_path = ask_save_path(input, out, seed)?;
+
+    if is_live {
+        run_live_tail(input, out, rules, players, colors, start_player, seed, save_path)
+    } else {
+        run_sim_tail(input, out, rules, players, colors, start_player, seed, save_path)
+    }
+}
+
+fn ask_mode(input: &mut dyn Iterator<Item = String>, out: &mut dyn FnMut(&str)) -> Result<bool, String> {
     let mut is_live: Option<bool> = None;
     ask(input, out, "Mode? (sim/live)", &mut |s: &str| -> Result<(), String> {
         match s.to_lowercase().as_str() {
@@ -58,8 +94,10 @@ pub fn run_wizard(
             _ => Err(format!("'{s}' is not 'sim' or 'live'")),
         }
     })?;
-    let is_live = is_live.unwrap(); // `ask` returned Ok(()) only after this was set
+    Ok(is_live.unwrap()) // `ask` returned Ok(()) only after this was set
+}
 
+fn ask_player_count(input: &mut dyn Iterator<Item = String>, out: &mut dyn FnMut(&str)) -> Result<u8, String> {
     let mut players: Option<u8> = None;
     ask(input, out, "Number of players? (2/3/4)", &mut |s: &str| -> Result<(), String> {
         match s.parse::<u8>() {
@@ -70,9 +108,15 @@ pub fn run_wizard(
             _ => Err(format!("'{s}' is not 2, 3, or 4")),
         }
     })?;
-    let players = players.unwrap();
+    Ok(players.unwrap())
+}
 
-    // Colors: one per seat, distinct.
+/// One per seat, distinct.
+fn ask_colors(
+    input: &mut dyn Iterator<Item = String>,
+    out: &mut dyn FnMut(&str),
+    players: u8,
+) -> Result<Vec<PlayerColor>, String> {
     let mut colors: Vec<PlayerColor> = Vec::new();
     for seat in 0..players {
         let mut chosen: Option<PlayerColor> = None;
@@ -91,7 +135,14 @@ pub fn run_wizard(
         )?;
         colors.push(chosen.unwrap());
     }
+    Ok(colors)
+}
 
+fn ask_start_player(
+    input: &mut dyn Iterator<Item = String>,
+    out: &mut dyn FnMut(&str),
+    players: u8,
+) -> Result<PlayerId, String> {
     let mut start: Option<PlayerId> = None;
     ask(
         input,
@@ -106,11 +157,13 @@ pub fn run_wizard(
             Ok(())
         },
     )?;
-    let start_player = start.unwrap();
+    Ok(start.unwrap())
+}
 
-    // Seed: blank derives from wall-clock nanos -- the crate's one and only
-    // permitted nondeterminism -- and echoes it so the game stays
-    // reproducible from the transcript/GameRecord alone.
+/// Blank derives from wall-clock nanos -- the crate's one and only
+/// permitted nondeterminism -- and echoes it so the game stays reproducible
+/// from the transcript/GameRecord alone.
+fn ask_seed(input: &mut dyn Iterator<Item = String>, out: &mut dyn FnMut(&str)) -> Result<u64, String> {
     let mut seed_answer: Option<Option<u64>> = None;
     ask(input, out, "Seed? (integer, or blank for random)", &mut |s: &str| -> Result<(), String> {
         if s.is_empty() {
@@ -125,7 +178,7 @@ pub fn run_wizard(
             Err(_) => Err(format!("'{s}' is not a valid integer seed")),
         }
     })?;
-    let seed = match seed_answer.unwrap() {
+    Ok(match seed_answer.unwrap() {
         Some(n) => n,
         None => {
             let n = std::time::SystemTime::now()
@@ -135,175 +188,19 @@ pub fn run_wizard(
             out(&format!("seed: {n}\n"));
             n
         }
-    };
+    })
+}
 
+fn ask_save_path(input: &mut dyn Iterator<Item = String>, out: &mut dyn FnMut(&str), seed: u64) -> Result<String, String> {
     let mut path_answer: Option<String> = None;
     ask(input, out, "Save path? (blank for default)", &mut |s: &str| -> Result<(), String> {
         path_answer = Some(s.to_string());
         Ok(())
     })?;
-    let save_path = match path_answer.unwrap() {
+    Ok(match path_answer.unwrap() {
         s if s.is_empty() => format!("yokohama-game-{seed}.json"),
         s => s,
-    };
-
-    if is_live {
-        let mut config = GameConfig::for_player_count(players);
-        config.player_colors = colors;
-        config.start_player = start_player;
-
-        // Per-seat deal: known (report both cards + a keep choice) or
-        // hidden (no deals entry; StartingOrderChoice::Unknown).
-        let mut deals: Vec<(PlayerId, [OrderCardId; 2])> = Vec::new();
-        let mut choices: Vec<StartingOrderChoice> = Vec::new();
-        for seat in 0..players {
-            let pid = PlayerId::try_new(seat).map_err(|e| e.to_string())?;
-            let mut known: Option<bool> = None;
-            ask(
-                input,
-                out,
-                &format!("Seat {seat}: deal known or hidden? (known/hidden)"),
-                &mut |s: &str| -> Result<(), String> {
-                    match s.to_lowercase().as_str() {
-                        "known" => {
-                            known = Some(true);
-                            Ok(())
-                        }
-                        "hidden" => {
-                            known = Some(false);
-                            Ok(())
-                        }
-                        _ => Err(format!("'{s}' is not 'known' or 'hidden'")),
-                    }
-                },
-            )?;
-            if known.unwrap() {
-                let mut c1: Option<OrderCardId> = None;
-                ask(input, out, &format!("Seat {seat}: first dealt card? (O<id>)"), &mut |s: &str| -> Result<(), String> {
-                    c1 = Some(parse_order_token(s)?);
-                    Ok(())
-                })?;
-                let mut c2: Option<OrderCardId> = None;
-                ask(input, out, &format!("Seat {seat}: second dealt card? (O<id>)"), &mut |s: &str| -> Result<(), String> {
-                    c2 = Some(parse_order_token(s)?);
-                    Ok(())
-                })?;
-                let keep = ask_keep(input, out, seat)?;
-                deals.push((pid, [c1.unwrap(), c2.unwrap()]));
-                choices.push(StartingOrderChoice::Keep(keep));
-            } else {
-                choices.push(StartingOrderChoice::Unknown);
-            }
-        }
-
-        // Board: every cell's tile, then a building-site index for every
-        // non-Canal cell (Canal cells carry no site and are not asked about).
-        let (rows, cols) = grid_dimensions(players);
-        let n = rows as usize * cols as usize;
-        let mut tiles: Vec<AreaType> = Vec::with_capacity(n);
-        for i in 0..n {
-            let mut chosen: Option<AreaType> = None;
-            ask(
-                input,
-                out,
-                &format!("Cell {i}/{n} tile? (cm/sm/tp/fg/bank/pa/pb/la/lb/ea/ct/ch/cu/canal)"),
-                &mut |s: &str| -> Result<(), String> {
-                    chosen = Some(parse_tile_abbrev(s)?);
-                    Ok(())
-                },
-            )?;
-            tiles.push(chosen.unwrap());
-        }
-        let mut sites: Vec<Option<u8>> = Vec::with_capacity(n);
-        for (i, tile) in tiles.iter().enumerate() {
-            if *tile == AreaType::Canal {
-                sites.push(None);
-                continue;
-            }
-            let mut chosen: Option<u8> = None;
-            ask(
-                input,
-                out,
-                &format!("Cell {i} building-site index? (S<idx> or a number)"),
-                &mut |s: &str| -> Result<(), String> {
-                    chosen = Some(parse_site_index(s)?);
-                    Ok(())
-                },
-            )?;
-            sites.push(Some(chosen.unwrap()));
-        }
-
-        // Achievements: 3 distinct entries out of the 12 canonical types.
-        out("Achievements -- enter 3 distinct types (name is case-insensitive):\n");
-        for (i, ty) in ALL_ACHIEVEMENTS.iter().enumerate() {
-            out(&format!("  {}) {:?} -- {}\n", i + 1, ty, crate::describe::achievement_desc(*ty)));
-        }
-        let mut achievement_list: Vec<AchievementType> = Vec::new();
-        for slot in 0..3 {
-            let mut chosen: Option<AchievementType> = None;
-            ask(input, out, &format!("Achievement {} of 3?", slot + 1), &mut |s: &str| -> Result<(), String> {
-                let ty = parse_achievement(s)?;
-                if achievement_list.contains(&ty) {
-                    return Err(format!("{ty:?} was already chosen"));
-                }
-                chosen = Some(ty);
-                Ok(())
-            })?;
-            achievement_list.push(chosen.unwrap());
-        }
-        let achievements: [AchievementType; 3] = achievement_list.try_into().unwrap();
-
-        let port_a: [OrderCardId; 6] = ask_orders(input, out, "Port A", 6)?.try_into().unwrap();
-        let port_b = if config.has_port_b {
-            Some(ask_orders(input, out, "Port B", 6)?.try_into().unwrap())
-        } else {
-            None
-        };
-        let lab_a: [TechCardId; 6] = ask_techs(input, out, "Laboratory A", 6, &rules.techs)?.try_into().unwrap();
-        let lab_b = if config.has_lab_b {
-            Some(ask_techs(input, out, "Laboratory B", 6, &rules.techs)?.try_into().unwrap())
-        } else {
-            None
-        };
-
-        let obs = SetupObservations {
-            board: Some(ObservedBoard { tiles, sites }),
-            achievements: Some(achievements),
-            port_a: Some(port_a),
-            port_b,
-            lab_a: Some(lab_a),
-            lab_b,
-            deals,
-        };
-
-        let mut session = Session::new_live(config, seed, obs, choices, rules)?;
-        session.save_path = Some(std::path::PathBuf::from(save_path));
-        Ok(crate::repl::Repl::new(session))
-    } else {
-        // Sim: preview each seat's dealt cards (re-running new_game with the
-        // chosen seed/config -- Session::new_sim redoes this internally too,
-        // deterministically, so the preview and the real deal always agree).
-        let mut config = GameConfig::for_player_count(players);
-        config.player_colors = colors;
-        config.start_player = start_player;
-
-        let pending = new_game(config.clone(), &rules, seed).map_err(|e| e.to_string())?;
-        let mut choices: Vec<StartingOrderChoice> = Vec::new();
-        for seat in 0..players {
-            out(&format!("Seat {seat} dealt:\n"));
-            for &card_id in &pending.deals[seat as usize] {
-                if let Some(card) = rules.orders.get(card_id) {
-                    out(&format!("  {}\n", order_prompt_line(card)));
-                }
-            }
-            let keep = ask_keep(input, out, seat)?;
-            choices.push(StartingOrderChoice::Keep(keep));
-        }
-
-        let mut session = Session::new_sim(config, seed, choices, rules)?;
-        session.save_path = Some(std::path::PathBuf::from(save_path));
-        Ok(crate::repl::Repl::new(session))
-    }
+    })
 }
 
 /// `Seat <n>: keep card 0 or 1?` -- shared by the sim tail and a live
@@ -322,12 +219,652 @@ fn ask_keep(input: &mut dyn Iterator<Item = String>, out: &mut dyn FnMut(&str), 
     Ok(keep.unwrap())
 }
 
-/// Ask `n` sequential order-card slots left-to-right (Port A/B contents).
+// ---------------------------------------------------------------------
+// Live tail
+// ---------------------------------------------------------------------
+
+/// Everything the live tail collects, bundled so the review/edit loop can
+/// dispatch `edit <section>` to a function taking `&mut LiveWizardState`
+/// instead of threading a dozen separate `&mut` locals around. `seen_*`
+/// are the cross-section duplicate trackers (design §5.5 item 1): order
+/// ids span the deals + Port A + Port B, tech ids span Lab A + Lab B --
+/// tiles and sites are each self-contained to their own section, so they
+/// don't need a persistent tracker (their `ask_*` functions start fresh
+/// every time, initial pass or edit alike).
+struct LiveWizardState {
+    players: u8,
+    colors: Vec<PlayerColor>,
+    start_player: PlayerId,
+    seed: u64,
+    save_path: String,
+    config: GameConfig,
+    grid_n: usize,
+    legal_tile_counts: HashMap<AreaType, u32>,
+    all_tech_ids: Vec<TechCardId>,
+    seen_order_ids: BTreeSet<u8>,
+    seen_tech_ids: BTreeSet<u8>,
+    known_deals: Vec<Option<[OrderCardId; 2]>>,
+    deal_choices: Vec<StartingOrderChoice>,
+    tiles: Vec<AreaType>,
+    sites: Vec<Option<u8>>,
+    achievements: [AchievementType; 3],
+    port_a: [OrderCardId; 6],
+    port_b: Option<[OrderCardId; 6]>,
+    lab_a: [TechCardId; 6],
+    lab_b: Option<[TechCardId; 6]>,
+}
+
+#[allow(clippy::too_many_arguments)]
+fn run_live_tail(
+    input: &mut dyn Iterator<Item = String>,
+    out: &mut dyn FnMut(&str),
+    rules: Rules,
+    players: u8,
+    colors: Vec<PlayerColor>,
+    start_player: PlayerId,
+    seed: u64,
+    save_path: String,
+) -> Result<crate::repl::Repl, String> {
+    let mut config = GameConfig::for_player_count(players);
+    config.player_colors = colors.clone();
+    config.start_player = start_player;
+
+    // Legal per-type tile counts for this player count (design §5.5 item
+    // 1): derived from a throwaway seeded board exactly the way
+    // `reconcile_board` treats the seeded layout as the multiset of
+    // record -- which physical duplicate a seeded RNG happens to drop
+    // doesn't change the per-type COUNTS, so any seed for this config
+    // yields the same legal multiset.
+    let ghost = new_game(config.clone(), &rules, seed).map_err(|e| e.to_string())?;
+    let mut legal_tile_counts: HashMap<AreaType, u32> = HashMap::new();
+    for area in ghost.state.board_layout.areas.values() {
+        *legal_tile_counts.entry(area.area_type).or_insert(0) += 1;
+    }
+    let all_tech_ids: Vec<TechCardId> = rules.techs.iter().map(|c| c.id).collect();
+    let (rows, cols) = grid_dimensions(players);
+    let grid_n = rows as usize * cols as usize;
+
+    let mut seen_order_ids: BTreeSet<u8> = BTreeSet::new();
+    let mut seen_tech_ids: BTreeSet<u8> = BTreeSet::new();
+    let mut known_deals: Vec<Option<[OrderCardId; 2]>> = vec![None; players as usize];
+    let mut deal_choices: Vec<StartingOrderChoice> = vec![StartingOrderChoice::Unknown; players as usize];
+    for seat in 0..players {
+        let (deal, choice) = ask_live_deal(input, out, seat, &rules, &mut seen_order_ids)?;
+        known_deals[seat as usize] = deal;
+        deal_choices[seat as usize] = choice;
+    }
+
+    let tiles = ask_tiles(input, out, grid_n, &legal_tile_counts)?;
+    let sites = ask_sites(input, out, &tiles, &rules)?;
+    let achievements = ask_achievements(input, out)?;
+
+    let port_a: [OrderCardId; 6] = ask_orders(input, out, "Port A", 6, &rules, &mut seen_order_ids)?.try_into().unwrap();
+    let port_b: Option<[OrderCardId; 6]> = if config.has_port_b {
+        Some(ask_orders(input, out, "Port B", 6, &rules, &mut seen_order_ids)?.try_into().unwrap())
+    } else {
+        None
+    };
+    let lab_a: [TechCardId; 6] =
+        ask_techs(input, out, "Laboratory A", 6, &rules, &all_tech_ids, &mut seen_tech_ids)?.try_into().unwrap();
+    let lab_b: Option<[TechCardId; 6]> = if config.has_lab_b {
+        Some(ask_techs(input, out, "Laboratory B", 6, &rules, &all_tech_ids, &mut seen_tech_ids)?.try_into().unwrap())
+    } else {
+        None
+    };
+
+    let mut ws = LiveWizardState {
+        players,
+        colors,
+        start_player,
+        seed,
+        save_path,
+        config,
+        grid_n,
+        legal_tile_counts,
+        all_tech_ids,
+        seen_order_ids,
+        seen_tech_ids,
+        known_deals,
+        deal_choices,
+        tiles,
+        sites,
+        achievements,
+        port_a,
+        port_b,
+        lab_a,
+        lab_b,
+    };
+
+    loop {
+        out(&render_live_summary(&ws, &rules));
+        out("confirm / edit <section> / abort?\n");
+        let line = input.next().ok_or("input ended mid-wizard")?;
+        let line = line.trim().to_string();
+        if line.eq_ignore_ascii_case("abort") {
+            return Err("aborted".to_string());
+        }
+        if line == "confirm" {
+            break;
+        }
+        match line.strip_prefix("edit ") {
+            Some(section) => match perform_live_edit(&mut ws, section.trim(), input, out, &rules) {
+                Ok(()) => {}
+                Err(e) if e == "aborted" => return Err(e),
+                Err(e) => out(&format!("  ! {e}\n")),
+            },
+            None => out(&format!("  ! '{line}' is not 'confirm', 'edit <section>', or 'abort'\n")),
+        }
+    }
+
+    let deals: Vec<(PlayerId, [OrderCardId; 2])> = ws
+        .known_deals
+        .iter()
+        .enumerate()
+        .filter_map(|(seat, d)| d.map(|cards| (PlayerId::new(seat as u8), cards)))
+        .collect();
+    let obs = SetupObservations {
+        board: Some(ObservedBoard { tiles: ws.tiles, sites: ws.sites }),
+        achievements: Some(ws.achievements),
+        port_a: Some(ws.port_a),
+        port_b: ws.port_b,
+        lab_a: Some(ws.lab_a),
+        lab_b: ws.lab_b,
+        deals,
+    };
+    let mut session = Session::new_live(ws.config, ws.seed, obs, ws.deal_choices, rules)?;
+    session.save_path = Some(std::path::PathBuf::from(ws.save_path));
+    Ok(crate::repl::Repl::new(session))
+}
+
+/// Perform one `edit <section>` from the live review loop: retract the
+/// section's previous contribution from the cross-section `seen_*`
+/// trackers where applicable, then re-run exactly that section's ask-block
+/// (design §5.5 item 3). `start`/`mode`/`players` are deliberately NOT
+/// editable sections -- changing any of them would invalidate every
+/// question already answered (color count, grid size, Port B/Lab B
+/// presence, ...); the wizard must be aborted and re-run for those.
+fn perform_live_edit(
+    ws: &mut LiveWizardState,
+    section: &str,
+    input: &mut dyn Iterator<Item = String>,
+    out: &mut dyn FnMut(&str),
+    rules: &Rules,
+) -> Result<(), String> {
+    let mut parts = section.split_whitespace();
+    match parts.next() {
+        Some("colors") => {
+            ws.colors = ask_colors(input, out, ws.players)?;
+            ws.config.player_colors = ws.colors.clone();
+        }
+        Some("seed") => {
+            ws.seed = ask_seed(input, out)?;
+            ws.config.setup_seed = ws.seed;
+        }
+        Some("save") => {
+            ws.save_path = ask_save_path(input, out, ws.seed)?;
+        }
+        Some("deal") => {
+            let seat: u8 = parts
+                .next()
+                .and_then(|t| t.parse().ok())
+                .ok_or_else(|| "usage: edit deal <seat>".to_string())?;
+            if seat >= ws.players {
+                return Err(format!("seat must be 0-{}", ws.players - 1));
+            }
+            if let Some(old) = ws.known_deals[seat as usize] {
+                for c in old {
+                    ws.seen_order_ids.remove(&c.0);
+                }
+            }
+            let (deal, choice) = ask_live_deal(input, out, seat, rules, &mut ws.seen_order_ids)?;
+            ws.known_deals[seat as usize] = deal;
+            ws.deal_choices[seat as usize] = choice;
+        }
+        Some("tiles") => {
+            ws.tiles = ask_tiles(input, out, ws.grid_n, &ws.legal_tile_counts)?;
+        }
+        Some("sites") => {
+            ws.sites = ask_sites(input, out, &ws.tiles, rules)?;
+        }
+        Some("achievements") => {
+            ws.achievements = ask_achievements(input, out)?;
+        }
+        Some("porta") => {
+            for c in ws.port_a {
+                ws.seen_order_ids.remove(&c.0);
+            }
+            ws.port_a = ask_orders(input, out, "Port A", 6, rules, &mut ws.seen_order_ids)?.try_into().unwrap();
+        }
+        Some("portb") if ws.config.has_port_b => {
+            if let Some(old) = ws.port_b {
+                for c in old {
+                    ws.seen_order_ids.remove(&c.0);
+                }
+            }
+            ws.port_b = Some(ask_orders(input, out, "Port B", 6, rules, &mut ws.seen_order_ids)?.try_into().unwrap());
+        }
+        Some("laba") => {
+            for c in ws.lab_a {
+                ws.seen_tech_ids.remove(&c.0);
+            }
+            ws.lab_a =
+                ask_techs(input, out, "Laboratory A", 6, rules, &ws.all_tech_ids, &mut ws.seen_tech_ids)?.try_into().unwrap();
+        }
+        Some("labb") if ws.config.has_lab_b => {
+            if let Some(old) = ws.lab_b {
+                for c in old {
+                    ws.seen_tech_ids.remove(&c.0);
+                }
+            }
+            ws.lab_b = Some(
+                ask_techs(input, out, "Laboratory B", 6, rules, &ws.all_tech_ids, &mut ws.seen_tech_ids)?.try_into().unwrap(),
+            );
+        }
+        _ => {
+            return Err(format!(
+                "'{section}' is not an editable section (colors/seed/save/deal <seat>/tiles/sites/achievements/porta/portb/laba/labb)"
+            ))
+        }
+    }
+    Ok(())
+}
+
+/// Plain-words summary of every answer collected so far -- reused verbatim
+/// for the initial review and after every edit, so a redisplay always
+/// reflects the current `ws` (design §5.5 item 3: "the summary reflects
+/// the change"). Card/tech display goes through the existing `tech_name`
+/// helper and `O{:02}`/`T{:02}` codes, matching the rest of the CLI's
+/// plain-words style (`describe.rs`/`render.rs`).
+fn render_live_summary(ws: &LiveWizardState, rules: &Rules) -> String {
+    let mut out = String::new();
+    out.push_str("--- Setup review ---\n");
+    out.push_str("mode: live\n");
+    out.push_str(&format!("players: {}\n", ws.players));
+    out.push_str(&format!("colors: {}\n", ws.colors.iter().map(|c| format!("{c:?}")).collect::<Vec<_>>().join(", ")));
+    out.push_str(&format!("start seat: {}\n", ws.start_player.0));
+    out.push_str(&format!("seed: {}\n", ws.seed));
+    out.push_str(&format!("save path: {}\n", ws.save_path));
+    out.push_str("tiles:\n");
+    for (i, t) in ws.tiles.iter().enumerate() {
+        let site = ws.sites[i].map(|s| format!(" S{s}")).unwrap_or_default();
+        out.push_str(&format!("  cell {i}: {}{}\n", crate::describe::area_type_name(*t), site));
+    }
+    out.push_str(&format!(
+        "achievements: {}\n",
+        ws.achievements.iter().map(|a| format!("{a:?}")).collect::<Vec<_>>().join(", ")
+    ));
+    out.push_str(&format!("Port A: {}\n", ws.port_a.iter().map(|c| format!("O{:02}", c.0)).collect::<Vec<_>>().join(", ")));
+    if let Some(pb) = &ws.port_b {
+        out.push_str(&format!("Port B: {}\n", pb.iter().map(|c| format!("O{:02}", c.0)).collect::<Vec<_>>().join(", ")));
+    }
+    out.push_str(&format!(
+        "Laboratory A: {}\n",
+        ws.lab_a.iter().map(|c| tech_name(*c, &rules.techs)).collect::<Vec<_>>().join(", ")
+    ));
+    if let Some(lb) = &ws.lab_b {
+        out.push_str(&format!("Laboratory B: {}\n", lb.iter().map(|c| tech_name(*c, &rules.techs)).collect::<Vec<_>>().join(", ")));
+    }
+    for seat in 0..ws.players {
+        match ws.known_deals[seat as usize] {
+            Some(cards) => {
+                let keep = match ws.deal_choices[seat as usize] {
+                    StartingOrderChoice::Keep(k) => k,
+                    StartingOrderChoice::Unknown => 0, // unreachable: a known deal always carries Keep
+                };
+                out.push_str(&format!("Seat {seat} deal: known O{:02}, O{:02} (keep {keep})\n", cards[0].0, cards[1].0));
+            }
+            None => out.push_str(&format!("Seat {seat} deal: hidden\n")),
+        }
+    }
+    out
+}
+
+// ---------------------------------------------------------------------
+// Sim tail
+// ---------------------------------------------------------------------
+
+struct SimWizardState {
+    players: u8,
+    colors: Vec<PlayerColor>,
+    start_player: PlayerId,
+    seed: u64,
+    save_path: String,
+    config: GameConfig,
+    pending: PendingSetup,
+    choices: Vec<StartingOrderChoice>,
+}
+
+#[allow(clippy::too_many_arguments)]
+fn run_sim_tail(
+    input: &mut dyn Iterator<Item = String>,
+    out: &mut dyn FnMut(&str),
+    rules: Rules,
+    players: u8,
+    colors: Vec<PlayerColor>,
+    start_player: PlayerId,
+    seed: u64,
+    save_path: String,
+) -> Result<crate::repl::Repl, String> {
+    let mut config = GameConfig::for_player_count(players);
+    config.player_colors = colors.clone();
+    config.start_player = start_player;
+
+    // Preview each seat's dealt cards (re-running new_game with the chosen
+    // seed/config -- Session::new_sim redoes this internally too,
+    // deterministically, so the preview and the real deal always agree).
+    let pending = new_game(config.clone(), &rules, seed).map_err(|e| e.to_string())?;
+    let mut choices: Vec<StartingOrderChoice> = Vec::with_capacity(players as usize);
+    for seat in 0..players {
+        let keep = ask_sim_deal(input, out, seat, &pending, &rules)?;
+        choices.push(StartingOrderChoice::Keep(keep));
+    }
+
+    let mut ws = SimWizardState { players, colors, start_player, seed, save_path, config, pending, choices };
+
+    loop {
+        out(&render_sim_summary(&ws));
+        out("confirm / edit <section> / abort?\n");
+        let line = input.next().ok_or("input ended mid-wizard")?;
+        let line = line.trim().to_string();
+        if line.eq_ignore_ascii_case("abort") {
+            return Err("aborted".to_string());
+        }
+        if line == "confirm" {
+            break;
+        }
+        match line.strip_prefix("edit ") {
+            Some(section) => match perform_sim_edit(&mut ws, section.trim(), input, out, &rules) {
+                Ok(()) => {}
+                Err(e) if e == "aborted" => return Err(e),
+                Err(e) => out(&format!("  ! {e}\n")),
+            },
+            None => out(&format!("  ! '{line}' is not 'confirm', 'edit <section>', or 'abort'\n")),
+        }
+    }
+
+    let mut session = Session::new_sim(ws.config, ws.seed, ws.choices, rules)?;
+    session.save_path = Some(std::path::PathBuf::from(ws.save_path));
+    Ok(crate::repl::Repl::new(session))
+}
+
+/// Sim's editable sections are the subset of the live tail's that apply
+/// without a board/ports/labs: `colors`, `seed`, `save`, `deal <seat>`
+/// (re-preview + re-ask that seat's keep choice). Editing `seed`
+/// recomputes `pending` so the preview stays honest about what the new
+/// seed actually deals.
+fn perform_sim_edit(
+    ws: &mut SimWizardState,
+    section: &str,
+    input: &mut dyn Iterator<Item = String>,
+    out: &mut dyn FnMut(&str),
+    rules: &Rules,
+) -> Result<(), String> {
+    let mut parts = section.split_whitespace();
+    match parts.next() {
+        Some("colors") => {
+            ws.colors = ask_colors(input, out, ws.players)?;
+            ws.config.player_colors = ws.colors.clone();
+        }
+        Some("seed") => {
+            ws.seed = ask_seed(input, out)?;
+            ws.config.setup_seed = ws.seed;
+            ws.pending = new_game(ws.config.clone(), rules, ws.seed).map_err(|e| e.to_string())?;
+            // A new seed deals different cards, so every previously-answered
+            // keep choice referred to a preview the operator can no longer
+            // see -- `StartingOrderChoice::Keep(k)` is just an index (fix
+            // wave, review of 0a01c95 finding 1: it stays "valid" against
+            // ANY deal, so nothing would otherwise catch a stale answer
+            // silently keeping the wrong card under the new deal). Re-ask
+            // every seat from scratch, re-showing each one's actual new
+            // preview -- the same "re-collect, don't reuse" treatment
+            // `edit deal <seat>` already gives a single seat.
+            let mut choices = Vec::with_capacity(ws.players as usize);
+            for seat in 0..ws.players {
+                let keep = ask_sim_deal(input, out, seat, &ws.pending, rules)?;
+                choices.push(StartingOrderChoice::Keep(keep));
+            }
+            ws.choices = choices;
+        }
+        Some("save") => {
+            ws.save_path = ask_save_path(input, out, ws.seed)?;
+        }
+        Some("deal") => {
+            let seat: u8 = parts
+                .next()
+                .and_then(|t| t.parse().ok())
+                .ok_or_else(|| "usage: edit deal <seat>".to_string())?;
+            if seat >= ws.players {
+                return Err(format!("seat must be 0-{}", ws.players - 1));
+            }
+            let keep = ask_sim_deal(input, out, seat, &ws.pending, rules)?;
+            ws.choices[seat as usize] = StartingOrderChoice::Keep(keep);
+        }
+        _ => return Err(format!("'{section}' is not an editable section (colors/seed/save/deal <seat>)")),
+    }
+    Ok(())
+}
+
+fn render_sim_summary(ws: &SimWizardState) -> String {
+    let mut out = String::new();
+    out.push_str("--- Setup review ---\n");
+    out.push_str("mode: sim\n");
+    out.push_str(&format!("players: {}\n", ws.players));
+    out.push_str(&format!("colors: {}\n", ws.colors.iter().map(|c| format!("{c:?}")).collect::<Vec<_>>().join(", ")));
+    out.push_str(&format!("start seat: {}\n", ws.start_player.0));
+    out.push_str(&format!("seed: {}\n", ws.seed));
+    out.push_str(&format!("save path: {}\n", ws.save_path));
+    for (seat, choice) in ws.choices.iter().enumerate() {
+        if let StartingOrderChoice::Keep(k) = choice {
+            out.push_str(&format!("Seat {seat} keep: card {k}\n"));
+        }
+    }
+    out
+}
+
+/// One seat's live-observed deal: known (2 order-card tokens, validated
+/// against the registry and deduped against `seen_order_ids`, plus a keep
+/// choice) or hidden (nothing else asked).
+fn ask_live_deal(
+    input: &mut dyn Iterator<Item = String>,
+    out: &mut dyn FnMut(&str),
+    seat: u8,
+    rules: &Rules,
+    seen_order_ids: &mut BTreeSet<u8>,
+) -> Result<(Option<[OrderCardId; 2]>, StartingOrderChoice), String> {
+    let mut known: Option<bool> = None;
+    ask(input, out, &format!("Seat {seat}: deal known or hidden? (known/hidden)"), &mut |s: &str| -> Result<(), String> {
+        match s.to_lowercase().as_str() {
+            "known" => {
+                known = Some(true);
+                Ok(())
+            }
+            "hidden" => {
+                known = Some(false);
+                Ok(())
+            }
+            _ => Err(format!("'{s}' is not 'known' or 'hidden'")),
+        }
+    })?;
+    if !known.unwrap() {
+        return Ok((None, StartingOrderChoice::Unknown));
+    }
+    let mut c1: Option<OrderCardId> = None;
+    ask(input, out, &format!("Seat {seat}: first dealt card? (O<id>)"), &mut |s: &str| -> Result<(), String> {
+        c1 = Some(ask_order_answer(s, rules, seen_order_ids)?);
+        Ok(())
+    })?;
+    let mut c2: Option<OrderCardId> = None;
+    ask(input, out, &format!("Seat {seat}: second dealt card? (O<id>)"), &mut |s: &str| -> Result<(), String> {
+        c2 = Some(ask_order_answer(s, rules, seen_order_ids)?);
+        Ok(())
+    })?;
+    let keep = ask_keep(input, out, seat)?;
+    Ok((Some([c1.unwrap(), c2.unwrap()]), StartingOrderChoice::Keep(keep)))
+}
+
+/// One seat's sim-preview + keep choice: prints the actual seeded deal
+/// (from `pending`, which the caller re-derives on a seed edit) and asks
+/// which of the two to keep.
+fn ask_sim_deal(
+    input: &mut dyn Iterator<Item = String>,
+    out: &mut dyn FnMut(&str),
+    seat: u8,
+    pending: &PendingSetup,
+    rules: &Rules,
+) -> Result<u8, String> {
+    out(&format!("Seat {seat} dealt:\n"));
+    for &card_id in &pending.deals[seat as usize] {
+        if let Some(card) = rules.orders.get(card_id) {
+            out(&format!("  {}\n", order_prompt_line(card)));
+        }
+    }
+    ask_keep(input, out, seat)
+}
+
+/// Validate one order-card answer: syntax (via the shared `parse_order_id`),
+/// registry membership, then not-already-entered -- inserting into
+/// `seen_order_ids` on success (design §5.5 item 1).
+fn ask_order_answer(s: &str, rules: &Rules, seen_order_ids: &mut BTreeSet<u8>) -> Result<OrderCardId, String> {
+    let n = parse_order_id(s).ok_or_else(|| format!("'{s}' is not a valid order-card code"))?;
+    let id = OrderCardId(n);
+    if rules.orders.get(id).is_none() {
+        return Err(format!("'{s}' is not a valid order card"));
+    }
+    if !seen_order_ids.insert(n) {
+        return Err(format!("'{s}' (O{n:02}) was already entered"));
+    }
+    Ok(id)
+}
+
+/// Validate one tech-card answer: the shared `parse_tech_entry` (registry
+/// membership folded into its candidate check, `TechAmbiguity::Reject` --
+/// the wizard records physical identity, so an ambiguous name prefix must
+/// be refused, not guessed), then not-already-entered. Renders its own
+/// wizard-flavored wording from `TechEntryError` (unchanged from before the
+/// fix wave) -- `reveal.rs`'s `parse_tech_reveal` renders its own
+/// deck-flavored wording from the SAME error type instead of sharing text.
+fn ask_tech_answer(
+    s: &str,
+    rules: &Rules,
+    all_tech_ids: &[TechCardId],
+    seen_tech_ids: &mut BTreeSet<u8>,
+) -> Result<TechCardId, String> {
+    let id = parse_tech_entry(s, &rules.techs, all_tech_ids, TechAmbiguity::Reject).map_err(|e| match e {
+        TechEntryError::NotInPool(_) => format!("'{s}' is not a valid tech card"),
+        TechEntryError::NoMatch => format!("'{s}' does not match any tech card"),
+        TechEntryError::Ambiguous => format!("'{s}' matches more than one tech card -- use T<id>"),
+    })?;
+    if !seen_tech_ids.insert(id.0) {
+        return Err(format!("'{s}' ({}) was already entered", tech_name(id, &rules.techs)));
+    }
+    Ok(id)
+}
+
+/// Board tiles: every grid cell's `AreaType`, validated against the legal
+/// per-type multiset (design §5.5 item 1). A fresh working copy of
+/// `legal_counts` is taken here every call, so both the initial pass and
+/// an `edit tiles` re-run start from the same full pool.
+fn ask_tiles(
+    input: &mut dyn Iterator<Item = String>,
+    out: &mut dyn FnMut(&str),
+    n: usize,
+    legal_counts: &HashMap<AreaType, u32>,
+) -> Result<Vec<AreaType>, String> {
+    let mut remaining = legal_counts.clone();
+    let mut tiles: Vec<AreaType> = Vec::with_capacity(n);
+    for i in 0..n {
+        let mut chosen: Option<AreaType> = None;
+        ask(
+            input,
+            out,
+            &format!("Cell {i}/{n} tile? (cm/sm/tp/fg/bank/pa/pb/la/lb/ea/ct/ch/cu/canal)"),
+            &mut |s: &str| -> Result<(), String> {
+                let area = parse_tile_abbrev(s)?;
+                match remaining.get_mut(&area) {
+                    Some(k) if *k > 0 => {
+                        *k -= 1;
+                        chosen = Some(area);
+                        Ok(())
+                    }
+                    _ => Err(format!("no {} tiles remaining for this board", s.to_lowercase())),
+                }
+            },
+        )?;
+        tiles.push(chosen.unwrap());
+    }
+    Ok(tiles)
+}
+
+/// A building-site index for every non-Canal cell (Canal cells carry no
+/// site and are not asked about). Distinctness is self-contained to this
+/// call (a fresh tracker every time, initial pass or `edit sites` alike).
+fn ask_sites(
+    input: &mut dyn Iterator<Item = String>,
+    out: &mut dyn FnMut(&str),
+    tiles: &[AreaType],
+    rules: &Rules,
+) -> Result<Vec<Option<u8>>, String> {
+    let mut seen_sites: BTreeSet<u8> = BTreeSet::new();
+    let mut sites: Vec<Option<u8>> = Vec::with_capacity(tiles.len());
+    for (i, tile) in tiles.iter().enumerate() {
+        if *tile == AreaType::Canal {
+            sites.push(None);
+            continue;
+        }
+        let mut chosen: Option<u8> = None;
+        ask(
+            input,
+            out,
+            &format!("Cell {i} building-site index? (S<idx> or a number)"),
+            &mut |s: &str| -> Result<(), String> {
+                let idx = parse_site_index(s)?;
+                if idx as usize >= rules.building_sites.len() {
+                    return Err(format!("'{s}' is not a valid building-site index"));
+                }
+                if !seen_sites.insert(idx) {
+                    return Err(format!("'{s}' (site {idx}) was already entered"));
+                }
+                chosen = Some(idx);
+                Ok(())
+            },
+        )?;
+        sites.push(Some(chosen.unwrap()));
+    }
+    Ok(sites)
+}
+
+/// 3 distinct entries out of the 12 canonical achievement types.
+fn ask_achievements(input: &mut dyn Iterator<Item = String>, out: &mut dyn FnMut(&str)) -> Result<[AchievementType; 3], String> {
+    out("Achievements -- enter 3 distinct types (name is case-insensitive):\n");
+    for (i, ty) in ALL_ACHIEVEMENTS.iter().enumerate() {
+        out(&format!("  {}) {:?} -- {}\n", i + 1, ty, crate::describe::achievement_desc(*ty)));
+    }
+    let mut achievement_list: Vec<AchievementType> = Vec::new();
+    for slot in 0..3 {
+        let mut chosen: Option<AchievementType> = None;
+        ask(input, out, &format!("Achievement {} of 3?", slot + 1), &mut |s: &str| -> Result<(), String> {
+            let ty = parse_achievement(s)?;
+            if achievement_list.contains(&ty) {
+                return Err(format!("{ty:?} was already chosen"));
+            }
+            chosen = Some(ty);
+            Ok(())
+        })?;
+        achievement_list.push(chosen.unwrap());
+    }
+    Ok(achievement_list.try_into().unwrap())
+}
+
+/// Ask `n` sequential order-card slots left-to-right (Port A/B contents),
+/// validated/deduped against `seen_order_ids` (design §5.5 item 1: shared
+/// across Port A + Port B + the deals).
 fn ask_orders(
     input: &mut dyn Iterator<Item = String>,
     out: &mut dyn FnMut(&str),
     label: &str,
     n: usize,
+    rules: &Rules,
+    seen_order_ids: &mut BTreeSet<u8>,
 ) -> Result<Vec<OrderCardId>, String> {
     let mut cards = Vec::with_capacity(n);
     for slot in 0..n {
@@ -337,7 +874,7 @@ fn ask_orders(
             out,
             &format!("{label} slot {} of {n}? (O<id>)", slot + 1),
             &mut |s: &str| -> Result<(), String> {
-                chosen = Some(parse_order_token(s)?);
+                chosen = Some(ask_order_answer(s, rules, seen_order_ids)?);
                 Ok(())
             },
         )?;
@@ -346,13 +883,17 @@ fn ask_orders(
     Ok(cards)
 }
 
-/// Ask `n` sequential tech-card slots left-to-right (Laboratory A/B contents).
+/// Ask `n` sequential tech-card slots left-to-right (Laboratory A/B
+/// contents), validated/deduped against `seen_tech_ids` (design §5.5 item
+/// 1: shared across Lab A + Lab B).
 fn ask_techs(
     input: &mut dyn Iterator<Item = String>,
     out: &mut dyn FnMut(&str),
     label: &str,
     n: usize,
-    techs: &TechRegistry,
+    rules: &Rules,
+    all_tech_ids: &[TechCardId],
+    seen_tech_ids: &mut BTreeSet<u8>,
 ) -> Result<Vec<TechCardId>, String> {
     let mut cards = Vec::with_capacity(n);
     for slot in 0..n {
@@ -362,7 +903,7 @@ fn ask_techs(
             out,
             &format!("{label} slot {} of {n}? (T<id> or a name)", slot + 1),
             &mut |s: &str| -> Result<(), String> {
-                chosen = Some(parse_tech_token(s, techs)?);
+                chosen = Some(ask_tech_answer(s, rules, all_tech_ids, seen_tech_ids)?);
                 Ok(())
             },
         )?;
@@ -405,32 +946,6 @@ fn parse_tile_abbrev(s: &str) -> Result<AreaType, String> {
 fn parse_site_index(s: &str) -> Result<u8, String> {
     let rest = s.strip_prefix(['S', 's']).unwrap_or(s);
     rest.parse::<u8>().map_err(|_| format!("'{s}' is not a valid building-site index"))
-}
-
-/// `O<id>` or a bare integer.
-fn parse_order_token(s: &str) -> Result<OrderCardId, String> {
-    let rest = s.strip_prefix(['O', 'o']).unwrap_or(s);
-    rest.parse::<u8>().map(OrderCardId).map_err(|_| format!("'{s}' is not a valid order-card code"))
-}
-
-/// `T<id>` or a case-insensitive name prefix, resolved only when it matches
-/// exactly one registry entry (some titles circulate as 2 physical copies
-/// under the same name -- an ambiguous prefix is rejected rather than
-/// guessing which physical card is on the board).
-fn parse_tech_token(s: &str, techs: &TechRegistry) -> Result<TechCardId, String> {
-    if let Some(rest) = s.strip_prefix(['T', 't']) {
-        if let Ok(n) = rest.parse::<u8>() {
-            return Ok(TechCardId(n));
-        }
-    }
-    let needle = s.to_lowercase();
-    let matches: Vec<TechCardId> =
-        techs.iter().filter(|c| c.name.to_lowercase().starts_with(&needle)).map(|c| c.id).collect();
-    match matches.len() {
-        1 => Ok(matches[0]),
-        0 => Err(format!("'{s}' does not match any tech card")),
-        _ => Err(format!("'{s}' matches more than one tech card -- use T<id>")),
-    }
 }
 
 /// Match against the Debug-formatted variant name, case-insensitively.
@@ -483,6 +998,7 @@ mod tests {
         let (repl, transcript) = feed(&[
             "sim", "2", "red", "blue", "0", "42", "", // mode players colors start seed savepath(default)
             "0", "1",                                  // keep choices for seats 0 and 1
+            "confirm",                                 // review/edit step (design §5.5 item 3)
         ]);
         let repl = repl.unwrap();
         assert!(transcript.contains("keep"), "{transcript}");
@@ -504,6 +1020,7 @@ mod tests {
         let (repl, _transcript) = feed(&[
             "sim", "2", "blue", "red", "1", "43", "", // mode players colors(seat0=blue,seat1=red) start=1 seed savepath(default)
             "0", "1",                                  // keep choices for seats 0 and 1
+            "confirm",                                 // review/edit step (design §5.5 item 3)
         ]);
         let repl = repl.unwrap();
         let state = repl.session.state();
@@ -564,6 +1081,7 @@ mod tests {
         for i in 0..6 {
             lines.push(format!("T{}", table.state.lab_state.lab_a.slots[i].unwrap().0));
         }
+        lines.push("confirm".into()); // review/edit step (design §5.5 item 3)
         let mut transcript = String::new();
         let mut it = lines.into_iter();
         let repl = {
@@ -578,5 +1096,216 @@ mod tests {
         assert_eq!(repl.session.state().players[0].starting_order, Some(table.deals[0][0]));
         assert!(repl.session.state().players[1].starting_order_hidden);
         std::fs::remove_file("yokohama-game-77.json").ok();
+    }
+
+    // ---- Task 14: parse-time validation, unlimited re-ask, abort, review/edit ----
+    // (design docs/plans/2026-07-18-choice-encoding-design.md §5.5)
+
+    /// Shared prefix for the scripted validation tests below: a 2-player
+    /// live game through mode/players/colors/start/seed/savepath, both
+    /// seats' deal (hidden, to keep the prefix short -- these tests target
+    /// Port A / tiles, not the deal questions), the full 10-cell board
+    /// (2p's legal tile multiset is exactly 1 each of these 10 types --
+    /// `board_gen::tiles_for_player_count`: PortB/LabB/Chinatown/Canal
+    /// removed entirely, 1 of each production type removed), 10 site
+    /// indices (0-9, safely inside the 24-card registry), and 3 distinct
+    /// achievements. Callers continue from here into Port A / Laboratory A
+    /// with their own scripted (possibly deliberately-invalid) answers, and
+    /// must append "confirm" once done.
+    fn live_2p_prefix(seed: u64) -> Vec<String> {
+        let mut lines: Vec<String> = vec![
+            "live".into(), "2".into(), "red".into(), "blue".into(), "0".into(), seed.to_string(), "".into(),
+            "hidden".into(), "hidden".into(),
+        ];
+        lines.extend(["cm", "sm", "tp", "fg", "bank", "pa", "la", "ea", "ch", "cu"].iter().map(|s| s.to_string()));
+        lines.extend((0u8..10).map(|i| i.to_string()));
+        lines.extend(["Copper5", "Silk6", "Tea7"].iter().map(|s| s.to_string()));
+        lines
+    }
+
+    fn feed_owned(lines: Vec<String>) -> (Result<crate::repl::Repl, String>, String) {
+        let mut transcript = String::new();
+        let mut it = lines.into_iter();
+        let result = {
+            let mut sink = |s: &str| transcript.push_str(s);
+            run_wizard(&mut it, &mut sink)
+        };
+        (result, transcript)
+    }
+
+    /// (a) A duplicate order id in the live Port-A tail re-asks AT THAT
+    /// QUESTION with an "already entered" message -- no abort, no
+    /// deferral to the ~30-question reconcile_setup tail.
+    #[test]
+    fn duplicate_order_id_in_port_a_reasks_with_already_entered() {
+        let mut lines = live_2p_prefix(601);
+        lines.extend(["O1", "O1", "O2", "O3", "O4", "O5", "O6"].iter().map(|s| s.to_string())); // O1 repeated
+        lines.extend(["T1", "T2", "T3", "T4", "T5", "T6"].iter().map(|s| s.to_string()));
+        lines.push("confirm".into());
+        let (repl, transcript) = feed_owned(lines);
+        assert!(transcript.contains("already entered"), "{transcript}");
+        let repl = repl.unwrap_or_else(|e| panic!("expected Ok, got Err({e}); transcript:\n{transcript}"));
+        assert_eq!(repl.session.state().port_state.port_a.slots[0], Some(OrderCardId(1)));
+        assert_eq!(repl.session.state().port_state.port_a.slots[1], Some(OrderCardId(2)));
+        std::fs::remove_file("yokohama-game-601.json").ok();
+    }
+
+    /// (b) An order id outside the 1-36 registry re-asks with "not a valid
+    /// order card".
+    #[test]
+    fn order_id_outside_registry_reasks_with_not_a_valid_order_card() {
+        let mut lines = live_2p_prefix(602);
+        lines.extend(["O99", "O1", "O2", "O3", "O4", "O5", "O6"].iter().map(|s| s.to_string())); // O99 not in registry
+        lines.extend(["T1", "T2", "T3", "T4", "T5", "T6"].iter().map(|s| s.to_string()));
+        lines.push("confirm".into());
+        let (repl, transcript) = feed_owned(lines);
+        assert!(transcript.contains("not a valid order card"), "{transcript}");
+        assert!(repl.is_ok(), "{transcript}");
+        std::fs::remove_file("yokohama-game-602.json").ok();
+    }
+
+    /// (c) A tile answer that over-fills the player-count multiset re-asks
+    /// with "no cm tiles remaining for this board" -- 2p's legal multiset
+    /// has exactly 1 Copper Mine, so a second "cm" is rejected.
+    #[test]
+    fn tile_over_fill_reasks_with_no_tiles_remaining() {
+        let mut lines: Vec<String> = vec![
+            "live".into(), "2".into(), "red".into(), "blue".into(), "0".into(), "603".into(), "".into(),
+            "hidden".into(), "hidden".into(),
+        ];
+        lines.extend(["cm", "cm", "sm", "tp", "fg", "bank", "pa", "la", "ea", "ch", "cu"].iter().map(|s| s.to_string())); // cell 1's first attempt repeats cell 0's "cm"
+        lines.extend((0u8..10).map(|i| i.to_string()));
+        lines.extend(["Copper5", "Silk6", "Tea7"].iter().map(|s| s.to_string()));
+        lines.extend(["O1", "O2", "O3", "O4", "O5", "O6"].iter().map(|s| s.to_string()));
+        lines.extend(["T1", "T2", "T3", "T4", "T5", "T6"].iter().map(|s| s.to_string()));
+        lines.push("confirm".into());
+        let (repl, transcript) = feed_owned(lines);
+        assert!(transcript.contains("no cm tiles remaining for this board"), "{transcript}");
+        assert!(repl.is_ok(), "{transcript}");
+        std::fs::remove_file("yokohama-game-603.json").ok();
+    }
+
+    /// (d) Three consecutive invalid answers do NOT abort -- the 4th valid
+    /// answer is accepted and the wizard proceeds to the NEXT question
+    /// (proven by reaching a *different* error -- "input ended mid-wizard"
+    /// from the color question's input running out -- rather than the old
+    /// "gave up after 3 invalid answers" 3-strikes message).
+    #[test]
+    fn three_invalid_answers_do_not_abort_fourth_valid_answer_is_accepted() {
+        let (repl, transcript) = feed(&["live", "x", "y", "z", "2"]); // mode, 3 bad player-counts, 1 good one; input ends before colors
+        assert_eq!(transcript.matches("is not 2, 3, or 4").count(), 3, "{transcript}");
+        match repl {
+            Err(e) => assert_eq!(e, "input ended mid-wizard", "the 4th valid answer must be accepted, reaching the NEXT question rather than giving up"),
+            Ok(_) => panic!("expected input to run out after the color question was reached"),
+        }
+    }
+
+    /// (e) `abort` at any question exits the wizard cleanly.
+    #[test]
+    fn abort_exits_the_wizard_cleanly_at_any_question() {
+        let (repl, _transcript) = feed(&["live", "2", "red", "abort"]); // abort mid seat-1-color question
+        match repl {
+            Err(e) => assert_eq!(e, "aborted"),
+            Ok(_) => panic!("expected Err(\"aborted\")"),
+        }
+    }
+
+    /// (f) After the last question, a summary block prints (containing the
+    /// entered port cards and tiles); `edit porta` re-runs the port
+    /// questions and the summary reflects the change; `confirm` proceeds
+    /// to a live session.
+    #[test]
+    fn review_summary_edit_porta_updates_it_then_confirm_builds_session() {
+        let mut lines = live_2p_prefix(604);
+        lines.extend(["O1", "O2", "O3", "O4", "O5", "O6"].iter().map(|s| s.to_string()));
+        lines.extend(["T1", "T2", "T3", "T4", "T5", "T6"].iter().map(|s| s.to_string()));
+        lines.push("edit porta".into());
+        lines.extend(["O10", "O11", "O12", "O13", "O14", "O15"].iter().map(|s| s.to_string()));
+        lines.push("confirm".into());
+        let (repl, transcript) = feed_owned(lines);
+        assert!(transcript.contains("O01"), "summary must show the originally-entered Port A cards\n{transcript}");
+        assert!(transcript.contains("cm"), "summary must show the entered tiles\n{transcript}");
+        let repl = repl.unwrap_or_else(|e| panic!("expected Ok, got Err({e}); transcript:\n{transcript}"));
+        for i in 0..6 {
+            assert_eq!(
+                repl.session.state().port_state.port_a.slots[i],
+                Some(OrderCardId(10 + i as u8)),
+                "the edited Port A answers must reach the built session"
+            );
+        }
+        std::fs::remove_file("yokohama-game-604.json").ok();
+    }
+
+    /// (g) sim tail: same re-ask behavior on an invalid keep answer (no
+    /// 3-strikes give-up).
+    #[test]
+    fn sim_tail_reasks_indefinitely_on_invalid_keep_answer() {
+        let (repl, transcript) = feed(&[
+            "sim", "2", "red", "blue", "0", "605", "",
+            "bogus", "still-bad", "nope", "0", // seat 0: 3 invalid + 1 valid keep answer
+            "1",                                // seat 1 keep
+            "confirm",
+        ]);
+        assert_eq!(transcript.matches("is not 0 or 1").count(), 3, "{transcript}");
+        let repl = repl.unwrap_or_else(|e| panic!("expected Ok, got Err({e}); transcript:\n{transcript}"));
+        assert!(!repl.session.legal().is_empty());
+        std::fs::remove_file("yokohama-game-605.json").ok();
+    }
+
+    // ---- Task 14 fix wave (review of commit 0a01c95) ----
+
+    /// Finding 1: sim `edit seed` used to recompute `ws.pending` under the
+    /// new seed but leave `ws.choices` untouched. Since `StartingOrderChoice
+    /// ::Keep(k)` is just an index (0 or 1) with no reference to which
+    /// actual card it names, an old keep answer stays "syntactically valid"
+    /// against a completely different deal -- finalize_setup never errors,
+    /// it just silently keeps whatever card sits at that index in the NEW
+    /// deal, which the operator never saw or confirmed. The fix re-asks
+    /// every seat's keep choice (re-showing that seat's ACTUAL new-seed
+    /// preview) whenever the seed changes. The `Seat 0 dealt:` count is the
+    /// signal that actually distinguishes old from new behavior here: the
+    /// buggy code still returns `Ok` (Keep(0)/Keep(1) are unconditionally
+    /// valid regardless of deal identity) and even happens to keep the
+    /// "right" card at that index by construction, so asserting on the
+    /// final hand ALONE would not catch this -- the bug is that the
+    /// operator's answer was never re-collected against what they'd
+    /// actually see, which only the re-printed preview proves.
+    #[test]
+    fn sim_edit_seed_reasks_every_seat_keep_choice_and_final_hands_match_new_seed() {
+        let rules = Rules::standard();
+        let config = GameConfig::for_player_count(2);
+        let pending_a = new_game(config.clone(), &rules, 700).unwrap();
+        let pending_b = new_game(config.clone(), &rules, 701).unwrap();
+        assert_ne!(pending_a.deals, pending_b.deals, "test precondition: the two seeds must deal different cards");
+
+        let (repl, transcript) = feed(&[
+            "sim", "2", "red", "blue", "0", "700", "",
+            "0", "1",       // seat 0/1 keep choices, answered while looking at seed 700's deal
+            "edit seed",
+            "701",          // change the seed -- the seed-700 preview the operator just answered against is now stale
+            "0", "1",       // seat 0/1 keep choices must be RE-ASKED against seed 701's (different) deal
+            "confirm",
+        ]);
+        assert_eq!(
+            transcript.matches("Seat 0 dealt:").count(),
+            2,
+            "a seed edit must re-preview + re-ask every seat's keep choice, not silently keep the stale answers\n{transcript}"
+        );
+        assert_eq!(transcript.matches("Seat 1 dealt:").count(), 2, "{transcript}");
+        let repl = repl.unwrap_or_else(|e| panic!("expected Ok, got Err({e}); transcript:\n{transcript}"));
+        let state = repl.session.state();
+        assert_eq!(
+            state.players[0].starting_order,
+            Some(pending_b.deals[0][0]),
+            "seat 0 kept index 0 of seed 701's deal (the deal actually previewed the second time), not seed 700's"
+        );
+        assert_eq!(
+            state.players[1].starting_order,
+            Some(pending_b.deals[1][1]),
+            "seat 1 kept index 1 of seed 701's deal"
+        );
+        assert_eq!(repl.session.record().seed, 701);
+        std::fs::remove_file("yokohama-game-700.json").ok(); // save path was set before the seed edit; not retroactively renamed
+        std::fs::remove_file("yokohama-game-701.json").ok(); // in case autosave fired under a different path
     }
 }

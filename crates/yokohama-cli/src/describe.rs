@@ -74,6 +74,39 @@ pub fn achievement_desc(a: AchievementType) -> String {
     }
 }
 
+/// Plain-words name of a trade good, for `Move::ChooseAnyGood`.
+fn trade_good_name(g: TradeGood) -> &'static str {
+    match g {
+        TradeGood::Copper => "copper",
+        TradeGood::Silk => "silk",
+        TradeGood::Tea => "tea",
+        TradeGood::Seafood => "fish",
+    }
+}
+
+/// Plain-words article + name of a warehouse item, for
+/// `Move::ChooseWarehouseTake` (e.g. "an assistant", "a shophouse").
+fn warehouse_item_name(item: WarehouseItem) -> &'static str {
+    match item {
+        WarehouseItem::Assistant => "an assistant",
+        WarehouseItem::Shophouse => "a shophouse",
+        WarehouseItem::TradingHouse => "a trading house",
+    }
+}
+
+/// Yen cost of taking `item` from the warehouse right now, for describing
+/// `Move::ChooseWarehouseTake` -- assistants free, shophouses 2 Yen (both via
+/// `WarehouseItem::flat_cost`, T2-m3 single source), trading houses at the
+/// printed take progression indexed by tokens already out of the warehouse
+/// (`TradingHouseState::already_taken`, T2-m2 single source; mirrors
+/// `warehouse_take_options`'s own pricing).
+fn warehouse_item_cost(p: &PlayerState, item: WarehouseItem) -> u32 {
+    match item.flat_cost() {
+        Some(cost) => cost,
+        None => TradingHouseState::take_cost(p.trading_houses.already_taken()),
+    }
+}
+
 /// Plain-words trade text for a single Chinatown exchange.
 fn chinatown_exchange_text(exchange: ChinatownExchange) -> &'static str {
     match exchange {
@@ -111,11 +144,7 @@ fn describe_area_action(action: &AreaAction, _state: &GameState, rules: &Rules) 
             s
         }
         AreaAction::Laboratory { card_id, extra_yen, extra_imported, fifth_tech_payment } => {
-            let name = rules
-                .techs
-                .get(*card_id)
-                .map(|c| c.name.clone())
-                .unwrap_or_else(|| format!("T{:02}", card_id.0));
+            let name = crate::input::tech_name(*card_id, &rules.techs);
             let mut s = format!("Laboratory: acquire {name}");
             if *extra_yen > 0 {
                 s.push_str(&format!(", +{extra_yen} yen"));
@@ -200,6 +229,8 @@ pub fn describe_move(mv: &Move, state: &GameState, rules: &Rules) -> String {
             Some(card) => format!("Fulfill {}", order_prompt_line(card)),
             None => format!("Fulfill order O{:02}", order_id.0),
         },
+        Move::UseUniversity => "Use University: pay 1 yen, take an assistant from the warehouse".to_string(),
+        Move::UseSpinningMill => "Use Textile Mill: discard 1 silk, gain 2 yen".to_string(),
         Move::EndAdditionalPhase => "End additional-action phase".to_string(),
         Move::PlaceThreeAreas { placements } if placements.is_empty() => "Place no assistants".to_string(),
         Move::PlaceThreeAreas { placements } => format!(
@@ -237,6 +268,69 @@ pub fn describe_move(mv: &Move, state: &GameState, rules: &Rules) -> String {
         Move::BuildShophouse { slot } => format!("Build a Shophouse (space {})", slot + 1),
         Move::BuildTradingHouse => "Build a Trading House".to_string(),
         Move::SkipBuilding => "Skip building".to_string(),
+        Move::ChooseAnyGood { good } => format!("Take 1 {} (any-good reward)", trade_good_name(*good)),
+        Move::ChooseWarehouseTake { item } => {
+            let cost = warehouse_item_cost(state.current_player(), *item);
+            let cost_text = if cost == 0 { "free".to_string() } else { format!("{cost} yen") };
+            format!("Take {} from the warehouse ({cost_text})", warehouse_item_name(*item))
+        }
+        Move::DeclineWarehouseTake => "Decline the warehouse take".to_string(),
+        Move::ChooseAssistantMove { from, to } => {
+            let from_label = match from {
+                MoveSource::Hand => "hand".to_string(),
+                MoveSource::Area(a) => area_label(state, *a),
+            };
+            format!("Move an assistant from {from_label} to {} (reward move)", area_label(state, *to))
+        }
+        Move::DeclineAssistantMove => "Decline the assistant move".to_string(),
+        Move::ChooseChurchSpace { space } => {
+            format!("Place on Church faith-{space} space ({} VP)", ChurchTrack::vp_reward(*space))
+        }
+        Move::ChooseCustomsSpace { space } => {
+            format!("Place on Customs space {space} ({} VP)", CustomsTrack::vp_reward(*space))
+        }
+        Move::ChooseRecoveryLeave { leave_one: false } => {
+            "Recover all assistants from the action area".to_string()
+        }
+        Move::ChooseRecoveryLeave { leave_one: true } => {
+            "Leave 1 assistant behind (Telephone)".to_string()
+        }
+    }
+}
+
+/// One plain-words summary line for the pending choice heading
+/// `GameState::pending_choices` -- feeds the `Choose: {...} -- {n}
+/// choice(s) pending` banner `Repl::prompt` renders in place of the normal
+/// phase name whenever the queue is non-empty (Task 11, design §5.4).
+/// Wildcard-free match: every current and future `PendingChoice` variant
+/// must be named here explicitly. `rules` is accepted for interface
+/// symmetry with `describe_move`'s call site (same precedent as
+/// `describe_area_action`'s `_state`) but no variant currently needs it --
+/// every choice type's summary is derived from `state` and the choice's own
+/// fields alone.
+pub fn describe_pending_choice(head: &PendingChoice, state: &GameState, _rules: &Rules) -> String {
+    match head {
+        PendingChoice::AnyGood => "any-good reward: choose 1 of copper/silk/tea/fish".to_string(),
+        PendingChoice::WarehouseTake => {
+            let p = state.current_player();
+            let parts: Vec<String> = warehouse_take_options(p)
+                .into_iter()
+                .map(|item| {
+                    let cost = warehouse_item_cost(p, item);
+                    let label = match item {
+                        WarehouseItem::Assistant => "assistant",
+                        WarehouseItem::Shophouse => "shophouse",
+                        WarehouseItem::TradingHouse => "TH",
+                    };
+                    if cost == 0 { format!("{label} free") } else { format!("{label} {cost}¥") }
+                })
+                .collect();
+            format!("warehouse take ({})", parts.join(" / "))
+        }
+        PendingChoice::AssistantMove => "assistant move (reward): choose a source and destination, or decline".to_string(),
+        PendingChoice::ChurchSpace { total_faith } => format!("Church space at faith {total_faith}"),
+        PendingChoice::CustomsSpace { cost } => format!("Customs space at cost {cost}"),
+        PendingChoice::RecoveryLeave => "Telephone: leave 1 assistant behind, or recover all".to_string(),
     }
 }
 
@@ -293,6 +387,123 @@ mod tests {
             &rules,
         );
         assert!(ch.contains("1 copper -> 2 yen"), "{ch}");
+    }
+
+    #[test]
+    fn warehouse_take_moves_read_as_plain_words() {
+        // Fresh game: no trading houses out yet, so the first take is 4 yen.
+        let state = state_2p();
+        let rules = Rules::standard();
+        assert_eq!(
+            describe_move(&Move::ChooseWarehouseTake { item: WarehouseItem::Assistant }, &state, &rules),
+            "Take an assistant from the warehouse (free)"
+        );
+        assert_eq!(
+            describe_move(&Move::ChooseWarehouseTake { item: WarehouseItem::Shophouse }, &state, &rules),
+            "Take a shophouse from the warehouse (2 yen)"
+        );
+        assert_eq!(
+            describe_move(&Move::ChooseWarehouseTake { item: WarehouseItem::TradingHouse }, &state, &rules),
+            "Take a trading house from the warehouse (4 yen)"
+        );
+        assert_eq!(describe_move(&Move::DeclineWarehouseTake, &state, &rules), "Decline the warehouse take");
+    }
+
+    #[test]
+    fn assistant_move_moves_read_as_plain_words() {
+        let state = state_2p();
+        let rules = Rules::standard();
+        let some_area = *state.board_layout.areas.keys().next().unwrap();
+
+        let from_hand = describe_move(&Move::ChooseAssistantMove { from: MoveSource::Hand, to: some_area }, &state, &rules);
+        assert!(from_hand.starts_with("Move an assistant from hand to "), "{from_hand}");
+        assert!(from_hand.ends_with("(reward move)"), "{from_hand}");
+
+        let from_area = describe_move(&Move::ChooseAssistantMove { from: MoveSource::Area(some_area), to: some_area }, &state, &rules);
+        assert!(from_area.contains(&format!("(A{:02})", some_area.0)), "{from_area}");
+        assert!(!from_area.contains("hand"), "{from_area}");
+
+        assert_eq!(describe_move(&Move::DeclineAssistantMove, &state, &rules), "Decline the assistant move");
+    }
+
+    #[test]
+    fn church_space_choice_reads_as_plain_words_with_vp() {
+        let state = state_2p();
+        let rules = Rules::standard();
+        assert_eq!(
+            describe_move(&Move::ChooseChurchSpace { space: 6 }, &state, &rules),
+            format!("Place on Church faith-6 space ({} VP)", ChurchTrack::vp_reward(6))
+        );
+    }
+
+    #[test]
+    fn customs_space_choice_reads_as_plain_words_with_vp() {
+        let state = state_2p();
+        let rules = Rules::standard();
+        assert_eq!(
+            describe_move(&Move::ChooseCustomsSpace { space: 3 }, &state, &rules),
+            format!("Place on Customs space 3 ({} VP)", CustomsTrack::vp_reward(3))
+        );
+    }
+
+    #[test]
+    fn recovery_leave_choice_reads_as_plain_words() {
+        let state = state_2p();
+        let rules = Rules::standard();
+        assert_eq!(
+            describe_move(&Move::ChooseRecoveryLeave { leave_one: false }, &state, &rules),
+            "Recover all assistants from the action area"
+        );
+        assert_eq!(
+            describe_move(&Move::ChooseRecoveryLeave { leave_one: true }, &state, &rules),
+            "Leave 1 assistant behind (Telephone)"
+        );
+    }
+
+    #[test]
+    fn describe_pending_choice_covers_all_six_variants() {
+        let mut state = state_2p();
+        let rules = Rules::standard();
+        // Fresh game already has >=1 of each warehouse item type (12/6/4 in
+        // the warehouse respectively); bump money so all three (including
+        // the 4-yen first Trading House take) are affordable and listed,
+        // regardless of which seat happens to be "current" (the start seat
+        // begins with only 3 yen -- see `GameConfig::starting_money`).
+        state.players[state.current_player.0 as usize].money = 10;
+
+        let any_good = describe_pending_choice(&PendingChoice::AnyGood, &state, &rules);
+        assert!(any_good.contains("any-good"), "{any_good}");
+
+        let warehouse = describe_pending_choice(&PendingChoice::WarehouseTake, &state, &rules);
+        assert!(warehouse.contains("assistant free"), "{warehouse}");
+        assert!(warehouse.contains("shophouse 2¥"), "{warehouse}");
+        assert!(warehouse.contains("TH 4¥"), "{warehouse}");
+
+        let assistant_move = describe_pending_choice(&PendingChoice::AssistantMove, &state, &rules);
+        assert!(assistant_move.contains("assistant move"), "{assistant_move}");
+
+        let church = describe_pending_choice(&PendingChoice::ChurchSpace { total_faith: 6 }, &state, &rules);
+        assert!(church.contains("Church") && church.contains('6'), "{church}");
+
+        let customs = describe_pending_choice(&PendingChoice::CustomsSpace { cost: 2 }, &state, &rules);
+        assert!(customs.contains("Customs") && customs.contains('2'), "{customs}");
+
+        let recovery = describe_pending_choice(&PendingChoice::RecoveryLeave, &state, &rules);
+        assert!(recovery.contains("Telephone"), "{recovery}");
+    }
+
+    #[test]
+    fn university_and_spinning_mill_read_as_plain_words() {
+        let state = state_2p();
+        let rules = Rules::standard();
+        assert_eq!(
+            describe_move(&Move::UseUniversity, &state, &rules),
+            "Use University: pay 1 yen, take an assistant from the warehouse"
+        );
+        assert_eq!(
+            describe_move(&Move::UseSpinningMill, &state, &rules),
+            "Use Textile Mill: discard 1 silk, gain 2 yen"
+        );
     }
 
     #[test]

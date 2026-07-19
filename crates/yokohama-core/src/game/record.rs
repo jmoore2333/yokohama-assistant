@@ -87,12 +87,80 @@ impl GameRecord {
     }
 }
 
+/// Why `replay`/`replay_from` could not reconstruct a `GameState` (Task 13,
+/// design §5.3-7): `event_index` is the 0-based index into the events slice
+/// being folded (`record.events` for `replay`, the caller's own slice for
+/// `replay_from`) of the event whose application failed, so a caller can
+/// point a human at exactly which logged event is bad instead of just
+/// "replay failed somewhere." A failure in `replay`'s own setup preamble
+/// (`new_game`/`reconcile_setup`/`finalize_setup`, before any event has
+/// folded) reports `event_index: 0` with `message` prefixed to say which
+/// setup step failed, since no event index is meaningful yet.
+#[derive(Debug)]
+pub struct ReplayError {
+    pub event_index: usize,
+    pub message: String,
+}
+
+impl std::fmt::Display for ReplayError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "replay failed at event {}: {}", self.event_index, self.message)
+    }
+}
+
+impl std::error::Error for ReplayError {}
+
+/// Fold `events` over `initial`, in order: `RecordedEvent::Move` applies via
+/// `apply_move`; each `Reveal*` variant applies via its matching `GameState`
+/// reconciliation method (`arrange_orders_on_top`, `arrange_techs_on_top`,
+/// `reveal_starting_order`, `reveal_five_power_token`). Returns the first
+/// error encountered, tagged with its 0-based index into `events` --
+/// short-circuits the loop, so events after the bad one never run.
+///
+/// This is `replay`'s event-folding loop, factored out (Task 13) so a
+/// caller with some OTHER already-known-good starting `GameState` --
+/// not necessarily one `new_game`+`finalize_setup` can reconstruct from a
+/// `(seed, config, choices)` triple -- can reuse the exact same fold. The
+/// yokohama-cli `Session::undo` checkpoint path is the motivating case: a
+/// `for_test_from_state` (test-only) session's base state is hand-built,
+/// so `replay` itself has nothing to replay FROM; before this it hand-kept
+/// a duplicate of this loop client-side (`replay_from_checkpoint`) instead.
+pub fn replay_from(initial: &GameState, events: &[RecordedEvent], rules: &Rules) -> Result<GameState, ReplayError> {
+    let mut state = initial.clone();
+    for (i, ev) in events.iter().enumerate() {
+        let step: Result<GameState, MoveError> = (|| {
+            Ok(match ev {
+                RecordedEvent::Move(mv) => apply_move(&state, mv, rules)?,
+                RecordedEvent::RevealOrders(cards) => {
+                    let mut s = state.clone();
+                    s.arrange_orders_on_top(cards)?;
+                    s
+                }
+                RecordedEvent::RevealTechs(cards) => {
+                    let mut s = state.clone();
+                    s.arrange_techs_on_top(cards)?;
+                    s
+                }
+                RecordedEvent::RevealStartingOrder { player, card } => {
+                    let mut s = state.clone();
+                    s.reveal_starting_order(*player, *card)?;
+                    s
+                }
+                RecordedEvent::RevealFivePowerToken { area, effect } => {
+                    let mut s = state.clone();
+                    s.reveal_five_power_token(*area, *effect)?;
+                    s
+                }
+            })
+        })();
+        state = step.map_err(|e| ReplayError { event_index: i, message: e.to_string() })?;
+    }
+    Ok(state)
+}
+
 /// Reconstruct the `GameState` a `GameRecord` describes: `new_game`,
-/// `finalize_setup`, then fold `record.events` over the resulting state in
-/// order -- `RecordedEvent::Move` applies via `apply_move`; each `Reveal*`
-/// variant applies via its matching `GameState` reconciliation method
-/// (`arrange_orders_on_top`, `arrange_techs_on_top`, `reveal_starting_order`,
-/// `reveal_five_power_token`).
+/// `finalize_setup`, then `replay_from` folds `record.events` over the
+/// resulting state in order.
 ///
 /// Does not refuse to replay a record written by a different engine
 /// version -- v1 only warns (to stderr) on a mismatch. A future engine
@@ -101,11 +169,10 @@ impl GameRecord {
 /// produced it; Phase 2 may turn this into a hard error or a migration
 /// step, but for now the record replays regardless.
 ///
-/// Returns the first error encountered: a `new_game`/`finalize_setup`
-/// failure surfaces as `MoveError::RuleViolation`; a bad event partway
-/// through `record.events` surfaces as that event's own error and
-/// short-circuits the loop -- events after the bad one never run.
-pub fn replay(record: &GameRecord, rules: &Rules) -> Result<GameState, MoveError> {
+/// Returns the first error encountered as a `ReplayError` naming the failed
+/// event's index (see its doc comment) -- a `new_game`/`reconcile_setup`/
+/// `finalize_setup` failure (before any event has folded) reports index 0.
+pub fn replay(record: &GameRecord, rules: &Rules) -> Result<GameState, ReplayError> {
     let running_version = env!("CARGO_PKG_VERSION");
     if record.engine_version != running_version {
         eprintln!(
@@ -114,37 +181,15 @@ pub fn replay(record: &GameRecord, rules: &Rules) -> Result<GameState, MoveError
         );
     }
 
-    let mut pending = new_game(record.config.clone(), rules, record.seed).map_err(MoveError::RuleViolation)?;
+    let mut pending = new_game(record.config.clone(), rules, record.seed)
+        .map_err(|e| ReplayError { event_index: 0, message: format!("new_game: {e}") })?;
     if let Some(obs) = &record.setup_observations {
-        pending = reconcile_setup(pending, obs, rules).map_err(MoveError::RuleViolation)?;
+        pending = reconcile_setup(pending, obs, rules)
+            .map_err(|e| ReplayError { event_index: 0, message: format!("reconcile_setup: {e}") })?;
     }
-    let mut state = finalize_setup(pending, &record.choices).map_err(MoveError::RuleViolation)?;
-    for ev in &record.events {
-        state = match ev {
-            RecordedEvent::Move(mv) => apply_move(&state, mv, rules)?,
-            RecordedEvent::RevealOrders(cards) => {
-                let mut s = state;
-                s.arrange_orders_on_top(cards)?;
-                s
-            }
-            RecordedEvent::RevealTechs(cards) => {
-                let mut s = state;
-                s.arrange_techs_on_top(cards)?;
-                s
-            }
-            RecordedEvent::RevealStartingOrder { player, card } => {
-                let mut s = state;
-                s.reveal_starting_order(*player, *card)?;
-                s
-            }
-            RecordedEvent::RevealFivePowerToken { area, effect } => {
-                let mut s = state;
-                s.reveal_five_power_token(*area, *effect)?;
-                s
-            }
-        };
-    }
-    Ok(state)
+    let state = finalize_setup(pending, &record.choices)
+        .map_err(|e| ReplayError { event_index: 0, message: format!("finalize_setup: {e}") })?;
+    replay_from(&state, &record.events, rules)
 }
 
 #[cfg(test)]
@@ -184,6 +229,27 @@ mod tests {
         record.push_event(RecordedEvent::RevealOrders(vec![expected_top]));
         let state = replay(&record, &rules).unwrap();
         assert_eq!(state.order_deck.last(), Some(&expected_top));
+    }
+
+    /// Task 13 test (a): a bad event partway through the log must name its
+    /// own 0-based index into `record.events`, not just "some event failed"
+    /// -- a 3-event record with event 1 corrupted must report index 1
+    /// exactly, regardless of event 2 (never reached) being present at all.
+    #[test]
+    fn replay_of_illegal_event_names_its_index() {
+        let rules = Rules::standard();
+        let config = GameConfig::for_player_count(2);
+        let choices = vec![StartingOrderChoice::Keep(0), StartingOrderChoice::Keep(0)];
+        let mut record = GameRecord::new(4, config, choices);
+        record.push_move(Move::EndAdditionalPhase); // event 0: legal
+        // OrderCardId(255) was never dealt (real ids are 1-36) -- can never
+        // be in any player's hand, so this is illegal regardless of phase.
+        record.push_move(Move::FulfillOrder { order_id: OrderCardId(255) }); // event 1: illegal
+        record.push_move(Move::EndAdditionalPhase); // event 2: never reached
+        assert_eq!(record.events.len(), 3);
+
+        let err = replay(&record, &rules).unwrap_err();
+        assert_eq!(err.event_index, 1);
     }
 
     #[test]

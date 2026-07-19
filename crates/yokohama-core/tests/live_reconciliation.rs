@@ -211,3 +211,87 @@ fn setup_observations_from_another_seed_replay_and_play_on() {
     }
     assert_eq!(replay(&record, &rules).unwrap(), state);
 }
+
+#[test]
+fn reconcile_moves_the_canal_and_adjacency_matches_direct_generation() {
+    // Re-type a 3p board so the Canal MOVES: seeded seed-1 layout has the
+    // Canal at AreaId(3), grid (0,3), crossing pair (2,4); observe a tile
+    // permutation swapping it to AreaId(9), grid (1,2) -> new pair (8,10)
+    // (Task 9, design 2026-07-18 decision log).
+    let rules = Rules::standard();
+    let pending = new_game(GameConfig::for_player_count(3), &rules, 1).unwrap();
+    let (rows, cols) = (2u8, 7u8); // 3p grid dimensions
+    let n = (rows * cols) as usize;
+
+    let mut tiles: Vec<yokohama_core::AreaType> = (0..n)
+        .map(|i| pending.state.board_layout.areas[&yokohama_core::AreaId::new(i as u8)].area_type)
+        .collect();
+    assert_eq!(
+        tiles[3],
+        yokohama_core::AreaType::Canal,
+        "fixture assumption: seed 1's 3p Canal must be at id 3"
+    );
+    assert_eq!(
+        pending.state.board_layout.canal_crossings,
+        vec![(yokohama_core::AreaId::new(2), yokohama_core::AreaId::new(4))],
+        "fixture assumption: seed 1's 3p Canal crossing must be (2,4)"
+    );
+
+    // Swap the Canal (id 3) with id 9: a valid multiset-preserving
+    // permutation that moves the Canal to grid (1,2).
+    tiles.swap(3, 9);
+    let sites: Vec<Option<u8>> = {
+        let mut next = 0u8;
+        tiles
+            .iter()
+            .map(|t| {
+                if *t == yokohama_core::AreaType::Canal {
+                    None
+                } else {
+                    let s = next;
+                    next += 1;
+                    Some(s)
+                }
+            })
+            .collect()
+    };
+    let obs = yokohama_core::SetupObservations {
+        board: Some(yokohama_core::ObservedBoard { tiles, sites }),
+        ..Default::default()
+    };
+    let reconciled = yokohama_core::reconcile_setup(pending, &obs, &rules).unwrap();
+    let layout = &reconciled.state.board_layout;
+
+    // Crossings follow the Canal's NEW cell exactly (only the horizontal
+    // pair exists in a 2-row grid): id 9 = grid (1,2) -> flank pair (8,10).
+    let expected_new = yokohama_core::derive_canal_crossings((1, 2), rows, cols);
+    assert_eq!(expected_new, vec![(yokohama_core::AreaId::new(8), yokohama_core::AreaId::new(10))]);
+    assert_eq!(layout.canal_crossings, expected_new);
+    assert!(layout.adjacent_areas(yokohama_core::AreaId::new(8)).contains(&yokohama_core::AreaId::new(10)));
+    assert!(layout.adjacent_areas(yokohama_core::AreaId::new(10)).contains(&yokohama_core::AreaId::new(8)));
+
+    // The STALE seeded pair (2,4) is gone: those cells are not orthogonal
+    // neighbors (2 apart on the same row), so they must not be adjacent.
+    assert!(!layout.adjacent_areas(yokohama_core::AreaId::new(2)).contains(&yokohama_core::AreaId::new(4)));
+    assert!(!layout.adjacent_areas(yokohama_core::AreaId::new(4)).contains(&yokohama_core::AreaId::new(2)));
+
+    // Adjacency otherwise equals grid-orthogonal edges plus this one new
+    // crossing pair - identical to generating this exact tile arrangement directly.
+    let mut expected_adjacency = std::collections::BTreeMap::<yokohama_core::AreaId, Vec<yokohama_core::AreaId>>::new();
+    for (a, b) in yokohama_core::grid_orthogonal_adjacency(rows, cols) {
+        expected_adjacency.entry(a).or_default().push(b);
+        expected_adjacency.entry(b).or_default().push(a);
+    }
+    for &(a, b) in &expected_new {
+        expected_adjacency.entry(a).or_default().push(b);
+        expected_adjacency.entry(b).or_default().push(a);
+    }
+    for v in expected_adjacency.values_mut() {
+        v.sort_by_key(|id| id.0);
+    }
+    let mut got_adjacency = layout.adjacency.clone();
+    for v in got_adjacency.values_mut() {
+        v.sort_by_key(|id| id.0);
+    }
+    assert_eq!(got_adjacency, expected_adjacency);
+}

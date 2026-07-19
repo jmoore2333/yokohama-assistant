@@ -4,8 +4,8 @@ use serde::{Deserialize, Serialize};
 
 use crate::types::{
     AchievementCard, AreaId, BoardLayout, ChurchTrack, CustomsTrack,
-    FivePowerEffect, LabBoard, MercenarySupply, OrderCardId, PlayerId, PlayerColor, PlayerState,
-    PortBoard, TechCardId, TurnPhase,
+    FivePowerEffect, LabBoard, MercenarySupply, OrderCardId, PendingChoice, PlayerId, PlayerColor,
+    PlayerState, PortBoard, TechCardId, TurnPhase,
 };
 
 /// Game configuration (immutable after setup).
@@ -242,6 +242,11 @@ pub struct GameState {
     pub final_round: bool,
     /// Player who triggered end game (for round completion logic).
     pub trigger_player: Option<PlayerId>,
+
+    /// Unresolved reward/recovery choices for the current player, FIFO.
+    /// Serialized state (not history). Empty at every player hand-off.
+    #[serde(default)]
+    pub pending_choices: Vec<PendingChoice>,
 }
 
 impl GameState {
