@@ -152,6 +152,14 @@ pub fn apply_move_unchecked(state: &GameState, mv: &Move, rules: &Rules) -> Resu
         }
     }
 
+    // Task 9 (design §4.4): the resolution just above may have left another,
+    // still-queued choice further back in the queue degraded to Decline-only
+    // (e.g. two queued WarehouseTakes sharing one warehouse item -- the
+    // first resolution can empty it out from under the second). Normalize
+    // BEFORE the Recovery gate below, so a queue emptied entirely by
+    // normalization still triggers Recovery in this same apply.
+    crate::game::choices::normalize_queue_head(&mut new_state, rules);
+
     // Handle Recovery phase automatically -- deferred while a choice from
     // this turn's reward is still unresolved (design 2026-07-18 §5.1-5.2):
     // resolving the last queued choice runs Recovery in that same apply.

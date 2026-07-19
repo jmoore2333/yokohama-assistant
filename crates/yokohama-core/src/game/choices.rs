@@ -229,6 +229,35 @@ pub fn resolve_choice_move(state: &mut GameState, mv: &Move, rules: &Rules) -> R
     Ok(())
 }
 
+/// Design §4.4: after an apply, heads whose ONLY resolution is a Decline are
+/// dead questions -- resolve them silently (structural no-ops by the pinned
+/// two-prong invariant, `assert_decline_or_never_singleton` in
+/// `tests/choice_encoding.rs`). Loops down the queue: normalizing the head
+/// can expose a NEXT head that has independently degraded the same way
+/// (e.g. two queued WarehouseTakes sharing one warehouse item -- the first
+/// resolution empties it out from under the second). ONLY Decline-only heads
+/// normalize: a degraded-to-one ChurchSpace/CustomsSpace head still prompts
+/// its single placement (it's a real placement move, not a Decline), and
+/// StationPlace has no Decline resolution to begin with (design §4.2) -- so
+/// neither ever matches `lone_decline` below, and both fall through to the
+/// `return` on the first iteration. Deterministic pure-state fn (same
+/// inputs, same result every time), so replays re-derive identical
+/// normalization from the recorded moves alone, with nothing extra to log.
+pub(crate) fn normalize_queue_head(state: &mut GameState, rules: &Rules) {
+    loop {
+        let Some(head) = state.pending_choices.first().cloned() else { return };
+        let opts = generate_choice_resolutions_for(state, &head, rules);
+        let lone_decline = opts.len() == 1
+            && matches!(opts[0], Move::DeclineWarehouseTake | Move::DeclineAssistantMove);
+        if !lone_decline {
+            return;
+        }
+        let mv = opts.into_iter().next().unwrap();
+        resolve_choice_move(state, &mv, rules)
+            .expect("lone-decline resolution is legal by construction");
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

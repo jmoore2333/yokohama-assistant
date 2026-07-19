@@ -475,6 +475,26 @@ fn assert_decline_or_never_singleton(head: &PendingChoice, resolutions: &[Move])
     }
 }
 
+/// Task 9 becomes-singleton probe (design §4.4): `normalize_queue_head`
+/// (called at the end of every `apply_move_unchecked`, right after the
+/// `match mv` block resolves the head) must never leave a queue head whose
+/// ONLY resolution is a Decline -- that is a dead question, and the whole
+/// point of Task 9 is that it auto-resolves silently instead of prompting.
+/// `get_legal_moves` is queue-first (returns exactly the head's resolution
+/// set whenever a choice is pending) -- the same head-only view
+/// `assert_decline_or_never_singleton` above relies on, so this is a no-op
+/// (vacuously true) whenever the queue is empty.
+fn assert_head_never_lone_decline(state: &GameState, rules: &Rules) {
+    let Some(head) = state.pending_choices.first() else { return };
+    let resolutions = get_legal_moves(state, rules);
+    let lone_decline = resolutions.len() == 1
+        && matches!(resolutions[0], Move::DeclineWarehouseTake | Move::DeclineAssistantMove);
+    assert!(
+        !lone_decline,
+        "{head:?} head degraded to lone Decline without normalizing: {resolutions:?}"
+    );
+}
+
 #[test]
 fn push_choice_singletons_are_never_non_decline_effects() {
     let rules = Rules::empty_for_tests();
@@ -548,6 +568,77 @@ fn push_choice_singletons_are_never_non_decline_effects() {
         assert!(state.pending_choices.is_empty(), "no movable assistant must auto-decline, not queue");
         assert_eq!(state.players[0], before, "auto-declined singleton must be a true no-op");
     }
+
+    // Task 9 becomes-singleton probe (design §4.4): two WarehouseTakes
+    // queued back to back (direct `pending_choices.push`, bypassing
+    // push_choice's own at-push-time singleton probe so BOTH start queued --
+    // the shape `apply_space_reward`/`execute_customs_action` produce for a
+    // 2-icon reward against unconsumed stock), warehouse stocked with
+    // exactly ONE assistant (0 shophouses, 0 trading houses) so the first
+    // resolution exhausts the only item either head could ever take -- the
+    // SECOND, still-queued WarehouseTake's resolution set degrades from
+    // [Assistant, Decline] to [Decline] alone. Resolving the first must not
+    // leave that dead question sitting as the new head.
+    {
+        let mut state = create_test_game_state(2);
+        state.players[0].assistants.in_warehouse = 1;
+        state.players[0].shophouses.in_warehouse = 0; // else the SECOND head still offers Shophouse
+        state.players[0].trading_houses.in_warehouse = 0; // ...and TradingHouse -- neither degenerate case fires
+        state.pending_choices.push(PendingChoice::WarehouseTake);
+        state.pending_choices.push(PendingChoice::WarehouseTake);
+        let after = apply_move(
+            &state,
+            &Move::ChooseWarehouseTake { item: WarehouseItem::Assistant },
+            &rules,
+        )
+        .unwrap();
+        assert_head_never_lone_decline(&after, &rules);
+    }
+}
+
+// ===========================================================================
+// Task 9 (design §4.4): head-of-queue normalization -- a queued choice whose
+// option set degrades to exactly [Decline] after an EARLIER resolution
+// consumed the shared resource must auto-resolve instead of prompting a dead
+// question.
+// ===========================================================================
+
+#[test]
+fn a_queued_take_that_becomes_decline_only_auto_resolves_without_prompting() {
+    // Fixture: warehouse has EXACTLY 1 assistant, 0 shophouses, 0 trading
+    // houses -- so after the first take, nothing is left for the second.
+    // Two WarehouseTakes queued back to back (the direct-push pattern from
+    // `game::choices::tests::double_warehouse_choice_fixture`).
+    let mut state = create_test_game_state(2);
+    state.players[0].assistants.in_warehouse = 1;
+    state.players[0].shophouses.in_warehouse = 0;
+    state.players[0].trading_houses.in_warehouse = 0;
+    state.pending_choices.push(PendingChoice::WarehouseTake);
+    state.pending_choices.push(PendingChoice::WarehouseTake);
+    let rules = Rules::empty_for_tests();
+    let before = state.players[0].clone();
+
+    // Resolve the first take (ChooseWarehouseTake for the assistant) -- this
+    // empties the warehouse, so the second queued WarehouseTake's resolution
+    // set collapses to [DeclineWarehouseTake] alone.
+    let after = apply_move(
+        &state,
+        &Move::ChooseWarehouseTake { item: WarehouseItem::Assistant },
+        &rules,
+    )
+    .unwrap();
+
+    // EXPECTED post-normalization: the queue is EMPTY (the second take
+    // became {Decline} and auto-resolved) and the player state shows
+    // exactly one take's effect -- a true no-op for the second.
+    assert!(
+        after.pending_choices.is_empty(),
+        "becomes-singleton head must auto-resolve, not prompt"
+    );
+    assert_eq!(after.players[0].assistants.in_hand, before.assistants.in_hand + 1);
+    assert_eq!(after.players[0].assistants.in_warehouse, 0);
+    // no second charge, no second token:
+    assert_eq!(after.players[0].money, before.money);
 }
 
 // ===========================================================================
