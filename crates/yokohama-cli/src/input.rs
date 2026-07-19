@@ -33,25 +33,45 @@ pub(crate) enum TechAmbiguity {
     LowestId,
 }
 
+/// Why `parse_tech_entry` rejected a token -- kept structured rather than a
+/// formatted `String` because its two callers describe the SAME failure to
+/// two very different audiences (fix wave, review of commit 0a01c95 finding
+/// 2): the setup wizard is checking the full registry ("not a valid tech
+/// card"), a live reveal is checking only the current deck ("not currently
+/// in the tech deck" -- a card can be real but already drawn, which is a
+/// materially different fact for someone tracking a live game). Sharing one
+/// wording between the two silently regressed the reveal path's message
+/// when the parsing logic was first unified; each caller now renders its
+/// own text from this error via `match`, so the wording can never drift
+/// back together by accident.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum TechEntryError {
+    /// A syntactically valid `T<id>` numeric token, but `id` (the payload)
+    /// isn't in the candidate pool.
+    NotInPool(u8),
+    /// A name prefix that matched zero candidates.
+    NoMatch,
+    /// A name prefix that matched 2+ candidates under `TechAmbiguity::Reject`.
+    Ambiguous,
+}
+
 /// Parse a tech-card token ("T05"/"t05" or a case-insensitive name prefix)
 /// into one of `candidates` (the wizard passes every registry id; a live
 /// reveal passes only the ids currently in the deck). Numeric tokens are
 /// checked against `candidates` too, so both callers reject a real-but-
-/// unavailable card the same way they reject a name with no match.
+/// unavailable card the same way they reject a name with no match. Returns
+/// a `TechEntryError` rather than a formatted message -- see its doc
+/// comment for why.
 pub(crate) fn parse_tech_entry(
     tok: &str,
     techs: &TechRegistry,
     candidates: &[TechCardId],
     ambiguity: TechAmbiguity,
-) -> Result<TechCardId, String> {
+) -> Result<TechCardId, TechEntryError> {
     if let Some(rest) = tok.strip_prefix(['T', 't']) {
         if let Ok(n) = rest.parse::<u8>() {
             let card = TechCardId(n);
-            return if candidates.contains(&card) {
-                Ok(card)
-            } else {
-                Err(format!("'{tok}' is not a valid tech card"))
-            };
+            return if candidates.contains(&card) { Ok(card) } else { Err(TechEntryError::NotInPool(n)) };
         }
     }
     let needle = tok.to_lowercase();
@@ -62,11 +82,11 @@ pub(crate) fn parse_tech_entry(
         .collect();
     matches.sort_unstable_by_key(|id| id.0);
     match matches.len() {
-        0 => Err(format!("'{tok}' does not match any tech card")),
+        0 => Err(TechEntryError::NoMatch),
         1 => Ok(matches[0]),
         _ => match ambiguity {
             TechAmbiguity::LowestId => Ok(matches[0]), // already sorted ascending
-            TechAmbiguity::Reject => Err(format!("'{tok}' matches more than one tech card -- use T<id>")),
+            TechAmbiguity::Reject => Err(TechEntryError::Ambiguous),
         },
     }
 }
@@ -101,9 +121,21 @@ mod tests {
         // pre-existing fixture comment).
         let candidates = vec![TechCardId(11), TechCardId(12)];
         assert_eq!(parse_tech_entry("T11", &rules.techs, &candidates, TechAmbiguity::Reject), Ok(TechCardId(11)));
-        assert!(parse_tech_entry("T99", &rules.techs, &candidates, TechAmbiguity::Reject).is_err(), "not in candidates");
-        assert!(parse_tech_entry("zzz", &rules.techs, &candidates, TechAmbiguity::Reject).is_err(), "no name match");
-        assert!(parse_tech_entry("ball", &rules.techs, &candidates, TechAmbiguity::Reject).is_err(), "ambiguous under Reject");
+        assert_eq!(
+            parse_tech_entry("T99", &rules.techs, &candidates, TechAmbiguity::Reject),
+            Err(TechEntryError::NotInPool(99)),
+            "not in candidates"
+        );
+        assert_eq!(
+            parse_tech_entry("zzz", &rules.techs, &candidates, TechAmbiguity::Reject),
+            Err(TechEntryError::NoMatch),
+            "no name match"
+        );
+        assert_eq!(
+            parse_tech_entry("ball", &rules.techs, &candidates, TechAmbiguity::Reject),
+            Err(TechEntryError::Ambiguous),
+            "ambiguous under Reject"
+        );
         assert_eq!(
             parse_tech_entry("ball", &rules.techs, &candidates, TechAmbiguity::LowestId),
             Ok(TechCardId(11)),

@@ -6,7 +6,7 @@
 use yokohama_core::*;
 
 use crate::describe;
-use crate::input::{parse_order_id, parse_tech_entry, TechAmbiguity};
+use crate::input::{parse_order_id, parse_tech_entry, TechAmbiguity, TechEntryError};
 use crate::repl::{Repl, StepOutput};
 
 /// Live-mode reveal-collection state: while a group is being collected,
@@ -272,12 +272,26 @@ pub(crate) fn parse_order_reveal(words: &[&str], deck: &[OrderCardId], collected
 /// thin wrapper over the shared `parse_tech_entry` (design 2026-07-18
 /// §5.5 riding item 4), which is why an ambiguous name here resolves
 /// (`TechAmbiguity::LowestId`) rather than being rejected the way the
-/// setup wizard's `parse_tech_entry` call does.
+/// setup wizard's `parse_tech_entry` call does. Renders its OWN
+/// deck-flavored wording from `TechEntryError` (fix wave, review of commit
+/// 0a01c95 finding 2: these exact messages regressed to the wizard's
+/// registry-flavored wording when the two were first unified -- "not
+/// currently in the tech deck" matters here because a card can be real but
+/// already drawn, a materially different fact from "not a valid tech
+/// card"). `Ambiguous` is unreachable under `LowestId` (kept as a safe,
+/// non-panicking fallback rather than `unreachable!()` in case that ever
+/// changes).
 pub(crate) fn parse_tech_reveal(words: &[&str], deck: &[TechCardId], techs: &TechRegistry) -> Result<TechCardId, String> {
     if words.len() != 1 {
         return Err("Enter exactly one tech code (e.g. 'T05' or a name), or 'cancel'.".to_string());
     }
-    parse_tech_entry(words[0], techs, deck, TechAmbiguity::LowestId)
+    let tok = words[0];
+    parse_tech_entry(tok, techs, deck, TechAmbiguity::LowestId).map_err(|e| match e {
+        TechEntryError::NotInPool(n) => format!("T{n:02} is not currently in the tech deck."),
+        TechEntryError::NoMatch | TechEntryError::Ambiguous => {
+            format!("'{tok}' does not match any tech card currently in the deck.")
+        }
+    })
 }
 
 /// Parse a 5-Power token-effect letter into the canonical pool's fixed
@@ -501,11 +515,20 @@ mod tests {
         let ball_deck = vec![TechCardId(11), TechCardId(12)];
         assert!(parse_tech_reveal(&[], &ball_deck, &rules.techs).is_err()); // empty input line
         assert!(parse_tech_reveal(&["T"], &ball_deck, &rules.techs).is_err()); // no T-named card in THIS deck
-        assert!(parse_tech_reveal(&["T99"], &ball_deck, &rules.techs).is_err()); // valid code, not in deck
         assert!(parse_tech_reveal(&["🎉"], &ball_deck, &rules.techs).is_err());
         assert!(parse_tech_reveal(&["Zzzz"], &ball_deck, &rules.techs).is_err()); // no name match
         assert_eq!(parse_tech_reveal(&["ball"], &ball_deck, &rules.techs), Ok(TechCardId(11)), "ambiguous name resolves to the LOWEST id");
         assert_eq!(parse_tech_reveal(&["T12"], &ball_deck, &rules.techs), Ok(TechCardId(12)));
+
+        // Message texts pinned (fix wave, review of commit 0a01c95 finding
+        // 2): a live-reveal rejection must talk about the DECK, not the
+        // registry -- a card can be real but already drawn, which is a
+        // different fact from "not a valid tech card" (the wizard's
+        // registry-flavored wording, which must NOT leak in here).
+        let not_in_deck = parse_tech_reveal(&["T99"], &ball_deck, &rules.techs).unwrap_err(); // valid code, not in deck
+        assert_eq!(not_in_deck, "T99 is not currently in the tech deck.", "{not_in_deck}");
+        let no_match = parse_tech_reveal(&["Zzzz"], &ball_deck, &rules.techs).unwrap_err();
+        assert_eq!(no_match, "'Zzzz' does not match any tech card currently in the deck.", "{no_match}");
     }
 
     #[test]

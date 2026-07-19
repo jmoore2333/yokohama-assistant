@@ -14,7 +14,7 @@
 
 use std::collections::{BTreeSet, HashMap};
 
-use crate::input::{parse_order_id, parse_tech_entry, tech_name, TechAmbiguity};
+use crate::input::{parse_order_id, parse_tech_entry, tech_name, TechAmbiguity, TechEntryError};
 use crate::session::Session;
 use yokohama_core::*;
 
@@ -609,6 +609,21 @@ fn perform_sim_edit(
             ws.seed = ask_seed(input, out)?;
             ws.config.setup_seed = ws.seed;
             ws.pending = new_game(ws.config.clone(), rules, ws.seed).map_err(|e| e.to_string())?;
+            // A new seed deals different cards, so every previously-answered
+            // keep choice referred to a preview the operator can no longer
+            // see -- `StartingOrderChoice::Keep(k)` is just an index (fix
+            // wave, review of 0a01c95 finding 1: it stays "valid" against
+            // ANY deal, so nothing would otherwise catch a stale answer
+            // silently keeping the wrong card under the new deal). Re-ask
+            // every seat from scratch, re-showing each one's actual new
+            // preview -- the same "re-collect, don't reuse" treatment
+            // `edit deal <seat>` already gives a single seat.
+            let mut choices = Vec::with_capacity(ws.players as usize);
+            for seat in 0..ws.players {
+                let keep = ask_sim_deal(input, out, seat, &ws.pending, rules)?;
+                choices.push(StartingOrderChoice::Keep(keep));
+            }
+            ws.choices = choices;
         }
         Some("save") => {
             ws.save_path = ask_save_path(input, out, ws.seed)?;
@@ -724,14 +739,21 @@ fn ask_order_answer(s: &str, rules: &Rules, seen_order_ids: &mut BTreeSet<u8>) -
 /// Validate one tech-card answer: the shared `parse_tech_entry` (registry
 /// membership folded into its candidate check, `TechAmbiguity::Reject` --
 /// the wizard records physical identity, so an ambiguous name prefix must
-/// be refused, not guessed), then not-already-entered.
+/// be refused, not guessed), then not-already-entered. Renders its own
+/// wizard-flavored wording from `TechEntryError` (unchanged from before the
+/// fix wave) -- `reveal.rs`'s `parse_tech_reveal` renders its own
+/// deck-flavored wording from the SAME error type instead of sharing text.
 fn ask_tech_answer(
     s: &str,
     rules: &Rules,
     all_tech_ids: &[TechCardId],
     seen_tech_ids: &mut BTreeSet<u8>,
 ) -> Result<TechCardId, String> {
-    let id = parse_tech_entry(s, &rules.techs, all_tech_ids, TechAmbiguity::Reject)?;
+    let id = parse_tech_entry(s, &rules.techs, all_tech_ids, TechAmbiguity::Reject).map_err(|e| match e {
+        TechEntryError::NotInPool(_) => format!("'{s}' is not a valid tech card"),
+        TechEntryError::NoMatch => format!("'{s}' does not match any tech card"),
+        TechEntryError::Ambiguous => format!("'{s}' matches more than one tech card -- use T<id>"),
+    })?;
     if !seen_tech_ids.insert(id.0) {
         return Err(format!("'{s}' ({}) was already entered", tech_name(id, &rules.techs)));
     }
@@ -1228,5 +1250,62 @@ mod tests {
         let repl = repl.unwrap_or_else(|e| panic!("expected Ok, got Err({e}); transcript:\n{transcript}"));
         assert!(!repl.session.legal().is_empty());
         std::fs::remove_file("yokohama-game-605.json").ok();
+    }
+
+    // ---- Task 14 fix wave (review of commit 0a01c95) ----
+
+    /// Finding 1: sim `edit seed` used to recompute `ws.pending` under the
+    /// new seed but leave `ws.choices` untouched. Since `StartingOrderChoice
+    /// ::Keep(k)` is just an index (0 or 1) with no reference to which
+    /// actual card it names, an old keep answer stays "syntactically valid"
+    /// against a completely different deal -- finalize_setup never errors,
+    /// it just silently keeps whatever card sits at that index in the NEW
+    /// deal, which the operator never saw or confirmed. The fix re-asks
+    /// every seat's keep choice (re-showing that seat's ACTUAL new-seed
+    /// preview) whenever the seed changes. The `Seat 0 dealt:` count is the
+    /// signal that actually distinguishes old from new behavior here: the
+    /// buggy code still returns `Ok` (Keep(0)/Keep(1) are unconditionally
+    /// valid regardless of deal identity) and even happens to keep the
+    /// "right" card at that index by construction, so asserting on the
+    /// final hand ALONE would not catch this -- the bug is that the
+    /// operator's answer was never re-collected against what they'd
+    /// actually see, which only the re-printed preview proves.
+    #[test]
+    fn sim_edit_seed_reasks_every_seat_keep_choice_and_final_hands_match_new_seed() {
+        let rules = Rules::standard();
+        let config = GameConfig::for_player_count(2);
+        let pending_a = new_game(config.clone(), &rules, 700).unwrap();
+        let pending_b = new_game(config.clone(), &rules, 701).unwrap();
+        assert_ne!(pending_a.deals, pending_b.deals, "test precondition: the two seeds must deal different cards");
+
+        let (repl, transcript) = feed(&[
+            "sim", "2", "red", "blue", "0", "700", "",
+            "0", "1",       // seat 0/1 keep choices, answered while looking at seed 700's deal
+            "edit seed",
+            "701",          // change the seed -- the seed-700 preview the operator just answered against is now stale
+            "0", "1",       // seat 0/1 keep choices must be RE-ASKED against seed 701's (different) deal
+            "confirm",
+        ]);
+        assert_eq!(
+            transcript.matches("Seat 0 dealt:").count(),
+            2,
+            "a seed edit must re-preview + re-ask every seat's keep choice, not silently keep the stale answers\n{transcript}"
+        );
+        assert_eq!(transcript.matches("Seat 1 dealt:").count(), 2, "{transcript}");
+        let repl = repl.unwrap_or_else(|e| panic!("expected Ok, got Err({e}); transcript:\n{transcript}"));
+        let state = repl.session.state();
+        assert_eq!(
+            state.players[0].starting_order,
+            Some(pending_b.deals[0][0]),
+            "seat 0 kept index 0 of seed 701's deal (the deal actually previewed the second time), not seed 700's"
+        );
+        assert_eq!(
+            state.players[1].starting_order,
+            Some(pending_b.deals[1][1]),
+            "seat 1 kept index 1 of seed 701's deal"
+        );
+        assert_eq!(repl.session.record().seed, 701);
+        std::fs::remove_file("yokohama-game-700.json").ok(); // save path was set before the seed edit; not retroactively renamed
+        std::fs::remove_file("yokohama-game-701.json").ok(); // in case autosave fired under a different path
     }
 }
