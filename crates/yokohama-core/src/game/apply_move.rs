@@ -3315,6 +3315,39 @@ mod tests {
         assert_eq!(next.players[0].order_cards_in_hand, vec![OrderCardId(7)]);
     }
 
+    #[test]
+    fn mercenary_port_take_at_five_grants() {
+        // Pin task (Task 8, 2026-07-18, design §5.3-1): a mercenary sub-turn
+        // Port take runs through the same execute_port_action path as a
+        // normal turn (area resolved from mercenary_target_area instead of
+        // president_location), so the take-gated Power-5 +3 VP bonus must
+        // fire there too.
+        let rules = Rules::standard();
+        let mut state = create_test_game_state(2);
+        let port_area = AreaId::new(5);
+        state.board_layout.areas.insert(port_area, AreaConfig {
+            area_type: AreaType::PortA,
+            grid_position: (0, 5),
+        });
+        state.is_mercenary_action = true;
+        state.mercenary_target_area = Some(port_area);
+        state.turn_phase = TurnPhase::AreaAction;
+        state.current_action_power = Some(5);
+        state.port_state.port_a.slots[0] = Some(OrderCardId(7));
+        let starting_vp = state.players[0].victory_points;
+
+        let mv = Move::ExecuteAreaAction {
+            action: AreaAction::Port {
+                cards_taken: vec![OrderCardId(7)],
+                second_card_payment: None,
+            },
+        };
+        let next = apply_move(&state, &mv, &rules).unwrap();
+
+        assert_eq!(next.players[0].order_cards_in_hand, vec![OrderCardId(7)]);
+        assert_eq!(next.players[0].victory_points, starting_vp + 3);
+    }
+
     /// Places a LaboratoryA area on the board and puts the president there.
     fn place_president_at_lab_a(state: &mut GameState) -> AreaId {
         let lab_area = AreaId::new(0);
@@ -3754,6 +3787,25 @@ mod tests {
     fn skip_at_power_5_port_does_not_grant_vp_bonus() {
         // v1 ruling: Skip declines all optional components, including the
         // Port power-5 +3 VP bonus, which requires an actual take.
+        let rules = Rules::empty_for_tests();
+        let mut state = create_test_game_state(2);
+        let area = AreaId::new(0);
+        state.board_layout.areas.insert(area, AreaConfig { area_type: AreaType::PortA, grid_position: (0, 0) });
+        state.players[0].president_location = PresidentLocation::OnBoard(area);
+        state.turn_phase = TurnPhase::AreaAction;
+        state.current_action_power = Some(5);
+        let starting_vp = state.players[0].victory_points;
+
+        let mv = Move::ExecuteAreaAction { action: AreaAction::Skip };
+        let next = apply_move(&state, &mv, &rules).unwrap();
+
+        assert_eq!(next.players[0].victory_points, starting_vp);
+    }
+
+    #[test]
+    fn skip_at_five_power_port_grants_no_vp() {
+        // owner-adjudicated 2026-07-18: +3 VP is take-gated; full hand bars
+        // the action; Skip grants nothing (design §5.3-1).
         let rules = Rules::empty_for_tests();
         let mut state = create_test_game_state(2);
         let area = AreaId::new(0);
