@@ -102,7 +102,9 @@ pub fn labs_view(state: &GameState, rules: &Rules) -> String {
 }
 
 /// Per player: color, money, VP, goods, imports, hand order codes, completed
-/// order count, technology names, tokens/mercenaries, and President location.
+/// order count, technology names, tokens/mercenaries, assistant/shophouse/
+/// trading-house counts by zone (hand/board/warehouse, built) plus the
+/// trading house's next Employment-Agency take cost, and President location.
 pub fn players_panel(state: &GameState, rules: &Rules) -> String {
     let mut out = String::new();
     for p in &state.players {
@@ -123,6 +125,23 @@ pub fn players_panel(state: &GameState, rules: &Rules) -> String {
             "  tokens: 5power {}  mercenaries {}\n",
             p.five_power_tokens,
             p.mercenaries.total(),
+        ));
+
+        let assistants_on_board: u32 = p.assistants.on_board.values().map(|&c| c as u32).sum();
+        out.push_str(&format!(
+            "  assistants: hand {}  board {}  warehouse {}\n",
+            p.assistants.in_hand, assistants_on_board, p.assistants.in_warehouse,
+        ));
+        out.push_str(&format!(
+            "  shophouses: hand {}  warehouse {}  built {}\n",
+            p.shophouses.in_hand, p.shophouses.in_warehouse, p.shophouses.built.len(),
+        ));
+        out.push_str(&format!(
+            "  trading:    hand {}  warehouse {}  built {}  (next take {} yen)\n",
+            p.trading_houses.in_hand,
+            p.trading_houses.in_warehouse,
+            p.trading_houses.built.len(),
+            p.trading_houses.next_cost(),
         ));
 
         let pres = match p.president_location {
@@ -686,6 +705,39 @@ mod tests {
         assert!(v.contains("Blue"), "{v}");
         assert!(v.contains("3 yen"), "{v}");
         assert!(v.contains("4 yen"), "{v}");
+    }
+
+    /// Task 11 (T2.1): the panel must show assistant/shophouse/trading-house
+    /// token counts by zone (hand/board/warehouse, built) plus the trading
+    /// house's next Employment-Agency take cost, appended after the existing
+    /// `tokens:` line -- the brief's exact line shapes.
+    #[test]
+    fn players_panel_shows_the_full_economy() {
+        let mut state = test_state_2p();
+        let rules = Rules::standard();
+        let area = *state
+            .board_layout
+            .areas
+            .iter()
+            .find(|(_, cfg)| cfg.area_type != AreaType::Canal)
+            .expect("a non-Canal area exists")
+            .0;
+        state.players[0].assistants.on_board.insert(area, 3);
+        state.players[0].assistants.in_hand -= 3;
+        state.players[0].shophouses.built.insert(area, 0);
+        state.players[0].shophouses.in_warehouse -= 1;
+        state.players[0].trading_houses.in_hand = 1;
+        state.players[0].trading_houses.in_warehouse -= 1;
+
+        let text = players_panel(&state, &rules);
+        assert!(text.contains("assistants: hand"), "{text}");
+        assert!(text.contains("shophouses: hand"), "{text}");
+        assert!(text.contains("trading:"), "{text}");
+        assert!(text.contains("next take"), "{text}");
+        // Spot-check real numbers from the fixture (Red is players[0]).
+        assert!(text.contains("  assistants: hand 5  board 3  warehouse 12"), "{text}");
+        assert!(text.contains("  shophouses: hand 2  warehouse 5  built 1"), "{text}");
+        assert!(text.contains("  trading:    hand 1  warehouse 3  built 0  (next take 5 yen)"), "{text}");
     }
 
     #[test]
