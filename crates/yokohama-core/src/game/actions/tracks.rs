@@ -218,7 +218,11 @@ pub fn execute_church_action(
 
     match spaces.len() {
         0 => unreachable!("validated non-empty above"),
-        1 => place_church_assistant(state, player, spaces[0], rules),
+        // `?`, not `.expect(...)`: the acting area was already resolved
+        // moments ago in this same call, so this can never actually Err --
+        // propagating costs nothing and needs no separate soundness
+        // argument (I2 final-review fix).
+        1 => place_church_assistant(state, player, spaces[0], rules)?,
         _ => state.pending_choices.push(PendingChoice::ChurchSpace { total_faith }),
     }
 
@@ -235,9 +239,16 @@ pub fn execute_church_action(
 /// with arrival order, awards the space's VP plus Winery bonus per owned
 /// copy, then queues the space's movement riders (`ChurchTrack::movement_rider`)
 /// as `AssistantMove` choices (design 2026-07-18 §5.2).
-pub fn place_church_assistant(state: &mut GameState, player: PlayerId, space: u8, rules: &Rules) {
-    let area = resolve_acting_area(state, player)
-        .expect("execute_church_action already validated the acting area; queue-first gating makes drift impossible here");
+///
+/// Returns `Err` iff `resolve_acting_area` fails (I2 final-review fix):
+/// under ordinary legal-list play this can't happen (queue-first gating
+/// guarantees no drift between the triggering `execute_church_action` and
+/// a later `ChooseChurchSpace` resolution), but a tampered record can
+/// insert an intervening move (e.g. `ReturnPresidentToHand`, which
+/// validates nothing) between the two -- `resolve_choice_move` propagates
+/// this as a typed `MoveError::RuleViolation` instead of panicking.
+pub fn place_church_assistant(state: &mut GameState, player: PlayerId, space: u8, rules: &Rules) -> Result<(), &'static str> {
+    let area = resolve_acting_area(state, player)?;
 
     // Computed via immutable borrow before any mutation below.
     let winery_bonus = church_vp_bonus(state, player, &rules.techs);
@@ -257,6 +268,7 @@ pub fn place_church_assistant(state: &mut GameState, player: PlayerId, space: u8
     for _ in 0..ChurchTrack::movement_rider(space) {
         push_choice(state, PendingChoice::AssistantMove, rules);
     }
+    Ok(())
 }
 
 /// Maximum imported goods payable at Customs based on power.
@@ -382,7 +394,9 @@ pub fn execute_customs_action(
 
     match spaces.len() {
         0 => unreachable!("validated non-empty above"),
-        1 => place_customs_assistant(state, player, spaces[0], rules),
+        // `?`, not `.expect(...)`: same reasoning as execute_church_action's
+        // singleton arm (I2 final-review fix).
+        1 => place_customs_assistant(state, player, spaces[0], rules)?,
         _ => state.pending_choices.push(PendingChoice::CustomsSpace { cost: imported_goods_paid }),
     }
 
@@ -401,9 +415,13 @@ pub fn execute_customs_action(
 /// (`CustomsTrack::rider`) as `WarehouseTake` choices via `push_choice` --
 /// the same mechanism order/space Warehouse-icon rewards use (design
 /// 2026-07-18 §5.2, Task 5; no new reward machinery).
-pub fn place_customs_assistant(state: &mut GameState, player: PlayerId, space: u8, rules: &Rules) {
-    let area = resolve_acting_area(state, player)
-        .expect("execute_customs_action already validated the acting area; queue-first gating makes drift impossible here");
+///
+/// Returns `Err` iff `resolve_acting_area` fails (I2 final-review fix) --
+/// see `place_church_assistant`'s doc comment for the exact (tampered-record-
+/// only) scenario this guards against; `resolve_choice_move` propagates it
+/// as a typed `MoveError::RuleViolation` instead of panicking.
+pub fn place_customs_assistant(state: &mut GameState, player: PlayerId, space: u8, rules: &Rules) -> Result<(), &'static str> {
+    let area = resolve_acting_area(state, player)?;
 
     // Computed via immutable borrows before any mutation below.
     let brickyard_bonus = customs_vp_bonus(state, player, &rules.techs);
@@ -429,6 +447,7 @@ pub fn place_customs_assistant(state: &mut GameState, player: PlayerId, space: u
     for _ in 0..warehouse_takes {
         push_choice(state, PendingChoice::WarehouseTake, rules);
     }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -600,7 +619,7 @@ mod tests {
 
         // Resolve as if the player picked space 5 -- proves the full
         // placement tail (assistant consumption, VP, slot, arrival order).
-        place_church_assistant(&mut state, PlayerId::new(0), 5, &rules);
+        place_church_assistant(&mut state, PlayerId::new(0), 5, &rules).unwrap();
 
         let p = &state.players[0];
         assert_eq!(p.assistants.in_hand, 7); // started at 8
@@ -702,7 +721,7 @@ mod tests {
         assert!(result.is_ok());
         assert_eq!(state.players[0].assistants.on_board.get(&area), Some(&2), "not consumed until placement resolves");
 
-        place_church_assistant(&mut state, PlayerId::new(0), 5, &rules);
+        place_church_assistant(&mut state, PlayerId::new(0), 5, &rules).unwrap();
 
         let p = &state.players[0];
         assert_eq!(p.assistants.in_hand, 0, "hand was already empty and stays empty");
@@ -727,7 +746,7 @@ mod tests {
         );
         assert!(result.is_ok());
 
-        place_church_assistant(&mut state, PlayerId::new(0), 5, &rules);
+        place_church_assistant(&mut state, PlayerId::new(0), 5, &rules).unwrap();
 
         assert_eq!(state.players[0].assistants.on_board.get(&area), None);
         assert_eq!(state.players[0].assistants.on_church, 1);
@@ -749,7 +768,7 @@ mod tests {
         );
         assert!(result.is_ok());
 
-        place_church_assistant(&mut state, PlayerId::new(0), 5, &rules);
+        place_church_assistant(&mut state, PlayerId::new(0), 5, &rules).unwrap();
 
         let p = &state.players[0];
         assert_eq!(p.assistants.in_hand, 2, "hand pawn spent, not the acting-area one");
@@ -800,7 +819,7 @@ mod tests {
         execute_church_action(
             &mut state, PlayerId::new(0), 5, false, false, false, false, false, false, &rules,
         ).unwrap();
-        place_church_assistant(&mut state, PlayerId::new(0), 5, &rules);
+        place_church_assistant(&mut state, PlayerId::new(0), 5, &rules).unwrap();
         assert_eq!(state.players[0].assistants.on_church, 1);
         assert_eq!(state.players[0].assistants.on_board.get(&area), None);
 
@@ -832,7 +851,7 @@ mod tests {
         assert!(!legal.contains(&Move::ChooseChurchSpace { space: 7 }), "2P dummy pawn must exclude faith-7");
 
         // Resolve to space 6 (the old auto-place target) to prove placement still works end to end.
-        place_church_assistant(&mut state, PlayerId::new(0), 6, &rules);
+        place_church_assistant(&mut state, PlayerId::new(0), 6, &rules).unwrap();
         assert_eq!(state.players[0].church_positions, vec![6]);
     }
 
@@ -1078,6 +1097,35 @@ mod tests {
     }
 
     #[test]
+    fn tampered_return_to_hand_mid_church_space_queue_errors_not_panics() {
+        // I2 final-review fix: apply_move validates nothing about
+        // pending_choices before dispatching a move (I1(a)'s gap), so a
+        // tampered record can insert a legal-LOOKING ReturnPresidentToHand
+        // while a ChurchSpace choice is queued -- it applies Ok and moves
+        // the President to hand. The queued choice's membership check
+        // (eligible_church_spaces) depends only on the track/faith, not
+        // president location, so ChooseChurchSpace still passes it -- but
+        // placing now has no acting area to resolve. Must surface a typed
+        // error, never panic (previously an unconditional .expect() in
+        // place_church_assistant).
+        let (state, rules) = church_fixture(6); // >=2 eligible spaces -> queues ChurchSpace
+        let mid = apply_move(&state, &church_power_only_move(), &rules).unwrap();
+        assert_eq!(mid.pending_choices, vec![PendingChoice::ChurchSpace { total_faith: 6 }]);
+
+        let tampered = apply_move(
+            &mid, &Move::ReturnPresidentToHand { recover_assistants_from: vec![] }, &rules,
+        ).unwrap();
+        assert_eq!(tampered.players[0].president_location, PresidentLocation::InHand);
+        assert_eq!(
+            tampered.pending_choices, vec![PendingChoice::ChurchSpace { total_faith: 6 }],
+            "queue survives the tampering untouched"
+        );
+
+        let result = apply_move(&tampered, &Move::ChooseChurchSpace { space: 6 }, &rules);
+        assert!(matches!(result, Err(MoveError::RuleViolation(_))), "{result:?}");
+    }
+
+    #[test]
     fn test_church_faith_from_power() {
         assert_eq!(church_faith_from_power(1), 1);
         // Jeremy-adjudicated 2026-07-17: faith scales LINEARLY with power;
@@ -1189,7 +1237,7 @@ mod tests {
         // NOT pop the queue -- that is resolve_choice_move's job, covered
         // separately by choosing_customs_space_places_scores_and_applies_riders
         // -- so the CustomsSpace entry above is still expected below.
-        place_customs_assistant(&mut state, PlayerId::new(0), 1, &rules);
+        place_customs_assistant(&mut state, PlayerId::new(0), 1, &rules).unwrap();
 
         let p = &state.players[0];
         assert_eq!(p.assistants.in_hand, 7); // 8 - 1 (placement); rider auto-declined
@@ -1341,7 +1389,7 @@ mod tests {
         assert!(result.is_ok());
         assert_eq!(state.players[0].assistants.on_board.get(&area), Some(&1), "not consumed until placement resolves");
 
-        place_customs_assistant(&mut state, PlayerId::new(0), 5, &rules);
+        place_customs_assistant(&mut state, PlayerId::new(0), 5, &rules).unwrap();
 
         let p = &state.players[0];
         assert_eq!(p.assistants.in_hand, 0);
@@ -1364,7 +1412,7 @@ mod tests {
         let result = execute_customs_action(&mut state, PlayerId::new(0), 5, 3, &rules);
         assert!(result.is_ok());
 
-        place_customs_assistant(&mut state, PlayerId::new(0), 5, &rules);
+        place_customs_assistant(&mut state, PlayerId::new(0), 5, &rules).unwrap();
 
         let p = &state.players[0];
         assert_eq!(p.assistants.in_hand, 2, "hand pawn spent, not the acting-area one");
@@ -1392,7 +1440,7 @@ mod tests {
         let result = execute_customs_action(&mut state, PlayerId::new(0), 5, 3, &rules);
         assert!(result.is_ok());
 
-        place_customs_assistant(&mut state, PlayerId::new(0), 5, &rules);
+        place_customs_assistant(&mut state, PlayerId::new(0), 5, &rules).unwrap();
 
         assert_eq!(state.players[0].customs_positions, vec![5]);
         assert_eq!(state.players[0].assistants.on_board.get(&customs_area), None);
@@ -1411,7 +1459,7 @@ mod tests {
         state.players[0].assistants.on_board.insert(area, 1);
 
         execute_customs_action(&mut state, PlayerId::new(0), 5, 3, &rules).unwrap();
-        place_customs_assistant(&mut state, PlayerId::new(0), 5, &rules);
+        place_customs_assistant(&mut state, PlayerId::new(0), 5, &rules).unwrap();
         assert_eq!(state.players[0].assistants.on_customs, 1);
         assert_eq!(state.players[0].assistants.on_board.get(&area), None);
 
@@ -1440,7 +1488,7 @@ mod tests {
         let result = execute_customs_action(&mut state, PlayerId::new(0), 3, 1, &rules);
         assert!(result.is_ok());
 
-        place_customs_assistant(&mut state, PlayerId::new(0), 1, &rules);
+        place_customs_assistant(&mut state, PlayerId::new(0), 1, &rules).unwrap();
 
         assert_eq!(state.players[0].customs_positions, vec![1]);
     }
@@ -1475,9 +1523,9 @@ mod tests {
         // Both cost pairs are fully open on a fresh track -> both actions
         // defer; arrival order is pinned by PLACEMENT order, not execute order.
         execute_customs_action(&mut state, PlayerId::new(0), 3, 1, &rules).unwrap();
-        place_customs_assistant(&mut state, PlayerId::new(0), 1, &rules); // -> space 1
+        place_customs_assistant(&mut state, PlayerId::new(0), 1, &rules).unwrap(); // -> space 1
         execute_customs_action(&mut state, PlayerId::new(1), 5, 3, &rules).unwrap();
-        place_customs_assistant(&mut state, PlayerId::new(1), 5, &rules); // -> space 5
+        place_customs_assistant(&mut state, PlayerId::new(1), 5, &rules).unwrap(); // -> space 5
 
         let idx1 = CustomsTrack::space_to_index(1).unwrap();
         let idx5 = CustomsTrack::space_to_index(5).unwrap();
@@ -1504,7 +1552,7 @@ mod tests {
         // Space 1's rider is +2 warehouse-takes; the whole warehouse is
         // empty, so both pushes auto-decline (singleton rule, design §5.1)
         // rather than queuing a choice with nothing left to take.
-        place_customs_assistant(&mut state, PlayerId::new(0), 1, &rules);
+        place_customs_assistant(&mut state, PlayerId::new(0), 1, &rules).unwrap();
         let p = &state.players[0];
         assert_eq!(p.assistants.in_warehouse, 0);
         assert_eq!(p.assistants.in_hand, 7); // only the -1 placement; rider auto-declined
@@ -1527,7 +1575,7 @@ mod tests {
         let result = execute_customs_action(&mut state, PlayerId::new(0), 5, 3, &rules);
         assert!(result.is_ok());
 
-        place_customs_assistant(&mut state, PlayerId::new(0), 5, &rules);
+        place_customs_assistant(&mut state, PlayerId::new(0), 5, &rules).unwrap();
 
         let p = &state.players[0];
         assert_eq!(p.customs_positions, vec![5]);
@@ -1558,7 +1606,7 @@ mod tests {
         assert!(result.is_ok());
         assert_eq!(state.players[0].victory_points, 0, "not awarded until the space choice resolves");
 
-        place_customs_assistant(&mut state, PlayerId::new(0), 5, &rules);
+        place_customs_assistant(&mut state, PlayerId::new(0), 5, &rules).unwrap();
 
         let base_vp = CustomsTrack::vp_reward(5) as u32;
         assert_eq!(state.players[0].victory_points, base_vp + 8); // 2 copies x 4 VP
@@ -1728,5 +1776,28 @@ mod tests {
         assert_eq!(p.assistants.in_hand, starting_hand - 1 + 1, "placement spent 1, the Assistant take refunded 1");
         assert_eq!(p.assistants.in_warehouse, starting_warehouse - 1);
         assert_eq!(p.money, starting_money, "assistant take is free; decline spends nothing");
+    }
+
+    #[test]
+    fn tampered_return_to_hand_mid_customs_space_queue_errors_not_panics() {
+        // Customs counterpart of tampered_return_to_hand_mid_church_space_queue_errors_not_panics
+        // (I2 final-review fix) -- same tampering, same reasoning:
+        // eligible_customs_spaces_for_cost's membership check depends only
+        // on the track/cost, not president location.
+        let (state, rules) = customs_fixture(2); // spaces 3+4 both open (3P) -> queues CustomsSpace
+        let mid = apply_move(&state, &customs_move(2), &rules).unwrap();
+        assert_eq!(mid.pending_choices, vec![PendingChoice::CustomsSpace { cost: 2 }]);
+
+        let tampered = apply_move(
+            &mid, &Move::ReturnPresidentToHand { recover_assistants_from: vec![] }, &rules,
+        ).unwrap();
+        assert_eq!(tampered.players[0].president_location, PresidentLocation::InHand);
+        assert_eq!(
+            tampered.pending_choices, vec![PendingChoice::CustomsSpace { cost: 2 }],
+            "queue survives the tampering untouched"
+        );
+
+        let result = apply_move(&tampered, &Move::ChooseCustomsSpace { space: 3 }, &rules);
+        assert!(matches!(result, Err(MoveError::RuleViolation(_))), "{result:?}");
     }
 }

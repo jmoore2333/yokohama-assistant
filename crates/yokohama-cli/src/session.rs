@@ -481,6 +481,84 @@ mod tests {
         std::fs::remove_file(&path).ok();
     }
 
+    /// Drives seed 4's 2p game (this file's `sim_2p` fixture seed) up
+    /// through a Church action that pays copper+silk+yen (3 distinct
+    /// payment types) at turn-1 power 3 -> Faith 6, which lands on 3
+    /// eligible spaces (4/5/6) on the fresh track and so
+    /// queues `PendingChoice::ChurchSpace { total_faith: 6 }` rather than
+    /// placing inline -- mirrors `repl.rs`'s
+    /// `drive_to_double_assistant_move_cascade` recipe verbatim but stops
+    /// one step earlier (before resolving the ChurchSpace choice, which
+    /// that fixture goes on to do). Verified deterministic for seed 4, same
+    /// precedent as that fixture's own doc comment.
+    fn session_with_church_space_choice_queued() -> Session {
+        let mut s = sim_2p(4);
+        let church_area = *s.state().board_layout.areas.iter()
+            .find(|(_, c)| c.area_type == AreaType::Church)
+            .expect("this board has a Church area").0;
+
+        if !s.legal().iter().any(|m| matches!(m, Move::PlaceTwoSameArea { .. })) {
+            let end = s.legal().into_iter().find(|m| matches!(m, Move::EndAdditionalPhase))
+                .expect("EndAdditionalPhase reaches Placement");
+            s.apply(end, vec![]).unwrap();
+        }
+        let place = s.legal().into_iter().find(|m| matches!(m,
+            Move::PlaceTwoSameArea { area, adjacent_bonus: None } if *area == church_area
+        )).expect("Option B at Church is legal turn 1");
+        s.apply(place, vec![]).unwrap();
+
+        let pres = s.legal().into_iter().find(|m| {
+            matches!(m, Move::PlacePresident { destination } if *destination == church_area)
+                || matches!(m, Move::MovePresident { destination, .. } if *destination == church_area)
+        }).expect("President can reach Church turn 1");
+        s.apply(pres, vec![]).unwrap();
+
+        let church_mv = s.legal().into_iter().find(|m| matches!(m, Move::ExecuteAreaAction {
+            action: AreaAction::Church {
+                copper: true, silk: true, tea: false, seafood: false, yen: true, imported_good: false,
+            }
+        })).expect("paying copper+silk+yen is affordable turn 1 (starting resources include 1 of each)");
+        s.apply(church_mv, vec![]).unwrap();
+
+        assert_eq!(
+            s.state().pending_choices, vec![PendingChoice::ChurchSpace { total_faith: 6 }],
+            "setup recipe drifted -- re-derive against the current engine before trusting this fixture"
+        );
+        s
+    }
+
+    /// I2 final-review fix, CLI-side confirmation: `Session::load` promises
+    /// typed, event-indexed errors (design comment on `ApplyError`/
+    /// `ReplayError`) -- a tampered save file must never panic the whole
+    /// process. `Session::apply`'s own legal-move gate would reject the
+    /// tampering move outright (with `ChurchSpace` queued, `get_legal_moves`
+    /// offers only its resolutions), so the tampered `GameRecord` is built
+    /// directly instead -- exactly how a hand-edited or corrupted save file
+    /// would bypass that gate: `Session::load` -> `replay` -> `replay_from`
+    /// applies every event via bare `apply_move`, with no legal-move
+    /// pre-filtering. The inserted `ReturnPresidentToHand` validates
+    /// nothing and moves the President to hand; the following
+    /// `ChooseChurchSpace { space: 6 }` still passes `resolve_choice_move`'s
+    /// membership check (`eligible_church_spaces` depends only on the
+    /// track/faith), so it reaches `place_church_assistant` with no acting
+    /// area to resolve -- the exact panic `tampered_return_to_hand_mid_church_space_queue_errors_not_panics`
+    /// (yokohama-core's `tracks.rs`) fixed at the engine layer.
+    #[test]
+    fn load_of_tampered_record_returns_typed_error_not_panic() {
+        let s = session_with_church_space_choice_queued();
+        let mut record = s.record().clone();
+        record.push_move(Move::ReturnPresidentToHand { recover_assistants_from: vec![] });
+        record.push_move(Move::ChooseChurchSpace { space: 6 });
+
+        let path = std::env::temp_dir().join(format!("yokohama_tampered_{}.json", std::process::id()));
+        std::fs::write(&path, serde_json::to_string_pretty(&record).unwrap()).unwrap();
+
+        let result = Session::load(&path, Rules::standard());
+        std::fs::remove_file(&path).ok();
+
+        assert!(result.is_err(), "a tampered record must surface as a typed load error, never a panic");
+    }
+
     /// The CLI-layer analog of the fuzz driver: a full random game driven
     /// entirely through Session::apply completes and its record replays.
     #[test]

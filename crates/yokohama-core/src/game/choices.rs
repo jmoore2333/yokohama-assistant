@@ -126,7 +126,16 @@ pub fn push_choice(state: &mut GameState, choice: PendingChoice, rules: &Rules) 
 
 /// Apply a Choose* move against the head pending choice. Validates the move
 /// is a resolution OF the head (type + membership in the generated set),
-/// pops the head, applies the effect. Zero mutation on error.
+/// pops the head, applies the effect. Zero mutation on error, with one
+/// narrow exception (I2 final-review fix): if the head is ChurchSpace/
+/// CustomsSpace and `place_church_assistant`/`place_customs_assistant`
+/// then fails to resolve an acting area (only reachable via a tampered
+/// record that inserts a move like ReturnPresidentToHand between the
+/// triggering action and this resolution -- see those functions' doc
+/// comments), the head has already been popped before the Err returns.
+/// Harmless in practice: every caller is `apply_move`, which runs this
+/// against a freshly cloned `new_state` and discards it whole on any Err,
+/// so no caller ever observes the partially-unwound queue.
 pub fn resolve_choice_move(state: &mut GameState, mv: &Move, rules: &Rules) -> Result<(), MoveError> {
     let head = state.pending_choices.first().cloned()
         .ok_or(MoveError::RuleViolation("No pending choice to resolve"))?;
@@ -187,10 +196,10 @@ pub fn resolve_choice_move(state: &mut GameState, mv: &Move, rules: &Rules) -> R
         }
         (PendingChoice::AssistantMove, Move::DeclineAssistantMove) => {}
         (PendingChoice::ChurchSpace { .. }, Move::ChooseChurchSpace { space }) => {
-            place_church_assistant(state, player, *space, rules);
+            place_church_assistant(state, player, *space, rules).map_err(MoveError::RuleViolation)?;
         }
         (PendingChoice::CustomsSpace { .. }, Move::ChooseCustomsSpace { space }) => {
-            place_customs_assistant(state, player, *space, rules);
+            place_customs_assistant(state, player, *space, rules).map_err(MoveError::RuleViolation)?;
         }
         (PendingChoice::RecoveryLeave, Move::ChooseRecoveryLeave { leave_one }) => {
             apply_recovery_with_leave(state, *leave_one);
