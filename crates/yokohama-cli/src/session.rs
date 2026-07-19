@@ -223,7 +223,12 @@ impl Session {
         if !get_legal_moves(&staged, &self.rules).contains(&mv) {
             return Err(ApplyError::Illegal(format!("move not legal in the current state: {mv:?}")));
         }
-        let next = apply_move(&staged, &mv, &self.rules).map_err(|e| ApplyError::Illegal(e.to_string()))?;
+        // apply_move_unchecked: the gate just above already proved
+        // membership in get_legal_moves on this same staged state, so
+        // routing through checked apply_move would double-enumerate
+        // get_legal_moves on every interactive apply.
+        let next =
+            apply_move_unchecked(&staged, &mv, &self.rules).map_err(|e| ApplyError::Illegal(e.to_string()))?;
         check_invariants(&next, &self.rules)
             .map_err(|e| ApplyError::Invariant(format!("INVARIANT VIOLATION after apply (driver/engine bug): {e}")))?;
         let mut delta = crate::render::delta_summary(&self.state, &next, &self.rules);

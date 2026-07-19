@@ -332,7 +332,11 @@ impl Repl {
     /// `TrackingMode::Simulation` -- applies at once via `finish_apply`.
     fn commit(&mut self, mv: Move) -> StepOutput {
         if matches!(self.session.mode, TrackingMode::Live) {
-            match apply_move(self.session.state(), &mv, self.session.rules()) {
+            // apply_move_unchecked: this is a scratch probe of a move that
+            // came from the numbered legal list (never mutates self.session
+            // -- see the doc comment above); the real apply behind it goes
+            // through Session::apply's checked gate.
+            match apply_move_unchecked(self.session.state(), &mv, self.session.rules()) {
                 Err(e) => return self.out(format!("Illegal: {e}\n"), false),
                 Ok(scratch) => {
                     let d_orders = self.session.state().order_deck.len() - scratch.order_deck.len();

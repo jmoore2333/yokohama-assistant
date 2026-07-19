@@ -17,7 +17,7 @@ use rand::{Rng, SeedableRng};
 use rand_chacha::ChaCha8Rng;
 
 use yokohama_core::{
-    apply_move, check_invariants, finalize_setup, get_legal_moves, is_game_over, new_game,
+    apply_move_unchecked, check_invariants, finalize_setup, get_legal_moves, is_game_over, new_game,
     EndGameTrigger, GameConfig, GameRecord, GameState, Move, Rules, StartingOrderChoice, TurnPhase,
 };
 
@@ -46,6 +46,31 @@ pub struct GameStats {
     pub branching_by_phase: HashMap<TurnPhase, (u64, u64)>,
 }
 
+/// Build a fresh seeded game up to the post-setup state, under the same
+/// choice policy as `run_random_game`/`run_random_game_observed` (per-player
+/// `StartingOrderChoice::Keep` drawn from the seeded RNG) -- reused here via
+/// the identical `new_game` -> `finalize_setup` sequence rather than
+/// reimplemented, so setup logic has exactly one copy. Returns the RNG in
+/// its post-setup-consumption state alongside the resulting `GameState`, so
+/// a caller that wants to keep driving deterministic random play from the
+/// same seed can (mirrors `run_random_game`'s internal handoff to
+/// `run_random_game_from`). Panics on setup failure: like `run_recorded_game`,
+/// this is test-only setup infrastructure, not a driver under test.
+pub fn new_seeded_game(seed: u64, players: u8, rules: &Rules) -> (GameState, ChaCha8Rng) {
+    let mut rng = ChaCha8Rng::seed_from_u64(seed);
+
+    let config = GameConfig::for_player_count(players);
+    let pending = new_game(config, rules, seed)
+        .unwrap_or_else(|e| panic!("seed={seed} players={players}p: new_game failed: {e}"));
+
+    let choices: Vec<StartingOrderChoice> =
+        (0..players).map(|_| StartingOrderChoice::Keep(rng.gen_range(0..2u8))).collect();
+    let state = finalize_setup(pending, &choices)
+        .unwrap_or_else(|e| panic!("seed={seed} players={players}p: finalize_setup failed: {e}"));
+
+    (state, rng)
+}
+
 /// Play one random game to completion (or to a hard failure) from a seed.
 ///
 /// Deterministic: the same `(seed, players)` pair always plays the same
@@ -59,10 +84,11 @@ pub struct GameStats {
 /// `Err(String)` -- a full dump (seed, turn, phase, move log, and the
 /// complete state as JSON) -- for any of: `new_game`/`finalize_setup`
 /// failing, `get_legal_moves` returning empty in a non-terminal state,
-/// `apply_move` erroring on a move `get_legal_moves` itself offered, a
-/// `check_invariants` violation after an apply, or exceeding `MAX_TURNS`
-/// without `is_game_over`. This function's own logic never panics --
-/// failures are always reported through the `Result`, not via panic.
+/// `apply_move_unchecked` erroring on a move `get_legal_moves` itself
+/// offered, a `check_invariants` violation after an apply, or exceeding
+/// `MAX_TURNS` without `is_game_over`. This function's own logic never
+/// panics -- failures are always reported through the `Result`, not via
+/// panic.
 pub fn run_random_game(seed: u64, players: u8, rules: &Rules) -> Result<GameStats, String> {
     let mut rng = ChaCha8Rng::seed_from_u64(seed);
 
@@ -82,7 +108,7 @@ pub fn run_random_game(seed: u64, players: u8, rules: &Rules) -> Result<GameStat
 /// contract as `run_random_game` (same failure modes, same invariant checks
 /// after every apply). Used by the seeded near-threshold trigger scenarios,
 /// which surgically construct a legal state, fire a specific trigger through
-/// `apply_move`, and then let random play finish the final round.
+/// `apply_move_unchecked`, and then let random play finish the final round.
 pub fn run_random_game_from(
     state: GameState,
     rng: &mut ChaCha8Rng,
@@ -190,7 +216,10 @@ fn run_random_game_from_observed(
 
         let choice = moves[rng.gen_range(0..moves.len())].clone();
         observe(&state, &choice);
-        match apply_move(&state, &choice, rules) {
+        // apply_move_unchecked: choice is drawn from get_legal_moves by
+        // construction, so the checked membership scan would roughly double
+        // the fuzz gate's per-move enumeration cost for no benefit here.
+        match apply_move_unchecked(&state, &choice, rules) {
             Ok(next_state) => {
                 if let Err(reason) = check_invariants(&next_state, rules) {
                     move_log.push(choice);
@@ -211,7 +240,7 @@ fn run_random_game_from_observed(
                     seed,
                     players,
                     &format!(
-                        "apply_move returned Err for a move get_legal_moves said was legal: {e}"
+                        "apply_move_unchecked returned Err for a move get_legal_moves said was legal: {e}"
                     ),
                     &state,
                     &move_log,
@@ -270,13 +299,15 @@ pub fn run_recorded_game(seed: u64, players: u8, rules: &Rules) -> (GameState, G
             );
         }
         let mv = moves[rng.gen_range(0..moves.len())].clone();
-        match apply_move(&state, &mv, rules) {
+        // apply_move_unchecked: mv is drawn from get_legal_moves by
+        // construction (same rationale as run_random_game_from_observed).
+        match apply_move_unchecked(&state, &mv, rules) {
             Ok(next_state) => {
                 state = next_state;
                 record.push_move(mv);
             }
             Err(e) => panic!(
-                "seed={seed} players={players}p turn={}: apply_move failed for a move get_legal_moves offered: {e}",
+                "seed={seed} players={players}p turn={}: apply_move_unchecked failed for a move get_legal_moves offered: {e}",
                 state.turn_number,
             ),
         }

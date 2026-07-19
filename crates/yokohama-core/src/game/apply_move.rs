@@ -4,8 +4,12 @@ use crate::types::*;
 use crate::game::*;
 use crate::game::actions::*;
 
-/// Apply a move to the game state, returning the new state.
-pub fn apply_move(state: &GameState, mv: &Move, rules: &Rules) -> Result<GameState, MoveError> {
+/// Apply a move to the game state, returning the new state. Raw per-arm
+/// validation only -- no membership check against `get_legal_moves`. Called
+/// deliberately by prechecked hot paths (Session's gate, the fuzz drivers,
+/// future search inner loops) AFTER choosing from an enumerated legal list;
+/// everything else should go through the checked `apply_move` below.
+pub fn apply_move_unchecked(state: &GameState, mv: &Move, rules: &Rules) -> Result<GameState, MoveError> {
     let mut new_state = state.clone();
 
     match mv {
@@ -163,6 +167,18 @@ pub fn apply_move(state: &GameState, mv: &Move, rules: &Rules) -> Result<GameSta
     check_end_game_triggers(&mut new_state);
 
     Ok(new_state)
+}
+
+/// The ONE checked public transition (design §4.1): membership in
+/// `get_legal_moves` is the legality contract; per-arm validation then runs
+/// in the raw transition. Prechecked hot paths (Session's gate, the fuzz
+/// drivers, future search inner loops) call `apply_move_unchecked`
+/// deliberately, AFTER choosing from an enumerated legal list.
+pub fn apply_move(state: &GameState, mv: &Move, rules: &Rules) -> Result<GameState, MoveError> {
+    if !crate::game::legal_moves::get_legal_moves(state, rules).contains(mv) {
+        return Err(MoveError::NotLegal);
+    }
+    apply_move_unchecked(state, mv, rules)
 }
 
 /// Set president's starting area for movement restriction.
@@ -1190,7 +1206,11 @@ mod tests {
         state.pending_choices.push(PendingChoice::AnyGood);
         let rules = Rules::empty_for_tests();
 
-        let result = apply_move(&state, &Move::EndAdditionalPhase, &rules);
+        // apply_move_unchecked: per the doc comment above, the queue-first
+        // gate in get_legal_moves never offers EndAdditionalPhase while a
+        // choice is queued, so this never fires under checked apply_move --
+        // this test targets the raw arm's self-defense directly.
+        let result = apply_move_unchecked(&state, &Move::EndAdditionalPhase, &rules);
         assert!(matches!(result, Err(MoveError::RuleViolation(_))), "{result:?}");
         assert_eq!(state.turn_phase, TurnPhase::AdditionalActionFirst, "original state must be untouched");
     }
@@ -1687,8 +1707,12 @@ mod tests {
         state.players[1].president_location = PresidentLocation::OnBoard(area);
         state.players[0].money = 1;
 
+        // apply_move_unchecked: this exact placement is unaffordable, so
+        // get_legal_moves never offers it -- checked apply_move would
+        // reject with NotLegal before reaching the raw NotEnoughMoney arm
+        // under test.
         let rules = Rules::empty_for_tests();
-        let result = apply_move(
+        let result = apply_move_unchecked(
             &state,
             &Move::PlaceTwoSameArea { area, adjacent_bonus: None },
             &rules,
@@ -1716,8 +1740,12 @@ mod tests {
         let owner1_money_before = state.players[1].money;
         let owner2_money_before = state.players[2].money;
 
+        // apply_move_unchecked: create_minimal_state doesn't equip the
+        // player with Telegram, so get_legal_moves never offers the
+        // adjacent_bonus option here -- this test targets the raw fee math
+        // of the bonus arm directly, independent of tech-ownership gating.
         let rules = Rules::empty_for_tests();
-        let result = apply_move(
+        let result = apply_move_unchecked(
             &state,
             &Move::PlaceTwoSameArea { area: main_area, adjacent_bonus: Some(adj_area) },
             &rules,
@@ -2180,7 +2208,12 @@ mod tests {
         rules.techs.insert(gaslight_tech_fixture(1), "tech_gaslight");
         state.players[0].technologies.push(TechCardId(1));
 
-        let result = apply_move(&state, &Move::BuildShophouse { slot: 0 }, &rules);
+        // apply_move_unchecked: create_minimal_state defaults turn_phase to
+        // AdditionalActionFirst with no action power, so get_legal_moves
+        // never offers BuildShophouse here -- this test targets the raw
+        // build-reward arm directly (same for the rest of this file's
+        // test_build_shophouse_* cluster and its sibling shophouse tests).
+        let result = apply_move_unchecked(&state, &Move::BuildShophouse { slot: 0 }, &rules);
         assert!(result.is_ok());
         let new_state = result.unwrap();
 
@@ -2205,7 +2238,8 @@ mod tests {
         state.players[0].technologies.push(TechCardId(1));
         state.players[0].technologies.push(TechCardId(2));
 
-        let result = apply_move(&state, &Move::BuildShophouse { slot: 0 }, &rules);
+        // apply_move_unchecked: see test_build_shophouse_gaslight_vp_bonus.
+        let result = apply_move_unchecked(&state, &Move::BuildShophouse { slot: 0 }, &rules);
         assert!(result.is_ok());
         let new_state = result.unwrap();
 
@@ -2347,8 +2381,11 @@ mod tests {
         assert_eq!(state.president_start_area, Some(AreaId::new(0)));
         assert_eq!(state.turn_phase, TurnPhase::Movement);
 
-        // Try to move back to area 0 (should fail)
-        let result = apply_move(&state, &Move::MovePresident {
+        // Try to move back to area 0 (should fail). apply_move_unchecked:
+        // get_legal_moves excludes the starting area from movement
+        // destinations too, so this targets the raw arm's own
+        // validate_movement_destination check directly.
+        let result = apply_move_unchecked(&state, &Move::MovePresident {
             path: vec![AreaId::new(1), AreaId::new(0)],
             destination: AreaId::new(0),
         }, &rules);
@@ -2511,8 +2548,10 @@ mod tests {
         let mut rules = Rules::empty_for_tests();
         rules.orders = order_registry;
 
-        // Fulfill order should fail
-        let result = apply_move(
+        // Fulfill order should fail. apply_move_unchecked: insufficient
+        // resources means get_legal_moves never offers this FulfillOrder,
+        // so this targets the raw resource-check arm directly.
+        let result = apply_move_unchecked(
             &state,
             &Move::FulfillOrder { order_id },
             &rules,
@@ -2939,7 +2978,11 @@ mod tests {
         let snapshot_warehouse = after_first.players[0].assistants.in_warehouse;
         let snapshot_hand = after_first.players[0].assistants.in_hand;
 
-        let second = apply_move(&after_first, &Move::UseUniversity, &rules);
+        // apply_move_unchecked: with university_used set, get_legal_moves no
+        // longer offers UseUniversity, so this is exactly the raw-arm
+        // self-defense path the comment above describes -- a bot calling
+        // apply_move_unchecked directly, without pre-filtering.
+        let second = apply_move_unchecked(&after_first, &Move::UseUniversity, &rules);
         assert!(
             matches!(second, Err(MoveError::RuleViolation(_))),
             "second same-turn use must be rejected, got {second:?}"
@@ -2982,7 +3025,11 @@ mod tests {
         let snapshot_silk = after_first.players[0].silk;
         let snapshot_money = after_first.players[0].money;
 
-        let second = apply_move(&after_first, &Move::UseSpinningMill, &rules);
+        // apply_move_unchecked: same reasoning as
+        // apply_university_rejects_second_use_same_turn -- with
+        // spinning_mill_used set, get_legal_moves no longer offers
+        // UseSpinningMill.
+        let second = apply_move_unchecked(&after_first, &Move::UseSpinningMill, &rules);
         assert!(
             matches!(second, Err(MoveError::RuleViolation(_))),
             "second same-turn use must be rejected, got {second:?}"
@@ -3088,7 +3135,8 @@ mod tests {
         state.board_layout.building_sites.insert(area, site);
         let rules = Rules::empty_for_tests();
 
-        let result = apply_move(&state, &Move::BuildShophouse { slot: 0 }, &rules);
+        // apply_move_unchecked: see test_build_shophouse_gaslight_vp_bonus.
+        let result = apply_move_unchecked(&state, &Move::BuildShophouse { slot: 0 }, &rules);
         assert!(result.is_ok());
         let new_state = result.unwrap();
 
@@ -3108,7 +3156,8 @@ mod tests {
         state.board_layout.building_sites.insert(area, site);
         let rules = Rules::empty_for_tests();
 
-        let result = apply_move(&state, &Move::BuildShophouse { slot: 1 }, &rules);
+        // apply_move_unchecked: see test_build_shophouse_gaslight_vp_bonus.
+        let result = apply_move_unchecked(&state, &Move::BuildShophouse { slot: 1 }, &rules);
         assert!(result.is_ok());
         let new_state = result.unwrap();
 
@@ -3130,7 +3179,11 @@ mod tests {
         state.board_layout.building_sites.insert(area, site);
         let rules = Rules::empty_for_tests();
 
-        let result = apply_move(&state, &Move::BuildShophouse { slot: 2 }, &rules);
+        // apply_move_unchecked: see test_build_shophouse_gaslight_vp_bonus.
+        // Applied consistently through this test's whole chain (not just the
+        // initial build) even though the two queued-choice resolutions below
+        // would likely also pass the checked membership test on their own.
+        let result = apply_move_unchecked(&state, &Move::BuildShophouse { slot: 2 }, &rules);
         assert!(result.is_ok());
         let mid = result.unwrap();
 
@@ -3141,14 +3194,14 @@ mod tests {
         assert_eq!(mid.players[0].assistants.in_hand, starting_hand);
         assert_eq!(mid.players[0].assistants.in_warehouse, starting_warehouse);
 
-        let after_wh = apply_move(
+        let after_wh = apply_move_unchecked(
             &mid, &Move::ChooseWarehouseTake { item: WarehouseItem::Assistant }, &rules,
         ).unwrap();
         assert_eq!(after_wh.pending_choices, vec![PendingChoice::AnyGood]);
         assert_eq!(after_wh.players[0].assistants.in_hand, starting_hand + 1);
         assert_eq!(after_wh.players[0].assistants.in_warehouse, starting_warehouse - 1);
 
-        let done = apply_move(&after_wh, &Move::ChooseAnyGood { good: TradeGood::Copper }, &rules).unwrap();
+        let done = apply_move_unchecked(&after_wh, &Move::ChooseAnyGood { good: TradeGood::Copper }, &rules).unwrap();
         assert_eq!(done.players[0].copper, starting_copper + 1);
         assert!(done.pending_choices.is_empty());
     }
@@ -3165,7 +3218,8 @@ mod tests {
         state.board_layout.building_sites.insert(area, BuildingSite::new([2, 3, 4, 5], 10));
         let rules = Rules::empty_for_tests();
 
-        let result = apply_move(&state, &Move::BuildShophouse { slot: 2 }, &rules);
+        // apply_move_unchecked: see test_build_shophouse_gaslight_vp_bonus.
+        let result = apply_move_unchecked(&state, &Move::BuildShophouse { slot: 2 }, &rules);
         assert!(result.is_ok());
         let new_state = result.unwrap();
 
@@ -3188,7 +3242,8 @@ mod tests {
         rules.techs.insert(mining_tech_fixture(), "tech_mining");
         state.players[0].technologies.push(TechCardId(1));
 
-        let result = apply_move(&state, &Move::BuildShophouse { slot: 0 }, &rules);
+        // apply_move_unchecked: see test_build_shophouse_gaslight_vp_bonus.
+        let result = apply_move_unchecked(&state, &Move::BuildShophouse { slot: 0 }, &rules);
         assert!(result.is_ok());
         let new_state = result.unwrap();
 
@@ -3211,7 +3266,8 @@ mod tests {
         rules.techs.insert(mining_tech_fixture(), "tech_mining");
         state.players[0].technologies.push(TechCardId(1));
 
-        let mid = apply_move(&state, &Move::BuildShophouse { slot: 0 }, &rules).unwrap();
+        // apply_move_unchecked: see test_build_shophouse_gaslight_vp_bonus.
+        let mid = apply_move_unchecked(&state, &Move::BuildShophouse { slot: 0 }, &rules).unwrap();
         // any_good queues a choice instead of auto-granting copper at build
         // time (design §5.3-2).
         assert_eq!(mid.pending_choices, vec![PendingChoice::AnyGood]);
@@ -3219,7 +3275,7 @@ mod tests {
 
         // Resolving the choice as Copper: 1 base + 1 Mining bonus (1 owned
         // copy). Mining applies because the CHOSEN good IS copper.
-        let done = apply_move(&mid, &Move::ChooseAnyGood { good: TradeGood::Copper }, &rules).unwrap();
+        let done = apply_move_unchecked(&mid, &Move::ChooseAnyGood { good: TradeGood::Copper }, &rules).unwrap();
         assert_eq!(done.players[0].copper, starting_copper + 2);
     }
 
@@ -3239,7 +3295,8 @@ mod tests {
         rules.techs.insert(mining_tech_fixture(), "tech_mining");
         state.players[0].technologies.push(TechCardId(1));
 
-        let result = apply_move(&state, &Move::BuildShophouse { slot: 0 }, &rules);
+        // apply_move_unchecked: see test_build_shophouse_gaslight_vp_bonus.
+        let result = apply_move_unchecked(&state, &Move::BuildShophouse { slot: 0 }, &rules);
         assert!(result.is_ok());
         let new_state = result.unwrap();
 
@@ -3271,12 +3328,13 @@ mod tests {
         rules.techs.insert(mining_tech_fixture(), "tech_mining");
         state.players[0].technologies.push(TechCardId(1));
 
-        let mid = apply_move(&state, &Move::BuildShophouse { slot: 0 }, &rules).unwrap();
+        // apply_move_unchecked: see test_build_shophouse_gaslight_vp_bonus.
+        let mid = apply_move_unchecked(&state, &Move::BuildShophouse { slot: 0 }, &rules).unwrap();
         // Explicit copper receipt fires immediately: 1 base + 1 Mining bonus.
         assert_eq!(mid.players[0].copper, starting_copper + 2);
         assert_eq!(mid.pending_choices, vec![PendingChoice::AnyGood]);
 
-        let done = apply_move(&mid, &Move::ChooseAnyGood { good: TradeGood::Copper }, &rules).unwrap();
+        let done = apply_move_unchecked(&mid, &Move::ChooseAnyGood { good: TradeGood::Copper }, &rules).unwrap();
         // Any-good-as-copper is its OWN receipt: another 1 base + 1 Mining bonus.
         assert_eq!(done.players[0].copper, starting_copper + 4);
     }
@@ -3474,7 +3532,11 @@ mod tests {
                 card_id: TechCardId(24), extra_yen: 0, extra_imported: 0, fifth_tech_payment: None,
             },
         };
-        let result = apply_move(&state, &mv, &rules);
+        // apply_move_unchecked: get_legal_moves only enumerates Laboratory
+        // actions for cards actually present on the acting board, so this
+        // cross-board card id is never legal -- targets the raw arm's
+        // CardNotFound check directly.
+        let result = apply_move_unchecked(&state, &mv, &rules);
         assert!(matches!(result, Err(MoveError::CardNotFound)));
     }
 
@@ -4103,11 +4165,15 @@ mod tests {
         // Fixture: Building phase, president on an area whose site TR space has any_good: 1,
         // player has a shophouse in hand and an assistant on the acting area.
         let (state, rules) = building_any_good_fixture();
-        let mid = apply_move(&state, &Move::BuildShophouse { slot: 1 }, &rules).unwrap();
+        // apply_move_unchecked: the fixture hardcodes slot 1 to land on the
+        // TR any_good space, but next_shophouse_slot allocates slot 0 first
+        // (it's the only empty one here), so get_legal_moves never offers
+        // slot 1 -- this test targets the raw build-reward arm directly.
+        let mid = apply_move_unchecked(&state, &Move::BuildShophouse { slot: 1 }, &rules).unwrap();
         assert_eq!(mid.pending_choices, vec![PendingChoice::AnyGood]);
         // Recovery DEFERRED: the acting-area assistant has NOT been recovered yet.
         assert!(mid.current_player().assistants.on_board.contains_key(&acting_area()));
-        let done = apply_move(&mid, &Move::ChooseAnyGood { good: TradeGood::Copper }, &rules).unwrap();
+        let done = apply_move_unchecked(&mid, &Move::ChooseAnyGood { good: TradeGood::Copper }, &rules).unwrap();
         // Resolving the last choice runs the deferred Recovery + transition in the same apply.
         assert!(!done.current_player().assistants.on_board.contains_key(&acting_area()));
         assert_eq!(done.turn_phase, TurnPhase::AdditionalActionSecond);

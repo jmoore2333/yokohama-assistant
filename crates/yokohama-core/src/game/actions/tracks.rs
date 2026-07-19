@@ -454,7 +454,7 @@ pub fn place_customs_assistant(state: &mut GameState, player: PlayerId, space: u
 mod tests {
     use super::*;
     use crate::types::*;
-    use crate::game::apply_move::apply_move;
+    use crate::game::apply_move::{apply_move, apply_move_unchecked};
     use crate::game::cards::TechRegistry;
     use crate::game::get_legal_moves;
     use std::collections::BTreeMap;
@@ -1112,7 +1112,11 @@ mod tests {
         let mid = apply_move(&state, &church_power_only_move(), &rules).unwrap();
         assert_eq!(mid.pending_choices, vec![PendingChoice::ChurchSpace { total_faith: 6 }]);
 
-        let tampered = apply_move(
+        // apply_move_unchecked: the tamper itself is the point of this test
+        // -- ReturnPresidentToHand is not in get_legal_moves while a choice
+        // is queued (queue-first gate), so checked apply_move now rejects it
+        // with NotLegal before ever reaching the raw arm this test exercises.
+        let tampered = apply_move_unchecked(
             &mid, &Move::ReturnPresidentToHand { recover_assistants_from: vec![] }, &rules,
         ).unwrap();
         assert_eq!(tampered.players[0].president_location, PresidentLocation::InHand);
@@ -1788,7 +1792,10 @@ mod tests {
         let mid = apply_move(&state, &customs_move(2), &rules).unwrap();
         assert_eq!(mid.pending_choices, vec![PendingChoice::CustomsSpace { cost: 2 }]);
 
-        let tampered = apply_move(
+        // apply_move_unchecked: same reasoning as the church counterpart --
+        // the tamper is the point; checked apply_move would reject it with
+        // NotLegal before reaching the raw arm under test.
+        let tampered = apply_move_unchecked(
             &mid, &Move::ReturnPresidentToHand { recover_assistants_from: vec![] }, &rules,
         ).unwrap();
         assert_eq!(tampered.players[0].president_location, PresidentLocation::InHand);
