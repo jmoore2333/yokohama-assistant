@@ -119,8 +119,10 @@ pub fn assistant_move_options(state: &GameState) -> Vec<(MoveSource, AreaId)> {
 /// design-sanctioned ("if exactly one eligible area exists, place inline")
 /// and real-board-unreachable (the smallest generated board has far more
 /// than 1 placeable area), but it means StationPlace is the first variant
-/// whose singleton path is NOT inert; see `choice_encoding.rs`'s
-/// `assert_decline_or_never_singleton` for the full reasoning.
+/// whose singleton path is NOT inert; pinned directly below by
+/// `station_place_with_single_placeable_area_places_inline_no_choice_event`,
+/// with the scope of that behavior cross-referenced from `choice_encoding.rs`'s
+/// `assert_decline_or_never_singleton`.
 ///
 /// NOTE: the singleton path calls `resolve_choice_move`, which can itself
 /// push further choices (a cascade) -- bounded by the same small reward
@@ -440,6 +442,29 @@ mod tests {
         // All 20 assistants in warehouse/locked: only Decline possible -> singleton auto.
         let (mut state, rules) = no_movable_assistant_fixture();
         push_choice(&mut state, PendingChoice::AssistantMove, &rules);
+        assert!(state.pending_choices.is_empty());
+    }
+
+    /// Direct-mechanism analogue of `actions/tracks.rs`'s
+    /// `church_with_single_eligible_space_places_inline_no_choice_event` /
+    /// `customs_with_one_pair_space_open_places_inline`, one layer down:
+    /// Station's degenerate singleton goes through `push_choice`'s OWN
+    /// generic singleton path (unlike ChurchSpace/CustomsSpace, which
+    /// `tracks.rs` pre-filters before ever reaching `push_choice`), and
+    /// unlike WarehouseTake/AssistantMove's singleton just above (always an
+    /// inert Decline), Station has no Decline at all -- its singleton
+    /// resolution is an ACTIVE effect: the token lands, unqueued.
+    #[test]
+    fn station_place_with_single_placeable_area_places_inline_no_choice_event() {
+        let mut state = create_test_game_state(2);
+        let rules = Rules::empty_for_tests();
+        state.board_layout.areas.insert(area_a(), AreaConfig { area_type: AreaType::Bank, grid_position: (0, 0) });
+        // Canal present too, to prove exclusion doesn't leave a real 2nd option.
+        state.board_layout.areas.insert(canal_area(), AreaConfig { area_type: AreaType::Canal, grid_position: (0, 2) });
+
+        push_choice(&mut state, PendingChoice::StationPlace, &rules);
+
+        assert_eq!(state.station_location, Some(area_a()));
         assert!(state.pending_choices.is_empty());
     }
 }

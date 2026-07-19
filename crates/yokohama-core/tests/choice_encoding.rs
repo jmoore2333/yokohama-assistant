@@ -457,11 +457,19 @@ fn assert_decline_or_never_singleton(head: &PendingChoice, resolutions: &[Move])
             // §4.2: "the token must land"), so push_choice's generic singleton
             // path would silently PLACE the token when exactly 1 area is
             // placeable. Design §4.2 explicitly sanctions this ("if exactly
-            // one eligible area exists, place inline"); the case is
+            // one eligible area exists, place inline") and the case is
             // real-board-unreachable (board_gen.rs's smallest grid is 10
-            // tiles, minus at most 1 Canal), so -- like ChurchSpace/
-            // CustomsSpace's assertion -- this only pins ">=2 whenever
-            // actually queued," not the degenerate case itself.
+            // tiles, minus at most 1 Canal). This assertion only pins ">=2
+            // whenever actually queued" -- same scope as ChurchSpace/
+            // CustomsSpace's arm above. The degenerate singleton-placement
+            // case itself is NOT left untested: it has a direct precedent
+            // test, same as ChurchSpace/CustomsSpace do (tracks.rs's
+            // `church_with_single_eligible_space_places_inline_no_choice_event`
+            // / `customs_with_one_pair_space_open_places_inline`) --
+            // `game/choices.rs`'s
+            // `station_place_with_single_placeable_area_places_inline_no_choice_event`
+            // calls `push_choice` directly and asserts the token lands
+            // unqueued.
             assert!(resolutions.len() >= 2, "StationPlace is only ever queued with >=2 placeable areas (real board)");
         }
     }
