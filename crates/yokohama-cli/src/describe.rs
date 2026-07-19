@@ -144,11 +144,7 @@ fn describe_area_action(action: &AreaAction, _state: &GameState, rules: &Rules) 
             s
         }
         AreaAction::Laboratory { card_id, extra_yen, extra_imported, fifth_tech_payment } => {
-            let name = rules
-                .techs
-                .get(*card_id)
-                .map(|c| c.name.clone())
-                .unwrap_or_else(|| format!("T{:02}", card_id.0));
+            let name = crate::input::tech_name(*card_id, &rules.techs);
             let mut s = format!("Laboratory: acquire {name}");
             if *extra_yen > 0 {
                 s.push_str(&format!(", +{extra_yen} yen"));

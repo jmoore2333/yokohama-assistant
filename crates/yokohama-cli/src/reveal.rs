@@ -6,7 +6,8 @@
 use yokohama_core::*;
 
 use crate::describe;
-use crate::repl::{parse_order_id, Repl, StepOutput};
+use crate::input::{parse_order_id, parse_tech_entry, TechAmbiguity};
+use crate::repl::{Repl, StepOutput};
 
 /// Live-mode reveal-collection state: while a group is being collected,
 /// `step` routes input to `collect_reveal` instead of normal command
@@ -267,30 +268,16 @@ pub(crate) fn parse_order_reveal(words: &[&str], deck: &[OrderCardId], collected
 
 /// Parse one tech-reveal answer: `T<id>` (validated against `deck`) or a
 /// case-insensitive name prefix, resolved to the LOWEST matching id
-/// currently in `deck` (some titles circulate as 2 physical copies).
+/// currently in `deck` (some titles circulate as 2 physical copies) --
+/// thin wrapper over the shared `parse_tech_entry` (design 2026-07-18
+/// §5.5 riding item 4), which is why an ambiguous name here resolves
+/// (`TechAmbiguity::LowestId`) rather than being rejected the way the
+/// setup wizard's `parse_tech_entry` call does.
 pub(crate) fn parse_tech_reveal(words: &[&str], deck: &[TechCardId], techs: &TechRegistry) -> Result<TechCardId, String> {
     if words.len() != 1 {
         return Err("Enter exactly one tech code (e.g. 'T05' or a name), or 'cancel'.".to_string());
     }
-    let tok = words[0];
-    if let Some(rest) = tok.strip_prefix(['T', 't']) {
-        if let Ok(n) = rest.parse::<u8>() {
-            let card = TechCardId(n);
-            return if deck.contains(&card) {
-                Ok(card)
-            } else {
-                Err(format!("T{n:02} is not currently in the tech deck."))
-            };
-        }
-    }
-    let needle = tok.to_lowercase();
-    let mut matches: Vec<TechCardId> = deck
-        .iter()
-        .copied()
-        .filter(|id| techs.get(*id).is_some_and(|c| c.name.to_lowercase().starts_with(&needle)))
-        .collect();
-    matches.sort_unstable_by_key(|id| id.0);
-    matches.into_iter().next().ok_or_else(|| format!("'{tok}' does not match any tech card currently in the deck."))
+    parse_tech_entry(words[0], techs, deck, TechAmbiguity::LowestId)
 }
 
 /// Parse a 5-Power token-effect letter into the canonical pool's fixed

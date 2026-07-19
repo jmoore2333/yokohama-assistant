@@ -11,6 +11,7 @@ use std::collections::{BTreeMap, HashSet};
 use yokohama_core::*;
 
 use crate::describe;
+use crate::input::tech_name;
 
 /// Fixed cell width for `board_grid`'s bordered layout.
 const CELL_WIDTH: usize = 16;
@@ -115,12 +116,7 @@ pub fn players_panel(state: &GameState, rules: &Rules) -> String {
 
         out.push_str(&format!("  completed: {}\n", p.completed_orders.len()));
 
-        let techs = p
-            .technologies
-            .iter()
-            .map(|id| rules.techs.get(*id).map(|c| c.name.clone()).unwrap_or_else(|| format!("T{:02}", id.0)))
-            .collect::<Vec<_>>()
-            .join(", ");
+        let techs = p.technologies.iter().map(|id| tech_name(*id, &rules.techs)).collect::<Vec<_>>().join(", ");
         out.push_str(&format!("  tech: {}\n", if techs.is_empty() { "-" } else { &techs }));
 
         out.push_str(&format!(
@@ -212,11 +208,7 @@ pub fn delta_summary(before: &GameState, after: &GameState, rules: &Rules) -> Ve
             a.technologies.iter().copied().filter(|id| !before_tech.contains(id)).collect();
         gained_tech.sort_unstable_by_key(|id| id.0);
         if !gained_tech.is_empty() {
-            let names = gained_tech
-                .iter()
-                .map(|id| rules.techs.get(*id).map(|c| c.name.clone()).unwrap_or_else(|| format!("T{:02}", id.0)))
-                .collect::<Vec<_>>()
-                .join(", ");
+            let names = gained_tech.iter().map(|id| tech_name(*id, &rules.techs)).collect::<Vec<_>>().join(", ");
             lines.push(format!("{}: tech +{}", color_name(a.color), names));
         }
 

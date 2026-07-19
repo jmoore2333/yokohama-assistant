@@ -6,6 +6,7 @@
 
 use yokohama_core::*;
 
+use crate::input::parse_order_id;
 use crate::reveal::{claimed_token_area, lab_b_changed, refilled_port_slots, Pending};
 use crate::session::{ApplyError, TrackingMode};
 use crate::{describe, render};
@@ -540,12 +541,6 @@ fn parse_area_id(tok: &str) -> Result<AreaId, String> {
 /// here.
 fn parse_raw_area_token(tok: &str) -> Result<AreaId, String> {
     tok.parse::<u8>().map(AreaId::unchecked).map_err(|_| format!("'{tok}' is not a valid area number"))
-}
-
-/// Parse an order-card token ("O17" or "17") into its numeric id -- no
-/// validation against any deck; callers check membership themselves.
-pub(crate) fn parse_order_id(tok: &str) -> Option<u8> {
-    tok.strip_prefix(['O', 'o']).unwrap_or(tok).parse::<u8>().ok()
 }
 
 const HELP_TEXT: &str = "\
