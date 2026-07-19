@@ -14,6 +14,45 @@ pub enum TrackingMode {
     Live,
 }
 
+/// Why `Session::apply`/`apply_standalone` could not commit (Task 13, design
+/// §5.3-7). The REPL (`repl::Repl::finish_apply`) matches on the variant to
+/// choose user-facing text and, for `Illegal`, to tell a live-mode desync
+/// guard (`reveal::lock_on_order_desync`/`lock_on_tech_desync`) that nothing
+/// actually applied, so it should skip re-checking a board that never
+/// changed -- replacing an earlier version that sniffed formatted text for
+/// the substring "Illegal:" for the same purpose.
+#[derive(Debug)]
+pub enum ApplyError {
+    /// `is_over()` was already true when `apply`/`apply_standalone` was
+    /// called -- nothing was staged, checked, or attempted.
+    GameOver,
+    /// The move itself was illegal: not offered by `get_legal_moves` on the
+    /// post-reveal state, or rejected by `apply_move`.
+    Illegal(String),
+    /// `check_invariants` failed on the state produced by an otherwise-legal
+    /// apply -- a driver/engine bug, not a legality problem. The caller
+    /// locks the session down on this variant rather than just rejecting
+    /// the one move.
+    Invariant(String),
+    /// A reveal event failed to fold onto the staged state (`apply`'s bound
+    /// reveals, or `apply_standalone`'s `RevealStartingOrder`), or wasn't a
+    /// variant valid in that position.
+    Reveal(String),
+}
+
+impl std::fmt::Display for ApplyError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            ApplyError::GameOver => write!(f, "the game is already over"),
+            ApplyError::Illegal(msg) => write!(f, "{msg}"),
+            ApplyError::Invariant(msg) => write!(f, "{msg}"),
+            ApplyError::Reveal(msg) => write!(f, "{msg}"),
+        }
+    }
+}
+
+impl std::error::Error for ApplyError {}
+
 /// The simulation/live-tracking core: `{Rules, GameRecord, GameState}` kept
 /// in lockstep. Standing invariant: `state` always equals what replaying
 /// `record` against `rules` produces FROM ITS BASE -- for every session
@@ -99,17 +138,26 @@ impl Session {
     /// never serialized.
     ///
     /// Atomic write-then-rename: the JSON is written to a sibling `.tmp`
-    /// file first, then renamed onto `path`. A crash mid-write leaves only
-    /// the `.tmp` file corrupt (or absent) and `path` untouched -- `path`
-    /// itself is never opened for writing, so live-mode autosave (which
-    /// rewrites the ONLY copy of a tracked game after every apply) can't
-    /// have its sole save corrupted by a crash mid-write.
+    /// file first, `fsync`ed, then renamed onto `path`. A crash mid-write
+    /// leaves only the `.tmp` file corrupt (or absent) and `path` untouched
+    /// -- `path` itself is never opened for writing, so live-mode autosave
+    /// (which rewrites the ONLY copy of a tracked game after every apply)
+    /// can't have its sole save corrupted by a crash mid-write. The `fsync`
+    /// (Task 13) closes the remaining gap: without it, the `.tmp` file's
+    /// bytes can still be sitting in the OS page cache (not yet on disk)
+    /// when `rename` runs, so a crash/power-loss right after a "successful"
+    /// save could still rename a not-yet-durable file onto `path`.
     pub fn save(&self, path: &std::path::Path) -> Result<(), String> {
+        use std::io::Write;
         let text = serde_json::to_string_pretty(&self.record).map_err(|e| e.to_string())?;
         let mut tmp = path.as_os_str().to_os_string();
         tmp.push(".tmp");
         let tmp = std::path::PathBuf::from(tmp);
-        std::fs::write(&tmp, text).map_err(|e| format!("write to {} failed: {e}", tmp.display()))?;
+        let mut file =
+            std::fs::File::create(&tmp).map_err(|e| format!("create {} failed: {e}", tmp.display()))?;
+        file.write_all(text.as_bytes()).map_err(|e| format!("write to {} failed: {e}", tmp.display()))?;
+        file.sync_all().map_err(|e| format!("fsync {} failed: {e}", tmp.display()))?;
+        drop(file);
         std::fs::rename(&tmp, path)
             .map_err(|e| format!("rename {} -> {} failed: {e}", tmp.display(), path.display()))
     }
@@ -141,33 +189,43 @@ impl Session {
     /// then applied; invariants checked; on any error nothing is
     /// recorded/committed. Returns `delta_summary` lines, plus an
     /// autosave-failure warning line when `save_path` is set and the write
-    /// fails.
-    pub fn apply(&mut self, mv: Move, reveals: Vec<RecordedEvent>) -> Result<Vec<String>, String> {
+    /// fails. Gated by an explicit `is_over()` check FIRST (Task 13) --
+    /// once the game has ended there is nothing left for `get_legal_moves`/
+    /// `apply_move` to legitimately do, so this reports the unambiguous
+    /// `ApplyError::GameOver` rather than whatever incidental error those
+    /// would happen to produce post-game.
+    pub fn apply(&mut self, mv: Move, reveals: Vec<RecordedEvent>) -> Result<Vec<String>, ApplyError> {
+        if self.is_over() {
+            return Err(ApplyError::GameOver);
+        }
         let mut staged = self.state.clone();
         for ev in &reveals {
             match ev {
-                RecordedEvent::RevealOrders(c) => staged.arrange_orders_on_top(c).map_err(|e| e.to_string())?,
-                RecordedEvent::RevealTechs(c) => staged.arrange_techs_on_top(c).map_err(|e| e.to_string())?,
-                RecordedEvent::RevealFivePowerToken { area, effect } => {
-                    staged.reveal_five_power_token(*area, *effect).map_err(|e| e.to_string())?
+                RecordedEvent::RevealOrders(c) => {
+                    staged.arrange_orders_on_top(c).map_err(|e| ApplyError::Reveal(e.to_string()))?
                 }
-                other => return Err(format!("event not allowed as a bound reveal: {other:?}")),
+                RecordedEvent::RevealTechs(c) => {
+                    staged.arrange_techs_on_top(c).map_err(|e| ApplyError::Reveal(e.to_string()))?
+                }
+                RecordedEvent::RevealFivePowerToken { area, effect } => staged
+                    .reveal_five_power_token(*area, *effect)
+                    .map_err(|e| ApplyError::Reveal(e.to_string()))?,
+                other => return Err(ApplyError::Reveal(format!("event not allowed as a bound reveal: {other:?}"))),
             }
         }
         // The engine's apply_move does not itself validate that `mv` matches
-        // the current phase (MoveError::WrongPhase is dead code -- see
-        // guidingpath's decision log; deliberately deferred at the engine
-        // level). Session enforces the plan's global constraint here
-        // instead: never apply a move get_legal_moves didn't offer. Checked
-        // against `staged` (post-reveal), since the group is atomic and
-        // legality is defined on the state the move will actually run
-        // against.
+        // the current phase (that check was MoveError::WrongPhase, deleted
+        // as dead code at Task 13 -- design §5.3-7, guidingpath's decision
+        // log). Session enforces the plan's global constraint here instead:
+        // never apply a move get_legal_moves didn't offer. Checked against
+        // `staged` (post-reveal), since the group is atomic and legality is
+        // defined on the state the move will actually run against.
         if !get_legal_moves(&staged, &self.rules).contains(&mv) {
-            return Err(format!("move not legal in the current state: {mv:?}"));
+            return Err(ApplyError::Illegal(format!("move not legal in the current state: {mv:?}")));
         }
-        let next = apply_move(&staged, &mv, &self.rules).map_err(|e| e.to_string())?;
+        let next = apply_move(&staged, &mv, &self.rules).map_err(|e| ApplyError::Illegal(e.to_string()))?;
         check_invariants(&next, &self.rules)
-            .map_err(|e| format!("INVARIANT VIOLATION after apply (driver/engine bug): {e}"))?;
+            .map_err(|e| ApplyError::Invariant(format!("INVARIANT VIOLATION after apply (driver/engine bug): {e}")))?;
         let mut delta = crate::render::delta_summary(&self.state, &next, &self.rules);
         for ev in reveals {
             self.record.push_event(ev);
@@ -183,16 +241,21 @@ impl Session {
     /// Apply a standalone reveal event (`RevealStartingOrder`) atomically:
     /// staged clone -> `reveal_starting_order` -> invariants -> commit ->
     /// autosave. Any other variant is rejected -- those are bound reveals,
-    /// only valid as part of `apply`'s group.
-    pub fn apply_standalone(&mut self, ev: RecordedEvent) -> Result<Vec<String>, String> {
+    /// only valid as part of `apply`'s group. Same `is_over()` gate as
+    /// `apply` (Task 13), for the same reason: a hidden order revealed after
+    /// the game has ended is not a real driver action.
+    pub fn apply_standalone(&mut self, ev: RecordedEvent) -> Result<Vec<String>, ApplyError> {
+        if self.is_over() {
+            return Err(ApplyError::GameOver);
+        }
         let (player, card) = match &ev {
             RecordedEvent::RevealStartingOrder { player, card } => (*player, *card),
-            other => return Err(format!("event not allowed as a standalone reveal: {other:?}")),
+            other => return Err(ApplyError::Reveal(format!("event not allowed as a standalone reveal: {other:?}"))),
         };
         let mut staged = self.state.clone();
-        staged.reveal_starting_order(player, card).map_err(|e| e.to_string())?;
+        staged.reveal_starting_order(player, card).map_err(|e| ApplyError::Reveal(e.to_string()))?;
         check_invariants(&staged, &self.rules)
-            .map_err(|e| format!("INVARIANT VIOLATION after apply (driver/engine bug): {e}"))?;
+            .map_err(|e| ApplyError::Invariant(format!("INVARIANT VIOLATION after apply (driver/engine bug): {e}")))?;
         let mut delta = crate::render::delta_summary(&self.state, &staged, &self.rules);
         self.record.push_event(ev);
         self.state = staged;
@@ -211,9 +274,11 @@ impl Session {
     /// that can't stage-then-commit on `state` directly -- undo's job is to
     /// move `state` backward, so it stages on a clone of `record` instead
     /// and re-derives `state`: via `replay` (from `new_game`+`finalize_setup`)
-    /// for a normal session, or by folding the truncated `record.events`
-    /// over `checkpoint` for a `for_test_from_state` session -- see
-    /// `replay_from_checkpoint`.
+    /// for a normal session, or via core's `replay_from` folding the
+    /// truncated `record.events` over `checkpoint` for a
+    /// `for_test_from_state` session (Task 13: previously a hand-kept
+    /// CLI-side mirror of `replay`'s own fold loop, `replay_from_checkpoint`;
+    /// now both paths share the one fold core exposes).
     pub fn undo(&mut self) -> Result<(), String> {
         let mut record = self.record.clone();
         match record.events.pop() {
@@ -231,7 +296,7 @@ impl Session {
             Some(_) => {} // standalone reveal (or an orphaned bound reveal): pops alone
         }
         let state = match &self.checkpoint {
-            Some(base) => replay_from_checkpoint(base.clone(), &record.events, &self.rules)?,
+            Some(base) => replay_from(base, &record.events, &self.rules).map_err(|e| e.to_string())?,
             None => replay(&record, &self.rules).map_err(|e| e.to_string())?,
         };
         self.record = record;
@@ -261,44 +326,6 @@ impl Session {
             Err(e) => Some(format!("WARNING: autosave failed: {e}")),
         }
     }
-}
-
-/// `undo`'s counterpart to `replay` for a `for_test_from_state` session:
-/// folds `events` over `base` exactly as `replay` folds `record.events`
-/// over a fresh `new_game`+`finalize_setup` state. Mirrors `replay`'s
-/// event-folding loop by hand (kept in sync manually -- `replay` itself
-/// lives in yokohama-core and isn't parameterized over its starting state,
-/// and this crate doesn't touch engine internals) because a hand-built
-/// checkpoint has no `(seed, config, choices)` that `replay` could use
-/// instead.
-fn replay_from_checkpoint(base: GameState, events: &[RecordedEvent], rules: &Rules) -> Result<GameState, String> {
-    let mut state = base;
-    for ev in events {
-        state = match ev {
-            RecordedEvent::Move(mv) => apply_move(&state, mv, rules).map_err(|e| e.to_string())?,
-            RecordedEvent::RevealOrders(cards) => {
-                let mut s = state;
-                s.arrange_orders_on_top(cards).map_err(|e| e.to_string())?;
-                s
-            }
-            RecordedEvent::RevealTechs(cards) => {
-                let mut s = state;
-                s.arrange_techs_on_top(cards).map_err(|e| e.to_string())?;
-                s
-            }
-            RecordedEvent::RevealStartingOrder { player, card } => {
-                let mut s = state;
-                s.reveal_starting_order(*player, *card).map_err(|e| e.to_string())?;
-                s
-            }
-            RecordedEvent::RevealFivePowerToken { area, effect } => {
-                let mut s = state;
-                s.reveal_five_power_token(*area, *effect).map_err(|e| e.to_string())?;
-                s
-            }
-        };
-    }
-    Ok(state)
 }
 
 #[cfg(test)]
@@ -381,6 +408,40 @@ mod tests {
         assert!(s.apply(Move::SkipBuilding, vec![]).is_err());
         assert_eq!(*s.state(), before_state);
         assert_eq!(s.record().events.len(), before_events);
+    }
+
+    /// Task 13 test (c): the illegal-move outcome is the typed `Illegal`
+    /// variant, not just "some String error" -- `lock_on_order_desync`
+    /// (reveal.rs) keys its skip-check on this variant instead of sniffing
+    /// formatted text for the substring "Illegal:".
+    #[test]
+    fn illegal_move_outcome_is_typed_illegal() {
+        let mut s = sim_2p(4);
+        let err = s.apply(Move::SkipBuilding, vec![]).unwrap_err();
+        assert!(matches!(err, ApplyError::Illegal(_)), "{err:?}");
+    }
+
+    /// Task 13 test (b): a finished game's `apply` returns the typed
+    /// `GameOver` outcome via an explicit `is_over()` gate, rather than
+    /// falling through to `get_legal_moves`/`apply_move` and surfacing
+    /// whatever incidental error those produce post-game. Built via
+    /// `for_test_from_state` (see its doc comment) with the exact fields
+    /// `is_game_over` checks flipped directly -- cheaper and more targeted
+    /// than driving a real game to completion.
+    #[test]
+    fn apply_on_finished_game_returns_typed_game_over() {
+        let mut state = create_test_game_state(2);
+        state.end_game_triggered = true;
+        state.final_round = true;
+        state.turn_phase = TurnPhase::TurnEnd;
+        // is_game_over requires current_player == the seat before start_player
+        // (2p, start_player 0 -> that's seat 1) at TurnEnd in the final round.
+        state.current_player = PlayerId::new(1);
+        assert!(is_game_over(&state), "fixture must actually satisfy is_game_over");
+
+        let mut s = Session::for_test_from_state(state, Rules::empty_for_tests());
+        let err = s.apply(Move::EndAdditionalPhase, vec![]).unwrap_err();
+        assert!(matches!(err, ApplyError::GameOver), "{err:?}");
     }
 
     #[test]

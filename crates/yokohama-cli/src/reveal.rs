@@ -90,8 +90,9 @@ impl Repl {
                     Ok(card) => {
                         collected.push(card);
                         if collected.len() == slots.len() {
-                            let out = self.finish_apply(mv, vec![RecordedEvent::RevealOrders(collected.clone())]);
-                            self.lock_on_order_desync(&slots, &collected, board_b, out)
+                            let (out, was_illegal) =
+                                self.finish_apply_ex(mv, vec![RecordedEvent::RevealOrders(collected.clone())]);
+                            self.lock_on_order_desync(&slots, &collected, board_b, out, was_illegal)
                         } else {
                             self.pending = Pending::OrderReveals { mv, slots, board_b, collected };
                             self.out(self.reveal_prompt(), false)
@@ -105,7 +106,11 @@ impl Repl {
             }
             Pending::TechReveal { mv, board_b } => {
                 match parse_tech_reveal(words, &self.session.state().tech_deck, &self.session.rules().techs) {
-                    Ok(card) => self.finish_apply(mv, vec![RecordedEvent::RevealTechs(vec![card])]),
+                    Ok(card) => {
+                        let (out, was_illegal) =
+                            self.finish_apply_ex(mv, vec![RecordedEvent::RevealTechs(vec![card])]);
+                        self.lock_on_tech_desync(card, board_b, out, was_illegal)
+                    }
                     Err(msg) => {
                         self.pending = Pending::TechReveal { mv, board_b };
                         self.out(format!("{msg}\n{}", self.reveal_prompt()), false)
@@ -129,16 +134,21 @@ impl Repl {
     /// deterministic given the reveal -- so it's treated like an invariant
     /// violation: lock the session and surface a CRITICAL banner rather
     /// than silently tracking a board that disagrees with the table.
-    /// No-ops when `finish_apply` already failed or locked -- nothing to
-    /// re-check against a move that never actually applied.
+    /// No-ops when `out.quit`/`self.locked`/`was_illegal` -- nothing to
+    /// re-check against a move that never actually applied. `was_illegal`
+    /// (Task 13) is `finish_apply_ex`'s report of whether the apply outcome
+    /// was specifically `ApplyError::Illegal`, keying this skip on the
+    /// error's TYPE rather than sniffing `out.text` for the substring
+    /// "Illegal:" as a prior version did.
     pub(crate) fn lock_on_order_desync(
         &mut self,
         slots: &[usize],
         collected: &[OrderCardId],
         board_b: bool,
         out: StepOutput,
+        was_illegal: bool,
     ) -> StepOutput {
-        if out.quit || self.locked || out.text.contains("Illegal:") {
+        if out.quit || self.locked || was_illegal {
             return out;
         }
         let state = self.session.state();
@@ -146,6 +156,40 @@ impl Repl {
         let matches_board = board.is_some_and(|b| {
             slots.iter().zip(collected.iter()).all(|(&slot, &card)| b.slots.get(slot) == Some(&Some(card)))
         });
+        if matches_board {
+            return out;
+        }
+        self.locked = true;
+        StepOutput {
+            text: format!(
+                "{}CRITICAL: desync detected -- the revealed card(s) do not match the board after applying the move. Session locked.\n{}",
+                out.text,
+                self.lockdown_status(),
+            ),
+            quit: false,
+        }
+    }
+
+    /// Tech-reveal (Laboratory) counterpart to `lock_on_order_desync` (Task
+    /// 13 test (d)): once a completed tech-reveal group actually applies,
+    /// the refilled Laboratory slot must hold exactly the typed `card`.
+    /// Same skip conditions and CRITICAL-banner shape, applied to the one
+    /// Lab slot that changed instead of a list of Port slots (a Laboratory
+    /// action only ever refills one slot -- see `remove_and_slide_lab`'s
+    /// doc comment).
+    pub(crate) fn lock_on_tech_desync(
+        &mut self,
+        card: TechCardId,
+        board_b: bool,
+        out: StepOutput,
+        was_illegal: bool,
+    ) -> StepOutput {
+        if out.quit || self.locked || was_illegal {
+            return out;
+        }
+        let state = self.session.state();
+        let board = if board_b { state.lab_state.lab_b.as_ref() } else { Some(&state.lab_state.lab_a) };
+        let matches_board = board.is_some_and(|b| b.slots.contains(&Some(card)));
         if matches_board {
             return out;
         }
@@ -334,6 +378,52 @@ mod tests {
         // The typed card is now physically on the Port A board.
         assert!(r.session.state().port_state.port_a.slots.iter().any(|s| *s == Some(others[0])));
         assert_eq!(replay(r.session.record(), r.session.rules()).unwrap(), *r.session.state());
+    }
+
+    /// Task 13 test (c), second half: `lock_on_order_desync` must skip its
+    /// check because the outcome's TYPE was `ApplyError::Illegal`, not
+    /// because the formatted text happened to contain the substring
+    /// "Illegal:" -- proven directly by handing it a `StepOutput` whose text
+    /// contains no such substring at all, alongside `was_illegal = true`.
+    /// A pre-Task-13 string-sniffing check would fail to skip here (no
+    /// match) and go on to report a false-positive desync lock against a
+    /// board that was deliberately never checked for realism.
+    #[test]
+    fn lock_on_order_desync_skips_on_illegal_type_not_string_content() {
+        let (mut r, _others) = live_repl();
+        let out = StepOutput { text: "some unrelated message\n".to_string(), quit: false };
+        let out = r.lock_on_order_desync(&[0], &[OrderCardId(1)], false, out, true);
+        assert!(!r.locked, "must skip the desync check when was_illegal is true, regardless of text content");
+        assert_eq!(out.text, "some unrelated message\n", "output must pass through unchanged when skipped");
+    }
+
+    /// Task 13 test (d): the tech-reveal (Laboratory) counterpart to the
+    /// order-reveal (Port) desync guard. Real live play can never actually
+    /// produce a mismatch here (the operator's own answer is what gets
+    /// arranged onto the deck, then immediately drawn -- see
+    /// `lock_on_order_desync`'s doc comment on this being a driver/engine-bug
+    /// tripwire, not a reachable-in-correct-play state), so this proves the
+    /// GUARD FUNCTION itself locks on a mismatch by calling it directly with
+    /// a card that was deliberately never placed on the board.
+    #[test]
+    fn lab_refill_reveal_mismatch_locks_the_session() {
+        let (mut r, _others) = live_repl();
+        let wrong_card = TechCardId(200); // never dealt, never on any board
+        let out = StepOutput { text: String::new(), quit: false };
+        let out = r.lock_on_tech_desync(wrong_card, false, out, false);
+        assert!(r.locked, "a typed card absent from the board must lock the session");
+        assert!(out.text.contains("CRITICAL"), "{}", out.text);
+    }
+
+    /// `lock_on_tech_desync`'s no-op path, mirroring
+    /// `lock_on_order_desync_skips_on_illegal_type_not_string_content`.
+    #[test]
+    fn lock_on_tech_desync_skips_on_illegal_type() {
+        let (mut r, _others) = live_repl();
+        let out = StepOutput { text: "some unrelated message\n".to_string(), quit: false };
+        let out = r.lock_on_tech_desync(TechCardId(200), false, out, true);
+        assert!(!r.locked);
+        assert_eq!(out.text, "some unrelated message\n");
     }
 
     #[test]

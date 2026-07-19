@@ -1,12 +1,13 @@
 //! Pure REPL step function over a `Session`: numbered-option prompts,
-//! placement grammar, view/utility commands, pagination, and live-mode
-//! reveal choreography (design docs/plans/2026-07-18-phase2-cli-driver-design.md).
+//! placement grammar, view/utility commands, and pagination -- live-mode
+//! reveal choreography lives in `reveal.rs` (moved there at Task 10)
+//! (design docs/plans/2026-07-18-phase2-cli-driver-design.md).
 //! No stdin/stdout -- `main.rs` (Task 13) drives this with real I/O.
 
 use yokohama_core::*;
 
 use crate::reveal::{claimed_token_area, lab_b_changed, refilled_port_slots, Pending};
-use crate::session::TrackingMode;
+use crate::session::{ApplyError, TrackingMode};
 use crate::{describe, render};
 
 /// One REPL turn's worth of state layered over a `Session`: which options
@@ -16,12 +17,12 @@ pub struct Repl {
     pub session: crate::session::Session,
     page: usize,
     pub(crate) pending: Pending,
-    /// Set once `finish_apply` sees an `INVARIANT VIOLATION` error from
-    /// `Session::apply`, or once a just-completed live order-reveal group
-    /// fails the post-apply desync assertion (`lock_on_order_desync`) --
-    /// from then on `step` refuses everything except `save`/`log`/`quit`,
-    /// so a desynced session can still be inspected and saved for
-    /// postmortem but never played further.
+    /// Set once `finish_apply` sees an `ApplyError::Invariant` outcome from
+    /// `Session::apply`, or once a just-completed live reveal group fails
+    /// the post-apply desync assertion (`lock_on_order_desync`/
+    /// `lock_on_tech_desync`) -- from then on `step` refuses everything
+    /// except `save`/`log`/`quit`, so a desynced session can still be
+    /// inspected and saved for postmortem but never played further.
     pub(crate) locked: bool,
 }
 
@@ -79,7 +80,7 @@ impl Repl {
                 }
             }
         }
-        out.push_str("> enter a number, 'a'/'b' for placement, or a command ('help' for the list)\n");
+        out.push_str(INPUT_HINT);
         out
     }
 
@@ -119,15 +120,15 @@ impl Repl {
         match words.as_slice() {
             [] => self.out(String::new(), false),
             ["quit"] | ["q"] => StepOutput { text: "bye\n".to_string(), quit: true },
-            ["help"] => self.out(HELP_TEXT.to_string(), false),
-            ["board"] => self.out(render::board_grid(self.session.state()), false),
-            ["players"] => self.out(render::players_panel(self.session.state(), self.session.rules()), false),
-            ["ports"] => self.out(render::ports_view(self.session.state(), self.session.rules()), false),
-            ["labs"] => self.out(render::labs_view(self.session.state(), self.session.rules()), false),
-            ["tracks"] => self.out(render::tracks_view(self.session.state()), false),
-            ["hand"] => self.out(self.hand_text(), false),
-            ["score"] => self.out(self.score_text(), false),
-            ["log"] => self.out(self.log_tail(), false),
+            ["help"] => self.out_view(HELP_TEXT.to_string()),
+            ["board"] => self.out_view(render::board_grid(self.session.state())),
+            ["players"] => self.out_view(render::players_panel(self.session.state(), self.session.rules())),
+            ["ports"] => self.out_view(render::ports_view(self.session.state(), self.session.rules())),
+            ["labs"] => self.out_view(render::labs_view(self.session.state(), self.session.rules())),
+            ["tracks"] => self.out_view(render::tracks_view(self.session.state())),
+            ["hand"] => self.out_view(self.hand_text()),
+            ["score"] => self.out_view(self.score_text()),
+            ["log"] => self.out_view(self.log_tail()),
             ["more"] => {
                 self.advance_page();
                 self.out(String::new(), false)
@@ -176,6 +177,29 @@ impl Repl {
             text.push_str(&self.lockdown_status());
         } else if matches!(self.pending, Pending::None) {
             text.push_str(&self.prompt());
+        }
+        StepOutput { text, quit: false }
+    }
+
+    /// Like `out`, but for read-only VIEW commands (`board`/`players`/
+    /// `ports`/`labs`/`tracks`/`hand`/`score`/`log`/`help`): appends just
+    /// `INPUT_HINT`, not the full header+phase+numbered-options block
+    /// `prompt()` builds (Task 13 test (e)). A view command never changes
+    /// state, so which options are legal never changes either -- reprinting
+    /// up to 20 numbered options after every single glance at the board was
+    /// pure noise (closed a dogfooding friction note). Mirrors `out`'s
+    /// lockdown/pending short-circuits for defense in depth, even though
+    /// today only `log` can reach here while locked (`step`'s lockdown
+    /// allow-list) and no view command is reachable mid-reveal-collection
+    /// (`step`'s pending-active branch routes elsewhere entirely).
+    pub(crate) fn out_view(&self, mut text: String) -> StepOutput {
+        if !text.is_empty() && !text.ends_with('\n') {
+            text.push('\n');
+        }
+        if self.locked {
+            text.push_str(&self.lockdown_status());
+        } else if matches!(self.pending, Pending::None) {
+            text.push_str(INPUT_HINT);
         }
         StepOutput { text, quit: false }
     }
@@ -336,12 +360,23 @@ impl Repl {
 
     /// Apply `mv` + `reveals` as one atomic group (`Session::apply`). On
     /// success, reset pagination and report the delta (plus a final-score
-    /// table if the game just ended). On failure, an `INVARIANT VIOLATION`
+    /// table if the game just ended). On failure, an `ApplyError::Invariant`
     /// locks the session down with a postmortem dump; anything else is an
     /// ordinary illegal-move rejection. This is the sim path's entire
-    /// `commit` (reveals always empty there) and the terminal step of
-    /// every live-mode reveal collection.
+    /// `commit` (reveals always empty there) and the terminal step of every
+    /// live-mode reveal collection that doesn't need the desync guard (see
+    /// `finish_apply_ex` for the two that do).
     pub(crate) fn finish_apply(&mut self, mv: Move, reveals: Vec<RecordedEvent>) -> StepOutput {
+        self.finish_apply_ex(mv, reveals).0
+    }
+
+    /// Same as `finish_apply`, but also reports whether the outcome was
+    /// specifically `ApplyError::Illegal` (Task 13) -- `reveal.rs`'s
+    /// `lock_on_order_desync`/`lock_on_tech_desync` need that to key their
+    /// skip-check on the error's TYPE (nothing actually applied, so there is
+    /// no board to re-check) rather than sniffing the formatted text for the
+    /// substring "Illegal:".
+    pub(crate) fn finish_apply_ex(&mut self, mv: Move, reveals: Vec<RecordedEvent>) -> (StepOutput, bool) {
         match self.session.apply(mv, reveals) {
             Ok(delta) => {
                 self.page = 0;
@@ -352,17 +387,17 @@ impl Repl {
                     }
                     text.push_str(&self.final_score_table());
                 }
-                self.out(text, false)
+                (self.out(text, false), false)
+            }
+            Err(ApplyError::Invariant(msg)) => {
+                self.locked = true;
+                let mut text = format!("LOCKDOWN -- {msg}\n");
+                text.push_str(&self.lockdown_dump());
+                (self.out(text, false), false)
             }
             Err(e) => {
-                if e.starts_with("INVARIANT VIOLATION") {
-                    self.locked = true;
-                    let mut text = format!("LOCKDOWN -- {e}\n");
-                    text.push_str(&self.lockdown_dump());
-                    self.out(text, false)
-                } else {
-                    self.out(format!("Illegal: {e}\n"), false)
-                }
+                let was_illegal = matches!(e, ApplyError::Illegal(_));
+                (self.out(format!("Illegal: {e}\n"), false), was_illegal)
             }
         }
     }
@@ -535,8 +570,13 @@ Commands:
   reveal <seat> <O..>  live mode: make a hidden opponent starting order public
   cancel          live mode: abort an in-progress card/token reveal prompt
   help            show this text
-  quit            exit the REPL
+  quit            exit the REPL ('q' also works)
 ";
+
+/// The one-line trailing hint every prompt screen ends with -- factored out
+/// (Task 13) so `prompt()`'s full block and `out_view`'s hint-only block
+/// agree on its wording verbatim.
+const INPUT_HINT: &str = "> enter a number, 'a'/'b' for placement, or a command ('help' for the list)\n";
 
 #[cfg(test)]
 mod tests {
@@ -637,6 +677,38 @@ mod tests {
             Some(original),
             "a failed save must not redirect future autosaves at a bad path"
         );
+    }
+
+    /// Task 13 test (e): a "view" command (one that only reads current state
+    /// -- never changes it) is followed by just the one-line input hint, not
+    /// the full header+phase+numbered-options block `prompt()` builds. Closes
+    /// a dogfooding friction note: re-showing up to 20 numbered options after
+    /// every single glance at the board/hand/log was pure noise since the
+    /// glance itself never changes which options are legal.
+    #[test]
+    fn view_commands_show_only_the_input_hint_not_the_full_options_block() {
+        let mut r = repl_2p(4);
+        for cmd in ["board", "players", "ports", "labs", "tracks", "hand", "score", "log", "help"] {
+            let out = r.step(cmd);
+            assert!(!out.text.contains("[0]"), "'{cmd}' unexpectedly showed the numbered options block: {}", out.text);
+            assert!(
+                out.text.trim_end().ends_with("('help' for the list)"),
+                "'{cmd}' output is missing the one-line input hint: {}", out.text
+            );
+        }
+    }
+
+    /// Task 13 test (f): `help`'s own text should document the `q` alias for
+    /// `quit` that `step`'s dispatch already honors (`["quit"] | ["q"]`) --
+    /// checked via the quoted form `'q'` (this codebase's convention for a
+    /// literal input token, e.g. reveal.rs's "or 'cancel'") rather than a
+    /// bare `"q"`, which the word "quit" itself already contains and so
+    /// would never have gone RED.
+    #[test]
+    fn help_text_documents_the_q_quit_alias() {
+        let mut r = repl_2p(4);
+        let out = r.step("help");
+        assert!(out.text.contains("'q'"), "{}", out.text);
     }
 
     #[test]
@@ -829,6 +901,54 @@ mod tests {
             r.session.state().pending_choices.len(), 2,
             "a failed second undo must not mutate state"
         );
+    }
+
+    /// Task 13 rider (T11 review): the checkpoint-fold path (`Session::undo`'s
+    /// `for_test_from_state` branch, now delegating to core's `replay_from`
+    /// instead of a hand-kept CLI-side mirror) exercised with a NON-empty
+    /// events slice. The sibling test above only ever undoes back to an
+    /// EMPTY record (a zero-event fold, since it resolves just ONE of the two
+    /// choices before undoing) -- this resolves BOTH, so the first undo must
+    /// fold exactly 1 event (the first `ChooseAnyGood`) back over the
+    /// checkpoint to re-derive the one-choice-pending state, not just return
+    /// the checkpoint verbatim.
+    #[test]
+    fn undo_after_both_any_good_choices_folds_a_non_empty_checkpoint_slice() {
+        let mut r = repl_with_any_good_cascade();
+        assert_eq!(r.session.state().pending_choices.len(), 2);
+
+        let k1 = r.session.legal().iter()
+            .position(|m| matches!(m, Move::ChooseAnyGood { good: TradeGood::Copper }))
+            .expect("Copper is always one of the four AnyGood options");
+        r.step(&k1.to_string());
+        assert_eq!(r.session.state().pending_choices.len(), 1);
+
+        let k2 = r.session.legal().iter()
+            .position(|m| matches!(m, Move::ChooseAnyGood { good: TradeGood::Silk }))
+            .expect("Silk is always one of the four AnyGood options");
+        r.step(&k2.to_string());
+        assert!(r.session.state().pending_choices.is_empty());
+        assert_eq!(r.session.record().events.len(), 2);
+
+        // Undo #1: folds exactly 1 event (the first ChooseAnyGood) over the
+        // checkpoint -- the non-empty fold this test targets.
+        let out = r.step("undo");
+        assert!(out.text.contains("Undid"), "{}", out.text);
+        assert_eq!(r.session.record().events.len(), 1);
+        assert_eq!(
+            r.session.state().pending_choices.len(), 1,
+            "re-shown state must be exactly what folding 1 event over the checkpoint produces"
+        );
+
+        // Undo #2: folds 0 events -- back to the checkpoint verbatim.
+        let out = r.step("undo");
+        assert!(out.text.contains("Undid"), "{}", out.text);
+        assert_eq!(r.session.record().events.len(), 0);
+        assert_eq!(r.session.state().pending_choices.len(), 2);
+
+        // Undo #3: nothing left to undo.
+        let out = r.step("undo");
+        assert!(out.text.contains("Cannot undo"), "{}", out.text);
     }
 
     /// Turn-1 setup shared by the `m`-grammar tests: Option-B-places 2
