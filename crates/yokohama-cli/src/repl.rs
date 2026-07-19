@@ -44,7 +44,18 @@ impl Repl {
     /// `session.legal()`, 20 per page.
     pub fn prompt(&self) -> String {
         let state = self.session.state();
-        let mut out = render::prompt_header(state);
+        let phase_text = match state.pending_choices.first() {
+            Some(head) => {
+                let n = state.pending_choices.len();
+                format!(
+                    "Choose: {} — {n} choice{} pending",
+                    describe::describe_pending_choice(head, state, self.session.rules()),
+                    if n == 1 { "" } else { "s" },
+                )
+            }
+            None => describe::phase_name(state.turn_phase).to_string(),
+        };
+        let mut out = render::prompt_header(state, &phase_text);
         out.push('\n');
         if self.session.is_over() {
             out.push_str("game over — commands only\n");
@@ -138,6 +149,8 @@ impl Repl {
             ["reveal", ..] => self.out("Usage: reveal <seat> <O..>\n".to_string(), false),
             ["a", rest @ ..] => self.try_placement_a(rest),
             ["b", rest @ ..] => self.try_placement_b(rest),
+            ["m", src, dst] => self.try_assistant_move(src, dst),
+            ["m", ..] => self.out("Usage: m <from> <to>\n".to_string(), false),
             [_] if words[0].chars().all(|c| c.is_ascii_digit()) => match words[0].parse::<usize>() {
                 Ok(k) => self.pick_option(k),
                 Err(_) => self.out(format!("'{}' is not a valid option number.\n", words[0]), false),
@@ -237,6 +250,36 @@ impl Repl {
         match self.find_placement_match(&candidate) {
             Some(mv) => self.commit(mv),
             None => self.out("Illegal: that placement is not currently available.\n".to_string(), false),
+        }
+    }
+
+    /// Parse `m <src> <dst>` (`src` is `hand` or an area id) into a
+    /// `ChooseAssistantMove` candidate and exact-match it against `legal()`
+    /// via `find_placement_match` (its catch-all arm already does plain
+    /// equality for every non-`PlaceThreeAreas` move, so this reuses it
+    /// as-is rather than duplicating the lookup). Area tokens go through
+    /// `parse_raw_area_token`, not `parse_area_id` -- an out-of-range
+    /// destination like `99` must fall through to the SAME "not one of the
+    /// legal assistant moves" rejection an on-board-but-wrong area gets,
+    /// not a separate range error, and `AreaId::new`'s panic-on->=18 rules
+    /// out using it directly on raw user input.
+    fn try_assistant_move(&mut self, src: &str, dst: &str) -> StepOutput {
+        let from = if src == "hand" {
+            MoveSource::Hand
+        } else {
+            match parse_raw_area_token(src) {
+                Ok(id) => MoveSource::Area(id),
+                Err(e) => return self.out(format!("{e}\n"), false),
+            }
+        };
+        let to = match parse_raw_area_token(dst) {
+            Ok(id) => id,
+            Err(e) => return self.out(format!("{e}\n"), false),
+        };
+        let candidate = Move::ChooseAssistantMove { from, to };
+        match self.find_placement_match(&candidate) {
+            Some(mv) => self.commit(mv),
+            None => self.out("Illegal: that is not one of the legal assistant moves.\n".to_string(), false),
         }
     }
 
@@ -451,6 +494,19 @@ fn parse_area_id(tok: &str) -> Result<AreaId, String> {
     }
 }
 
+/// Parse an `m`-grammar area token into a raw, possibly off-board `AreaId`
+/// for legal-move membership testing. Unlike `parse_area_id`, values >=18
+/// are NOT rejected here as a range error -- `AreaId::unchecked` can't
+/// panic on them, so a destination like `99` reaches `try_assistant_move`'s
+/// `legal()` lookup and fails there with "not one of the legal assistant
+/// moves" (its options never include an area that isn't really on the
+/// board) instead of a separate, earlier range error. Only genuinely
+/// unparseable tokens (non-numeric, or too large for `u8`) are rejected
+/// here.
+fn parse_raw_area_token(tok: &str) -> Result<AreaId, String> {
+    tok.parse::<u8>().map(AreaId::unchecked).map_err(|_| format!("'{tok}' is not a valid area number"))
+}
+
 /// Parse an order-card token ("O17" or "17") into its numeric id -- no
 /// validation against any deck; callers check membership themselves.
 pub(crate) fn parse_order_id(tok: &str) -> Option<u8> {
@@ -463,6 +519,7 @@ Commands:
   a [id id id]    Placement Option A: place 1 assistant in each of 0-3 areas
   b <id>          Placement Option B: place 2 assistants in one area
   b <id> t <adj>  Placement Option B with the Telegram bonus: +1 assistant in an adjacent area
+  m <from> <to>   resolve a pending assistant-move choice (<from> is 'hand' or an area id)
   board           show the area grid
   players         show each player's resources, hand, tech, tokens, President
   ports           show both Port boards and the order-deck size
@@ -670,5 +727,193 @@ mod tests {
         std::fs::remove_file(&path).ok();
 
         assert!(r.step("q").quit, "'q' must quit while locked, same as 'quit'");
+    }
+
+    /// Random-but-deterministic walk (same `(seed, rng_seed)` pair every
+    /// run): applies moves via `r.step` by picking a uniformly random legal
+    /// index each turn, until `pending_choices.first()` satisfies `pred`.
+    ///
+    /// `PendingChoice::AnyGood` only ever comes from a Shophouse built on
+    /// a lucky Site slot (a small minority of site templates carry an
+    /// any-good icon), which itself needs Power 4+ -- structurally
+    /// impossible turn 1 (max Power without Telegram tech or an
+    /// already-built Shophouse/Trading House there is 1 president + 2
+    /// assistants = 3) and not meaningfully faster over a few hand-picked
+    /// turns either (Telegram costs industry 6, unaffordable early). No
+    /// short hand-authored path reaches it (see Task 11 report for the
+    /// full trace and the empirical search that ruled this out), so this
+    /// replays a random-play recipe discovered once offline instead of a
+    /// hand-scripted one. Still fully deterministic: same crate-pinned
+    /// `ChaCha8Rng` stream every run, forever.
+    fn drive_until_choice(r: &mut Repl, rng_seed: u64, max_steps: u32, pred: impl Fn(&PendingChoice) -> bool) {
+        use rand::{Rng, SeedableRng};
+        use rand_chacha::ChaCha8Rng;
+        let mut rng = ChaCha8Rng::seed_from_u64(rng_seed);
+        for _ in 0..max_steps {
+            if r.session.state().pending_choices.first().is_some_and(|h| pred(h)) {
+                return;
+            }
+            let n = r.session.legal().len();
+            assert!(n > 0, "dead end while driving toward the target pending choice");
+            let k = rng.gen_range(0..n);
+            r.step(&k.to_string());
+        }
+        panic!("did not reach the target pending choice within {max_steps} steps");
+    }
+
+    /// Game seed 238's random walk (rng seed `238 ^ 0xA5A5_5A5A`) lands on
+    /// a genuine 2-deep AnyGood cascade (a Shophouse built on a slot worth
+    /// 2 any-good icons) the first time `AnyGood` heads the queue --
+    /// verified offline once (Task 11 report) and stable forever since
+    /// both the game seed and the walk's RNG are crate-pinned.
+    const ANY_GOOD_SEED: u64 = 238;
+    const ANY_GOOD_RNG_SEED: u64 = 238 ^ 0xA5A5_5A5A;
+
+    #[test]
+    fn any_good_cascade_banner_shows_choose_count_and_numbered_options() {
+        let mut r = repl_2p(ANY_GOOD_SEED);
+        drive_until_choice(&mut r, ANY_GOOD_RNG_SEED, 1500, |h| matches!(h, PendingChoice::AnyGood));
+        assert_eq!(
+            r.session.state().pending_choices.len(), 2,
+            "expected a 2-deep AnyGood cascade at this (seed, rng_seed) pair"
+        );
+
+        // Resolve the first of the two -- lands on exactly "1 choice
+        // pending", the substring this test pins.
+        let k = r.session.legal().iter()
+            .position(|m| matches!(m, Move::ChooseAnyGood { good: TradeGood::Copper }))
+            .expect("Copper is always one of the four AnyGood options");
+        r.step(&k.to_string());
+        assert_eq!(r.session.state().pending_choices.len(), 1);
+
+        let p = r.prompt();
+        assert!(p.contains("Choose:"), "{p}");
+        assert!(p.contains("1 choice pending"), "{p}");
+        // describe_pending_choice's own AnyGood banner text (the "reward:"
+        // colon form is unique to it -- describe_move's per-option text
+        // below uses "(any-good reward)" in parens instead, so this can't
+        // pass on the numbered options' wording alone).
+        assert!(p.contains("any-good reward: choose"), "{p}");
+        // The four numbered ChooseAnyGood options (describe_move's wording).
+        assert!(p.contains("copper"), "{p}");
+        assert!(p.contains("silk"), "{p}");
+        assert!(p.contains("tea"), "{p}");
+        assert!(p.contains("fish"), "{p}");
+        assert!(p.contains("(any-good reward)"), "{p}");
+    }
+
+    #[test]
+    fn undo_mid_any_good_cascade_steps_back_exactly_one_choice() {
+        let mut r = repl_2p(ANY_GOOD_SEED);
+        drive_until_choice(&mut r, ANY_GOOD_RNG_SEED, 1500, |h| matches!(h, PendingChoice::AnyGood));
+        assert_eq!(r.session.state().pending_choices.len(), 2);
+
+        let k = r.session.legal().iter()
+            .position(|m| matches!(m, Move::ChooseAnyGood { good: TradeGood::Copper }))
+            .expect("Copper is always one of the four AnyGood options");
+        r.step(&k.to_string());
+        assert_eq!(r.session.state().pending_choices.len(), 1);
+        let events_before = r.session.record().events.len();
+
+        let out = r.step("undo");
+        assert!(out.text.contains("Undid"), "{}", out.text);
+        assert_eq!(r.session.record().events.len(), events_before - 1);
+        assert_eq!(
+            r.session.state().pending_choices.len(), 2,
+            "undo must step back exactly ONE choice (re-queue the cascade), not unwind further"
+        );
+
+        // "the same choice again": still AnyGood, same banner shape.
+        let p = r.prompt();
+        assert!(p.contains("Choose:"), "{p}");
+        assert!(p.contains("2 choice"), "{p}");
+    }
+
+    /// Turn-1 setup shared by the `m`-grammar tests: Option-B-places 2
+    /// assistants at the board's Church area, moves the President there
+    /// too (Power 3 = 1 president + 2 assistants), pays copper+silk+yen (3
+    /// distinct payment types -> Faith = power(3) + 3 = 6), then picks
+    /// Church space 6 specifically (`ChurchTrack::movement_rider(6) ==
+    /// 2`, spaces 4/5 are the OTHER eligible-at-faith-6 spaces but only
+    /// carry 1 rider each) -- lands on a genuine 2-deep AssistantMove
+    /// cascade. Verified deterministic for seed 4 (this file's own
+    /// standard fixture seed, via `repl_2p`) by an offline exploration;
+    /// see Task 11 report. Returns the Church area's id, since the `m`
+    /// grammar needs it as a literal area-number source.
+    fn drive_to_double_assistant_move_cascade(r: &mut Repl) -> AreaId {
+        let church_area = *r.session.state().board_layout.areas.iter()
+            .find(|(_, c)| c.area_type == AreaType::Church)
+            .expect("this board has a Church area").0;
+
+        if !r.session.legal().iter().any(|m| matches!(m, Move::PlaceTwoSameArea { .. })) {
+            let end = r.session.legal().iter().position(|m| matches!(m, Move::EndAdditionalPhase))
+                .expect("EndAdditionalPhase reaches Placement");
+            r.step(&end.to_string());
+        }
+        let place = r.session.legal().iter().position(|m| matches!(m,
+            Move::PlaceTwoSameArea { area, adjacent_bonus: None } if *area == church_area
+        )).expect("Option B at Church is legal turn 1");
+        r.step(&place.to_string());
+
+        let pres = r.session.legal().iter().position(|m| {
+            matches!(m, Move::PlacePresident { destination } if *destination == church_area)
+                || matches!(m, Move::MovePresident { destination, .. } if *destination == church_area)
+        }).expect("President can reach Church turn 1");
+        r.step(&pres.to_string());
+
+        let church_mv = r.session.legal().iter().position(|m| matches!(m, Move::ExecuteAreaAction {
+            action: AreaAction::Church {
+                copper: true, silk: true, tea: false, seafood: false, yen: true, imported_good: false,
+            }
+        })).expect("paying copper+silk+yen is affordable turn 1 (starting resources include 1 of each)");
+        r.step(&church_mv.to_string());
+
+        if matches!(r.session.state().pending_choices.first(), Some(PendingChoice::ChurchSpace { .. })) {
+            let space6 = r.session.legal().iter().position(|m| matches!(m, Move::ChooseChurchSpace { space: 6 }))
+                .expect("space 6 (Faith 6) is reachable and unclaimed turn 1");
+            r.step(&space6.to_string());
+        }
+
+        assert_eq!(
+            r.session.state().pending_choices,
+            vec![PendingChoice::AssistantMove, PendingChoice::AssistantMove],
+            "setup recipe drifted -- re-derive against the current engine before trusting this fixture"
+        );
+        church_area
+    }
+
+    #[test]
+    fn assistant_move_m_grammar_applies_from_area_and_hand() {
+        let mut r = repl_2p(4);
+        let church_area = drive_to_double_assistant_move_cascade(&mut r);
+        let p = r.prompt();
+        assert!(p.contains("Choose:"), "{p}");
+        assert!(p.contains("2 choice"), "{p}");
+        let events_before = r.session.record().events.len();
+
+        // First rider: source is the on-board area holding our assistants.
+        let out = r.step(&format!("m {} 9", church_area.0));
+        assert!(!out.text.to_lowercase().contains("illegal"), "{}", out.text);
+        assert_eq!(r.session.record().events.len(), events_before + 1);
+        assert_eq!(r.session.state().pending_choices, vec![PendingChoice::AssistantMove]);
+
+        // Second rider: source is hand.
+        let out = r.step("m hand 9");
+        assert!(!out.text.to_lowercase().contains("illegal"), "{}", out.text);
+        assert_eq!(r.session.record().events.len(), events_before + 2);
+        assert!(r.session.state().pending_choices.is_empty());
+    }
+
+    #[test]
+    fn assistant_move_m_grammar_rejects_out_of_range_destination() {
+        let mut r = repl_2p(4);
+        let church_area = drive_to_double_assistant_move_cascade(&mut r);
+        let events_before = r.session.record().events.len();
+        let state_before = r.session.state().clone();
+
+        let out = r.step(&format!("m {} 99", church_area.0));
+        assert!(out.text.contains("not one of the legal assistant moves"), "{}", out.text);
+        assert_eq!(r.session.record().events.len(), events_before);
+        assert_eq!(*r.session.state(), state_before);
     }
 }

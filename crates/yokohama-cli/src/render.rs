@@ -17,13 +17,18 @@ const CELL_WIDTH: usize = 16;
 
 /// One-line turn/phase/resource summary, e.g.
 /// `"Turn 12 | Red | Placement | 5 yen 3 VP | c1 s2 t0 f1 i0 | hand 2"`.
-pub fn prompt_header(state: &GameState) -> String {
+/// `phase_text` fills the third slot verbatim -- the normal phase name
+/// (`describe::phase_name`) most of the time, or the pending-choice banner
+/// text when `Repl::prompt` (Task 11, design §5.4) detects a queued choice.
+/// Deciding WHICH text that is stays the caller's job; this function only
+/// formats.
+pub fn prompt_header(state: &GameState, phase_text: &str) -> String {
     let p = state.current_player();
     format!(
         "Turn {} | {} | {} | {} yen {} VP | c{} s{} t{} f{} i{} | hand {}",
         state.turn_number,
         color_name(p.color),
-        describe::phase_name(state.turn_phase),
+        phase_text,
         p.money,
         p.victory_points,
         p.copper,
@@ -401,7 +406,7 @@ mod tests {
     #[test]
     fn prompt_header_shows_turn_color_phase_and_money() {
         let state = test_state_2p();
-        let h = prompt_header(&state);
+        let h = prompt_header(&state, describe::phase_name(state.turn_phase));
         assert!(h.contains("Turn 1"), "{h}");
         assert!(h.contains("Red"), "{h}");
         assert!(h.contains("Additional actions (before)"), "{h}");

@@ -304,6 +304,42 @@ pub fn describe_move(mv: &Move, state: &GameState, rules: &Rules) -> String {
     }
 }
 
+/// One plain-words summary line for the pending choice heading
+/// `GameState::pending_choices` -- feeds the `Choose: {...} -- {n}
+/// choice(s) pending` banner `Repl::prompt` renders in place of the normal
+/// phase name whenever the queue is non-empty (Task 11, design §5.4).
+/// Wildcard-free match: every current and future `PendingChoice` variant
+/// must be named here explicitly. `rules` is accepted for interface
+/// symmetry with `describe_move`'s call site (same precedent as
+/// `describe_area_action`'s `_state`) but no variant currently needs it --
+/// every choice type's summary is derived from `state` and the choice's own
+/// fields alone.
+pub fn describe_pending_choice(head: &PendingChoice, state: &GameState, _rules: &Rules) -> String {
+    match head {
+        PendingChoice::AnyGood => "any-good reward: choose 1 of copper/silk/tea/fish".to_string(),
+        PendingChoice::WarehouseTake => {
+            let p = state.current_player();
+            let parts: Vec<String> = warehouse_take_options(p)
+                .into_iter()
+                .map(|item| {
+                    let cost = warehouse_item_cost(p, item);
+                    let label = match item {
+                        WarehouseItem::Assistant => "assistant",
+                        WarehouseItem::Shophouse => "shophouse",
+                        WarehouseItem::TradingHouse => "TH",
+                    };
+                    if cost == 0 { format!("{label} free") } else { format!("{label} {cost}¥") }
+                })
+                .collect();
+            format!("warehouse take ({})", parts.join(" / "))
+        }
+        PendingChoice::AssistantMove => "assistant move (reward): choose a source and destination, or decline".to_string(),
+        PendingChoice::ChurchSpace { total_faith } => format!("Church space at faith {total_faith}"),
+        PendingChoice::CustomsSpace { cost } => format!("Customs space at cost {cost}"),
+        PendingChoice::RecoveryLeave => "Telephone: leave 1 assistant behind, or recover all".to_string(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -428,6 +464,38 @@ mod tests {
             describe_move(&Move::ChooseRecoveryLeave { leave_one: true }, &state, &rules),
             "Leave 1 assistant behind (Telephone)"
         );
+    }
+
+    #[test]
+    fn describe_pending_choice_covers_all_six_variants() {
+        let mut state = state_2p();
+        let rules = Rules::standard();
+        // Fresh game already has >=1 of each warehouse item type (12/6/4 in
+        // the warehouse respectively); bump money so all three (including
+        // the 4-yen first Trading House take) are affordable and listed,
+        // regardless of which seat happens to be "current" (the start seat
+        // begins with only 3 yen -- see `GameConfig::starting_money`).
+        state.players[state.current_player.0 as usize].money = 10;
+
+        let any_good = describe_pending_choice(&PendingChoice::AnyGood, &state, &rules);
+        assert!(any_good.contains("any-good"), "{any_good}");
+
+        let warehouse = describe_pending_choice(&PendingChoice::WarehouseTake, &state, &rules);
+        assert!(warehouse.contains("assistant free"), "{warehouse}");
+        assert!(warehouse.contains("shophouse 2¥"), "{warehouse}");
+        assert!(warehouse.contains("TH 4¥"), "{warehouse}");
+
+        let assistant_move = describe_pending_choice(&PendingChoice::AssistantMove, &state, &rules);
+        assert!(assistant_move.contains("assistant move"), "{assistant_move}");
+
+        let church = describe_pending_choice(&PendingChoice::ChurchSpace { total_faith: 6 }, &state, &rules);
+        assert!(church.contains("Church") && church.contains('6'), "{church}");
+
+        let customs = describe_pending_choice(&PendingChoice::CustomsSpace { cost: 2 }, &state, &rules);
+        assert!(customs.contains("Customs") && customs.contains('2'), "{customs}");
+
+        let recovery = describe_pending_choice(&PendingChoice::RecoveryLeave, &state, &rules);
+        assert!(recovery.contains("Telephone"), "{recovery}");
     }
 
     #[test]
