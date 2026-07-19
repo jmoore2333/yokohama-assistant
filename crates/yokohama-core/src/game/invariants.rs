@@ -135,6 +135,59 @@ pub fn check_invariants(state: &GameState, rules: &Rules) -> Result<(), String> 
         return Err(format!("pending_choices non-empty at TurnEnd: {:?}", state.pending_choices));
     }
 
+    // Board membership (design §4.1): every stored AreaId must exist on the
+    // board. A record or bot that fabricates areas must fail loudly here.
+    let on_board = |a: &crate::types::AreaId| state.board_layout.areas.contains_key(a);
+    for p in &state.players {
+        if let crate::types::PresidentLocation::OnBoard(a) = p.president_location {
+            if !on_board(&a) {
+                return Err(format!("player {} president on non-board area {:?}", p.id.0, a));
+            }
+        }
+        for a in p.assistants.on_board.keys() {
+            if !on_board(a) {
+                return Err(format!("player {} assistants on non-board area {:?}", p.id.0, a));
+            }
+        }
+        for a in p.shophouses.built.keys() {
+            if !on_board(a) {
+                return Err(format!("player {} shophouse on non-board area {:?}", p.id.0, a));
+            }
+        }
+        for a in &p.trading_houses.built {
+            if !on_board(a) {
+                return Err(format!("player {} trading house on non-board area {:?}", p.id.0, a));
+            }
+        }
+    }
+    if let Some(a) = state.station_location {
+        if !on_board(&a) {
+            return Err(format!("station token on non-board area {:?}", a));
+        }
+    }
+    if let Some(a) = state.president_start_area {
+        if !on_board(&a) {
+            return Err(format!("president_start_area is non-board area {:?}", a));
+        }
+    }
+    // Sweep beyond the 4 fields above (types/state.rs audit, T2): the
+    // mercenary sub-turn's target area, and the 5-Power token map's keys.
+    // board_layout is itself part of stored/serialized GameState, so a
+    // corrupted or fabricated save can carry a token entry keyed by a
+    // ghost area even though normal generation never produces one
+    // (board_gen.rs adds every grid cell to `areas` before optionally
+    // giving that same cell a building site / token).
+    if let Some(a) = state.mercenary_target_area {
+        if !on_board(&a) {
+            return Err(format!("mercenary_target_area is non-board area {:?}", a));
+        }
+    }
+    for a in state.board_layout.five_power_tokens.keys() {
+        if !on_board(a) {
+            return Err(format!("5-power token slot on non-board area {:?}", a));
+        }
+    }
+
     Ok(())
 }
 
@@ -142,7 +195,7 @@ pub fn check_invariants(state: &GameState, rules: &Rules) -> Result<(), String> 
 mod tests {
     use super::*;
     use crate::game::{create_test_game_state, finalize_setup, new_game, StartingOrderChoice};
-    use crate::types::{AreaId, OrderCardId};
+    use crate::types::{AreaId, OrderCardId, PresidentLocation};
 
     /// Baseline fixture for the per-player / structural checks: a minimal
     /// state (empty decks/board) is fine here because these tests use
@@ -285,5 +338,54 @@ mod tests {
         state.pending_choices.push(crate::types::PendingChoice::AnyGood);
         let err = check_invariants(&state, &rules).unwrap_err();
         assert!(err.contains("pending_choices") && err.contains("TurnEnd"), "expected a pending-choices-at-TurnEnd error, got: {err}");
+    }
+
+    /// Board membership (design §4.1, T2): a record or bot that fabricates an
+    /// `AreaId` not present in `board_layout.areas` must be rejected. Uses the
+    /// golden (real-board) fixture rather than `baseline()`, whose
+    /// `board_layout.areas` is empty and would make every area a "ghost" --
+    /// these mutations need a real board so only the fabricated area fails.
+    #[test]
+    fn out_of_board_area_ids_violate_invariants() {
+        let (state, rules) = golden_standard_game();
+        let ghost = AreaId::unchecked(99);
+
+        let mut s = state.clone();
+        s.players[0].president_location = PresidentLocation::OnBoard(ghost);
+        assert!(check_invariants(&s, &rules).is_err(), "ghost president area must fail");
+
+        let mut s = state.clone();
+        s.players[0].assistants.on_board.insert(ghost, 1);
+        // keep totals conserved so ONLY the membership check can catch it:
+        s.players[0].assistants.in_hand -= 1;
+        assert!(check_invariants(&s, &rules).is_err(), "ghost assistant area must fail");
+
+        let mut s = state.clone();
+        s.station_location = Some(ghost);
+        assert!(check_invariants(&s, &rules).is_err(), "ghost station area must fail");
+
+        let mut s = state.clone();
+        s.president_start_area = Some(ghost);
+        assert!(check_invariants(&s, &rules).is_err(), "ghost president_start_area must fail");
+    }
+
+    /// T2 field sweep beyond the brief's 4 checks above: two more
+    /// `AreaId`-bearing fields found while auditing `types/state.rs` --
+    /// the mercenary sub-turn's target area, and the 5-Power token map
+    /// nested in `board_layout` (itself part of serialized `GameState`,
+    /// so a corrupted/fabricated save can carry a token keyed by a ghost
+    /// area even though normal board generation never produces one).
+    #[test]
+    fn out_of_board_area_ids_violate_invariants_swept_fields() {
+        let (state, rules) = golden_standard_game();
+        let ghost = AreaId::unchecked(99);
+
+        let mut s = state.clone();
+        s.mercenary_target_area = Some(ghost);
+        assert!(check_invariants(&s, &rules).is_err(), "ghost mercenary_target_area must fail");
+
+        let mut s = state.clone();
+        s.board_layout.five_power_tokens.insert(ghost, None);
+        assert!(check_invariants(&s, &rules).is_err(), "ghost 5-power token area must fail");
     }
 }
