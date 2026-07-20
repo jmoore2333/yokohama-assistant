@@ -547,9 +547,14 @@ structural equality — this IS the L2 identity (destination, mover-cost, credit
   even if there are other President pawns in the Area. However, you may only move to this Area if
   you are doing this Area action"; DL 2026-07-17 I2 row calls both Station and Tram empty-path
   free teleports]. Whether the Station area must hold an own assistant is a genuine open reading —
-  §7.1-A1; the oracle emits the label WITHOUT the assistant requirement (card-text reading, Tram
-  analog) so that any engine disagreement surfaces as a divergence for triage rather than being
-  silently harmonized.
+  §7.1-A1; the oracle AS SPECIFIED emitted the label WITHOUT the assistant requirement (card-text
+  reading, Tram analog) so that any engine disagreement would surface as a divergence for triage
+  rather than being silently harmonized. **[SUPERSEDED at round-1 triage, 2026-07-20 — see §9-D:
+  the probe worked. The divergence surfaced organically (3/60 sweep games), was adversarially
+  verified, and was triaged class-4 genuine ambiguity; pending the owner's ruling the CODE
+  temporarily mirrors the engine's Reading 2 behind the `PENDING-RULING §7.1-A1` marker in
+  `movement.rs`, so this sentence describes the probe design, not current behavior. The ruling
+  list carries the full entry.]**
 
 Teleport labels merge with walking labels under the same dedup (a free walking route and a teleport
 to the same destination produce one identical `{dest, {}}` label).
@@ -890,6 +895,15 @@ rules question) or interface decisions; none injects an engine rules belief.
   `rules.building_sites: Vec<BuildingSite>` / `rules.five_power_tokens: Vec<FivePowerEffect>`.
   Signatures published by the orchestrator (names only, no bodies); `game/cards.rs` itself
   remains forbidden to oracle authors.
+- **D. Station interim (round-1 triage, 2026-07-20).** §4.2's Reading-1 emission is SUPERSEDED
+  in code: the §7.1-A1 divergence surfaced live (3/60 games, byte-identical repro, preserved as
+  `crates/yokohama-difftest/fixtures/ruling-a1/`), was verified, and is with the owner as ruling
+  A1. Pending that ruling the oracle mirrors the engine's Reading 2 (own assistant required)
+  behind the `PENDING-RULING §7.1-A1` marker so the differential gate binds; the engine is
+  deliberately untouched (no unadjudicated reading enters `rules_hash`-stamped records). The
+  ruling flips exactly one condition on whichever side loses. (Recorded here at the Stage-1
+  review's must-fix: an attested spec must not assert the opposite of the code on the very
+  question the harness exists to probe.)
 - **D. Chinatown Mining rider (round-2 triage, 2026-07-20 — class-2 ORACLE BUG, fixed).** The
   oracle's Chinatown running-balance model (`chinatown_apply`, YenToCopper) added exactly 1
   copper, omitting the Mining Technology rider — verified card text (08-tech-cards.yaml Mining

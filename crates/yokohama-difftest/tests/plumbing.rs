@@ -68,3 +68,76 @@ fn engine_route_label_matches_engine_pricing_on_a_real_state() {
     assert!(label.fees.is_empty());
     let _: String = route_label_key(&label); // key building never panics
 }
+
+/// A REAL GameState survives the artifact round-trip byte-faithfully — the
+/// stub round-trip in artifact.rs covers the envelope; this covers the
+/// payload the whole repro contract rests on (Stage-1 review finding 2).
+#[test]
+fn real_state_round_trips_through_an_artifact() {
+    use yokohama_difftest::artifact::{
+        read_artifact, write_artifact, DivergenceArtifact, ARTIFACT_FORMAT_VERSION,
+    };
+    let rules = Rules::standard();
+    let (state, _rng) = new_seeded_game(3, 3, &rules).expect("setup");
+    let artifact = DivergenceArtifact {
+        format_version: ARTIFACT_FORMAT_VERSION,
+        seed: u64::MAX - 1, // cannot collide with sweep artifacts
+        players: 3,
+        policy: "uniform".to_string(),
+        step_index: 0,
+        turn_number: state.turn_number,
+        phase: format!("{:?}", state.turn_phase),
+        state_json: serde_json::to_value(&state).expect("serialize state"),
+        engine_only: vec![],
+        oracle_only: vec![],
+        duplicates: vec![],
+    };
+    let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("artifacts");
+    let path = write_artifact(&artifact, &dir).expect("write");
+    let back = read_artifact(&path).expect("read");
+    let state_back: yokohama_core::GameState =
+        serde_json::from_value(back.state_json.clone()).expect("state deserializes");
+    assert_eq!(state, state_back, "state must survive the artifact round-trip");
+    std::fs::remove_file(&path).expect("cleanup");
+}
+
+/// The committed ruling-A1 fixtures stay loadable and re-enumerable forever —
+/// they are the owner-facing evidence for ruling A1 and must not rot silently
+/// (Stage-1 review finding 2). Each fixture's RECORDED diff shows the
+/// pre-interim divergence (oracle-only Station label); the FRESH comparison
+/// must be CLEAN because the PENDING-RULING interim aligns the oracle with
+/// the engine's Reading 2. If Jeremy rules Reading 1, the engine changes and
+/// the fresh expectation here flips with it — update alongside the ruling.
+#[test]
+fn ruling_a1_fixtures_load_and_compare_clean_under_the_interim() {
+    use yokohama_difftest::artifact::read_artifact;
+    use yokohama_difftest::compare::compare_moves;
+    let rules = Rules::standard();
+    let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("fixtures/ruling-a1");
+    let mut checked = 0;
+    for name in [
+        "6-4-retreat-averse-269.json",
+        "7-4-retreat-averse-130.json",
+        "7-4-uniform-30.json",
+    ] {
+        let artifact = read_artifact(&dir.join(name)).expect("fixture reads");
+        assert_eq!(artifact.format_version, 1, "{name}: schema version");
+        assert!(
+            !artifact.oracle_only.is_empty(),
+            "{name}: recorded diff must show the historical pre-interim divergence"
+        );
+        let state: yokohama_core::GameState =
+            serde_json::from_value(artifact.state_json.clone())
+                .unwrap_or_else(|e| panic!("{name}: state no longer deserializes — the A1 ruling evidence is rotting: {e}"));
+        let engine_moves = yokohama_core::get_legal_moves(&state, &rules);
+        let oracle = yokohama_oracle::oracle_moves(&state, &rules);
+        let cmp = compare_moves(&state, &rules, &engine_moves, &oracle);
+        assert!(
+            !cmp.is_divergent(),
+            "{name}: must compare CLEAN under the PENDING-RULING interim; got engine_only={:?} oracle_only={:?} dups={:?}",
+            cmp.engine_only, cmp.oracle_only, cmp.duplicates
+        );
+        checked += 1;
+    }
+    assert_eq!(checked, 3);
+}

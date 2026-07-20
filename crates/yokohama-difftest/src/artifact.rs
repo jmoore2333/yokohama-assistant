@@ -14,9 +14,25 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
+/// Current artifact schema version. Bump when `DivergenceArtifact`'s shape
+/// (or the meaning of a field) changes, so a future reader of an old file
+/// gets "predates schema N" instead of a raw serde error. Version 1 =
+/// Stage-1 full-GameState-snapshot form (blessed at the Stage-1 review:
+/// the state snapshot IS the repro; the plan's move-prefix + shrinking
+/// mandate is satisfied by a 0-move prefix).
+pub const ARTIFACT_FORMAT_VERSION: u32 = 1;
+
+fn default_format_version() -> u32 {
+    // Files written before the field existed are version 1 by definition.
+    1
+}
+
 /// One recorded divergence between engine and oracle enumeration.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DivergenceArtifact {
+    /// Artifact schema version — see [`ARTIFACT_FORMAT_VERSION`].
+    #[serde(default = "default_format_version")]
+    pub format_version: u32,
     /// Seed of the self-play game that reached the diverging state.
     pub seed: u64,
     /// Player count of that game.
@@ -82,6 +98,7 @@ mod tests {
 
     fn sample() -> DivergenceArtifact {
         DivergenceArtifact {
+            format_version: ARTIFACT_FORMAT_VERSION,
             seed: u64::MAX, // distinctive: cannot collide with sweep seeds
             players: 2,
             policy: "uniform".to_string(),

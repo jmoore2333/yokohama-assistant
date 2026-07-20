@@ -42,6 +42,7 @@ pub fn run_differential_game(
             return Ok(StepOutcome::Continue);
         }
         let artifact = DivergenceArtifact {
+            format_version: crate::artifact::ARTIFACT_FORMAT_VERSION,
             seed,
             players,
             policy: policy.as_str().to_string(),

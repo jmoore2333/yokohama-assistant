@@ -22,10 +22,18 @@ use yokohama_difftest::artifact::default_artifacts_dir;
 use yokohama_difftest::drive::Policy;
 use yokohama_difftest::runner::run_differential_game;
 
-/// `repro <artifact.json>`: reload a divergence artifact's state snapshot and
-/// re-run both sides' enumeration on it, printing the full key lists and the
-/// re-computed diff — the mechanical half of adversarial verification.
-fn repro(path: &str) -> ExitCode {
+/// `repro [--strict] <artifact.json>`: reload a divergence artifact's state
+/// snapshot and re-run both sides' enumeration on it, printing the full key
+/// lists and the re-computed diff — the mechanical half of adversarial
+/// verification.
+///
+/// Exit codes: 0 = no CURRENT divergence on the state; 1 = currently
+/// divergent; 2 = unreadable artifact; with `--strict`, 3 = the stored diff
+/// does not reproduce byte-identically. A stored-vs-fresh mismatch is
+/// EXPECTED for historical fixtures re-examined after a fix landed on either
+/// side (the stored diff documents the pre-fix divergence) — use `--strict`
+/// only when verifying a FRESH artifact.
+fn repro(path: &str, strict: bool) -> ExitCode {
     let artifact = match yokohama_difftest::artifact::read_artifact(std::path::Path::new(path)) {
         Ok(a) => a,
         Err(e) => {
@@ -41,10 +49,17 @@ fn repro(path: &str) -> ExitCode {
         }
     };
     let rules = Rules::standard();
+    if artifact.format_version > yokohama_difftest::artifact::ARTIFACT_FORMAT_VERSION {
+        eprintln!(
+            "repro: artifact schema v{} is newer than this binary's v{} — rebuild before trusting output",
+            artifact.format_version,
+            yokohama_difftest::artifact::ARTIFACT_FORMAT_VERSION
+        );
+    }
     println!(
-        "artifact: seed={} players={} policy={} step={} turn={} phase={}",
-        artifact.seed, artifact.players, artifact.policy, artifact.step_index,
-        artifact.turn_number, artifact.phase
+        "artifact: schema=v{} seed={} players={} policy={} step={} turn={} phase={}",
+        artifact.format_version, artifact.seed, artifact.players, artifact.policy,
+        artifact.step_index, artifact.turn_number, artifact.phase
     );
     println!(
         "state: current_player={:?} pending_choices={:?}",
@@ -79,10 +94,18 @@ fn repro(path: &str) -> ExitCode {
     }
     let stored = (&artifact.engine_only, &artifact.oracle_only, &artifact.duplicates);
     let fresh = (&cmp.engine_only, &cmp.oracle_only, &cmp.duplicates);
+    let reproduces = stored == fresh;
     println!(
         "\nreproduces stored diff: {}",
-        if stored == fresh { "YES (byte-identical)" } else { "NO — stored diff differs from re-run (investigate)" }
+        if reproduces {
+            "YES (byte-identical)"
+        } else {
+            "NO — stored diff differs from re-run (EXPECTED for a historical fixture after a fix on either side; unexpected for a fresh artifact — re-run with --strict to fail on this)"
+        }
     );
+    if strict && !reproduces {
+        return ExitCode::from(3);
+    }
     if cmp.is_divergent() {
         ExitCode::from(1)
     } else {
@@ -92,12 +115,15 @@ fn repro(path: &str) -> ExitCode {
 
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().collect();
-    if args.len() == 3 && args[1] == "repro" {
-        return repro(&args[2]);
+    if (args.len() == 3 && args[1] == "repro")
+        || (args.len() == 4 && args[1] == "repro" && args[2] == "--strict")
+    {
+        let strict = args.len() == 4;
+        return repro(if strict { &args[3] } else { &args[2] }, strict);
     }
     if args.len() != 5 {
         eprintln!("usage: yokohama-difftest <games> <players> <base_seed> <policy: uniform|retreat-averse>");
-        eprintln!("       yokohama-difftest repro <artifact.json>");
+        eprintln!("       yokohama-difftest repro [--strict] <artifact.json>");
         return ExitCode::from(2);
     }
     let (games, players, base_seed, policy) = match (

@@ -394,9 +394,12 @@ pub fn describe_move(mv: &Move, state: &GameState, rules: &Rules) -> String {
                 // through to the bare "(space N)" wording below instead of
                 // panicking. See C1, external review 2026-07-20.
                 .and_then(|site| slot_reward_text(site, *slot as usize));
+            // usize arithmetic: `slot + 1` on the raw u8 debug-overflows at
+            // slot = 255 (tampered record) — the None arm must stay total.
+            let space = (*slot as usize) + 1;
             match reward {
-                Some(r) => format!("Build a Shophouse (space {}: {r})", slot + 1),
-                None => format!("Build a Shophouse (space {})", slot + 1),
+                Some(r) => format!("Build a Shophouse (space {space}: {r})"),
+                None => format!("Build a Shophouse (space {space})"),
             }
         }
         Move::BuildTradingHouse => {
@@ -737,6 +740,17 @@ mod tests {
     /// it builds on alongside that space's printed reward -- two blank
     /// spaces would otherwise render identical `(-)` options a tester at the
     /// table cannot tell apart without opening the `sites` view.
+    #[test]
+    fn tampered_out_of_range_shophouse_slot_describes_without_panicking() {
+        // slot = 255 can only come from a tampered record; the description
+        // must stay total (usize arithmetic, no u8 overflow) — Stage-1
+        // review finding 5.
+        let state = state_2p();
+        let rules = Rules::standard();
+        let text = describe_move(&Move::BuildShophouse { slot: 255 }, &state, &rules);
+        assert!(text.contains("space 256"), "total fallback wording: {text}");
+    }
+
     #[test]
     fn build_shophouse_options_identify_the_slot_and_its_reward() {
         let mut state = state_2p();
