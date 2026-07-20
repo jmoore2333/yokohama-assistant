@@ -18,6 +18,16 @@
 //! Same exit codes. This mirrors the `scoring_differential` release-gate
 //! sweep for manual runs.
 //!
+//! `routes3 <games> <players> <base_seed> <policy>` (Stage 3) drives the
+//! same seeded games but runs the THREE-WAY pruning-soundness check (engine
+//! walk vs pruned-oracle walk vs pruneless reference, as route-label key
+//! sets) at every qualifying decision point (Movement phase, empty queue,
+//! President on board); the first divergence per game writes a
+//! `phase: "Routes3"` artifact and stops that game. Per-seed lines report
+//! how many decision points qualified and the largest label set seen; the
+//! summary reports the overall maximum. Same exit codes. Mirrors the
+//! `routes3_differential` release-gate sweep for manual runs.
+//!
 //! NOTE (Stage 1 shell): while `yokohama_oracle::oracle_moves` is an empty/partial
 //! stub, EVERY game diverges at step 0 (all engine moves are engine-only) —
 //! expected until the independence-protected oracle track lands the real
@@ -28,6 +38,7 @@ use std::process::ExitCode;
 use yokohama_core::Rules;
 use yokohama_difftest::artifact::default_artifacts_dir;
 use yokohama_difftest::drive::Policy;
+use yokohama_difftest::routes3::run_routes3_game;
 use yokohama_difftest::runner::{run_differential_game, run_scoring_game};
 
 /// `repro [--strict] <artifact.json>`: reload a divergence artifact's state
@@ -171,6 +182,65 @@ fn score_sweep(games: u64, players: u8, base_seed: u64, policy: Policy) -> ExitC
     }
 }
 
+/// `routes3 <games> <players> <base_seed> <policy>`: the Stage-3 three-way
+/// pruning-soundness sweep — engine walk vs pruned-oracle walk vs pruneless
+/// reference at every qualifying decision point (Movement, empty queue,
+/// on-board president). Prints per-seed qualifying counts and the maximum
+/// label count observed; the first divergence per game writes a
+/// `phase: "Routes3"` artifact. Exit 0 all clean, 1 on any divergence or
+/// driver failure.
+fn routes3_sweep(games: u64, players: u8, base_seed: u64, policy: Policy) -> ExitCode {
+    let rules = Rules::standard();
+    let artifact_dir = default_artifacts_dir();
+    let mut clean: u64 = 0;
+    let mut diverged: u64 = 0;
+    let mut qualifying_total: u64 = 0;
+    let mut max_labels: usize = 0;
+
+    for i in 0..games {
+        let seed = base_seed + i;
+        match run_routes3_game(seed, players, policy, &rules, &artifact_dir) {
+            Ok(outcome) => {
+                qualifying_total += outcome.qualifying_steps;
+                max_labels = max_labels.max(outcome.max_labels);
+                match outcome.divergence {
+                    None => {
+                        clean += 1;
+                        println!(
+                            "seed {seed}: routes3 clean ({} steps, {} qualifying, max {} labels)",
+                            outcome.stats.steps, outcome.qualifying_steps, outcome.max_labels
+                        );
+                    }
+                    Some(path) => {
+                        diverged += 1;
+                        println!(
+                            "seed {seed}: ROUTES3 DIVERGENCE at step {} (turn {}) -> {}",
+                            outcome.stats.steps,
+                            outcome.stats.turns,
+                            path.display()
+                        );
+                    }
+                }
+            }
+            Err(e) => {
+                eprintln!("seed {seed}: DRIVER FAILURE:\n{e}");
+                return ExitCode::from(1);
+            }
+        }
+    }
+
+    println!(
+        "{games} games ({players}p, policy {}): {clean} routes3-clean, {diverged} diverged; \
+         {qualifying_total} qualifying decision points, max {max_labels} labels",
+        policy.as_str()
+    );
+    if diverged > 0 {
+        ExitCode::from(1)
+    } else {
+        ExitCode::SUCCESS
+    }
+}
+
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().collect();
     if (args.len() == 3 && args[1] == "repro")
@@ -179,16 +249,25 @@ fn main() -> ExitCode {
         let strict = args.len() == 4;
         return repro(if strict { &args[3] } else { &args[2] }, strict);
     }
-    if args.len() == 6 && args[1] == "score" {
+    if args.len() == 6 && (args[1] == "score" || args[1] == "routes3") {
         return match (
             args[2].parse::<u64>(),
             args[3].parse::<u8>(),
             args[4].parse::<u64>(),
             args[5].parse::<Policy>(),
         ) {
-            (Ok(g), Ok(p), Ok(s), Ok(pol)) if (2..=4).contains(&p) => score_sweep(g, p, s, pol),
+            (Ok(g), Ok(p), Ok(s), Ok(pol)) if (2..=4).contains(&p) => {
+                if args[1] == "score" {
+                    score_sweep(g, p, s, pol)
+                } else {
+                    routes3_sweep(g, p, s, pol)
+                }
+            }
             _ => {
-                eprintln!("usage: yokohama-difftest score <games> <players: 2-4> <base_seed> <policy: uniform|retreat-averse>");
+                eprintln!(
+                    "usage: yokohama-difftest {} <games> <players: 2-4> <base_seed> <policy: uniform|retreat-averse>",
+                    args[1]
+                );
                 ExitCode::from(2)
             }
         };
@@ -196,6 +275,7 @@ fn main() -> ExitCode {
     if args.len() != 5 {
         eprintln!("usage: yokohama-difftest <games> <players> <base_seed> <policy: uniform|retreat-averse>");
         eprintln!("       yokohama-difftest score <games> <players> <base_seed> <policy>");
+        eprintln!("       yokohama-difftest routes3 <games> <players> <base_seed> <policy>");
         eprintln!("       yokohama-difftest repro [--strict] <artifact.json>");
         return ExitCode::from(2);
     }

@@ -12,5 +12,6 @@
 pub mod artifact;
 pub mod compare;
 pub mod drive;
+pub mod routes3;
 pub mod runner;
 pub mod scoring;

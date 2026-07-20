@@ -36,6 +36,7 @@ mod choices;
 mod common;
 mod movement;
 mod placement;
+pub mod route_reference;
 pub mod scoring;
 
 #[cfg(test)]
@@ -184,17 +185,17 @@ fn area_action_moves(state: &GameState, rules: &Rules) -> Vec<Move> {
 }
 
 /// Deduplicate `exact` in place, preserving first-occurrence order. `Move`
-/// derives neither `Ord` nor `Hash`, so this is an O(n²) `PartialEq` scan (n is
-/// tiny — a per-state legal set).
+/// derives neither `Ord` nor `Hash`, so the key is the derived `Debug`
+/// rendering — a faithful stable identity for these fully-structural types
+/// (all fields printed; `BTreeMap` renders in deterministic order), the same
+/// reasoning the difftest comparison keys rest on. Replaces the original
+/// O(n²) `PartialEq` scan, which was quadratic-catastrophic on the retreat
+/// family (2^17 moves at the Stage-3 worst-case battery state ⇒ minutes per
+/// call; Stage-3 harness finding, 2026-07-20 — orchestrator perf plumbing,
+/// zero semantic change, pinned by `dedup_moves_matches_quadratic_reference`).
 fn dedup_moves(v: &mut Vec<Move>) {
-    let mut i = 0;
-    while i < v.len() {
-        if v[..i].contains(&v[i]) {
-            v.remove(i);
-        } else {
-            i += 1;
-        }
-    }
+    let mut seen = std::collections::HashSet::with_capacity(v.len());
+    v.retain(|m| seen.insert(format!("{m:?}")));
 }
 
 /// Sort + dedup labels via `RouteLabel`'s derived `Ord` (the L2 identity is
@@ -211,6 +212,48 @@ mod tests {
     use std::collections::BTreeMap;
     use std::collections::HashSet;
     use yokohama_core::{PendingChoice, PlayerId, Rules, TurnPhase};
+
+    /// The HashSet-keyed dedup is semantically identical to the original
+    /// quadratic PartialEq scan: same survivors, same first-occurrence
+    /// order (orchestrator perf plumbing pin, Stage-3 2026-07-20).
+    #[test]
+    fn dedup_moves_matches_quadratic_reference() {
+        fn quadratic(v: &mut Vec<Move>) {
+            let mut i = 0;
+            while i < v.len() {
+                if v[..i].contains(&v[i]) {
+                    v.remove(i);
+                } else {
+                    i += 1;
+                }
+            }
+        }
+        let a = |n: u8| Move::PlaceThreeAreas {
+            placements: vec![yokohama_core::AreaId::new(n)],
+        };
+        let retreat = |pairs: &[(u8, u8)]| Move::ReturnPresidentToHand {
+            recover: pairs
+                .iter()
+                .map(|&(ar, c)| (yokohama_core::AreaId::new(ar), c))
+                .collect(),
+        };
+        let sample = vec![
+            a(1),
+            Move::EndAdditionalPhase,
+            a(1), // dup of [0]
+            retreat(&[(2, 1)]),
+            a(2),
+            retreat(&[(2, 1)]), // dup of [3]
+            Move::EndAdditionalPhase, // dup of [1]
+            retreat(&[(2, 2)]), // NOT a dup (different count)
+        ];
+        let mut fast = sample.clone();
+        let mut slow = sample;
+        dedup_moves(&mut fast);
+        quadratic(&mut slow);
+        assert_eq!(fast, slow, "same survivors in the same first-occurrence order");
+        assert_eq!(fast.len(), 5);
+    }
 
     // --- RouteLabel type behavior (spec §1.1 / §9-A) ---
 

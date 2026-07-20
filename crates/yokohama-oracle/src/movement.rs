@@ -209,6 +209,31 @@ pub(crate) fn route_labels(state: &GameState, rules: &Rules) -> Vec<RouteLabel> 
     walk.dfs(start, &mut visited, &mut fees, 0);
     let mut labels = walk.labels;
 
+    labels.extend(teleport_labels(state, rules));
+
+    // L2 dedup: structural equality on (destination, fees) — a free walking
+    // route and a teleport to the same destination are ONE label (§4.2).
+    labels.sort();
+    labels.dedup();
+    labels
+}
+
+/// §4.2 teleport labels (Tram + Station), unsorted/undeduped — the caller
+/// merges them into the walk labels under the L2 dedup. Empty unless the
+/// President is on the board.
+///
+/// SHARED BY DESIGN with `route_reference::route_labels_pruneless` (Stage 3):
+/// teleports have no walk and no fees, so reusing this emission makes the
+/// three-way diff surface (engine DFS vs pruned oracle DFS vs the pruneless
+/// reference enumerator) exactly the WALKS.
+pub(crate) fn teleport_labels(state: &GameState, rules: &Rules) -> Vec<RouteLabel> {
+    let mover = state.current_player;
+    let p = state.current_player();
+    let PresidentLocation::OnBoard(start) = p.president_location else {
+        return Vec::new();
+    };
+    let mut labels = Vec::new();
+
     // Tram (owner only): a zero-fee label for every non-Canal area containing
     // no other player's President, other than the current area; NO assistant
     // needed at the destination [RB p.16; DL 2026-07-17 I1 — Tram does NOT
@@ -237,10 +262,6 @@ pub(crate) fn route_labels(state: &GameState, rules: &Rules) -> Vec<RouteLabel> 
         }
     }
 
-    // L2 dedup: structural equality on (destination, fees) — a free walking
-    // route and a teleport to the same destination are ONE label (§4.2).
-    labels.sort();
-    labels.dedup();
     labels
 }
 
