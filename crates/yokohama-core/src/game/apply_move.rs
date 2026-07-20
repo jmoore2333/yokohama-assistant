@@ -727,6 +727,17 @@ fn apply_take_5_power(state: &mut GameState, rules: &Rules) -> Result<(), MoveEr
 }
 
 fn apply_build_shophouse(state: &mut GameState, slot: u8, rules: &Rules) -> Result<(), MoveError> {
+    // `slot` indexes the site's fixed `SPACES_PER_SITE` arrays twice below
+    // (`spaces` for the reward, `shophouses_built` for ownership). Validate
+    // FIRST so the raw arm returns a typed error rather than aborting the
+    // process: checked `apply_move` masks this (the legal list never offers
+    // an out-of-range slot), but `apply_move_unchecked` is public and
+    // documented for future search inner loops, which cannot catch a panic.
+    // Same self-defence precedent as EndAdditionalPhase / UseUniversity /
+    // UseSpinningMill / apply_return_to_hand (C1, external review 2026-07-20).
+    if slot as usize >= SPACES_PER_SITE {
+        return Err(MoveError::InvalidSlot);
+    }
     let player = state.current_player;
     let p = state.player(player);
 
@@ -2255,6 +2266,37 @@ mod tests {
 
         // 2 (space VP) + 4 (Gaslight, 2 owned copies x 2 VP).
         assert_eq!(new_state.players[0].victory_points, 6);
+    }
+
+    /// C1 regression (external six-agent review, 2026-07-20): the raw build
+    /// arm indexed `site.spaces[slot as usize]` (and `shophouses_built[..]`)
+    /// into a `[SpaceReward; 4]` with NO bound check, so an out-of-range slot
+    /// aborted the process instead of returning a `MoveError`. Checked
+    /// `apply_move` masked it -- the legal list never offers such a slot --
+    /// but `apply_move_unchecked` is public and documented for future search
+    /// inner loops, and a search loop cannot catch a panic. This arm now
+    /// self-defends the way `EndAdditionalPhase`, `UseUniversity`,
+    /// `UseSpinningMill` and `apply_return_to_hand` already do.
+    #[test]
+    fn out_of_range_shophouse_slot_is_rejected_by_the_raw_arm_not_a_panic() {
+        let mut state = create_minimal_state(2);
+        let area = AreaId::new(0);
+        state.players[0].president_location = PresidentLocation::OnBoard(area);
+        state.players[0].shophouses.in_hand = 1;
+        state.board_layout.building_sites.insert(area, BuildingSite::new([0, 0, 0, 0], 10));
+        let rules = Rules::empty_for_tests();
+
+        // apply_move_unchecked: see test_build_shophouse_gaslight_vp_bonus --
+        // the raw arm IS the subject here, since it is what must self-defend.
+        // 4 is the first out-of-range slot for a 4-space site; 250 is the
+        // value the review's reproduction used; u8::MAX is the ceiling.
+        for slot in [4u8, 250u8, u8::MAX] {
+            match apply_move_unchecked(&state, &Move::BuildShophouse { slot }, &rules) {
+                Err(MoveError::InvalidSlot) => {}
+                Err(other) => panic!("slot {slot} must be InvalidSlot, got {other:?}"),
+                Ok(_) => panic!("slot {slot} is out of range and must be rejected, was accepted"),
+            }
+        }
     }
 
     #[test]

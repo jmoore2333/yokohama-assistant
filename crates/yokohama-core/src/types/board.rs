@@ -114,15 +114,22 @@ pub struct SpaceReward {
     pub warehouse_tokens: u8,
 }
 
+/// Shophouse spaces per building site (TL, TR, ML, MR -- board-art verified
+/// 2026-07-17). Named because it bounds BOTH arrays on `BuildingSite` AND the
+/// `slot` validation in `apply_build_shophouse`; a bare literal in the latter
+/// is exactly the drift that let C1 (out-of-range slot -> process abort)
+/// through.
+pub const SPACES_PER_SITE: usize = 4;
+
 /// Building site card placed on an area.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct BuildingSite {
     /// Rewards for the four Shophouse spaces, in TL, TR, ML, MR order.
-    pub spaces: [SpaceReward; 4],
+    pub spaces: [SpaceReward; SPACES_PER_SITE],
     /// VP reward for Trading House.
     pub trading_house_reward: u8,
     /// Which player owns shophouse in each slot (0-3), None if empty.
-    pub shophouses_built: [Option<PlayerId>; 4],
+    pub shophouses_built: [Option<PlayerId>; SPACES_PER_SITE],
     /// Which player owns the trading house, if any.
     pub trading_house_owner: Option<PlayerId>,
 }

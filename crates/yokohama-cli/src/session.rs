@@ -729,6 +729,52 @@ mod tests {
         assert!(result.is_err(), "a tampered record must surface as a typed load error, never a panic");
     }
 
+    /// C1 regression (external six-agent review, 2026-07-20). The guard test
+    /// directly above has NO teeth against this: its `ReturnPresidentToHand`
+    /// tamper happens to *describe* safely, so it passes even when `load`
+    /// panics on a differently-shaped tamper.
+    ///
+    /// T2.4's per-event fold calls `describe_recorded_event` BEFORE
+    /// `replay_from` validates the event, so a tampered out-of-range
+    /// `BuildShophouse` slot reached `slot_reward_text`'s raw
+    /// `site.spaces[slot]` index and aborted the process -- against design
+    /// §7 ("tampered move -> typed rejection, not warn, not panic"), and a
+    /// regression from the pre-T2.4 `load`, which replayed in one shot and
+    /// never described an unvalidated event.
+    #[test]
+    fn load_of_tampered_record_with_out_of_range_slot_is_typed_error_not_panic() {
+        let s = session_with_church_space_choice_queued();
+
+        // Fixture precondition: the tampered event must actually reach
+        // `slot_reward_text` when described, else this test proves nothing.
+        // That needs the President standing on an area that HAS a building
+        // site (`describe_move`'s BuildShophouse arm resolves the site from
+        // `acting_area`).
+        let area = match s.state().player(s.state().current_player).president_location {
+            PresidentLocation::OnBoard(a) => a,
+            PresidentLocation::InHand => panic!("fixture must leave the President on board"),
+        };
+        assert!(
+            s.state().board_layout.building_sites.contains_key(&area),
+            "fixture area {area:?} must have a building site, else the tamper describes safely \
+             and this test degenerates into the toothless one above"
+        );
+
+        let mut record = s.record().clone();
+        record.push_move(Move::BuildShophouse { slot: 250 });
+
+        let path = std::env::temp_dir().join(format!("yokohama_tampered_slot_{}.json", std::process::id()));
+        std::fs::write(&path, serde_json::to_string_pretty(&record).unwrap()).unwrap();
+
+        let result = Session::load(&path, Rules::standard());
+        std::fs::remove_file(&path).ok();
+
+        assert!(
+            result.is_err(),
+            "an out-of-range slot in a tampered record must surface as a typed load error, never a panic"
+        );
+    }
+
     /// Fix-wave regression (Task 15 review, Finding 1): `load`'s per-event
     /// fold loop must name the TRUE failing event's index, not always 0.
     /// The old (pre-T2.4) `load` called `replay` once over the whole events

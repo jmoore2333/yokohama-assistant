@@ -353,7 +353,11 @@ pub fn describe_move(mv: &Move, state: &GameState, rules: &Rules) -> String {
         Move::BuildShophouse { slot } => {
             let reward = acting_area(state)
                 .and_then(|a| state.board_layout.building_sites.get(&a))
-                .map(|site| slot_reward_text(site, *slot as usize));
+                // and_then, not map: `slot_reward_text` yields None for an
+                // out-of-range slot (a tampered record's can be), which falls
+                // through to the bare "(space N)" wording below instead of
+                // panicking. See C1, external review 2026-07-20.
+                .and_then(|site| slot_reward_text(site, *slot as usize));
             match reward {
                 Some(r) => format!("Build a Shophouse ({r})"),
                 None => format!("Build a Shophouse (space {})", slot + 1),
@@ -688,7 +692,7 @@ mod tests {
 
         let text = describe_move(&Move::BuildShophouse { slot: 0 }, &state, &rules);
         assert!(!text.ends_with("(space 1)"), "bare space-number text must be gone: {text}");
-        let expected = slot_reward_text(&site, 0);
+        let expected = slot_reward_text(&site, 0).expect("slot 0 is always in range");
         assert!(text.contains(&expected), "{text}");
     }
 
