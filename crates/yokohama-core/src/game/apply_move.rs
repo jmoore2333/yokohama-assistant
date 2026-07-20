@@ -916,6 +916,9 @@ fn apply_take_5_power(state: &mut GameState, rules: &Rules) -> Result<(), MoveEr
     // For mercenary sub-turns, use the mercenary target area
     let area = resolve_acting_area(state, player).map_err(MoveError::RuleViolation)?;
 
+    // `Option::take` on an empty/absent slot is a no-op, so the Err path
+    // leaves state untouched despite the mutate-shaped call (Stage-4 review
+    // F1: correctness relies on exactly that no-op).
     let effect = state
         .board_layout
         .five_power_tokens
