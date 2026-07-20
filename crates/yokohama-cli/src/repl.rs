@@ -26,6 +26,55 @@ pub struct Repl {
     /// except `save`/`log`/`quit`, so a desynced session can still be
     /// inspected and saved for postmortem but never played further.
     pub(crate) locked: bool,
+    /// An in-progress Movement sub-prompt (route pick or guided retreat), or
+    /// `None`. A sibling of `pending` rather than a `Pending` variant: `pending`
+    /// models LIVE-mode reveal collection (always `None` in simulation, keyed to
+    /// hidden-card entry), whereas sub-prompts are pure ENTRY HELPERS over the
+    /// engine's own legal list that apply in BOTH modes and never collect hidden
+    /// information. The two are structurally mutually exclusive -- a sub-prompt
+    /// only ever starts from a clean main prompt (`pick_option` runs only when
+    /// `pending` is `None`), and committing out of one never draws a card or
+    /// claims a token (President moves / retreats touch neither deck), so
+    /// `commit` never parks a fresh `Pending` behind a sub-prompt.
+    pub(crate) sub: SubPrompt,
+}
+
+/// One line in the Movement phase's collapsed numbered list (design.md:67,
+/// destination-first). Outside Movement -- and inside it whenever a choice is
+/// queued -- every option is a bare `Direct`, so the list is byte-identical to
+/// the ungrouped `legal()` rendering; the two collapsing variants only ever
+/// appear in the Movement main list. The legal list stays the SOLE authority:
+/// `Route`/`Retreat` are entry helpers whose selections are exact-matched
+/// against `legal()` before anything commits (`find_placement_match`).
+enum PromptOption {
+    /// A single move rendered and committed exactly as today (`describe_move`).
+    Direct(Move),
+    /// A walk/teleport destination reachable by >1 route label -- selecting it
+    /// opens the route sub-prompt over `moves` (all `MovePresident` to `destination`).
+    Route { destination: AreaId, moves: Vec<Move> },
+    /// The whole retreat family (>1 `ReturnPresidentToHand` variant) collapsed to
+    /// one line; `count` is the family size, shown in the entry text. Selecting it
+    /// opens the guided retreat sub-prompt (per-area recovery counts, recomputed
+    /// from state -- the moves themselves are never cloned into the entry, so a
+    /// pathological 100k-variant retreat family stays cheap to display).
+    Retreat { count: usize },
+}
+
+/// An in-progress Movement sub-prompt. Both variants are ENTRY HELPERS: whatever
+/// they assemble is exact-matched against `session.legal()` before `commit`, so
+/// neither can construct-and-apply anything the engine didn't offer.
+pub(crate) enum SubPrompt {
+    None,
+    /// Picking one of a multi-label destination's route labels. `moves` are the
+    /// `MovePresident` variants to `destination` (bounded small -- one per distinct
+    /// fee vector); a numeric answer commits `moves[k]` directly.
+    Route { destination: AreaId, moves: Vec<Move> },
+    /// Guided recovery: `areas` are the current player's occupied areas ascending
+    /// (AreaId, count-there), captured at entry (state is frozen until commit);
+    /// `collected` grows one answer per area. Once `collected.len() == areas.len()`
+    /// the confirm line shows, and `confirm` assembles + exact-matches the
+    /// `ReturnPresidentToHand { recover }`.
+    Retreat { areas: Vec<(AreaId, u8)>, collected: Vec<u8> },
 }
 
 /// The result of one `Repl::step` call: the text to show the user (which
@@ -38,7 +87,7 @@ pub struct StepOutput {
 
 impl Repl {
     pub fn new(session: crate::session::Session) -> Repl {
-        Repl { session, page: 0, pending: Pending::None, locked: false }
+        Repl { session, page: 0, pending: Pending::None, locked: false, sub: SubPrompt::None }
     }
 
     /// The whole prompt screen for the current state: header line, options
@@ -63,19 +112,25 @@ impl Repl {
         if self.session.is_over() {
             out.push_str("game over — commands only\n");
         } else {
-            let legal = self.session.legal();
-            let n = legal.len();
+            // The Movement phase collapses its list into `display_options`
+            // (destination-first + one retreat line); every other phase yields
+            // one `Direct` per legal move, so this renders byte-for-byte as the
+            // old `legal()` loop did. Paging is over the DISPLAYED entries, not
+            // the raw legal list, so a grouped Movement list pages by its own
+            // (much smaller) count.
+            let options = self.display_options();
+            let n = options.len();
             if n == 0 {
                 out.push_str("(no legal options right now -- commands only)\n");
             } else {
                 let total_pages = total_pages_for(n);
                 let start = (self.page * 20).min(n);
                 let end = (start + 20).min(n);
-                for (i, mv) in legal[start..end].iter().enumerate() {
+                for (i, opt) in options[start..end].iter().enumerate() {
                     out.push_str(&format!(
                         "[{}] {}\n",
                         start + i,
-                        describe::describe_move(mv, state, self.session.rules())
+                        self.render_option(opt, state, self.session.rules())
                     ));
                 }
                 if end < n {
@@ -112,7 +167,9 @@ impl Repl {
         }
         match state.turn_phase {
             TurnPhase::Placement => format!("> enter a number, 'a'/'b' for placement, {TAIL}\n"),
-            TurnPhase::Movement => format!("> enter a number, 'r' to retreat, {TAIL}\n"),
+            TurnPhase::Movement => {
+                format!("> enter a number, 'r' to retreat (or the numbered retreat entry for guided recovery), {TAIL}\n")
+            }
             TurnPhase::AdditionalActionFirst
             | TurnPhase::AreaAction
             | TurnPhase::FivePowerBonus
@@ -139,6 +196,15 @@ impl Repl {
                 "session locked after a driver/engine fault — only save/log/quit".to_string(),
                 false,
             );
+        }
+        // A Movement sub-prompt (route pick / guided retreat) captures input the
+        // same way the reveal collector does -- checked AFTER the lockdown gate
+        // above, so lockdown wins (entering or continuing a sub-prompt while
+        // locked is refused exactly like a move). Structurally exclusive with the
+        // `pending` reveal branch below: a sub-prompt only ever starts from a
+        // clean main prompt (see `SubPrompt`'s doc comment).
+        if !matches!(self.sub, SubPrompt::None) {
+            return self.step_sub_prompt(&words);
         }
         // While a live-mode reveal group is being collected, input goes to
         // the collector instead of normal dispatch -- `cancel` and
@@ -217,6 +283,11 @@ impl Repl {
         }
         if self.locked {
             text.push_str(&self.lockdown_status());
+        } else if !matches!(self.sub, SubPrompt::None) {
+            // Inside a Movement sub-prompt: append the sub-prompt screen (route
+            // list / current recovery question / confirm line) instead of the
+            // main numbered list -- symmetric with the `pending` reveal branch.
+            text.push_str(&self.sub_prompt_text());
         } else if matches!(self.pending, Pending::None) {
             text.push_str(&self.prompt());
         }
@@ -242,6 +313,11 @@ impl Repl {
         }
         if self.locked {
             text.push_str(&self.lockdown_status());
+        } else if !matches!(self.sub, SubPrompt::None) {
+            // Defense in depth: no view command is reachable mid-sub-prompt
+            // (`step`'s sub-prompt branch routes elsewhere entirely), so this
+            // mirrors `out`'s short-circuit rather than being load-bearing.
+            text.push_str(&self.sub_prompt_text());
         } else if matches!(self.pending, Pending::None) {
             text.push_str(&self.input_hint());
         }
@@ -259,17 +335,96 @@ impl Repl {
     }
 
     fn advance_page(&mut self) {
-        let n = self.session.legal().len();
+        // Paging is over the DISPLAYED entry count (grouped in Movement), so
+        // `more` wraps exactly where `prompt()`'s "page N/M" footer says it will.
+        let n = self.display_options().len();
         self.page = (self.page + 1) % total_pages_for(n);
     }
 
     fn pick_option(&mut self, k: usize) -> StepOutput {
-        let legal = self.session.legal();
-        if k >= legal.len() {
-            return self.out(format!("option {k} out of range (0..{})\n", legal.len()), false);
+        // Index into the DISPLAYED entries: a `Direct` commits as before, a
+        // `Route`/`Retreat` entry opens its sub-prompt. `display_options` calls
+        // `legal()` exactly once (same as the old direct-index path).
+        let options = self.display_options();
+        let len = options.len();
+        match options.into_iter().nth(k) {
+            Some(PromptOption::Direct(mv)) => self.commit(mv),
+            Some(PromptOption::Route { destination, moves }) => self.enter_route_subprompt(destination, moves),
+            Some(PromptOption::Retreat { .. }) => self.enter_retreat_subprompt(),
+            None => self.out(format!("option {k} out of range (0..{len})\n"), false),
         }
-        let mv = legal[k].clone();
-        self.commit(mv)
+    }
+
+    /// Build the numbered entries for the current prompt. Outside the Movement
+    /// phase -- and inside it while a choice is queued -- every legal move is a
+    /// bare `Direct` (byte-identical to the old ungrouped rendering). In the
+    /// Movement main list it collapses the family (design.md:67): one entry per
+    /// walk/teleport destination (a `Route` when that destination has >1 fee
+    /// label, else the single move `Direct`), each `PlacePresident`/other move
+    /// left as `Direct` in place, and the whole `ReturnPresidentToHand` family
+    /// folded into one `Retreat` line (unless a lone bare retreat is the only
+    /// variant, which stays `Direct`). Single pass over `legal()` into a
+    /// `BTreeMap` -- no per-keystroke rescans beyond the one `legal()` call.
+    fn display_options(&self) -> Vec<PromptOption> {
+        let legal = self.session.legal();
+        let state = self.session.state();
+        let group = state.turn_phase == TurnPhase::Movement && state.pending_choices.is_empty();
+        if !group {
+            return legal.into_iter().map(PromptOption::Direct).collect();
+        }
+
+        let mut routes: std::collections::BTreeMap<AreaId, Vec<Move>> = std::collections::BTreeMap::new();
+        let mut others: Vec<Move> = Vec::new();
+        let mut retreat_count = 0usize;
+        let mut lone_retreat: Option<Move> = None;
+        for mv in legal {
+            match &mv {
+                Move::MovePresident { destination, .. } => {
+                    let dest = *destination;
+                    routes.entry(dest).or_default().push(mv);
+                }
+                Move::ReturnPresidentToHand { .. } => {
+                    retreat_count += 1;
+                    if lone_retreat.is_none() {
+                        lone_retreat = Some(mv); // kept only for the singleton case
+                    }
+                }
+                _ => others.push(mv),
+            }
+        }
+
+        let mut out = Vec::new();
+        for (destination, mut moves) in routes {
+            if moves.len() == 1 {
+                out.push(PromptOption::Direct(moves.pop().unwrap()));
+            } else {
+                out.push(PromptOption::Route { destination, moves });
+            }
+        }
+        out.extend(others.into_iter().map(PromptOption::Direct));
+        match retreat_count {
+            0 => {}
+            1 => out.push(PromptOption::Direct(lone_retreat.unwrap())),
+            n => out.push(PromptOption::Retreat { count: n }),
+        }
+        out
+    }
+
+    /// One numbered-line's text for a display entry. `Direct` reuses
+    /// `describe_move` verbatim; the two collapsing variants get their own
+    /// single-line summaries (the `<k>` counts come from the grouped family sizes).
+    fn render_option(&self, opt: &PromptOption, state: &GameState, rules: &Rules) -> String {
+        match opt {
+            PromptOption::Direct(mv) => describe::describe_move(mv, state, rules),
+            PromptOption::Route { destination, moves } => format!(
+                "Move President to {} — {} route options",
+                describe::area_label(state, *destination),
+                moves.len()
+            ),
+            PromptOption::Retreat { count } => format!(
+                "Retreat President to hand — choose recovery ({count} combinations; 'r' grammar works too)"
+            ),
+        }
     }
 
     /// Parse `a [id id id [id]]` (0-3 area ids, or 0-4 for a Newspaper
@@ -412,6 +567,190 @@ impl Repl {
             (Move::PlaceThreeAreas { placements: a }, Move::PlaceThreeAreas { placements: b }) => key(a) == key(b),
             (m, c) => m == c,
         })
+    }
+
+    /// Route one line of input into the active Movement sub-prompt. `matches!`
+    /// takes only a momentary borrow, so the `&mut self` dispatch is clean.
+    fn step_sub_prompt(&mut self, words: &[&str]) -> StepOutput {
+        if matches!(self.sub, SubPrompt::Route { .. }) {
+            self.step_route(words)
+        } else {
+            self.step_retreat(words)
+        }
+    }
+
+    /// Route sub-prompt input: a valid route number commits that exact
+    /// `MovePresident` (taken straight from `legal()` -- never re-derived),
+    /// `cancel` returns to the main list, `quit`/`q` exits (the un-applied
+    /// sub-prompt is simply discarded -- nothing was recorded, same escape the
+    /// reveal collector honors). A bare out-of-range number re-asks with its
+    /// range; any other non-answer re-asks with `! finish or cancel this prompt
+    /// first` (a view/`save`/`undo`/`more` mid-collection would render or mutate
+    /// against a state the collection doesn't reflect).
+    fn step_route(&mut self, words: &[&str]) -> StepOutput {
+        match words {
+            ["cancel"] => {
+                self.sub = SubPrompt::None;
+                self.page = 0;
+                self.out("Route selection cancelled — back to the movement options.".to_string(), false)
+            }
+            ["quit"] | ["q"] => StepOutput { text: "bye\n".to_string(), quit: true },
+            [tok] if !tok.is_empty() && tok.chars().all(|c| c.is_ascii_digit()) => {
+                // Resolve while borrowing `self.sub`, but yield an OWNED result so
+                // the borrow is released before the mutation/commit below.
+                let selected: Result<Move, usize> = match &self.sub {
+                    SubPrompt::Route { moves, .. } => {
+                        let n = moves.len();
+                        tok.parse::<usize>().ok().and_then(|k| moves.get(k).cloned()).ok_or(n)
+                    }
+                    _ => return self.out(String::new(), false), // unreachable: dispatched as Route
+                };
+                match selected {
+                    Ok(mv) => {
+                        self.sub = SubPrompt::None;
+                        self.page = 0;
+                        self.commit(mv)
+                    }
+                    Err(n) => self.out(format!("! pick a route 0-{}, or 'cancel'", n.saturating_sub(1)), false),
+                }
+            }
+            _ => self.out("! finish or cancel this prompt first".to_string(), false),
+        }
+    }
+
+    /// Guided retreat input. During the per-area questions a valid count
+    /// (`0..=` that area's own on-board total) advances to the next area; once
+    /// every area is answered, `confirm` assembles and applies the retreat.
+    /// `cancel`/`quit` behave as in the route sub-prompt. A count outside the
+    /// area's range (including one exceeding what's available) re-asks the SAME
+    /// question with its range; any other non-answer (a view command, garbage)
+    /// re-asks with `! finish or cancel this prompt first`.
+    fn step_retreat(&mut self, words: &[&str]) -> StepOutput {
+        let (areas_len, collected_len) = match &self.sub {
+            SubPrompt::Retreat { areas, collected } => (areas.len(), collected.len()),
+            _ => return self.out(String::new(), false), // unreachable: dispatched as Retreat
+        };
+        let confirming = collected_len >= areas_len;
+        match words {
+            ["cancel"] => {
+                self.sub = SubPrompt::None;
+                self.page = 0;
+                self.out("Retreat cancelled — back to the movement options.".to_string(), false)
+            }
+            ["quit"] | ["q"] => StepOutput { text: "bye\n".to_string(), quit: true },
+            _ if confirming => match words {
+                ["confirm"] => self.confirm_retreat(),
+                _ => self.out("! finish or cancel this prompt first".to_string(), false),
+            },
+            [tok] if !tok.is_empty() && tok.chars().all(|c| c.is_ascii_digit()) => {
+                let max = match &self.sub {
+                    SubPrompt::Retreat { areas, collected } => areas[collected.len()].1,
+                    _ => return self.out(String::new(), false),
+                };
+                match tok.parse::<u8>() {
+                    Ok(n) if n <= max => {
+                        if let SubPrompt::Retreat { collected, .. } = &mut self.sub {
+                            collected.push(n);
+                        }
+                        // out() appends the next question, or the confirm line.
+                        self.out(String::new(), false)
+                    }
+                    _ => self.out(format!("! recover 0-{max} from this area, or 'cancel'"), false),
+                }
+            }
+            _ => self.out("! finish or cancel this prompt first".to_string(), false),
+        }
+    }
+
+    /// Assemble the collected per-area counts into a `ReturnPresidentToHand`
+    /// (zero-count areas omitted -- an absent entry is the engine's own encoding
+    /// for "recover none there"), then exact-match against `legal()` and commit.
+    /// The per-area bounds were honored at every question, so a legal member
+    /// always results; the match stays the sole legality authority regardless
+    /// (a non-member gets the standard rejection and drops back to the main list).
+    fn confirm_retreat(&mut self) -> StepOutput {
+        let recover: std::collections::BTreeMap<AreaId, u8> = match &self.sub {
+            SubPrompt::Retreat { areas, collected } => areas
+                .iter()
+                .enumerate()
+                .filter_map(|(i, &(area, _))| (collected[i] > 0).then_some((area, collected[i])))
+                .collect(),
+            _ => return self.out(String::new(), false),
+        };
+        self.sub = SubPrompt::None;
+        self.page = 0;
+        let candidate = Move::ReturnPresidentToHand { recover };
+        match self.find_placement_match(&candidate) {
+            Some(mv) => self.commit(mv),
+            None => self.out("Illegal: that retreat is not in the legal list".to_string(), false),
+        }
+    }
+
+    /// Open the route sub-prompt for a multi-label destination. `out()` appends
+    /// `sub_prompt_text()` (the route list) since `self.sub` is now set.
+    fn enter_route_subprompt(&mut self, destination: AreaId, moves: Vec<Move>) -> StepOutput {
+        self.sub = SubPrompt::Route { destination, moves };
+        self.out(String::new(), false)
+    }
+
+    /// Open the guided retreat sub-prompt: capture the current player's occupied
+    /// areas (ascending AreaId, with their on-board counts -- the same set and
+    /// order `enumerate_recovery_options` walks) and ask the first. Reached only
+    /// from a collapsed `Retreat` entry, which exists only when >1 retreat
+    /// variant is legal -- i.e. at least one occupied area -- so `areas` is
+    /// non-empty and the confirm step is never reached with zero questions asked.
+    fn enter_retreat_subprompt(&mut self) -> StepOutput {
+        let me = self.session.state().current_player;
+        let areas: Vec<(AreaId, u8)> = self
+            .session
+            .state()
+            .player(me)
+            .assistants
+            .on_board
+            .iter()
+            .filter(|(_, &c)| c > 0)
+            .map(|(&a, &c)| (a, c))
+            .collect();
+        self.sub = SubPrompt::Retreat { areas, collected: Vec::new() };
+        self.out("Guided retreat — enter how many to recover from each area, then confirm.".to_string(), false)
+    }
+
+    /// The sub-prompt screen for whatever `self.sub` holds (empty when `None`):
+    /// the route label list (each via `describe_move`, so cost/recipient text is
+    /// unchanged), the current per-area recovery question, or the confirm line
+    /// (the assembled move rendered exactly by `describe_move`).
+    fn sub_prompt_text(&self) -> String {
+        let state = self.session.state();
+        let rules = self.session.rules();
+        match &self.sub {
+            SubPrompt::None => String::new(),
+            SubPrompt::Route { destination, moves } => {
+                let mut out = format!("Routes to {}:\n", describe::area_label(state, *destination));
+                for (i, mv) in moves.iter().enumerate() {
+                    out.push_str(&format!("[{}] {}\n", i, describe::describe_move(mv, state, rules)));
+                }
+                out.push_str("> pick a route number, or 'cancel'\n");
+                out
+            }
+            SubPrompt::Retreat { areas, collected } => {
+                if collected.len() < areas.len() {
+                    let (area, max) = areas[collected.len()];
+                    format!(
+                        "recover how many from {} [0-{}]?\n> enter a number, or 'cancel'\n",
+                        describe::area_label(state, area),
+                        max
+                    )
+                } else {
+                    let recover: std::collections::BTreeMap<AreaId, u8> = areas
+                        .iter()
+                        .enumerate()
+                        .filter_map(|(i, &(area, _))| (collected[i] > 0).then_some((area, collected[i])))
+                        .collect();
+                    let mv = Move::ReturnPresidentToHand { recover };
+                    format!("{}\n> confirm / cancel\n", describe::describe_move(&mv, state, rules))
+                }
+            }
+        }
     }
 
     /// Route `mv` through live-mode reveal detection (`TrackingMode::Live`
@@ -1540,5 +1879,412 @@ mod tests {
         ), "{:?}", r.session.record().events.last());
         assert_eq!(r.session.state().player(me).assistants.in_area(a), 0);
         assert_eq!(r.session.state().player(me).assistants.in_area(b), 0);
+    }
+
+    // ===================================================================
+    // Pre-gate Task A: Movement family collapse + sub-prompts.
+    //
+    // Fixture: a hand-built Movement-phase state (mirrors describe.rs's
+    // `movement_cost_fixture` geometry, but with the current player's OWN
+    // assistants placed so `get_legal_moves` actually enumerates the routes
+    // and the recovery combinations):
+    //
+    //   A00 Bank         Red's President sits here (the hub); Red: 2 assistants
+    //   A01 Copper Mine  a MULTI-LABEL destination -- reachable by the direct
+    //                    canal crossing A0->A1 (1 canal toll to the bank) AND
+    //                    the long way A0->A2->A1 (1 fee to Blue, whose
+    //                    President blocks A2). Two distinct (destination, fee)
+    //                    labels -> one "2 route options" entry + route sub-prompt.
+    //   A02 Silk Mill    Blue's President sits here (pass-through only, never a
+    //                    stop) -- the source of the fee label above.
+    //   A03 Tea Plantation  a SINGLE-LABEL destination (only A0->A3, free) ->
+    //                       stays a plain numbered move.
+    //
+    // Red also has 1 assistant each in A1/A2/A3, so the retreat family is the
+    // full 3*2*2*2 = 24-combination Cartesian product -> one collapsed
+    // "choose recovery" entry + the guided retreat sub-prompt.
+    //
+    // `Rules::empty_for_tests()` (empty registries) so `check_invariants`'
+    // order/tech conservation gates stay off; the per-player assistant total
+    // is held at 20 by draining the warehouse to match the 6 placed on board.
+    fn movement_grouping_fixture() -> Repl {
+        use std::collections::BTreeMap;
+        let a0 = AreaId::new(0);
+        let a1 = AreaId::new(1);
+        let a2 = AreaId::new(2);
+        let a3 = AreaId::new(3);
+
+        let mut areas = BTreeMap::new();
+        areas.insert(a0, AreaConfig { area_type: AreaType::Bank, grid_position: (0, 0) });
+        areas.insert(a1, AreaConfig { area_type: AreaType::CopperMine, grid_position: (0, 1) });
+        areas.insert(a2, AreaConfig { area_type: AreaType::SilkMill, grid_position: (1, 0) });
+        areas.insert(a3, AreaConfig { area_type: AreaType::TeaPlantation, grid_position: (1, 1) });
+
+        let mut adjacency = BTreeMap::new();
+        adjacency.insert(a0, vec![a1, a2, a3]);
+        adjacency.insert(a1, vec![a0, a2]);
+        adjacency.insert(a2, vec![a0, a1]);
+        adjacency.insert(a3, vec![a0]);
+
+        let board_layout = BoardLayout {
+            areas,
+            adjacency,
+            canal_crossings: vec![(a0, a1)],
+            building_sites: BTreeMap::new(),
+            five_power_tokens: BTreeMap::new(),
+        };
+
+        let config = GameConfig::new(2, vec![PlayerColor::Red, PlayerColor::Blue], PlayerId::new(0));
+        let mut players = vec![
+            PlayerState::new(PlayerId::new(0), PlayerColor::Red, true),
+            PlayerState::new(PlayerId::new(1), PlayerColor::Blue, false),
+        ];
+        players[0].president_location = PresidentLocation::OnBoard(a0);
+        players[0].money = 10;
+        players[0].assistants.on_board.insert(a0, 2);
+        players[0].assistants.on_board.insert(a1, 1);
+        players[0].assistants.on_board.insert(a2, 1);
+        players[0].assistants.on_board.insert(a3, 1);
+        players[0].assistants.in_warehouse -= 5; // 5 placed on board -> keep the per-player total at 20
+        players[1].president_location = PresidentLocation::OnBoard(a2); // Blue blocks A2
+        players[1].money = 10;
+
+        let state = GameState {
+            config,
+            board_layout,
+            players,
+            current_player: PlayerId::new(0),
+            turn_phase: TurnPhase::Movement,
+            turn_number: 1,
+            additional_action_state: AdditionalActionState::new(),
+            current_action_power: None,
+            is_mercenary_action: false,
+            mercenary_target_area: None,
+            mercenary_return_phase: None,
+            president_start_area: None,
+            port_state: PortState::new(false),
+            lab_state: LabState::new(false),
+            order_deck: vec![],
+            tech_deck: vec![],
+            orders_removed: vec![],
+            church_track: ChurchTrack::new(),
+            customs_track: CustomsTrack::new(),
+            achievements: [
+                AchievementCard::new(AchievementType::Copper5),
+                AchievementCard::new(AchievementType::Money10),
+                AchievementCard::new(AchievementType::Production4),
+            ],
+            mercenary_supply: MercenarySupply::new(),
+            station_location: None,
+            end_game_triggered: false,
+            trigger_reason: None,
+            final_round: false,
+            trigger_player: None,
+            pending_choices: Vec::new(),
+        };
+        Repl::new(Session::for_test_from_state(state, Rules::empty_for_tests()))
+    }
+
+    /// Movement-phase state with the President on the board but NO on-board
+    /// assistants for the current player: the ONLY legal move is the bare
+    /// `ReturnPresidentToHand {}` (recover nothing) -- exactly one retreat
+    /// variant, so it must stay a DIRECT numbered entry (no collapse, no
+    /// guided sub-prompt hop). Used by `bare_retreat_only_state_keeps_direct_entry`.
+    fn movement_bare_retreat_fixture() -> Repl {
+        use std::collections::BTreeMap;
+        let a0 = AreaId::new(0);
+        let mut areas = BTreeMap::new();
+        areas.insert(a0, AreaConfig { area_type: AreaType::Bank, grid_position: (0, 0) });
+        let mut adjacency = BTreeMap::new();
+        adjacency.insert(a0, vec![]);
+        let board_layout = BoardLayout {
+            areas,
+            adjacency,
+            canal_crossings: vec![],
+            building_sites: BTreeMap::new(),
+            five_power_tokens: BTreeMap::new(),
+        };
+        let config = GameConfig::new(2, vec![PlayerColor::Red, PlayerColor::Blue], PlayerId::new(0));
+        let mut players = vec![
+            PlayerState::new(PlayerId::new(0), PlayerColor::Red, true),
+            PlayerState::new(PlayerId::new(1), PlayerColor::Blue, false),
+        ];
+        players[0].president_location = PresidentLocation::OnBoard(a0); // on board, but no assistants anywhere
+        let state = GameState {
+            config,
+            board_layout,
+            players,
+            current_player: PlayerId::new(0),
+            turn_phase: TurnPhase::Movement,
+            turn_number: 1,
+            additional_action_state: AdditionalActionState::new(),
+            current_action_power: None,
+            is_mercenary_action: false,
+            mercenary_target_area: None,
+            mercenary_return_phase: None,
+            president_start_area: None,
+            port_state: PortState::new(false),
+            lab_state: LabState::new(false),
+            order_deck: vec![],
+            tech_deck: vec![],
+            orders_removed: vec![],
+            church_track: ChurchTrack::new(),
+            customs_track: CustomsTrack::new(),
+            achievements: [
+                AchievementCard::new(AchievementType::Copper5),
+                AchievementCard::new(AchievementType::Money10),
+                AchievementCard::new(AchievementType::Production4),
+            ],
+            mercenary_supply: MercenarySupply::new(),
+            station_location: None,
+            end_game_triggered: false,
+            trigger_reason: None,
+            final_round: false,
+            trigger_player: None,
+            pending_choices: Vec::new(),
+        };
+        Repl::new(Session::for_test_from_state(state, Rules::empty_for_tests()))
+    }
+
+    /// Convenience: the raw legal-list positions the fixture pins, so the
+    /// tests can assert against the actual engine enumeration rather than
+    /// re-deriving it. Returns (multi-label dest, single-label dest).
+    fn grouping_fixture_dests() -> (AreaId, AreaId) {
+        (AreaId::new(1), AreaId::new(3))
+    }
+
+    /// Main-list grouping: one numbered entry per destination -- the
+    /// multi-label destination collapses to a "N route options" line, the
+    /// single-label one renders as the move itself, and the whole retreat
+    /// family collapses to one "choose recovery" line. Three entries total.
+    #[test]
+    fn movement_list_groups_destinations_and_collapses_retreats() {
+        let r = movement_grouping_fixture();
+        let (multi, single) = grouping_fixture_dests();
+        let state = r.session.state();
+        let rules = r.session.rules();
+        let p = r.prompt();
+
+        // Entry 0: the multi-label destination as a route-options line.
+        assert!(
+            p.contains(&format!("[0] Move President to {} — 2 route options", crate::describe::area_label(state, multi))),
+            "{p}"
+        );
+        // Entry 1: the single-label destination rendered exactly as the move.
+        let single_move = Move::MovePresident { path: vec![single], destination: single };
+        assert!(
+            p.contains(&format!("[1] {}", crate::describe::describe_move(&single_move, state, rules))),
+            "{p}"
+        );
+        // Entry 2: the collapsed retreat family (24 = 3*2*2*2 combinations).
+        assert!(
+            p.contains("[2] Retreat President to hand — choose recovery (24 combinations; 'r' grammar works too)"),
+            "{p}"
+        );
+        // Exactly three entries -- no [3], and none of the 27 raw legal moves
+        // (3 MovePresident + 24 retreats) leaked through ungrouped.
+        assert!(!p.contains("[3]"), "grouping must leave exactly 3 entries: {p}");
+        assert_eq!(r.session.legal().len(), 27, "fixture assumption: 3 MovePresident + 24 retreats");
+    }
+
+    /// The Movement hint keeps the `'r' to retreat` shorthand AND now names
+    /// the numbered retreat entry (brief item 6), all on one line.
+    #[test]
+    fn movement_hint_names_the_retreat_entry() {
+        let r = movement_grouping_fixture();
+        let p = r.prompt();
+        assert!(p.contains("'r' to retreat"), "{p}");
+        assert!(p.contains("retreat entry"), "{p}");
+    }
+
+    /// Route sub-prompt: selecting the multi-label entry lists exactly that
+    /// destination's two labels with their unchanged cost/recipient text
+    /// (canal toll vs. fee-to-Blue), and a number commits the chosen move.
+    #[test]
+    fn route_subprompt_lists_labels_then_commits() {
+        let mut r = movement_grouping_fixture();
+        let (multi, _single) = grouping_fixture_dests();
+
+        let out = r.step("0"); // enter the route sub-prompt for the multi-label dest
+        assert!(out.text.contains(&format!("Routes to {}", crate::describe::area_label(r.session.state(), multi))), "{}", out.text);
+        // Both labels, with the SAME cost/recipient wording describe_move uses.
+        assert!(out.text.contains("[0]") && out.text.contains("[1]"), "{}", out.text);
+        assert!(out.text.contains("canal toll"), "canal-toll route label missing: {}", out.text);
+        assert!(out.text.contains("to Blue"), "fee-to-Blue route label missing: {}", out.text);
+        assert!(!out.text.contains("[2]"), "exactly two routes to this destination: {}", out.text);
+
+        // A number commits that exact MovePresident (assert via the applied event).
+        let events_before = r.session.record().events.len();
+        let out = r.step("0");
+        assert!(!out.text.to_lowercase().contains("illegal"), "{}", out.text);
+        assert_eq!(r.session.record().events.len(), events_before + 1);
+        assert!(matches!(
+            r.session.record().events.last(),
+            Some(RecordedEvent::Move(Move::MovePresident { destination, .. })) if *destination == multi
+        ), "{:?}", r.session.record().events.last());
+    }
+
+    /// Route sub-prompt `cancel` returns cleanly to the main list with the
+    /// full grouped list re-shown, applying nothing.
+    #[test]
+    fn route_subprompt_cancel_restores_main_list() {
+        let mut r = movement_grouping_fixture();
+        let events_before = r.session.record().events.len();
+        let state_before = r.session.state().clone();
+
+        r.step("0"); // into the route sub-prompt
+        let out = r.step("cancel");
+        assert!(out.text.to_lowercase().contains("cancel"), "{}", out.text);
+        // The full grouped main list is back (the route-options entry again).
+        assert!(out.text.contains("2 route options"), "main list must be re-shown: {}", out.text);
+        assert_eq!(r.session.record().events.len(), events_before, "cancel applies nothing");
+        assert_eq!(*r.session.state(), state_before);
+    }
+
+    /// Guided retreat: the collapsed retreat entry opens a per-area question
+    /// sequence (ascending AreaId), then a confirm line; confirming applies
+    /// the exact `ReturnPresidentToHand { recover }` the answers assemble.
+    #[test]
+    fn guided_retreat_collects_counts_confirms_and_applies() {
+        let mut r = movement_grouping_fixture();
+        let (a0, a1, a2, a3) = (AreaId::new(0), AreaId::new(1), AreaId::new(2), AreaId::new(3));
+
+        // Enter the guided retreat (entry [2]).
+        let out = r.step("2");
+        assert!(out.text.contains(&format!("recover how many from {}", crate::describe::area_label(r.session.state(), a0))), "{}", out.text);
+        assert!(out.text.contains("[0-2]"), "A00 holds 2 assistants: {}", out.text);
+
+        // Answer each area in ascending order: 2 from A0, 1 from A1, 1 from A2, 1 from A3.
+        let out = r.step("2");
+        assert!(out.text.contains(&format!("recover how many from {}", crate::describe::area_label(r.session.state(), a1))), "{}", out.text);
+        let out = r.step("1");
+        assert!(out.text.contains(&format!("recover how many from {}", crate::describe::area_label(r.session.state(), a2))), "{}", out.text);
+        let out = r.step("1");
+        assert!(out.text.contains(&format!("recover how many from {}", crate::describe::area_label(r.session.state(), a3))), "{}", out.text);
+
+        // Last answer -> the confirm line shows the assembled move via describe_move.
+        let out = r.step("1");
+        assert!(out.text.contains("Return President to hand, recovering 5 assistant(s)"), "{}", out.text);
+        assert!(out.text.contains("confirm"), "confirm prompt expected: {}", out.text);
+
+        let events_before = r.session.record().events.len();
+        let out = r.step("confirm");
+        assert!(!out.text.to_lowercase().contains("illegal"), "{}", out.text);
+        assert_eq!(r.session.record().events.len(), events_before + 1);
+        let expected: std::collections::BTreeMap<AreaId, u8> =
+            [(a0, 2u8), (a1, 1), (a2, 1), (a3, 1)].into_iter().collect();
+        assert!(matches!(
+            r.session.record().events.last(),
+            Some(RecordedEvent::Move(Move::ReturnPresidentToHand { recover })) if *recover == expected
+        ), "{:?}", r.session.record().events.last());
+    }
+
+    /// Guided retreat re-asks the SAME question on an out-of-range count
+    /// (count-exceeding-available: A00 holds 2, so 3 is refused) and on
+    /// garbage, applying nothing until a valid answer arrives.
+    #[test]
+    fn guided_retreat_reasks_on_out_of_range_and_garbage() {
+        let mut r = movement_grouping_fixture();
+        let a0 = AreaId::new(0);
+        r.step("2"); // enter -> first question is A00 [0-2]
+
+        // Out of range (3 > 2 available): re-ask, nothing collected.
+        let out = r.step("3");
+        assert!(out.text.contains("0-2"), "out-of-range must re-ask with the range: {}", out.text);
+        assert!(out.text.contains(&format!("recover how many from {}", crate::describe::area_label(r.session.state(), a0))), "still on A00's question: {}", out.text);
+
+        // Garbage: re-ask, still on A00's question.
+        let out = r.step("banana");
+        assert!(out.text.contains(&format!("recover how many from {}", crate::describe::area_label(r.session.state(), a0))), "garbage must re-ask A00's question: {}", out.text);
+
+        // A valid answer now advances to A01's question.
+        let out = r.step("2");
+        assert!(out.text.contains(&format!("recover how many from {}", crate::describe::area_label(r.session.state(), AreaId::new(1)))), "{}", out.text);
+        assert!(r.session.record().events.is_empty(), "nothing may apply during collection");
+    }
+
+    /// Guided retreat `cancel` mid-questions returns to the main list,
+    /// applying nothing.
+    #[test]
+    fn guided_retreat_cancel_mid_questions_restores_main_list() {
+        let mut r = movement_grouping_fixture();
+        let state_before = r.session.state().clone();
+        r.step("2");   // enter
+        r.step("2");   // answer A00
+        let out = r.step("cancel");
+        assert!(out.text.to_lowercase().contains("cancel"), "{}", out.text);
+        assert!(out.text.contains("choose recovery"), "main list must be re-shown: {}", out.text);
+        assert!(r.session.record().events.is_empty());
+        assert_eq!(*r.session.state(), state_before);
+    }
+
+    /// Sub-prompt input discipline: a view command mid-collection re-asks
+    /// with `! finish or cancel this prompt first` and never renders the view
+    /// (a board glance would be against a state the collection doesn't reflect).
+    #[test]
+    fn subprompt_view_command_reasks_with_finish_or_cancel() {
+        let mut r = movement_grouping_fixture();
+        r.step("2"); // enter the guided retreat
+        let out = r.step("board");
+        assert!(out.text.contains("! finish or cancel this prompt first"), "{}", out.text);
+        // The view did NOT render, and the question is still showing.
+        assert!(!out.text.contains("grid"), "the board view must not render mid-collection: {}", out.text);
+        assert!(out.text.contains("recover how many from"), "the question must be re-shown: {}", out.text);
+        assert!(r.session.record().events.is_empty());
+    }
+
+    /// Lockdown wins over an in-progress sub-prompt: once locked, even
+    /// sub-prompt input is refused the same way moves are (only save/log/quit).
+    #[test]
+    fn subprompt_refused_under_lockdown() {
+        let mut r = movement_grouping_fixture();
+        r.step("2"); // enter the guided retreat
+        r.locked = true;
+        let out = r.step("2"); // would be an answer, but lockdown refuses it
+        assert!(out.text.contains("locked"), "{}", out.text);
+        assert!(r.session.record().events.is_empty());
+    }
+
+    /// Regression: the `r` grammar still assembles + applies the exact retreat
+    /// with the new grouping active -- it BYPASSES the guided sub-prompt (no
+    /// hop), matching straight against the legal list.
+    #[test]
+    fn r_grammar_bypasses_the_guided_flow_with_grouping_active() {
+        let mut r = movement_grouping_fixture();
+        let a1 = AreaId::new(1);
+        let events_before = r.session.record().events.len();
+        let out = r.step(&format!("r {}:1", a1.0));
+        assert!(!out.text.to_lowercase().contains("illegal"), "{}", out.text);
+        assert!(!out.text.contains("not in the legal list"), "{}", out.text);
+        // Black-box proof of bypass: the retreat applied in ONE step, and no
+        // guided per-area question or confirm line ever appeared.
+        assert!(!out.text.contains("recover how many") && !out.text.contains("confirm"), "the r grammar must not open the guided sub-prompt: {}", out.text);
+        assert_eq!(r.session.record().events.len(), events_before + 1);
+        assert!(matches!(
+            r.session.record().events.last(),
+            Some(RecordedEvent::Move(Move::ReturnPresidentToHand { recover }))
+                if recover.len() == 1 && recover.get(&a1) == Some(&1)
+        ), "{:?}", r.session.record().events.last());
+    }
+
+    /// Bare-retreat-only Movement state (no on-board assistants): exactly one
+    /// retreat variant, so it stays a DIRECT numbered entry -- picking it
+    /// commits immediately with no guided sub-prompt.
+    #[test]
+    fn bare_retreat_only_state_keeps_direct_entry() {
+        let mut r = movement_bare_retreat_fixture();
+        let p = r.prompt();
+        assert!(p.contains("[0] Return President to hand (recover no assistants)"), "{p}");
+        assert!(!p.contains("choose recovery"), "a lone retreat must NOT collapse: {p}");
+        assert!(!p.contains("[1]"), "a lone-retreat state has exactly one entry: {p}");
+
+        let events_before = r.session.record().events.len();
+        let out = r.step("0");
+        assert!(!out.text.contains("recover how many") && !out.text.contains("confirm"), "a direct bare retreat must not hop into a sub-prompt: {}", out.text);
+        assert_eq!(r.session.record().events.len(), events_before + 1);
+        assert!(matches!(
+            r.session.record().events.last(),
+            Some(RecordedEvent::Move(Move::ReturnPresidentToHand { recover })) if recover.is_empty()
+        ), "{:?}", r.session.record().events.last());
     }
 }

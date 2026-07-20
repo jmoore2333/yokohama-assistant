@@ -72,9 +72,40 @@ Turn 1 | Red | Additional actions (before) | 3 yen 0 VP | c1 s2 t0 f1 i0 | hand 
 
 Header anatomy: turn number | whose turn | phase (§8.4) | money and VP | goods `c`opper `s`ilk `t`ea `f`ish(=Seafood) `i`mports | order cards in hand.
 
-The hint line's own middle clause is phase/choice-aware — it only ever names a shorthand that's actually usable right now: `'a'/'b' for placement` appears in `Placement`, `'r' to retreat` in `Movement`, `'m <from> <to>' to resolve (or the numbered Decline)` while an assistant-move choice is queued, and nothing extra (just the plain form above) everywhere else, including every OTHER kind of pending choice.
+The hint line's own middle clause is phase/choice-aware — it only ever names a shorthand that's actually usable right now: `'a'/'b' for placement` appears in `Placement`, `'r' to retreat (or the numbered retreat entry for guided recovery)` in `Movement`, `'m <from> <to>' to resolve (or the numbered Decline)` while an assistant-move choice is queued, and nothing extra (just the plain form above) everywhere else, including every OTHER kind of pending choice.
 
 **Choosing a move:** type the option's number. Long lists show 20 per page — `more` pages forward (wrapping), `list` returns to page 0; whenever there's more than one page, a `page N/M` line appears right above the hint so you always know where you are and how many pages there are in total.
+
+**Movement: destination-first, with sub-prompts.** The raw rules can offer thousands of Movement combinations — every route to every destination, every count of assistants to recover — so the Movement list is *collapsed*. Each reachable destination is ONE numbered entry: if a single route reaches it, that entry is the move itself (cost and who-gets-paid text unchanged); if several routes reach it — say a free walk versus a longer one that pays a pass-through fee — the entry reads `Move President to <Area> (Ann) — <k> route options`. The whole *retreat* family (Movement Option B) collapses to one `Retreat President to hand — choose recovery (<k> combinations; 'r' grammar works too)` entry (a lone bare retreat — no assistants on board — stays a plain numbered entry, no sub-prompt). A captured Movement list with both kinds:
+
+```
+Turn 3 | Red | Movement | 1 yen 3 VP | c0 s1 t1 f1 i0 | hand 1
+[0] Move President to Fishing Ground (A05) — 2 route options
+[1] Move President to Customs (A06) — 2 route options
+[2] Retreat President to hand — choose recovery (8 combinations; 'r' grammar works too)
+> enter a number, 'r' to retreat (or the numbered retreat entry for guided recovery), or a command ('help' for the list)
+```
+
+Selecting a `route options` entry opens a **route sub-prompt** — that destination's routes, each with its full cost/recipient text, so you pick which one:
+
+```
+Routes to Fishing Ground (A05):
+[0] Move President to Fishing Ground (A05) — free
+[1] Move President to Fishing Ground (A05) — pay 1 yen (1 to Blue)
+> pick a route number, or 'cancel'
+```
+
+Selecting the collapsed retreat entry opens a **guided retreat**: for each area holding your assistants (ascending area id) it asks `recover how many from <Area> [0-n]?`, then shows the assembled move for a final `confirm`:
+
+```
+recover how many from Tea Plantation (A02) [0-1]?
+> enter a number, or 'cancel'
+...
+Return President to hand, recovering 2 assistant(s) (A02 x1, A09 x1)
+> confirm / cancel
+```
+
+Inside either sub-prompt the only accepted inputs are a valid answer or `cancel` (which returns to the full Movement list, applying nothing); an out-of-range number re-asks with its range, and a view/`save`/`undo`/`more` mid-prompt is refused with `! finish or cancel this prompt first` (it would otherwise render or act against a state the half-finished prompt doesn't reflect yet). Whatever a sub-prompt assembles is matched against the real legal list before it applies — exactly like the `a`/`b`/`m`/`r` shorthands — so neither can produce a move the engine didn't offer.
 
 **Choice prompts:** some rewards leave you a decision — which good, which warehouse item, where to move an assistant, which Church/Customs space (full inventory in §8.6). Whenever one or more of these is queued, the phase slot in the header is replaced by a `Choose: ... — N choice(s) pending` banner naming the head choice, and the numbered list below is exactly that choice's options — nothing about entering them differs from any other phase. A captured example, mid-Church-visit:
 
@@ -99,7 +130,7 @@ Order of ids in `a` doesn't matter; the tool matches your entry against the lega
 
 **Assistant-move shorthand** (for a pending assistant-move choice — the Movement icon's reward, §8.6): `m <from> <to>` instead of hunting the numbered list, where `<from>` is `hand` or the id of an area holding one of your own on-board assistants, and `<to>` is any area id. Continuing the transcript above once it cascades into an assistant-move choice: `m 8 9` moves the assistant sitting in area 8 to area 9; `m hand 9` moves one from hand to area 9. Like the placement shorthand, `m` only ever matches against the real legal list — a destination the reward doesn't actually allow gets the same rejection a wrong option number would, and there's no `m` shorthand for declining (use the numbered `Decline the assistant move` option). Bad input: `m` alone or `m <one token>` → `Usage: m <from> <to>`; a non-numeric area token → `'<tok>' is not a valid area number`; a well-formed area number that isn't actually offered — including one out of the board's 0-17 range (`m 8 99`), or using `m` when no assistant-move choice is pending at all — → `Illegal: that is not one of the legal assistant moves.` Unlike `a`/`b`, `m` doesn't separately range-check its area numbers first; an out-of-range one just falls through to that same generic rejection.
 
-**Retreat shorthand** (Movement Option B: return the President to hand, optionally recovering assistants — the rulebook's other Step-2 option alongside moving him, §8.4): `r` by itself returns the President to hand recovering no assistants; `r <id>` recovers *every* assistant you currently have on board in area `<id>`; `r <id>:<n>` recovers exactly `n` from area `<id>` (`n` must be ≥ 1). Chain several area tokens in one command: `r 4:1 9` recovers 1 assistant from area 4 *and* every assistant you have in area 9. The numbered list still works too — it now shows each retreat's actual per-area counts (e.g. `Return President to hand, recovering 3 assistant(s) (A04 x1, A09 x2)`) instead of just naming the areas, so two retreats that recover different counts from the same area no longer read identically; with several occupied areas this list can page (§4), which is exactly why the shorthand exists. Like `a`/`b`/`m`, `r` only ever matches against the real legal list — asking for more assistants than are actually there (or any other combination the rules don't offer) gets `That retreat is not in the legal list (check areas/counts).`, the same rejection a wrong option number would get. Bad input: a non-numeric area token → `Bad area token '<tok>'. Usage: r [<area>[:<n>]]...`; a zero, negative, or non-numeric count after `:` → `Bad count in '<tok>'.` An area number that simply isn't on this board (`r 99`) parses fine and falls through to the legal-list rejection above — the legal list, not the parser, is what rules it out.
+**Retreat shorthand** (Movement Option B: return the President to hand, optionally recovering assistants — the rulebook's other Step-2 option alongside moving him, §8.4): `r` by itself returns the President to hand recovering no assistants; `r <id>` recovers *every* assistant you currently have on board in area `<id>`; `r <id>:<n>` recovers exactly `n` from area `<id>` (`n` must be ≥ 1). Chain several area tokens in one command: `r 4:1 9` recovers 1 assistant from area 4 *and* every assistant you have in area 9. The numbered list still works too, but the whole retreat family now collapses to the single **guided retreat** entry described under Movement grouping above — `r` is the shorthand that *bypasses* that guided flow, assembling and applying the exact retreat in one line instead of stepping through the per-area questions. Like `a`/`b`/`m`, `r` only ever matches against the real legal list — asking for more assistants than are actually there (or any other combination the rules don't offer) gets `That retreat is not in the legal list (check areas/counts).`, the same rejection a wrong option number would get. Bad input: a non-numeric area token → `Bad area token '<tok>'. Usage: r [<area>[:<n>]]...`; a zero, negative, or non-numeric count after `:` → `Bad count in '<tok>'.` An area number that simply isn't on this board (`r 99`) parses fine and falls through to the legal-list rejection above — the legal list, not the parser, is what rules it out.
 
 ## 5. Commands
 
