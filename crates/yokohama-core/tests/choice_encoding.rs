@@ -896,6 +896,7 @@ fn missing(
 }
 
 #[test]
+#[ignore = "~93s in debug: organic-coverage census, not per-edit correctness -- run with cargo test --release -p yokohama-core --test choice_encoding -- --ignored before merges/phase closes (gate PASSES; see module docs)"]
 fn every_choice_variant_fires_organically_in_random_play() {
     let rules = Rules::standard();
     let mut seen_pending: BTreeSet<&'static str> = BTreeSet::new();
