@@ -89,7 +89,7 @@ pub fn tech_effect_text(effect: TechEffect) -> &'static str {
         TechEffect::Tram => "Teleport the President to any area without an opponent President",
         TechEffect::Stagecoach => "Move through opponent Presidents without paying the pass-through fee",
         TechEffect::PostalSystem => "May stop and act in an area holding an opponent President",
-        TechEffect::Station => "Place the Station token: +1 Power for everyone there; you may teleport to it",
+        TechEffect::Station => "Place the Station token: +1 Power for everyone there; teleport there while you have an assistant in its area",
         TechEffect::Gaslight => "+2 VP when you build a Shophouse",
         TechEffect::ElectricalLight => "+3 VP when you build a Trading House",
         TechEffect::MiningTechnology => "+1 Copper whenever you receive Copper",
@@ -824,6 +824,19 @@ mod tests {
         assert!(tech_effect_text(TechEffect::Gaslight).contains("Shophouse"), "{}", tech_effect_text(TechEffect::Gaslight));
         assert!(tech_effect_text(TechEffect::Brickyard).contains("Customs"), "{}", tech_effect_text(TechEffect::Brickyard));
         assert!(tech_effect_text(TechEffect::University).contains("Warehouse"), "{}", tech_effect_text(TechEffect::University));
+    }
+
+    /// Task B review minor: the Station effect line must not promise an
+    /// UNCONDITIONAL teleport -- the engine gates it on the owner holding an
+    /// assistant in the Station's area (`can_teleport_to_station`,
+    /// movement.rs:245-248: `in_area(station_area) > 0`). The one-liner must
+    /// therefore carry that assistant-presence gate, not just say "teleport
+    /// to it".
+    #[test]
+    fn station_effect_line_carries_the_teleport_gate() {
+        let line = tech_effect_text(TechEffect::Station);
+        assert!(line.contains("teleport"), "{line}");
+        assert!(line.contains("assistant"), "teleport must read as gated on an assistant: {line}");
     }
 
     #[test]
