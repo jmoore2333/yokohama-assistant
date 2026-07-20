@@ -108,19 +108,11 @@ pub fn engine_route_label(
     path: &[AreaId],
     destination: AreaId,
 ) -> RouteLabel {
-    let vector = route_fee_vector(state, state.current_player, path, Some(&rules.techs), false);
-    let mover_cost: u32 = vector.values().sum();
-    let mut player_credits = BTreeMap::new();
-    let mut bank: u32 = 0;
-    for (recipient, amount) in vector {
-        match recipient {
-            Some(pid) => {
-                player_credits.insert(pid, amount);
-            }
-            None => bank += amount,
-        }
-    }
-    RouteLabel { to: destination, mover_cost, player_credits, bank }
+    // `route_fee_vector` already returns the label's fee map shape verbatim:
+    // BTreeMap<Option<PlayerId>, u32> keyed by recipient (None = bank), which
+    // is exactly the spec §1.1 `RouteLabel::fees` contract (§9-A adoption).
+    let fees = route_fee_vector(state, state.current_player, path, Some(&rules.techs), false);
+    RouteLabel { destination, fees }
 }
 
 /// Pure multiset diff over pre-built key lists (the testable core of

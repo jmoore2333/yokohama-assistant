@@ -36,7 +36,7 @@ pub fn run_differential_game(
     let mut divergence: Option<PathBuf> = None;
 
     let stats = drive_game(seed, players, policy, rules, None, |state, engine_moves, step| {
-        let oracle = yokohama_oracle::legal_moves(state, rules);
+        let oracle = yokohama_oracle::oracle_moves(state, rules);
         let cmp = compare_moves(state, rules, engine_moves, &oracle);
         if !cmp.is_divergent() {
             return Ok(StepOutcome::Continue);

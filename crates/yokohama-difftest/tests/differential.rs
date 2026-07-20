@@ -3,7 +3,7 @@
 //! `#[ignore]`d: this joins the pre-merge RELEASE gates (CLAUDE.md two-tier
 //! policy: release-profile, large-N, before merges/phase closes — never the
 //! per-edit debug suite) ONCE the independence-protected oracle track lands
-//! the real `yokohama_oracle::legal_moves`. Run it with:
+//! the real `yokohama_oracle::oracle_moves`. Run it with:
 //!
 //! `cargo test --release -p yokohama-difftest --test differential -- --ignored`
 //!

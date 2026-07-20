@@ -50,13 +50,9 @@ fn engine_route_label_matches_engine_pricing_on_a_real_state() {
                 let vector =
                     route_fee_vector(state, state.current_player, path, Some(&rules.techs), false);
                 let total: u32 = vector.values().sum();
-                assert_eq!(label.mover_cost, total, "label cost must be the engine's own sum");
-                assert_eq!(
-                    label.player_credits.values().sum::<u32>() + label.bank,
-                    label.mover_cost,
-                    "credits + bank must re-sum to the mover's cost"
-                );
-                assert_eq!(label.to, *destination);
+                assert_eq!(label.mover_cost(), total, "label cost must be the engine's own sum");
+                assert_eq!(label.fees, vector, "the label's fee map IS the engine's fee vector");
+                assert_eq!(label.destination, *destination);
                 found = true;
             }
         }
@@ -68,7 +64,7 @@ fn engine_route_label_matches_engine_pricing_on_a_real_state() {
     // Teleport encoding: empty path prices to the all-zero label.
     let some_area = *state.board_layout.areas.keys().next().expect("board has areas");
     let label = engine_route_label(&state, &rules, &[], some_area);
-    assert_eq!((label.mover_cost, label.bank), (0, 0));
-    assert!(label.player_credits.is_empty());
+    assert_eq!(label.mover_cost(), 0);
+    assert!(label.fees.is_empty());
     let _: String = route_label_key(&label); // key building never panics
 }

@@ -10,7 +10,7 @@
 //! every game completes divergence-free, 1 on any divergence or driver
 //! failure, 2 on usage error.
 //!
-//! NOTE (Stage 1 shell): while `yokohama_oracle::legal_moves` is the empty
+//! NOTE (Stage 1 shell): while `yokohama_oracle::oracle_moves` is an empty/partial
 //! stub, EVERY game diverges at step 0 (all engine moves are engine-only) —
 //! expected until the independence-protected oracle track lands the real
 //! enumerator.
