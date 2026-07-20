@@ -156,7 +156,7 @@ list            reset to the first page of legal options
 undo            undo the last move (and any reveals bound to it)
 save [path]     save to path (or to the last-used path if omitted)
 reveal <seat> <O..>  live mode: make a hidden opponent starting order public
-cancel          live mode: abort an in-progress card/token reveal prompt
+cancel          abort an in-progress reveal prompt (live mode) or a route/retreat sub-prompt
 help            show this text
 quit            exit the REPL
 ```

@@ -614,6 +614,24 @@ impl Repl {
                     Err(n) => self.out(format!("! pick a route 0-{}, or 'cancel'", n.saturating_sub(1)), false),
                 }
             }
+            // The route list pages like the main list (brief item 5): `more`/
+            // `list` drive its pager rather than being refused, so the mirrored
+            // "type 'more'" footer is honest. (A deliberate refinement of the
+            // discipline's default "more re-asks" -- only for the route list,
+            // which is the only paged sub-prompt surface; retreat questions are
+            // sequential, not a list, so `step_retreat` still refuses them.)
+            ["more"] => {
+                let n = match &self.sub {
+                    SubPrompt::Route { moves, .. } => moves.len(),
+                    _ => 0,
+                };
+                self.page = (self.page + 1) % total_pages_for(n);
+                self.out(String::new(), false)
+            }
+            ["list"] => {
+                self.page = 0;
+                self.out(String::new(), false)
+            }
             _ => self.out("! finish or cancel this prompt first".to_string(), false),
         }
     }
@@ -690,6 +708,7 @@ impl Repl {
     /// `sub_prompt_text()` (the route list) since `self.sub` is now set.
     fn enter_route_subprompt(&mut self, destination: AreaId, moves: Vec<Move>) -> StepOutput {
         self.sub = SubPrompt::Route { destination, moves };
+        self.page = 0; // the route list gets its own paging, starting at page 0
         self.out(String::new(), false)
     }
 
@@ -725,9 +744,23 @@ impl Repl {
         match &self.sub {
             SubPrompt::None => String::new(),
             SubPrompt::Route { destination, moves } => {
+                // Same 20/page + footer machinery the main list uses (brief item
+                // 5). Bounded ~16 in real play, so this rarely pages -- but when
+                // it does, `more`/`list` step it (see `step_route`), so the
+                // mirrored "type 'more'" footer stays honest.
                 let mut out = format!("Routes to {}:\n", describe::area_label(state, *destination));
-                for (i, mv) in moves.iter().enumerate() {
-                    out.push_str(&format!("[{}] {}\n", i, describe::describe_move(mv, state, rules)));
+                let n = moves.len();
+                let total_pages = total_pages_for(n);
+                let start = (self.page * 20).min(n);
+                let end = (start + 20).min(n);
+                for (i, mv) in moves[start..end].iter().enumerate() {
+                    out.push_str(&format!("[{}] {}\n", start + i, describe::describe_move(mv, state, rules)));
+                }
+                if end < n {
+                    out.push_str(&format!("...{} more (type 'more')\n", n - end));
+                }
+                if total_pages > 1 {
+                    out.push_str(&format!("page {}/{total_pages}\n", self.page + 1));
                 }
                 out.push_str("> pick a route number, or 'cancel'\n");
                 out
@@ -1022,7 +1055,7 @@ Commands:
   undo            undo the last move (and any reveals bound to it)
   save [path]     save to path (or to the last-used path if omitted)
   reveal <seat> <O..>  live mode: make a hidden opponent starting order public
-  cancel          live mode: abort an in-progress card/token reveal prompt
+  cancel          abort an in-progress reveal prompt (live mode) or a route/retreat sub-prompt
   help            show this text
   quit            exit the REPL ('q' also works)
 ";
@@ -2286,5 +2319,47 @@ mod tests {
             r.session.record().events.last(),
             Some(RecordedEvent::Move(Move::ReturnPresidentToHand { recover })) if recover.is_empty()
         ), "{:?}", r.session.record().events.last());
+    }
+
+    /// Task A review Minor 1: a route sub-prompt list uses the SAME 20/page +
+    /// footer machinery the main list does (brief item 5). Route lists are
+    /// bounded ~16 in real play, so this is defensive -- the state is
+    /// constructed directly with 25 rendering-only labels (never committed, so
+    /// they need not be legal) to exercise the cap + footer + `more`/`list`.
+    #[test]
+    fn route_subprompt_pages_a_long_route_list() {
+        let mut r = repl_2p(4);
+        let moves: Vec<Move> =
+            (0..25).map(|i| Move::MovePresident { path: vec![], destination: AreaId::new((i % 10) as u8) }).collect();
+        r.sub = SubPrompt::Route { destination: AreaId::new(0), moves };
+
+        // Page 1 caps at 20 entries ([0]..[19]) and shows both footer lines.
+        let p0 = r.sub_prompt_text();
+        assert!(p0.contains("[0] ") && p0.contains("[19] "), "{p0}");
+        assert!(!p0.contains("[20] "), "page 1 must cap at 20 route entries: {p0}");
+        assert!(p0.contains("...5 more (type 'more')"), "{p0}");
+        assert!(p0.contains("page 1/2"), "{p0}");
+
+        // `more` pages forward to the remaining 5.
+        let p1 = r.step("more").text;
+        assert!(p1.contains("[20] ") && p1.contains("[24] "), "{p1}");
+        assert!(!p1.contains("[19] "), "page 2 must not repeat page-1 entries: {p1}");
+        assert!(p1.contains("page 2/2"), "{p1}");
+
+        // `list` resets to page 1.
+        let p2 = r.step("list").text;
+        assert!(p2.contains("[0] ") && p2.contains("page 1/2"), "{p2}");
+        // Still in the sub-prompt, nothing applied.
+        assert!(matches!(r.sub, SubPrompt::Route { .. }));
+        assert!(r.session.record().events.is_empty());
+    }
+
+    /// Task A review Minor 2: `cancel` now also aborts a route/retreat
+    /// sub-prompt (both modes), so `help` must say so, not just "reveal prompt".
+    #[test]
+    fn help_text_cancel_line_covers_sub_prompts() {
+        let mut r = repl_2p(4);
+        let out = r.step("help");
+        assert!(out.text.contains("sub-prompt"), "{}", out.text);
     }
 }
