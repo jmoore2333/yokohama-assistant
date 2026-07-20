@@ -168,7 +168,7 @@ fn area_action_moves(state: &GameState, rules: &Rules) -> Vec<Move> {
             area_actions_cards::laboratory_moves(state, rules, area_type, power)
         }
         AreaType::EmploymentAgency => area_actions_market::employment_moves(state, power),
-        AreaType::Chinatown => area_actions_market::chinatown_moves(state, power),
+        AreaType::Chinatown => area_actions_market::chinatown_moves(state, rules, power),
         AreaType::Church => area_actions_tracks::church_moves(state, power, area),
         AreaType::Customs => area_actions_tracks::customs_moves(state, power, area),
         // The Canal is never an acting area (no President or mercenary target

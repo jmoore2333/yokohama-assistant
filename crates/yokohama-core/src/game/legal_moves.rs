@@ -706,20 +706,6 @@ fn generate_employment_agency_actions(state: &GameState, player: PlayerId, power
     moves
 }
 
-/// Documented v1 cap on the length of a single Chinatown move's exchange
-/// sequence, as enumerated by `generate_chinatown_actions`. The KB rule
-/// ("Number of exchanges = Power level", 07-rules-reference.md line 312)
-/// is now enforced end-to-end (Task 17b): `apply_area_action`'s Chinatown
-/// arm calls `validate_chinatown_exchanges` before any exchange executes,
-/// and the generator caps its own BFS depth at
-/// `min(power.min(5) as usize, CHINATOWN_ENUM_DEPTH)`. This constant only
-/// actually bites at power 5: a legal 5-exchange move exists per the rule
-/// there but is deliberately NOT enumerated (a plan-sanctioned v1
-/// enumeration bound, not a rules gap). At every power below 5, `power`
-/// itself is the binding constraint and this constant never limits
-/// anything.
-pub const CHINATOWN_ENUM_DEPTH: usize = 4;
-
 /// The 9 Chinatown exchange kinds, used to drive the enumeration BFS below.
 const ALL_CHINATOWN_EXCHANGES: [ChinatownExchange; 9] = [
     ChinatownExchange::CopperToYen,
@@ -832,12 +818,14 @@ fn chinatown_multiset_key(exchanges: &[ChinatownExchange]) -> [u8; 9] {
 }
 
 /// Enumerate legal Chinatown moves via breadth-first search over exchange
-/// sequences, up to `min(power.min(5) as usize, CHINATOWN_ENUM_DEPTH)`
-/// exchanges (Task 17b: the KB caps the exchange count at the acting
-/// power, exactly mirroring `validate_chinatown_exchanges`, which
-/// `apply_area_action`'s Chinatown arm now enforces), starting from the
-/// player's actual resource tuple and admitting only exchanges valid on
-/// the running simulated state (mirroring `apply_chinatown_exchange`'s
+/// sequences, up to `power.min(5)` exchanges (the KB rule "Number of
+/// exchanges = Power level", exactly mirroring
+/// `validate_chinatown_exchanges`, which `apply_area_action`'s Chinatown
+/// arm enforces -- the former v1 `CHINATOWN_ENUM_DEPTH = 4` enumeration
+/// cap was retired in the Phase-2.9 oracle fix wave: it hid legal,
+/// apply-valid length-5 moves at power 5), starting from the player's
+/// actual resource tuple and admitting only exchanges valid on the
+/// running simulated state (mirroring `apply_chinatown_exchange`'s
 /// costs/yields exactly, including the Mining Technology bonus on
 /// YenToCopper). Processing strictly by increasing sequence length means
 /// the first witness recorded for any reachable multiset is always found
@@ -846,10 +834,16 @@ fn chinatown_multiset_key(exchanges: &[ChinatownExchange]) -> [u8; 9] {
 /// path that reached it (a valid execution order BY CONSTRUCTION), never
 /// independently sorted: sorting a multiset can produce an order that
 /// fails validation (e.g. money 0, 1 copper: [CopperToYen, YenToTea] is
-/// valid, the reverse is not). One move per distinct multiset. Chinatown
-/// places no assistant, so (unlike the other five permissive areas) hand
-/// availability never gates it. Skip is always legal and always offered
-/// (Task 16/17 decision-log optionality ruling).
+/// valid, the reverse is not). One move per distinct multiset. Frontier
+/// expansion is gated on the same seen-multiset insert as emission --
+/// provably lossless, because every exchange is a fixed additive delta on
+/// the running resources, so a multiset determines the balance
+/// order-independently and the first visit's subtree is identical to any
+/// revisit's; this bounds the frontier to distinct multisets (small
+/// thousands at depth 5 over 9 variants). Chinatown places no assistant,
+/// so (unlike the other five permissive areas) hand availability never
+/// gates it. Skip is always legal and always offered (Task 16/17
+/// decision-log optionality ruling).
 fn generate_chinatown_actions(state: &GameState, player: PlayerId, power: u8, rules: &Rules) -> Vec<Move> {
     let p = state.player(player);
     let mining_bonus = copper_bonus(state, player, 1, &rules.techs) as u32;
@@ -861,7 +855,7 @@ fn generate_chinatown_actions(state: &GameState, player: PlayerId, power: u8, ru
         money: p.money,
         imported_goods: p.imported_goods,
     };
-    let depth = (power.min(5) as usize).min(CHINATOWN_ENUM_DEPTH);
+    let depth = power.min(5) as usize;
 
     let mut moves = Vec::new();
     let mut seen: std::collections::HashSet<[u8; 9]> = std::collections::HashSet::new();
@@ -878,8 +872,8 @@ fn generate_chinatown_actions(state: &GameState, player: PlayerId, power: u8, ru
                         moves.push(Move::ExecuteAreaAction {
                             action: AreaAction::Chinatown { exchanges: next_path.clone() },
                         });
+                        next_frontier.push((next_res, next_path));
                     }
-                    next_frontier.push((next_res, next_path));
                 }
             }
         }
@@ -2639,9 +2633,11 @@ mod tests {
     }
 
     /// Places a Chinatown area on the board, puts the president there, and
-    /// enters the AreaAction phase at the given power (Task 17b: power now
-    /// caps the BFS enumeration depth -- see `CHINATOWN_ENUM_DEPTH`'s doc
-    /// comment).
+    /// enters the AreaAction phase at the given power (power caps the BFS
+    /// enumeration depth at `power.min(5)` -- see
+    /// `generate_chinatown_actions`'s doc comment; the former v1
+    /// `CHINATOWN_ENUM_DEPTH = 4` cap was retired in the Phase-2.9 oracle
+    /// fix wave).
     fn create_chinatown_area_state(power: u8) -> GameState {
         let mut state = create_test_state();
         let area = AreaId::new(5);
@@ -2903,8 +2899,8 @@ mod tests {
 
     #[test]
     fn chinatown_enumeration_hand_derived_small_fixture_power_3() {
-        // Fixture: money 1, everything else 0, power 3 (Task 17b: depth cap
-        // = min(3,4) = 3). HAND DERIVATION (full walk-through in the Task
+        // Fixture: money 1, everything else 0, power 3 (depth = power =
+        // 3). HAND DERIVATION (full walk-through in the Task
         // 17/17b report): the reachable exchange graph is a 2-leaf star --
         // R=(money:1) <-> T=(tea:1) via YenToTea/TeaToYen, and R <->
         // S=(seafood:1) via YenToSeafood/SeafoodToYen -- since money never
@@ -2938,8 +2934,8 @@ mod tests {
 
     #[test]
     fn chinatown_enumeration_hand_derived_small_fixture_power_2_caps_depth() {
-        // Same fixture as the power-3 pin above, at power 2 (depth cap =
-        // min(2,4) = 2): only the L=1 (2 raw) and L=2 (2 raw) walks survive
+        // Same fixture as the power-3 pin above, at power 2 (depth = power
+        // = 2): only the L=1 (2 raw) and L=2 (2 raw) walks survive
         // -- {YenToTea}, {YenToSeafood}, {YenToTea,TeaToYen},
         // {YenToSeafood,SeafoodToYen} -- all 4 distinct (no collision is
         // possible below length 4). 4 + Skip = 5.
@@ -2984,7 +2980,7 @@ mod tests {
     #[test]
     fn chinatown_enumeration_mining_bonus_three_exchange_chain_discriminates_drop() {
         // Player owns 1 Mining Technology copy, money 4, copper 0, power 3
-        // (depth cap = min(3,4) = 3). At the start, only YenToCopper is
+        // (depth = power = 3). At the start, only YenToCopper is
         // resource-valid (copper=0 blocks CopperToYen/etc.; money=4 covers
         // YenToCopper's cost of 2).
         //
@@ -3031,6 +3027,96 @@ mod tests {
                 ChinatownExchange::CopperToYen,
             ]
         )), "expected [YenToCopper, CopperToYen, CopperToYen] among the generated moves");
+        assert_all_moves_apply(&state, &moves, &rules);
+    }
+
+    #[test]
+    fn chinatown_enumeration_power_5_reaches_length_5_multisets() {
+        // Phase-2.9 oracle divergence fixture: money 2, seafood 14, power 5.
+        // The rules (and the executor's own validate_chinatown_exchanges)
+        // permit 1..=power exchanges, i.e. length 5 here. HAND ARITHMETIC
+        // for one achievable length-5 sequence,
+        // [SeafoodToYen, YenToCopper, CopperToYen, YenToCopper, CopperToYen]:
+        //   start           money 2, seafood 14, copper 0
+        //   SeafoodToYen -> money 3, seafood 13            (needs seafood >= 1: 14 ok)
+        //   YenToCopper  -> money 1, copper 1              (needs money >= 2: 3 ok)
+        //   CopperToYen  -> money 3, copper 0              (needs copper >= 1: 1 ok)
+        //   YenToCopper  -> money 1, copper 1              (needs money >= 2: 3 ok)
+        //   CopperToYen  -> money 3, copper 0              (needs copper >= 1: 1 ok)
+        // Every step is feasible on the running balance, so the multiset
+        // {SeafoodToYen: 1, YenToCopper: 2, CopperToYen: 2} MUST be
+        // enumerated at power 5. The generator emits one move per distinct
+        // multiset with whatever valid execution order its BFS found first,
+        // so we match on the multiset key, never a literal vector.
+        let mut state = create_chinatown_area_state(5);
+        state.players[0].copper = 0;
+        state.players[0].silk = 0;
+        state.players[0].tea = 0;
+        state.players[0].seafood = 14;
+        state.players[0].money = 2;
+        state.players[0].imported_goods = 0;
+        let rules = Rules::empty_for_tests();
+
+        let moves = get_legal_moves(&state, &rules);
+        let target = chinatown_multiset_key(&[
+            ChinatownExchange::SeafoodToYen,
+            ChinatownExchange::YenToCopper,
+            ChinatownExchange::YenToCopper,
+            ChinatownExchange::CopperToYen,
+            ChinatownExchange::CopperToYen,
+        ]);
+        assert!(moves.iter().any(|m| matches!(m,
+            Move::ExecuteAreaAction { action: AreaAction::Chinatown { exchanges } }
+            if chinatown_multiset_key(exchanges) == target
+        )), "power 5 must enumerate the feasible length-5 multiset {{SeafoodToYen:1, YenToCopper:2, CopperToYen:2}}");
+        for m in &moves {
+            if let Move::ExecuteAreaAction { action: AreaAction::Chinatown { exchanges } } = m {
+                assert!(
+                    exchanges.len() <= 5,
+                    "no enumerated sequence may exceed the acting power (5), got length {}",
+                    exchanges.len()
+                );
+            }
+        }
+        assert_all_moves_apply(&state, &moves, &rules);
+    }
+
+    #[test]
+    fn chinatown_enumeration_power_4_set_unchanged_by_frontier_prune() {
+        // Same money-1 star fixture as the power-2/3 pins above, at power 4
+        // (depth = 4). HAND DERIVATION, extending the power-3 walk count:
+        // valid walks of length L from R number 2^ceil(L/2) -- L=1 -> 2,
+        // L=2 -> 2, L=3 -> 4, and L=4 -> 4 raw walks (a Tea/Seafood choice
+        // at steps 1 and 3, steps 2 and 4 forced back to R): (T,T), (T,S),
+        // (S,T), (S,S). At L=4 the first multiset collision appears: (T,S)
+        // and (S,T) both collapse to {YenToTea, TeaToYen, YenToSeafood,
+        // SeafoodToYen}, so L=4 contributes 3 distinct multisets, not 4.
+        // Total: 2 + 2 + 4 + 3 = 11 + Skip = 12. This exact count plus the
+        // cross-branch multiset pin below hold both BEFORE and AFTER the
+        // frontier-expansion prune (gating next_frontier on the same
+        // seen-multiset insert as emission): the prune may only change
+        // performance, never the enumerated set.
+        let mut state = create_chinatown_area_state(4);
+        state.players[0].copper = 0;
+        state.players[0].silk = 0;
+        state.players[0].tea = 0;
+        state.players[0].seafood = 0;
+        state.players[0].money = 1;
+        state.players[0].imported_goods = 0;
+        let rules = Rules::empty_for_tests();
+
+        let moves = get_legal_moves(&state, &rules);
+        assert_eq!(moves.len(), 12);
+        let cross = chinatown_multiset_key(&[
+            ChinatownExchange::YenToTea,
+            ChinatownExchange::TeaToYen,
+            ChinatownExchange::YenToSeafood,
+            ChinatownExchange::SeafoodToYen,
+        ]);
+        assert!(moves.iter().any(|m| matches!(m,
+            Move::ExecuteAreaAction { action: AreaAction::Chinatown { exchanges } }
+            if chinatown_multiset_key(exchanges) == cross
+        )), "the known power-4 cross-branch multiset must still be enumerated");
         assert_all_moves_apply(&state, &moves, &rules);
     }
 

@@ -8,7 +8,9 @@
 
 use std::collections::BTreeSet;
 
-use yokohama_core::{AreaAction, AreaType, ChinatownExchange, GameState, Move, TradingHouseState};
+use yokohama_core::{
+    AreaAction, AreaType, ChinatownExchange, GameState, Move, Rules, TechEffect, TradingHouseState,
+};
 
 /// The nine Chinatown exchange rates in declaration order [RB p.13]. This
 /// order is the fixed total order used for the §9-B multiset representative
@@ -97,8 +99,24 @@ pub(crate) fn employment_moves(state: &GameState, power: u8) -> Vec<Move> {
 
 /// §3.4 Chinatown: one representative `Chinatown` move per achievable exchange
 /// multiset (spec §9-B), `1 ≤ len ≤ power`, sequential running-balance feasible.
-pub(crate) fn chinatown_moves(state: &GameState, power: u8) -> Vec<Move> {
+///
+/// `rules` threaded in at round-2 triage (signature was `(state, power)`): the
+/// Mining Technology rider makes the YenToCopper delta ownership-dependent,
+/// and effect lookup needs `rules.techs` (data access only, spec §9-C).
+pub(crate) fn chinatown_moves(state: &GameState, rules: &Rules, power: u8) -> Vec<Move> {
     let p = state.current_player();
+    // Mining Technology rider [08-tech-cards.yaml Mining: "Whenever you gain
+    // one or more Copper: gain 1 additional Copper"]: UNIVERSAL — applies to
+    // EVERY copper receipt including Chinatown buys [DL 2026-07-18
+    // every-copper-receipt row; KB 01:596], +1 per owned copy. Tech ownership
+    // is constant within the action, so count once before the DFS.
+    let mining_copies = p
+        .technologies
+        .iter()
+        .filter(|id| {
+            rules.techs.get(**id).is_some_and(|t| t.effect == TechEffect::MiningTechnology)
+        })
+        .count() as u32;
     // Sequence length 1..=power [RB p.13 "The number of times you may exchange
     // depends on the Action Power"; CM power-cap line]. `[]` is
     // validator-ILLEGAL (Skip canonical) [DL 2026-07-17 optionality row].
@@ -117,7 +135,7 @@ pub(crate) fn chinatown_moves(state: &GameState, power: u8) -> Vec<Move> {
     // multiset key, so exactly the achievable multisets are collected.
     let mut seen: BTreeSet<Vec<u8>> = BTreeSet::new();
     let mut prefix: Vec<u8> = Vec::new();
-    chinatown_dfs(start, max_len, &mut prefix, &mut seen);
+    chinatown_dfs(start, mining_copies, max_len, &mut prefix, &mut seen);
     seen.into_iter()
         .map(|key| Move::ExecuteAreaAction {
             action: AreaAction::Chinatown {
@@ -145,7 +163,13 @@ struct ChinatownBalance {
 /// Apply one exchange to the running balance; `None` when unaffordable at this
 /// point in the sequence. Rates [RB p.13]: Copper/Silk sell for 2 Yen, Tea/
 /// Seafood for 1; buys mirror those prices; 4 Yen buys 1 Imported Good.
-fn chinatown_apply(b: ChinatownBalance, variant: u8) -> Option<ChinatownBalance> {
+/// `mining_copies` is the Mining Technology rider (round-2 triage): every
+/// copper receipt gains +1 per owned copy [08-tech-cards.yaml; DL 2026-07-18].
+fn chinatown_apply(
+    b: ChinatownBalance,
+    variant: u8,
+    mining_copies: u32,
+) -> Option<ChinatownBalance> {
     let mut b = b;
     match CHINATOWN_VARIANTS[usize::from(variant)] {
         ChinatownExchange::CopperToYen => {
@@ -166,7 +190,10 @@ fn chinatown_apply(b: ChinatownBalance, variant: u8) -> Option<ChinatownBalance>
         }
         ChinatownExchange::YenToCopper => {
             b.money = b.money.checked_sub(2)?;
-            b.copper += 1;
+            // Mining rider: this is a copper receipt, so +1 per owned copy on
+            // top of the printed 1 [08-tech-cards.yaml; DL 2026-07-18
+            // every-copper-receipt row; KB 01:596].
+            b.copper += 1 + mining_copies;
         }
         ChinatownExchange::YenToSilk => {
             b.money = b.money.checked_sub(2)?;
@@ -193,10 +220,12 @@ fn chinatown_apply(b: ChinatownBalance, variant: u8) -> Option<ChinatownBalance>
 /// recording each visited prefix's sorted multiset key into `seen`.
 ///
 /// Prune on an already-seen key: an exchange's balance delta is fixed per
-/// variant, so a multiset determines the resulting balance regardless of
-/// order — the first visit of a key explored the identical subtree.
+/// variant (`mining_copies` is constant for the whole action), so a multiset
+/// determines the resulting balance regardless of order — the first visit of a
+/// key explored the identical subtree.
 fn chinatown_dfs(
     balance: ChinatownBalance,
+    mining_copies: u32,
     remaining: usize,
     prefix: &mut Vec<u8>,
     seen: &mut BTreeSet<Vec<u8>>,
@@ -205,14 +234,14 @@ fn chinatown_dfs(
         return;
     }
     for variant in 0..CHINATOWN_VARIANTS.len() as u8 {
-        let Some(next) = chinatown_apply(balance, variant) else {
+        let Some(next) = chinatown_apply(balance, variant, mining_copies) else {
             continue;
         };
         prefix.push(variant);
         let mut key = prefix.clone();
         key.sort_unstable();
         if seen.insert(key) {
-            chinatown_dfs(next, remaining - 1, prefix, seen);
+            chinatown_dfs(next, mining_copies, remaining - 1, prefix, seen);
         }
         prefix.pop();
     }
@@ -367,7 +396,7 @@ mod tests {
         s.players[0].silk = 0;
         s.players[0].tea = 0;
         s.players[0].seafood = 0;
-        let moves = chinatown_moves(&s, 2);
+        let moves = chinatown_moves(&s, &Rules::empty_for_tests(), 2);
         assert!(moves
             .contains(&chinatown(vec![ChinatownExchange::CopperToYen, ChinatownExchange::YenToTea])));
         assert!(moves.contains(&chinatown(vec![ChinatownExchange::CopperToYen])));
@@ -385,7 +414,7 @@ mod tests {
         s.players[0].silk = 0;
         s.players[0].tea = 0;
         s.players[0].seafood = 0;
-        let moves = chinatown_moves(&s, 2);
+        let moves = chinatown_moves(&s, &Rules::empty_for_tests(), 2);
         assert!(moves.contains(&chinatown(vec![
             ChinatownExchange::CopperToYen,
             ChinatownExchange::YenToCopper,
@@ -398,7 +427,7 @@ mod tests {
         // Action Power"; cap is the power (CM Chinatown-cap line).
         let mut s = two_player_state();
         s.players[0].money = 20;
-        let moves = chinatown_moves(&s, 2);
+        let moves = chinatown_moves(&s, &Rules::empty_for_tests(), 2);
         assert!(!moves.is_empty());
         assert!(moves.iter().all(|m| matches!(
             m,
@@ -418,7 +447,103 @@ mod tests {
         s.players[0].tea = 0;
         s.players[0].seafood = 0;
         s.players[0].imported_goods = 5;
-        assert!(chinatown_moves(&s, 5).is_empty());
+        assert!(chinatown_moves(&s, &Rules::empty_for_tests(), 5).is_empty());
+    }
+
+    /// The Mining Technology card id(s) from the standard data — copies:1 in
+    /// 08-tech-cards.yaml, so exactly one id exists.
+    fn mining_id(rules: &Rules) -> yokohama_core::TechCardId {
+        rules
+            .techs
+            .iter()
+            .find(|t| t.effect == yokohama_core::TechEffect::MiningTechnology)
+            .expect("standard data carries Mining Technology")
+            .id
+    }
+
+    #[test]
+    fn chinatown_mining_rider_extends_achievable_multisets() {
+        // Mining Technology [08-tech-cards.yaml]: "Whenever you gain one or
+        // more Copper: gain 1 additional Copper" — UNIVERSAL, every copper
+        // receipt including Chinatown buys [DL 2026-07-18 every-copper-receipt
+        // row; KB 01:596]. With 1 copy, 3 Yen, 0 copper, power 3: buy first
+        // (-2 Yen, +2 copper via the rider), then sell twice — the multiset
+        // {CopperToYen, CopperToYen, YenToCopper} is achievable. Without the
+        // rider a buy yields 1 copper and only one sell can follow.
+        let rules = Rules::standard();
+        let mut s = two_player_state();
+        s.players[0].money = 3;
+        s.players[0].copper = 0;
+        s.players[0].silk = 0;
+        s.players[0].tea = 0;
+        s.players[0].seafood = 0;
+        s.players[0].technologies = vec![mining_id(&rules)];
+        let moves = chinatown_moves(&s, &rules, 3);
+        assert!(
+            moves.contains(&chinatown(vec![
+                ChinatownExchange::CopperToYen,
+                ChinatownExchange::CopperToYen,
+                ChinatownExchange::YenToCopper,
+            ])),
+            "1x Mining owner: buy-first makes 2 copper, funding two sells"
+        );
+    }
+
+    #[test]
+    fn chinatown_mining_rider_stacks_per_owned_copy() {
+        // Rider stacking: +1 per owned copy, so with 2 copies each YenToCopper
+        // yields 3 copper. With 2 Yen, 0 copper, power 4 the multiset
+        // {YenToCopper, CopperToYen x3} needs all 3 coppers from the single
+        // affordable buy — achievable ONLY with the double rider (1 copy gives
+        // 2 copper => at most two sells). Standard data has one physical
+        // Mining card (copies:1) and the one-per-title rule makes 2 owned
+        // copies unreachable in a real game, but the rider is specified
+        // per-copy and the hand-built fixture (type-valid, not setup-valid —
+        // test_support preamble) pins the stacking arithmetic.
+        let rules = Rules::standard();
+        let mut s = two_player_state();
+        s.players[0].money = 2;
+        s.players[0].copper = 0;
+        s.players[0].silk = 0;
+        s.players[0].tea = 0;
+        s.players[0].seafood = 0;
+        let triple_sell_buy = chinatown(vec![
+            ChinatownExchange::CopperToYen,
+            ChinatownExchange::CopperToYen,
+            ChinatownExchange::CopperToYen,
+            ChinatownExchange::YenToCopper,
+        ]);
+        s.players[0].technologies = vec![mining_id(&rules), mining_id(&rules)];
+        assert!(
+            chinatown_moves(&s, &rules, 4).contains(&triple_sell_buy),
+            "2x Mining: one buy yields 3 copper, funding three sells"
+        );
+        // Contrast: a single copy cannot reach the triple-sell multiset.
+        s.players[0].technologies = vec![mining_id(&rules)];
+        assert!(
+            !chinatown_moves(&s, &rules, 4).contains(&triple_sell_buy),
+            "1x Mining: one buy yields only 2 copper"
+        );
+    }
+
+    #[test]
+    fn chinatown_no_mining_control_multiset_stays_absent() {
+        // Control: identical holdings to the 1x-Mining case but NO tech —
+        // a buy yields exactly 1 copper, so {CopperToYen x2, YenToCopper} is
+        // NOT achievable and must not be emitted.
+        let rules = Rules::standard();
+        let mut s = two_player_state();
+        s.players[0].money = 3;
+        s.players[0].copper = 0;
+        s.players[0].silk = 0;
+        s.players[0].tea = 0;
+        s.players[0].seafood = 0;
+        assert!(s.players[0].technologies.is_empty());
+        assert!(!chinatown_moves(&s, &rules, 3).contains(&chinatown(vec![
+            ChinatownExchange::CopperToYen,
+            ChinatownExchange::CopperToYen,
+            ChinatownExchange::YenToCopper,
+        ])));
     }
 
     #[test]
@@ -427,7 +552,7 @@ mod tests {
         // by variant (fixed total order).
         let mut s = two_player_state();
         s.players[0].money = 6;
-        let moves = chinatown_moves(&s, 3);
+        let moves = chinatown_moves(&s, &Rules::empty_for_tests(), 3);
         let mut seen = std::collections::BTreeSet::new();
         for m in &moves {
             let Move::ExecuteAreaAction { action: AreaAction::Chinatown { exchanges } } = m else {

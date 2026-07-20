@@ -397,7 +397,10 @@ Per area type (all moves are `ExecuteAreaAction { action }`):
   `Chinatown { exchanges }` with `1 ≤ len ≤ power` [RB p.13 "The number of times you may exchange
   depends on the Action Power"; power cap CM]. The nine `ChinatownExchange` rates [RB p.13;
   types::moves]: Copper→2¥, Silk→2¥, Tea→1¥, Seafood→1¥, 2¥→Copper, 2¥→Silk, 1¥→Tea, 1¥→Seafood,
-  4¥→Imported. Imported Goods can never be sold [RB p.13 Note]. The oracle validates a sequence
+  4¥→Imported. 2¥→Copper yields 1 + (owned Mining Technology copies) Copper [08-tech-cards.yaml
+  Mining; DL 2026-07-18 every-copper-receipt row; KB 01:596] (added at round-2 triage: the
+  original spec missed this cross-cutting rider; class-2 oracle bug, misreading recorded in the
+  ruling list). Imported Goods can never be sold [RB p.13 Note]. The oracle validates a sequence
   left-to-right with running balances (proceeds of an earlier exchange may fund a later one — the
   sequential reading; see ambiguity §7.1-A3) and enumerates ALL feasible ordered sequences;
   sequence-vs-multiset canonicalization is an unpinned encoding (§7.2) the runner must normalize.
@@ -652,7 +655,11 @@ pub(crate) fn route_labels(state: &GameState, rules: &Rules) -> Vec<RouteLabel>;
 ```rust
 pub(crate) fn production_or_bank_move(area_type: AreaType) -> Option<Move>;
 pub(crate) fn employment_moves(state: &GameState, power: u8) -> Vec<Move>;
-pub(crate) fn chinatown_moves(state: &GameState, power: u8) -> Vec<Move>;
+// Round-2 correction: was `(state, power)`. `rules` threaded in because the
+// Mining Technology rider (§3.4 Chinatown, added at round-2 triage) makes the
+// 2¥→Copper delta ownership-dependent — effect lookup via `rules.techs` (§9-C
+// data access only).
+pub(crate) fn chinatown_moves(state: &GameState, rules: &Rules, power: u8) -> Vec<Move>;
 ```
 
 ### `area_actions_cards.rs` — §3.4 Port, Laboratory (Author C)
@@ -883,3 +890,16 @@ rules question) or interface decisions; none injects an engine rules belief.
   `rules.building_sites: Vec<BuildingSite>` / `rules.five_power_tokens: Vec<FivePowerEffect>`.
   Signatures published by the orchestrator (names only, no bodies); `game/cards.rs` itself
   remains forbidden to oracle authors.
+- **D. Chinatown Mining rider (round-2 triage, 2026-07-20 — class-2 ORACLE BUG, fixed).** The
+  oracle's Chinatown running-balance model (`chinatown_apply`, YenToCopper) added exactly 1
+  copper, omitting the Mining Technology rider — verified card text (08-tech-cards.yaml Mining
+  Technology): "Whenever you gain one or more Copper: gain 1 additional Copper", UNIVERSAL per
+  DL 2026-07-18 ("Mining Technology applies to EVERY Copper receipt") and KB 01:596; stacking is
+  +1 per owned copy per receipt. Observed consequence: with 1x Mining, 3 Yen, 0 copper, power 3,
+  the achievable multiset {CopperToYen, CopperToYen, YenToCopper} (buy first ⇒ 2 copper, then
+  sell twice) was wrongly absent. THE MISREADING, recorded verbatim: the spec's §3.4 Chinatown
+  rate list transcribed RB p.13's printed exchange rates but missed the cross-cutting Mining
+  rider that lives on the tech card and in the decision log, not on the Chinatown board — and
+  lane D implemented the spec faithfully. This cross-reference miss is itself evidence the rules
+  sources make the interaction easy to overlook. Fix: §3.4 rate list amended, `chinatown_moves`
+  signature gains `rules: &Rules` (§5), `mining_copies` computed once before the DFS.
