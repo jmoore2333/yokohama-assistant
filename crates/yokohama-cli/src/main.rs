@@ -1,6 +1,7 @@
 use std::io::{BufRead, Write};
 
 fn main() {
+    yokohama_cli::style::init_from_tty();
     let rules = yokohama_core::Rules::standard();
     let args: Vec<String> = std::env::args().collect();
     let stdin = std::io::stdin();

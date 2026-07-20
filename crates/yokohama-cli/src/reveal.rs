@@ -8,6 +8,7 @@ use yokohama_core::*;
 use crate::describe;
 use crate::input::{parse_order_id, parse_tech_entry, TechAmbiguity, TechEntryError};
 use crate::repl::{Repl, StepOutput};
+use crate::style::{paint, Tone};
 
 /// Live-mode reveal-collection state: while a group is being collected,
 /// `step` routes input to `collect_reveal` instead of normal command
@@ -166,8 +167,9 @@ impl Repl {
         self.locked = true;
         StepOutput {
             text: format!(
-                "{}CRITICAL: desync detected -- the revealed card(s) do not match the board after applying the move. Session locked.\n{}",
+                "{}{}\n{}",
                 out.text,
+                paint(Tone::Warn, DESYNC_BANNER),
                 self.lockdown_status(),
             ),
             quit: false,
@@ -205,14 +207,20 @@ impl Repl {
         self.locked = true;
         StepOutput {
             text: format!(
-                "{}CRITICAL: desync detected -- the revealed card(s) do not match the board after applying the move. Session locked.\n{}",
+                "{}{}\n{}",
                 out.text,
+                paint(Tone::Warn, DESYNC_BANNER),
                 self.lockdown_status(),
             ),
             quit: false,
         }
     }
 }
+
+/// Shared by both desync guards -- one banner, painted `Warn` as a unit so
+/// the whole sentence lands in bold red on a color terminal.
+const DESYNC_BANNER: &str =
+    "CRITICAL: desync detected -- the revealed card(s) do not match the board after applying the move. Session locked.";
 
 /// Which Port board changed, and which of ITS slots now hold a card that
 /// wasn't in `before.order_deck` a moment ago -- an identity-independent

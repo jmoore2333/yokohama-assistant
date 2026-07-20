@@ -12,6 +12,7 @@ use yokohama_core::*;
 
 use crate::describe;
 use crate::input::tech_name;
+use crate::style::{paint, Tone};
 
 /// Fixed cell width for `board_grid`'s bordered layout.
 const CELL_WIDTH: usize = 16;
@@ -29,7 +30,7 @@ pub fn prompt_header(state: &GameState, phase_text: &str) -> String {
         "Turn {} | {} | {} | {} yen {} VP | c{} s{} t{} f{} i{} | hand {}",
         state.turn_number,
         color_name(p.color),
-        phase_text,
+        paint(Tone::Prompt, phase_text),
         p.money,
         p.victory_points,
         p.copper,
@@ -41,24 +42,43 @@ pub fn prompt_header(state: &GameState, phase_text: &str) -> String {
     )
 }
 
-/// ASCII grid, one bordered cell per area: id + type abbreviation (with a
-/// trailing `*` while its 5-Power token is unclaimed), which Presidents are
-/// present, which assistants are present, and building ownership.
+/// Box-drawing grid, one framed cell per area: id + type abbreviation (with
+/// a trailing `*` while its 5-Power token is unclaimed), which Presidents
+/// are present, which assistants are present, and building ownership.
+/// Rulers meet content columns at real junctions (`┌┬┐` / `├┼┤` / `└┴┘`),
+/// so every vertical `│` runs unbroken from top corner to bottom.
 pub fn board_grid(state: &GameState) -> String {
     let areas = &state.board_layout.areas;
     let rows = areas.values().map(|c| c.grid_position.0 as usize).max().map(|m| m + 1).unwrap_or(0);
     let cols = areas.values().map(|c| c.grid_position.1 as usize).max().map(|m| m + 1).unwrap_or(0);
+    if rows == 0 || cols == 0 {
+        return String::new();
+    }
 
     let mut grid: Vec<Vec<Option<AreaId>>> = vec![vec![None; cols]; rows];
     for (&id, cfg) in areas.iter() {
         grid[cfg.grid_position.0 as usize][cfg.grid_position.1 as usize] = Some(id);
     }
 
-    let ruler = "-".repeat(cols * (CELL_WIDTH + 1));
-    let mut out = String::new();
-    out.push_str(&ruler);
-    out.push('\n');
-    for row in &grid {
+    let segment = "─".repeat(CELL_WIDTH);
+    let ruler = |left: char, junction: char, right: char| {
+        let mut line = String::from(left);
+        for col in 0..cols {
+            if col > 0 {
+                line.push(junction);
+            }
+            line.push_str(&segment);
+        }
+        line.push(right);
+        line.push('\n');
+        line
+    };
+
+    let mut out = ruler('┌', '┬', '┐');
+    for (row_idx, row) in grid.iter().enumerate() {
+        if row_idx > 0 {
+            out.push_str(&ruler('├', '┼', '┤'));
+        }
         let cells: Vec<[String; 4]> = row
             .iter()
             .map(|slot| match slot {
@@ -67,13 +87,12 @@ pub fn board_grid(state: &GameState) -> String {
             })
             .collect();
         for line_idx in 0..4 {
-            let joined = cells.iter().map(|c| c[line_idx].as_str()).collect::<Vec<_>>().join("|");
-            out.push_str(&joined);
-            out.push('\n');
+            out.push('│');
+            out.push_str(&cells.iter().map(|c| c[line_idx].as_str()).collect::<Vec<_>>().join("│"));
+            out.push_str("│\n");
         }
-        out.push_str(&ruler);
-        out.push('\n');
     }
+    out.push_str(&ruler('└', '┴', '┘'));
     out
 }
 
@@ -110,7 +129,7 @@ pub fn players_panel(state: &GameState, rules: &Rules) -> String {
     for p in &state.players {
         out.push_str(&format!(
             "{}: {} yen  {} VP  c{} s{} t{} f{}  imports {}\n",
-            color_name(p.color), p.money, p.victory_points, p.copper, p.silk, p.tea, p.seafood, p.imported_goods,
+            player_prefix(p.color), p.money, p.victory_points, p.copper, p.silk, p.tea, p.seafood, p.imported_goods,
         ));
 
         let hand = p.order_cards_in_hand.iter().map(|id| format!("O{:02}", id.0)).collect::<Vec<_>>().join(", ");
@@ -287,7 +306,7 @@ pub fn delta_summary(before: &GameState, after: &GameState, rules: &Rules) -> Ve
         push_diff(&mut parts, "seafood", a.seafood as i64 - b.seafood as i64);
         push_diff(&mut parts, "imports", a.imported_goods as i64 - b.imported_goods as i64);
         if !parts.is_empty() {
-            lines.push(format!("{}: {}", color_name(a.color), parts.join(", ")));
+            lines.push(format!("{}: {}", player_prefix(a.color), parts.join(", ")));
         }
 
         let before_hand: HashSet<OrderCardId> = b.order_cards_in_hand.iter().copied().collect();
@@ -295,10 +314,10 @@ pub fn delta_summary(before: &GameState, after: &GameState, rules: &Rules) -> Ve
         let gained = sorted_order_codes(after_hand.difference(&before_hand).copied());
         let lost = sorted_order_codes(before_hand.difference(&after_hand).copied());
         if !gained.is_empty() {
-            lines.push(format!("{}: hand +{}", color_name(a.color), gained.join(",")));
+            lines.push(format!("{}: hand +{}", player_prefix(a.color), gained.join(",")));
         }
         if !lost.is_empty() {
-            lines.push(format!("{}: hand -{}", color_name(a.color), lost.join(",")));
+            lines.push(format!("{}: hand -{}", player_prefix(a.color), lost.join(",")));
         }
 
         let before_tech: HashSet<TechCardId> = b.technologies.iter().copied().collect();
@@ -307,7 +326,7 @@ pub fn delta_summary(before: &GameState, after: &GameState, rules: &Rules) -> Ve
         gained_tech.sort_unstable_by_key(|id| id.0);
         if !gained_tech.is_empty() {
             let names = gained_tech.iter().map(|id| tech_name(*id, &rules.techs)).collect::<Vec<_>>().join(", ");
-            lines.push(format!("{}: tech +{}", color_name(a.color), names));
+            lines.push(format!("{}: tech +{}", player_prefix(a.color), names));
         }
 
         assistant_lines(&mut lines, before, after, b, a);
@@ -318,7 +337,7 @@ pub fn delta_summary(before: &GameState, after: &GameState, rules: &Rules) -> Ve
         if a.president_location != b.president_location {
             lines.push(format!(
                 "{}: President {} -> {}",
-                color_name(a.color),
+                player_prefix(a.color),
                 president_label(after, b.president_location),
                 president_label(after, a.president_location),
             ));
@@ -444,7 +463,7 @@ fn assistant_lines(lines: &mut Vec<String>, before: &GameState, after: &GameStat
     while ni < negatives.len() && pi < positives.len() {
         lines.push(format!(
             "{}: assistant moved from {} to {}",
-            color_name(a.color),
+            player_prefix(a.color),
             describe::area_label(after, negatives[ni].0),
             describe::area_label(after, positives[pi].0),
         ));
@@ -458,7 +477,7 @@ fn assistant_lines(lines: &mut Vec<String>, before: &GameState, after: &GameStat
         if n > 0 {
             lines.push(format!(
                 "{}: {} assistant{} recovered from {}",
-                color_name(a.color), n, if n == 1 { "" } else { "s" }, describe::area_label(after, area),
+                player_prefix(a.color), n, if n == 1 { "" } else { "s" }, describe::area_label(after, area),
             ));
         }
     }
@@ -469,12 +488,12 @@ fn assistant_lines(lines: &mut Vec<String>, before: &GameState, after: &GameStat
         if before.turn_phase == TurnPhase::Placement {
             lines.push(format!(
                 "{}: {} assistant{} placed in {}",
-                color_name(a.color), n, if n == 1 { "" } else { "s" }, describe::area_label(after, area),
+                player_prefix(a.color), n, if n == 1 { "" } else { "s" }, describe::area_label(after, area),
             ));
         } else {
             lines.push(format!(
                 "{}: assistant moved from hand to {}",
-                color_name(a.color), describe::area_label(after, area),
+                player_prefix(a.color), describe::area_label(after, area),
             ));
         }
     }
@@ -524,7 +543,7 @@ fn warehouse_take_lines(lines: &mut Vec<String>, b: &PlayerState, a: &PlayerStat
 fn push_took_line(lines: &mut Vec<String>, color: PlayerColor, singular: &str, plural: &str, n: u32, cost: u32) {
     let word = if n == 1 { singular.to_string() } else { format!("{n} {plural}") };
     let cost_text = if cost == 0 { "free".to_string() } else { format!("{cost} yen") };
-    lines.push(format!("{}: took {} ({})", color_name(color), word, cost_text));
+    lines.push(format!("{}: took {} ({})", player_prefix(color), word, cost_text));
 }
 
 /// "placed on Church faith-N (+M VP)" / "placed on Customs space N (+M VP)"
@@ -539,13 +558,13 @@ fn church_customs_lines(lines: &mut Vec<String>, b: &PlayerState, a: &PlayerStat
     for &space in &a.church_positions[b.church_positions.len()..] {
         lines.push(format!(
             "{}: placed on Church faith-{space} (+{} VP)",
-            color_name(a.color), ChurchTrack::vp_reward(space),
+            player_prefix(a.color), ChurchTrack::vp_reward(space),
         ));
     }
     for &space in &a.customs_positions[b.customs_positions.len()..] {
         lines.push(format!(
             "{}: placed on Customs space {space} (+{} VP)",
-            color_name(a.color), CustomsTrack::vp_reward(space),
+            player_prefix(a.color), CustomsTrack::vp_reward(space),
         ));
     }
 }
@@ -566,7 +585,7 @@ fn token_lines(lines: &mut Vec<String>, b: &PlayerState, a: &PlayerState) {
             let suffix = if n == 1 { String::new() } else { format!(" x{n}") };
             lines.push(format!(
                 "{}: gained mercenary ({}){}",
-                color_name(a.color), describe::country_name(country), suffix,
+                player_prefix(a.color), describe::country_name(country), suffix,
             ));
         }
     }
@@ -574,7 +593,7 @@ fn token_lines(lines: &mut Vec<String>, b: &PlayerState, a: &PlayerState) {
     if a.five_power_tokens > b.five_power_tokens {
         let n = a.five_power_tokens - b.five_power_tokens;
         let suffix = if n == 1 { String::new() } else { format!(" x{n}") };
-        lines.push(format!("{}: gained 5-Power token{}", color_name(a.color), suffix));
+        lines.push(format!("{}: gained 5-Power token{}", player_prefix(a.color), suffix));
     }
 }
 
@@ -592,7 +611,7 @@ fn building_lines(lines: &mut Vec<String>, before: &GameState, after: &GameState
                 if let Some(owner) = after_site.shophouses_built[slot] {
                     lines.push(format!(
                         "{}: built shophouse at {}",
-                        color_name(after.player(owner).color), describe::area_label(after, *area),
+                        player_prefix(after.player(owner).color), describe::area_label(after, *area),
                     ));
                 }
             }
@@ -602,7 +621,7 @@ fn building_lines(lines: &mut Vec<String>, before: &GameState, after: &GameState
             if let Some(owner) = after_site.trading_house_owner {
                 lines.push(format!(
                     "{}: built trading house at {}",
-                    color_name(after.player(owner).color), describe::area_label(after, *area),
+                    player_prefix(after.player(owner).color), describe::area_label(after, *area),
                 ));
             }
         }
@@ -644,42 +663,79 @@ fn render_lab_board(label: &str, board: &LabBoard, rules: &Rules, out: &mut Stri
     }
 }
 
-/// The 4 fixed-width lines for one `board_grid` cell.
+/// The 4 fixed-width lines for one `board_grid` cell. President and
+/// assistant tokens are painted in their player's color; both lines are
+/// built as (plain, painted) twins so `fit_cell_painted` can size the cell
+/// from the plain text and emit the painted one -- the alignment-trap rule
+/// from style.rs's module doc.
 fn area_cell_lines(state: &GameState, id: AreaId) -> [String; 4] {
     let cfg = &state.board_layout.areas[&id];
     let marker = matches!(state.board_layout.five_power_tokens.get(&id), Some(Some(_)));
     let header = format!("A{:02} {}{}", id.0, area_abbrev(cfg.area_type), if marker { " *" } else { "" });
 
-    let pres: String = state
+    let pres_colors: Vec<PlayerColor> = state
         .players
         .iter()
         .filter(|p| p.president_location == PresidentLocation::OnBoard(id))
-        .map(|p| color_letter(p.color))
+        .map(|p| p.color)
         .collect();
-    let pres_line = format!("P: {}", if pres.is_empty() { "-".to_string() } else { pres });
+    let (pres_line, pres_line_painted) = if pres_colors.is_empty() {
+        ("P: -".to_string(), "P: -".to_string())
+    } else {
+        let plain: String = pres_colors.iter().map(|&c| color_letter(c)).collect();
+        let painted: String =
+            pres_colors.iter().map(|&c| paint(Tone::Player(c), &color_letter(c).to_string())).collect();
+        (format!("P: {plain}"), format!("P: {painted}"))
+    };
 
-    let assist_parts: Vec<String> = state
-        .players
-        .iter()
-        .filter_map(|p| {
-            let n = p.assistants.in_area(id);
-            if n > 0 { Some(format!("{}{}", color_letter(p.color), n)) } else { None }
-        })
-        .collect();
-    let assist_line = if assist_parts.is_empty() { "-".to_string() } else { assist_parts.join(" ") };
+    let mut assist_parts: Vec<String> = Vec::new();
+    let mut assist_parts_painted: Vec<String> = Vec::new();
+    for p in &state.players {
+        let n = p.assistants.in_area(id);
+        if n > 0 {
+            let part = format!("{}{}", color_letter(p.color), n);
+            assist_parts_painted.push(paint(Tone::Player(p.color), &part));
+            assist_parts.push(part);
+        }
+    }
+    let (assist_line, assist_line_painted) = if assist_parts.is_empty() {
+        ("-".to_string(), "-".to_string())
+    } else {
+        (assist_parts.join(" "), assist_parts_painted.join(" "))
+    };
 
     let build_line = match state.board_layout.building_sites.get(&id) {
         Some(site) => build_marks(state, site),
         None => "no site".to_string(),
     };
 
-    [fit_cell(&header), fit_cell(&pres_line), fit_cell(&assist_line), fit_cell(&build_line)]
+    [
+        fit_cell(&header),
+        fit_cell_painted(&pres_line, &pres_line_painted),
+        fit_cell_painted(&assist_line, &assist_line_painted),
+        fit_cell(&build_line),
+    ]
 }
 
-/// Truncate/pad to `CELL_WIDTH` so grid rows line up under `|` separators.
+/// Truncate/pad to `CELL_WIDTH` so grid rows line up under `│` separators.
 fn fit_cell(s: &str) -> String {
     let truncated: String = s.chars().take(CELL_WIDTH).collect();
     format!("{:<width$}", truncated, width = CELL_WIDTH)
+}
+
+/// `fit_cell` for a painted cell line: the pad is computed from `plain`
+/// (the same text minus escapes), never from `painted`, whose ANSI bytes
+/// have zero display width and would otherwise shrink the pad and shear
+/// the column. Falls back to the plain fit when the text overflows the
+/// cell -- an escape run can't be truncated safely, and a cut cell isn't
+/// worth painting. When color is disabled `painted == plain` and this is
+/// exactly `fit_cell`.
+fn fit_cell_painted(plain: &str, painted: &str) -> String {
+    let width = plain.chars().count();
+    if width > CELL_WIDTH {
+        return fit_cell(plain);
+    }
+    format!("{}{}", painted, " ".repeat(CELL_WIDTH - width))
 }
 
 fn area_abbrev(t: AreaType) -> &'static str {
@@ -701,6 +757,16 @@ fn area_abbrev(t: AreaType) -> &'static str {
     }
 }
 
+/// A player's color name painted in that player's own color -- the leading
+/// token of `players_panel`'s per-player block and of every per-player
+/// `delta_summary` line, so the eye attributes a line to its player before
+/// reading a word of it. Delta lines are ephemeral display text (never
+/// cached into `Session::event_descriptions`, never serialized), so paint
+/// here can't leak into logs or save files.
+fn player_prefix(c: PlayerColor) -> String {
+    paint(Tone::Player(c), color_name(c))
+}
+
 pub fn color_name(c: PlayerColor) -> &'static str {
     match c {
         PlayerColor::Red => "Red",
@@ -717,6 +783,7 @@ fn color_letter(c: PlayerColor) -> char {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::style::test_support::strip_ansi;
 
     fn test_state_2p() -> GameState {
         let rules = Rules::standard();
@@ -1065,5 +1132,63 @@ mod tests {
         after.players[0].assistants.in_hand += 1;
         let lines = delta_summary(&before, &after, &rules);
         assert!(lines.iter().any(|l| l.contains("took assistant (free)")), "{lines:?}");
+    }
+
+    /// Task 16 (T2.5): painting must happen AFTER fixed-width layout --
+    /// ANSI escapes are zero-display-width bytes, so padding computed on an
+    /// already-painted string breaks column alignment. Stripping the
+    /// escapes back out must therefore reproduce the plain render exactly.
+    #[test]
+    fn colored_players_panel_still_contains_the_plain_text() {
+        let state = test_state_2p();
+        let rules = Rules::standard();
+        crate::style::force(true);
+        let colored = players_panel(&state, &rules);
+        crate::style::force(false);
+        let plain = players_panel(&state, &rules);
+        assert_ne!(colored, plain, "forced mode must actually paint something");
+        assert_eq!(strip_ansi(&colored), plain);
+    }
+
+    /// Same alignment invariant for the board grid, whose president and
+    /// assistant tokens are painted INSIDE fixed-width `fit_cell` cells --
+    /// the exact spot where escape-inflated padding would shear the frame.
+    #[test]
+    fn colored_board_grid_stays_aligned_with_plain_layout() {
+        let mut state = test_state_2p();
+        let area = *state
+            .board_layout
+            .areas
+            .iter()
+            .find(|(_, cfg)| cfg.area_type != AreaType::Canal)
+            .expect("a non-Canal area exists")
+            .0;
+        state.players[0].president_location = PresidentLocation::OnBoard(area);
+        state.players[1].president_location = PresidentLocation::OnBoard(area);
+        state.players[0].assistants.in_hand -= 3;
+        state.players[0].assistants.on_board.insert(area, 3);
+        state.players[1].assistants.in_hand -= 1;
+        state.players[1].assistants.on_board.insert(area, 1);
+
+        let plain = board_grid(&state);
+        crate::style::force(true);
+        let colored = board_grid(&state);
+        crate::style::force(false);
+        assert_ne!(colored, plain, "forced mode must actually paint something");
+        assert_eq!(strip_ansi(&colored), plain);
+    }
+
+    /// Task 16 (T2.5): the board frame is box-drawing, not `-`/`|` ASCII --
+    /// and every line (rulers and content rows alike) shares one display
+    /// width, or the frame shears.
+    #[test]
+    fn board_grid_uses_box_drawing_rulers() {
+        let state = test_state_2p();
+        let g = board_grid(&state);
+        for glyph in ['─', '│', '┌', '┬', '┐', '├', '┼', '┤', '└', '┴', '┘'] {
+            assert!(g.contains(glyph), "missing {glyph} in:\n{g}");
+        }
+        let widths: HashSet<usize> = g.lines().map(|l| l.chars().count()).collect();
+        assert_eq!(widths.len(), 1, "all grid lines must share one width:\n{g}");
     }
 }

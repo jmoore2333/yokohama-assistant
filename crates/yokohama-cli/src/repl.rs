@@ -9,6 +9,7 @@ use yokohama_core::*;
 use crate::input::parse_order_id;
 use crate::reveal::{claimed_token_area, lab_b_changed, refilled_port_slots, Pending};
 use crate::session::{ApplyError, TrackingMode};
+use crate::style::{paint, Tone};
 use crate::{describe, render};
 
 /// One REPL turn's worth of state layered over a `Session`: which options
@@ -210,7 +211,8 @@ impl Repl {
 
     pub(crate) fn lockdown_status(&self) -> String {
         format!(
-            "[locked] turn {} | seed {} | {} logged event(s) -- only 'save', 'log', 'quit' available\n",
+            "{} turn {} | seed {} | {} logged event(s) -- only 'save', 'log', 'quit' available\n",
+            paint(Tone::Warn, "[locked]"),
             self.session.state().turn_number,
             self.session.record().seed,
             self.session.record().events.len(),
@@ -445,7 +447,7 @@ impl Repl {
             }
             Err(ApplyError::Invariant(msg)) => {
                 self.locked = true;
-                let mut text = format!("LOCKDOWN -- {msg}\n");
+                let mut text = format!("{}\n", paint(Tone::Warn, &format!("LOCKDOWN -- {msg}")));
                 text.push_str(&self.lockdown_dump());
                 (self.out(text, false), false)
             }
@@ -525,7 +527,12 @@ impl Repl {
         } else {
             let mut out = String::from("Score:\n");
             for p in &self.session.state().players {
-                out.push_str(&format!("  {:?}: {} VP, {} yen\n", p.color, p.victory_points, p.money));
+                out.push_str(&format!(
+                    "  {:?}: {}, {} yen\n",
+                    p.color,
+                    paint(Tone::Vp, &format!("{} VP", p.victory_points)),
+                    p.money,
+                ));
             }
             out
         }
@@ -543,10 +550,10 @@ impl Repl {
         for s in &result.standings {
             let b = &s.breakdown;
             out.push_str(&format!(
-                "#{} {}: {} VP (base {} + church {} + customs {} + tech {} + country {} + remainder {})\n",
+                "#{} {}: {} (base {} + church {} + customs {} + tech {} + country {} + remainder {})\n",
                 s.rank,
                 render::color_name(state.player(s.player).color),
-                b.total,
+                paint(Tone::Vp, &format!("{} VP", b.total)),
                 b.base_vp,
                 b.church,
                 b.customs,
@@ -759,6 +766,34 @@ mod tests {
                 "'{cmd}' output is missing the one-line input hint: {}", out.text
             );
         }
+    }
+
+    /// Task 16 (T2.5): the `score` view paints its VP totals -- stripping
+    /// the escapes back out must reproduce the plain text exactly, and a
+    /// view command's painted output must never differ structurally.
+    #[test]
+    fn forced_color_score_text_strips_back_to_plain() {
+        let mut r = repl_2p(4);
+        crate::style::force(true);
+        let colored = r.step("score").text;
+        crate::style::force(false);
+        let plain = r.step("score").text;
+        assert_ne!(colored, plain, "forced mode must actually paint something");
+        assert_eq!(crate::style::test_support::strip_ansi(&colored), plain);
+    }
+
+    /// Task 16 (T2.5): the lockdown status line's `[locked]` marker is
+    /// painted as a warning -- same strip-equality invariant.
+    #[test]
+    fn forced_color_lockdown_status_strips_back_to_plain() {
+        let mut r = repl_2p(4);
+        r.locked = true;
+        crate::style::force(true);
+        let colored = r.step("log").text;
+        crate::style::force(false);
+        let plain = r.step("log").text;
+        assert_ne!(colored, plain, "forced mode must actually paint something");
+        assert_eq!(crate::style::test_support::strip_ansi(&colored), plain);
     }
 
     /// Task 13 test (f): `help`'s own text should document the `q` alias for
