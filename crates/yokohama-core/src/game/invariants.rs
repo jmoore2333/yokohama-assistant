@@ -135,6 +135,24 @@ pub fn check_invariants(state: &GameState, rules: &Rules) -> Result<(), String> 
         return Err(format!("pending_choices non-empty at TurnEnd: {:?}", state.pending_choices));
     }
 
+    // Queue-head resolvability (Phase 2.9 Stage 5, Stage-4 census finding):
+    // get_legal_moves is queue-first -- a non-empty pending_choices makes it
+    // return ONLY the head's resolution set. If that set is empty the game
+    // livelocks: get_legal_moves yields nothing, is_game_over stays false, and
+    // no move can ever apply. Organic play cannot reach it (push_choice
+    // auto-resolves singletons, normalize_queue_head clears lone-declines, and
+    // Church/Customs/Station heads only ever queue with >=2 live options), but
+    // a tampered or deserialized head (e.g. a CustomsSpace at an impossible
+    // cost, or a StationPlace with no placeable area) can -- so replay_strict
+    // rejects it here loudly instead of hanging.
+    if let Some(head) = state.pending_choices.first() {
+        if crate::game::choices::generate_choice_resolutions(state, head, rules).is_empty() {
+            return Err(format!(
+                "pending choice head {head:?} has no legal resolution (empty resolution set would livelock get_legal_moves)"
+            ));
+        }
+    }
+
     // Board membership (design §4.1): every stored AreaId must exist on the
     // board. A record or bot that fabricates areas must fail loudly here.
     let on_board = |a: &crate::types::AreaId| state.board_layout.areas.contains_key(a);
@@ -185,6 +203,61 @@ pub fn check_invariants(state: &GameState, rules: &Rules) -> Result<(), String> 
     for a in state.board_layout.five_power_tokens.keys() {
         if !on_board(a) {
             return Err(format!("5-power token slot on non-board area {:?}", a));
+        }
+    }
+
+    // BoardLayout STRUCTURAL integrity (external review I-7, defense-in-depth
+    // backlog). BoardLayoutBuilder enforces most of this at construction, but
+    // `BoardLayout` is part of the serialized `GameState`: a state deserialized
+    // straight into its fields, or hand-built by a bot/record, never runs the
+    // builder. Every clause below holds on BOTH generated boards (board_gen:
+    // add_adjacency pushes both directions, canal crossings are added to
+    // adjacency too, sites/tokens key only off non-Canal cells) and live
+    // re-typed boards (reconcile_board rebuilds adjacency/crossings/sites/
+    // tokens the same way) -- so none of it fires on an organic state.
+    let board = &state.board_layout;
+    // building_sites: every key is a real, non-Canal area (five_power_tokens
+    // membership is already audited above; a site on the Canal or off-board
+    // would misprice or crash Building).
+    for area in board.building_sites.keys() {
+        if !on_board(area) {
+            return Err(format!("building site on non-board area {area:?}"));
+        }
+        if board.areas[area].area_type == crate::types::AreaType::Canal {
+            return Err(format!("building site on Canal area {area:?}"));
+        }
+    }
+    // adjacency: every key and every named neighbor is a real area...
+    for (area, neighbors) in &board.adjacency {
+        if !on_board(area) {
+            return Err(format!("adjacency entry for non-board area {area:?}"));
+        }
+        for n in neighbors {
+            if !on_board(n) {
+                return Err(format!("adjacency for {area:?} names non-board neighbor {n:?}"));
+            }
+        }
+    }
+    // ...and adjacency is SYMMETRIC (b in adj[a] => a in adj[b]); the movement
+    // BFS and every route argument assume an undirected graph.
+    for (area, neighbors) in &board.adjacency {
+        for n in neighbors {
+            if !board.adjacency.get(n).is_some_and(|back| back.contains(area)) {
+                return Err(format!("adjacency not symmetric: {area:?} lists {n:?} but not the reverse"));
+            }
+        }
+    }
+    // canal_crossings: both endpoints are real areas AND the pair is an
+    // adjacency edge -- transit edges ARE adjacency edges (design 2026-07-18;
+    // Stage-3 battery), so the BFS can traverse straight across the Canal.
+    for (a, b) in &board.canal_crossings {
+        if !on_board(a) || !on_board(b) {
+            return Err(format!("canal crossing references non-board area: {a:?} <-> {b:?}"));
+        }
+        let a_to_b = board.adjacency.get(a).is_some_and(|ns| ns.contains(b));
+        let b_to_a = board.adjacency.get(b).is_some_and(|ns| ns.contains(a));
+        if !a_to_b || !b_to_a {
+            return Err(format!("canal crossing {a:?} <-> {b:?} is not an adjacency edge"));
         }
     }
 
@@ -345,6 +418,12 @@ mod tests {
     /// golden (real-board) fixture rather than `baseline()`, whose
     /// `board_layout.areas` is empty and would make every area a "ghost" --
     /// these mutations need a real board so only the fabricated area fails.
+    ///
+    /// Covers all FOUR of the brief's original fields plus the two BUILT-token
+    /// maps (`shophouses.built`, `trading_houses.built`) that the membership
+    /// sweep also guards but that had no firing test until Phase 2.9 Stage 5 --
+    /// each moves a token warehouse->built so totals stay conserved (8 / 4)
+    /// and ONLY the membership check can be what catches the ghost.
     #[test]
     fn out_of_board_area_ids_violate_invariants() {
         let (state, rules) = golden_standard_game();
@@ -367,6 +446,23 @@ mod tests {
         let mut s = state.clone();
         s.president_start_area = Some(ghost);
         assert!(check_invariants(&s, &rules).is_err(), "ghost president_start_area must fail");
+
+        // shophouses.built (invariant previously UNCOVERED): warehouse->built
+        // keeps the per-player total at 8, so the (area,slot) uniqueness and
+        // total checks both pass and the membership check is the only catch.
+        let mut s = state.clone();
+        s.players[0].shophouses.in_warehouse -= 1;
+        s.players[0].shophouses.built.insert(ghost, 0);
+        let e = check_invariants(&s, &rules).unwrap_err();
+        assert!(e.contains("shophouse on non-board"), "ghost shophouse-built area must fail: {e}");
+
+        // trading_houses.built (invariant previously UNCOVERED): same shape,
+        // total stays 4.
+        let mut s = state.clone();
+        s.players[0].trading_houses.in_warehouse -= 1;
+        s.players[0].trading_houses.built.push(ghost);
+        let e = check_invariants(&s, &rules).unwrap_err();
+        assert!(e.contains("trading house on non-board"), "ghost trading-house-built area must fail: {e}");
     }
 
     /// T2 field sweep beyond the brief's 4 checks above: two more
@@ -387,5 +483,116 @@ mod tests {
         let mut s = state.clone();
         s.board_layout.five_power_tokens.insert(ghost, None);
         assert!(check_invariants(&s, &rules).is_err(), "ghost 5-power token area must fail");
+    }
+
+    /// Two distinct real areas that are NOT adjacent. Exists on every board
+    /// bigger than a single clique -- the 2x5 golden board has many (opposite
+    /// corners, any two cells >1 grid step apart).
+    fn non_adjacent_pair(layout: &crate::types::BoardLayout) -> (AreaId, AreaId) {
+        let areas: Vec<AreaId> = layout.areas.keys().copied().collect();
+        for &a in &areas {
+            for &b in &areas {
+                if a != b && !layout.adjacency.get(&a).is_some_and(|ns| ns.contains(&b)) {
+                    return (a, b);
+                }
+            }
+        }
+        panic!("golden board has no non-adjacent pair (complete graph?)");
+    }
+
+    /// I-7 (external Codex review of PR #2, defense-in-depth backlog):
+    /// BoardLayout STRUCTURAL integrity. `BoardLayoutBuilder` enforces these
+    /// at construction, but a `GameState` deserialized straight into its
+    /// fields -- or hand-built by a bot/record -- never runs the builder, so
+    /// `check_invariants` re-audits the board itself. Every clause holds on
+    /// both generated boards (`board_gen`) and live re-typed boards
+    /// (`reconcile_board`); each mutation below is minimal (trips exactly one
+    /// clause) and needs the golden real-board fixture (`baseline()`'s board
+    /// is empty, so no clause has anything to bite).
+    #[test]
+    fn board_layout_structural_invariants_catch_corruption() {
+        use crate::types::AreaType;
+        let (state, rules) = golden_standard_game();
+        assert!(check_invariants(&state, &rules).is_ok());
+        let ghost = AreaId::unchecked(99);
+        let real: Vec<AreaId> = state.board_layout.areas.keys().copied().collect();
+
+        // building_sites keyed off a non-board area.
+        let mut s = state.clone();
+        let site = s.board_layout.building_sites.values().next().unwrap().clone();
+        s.board_layout.building_sites.insert(ghost, site);
+        let e = check_invariants(&s, &rules).unwrap_err();
+        assert!(e.contains("building site on non-board area"), "{e}");
+
+        // building_sites keyed off the Canal (re-type a real site area to Canal).
+        let mut s = state.clone();
+        let site_area = *s.board_layout.building_sites.keys().next().unwrap();
+        s.board_layout.areas.get_mut(&site_area).unwrap().area_type = AreaType::Canal;
+        let e = check_invariants(&s, &rules).unwrap_err();
+        assert!(e.contains("building site on Canal area"), "{e}");
+
+        // adjacency keyed off a non-board area.
+        let mut s = state.clone();
+        s.board_layout.adjacency.insert(ghost, vec![]);
+        let e = check_invariants(&s, &rules).unwrap_err();
+        assert!(e.contains("adjacency entry for non-board area"), "{e}");
+
+        // adjacency naming a non-board neighbor.
+        let mut s = state.clone();
+        s.board_layout.adjacency.get_mut(&real[0]).unwrap().push(ghost);
+        let e = check_invariants(&s, &rules).unwrap_err();
+        assert!(e.contains("non-board neighbor"), "{e}");
+
+        // adjacency asymmetric: drop one direction of an existing edge.
+        let mut s = state.clone();
+        let (a, b) = {
+            let (a, ns) = s.board_layout.adjacency.iter().find(|(_, ns)| !ns.is_empty()).unwrap();
+            (*a, ns[0])
+        };
+        s.board_layout.adjacency.get_mut(&b).unwrap().retain(|&x| x != a);
+        let e = check_invariants(&s, &rules).unwrap_err();
+        assert!(e.contains("not symmetric"), "{e}");
+
+        // canal_crossings with a non-board endpoint.
+        let mut s = state.clone();
+        s.board_layout.canal_crossings.push((real[0], ghost));
+        let e = check_invariants(&s, &rules).unwrap_err();
+        assert!(e.contains("canal crossing references non-board area"), "{e}");
+
+        // canal_crossings on a real pair that is NOT an adjacency edge
+        // (transit edges MUST be adjacency edges -- Stage-3 battery).
+        let mut s = state.clone();
+        let (a, b) = non_adjacent_pair(&s.board_layout);
+        s.board_layout.canal_crossings.push((a, b));
+        let e = check_invariants(&s, &rules).unwrap_err();
+        assert!(e.contains("not an adjacency edge"), "{e}");
+    }
+
+    /// Queue-head resolvability (Phase 2.9 Stage 5, Stage-4 census finding):
+    /// `get_legal_moves` is queue-first, so a non-empty `pending_choices`
+    /// whose HEAD has an empty resolution set livelocks the driver --
+    /// `get_legal_moves` returns nothing, `is_game_over` is false, and no move
+    /// can ever apply. Organic play never reaches it (`push_choice`
+    /// auto-resolves singletons, `normalize_queue_head` clears lone-declines,
+    /// and Church/Customs/Station heads only queue with >=2 live options), but
+    /// a tampered/deserialized head can -- so `check_invariants` (hence
+    /// `replay_strict`) rejects it loudly instead of hanging.
+    #[test]
+    fn pending_choice_head_with_empty_resolution_set_is_rejected() {
+        // A CustomsSpace head at a printed cost no space carries (tampered
+        // cost): eligible_customs_spaces_for_cost returns empty, so no
+        // resolution move exists.
+        let (mut s, rules) = golden_standard_game();
+        s.pending_choices.push(crate::types::PendingChoice::CustomsSpace { cost: 99 });
+        let e = check_invariants(&s, &rules).unwrap_err();
+        assert!(e.contains("no legal resolution"), "{e}");
+
+        // StationPlace on a board with no placeable area (empty baseline
+        // board): the token has nowhere to land. Distinct variant (no Decline
+        // at all), same livelock class.
+        let (mut s, rules) = baseline();
+        s.pending_choices.push(crate::types::PendingChoice::StationPlace);
+        let e = check_invariants(&s, &rules).unwrap_err();
+        assert!(e.contains("no legal resolution"), "{e}");
     }
 }
