@@ -170,7 +170,7 @@ save [path]     save to path (or to the last-used path if omitted)
 reveal <seat> <O..>  live mode: make a hidden opponent starting order public
 cancel          abort an in-progress reveal prompt (live mode) or a route/retreat sub-prompt
 help            show this text
-quit            exit the REPL
+quit            exit the REPL ('q' also works)
 ```
 
 After each applied move the tool prints a **delta summary** — what changed (money, VP, goods, hand, tech, President location, phase, deck sizes, end-trigger announcements) — then the next prompt.
