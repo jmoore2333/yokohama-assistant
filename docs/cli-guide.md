@@ -1,6 +1,6 @@
 # Yokohama CLI — Tester's Guide
 
-*For the Phase-2 game driver (`yokohama-cli`), 2026-07-19. Audience: playtesters tracking or simulating games of Yokohama (Hisashi Hayashi, 2016). You need the physical rules in your head; this guide covers how the tool speaks about them — and **flags every place its language or behavior differs from the rulebook**.*
+*For the Phase-2 game driver (`yokohama-cli`), 2026-07-20. Audience: playtesters tracking or simulating games of Yokohama (Hisashi Hayashi, 2016). You need the physical rules in your head; this guide covers how the tool speaks about them — and **flags every place its language or behavior differs from the rulebook** (marked ⚠).*
 
 ---
 
@@ -17,17 +17,27 @@ The engine only ever offers **legal** moves. If the tool won't offer a move you 
 
 ## 2. Running it
 
+**Prerequisites.** The Rust toolchain (install it via rustup), a clone of this repository, and a shell sitting in the repo root. Plain `cargo` works on the project machine.
+
 ```bash
 # from the repo root
 cargo run -p yokohama-cli              # start the setup wizard
 cargo run -p yokohama-cli -- save.json # resume a saved game
 ```
 
-Rust toolchain required (plain `cargo` works on the project machine). The game autosaves after **every** applied move once a save path is set (the wizard sets one by default), so a crash loses at most the move you were typing — rerun with the save file to resume.
+**First run.** `cargo run -p yokohama-cli` with no arguments opens the setup wizard, which asks — one question at a time — for the mode, player count, per-seat colors, start seat, seed, and save path, then a mode-specific tail; §3 walks through every question. Fastest way to try it: run the command and answer `sim`, `2`, `red`, `blue`, `0`, then press Enter twice to take a random seed and the default save file, keep either dealt card with `0` and `0`, and `confirm` — you are now driving a 2-player simulation from the prompt in §4.
 
-When run in a real terminal the tool colors what matters — player names in their colors, VP, warnings, the prompt's phase line — and draws the board grid with box-drawing rulers. Piped or redirected output is always plain text (byte-identical to the pre-color tool), and setting the standard `NO_COLOR` environment variable turns color off in a terminal too.
+**Resuming.** `cargo run -p yokohama-cli -- <save.json>` replays a saved game deterministically to exactly where you left off. The game autosaves after **every** applied move once a save path is set, and the wizard sets one by default — `yokohama-game-<seed>.json` in the current directory unless you gave a path — so a crash loses at most the move you were typing; just rerun with the save file.
 
-The board grid is wide — 86 columns at 2 players, 120 at 3, and 103 at 4 — so the 3-player board needs a terminal at least 120 columns wide or its rows shear. There is no terminal-size detection, so the `board` command just prints a one-time reminder of the exact width the first time you render a board wider than 100 columns; widen the window if you see the rows break.
+**Terminal, color, and width.** In a real terminal the tool colors what matters — player names in their colors, VP, warnings, the prompt's phase line — and draws the board grid with box-drawing rulers. Piped or redirected output is always plain text (byte-identical to the pre-color tool), and setting the standard `NO_COLOR` environment variable turns color off in a terminal too. The board grid is wide — 86 columns at 2 players, 120 at 3, and 103 at 4 — and there is no terminal-size detection, so the `board` command prints a one-time reminder of the exact width the first time you render a board wider than 100 columns; widen the window if the rows shear.
+
+**If something looks off:**
+
+- **Board rows shear or wrap** — the terminal is narrower than the grid; widen it to at least the width above for your player count (120 columns clears every board).
+- **A save won't load** — the tool prints `failed to load <path>: <reason>` and exits; the reason is a typed error. A JSON parse failure means the file is truncated or hand-edited; `replay failed at event N: ...` means a recorded move no longer reconstructs (a stale or tampered save). A mere engine- or rules-**version** mismatch only prints a `warning:` and replays anyway — v1 never refuses on version drift.
+- **A move is rejected with `Illegal: ...`** — the engine disagrees that the move is legal right now. If it is legal at the table, that is a bug worth reporting: `save` and follow §9. Its more serious cousin, a mid-game `CRITICAL: desync` lockdown, is covered in §6.
+
+The release gates — `cargo test` and the fuzz sweep — are developer-only; a tester never runs them.
 
 ## 3. The setup wizard
 

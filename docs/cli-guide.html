@@ -38,7 +38,7 @@
 <body>
 
 <h1>Yokohama CLI — Tester's Guide</h1>
-<p class="lede">For the Phase-2 game driver (<code>yokohama-cli</code>), 2026-07-19. Audience: playtesters tracking or simulating games of Yokohama (Hisashi Hayashi, 2016). You need the physical rules in your head; this guide covers how the tool speaks about them — and <strong>flags every place its language or behavior differs from the rulebook</strong> with a <span class="difftag">DIFFERS</span> tag.</p>
+<p class="lede">For the Phase-2 game driver (<code>yokohama-cli</code>), 2026-07-20. Audience: playtesters tracking or simulating games of Yokohama (Hisashi Hayashi, 2016). You need the physical rules in your head; this guide covers how the tool speaks about them — and <strong>flags every place its language or behavior differs from the rulebook</strong> (marked <span class="difftag">DIFFERS</span>).</p>
 
 <h2>1. What this is</h2>
 <p>A terminal program backed by the full Yokohama rules engine. Two modes:</p>
@@ -50,15 +50,23 @@
 <div class="callout"><strong>Testing-round note:</strong> this build carries the full choice-encoding + wizard-robustness work — every reward decision the rulebook gives you is a real prompt now (§8.6), the setup wizard re-asks indefinitely on bad input instead of aborting (§3), and the Canal can be crossed (§8.5). Live-tracking a full physical game start to finish is the point of this round — save and report anything that looks wrong (§9).</div>
 
 <h2>2. Running it</h2>
+<p><strong>Prerequisites.</strong> The Rust toolchain (install it via rustup), a clone of this repository, and a shell sitting in the repo root. Plain <code>cargo</code> works on the project machine.</p>
 <pre><code># from the repo root
 cargo run -p yokohama-cli              # start the setup wizard
 cargo run -p yokohama-cli -- save.json # resume a saved game</code></pre>
-<p>Rust toolchain required (plain <code>cargo</code> works on the project machine). The game autosaves after <strong>every</strong> applied move once a save path is set (the wizard sets one by default), so a crash loses at most the move you were typing — rerun with the save file to resume.</p>
-<p>When run in a real terminal the tool colors what matters — player names in their colors, VP, warnings, the prompt's phase line — and draws the board grid with box-drawing rulers. Piped or redirected output is always plain text (byte-identical to the pre-color tool), and setting the standard <code>NO_COLOR</code> environment variable turns color off in a terminal too.</p>
-<p>The board grid is wide — 86 columns at 2 players, 120 at 3, and 103 at 4 — so the 3-player board needs a terminal at least 120 columns wide or its rows shear. There is no terminal-size detection, so the <code>board</code> command just prints a one-time reminder of the exact width the first time you render a board wider than 100 columns; widen the window if you see the rows break.</p>
+<p><strong>First run.</strong> <code>cargo run -p yokohama-cli</code> with no arguments opens the setup wizard, which asks — one question at a time — for the mode, player count, per-seat colors, start seat, seed, and save path, then a mode-specific tail; §3 walks through every question. Fastest way to try it: run the command and answer <code>sim</code>, <code>2</code>, <code>red</code>, <code>blue</code>, <code>0</code>, then press Enter twice to take a random seed and the default save file, keep either dealt card with <code>0</code> and <code>0</code>, and <code>confirm</code> — you are now driving a 2-player simulation from the prompt in §4.</p>
+<p><strong>Resuming.</strong> <code>cargo run -p yokohama-cli -- &lt;save.json&gt;</code> replays a saved game deterministically to exactly where you left off. The game autosaves after <strong>every</strong> applied move once a save path is set, and the wizard sets one by default — <code>yokohama-game-&lt;seed&gt;.json</code> in the current directory unless you gave a path — so a crash loses at most the move you were typing; just rerun with the save file.</p>
+<p><strong>Terminal, color, and width.</strong> In a real terminal the tool colors what matters — player names in their colors, VP, warnings, the prompt's phase line — and draws the board grid with box-drawing rulers. Piped or redirected output is always plain text (byte-identical to the pre-color tool), and setting the standard <code>NO_COLOR</code> environment variable turns color off in a terminal too. The board grid is wide — 86 columns at 2 players, 120 at 3, and 103 at 4 — and there is no terminal-size detection, so the <code>board</code> command prints a one-time reminder of the exact width the first time you render a board wider than 100 columns; widen the window if the rows shear.</p>
+<p><strong>If something looks off:</strong></p>
+<ul>
+  <li><strong>Board rows shear or wrap</strong> — the terminal is narrower than the grid; widen it to at least the width above for your player count (120 columns clears every board).</li>
+  <li><strong>A save won't load</strong> — the tool prints <code>failed to load &lt;path&gt;: &lt;reason&gt;</code> and exits; the reason is a typed error. A JSON parse failure means the file is truncated or hand-edited; <code>replay failed at event N: ...</code> means a recorded move no longer reconstructs (a stale or tampered save). A mere engine- or rules-<strong>version</strong> mismatch only prints a <code>warning:</code> and replays anyway — v1 never refuses on version drift.</li>
+  <li><strong>A move is rejected with <code>Illegal: ...</code></strong> — the engine disagrees that the move is legal right now. If it is legal at the table, that is a bug worth reporting: <code>save</code> and follow §9. Its more serious cousin, a mid-game <code>CRITICAL: desync</code> lockdown, is covered in §6.</li>
+</ul>
+<p>The release gates — <code>cargo test</code> and the fuzz sweep — are developer-only; a tester never runs them.</p>
 
 <h2>3. The setup wizard</h2>
-<p>Questions are asked one at a time. An invalid answer re-asks the SAME question and shows why (<code>  ! '&lt;answer&gt;' is not ...</code>) — there's no limit on retries. Typing <code>abort</code> (case-insensitive) at any question exits setup right away; that's the only other way out mid-wizard.</p>
+<p>Questions are asked one at a time. An invalid answer re-asks the SAME question and shows why (<code>  ! '&lt;answer&gt;' is not ...</code>) — there's no limit on retries. Typing <code>abort</code> (case-insensitive) at any question exits setup right away; that's the only other way out mid-wizard. Answers in <code>[brackets]</code> are the literal things you type.</p>
 <table>
   <tr><th>Question</th><th>Answer</th></tr>
   <tr><td>Mode</td><td><code>sim</code> or <code>live</code></td></tr>
@@ -182,7 +190,7 @@ quit            exit the REPL</code></pre>
 </ul>
 
 <h2>8. LANGUAGE: how the CLI names things vs. the rulebook</h2>
-<p>The engine's canonical vocabulary differs from the rulebook's in places. <strong>Differences carry the <span class="difftag">DIFFERS</span> tag.</strong></p>
+<p>The engine's canonical vocabulary differs from the rulebook's in places. <strong>Differences are marked <span class="difftag">DIFFERS</span>.</strong></p>
 
 <h3>8.1 Order cards</h3>
 <table>
@@ -218,6 +226,7 @@ quit            exit the REPL</code></pre>
 
 <h3>8.4 Countries and turn phases</h3>
 <p>Countries: <code>GB</code>=Britain, <code>US</code>=America, <code>FR</code>=France, <code>DE</code>=Germany, <code>NL</code>=Netherlands (flags on the order cards).</p>
+<p>Turn phases as the CLI names them, against the rulebook's turn structure:</p>
 <table>
   <tr><th>CLI phase</th><th>Rulebook</th></tr>
   <tr class="warn"><td><code>Additional actions (before)</code> / <code>(after)</code></td><td><span class="difftag">DIFFERS</span> Not a rulebook step name — the windows in which an Additional Action (fulfilling orders, mercenary use, achievement claims) may be taken before/after the main turn.</td></tr>
@@ -232,6 +241,7 @@ quit            exit the REPL</code></pre>
 <div class="callout"><span class="difftag">DIFFERS</span> <strong><code>Skip</code> option:</strong> in the six "may"-worded areas (Port, Laboratory, Employment Agency, Chinatown, Church, Customs) the CLI offers an explicit <code>Skip</code> move = carry out the area action declining its optional parts. The rulebook has no named "skip" — it's the engine's encoding of "you may". Note v1's conservative reading: taking <code>Skip</code> at a 5-power Port forgoes the +3 VP bonus.</div>
 
 <h3>8.5 Areas, boards, and tracks</h3>
+<p>Area names with their grid abbreviations (<code>board</code> view) and wizard entry codes:</p>
 <table>
   <tr><th>Area</th><th>Grid</th><th>Wizard</th></tr>
   <tr><td>Copper Mine</td><td><code>CuM</code></td><td><code>cm</code></td></tr>

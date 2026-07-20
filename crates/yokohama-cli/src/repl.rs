@@ -1067,7 +1067,10 @@ fn parse_raw_area_token(tok: &str) -> Result<AreaId, String> {
     tok.parse::<u8>().map(AreaId::unchecked).map_err(|_| format!("'{tok}' is not a valid area number"))
 }
 
-const HELP_TEXT: &str = "\
+/// The in-app `help` command's text. `pub` so the `guide_sync` integration
+/// test can pin every command token against the tester guide's §5 block --
+/// this const is the authority; the guide follows it.
+pub const HELP_TEXT: &str = "\
 Commands:
   <number>        apply the numbered legal option
   a [id id id]    Placement Option A: place 1 assistant in each of 0-3 areas (4 with Newspaper)
