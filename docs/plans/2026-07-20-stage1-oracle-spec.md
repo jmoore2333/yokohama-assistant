@@ -904,6 +904,12 @@ rules question) or interface decisions; none injects an engine rules belief.
   ruling flips exactly one condition on whichever side loses. (Recorded here at the Stage-1
   review's must-fix: an attested spec must not assert the opposite of the code on the very
   question the harness exists to probe.)
+  **RESOLVED (Jeremy, 2026-07-20, corrected same session — decision-log row):** Reading 2 RULED.
+  The station token adds POWER only; RB p.6's assistant-at-destination rule stands; the card's
+  explicit clauses stand (free, ignores other President pawns at the station); from-hand follows
+  normal placement rules. The interim gate was exactly the ruled behavior — zero code change;
+  all PENDING-RULING markers converted to RULED pins, and the engine's inception-era gate gained
+  the ruling citation.
 - **D. Chinatown Mining rider (round-2 triage, 2026-07-20 — class-2 ORACLE BUG, fixed).** The
   oracle's Chinatown running-balance model (`chinatown_apply`, YenToCopper) added exactly 1
   copper, omitting the Mining Technology rider — verified card text (08-tech-cards.yaml Mining

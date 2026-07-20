@@ -189,6 +189,30 @@ mod tests {
         assert_eq!(AchievementType::Copper5.subsequent_vp(), 6);
     }
 
+    /// RULED (Jeremy, 2026-07-20 decision-log row, closing ruling A2):
+    /// face-DOWN (used) mercenaries count toward the Tokens5 achievement —
+    /// "own a total of 5" means all owned tokens, face-up or face-down.
+    /// Pin: 3 five-power tokens + 2 USED mercenaries (zero face-up) meets
+    /// the requirement; with only 1 used mercenary it does not.
+    #[test]
+    fn tokens5_counts_face_down_mercenaries_ruled_a2() {
+        let mut state = create_test_state();
+        let p = state.player_mut(PlayerId::new(0));
+        p.five_power_tokens = 3;
+        p.mercenaries.used.insert(Country::English, 2);
+        let (current, needed) =
+            achievement_progress(&state, PlayerId::new(0), AchievementType::Tokens5);
+        assert!(
+            current >= needed,
+            "3 five-power + 2 face-down mercenaries = 5 owned tokens: {current}/{needed}"
+        );
+        let p = state.player_mut(PlayerId::new(0));
+        p.mercenaries.used.insert(Country::English, 1);
+        let (current, needed) =
+            achievement_progress(&state, PlayerId::new(0), AchievementType::Tokens5);
+        assert!(current < needed, "4 owned tokens must not qualify: {current}/{needed}");
+    }
+
     fn create_test_state() -> GameState {
         let config = GameConfig::new(
             2,

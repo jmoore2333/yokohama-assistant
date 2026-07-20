@@ -254,7 +254,7 @@ pub(crate) fn teleport_labels(state: &GameState, rules: &Rules) -> Vec<RouteLabe
     // regardless of other President pawns there [RB p.15].
     if owns_effect(state, rules, mover, TechEffect::Station) {
         if let Some(st) = state.station_location {
-            // PENDING-RULING §7.1-A1 (triage 2026-07-20): temporarily mirrors the engine's Reading 2 (own assistant required at the Station area) so the differential gate binds. Jeremy's ruling flips exactly this condition — if Reading 1 is ruled, delete it (and the engine changes instead).
+            // RULED §7.1-A1 (Jeremy, 2026-07-20 decision-log row): Reading 2 — the station token adds POWER only; RB p.6's assistant-at-destination rule stands, so the teleport requires an own assistant at the station area. The card's explicit clauses stand (free; ignores other President pawns there). Originally landed as a triage interim mirroring the engine; the ruling confirmed it as permanent behavior.
             let own_assistant_at_station = p.assistants.on_board.get(&st).copied().unwrap_or(0) >= 1;
             if st != start && own_assistant_at_station {
                 labels.push(RouteLabel { destination: st, fees: BTreeMap::new() });
@@ -507,8 +507,8 @@ mod tests {
     // --- F12 [RB p.15] Station teleport ---
 
     #[test]
-    fn f12_station_teleport_presidents_ignored_but_assistant_required_pending_ruling() {
-        // PENDING-RULING §7.1-A1 (triage 2026-07-20): interim mirrors the
+    fn f12_station_teleport_presidents_ignored_but_assistant_required_ruled() {
+        // RULED §7.1-A1 (Jeremy 2026-07-20): permanent behavior — mirrors the
         // engine's Reading 2 — the teleport label is emitted ONLY with >= 1
         // own assistant at the Station area. All other facets unchanged:
         // owner-only, zero fees, opponent presidents there neither block nor

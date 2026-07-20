@@ -13,7 +13,7 @@
 //! and dedups to the L2 `(destination, fees)` labels.
 //!
 //! DELIBERATELY SHARED: teleport labels (Tram / Station, including the
-//! `PENDING-RULING §7.1-A1` interim gate) are appended by REUSING the pruned
+//! `§7.1-A1` gate, RULED Reading 2 by Jeremy 2026-07-20) are appended by REUSING the pruned
 //! module's [`movement::teleport_labels`]. Teleports have no walk and no fees,
 //! so sharing them makes the three-way diff surface (engine DFS vs pruned
 //! oracle DFS vs this enumerator) exactly the WALKS.
@@ -364,7 +364,7 @@ mod tests {
     fn shared_teleports_flow_through_identically() {
         // Teleports are REUSED from the pruned module (module header): both
         // surfaces must agree with Tram + Station live, and the Station
-        // PENDING-RULING §7.1-A1 interim gate is shared by construction.
+        // §7.1-A1 assistant gate (RULED Reading 2, 2026-07-20) is shared by construction.
         let rules = Rules::standard();
         let mut s = canal_president();
         s.players[0].money = 3;
