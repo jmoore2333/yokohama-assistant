@@ -1396,6 +1396,11 @@ mod tests {
         assert_eq!(state.players[0].victory_points, 4); // 2 owned copies x 2 VP
     }
 
+    /// RULED (Jeremy, 2026-07-20, closing ruling A4): rulebook p.17 —
+    /// "Whenever you obtain a technology (after this one), score 2
+    /// additional points." Self-EXCLUSIVE: acquiring Patent System itself
+    /// grants nothing; a player's next tech after it scores +2. Confirms
+    /// the shipped filter (`id != acquired`).
     #[test]
     fn test_lab_acquisition_bonus_excludes_just_acquired_card() {
         let mut state = create_test_state();
