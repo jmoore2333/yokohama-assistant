@@ -8,6 +8,7 @@
 
 use std::collections::{BTreeMap, HashSet};
 
+use yokohama_core::game::actions::resolve_acting_area;
 use yokohama_core::*;
 
 use crate::describe;
@@ -224,6 +225,18 @@ pub fn sites_view(state: &GameState, _rules: &Rules) -> String {
     out
 }
 
+/// DEPENDS ON PREFIX-PACKING (S2, render.rs deep audit 2026-07-20).
+/// Collecting owners in slot order drops WHICH slot each holds, which is
+/// unambiguous only because `shophouses_built` is prefix-packed: the engine
+/// offers exactly one `BuildShophouse` per site, at
+/// `BuildingSite::next_shophouse_slot` = the first empty index, and a built
+/// shophouse is never removed. That matters because `sites_view` prints the
+/// four DIFFERENT printed rewards positionally right beside these marks
+/// (`[1vp 4vp - 2yen]  sh RB`), so if a real per-slot choice were ever
+/// offered, this line would silently start attributing owners to the wrong
+/// rewards. `shophouse_slots_fill_prefix_packed_so_build_marks_stay_
+/// unambiguous` pins the premise so that change fails loudly here instead.
+///
 /// "sh RB | th Y" build/ownership marks for one site: shophouse owners'
 /// color letters in slot order (built slots only; `-` when none built),
 /// then the trading-house owner's letter or `-`. Shared by `area_cell_
@@ -485,16 +498,21 @@ fn president_label(state: &GameState, loc: PresidentLocation) -> String {
 /// (Placement never queues a reward, so `before.turn_phase` cleanly
 /// disambiguates a shape both moves produce identically).
 ///
-/// One caveat, accepted for a v1 CLI display feature: a Church/Customs
-/// placement drawn from the acting area (rather than hand, when hand is
-/// empty -- `take_church_or_customs_assistant` prefers hand, falls back to
-/// the acting area) is reserved out of `board_diff` below so it isn't ALSO
-/// reported as a spurious "recovered" line; the reservation itself can
-/// mis-attribute by one unit in the extremely rare case where a singleton
-/// movement-reward AND a hand-empty Church/Customs placement land in the
-/// same move's diff (both draw on the same acting-area count). Not reached
-/// by any move shape the current engine actually produces outside a
-/// contrived fixture.
+/// A Church/Customs placement drawn from the acting area (rather than hand,
+/// when hand is empty -- `take_church_or_customs_assistant` prefers hand,
+/// falls back to the acting area) is reserved out of `board_diff` below so
+/// it isn't ALSO reported as a spurious "recovered" line. WHICH area that is
+/// comes from the engine's own `resolve_acting_area` against the pre-move
+/// state, so the mercenary sub-turn case (target area, not the president's)
+/// is covered rather than mis-attributed (S1, fixed 2026-07-20).
+///
+/// One caveat remains, accepted for a v1 CLI display feature: the
+/// reservation can mis-attribute by one unit in the rare case where a
+/// singleton movement-reward AND a hand-empty Church/Customs placement land
+/// in the same move's diff (both draw on the same acting-area count). Not
+/// reached by any move shape the current engine actually produces outside a
+/// contrived fixture -- and unlike the S1 case, this one does not depend on
+/// a state the fuzzer under-samples.
 fn assistant_lines(lines: &mut Vec<String>, before: &GameState, after: &GameState, b: &PlayerState, a: &PlayerState) {
     let mut board_diff: BTreeMap<AreaId, i64> = BTreeMap::new();
     for (&area, &n) in &b.assistants.on_board {
@@ -508,8 +526,19 @@ fn assistant_lines(lines: &mut Vec<String>, before: &GameState, after: &GameStat
         + a.customs_positions.len().saturating_sub(b.customs_positions.len());
     let hand_shrink = (b.assistants.in_hand as i64 - a.assistants.in_hand as i64).max(0) as usize;
     let from_board = track_placed.saturating_sub(hand_shrink);
+    // Acting area comes from the ENGINE's own resolver against the PRE-move
+    // state, not from `president_location`: during a mercenary sub-turn the
+    // action runs at `mercenary_target_area` instead ("the target area, not
+    // the president's", per resolve_acting_area's own callers). Reading the
+    // president's location here reserved the wrong area, leaving the real
+    // source at -1 and the president's area at +1 -- which the pairing loop
+    // below rendered as an "assistant moved from X to Y" that never happened
+    // (S1, render.rs deep audit 2026-07-20).
+    //
+    // Only the acting player can have `from_board > 0`, so resolving against
+    // `a.id` is safe even though a mercenary sub-turn's target is global.
     if from_board > 0 {
-        if let PresidentLocation::OnBoard(area) = a.president_location {
+        if let Ok(area) = resolve_acting_area(before, a.id) {
             if let Some(d) = board_diff.get_mut(&area) {
                 *d += from_board as i64;
                 if *d == 0 {
@@ -1232,6 +1261,107 @@ mod tests {
         assert!(
             lines.iter().any(|l| l.contains("Britain")),
             "the line must name WHICH country's tile to flip: {lines:?}"
+        );
+    }
+
+    /// S2 (render.rs deep audit, 2026-07-20): `build_marks` renders shophouse
+    /// owners in slot order WITHOUT saying which slot each holds, and
+    /// `sites_view` prints the four different printed rewards positionally
+    /// right beside those marks. That is only unambiguous while
+    /// `shophouses_built` is prefix-packed.
+    ///
+    /// It is prefix-packed because `next_shophouse_slot` returns the FIRST
+    /// empty index and `legal_moves` offers exactly that one slot per site,
+    /// so builds fill 0,1,2,3 in order. Pinned here rather than left implicit:
+    /// the day a real per-slot choice is offered, this fails and points at
+    /// `build_marks`, instead of `sites_view` quietly attributing an owner to
+    /// a reward they didn't take.
+    #[test]
+    fn shophouse_slots_fill_prefix_packed_so_build_marks_stay_unambiguous() {
+        let mut site = BuildingSite::new([1, 4, 0, 2], 8);
+        let players = [PlayerId::new(0), PlayerId::new(1), PlayerId::new(2), PlayerId::new(3)];
+
+        for (expected_slot, &pid) in players.iter().enumerate() {
+            let slot = site
+                .next_shophouse_slot(pid)
+                .expect("an empty slot remains for a player who has not built here");
+            assert_eq!(
+                slot, expected_slot,
+                "the engine must hand out slots in ascending order, else slot-order marks lie"
+            );
+            site.shophouses_built[slot] = Some(pid);
+
+            // After each build the array must still be prefix-packed: no
+            // Some may follow a None.
+            let first_empty =
+                site.shophouses_built.iter().position(|p| p.is_none()).unwrap_or(SPACES_PER_SITE);
+            assert!(
+                site.shophouses_built[first_empty..].iter().all(|p| p.is_none()),
+                "shophouses_built must stay prefix-packed: {:?}",
+                site.shophouses_built
+            );
+        }
+
+        // A player who already built here is offered nothing (one per area).
+        assert_eq!(site.next_shophouse_slot(players[0]), None);
+    }
+
+    /// S1 (render.rs deep audit, 2026-07-20): the track-placement reservation
+    /// read `president_location`, but the engine resolves the acting area via
+    /// `resolve_acting_area`, which returns `mercenary_target_area` during a
+    /// mercenary sub-turn -- its own doc says "the target area, not the
+    /// president's". This was the ONE place `render.rs` recomputed an engine
+    /// quantity rather than delegating, and it recomputed it wrong.
+    ///
+    /// Unreached in 3,800 random games, but reachable at a table: a late-game
+    /// player with an empty assistant hand spending a mercenary at the Church
+    /// is ordinary play. Uniform-random play rarely combines those three --
+    /// exactly the blind-spot class I6 documented, so "the fuzzer never hit
+    /// it" is not evidence of unreachability here.
+    #[test]
+    fn track_placement_in_a_mercenary_sub_turn_reserves_the_target_not_the_president() {
+        let rules = Rules::standard();
+        let mut before = test_state_2p();
+        let mut areas = before.board_layout.areas.keys().copied();
+        let target = areas.next().expect("board has areas");
+        let president_area = areas.next().expect("board has a second area");
+
+        {
+            let p = &mut before.players[0];
+            // Empty hand forces the Church placement to draw off the BOARD --
+            // `take_church_or_customs_assistant` prefers hand, falls back to
+            // the acting area.
+            p.assistants.in_hand = 0;
+            p.assistants.on_board.clear();
+            p.assistants.on_board.insert(target, 1);
+            p.assistants.on_board.insert(president_area, 1);
+            p.president_location = PresidentLocation::OnBoard(president_area);
+            p.church_positions.clear();
+        }
+        before.is_mercenary_action = true;
+        before.mercenary_target_area = Some(target);
+        assert_ne!(target, president_area, "fixture needs the two areas distinct to discriminate");
+
+        // The mercenary Church action locks the TARGET area's pawn on the track.
+        let mut after = before.clone();
+        {
+            let p = &mut after.players[0];
+            p.assistants.on_board.remove(&target);
+            p.assistants.on_church += 1;
+            p.church_positions.push(6);
+        }
+
+        let lines = delta_summary(&before, &after, &rules);
+        // Reserving the president's area instead of the target leaves the
+        // target at -1 and the president's area at +1, which the pairing loop
+        // renders as a move that never happened.
+        assert!(
+            !lines.iter().any(|l| l.contains("assistant moved from")),
+            "no assistant moved between areas; reserving the wrong area fabricates one: {lines:?}"
+        );
+        assert!(
+            !lines.iter().any(|l| l.contains("recovered from")),
+            "the pawn went onto the church track, not back to hand: {lines:?}"
         );
     }
 

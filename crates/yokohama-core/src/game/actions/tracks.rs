@@ -52,7 +52,13 @@ fn has_church_or_customs_assistant(p: &PlayerState, area: AreaId) -> bool {
 /// `.expect(...)` instead. `pub(crate)` since `apply_move::resolve_recovery`
 /// (Task 6) also needs the acting area to decide the Telephone Recovery
 /// queue-vs-auto split.
-pub(crate) fn resolve_acting_area(state: &GameState, player: PlayerId) -> Result<AreaId, &'static str> {
+/// `pub` (not `pub(crate)`) since 2026-07-20: the CLI's `delta_summary` must
+/// resolve the acting area the SAME way the engine does when it reports where
+/// a track-placement pawn came from. Reading `president_location` there
+/// instead fabricated an "assistant moved" line during mercenary sub-turns
+/// (S1, render.rs deep audit) -- delegating to this function is what keeps
+/// the view from recomputing an engine quantity.
+pub fn resolve_acting_area(state: &GameState, player: PlayerId) -> Result<AreaId, &'static str> {
     if state.is_mercenary_action {
         state.mercenary_target_area.ok_or("No mercenary target area")
     } else {
