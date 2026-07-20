@@ -57,9 +57,11 @@ pub struct GameStats {
 
 /// Build a fresh seeded game up to the post-setup state, under the same
 /// choice policy as `run_random_game`/`run_random_game_observed` (per-player
-/// `StartingOrderChoice::Keep` drawn from the seeded RNG) -- reused here via
-/// the identical `new_game` -> `finalize_setup` sequence rather than
-/// reimplemented, so setup logic has exactly one copy. Returns the RNG in
+/// `StartingOrderChoice::Keep` drawn from the seeded RNG) -- the identical
+/// `new_game` -> `finalize_setup` sequence those two (and `run_recorded_game`)
+/// each also hand-roll, so a caller that only wants the post-setup state can
+/// reuse this instead of writing a fifth near-identical copy of it in this
+/// file. Returns the RNG in
 /// its post-setup-consumption state alongside the resulting `GameState`, so
 /// a caller that wants to keep driving deterministic random play from the
 /// same seed can (mirrors `run_random_game`'s internal handoff to

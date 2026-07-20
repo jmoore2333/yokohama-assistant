@@ -53,9 +53,12 @@ fn enabled() -> bool {
     ENABLED.load(Ordering::Relaxed)
 }
 
-/// The five tradeable resources, for `Tone::Good`. Defined here (not in
-/// core) because the distinction only matters for display: engine state
-/// keeps goods as separate counters, never as a unified enum.
+/// Resource kinds that get their own display color, for `Tone::Good`: the
+/// four tradeable goods, one variant each mirroring core's `TradeGood`
+/// (`types/choices.rs`), plus `Yen` -- not a `TradeGood` in core, but still
+/// a countable resource worth coloring in CLI output. Kept as its own
+/// CLI-side enum rather than reusing `TradeGood` directly because of that
+/// Yen extra, not because core lacks a unified goods enum.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum GoodKind {
     Copper,

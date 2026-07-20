@@ -357,6 +357,9 @@ fn language_school_yen_is_available_for_the_same_orders_warehouse_take() {
         OrderRewards { warehouse_tokens: 1, ..Default::default() },
         AreaType::Bank,
     );
+    // Second arg is TechRegistry::insert's CV-integration string code --
+    // unused by this test (which looks the card up by TechCardId below),
+    // but required by the method's signature.
     rules.techs.insert(
         TechCard {
             id: TechCardId(50),

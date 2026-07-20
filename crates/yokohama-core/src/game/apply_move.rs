@@ -14,11 +14,13 @@ pub fn apply_move_unchecked(state: &GameState, mv: &Move, rules: &Rules) -> Resu
 
     match mv {
         Move::EndAdditionalPhase => {
-            // apply_move is the pure authoritative API (a Phase-3 bot, or a
-            // tampered record, may call it directly, not just via
-            // legal-move pre-filtering) -- self-defended here the same way
-            // UseUniversity/UseSpinningMill defend their once-per-turn flag
-            // and apply_mercenary defends mercenary_used (T7 precedent):
+            // apply_move_unchecked is the raw arm, with no legal-list gate
+            // of its own -- a Phase-3 bot's search inner loop may call it
+            // directly after choosing from its own enumerated list, not
+            // necessarily through checked apply_move's pre-filtering -- so
+            // it self-defends here the same way UseUniversity/UseSpinningMill
+            // defend their once-per-turn flag and apply_mercenary defends
+            // mercenary_used (T7 precedent):
             // ending the phase with a choice still queued would advance
             // the turn (handing off to the next player, in the
             // AdditionalActionSecond case) while a reward from THIS turn
@@ -121,10 +123,11 @@ pub fn apply_move_unchecked(state: &GameState, mv: &Move, rules: &Rules) -> Resu
         Move::UseUniversity => {
             let player = new_state.current_player;
             // apply_university checks only resource preconditions, not the
-            // once-per-turn flag -- apply_move is the pure authoritative API
-            // (a Phase-3 bot will call it directly, not just via legal-move
-            // pre-filtering), so it must defend the flag itself, mirroring
-            // apply_mercenary's self-defended mercenary_used gate.
+            // once-per-turn flag -- apply_move_unchecked is the raw arm with
+            // no legal-list gate of its own (a Phase-3 bot's search inner
+            // loop may call it directly, not just via checked apply_move's
+            // legal-move pre-filtering), so it must defend the flag itself,
+            // mirroring apply_mercenary's self-defended mercenary_used gate.
             if !can_use_university(&new_state, player, &rules.techs) {
                 return Err(MoveError::RuleViolation("University not usable this turn"));
             }

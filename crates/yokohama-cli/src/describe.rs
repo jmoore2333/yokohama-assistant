@@ -157,6 +157,10 @@ fn acting_area(state: &GameState) -> Option<AreaId> {
 fn production_preview(state: &GameState, verb: &str, good: TradeGood, reward_fn: fn(u8) -> u8) -> String {
     match acting_area(state) {
         Some(area) => {
+            // Recomputed rather than read from state.current_action_power,
+            // but the two are always equal here -- including the mercenary
+            // formula, which omits the President's own +1 exactly where the
+            // target area is guaranteed not to hold it.
             let power = calculate_power(state, state.current_player, area);
             let reward = reward_fn(power);
             format!("{verb} (power {power} -> +{reward} {})", trade_good_name(good))
@@ -315,7 +319,9 @@ pub fn describe_move(mv: &Move, state: &GameState, rules: &Rules) -> String {
                             format!("{amount} to {}", render::color_name(state.player(player_id).color))
                         })
                     })
-                    .chain(vector.get(&None).map(|amount| format!("{amount} canal toll")))
+                    .chain(vector.get(&None).map(|amount| {
+                        format!("{amount} canal toll{}", if *amount == 1 { "" } else { "s" })
+                    }))
                     .collect();
                 format!("pay {total} yen ({})", parts.join(", "))
             };

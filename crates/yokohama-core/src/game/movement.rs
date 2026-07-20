@@ -1296,18 +1296,19 @@ mod tests {
 
     #[test]
     fn cost_full_equals_vector_sum_on_random_walks() {
-        // Property: for every real path these fixtures' movement graphs can
-        // produce, the OLD scalar pricing (calculate_movement_cost_full)
-        // must equal the NEW vector's sum
-        // (route_fee_vector(...).values().sum()) -- the refactor's core
-        // safety net. Two sources of "every path": (a) the full enumerated
-        // set from two fixtures that between them exercise canal tolls,
-        // president pass-through fees, AND destination fees; (b) a few
-        // seeded random walks over a third fixture's graph (not restricted
-        // to simple paths or to enumerate_president_routes's affordability
-        // pruning -- just "any sequence a naive path-builder might
-        // produce"), so the property is also checked against paths nobody
-        // hand-picked.
+        // Definitional identity, not an independent safety net:
+        // calculate_movement_cost_full IS
+        // route_fee_vector(...).values().sum() by construction (see its
+        // definition above), so the two sides here can never disagree --
+        // this cannot catch a pricing regression. What it actually pins is
+        // that both functions run to completion without panicking across a
+        // real range of paths: (a) the full enumerated set from two
+        // fixtures that between them exercise canal tolls, president
+        // pass-through fees, AND destination fees; (b) a few seeded random
+        // walks over a third fixture's graph, NOT restricted to simple
+        // paths or to enumerate_president_routes's affordability pruning --
+        // just "any sequence a naive path-builder might produce", including
+        // paths that revisit an area.
         let p0 = PlayerId::new(0);
 
         let (state1, rules1) = canal_vs_around_fixture();

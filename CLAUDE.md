@@ -17,7 +17,7 @@ Toolchain is FIXED (2026-07-17): plain `cargo` works. (History: `~/.cargo/bin/ru
 - All tests: `cargo test -p yokohama-core` (495 passing as of 2026-07-19 engine-authority close: 452 lib + 43 integration across 7 binaries incl. 15 choice_encoding — whose census test runs ~90s in debug, normal not a hang) and `cargo test -p yokohama-cli` (116 passing)
 - Lint gate (adopted 2026-07-19): `cargo clippy --workspace --all-targets -- -D warnings` must pass. rustfmt is deliberately NOT adopted (would reformat the whole repo, ~1k diff blocks — revisit at a phase boundary; don't run `cargo fmt` casually)
 - Run the CLI driver: `cargo run -p yokohama-cli` (setup wizard → REPL; sim or live tracking); `cargo run -p yokohama-cli -- <save.json>` resumes a saved game. REPL surfaces beyond numbered options: `a`/`b` placement, `m` assistant-move, and `r [id[:n]]...` retreat grammars; views incl. `sites` (building-site printed rewards) and `goals` (achievement progress); `log` shows historical descriptions (state-at-the-time, via the per-event fold cache). Output colors on a real TTY only (`NO_COLOR` honored; piped output byte-identical plain text)
-- Fuzz regression gate (run in release before merges): `cargo test --release -p yokohama-core --test fuzz_full_games -- --ignored` (1,500 games, ~8s)
+- Fuzz regression gate (run in release before merges): `cargo test --release -p yokohama-core --test fuzz_full_games -- --ignored` (1,500 games, ~38s since the T7 gate-constant amendments; was ~8s before)
 - Full self-play sweep: `cargo run --release -p yokohama-core --example selfplay -- 5000 <players> <base_seed>`
 - Single test: `cargo test -p yokohama-core test_name`
 - One module: `cargo test -p yokohama-core board_gen`

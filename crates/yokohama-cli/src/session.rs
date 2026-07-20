@@ -694,14 +694,18 @@ mod tests {
     /// offers only its resolutions), so the tampered `GameRecord` is built
     /// directly instead -- exactly how a hand-edited or corrupted save file
     /// would bypass that gate: `Session::load` -> `replay` -> `replay_from`
-    /// applies every event via bare `apply_move`, with no legal-move
-    /// pre-filtering. The inserted `ReturnPresidentToHand` validates
-    /// nothing and moves the President to hand; the following
-    /// `ChooseChurchSpace { space: 6 }` still passes `resolve_choice_move`'s
-    /// membership check (`eligible_church_spaces` depends only on the
-    /// track/faith), so it reaches `place_church_assistant` with no acting
-    /// area to resolve -- the exact panic `tampered_return_to_hand_mid_church_space_queue_errors_not_panics`
-    /// (yokohama-core's `tracks.rs`) fixed at the engine layer.
+    /// applies every event via the ONE checked `apply_move` (core's
+    /// apply_move.rs), WITH legal-move pre-filtering. That rejects the
+    /// inserted `ReturnPresidentToHand` immediately with
+    /// `MoveError::NotLegal` -- it isn't one of `ChurchSpace`'s own
+    /// resolutions, so it's absent from `get_legal_moves` while that choice
+    /// is queued -- and the following `ChooseChurchSpace { space: 6 }` is
+    /// never reached. (The engine-layer counterpart,
+    /// `tracks.rs`'s `tampered_return_to_hand_mid_church_space_queue_errors_not_panics`,
+    /// exercises the SAME tamper via raw `apply_move_unchecked` instead,
+    /// where the second move IS reached and would otherwise panic -- fixed
+    /// there at the engine layer; here it's moot, since checked `apply_move`
+    /// never gets that far.)
     #[test]
     fn load_of_tampered_record_returns_typed_error_not_panic() {
         let s = session_with_church_space_choice_queued();
@@ -733,20 +737,11 @@ mod tests {
     /// `ReturnPresidentToHand` -- not one of the queued choice's own
     /// resolutions, so `apply_move`'s blanket `get_legal_moves` membership
     /// check (`MoveError::NotLegal`, core's apply_move.rs) rejects it
-    /// immediately at THIS event, the first (and only) tampered one. (This
-    /// corrects an inaccurate claim in the sibling test's doc comment just
-    /// above, which says this exact move "validates nothing and moves the
-    /// President to hand" -- empirically it does not: unlike
-    /// `apply_move_unchecked`, checked `apply_move` verifies legal-list
-    /// membership up front for every move, so an out-of-turn
-    /// `ReturnPresidentToHand` never reaches its own per-arm logic at all.
-    /// The sibling test's own assertion, `result.is_err()`, still holds
-    /// either way, so it wasn't wrong to trust -- just its narrative of
-    /// WHICH move fails and why. Flagging for the reviewer/controller
-    /// rather than silently rewriting that test's comment here -- outside
-    /// this fix wave's stated scope.) The expected index is computed from
-    /// the fixture (`base`) rather than hardcoded, so it can't silently
-    /// drift if the fixture's own move count ever changes.
+    /// immediately at THIS event, the first (and only) tampered one -- the
+    /// same mechanism the sibling test above now documents. The expected
+    /// index is computed from the fixture (`base`) rather than hardcoded,
+    /// so it can't silently drift if the fixture's own move count ever
+    /// changes.
     #[test]
     fn load_of_tampered_record_names_the_true_failing_event_index() {
         let s = session_with_church_space_choice_queued();
