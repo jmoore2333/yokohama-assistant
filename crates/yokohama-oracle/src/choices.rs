@@ -243,7 +243,6 @@ mod tests {
     // --- Stub-dependent (lane D `eligible_*`): written now, ignored until integration. ---
 
     #[test]
-    #[ignore = "stub-dependent: lane D (eligible_church_spaces)"]
     fn church_space_maps_eligible_spaces_no_decline() {
         let mut s = two_player_state();
         s.pending_choices = vec![PendingChoice::ChurchSpace { total_faith: 6 }];
@@ -253,7 +252,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "stub-dependent: lane D (eligible_customs_spaces)"]
     fn customs_space_maps_eligible_spaces_no_decline() {
         let mut s = two_player_state();
         s.pending_choices = vec![PendingChoice::CustomsSpace { cost: 1 }];
