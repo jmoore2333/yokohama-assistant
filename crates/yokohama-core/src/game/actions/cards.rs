@@ -187,18 +187,21 @@ pub fn execute_port_action(
     Ok(())
 }
 
-/// Calculate industry value available for Laboratory.
+/// Calculate industry value available for Laboratory. Sums in u32 (Phase
+/// 2.9 Stage 4, census gap 2): the raw arm feeds arbitrary u8 payloads
+/// here, and values near u8::MAX overflowed the old u8 sum in debug builds
+/// (arithmetic totality — no input may panic or wrap in any profile).
 pub fn calculate_industry_value(
     power: u8,
     extra_yen: u8,
     extra_imported: u8,
-) -> u8 {
+) -> u32 {
     // Power gives 1:1 industry value, max 5
-    let from_power = power.min(5);
+    let from_power = power.min(5) as u32;
     // 2 Yen = 1 Industry Value
-    let from_yen = extra_yen / 2;
+    let from_yen = extra_yen as u32 / 2;
     // 1 Imported Good = 1 Industry Value
-    let from_imported = extra_imported;
+    let from_imported = extra_imported as u32;
 
     from_power + from_yen + from_imported
 }
@@ -223,6 +226,13 @@ pub fn lab_position_surcharge(slot_index: usize) -> u8 {
 /// be the board `slot_index` refers to (the acting Lab board — A or B — is
 /// resolved by the caller; buying across boards is illegal, so this function
 /// never assumes Lab A).
+///
+/// Returns the priced `(yen_cost, imported_cost)` the purchase will charge —
+/// since Phase 2.9 Stage 4 the executor deducts EXACTLY these validated
+/// amounts, so no arithmetic on unvalidated payload fields exists in the
+/// execute path (census gap 1: the old executor re-derived the fifth-tech
+/// surcharge itself and could charge a +2 Yen validation never priced,
+/// underflowing `money`).
 #[allow(clippy::too_many_arguments)]
 pub fn validate_lab_action(
     state: &GameState,
@@ -234,7 +244,7 @@ pub fn validate_lab_action(
     fifth_tech_payment: Option<bool>,
     power: u8,
     tech_registry: &TechRegistry,
-) -> Result<u8, &'static str> {
+) -> Result<(u32, u32), &'static str> {
     let p = state.player(player);
 
     if slot_index >= 6 {
@@ -261,11 +271,26 @@ pub fn validate_lab_action(
     let position_surcharge = lab_position_surcharge(slot_index);
     let total_required = required_iv + position_surcharge;
 
-    // Calculate available industry value
+    // Calculate available industry value (u32 sum — census gap 2)
     let available_iv = calculate_industry_value(power, extra_yen, extra_imported);
 
-    if available_iv < total_required {
+    if available_iv < total_required as u32 {
         return Err("Insufficient industry value");
+    }
+
+    // Exact-cover enumeration convention (Phase 2.9 adjudication against
+    // stage-1 oracle spec §7.2-3): the legal-move generator emits only
+    // `extra_yen = 2*(deficit-k)`, `extra_imported = k` — so extra payment
+    // never exceeds the Industry deficit and extra_yen is always a whole
+    // number of 2-Yen Industry units. Raw-arm payloads that over-cover (or
+    // waste an odd Yen that buys no Industry) are rejected for consistency
+    // rather than silently charged for nothing.
+    if !extra_yen.is_multiple_of(2) {
+        return Err("Odd extra Yen buys no Industry (2 Yen = 1 Industry; exact covers only)");
+    }
+    let deficit = (total_required as u32).saturating_sub(power.min(5) as u32);
+    if extra_yen as u32 / 2 + extra_imported as u32 > deficit {
+        return Err("Payment over-covers the Industry deficit (exact covers only)");
     }
 
     // Calculate total Yen cost
@@ -283,6 +308,11 @@ pub fn validate_lab_action(
                 }
             }
         }
+    } else if fifth_tech_payment.is_some() {
+        // Census gap 1: a supplied payment for a penalty that is not due
+        // must be rejected here — the old validation ignored it while the
+        // executor still charged it (money underflow for Some(true)).
+        return Err("Fifth tech payment supplied but no penalty is due");
     }
 
     // Validate payment
@@ -295,7 +325,7 @@ pub fn validate_lab_action(
         return Err("Not enough imported goods");
     }
 
-    Ok(total_required)
+    Ok((yen_cost, imported_cost))
 }
 
 /// Execute Laboratory action: resolve the acting Lab board (A or B) from the
@@ -345,17 +375,15 @@ pub fn execute_lab_action(
     let slot_index = lab_ref.slots.iter().position(|s| *s == Some(card_id))
         .ok_or(MoveError::CardNotFound)?;
 
-    // Validate against the resolved board.
-    validate_lab_action(
+    // Validate against the resolved board. The returned (yen_cost,
+    // imported_cost) is the ONLY amount deducted below (Phase 2.9 Stage 4,
+    // census gap 1): the executor no longer re-derives costs from the raw
+    // payload, so a validate/execute pricing mismatch is structurally
+    // impossible.
+    let (yen_cost, imported_cost) = validate_lab_action(
         state, player, lab_ref, slot_index, extra_yen, extra_imported,
         fifth_tech_payment, power, tech_registry,
     ).map_err(MoveError::RuleViolation)?;
-
-    // Costs (mirrors validate_lab_action's own calculation).
-    let yen_cost = extra_yen as u32
-        + if fifth_tech_payment == Some(true) { 2 } else { 0 };
-    let imported_cost = extra_imported as u32
-        + if fifth_tech_payment == Some(false) { 1 } else { 0 };
 
     // Take the card, slide the remainder left, and refill from the
     // state-owned deck — one borrow of `lab` so refill_lab (which borrows
@@ -1249,6 +1277,109 @@ mod tests {
         r.insert(make_test_tech_card(4, 5, TechEffect::Exposition), "exposition_1");
         r.insert(make_test_tech_card(5, 5, TechEffect::Tram), "tram_1");
         r
+    }
+
+    // --- Phase 2.9 Stage 4: raw-arm self-defense (census gaps 1-2) ---
+
+    #[test]
+    fn lab_fifth_tech_yen_payment_without_penalty_due_is_rejected_no_underflow() {
+        // Census gap 1 probe: 0 techs owned (penalty NOT required), money 0,
+        // cost fully covered by power. Supplying Some(true) slipped past
+        // validation (which only inspects fifth_tech_payment when the
+        // penalty is due) and the executor then charged the unvalidated
+        // +2 Yen: debug underflow panic, release wrap to ~4.29e9 Yen.
+        let mut state = create_test_state();
+        let player = PlayerId::new(0);
+        state.players[0].money = 0;
+        place_president_at_lab_a(&mut state);
+
+        let mut tech_registry = TechRegistry::new();
+        tech_registry.insert(make_test_tech_card(1, 2, TechEffect::Tram), "tech_test");
+        state.lab_state.lab_a.slots[0] = Some(TechCardId(1));
+        let before = state.clone();
+
+        let result = execute_lab_action(
+            &mut state, player, TechCardId(1), 0, 0, Some(true), 3, &tech_registry,
+        );
+        assert!(matches!(result, Err(MoveError::RuleViolation(_))), "{result:?}");
+        assert_eq!(state, before, "zero mutation on Err");
+    }
+
+    #[test]
+    fn lab_fifth_tech_imported_payment_without_penalty_due_is_rejected() {
+        // Some(false) sibling of the probe above: with imported_goods >= 1
+        // the old validation ACCEPTED the spurious penalty payment and the
+        // executor charged 1 imported good for a penalty that was not due.
+        let mut state = create_test_state();
+        let player = PlayerId::new(0);
+        state.players[0].money = 5;
+        state.players[0].imported_goods = 1;
+        place_president_at_lab_a(&mut state);
+
+        let mut tech_registry = TechRegistry::new();
+        tech_registry.insert(make_test_tech_card(1, 2, TechEffect::Tram), "tech_test");
+        state.lab_state.lab_a.slots[0] = Some(TechCardId(1));
+        let before = state.clone();
+
+        let result = execute_lab_action(
+            &mut state, player, TechCardId(1), 0, 0, Some(false), 3, &tech_registry,
+        );
+        assert!(matches!(result, Err(MoveError::RuleViolation(_))), "{result:?}");
+        assert_eq!(state, before, "zero mutation on Err");
+    }
+
+    #[test]
+    fn lab_overpay_beyond_deficit_is_rejected_exact_covers_only() {
+        // Census static note, adjudicated against the enumeration
+        // convention (stage-1 oracle spec §7.2-3: the generator emits exact
+        // covers only; over-cover adds nothing at the table): power 5 fully
+        // covers cost 2, so ANY extra payment over-covers -- previously
+        // accepted, silently charging 2 Yen for zero additional Industry.
+        let mut state = create_test_state();
+        let player = PlayerId::new(0);
+        state.players[0].money = 10;
+        place_president_at_lab_a(&mut state);
+
+        let mut tech_registry = TechRegistry::new();
+        tech_registry.insert(make_test_tech_card(1, 2, TechEffect::Tram), "tech_test");
+        state.lab_state.lab_a.slots[0] = Some(TechCardId(1));
+        let before = state.clone();
+
+        let result = execute_lab_action(
+            &mut state, player, TechCardId(1), 2, 0, None, 5, &tech_registry,
+        );
+        assert!(matches!(result, Err(MoveError::RuleViolation(_))), "{result:?}");
+        assert_eq!(state, before, "zero mutation on Err");
+    }
+
+    #[test]
+    fn lab_odd_extra_yen_is_rejected_exact_covers_only() {
+        // extra_yen = 3 covers a deficit of 1 (3/2 = 1 Industry) but wastes
+        // 1 Yen -- not of the generator's 2*(deficit-k) form (§7.2-3), so
+        // the raw arm rejects it rather than silently charging the odd Yen.
+        let mut state = create_test_state();
+        let player = PlayerId::new(0);
+        state.players[0].money = 10;
+        place_president_at_lab_a(&mut state);
+
+        let mut tech_registry = TechRegistry::new();
+        tech_registry.insert(make_test_tech_card(1, 4, TechEffect::Tram), "tech_test");
+        state.lab_state.lab_a.slots[0] = Some(TechCardId(1));
+        let before = state.clone();
+
+        // Power 3 vs required 4 -> deficit 1; extra_yen 3 is odd.
+        let result = execute_lab_action(
+            &mut state, player, TechCardId(1), 3, 0, None, 3, &tech_registry,
+        );
+        assert!(matches!(result, Err(MoveError::RuleViolation(_))), "{result:?}");
+        assert_eq!(state, before, "zero mutation on Err");
+    }
+
+    #[test]
+    fn calculate_industry_value_sums_without_u8_overflow() {
+        // Census gap 2 probe: extra_yen/extra_imported near u8::MAX
+        // overflowed the old u8 sum in debug builds. The sum is u32 now.
+        assert_eq!(u64::from(calculate_industry_value(5, 255, 255)), 5 + 127 + 255);
     }
 
     #[test]
