@@ -7,8 +7,8 @@ use rand::{Rng, SeedableRng};
 use rand_chacha::ChaCha8Rng;
 use yokohama_core::{
     apply_move_unchecked, finalize_setup, get_legal_moves, is_game_over, new_game, replay, replay_strict,
-    GameConfig, GameRecord, GameState, Move, OrderCardId, PlayerId, RecordedEvent, Rules,
-    StartingOrderChoice,
+    state_digest, GameConfig, GameRecord, GameState, Move, OrderCardId, PlayerId, RecordedEvent, Rules,
+    StartingOrderChoice, SEMANTICS_REV,
 };
 
 /// Build a record whose hidden-starting-order player (P1) is holding a FULL
@@ -178,4 +178,117 @@ fn strict_replay_rejects_a_broken_state_though_every_event_applied() {
     assert_eq!(err.event_index, bad_index, "strict must name the offending event: {err}");
     assert!(err.message.contains("invariant violated"), "got: {}", err.message);
     assert!(err.message.contains("order hand size"), "got: {}", err.message);
+}
+
+// --- Phase 2.9 close-out: semantics-revision stamp + terminal-state digest ---
+// guidingpath Phase-3 MANDATORY handover item (a): today's `engine_version`
+// (never-bumped workspace 0.1.0) and `rules_hash` (static DATA only) don't
+// identify executable semantics, so a legality/apply/scoring/setup change
+// moves neither stamp and `replay_strict` would silently reinterpret an old
+// record. `SEMANTICS_REV` closes that gap; the terminal digest is the
+// defense-in-depth backstop on top of the per-event invariant checks.
+
+/// Every fresh record is stamped with the running engine's `SEMANTICS_REV`.
+#[test]
+fn records_stamp_the_running_semantics_rev() {
+    let rules = Rules::standard();
+    let (_, record) = common::run_recorded_game(7, 2, &rules);
+    assert_eq!(record.semantics_rev, SEMANTICS_REV);
+}
+
+/// Strict replay rejects a record whose `semantics_rev` differs from this
+/// engine's -- the whole point of the stamp: a behaviour change bumps the
+/// rev, and an old record must not be silently reinterpreted. Lenient replay
+/// still warns-and-continues, mirroring the engine_version/rules_hash split.
+#[test]
+fn strict_replay_rejects_semantics_rev_mismatch_but_lenient_continues() {
+    let rules = Rules::standard();
+    let (_, mut record) = common::run_recorded_game(7, 2, &rules);
+    record.semantics_rev = SEMANTICS_REV + 1;
+    let err = replay_strict(&record, &rules).unwrap_err();
+    assert_eq!(err.event_index, 0);
+    assert!(err.message.contains("semantics_rev"), "got: {}", err.message);
+    assert!(replay(&record, &rules).is_ok(), "lenient replay warns but continues");
+}
+
+/// A stamped record survives a JSON round-trip and strict-replays clean with
+/// its terminal-state digest verified against the replayed state.
+#[test]
+fn stamped_record_round_trips_and_strict_replay_verifies_the_terminal_digest() {
+    let rules = Rules::standard();
+    let (final_state, mut record) = common::run_recorded_game(7, 2, &rules);
+    record.stamp_terminal_digest(&final_state);
+    assert!(record.terminal_digest.is_some(), "stamp must set the digest");
+
+    let json = serde_json::to_string(&record).unwrap();
+    let back: GameRecord = serde_json::from_str(&json).unwrap();
+    assert_eq!(back.terminal_digest, record.terminal_digest, "digest survives round-trip");
+    assert_eq!(back.semantics_rev, SEMANTICS_REV, "semantics_rev survives round-trip");
+
+    // Strict replay recomputes the digest from the replayed terminal state
+    // and must accept the match.
+    assert_eq!(replay_strict(&back, &rules).unwrap(), final_state);
+}
+
+/// Strict replay rejects a stored terminal digest that does not match the
+/// state the event log folds to. The error is reported at the past-the-end
+/// event index (the digest covers the whole run, not one event) and names
+/// the terminal-state digest. Lenient replay does NOT check it (strict-only,
+/// like the invariant checks).
+#[test]
+fn strict_replay_rejects_a_wrong_terminal_digest() {
+    let rules = Rules::standard();
+    let (final_state, mut record) = common::run_recorded_game(7, 2, &rules);
+    record.stamp_terminal_digest(&final_state);
+    // All-f is a valid 16-hex digest that cannot match the real one (2^-64).
+    record.terminal_digest = Some("ffffffffffffffff".into());
+    let err = replay_strict(&record, &rules).unwrap_err();
+    assert_eq!(err.event_index, record.events.len(), "digest failure is after the last event");
+    assert!(err.message.contains("terminal-state digest"), "got: {}", err.message);
+    assert!(replay(&record, &rules).is_ok(), "lenient replay does not verify the digest");
+}
+
+/// The terminal digest catches an events-vs-digest divergence that the
+/// per-event invariant checks do NOT: dropping the last event leaves a record
+/// whose events fold to a perfectly valid EARLIER state, yet the stored digest
+/// still describes the full run. Only the digest comparison flags it.
+#[test]
+fn terminal_digest_catches_a_valid_but_wrong_terminal_state() {
+    let rules = Rules::standard();
+    let (final_state, mut record) = common::run_recorded_game(7, 2, &rules);
+    assert!(record.events.len() >= 2, "need >=2 events to drop one meaningfully");
+    record.stamp_terminal_digest(&final_state);
+
+    // Drop the last event: the remaining prefix folds to a real, invariant-
+    // clean mid-game state -- different from `final_state`, so its digest
+    // differs from the one stamped for the full run.
+    record.events.pop();
+    let truncated = replay(&record, &rules).expect("a prefix of a real game replays cleanly");
+    assert_ne!(
+        state_digest(&truncated),
+        record.terminal_digest.clone().unwrap(),
+        "fixture: the dropped event must actually change the terminal state"
+    );
+
+    // Every prefix event is invariant-clean, so strict replay reaches the
+    // terminal-digest check and fails THERE (not on an invariant).
+    let err = replay_strict(&record, &rules).unwrap_err();
+    assert!(err.message.contains("terminal-state digest"), "got: {}", err.message);
+}
+
+/// Records written before these fields existed (no `semantics_rev`, no
+/// `terminal_digest` key) still deserialize: `semantics_rev` serde-defaults to
+/// rev 1 (the semantics in force when the field landed) and `terminal_digest`
+/// to `None`.
+#[test]
+fn pre_field_records_deserialize_with_semantics_rev_1_and_no_digest() {
+    let rules = Rules::standard();
+    let (_, record) = common::run_recorded_game(7, 2, &rules);
+    let mut v = serde_json::to_value(&record).unwrap();
+    let obj = v.as_object_mut().unwrap();
+    obj.remove("semantics_rev");
+    obj.remove("terminal_digest");
+    let restored: GameRecord = serde_json::from_value(v).unwrap();
+    assert_eq!(restored.semantics_rev, 1, "pre-field records default to semantics rev 1");
+    assert_eq!(restored.terminal_digest, None);
 }

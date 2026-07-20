@@ -187,6 +187,13 @@ impl Session {
                 record.rules_hash,
             );
         }
+        if record.semantics_rev != yokohama_core::SEMANTICS_REV {
+            eprintln!(
+                "warning: GameRecord.semantics_rev={} does not match running SEMANTICS_REV={} -- replaying anyway (interactive load is lenient; record_stats/replay_strict refuse)",
+                record.semantics_rev,
+                yokohama_core::SEMANTICS_REV,
+            );
+        }
 
         // Rebuilds the base state the same way `new_sim`/`new_live` do
         // (new_game -> optional reconcile_setup -> finalize_setup) rather
@@ -247,7 +254,13 @@ impl Session {
     /// save could still rename a not-yet-durable file onto `path`.
     pub fn save(&self, path: &std::path::Path) -> Result<(), String> {
         use std::io::Write;
-        let text = serde_json::to_string_pretty(&self.record).map_err(|e| e.to_string())?;
+        // Stamp the digest of the state-after-last-event on a clone (`save`
+        // is `&self`; the clone is cheaper than the JSON serialization that
+        // follows). Makes every tester/live-gate save strict-verifiable end
+        // to end — Phase-2.9 close-out follow-up (a).
+        let mut record = self.record.clone();
+        record.stamp_terminal_digest(&self.state);
+        let text = serde_json::to_string_pretty(&record).map_err(|e| e.to_string())?;
         let mut tmp = path.as_os_str().to_os_string();
         tmp.push(".tmp");
         let tmp = std::path::PathBuf::from(tmp);
@@ -607,6 +620,32 @@ mod tests {
         let mut s = Session::for_test_from_state(state, Rules::empty_for_tests());
         let err = s.apply(Move::EndAdditionalPhase, vec![]).unwrap_err();
         assert!(matches!(err, ApplyError::GameOver), "{err:?}");
+    }
+
+    /// Phase-2.9 close-out follow-up (a): every save stamps the terminal
+    /// digest of the state-after-last-event, so tester/live-gate saves are
+    /// strict-verifiable end to end (record_stats and replay_strict check
+    /// the digest only when present).
+    #[test]
+    fn save_stamps_the_terminal_digest_and_it_verifies_strict() {
+        let mut s = sim_2p(4);
+        for _ in 0..5 {
+            let mv = s.legal()[0].clone();
+            s.apply(mv, vec![]).unwrap();
+        }
+        let path =
+            std::env::temp_dir().join(format!("yokohama_digest_{}.json", std::process::id()));
+        s.save(&path).unwrap();
+        let text = std::fs::read_to_string(&path).unwrap();
+        let record: yokohama_core::GameRecord = serde_json::from_str(&text).unwrap();
+        assert_eq!(
+            record.terminal_digest.as_deref(),
+            Some(yokohama_core::state_digest(s.state()).as_str()),
+            "save must stamp the digest of the state after the last event"
+        );
+        yokohama_core::replay_strict(&record, s.rules())
+            .expect("a freshly-saved record must strict-replay clean incl. digest");
+        std::fs::remove_file(&path).ok();
     }
 
     #[test]
