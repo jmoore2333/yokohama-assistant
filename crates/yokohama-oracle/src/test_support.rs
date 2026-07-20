@@ -41,6 +41,17 @@ pub(crate) fn small_board() -> BoardLayout {
     b.build().expect("small board validates")
 }
 
+/// [`two_player_state`] extended additively to 3 players (P2 Yellow): same
+/// small board, `config` swapped to the 3-player one. Type-valid, not
+/// setup-valid (e.g. `port_b` stays `None`) — Stage-2 scoring fixtures only
+/// need seats and per-player state, never port boards.
+pub(crate) fn three_player_state() -> GameState {
+    let mut s = two_player_state();
+    s.config = GameConfig::for_player_count(3);
+    s.players.push(PlayerState::new(PlayerId::new(2), PlayerColor::Yellow, false));
+    s
+}
+
 /// A minimal 2-player state on [`small_board`]: both presidents in hand,
 /// default resources, `AdditionalActionFirst`, empty queue. Tests mutate the
 /// fields they care about.

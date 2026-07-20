@@ -139,8 +139,24 @@ pub fn drive_game(
     policy: Policy,
     rules: &Rules,
     max_steps: Option<u64>,
-    mut observer: impl FnMut(&GameState, &[Move], u64) -> Result<StepOutcome, String>,
+    observer: impl FnMut(&GameState, &[Move], u64) -> Result<StepOutcome, String>,
 ) -> Result<DriveStats, String> {
+    drive_game_to_end(seed, players, policy, rules, max_steps, observer).map(|(stats, _)| stats)
+}
+
+/// [`drive_game`], but also returning the LAST state reached — the terminal
+/// state when `stats.completed` is true (this is what the Stage-2 scoring
+/// differential compares on), or the state at the stop point for an
+/// observer `Stop` / `max_steps` cutoff. Same loop, same failure contract;
+/// `drive_game` is a thin wrapper that drops the state.
+pub fn drive_game_to_end(
+    seed: u64,
+    players: u8,
+    policy: Policy,
+    rules: &Rules,
+    max_steps: Option<u64>,
+    mut observer: impl FnMut(&GameState, &[Move], u64) -> Result<StepOutcome, String>,
+) -> Result<(DriveStats, GameState), String> {
     let (mut state, mut rng) = new_seeded_game(seed, players, rules)?;
 
     if let Err(reason) = check_invariants(&state, rules) {
@@ -150,7 +166,9 @@ pub fn drive_game(
     let mut steps: u64 = 0;
     loop {
         if is_game_over(&state) {
-            return Ok(DriveStats { seed, players, policy, steps, turns: state.turn_number, completed: true });
+            let stats =
+                DriveStats { seed, players, policy, steps, turns: state.turn_number, completed: true };
+            return Ok((stats, state));
         }
         if state.turn_number > MAX_TURNS {
             return Err(fail(
@@ -161,7 +179,9 @@ pub fn drive_game(
             ));
         }
         if max_steps.is_some_and(|cap| steps >= cap) {
-            return Ok(DriveStats { seed, players, policy, steps, turns: state.turn_number, completed: false });
+            let stats =
+                DriveStats { seed, players, policy, steps, turns: state.turn_number, completed: false };
+            return Ok((stats, state));
         }
 
         let moves = get_legal_moves(&state, rules);
@@ -176,7 +196,15 @@ pub fn drive_game(
 
         match observer(&state, &moves, steps)? {
             StepOutcome::Stop => {
-                return Ok(DriveStats { seed, players, policy, steps, turns: state.turn_number, completed: false });
+                let stats = DriveStats {
+                    seed,
+                    players,
+                    policy,
+                    steps,
+                    turns: state.turn_number,
+                    completed: false,
+                };
+                return Ok((stats, state));
             }
             StepOutcome::Continue => {}
         }

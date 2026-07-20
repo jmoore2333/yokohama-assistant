@@ -36,6 +36,7 @@ mod choices;
 mod common;
 mod movement;
 mod placement;
+pub mod scoring;
 
 #[cfg(test)]
 mod test_support;

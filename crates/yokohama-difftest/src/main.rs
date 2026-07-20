@@ -10,6 +10,14 @@
 //! every game completes divergence-free, 1 on any divergence or driver
 //! failure, 2 on usage error.
 //!
+//! `score <games> <players> <base_seed> <policy>` (Stage 2) instead drives
+//! each game TO COMPLETION with no per-step comparison and differentially
+//! compares FINAL scoring (engine `final_result` vs. oracle
+//! `final_standings`: per-player totals AND the full ranked order) at the
+//! terminal state; divergences write `phase: "FinalScoring"` artifacts.
+//! Same exit codes. This mirrors the `scoring_differential` release-gate
+//! sweep for manual runs.
+//!
 //! NOTE (Stage 1 shell): while `yokohama_oracle::oracle_moves` is an empty/partial
 //! stub, EVERY game diverges at step 0 (all engine moves are engine-only) —
 //! expected until the independence-protected oracle track lands the real
@@ -20,7 +28,7 @@ use std::process::ExitCode;
 use yokohama_core::Rules;
 use yokohama_difftest::artifact::default_artifacts_dir;
 use yokohama_difftest::drive::Policy;
-use yokohama_difftest::runner::run_differential_game;
+use yokohama_difftest::runner::{run_differential_game, run_scoring_game};
 
 /// `repro [--strict] <artifact.json>`: reload a divergence artifact's state
 /// snapshot and re-run both sides' enumeration on it, printing the full key
@@ -113,6 +121,56 @@ fn repro(path: &str, strict: bool) -> ExitCode {
     }
 }
 
+/// `score <games> <players> <base_seed> <policy>`: the Stage-2 terminal
+/// scoring sweep (see module docs). Mirrors the enumeration sweep loop:
+/// exit 0 all clean, 1 on any divergence or driver failure.
+fn score_sweep(games: u64, players: u8, base_seed: u64, policy: Policy) -> ExitCode {
+    let rules = Rules::standard();
+    let artifact_dir = default_artifacts_dir();
+    let mut clean: u64 = 0;
+    let mut diverged: u64 = 0;
+
+    for i in 0..games {
+        let seed = base_seed + i;
+        match run_scoring_game(seed, players, policy, &rules, &artifact_dir) {
+            Ok(outcome) => match outcome.divergence {
+                None => {
+                    clean += 1;
+                    println!(
+                        "seed {seed}: scoring clean ({} steps, {} turns) engine={:?}",
+                        outcome.stats.steps, outcome.stats.turns, outcome.comparison.engine
+                    );
+                }
+                Some(path) => {
+                    diverged += 1;
+                    println!(
+                        "seed {seed}: SCORING DIVERGENCE after {} steps (turn {})\n  engine: {:?}\n  oracle: {:?}\n  -> {}",
+                        outcome.stats.steps,
+                        outcome.stats.turns,
+                        outcome.comparison.engine,
+                        outcome.comparison.oracle,
+                        path.display()
+                    );
+                }
+            },
+            Err(e) => {
+                eprintln!("seed {seed}: DRIVER FAILURE:\n{e}");
+                return ExitCode::from(1);
+            }
+        }
+    }
+
+    println!(
+        "{games} games ({players}p, policy {}): {clean} scoring-clean, {diverged} diverged",
+        policy.as_str()
+    );
+    if diverged > 0 {
+        ExitCode::from(1)
+    } else {
+        ExitCode::SUCCESS
+    }
+}
+
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().collect();
     if (args.len() == 3 && args[1] == "repro")
@@ -121,8 +179,23 @@ fn main() -> ExitCode {
         let strict = args.len() == 4;
         return repro(if strict { &args[3] } else { &args[2] }, strict);
     }
+    if args.len() == 6 && args[1] == "score" {
+        return match (
+            args[2].parse::<u64>(),
+            args[3].parse::<u8>(),
+            args[4].parse::<u64>(),
+            args[5].parse::<Policy>(),
+        ) {
+            (Ok(g), Ok(p), Ok(s), Ok(pol)) if (2..=4).contains(&p) => score_sweep(g, p, s, pol),
+            _ => {
+                eprintln!("usage: yokohama-difftest score <games> <players: 2-4> <base_seed> <policy: uniform|retreat-averse>");
+                ExitCode::from(2)
+            }
+        };
+    }
     if args.len() != 5 {
         eprintln!("usage: yokohama-difftest <games> <players> <base_seed> <policy: uniform|retreat-averse>");
+        eprintln!("       yokohama-difftest score <games> <players> <base_seed> <policy>");
         eprintln!("       yokohama-difftest repro [--strict] <artifact.json>");
         return ExitCode::from(2);
     }
