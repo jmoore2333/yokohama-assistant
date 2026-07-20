@@ -1597,6 +1597,8 @@ mod tests {
     fn finish_apply_ex_reports_game_over_plainly_not_illegal_prefixed() {
         let mut state = create_test_game_state(2);
         state.end_game_triggered = true;
+        state.trigger_player = Some(PlayerId::new(0));
+        state.trigger_reason = Some(yokohama_core::EndGameTrigger::OrderDeckEmpty);
         state.final_round = true;
         state.turn_phase = TurnPhase::TurnEnd;
         state.current_player = PlayerId::new(1);
@@ -1620,6 +1622,8 @@ mod tests {
     fn game_over_screen_announces_winner_and_breakdown() {
         let mut state = create_test_game_state(2);
         state.end_game_triggered = true;
+        state.trigger_player = Some(PlayerId::new(0));
+        state.trigger_reason = Some(yokohama_core::EndGameTrigger::OrderDeckEmpty);
         state.final_round = true;
         state.turn_phase = TurnPhase::TurnEnd;
         state.current_player = PlayerId::new(1);

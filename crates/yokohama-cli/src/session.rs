@@ -595,6 +595,8 @@ mod tests {
     fn apply_on_finished_game_returns_typed_game_over() {
         let mut state = create_test_game_state(2);
         state.end_game_triggered = true;
+        state.trigger_player = Some(PlayerId::new(0));
+        state.trigger_reason = Some(yokohama_core::EndGameTrigger::OrderDeckEmpty);
         state.final_round = true;
         state.turn_phase = TurnPhase::TurnEnd;
         // is_game_over requires current_player == the seat before start_player

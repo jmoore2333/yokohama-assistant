@@ -141,6 +141,25 @@ fn test_church_track_rewards() {
     assert_eq!(ChurchTrack::faith_to_index(3), None);
 }
 
+/// Phase-2.9 Stage-6 banked-VP audit pin: the FULL Church VP table against
+/// box-verified literals (owner box check 2026-07-18, guidingpath decision
+/// log: "church board VP 3/4/5/6/7/8/11/14 CONFIRMED"; KB
+/// 01-rules-reference.md Church table). The pre-existing test above pinned
+/// only the endpoints — the six middle amounts had no literal pin anywhere
+/// (tracks.rs tests compare against `vp_reward` itself, which cannot catch
+/// a table edit).
+#[test]
+fn church_track_vp_full_table_pin() {
+    let expected: [(u8, u8); 8] =
+        [(4, 3), (5, 4), (6, 5), (7, 6), (8, 7), (9, 8), (10, 11), (11, 14)];
+    for (faith, vp) in expected {
+        assert_eq!(ChurchTrack::vp_reward(faith), vp, "faith {faith}");
+    }
+    // Off-track inputs credit nothing.
+    assert_eq!(ChurchTrack::vp_reward(3), 0);
+    assert_eq!(ChurchTrack::vp_reward(12), 0);
+}
+
 #[test]
 fn test_customs_track_rewards() {
     // Board-art verified 2026-07-17: 7 spaces keyed by space number
@@ -207,6 +226,37 @@ fn test_achievement_vp() {
     assert_eq!(AchievementType::Copper5.subsequent_vp(), 6);
     assert_eq!(AchievementType::Money10.first_place_vp(), 9);
     assert_eq!(AchievementType::Production4.first_place_vp(), 10);
+}
+
+/// Phase-2.9 Stage-6 banked-VP audit pin: first/subsequent VP for ALL 12
+/// achievement types against KB 01-rules-reference.md's Achievement tables
+/// (A: 8/6, B: 9/7, C: 10/8). The pre-existing test above pinned only 4 of
+/// the 24 amounts; in particular no test pinned the subsequent VP for any
+/// category-B or category-C card.
+#[test]
+fn achievement_vp_full_table_pin() {
+    use AchievementType::*;
+    let cases: [(AchievementType, u8, u8); 12] = [
+        // Category A: Trade Good Holdings — 1st 8 VP, 2nd+ 6 VP
+        (Copper5, 8, 6),
+        (Silk6, 8, 6),
+        (Tea7, 8, 6),
+        (Seafood7, 8, 6),
+        // Category B: Collection Goals — 1st 9 VP, 2nd+ 7 VP
+        (Money10, 9, 7),
+        (Tokens5, 9, 7),
+        (Orders5, 9, 7),
+        (Technologies4, 9, 7),
+        // Category C: Building Presence — 1st 10 VP, 2nd+ 8 VP
+        (Production4, 10, 8),
+        (Commercial4, 10, 8),
+        (Prod3Comm2, 10, 8),
+        (Prod2Comm3, 10, 8),
+    ];
+    for (ach, first, subsequent) in cases {
+        assert_eq!(ach.first_place_vp(), first, "{ach:?} first");
+        assert_eq!(ach.subsequent_vp(), subsequent, "{ach:?} subsequent");
+    }
 }
 
 #[test]

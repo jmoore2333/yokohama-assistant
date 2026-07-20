@@ -153,6 +153,22 @@ pub fn check_invariants(state: &GameState, rules: &Rules) -> Result<(), String> 
         }
     }
 
+    // End-game trigger coherence (Stage-6 audit): check_end_game_triggers
+    // always sets trigger_player + trigger_reason with the flag, and
+    // final_round only ever follows a trigger. A state violating either is
+    // tampered/corrupt, and previously made the free-fn and method
+    // is_game_over implementations disagree (now unified).
+    if state.end_game_triggered && (state.trigger_player.is_none() || state.trigger_reason.is_none())
+    {
+        return Err(
+            "end_game_triggered without trigger_player/trigger_reason (trigger coherence)"
+                .to_string(),
+        );
+    }
+    if state.final_round && !state.end_game_triggered {
+        return Err("final_round without end_game_triggered (final_round coherence)".to_string());
+    }
+
     // Board membership (design §4.1): every stored AreaId must exist on the
     // board. A record or bot that fabricates areas must fail loudly here.
     let on_board = |a: &crate::types::AreaId| state.board_layout.areas.contains_key(a);
@@ -396,6 +412,31 @@ mod tests {
         state.current_action_power = Some(6);
         let err = check_invariants(&state, &rules).unwrap_err();
         assert!(err.contains("current_action_power"), "expected power-bound error, got: {err}");
+    }
+
+    /// Stage-6 audit finding: `end_game::is_game_over` and
+    /// `GameState::is_game_over` had drifted on tampered states where
+    /// `end_game_triggered` is set without `trigger_player`/`trigger_reason`
+    /// — a state `check_end_game_triggers` can never produce. The free fn
+    /// now delegates to the method (single definition), and this invariant
+    /// makes the incoherent state loudly invalid for `replay_strict`.
+    #[test]
+    fn end_game_trigger_fields_must_be_coherent() {
+        let (mut state, rules) = baseline();
+        assert!(check_invariants(&state, &rules).is_ok());
+
+        state.end_game_triggered = true;
+        state.trigger_player = None;
+        state.trigger_reason = None;
+        let err = check_invariants(&state, &rules).unwrap_err();
+        assert!(err.contains("trigger"), "expected trigger-coherence error, got: {err}");
+
+        // final_round without the trigger flag is equally incoherent.
+        let (mut state, rules) = baseline();
+        state.final_round = true;
+        state.end_game_triggered = false;
+        let err = check_invariants(&state, &rules).unwrap_err();
+        assert!(err.contains("final_round"), "expected final_round-coherence error, got: {err}");
     }
 
     /// I1(b) final-review fix (design §5.1 queue invariant): a queued

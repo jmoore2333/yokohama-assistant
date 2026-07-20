@@ -70,24 +70,15 @@ fn check_port_empty_slot(state: &GameState) -> bool {
 }
 
 /// Determine if the game is completely over (final round finished).
+///
+/// Delegates to [`GameState::is_game_over`] — the SINGLE definition (Stage-6
+/// audit finding: this free fn and the method had drifted; the method
+/// additionally requires `trigger_player` to be set, which
+/// `check_end_game_triggers` guarantees on every engine-produced state, so
+/// legal-play behavior is identical and only tampered states differ — they
+/// now also trip the trigger-coherence invariant).
 pub fn is_game_over(state: &GameState) -> bool {
-    if !state.end_game_triggered {
-        return false;
-    }
-
-    if !state.final_round {
-        // Need to complete current round first, then play final round
-        return false;
-    }
-
-    // Final round complete when we've looped back after all players took a turn
-    // The player before start player should be the last to play
-    let player_before_start = PlayerId::new(
-        (state.config.start_player.0 + state.config.player_count - 1) % state.config.player_count,
-    );
-
-    // Game is over if current player is at TurnEnd and is the player before start player
-    state.current_player == player_before_start && state.turn_phase == TurnPhase::TurnEnd
+    state.is_game_over()
 }
 
 /// Advance to final round after completing current round.
