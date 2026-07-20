@@ -1,0 +1,302 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Yokohama Assistant — Engineer Primer</title>
+<style>
+  :root {
+    --bg: #ffffff;
+    --panel: #f7f8fa;
+    --panel-border: #e3e6ea;
+    --text: #1f2328;
+    --muted: #59606a;
+    --accent: #2563eb;
+    --accent-soft: #eaf1fe;
+    --code-bg: #f2f3f5;
+    --code-text: #14315c;
+    --rule: #e3e6ea;
+    --core-bg: #eaf1fe;
+    --core-border: #9cc0fb;
+    --node-bg: #f7f8fa;
+    --node-border: #d6dbe1;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #14161b;
+      --panel: #1c1f26;
+      --panel-border: #2b2f38;
+      --text: #e6e8eb;
+      --muted: #a2a9b4;
+      --accent: #7aa2f7;
+      --accent-soft: #1b2438;
+      --code-bg: #1e222a;
+      --code-text: #c7d2e6;
+      --rule: #2b2f38;
+      --core-bg: #1b2438;
+      --core-border: #34517f;
+      --node-bg: #1c1f26;
+      --node-border: #2b2f38;
+    }
+  }
+
+  * { box-sizing: border-box; }
+  html { -webkit-text-size-adjust: 100%; }
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    line-height: 1.62;
+    margin: 0;
+    padding: 2.4rem 1.2rem 4rem;
+    font-size: 16px;
+  }
+  main { max-width: 50rem; margin: 0 auto; }
+
+  h1 { font-size: 1.7rem; line-height: 1.25; margin: 0 0 .35rem; letter-spacing: -0.01em; }
+  h2 {
+    font-size: 1.18rem; margin: 2.4rem 0 .7rem; padding-bottom: .3rem;
+    border-bottom: 1px solid var(--rule); letter-spacing: -0.005em;
+  }
+  h3 { font-size: 1.02rem; margin: 1.4rem 0 .3rem; }
+  p { margin: .7rem 0; }
+  .lead { font-size: 1.05rem; color: var(--text); }
+  .subtitle { color: var(--muted); margin: 0 0 1.2rem; font-size: 1rem; }
+  .muted { color: var(--muted); }
+  strong { font-weight: 650; }
+  a { color: var(--accent); text-decoration: none; }
+  a:hover { text-decoration: underline; }
+
+  code {
+    font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace;
+    font-size: 0.88em;
+    background: var(--code-bg);
+    color: var(--code-text);
+    padding: .1em .35em;
+    border-radius: 4px;
+    word-break: break-word;
+  }
+  pre {
+    background: var(--code-bg);
+    border: 1px solid var(--panel-border);
+    border-radius: 8px;
+    padding: .9rem 1rem;
+    overflow-x: auto;
+    margin: .9rem 0;
+  }
+  pre code { background: none; padding: 0; color: var(--code-text); font-size: 0.84rem; line-height: 1.55; }
+  .cmt { color: var(--muted); }
+
+  ol, ul { margin: .6rem 0; padding-left: 1.4rem; }
+  li { margin: .28rem 0; }
+  li > strong:first-child { color: var(--text); }
+
+  .table-wrap { overflow-x: auto; margin: 1rem 0; }
+  table { border-collapse: collapse; width: 100%; font-size: 0.92rem; }
+  th, td { text-align: left; padding: .55rem .7rem; border-bottom: 1px solid var(--rule); vertical-align: top; }
+  th { font-weight: 650; color: var(--muted); font-size: 0.8rem; text-transform: uppercase; letter-spacing: 0.03em; }
+  td code { font-size: 0.82em; }
+  .nowrap { white-space: nowrap; }
+
+  /* crate diagram */
+  .diagram { margin: 1.1rem 0 .4rem; }
+  .node {
+    background: var(--node-bg);
+    border: 1px solid var(--node-border);
+    border-radius: 10px;
+    padding: .75rem .95rem;
+  }
+  .node-core { background: var(--core-bg); border-color: var(--core-border); }
+  .node-title { font-weight: 650; font-size: 0.98rem; }
+  .node-title .tag {
+    font-weight: 500; font-size: 0.72rem; color: var(--muted);
+    background: var(--bg); border: 1px solid var(--panel-border);
+    border-radius: 20px; padding: .05rem .5rem; margin-left: .5rem; white-space: nowrap;
+  }
+  .node-body { color: var(--muted); font-size: 0.86rem; margin-top: .25rem; line-height: 1.45; }
+  .node-body code { font-size: 0.85em; }
+  .connector { text-align: center; color: var(--muted); font-size: 0.8rem; margin: .5rem 0; }
+  .node-row { display: flex; gap: .7rem; flex-wrap: wrap; }
+  .node-row .node { flex: 1 1 12rem; }
+  .gendata { color: var(--muted); font-size: 0.84rem; margin-top: .7rem; padding-left: .2rem; }
+  .diagram-caption { color: var(--muted); font-size: 0.86rem; margin-top: .55rem; }
+
+  .callout {
+    background: var(--panel);
+    border: 1px solid var(--panel-border);
+    border-left: 3px solid var(--accent);
+    border-radius: 6px;
+    padding: .7rem .95rem;
+    margin: 1rem 0;
+    font-size: 0.94rem;
+  }
+  .callout .label { font-weight: 650; color: var(--accent); }
+
+  footer { margin-top: 3rem; padding-top: 1rem; border-top: 1px solid var(--rule); color: var(--muted); font-size: 0.85rem; }
+
+  @media print {
+    body { padding: 0; font-size: 11.5pt; }
+    h2 { page-break-after: avoid; }
+    pre, table, .diagram, .callout { page-break-inside: avoid; }
+    a { color: inherit; }
+  }
+</style>
+</head>
+<body>
+<main>
+
+<h1>Yokohama Assistant — Engineer Primer</h1>
+<p class="subtitle">A Rust engine, live-tracking CLI, and verification stack for the board game <em>Yokohama</em> · orientation for a first-time reader of this codebase</p>
+
+<p class="lead">This repository is a Rust workspace that knows how to play <strong>Yokohama</strong> (Hisashi Hayashi, 2016, 2&ndash;4 players): a rules-complete <em>engine</em>, a command-line <em>driver</em> that tracks or simulates real games move by move, and a <em>verification stack</em> that has been checked, decision-point by decision-point, against a second implementation of the rules written independently from the same rulebook. It is built toward a computer player, so the engine is deliberately shaped as the API a search algorithm will later consume &mdash; state is cheap to clone and carries no history. The work follows a three-rung priority order: <strong>(1)</strong> engine-validated live-game tracking through the CLI, <strong>(2)</strong> a computer player that provably plays to win, and <strong>(3)</strong> computer vision, deferred.</p>
+
+<h2>1. The workspace at a glance</h2>
+
+<p>Five crates. Everything is built on <code>yokohama-core</code>; the arrangement below is the point of the whole design, so it is worth thirty seconds.</p>
+
+<div class="diagram" role="img" aria-label="Dependency diagram: yokohama-oracle, yokohama-cli, and yokohama-difftest all build on yokohama-core; gen-data generates core's card data.">
+  <div class="node node-core">
+    <div class="node-title">yokohama-core <span class="tag">the engine</span></div>
+    <div class="node-body">Serde state types &middot; the pure functions <code>get_legal_moves</code> and <code>apply_move</code> over a cheap-to-clone, history-free <code>GameState</code> &middot; <code>GameRecord</code> save/replay</div>
+  </div>
+  <div class="connector">&#9650;&nbsp;&nbsp;all three crates below build on&nbsp;<code>yokohama-core</code>&nbsp;&nbsp;&#9650;</div>
+  <div class="node-row">
+    <div class="node">
+      <div class="node-title">yokohama-oracle</div>
+      <div class="node-body">Independent rules referee. <strong>Types-only</strong> dependency on core &mdash; shares the data, none of the logic.</div>
+    </div>
+    <div class="node">
+      <div class="node-title">yokohama-cli</div>
+      <div class="node-body">Setup wizard + REPL driver. Consumes core's legal-move / apply API.</div>
+    </div>
+    <div class="node">
+      <div class="node-title">yokohama-difftest</div>
+      <div class="node-body">Differential harness. Depends on <em>both</em> core and oracle and compares them.</div>
+    </div>
+  </div>
+  <div class="gendata">&#8627; <strong>gen-data</strong> &mdash; build-time tool; turns the verified YAML card/board data into <code>core/src/game/data.rs</code> (never hand-edited).</div>
+</div>
+
+<h3>yokohama-core &mdash; the engine</h3>
+<p>Serde-serializable state plus two pure functions over it: <code>get_legal_moves(&amp;GameState, &amp;Rules) -&gt; Vec&lt;Move&gt;</code> enumerates every legal move, and <code>apply_move(&amp;GameState, &amp;Move, &amp;Rules) -&gt; Result&lt;GameState, MoveError&gt;</code> returns a fresh state (it clones; it never mutates). <code>apply_move</code> is the <strong>checked boundary</strong> &mdash; it rejects any move not in the current legal list before applying &mdash; while <code>apply_move_unchecked</code> is the internal fast path for self-play and the future search, where moves are already drawn from the legal list. Games save and replay through <code>GameRecord</code>, which stamps a <code>rules_hash</code> (which static card/board data produced it), a <code>semantics_rev</code> (bumped for any behaviour-affecting rules change), and a terminal-state digest that <code>replay_strict</code> verifies. Keeping <code>GameState</code> history-free is deliberate: the move history lives in the external record, so search clones stay cheap.</p>
+
+<h3>yokohama-cli &mdash; the driver</h3>
+<p>A setup wizard walks you through mode (simulate, or live-track a physical game), player count, colours, seed, and &mdash; in live mode &mdash; the table's tiles, building sites, and port/lab contents, with a review/edit step before it commits. Then a REPL presents the current player's numbered legal options and applies what you pick, with <code>a</code>/<code>b</code> placement, <code>m</code> assistant-move, and <code>r</code> retreat shorthand grammars for the phases that have too many options to number usefully. It carries save/load/undo/autosave, a reveal choreography for hidden cards drawn during a live game, and a desync tripwire that locks the session if the tracked state and the physical board ever disagree.</p>
+
+<h3>yokohama-oracle &mdash; the independent referee</h3>
+<p>A second, independently-authored implementation of the rules, used purely as a referee. It re-implements legal-move enumeration, final scoring with the tie-break, and a prune-free route reference &mdash; written from the rulebook, knowledge base, and decision log only, with a <strong>types-only</strong> dependency on the engine (it shares the data types but reads none of the engine's logic). That independence is the whole idea: two implementations that never read each other's rules code can only agree if <em>both</em> read the actual rules correctly, so a mistaken belief in the engine surfaces as a disagreement rather than as two copies of the same bug. To keep the independence real rather than nominal, every oracle author's file access was audited against the tool calls they actually made.</p>
+
+<h3>yokohama-difftest &mdash; the harness</h3>
+<p>Drives the engine and the oracle over the same games under two different play policies and compares them at every decision point: legal-move sets, president-route labels (three-way, against the prune-free reference as well), and final scores and rankings. Any disagreement is written out as a schema-versioned, fully self-contained snapshot of the game state, and a <code>repro</code> subcommand reloads one and re-runs the comparison &mdash; so a divergence is a standalone, replayable artifact, not a seed you have to reconstruct.</p>
+
+<h2>2. Quickstart</h2>
+
+<pre><code><span class="cmt"># 1. Install Rust, if you don't have it (rustup)</span>
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
+<span class="cmt"># plain `cargo` works on this project once rustup is installed</span>
+
+<span class="cmt"># 2. Run the engine's test suite</span>
+cargo test -p yokohama-core
+
+<span class="cmt">#    ...or the full per-edit gate: all four crates, then the lint wall</span>
+cargo test -p yokohama-core -p yokohama-cli -p yokohama-oracle -p yokohama-difftest
+cargo clippy --workspace --all-targets -- -D warnings
+
+<span class="cmt"># 3. Run the game driver (setup wizard, then the REPL)</span>
+cargo run -p yokohama-cli
+cargo run -p yokohama-cli -- save.json     <span class="cmt"># resume a saved game</span>
+
+<span class="cmt"># 4. Random self-play: 100 games, 4 players, base seed 0</span>
+cargo run --release -p yokohama-core --example selfplay -- 100 4 0</code></pre>
+
+<p><strong>The driver, in one paragraph.</strong> <code>cargo run -p yokohama-cli</code> opens the setup wizard, which asks one question at a time (mode, players, colours, start seat, seed, save path, then a mode-specific tail) and lets you review and edit before it starts. In-game, every screen shows a status header, a numbered list of the legal moves, and a hint line; you play by typing an option's number, or one of the shorthand grammars where numbering is impractical &mdash; <code>a</code>/<code>b</code> for assistant placement, <code>m &lt;from&gt; &lt;to&gt;</code> for a queued assistant-move reward, and <code>r [id[:n]]...</code> to retreat the President while recovering assistants. Whatever a grammar assembles is matched against the engine's real legal list before it applies, so the tool can never make a move the engine did not offer. The complete tester's guide is <a href="cli-guide.md">docs/cli-guide.md</a> (and a word-identical <code>.html</code> twin).</p>
+
+<p class="muted">At the Phase&nbsp;2.9 close-out the debug suites stood at roughly 940 tests (core 564, CLI 169, oracle 164, difftest 40), zero failures, clippy clean. Those run after every edit. The five heavier <em>release gates</em> below run before a merge or a phase close.</p>
+
+<h2>3. The five release gates</h2>
+
+<p>Copy-pasteable, in the order they run. Each ends in <code>-- --ignored</code> because these are release-profile sweeps kept out of the fast per-edit suite.</p>
+
+<pre><code>cargo test --release -p yokohama-core     --test fuzz_full_games      -- --ignored
+cargo test --release -p yokohama-core     --test choice_encoding      -- --ignored
+cargo test --release -p yokohama-difftest --test differential         -- --ignored
+cargo test --release -p yokohama-difftest --test routes3_differential -- --ignored
+cargo test --release -p yokohama-difftest --test scoring_differential -- --ignored</code></pre>
+
+<div class="table-wrap">
+<table>
+  <thead>
+    <tr><th>Gate</th><th>What it proves</th><th class="nowrap">~Time</th></tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td><strong>Fuzz self-play</strong></td>
+      <td>1,500 random games (a slice of the 15,000-game sweep) run to completion with per-move state invariants: the engine stays <em>self-consistent</em>.</td>
+      <td class="nowrap">~44 s</td>
+    </tr>
+    <tr>
+      <td><strong>Choice census</strong></td>
+      <td>Every kind of queued player choice, and its resolution move, actually fires in random play &mdash; coverage that the choice machinery isn't dead code.</td>
+      <td class="nowrap">~0.3 s</td>
+    </tr>
+    <tr>
+      <td><strong>Engine&nbsp;vs&nbsp;oracle differential</strong></td>
+      <td>Engine and oracle agree on every legal-move set, at every decision point, under two drive policies.</td>
+      <td class="nowrap">~26 s</td>
+    </tr>
+    <tr>
+      <td><strong>Three-way route check</strong></td>
+      <td>Engine, oracle, and a prune-free reference agree on every president-route label (cost and who-gets-paid).</td>
+      <td class="nowrap">~1.4 s</td>
+    </tr>
+    <tr>
+      <td><strong>Scoring differential</strong></td>
+      <td>Engine and oracle agree on every final score and ranking, including the clockwise tie-break.</td>
+      <td class="nowrap">~1.7 s</td>
+    </tr>
+  </tbody>
+</table>
+</div>
+<p class="muted">Standing per-gate costs from the Phase&nbsp;2.9 final report (~74&nbsp;s total); they vary with game count and machine.</p>
+
+<h2>4. How the verification stack works</h2>
+
+<p>Two independent techniques, aimed at two different classes of bug.</p>
+
+<p><strong>Self-play fuzzing proves the engine is self-consistent.</strong> Fifteen thousand random games (and the 1,500-game CI slice above) run to completion with nine-plus state invariants checked after every applied move &mdash; money and goods conserved, hand sizes legal, the turn machine well-formed. This is excellent at catching a state the engine corrupts. But it has a structural blind spot: enumeration and application are the same code reading the same rules, so if <em>both</em> share a wrong belief, self-play cheerfully agrees with itself and sees nothing wrong.</p>
+
+<p><strong>The differential oracle is the tool for exactly that blind spot.</strong> Because the oracle enumerates moves from an independent reading of the rules, a shared-wrong-belief bug surfaces as a disagreement rather than staying invisible.</p>
+
+<div class="callout">
+  <span class="label">War story.</span> The engine's builder offered only the <em>first</em> empty shophouse slot on a building site &mdash; but the site's four slots carry materially different printed rewards, so a player's real choice among them was unencodable. Self-play could never catch it (both sides shared the belief that one slot was enough), yet the oracle enumerated the other slots and the very first differential sweep diverged. The campaign found four such engine bugs this way, plus one bug in the oracle itself.
+</div>
+
+<p><strong>Divergences are self-contained.</strong> When the two disagree, the harness writes a schema-versioned snapshot of the game state at the point of disagreement. <code>cargo run -p yokohama-difftest -- repro [--strict] &lt;artifact.json&gt;</code> reloads that snapshot and re-runs the comparison, so any divergence can be replayed in isolation without reconstructing the game that produced it.</p>
+
+<h2>5. Where the truth lives</h2>
+<ul>
+  <li><strong><a href="../guidingpath.md">guidingpath.md</a></strong> &mdash; the authoritative status and roadmap. Its decision log is the canonical record of <em>every</em> rules ruling. Start here; where README or older docs disagree, this file wins.</li>
+  <li><strong><a href="../CLAUDE.md">CLAUDE.md</a></strong> &mdash; working conventions: commands, architecture, the two-tier gate policy.</li>
+  <li><strong><a href="cli-guide.md">docs/cli-guide.md</a></strong> / <code>.html</code> &mdash; the tester's guide to the driver, in word-identical twin formats.</li>
+  <li><strong>docs/plans/</strong> &mdash; dated design docs, implementation plans, and phase reports (<code>YYYY-MM-DD-topic.md</code>). The campaign write-up is <a href="plans/2026-07-20-phase-2.9-final-report.md">2026-07-20-phase-2.9-final-report.md</a>.</li>
+  <li><strong><a href="plans/2026-07-20-phase-2.9-ruling-list.md">the ruling list</a></strong> &mdash; the owner's adjudications of the rules ambiguities the campaign surfaced.</li>
+  <li><strong>README.md</strong> &mdash; top-level overview. Note: everything below its &ldquo;historical note&rdquo; line describes a superseded 2025 vision, kept only for the record.</li>
+</ul>
+
+<h2>6. Current status &amp; what's next</h2>
+
+<p><strong>Status (2026-07-20): Phase&nbsp;2.9 converged.</strong> The engine and the independent oracle agree on every legal-move set (240 of 240 games after fixes), every route label (7,272 organic decision points plus adversarial batteries), and every final score and ranking (540 games). Getting there found and fixed four engine bugs, one oracle bug, and a performance defect, hardened the raw apply path against ill-formed inputs, and produced the owner-adjudicated ruling list. The engine has been the sole legality authority since the prior phase, and the differential harness now stands as a permanent regression net.</p>
+
+<p><strong>Next, in order:</strong></p>
+<ol>
+  <li><strong>The live gate</strong> &mdash; tracking one full physical game start to finish through the CLI. This is the Phase-2 acceptance test; the machinery and choice encoding are complete, so it is a scheduling matter for the owner, not an engineering blocker.</li>
+  <li><strong>Phase&nbsp;3 &mdash; the computer player</strong> &mdash; a value-function-first ladder toward search (per the project's read of the Catanatron evidence: a good evaluator before deep search). Three handover items are recorded in <code>guidingpath.md</code> for whoever starts it: uniform-random rollouts are a poor playout policy (they over-sample the retreat family), <code>get_legal_moves</code> can materialize a six-figure worst case so search needs a factored/lazy action interface, and training corpora must not be carried across a <code>semantics_rev</code> bump.</li>
+</ol>
+
+<footer>
+  Yokohama is a board game by Hisashi Hayashi (2016); this is an unofficial engine and assistant. All figures above are drawn from the repository's own docs (chiefly the Phase&nbsp;2.9 final report) &mdash; verify against the source tree if anything looks stale.
+</footer>
+
+</main>
+</body>
+</html>
