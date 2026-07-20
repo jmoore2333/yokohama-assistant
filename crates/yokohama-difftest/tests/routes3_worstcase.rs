@@ -203,7 +203,7 @@ fn worst_case_battery_three_way_equal_and_bound_recorded() {
 
     // Cell tech loadouts: the Stagecoach/Postal 2x2 plus one Tram+Station
     // cell (station on a far flank; every area holds an own assistant, so
-    // the PENDING-RULING interim gate passes).
+    // the RULED §7.1-A1 Reading-2 assistant gate passes).
     let cells: [(&str, Vec<yokohama_core::TechCardId>, Option<AreaId>); 5] = [
         ("plain", vec![], None),
         ("postal", vec![postal], None),

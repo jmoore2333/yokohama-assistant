@@ -104,12 +104,13 @@ fn real_state_round_trips_through_an_artifact() {
 /// The committed ruling-A1 fixtures stay loadable and re-enumerable forever —
 /// they are the owner-facing evidence for ruling A1 and must not rot silently
 /// (Stage-1 review finding 2). Each fixture's RECORDED diff shows the
-/// pre-interim divergence (oracle-only Station label); the FRESH comparison
-/// must be CLEAN because the PENDING-RULING interim aligns the oracle with
-/// the engine's Reading 2. If Jeremy rules Reading 1, the engine changes and
-/// the fresh expectation here flips with it — update alongside the ruling.
+/// historical pre-ruling divergence (oracle-only Station label); the FRESH
+/// comparison must be CLEAN because both sides implement Reading 2 — RULED
+/// by Jeremy 2026-07-20 (decision-log row): the station token adds power
+/// only, RB p.6's assistant-at-destination rule stands. These fixtures are
+/// the permanent evidence of the divergence that surfaced the question.
 #[test]
-fn ruling_a1_fixtures_load_and_compare_clean_under_the_interim() {
+fn ruling_a1_fixtures_load_and_compare_clean_under_reading_2() {
     use yokohama_difftest::artifact::read_artifact;
     use yokohama_difftest::compare::compare_moves;
     let rules = Rules::standard();
@@ -134,7 +135,7 @@ fn ruling_a1_fixtures_load_and_compare_clean_under_the_interim() {
         let cmp = compare_moves(&state, &rules, &engine_moves, &oracle);
         assert!(
             !cmp.is_divergent(),
-            "{name}: must compare CLEAN under the PENDING-RULING interim; got engine_only={:?} oracle_only={:?} dups={:?}",
+            "{name}: must compare CLEAN under RULED Reading 2; got engine_only={:?} oracle_only={:?} dups={:?}",
             cmp.engine_only, cmp.oracle_only, cmp.duplicates
         );
         checked += 1;

@@ -22,7 +22,7 @@
 //! is negative and nothing on a route earns money, so an unaffordable prefix
 //! can never extend to an affordable route) but no code; the reference does
 //! not make the assumption at all. Teleport labels (Tram / Station incl. the
-//! PENDING-RULING interim gate) are deliberately SHARED between the two
+//! RULED §7.1-A1 Reading-2 assistant gate) are deliberately SHARED between the two
 //! oracle surfaces, so a pruned-vs-pruneless diff isolates the WALKS —
 //! exactly the pruning-soundness claim under test.
 
