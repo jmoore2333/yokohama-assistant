@@ -232,6 +232,42 @@ pub fn tracks_view(state: &GameState) -> String {
     out
 }
 
+/// Achievement cards in play (`state.achievements`'s fixed 3-card array,
+/// `G0`-`G2`): the printed condition (`describe::achievement_desc`), claim
+/// state (`open`, or `claimed by` the claiming color(s) in claim order --
+/// MORE than one player can claim the same achievement, first claimant at
+/// `first_place_vp`, each later one at `subsequent_vp`, so every name in
+/// `claimed_by` is listed, not just the first), then one indented line per
+/// player with their live progress (`achievement_progress`, Task 14/T2.3)
+/// as `cur/need` -- the SAME arithmetic `can_claim_achievement` gates the
+/// actual claim on, so this view can never show a player "ready" (cur >=
+/// need) when the engine would actually refuse the claim, or vice versa.
+/// `rules` is accepted for interface symmetry with the file's other
+/// `*_view` functions (same precedent as `sites_view`'s `_rules`) but
+/// unused: everything here comes from `state` alone.
+pub fn achievements_view(state: &GameState, _rules: &Rules) -> String {
+    let mut out = String::new();
+    for (i, card) in state.achievements.iter().enumerate() {
+        let claim_state = if card.claimed_by.is_empty() {
+            "open".to_string()
+        } else {
+            let names: Vec<&str> =
+                card.claimed_by.iter().map(|&pid| color_name(state.player(pid).color)).collect();
+            format!("claimed by {}", names.join(", "))
+        };
+        out.push_str(&format!(
+            "G{i}: {} — {}\n",
+            describe::achievement_desc(card.achievement_type),
+            claim_state,
+        ));
+        for p in &state.players {
+            let (cur, need) = achievement_progress(state, p.id, card.achievement_type);
+            out.push_str(&format!("   {}: {}/{}\n", color_name(p.color), cur, need));
+        }
+    }
+    out
+}
+
 /// Human-readable lines summarizing everything that changed between `before`
 /// and `after`: per-player money/VP/goods/imports diffs, hand and technology
 /// gains/losses, assistant placed/moved/recovered/taken lines, church/
@@ -825,6 +861,61 @@ mod tests {
         let needle = format!("faith {:2}:", 7);
         let line = v.lines().find(|l| l.contains(&needle)).expect("faith-7 line present");
         assert!(line.trim_end().ends_with('X'), "{line}");
+    }
+
+    /// Task 14 (T2.3) brief Step 1: one `G{i}` line per achievement card
+    /// (`state.achievements` is always a fixed 3-card array -- one per
+    /// category), and progress shown as `cur/need` somewhere in the text.
+    #[test]
+    fn achievements_view_lists_condition_claim_state_and_progress() {
+        let state = test_state_2p();
+        let rules = Rules::standard();
+        let text = achievements_view(&state, &rules);
+        assert_eq!(text.lines().filter(|l| l.starts_with("G")).count(), 3, "{text}");
+        assert!(text.contains("/"), "progress as cur/need expected: {text}");
+    }
+
+    /// Claim state must name the ACTUAL claimant and stay "open" for a
+    /// still-unclaimed card -- the Step-1 test above only pins line COUNT
+    /// and that SOME "/" appears, not the words themselves.
+    #[test]
+    fn achievements_view_shows_open_then_names_the_claimant_once_claimed() {
+        let mut state = test_state_2p();
+        let rules = Rules::standard();
+
+        let before = achievements_view(&state, &rules);
+        let g0_before = before.lines().find(|l| l.starts_with("G0")).expect("a G0 line exists");
+        assert!(g0_before.contains("open"), "{g0_before}");
+
+        // State-inject a claim directly onto the card (mirrors
+        // achievements.rs's own claim tests) rather than driving
+        // `claim_achievement` through a full legal-move sequence -- this
+        // view only reads `claimed_by`, so a direct injection exercises
+        // exactly the field it reads.
+        state.achievements[0].claimed_by.push(PlayerId::new(0));
+        let after = achievements_view(&state, &rules);
+        let g0_after = after.lines().find(|l| l.starts_with("G0")).expect("a G0 line exists");
+        assert!(!g0_after.contains("open"), "{g0_after}");
+        assert!(g0_after.contains("claimed by Red"), "{g0_after}"); // Red is players[0]
+    }
+
+    /// The numbers shown are exactly what `achievement_progress` computes,
+    /// not just "some digits with a slash" (the Step-1 test's `contains
+    /// ("/")` check would pass even for a stub like "0/0" on every line) --
+    /// checked for every card x player without depending on which 3
+    /// achievements this seed happened to draw.
+    #[test]
+    fn achievements_view_progress_numbers_match_achievement_progress() {
+        let state = test_state_2p();
+        let rules = Rules::standard();
+        let text = achievements_view(&state, &rules);
+        for card in &state.achievements {
+            for p in &state.players {
+                let (cur, need) = achievement_progress(&state, p.id, card.achievement_type);
+                let expected = format!("{}: {}/{}", color_name(p.color), cur, need);
+                assert!(text.contains(&expected), "missing '{expected}' in:\n{text}");
+            }
+        }
     }
 
     /// Reviewer-check per the Task 12 brief: `render.rs` must single-source

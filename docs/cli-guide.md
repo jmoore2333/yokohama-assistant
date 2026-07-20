@@ -112,6 +112,7 @@ ports           show both Port boards and the order-deck size
 labs            show both Laboratory boards and the tech-deck size
 tracks          show the Church and Customs tracks
 sites           show each area's building-site printed rewards and build marks
+goals           show achievement cards, claim state, and per-player progress
 hand            show the current player's order-card hand
 score           show current VP/money (or the final scores once the game is over)
 log             show the tail of the move/event log

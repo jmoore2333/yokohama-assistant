@@ -128,6 +128,7 @@ impl Repl {
             ["labs"] => self.out_view(render::labs_view(self.session.state(), self.session.rules())),
             ["tracks"] => self.out_view(render::tracks_view(self.session.state())),
             ["sites"] => self.out_view(render::sites_view(self.session.state(), self.session.rules())),
+            ["goals"] => self.out_view(render::achievements_view(self.session.state(), self.session.rules())),
             ["hand"] => self.out_view(self.hand_text()),
             ["score"] => self.out_view(self.score_text()),
             ["log"] => self.out_view(self.log_tail()),
@@ -631,6 +632,7 @@ Commands:
   labs            show both Laboratory boards and the tech-deck size
   tracks          show the Church and Customs tracks
   sites           show each area's building-site printed rewards and build marks
+  goals           show achievement cards, claim state, and per-player progress
   hand            show the current player's order-card hand
   score           show current VP/money (or the final scores once the game is over)
   log             show the tail of the move/event log
@@ -759,7 +761,7 @@ mod tests {
     #[test]
     fn view_commands_show_only_the_input_hint_not_the_full_options_block() {
         let mut r = repl_2p(4);
-        for cmd in ["board", "players", "ports", "labs", "tracks", "sites", "hand", "score", "log", "help"] {
+        for cmd in ["board", "players", "ports", "labs", "tracks", "sites", "goals", "hand", "score", "log", "help"] {
             let out = r.step(cmd);
             assert!(!out.text.contains("[0]"), "'{cmd}' unexpectedly showed the numbered options block: {}", out.text);
             assert!(
