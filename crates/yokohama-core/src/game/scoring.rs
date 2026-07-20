@@ -336,12 +336,22 @@ mod tests {
         // Fixture: 3p, engineered equal totals for players 1 and 2 (set raw
         // victory_points equal, then zero every remainder-affecting field so
         // default per-seat differences -- e.g. the start player's lower
-        // starting money -- can't reintroduce an accidental tiebreak),
-        // start_player = 2.
-        // distance: p2 = 0, p0 = 1, p1 = 2 -> tied p1/p2 resolve p2 first.
+        // starting money -- can't reintroduce an accidental tiebreak).
+        //
+        // start_player = 0, and the TIE IS BETWEEN TWO NON-START SEATS. That
+        // is what gives this test teeth (I1, external review 2026-07-20): the
+        // previous fixture tied p1/p2 with start_player = 2, so the winner was
+        // the start player itself at distance 0 -- which is distance 0 under
+        // BOTH the shipped clockwise key and a reversed one, so a sign flip at
+        // `final_result`'s sort key passed unnoticed.
+        //
+        //   clockwise  (p + n - start) % n : p1 = 1, p2 = 2  -> p1 wins the tie
+        //   reversed   (start + n - p) % n : p1 = 2, p2 = 1  -> p2 would win
+        //
+        // so the direction is now observable in the outcome.
         let rules = Rules::empty_for_tests();
         let mut state = create_test_game_state(3);
-        state.config.start_player = PlayerId::new(2);
+        state.config.start_player = PlayerId::new(0);
         for p in state.players.iter_mut() {
             p.money = 0;
             p.copper = 0;
@@ -355,16 +365,17 @@ mod tests {
         state.players[2].victory_points = 10;
 
         let r = final_result(&state, &rules);
-        assert_eq!(
-            r.standings.iter().map(|s| s.rank).collect::<Vec<_>>().len(),
-            state.players.len()
-        );
-        assert_eq!(r.winner, PlayerId::new(2));
+        assert_eq!(r.standings.len(), state.players.len(), "one standing per player");
+        assert_eq!(r.winner, PlayerId::new(1), "clockwise from start 0, p1 is nearer than tied p2");
         let ranks: Vec<(PlayerId, u8)> = r.standings.iter().map(|s| (s.player, s.rank)).collect();
-        // p2 outranks p1 despite equal totals; no shared ranks.
+        // p1 outranks p2 despite equal totals; no shared ranks.
         let p1_rank = ranks.iter().find(|(p, _)| *p == PlayerId::new(1)).unwrap().1;
         let p2_rank = ranks.iter().find(|(p, _)| *p == PlayerId::new(2)).unwrap().1;
-        assert!(p2_rank < p1_rank, "p2 (distance 0 from start) must outrank tied p1: {ranks:?}");
+        assert!(
+            p1_rank < p2_rank,
+            "p1 (clockwise distance 1) must outrank tied p2 (distance 2); a reversed \
+             tie-break would invert this: {ranks:?}"
+        );
         let mut rank_values: Vec<u8> = ranks.iter().map(|(_, rk)| *rk).collect();
         rank_values.sort_unstable();
         assert_eq!(rank_values, vec![1, 2, 3], "ranks must be unique 1..=n, never shared");
