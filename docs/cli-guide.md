@@ -111,6 +111,7 @@ players         show each player's resources, hand, tech, tokens, President
 ports           show both Port boards and the order-deck size
 labs            show both Laboratory boards and the tech-deck size
 tracks          show the Church and Customs tracks
+sites           show each area's building-site printed rewards and build marks
 hand            show the current player's order-card hand
 score           show current VP/money (or the final scores once the game is over)
 log             show the tail of the move/event log
@@ -232,9 +233,9 @@ Area names with their grid abbreviations (`board` view) and wizard entry codes:
 
 Board-grid cells also show: `P:` line (Presidents present, by color letter), assistants (`R2 B1` = 2 red, 1 blue), buildings (`sh RB | th Y` = shophouses by owner color, trading house owner), and `*` = this area's 5-Power token is still unclaimed.
 
-Building sites: `S03  [1vp 2vp+1yen - 2tea]  TH 8vp` = site card 3, its four shophouse spaces' printed rewards (top-left, top-right, mid-left, mid-right; `-` = blank), and the trading-house VP.
+Building sites (`sites` view): one line per area holding a site, e.g. `Copper Mine (A03)  S03  [1vp 2wh - 2move]  TH 7vp  sh - | th -` — `S<n>`'s number is the **area's id**, not the physical site card's printed index (that number is only used to validate your entry during wizard setup, §3, and isn't kept once the game starts); `[...]` is the site's four shophouse-space printed rewards (top-left, top-right, mid-left, mid-right; `-` = blank; `wh`/`move`/`any` are the icon rewards from §8.3, real choice prompts when taken); `TH` is the trading-house VP; `sh .. | th ..` are the same build/ownership marks the `board` grid shows for that cell. Building options during the Building phase (`Build a Shophouse`/`Build a Trading House`) print this same printed-reward text instead of a bare space number.
 
-Tracks (`tracks` view): Church spaces by faith value 4–11; Customs spaces 1–7 with printed goods-costs `[1,1,2,2,3,3,4]`. In 2-player games `X` marks the pre-blocked dummy space (Customs space 4). ⚠ **Known display gap:** the 2-player Church dummy block (faith-7 space) is *enforced by the engine but not marked in the `tracks` view* — it renders `-` (open). Don't be surprised when placement there isn't offered at 2p.
+Tracks (`tracks` view): Church spaces by faith value 4–11; Customs spaces 1–7 with printed goods-costs `[1,1,2,2,3,3,4]`. In 2-player games `X` marks both pre-blocked dummy spaces — Church faith-7 and Customs space 4.
 
 **Canal crossing:** the Canal tile can never hold an assistant, a President, or a building — that part is unchanged — but President movement can now cross straight through it in a single hop, connecting whichever of its (up to) four flanking pairs actually exist on this board's grid: left↔right, up↔down, and both diagonals. A 3-player board's grid is only 2 rows, so it can only ever have the left↔right pair; a 4-player board's 3-row grid can have all four; 2-player games have no Canal tile at all. Each crossing costs 1 Yen to the bank — a separate, unconditional toll from the opponent-president pass-through fee (which instead goes to that president's owner) — and that includes the very first step out of the President's current area, if that step is itself a crossing. "Bent" transits (entering one flank and exiting anywhere but the exact opposite one) are illegal and never offered: the tool only ever builds the straight-through edges, so there's nothing bent to pick from in the first place. Telegram's adjacent-area placement bonus (§4) does not extend across a canal crossing — it still needs a physically adjoining tile.
 

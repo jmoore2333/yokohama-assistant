@@ -2,6 +2,7 @@
 //! the CLI's option text (design docs/plans/2026-07-18-phase2-cli-driver-design.md).
 
 use yokohama_core::*;
+use yokohama_core::game::actions::{copper_mine_reward, fishing_ground_reward, silk_mill_reward, tea_plantation_reward};
 
 pub fn area_type_name(t: AreaType) -> &'static str {
     match t {
@@ -122,16 +123,60 @@ fn chinatown_exchange_text(exchange: ChinatownExchange) -> &'static str {
     }
 }
 
+/// The area this AreaAction targets: the mercenary sub-turn's target area
+/// when `state.is_mercenary_action`, else the current player's President
+/// location on board -- mirrors the engine's own acting-area resolution in
+/// `game::legal_moves::generate_area_action_moves`/`generate_building_
+/// moves` so a preview never disagrees with what the engine will actually
+/// act on. `None` when the President is still in hand: unreached by any
+/// legal `ExecuteAreaAction`/`BuildShophouse`/`BuildTradingHouse` move
+/// (both phases require the President on board first) but kept as a
+/// defensive fallback for direct state construction (fixtures/tests).
+fn acting_area(state: &GameState) -> Option<AreaId> {
+    if state.is_mercenary_action {
+        state.mercenary_target_area
+    } else {
+        match state.current_player().president_location {
+            PresidentLocation::OnBoard(a) => Some(a),
+            PresidentLocation::InHand => None,
+        }
+    }
+}
+
+/// Production-area preview text: `"{verb} (power {p} -> +{r} {good})"`
+/// where `r` is the REAL reward `reward_fn` computes for power `p`.
+/// Production is NOT always power-for-power -- Copper Mine and Silk Mill
+/// under-produce at low power (e.g. `copper_mine_reward(3) == 1`); only
+/// Tea Plantation/Fishing Ground are a flat 1:1 (`game::actions::
+/// production`) -- so this always calls the engine's own reward function
+/// rather than echoing the power number, which would misstate the yield
+/// for the two non-linear areas. Falls back to the bare verb when the
+/// acting area can't be determined (see `acting_area`).
+fn production_preview(state: &GameState, verb: &str, good: TradeGood, reward_fn: fn(u8) -> u8) -> String {
+    match acting_area(state) {
+        Some(area) => {
+            let power = calculate_power(state, state.current_player, area);
+            let reward = reward_fn(power);
+            format!("{verb} (power {power} -> +{reward} {})", trade_good_name(good))
+        }
+        None => verb.to_string(),
+    }
+}
+
 /// One plain-words line describing an `AreaAction` (called from
-/// `describe_move`'s `ExecuteAreaAction` arm). `state` is accepted for
-/// interface symmetry with `describe_move`'s call site but is currently
-/// unused: no area action's description depends on board state.
-fn describe_area_action(action: &AreaAction, _state: &GameState, rules: &Rules) -> String {
+/// `describe_move`'s `ExecuteAreaAction` arm). `state` locates the acting
+/// area (`acting_area`) so the production arms (Copper Mine/Silk Mill/Tea
+/// Plantation/Fishing Ground) can preview the real yield at the current
+/// power (Task 12, T2.2a) -- every other arm's text is still independent
+/// of board state.
+fn describe_area_action(action: &AreaAction, state: &GameState, rules: &Rules) -> String {
     match action {
-        AreaAction::ProduceCopper => "Produce copper".to_string(),
-        AreaAction::ProduceSilk => "Produce silk".to_string(),
-        AreaAction::ProduceTea => "Produce tea".to_string(),
-        AreaAction::ProduceSeafood => "Produce seafood".to_string(),
+        AreaAction::ProduceCopper => production_preview(state, "Produce copper", TradeGood::Copper, copper_mine_reward),
+        AreaAction::ProduceSilk => production_preview(state, "Produce silk", TradeGood::Silk, silk_mill_reward),
+        AreaAction::ProduceTea => production_preview(state, "Produce tea", TradeGood::Tea, tea_plantation_reward),
+        AreaAction::ProduceSeafood => {
+            production_preview(state, "Produce seafood", TradeGood::Seafood, fishing_ground_reward)
+        }
         AreaAction::Bank => "Take money at the Bank".to_string(),
         AreaAction::Port { cards_taken, second_card_payment } => {
             let cards = cards_taken.iter().map(|id| format!("O{:02}", id.0)).collect::<Vec<_>>().join(", ");
@@ -275,8 +320,22 @@ pub fn describe_move(mv: &Move, state: &GameState, rules: &Rules) -> String {
         Move::ExecuteAreaAction { action } => describe_area_action(action, state, rules),
         Move::Take5PowerToken => "Take the 5-Power token".to_string(),
         Move::Skip5PowerBonus => "Skip the 5-Power token".to_string(),
-        Move::BuildShophouse { slot } => format!("Build a Shophouse (space {})", slot + 1),
-        Move::BuildTradingHouse => "Build a Trading House".to_string(),
+        Move::BuildShophouse { slot } => {
+            let reward = acting_area(state)
+                .and_then(|a| state.board_layout.building_sites.get(&a))
+                .map(|site| slot_reward_text(site, *slot as usize));
+            match reward {
+                Some(r) => format!("Build a Shophouse ({r})"),
+                None => format!("Build a Shophouse (space {})", slot + 1),
+            }
+        }
+        Move::BuildTradingHouse => {
+            let reward = acting_area(state).and_then(|a| state.board_layout.building_sites.get(&a));
+            match reward {
+                Some(site) => format!("Build a Trading House ({}vp)", site.trading_house_reward),
+                None => "Build a Trading House".to_string(),
+            }
+        }
         Move::SkipBuilding => "Skip building".to_string(),
         Move::ChooseAnyGood { good } => format!("Take 1 {} (any-good reward)", trade_good_name(*good)),
         Move::ChooseWarehouseTake { item } => {
@@ -549,6 +608,105 @@ mod tests {
             describe_move(&Move::UseSpinningMill, &state, &rules),
             "Use Textile Mill: discard 1 silk, gain 2 yen"
         );
+    }
+
+    /// Task 12 (T2.2a): a BuildShophouse option must show the space's
+    /// PRINTED reward, not a bare "(space N)" placeholder -- the CLI must
+    /// never require the player to cross-reference the physical site card
+    /// themselves to know what a build actually pays out.
+    #[test]
+    fn build_shophouse_options_print_the_spaces_printed_reward() {
+        let mut state = state_2p();
+        let rules = Rules::standard();
+        let (area, site) = state
+            .board_layout
+            .building_sites
+            .iter()
+            .next()
+            .map(|(&a, s)| (a, s.clone()))
+            .expect("a building site exists");
+        let cp = state.current_player;
+        state.players[cp.0 as usize].president_location = PresidentLocation::OnBoard(area);
+
+        let text = describe_move(&Move::BuildShophouse { slot: 0 }, &state, &rules);
+        assert!(!text.ends_with("(space 1)"), "bare space-number text must be gone: {text}");
+        let expected = slot_reward_text(&site, 0);
+        assert!(text.contains(&expected), "{text}");
+    }
+
+    /// Task 12 riding item: BuildTradingHouse should likewise show the
+    /// site's printed Trading-House VP rather than a bare label.
+    #[test]
+    fn build_trading_house_option_prints_the_sites_th_reward() {
+        let mut state = state_2p();
+        let rules = Rules::standard();
+        let (area, site) = state
+            .board_layout
+            .building_sites
+            .iter()
+            .next()
+            .map(|(&a, s)| (a, s.clone()))
+            .expect("a building site exists");
+        let cp = state.current_player;
+        state.players[cp.0 as usize].president_location = PresidentLocation::OnBoard(area);
+
+        let text = describe_move(&Move::BuildTradingHouse, &state, &rules);
+        assert!(text.contains(&format!("{}vp", site.trading_house_reward)), "{text}");
+    }
+
+    /// Task 12 (T2.2a): production-area action options must preview the
+    /// yield at the CURRENT power, computed the same way the engine
+    /// computes it (`calculate_power`) -- not just named.
+    #[test]
+    fn production_area_actions_preview_the_yield() {
+        let mut state = state_2p();
+        let rules = Rules::standard();
+        let area = *state
+            .board_layout
+            .areas
+            .iter()
+            .find(|(_, cfg)| cfg.area_type == AreaType::TeaPlantation)
+            .expect("a Tea Plantation area exists")
+            .0;
+        let cp = state.current_player;
+        state.players[cp.0 as usize].president_location = PresidentLocation::OnBoard(area);
+        state.players[cp.0 as usize].assistants.on_board.insert(area, 2);
+        state.players[cp.0 as usize].assistants.in_hand -= 2;
+        // President (1) + 2 assistants = power 3; Tea Plantation is a flat
+        // 1:1 reward, so power 3 -> +3 tea.
+
+        let text =
+            describe_move(&Move::ExecuteAreaAction { action: AreaAction::ProduceTea }, &state, &rules);
+        assert!(text.contains("power 3"), "{text}");
+        assert!(text.contains("+3 tea"), "{text}");
+    }
+
+    /// Task 12 correctness guard: Copper Mine's reward table is NOT 1:1
+    /// with power (power 3 -> only 1 copper, per `copper_mine_reward`) --
+    /// the preview must show the REAL yield, not echo the power number, or
+    /// it would actively mislead a player about what the build pays out.
+    #[test]
+    fn production_preview_uses_the_real_non_linear_reward_not_the_power_number() {
+        let mut state = state_2p();
+        let rules = Rules::standard();
+        let area = *state
+            .board_layout
+            .areas
+            .iter()
+            .find(|(_, cfg)| cfg.area_type == AreaType::CopperMine)
+            .expect("a Copper Mine area exists")
+            .0;
+        let cp = state.current_player;
+        state.players[cp.0 as usize].president_location = PresidentLocation::OnBoard(area);
+        state.players[cp.0 as usize].assistants.on_board.insert(area, 2);
+        state.players[cp.0 as usize].assistants.in_hand -= 2;
+        // President (1) + 2 assistants = power 3; Copper Mine at power 3 -> 1 copper.
+
+        let text =
+            describe_move(&Move::ExecuteAreaAction { action: AreaAction::ProduceCopper }, &state, &rules);
+        assert!(text.contains("power 3"), "{text}");
+        assert!(text.contains("+1 copper"), "{text}");
+        assert!(!text.contains("+3 copper"), "{text}");
     }
 
     #[test]

@@ -153,6 +153,49 @@ pub fn players_panel(state: &GameState, rules: &Rules) -> String {
     out
 }
 
+/// One `site_compact_line` per area holding a `BuildingSite`, in `AreaId`
+/// order (`state.board_layout.building_sites`'s own `BTreeMap` iteration
+/// order), each prefixed by the area label (`describe::area_label`'s
+/// type-name + `(A00)` convention) and suffixed by the same `sh .. | th ..`
+/// build/ownership marks the `board` grid's per-cell line shows
+/// (`build_marks`, shared with `area_cell_lines` below so the two views
+/// can never drift). The `S<n>` number `site_compact_line` prints is the
+/// AREA's id, not the physical site card's printed index -- the
+/// wizard-entered card number is used only to validate setup entry and
+/// isn't persisted onto the runtime `BuildingSite` (Task 12, T2.2a;
+/// docs/cli-guide.md §8.5 documents this). `rules` is accepted for
+/// interface symmetry with the file's other `*_view` functions (same
+/// precedent as `describe::describe_pending_choice`'s `_rules`) but
+/// currently unused: site data lives entirely in `state`.
+pub fn sites_view(state: &GameState, _rules: &Rules) -> String {
+    let mut out = String::new();
+    for (&area, site) in &state.board_layout.building_sites {
+        out.push_str(&format!(
+            "{}  {}  {}\n",
+            describe::area_label(state, area),
+            site_compact_line(area.0 as usize, site),
+            build_marks(state, site),
+        ));
+    }
+    out
+}
+
+/// "sh RB | th Y" build/ownership marks for one site: shophouse owners'
+/// color letters in slot order (built slots only; `-` when none built),
+/// then the trading-house owner's letter or `-`. Shared by `area_cell_
+/// lines`'s board-grid cell and `sites_view`'s per-site line (Task 12) so
+/// the two views can't drift on the convention documented at docs/cli-
+/// guide.md §8.5.
+fn build_marks(state: &GameState, site: &BuildingSite) -> String {
+    let sh: String =
+        site.shophouses_built.iter().filter_map(|o| o.map(|pid| color_letter(state.player(pid).color))).collect();
+    let th = site
+        .trading_house_owner
+        .map(|pid| color_letter(state.player(pid).color).to_string())
+        .unwrap_or_else(|| "-".to_string());
+    format!("sh {} | th {}", if sh.is_empty() { "-".to_string() } else { sh }, th)
+}
+
 /// Church Management Board (faith values 4-11, occupant color or `-`, `X` on
 /// the 2P dummy-blocked faith-7 space -- `eligible_church_spaces` blocks it
 /// exactly the way `eligible_customs_spaces_for_cost` blocks Customs space
@@ -590,15 +633,7 @@ fn area_cell_lines(state: &GameState, id: AreaId) -> [String; 4] {
     let assist_line = if assist_parts.is_empty() { "-".to_string() } else { assist_parts.join(" ") };
 
     let build_line = match state.board_layout.building_sites.get(&id) {
-        Some(site) => {
-            let sh: String =
-                site.shophouses_built.iter().filter_map(|o| o.map(|pid| color_letter(state.player(pid).color))).collect();
-            let th = site
-                .trading_house_owner
-                .map(|pid| color_letter(state.player(pid).color).to_string())
-                .unwrap_or_else(|| "-".to_string());
-            format!("sh {} | th {}", if sh.is_empty() { "-".to_string() } else { sh }, th)
-        }
+        Some(site) => build_marks(state, site),
         None => "no site".to_string(),
     };
 
@@ -738,6 +773,34 @@ mod tests {
         assert!(text.contains("  assistants: hand 5  board 3  warehouse 12"), "{text}");
         assert!(text.contains("  shophouses: hand 2  warehouse 5  built 1"), "{text}");
         assert!(text.contains("  trading:    hand 1  warehouse 3  built 0  (next take 5 yen)"), "{text}");
+    }
+
+    /// Task 12 (T2.2a): `site_compact_line` exists in core with zero
+    /// non-test callers before this task -- `sites_view` wires it up, one
+    /// line per area holding a `BuildingSite`.
+    #[test]
+    fn sites_view_renders_a_compact_line_per_sited_area() {
+        let state = test_state_2p();
+        let rules = Rules::standard();
+        let text = sites_view(&state, &rules);
+        assert!(text.contains('S'), "{text}");
+        assert!(text.lines().count() >= 1);
+    }
+
+    /// Each line is prefixed by the area label and suffixed by the same
+    /// `sh .. | th ..` build/ownership marks the `board` grid shows, so a
+    /// build recorded on the site is visible from `sites` too.
+    #[test]
+    fn sites_view_labels_the_area_and_shows_build_marks() {
+        let mut state = test_state_2p();
+        let rules = Rules::standard();
+        let area = *state.board_layout.building_sites.keys().next().expect("a building site exists");
+        state.board_layout.building_sites.get_mut(&area).unwrap().shophouses_built[0] = Some(PlayerId::new(0));
+
+        let text = sites_view(&state, &rules);
+        let label = describe::area_label(&state, area);
+        let line = text.lines().find(|l| l.starts_with(&label)).unwrap_or_else(|| panic!("missing {label} in {text}"));
+        assert!(line.contains("sh R"), "{line}"); // Red is players[0]
     }
 
     #[test]
