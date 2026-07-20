@@ -56,9 +56,12 @@ pub enum Move {
     EndAdditionalPhase,
 
     // Step 1: Placement
-    /// Option A: Place 1 assistant in each of up to 3 different areas.
+    /// Option A: Place 1 assistant in each of 1-3 different areas (4 with
+    /// Newspaper tech), or place none at all -- an empty placement is
+    /// always legal and free. Variant name predates the Newspaper 4-area
+    /// case; kept as-is (renaming is out of scope).
     PlaceThreeAreas {
-        placements: Vec<AreaId>, // 0-3 areas
+        placements: Vec<AreaId>, // 0-3 areas, or 0-4 with Newspaper
     },
     /// Option B: Place 2 assistants in 1 area.
     /// With Telegram tech, may also place 1 in an adjacent area.

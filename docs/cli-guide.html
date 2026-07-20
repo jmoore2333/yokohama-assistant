@@ -89,20 +89,21 @@ cargo run -p yokohama-cli -- save.json # resume a saved game</code></pre>
 <p>Every screen ends with a status header, the numbered legal options, and a hint line:</p>
 <pre><code>Turn 1 | Red | Additional actions (before) | 3 yen 0 VP | c1 s2 t0 f1 i0 | hand 1
 [0] End additional-action phase
-&gt; enter a number, 'a'/'b' for placement, 'r' to retreat, or a command ('help' for the list)</code></pre>
+&gt; enter a number, or a command ('help' for the list)</code></pre>
 <p>Header anatomy: turn number | whose turn | phase (§8.4) | money and VP | goods <code>c</code>opper <code>s</code>ilk <code>t</code>ea <code>f</code>ish(=Seafood) <code>i</code>mports | order cards in hand.</p>
-<p><strong>Choosing a move:</strong> type the option's number. Long lists show 20 per page — <code>more</code> pages forward (wrapping), <code>list</code> returns to page 0.</p>
+<p>The hint line's own middle clause is phase/choice-aware — it only ever names a shorthand that's actually usable right now: <code>'a'/'b' for placement</code> appears in <code>Placement</code>, <code>'r' to retreat</code> in <code>Movement</code>, <code>'m &lt;from&gt; &lt;to&gt;' to resolve (or the numbered Decline)</code> while an assistant-move choice is queued, and nothing extra (just the plain form above) everywhere else, including every OTHER kind of pending choice.</p>
+<p><strong>Choosing a move:</strong> type the option's number. Long lists show 20 per page — <code>more</code> pages forward (wrapping), <code>list</code> returns to page 0; whenever there's more than one page, a <code>page N/M</code> line appears right above the hint so you always know where you are and how many pages there are in total.</p>
 <p><strong>Choice prompts:</strong> some rewards leave you a decision — which good, which warehouse item, where to move an assistant, which Church/Customs space (full inventory in §8.6). Whenever one or more of these is queued, the phase slot in the header is replaced by a <code>Choose: ... — N choice(s) pending</code> banner naming the head choice, and the numbered list below is exactly that choice's options — nothing about entering them differs from any other phase. A captured example, mid-Church-visit:</p>
 <pre><code>Turn 1 | Red | Choose: Church space at faith 6 — 1 choice pending | 2 yen 0 VP | c0 s0 t1 f1 i0 | hand 1
 [0] Place on Church faith-4 space (3 VP)
 [1] Place on Church faith-5 space (4 VP)
 [2] Place on Church faith-6 space (5 VP)
-&gt; enter a number, 'a'/'b' for placement, 'r' to retreat, or a command ('help' for the list)</code></pre>
+&gt; enter a number, or a command ('help' for the list)</code></pre>
 <p>A choice that lets you decline (warehouse take, assistant move) adds <code>Decline the ...</code> as one more numbered option; a choice that's purely "which one" (any-good, Church space, Customs space) has none, because the rulebook doesn't give you one there either. Resolving a choice can queue another — picking the Church space above queues its movement-rider(s) next — and the <code>— N pending</code> count tracks how many are still stacked up.</p>
 <p><strong>Placement shorthand</strong> (the one phase with too many options to number usefully):</p>
 <ul>
   <li><code>a</code> — place nothing (legal per the rules: 0–3 assistants)</li>
-  <li><code>a 4 9 12</code> — Option A: 1 assistant in each listed area (area ids <code>0</code>–<code>17</code> as shown on the board grid, up to 3)</li>
+  <li><code>a 4 9 12</code> — Option A: 1 assistant in each listed area (area ids <code>0</code>–<code>17</code> as shown on the board grid, up to 3 — 4 with Newspaper tech)</li>
   <li><code>b 7</code> — Option B: 2 assistants in area 7</li>
   <li><code>b 7 t 8</code> — Option B plus the <strong>Telegram</strong> tech bonus assistant in adjacent area 8</li>
 </ul>
@@ -113,7 +114,7 @@ cargo run -p yokohama-cli -- save.json # resume a saved game</code></pre>
 
 <h2>5. Commands</h2>
 <pre><code>&lt;number&gt;        apply the numbered legal option
-a [id id id]    Placement Option A: place 1 assistant in each of 0-3 areas
+a [id id id]    Placement Option A: place 1 assistant in each of 0-3 areas (4 with Newspaper)
 b &lt;id&gt;          Placement Option B: place 2 assistants in one area
 b &lt;id&gt; t &lt;adj&gt;  Placement Option B with the Telegram bonus: +1 assistant in an adjacent area
 m &lt;from&gt; &lt;to&gt;   resolve a pending assistant-move choice (&lt;from&gt; is 'hand' or an area id)

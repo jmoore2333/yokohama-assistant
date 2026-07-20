@@ -68,6 +68,7 @@ impl Repl {
             if n == 0 {
                 out.push_str("(no legal options right now -- commands only)\n");
             } else {
+                let total_pages = total_pages_for(n);
                 let start = (self.page * 20).min(n);
                 let end = (start + 20).min(n);
                 for (i, mv) in legal[start..end].iter().enumerate() {
@@ -80,10 +81,46 @@ impl Repl {
                 if end < n {
                     out.push_str(&format!("...{} more (type 'more')\n", n - end));
                 }
+                if total_pages > 1 {
+                    out.push_str(&format!("page {}/{total_pages}\n", self.page + 1));
+                }
             }
         }
-        out.push_str(INPUT_HINT);
+        out.push_str(&self.input_hint());
         out
+    }
+
+    /// The one-line trailing hint every prompt screen ends with -- shared by
+    /// `prompt()`'s full block and `out_view`'s hint-only block so they
+    /// agree on its wording verbatim (Task 13; made phase-aware for the
+    /// Codex review I-4 fix). Names only the shorthand that's ACTUALLY
+    /// usable right now: `a`/`b` in `Placement`, `r` in `Movement`, or
+    /// `m <from> <to>` (plus the numbered Decline) while an
+    /// `AssistantMove` choice sits at the head of the queue -- checked
+    /// ahead of phase, same priority order `prompt()`'s own `phase_text`
+    /// banner uses. Every other phase, and every other pending-choice kind
+    /// (`AnyGood`, `WarehouseTake`, `ChurchSpace`, ...), has no shorthand of
+    /// its own, so it gets the bare numbers+'help' hint.
+    fn input_hint(&self) -> String {
+        const TAIL: &str = "or a command ('help' for the list)";
+        let state = self.session.state();
+        if matches!(state.pending_choices.first(), Some(PendingChoice::AssistantMove)) {
+            return format!("> enter a number, 'm <from> <to>' to resolve (or the numbered Decline), {TAIL}\n");
+        }
+        if !state.pending_choices.is_empty() {
+            return format!("> enter a number, {TAIL}\n");
+        }
+        match state.turn_phase {
+            TurnPhase::Placement => format!("> enter a number, 'a'/'b' for placement, {TAIL}\n"),
+            TurnPhase::Movement => format!("> enter a number, 'r' to retreat, {TAIL}\n"),
+            TurnPhase::AdditionalActionFirst
+            | TurnPhase::AreaAction
+            | TurnPhase::FivePowerBonus
+            | TurnPhase::Building
+            | TurnPhase::Recovery
+            | TurnPhase::AdditionalActionSecond
+            | TurnPhase::TurnEnd => format!("> enter a number, {TAIL}\n"),
+        }
     }
 
     /// One REPL interaction: parse `line`, act on `session`, return output
@@ -188,15 +225,16 @@ impl Repl {
 
     /// Like `out`, but for read-only VIEW commands (`board`/`players`/
     /// `ports`/`labs`/`tracks`/`hand`/`score`/`log`/`help`): appends just
-    /// `INPUT_HINT`, not the full header+phase+numbered-options block
-    /// `prompt()` builds (Task 13 test (e)). A view command never changes
-    /// state, so which options are legal never changes either -- reprinting
-    /// up to 20 numbered options after every single glance at the board was
-    /// pure noise (closed a dogfooding friction note). Mirrors `out`'s
-    /// lockdown/pending short-circuits for defense in depth, even though
-    /// today only `log` can reach here while locked (`step`'s lockdown
-    /// allow-list) and no view command is reachable mid-reveal-collection
-    /// (`step`'s pending-active branch routes elsewhere entirely).
+    /// the phase-aware input hint (`input_hint()`), not the full
+    /// header+phase+numbered-options block `prompt()` builds (Task 13 test
+    /// (e)). A view command never changes state, so which options are
+    /// legal never changes either -- reprinting up to 20 numbered options
+    /// after every single glance at the board was pure noise (closed a
+    /// dogfooding friction note). Mirrors `out`'s lockdown/pending
+    /// short-circuits for defense in depth, even though today only `log`
+    /// can reach here while locked (`step`'s lockdown allow-list) and no
+    /// view command is reachable mid-reveal-collection (`step`'s
+    /// pending-active branch routes elsewhere entirely).
     pub(crate) fn out_view(&self, mut text: String) -> StepOutput {
         if !text.is_empty() && !text.ends_with('\n') {
             text.push('\n');
@@ -204,7 +242,7 @@ impl Repl {
         if self.locked {
             text.push_str(&self.lockdown_status());
         } else if matches!(self.pending, Pending::None) {
-            text.push_str(INPUT_HINT);
+            text.push_str(&self.input_hint());
         }
         StepOutput { text, quit: false }
     }
@@ -221,8 +259,7 @@ impl Repl {
 
     fn advance_page(&mut self) {
         let n = self.session.legal().len();
-        let total_pages = n.div_ceil(20).max(1);
-        self.page = (self.page + 1) % total_pages;
+        self.page = (self.page + 1) % total_pages_for(n);
     }
 
     fn pick_option(&mut self, k: usize) -> StepOutput {
@@ -234,12 +271,18 @@ impl Repl {
         self.commit(mv)
     }
 
-    /// Parse `a [id id id]` (0-3 area ids) into a `PlaceThreeAreas`
-    /// candidate and match it against `legal()` by placement-multiset
-    /// equality (the generator's internal ordering must not matter).
+    /// Parse `a [id id id [id]]` (0-3 area ids, or 0-4 for a Newspaper
+    /// owner) into a `PlaceThreeAreas` candidate and match it against
+    /// `legal()` by placement-multiset equality (the generator's internal
+    /// ordering must not matter). This function only bounds the token
+    /// COUNT (at most 4, Newspaper or not) -- `find_placement_match` below
+    /// is the sole legality authority, so a 4-id entry from a non-Newspaper
+    /// owner parses fine here and simply never matches anything in
+    /// `legal()`, falling through to the same "not currently available"
+    /// rejection any other engine-unoffered combination gets.
     fn try_placement_a(&mut self, rest: &[&str]) -> StepOutput {
-        if rest.len() > 3 {
-            return self.out(format!("Option A takes at most 3 area ids, got {}.\n", rest.len()), false);
+        if rest.len() > 4 {
+            return self.out(format!("Option A takes at most 4 area ids, got {}.\n", rest.len()), false);
         }
         let mut placements = Vec::with_capacity(rest.len());
         for tok in rest {
@@ -618,7 +661,7 @@ fn parse_raw_area_token(tok: &str) -> Result<AreaId, String> {
 const HELP_TEXT: &str = "\
 Commands:
   <number>        apply the numbered legal option
-  a [id id id]    Placement Option A: place 1 assistant in each of 0-3 areas
+  a [id id id]    Placement Option A: place 1 assistant in each of 0-3 areas (4 with Newspaper)
   b <id>          Placement Option B: place 2 assistants in one area
   b <id> t <adj>  Placement Option B with the Telegram bonus: +1 assistant in an adjacent area
   m <from> <to>   resolve a pending assistant-move choice (<from> is 'hand' or an area id)
@@ -643,10 +686,13 @@ Commands:
   quit            exit the REPL ('q' also works)
 ";
 
-/// The one-line trailing hint every prompt screen ends with -- factored out
-/// (Task 13) so `prompt()`'s full block and `out_view`'s hint-only block
-/// agree on its wording verbatim.
-const INPUT_HINT: &str = "> enter a number, 'a'/'b' for placement, 'r' to retreat, or a command ('help' for the list)\n";
+/// How many 20-per-page screens `n` legal options need, minimum 1 -- shared
+/// by `prompt()`'s "page N/M" footer and `advance_page`'s wraparound so the
+/// footer's M always matches where `more` actually wraps (Codex review I-4
+/// page-count fix).
+fn total_pages_for(n: usize) -> usize {
+    n.div_ceil(20).max(1)
+}
 
 #[cfg(test)]
 mod tests {
@@ -700,6 +746,97 @@ mod tests {
         let events_before = r.session.record().events.len();
         r.step(&line);
         assert_eq!(r.session.record().events.len(), events_before + 1);
+    }
+
+    /// Codex review Item 1 (I-3/I-4 disposition): `legal_moves.rs`'s
+    /// `generate_placement_moves_with_tech` generates a 4-area Option-A
+    /// placement once the current player owns Newspaper tech (`max_areas =
+    /// 4`) -- this fixture reaches that state directly via
+    /// `for_test_from_state` rather than playing a real game up to a
+    /// Newspaper acquisition (itself a multi-turn Laboratory visit),
+    /// mirroring core's own `test_placement_limit` fixture
+    /// (`tech_effects.rs`) for the tech insertion and
+    /// `repl_with_any_good_cascade` below for the state-injection style
+    /// generally. `Rules::empty_for_tests()` plus ONE inserted Newspaper
+    /// card (not `Rules::standard()`) for the same reason
+    /// `repl_with_any_good_cascade` documents: `create_test_game_state`'s
+    /// empty decks would otherwise fail `check_invariants`'
+    /// order/tech-conservation gates, which only fire when the registry
+    /// holds the full physical count (36 orders / 30 techs) -- a
+    /// single-card registry never trips them.
+    fn newspaper_placement_fixture() -> Repl {
+        let mut state = create_test_game_state(2);
+        state.turn_phase = TurnPhase::Placement;
+
+        let mut areas = std::collections::BTreeMap::new();
+        for i in 0u8..4 {
+            areas.insert(AreaId::new(i), AreaConfig { area_type: AreaType::CopperMine, grid_position: (0, i) });
+        }
+        state.board_layout = BoardLayout {
+            areas,
+            adjacency: std::collections::BTreeMap::new(),
+            canal_crossings: vec![],
+            building_sites: std::collections::BTreeMap::new(),
+            five_power_tokens: std::collections::BTreeMap::new(),
+        };
+
+        let mut techs = TechRegistry::new();
+        techs.insert(
+            TechCard {
+                id: TechCardId(7),
+                name: "Newspaper".to_string(),
+                country: Country::Dutch,
+                industry_cost: 5,
+                effect: TechEffect::Newspaper,
+            },
+            "tech_newspaper",
+        );
+        state.players[0].technologies.push(TechCardId(7));
+
+        let rules = Rules { techs, ..Rules::empty_for_tests() };
+        Repl::new(Session::for_test_from_state(state, rules))
+    }
+
+    /// RED-discriminating (Codex I-3): before this fix, `try_placement_a`
+    /// hard-rejected any `a` entry with more than 3 area ids, so this
+    /// engine-legal 4-area Newspaper placement was reachable only by its
+    /// raw numbered option -- typing the `a` grammar for it failed at parse
+    /// time with "Option A takes at most 3 area ids, got 4." instead of
+    /// applying.
+    #[test]
+    fn placement_a_grammar_reaches_newspaper_4_area_placement() {
+        let mut r = newspaper_placement_fixture();
+        let events_before = r.session.record().events.len();
+        let out = r.step("a 0 1 2 3");
+        assert!(!out.text.to_lowercase().contains("illegal"), "{}", out.text);
+        assert!(!out.text.contains("at most"), "{}", out.text);
+        assert_eq!(
+            r.session.record().events.len(), events_before + 1,
+            "the 4-area placement must actually apply: {}", out.text
+        );
+        assert_eq!(r.session.state().turn_phase, TurnPhase::Movement);
+    }
+
+    /// A 4-id `a` entry now parses (the count bound moved to 4), but a
+    /// player WITHOUT Newspaper never has a 4-area option in `legal()` --
+    /// `find_placement_match` is the sole legality authority, so this falls
+    /// through to the ordinary "not currently available" rejection, same as
+    /// any other combination the engine didn't generate.
+    #[test]
+    fn placement_a_grammar_rejects_4_ids_without_newspaper() {
+        let mut r = repl_2p(4);
+        r.step("0"); // -> Placement
+        let out = r.step("a 0 1 2 3");
+        assert!(out.text.contains("Illegal: that placement is not currently available."), "{}", out.text);
+    }
+
+    /// The token-count bound itself moved from 3 to 4, not away entirely --
+    /// 5 ids is still a parse-time rejection for everyone, Newspaper or not.
+    #[test]
+    fn placement_a_grammar_rejects_more_than_four_ids() {
+        let mut r = repl_2p(4);
+        let out = r.step("a 0 1 2 3 4");
+        assert!(out.text.contains("Option A takes at most 4 area ids, got 5."), "{}", out.text);
     }
 
     #[test]
@@ -820,6 +957,83 @@ mod tests {
             let p1 = r.step("more").text;
             assert_ne!(p0, p1);
         }
+    }
+
+    /// Codex review Item 2 (page-count footer): the pager already told a
+    /// player how many options were left ("...N more"), but never how many
+    /// PAGES there were in total, or which one they were currently on --
+    /// this pins the new "page N/M" footer on both the first and second
+    /// page of a real Placement-phase list (verified >20 options here, so
+    /// the pagination path actually engages -- `Placement`'s combinatorial
+    /// Option-A enumeration is comfortably over that on a real board).
+    #[test]
+    fn prompt_shows_page_count_footer_when_paginated() {
+        let mut r = repl_2p(4);
+        r.step("0"); // -> Placement
+        let n = r.session.legal().len();
+        assert!(n > 20, "fixture assumption: Placement must offer >20 options here, got {n}");
+        let p0 = r.prompt();
+        assert!(p0.contains("page 1/"), "{p0}");
+        let p1 = r.step("more").text;
+        assert!(p1.contains("page 2/"), "{p1}");
+    }
+
+    /// Codex review Item 2 (phase-aware hint): the trailing input hint used
+    /// to be one static line naming EVERY shorthand regardless of whether
+    /// it applied right now. Walks a fresh session through the three phase
+    /// buckets the dispatch calls out: a phase with no shorthand at all
+    /// (`AdditionalActionFirst`), `Placement` (`a`/`b`), and `Movement`
+    /// (`r`) -- each assertion checks both that the CURRENT phase's
+    /// shorthand is mentioned and that the OTHER phase's isn't, so this
+    /// can't pass on a hint that just lists everything unconditionally.
+    #[test]
+    fn input_hint_is_phase_aware() {
+        let mut r = repl_2p(4);
+        let p = r.prompt();
+        assert!(p.contains("enter a number, or a command ('help' for the list)"), "{p}");
+        assert!(!p.contains("'a'/'b'"), "{p}");
+        assert!(!p.contains("'r' to retreat"), "{p}");
+
+        r.step("0"); // -> Placement
+        let p = r.prompt();
+        assert!(p.contains("'a'/'b' for placement"), "{p}");
+        assert!(!p.contains("'r' to retreat"), "{p}");
+
+        r.step("a"); // place nothing -> Movement
+        assert_eq!(r.session.state().turn_phase, TurnPhase::Movement, "fixture assumption drifted");
+        let p = r.prompt();
+        assert!(p.contains("'r' to retreat"), "{p}");
+        assert!(!p.contains("'a'/'b'"), "{p}");
+    }
+
+    /// Codex review Item 2 (phase-aware hint, AssistantMove case): a
+    /// pending `AssistantMove` choice at the head of the queue gets its own
+    /// hint naming the `m <from> <to>` grammar and the numbered Decline --
+    /// checked against the genuine 2-deep cascade fixture
+    /// `drive_to_double_assistant_move_cascade` builds below (real Church
+    /// visit, not synthesized `pending_choices`).
+    #[test]
+    fn input_hint_mentions_m_grammar_during_assistant_move_choice() {
+        let mut r = repl_2p(4);
+        drive_to_double_assistant_move_cascade(&mut r);
+        let p = r.prompt();
+        assert!(p.contains("'m <from> <to>'"), "{p}");
+        assert!(p.contains("Decline"), "{p}");
+    }
+
+    /// Codex review Item 2 (phase-aware hint, "other choices" case): a
+    /// pending choice that ISN'T `AssistantMove` (here, `AnyGood`) falls
+    /// back to the plain numbers+'help' hint -- it has no shorthand of its
+    /// own, and critically must NOT inherit the underlying phase's
+    /// shorthand (or `m`'s) just because a choice happens to be queued
+    /// mid-phase.
+    #[test]
+    fn input_hint_is_plain_for_non_assistant_move_pending_choices() {
+        let r = repl_with_any_good_cascade();
+        let p = r.prompt();
+        assert!(p.contains("enter a number, or a command ('help' for the list)"), "{p}");
+        assert!(!p.contains("'m <from> <to>'"), "{p}");
+        assert!(!p.contains("'a'/'b'"), "{p}");
     }
 
     #[test]

@@ -67,12 +67,14 @@ Every screen ends with a status header, the numbered legal options, and a hint l
 ```
 Turn 1 | Red | Additional actions (before) | 3 yen 0 VP | c1 s2 t0 f1 i0 | hand 1
 [0] End additional-action phase
-> enter a number, 'a'/'b' for placement, 'r' to retreat, or a command ('help' for the list)
+> enter a number, or a command ('help' for the list)
 ```
 
 Header anatomy: turn number | whose turn | phase (§8.4) | money and VP | goods `c`opper `s`ilk `t`ea `f`ish(=Seafood) `i`mports | order cards in hand.
 
-**Choosing a move:** type the option's number. Long lists show 20 per page — `more` pages forward (wrapping), `list` returns to page 0.
+The hint line's own middle clause is phase/choice-aware — it only ever names a shorthand that's actually usable right now: `'a'/'b' for placement` appears in `Placement`, `'r' to retreat` in `Movement`, `'m <from> <to>' to resolve (or the numbered Decline)` while an assistant-move choice is queued, and nothing extra (just the plain form above) everywhere else, including every OTHER kind of pending choice.
+
+**Choosing a move:** type the option's number. Long lists show 20 per page — `more` pages forward (wrapping), `list` returns to page 0; whenever there's more than one page, a `page N/M` line appears right above the hint so you always know where you are and how many pages there are in total.
 
 **Choice prompts:** some rewards leave you a decision — which good, which warehouse item, where to move an assistant, which Church/Customs space (full inventory in §8.6). Whenever one or more of these is queued, the phase slot in the header is replaced by a `Choose: ... — N choice(s) pending` banner naming the head choice, and the numbered list below is exactly that choice's options — nothing about entering them differs from any other phase. A captured example, mid-Church-visit:
 
@@ -81,7 +83,7 @@ Turn 1 | Red | Choose: Church space at faith 6 — 1 choice pending | 2 yen 0 VP
 [0] Place on Church faith-4 space (3 VP)
 [1] Place on Church faith-5 space (4 VP)
 [2] Place on Church faith-6 space (5 VP)
-> enter a number, 'a'/'b' for placement, 'r' to retreat, or a command ('help' for the list)
+> enter a number, or a command ('help' for the list)
 ```
 
 A choice that lets you decline (warehouse take, assistant move) adds `Decline the ...` as one more numbered option; a choice that's purely "which one" (any-good, Church space, Customs space) has none, because the rulebook doesn't give you one there either. Resolving a choice can queue another — picking the Church space above queues its movement-rider(s) next — and the `— N pending` count tracks how many are still stacked up.
@@ -89,7 +91,7 @@ A choice that lets you decline (warehouse take, assistant move) adds `Decline th
 **Placement shorthand** (the one phase with too many options to number usefully):
 
 - `a` — place nothing (legal per the rules: 0–3 assistants)
-- `a 4 9 12` — Option A: 1 assistant in each listed area (area ids `0`–`17` as shown on the board grid, up to 3)
+- `a 4 9 12` — Option A: 1 assistant in each listed area (area ids `0`–`17` as shown on the board grid, up to 3 — 4 with Newspaper tech)
 - `b 7` — Option B: 2 assistants in area 7
 - `b 7 t 8` — Option B plus the **Telegram** tech bonus assistant in adjacent area 8
 
@@ -103,7 +105,7 @@ Order of ids in `a` doesn't matter; the tool matches your entry against the lega
 
 ```
 <number>        apply the numbered legal option
-a [id id id]    Placement Option A: place 1 assistant in each of 0-3 areas
+a [id id id]    Placement Option A: place 1 assistant in each of 0-3 areas (4 with Newspaper)
 b <id>          Placement Option B: place 2 assistants in one area
 b <id> t <adj>  Placement Option B with the Telegram bonus: +1 assistant in an adjacent area
 m <from> <to>   resolve a pending assistant-move choice (<from> is 'hand' or an area id)
