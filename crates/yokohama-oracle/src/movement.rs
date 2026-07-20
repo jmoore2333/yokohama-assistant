@@ -226,13 +226,12 @@ pub(crate) fn route_labels(state: &GameState, rules: &Rules) -> Vec<RouteLabel> 
     }
 
     // Station (owner only): a zero-fee label to the Station area — free,
-    // regardless of other President pawns there [RB p.15]. Emitted WITHOUT an
-    // own-assistant requirement (documented §7.1-A1 Reading 1: card-text
-    // reading, Tram analog) so any engine disagreement surfaces as a
-    // divergence for triage rather than being silently harmonized.
+    // regardless of other President pawns there [RB p.15].
     if owns_effect(state, rules, mover, TechEffect::Station) {
         if let Some(st) = state.station_location {
-            if st != start {
+            // PENDING-RULING §7.1-A1 (triage 2026-07-20): temporarily mirrors the engine's Reading 2 (own assistant required at the Station area) so the differential gate binds. Jeremy's ruling flips exactly this condition — if Reading 1 is ruled, delete it (and the engine changes instead).
+            let own_assistant_at_station = p.assistants.on_board.get(&st).copied().unwrap_or(0) >= 1;
+            if st != start && own_assistant_at_station {
                 labels.push(RouteLabel { destination: st, fees: BTreeMap::new() });
             }
         }
@@ -487,9 +486,12 @@ mod tests {
     // --- F12 [RB p.15] Station teleport ---
 
     #[test]
-    fn f12_station_teleport_ignores_presidents_and_needs_no_assistant() {
-        // §7.1-A1 documented Reading 1: no own assistant required at the
-        // Station area; opponent presidents there neither block nor price it.
+    fn f12_station_teleport_presidents_ignored_but_assistant_required_pending_ruling() {
+        // PENDING-RULING §7.1-A1 (triage 2026-07-20): interim mirrors the
+        // engine's Reading 2 — the teleport label is emitted ONLY with >= 1
+        // own assistant at the Station area. All other facets unchanged:
+        // owner-only, zero fees, opponent presidents there neither block nor
+        // price it, st ≠ current area.
         let rules = Rules::standard();
         let mut s = f2_state();
         s.station_location = Some(AreaId::new(3)); // no own assistant at 3
@@ -497,11 +499,22 @@ mod tests {
         // Non-owner: no label to 3 (walking needs an own assistant there).
         let labels = route_labels(&s, &rules);
         assert!(labels.iter().all(|l| l.destination != AreaId::new(3)));
-        // Owner: the free teleport label appears.
+        // Owner, ZERO own assistants at the Station area: label ABSENT.
         s.players[0].technologies.push(tech_id(&rules, TechEffect::Station));
         let labels = route_labels(&s, &rules);
+        assert!(
+            labels.iter().all(|l| l.destination != AreaId::new(3)),
+            "interim Reading 2: no own assistant at the Station area suppresses the label"
+        );
+        // Owner, ONE own assistant there: the free teleport label appears —
+        // the opponent President at 3 neither blocks nor prices it (zero
+        // fees; the walking route to 3 would carry a president fee).
+        s.players[0].assistants.on_board.insert(AreaId::new(3), 1);
+        let labels = route_labels(&s, &rules);
         assert!(labels.contains(&label(3, &[])));
-        // Station at the mover's current area yields no label (st ≠ current).
+        // Station at the mover's current area yields no label (st ≠ current),
+        // even with an own assistant there.
+        s.players[0].assistants.on_board.insert(AreaId::new(0), 1);
         s.station_location = Some(AreaId::new(0));
         let labels = route_labels(&s, &rules);
         assert!(labels.iter().all(|l| l.destination != AreaId::new(0)));
