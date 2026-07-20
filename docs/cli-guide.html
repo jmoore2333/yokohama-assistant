@@ -102,7 +102,7 @@ cargo run -p yokohama-cli -- save.json # resume a saved game</code></pre>
 <p>A choice that lets you decline (warehouse take, assistant move) adds <code>Decline the ...</code> as one more numbered option; a choice that's purely "which one" (any-good, Church space, Customs space) has none, because the rulebook doesn't give you one there either. Resolving a choice can queue another — picking the Church space above queues its movement-rider(s) next — and the <code>— N pending</code> count tracks how many are still stacked up.</p>
 <p><strong>Placement shorthand</strong> (the one phase with too many options to number usefully):</p>
 <ul>
-  <li><code>a</code> — place nothing (legal per the rules: 0–3 assistants)</li>
+  <li><code>a</code> — place nothing (legal per the rules: 0–3 assistants, 0–4 with Newspaper)</li>
   <li><code>a 4 9 12</code> — Option A: 1 assistant in each listed area (area ids <code>0</code>–<code>17</code> as shown on the board grid, up to 3 — 4 with Newspaper tech)</li>
   <li><code>b 7</code> — Option B: 2 assistants in area 7</li>
   <li><code>b 7 t 8</code> — Option B plus the <strong>Telegram</strong> tech bonus assistant in adjacent area 8</li>

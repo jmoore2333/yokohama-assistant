@@ -90,7 +90,7 @@ A choice that lets you decline (warehouse take, assistant move) adds `Decline th
 
 **Placement shorthand** (the one phase with too many options to number usefully):
 
-- `a` — place nothing (legal per the rules: 0–3 assistants)
+- `a` — place nothing (legal per the rules: 0–3 assistants, 0–4 with Newspaper)
 - `a 4 9 12` — Option A: 1 assistant in each listed area (area ids `0`–`17` as shown on the board grid, up to 3 — 4 with Newspaper tech)
 - `b 7` — Option B: 2 assistants in area 7
 - `b 7 t 8` — Option B plus the **Telegram** tech bonus assistant in adjacent area 8
