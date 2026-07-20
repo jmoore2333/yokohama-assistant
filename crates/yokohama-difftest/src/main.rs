@@ -22,10 +22,82 @@ use yokohama_difftest::artifact::default_artifacts_dir;
 use yokohama_difftest::drive::Policy;
 use yokohama_difftest::runner::run_differential_game;
 
+/// `repro <artifact.json>`: reload a divergence artifact's state snapshot and
+/// re-run both sides' enumeration on it, printing the full key lists and the
+/// re-computed diff — the mechanical half of adversarial verification.
+fn repro(path: &str) -> ExitCode {
+    let artifact = match yokohama_difftest::artifact::read_artifact(std::path::Path::new(path)) {
+        Ok(a) => a,
+        Err(e) => {
+            eprintln!("repro: cannot read artifact {path}: {e}");
+            return ExitCode::from(2);
+        }
+    };
+    let state: yokohama_core::GameState = match serde_json::from_value(artifact.state_json.clone()) {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("repro: state snapshot does not deserialize: {e}");
+            return ExitCode::from(2);
+        }
+    };
+    let rules = Rules::standard();
+    println!(
+        "artifact: seed={} players={} policy={} step={} turn={} phase={}",
+        artifact.seed, artifact.players, artifact.policy, artifact.step_index,
+        artifact.turn_number, artifact.phase
+    );
+    println!(
+        "state: current_player={:?} pending_choices={:?}",
+        state.current_player, state.pending_choices
+    );
+    let engine_moves = yokohama_core::get_legal_moves(&state, &rules);
+    let oracle = yokohama_oracle::oracle_moves(&state, &rules);
+    let cmp = yokohama_difftest::compare::compare_moves(&state, &rules, &engine_moves, &oracle);
+    println!("\n== ENGINE ({} moves) ==", engine_moves.len());
+    for m in &engine_moves {
+        println!("  {m:?}");
+    }
+    println!("\n== ORACLE ({} exact + {} labels) ==", oracle.exact.len(), oracle.movement.len());
+    for m in &oracle.exact {
+        println!("  {m:?}");
+    }
+    for l in &oracle.movement {
+        println!("  {l:?}");
+    }
+    println!("\n== RE-COMPUTED DIFF ==");
+    println!("engine_only ({}):", cmp.engine_only.len());
+    for k in &cmp.engine_only {
+        println!("  {k}");
+    }
+    println!("oracle_only ({}):", cmp.oracle_only.len());
+    for k in &cmp.oracle_only {
+        println!("  {k}");
+    }
+    println!("duplicates ({}):", cmp.duplicates.len());
+    for k in &cmp.duplicates {
+        println!("  {k}");
+    }
+    let stored = (&artifact.engine_only, &artifact.oracle_only, &artifact.duplicates);
+    let fresh = (&cmp.engine_only, &cmp.oracle_only, &cmp.duplicates);
+    println!(
+        "\nreproduces stored diff: {}",
+        if stored == fresh { "YES (byte-identical)" } else { "NO — stored diff differs from re-run (investigate)" }
+    );
+    if cmp.is_divergent() {
+        ExitCode::from(1)
+    } else {
+        ExitCode::SUCCESS
+    }
+}
+
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().collect();
+    if args.len() == 3 && args[1] == "repro" {
+        return repro(&args[2]);
+    }
     if args.len() != 5 {
         eprintln!("usage: yokohama-difftest <games> <players> <base_seed> <policy: uniform|retreat-averse>");
+        eprintln!("       yokohama-difftest repro <artifact.json>");
         return ExitCode::from(2);
     }
     let (games, players, base_seed, policy) = match (
