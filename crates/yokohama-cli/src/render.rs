@@ -154,10 +154,27 @@ pub fn players_panel(state: &GameState, rules: &Rules) -> String {
             p.mercenaries.unused_count(),
         ));
 
+        // ALL SIX `AssistantState` zones, so the printed numbers reconcile to
+        // the player's true pawn count. Printing only hand/board/warehouse
+        // invited the natural table-side conservation check (they must total
+        // 20) and then failed it 72% of the time, sending the operator
+        // hunting a pawn that was merely locked on a goal or track (R2,
+        // render.rs deep audit 2026-07-20). The three locked zones are
+        // omitted when zero to keep the common line short.
         let assistants_on_board: u32 = p.assistants.on_board.values().map(|&c| c as u32).sum();
+        let mut locked = String::new();
+        if p.assistants.on_achievements > 0 {
+            locked.push_str(&format!("  goals {}", p.assistants.on_achievements));
+        }
+        if p.assistants.on_church > 0 {
+            locked.push_str(&format!("  church {}", p.assistants.on_church));
+        }
+        if p.assistants.on_customs > 0 {
+            locked.push_str(&format!("  customs {}", p.assistants.on_customs));
+        }
         out.push_str(&format!(
-            "  assistants: hand {}  board {}  warehouse {}\n",
-            p.assistants.in_hand, assistants_on_board, p.assistants.in_warehouse,
+            "  assistants: hand {}  board {}  warehouse {}{}\n",
+            p.assistants.in_hand, assistants_on_board, p.assistants.in_warehouse, locked,
         ));
         out.push_str(&format!(
             "  shophouses: hand {}  warehouse {}  built {}\n",
@@ -371,6 +388,7 @@ pub fn delta_summary(before: &GameState, after: &GameState, rules: &Rules) -> Ve
     }
 
     building_lines(&mut lines, before, after);
+    achievement_lines(&mut lines, before, after);
 
     if before.turn_phase != after.turn_phase {
         lines.push(format!(
@@ -671,6 +689,30 @@ fn token_lines(lines: &mut Vec<String>, b: &PlayerState, a: &PlayerState) {
 /// transition on a slot/trading-house-owner is the only case to detect.
 /// Board-level (not per-player), since a building site's ownership fields
 /// name the owner directly.
+/// "claimed achievement" lines from `achievements[i].claimed_by` growth.
+/// Board-level like `building_lines`, and for the same reason: the card
+/// names its claimant directly.
+///
+/// A claim also LOCKS one of the claimant's assistants onto the card, which
+/// is a physical act the operator owes the table -- and the VP line alone
+/// ("Red: +8 VP") never cued it, so the pawn stayed in hand and the count
+/// ran high for the rest of the game (R2, render.rs deep audit 2026-07-20).
+/// `claimed_by` is append-only and MORE than one player may claim the same
+/// card, so this walks the tail rather than assuming a single new claimant.
+fn achievement_lines(lines: &mut Vec<String>, before: &GameState, after: &GameState) {
+    for (i, after_card) in after.achievements.iter().enumerate() {
+        let before_claims = before.achievements.get(i).map(|c| c.claimed_by.len()).unwrap_or(0);
+        for &claimant in after_card.claimed_by.iter().skip(before_claims) {
+            lines.push(format!(
+                "{}: claimed achievement G{} ({}) -- 1 assistant locked onto the card",
+                player_prefix(after.player(claimant).color),
+                i,
+                describe::achievement_desc(after_card.achievement_type),
+            ));
+        }
+    }
+}
+
 fn building_lines(lines: &mut Vec<String>, before: &GameState, after: &GameState) {
     for (area, after_site) in &after.board_layout.building_sites {
         let before_site = before.board_layout.building_sites.get(area);
@@ -1190,6 +1232,73 @@ mod tests {
         assert!(
             lines.iter().any(|l| l.contains("Britain")),
             "the line must name WHICH country's tile to flip: {lines:?}"
+        );
+    }
+
+    /// R2 (render.rs deep audit, 2026-07-20): the panel printed 3 of
+    /// `AssistantState`'s SIX zones -- and the three it printed are exactly
+    /// the ones an operator would sum to 20 for a conservation check. Across
+    /// 1,200 end-of-game states the sum was short in 861 (72%), worst gap 5,
+    /// with nothing on screen explaining where the pawns went, so the
+    /// operator hunts a pawn that isn't lost.
+    #[test]
+    fn players_panel_accounts_for_every_assistant_zone() {
+        let rules = Rules::standard();
+        let mut state = test_state_2p();
+        {
+            let p = &mut state.players[0];
+            p.assistants.on_achievements = 1;
+            p.assistants.on_church = 2;
+            p.assistants.on_customs = 3;
+        }
+        let total = state.players[0].assistants.total();
+
+        let panel = players_panel(&state, &rules);
+        let line = panel
+            .lines()
+            .find(|l| l.contains("assistants:"))
+            .expect("panel has an assistants line");
+
+        // The three locked zones must be visible somewhere on that line.
+        assert!(line.contains("goals 1"), "achievement-locked pawns hidden: {line}");
+        assert!(line.contains("church 2"), "church-locked pawns hidden: {line}");
+        assert!(line.contains("customs 3"), "customs-locked pawns hidden: {line}");
+
+        // And the printed numbers must actually reconcile to the true total,
+        // which is the whole point of showing them.
+        let sum: u32 = line
+            .split_whitespace()
+            .filter_map(|t| t.parse::<u32>().ok())
+            .sum();
+        assert_eq!(
+            sum, total as u32,
+            "the panel's assistant numbers must sum to the player's true pawn count: {line}"
+        );
+    }
+
+    /// R2 companion: claiming an achievement moved a pawn `hand ->
+    /// on_achievements` and printed only "+N VP". The physical act it
+    /// requires -- moving an assistant onto the achievement card -- was never
+    /// prompted, so the pawn stays in hand and the count runs 1 high for the
+    /// rest of the game. 286/379/302 claims per 300 games, all silent.
+    #[test]
+    fn delta_summary_reports_an_achievement_claim() {
+        let rules = Rules::standard();
+        let before = test_state_2p();
+        let mut after = before.clone();
+        let claimer = after.players[0].id;
+        after.players[0].assistants.in_hand -= 1;
+        after.players[0].assistants.on_achievements += 1;
+        after.achievements[0].claimed_by.push(claimer);
+
+        let lines = delta_summary(&before, &after, &rules);
+        assert!(
+            lines.iter().any(|l| l.contains("claimed achievement")),
+            "claiming an achievement must be narrated: {lines:?}"
+        );
+        assert!(
+            lines.iter().any(|l| l.contains("assistant")),
+            "the line must cue the pawn that moves onto the card: {lines:?}"
         );
     }
 
