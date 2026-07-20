@@ -506,9 +506,11 @@ mod tests {
     /// fields -- or hand-built by a bot/record -- never runs the builder, so
     /// `check_invariants` re-audits the board itself. Every clause holds on
     /// both generated boards (`board_gen`) and live re-typed boards
-    /// (`reconcile_board`); each mutation below is minimal (trips exactly one
-    /// clause) and needs the golden real-board fixture (`baseline()`'s board
-    /// is empty, so no clause has anything to bite).
+    /// (`reconcile_board`); each mutation below trips its TARGETED clause
+    /// first (the ghost-neighbor case also implies a latent asymmetry, so
+    /// teeth survive either clause's removal — Stage-5 review nit) and needs
+    /// the golden real-board fixture (`baseline()`'s board is empty, so no
+    /// clause has anything to bite).
     #[test]
     fn board_layout_structural_invariants_catch_corruption() {
         use crate::types::AreaType;
