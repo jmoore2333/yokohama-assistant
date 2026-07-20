@@ -852,3 +852,34 @@ label contract (§1.1) exists precisely to sidestep that encoding.
 (including `types/tests.rs`, which the allowlist technically permits but which was skipped as
 unnecessary), all other `docs/` files, and the CLI crate. Directory listings (`ls`, `wc -l`,
 PDF page count) were used for navigation only.
+
+---
+
+## 9. Orchestrator amendments (Stage-1b gate, 2026-07-20)
+
+Recorded by the orchestrating session at the spec gate. All three are ENCODING-class
+adjudications (phase-plan divergence class 3 — harmonized on the oracle side without touching any
+rules question) or interface decisions; none injects an engine rules belief.
+
+- **A. API adoption.** The crate API follows §1.1/§5 verbatim: `RouteLabel { destination, fees }`
+  with derives `Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize` and
+  `mover_cost()` as a method; entrypoint `pub fn oracle_moves`. The scaffold stub's earlier
+  `{to, mover_cost, player_credits, bank}` shape and `legal_moves` name are SUPERSEDED; the
+  impl-aware difftest harness adapts to this shape (orchestrator-owned change on the impl-aware
+  side).
+- **B. Chinatown emission (encoding adjudication).** §3.4's "enumerates ALL feasible ordered
+  sequences" is amended: the oracle emits ONE representative `AreaAction::Chinatown` per
+  ACHIEVABLE multiset — achievable = at least one ordering of the multiset passes §3.4's
+  sequential running-balance validation — with the representative's `exchanges` Vec sorted by
+  variant (any fixed total order; the runner normalizes). Rationale: the comparison unit for this
+  payload is the multiset (a canonical-representative encoding, the class the phase plan assigns
+  to normative-encoding harmonization), and enumerating orderings would only multiply comparison
+  keys (~66k sequences vs ~2k multisets at power 5). The §7.1-A3 sequential-vs-budget RULES
+  ambiguity is UNAFFECTED and stays live: the two readings produce different achievable-multiset
+  sets, which is exactly what the differential comparison tests.
+- **C. Registry data-access surface (closes §7.2-7).** Module authors may use, as data access
+  only: `rules.orders.get(OrderCardId) -> Option<&OrderCard>`, `rules.orders.iter()`,
+  `rules.techs.get(TechCardId) -> Option<&TechCard>`, `rules.techs.iter()`, and the public fields
+  `rules.building_sites: Vec<BuildingSite>` / `rules.five_power_tokens: Vec<FivePowerEffect>`.
+  Signatures published by the orchestrator (names only, no bodies); `game/cards.rs` itself
+  remains forbidden to oracle authors.
