@@ -751,6 +751,20 @@ fn apply_build_shophouse(state: &mut GameState, slot: u8, rules: &Rules) -> Resu
         }
     };
 
+    // Occupancy + duplicate-ownership self-defence (Phase-2.9 divergence
+    // fix, same class as the range check above): without these, an unchecked
+    // apply onto an occupied slot silently OVERWROTE the other player's
+    // shophouse, and a builder could stack a second own shophouse on the
+    // site. Checked before any mutation -- zero mutation on error.
+    if let Some(site) = state.board_layout.building_sites.get(&area) {
+        if site.shophouses_built[slot as usize].is_some() {
+            return Err(MoveError::RuleViolation("Shophouse slot already occupied"));
+        }
+        if site.shophouses_built.contains(&Some(player)) {
+            return Err(MoveError::RuleViolation("Already own a shophouse on this site"));
+        }
+    }
+
     // Get the space's full reward (before the mutable borrow of the player).
     let reward = state
         .board_layout
@@ -2297,6 +2311,91 @@ mod tests {
                 Ok(_) => panic!("slot {slot} is out of range and must be rejected, was accepted"),
             }
         }
+    }
+
+    /// Phase-2.9 divergence fix (ENGINE BUG -- completeness): the raw arm
+    /// checked only slot range and token count, so an unchecked apply onto an
+    /// OCCUPIED slot silently overwrote the other player's shophouse. Same
+    /// self-defence class as the out-of-range guard above (C1 precedent).
+    #[test]
+    fn occupied_shophouse_slot_is_rejected_by_the_raw_arm_not_overwritten() {
+        let mut state = create_minimal_state(2);
+        let area = AreaId::new(0);
+        state.players[0].president_location = PresidentLocation::OnBoard(area);
+        state.players[0].shophouses.in_hand = 1;
+        let mut site = BuildingSite::new([2, 3, 4, 5], 10);
+        site.shophouses_built[1] = Some(PlayerId::new(1));
+        state.board_layout.building_sites.insert(area, site);
+        let rules = Rules::empty_for_tests();
+
+        // apply_move_unchecked: the raw arm IS the subject -- it must
+        // self-defend even when the legal list is bypassed.
+        match apply_move_unchecked(&state, &Move::BuildShophouse { slot: 1 }, &rules) {
+            Err(MoveError::RuleViolation(_)) => {}
+            Err(other) => panic!("occupied slot must be a RuleViolation, got {other:?}"),
+            Ok(_) => panic!("occupied slot 1 must be rejected, was accepted (overwrite)"),
+        }
+        // Zero mutation on error: the input state is untouched.
+        assert_eq!(
+            state.board_layout.building_sites[&area].shophouses_built[1],
+            Some(PlayerId::new(1))
+        );
+        assert_eq!(state.players[0].shophouses.in_hand, 1);
+        assert!(state.players[0].shophouses.built.is_empty());
+    }
+
+    /// Companion to the occupied-slot guard: a builder who already owns a
+    /// shophouse anywhere on the site may not add a second one, even via the
+    /// unchecked path onto a different (empty) slot.
+    #[test]
+    fn duplicate_own_shophouse_on_site_is_rejected_by_the_raw_arm() {
+        let mut state = create_minimal_state(2);
+        let area = AreaId::new(0);
+        state.players[0].president_location = PresidentLocation::OnBoard(area);
+        state.players[0].shophouses.in_hand = 1;
+        let mut site = BuildingSite::new([2, 3, 4, 5], 10);
+        site.shophouses_built[2] = Some(PlayerId::new(0));
+        state.board_layout.building_sites.insert(area, site);
+        let rules = Rules::empty_for_tests();
+
+        // apply_move_unchecked: see the occupied-slot test above.
+        match apply_move_unchecked(&state, &Move::BuildShophouse { slot: 0 }, &rules) {
+            Err(MoveError::RuleViolation(_)) => {}
+            Err(other) => panic!("own duplicate must be a RuleViolation, got {other:?}"),
+            Ok(_) => panic!("second own shophouse on the site must be rejected"),
+        }
+        // Zero mutation on error: the input state is untouched.
+        assert_eq!(state.board_layout.building_sites[&area].shophouses_built[0], None);
+        assert_eq!(state.players[0].shophouses.in_hand, 1);
+    }
+
+    /// Slot-specific printed rewards flow from the slot ACTUALLY built:
+    /// building slot 3 grants spaces[3]'s reward, not spaces[0]'s. This pins
+    /// the payoff side of per-slot enumeration (the four spaces print
+    /// materially different rewards, so the choice of slot matters).
+    #[test]
+    fn shophouse_reward_comes_from_the_slot_actually_built() {
+        let mut state = create_minimal_state(2);
+        let area = AreaId::new(0);
+        state.players[0].president_location = PresidentLocation::OnBoard(area);
+        state.players[0].shophouses.in_hand = 1;
+        let starting_tea = state.players[0].tea;
+
+        let mut site = BuildingSite::new([0, 0, 0, 0], 10);
+        site.spaces[0] = SpaceReward { vp: 9, ..Default::default() };
+        site.spaces[3] = SpaceReward { tea: 2, ..Default::default() };
+        state.board_layout.building_sites.insert(area, site);
+        let rules = Rules::empty_for_tests();
+
+        // apply_move_unchecked: see test_build_shophouse_gaslight_vp_bonus.
+        let result = apply_move_unchecked(&state, &Move::BuildShophouse { slot: 3 }, &rules);
+        assert!(result.is_ok());
+        let new_state = result.unwrap();
+
+        assert_eq!(new_state.players[0].tea, starting_tea + 2, "slot 3 grants spaces[3]'s tea");
+        assert_eq!(new_state.players[0].victory_points, 0, "spaces[0]'s VP must NOT be granted");
+        assert_eq!(new_state.board_layout.building_sites[&area].shophouses_built[3], Some(PlayerId::new(0)));
+        assert_eq!(new_state.board_layout.building_sites[&area].shophouses_built[0], None);
     }
 
     #[test]

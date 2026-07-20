@@ -152,7 +152,12 @@ impl BuildingSite {
         }
     }
 
-    /// Returns the next available shophouse slot (0-3), or None if full.
+    /// Returns the FIRST empty shophouse slot (0-3), or None if the site is
+    /// full or `player` already owns a shophouse here. NOTE: since the
+    /// Phase-2.9 per-slot enumeration fix the engine no longer pins builds
+    /// to this slot -- `get_legal_moves` offers one `BuildShophouse` per
+    /// empty slot, and no production code path calls this anymore (test-only
+    /// convenience); do not treat it as "the slot the engine will offer".
     pub fn next_shophouse_slot(&self, player: PlayerId) -> Option<usize> {
         // Player can only have one shophouse per area
         if self.shophouses_built.contains(&Some(player)) {

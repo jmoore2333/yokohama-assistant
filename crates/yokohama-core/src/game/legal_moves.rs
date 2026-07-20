@@ -942,10 +942,21 @@ fn generate_building_moves(state: &GameState) -> Vec<Move> {
     let power = state.current_action_power.unwrap_or(0);
 
     if let Some(site) = state.board_layout.building_sites.get(&area) {
-        // Shophouse: requires Power 4+
-        if power >= 4 && p.shophouses.in_hand > 0 {
-            if let Some(slot) = site.next_shophouse_slot(player) {
-                moves.push(Move::BuildShophouse { slot: slot as u8 });
+        // Shophouse: requires Power 4+. RB p.7 and 09-building-sites.yaml
+        // carry NO fill-order rule and the four spaces print materially
+        // different rewards, so the builder chooses the slot: one
+        // BuildShophouse per EMPTY slot (Phase-2.9 divergence fix; formerly
+        // pinned to the first empty slot via next_shophouse_slot). A player
+        // may own at most ONE shophouse per site, so an own shophouse
+        // anywhere on the site blocks all offers.
+        if power >= 4
+            && p.shophouses.in_hand > 0
+            && !site.shophouses_built.contains(&Some(player))
+        {
+            for (slot, occupant) in site.shophouses_built.iter().enumerate() {
+                if occupant.is_none() {
+                    moves.push(Move::BuildShophouse { slot: slot as u8 });
+                }
             }
         }
 
@@ -1670,6 +1681,80 @@ mod tests {
         state.current_action_power = Some(4);
         let moves = get_legal_moves(&state, &rules);
         assert!(moves.iter().any(|m| matches!(m, Move::BuildShophouse { .. })));
+    }
+
+    #[test]
+    fn shophouse_enumeration_offers_every_empty_slot() {
+        // Phase-2.9 divergence fix (ENGINE BUG -- completeness): RB p.7 and
+        // 09-building-sites.yaml carry NO fill-order rule, and the four
+        // spaces print materially different rewards, so the builder chooses
+        // the slot. The generator formerly pinned the first empty slot via
+        // next_shophouse_slot; it must emit one BuildShophouse per EMPTY slot.
+        let mut state = create_test_state();
+        let area = AreaId::new(0);
+        state.turn_phase = TurnPhase::Building;
+        state.current_action_power = Some(4);
+        state.players[0].president_location = PresidentLocation::OnBoard(area);
+        state.players[0].shophouses.in_hand = 2;
+        state.board_layout.building_sites.insert(area, BuildingSite::new([2, 3, 4, 5], 10));
+        let rules = Rules::empty_for_tests();
+
+        let moves = get_legal_moves(&state, &rules);
+        for slot in 0u8..4 {
+            assert!(
+                moves.iter().any(|m| matches!(m, Move::BuildShophouse { slot: s } if *s == slot)),
+                "all-empty site must offer slot {slot}"
+            );
+        }
+        assert!(moves.iter().any(|m| matches!(m, Move::SkipBuilding)));
+    }
+
+    #[test]
+    fn shophouse_enumeration_skips_occupied_slots() {
+        // Opponent shophouse on slot 1 => exactly slots {0, 2, 3} offered.
+        let mut state = create_test_state();
+        let area = AreaId::new(0);
+        state.turn_phase = TurnPhase::Building;
+        state.current_action_power = Some(4);
+        state.players[0].president_location = PresidentLocation::OnBoard(area);
+        state.players[0].shophouses.in_hand = 2;
+        let mut site = BuildingSite::new([2, 3, 4, 5], 10);
+        site.shophouses_built[1] = Some(PlayerId::new(1));
+        state.board_layout.building_sites.insert(area, site);
+        let rules = Rules::empty_for_tests();
+
+        let moves = get_legal_moves(&state, &rules);
+        let mut offered: Vec<u8> = moves
+            .iter()
+            .filter_map(|m| match m {
+                Move::BuildShophouse { slot } => Some(*slot),
+                _ => None,
+            })
+            .collect();
+        offered.sort_unstable();
+        assert_eq!(offered, vec![0, 2, 3], "occupied slot 1 must not be offered");
+    }
+
+    #[test]
+    fn shophouse_enumeration_blocked_by_own_shophouse_on_site() {
+        // A player may own at most one shophouse per site: an own shophouse
+        // on ANY slot blocks every BuildShophouse offer on that site.
+        let mut state = create_test_state();
+        let area = AreaId::new(0);
+        state.turn_phase = TurnPhase::Building;
+        state.current_action_power = Some(4);
+        state.players[0].president_location = PresidentLocation::OnBoard(area);
+        state.players[0].shophouses.in_hand = 2;
+        let mut site = BuildingSite::new([2, 3, 4, 5], 10);
+        site.shophouses_built[2] = Some(PlayerId::new(0));
+        state.board_layout.building_sites.insert(area, site);
+        let rules = Rules::empty_for_tests();
+
+        let moves = get_legal_moves(&state, &rules);
+        assert!(
+            !moves.iter().any(|m| matches!(m, Move::BuildShophouse { .. })),
+            "own shophouse on the site must block all further shophouse builds there"
+        );
     }
 
     #[test]

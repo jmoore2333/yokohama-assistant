@@ -383,6 +383,10 @@ pub fn describe_move(mv: &Move, state: &GameState, rules: &Rules) -> String {
         Move::Take5PowerToken => "Take the 5-Power token".to_string(),
         Move::Skip5PowerBonus => "Skip the 5-Power token".to_string(),
         Move::BuildShophouse { slot } => {
+            // The space number is ALWAYS printed (Phase-2.9 per-slot
+            // enumeration: one option per empty slot, and two blank slots
+            // share the reward text "-", so the reward alone can't
+            // distinguish them at the table).
             let reward = acting_area(state)
                 .and_then(|a| state.board_layout.building_sites.get(&a))
                 // and_then, not map: `slot_reward_text` yields None for an
@@ -391,7 +395,7 @@ pub fn describe_move(mv: &Move, state: &GameState, rules: &Rules) -> String {
                 // panicking. See C1, external review 2026-07-20.
                 .and_then(|site| slot_reward_text(site, *slot as usize));
             match reward {
-                Some(r) => format!("Build a Shophouse ({r})"),
+                Some(r) => format!("Build a Shophouse (space {}: {r})", slot + 1),
                 None => format!("Build a Shophouse (space {})", slot + 1),
             }
         }
@@ -726,6 +730,43 @@ mod tests {
         assert!(!text.ends_with("(space 1)"), "bare space-number text must be gone: {text}");
         let expected = slot_reward_text(&site, 0).expect("slot 0 is always in range");
         assert!(text.contains(&expected), "{text}");
+    }
+
+    /// Phase-2.9 per-slot enumeration fix: the Building phase now offers one
+    /// `BuildShophouse` per empty slot, so each option must name WHICH space
+    /// it builds on alongside that space's printed reward -- two blank
+    /// spaces would otherwise render identical `(-)` options a tester at the
+    /// table cannot tell apart without opening the `sites` view.
+    #[test]
+    fn build_shophouse_options_identify_the_slot_and_its_reward() {
+        let mut state = state_2p();
+        let rules = Rules::standard();
+        let (area, site) = state
+            .board_layout
+            .building_sites
+            .iter()
+            .next()
+            .map(|(&a, s)| (a, s.clone()))
+            .expect("a building site exists");
+        let cp = state.current_player;
+        state.players[cp.0 as usize].president_location = PresidentLocation::OnBoard(area);
+
+        let mut texts = Vec::new();
+        for slot in 0u8..4 {
+            let text = describe_move(&Move::BuildShophouse { slot }, &state, &rules);
+            assert!(
+                text.contains(&format!("space {}", slot + 1)),
+                "option must name its space (1-based): {text}"
+            );
+            let reward = slot_reward_text(&site, slot as usize).expect("slot in range");
+            assert!(text.contains(&reward), "option must keep the printed reward: {text}");
+            texts.push(text);
+        }
+        for (i, a) in texts.iter().enumerate() {
+            for b in texts.iter().skip(i + 1) {
+                assert_ne!(a, b, "per-slot options must be pairwise distinguishable");
+            }
+        }
     }
 
     /// Task 12 riding item: BuildTradingHouse should likewise show the
