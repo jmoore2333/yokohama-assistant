@@ -30,7 +30,7 @@ pub fn prompt_header(state: &GameState, phase_text: &str) -> String {
     format!(
         "Turn {} | {} | {} | {} yen {} VP | c{} s{} t{} f{} i{} | hand {}",
         state.turn_number,
-        color_name(p.color),
+        paint(Tone::Player(p.color), color_name(p.color)),
         paint(Tone::Prompt, phase_text),
         p.money,
         p.victory_points,
@@ -95,6 +95,14 @@ pub fn board_grid(state: &GameState) -> String {
     }
     out.push_str(&ruler('└', '┴', '┘'));
     out
+}
+
+/// One-line legend for the `board` grid documenting the `*` mark (item 7).
+/// Kept out of `board_grid` itself so that function's uniform-width frame
+/// invariant (`board_grid_uses_box_drawing_rulers`) is undisturbed -- the
+/// REPL's `board` command appends this footer after the grid.
+pub fn board_legend() -> &'static str {
+    "* = unclaimed 5-Power token"
 }
 
 /// Per Port board: slot number, zone, and the order card there via
@@ -216,11 +224,56 @@ pub fn sites_view(state: &GameState, _rules: &Rules) -> String {
     let mut out = String::new();
     for (&area, site) in &state.board_layout.building_sites {
         out.push_str(&format!(
-            "{}  {}  {}\n",
+            "{}  {}  {}  {}\n",
             describe::area_label(state, area),
             site_compact_line(area.0 as usize, site),
             build_marks(state, site),
+            adjacency_suffix(state, area),
         ));
+    }
+    out
+}
+
+/// The `adj: ...` board-connectivity suffix for a `sites_view` line
+/// (item 7): adjacent area ids ascending, then each canal-crossing partner
+/// as `canal-><id>`. Both are read straight off `board_layout` --
+/// `adjacent_areas` (the `adjacency` graph) and `canal_crossings` -- never
+/// re-derived, so this can't disagree with what movement actually offers.
+/// Canal crossings are transit-only edges kept separate from ordinary
+/// adjacency (box ruling 2026-07-18), hence the distinct `canal->` marks;
+/// each pair is scanned in both orders so it shows on both members' lines.
+/// `adj: -` when an area has no neighbors (defensive -- every real sited
+/// area has at least one).
+fn adjacency_suffix(state: &GameState, area: AreaId) -> String {
+    let mut ids: Vec<u8> = state.board_layout.adjacent_areas(area).iter().map(|a| a.0).collect();
+    ids.sort_unstable();
+    ids.dedup();
+    let adj = if ids.is_empty() {
+        "-".to_string()
+    } else {
+        ids.iter().map(|n| format!("A{:02}", n)).collect::<Vec<_>>().join(", ")
+    };
+
+    let mut crossings: Vec<u8> = state
+        .board_layout
+        .canal_crossings
+        .iter()
+        .filter_map(|&(a, b)| {
+            if a == area {
+                Some(b.0)
+            } else if b == area {
+                Some(a.0)
+            } else {
+                None
+            }
+        })
+        .collect();
+    crossings.sort_unstable();
+    crossings.dedup();
+
+    let mut out = format!("adj: {adj}");
+    for n in crossings {
+        out.push_str(&format!("  canal->A{:02}", n));
     }
     out
 }
@@ -253,12 +306,39 @@ fn build_marks(state: &GameState, site: &BuildingSite) -> String {
     format!("sh {} | th {}", if sh.is_empty() { "-".to_string() } else { sh }, th)
 }
 
+/// A Church faith space's printed reward: VP plus its movement rider, in
+/// `sites_view`'s reward vocabulary (`3vp 1move`). Single-sourced from the
+/// `ChurchTrack` tables -- the same `vp_reward` `delta_summary` prints after a
+/// placement, plus the `movement_rider` the engine queues as assistant-move
+/// choices. Every faith 4-11 carries a movement rider, so it is always shown.
+fn church_reward_text(faith: u8) -> String {
+    format!("{}vp {}move", ChurchTrack::vp_reward(faith), ChurchTrack::movement_rider(faith))
+}
+
+/// A Customs space's printed reward: VP plus its rider, in `sites_view`'s
+/// vocabulary. `CustomsTrack::rider` returns `(warehouse_takes, yen)` --
+/// rendered `Nwh`/`Nyen` -- and spaces 5-7 carry no rider, so those lines show
+/// VP alone. Single-sourced from the `CustomsTrack` tables.
+fn customs_reward_text(space: u8) -> String {
+    let mut s = format!("{}vp", CustomsTrack::vp_reward(space));
+    let (warehouse_takes, yen) = CustomsTrack::rider(space);
+    if warehouse_takes > 0 {
+        s.push_str(&format!(" {warehouse_takes}wh"));
+    }
+    if yen > 0 {
+        s.push_str(&format!(" {yen}yen"));
+    }
+    s
+}
+
 /// Church Management Board (faith values 4-11, occupant color or `-`, `X` on
 /// the 2P dummy-blocked faith-7 space -- `eligible_church_spaces` blocks it
 /// exactly the way `eligible_customs_spaces_for_cost` blocks Customs space
 /// 4) and Customs Management Board (printed cost via `CustomsTrack::
 /// space_cost` -- single source, Task 12 -- occupant or `-`, `X` on the 2P
-/// dummy-blocked space).
+/// dummy-blocked space). Each space line also prints its printed VP + rider
+/// (`church_reward_text`/`customs_reward_text`, S5) after the occupant, and
+/// the occupant color letter is painted in the player's color (S4).
 pub fn tracks_view(state: &GameState) -> String {
     let mut out = String::new();
 
@@ -267,11 +347,14 @@ pub fn tracks_view(state: &GameState) -> String {
         let faith = ChurchTrack::index_to_faith(i);
         let blocked = state.config.player_count == 2 && faith == 7;
         let occ = match state.church_track.slots[i] {
-            Some(slot) => color_letter(state.player(slot.player).color).to_string(),
+            Some(slot) => {
+                let c = state.player(slot.player).color;
+                paint(Tone::Player(c), &color_letter(c).to_string())
+            }
             None if blocked => "X".to_string(),
             None => "-".to_string(),
         };
-        out.push_str(&format!("  faith {:2}: {}\n", faith, occ));
+        out.push_str(&format!("  faith {:2}: {}  {}\n", faith, occ, church_reward_text(faith)));
     }
 
     out.push_str("Customs:\n");
@@ -279,11 +362,20 @@ pub fn tracks_view(state: &GameState) -> String {
         let space = CustomsTrack::index_to_space(i);
         let blocked = state.config.player_count == 2 && space == 4;
         let occ = match state.customs_track.slots[i] {
-            Some(slot) => color_letter(state.player(slot.player).color).to_string(),
+            Some(slot) => {
+                let c = state.player(slot.player).color;
+                paint(Tone::Player(c), &color_letter(c).to_string())
+            }
             None if blocked => "X".to_string(),
             None => "-".to_string(),
         };
-        out.push_str(&format!("  space {} (cost {}): {}\n", space, CustomsTrack::space_cost(space), occ));
+        out.push_str(&format!(
+            "  space {} (cost {}): {}  {}\n",
+            space,
+            CustomsTrack::space_cost(space),
+            occ,
+            customs_reward_text(space),
+        ));
     }
 
     // The Station token is board-level shared state like the two tracks
@@ -326,18 +418,40 @@ pub fn achievements_view(state: &GameState, _rules: &Rules) -> String {
         let claim_state = if card.claimed_by.is_empty() {
             "open".to_string()
         } else {
-            let names: Vec<&str> =
-                card.claimed_by.iter().map(|&pid| color_name(state.player(pid).color)).collect();
+            // S4: each claimant's color name paints in that player's color.
+            let names: Vec<String> = card
+                .claimed_by
+                .iter()
+                .map(|&pid| {
+                    let c = state.player(pid).color;
+                    paint(Tone::Player(c), color_name(c))
+                })
+                .collect();
             format!("claimed by {}", names.join(", "))
         };
+        // Item 6: the card's first/subsequent claim VP from the registry --
+        // the same `first_place_vp`/`subsequent_vp` `vp_for_player` scores
+        // with -- so claim value is visible before committing an assistant.
         out.push_str(&format!(
-            "G{i}: {} — {}\n",
+            "G{i}: {} ({}/{} VP) — {}\n",
             describe::achievement_desc(card.achievement_type),
+            card.achievement_type.first_place_vp(),
+            card.achievement_type.subsequent_vp(),
             claim_state,
         ));
         for p in &state.players {
             let (cur, need) = achievement_progress(state, p.id, card.achievement_type);
-            out.push_str(&format!("   {}: {}/{}\n", color_name(p.color), cur, need));
+            // S6: a player already in `claimed_by` is marked, so a maxed-out
+            // `cur/need` under `claimed by <them>` no longer reads as an
+            // invitation to claim again. S4: the color prefix paints.
+            let claimed = if card.claimed_by.contains(&p.id) { " (claimed)" } else { "" };
+            out.push_str(&format!(
+                "   {}: {}/{}{}\n",
+                paint(Tone::Player(p.color), color_name(p.color)),
+                cur,
+                need,
+                claimed,
+            ));
         }
     }
     out
@@ -794,7 +908,16 @@ fn render_lab_board(label: &str, board: &LabBoard, rules: &Rules, out: &mut Stri
         let surcharge = LabBoard::position_modifier(i);
         let line = match board.slots[i] {
             Some(tech_id) => match rules.techs.get(tech_id) {
-                Some(card) => format!("{} (cost {})", card.name, card.industry_cost),
+                // Country + one-line effect (item 5): single-sourced from the
+                // card's own `country`/`effect` via `describe`, so a player
+                // weighs a tech without cross-referencing a table.
+                Some(card) => format!(
+                    "{} [{}] (cost {}) — {}",
+                    card.name,
+                    describe::country_name(card.country),
+                    card.industry_cost,
+                    describe::tech_effect_text(card.effect),
+                ),
                 None => format!("T{:02}", tech_id.0),
             },
             None => "-".to_string(),
@@ -941,6 +1064,23 @@ mod tests {
         assert!(h.contains("3 yen"), "{h}");
     }
 
+    /// S4 (pre-gate view batch): the header's current-player name is a
+    /// who-is-where surface and paints in that player's color, alongside the
+    /// phase text that already paints. The plain (disabled) header is
+    /// unchanged -- so the existing `prompt_header_*` plain-text tests keep
+    /// passing -- and `strip_ansi` round-trips the painted header to it.
+    #[test]
+    fn prompt_header_paints_the_current_player_name() {
+        let state = test_state_2p(); // Red is the start/current player
+        crate::style::force(true);
+        let colored = prompt_header(&state, "Placement");
+        let painted_name = paint(Tone::Player(PlayerColor::Red), "Red");
+        crate::style::force(false);
+        let plain = prompt_header(&state, "Placement");
+        assert!(colored.contains(&painted_name), "current-player name must paint: {colored:?}");
+        assert_eq!(strip_ansi(&colored), plain);
+    }
+
     #[test]
     fn board_grid_has_one_cell_per_area_with_ids() {
         let state = test_state_2p();
@@ -972,6 +1112,29 @@ mod tests {
         assert!(v.contains("+1"), "{v}");
         assert!(v.contains("+2"), "{v}");
         assert!(v.contains(&format!("tech deck: {}", state.tech_deck.len())), "{v}");
+    }
+
+    /// Labs country + effect (pre-gate view batch item 5): each populated lab
+    /// slot line shows the tech's country (`[Country]`) and its one-line
+    /// effect (`describe::tech_effect_text`), single-sourced from the card
+    /// data -- so a player can weigh a tech without cross-referencing a table.
+    #[test]
+    fn labs_view_shows_country_and_effect_per_card() {
+        let state = test_state_2p();
+        let rules = Rules::standard();
+        let text = labs_view(&state, &rules);
+        let mut checked = 0;
+        for slot in state.lab_state.lab_a.slots.iter().flatten() {
+            let card = rules.techs.get(*slot).expect("a lab card is in the registry");
+            assert!(
+                text.contains(&format!("[{}]", describe::country_name(card.country))),
+                "want country of {} in\n{text}",
+                card.name
+            );
+            assert!(text.contains(describe::tech_effect_text(card.effect)), "want effect of {} in\n{text}", card.name);
+            checked += 1;
+        }
+        assert!(checked > 0, "fixture must populate at least one lab slot:\n{text}");
     }
 
     #[test]
@@ -1046,6 +1209,50 @@ mod tests {
         assert!(line.contains("sh R"), "{line}"); // Red is players[0]
     }
 
+    /// Board connectivity (pre-gate view batch item 7): each `sites` line
+    /// gains an `adj:` suffix listing its adjacent area ids ascending, sourced
+    /// from `board_layout.adjacency` (never re-derived) so a state inventory
+    /// reads as a navigable board.
+    #[test]
+    fn sites_view_lists_adjacent_area_ids_ascending() {
+        let state = test_state_2p();
+        let rules = Rules::standard();
+        let text = sites_view(&state, &rules);
+
+        let (&area, _) = state.board_layout.building_sites.iter().next().expect("a building site exists");
+        let mut ids: Vec<u8> = state.board_layout.adjacent_areas(area).iter().map(|a| a.0).collect();
+        ids.sort_unstable();
+        ids.dedup();
+        let expected = format!("adj: {}", ids.iter().map(|n| format!("A{:02}", n)).collect::<Vec<_>>().join(", "));
+
+        let label = describe::area_label(&state, area);
+        let line = text.lines().find(|l| l.starts_with(&label)).unwrap_or_else(|| panic!("{label} line in\n{text}"));
+        assert!(line.contains(&expected), "want '{expected}' in '{line}'");
+    }
+
+    /// Board connectivity item 7: a canal-crossing pair shows as `canal-><id>`
+    /// on BOTH members' lines (crossings are bidirectional), sourced from
+    /// `board_layout.canal_crossings`. Injected directly here -- the renderer
+    /// only reads the pair list, so geometry is irrelevant to this display.
+    #[test]
+    fn sites_view_shows_canal_crossings_bidirectionally() {
+        let mut state = test_state_2p();
+        let rules = Rules::standard();
+        let sited: Vec<AreaId> = state.board_layout.building_sites.keys().copied().collect();
+        let (area, other) = (sited[0], sited[1]);
+        state.board_layout.canal_crossings.push((area, other));
+
+        let text = sites_view(&state, &rules);
+        let label = describe::area_label(&state, area);
+        let line = text.lines().find(|l| l.starts_with(&label)).unwrap_or_else(|| panic!("{label} line in\n{text}"));
+        assert!(line.contains(&format!("canal->A{:02}", other.0)), "want forward crossing in '{line}'");
+
+        let other_label = describe::area_label(&state, other);
+        let other_line =
+            text.lines().find(|l| l.starts_with(&other_label)).unwrap_or_else(|| panic!("{other_label} line"));
+        assert!(other_line.contains(&format!("canal->A{:02}", area.0)), "want reverse crossing in '{other_line}'");
+    }
+
     #[test]
     fn tracks_view_shows_church_and_customs_with_2p_block() {
         let state = test_state_2p();
@@ -1114,10 +1321,65 @@ mod tests {
         let state = test_state_2p();
         let v = tracks_view(&state);
         // Computed via the same `{:2}` width the SUT formats with, so this
-        // assertion doesn't hardcode a specific padding guess.
+        // assertion doesn't hardcode a specific padding guess. The occupant
+        // now sits directly after the colon (S5 appends the printed VP/rider
+        // after it), so the marker is checked there rather than at line-end.
         let needle = format!("faith {:2}:", 7);
         let line = v.lines().find(|l| l.contains(&needle)).expect("faith-7 line present");
-        assert!(line.trim_end().ends_with('X'), "{line}");
+        assert!(line.contains(&format!("{needle} X")), "{line}");
+    }
+
+    /// S5 (pre-gate view batch): every track space line must show its PRINTED
+    /// VP and rider icon(s), single-sourced from the engine's `ChurchTrack`/
+    /// `CustomsTrack` tables -- the same tables `delta_summary` reads after a
+    /// placement. Church carries a movement rider (`Nmove`); Customs a
+    /// warehouse/yen rider (`Nwh`/`Nyen`, absent on spaces 5-7). Vocabulary
+    /// matches `sites_view` (`Nvp`, `Nmove`, `Nwh`, `Nyen`).
+    #[test]
+    fn tracks_view_shows_printed_vp_and_riders() {
+        let state = test_state_2p();
+        let v = tracks_view(&state);
+
+        for faith in 4u8..=11 {
+            let needle = format!("faith {:2}:", faith);
+            let line = v.lines().find(|l| l.contains(&needle)).unwrap_or_else(|| panic!("faith {faith} line in\n{v}"));
+            let expected = format!("{}vp {}move", ChurchTrack::vp_reward(faith), ChurchTrack::movement_rider(faith));
+            assert!(line.contains(&expected), "faith {faith}: want '{expected}' in '{line}'");
+        }
+
+        for space in 1u8..=7 {
+            let needle = format!("space {} (cost {}):", space, CustomsTrack::space_cost(space));
+            let line = v.lines().find(|l| l.contains(&needle)).unwrap_or_else(|| panic!("space {space} line in\n{v}"));
+            assert!(line.contains(&format!("{}vp", CustomsTrack::vp_reward(space))), "space {space} vp in '{line}'");
+            let (wh, yen) = CustomsTrack::rider(space);
+            if wh > 0 {
+                assert!(line.contains(&format!("{wh}wh")), "space {space} wh in '{line}'");
+            }
+            if yen > 0 {
+                assert!(line.contains(&format!("{yen}yen")), "space {space} yen in '{line}'");
+            }
+            if wh == 0 && yen == 0 {
+                assert!(!line.contains("wh") && !line.contains("yen"), "space {space} must be riderless: '{line}'");
+            }
+        }
+    }
+
+    /// S4 (pre-gate view batch): `tracks_view` occupant color letters are a
+    /// who-is-where surface and must paint in the player's color -- painted
+    /// AFTER any layout, so the alignment invariant `strip_ansi(colored) ==
+    /// plain` still holds (the players_panel/board_grid precedent). Occupants
+    /// injected on both tracks so painting has something to do.
+    #[test]
+    fn colored_tracks_view_still_contains_the_plain_text() {
+        let mut state = test_state_2p();
+        state.church_track.slots[0] = Some(ChurchSlot { player: PlayerId::new(0), arrival_order: 0 });
+        state.customs_track.slots[2] = Some(CustomsSlot { player: PlayerId::new(1), arrival_order: 0 });
+        crate::style::force(true);
+        let colored = tracks_view(&state);
+        crate::style::force(false);
+        let plain = tracks_view(&state);
+        assert_ne!(colored, plain, "forced mode must actually paint something");
+        assert_eq!(strip_ansi(&colored), plain);
     }
 
     /// Task 14 (T2.3) brief Step 1: one `G{i}` line per achievement card
@@ -1173,6 +1435,69 @@ mod tests {
                 assert!(text.contains(&expected), "missing '{expected}' in:\n{text}");
             }
         }
+    }
+
+    /// Goals show claim VP (pre-gate view batch item 6): each `G{i}` line must
+    /// print the card's first/subsequent claim VP from the registry
+    /// (`AchievementType::first_place_vp`/`subsequent_vp`), so claim value is
+    /// visible before committing an assistant. Single-sourced -- computed from
+    /// the same methods `AchievementCard::vp_for_player` scores with.
+    #[test]
+    fn achievements_view_shows_claim_vp_from_registry() {
+        let state = test_state_2p();
+        let rules = Rules::standard();
+        let text = achievements_view(&state, &rules);
+        for (i, card) in state.achievements.iter().enumerate() {
+            let g_line = text
+                .lines()
+                .find(|l| l.starts_with(&format!("G{i}:")))
+                .unwrap_or_else(|| panic!("G{i} line in\n{text}"));
+            let expected =
+                format!("{}/{} VP", card.achievement_type.first_place_vp(), card.achievement_type.subsequent_vp());
+            assert!(g_line.contains(&expected), "G{i}: want '{expected}' in '{g_line}'");
+        }
+    }
+
+    /// S6 (pre-gate view batch): a player already in `claimed_by` gets an
+    /// explicit ` (claimed)` marker on their progress line, so a maxed-out
+    /// `Red: 7/7` under `claimed by Red` no longer reads as an invitation to
+    /// claim again. A player who has NOT claimed keeps a bare `cur/need`.
+    #[test]
+    fn achievements_view_marks_a_claimant_progress_line() {
+        let mut state = test_state_2p();
+        let rules = Rules::standard();
+        state.achievements[0].claimed_by.push(PlayerId::new(0)); // Red claims G0
+
+        let text = achievements_view(&state, &rules);
+        // The G0 block: from its `G0:` header up to (not including) `G1:`.
+        let g0_block: Vec<&str> = text
+            .lines()
+            .skip_while(|l| !l.starts_with("G0:"))
+            .skip(1)
+            .take_while(|l| !l.starts_with("G1:"))
+            .collect();
+        let red_line = g0_block.iter().find(|l| l.trim_start().starts_with("Red:")).expect("a Red progress line");
+        assert!(red_line.contains("(claimed)"), "claimant must be marked: {red_line}");
+        let blue_line = g0_block.iter().find(|l| l.trim_start().starts_with("Blue:")).expect("a Blue progress line");
+        assert!(!blue_line.contains("(claimed)"), "non-claimant must NOT be marked: {blue_line}");
+    }
+
+    /// S4 (pre-gate view batch): `achievements_view` color names -- both the
+    /// `claimed by <names>` list and each per-player progress prefix -- are a
+    /// who-is-where surface and paint in the player's color. The alignment
+    /// invariant `strip_ansi(colored) == plain` still holds (there is no
+    /// fixed-width layout here, but the equality is the paint-discipline pin).
+    #[test]
+    fn colored_achievements_view_still_contains_the_plain_text() {
+        let mut state = test_state_2p();
+        let rules = Rules::standard();
+        state.achievements[0].claimed_by.push(PlayerId::new(0)); // paint the claimed-by list too
+        crate::style::force(true);
+        let colored = achievements_view(&state, &rules);
+        crate::style::force(false);
+        let plain = achievements_view(&state, &rules);
+        assert_ne!(colored, plain, "forced mode must actually paint something");
+        assert_eq!(strip_ansi(&colored), plain);
     }
 
     /// Reviewer-check per the Task 12 brief: `render.rs` must single-source

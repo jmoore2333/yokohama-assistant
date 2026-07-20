@@ -37,6 +37,11 @@ pub struct Repl {
     /// claims a token (President moves / retreats touch neither deck), so
     /// `commit` never parks a fresh `Pending` behind a sub-prompt.
     pub(crate) sub: SubPrompt,
+    /// Set true once the FIRST `board` render of a session has printed the
+    /// wide-board width note (S3), so it prints exactly once. Lives on the
+    /// REPL rather than in `render` because that layer is a pure formatter --
+    /// "once per session" is mutable session state the REPL owns.
+    board_width_note_shown: bool,
 }
 
 /// One line in the Movement phase's collapsed numbered list (design.md:67,
@@ -87,7 +92,14 @@ pub struct StepOutput {
 
 impl Repl {
     pub fn new(session: crate::session::Session) -> Repl {
-        Repl { session, page: 0, pending: Pending::None, locked: false, sub: SubPrompt::None }
+        Repl {
+            session,
+            page: 0,
+            pending: Pending::None,
+            locked: false,
+            sub: SubPrompt::None,
+            board_width_note_shown: false,
+        }
     }
 
     /// The whole prompt screen for the current state: header line, options
@@ -226,7 +238,7 @@ impl Repl {
             [] => self.out(String::new(), false),
             ["quit"] | ["q"] => StepOutput { text: "bye\n".to_string(), quit: true },
             ["help"] => self.out_view(HELP_TEXT.to_string()),
-            ["board"] => self.out_view(render::board_grid(self.session.state())),
+            ["board"] => self.board_cmd(),
             ["players"] => self.out_view(render::players_panel(self.session.state(), self.session.rules())),
             ["ports"] => self.out_view(render::ports_view(self.session.state(), self.session.rules())),
             ["labs"] => self.out_view(render::labs_view(self.session.state(), self.session.rules())),
@@ -322,6 +334,29 @@ impl Repl {
             text.push_str(&self.input_hint());
         }
         StepOutput { text, quit: false }
+    }
+
+    /// The `board` view command: the box-drawing grid, plus a one-line legend
+    /// footer (item 7) and -- on the FIRST render of a session whose board is
+    /// wider than 100 columns -- a one-time width note (S3). The note is keyed
+    /// on the board's OWN rendered width (all grid rows share one width, so
+    /// the first line's column count is it), never on the terminal size (std
+    /// exposes none). `&mut self` only to flip the once-per-session flag.
+    fn board_cmd(&mut self) -> StepOutput {
+        let grid = render::board_grid(self.session.state());
+        let width = grid.lines().next().map(|l| l.chars().count()).unwrap_or(0);
+
+        let mut text = String::new();
+        if width > 100 && !self.board_width_note_shown {
+            self.board_width_note_shown = true;
+            text.push_str(&format!(
+                "(board is {width} columns wide — widen the terminal if rows shear; guide §2)\n"
+            ));
+        }
+        text.push_str(&grid);
+        text.push_str(render::board_legend());
+        text.push('\n');
+        self.out_view(text)
     }
 
     pub(crate) fn lockdown_status(&self) -> String {
@@ -1086,6 +1121,64 @@ mod tests {
             vec![StartingOrderChoice::Keep(0), StartingOrderChoice::Keep(0)],
             Rules::standard(),
         ).unwrap())
+    }
+
+    /// A REPL over a fresh `n`-player simulation (n in 2..=4). Used for the
+    /// board-width note (S3): 3p/4p boards render wider than 100 columns,
+    /// which the 2p board (86 columns) never does.
+    fn repl_np(n: u8, seed: u64) -> Repl {
+        Repl::new(
+            Session::new_sim(
+                GameConfig::for_player_count(n),
+                seed,
+                vec![StartingOrderChoice::Keep(0); n as usize],
+                Rules::standard(),
+            )
+            .unwrap(),
+        )
+    }
+
+    /// S3 (pre-gate view batch): the FIRST `board` render of a session, on a
+    /// board wider than 100 columns, prints a one-time width note -- there is
+    /// no terminal-size detection (std has none; no new deps), so the note is
+    /// keyed purely on the board's own rendered width. A 3-player board is
+    /// 120 columns; the note names that width and points at guide §2, and a
+    /// second render does NOT repeat it.
+    #[test]
+    fn board_command_prints_a_one_time_width_note_on_a_wide_board() {
+        let mut r = repl_np(3, 7);
+        let width =
+            render::board_grid(r.session.state()).lines().next().map(|l| l.chars().count()).unwrap_or(0);
+        assert!(width > 100, "3p board should exceed 100 columns, got {width}");
+
+        let first = r.step("board");
+        assert!(
+            first.text.contains(&format!("board is {width} columns wide")),
+            "first render must note width: {}",
+            first.text
+        );
+        assert!(first.text.contains("guide §2"), "{}", first.text);
+
+        let second = r.step("board");
+        assert!(!second.text.contains("columns wide"), "note must print once per session: {}", second.text);
+    }
+
+    /// S3: a narrow board (2 players = 86 columns, <= 100) never triggers the
+    /// note, on the first render or any later one.
+    #[test]
+    fn board_command_omits_the_width_note_on_a_narrow_board() {
+        let mut r = repl_2p(4);
+        let out = r.step("board");
+        assert!(!out.text.contains("columns wide"), "{}", out.text);
+    }
+
+    /// Item 7 (board connectivity): every `board` render carries a one-line
+    /// legend documenting the `*` = unclaimed 5-Power token mark.
+    #[test]
+    fn board_command_prints_the_five_power_legend() {
+        let mut r = repl_2p(4);
+        let out = r.step("board");
+        assert!(out.text.contains("* = unclaimed 5-Power token"), "{}", out.text);
     }
 
     #[test]

@@ -27,6 +27,8 @@ Rust toolchain required (plain `cargo` works on the project machine). The game a
 
 When run in a real terminal the tool colors what matters — player names in their colors, VP, warnings, the prompt's phase line — and draws the board grid with box-drawing rulers. Piped or redirected output is always plain text (byte-identical to the pre-color tool), and setting the standard `NO_COLOR` environment variable turns color off in a terminal too.
 
+The board grid is wide — 86 columns at 2 players, 120 at 3, and 103 at 4 — so the 3-player board needs a terminal at least 120 columns wide or its rows shear. There is no terminal-size detection, so the `board` command just prints a one-time reminder of the exact width the first time you render a board wider than 100 columns; widen the window if you see the rows break.
+
 ## 3. The setup wizard
 
 Questions are asked one at a time. An invalid answer re-asks the SAME question and shows why (`  ! '<answer>' is not ...`) — there's no limit on retries. Typing `abort` (case-insensitive) at any question exits setup right away; that's the only other way out mid-wizard. Answers in `[brackets]` are the literal things you type.
@@ -141,13 +143,13 @@ b <id>          Placement Option B: place 2 assistants in one area
 b <id> t <adj>  Placement Option B with the Telegram bonus: +1 assistant in an adjacent area
 m <from> <to>   resolve a pending assistant-move choice (<from> is 'hand' or an area id)
 r [id[:n]]...   Movement Option B: retreat the President, recovering all (bare id) or n assistants per area ('r' alone recovers none)
-board           show the area grid
+board           show the area grid (legend: * = unclaimed 5-Power token)
 players         show each player's resources, hand, tech, tokens, President
 ports           show both Port boards and the order-deck size
-labs            show both Laboratory boards and the tech-deck size
-tracks          show the Church and Customs tracks
-sites           show each area's building-site printed rewards and build marks
-goals           show achievement cards, claim state, and per-player progress
+labs            show both Laboratory boards (each tech's country + effect) and the tech-deck size
+tracks          show the Church and Customs tracks with printed VP and rider icons
+sites           show each area's building-site printed rewards, build marks, and adjacency
+goals           show achievement cards with claim VP, claim state, and per-player progress
 hand            show the current player's order-card hand
 score           show current VP/money (or the final scores once the game is over)
 log             show the tail of the move/event log
@@ -267,11 +269,11 @@ Area names with their grid abbreviations (`board` view) and wizard entry codes:
 | Customs | `Cstms` | `cu` |
 | Canal | `Canal` | `canal` |
 
-Board-grid cells also show: `P:` line (Presidents present, by color letter), assistants (`R2 B1` = 2 red, 1 blue), buildings (`sh RB | th Y` = shophouses by owner color, trading house owner), and `*` = this area's 5-Power token is still unclaimed.
+Board-grid cells also show: `P:` line (Presidents present, by color letter), assistants (`R2 B1` = 2 red, 1 blue), buildings (`sh RB | th Y` = shophouses by owner color, trading house owner), and `*` = this area's 5-Power token is still unclaimed. The `board` command repeats that `*` mark as a one-line legend under the grid.
 
-Building sites (`sites` view): one line per area holding a site, e.g. `Copper Mine (A03)  S03  [1vp 2wh - 2move]  TH 7vp  sh - | th -` — `S<n>`'s number is the **area's id**, not the physical site card's printed index (that number is only used to validate your entry during wizard setup, §3, and isn't kept once the game starts); `[...]` is the site's four shophouse-space printed rewards (top-left, top-right, mid-left, mid-right; `-` = blank; `wh`/`move`/`any` are the icon rewards from §8.3, real choice prompts when taken); `TH` is the trading-house VP; `sh .. | th ..` are the same build/ownership marks the `board` grid shows for that cell. Building options during the Building phase (`Build a Shophouse`/`Build a Trading House`) print this same printed-reward text instead of a bare space number.
+Building sites (`sites` view): one line per area holding a site, e.g. `Copper Mine (A03)  S03  [1vp 2wh - 2move]  TH 7vp  sh - | th -  adj: A01, A05  canal->A06` — `S<n>`'s number is the **area's id**, not the physical site card's printed index (that number is only used to validate your entry during wizard setup, §3, and isn't kept once the game starts); `[...]` is the site's four shophouse-space printed rewards (top-left, top-right, mid-left, mid-right; `-` = blank; `wh`/`move`/`any` are the icon rewards from §8.3, real choice prompts when taken); `TH` is the trading-house VP; `sh .. | th ..` are the same build/ownership marks the `board` grid shows for that cell; `adj:` lists the area ids reachable from here (ascending) — the President's movement neighbors — with any canal-crossing partner shown separately as `canal-><id>` (a transit-only edge, see **Canal crossing** below). Building options during the Building phase (`Build a Shophouse`/`Build a Trading House`) print this same printed-reward text instead of a bare space number.
 
-Tracks (`tracks` view): Church spaces by faith value 4–11; Customs spaces 1–7 with printed goods-costs `[1,1,2,2,3,3,4]`. In 2-player games `X` marks both pre-blocked dummy spaces — Church faith-7 and Customs space 4.
+Tracks (`tracks` view): Church spaces by faith value 4–11, each showing its printed VP and movement rider (`3vp 1move`); Customs spaces 1–7 with printed goods-costs `[1,1,2,2,3,3,4]`, each showing its printed VP and warehouse/yen rider (`5vp 2wh`, `4vp 2yen`; spaces 5–7 carry no rider). The occupant color letter sits directly after the space label, before the reward. In 2-player games `X` marks both pre-blocked dummy spaces — Church faith-7 and Customs space 4.
 
 **Canal crossing:** the Canal tile can never hold an assistant, a President, or a building — that part is unchanged — but President movement can now cross straight through it in a single hop, connecting whichever of its (up to) four flanking pairs actually exist on this board's grid: left↔right, up↔down, and both diagonals. A 3-player board's grid is only 2 rows, so it can only ever have the left↔right pair; a 4-player board's 3-row grid can have all four; 2-player games have no Canal tile at all. Each crossing costs 1 Yen to the bank — a separate, unconditional toll from the opponent-president pass-through fee (which instead goes to that president's owner) — and that includes the very first step out of the President's current area, if that step is itself a crossing. "Bent" transits (entering one flank and exiting anywhere but the exact opposite one) are illegal and never offered: the tool only ever builds the straight-through edges, so there's nothing bent to pick from in the first place. Telegram's adjacent-area placement bonus (§4) does not extend across a canal crossing — it still needs a physically adjoining tile.
 

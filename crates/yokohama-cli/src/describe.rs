@@ -77,6 +77,38 @@ pub fn achievement_desc(a: AchievementType) -> String {
     }
 }
 
+/// One-line plain-words statement of a Technology card's effect, for the
+/// `labs` view (item 5). A TOTAL match over `TechEffect` -- no wildcard arm,
+/// so adding a variant is a compile error here rather than a silently-missing
+/// line. Each line is authored from the engine's own `TechEffect` variant
+/// docs (`types/cards.rs`); the CLI guide's §8.2 lists card NAMES only, not
+/// per-effect wording, so these are the single display source for what a tech
+/// does. ASCII only, to stay terminal-safe.
+pub fn tech_effect_text(effect: TechEffect) -> &'static str {
+    match effect {
+        TechEffect::Tram => "Teleport the President to any area without an opponent President",
+        TechEffect::Stagecoach => "Move through opponent Presidents without paying the pass-through fee",
+        TechEffect::PostalSystem => "May stop and act in an area holding an opponent President",
+        TechEffect::Station => "Place the Station token: +1 Power for everyone there; you may teleport to it",
+        TechEffect::Gaslight => "+2 VP when you build a Shophouse",
+        TechEffect::ElectricalLight => "+3 VP when you build a Trading House",
+        TechEffect::MiningTechnology => "+1 Copper whenever you receive Copper",
+        TechEffect::SpinningMill => "Once per turn: discard 1 Silk to gain 2 Yen",
+        TechEffect::Ball => "+2 VP when you complete an Order",
+        TechEffect::LanguageSchool => "+1 Yen when you complete an Order",
+        TechEffect::PatentSystem => "+2 VP when you acquire a Technology",
+        TechEffect::LetterPressPrinting => "+1 Yen when you acquire a Technology",
+        TechEffect::Winery => "+3 VP when you place an assistant on the Church",
+        TechEffect::Brickyard => "+4 VP when you place an assistant on Customs",
+        TechEffect::SystemOfStock => "At turn start, if you have 1 Yen or less, refill to 2 Yen",
+        TechEffect::University => "Once per turn: pay 1 Yen to take an assistant from the Warehouse",
+        TechEffect::Newspaper => "Placement Option A may use 4 different areas instead of 3",
+        TechEffect::Telegram => "After placing 2 assistants in one area, may place 1 in an adjacent area",
+        TechEffect::Telephone => "During Recovery, may leave 1 assistant in the action area",
+        TechEffect::Exposition => "Immediately gain 10 VP when acquired",
+    }
+}
+
 /// Plain-words name of a trade good, for `Move::ChooseAnyGood`.
 fn trade_good_name(g: TradeGood) -> &'static str {
     match g {
@@ -769,6 +801,29 @@ mod tests {
         assert!(text.contains("power 3"), "{text}");
         assert!(text.contains("+1 copper"), "{text}");
         assert!(!text.contains("+3 copper"), "{text}");
+    }
+
+    /// Labs country + effect (pre-gate view batch item 5): `tech_effect_text`
+    /// is a TOTAL match over `TechEffect` (no wildcard arm -- a future variant
+    /// is a compile error). Every real tech card must therefore map to a
+    /// non-empty effect line. Driven off the standard registry, which carries
+    /// all 20 effects.
+    #[test]
+    fn every_tech_effect_has_nonempty_text() {
+        let rules = Rules::standard();
+        for card in rules.techs.iter() {
+            assert!(!tech_effect_text(card.effect).is_empty(), "{:?} has empty effect text", card.effect);
+        }
+    }
+
+    /// Spot-check a few effect lines against the engine's `TechEffect` docs so
+    /// a regression in the mapping is caught, not just emptiness.
+    #[test]
+    fn tech_effect_text_spot_checks() {
+        assert_eq!(tech_effect_text(TechEffect::Exposition), "Immediately gain 10 VP when acquired");
+        assert!(tech_effect_text(TechEffect::Gaslight).contains("Shophouse"), "{}", tech_effect_text(TechEffect::Gaslight));
+        assert!(tech_effect_text(TechEffect::Brickyard).contains("Customs"), "{}", tech_effect_text(TechEffect::Brickyard));
+        assert!(tech_effect_text(TechEffect::University).contains("Warehouse"), "{}", tech_effect_text(TechEffect::University));
     }
 
     #[test]
