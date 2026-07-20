@@ -1,0 +1,18 @@
+[package]
+name = "yokohama-oracle"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "Independent rules oracle for the Yokohama engine (Phase 2.9). Depends on yokohama-core for TYPES ONLY, never logic - the visible-coupling guarantee of the phase plan: any logic import would be visible right here."
+
+# DEPENDENCY POLICY (phase plan, Structure section): yokohama-core for types
+# only (GameState, Rules, Move, ids, money) plus serde for RouteLabel
+# serialization. Adding ANY other engine coupling - or calling engine logic -
+# violates the independence rule and must be rejected in review.
+[dependencies]
+yokohama-core = { path = "../yokohama-core" }
+serde = { workspace = true }
+
+[dev-dependencies]
+serde_json = { workspace = true }

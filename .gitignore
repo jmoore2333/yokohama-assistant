@@ -2,3 +2,8 @@ target/
 *.swp
 *.swo
 .DS_Store
+
+# Phase-2.9 differential-harness divergence artifacts (generated repros;
+# never committed - the seed/players/policy/step in each filename is the
+# provenance, the state snapshot inside is the repro)
+crates/yokohama-difftest/artifacts/

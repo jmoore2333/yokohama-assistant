@@ -237,6 +237,27 @@ dependencies = [
 ]
 
 [[package]]
+name = "yokohama-difftest"
+version = "0.1.0"
+dependencies = [
+ "rand",
+ "rand_chacha",
+ "serde",
+ "serde_json",
+ "yokohama-core",
+ "yokohama-oracle",
+]
+
+[[package]]
+name = "yokohama-oracle"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "yokohama-core",
+]
+
+[[package]]
 name = "zerocopy"
 version = "0.8.31"
 source = "registry+https://github.com/rust-lang/crates.io-index"
