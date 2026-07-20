@@ -158,6 +158,36 @@ impl Session {
         let text = std::fs::read_to_string(path).map_err(|e| e.to_string())?;
         let record: GameRecord = serde_json::from_str(&text).map_err(|e| e.to_string())?;
 
+        // Mirrors `replay`'s own lenient mismatch diagnostics (core's
+        // record.rs) verbatim: v1 warns but does not refuse to replay a
+        // record produced by a different engine build or against different
+        // rules data. `load` can no longer just call `replay` for this --
+        // see below -- so these two checks are duplicated here rather than
+        // silently dropped (Task 15 review Finding 2: `check_invariants`
+        // below checks only structural conservation, NOT engine_version/
+        // rules_hash, so it does NOT backstop a rules-data drift that
+        // happens to leave conservation intact -- an earlier version of
+        // this comment claimed otherwise; that was wrong). Correct only
+        // because yokohama-cli and yokohama-core share one workspace
+        // version (`version.workspace = true` in both Cargo.tomls) --
+        // `env!("CARGO_PKG_VERSION")` is resolved per-crate at compile
+        // time, so this comparison would silently stop meaning anything if
+        // the two crates' versions were ever allowed to diverge.
+        let running_version = env!("CARGO_PKG_VERSION");
+        if record.engine_version != running_version {
+            eprintln!(
+                "warning: GameRecord.engine_version=\"{}\" does not match running engine version \"{running_version}\" -- replaying anyway (v1 does not refuse on a version mismatch)",
+                record.engine_version,
+            );
+        }
+        let running_rules_hash = rules.content_hash();
+        if record.rules_hash != running_rules_hash {
+            eprintln!(
+                "warning: GameRecord.rules_hash=\"{}\" does not match running rules content hash \"{running_rules_hash}\" -- replaying anyway (v1 does not refuse on a rules_hash mismatch)",
+                record.rules_hash,
+            );
+        }
+
         // Rebuilds the base state the same way `new_sim`/`new_live` do
         // (new_game -> optional reconcile_setup -> finalize_setup) rather
         // than calling `replay` for the whole record in one shot: each
@@ -165,12 +195,7 @@ impl Session {
         // before it folds, so the loop below interleaves
         // `describe_recorded_event` with `replay_from` one event at a time
         // -- the same per-event pattern `examples/record_stats.rs` uses to
-        // interleave its own `metrics.observe` call. `replay`'s
-        // engine_version/rules_hash mismatch warnings are not reproduced
-        // here -- a mismatched save that actually replays to something
-        // broken still surfaces as a hard error from `check_invariants`
-        // below; duplicating those two soft stderr diagnostics alongside
-        // the fold wasn't judged worth the extra surface for this task.
+        // interleave its own `metrics.observe` call.
         let mut pending = new_game(record.config.clone(), &rules, record.seed).map_err(|e| e.to_string())?;
         if let Some(obs) = &record.setup_observations {
             pending = reconcile_setup(pending, obs, &rules).map_err(|e| e.to_string())?;
@@ -178,9 +203,18 @@ impl Session {
         let mut state = finalize_setup(pending, &record.choices).map_err(|e| e.to_string())?;
 
         let mut event_descriptions = Vec::with_capacity(record.events.len());
-        for ev in &record.events {
+        for (i, ev) in record.events.iter().enumerate() {
             event_descriptions.push(crate::describe::describe_recorded_event(ev, &state, &rules));
-            state = replay_from(&state, std::slice::from_ref(ev), &rules).map_err(|e| e.to_string())?;
+            // `replay_from` is fed a FRESH 1-element slice per iteration
+            // (so `state` can advance one event at a time between
+            // description calls), so its own `ReplayError::event_index` --
+            // derived from `.enumerate()` over THAT slice -- is always 0,
+            // no matter which real event failed (Task 15 review Finding 1).
+            // Reconstruct the message with the TRUE index `i` into
+            // `record.events` instead of trusting the error's own
+            // (structurally always-0) index.
+            state = replay_from(&state, std::slice::from_ref(ev), &rules)
+                .map_err(|e| format!("replay failed at event {i}: {}", e.message))?;
         }
         debug_assert_eq!(event_descriptions.len(), record.events.len());
 
@@ -682,6 +716,62 @@ mod tests {
         std::fs::remove_file(&path).ok();
 
         assert!(result.is_err(), "a tampered record must surface as a typed load error, never a panic");
+    }
+
+    /// Fix-wave regression (Task 15 review, Finding 1): `load`'s per-event
+    /// fold loop must name the TRUE failing event's index, not always 0.
+    /// The old (pre-T2.4) `load` called `replay` once over the whole events
+    /// slice, so a `ReplayError` correctly named which event broke; the
+    /// per-event `replay_from(&state, std::slice::from_ref(ev), &rules)`
+    /// rewrite feeds each call a FRESH 1-element slice, so
+    /// `ReplayError::event_index` -- derived from `.enumerate()` over THAT
+    /// slice -- was structurally always 0 regardless of which real event
+    /// failed.
+    ///
+    /// Tampers a record with `ChurchSpace` queued
+    /// (`session_with_church_space_choice_queued`) by appending ONE
+    /// `ReturnPresidentToHand` -- not one of the queued choice's own
+    /// resolutions, so `apply_move`'s blanket `get_legal_moves` membership
+    /// check (`MoveError::NotLegal`, core's apply_move.rs) rejects it
+    /// immediately at THIS event, the first (and only) tampered one. (This
+    /// corrects an inaccurate claim in the sibling test's doc comment just
+    /// above, which says this exact move "validates nothing and moves the
+    /// President to hand" -- empirically it does not: unlike
+    /// `apply_move_unchecked`, checked `apply_move` verifies legal-list
+    /// membership up front for every move, so an out-of-turn
+    /// `ReturnPresidentToHand` never reaches its own per-arm logic at all.
+    /// The sibling test's own assertion, `result.is_err()`, still holds
+    /// either way, so it wasn't wrong to trust -- just its narrative of
+    /// WHICH move fails and why. Flagging for the reviewer/controller
+    /// rather than silently rewriting that test's comment here -- outside
+    /// this fix wave's stated scope.) The expected index is computed from
+    /// the fixture (`base`) rather than hardcoded, so it can't silently
+    /// drift if the fixture's own move count ever changes.
+    #[test]
+    fn load_of_tampered_record_names_the_true_failing_event_index() {
+        let s = session_with_church_space_choice_queued();
+        let base = s.record().events.len();
+        let mut record = s.record().clone();
+        record.push_move(Move::ReturnPresidentToHand { recover: std::collections::BTreeMap::new() });
+        let expected_failing_index = base; // the tampered ReturnPresidentToHand itself
+
+        let path = std::env::temp_dir().join(format!("yokohama_tampered_index_{}.json", std::process::id()));
+        std::fs::write(&path, serde_json::to_string_pretty(&record).unwrap()).unwrap();
+
+        // `Session::load`'s Ok variant is `Session`, which (deliberately)
+        // doesn't derive `Debug` -- `unwrap_err()` needs `T: Debug` for its
+        // OWN panic message on the never-taken Ok arm, so a plain `match`
+        // sidesteps that instead of adding a derive nothing else needs.
+        let err = match Session::load(&path, Rules::standard()) {
+            Err(e) => e,
+            Ok(_) => panic!("expected a load error naming the tampered event, got Ok"),
+        };
+        std::fs::remove_file(&path).ok();
+
+        assert!(
+            err.contains(&format!("event {expected_failing_index}")),
+            "error must name the TRUE failing event index ({expected_failing_index}), not always 0: {err}"
+        );
     }
 
     /// The CLI-layer analog of the fuzz driver: a full random game driven
