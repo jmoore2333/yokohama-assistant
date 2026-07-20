@@ -25,6 +25,8 @@ cargo run -p yokohama-cli -- save.json # resume a saved game
 
 Rust toolchain required (plain `cargo` works on the project machine). The game autosaves after **every** applied move once a save path is set (the wizard sets one by default), so a crash loses at most the move you were typing — rerun with the save file to resume.
 
+When run in a real terminal the tool colors what matters — player names in their colors, VP, warnings, the prompt's phase line — and draws the board grid with box-drawing rulers. Piped or redirected output is always plain text (byte-identical to the pre-color tool), and setting the standard `NO_COLOR` environment variable turns color off in a terminal too.
+
 ## 3. The setup wizard
 
 Questions are asked one at a time. An invalid answer re-asks the SAME question and shows why (`  ! '<answer>' is not ...`) — there's no limit on retries. Typing `abort` (case-insensitive) at any question exits setup right away; that's the only other way out mid-wizard. Answers in `[brackets]` are the literal things you type.
