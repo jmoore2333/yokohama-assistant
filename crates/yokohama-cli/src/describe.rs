@@ -4,6 +4,8 @@
 use yokohama_core::*;
 use yokohama_core::game::actions::{copper_mine_reward, fishing_ground_reward, silk_mill_reward, tea_plantation_reward};
 
+use crate::render;
+
 pub fn area_type_name(t: AreaType) -> &'static str {
     match t {
         AreaType::CopperMine => "Copper Mine",
@@ -292,11 +294,33 @@ pub fn describe_move(mv: &Move, state: &GameState, rules: &Rules) -> String {
         Move::MovePresident { path, destination } if path.is_empty() => {
             format!("Move President directly to {} (free teleport)", area_label(state, *destination))
         }
-        Move::MovePresident { path, destination } => format!(
-            "Move President to {} via {}",
-            area_label(state, *destination),
-            path.iter().map(|a| area_label(state, *a)).collect::<Vec<_>>().join(" -> ")
-        ),
+        Move::MovePresident { path, destination } => {
+            // `path` already carries the destination as its last element --
+            // the same slice `apply_movement` prices (Task 6) -- so it feeds
+            // `route_fee_vector` unchanged, never `path` + `destination`
+            // appended (that would double-count the last hop).
+            let vector = route_fee_vector(state, state.current_player, path, Some(&rules.techs), false);
+            let cost_text = if vector.is_empty() {
+                "free".to_string()
+            } else {
+                let total: u32 = vector.values().sum();
+                // Player entries first (in PlayerId order), canal toll (the
+                // `None` bank entry) last -- matches the design's example
+                // wording, not `RouteVector`'s natural key order (`None`
+                // sorts first in a BTreeMap since `None < Some(_)`).
+                let parts: Vec<String> = vector
+                    .iter()
+                    .filter_map(|(recipient, amount)| {
+                        recipient.map(|player_id| {
+                            format!("{amount} to {}", render::color_name(state.player(player_id).color))
+                        })
+                    })
+                    .chain(vector.get(&None).map(|amount| format!("{amount} canal toll")))
+                    .collect();
+                format!("pay {total} yen ({})", parts.join(", "))
+            };
+            format!("Move President to {} — {}", area_label(state, *destination), cost_text)
+        }
         // Counts encoding (I5 ruling): per-area counts, not just which areas
         // -- two retreats differing only by count (e.g. recover 1 vs 2 from
         // the same area) must render distinguishably (Task 7's report;
@@ -410,6 +434,7 @@ pub fn describe_pending_choice(head: &PendingChoice, state: &GameState, _rules: 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::BTreeMap;
 
     fn state_2p() -> GameState {
         let rules = Rules::standard();
@@ -718,5 +743,131 @@ mod tests {
         ] {
             assert!(!phase_name(p).is_empty());
         }
+    }
+
+    /// Task 13 (T2.2b): a small hand-built board for MovePresident cost
+    /// tests. `state_2p()` can't reach a canal at all -- the standard
+    /// 2-player board never places a Canal tile (board_gen.rs's
+    /// `two_player_boards_unchanged` pins `canal_crossings.is_empty()` for
+    /// every seeded 2p layout) -- so this mirrors movement.rs's Task 6
+    /// fixture pattern (`canal_crossing_fixture` / `l2_diamond_fixture`)
+    /// locally: those are `#[cfg(test)]`-private to yokohama-core and not
+    /// reachable across the crate boundary. `route_fee_vector` only reads
+    /// `canal_crossings` and `president_location`s (never `adjacency`), so
+    /// the board is deliberately minimal: a `start` hub with three spokes --
+    /// one tolled, one fee-bearing (Blue's President sits there), one free.
+    fn movement_cost_fixture() -> (GameState, Rules) {
+        let start = AreaId::new(0);
+        let toll_dest = AreaId::new(1);
+        let fee_dest = AreaId::new(2);
+        let free_dest = AreaId::new(3);
+
+        let mut areas = BTreeMap::new();
+        areas.insert(start, AreaConfig { area_type: AreaType::Bank, grid_position: (0, 0) });
+        areas.insert(toll_dest, AreaConfig { area_type: AreaType::CopperMine, grid_position: (0, 1) });
+        areas.insert(fee_dest, AreaConfig { area_type: AreaType::SilkMill, grid_position: (0, 2) });
+        areas.insert(free_dest, AreaConfig { area_type: AreaType::TeaPlantation, grid_position: (0, 3) });
+
+        let mut adjacency = BTreeMap::new();
+        adjacency.insert(start, vec![toll_dest, fee_dest, free_dest]);
+        adjacency.insert(toll_dest, vec![start, fee_dest]);
+        adjacency.insert(fee_dest, vec![start, toll_dest, free_dest]);
+        adjacency.insert(free_dest, vec![start, fee_dest]);
+
+        let board_layout = BoardLayout {
+            areas,
+            adjacency,
+            canal_crossings: vec![(start, toll_dest)],
+            building_sites: BTreeMap::new(),
+            five_power_tokens: BTreeMap::new(),
+        };
+
+        let config = GameConfig::new(2, vec![PlayerColor::Red, PlayerColor::Blue], PlayerId::new(0));
+        let mut players = vec![
+            PlayerState::new(PlayerId::new(0), PlayerColor::Red, true),
+            PlayerState::new(PlayerId::new(1), PlayerColor::Blue, false),
+        ];
+        players[0].president_location = PresidentLocation::OnBoard(start);
+        players[0].money = 10;
+        players[1].president_location = PresidentLocation::OnBoard(fee_dest); // Blue blocks fee_dest
+        players[1].money = 10;
+
+        let state = GameState {
+            config,
+            board_layout,
+            players,
+            current_player: PlayerId::new(0),
+            turn_phase: TurnPhase::Movement,
+            turn_number: 1,
+            additional_action_state: AdditionalActionState::new(),
+            current_action_power: None,
+            is_mercenary_action: false,
+            mercenary_target_area: None,
+            mercenary_return_phase: None,
+            president_start_area: None,
+            port_state: PortState::new(false),
+            lab_state: LabState::new(false),
+            order_deck: vec![],
+            tech_deck: vec![],
+            orders_removed: vec![],
+            church_track: ChurchTrack::new(),
+            customs_track: CustomsTrack::new(),
+            achievements: [
+                AchievementCard::new(AchievementType::Copper5),
+                AchievementCard::new(AchievementType::Money10),
+                AchievementCard::new(AchievementType::Production4),
+            ],
+            mercenary_supply: MercenarySupply::new(),
+            station_location: None,
+            end_game_triggered: false,
+            trigger_reason: None,
+            final_round: false,
+            trigger_player: None,
+            pending_choices: Vec::new(),
+        };
+
+        (state, Rules::empty_for_tests())
+    }
+
+    /// Task 13 (T2.2b): a MovePresident option must show WHO gets paid, not
+    /// just how much -- a player choosing between two equal-cost routes
+    /// needs to see that one pays an opponent and the other pays the bank
+    /// (canal toll) before picking. Also pins that a non-empty zero-cost
+    /// path reads as "free", NOT the teleport wording (that stays reserved
+    /// for the empty-path Station/Tram case).
+    #[test]
+    fn movement_descriptions_name_cost_and_recipients() {
+        let (state, rules) = movement_cost_fixture();
+        let toll_dest = AreaId::new(1);
+        let fee_dest = AreaId::new(2);
+        let free_dest = AreaId::new(3);
+
+        // Canal fixture -- the toll route:
+        let toll_move = Move::MovePresident { path: vec![toll_dest], destination: toll_dest };
+        let text = describe_move(&toll_move, &state, &rules);
+        assert!(text.contains("canal toll"), "{text}");
+
+        // the fee route (Blue's President sits at fee_dest):
+        let fee_move = Move::MovePresident { path: vec![fee_dest], destination: fee_dest };
+        let text2 = describe_move(&fee_move, &state, &rules);
+        assert!(text2.contains("1 to "), "{text2}");
+        assert!(text2.contains("1 to Blue"), "{text2}");
+
+        // a free move: no canal, no opponent -- and it must NOT read as a
+        // teleport (non-empty path):
+        let free_move = Move::MovePresident { path: vec![free_dest], destination: free_dest };
+        let text3 = describe_move(&free_move, &state, &rules);
+        assert!(text3.contains("free"), "{text3}");
+        assert!(!text3.contains("teleport"), "{text3}");
+
+        // both a toll AND a fee on the same route (path through toll_dest,
+        // stopping where Blue's President sits) -- pins the exact wording
+        // and the players-before-canal-toll part ordering.
+        let combo_move = Move::MovePresident { path: vec![toll_dest, fee_dest], destination: fee_dest };
+        let text4 = describe_move(&combo_move, &state, &rules);
+        assert_eq!(
+            text4,
+            format!("Move President to {} — pay 2 yen (1 to Blue, 1 canal toll)", area_label(&state, fee_dest))
+        );
     }
 }
