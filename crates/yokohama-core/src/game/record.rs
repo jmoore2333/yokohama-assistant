@@ -43,7 +43,9 @@ pub struct GameRecord {
     /// `env!("CARGO_PKG_VERSION")` of the engine build that produced this
     /// record. `replay` compares this to the running engine's version and
     /// warns on mismatch, but does not refuse to replay (see `replay`'s doc
-    /// comment) -- that tightening is left to Phase 2.
+    /// comment). `replay_strict` (same module) IS that tightening: it
+    /// rejects a mismatch outright at event_index 0, and is the path a
+    /// training pipeline should use.
     pub engine_version: String,
     /// `Rules::content_hash()` of the `Rules` the record was created against.
     /// `replay_strict` rejects a mismatch at event_index 0; lenient `replay`

@@ -224,7 +224,8 @@ impl Repl {
     }
 
     /// Like `out`, but for read-only VIEW commands (`board`/`players`/
-    /// `ports`/`labs`/`tracks`/`hand`/`score`/`log`/`help`): appends just
+    /// `ports`/`labs`/`tracks`/`sites`/`goals`/`hand`/`score`/`log`/`help`):
+    /// appends just
     /// the phase-aware input hint (`input_hint()`), not the full
     /// header+phase+numbered-options block `prompt()` builds (Task 13 test
     /// (e)). A view command never changes state, so which options are
@@ -415,7 +416,8 @@ impl Repl {
 
     /// Route `mv` through live-mode reveal detection (`TrackingMode::Live`
     /// only), then apply. A scratch-apply against the CURRENT state (never
-    /// mutates -- `apply_move` always clones) reveals whether `mv` draws
+    /// mutates -- the probe below calls `apply_move_unchecked`, which clones
+    /// like every arm in that module) reveals whether `mv` draws
     /// from either deck or claims a 5-Power token; when it does, `mv` is
     /// parked in `self.pending` and the operator is prompted instead of
     /// applying immediately. Everything else -- including every move in

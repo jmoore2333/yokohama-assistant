@@ -192,8 +192,17 @@ pub fn find_reachable_areas_with_tech(
 
 /// Whether a president-movement step may land on `to`, given the move's
 /// start area `start`: `to` must hold >=1 of the mover's own assistants
-/// (the assistant-chain requirement) and must not be `start` itself (a
-/// President may never re-enter its own starting area mid-move). Shared by
+/// (the assistant-chain requirement) and must not be `start` itself.
+///
+/// That start-exclusion is CANONICALIZATION, not a rules claim. The
+/// 2026-07-20 effective-route ruling (guidingpath decision log) is that
+/// retracing isn't real movement: the only prohibited revisit is ENDING on
+/// the start area, and any declared route that re-enters `start` mid-move
+/// reduces to a shorter simple effective route with the same endpoint and
+/// the same fees. Excluding `start` from every hop therefore enumerates one
+/// representative per effective route rather than narrowing the legal set.
+///
+/// Shared by
 /// `find_reachable_areas_with_tech` (Dijkstra, one path per destination)
 /// and `enumerate_president_routes` (DFS, every simple affordable path) so
 /// the two searches can never diverge on what counts as a legal hop.
