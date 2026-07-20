@@ -232,6 +232,12 @@ fn calculate_technology_bonus(state: &GameState, tech_registry: &TechRegistry) -
     });
 
     let mut bonuses = Vec::new();
+    // Participation gate: `iv > 0` is equivalent to "owns >=1 tech card"
+    // ONLY because every tech in the standard data has industry_cost >= 3
+    // (08-tech-cards.yaml min is 3). The rulebook's literal gate is
+    // ownership; if a zero-industry tech is ever added, this must become an
+    // ownership check or a 0-iv owner would wrongly be excluded (Stage-2
+    // differential review note, 2026-07-20).
     if let Some((player, iv, _)) = totals.first() {
         if *iv > 0 {
             bonuses.push((*player, 10));

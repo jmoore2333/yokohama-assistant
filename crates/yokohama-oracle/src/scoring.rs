@@ -33,8 +33,10 @@
 //!    cards and owned Technology cards divide into sets of DIFFERENT icons:
 //!    5 → 12 VP, 4 → 8, 3 → 4, 2 → 2, 1 → 0; each icon used once. The oracle
 //!    scores the optimal division (largest-sets-first / conjugate partition,
-//!    KB: "Optimal: form largest sets first"), brute-force-verified optimal in
-//!    the tests.
+//!    KB: "Optimal: form largest sets first"), brute-force-verified optimal
+//!    for all per-icon counts ≤ 7 in the tests; beyond that by convexity of
+//!    the set-value table (increments 0,2,2,4,4 are non-decreasing, so
+//!    largest-sets-first cannot lose by exchange).
 //! 6. **Remainder scoring** [RB p.10 §5; KB §Final Scoring 5] — 1 VP per
 //!    unused (face-up) Foreign Mercenary token, 1 VP per Imported Good token,
 //!    1 VP per full 2 Yen, 1 VP per full 3 Trade Goods (any combination).
@@ -53,11 +55,13 @@
 //!   per-player `church_positions`/`customs_positions` value vectors — the
 //!   board is what the rulebook's "rightmost" refers to, and slot occupancy
 //!   makes it strict (two pawns never share a space).
-//! - "Rightmost" is POSITIONAL. The `ChurchSlot::arrival_order` field comment
-//!   in types/tracks.rs suggests a later-arrival reading; the rulebook example
-//!   [RB p.9] compares pawn POSITIONS, so this oracle uses the highest
-//!   occupied slot index. If the engine tie-breaks by arrival order instead,
-//!   the differential harness should surface it.
+//! - "Rightmost" is POSITIONAL. The rulebook example [RB p.9] compares pawn
+//!   POSITIONS, so this oracle uses the highest occupied slot index.
+//!   (Probe outcome, Stage-2 sweeps 2026-07-20: the engine ALSO scores
+//!   positionally — the old `arrival_order` field comment in types/tracks.rs
+//!   described a reading the engine never implemented and has been corrected.
+//!   Note the differential confirms the two sides AGREE; it cannot by itself
+//!   adjudicate positional-vs-arrival — the rulebook's examples do.)
 
 use serde::{Deserialize, Serialize};
 use yokohama_core::{Country, GameState, PlayerId, PlayerState, Rules};
@@ -201,7 +205,8 @@ fn technology_awards(state: &GameState, rules: &Rules) -> Vec<u32> {
 /// 1→0 VP, each icon used once [RB p.10 §4]. Scores the OPTIMAL division via
 /// the conjugate partition — the j-th set takes every icon type with count
 /// ≥ j (largest sets first, KB §Final Scoring 4 "Optimal: form largest sets
-/// first"); brute-force-verified optimal in this module's tests.
+/// first"); brute-force-verified optimal for all per-icon counts ≤ 7 in this
+/// module's tests, and by set-value convexity beyond.
 fn country_score_from_counts(counts: &[u32; 5]) -> u32 {
     fn set_value(size: usize) -> u32 {
         match size {
@@ -492,7 +497,11 @@ mod tests {
     #[test]
     fn country_score_greedy_is_optimal_brute_force() {
         // Adversarial check of the largest-sets-first (conjugate) division:
-        // brute-force the best partition for every count vector ≤ 3 per icon.
+        // brute-force the best partition for every count vector ≤ 7 per icon
+        // (Stage-2 review widening — counts > 3 are reachable at game end,
+        // e.g. GB order cards + 2-copy GB tech titles; ≤ 7 covers every
+        // plausible table and 8^5 memoized vectors stay fast; beyond 7 the
+        // set-value convexity argument in the module docs applies).
         fn set_value(size: u32) -> u32 {
             match size {
                 5 => 12,
@@ -529,11 +538,11 @@ mod tests {
             best
         }
         let mut memo = HashMap::new();
-        for a in 0..4u32 {
-            for b in 0..4u32 {
-                for c in 0..4u32 {
-                    for d in 0..4u32 {
-                        for e in 0..4u32 {
+        for a in 0..8u32 {
+            for b in 0..8u32 {
+                for c in 0..8u32 {
+                    for d in 0..8u32 {
+                        for e in 0..8u32 {
                             let counts = [a, b, c, d, e];
                             assert_eq!(
                                 country_score_from_counts(&counts),
