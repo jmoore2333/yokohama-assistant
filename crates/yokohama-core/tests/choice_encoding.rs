@@ -341,6 +341,48 @@ fn station_place_resolutions_cover_all_placeable_areas_and_resolution_sets_the_t
 }
 
 // ===========================================================================
+// Ruling pin (guidingpath decision log, 2026-07-19): Language School is
+// YEN-FIRST -- its +1 Yen order-completion bonus (`language_school_yen_bonus`,
+// credited at the tail of `apply_fulfill_order`) lands within the SAME
+// FulfillOrder move that queues that order's WarehouseTake choice, so the
+// fresh Yen counts toward the queued take's affordability the moment it's
+// resolved. `generate_choice_resolutions_for`/`warehouse_take_options` read
+// the player's LIVE money at resolution time rather than a value snapshotted
+// when the choice was queued, so this already holds -- this pin locks it in.
+// ===========================================================================
+
+#[test]
+fn language_school_yen_is_available_for_the_same_orders_warehouse_take() {
+    let (mut state, order_id, mut rules) = order_fixture(
+        OrderRewards { warehouse_tokens: 1, ..Default::default() },
+        AreaType::Bank,
+    );
+    rules.techs.insert(
+        TechCard {
+            id: TechCardId(50),
+            name: "Language School".to_string(),
+            country: Country::American,
+            industry_cost: 3,
+            effect: TechEffect::LanguageSchool,
+        },
+        "tech_language_school",
+    );
+    state.players[0].technologies.push(TechCardId(50));
+    state.players[0].money = 3;
+    assert_eq!(state.players[0].trading_houses.next_cost(), 4, "fixture precondition");
+
+    let after = apply_move(&state, &Move::FulfillOrder { order_id }, &rules).unwrap();
+    assert_eq!(after.players[0].money, 4, "Language School's +1 Yen must land within this same move");
+    assert_eq!(after.pending_choices, vec![PendingChoice::WarehouseTake]);
+
+    let legal = get_legal_moves(&after, &rules);
+    assert!(
+        legal.contains(&Move::ChooseWarehouseTake { item: WarehouseItem::TradingHouse }),
+        "the fresh yen must count toward the queued take's affordability: {legal:?}"
+    );
+}
+
+// ===========================================================================
 // Movement(2) -> 2 moves cascade (design §6.1-1's third named cascade;
 // AssistantMove's own per-type scenario above uses a single icon, so this
 // is the genuinely distinct "one trigger, N choices of the SAME type" shape).

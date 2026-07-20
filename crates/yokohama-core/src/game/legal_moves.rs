@@ -1967,6 +1967,41 @@ mod tests {
     }
 
     #[test]
+    fn tram_offers_nothing_from_hand() {
+        // Owner ruling 2026-07-19 (guidingpath decision log): Tram is
+        // BOARD-ONLY -- it's a movement rule for a President already
+        // OnBoard (see the `PresidentLocation::OnBoard` arm above, and
+        // `test_tram_allows_free_move_to_president_free_area_with_no_own_assistant`
+        // just above), not a Placement rule. It must not relax Placement's
+        // own-assistant requirement when the President is still InHand.
+        // `possible_action_area` (own assistant present) must still be
+        // offered as a sanity check; `assistantless_area` (no own
+        // assistant, no opponent president) would ONLY become reachable if
+        // Tram wrongly applied here too, and must stay withheld.
+        let mut state = create_test_state();
+        state.turn_phase = TurnPhase::Movement;
+        state.players[0].president_location = PresidentLocation::InHand;
+        let possible_action_area = AreaId::new(0);
+        let assistantless_area = AreaId::new(1);
+        state.players[0].assistants.on_board.insert(possible_action_area, 1);
+
+        let tram_tech = TechCardId(105);
+        state.players[0].technologies.push(tram_tech);
+        let mut rules = Rules::empty_for_tests();
+        rules.techs = tram_tech_registry(tram_tech);
+
+        let moves = get_legal_moves(&state, &rules);
+        assert!(
+            moves.iter().any(|m| matches!(m, Move::PlacePresident { destination } if *destination == possible_action_area)),
+            "sanity: the area WITH an own assistant must still be offered: {moves:?}"
+        );
+        assert!(
+            !moves.iter().any(|m| matches!(m, Move::PlacePresident { destination } if *destination == assistantless_area)),
+            "from hand, Tram must NOT unlock assistant-free placement (board-only ruling): {moves:?}"
+        );
+    }
+
+    #[test]
     fn test_telegram_adjacent_bonus() {
         let mut state = create_test_state();
         let main_area = AreaId::new(0); // Bank

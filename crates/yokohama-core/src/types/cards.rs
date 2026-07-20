@@ -108,35 +108,6 @@ pub enum TechEffect {
     Exposition,
 }
 
-impl TechEffect {
-    /// Returns the base industry cost for this technology.
-    /// Note: Some costs are uncertain in the reference; using best estimates.
-    pub fn base_industry_cost(&self) -> u8 {
-        match self {
-            TechEffect::Tram => 5,
-            TechEffect::Stagecoach => 3,
-            TechEffect::PostalSystem => 4,
-            TechEffect::Station => 4,
-            TechEffect::Gaslight => 3,
-            TechEffect::ElectricalLight => 4,
-            TechEffect::MiningTechnology => 3,
-            TechEffect::SpinningMill => 4,
-            TechEffect::Ball => 5,
-            TechEffect::LanguageSchool => 3,
-            TechEffect::PatentSystem => 3,
-            TechEffect::LetterPressPrinting => 3,
-            TechEffect::Winery => 4,
-            TechEffect::Brickyard => 4,
-            TechEffect::SystemOfStock => 3,
-            TechEffect::University => 4,
-            TechEffect::Newspaper => 4,
-            TechEffect::Telegram => 3,
-            TechEffect::Telephone => 6,
-            TechEffect::Exposition => 5,
-        }
-    }
-}
-
 /// A Technology card.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TechCard {
