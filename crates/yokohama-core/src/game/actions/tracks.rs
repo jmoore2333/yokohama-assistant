@@ -52,7 +52,13 @@ fn has_church_or_customs_assistant(p: &PlayerState, area: AreaId) -> bool {
 /// `.expect(...)` instead. `pub(crate)` since `apply_move::resolve_recovery`
 /// (Task 6) also needs the acting area to decide the Telephone Recovery
 /// queue-vs-auto split.
-pub(crate) fn resolve_acting_area(state: &GameState, player: PlayerId) -> Result<AreaId, &'static str> {
+/// `pub` (not `pub(crate)`) since 2026-07-20: the CLI's `delta_summary` must
+/// resolve the acting area the SAME way the engine does when it reports where
+/// a track-placement pawn came from. Reading `president_location` there
+/// instead fabricated an "assistant moved" line during mercenary sub-turns
+/// (S1, render.rs deep audit) -- delegating to this function is what keeps
+/// the view from recomputing an engine quantity.
+pub fn resolve_acting_area(state: &GameState, player: PlayerId) -> Result<AreaId, &'static str> {
     if state.is_mercenary_action {
         state.mercenary_target_area.ok_or("No mercenary target area")
     } else {
@@ -454,7 +460,7 @@ pub fn place_customs_assistant(state: &mut GameState, player: PlayerId, space: u
 mod tests {
     use super::*;
     use crate::types::*;
-    use crate::game::apply_move::apply_move;
+    use crate::game::apply_move::{apply_move, apply_move_unchecked};
     use crate::game::cards::TechRegistry;
     use crate::game::get_legal_moves;
     use std::collections::BTreeMap;
@@ -1112,8 +1118,12 @@ mod tests {
         let mid = apply_move(&state, &church_power_only_move(), &rules).unwrap();
         assert_eq!(mid.pending_choices, vec![PendingChoice::ChurchSpace { total_faith: 6 }]);
 
-        let tampered = apply_move(
-            &mid, &Move::ReturnPresidentToHand { recover_assistants_from: vec![] }, &rules,
+        // apply_move_unchecked: the tamper itself is the point of this test
+        // -- ReturnPresidentToHand is not in get_legal_moves while a choice
+        // is queued (queue-first gate), so checked apply_move now rejects it
+        // with NotLegal before ever reaching the raw arm this test exercises.
+        let tampered = apply_move_unchecked(
+            &mid, &Move::ReturnPresidentToHand { recover: std::collections::BTreeMap::new() }, &rules,
         ).unwrap();
         assert_eq!(tampered.players[0].president_location, PresidentLocation::InHand);
         assert_eq!(
@@ -1788,8 +1798,11 @@ mod tests {
         let mid = apply_move(&state, &customs_move(2), &rules).unwrap();
         assert_eq!(mid.pending_choices, vec![PendingChoice::CustomsSpace { cost: 2 }]);
 
-        let tampered = apply_move(
-            &mid, &Move::ReturnPresidentToHand { recover_assistants_from: vec![] }, &rules,
+        // apply_move_unchecked: same reasoning as the church counterpart --
+        // the tamper is the point; checked apply_move would reject it with
+        // NotLegal before reaching the raw arm under test.
+        let tampered = apply_move_unchecked(
+            &mid, &Move::ReturnPresidentToHand { recover: std::collections::BTreeMap::new() }, &rules,
         ).unwrap();
         assert_eq!(tampered.players[0].president_location, PresidentLocation::InHand);
         assert_eq!(

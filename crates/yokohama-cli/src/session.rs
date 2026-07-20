@@ -78,6 +78,20 @@ pub struct Session {
     /// correctly, so `undo` uses the real `replay` function for them
     /// unchanged.
     checkpoint: Option<GameState>,
+    /// One cached plain-words description per `record.events` entry, in the
+    /// same order -- ALWAYS in lockstep with `record.events` (every mutator
+    /// asserts this in debug: `apply`/`apply_standalone` push alongside
+    /// `push_event`/`push_move`, `undo` truncates to match, `load` rebuilds
+    /// the whole vector by folding). Each entry is computed against the
+    /// state AS OF WHEN THAT EVENT HAPPENED, not whatever state happens to
+    /// be current when it's later read -- `event_description` (and
+    /// `Repl::log_tail`, its one caller) is how `log` avoids re-describing
+    /// an old event against live state and showing e.g. a trading-house
+    /// take's LATEST printed price or a long-rotated movement fee's CURRENT
+    /// recipient instead of the historical ones (T2.4; the two staleness
+    /// cases Task 13's review flagged). Not part of `GameRecord`, so never
+    /// serialized -- `load` rebuilds it from scratch by folding.
+    event_descriptions: Vec<String>,
 }
 
 impl Session {
@@ -96,8 +110,16 @@ impl Session {
     ) -> Result<Session, String> {
         let pending = new_game(config.clone(), &rules, seed).map_err(|e| e.to_string())?;
         let state = finalize_setup(pending, &choices).map_err(|e| e.to_string())?;
-        let record = GameRecord::new(seed, config, choices);
-        Ok(Session { rules, record, state, mode: TrackingMode::Simulation, save_path: None, checkpoint: None })
+        let record = GameRecord::new(seed, config, choices, &rules);
+        Ok(Session {
+            rules,
+            record,
+            state,
+            mode: TrackingMode::Simulation,
+            save_path: None,
+            checkpoint: None,
+            event_descriptions: Vec::new(),
+        })
     }
 
     /// Start a new live-tracked game: `new_game`, reconcile physical-table
@@ -114,9 +136,17 @@ impl Session {
         let pending = new_game(config.clone(), &rules, seed).map_err(|e| e.to_string())?;
         let pending = reconcile_setup(pending, &obs, &rules).map_err(|e| e.to_string())?;
         let state = finalize_setup(pending, &choices).map_err(|e| e.to_string())?;
-        let mut record = GameRecord::new(seed, config, choices);
+        let mut record = GameRecord::new(seed, config, choices, &rules);
         record.setup_observations = Some(obs);
-        Ok(Session { rules, record, state, mode: TrackingMode::Live, save_path: None, checkpoint: None })
+        Ok(Session {
+            rules,
+            record,
+            state,
+            mode: TrackingMode::Live,
+            save_path: None,
+            checkpoint: None,
+            event_descriptions: Vec::new(),
+        })
     }
 
     /// Load a saved `GameRecord` from `path` and replay it to reconstruct
@@ -127,10 +157,78 @@ impl Session {
     pub fn load(path: &std::path::Path, rules: Rules) -> Result<Session, String> {
         let text = std::fs::read_to_string(path).map_err(|e| e.to_string())?;
         let record: GameRecord = serde_json::from_str(&text).map_err(|e| e.to_string())?;
-        let state = replay(&record, &rules).map_err(|e| e.to_string())?;
+
+        // Mirrors `replay`'s own lenient mismatch diagnostics (core's
+        // record.rs) verbatim: v1 warns but does not refuse to replay a
+        // record produced by a different engine build or against different
+        // rules data. `load` can no longer just call `replay` for this --
+        // see below -- so these two checks are duplicated here rather than
+        // silently dropped (Task 15 review Finding 2: `check_invariants`
+        // below checks only structural conservation, NOT engine_version/
+        // rules_hash, so it does NOT backstop a rules-data drift that
+        // happens to leave conservation intact -- an earlier version of
+        // this comment claimed otherwise; that was wrong). Correct only
+        // because yokohama-cli and yokohama-core share one workspace
+        // version (`version.workspace = true` in both Cargo.tomls) --
+        // `env!("CARGO_PKG_VERSION")` is resolved per-crate at compile
+        // time, so this comparison would silently stop meaning anything if
+        // the two crates' versions were ever allowed to diverge.
+        let running_version = env!("CARGO_PKG_VERSION");
+        if record.engine_version != running_version {
+            eprintln!(
+                "warning: GameRecord.engine_version=\"{}\" does not match running engine version \"{running_version}\" -- replaying anyway (v1 does not refuse on a version mismatch)",
+                record.engine_version,
+            );
+        }
+        let running_rules_hash = rules.content_hash();
+        if record.rules_hash != running_rules_hash {
+            eprintln!(
+                "warning: GameRecord.rules_hash=\"{}\" does not match running rules content hash \"{running_rules_hash}\" -- replaying anyway (v1 does not refuse on a rules_hash mismatch)",
+                record.rules_hash,
+            );
+        }
+
+        // Rebuilds the base state the same way `new_sim`/`new_live` do
+        // (new_game -> optional reconcile_setup -> finalize_setup) rather
+        // than calling `replay` for the whole record in one shot: each
+        // event needs to be described against the state AS OF THAT EVENT
+        // before it folds, so the loop below interleaves
+        // `describe_recorded_event` with `replay_from` one event at a time
+        // -- the same per-event pattern `examples/record_stats.rs` uses to
+        // interleave its own `metrics.observe` call.
+        let mut pending = new_game(record.config.clone(), &rules, record.seed).map_err(|e| e.to_string())?;
+        if let Some(obs) = &record.setup_observations {
+            pending = reconcile_setup(pending, obs, &rules).map_err(|e| e.to_string())?;
+        }
+        let mut state = finalize_setup(pending, &record.choices).map_err(|e| e.to_string())?;
+
+        let mut event_descriptions = Vec::with_capacity(record.events.len());
+        for (i, ev) in record.events.iter().enumerate() {
+            event_descriptions.push(crate::describe::describe_recorded_event(ev, &state, &rules));
+            // `replay_from` is fed a FRESH 1-element slice per iteration
+            // (so `state` can advance one event at a time between
+            // description calls), so its own `ReplayError::event_index` --
+            // derived from `.enumerate()` over THAT slice -- is always 0,
+            // no matter which real event failed (Task 15 review Finding 1).
+            // Reconstruct the message with the TRUE index `i` into
+            // `record.events` instead of trusting the error's own
+            // (structurally always-0) index.
+            state = replay_from(&state, std::slice::from_ref(ev), &rules)
+                .map_err(|e| format!("replay failed at event {i}: {}", e.message))?;
+        }
+        debug_assert_eq!(event_descriptions.len(), record.events.len());
+
         check_invariants(&state, &rules)?;
         let mode = if record.setup_observations.is_some() { TrackingMode::Live } else { TrackingMode::Simulation };
-        Ok(Session { rules, record, state, mode, save_path: Some(path.to_path_buf()), checkpoint: None })
+        Ok(Session {
+            rules,
+            record,
+            state,
+            mode,
+            save_path: Some(path.to_path_buf()),
+            checkpoint: None,
+            event_descriptions,
+        })
     }
 
     /// Write the record as pretty-printed JSON to `path`. `load`
@@ -174,6 +272,14 @@ impl Session {
         &self.record
     }
 
+    /// The cached plain-words description of `record().events[i]`, computed
+    /// against the state as of when that event happened (see the
+    /// `event_descriptions` field doc comment) -- `Repl::log_tail` is the
+    /// one caller today.
+    pub fn event_description(&self, i: usize) -> &str {
+        &self.event_descriptions[i]
+    }
+
     pub fn legal(&self) -> Vec<Move> {
         get_legal_moves(&self.state, &self.rules)
     }
@@ -199,7 +305,15 @@ impl Session {
             return Err(ApplyError::GameOver);
         }
         let mut staged = self.state.clone();
+        let mut reveal_descriptions = Vec::with_capacity(reveals.len());
         for ev in &reveals {
+            // Described against `staged` as it stands right before THIS
+            // event folds -- the historical state at the moment it
+            // happened. Computed unconditionally before the apply arm below
+            // (including for a variant the `other` arm is about to reject);
+            // that's a harmless wasted allocation on the error path, traded
+            // for one line per event instead of two parallel matches.
+            let desc = crate::describe::describe_recorded_event(ev, &staged, &self.rules);
             match ev {
                 RecordedEvent::RevealOrders(c) => {
                     staged.arrange_orders_on_top(c).map_err(|e| ApplyError::Reveal(e.to_string()))?
@@ -212,18 +326,37 @@ impl Session {
                     .map_err(|e| ApplyError::Reveal(e.to_string()))?,
                 other => return Err(ApplyError::Reveal(format!("event not allowed as a bound reveal: {other:?}"))),
             }
+            reveal_descriptions.push(desc);
         }
-        // The engine's apply_move does not itself validate that `mv` matches
-        // the current phase (that check was MoveError::WrongPhase, deleted
-        // as dead code at Task 13 -- design §5.3-7, guidingpath's decision
-        // log). Session enforces the plan's global constraint here instead:
-        // never apply a move get_legal_moves didn't offer. Checked against
-        // `staged` (post-reveal), since the group is atomic and legality is
-        // defined on the state the move will actually run against.
+        // Since the checked-boundary task, the engine's PUBLIC apply_move
+        // itself gates on get_legal_moves membership -- the phase check it
+        // used to lean on instead, MoveError::WrongPhase, was deleted as
+        // dead code at Task 13 (design §5.3-7, guidingpath's decision log).
+        // This call site deliberately uses apply_move_unchecked below
+        // rather than that public apply_move: Session runs its own
+        // identical legal-list gate right here, against `staged`
+        // (post-reveal, since the group is atomic and legality is defined
+        // on the state the move will actually run against), so it can skip
+        // a second, redundant get_legal_moves enumeration (see the comment
+        // on the apply_move_unchecked call itself, below).
         if !get_legal_moves(&staged, &self.rules).contains(&mv) {
             return Err(ApplyError::Illegal(format!("move not legal in the current state: {mv:?}")));
         }
-        let next = apply_move(&staged, &mv, &self.rules).map_err(|e| ApplyError::Illegal(e.to_string()))?;
+        // Described against `staged` (post-reveal, pre-move) -- the
+        // HISTORICAL state the move actually ran against -- and cached
+        // below, so `log` renders this event's text as it was true when it
+        // happened rather than re-evaluating it against whatever state is
+        // current when `log` is later invoked (T2.4: a trading-house take's
+        // printed price, a movement fee's recipient, and any other
+        // state-dependent wording would otherwise go stale the moment state
+        // moves on).
+        let move_description = crate::describe::describe_move(&mv, &staged, &self.rules);
+        // apply_move_unchecked: the gate just above already proved
+        // membership in get_legal_moves on this same staged state, so
+        // routing through checked apply_move would double-enumerate
+        // get_legal_moves on every interactive apply.
+        let next =
+            apply_move_unchecked(&staged, &mv, &self.rules).map_err(|e| ApplyError::Illegal(e.to_string()))?;
         check_invariants(&next, &self.rules)
             .map_err(|e| ApplyError::Invariant(format!("INVARIANT VIOLATION after apply (driver/engine bug): {e}")))?;
         let mut delta = crate::render::delta_summary(&self.state, &next, &self.rules);
@@ -231,6 +364,9 @@ impl Session {
             self.record.push_event(ev);
         }
         self.record.push_move(mv);
+        self.event_descriptions.extend(reveal_descriptions);
+        self.event_descriptions.push(move_description);
+        debug_assert_eq!(self.event_descriptions.len(), self.record.events.len());
         self.state = next;
         if let Some(warning) = self.autosave() {
             delta.push(warning);
@@ -252,12 +388,21 @@ impl Session {
             RecordedEvent::RevealStartingOrder { player, card } => (*player, *card),
             other => return Err(ApplyError::Reveal(format!("event not allowed as a standalone reveal: {other:?}"))),
         };
+        // Described against the PRE-commit `self.state` -- the historical
+        // state at the moment this reveal happened -- same reasoning as
+        // `apply`'s per-event descriptions (T2.4). This variant's wording
+        // doesn't actually depend on state, but computing it uniformly here
+        // keeps `event_descriptions` populated by every path that can push
+        // into `record.events`, which is what the lockstep invariant needs.
+        let description = crate::describe::describe_recorded_event(&ev, &self.state, &self.rules);
         let mut staged = self.state.clone();
         staged.reveal_starting_order(player, card).map_err(|e| ApplyError::Reveal(e.to_string()))?;
         check_invariants(&staged, &self.rules)
             .map_err(|e| ApplyError::Invariant(format!("INVARIANT VIOLATION after apply (driver/engine bug): {e}")))?;
         let mut delta = crate::render::delta_summary(&self.state, &staged, &self.rules);
         self.record.push_event(ev);
+        self.event_descriptions.push(description);
+        debug_assert_eq!(self.event_descriptions.len(), self.record.events.len());
         self.state = staged;
         if let Some(warning) = self.autosave() {
             delta.push(warning);
@@ -299,6 +444,14 @@ impl Session {
             Some(base) => replay_from(base, &record.events, &self.rules).map_err(|e| e.to_string())?,
             None => replay(&record, &self.rules).map_err(|e| e.to_string())?,
         };
+        // The cache only ever grows/shrinks in lockstep with `record.events`
+        // by appending/truncating at the tail -- `event_descriptions[i]` was
+        // computed for `record.events[i]` when it was first appended and
+        // never touched again, so truncating to the new (shorter) length is
+        // exactly right: it drops the popped entries' descriptions and
+        // leaves every surviving one untouched.
+        self.event_descriptions.truncate(record.events.len());
+        debug_assert_eq!(self.event_descriptions.len(), record.events.len());
         self.record = record;
         self.state = state;
         // autosave failure must stay visible, but `undo`'s signature is
@@ -313,6 +466,15 @@ impl Session {
 
     pub fn final_scores(&self) -> Vec<(PlayerId, u32)> {
         calculate_final_scores(&self.state, &self.rules.orders, &self.rules.techs)
+    }
+
+    /// The full official result -- per-player `ScoreBreakdown` plus rank,
+    /// winner decided by the KB's clockwise tie-break (`final_result`,
+    /// scoring.rs). What the game-over screen (`Repl::score_text`) renders;
+    /// `final_scores` above stays as the flat `(player, total)` view for
+    /// callers that don't need the breakdown.
+    pub fn final_result(&self) -> GameResult {
+        final_result(&self.state, &self.rules)
     }
 
     /// Best-effort write to `save_path` (`None` when unset, or when the
@@ -355,7 +517,7 @@ impl Session {
     /// are never saved -- but not a general-purpose checkpoint/resume
     /// feature as-is.
     pub(crate) fn for_test_from_state(state: GameState, rules: Rules) -> Session {
-        let record = GameRecord::new(0, state.config.clone(), Vec::new());
+        let record = GameRecord::new(0, state.config.clone(), Vec::new(), &rules);
         Session {
             rules,
             record,
@@ -363,6 +525,7 @@ impl Session {
             state,
             mode: TrackingMode::Simulation,
             save_path: None,
+            event_descriptions: Vec::new(),
         }
     }
 }
@@ -534,20 +697,27 @@ mod tests {
     /// tampering move outright (with `ChurchSpace` queued, `get_legal_moves`
     /// offers only its resolutions), so the tampered `GameRecord` is built
     /// directly instead -- exactly how a hand-edited or corrupted save file
-    /// would bypass that gate: `Session::load` -> `replay` -> `replay_from`
-    /// applies every event via bare `apply_move`, with no legal-move
-    /// pre-filtering. The inserted `ReturnPresidentToHand` validates
-    /// nothing and moves the President to hand; the following
-    /// `ChooseChurchSpace { space: 6 }` still passes `resolve_choice_move`'s
-    /// membership check (`eligible_church_spaces` depends only on the
-    /// track/faith), so it reaches `place_church_assistant` with no acting
-    /// area to resolve -- the exact panic `tampered_return_to_hand_mid_church_space_queue_errors_not_panics`
-    /// (yokohama-core's `tracks.rs`) fixed at the engine layer.
+    /// would bypass that gate: `Session::load` (since the T2.4/Task-15
+    /// fold-cache rewrite, its OWN inline `new_game`/`reconcile_setup`/
+    /// `finalize_setup` preamble plus a per-event loop over `replay_from`,
+    /// not a single `replay` call the way it used to be) applies every
+    /// event via the ONE checked `apply_move` (core's apply_move.rs), WITH
+    /// legal-move pre-filtering. That rejects the
+    /// inserted `ReturnPresidentToHand` immediately with
+    /// `MoveError::NotLegal` -- it isn't one of `ChurchSpace`'s own
+    /// resolutions, so it's absent from `get_legal_moves` while that choice
+    /// is queued -- and the following `ChooseChurchSpace { space: 6 }` is
+    /// never reached. (The engine-layer counterpart,
+    /// `tracks.rs`'s `tampered_return_to_hand_mid_church_space_queue_errors_not_panics`,
+    /// exercises the SAME tamper via raw `apply_move_unchecked` instead,
+    /// where the second move IS reached and would otherwise panic -- fixed
+    /// there at the engine layer; here it's moot, since checked `apply_move`
+    /// never gets that far.)
     #[test]
     fn load_of_tampered_record_returns_typed_error_not_panic() {
         let s = session_with_church_space_choice_queued();
         let mut record = s.record().clone();
-        record.push_move(Move::ReturnPresidentToHand { recover_assistants_from: vec![] });
+        record.push_move(Move::ReturnPresidentToHand { recover: std::collections::BTreeMap::new() });
         record.push_move(Move::ChooseChurchSpace { space: 6 });
 
         let path = std::env::temp_dir().join(format!("yokohama_tampered_{}.json", std::process::id()));
@@ -557,6 +727,99 @@ mod tests {
         std::fs::remove_file(&path).ok();
 
         assert!(result.is_err(), "a tampered record must surface as a typed load error, never a panic");
+    }
+
+    /// C1 regression (external six-agent review, 2026-07-20). The guard test
+    /// directly above has NO teeth against this: its `ReturnPresidentToHand`
+    /// tamper happens to *describe* safely, so it passes even when `load`
+    /// panics on a differently-shaped tamper.
+    ///
+    /// T2.4's per-event fold calls `describe_recorded_event` BEFORE
+    /// `replay_from` validates the event, so a tampered out-of-range
+    /// `BuildShophouse` slot reached `slot_reward_text`'s raw
+    /// `site.spaces[slot]` index and aborted the process -- against design
+    /// §7 ("tampered move -> typed rejection, not warn, not panic"), and a
+    /// regression from the pre-T2.4 `load`, which replayed in one shot and
+    /// never described an unvalidated event.
+    #[test]
+    fn load_of_tampered_record_with_out_of_range_slot_is_typed_error_not_panic() {
+        let s = session_with_church_space_choice_queued();
+
+        // Fixture precondition: the tampered event must actually reach
+        // `slot_reward_text` when described, else this test proves nothing.
+        // That needs the President standing on an area that HAS a building
+        // site (`describe_move`'s BuildShophouse arm resolves the site from
+        // `acting_area`).
+        let area = match s.state().player(s.state().current_player).president_location {
+            PresidentLocation::OnBoard(a) => a,
+            PresidentLocation::InHand => panic!("fixture must leave the President on board"),
+        };
+        assert!(
+            s.state().board_layout.building_sites.contains_key(&area),
+            "fixture area {area:?} must have a building site, else the tamper describes safely \
+             and this test degenerates into the toothless one above"
+        );
+
+        let mut record = s.record().clone();
+        record.push_move(Move::BuildShophouse { slot: 250 });
+
+        let path = std::env::temp_dir().join(format!("yokohama_tampered_slot_{}.json", std::process::id()));
+        std::fs::write(&path, serde_json::to_string_pretty(&record).unwrap()).unwrap();
+
+        let result = Session::load(&path, Rules::standard());
+        std::fs::remove_file(&path).ok();
+
+        assert!(
+            result.is_err(),
+            "an out-of-range slot in a tampered record must surface as a typed load error, never a panic"
+        );
+    }
+
+    /// Fix-wave regression (Task 15 review, Finding 1): `load`'s per-event
+    /// fold loop must name the TRUE failing event's index, not always 0.
+    /// The old (pre-T2.4) `load` called `replay` once over the whole events
+    /// slice, so a `ReplayError` correctly named which event broke; the
+    /// per-event `replay_from(&state, std::slice::from_ref(ev), &rules)`
+    /// rewrite feeds each call a FRESH 1-element slice, so
+    /// `ReplayError::event_index` -- derived from `.enumerate()` over THAT
+    /// slice -- was structurally always 0 regardless of which real event
+    /// failed.
+    ///
+    /// Tampers a record with `ChurchSpace` queued
+    /// (`session_with_church_space_choice_queued`) by appending ONE
+    /// `ReturnPresidentToHand` -- not one of the queued choice's own
+    /// resolutions, so `apply_move`'s blanket `get_legal_moves` membership
+    /// check (`MoveError::NotLegal`, core's apply_move.rs) rejects it
+    /// immediately at THIS event, the first (and only) tampered one -- the
+    /// same mechanism the sibling test above now documents. The expected
+    /// index is computed from the fixture (`base`) rather than hardcoded,
+    /// so it can't silently drift if the fixture's own move count ever
+    /// changes.
+    #[test]
+    fn load_of_tampered_record_names_the_true_failing_event_index() {
+        let s = session_with_church_space_choice_queued();
+        let base = s.record().events.len();
+        let mut record = s.record().clone();
+        record.push_move(Move::ReturnPresidentToHand { recover: std::collections::BTreeMap::new() });
+        let expected_failing_index = base; // the tampered ReturnPresidentToHand itself
+
+        let path = std::env::temp_dir().join(format!("yokohama_tampered_index_{}.json", std::process::id()));
+        std::fs::write(&path, serde_json::to_string_pretty(&record).unwrap()).unwrap();
+
+        // `Session::load`'s Ok variant is `Session`, which (deliberately)
+        // doesn't derive `Debug` -- `unwrap_err()` needs `T: Debug` for its
+        // OWN panic message on the never-taken Ok arm, so a plain `match`
+        // sidesteps that instead of adding a derive nothing else needs.
+        let err = match Session::load(&path, Rules::standard()) {
+            Err(e) => e,
+            Ok(_) => panic!("expected a load error naming the tampered event, got Ok"),
+        };
+        std::fs::remove_file(&path).ok();
+
+        assert!(
+            err.contains(&format!("event {expected_failing_index}")),
+            "error must name the TRUE failing event index ({expected_failing_index}), not always 0: {err}"
+        );
     }
 
     /// The CLI-layer analog of the fuzz driver: a full random game driven
@@ -753,5 +1016,265 @@ mod tests {
         let delta = s.apply(Move::ChooseChurchSpace { space: 6 }, vec![]).unwrap();
         let expected = format!("placed on Church faith-6 (+{} VP)", ChurchTrack::vp_reward(6));
         assert!(delta.iter().any(|l| l.contains(&expected)), "{delta:?}");
+    }
+
+    /// T2.4 (Task 15): `event_descriptions` must stay in exact lockstep with
+    /// `record().events` across every operation that can grow or shrink the
+    /// log -- `apply` (repeated), `undo`, and `load` (a fresh Session built
+    /// from a saved file).
+    #[test]
+    fn descriptions_stay_in_lockstep_across_apply_undo_load() {
+        let mut s = sim_2p(4);
+        for _ in 0..5 {
+            let mv = s.legal()[0].clone();
+            s.apply(mv, vec![]).unwrap();
+            assert_eq!(s.event_descriptions.len(), s.record().events.len());
+        }
+
+        s.undo().unwrap();
+        assert_eq!(s.event_descriptions.len(), s.record().events.len());
+
+        let path = std::env::temp_dir().join(format!("yokohama_test_lockstep_{}.json", std::process::id()));
+        s.save(&path).unwrap();
+        let loaded = Session::load(&path, Rules::standard()).unwrap();
+        std::fs::remove_file(&path).ok();
+        assert_eq!(loaded.event_descriptions.len(), loaded.record().events.len());
+    }
+
+    /// T2.4 (Task 15) Step-1 fixture: a trading-house warehouse take is
+    /// described with the printed cost AT THE TIME IT WAS TAKEN (4 yen,
+    /// `TradingHouseState::take_cost(0)`) -- `describe_move`'s cost text
+    /// comes from `next_cost()`, which advances with the take progression,
+    /// so re-describing the SAME historical event against a LATER state
+    /// (progression advanced past 4) must not change the cached text.
+    #[test]
+    fn log_descriptions_are_historical_not_current() {
+        let mut state = raw_state_2p(4);
+        let taker = PlayerId::new(0);
+        state.players[0].money = 10; // affordable at the printed 4-yen first take
+        state.pending_choices.push(PendingChoice::WarehouseTake);
+
+        let mut s = Session::for_test_from_state(state, Rules::standard());
+        s.apply(Move::ChooseWarehouseTake { item: WarehouseItem::TradingHouse }, vec![]).unwrap();
+        let idx = s.record().events.len() - 1;
+        assert!(s.event_description(idx).contains('4'), "{}", s.event_description(idx));
+
+        // Advance the printed take progression past the first take's price
+        // -- simulates play continuing after the historical event (direct
+        // field mutation: this test module is nested inside session.rs, so
+        // it shares Session's private-field visibility).
+        s.state.players[taker.0 as usize].trading_houses.in_hand += 1;
+        assert_ne!(
+            s.state().player(taker).trading_houses.next_cost(),
+            4,
+            "fixture must have advanced the progression, else this test proves nothing"
+        );
+
+        assert!(
+            s.event_description(idx).contains('4'),
+            "cached description must still show the OLD printed cost: {}",
+            s.event_description(idx)
+        );
+    }
+
+    /// T2.4 (Task 15) context assertion: after `load`, the fold-rebuilt
+    /// `event_descriptions` must equal the pre-save vector element-by-
+    /// element (not just lockstep length) -- proves the load fold
+    /// reproduces history exactly, movement events (state-dependent text)
+    /// included, not just reveal events (state-independent text).
+    #[test]
+    fn load_of_a_saved_session_reproduces_event_descriptions_exactly() {
+        let mut s = sim_2p(4);
+        let mut saw_move_president = false;
+        for _ in 0..25 {
+            if s.is_over() {
+                break;
+            }
+            let legal = s.legal();
+            // Picking legal()[0] every turn never diversifies WHERE
+            // assistants land (it happens to always re-pick the same
+            // single area), so the President never has anywhere else to
+            // move to and MovePresident never appears -- verified via an
+            // offline probe. Instead: take a MovePresident the moment one
+            // is offered; otherwise prefer the Option-A placement touching
+            // the MOST distinct areas (spreads assistants so a real
+            // destination eventually exists), then getting the President
+            // onto the board at all, else fall back to legal()[0].
+            let mv = legal
+                .iter()
+                .find(|m| matches!(m, Move::MovePresident { .. }))
+                .or_else(|| {
+                    legal
+                        .iter()
+                        .filter(|m| matches!(m, Move::PlaceThreeAreas { .. }))
+                        .max_by_key(|m| match m {
+                            Move::PlaceThreeAreas { placements } => placements.len(),
+                            _ => 0,
+                        })
+                })
+                .or_else(|| legal.iter().find(|m| matches!(m, Move::PlacePresident { .. })))
+                .cloned()
+                .unwrap_or_else(|| legal[0].clone());
+            if matches!(mv, Move::MovePresident { .. }) {
+                saw_move_president = true;
+            }
+            s.apply(mv, vec![]).unwrap();
+        }
+        assert!(
+            saw_move_president,
+            "fixture must exercise at least one MovePresident event -- re-derive the step count/seed if the engine's move ordering drifted"
+        );
+
+        let path = std::env::temp_dir().join(format!("yokohama_test_descs_{}.json", std::process::id()));
+        s.save(&path).unwrap();
+        let loaded = Session::load(&path, Rules::standard()).unwrap();
+        std::fs::remove_file(&path).ok();
+
+        assert_eq!(loaded.event_descriptions.len(), s.event_descriptions.len());
+        assert_eq!(
+            loaded.event_descriptions, s.event_descriptions,
+            "load's fold-rebuilt descriptions must equal the pre-save vector element-by-element"
+        );
+    }
+
+    /// Minimal 3-area chain (`start` - `blocked` - `final_dest`) for the
+    /// movement fee-recipient staleness test below: Red's President starts
+    /// at `start` and moves to `final_dest`, PASSING THROUGH `blocked` --
+    /// where Blue's President sits -- along the way. Landing directly on an
+    /// opponent's area is never legal (`is_possible_action_area_full`
+    /// rejects it, Postal System aside), so `final_dest` is deliberately a
+    /// separate, unblocked area: this is what makes the pass-through fee
+    /// (credited to Blue, 1 yen) the only reason "Blue" appears in the
+    /// description at all. Mirrors `describe.rs`'s own `movement_cost_fixture`
+    /// (private to that file's test module, so rebuilt minimally here
+    /// rather than exported crate-wide for one caller) with the
+    /// canal/free-route cases dropped -- this test only needs the
+    /// pass-through fee case.
+    fn movement_fee_fixture() -> (GameState, Rules) {
+        let start = AreaId::new(0);
+        let blocked = AreaId::new(1);
+        let final_dest = AreaId::new(2);
+
+        let mut areas = std::collections::BTreeMap::new();
+        areas.insert(start, AreaConfig { area_type: AreaType::Bank, grid_position: (0, 0) });
+        areas.insert(blocked, AreaConfig { area_type: AreaType::CopperMine, grid_position: (0, 1) });
+        areas.insert(final_dest, AreaConfig { area_type: AreaType::SilkMill, grid_position: (0, 2) });
+
+        let mut adjacency = std::collections::BTreeMap::new();
+        adjacency.insert(start, vec![blocked]);
+        adjacency.insert(blocked, vec![start, final_dest]);
+        adjacency.insert(final_dest, vec![blocked]);
+
+        let board_layout = BoardLayout {
+            areas,
+            adjacency,
+            canal_crossings: vec![],
+            building_sites: std::collections::BTreeMap::new(),
+            five_power_tokens: std::collections::BTreeMap::new(),
+        };
+
+        let config = GameConfig::new(2, vec![PlayerColor::Red, PlayerColor::Blue], PlayerId::new(0));
+        let mut players = vec![
+            PlayerState::new(PlayerId::new(0), PlayerColor::Red, true),
+            PlayerState::new(PlayerId::new(1), PlayerColor::Blue, false),
+        ];
+        players[0].president_location = PresidentLocation::OnBoard(start);
+        players[0].money = 10;
+        // Ordinary (non-Tram/Station) movement only steps onto an area
+        // holding the MOVER's own assistant (`can_step_onto`, movement.rs)
+        // -- an opponent-occupied area is still traversable that way (fee
+        // charged), just never itself a legal LANDING spot
+        // (`is_possible_action_area_full` rejects a destination with
+        // another player's President on it, Postal System aside). So Red
+        // needs an assistant at BOTH the pass-through area `blocked` (to
+        // traverse it) and the actual landing area `final_dest` (to land
+        // there) -- Blue's President sits only at `blocked`, charging the
+        // pass-through fee without blocking the eventual landing.
+        players[0].assistants.on_board.insert(blocked, 1);
+        players[0].assistants.on_board.insert(final_dest, 1);
+        players[0].assistants.in_hand -= 2;
+        players[1].president_location = PresidentLocation::OnBoard(blocked); // Blue charges the pass-through fee
+        players[1].money = 10;
+
+        let state = GameState {
+            config,
+            board_layout,
+            players,
+            current_player: PlayerId::new(0),
+            turn_phase: TurnPhase::Movement,
+            turn_number: 1,
+            additional_action_state: AdditionalActionState::new(),
+            current_action_power: None,
+            is_mercenary_action: false,
+            mercenary_target_area: None,
+            mercenary_return_phase: None,
+            president_start_area: None,
+            port_state: PortState::new(false),
+            lab_state: LabState::new(false),
+            order_deck: vec![],
+            tech_deck: vec![],
+            orders_removed: vec![],
+            church_track: ChurchTrack::new(),
+            customs_track: CustomsTrack::new(),
+            achievements: [
+                AchievementCard::new(AchievementType::Copper5),
+                AchievementCard::new(AchievementType::Money10),
+                AchievementCard::new(AchievementType::Production4),
+            ],
+            mercenary_supply: MercenarySupply::new(),
+            station_location: None,
+            end_game_triggered: false,
+            trigger_reason: None,
+            final_round: false,
+            trigger_player: None,
+            pending_choices: Vec::new(),
+        };
+
+        (state, Rules::empty_for_tests())
+    }
+
+    /// T2.4 (Task 15) context assertion (closes review obligation #1, T13's
+    /// flagged MovePresident staleness case): a MovePresident event's
+    /// fee/recipient text depends on WHO occupies the fee-charging area at
+    /// the moment it applies -- once that player's President moves away,
+    /// re-describing the SAME historical move against the state as it
+    /// stands NOW would show a different (or missing) recipient. The cache
+    /// must keep the ORIGINAL recipient regardless of what happens to the
+    /// board afterward.
+    #[test]
+    fn move_president_description_keeps_historical_fee_recipient_after_state_changes() {
+        let (state, rules) = movement_fee_fixture();
+        let start = AreaId::new(0);
+        let final_dest = AreaId::new(2);
+        let mut s = Session::for_test_from_state(state, rules);
+
+        let mv = s
+            .legal()
+            .into_iter()
+            .find(|m| matches!(m, Move::MovePresident { destination, .. } if *destination == final_dest))
+            .expect("reaching final_dest via the blocked pass-through must be a legal Movement-phase option in this fixture");
+        s.apply(mv.clone(), vec![]).unwrap();
+        let idx = s.record().events.len() - 1;
+        let cached = s.event_description(idx).to_string();
+        assert!(cached.contains("Blue"), "fixture must actually charge the pass-through fee to Blue: {cached}");
+
+        // Blue's President relocates off the historical path entirely --
+        // simulates state moving on past this historical event (direct
+        // field mutation: this test module is nested inside session.rs, so
+        // it shares Session's private-field visibility, same access
+        // `for_test_from_state` itself relies on).
+        s.state.players[1].president_location = PresidentLocation::OnBoard(start);
+
+        // Re-describing the SAME historical move against the state as it
+        // stands now would no longer credit Blue -- confirms the contrast
+        // this test pins is real, not vacuous.
+        let restated = crate::describe::describe_move(&mv, s.state(), s.rules());
+        assert!(!restated.contains("Blue"), "fixture's contrast must actually differ once state changes: {restated}");
+
+        assert!(
+            s.event_description(idx).contains("Blue"),
+            "cached description must keep the HISTORICAL fee recipient: {}",
+            s.event_description(idx)
+        );
     }
 }

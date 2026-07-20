@@ -271,27 +271,40 @@ fn generate_movement_moves_with_tech(state: &GameState, tech_registry: Option<&T
             // recover any assistants" - and it guarantees the required
             // Movement step can never dead-end when no Possible Action
             // Area exists.
-            let areas_with_assistants: Vec<AreaId> = p
-                .assistants
-                .on_board
-                .iter()
-                .filter(|(_, &count)| count > 0)
-                .map(|(&area, _)| area)
-                .collect();
-            moves.push(Move::ReturnPresidentToHand {
-                recover_assistants_from: areas_with_assistants,
-            });
+            for recover in enumerate_recovery_options(p) {
+                moves.push(Move::ReturnPresidentToHand { recover });
+            }
         }
         PresidentLocation::OnBoard(current) => {
-            // Move to reachable areas the player can afford: price each path
-            // with the same tech-aware cost apply_movement charges
-            // (president pass-through fees + canal tolls), so legal ==
-            // applicable. One path per destination (BFS order) - a cheaper
-            // alternate route to the same destination is not searched for.
-            for (dest, path) in find_reachable_areas_with_tech(state, player, current, tech_registry) {
-                if calculate_movement_cost_with_tech(state, player, &path, tech_registry)
-                    <= p.money
-                {
+            // Move to every reachable (destination, fee-vector) label the
+            // player can afford: L2 route enumeration (owner-ruled design
+            // 2026-07-19 §4.3) -- a deliberately pricier route that pays a
+            // DIFFERENT recipient than the cheapest one (income-denial
+            // routing) is real, enumerable play, so this offers every
+            // distinct affordable label per destination, not just the
+            // cheapest path. enumerate_president_routes already prunes by
+            // affordability internally; the `<= p.money` re-check here is
+            // belt-and-braces, matching this file's usual style of pricing
+            // a move again right where it's pushed.
+            //
+            // `zero_cost_destinations` tracks every destination already
+            // covered by a FREE (empty fee-vector) move -- walked, Station,
+            // or Tram -- so the teleports below can suppress a genuine
+            // duplicate (another free move to the same area) without also
+            // swallowing a walking route that costs money (I-1 final-review
+            // fix: a tolled walk and a free teleport are DIFFERENT
+            // (destination, fee vector) labels and must both survive --
+            // Station's and Tram's card text is unconditionally "for
+            // free"). A cost of 0 is exactly an empty `RouteVector` (every
+            // entry in it is >= 1), so the `<= p.money` cost already
+            // computed for affordability doubles as that test.
+            let mut zero_cost_destinations: std::collections::BTreeSet<AreaId> = std::collections::BTreeSet::new();
+            for (dest, path) in enumerate_president_routes(state, player, current, tech_registry) {
+                let cost = calculate_movement_cost_with_tech(state, player, &path, tech_registry);
+                if cost <= p.money {
+                    if cost == 0 {
+                        zero_cost_destinations.insert(dest);
+                    }
                     moves.push(Move::MovePresident {
                         path,
                         destination: dest,
@@ -301,12 +314,16 @@ fn generate_movement_moves_with_tech(state: &GameState, tech_registry: Option<&T
 
             // Station teleport (free move to station area if player has Station tech)
             if let Some(station_area) = can_teleport_to_station_with_tech(state, player, tech_registry) {
-                // Only add if not already at station and not already in moves
-                if station_area != current && !moves.iter().any(|m| matches!(m, Move::MovePresident { destination, .. } if *destination == station_area)) {
+                // Only suppress when a ZERO-cost move to the station area is
+                // already listed -- a tolled walking route is a distinct
+                // label from the free teleport and must not hide it (I-1
+                // final-review fix).
+                if station_area != current && !zero_cost_destinations.contains(&station_area) {
                     moves.push(Move::MovePresident {
                         path: vec![], // Free teleport, no path needed
                         destination: station_area,
                     });
+                    zero_cost_destinations.insert(station_area);
                 }
             }
 
@@ -316,7 +333,10 @@ fn generate_movement_moves_with_tech(state: &GameState, tech_registry: Option<&T
             // assistant-chain requirement) and there's no further movement
             // this turn (inherent - one Movement-step move per turn).
             // Emitted the same way as Station's teleport: free (empty path),
-            // skipped if a move to that destination is already offered.
+            // skipped only when a ZERO-cost move to that destination is
+            // already listed (I-1 final-review fix, see above -- this also
+            // composes with Station's own push just above, since that
+            // inserts into the same set).
             let has_tram = tech_registry.is_some_and(|registry| {
                 p.technologies.iter().any(|&tech_id| {
                     registry.get(tech_id).map(|t| t.effect == TechEffect::Tram).unwrap_or(false)
@@ -339,28 +359,44 @@ fn generate_movement_moves_with_tech(state: &GameState, tech_registry: Option<&T
                     if opponent_present {
                         continue;
                     }
-                    if !moves.iter().any(|m| matches!(m, Move::MovePresident { destination, .. } if *destination == area)) {
+                    if !zero_cost_destinations.contains(&area) {
                         moves.push(Move::MovePresident { path: vec![], destination: area });
+                        zero_cost_destinations.insert(area);
                     }
                 }
             }
 
             // Return to hand (emergency exit, always available)
-            let areas_with_assistants: Vec<AreaId> = p
-                .assistants
-                .on_board
-                .iter()
-                .filter(|(_, &count)| count > 0)
-                .map(|(&area, _)| area)
-                .collect();
-
-            moves.push(Move::ReturnPresidentToHand {
-                recover_assistants_from: areas_with_assistants,
-            });
+            for recover in enumerate_recovery_options(p) {
+                moves.push(Move::ReturnPresidentToHand { recover });
+            }
         }
     }
 
     moves
+}
+
+/// Cartesian product of 0..=count per occupied area (I5 ruling: any number).
+/// Deterministic: BTreeMap area order, counts ascending. Includes the empty
+/// map (recover nothing) and the all-max map (previous sole behavior).
+fn enumerate_recovery_options(p: &PlayerState) -> Vec<std::collections::BTreeMap<AreaId, u8>> {
+    let occupied: Vec<(AreaId, u8)> = p.assistants.on_board.iter()
+        .filter(|(_, &c)| c > 0).map(|(&a, &c)| (a, c)).collect();
+    let mut out = vec![std::collections::BTreeMap::new()];
+    for (area, max) in occupied {
+        let mut next = Vec::with_capacity(out.len() * (max as usize + 1));
+        for base in &out {
+            for k in 0..=max {
+                let mut m = base.clone();
+                if k > 0 {
+                    m.insert(area, k);
+                }
+                next.push(m);
+            }
+        }
+        out = next;
+    }
+    out
 }
 
 fn generate_area_action_moves(state: &GameState, rules: &Rules) -> Vec<Move> {
@@ -1178,6 +1214,33 @@ mod tests {
     }
 
     #[test]
+    fn option_b_enumerates_every_recovery_combination() {
+        // I5 ruling (2026-07-19): Option B retreat may recover ANY NUMBER
+        // of assistants, not just all-or-nothing. Fixture: current
+        // player's president OnBoard; on_board = {A0: 2, A3: 1}.
+        // Expect (2+1)*(1+1) = 6 ReturnPresidentToHand moves: {}, {A0:1},
+        // {A0:2}, {A3:1}, {A0:1,A3:1}, {A0:2,A3:1}.
+        let mut state = create_test_state();
+        state.turn_phase = TurnPhase::Movement;
+        let rules = Rules::empty_for_tests();
+        let a0 = AreaId::new(0);
+        let a3 = AreaId::new(3);
+        state.players[0].president_location = PresidentLocation::OnBoard(a0);
+        state.players[0].assistants.on_board.insert(a0, 2);
+        state.players[0].assistants.on_board.insert(a3, 1);
+
+        let moves = get_legal_moves(&state, &rules);
+        let retreats: Vec<&Move> = moves.iter()
+            .filter(|m| matches!(m, Move::ReturnPresidentToHand { .. })).collect();
+        assert_eq!(retreats.len(), 6, "{retreats:?}");
+        assert!(retreats.iter().any(|m| matches!(m,
+            Move::ReturnPresidentToHand { recover } if recover.is_empty())));
+        assert!(retreats.iter().any(|m| matches!(m,
+            Move::ReturnPresidentToHand { recover }
+                if recover.get(&a0) == Some(&1) && recover.get(&a3) == Some(&1))));
+    }
+
+    #[test]
     fn test_enumeration_is_deterministic_across_identical_constructions() {
         // Two states built identically (same seed) must enumerate identical
         // move LISTS - same set AND same order. HashMap iteration order is
@@ -1924,6 +1987,192 @@ mod tests {
             !moves.iter().any(|m| matches!(m, Move::MovePresident { destination, .. } if *destination == occupied)),
             "Tram must not offer a move into an opponent-occupied area"
         );
+    }
+
+    #[test]
+    fn tram_offers_nothing_from_hand() {
+        // Owner ruling 2026-07-19 (guidingpath decision log): Tram is
+        // BOARD-ONLY -- it's a movement rule for a President already
+        // OnBoard (see the `PresidentLocation::OnBoard` arm above, and
+        // `test_tram_allows_free_move_to_president_free_area_with_no_own_assistant`
+        // just above), not a Placement rule. It must not relax Placement's
+        // own-assistant requirement when the President is still InHand.
+        // `possible_action_area` (own assistant present) must still be
+        // offered as a sanity check; `assistantless_area` (no own
+        // assistant, no opponent president) would ONLY become reachable if
+        // Tram wrongly applied here too, and must stay withheld.
+        let mut state = create_test_state();
+        state.turn_phase = TurnPhase::Movement;
+        state.players[0].president_location = PresidentLocation::InHand;
+        let possible_action_area = AreaId::new(0);
+        let assistantless_area = AreaId::new(1);
+        state.players[0].assistants.on_board.insert(possible_action_area, 1);
+
+        let tram_tech = TechCardId(105);
+        state.players[0].technologies.push(tram_tech);
+        let mut rules = Rules::empty_for_tests();
+        rules.techs = tram_tech_registry(tram_tech);
+
+        let moves = get_legal_moves(&state, &rules);
+        assert!(
+            moves.iter().any(|m| matches!(m, Move::PlacePresident { destination } if *destination == possible_action_area)),
+            "sanity: the area WITH an own assistant must still be offered: {moves:?}"
+        );
+        assert!(
+            !moves.iter().any(|m| matches!(m, Move::PlacePresident { destination } if *destination == assistantless_area)),
+            "from hand, Tram must NOT unlock assistant-free placement (board-only ruling): {moves:?}"
+        );
+    }
+
+    #[test]
+    fn test_station_teleport_survives_a_tolled_walking_route_to_the_same_area() {
+        // I-1 final-review fix: the OLD code suppressed Station's free
+        // teleport whenever ANY walking move already reached the station
+        // area, regardless of that walk's cost. Station's card text is
+        // unconditionally "for free", so a walking route that costs money
+        // (here, a canal toll) is a DIFFERENT (destination, fee vector)
+        // label and must survive ALONGSIDE the free teleport, not hide it.
+        let mut state = create_test_state();
+        let current_area = AreaId::new(0);
+        let station_area = AreaId::new(1);
+        state.board_layout.adjacency.insert(current_area, vec![station_area]);
+        state.board_layout.adjacency.insert(station_area, vec![current_area]);
+        state.board_layout.canal_crossings.push((current_area, station_area));
+
+        state.turn_phase = TurnPhase::Movement;
+        state.players[0].president_location = PresidentLocation::OnBoard(current_area);
+        state.players[0].assistants.on_board.insert(station_area, 1);
+        state.station_location = Some(station_area);
+        state.players[0].money = 5;
+
+        let station_tech = TechCardId(208);
+        state.players[0].technologies.push(station_tech);
+        let mut tech_registry = TechRegistry::new();
+        tech_registry.insert(
+            TechCard {
+                id: station_tech,
+                name: "Station".to_string(),
+                industry_cost: 4,
+                country: Country::German,
+                effect: TechEffect::Station,
+            },
+            "tech_station",
+        );
+        let mut rules = Rules::empty_for_tests();
+        rules.techs = tech_registry;
+
+        let moves = get_legal_moves(&state, &rules);
+        assert!(
+            moves.iter().any(|m| matches!(m, Move::MovePresident { destination, path } if *destination == station_area && !path.is_empty())),
+            "the tolled walking route to the station area must still be offered: {moves:?}"
+        );
+        let teleport = moves.iter()
+            .find(|m| matches!(m, Move::MovePresident { destination, path } if *destination == station_area && path.is_empty()))
+            .expect("Station's free teleport must survive alongside a tolled walking route to the same area (I-1 final-review fix)")
+            .clone();
+
+        let next = apply_move(&state, &teleport, &rules).unwrap();
+        assert_eq!(next.players[0].money, 5, "the teleport itself must stay free, unlike the walking route");
+    }
+
+    #[test]
+    fn test_station_teleport_deduplicates_against_a_free_walking_route() {
+        // Companion to the test above: when the walking route to the
+        // station area is ALREADY free (no toll, no pass-through fee), the
+        // teleport is state-identical to it, and the canonical-
+        // representative dedup is sound -- exactly one zero-cost move to
+        // the area should be offered, not two.
+        let mut state = create_test_state();
+        let current_area = AreaId::new(0);
+        let station_area = AreaId::new(1);
+        state.board_layout.adjacency.insert(current_area, vec![station_area]);
+        state.board_layout.adjacency.insert(station_area, vec![current_area]);
+
+        state.turn_phase = TurnPhase::Movement;
+        state.players[0].president_location = PresidentLocation::OnBoard(current_area);
+        state.players[0].assistants.on_board.insert(station_area, 1);
+        state.station_location = Some(station_area);
+
+        let station_tech = TechCardId(209);
+        state.players[0].technologies.push(station_tech);
+        let mut tech_registry = TechRegistry::new();
+        tech_registry.insert(
+            TechCard {
+                id: station_tech,
+                name: "Station".to_string(),
+                industry_cost: 4,
+                country: Country::German,
+                effect: TechEffect::Station,
+            },
+            "tech_station",
+        );
+        let mut rules = Rules::empty_for_tests();
+        rules.techs = tech_registry;
+
+        let moves = get_legal_moves(&state, &rules);
+        let to_station: Vec<_> = moves.iter()
+            .filter(|m| matches!(m, Move::MovePresident { destination, .. } if *destination == station_area))
+            .collect();
+        assert_eq!(
+            to_station.len(), 1,
+            "a free walking route and the Station teleport are state-identical and must collapse to one move: {to_station:?}"
+        );
+    }
+
+    #[test]
+    fn test_station_and_tram_teleports_to_the_same_area_do_not_duplicate() {
+        // Compose case (I-1 final-review fix): Station's own push must
+        // register the area as zero-cost too, so Tram's loop -- which runs
+        // right after -- correctly sees it as already covered instead of
+        // pushing a second free move to the same destination.
+        let mut state = create_test_state();
+        let current_area = AreaId::new(0);
+        let station_area = AreaId::new(1);
+        // No adjacency at all: isolates the Station-vs-Tram push order
+        // from any walking route.
+
+        state.turn_phase = TurnPhase::Movement;
+        state.players[0].president_location = PresidentLocation::OnBoard(current_area);
+        state.players[0].assistants.on_board.insert(station_area, 1);
+        state.station_location = Some(station_area);
+
+        let station_tech = TechCardId(210);
+        let tram_tech = TechCardId(211);
+        state.players[0].technologies.push(station_tech);
+        state.players[0].technologies.push(tram_tech);
+        let mut tech_registry = TechRegistry::new();
+        tech_registry.insert(
+            TechCard {
+                id: station_tech,
+                name: "Station".to_string(),
+                industry_cost: 4,
+                country: Country::German,
+                effect: TechEffect::Station,
+            },
+            "tech_station",
+        );
+        tech_registry.insert(
+            TechCard {
+                id: tram_tech,
+                name: "Tram".to_string(),
+                industry_cost: 5,
+                country: Country::American,
+                effect: TechEffect::Tram,
+            },
+            "tech_tram",
+        );
+        let mut rules = Rules::empty_for_tests();
+        rules.techs = tech_registry;
+
+        let moves = get_legal_moves(&state, &rules);
+        let to_station: Vec<_> = moves.iter()
+            .filter(|m| matches!(m, Move::MovePresident { destination, .. } if *destination == station_area))
+            .collect();
+        assert_eq!(
+            to_station.len(), 1,
+            "Station's and Tram's free teleports to the same area must collapse to one move: {to_station:?}"
+        );
+        assert!(matches!(to_station[0], Move::MovePresident { path, .. } if path.is_empty()));
     }
 
     #[test]

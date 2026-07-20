@@ -56,9 +56,12 @@ pub enum Move {
     EndAdditionalPhase,
 
     // Step 1: Placement
-    /// Option A: Place 1 assistant in each of up to 3 different areas.
+    /// Option A: Place 1 assistant in each of 1-3 different areas (4 with
+    /// Newspaper tech), or place none at all -- an empty placement is
+    /// always legal and free. Variant name predates the Newspaper 4-area
+    /// case; kept as-is (renaming is out of scope).
     PlaceThreeAreas {
-        placements: Vec<AreaId>, // 0-3 areas
+        placements: Vec<AreaId>, // 0-3 areas, or 0-4 with Newspaper
     },
     /// Option B: Place 2 assistants in 1 area.
     /// With Telegram tech, may also place 1 in an adjacent area.
@@ -75,9 +78,11 @@ pub enum Move {
         path: Vec<AreaId>,
         destination: AreaId,
     },
-    /// Return President to hand, optionally recovering assistants.
+    /// Return President to hand, recovering any number of assistants
+    /// (per-area counts; empty = recover none). Owner-ruled 2026-07-19 (I5
+    /// expanded wording); encoding break approved same day.
     ReturnPresidentToHand {
-        recover_assistants_from: Vec<AreaId>,
+        recover: std::collections::BTreeMap<AreaId, u8>,
     },
     /// Place President from hand onto board.
     PlacePresident {
@@ -113,6 +118,7 @@ pub enum Move {
     ChooseChurchSpace { space: u8 },
     ChooseCustomsSpace { space: u8 },
     ChooseRecoveryLeave { leave_one: bool },
+    ChooseStationPlace { area: AreaId },
 }
 
 /// Specific area actions.

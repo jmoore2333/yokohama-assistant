@@ -16,8 +16,9 @@
 //! trading houses). The corpus test therefore asserts the organic pair,
 //! and the three rare triggers are each proven END-TO-END by a seeded
 //! near-threshold scenario below: surgically construct a legal state one
-//! step from the trigger, fire it through the public `apply_move` API,
-//! then random-play the final round to a completed, invariant-checked game.
+//! step from the trigger, fire it through the public `apply_move_unchecked`
+//! API, then random-play the final round to a completed, invariant-checked
+//! game.
 
 mod common;
 use common::{run_random_game, run_random_game_from};
@@ -25,9 +26,9 @@ use common::{run_random_game, run_random_game_from};
 use rand::SeedableRng;
 use rand_chacha::ChaCha8Rng;
 use yokohama_core::{
-    apply_move, finalize_setup, get_legal_moves, new_game, AreaAction, AreaType, EndGameTrigger,
-    GameConfig, GameState, Move, PlayerId, PresidentLocation, Rules, StartingOrderChoice,
-    TurnPhase,
+    apply_move_unchecked, finalize_setup, get_legal_moves, new_game, AreaAction, AreaType,
+    EndGameTrigger, GameConfig, GameState, Move, PlayerId, PresidentLocation, Rules,
+    StartingOrderChoice, TurnPhase,
 };
 
 #[test]
@@ -124,7 +125,7 @@ fn scenario_customs_track_trigger_end_to_end() {
     stage_area_action(&mut state, PlayerId::new(0), customs, 5);
 
     let mv = Move::ExecuteAreaAction { action: AreaAction::Customs { imported_goods_paid: 4 } };
-    state = apply_move(&state, &mv, &rules).expect("customs placement");
+    state = apply_move_unchecked(&state, &mv, &rules).expect("customs placement");
     assert!(state.end_game_triggered);
     assert!(matches!(state.trigger_reason, Some(EndGameTrigger::CustomsTrackFull)));
 
@@ -163,7 +164,7 @@ fn scenario_shophouses_complete_trigger_end_to_end() {
     let slot = state.board_layout.building_sites[&build_area]
         .next_shophouse_slot(PlayerId::new(0))
         .expect("free slot") as u8;
-    state = apply_move(&state, &Move::BuildShophouse { slot }, &rules).expect("8th shophouse");
+    state = apply_move_unchecked(&state, &Move::BuildShophouse { slot }, &rules).expect("8th shophouse");
     assert!(state.end_game_triggered);
     assert!(matches!(
         state.trigger_reason,
@@ -197,7 +198,7 @@ fn scenario_trading_houses_complete_trigger_end_to_end() {
     stage_area_action(&mut state, PlayerId::new(0), build_area, 5);
     state.turn_phase = TurnPhase::Building;
 
-    state = apply_move(&state, &Move::BuildTradingHouse, &rules).expect("4th trading house");
+    state = apply_move_unchecked(&state, &Move::BuildTradingHouse, &rules).expect("4th trading house");
     assert!(state.end_game_triggered);
     assert!(matches!(
         state.trigger_reason,
@@ -252,13 +253,17 @@ fn legal_moves_all_apply_over_short_random_walk() {
         }
         let moves = get_legal_moves(&state, &rules);
         assert!(!moves.is_empty(), "no dead ends in a non-terminal state");
+        // apply_move_unchecked: every move here is drawn from
+        // get_legal_moves by construction, and this loop applies ALL of
+        // them per state, not just the one picked -- checked apply_move
+        // would double-enumerate get_legal_moves per move and go quadratic.
         for m in &moves {
             assert!(
-                apply_move(&state, m, &rules).is_ok(),
+                apply_move_unchecked(&state, m, &rules).is_ok(),
                 "generated move must apply: {m:?}"
             );
         }
         let pick = moves[rng.gen_range(0..moves.len())].clone();
-        state = apply_move(&state, &pick, &rules).expect("picked move applies");
+        state = apply_move_unchecked(&state, &pick, &rules).expect("picked move applies");
     }
 }

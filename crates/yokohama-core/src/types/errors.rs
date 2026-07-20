@@ -12,6 +12,9 @@ pub enum MoveError {
     CardNotFound,
     InvalidSlot,
     IllegalDestination,
+    /// The move is not in `get_legal_moves` for this state (checked boundary,
+    /// design §4.1). Raw per-arm validation lives behind `apply_move_unchecked`.
+    NotLegal,
     /// Catch-all carrying the legacy message; migrate call sites to
     /// specific variants opportunistically when touching them.
     RuleViolation(&'static str),
@@ -27,6 +30,7 @@ impl std::fmt::Display for MoveError {
             MoveError::CardNotFound => write!(f, "card not found"),
             MoveError::InvalidSlot => write!(f, "invalid slot"),
             MoveError::IllegalDestination => write!(f, "illegal destination"),
+            MoveError::NotLegal => write!(f, "move is not in the legal-move list for this state"),
             MoveError::RuleViolation(msg) => write!(f, "{msg}"),
         }
     }

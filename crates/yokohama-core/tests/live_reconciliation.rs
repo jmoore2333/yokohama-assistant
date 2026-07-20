@@ -23,7 +23,7 @@ fn play_with_reveals(seed: u64, players: u8, max_moves: usize, permute: bool, ru
     let pending = new_game(config.clone(), rules, seed).unwrap();
     let choices: Vec<StartingOrderChoice> =
         (0..players).map(|_| StartingOrderChoice::Keep(rng.gen_range(0..2u8))).collect();
-    let mut record = GameRecord::new(seed, config, choices.clone());
+    let mut record = GameRecord::new(seed, config, choices.clone(), rules);
     let mut state = finalize_setup(pending, &choices).unwrap();
 
     for _ in 0..max_moves {
@@ -99,7 +99,7 @@ fn revealed_hidden_starting_order_replays() {
     let pending = new_game(config.clone(), &rules, 21).unwrap();
     let hidden_deal = pending.deals[1];
     let choices = vec![StartingOrderChoice::Keep(0), StartingOrderChoice::Unknown];
-    let mut record = GameRecord::new(21, config, choices.clone());
+    let mut record = GameRecord::new(21, config, choices.clone(), &rules);
     let mut state = finalize_setup(pending, &choices).unwrap();
 
     state.reveal_starting_order(yokohama_core::PlayerId::new(1), hidden_deal[0]).unwrap();
@@ -116,7 +116,7 @@ fn revealed_five_power_token_replays_through_fold() {
     let rules = Rules::standard();
     let config = GameConfig::for_player_count(2);
     let choices = vec![StartingOrderChoice::Keep(0), StartingOrderChoice::Keep(0)];
-    let mut record = GameRecord::new(33, config.clone(), choices.clone());
+    let mut record = GameRecord::new(33, config.clone(), choices.clone(), &rules);
     let pending = new_game(config, &rules, 33).unwrap();
     let mut state = finalize_setup(pending, &choices).unwrap();
     // Pick any tokened area and reveal a DIFFERENT canonical effect there.
@@ -178,7 +178,7 @@ fn setup_observations_from_another_seed_replay_and_play_on() {
         StartingOrderChoice::Unknown,
         StartingOrderChoice::Unknown,
     ];
-    let mut record = GameRecord::new(31, config.clone(), choices.clone());
+    let mut record = GameRecord::new(31, config.clone(), choices.clone(), &rules);
     record.setup_observations = Some(obs.clone());
 
     let pending = new_game(config, &rules, 31).unwrap();

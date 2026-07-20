@@ -192,23 +192,36 @@ fn render_space_compact(space: &SpaceReward) -> String {
     }
 }
 
+/// Printed reward text for one Shophouse space of `site` (e.g. `"1vp"`,
+/// `"2vp+1yen"`, `"-"` when blank) -- the same compact formatter
+/// `site_compact_line` uses per space, exposed standalone so callers (the
+/// CLI's `BuildShophouse` option text) can print a single slot's reward
+/// without re-deriving reward-text semantics themselves (Task 12, T2.2a).
+/// `None` when `slot` is out of range for the site's `SPACES_PER_SITE`
+/// spaces, so callers describing an UNVALIDATED slot fall through to their
+/// own bare-slot wording instead of aborting the process. `Session::load`
+/// describes each recorded event before `replay_from` validates it, so a
+/// tampered record used to reach a raw `site.spaces[slot]` index here
+/// (C1, external review 2026-07-20).
+pub fn slot_reward_text(site: &BuildingSite, slot: usize) -> Option<String> {
+    site.spaces.get(slot).map(render_space_compact)
+}
+
 /// Render a building site in compact format.
 ///
 /// Format: `S03  [1vp 2vp+1yen - 2tea]  TH 8vp`
 pub fn site_compact_line(index: usize, site: &BuildingSite) -> String {
-    let spaces = &site.spaces;
-    let space1 = render_space_compact(&spaces[0]);
-    let space2 = render_space_compact(&spaces[1]);
-    let space3 = render_space_compact(&spaces[2]);
-    let space4 = render_space_compact(&spaces[3]);
-    let th_reward = site.trading_house_reward;
-    format!("S{:02}  [{} {} {} {}]  TH {}vp", index, space1, space2, space3, space4, th_reward)
+    // Iterating the array beats four literal `slot_reward_text` calls: every
+    // space is in range by construction (no Option to unwrap), and the line
+    // cannot drift if `SPACES_PER_SITE` ever changes.
+    let spaces = site.spaces.iter().map(render_space_compact).collect::<Vec<_>>().join(" ");
+    format!("S{:02}  [{}]  TH {}vp", index, spaces, site.trading_house_reward)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::types::OrderCardId;
+    use crate::types::{OrderCardId, SPACES_PER_SITE};
 
     #[test]
     fn order_prompt_line_is_plain_words() {
@@ -233,6 +246,30 @@ mod tests {
             rewards: OrderRewards { victory_points: 8, imported_goods: 1, ..Default::default() },
         };
         assert_eq!(order_compact_line(&card), "O17 GB  2cop 1fish -> 8vp 1imp");
+    }
+
+    #[test]
+    fn slot_reward_text_renders_a_single_space() {
+        let site = BuildingSite {
+            spaces: [
+                SpaceReward { vp: 1, ..Default::default() },
+                SpaceReward { vp: 2, yen: 1, ..Default::default() },
+                SpaceReward::default(),
+                SpaceReward { tea: 2, ..Default::default() },
+            ],
+            trading_house_reward: 8,
+            shophouses_built: [None; 4],
+            trading_house_owner: None,
+        };
+        assert_eq!(slot_reward_text(&site, 0).as_deref(), Some("1vp"));
+        assert_eq!(slot_reward_text(&site, 1).as_deref(), Some("2vp+1yen"));
+        assert_eq!(slot_reward_text(&site, 2).as_deref(), Some("-"));
+        assert_eq!(slot_reward_text(&site, 3).as_deref(), Some("2tea"));
+        // C1 (external review 2026-07-20): an out-of-range slot must yield
+        // None so an unvalidated caller falls through to its own wording,
+        // rather than indexing the fixed array and aborting the process.
+        assert_eq!(slot_reward_text(&site, SPACES_PER_SITE), None);
+        assert_eq!(slot_reward_text(&site, 250), None);
     }
 
     #[test]

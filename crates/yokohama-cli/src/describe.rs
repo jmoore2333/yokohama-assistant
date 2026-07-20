@@ -2,6 +2,9 @@
 //! the CLI's option text (design docs/plans/2026-07-18-phase2-cli-driver-design.md).
 
 use yokohama_core::*;
+use yokohama_core::game::actions::{copper_mine_reward, fishing_ground_reward, silk_mill_reward, tea_plantation_reward};
+
+use crate::render;
 
 pub fn area_type_name(t: AreaType) -> &'static str {
     match t {
@@ -74,6 +77,38 @@ pub fn achievement_desc(a: AchievementType) -> String {
     }
 }
 
+/// One-line plain-words statement of a Technology card's effect, for the
+/// `labs` view (item 5). A TOTAL match over `TechEffect` -- no wildcard arm,
+/// so adding a variant is a compile error here rather than a silently-missing
+/// line. Each line is authored from the engine's own `TechEffect` variant
+/// docs (`types/cards.rs`); the CLI guide's §8.2 lists card NAMES only, not
+/// per-effect wording, so these are the single display source for what a tech
+/// does. ASCII only, to stay terminal-safe.
+pub fn tech_effect_text(effect: TechEffect) -> &'static str {
+    match effect {
+        TechEffect::Tram => "Teleport the President to any area without an opponent President",
+        TechEffect::Stagecoach => "Move through opponent Presidents without paying the pass-through fee",
+        TechEffect::PostalSystem => "May stop and act in an area holding an opponent President",
+        TechEffect::Station => "Place the Station token: +1 Power for everyone there; teleport there while you have an assistant in its area",
+        TechEffect::Gaslight => "+2 VP when you build a Shophouse",
+        TechEffect::ElectricalLight => "+3 VP when you build a Trading House",
+        TechEffect::MiningTechnology => "+1 Copper whenever you receive Copper",
+        TechEffect::SpinningMill => "Once per turn: discard 1 Silk to gain 2 Yen",
+        TechEffect::Ball => "+2 VP when you complete an Order",
+        TechEffect::LanguageSchool => "+1 Yen when you complete an Order",
+        TechEffect::PatentSystem => "+2 VP when you acquire a Technology",
+        TechEffect::LetterPressPrinting => "+1 Yen when you acquire a Technology",
+        TechEffect::Winery => "+3 VP when you place an assistant on the Church",
+        TechEffect::Brickyard => "+4 VP when you place an assistant on Customs",
+        TechEffect::SystemOfStock => "At turn start, if you have 1 Yen or less, refill to 2 Yen",
+        TechEffect::University => "Once per turn: pay 1 Yen to take an assistant from the Warehouse",
+        TechEffect::Newspaper => "Placement Option A may use 4 different areas instead of 3",
+        TechEffect::Telegram => "After placing 2 assistants in one area, may place 1 in an adjacent area",
+        TechEffect::Telephone => "During Recovery, may leave 1 assistant in the action area",
+        TechEffect::Exposition => "Immediately gain 10 VP when acquired",
+    }
+}
+
 /// Plain-words name of a trade good, for `Move::ChooseAnyGood`.
 fn trade_good_name(g: TradeGood) -> &'static str {
     match g {
@@ -122,16 +157,64 @@ fn chinatown_exchange_text(exchange: ChinatownExchange) -> &'static str {
     }
 }
 
+/// The area this AreaAction targets: the mercenary sub-turn's target area
+/// when `state.is_mercenary_action`, else the current player's President
+/// location on board -- mirrors the engine's own acting-area resolution in
+/// `game::legal_moves::generate_area_action_moves`/`generate_building_
+/// moves` so a preview never disagrees with what the engine will actually
+/// act on. `None` when the President is still in hand: unreached by any
+/// legal `ExecuteAreaAction`/`BuildShophouse`/`BuildTradingHouse` move
+/// (both phases require the President on board first) but kept as a
+/// defensive fallback for direct state construction (fixtures/tests).
+fn acting_area(state: &GameState) -> Option<AreaId> {
+    if state.is_mercenary_action {
+        state.mercenary_target_area
+    } else {
+        match state.current_player().president_location {
+            PresidentLocation::OnBoard(a) => Some(a),
+            PresidentLocation::InHand => None,
+        }
+    }
+}
+
+/// Production-area preview text: `"{verb} (power {p} -> +{r} {good})"`
+/// where `r` is the REAL reward `reward_fn` computes for power `p`.
+/// Production is NOT always power-for-power -- Copper Mine and Silk Mill
+/// under-produce at low power (e.g. `copper_mine_reward(3) == 1`); only
+/// Tea Plantation/Fishing Ground are a flat 1:1 (`game::actions::
+/// production`) -- so this always calls the engine's own reward function
+/// rather than echoing the power number, which would misstate the yield
+/// for the two non-linear areas. Falls back to the bare verb when the
+/// acting area can't be determined (see `acting_area`).
+fn production_preview(state: &GameState, verb: &str, good: TradeGood, reward_fn: fn(u8) -> u8) -> String {
+    match acting_area(state) {
+        Some(area) => {
+            // Recomputed rather than read from state.current_action_power,
+            // but the two are always equal here -- including the mercenary
+            // formula, which omits the President's own +1 exactly where the
+            // target area is guaranteed not to hold it.
+            let power = calculate_power(state, state.current_player, area);
+            let reward = reward_fn(power);
+            format!("{verb} (power {power} -> +{reward} {})", trade_good_name(good))
+        }
+        None => verb.to_string(),
+    }
+}
+
 /// One plain-words line describing an `AreaAction` (called from
-/// `describe_move`'s `ExecuteAreaAction` arm). `state` is accepted for
-/// interface symmetry with `describe_move`'s call site but is currently
-/// unused: no area action's description depends on board state.
-fn describe_area_action(action: &AreaAction, _state: &GameState, rules: &Rules) -> String {
+/// `describe_move`'s `ExecuteAreaAction` arm). `state` locates the acting
+/// area (`acting_area`) so the production arms (Copper Mine/Silk Mill/Tea
+/// Plantation/Fishing Ground) can preview the real yield at the current
+/// power (Task 12, T2.2a) -- every other arm's text is still independent
+/// of board state.
+fn describe_area_action(action: &AreaAction, state: &GameState, rules: &Rules) -> String {
     match action {
-        AreaAction::ProduceCopper => "Produce copper".to_string(),
-        AreaAction::ProduceSilk => "Produce silk".to_string(),
-        AreaAction::ProduceTea => "Produce tea".to_string(),
-        AreaAction::ProduceSeafood => "Produce seafood".to_string(),
+        AreaAction::ProduceCopper => production_preview(state, "Produce copper", TradeGood::Copper, copper_mine_reward),
+        AreaAction::ProduceSilk => production_preview(state, "Produce silk", TradeGood::Silk, silk_mill_reward),
+        AreaAction::ProduceTea => production_preview(state, "Produce tea", TradeGood::Tea, tea_plantation_reward),
+        AreaAction::ProduceSeafood => {
+            production_preview(state, "Produce seafood", TradeGood::Seafood, fishing_ground_reward)
+        }
         AreaAction::Bank => "Take money at the Bank".to_string(),
         AreaAction::Port { cards_taken, second_card_payment } => {
             let cards = cards_taken.iter().map(|id| format!("O{:02}", id.0)).collect::<Vec<_>>().join(", ");
@@ -247,26 +330,78 @@ pub fn describe_move(mv: &Move, state: &GameState, rules: &Rules) -> String {
         Move::MovePresident { path, destination } if path.is_empty() => {
             format!("Move President directly to {} (free teleport)", area_label(state, *destination))
         }
-        Move::MovePresident { path, destination } => format!(
-            "Move President to {} via {}",
-            area_label(state, *destination),
-            path.iter().map(|a| area_label(state, *a)).collect::<Vec<_>>().join(" -> ")
-        ),
-        Move::ReturnPresidentToHand { recover_assistants_from } if recover_assistants_from.is_empty() => {
-            "Return President to hand (recover no assistants)".to_string()
+        Move::MovePresident { path, destination } => {
+            // `path` already carries the destination as its last element --
+            // the same slice `apply_movement` prices (Task 6) -- so it feeds
+            // `route_fee_vector` unchanged, never `path` + `destination`
+            // appended (that would double-count the last hop).
+            let vector = route_fee_vector(state, state.current_player, path, Some(&rules.techs), false);
+            let cost_text = if vector.is_empty() {
+                "free".to_string()
+            } else {
+                let total: u32 = vector.values().sum();
+                // Player entries first (in PlayerId order), canal toll (the
+                // `None` bank entry) last -- matches the design's example
+                // wording, not `RouteVector`'s natural key order (`None`
+                // sorts first in a BTreeMap since `None < Some(_)`).
+                let parts: Vec<String> = vector
+                    .iter()
+                    .filter_map(|(recipient, amount)| {
+                        recipient.map(|player_id| {
+                            format!("{amount} to {}", render::color_name(state.player(player_id).color))
+                        })
+                    })
+                    .chain(vector.get(&None).map(|amount| {
+                        format!("{amount} canal toll{}", if *amount == 1 { "" } else { "s" })
+                    }))
+                    .collect();
+                format!("pay {total} yen ({})", parts.join(", "))
+            };
+            format!("Move President to {} — {}", area_label(state, *destination), cost_text)
         }
-        Move::ReturnPresidentToHand { recover_assistants_from } => format!(
-            "Return President to hand, recovering assistants from {}",
-            recover_assistants_from.iter().map(|a| area_label(state, *a)).collect::<Vec<_>>().join(", ")
-        ),
+        // Counts encoding (I5 ruling): per-area counts, not just which areas
+        // -- two retreats differing only by count (e.g. recover 1 vs 2 from
+        // the same area) must render distinguishably (Task 7's report;
+        // Task 8 gives this its real treatment).
+        Move::ReturnPresidentToHand { recover } => {
+            if recover.is_empty() {
+                "Return President to hand (recover no assistants)".to_string()
+            } else {
+                let total: u32 = recover.values().map(|&c| c as u32).sum();
+                let parts = recover
+                    .iter()
+                    .map(|(a, c)| format!("A{:02} x{}", a.0, c))
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                format!("Return President to hand, recovering {total} assistant(s) ({parts})")
+            }
+        }
         Move::PlacePresident { destination } => {
             format!("Place President from hand in {}", area_label(state, *destination))
         }
         Move::ExecuteAreaAction { action } => describe_area_action(action, state, rules),
         Move::Take5PowerToken => "Take the 5-Power token".to_string(),
         Move::Skip5PowerBonus => "Skip the 5-Power token".to_string(),
-        Move::BuildShophouse { slot } => format!("Build a Shophouse (space {})", slot + 1),
-        Move::BuildTradingHouse => "Build a Trading House".to_string(),
+        Move::BuildShophouse { slot } => {
+            let reward = acting_area(state)
+                .and_then(|a| state.board_layout.building_sites.get(&a))
+                // and_then, not map: `slot_reward_text` yields None for an
+                // out-of-range slot (a tampered record's can be), which falls
+                // through to the bare "(space N)" wording below instead of
+                // panicking. See C1, external review 2026-07-20.
+                .and_then(|site| slot_reward_text(site, *slot as usize));
+            match reward {
+                Some(r) => format!("Build a Shophouse ({r})"),
+                None => format!("Build a Shophouse (space {})", slot + 1),
+            }
+        }
+        Move::BuildTradingHouse => {
+            let reward = acting_area(state).and_then(|a| state.board_layout.building_sites.get(&a));
+            match reward {
+                Some(site) => format!("Build a Trading House ({}vp)", site.trading_house_reward),
+                None => "Build a Trading House".to_string(),
+            }
+        }
         Move::SkipBuilding => "Skip building".to_string(),
         Move::ChooseAnyGood { good } => format!("Take 1 {} (any-good reward)", trade_good_name(*good)),
         Move::ChooseWarehouseTake { item } => {
@@ -294,6 +429,36 @@ pub fn describe_move(mv: &Move, state: &GameState, rules: &Rules) -> String {
         }
         Move::ChooseRecoveryLeave { leave_one: true } => {
             "Leave 1 assistant behind (Telephone)".to_string()
+        }
+        Move::ChooseStationPlace { area } => {
+            format!("Place the Station token in {}", area_label(state, *area))
+        }
+    }
+}
+
+/// One plain-words line describing a `RecordedEvent` as it happened: a
+/// `Move` delegates to `describe_move` against `state`, while each
+/// `Reveal*` variant's wording depends only on the event's own fields, not
+/// `state` -- `state`/`rules` are threaded through regardless so every
+/// caller can call this ONE function uniformly regardless of variant,
+/// passing the state as of when the event actually happened. Moved here
+/// (T2.4) from the CLI's old `Repl::describe_event`, which always described
+/// against whatever state was CURRENT when `log` was invoked -- harmless
+/// for the Reveal arms (state-independent), but wrong for `Move` once
+/// state-dependent wording (movement fees/recipients, a trading-house
+/// take's printed price) went stale after the state it described moved on.
+/// `Session` (`apply`/`apply_standalone`/`load`) now calls this once per
+/// event, at the moment the event is folded, and caches the result.
+pub fn describe_recorded_event(ev: &RecordedEvent, state: &GameState, rules: &Rules) -> String {
+    match ev {
+        RecordedEvent::Move(mv) => describe_move(mv, state, rules),
+        RecordedEvent::RevealOrders(cards) => format!("reveal orders: {} card(s)", cards.len()),
+        RecordedEvent::RevealTechs(cards) => format!("reveal techs: {} card(s)", cards.len()),
+        RecordedEvent::RevealStartingOrder { player, card } => {
+            format!("reveal starting order: P{} = O{:02}", player.0, card.0)
+        }
+        RecordedEvent::RevealFivePowerToken { area, effect } => {
+            format!("reveal 5-power at A{:02}: {:?}", area.0, effect)
         }
     }
 }
@@ -331,12 +496,14 @@ pub fn describe_pending_choice(head: &PendingChoice, state: &GameState, _rules: 
         PendingChoice::ChurchSpace { total_faith } => format!("Church space at faith {total_faith}"),
         PendingChoice::CustomsSpace { cost } => format!("Customs space at cost {cost}"),
         PendingChoice::RecoveryLeave => "Telephone: leave 1 assistant behind, or recover all".to_string(),
+        PendingChoice::StationPlace => "place the Station token (all players gain +1 Power in its area)".to_string(),
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::BTreeMap;
 
     fn state_2p() -> GameState {
         let rules = Rules::standard();
@@ -447,6 +614,24 @@ mod tests {
     }
 
     #[test]
+    fn retreat_descriptions_show_counts_or_none() {
+        let state = state_2p();
+        let rules = Rules::standard();
+        let none = describe_move(
+            &Move::ReturnPresidentToHand { recover: std::collections::BTreeMap::new() },
+            &state,
+            &rules,
+        );
+        assert_eq!(none, "Return President to hand (recover no assistants)");
+
+        let mut recover = std::collections::BTreeMap::new();
+        recover.insert(AreaId::new(0), 2);
+        recover.insert(AreaId::new(3), 1);
+        let some = describe_move(&Move::ReturnPresidentToHand { recover }, &state, &rules);
+        assert_eq!(some, "Return President to hand, recovering 3 assistant(s) (A00 x2, A03 x1)");
+    }
+
+    #[test]
     fn recovery_leave_choice_reads_as_plain_words() {
         let state = state_2p();
         let rules = Rules::standard();
@@ -461,7 +646,17 @@ mod tests {
     }
 
     #[test]
-    fn describe_pending_choice_covers_all_six_variants() {
+    fn station_place_choice_reads_as_plain_words() {
+        let state = state_2p();
+        let rules = Rules::standard();
+        let some_area = *state.board_layout.areas.keys().next().unwrap();
+        let text = describe_move(&Move::ChooseStationPlace { area: some_area }, &state, &rules);
+        assert!(text.starts_with("Place the Station token in "), "{text}");
+        assert!(text.contains(&format!("(A{:02})", some_area.0)), "{text}");
+    }
+
+    #[test]
+    fn describe_pending_choice_covers_all_seven_variants() {
         let mut state = state_2p();
         let rules = Rules::standard();
         // Fresh game already has >=1 of each warehouse item type (12/6/4 in
@@ -490,6 +685,9 @@ mod tests {
 
         let recovery = describe_pending_choice(&PendingChoice::RecoveryLeave, &state, &rules);
         assert!(recovery.contains("Telephone"), "{recovery}");
+
+        let station = describe_pending_choice(&PendingChoice::StationPlace, &state, &rules);
+        assert!(station.contains("Station") && station.contains("Power"), "{station}");
     }
 
     #[test]
@@ -506,6 +704,141 @@ mod tests {
         );
     }
 
+    /// Task 12 (T2.2a): a BuildShophouse option must show the space's
+    /// PRINTED reward, not a bare "(space N)" placeholder -- the CLI must
+    /// never require the player to cross-reference the physical site card
+    /// themselves to know what a build actually pays out.
+    #[test]
+    fn build_shophouse_options_print_the_spaces_printed_reward() {
+        let mut state = state_2p();
+        let rules = Rules::standard();
+        let (area, site) = state
+            .board_layout
+            .building_sites
+            .iter()
+            .next()
+            .map(|(&a, s)| (a, s.clone()))
+            .expect("a building site exists");
+        let cp = state.current_player;
+        state.players[cp.0 as usize].president_location = PresidentLocation::OnBoard(area);
+
+        let text = describe_move(&Move::BuildShophouse { slot: 0 }, &state, &rules);
+        assert!(!text.ends_with("(space 1)"), "bare space-number text must be gone: {text}");
+        let expected = slot_reward_text(&site, 0).expect("slot 0 is always in range");
+        assert!(text.contains(&expected), "{text}");
+    }
+
+    /// Task 12 riding item: BuildTradingHouse should likewise show the
+    /// site's printed Trading-House VP rather than a bare label.
+    #[test]
+    fn build_trading_house_option_prints_the_sites_th_reward() {
+        let mut state = state_2p();
+        let rules = Rules::standard();
+        let (area, site) = state
+            .board_layout
+            .building_sites
+            .iter()
+            .next()
+            .map(|(&a, s)| (a, s.clone()))
+            .expect("a building site exists");
+        let cp = state.current_player;
+        state.players[cp.0 as usize].president_location = PresidentLocation::OnBoard(area);
+
+        let text = describe_move(&Move::BuildTradingHouse, &state, &rules);
+        assert!(text.contains(&format!("{}vp", site.trading_house_reward)), "{text}");
+    }
+
+    /// Task 12 (T2.2a): production-area action options must preview the
+    /// yield at the CURRENT power, computed the same way the engine
+    /// computes it (`calculate_power`) -- not just named.
+    #[test]
+    fn production_area_actions_preview_the_yield() {
+        let mut state = state_2p();
+        let rules = Rules::standard();
+        let area = *state
+            .board_layout
+            .areas
+            .iter()
+            .find(|(_, cfg)| cfg.area_type == AreaType::TeaPlantation)
+            .expect("a Tea Plantation area exists")
+            .0;
+        let cp = state.current_player;
+        state.players[cp.0 as usize].president_location = PresidentLocation::OnBoard(area);
+        state.players[cp.0 as usize].assistants.on_board.insert(area, 2);
+        state.players[cp.0 as usize].assistants.in_hand -= 2;
+        // President (1) + 2 assistants = power 3; Tea Plantation is a flat
+        // 1:1 reward, so power 3 -> +3 tea.
+
+        let text =
+            describe_move(&Move::ExecuteAreaAction { action: AreaAction::ProduceTea }, &state, &rules);
+        assert!(text.contains("power 3"), "{text}");
+        assert!(text.contains("+3 tea"), "{text}");
+    }
+
+    /// Task 12 correctness guard: Copper Mine's reward table is NOT 1:1
+    /// with power (power 3 -> only 1 copper, per `copper_mine_reward`) --
+    /// the preview must show the REAL yield, not echo the power number, or
+    /// it would actively mislead a player about what the build pays out.
+    #[test]
+    fn production_preview_uses_the_real_non_linear_reward_not_the_power_number() {
+        let mut state = state_2p();
+        let rules = Rules::standard();
+        let area = *state
+            .board_layout
+            .areas
+            .iter()
+            .find(|(_, cfg)| cfg.area_type == AreaType::CopperMine)
+            .expect("a Copper Mine area exists")
+            .0;
+        let cp = state.current_player;
+        state.players[cp.0 as usize].president_location = PresidentLocation::OnBoard(area);
+        state.players[cp.0 as usize].assistants.on_board.insert(area, 2);
+        state.players[cp.0 as usize].assistants.in_hand -= 2;
+        // President (1) + 2 assistants = power 3; Copper Mine at power 3 -> 1 copper.
+
+        let text =
+            describe_move(&Move::ExecuteAreaAction { action: AreaAction::ProduceCopper }, &state, &rules);
+        assert!(text.contains("power 3"), "{text}");
+        assert!(text.contains("+1 copper"), "{text}");
+        assert!(!text.contains("+3 copper"), "{text}");
+    }
+
+    /// Labs country + effect (pre-gate view batch item 5): `tech_effect_text`
+    /// is a TOTAL match over `TechEffect` (no wildcard arm -- a future variant
+    /// is a compile error). Every real tech card must therefore map to a
+    /// non-empty effect line. Driven off the standard registry, which carries
+    /// all 20 effects.
+    #[test]
+    fn every_tech_effect_has_nonempty_text() {
+        let rules = Rules::standard();
+        for card in rules.techs.iter() {
+            assert!(!tech_effect_text(card.effect).is_empty(), "{:?} has empty effect text", card.effect);
+        }
+    }
+
+    /// Spot-check a few effect lines against the engine's `TechEffect` docs so
+    /// a regression in the mapping is caught, not just emptiness.
+    #[test]
+    fn tech_effect_text_spot_checks() {
+        assert_eq!(tech_effect_text(TechEffect::Exposition), "Immediately gain 10 VP when acquired");
+        assert!(tech_effect_text(TechEffect::Gaslight).contains("Shophouse"), "{}", tech_effect_text(TechEffect::Gaslight));
+        assert!(tech_effect_text(TechEffect::Brickyard).contains("Customs"), "{}", tech_effect_text(TechEffect::Brickyard));
+        assert!(tech_effect_text(TechEffect::University).contains("Warehouse"), "{}", tech_effect_text(TechEffect::University));
+    }
+
+    /// Task B review minor: the Station effect line must not promise an
+    /// UNCONDITIONAL teleport -- the engine gates it on the owner holding an
+    /// assistant in the Station's area (`can_teleport_to_station`,
+    /// movement.rs:245-248: `in_area(station_area) > 0`). The one-liner must
+    /// therefore carry that assistant-presence gate, not just say "teleport
+    /// to it".
+    #[test]
+    fn station_effect_line_carries_the_teleport_gate() {
+        let line = tech_effect_text(TechEffect::Station);
+        assert!(line.contains("teleport"), "{line}");
+        assert!(line.contains("assistant"), "teleport must read as gated on an assistant: {line}");
+    }
+
     #[test]
     fn every_phase_has_a_plain_name() {
         for p in [
@@ -515,5 +848,131 @@ mod tests {
         ] {
             assert!(!phase_name(p).is_empty());
         }
+    }
+
+    /// Task 13 (T2.2b): a small hand-built board for MovePresident cost
+    /// tests. `state_2p()` can't reach a canal at all -- the standard
+    /// 2-player board never places a Canal tile (board_gen.rs's
+    /// `two_player_boards_unchanged` pins `canal_crossings.is_empty()` for
+    /// every seeded 2p layout) -- so this mirrors movement.rs's Task 6
+    /// fixture pattern (`canal_crossing_fixture` / `l2_diamond_fixture`)
+    /// locally: those are `#[cfg(test)]`-private to yokohama-core and not
+    /// reachable across the crate boundary. `route_fee_vector` only reads
+    /// `canal_crossings` and `president_location`s (never `adjacency`), so
+    /// the board is deliberately minimal: a `start` hub with three spokes --
+    /// one tolled, one fee-bearing (Blue's President sits there), one free.
+    fn movement_cost_fixture() -> (GameState, Rules) {
+        let start = AreaId::new(0);
+        let toll_dest = AreaId::new(1);
+        let fee_dest = AreaId::new(2);
+        let free_dest = AreaId::new(3);
+
+        let mut areas = BTreeMap::new();
+        areas.insert(start, AreaConfig { area_type: AreaType::Bank, grid_position: (0, 0) });
+        areas.insert(toll_dest, AreaConfig { area_type: AreaType::CopperMine, grid_position: (0, 1) });
+        areas.insert(fee_dest, AreaConfig { area_type: AreaType::SilkMill, grid_position: (0, 2) });
+        areas.insert(free_dest, AreaConfig { area_type: AreaType::TeaPlantation, grid_position: (0, 3) });
+
+        let mut adjacency = BTreeMap::new();
+        adjacency.insert(start, vec![toll_dest, fee_dest, free_dest]);
+        adjacency.insert(toll_dest, vec![start, fee_dest]);
+        adjacency.insert(fee_dest, vec![start, toll_dest, free_dest]);
+        adjacency.insert(free_dest, vec![start, fee_dest]);
+
+        let board_layout = BoardLayout {
+            areas,
+            adjacency,
+            canal_crossings: vec![(start, toll_dest)],
+            building_sites: BTreeMap::new(),
+            five_power_tokens: BTreeMap::new(),
+        };
+
+        let config = GameConfig::new(2, vec![PlayerColor::Red, PlayerColor::Blue], PlayerId::new(0));
+        let mut players = vec![
+            PlayerState::new(PlayerId::new(0), PlayerColor::Red, true),
+            PlayerState::new(PlayerId::new(1), PlayerColor::Blue, false),
+        ];
+        players[0].president_location = PresidentLocation::OnBoard(start);
+        players[0].money = 10;
+        players[1].president_location = PresidentLocation::OnBoard(fee_dest); // Blue blocks fee_dest
+        players[1].money = 10;
+
+        let state = GameState {
+            config,
+            board_layout,
+            players,
+            current_player: PlayerId::new(0),
+            turn_phase: TurnPhase::Movement,
+            turn_number: 1,
+            additional_action_state: AdditionalActionState::new(),
+            current_action_power: None,
+            is_mercenary_action: false,
+            mercenary_target_area: None,
+            mercenary_return_phase: None,
+            president_start_area: None,
+            port_state: PortState::new(false),
+            lab_state: LabState::new(false),
+            order_deck: vec![],
+            tech_deck: vec![],
+            orders_removed: vec![],
+            church_track: ChurchTrack::new(),
+            customs_track: CustomsTrack::new(),
+            achievements: [
+                AchievementCard::new(AchievementType::Copper5),
+                AchievementCard::new(AchievementType::Money10),
+                AchievementCard::new(AchievementType::Production4),
+            ],
+            mercenary_supply: MercenarySupply::new(),
+            station_location: None,
+            end_game_triggered: false,
+            trigger_reason: None,
+            final_round: false,
+            trigger_player: None,
+            pending_choices: Vec::new(),
+        };
+
+        (state, Rules::empty_for_tests())
+    }
+
+    /// Task 13 (T2.2b): a MovePresident option must show WHO gets paid, not
+    /// just how much -- a player choosing between two equal-cost routes
+    /// needs to see that one pays an opponent and the other pays the bank
+    /// (canal toll) before picking. Also pins that a non-empty zero-cost
+    /// path reads as "free", NOT the teleport wording (that stays reserved
+    /// for the empty-path Station/Tram case).
+    #[test]
+    fn movement_descriptions_name_cost_and_recipients() {
+        let (state, rules) = movement_cost_fixture();
+        let toll_dest = AreaId::new(1);
+        let fee_dest = AreaId::new(2);
+        let free_dest = AreaId::new(3);
+
+        // Canal fixture -- the toll route:
+        let toll_move = Move::MovePresident { path: vec![toll_dest], destination: toll_dest };
+        let text = describe_move(&toll_move, &state, &rules);
+        assert!(text.contains("canal toll"), "{text}");
+
+        // the fee route (Blue's President sits at fee_dest):
+        let fee_move = Move::MovePresident { path: vec![fee_dest], destination: fee_dest };
+        let text2 = describe_move(&fee_move, &state, &rules);
+        assert!(text2.contains("1 to "), "{text2}");
+        assert!(text2.contains("1 to Blue"), "{text2}");
+
+        // a free move: no canal, no opponent -- and it must NOT read as a
+        // teleport (non-empty path):
+        let free_move = Move::MovePresident { path: vec![free_dest], destination: free_dest };
+        let text3 = describe_move(&free_move, &state, &rules);
+        assert!(text3.contains("free"), "{text3}");
+        assert!(!text3.contains("teleport"), "{text3}");
+
+        // both a toll AND a fee on the same route (path through toll_dest,
+        // stopping where Blue's President sits) -- pins the exact wording
+        // and the players-before-canal-toll part ordering.
+        let combo_move = Move::MovePresident { path: vec![toll_dest, fee_dest], destination: fee_dest };
+        let text4 = describe_move(&combo_move, &state, &rules);
+        assert_eq!(
+            text4,
+            format!("Move President to {} — pay 2 yen (1 to Blue, 1 canal toll)", area_label(&state, fee_dest))
+        );
     }
 }

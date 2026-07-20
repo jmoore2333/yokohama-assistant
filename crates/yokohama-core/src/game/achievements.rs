@@ -22,36 +22,71 @@ pub fn can_claim_achievement(
         return false;
     }
 
-    // Check specific achievement requirements
+    // Requirement met iff current progress has reached what's needed --
+    // `achievement_progress` carries the exact arithmetic every arm below
+    // used to have inline (Task 14, T2.3: extracted so a CLI progress
+    // display and the actual claim gate can never disagree -- there's only
+    // one copy of the arithmetic left).
+    let (current, needed) = achievement_progress(state, player, achievement);
+    current >= needed
+}
+
+/// Progress toward `achievement` for `player`: `(current, needed)`. This is
+/// the SAME arithmetic `can_claim_achievement`'s match used to have inline,
+/// per arm -- extracted so a CLI progress display (`render::
+/// achievements_view`) and the actual claim gate can never disagree (Task
+/// 14, T2.3). Does NOT account for `can_claim_achievement`'s other two
+/// gates (already claimed by this player, no assistant in hand to place) --
+/// those aren't "progress" in any numeric sense, so `can_claim_achievement`
+/// still checks them itself before ever consulting this function.
+///
+/// The two Category-C AND-shaped achievements (`Prod3Comm2`/`Prod2Comm3`)
+/// can't be expressed as a single linear "own N of a thing" pair the way
+/// every other achievement can: they require a production-area count AND a
+/// commercial-area count to EACH individually clear their own threshold.
+/// They're encoded as a capped sum: `needed` is the sum of both thresholds,
+/// and `current` is the sum of each count capped at its own threshold
+/// (`count.min(threshold)`). Because each capped term can never exceed its
+/// own threshold, their sum can only reach the combined `needed` when BOTH
+/// terms are individually at their cap -- i.e. `current >= needed` holds
+/// exactly when both sub-conditions hold, reproducing the AND precisely
+/// (not an approximation; see `achievement_progress_and_shaped_achievement_
+/// caps_each_leg_at_its_own_threshold` for a worked counterexample against
+/// a naive uncapped sum).
+pub fn achievement_progress(
+    state: &GameState,
+    player: PlayerId,
+    achievement: AchievementType,
+) -> (u32, u32) {
+    let p = state.player(player);
+
     match achievement {
         // Category A: Trade good holdings (no payment, just demonstrate ownership)
-        AchievementType::Copper5 => p.copper >= 5,
-        AchievementType::Silk6 => p.silk >= 6,
-        AchievementType::Tea7 => p.tea >= 7,
-        AchievementType::Seafood7 => p.seafood >= 7,
+        AchievementType::Copper5 => (p.copper, 5),
+        AchievementType::Silk6 => (p.silk, 6),
+        AchievementType::Tea7 => (p.tea, 7),
+        AchievementType::Seafood7 => (p.seafood, 7),
 
         // Category B: Collection goals
-        AchievementType::Money10 => p.money >= 10,
+        AchievementType::Money10 => (p.money, 10),
         AchievementType::Tokens5 => {
-            p.five_power_tokens + p.mercenaries.total() >= 5
+            (p.five_power_tokens as u32 + p.mercenaries.total() as u32, 5)
         }
-        AchievementType::Orders5 => p.completed_orders.len() >= 5,
-        AchievementType::Technologies4 => p.technologies.len() >= 4,
+        AchievementType::Orders5 => (p.completed_orders.len() as u32, 5),
+        AchievementType::Technologies4 => (p.technologies.len() as u32, 4),
 
         // Category C: Building presence
-        AchievementType::Production4 => {
-            count_production_buildings(state, player) >= 4
-        }
-        AchievementType::Commercial4 => {
-            count_commercial_buildings(state, player) >= 4
-        }
+        AchievementType::Production4 => (count_production_buildings(state, player) as u32, 4),
+        AchievementType::Commercial4 => (count_commercial_buildings(state, player) as u32, 4),
         AchievementType::Prod3Comm2 => {
-            count_production_buildings(state, player) >= 3
-                && count_commercial_buildings(state, player) >= 2
+            let prod = (count_production_buildings(state, player) as u32).min(3);
+            let comm = (count_commercial_buildings(state, player) as u32).min(2);
+            (prod + comm, 5)
         }
         AchievementType::Prod2Comm3 => {
-            count_production_buildings(state, player) >= 2
-                && count_commercial_buildings(state, player) >= 3
+            let prod = (count_production_buildings(state, player) as u32).min(2);
+            let comm = (count_commercial_buildings(state, player) as u32).min(3);
+            (prod + comm, 5)
         }
     }
 }
@@ -289,5 +324,135 @@ mod tests {
         }
 
         assert!(can_claim_achievement(&state, PlayerId::new(0), AchievementType::Production4));
+    }
+
+    /// Fixture for `progress_matches_the_claim_gate` (Task 14, T2.3): a
+    /// 2-player state with deliberately varied resource/building counts --
+    /// some exactly AT a threshold, some above, some below -- and lopsided
+    /// production/commercial building counts (Red production-heavy and
+    /// commercial-empty, Blue the reverse) specifically to exercise the
+    /// AND-shaped Prod3Comm2/Prod2Comm3 arms, not just the linear ones.
+    /// Both players keep their full starting `assistants.in_hand` (8) and
+    /// neither has claimed anything, so `can_claim_achievement`'s two
+    /// pre-arithmetic gates (already claimed, no assistant in hand) never
+    /// fire here -- the property under test reduces to exactly the
+    /// arithmetic both functions must agree on.
+    fn progress_fixture_state() -> GameState {
+        let mut state = create_test_state();
+
+        let prod_areas = [AreaId::new(0), AreaId::new(1), AreaId::new(2)];
+        let comm_areas = [AreaId::new(3), AreaId::new(4)];
+        let prod_types = [AreaType::CopperMine, AreaType::SilkMill, AreaType::TeaPlantation];
+        let comm_types = [AreaType::Bank, AreaType::PortA];
+        for (i, &a) in prod_areas.iter().enumerate() {
+            state.board_layout.areas.insert(a, AreaConfig { area_type: prod_types[i], grid_position: (0, i as u8) });
+        }
+        for (i, &a) in comm_areas.iter().enumerate() {
+            state.board_layout.areas.insert(a, AreaConfig { area_type: comm_types[i], grid_position: (1, i as u8) });
+        }
+
+        // Red: exactly at threshold on every linear check; production-heavy
+        // (3, meets Prod3Comm2's production leg), commercial-empty (fails
+        // its commercial leg).
+        state.players[0].copper = 5;
+        state.players[0].silk = 2;
+        state.players[0].tea = 9;
+        state.players[0].seafood = 7;
+        state.players[0].money = 10;
+        state.players[0].five_power_tokens = 2;
+        state.players[0].mercenaries.available.insert(Country::English, 3);
+        state.players[0].completed_orders = (0..4).map(OrderCardId).collect();
+        state.players[0].technologies = (0..4).map(TechCardId).collect();
+        state.players[0].trading_houses.built = prod_areas.to_vec();
+
+        // Blue: the opposite skew -- commercial-only buildings (meets
+        // Prod3Comm2's commercial leg at exactly 2, fails its production
+        // leg at 0; also fails Prod2Comm3's commercial leg, which needs 3).
+        state.players[1].copper = 0;
+        state.players[1].silk = 6;
+        state.players[1].tea = 1;
+        state.players[1].seafood = 0;
+        state.players[1].money = 3;
+        state.players[1].five_power_tokens = 0;
+        state.players[1].completed_orders = (10..16).map(OrderCardId).collect();
+        state.players[1].technologies = Vec::new();
+        state.players[1].trading_houses.built = comm_areas.to_vec();
+
+        state
+    }
+
+    /// Task 14 (T2.3), brief Step 1: `achievement_progress` must carry the
+    /// SAME arithmetic `can_claim_achievement` uses, for every achievement
+    /// type (not just the 3 physically in play this game -- the "already
+    /// claimed" gate is a no-op for a type that isn't one of the 3 cards,
+    /// so the arithmetic-equivalence property holds regardless) and every
+    /// player in the fixture.
+    #[test]
+    fn progress_matches_the_claim_gate() {
+        let state = progress_fixture_state();
+        let all_achievements = [
+            AchievementType::Copper5,
+            AchievementType::Silk6,
+            AchievementType::Tea7,
+            AchievementType::Seafood7,
+            AchievementType::Money10,
+            AchievementType::Tokens5,
+            AchievementType::Orders5,
+            AchievementType::Technologies4,
+            AchievementType::Production4,
+            AchievementType::Commercial4,
+            AchievementType::Prod3Comm2,
+            AchievementType::Prod2Comm3,
+        ];
+        for &player in &[PlayerId::new(0), PlayerId::new(1)] {
+            for &ach in &all_achievements {
+                let (cur, need) = achievement_progress(&state, player, ach);
+                assert_eq!(
+                    cur >= need,
+                    can_claim_achievement(&state, player, ach),
+                    "player {:?} achievement {:?}: cur={} need={}",
+                    player, ach, cur, need,
+                );
+            }
+        }
+    }
+
+    /// Pins the exact capped-sum encoding for the AND-shaped achievements
+    /// (doc comment on `achievement_progress`) against concrete numbers,
+    /// not just the boolean equivalence `progress_matches_the_claim_gate`
+    /// checks -- guards against a regression that keeps the boolean
+    /// equivalence by accident while silently breaking the numbers a
+    /// player actually sees in `render::achievements_view`. Deliberately
+    /// uses a RAW total (6) that exceeds `need` (5) while the achievement
+    /// still must NOT be claimable, because one leg (commercial, 1) is
+    /// individually below ITS OWN threshold (2) -- a naive uncapped
+    /// `production + commercial >= need` sum would wrongly call this
+    /// claimable.
+    #[test]
+    fn achievement_progress_and_shaped_achievement_caps_each_leg_at_its_own_threshold() {
+        let mut state = create_test_state();
+        let prod_areas: Vec<AreaId> = (0..5).map(AreaId::new).collect();
+        let comm_area = AreaId::new(5);
+        for (i, &a) in prod_areas.iter().enumerate() {
+            state.board_layout.areas.insert(a, AreaConfig {
+                area_type: AreaType::CopperMine,
+                grid_position: (0, i as u8),
+            });
+        }
+        state.board_layout.areas.insert(comm_area, AreaConfig {
+            area_type: AreaType::Bank,
+            grid_position: (1, 0),
+        });
+        state.players[0].trading_houses.built = prod_areas.clone();
+        state.players[0].trading_houses.built.push(comm_area);
+
+        let (cur, need) = achievement_progress(&state, PlayerId::new(0), AchievementType::Prod3Comm2);
+        assert_eq!(need, 5, "need = 3 (production cap) + 2 (commercial cap)");
+        assert_eq!(cur, 4, "current = min(5,3) production + min(1,2) commercial = 3 + 1, NOT the raw 6");
+        assert!(cur < need);
+        assert!(
+            !can_claim_achievement(&state, PlayerId::new(0), AchievementType::Prod3Comm2),
+            "commercial count (1) is still below its own threshold (2), even though the RAW total (6) exceeds `need` (5)"
+        );
     }
 }

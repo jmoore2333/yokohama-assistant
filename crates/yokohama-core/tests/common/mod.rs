@@ -17,21 +17,30 @@ use rand::{Rng, SeedableRng};
 use rand_chacha::ChaCha8Rng;
 
 use yokohama_core::{
-    apply_move, check_invariants, finalize_setup, get_legal_moves, is_game_over, new_game,
+    apply_move_unchecked, check_invariants, finalize_setup, get_legal_moves, is_game_over, new_game,
     EndGameTrigger, GameConfig, GameRecord, GameState, Move, Rules, StartingOrderChoice, TurnPhase,
 };
 
 /// Turn cap: exceeding this without `is_game_over` returning true is treated
 /// as a non-termination failure rather than looping forever.
 ///
-/// 2000, not the plan's original 500 (orchestrator-adjudicated during Task
-/// 18.4): random play converges slowly - hands fill, fulfillment is rare,
-/// so deck-drain and track triggers arrive late. Observed completions once
-/// every legal==applicable and trigger bug was fixed: 2p seed 18 -> 638
-/// turns, 3p seed 9 -> 513, 4p seed 0 -> 504 (the old cap interrupted that
-/// one FOUR turns from its legitimate end, mid final-round). Real games
-/// end far sooner; this bound exists purely to catch true non-termination.
-pub const MAX_TURNS: u32 = 2000;
+/// 10000, not Task 18.4's 2000 (engine-authority Task 7 re-measurement):
+/// enumerating Option B retreat as the full per-area cartesian product (I5
+/// ruling -- any number of assistants, not all-or-nothing) makes
+/// `ReturnPresidentToHand` the single largest move family whenever a
+/// player's assistants are scattered across several board areas, which
+/// dilutes uniform-random selection AWAY from `MovePresident`/
+/// `PlacePresident`/`ExecuteAreaAction` and measurably slows convergence --
+/// not a dead end (a temporarily-raised cap confirmed every one of the
+/// fuzz gate's 1500 seeds, 500 per player count, still completes), just
+/// slower. Re-measured worst case at that same 1500-seed sample (`cargo run
+/// --release -p yokohama-core --example selfplay -- 500 <players> 0`,
+/// diagnostic max-turns instrumentation, discarded after measuring): 2p
+/// seed 191 -> 6036 turns (mean 1181.6), 3p seed 114 -> 4755 (mean 1625.2),
+/// 4p seed 194 -> 4104 (mean 2126.6). 10000 gives ~65% headroom over the
+/// observed 6036 max. Real games end far sooner; this bound exists purely
+/// to catch true non-termination.
+pub const MAX_TURNS: u32 = 10000;
 
 /// Summary statistics for one completed random self-play game.
 #[derive(Debug, Clone)]
@@ -44,6 +53,33 @@ pub struct GameStats {
     /// Per-phase (sum of branching factor, number of decisions observed),
     /// for computing a mean branching factor per `TurnPhase`.
     pub branching_by_phase: HashMap<TurnPhase, (u64, u64)>,
+}
+
+/// Build a fresh seeded game up to the post-setup state, under the same
+/// choice policy as `run_random_game`/`run_random_game_observed` (per-player
+/// `StartingOrderChoice::Keep` drawn from the seeded RNG) -- the identical
+/// `new_game` -> `finalize_setup` sequence those two (and `run_recorded_game`)
+/// each also hand-roll, so a caller that only wants the post-setup state can
+/// reuse this instead of writing a fifth near-identical copy of it in this
+/// file. Returns the RNG in
+/// its post-setup-consumption state alongside the resulting `GameState`, so
+/// a caller that wants to keep driving deterministic random play from the
+/// same seed can (mirrors `run_random_game`'s internal handoff to
+/// `run_random_game_from`). Panics on setup failure: like `run_recorded_game`,
+/// this is test-only setup infrastructure, not a driver under test.
+pub fn new_seeded_game(seed: u64, players: u8, rules: &Rules) -> (GameState, ChaCha8Rng) {
+    let mut rng = ChaCha8Rng::seed_from_u64(seed);
+
+    let config = GameConfig::for_player_count(players);
+    let pending = new_game(config, rules, seed)
+        .unwrap_or_else(|e| panic!("seed={seed} players={players}p: new_game failed: {e}"));
+
+    let choices: Vec<StartingOrderChoice> =
+        (0..players).map(|_| StartingOrderChoice::Keep(rng.gen_range(0..2u8))).collect();
+    let state = finalize_setup(pending, &choices)
+        .unwrap_or_else(|e| panic!("seed={seed} players={players}p: finalize_setup failed: {e}"));
+
+    (state, rng)
 }
 
 /// Play one random game to completion (or to a hard failure) from a seed.
@@ -59,10 +95,11 @@ pub struct GameStats {
 /// `Err(String)` -- a full dump (seed, turn, phase, move log, and the
 /// complete state as JSON) -- for any of: `new_game`/`finalize_setup`
 /// failing, `get_legal_moves` returning empty in a non-terminal state,
-/// `apply_move` erroring on a move `get_legal_moves` itself offered, a
-/// `check_invariants` violation after an apply, or exceeding `MAX_TURNS`
-/// without `is_game_over`. This function's own logic never panics --
-/// failures are always reported through the `Result`, not via panic.
+/// `apply_move_unchecked` erroring on a move `get_legal_moves` itself
+/// offered, a `check_invariants` violation after an apply, or exceeding
+/// `MAX_TURNS` without `is_game_over`. This function's own logic never
+/// panics -- failures are always reported through the `Result`, not via
+/// panic.
 pub fn run_random_game(seed: u64, players: u8, rules: &Rules) -> Result<GameStats, String> {
     let mut rng = ChaCha8Rng::seed_from_u64(seed);
 
@@ -82,7 +119,7 @@ pub fn run_random_game(seed: u64, players: u8, rules: &Rules) -> Result<GameStat
 /// contract as `run_random_game` (same failure modes, same invariant checks
 /// after every apply). Used by the seeded near-threshold trigger scenarios,
 /// which surgically construct a legal state, fire a specific trigger through
-/// `apply_move`, and then let random play finish the final round.
+/// `apply_move_unchecked`, and then let random play finish the final round.
 pub fn run_random_game_from(
     state: GameState,
     rng: &mut ChaCha8Rng,
@@ -190,7 +227,10 @@ fn run_random_game_from_observed(
 
         let choice = moves[rng.gen_range(0..moves.len())].clone();
         observe(&state, &choice);
-        match apply_move(&state, &choice, rules) {
+        // apply_move_unchecked: choice is drawn from get_legal_moves by
+        // construction, so the checked membership scan would roughly double
+        // the fuzz gate's per-move enumeration cost for no benefit here.
+        match apply_move_unchecked(&state, &choice, rules) {
             Ok(next_state) => {
                 if let Err(reason) = check_invariants(&next_state, rules) {
                     move_log.push(choice);
@@ -211,7 +251,7 @@ fn run_random_game_from_observed(
                     seed,
                     players,
                     &format!(
-                        "apply_move returned Err for a move get_legal_moves said was legal: {e}"
+                        "apply_move_unchecked returned Err for a move get_legal_moves said was legal: {e}"
                     ),
                     &state,
                     &move_log,
@@ -251,7 +291,7 @@ pub fn run_recorded_game(seed: u64, players: u8, rules: &Rules) -> (GameState, G
 
     let choices: Vec<StartingOrderChoice> =
         (0..players).map(|_| StartingOrderChoice::Keep(rng.gen_range(0..2u8))).collect();
-    let mut record = GameRecord::new(seed, record_config, choices.clone());
+    let mut record = GameRecord::new(seed, record_config, choices.clone(), rules);
 
     let mut state = match finalize_setup(pending, &choices) {
         Ok(s) => s,
@@ -270,13 +310,15 @@ pub fn run_recorded_game(seed: u64, players: u8, rules: &Rules) -> (GameState, G
             );
         }
         let mv = moves[rng.gen_range(0..moves.len())].clone();
-        match apply_move(&state, &mv, rules) {
+        // apply_move_unchecked: mv is drawn from get_legal_moves by
+        // construction (same rationale as run_random_game_from_observed).
+        match apply_move_unchecked(&state, &mv, rules) {
             Ok(next_state) => {
                 state = next_state;
                 record.push_move(mv);
             }
             Err(e) => panic!(
-                "seed={seed} players={players}p turn={}: apply_move failed for a move get_legal_moves offered: {e}",
+                "seed={seed} players={players}p turn={}: apply_move_unchecked failed for a move get_legal_moves offered: {e}",
                 state.turn_number,
             ),
         }

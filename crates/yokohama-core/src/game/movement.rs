@@ -1,9 +1,19 @@
 //! President movement and pathfinding.
 
 use std::cmp::Reverse;
-use std::collections::{BTreeMap, BinaryHeap};
+use std::collections::{BTreeMap, BTreeSet, BinaryHeap};
 use crate::types::{AreaId, GameState, Move, PlayerId, PresidentLocation, TechEffect};
 use super::cards::TechRegistry;
+
+/// Fee vector for one Movement-step path: `None` is the bank (canal tolls),
+/// `Some(owner)` is that opponent's President owner (pass-through/
+/// destination fees). Task 6 (L2 route enumeration, design 2026-07-19
+/// §4.3): the engine used to track only the path's TOTAL cost as a `u32` -
+/// this type is the single source of WHO gets paid, so
+/// `enumerate_president_routes` can tell two equal-total-cost paths apart
+/// when they pay different recipients (the owner's ruling: deliberately
+/// paying MORE to deny an opponent a fee is real, enumerable play).
+pub type RouteVector = BTreeMap<Option<PlayerId>, u32>;
 
 /// Check if an area is a valid destination (Possible Action Area).
 /// Without TechRegistry, assumes no Postal System.
@@ -106,6 +116,15 @@ pub fn find_reachable_areas(
 /// the longer vector it's a prefix of (`vec![a] < vec![a, b]`). So keys
 /// only ever increase along any walk, meaning the first successful pop for
 /// any area is already that area's global-optimum (cost, path) pair.
+///
+/// Task 6 (L2 route enumeration, design 2026-07-19 §4.3): this is a
+/// single-MINIMUM-cost view of the reachability graph. President Movement
+/// legal-move generation no longer calls this directly -- it uses
+/// `enumerate_president_routes`, which returns every distinct affordable
+/// (destination, fee vector) label, not just the cheapest path per
+/// destination. This function stays as-is for its other callers (mercenary
+/// paths, and any future consumer that genuinely only wants the cheapest
+/// route).
 pub fn find_reachable_areas_with_tech(
     state: &GameState,
     player: PlayerId,
@@ -141,7 +160,7 @@ pub fn find_reachable_areas_with_tech(
 
     for &adj in state.board_layout.adjacent_areas(from) {
         // Can only move through areas with our assistants
-        if p.assistants.in_area(adj) > 0 {
+        if can_step_onto(state, player, from, adj) {
             heap.push(Reverse((edge_cost(from, adj), vec![adj], adj)));
         }
     }
@@ -155,7 +174,7 @@ pub fn find_reachable_areas_with_tech(
         // Continue exploring if we have assistants here
         if p.assistants.in_area(area) > 0 {
             for &adj in state.board_layout.adjacent_areas(area) {
-                if adj == from || p.assistants.in_area(adj) == 0 {
+                if !can_step_onto(state, player, from, adj) {
                     continue;
                 }
                 let mut new_path = path.clone();
@@ -169,6 +188,26 @@ pub fn find_reachable_areas_with_tech(
         .filter(|&(area, _)| is_possible_action_area_with_tech(state, player, area, tech_registry))
         .map(|(area, (_, path))| (area, path))
         .collect()
+}
+
+/// Whether a president-movement step may land on `to`, given the move's
+/// start area `start`: `to` must hold >=1 of the mover's own assistants
+/// (the assistant-chain requirement) and must not be `start` itself.
+///
+/// That start-exclusion is CANONICALIZATION, not a rules claim. The
+/// 2026-07-20 effective-route ruling (guidingpath decision log) is that
+/// retracing isn't real movement: the only prohibited revisit is ENDING on
+/// the start area, and any declared route that re-enters `start` mid-move
+/// reduces to a shorter simple effective route with the same endpoint and
+/// the same fees. Excluding `start` from every hop therefore enumerates one
+/// representative per effective route rather than narrowing the legal set.
+///
+/// Shared by
+/// `find_reachable_areas_with_tech` (Dijkstra, one path per destination)
+/// and `enumerate_president_routes` (DFS, every simple affordable path) so
+/// the two searches can never diverge on what counts as a legal hop.
+fn can_step_onto(state: &GameState, player: PlayerId, start: AreaId, to: AreaId) -> bool {
+    to != start && state.player(player).assistants.in_area(to) > 0
 }
 
 /// Check if player can teleport to Station area (Station technology).
@@ -261,16 +300,35 @@ pub fn calculate_movement_cost_mercenary(
     calculate_movement_cost_full(state, player, path, None, true)
 }
 
-/// Full movement cost calculation with all options.
-/// - is_mercenary: If true, no cost for opponent presidents.
-pub fn calculate_movement_cost_full(
+/// Fee vector for moving along `path` -- the ONE place that prices a
+/// Movement-step path (Task 6, L2 route enumeration, design 2026-07-19
+/// §4.3). Ports what was previously `calculate_movement_cost_full`'s
+/// scalar-accumulation logic unchanged, just writing into a `RouteVector`
+/// instead of a running `u32`:
+/// - intermediate president pass-through fees (every area in `path` except
+///   the last, 1 Yen per opponent President owner occupying it),
+/// - the Postal System destination stop fee (the last area in `path`, same
+///   1-Yen-per-owner pricing -- vacuous without Postal System since such a
+///   destination is otherwise unreachable),
+/// - canal tolls over the FULL route, including the start -> path[0] edge
+///   (`p.president_location` prepended, since a toll applies to every
+///   crossing in the move, not just crossings strictly within `path`),
+/// - Stagecoach waives president fees entirely (both bullets above) but
+///   never tolls; `is_mercenary` also waives president fees (mercenaries
+///   bypass blocking and fees) but likewise never tolls.
+///
+/// `calculate_movement_cost_full` is now just this vector's sum, and
+/// `credit_movement_president_fees` (apply_move.rs) consumes it directly
+/// instead of re-deriving who's owed what -- one pricing source end to
+/// end, so pricing and crediting can never drift apart.
+pub fn route_fee_vector(
     state: &GameState,
     player: PlayerId,
     path: &[AreaId],
     tech_registry: Option<&TechRegistry>,
     is_mercenary: bool,
-) -> u32 {
-    let mut cost: u32 = 0;
+) -> RouteVector {
+    let mut route: RouteVector = BTreeMap::new();
     let p = state.player(player);
 
     // Mercenaries don't pay for opponent presidents
@@ -293,7 +351,7 @@ pub fn calculate_movement_cost_full(
                 if other_player.id != player
                     && other_player.president_location == PresidentLocation::OnBoard(area)
                 {
-                    cost += 1;
+                    *route.entry(Some(other_player.id)).or_insert(0) += 1;
                 }
             }
         }
@@ -314,7 +372,7 @@ pub fn calculate_movement_cost_full(
                 if other_player.id != player
                     && other_player.president_location == PresidentLocation::OnBoard(destination)
                 {
-                    cost += 1;
+                    *route.entry(Some(other_player.id)).or_insert(0) += 1;
                 }
             }
         }
@@ -333,11 +391,126 @@ pub fn calculate_movement_cost_full(
     };
     for window in full_route.windows(2) {
         if state.board_layout.is_canal_crossing(window[0], window[1]) {
-            cost += 1;
+            *route.entry(None).or_insert(0) += 1;
         }
     }
 
-    cost
+    route
+}
+
+/// Full movement cost calculation with all options.
+/// - is_mercenary: If true, no cost for opponent presidents.
+pub fn calculate_movement_cost_full(
+    state: &GameState,
+    player: PlayerId,
+    path: &[AreaId],
+    tech_registry: Option<&TechRegistry>,
+    is_mercenary: bool,
+) -> u32 {
+    route_fee_vector(state, player, path, tech_registry, is_mercenary).values().sum()
+}
+
+/// Key for `enumerate_president_routes`'s dedup map: destination area + fee
+/// vector for the path that reaches it. Deduping and sorting on this exact
+/// pair is what turns "one path per destination" into "one path per
+/// (destination, who's paid what)".
+type RouteLabel = (AreaId, RouteVector);
+
+/// Enumerate every DISTINCT (destination, fee vector) reachable from `from`
+/// over SIMPLE paths through the mover's own assistants, affordability-
+/// pruned against `state.player(player).money`. Owner's L2 ruling (design
+/// 2026-07-19 §4.3): unlike `find_reachable_areas_with_tech`'s single
+/// minimum-cost path per destination, a deliberately pricier route that
+/// pays a DIFFERENT fee recipient -- or simply pays more -- is real,
+/// enumerable play (income-denial routing), so every affordable label must
+/// survive, not just the cheapest.
+///
+/// One entry per distinct (destination, `RouteVector`) pair: when several
+/// simple paths tie on the SAME pair, the lexicographically-least path
+/// (`Vec<AreaId>`'s derived `Ord`) is kept. The whole result is emitted
+/// sorted by (destination, vector) -- both guaranteed by collecting into a
+/// single `BTreeMap<RouteLabel, Vec<AreaId>>` keyed exactly that way (a
+/// later insert only replaces the stored path when the new one sorts
+/// smaller), whose in-order iteration IS that sort order.
+///
+/// DFS, not Dijkstra: `find_reachable_areas_with_tech` only ever needs the
+/// cheapest path per destination, so lazy-deletion Dijkstra suffices --
+/// here every affordable label must survive, so the search must actually
+/// visit every simple path. Bounded in practice: paths only traverse the
+/// mover's own-assistant areas (a small subgraph -- the whole board is at
+/// most 18 areas, and any one player's own on-board assistants are a
+/// fraction of that) and monotonic-cost pruning (no edge ever has
+/// negative weight, so once a prefix is unaffordable every extension of it
+/// is too) stops exploration the moment a prefix exceeds the player's
+/// money; the release fuzz gate measures the real wall-time impact (this
+/// task's report has the before/after).
+pub fn enumerate_president_routes(
+    state: &GameState,
+    player: PlayerId,
+    from: AreaId,
+    tech_registry: Option<&TechRegistry>,
+) -> Vec<(AreaId, Vec<AreaId>)> {
+    let dfs = RouteDfs { state, player, from, tech_registry, money: state.player(player).money };
+
+    let mut best: BTreeMap<RouteLabel, Vec<AreaId>> = BTreeMap::new();
+    let mut path: Vec<AreaId> = Vec::new();
+    let mut visited: BTreeSet<AreaId> = BTreeSet::new();
+
+    dfs.step(from, &mut path, &mut visited, &mut best);
+
+    best.into_iter().map(|((dest, _vector), path)| (dest, path)).collect()
+}
+
+/// DFS context for `enumerate_president_routes`, bundled into a struct so
+/// the recursive walk below doesn't thread half a dozen loose parameters
+/// through every call.
+struct RouteDfs<'a> {
+    state: &'a GameState,
+    player: PlayerId,
+    from: AreaId,
+    tech_registry: Option<&'a TechRegistry>,
+    money: u32,
+}
+
+impl RouteDfs<'_> {
+    /// Extend `path` by one legal hop from `at` in every possible way,
+    /// recording each newly-reached area as a destination (when it's a
+    /// legal Possible Action Area) and recursing -- backtracking
+    /// `path`/`visited` before trying the next hop, so every SIMPLE path
+    /// through the graph gets its own turn. Continues exploring PAST an
+    /// area even when that area isn't itself a legal destination (an
+    /// opponent-blocked area can still be passed through, same as
+    /// ordinary movement) as long as the path remains affordable.
+    fn step(
+        &self,
+        at: AreaId,
+        path: &mut Vec<AreaId>,
+        visited: &mut BTreeSet<AreaId>,
+        best: &mut BTreeMap<RouteLabel, Vec<AreaId>>,
+    ) {
+        for &adj in self.state.board_layout.adjacent_areas(at) {
+            if visited.contains(&adj) || !can_step_onto(self.state, self.player, self.from, adj) {
+                continue;
+            }
+            path.push(adj);
+            let vector = route_fee_vector(self.state, self.player, path, self.tech_registry, false);
+            let sum: u32 = vector.values().sum();
+            if sum <= self.money {
+                if is_possible_action_area_with_tech(self.state, self.player, adj, self.tech_registry) {
+                    let key = (adj, vector);
+                    let keep_new =
+                        best.get(&key).map(|existing| path.as_slice() < existing.as_slice()).unwrap_or(true);
+                    if keep_new {
+                        best.insert(key, path.clone());
+                    }
+                }
+                visited.insert(adj);
+                self.step(adj, path, visited, best);
+                visited.remove(&adj);
+            }
+            path.pop();
+        }
+    }
 }
 
 /// Fee for placing the President from hand directly into `destination`
@@ -698,6 +871,10 @@ mod tests {
     }
 
     // --- I3 final-review fix: minimum-TOTAL-cost path per destination ----
+    // (pricing fix retained; the two tests below were rewritten for Task 6
+    // -- L2 route enumeration now offers EVERY affordable label per
+    // destination, not just the cheapest, so their old "exactly one path"
+    // assertions no longer hold. See the updated tests past the fixtures.)
 
     /// `start`(0) --canal--> `direct_dest`(1), PLUS a longer, toll-free
     /// around-route 0-2-3-1 (ordinary adjacency, no canal on 0-2 or 2-3)
@@ -777,26 +954,37 @@ mod tests {
         (state, Rules::empty_for_tests())
     }
 
-    fn only_move_to(legal: &[Move], destination: AreaId) -> Move {
-        let matches_dest: Vec<&Move> = legal.iter()
-            .filter(|m| matches!(m, Move::MovePresident { destination: d, .. } if *d == destination))
-            .collect();
-        assert_eq!(matches_dest.len(), 1, "exactly one path must be offered per destination: {matches_dest:?}");
-        matches_dest[0].clone()
-    }
-
     #[test]
-    fn movement_prefers_a_free_around_path_over_a_tolled_canal_shortcut() {
+    fn movement_offers_both_the_free_around_path_and_the_tolled_canal_shortcut() {
+        // Was `movement_prefers_a_free_around_path_over_a_tolled_canal_shortcut`
+        // (I3 final-review, pre-L2): back when only the cheapest path per
+        // destination survived, this pinned "prefer the free around-route
+        // over the tolled shortcut". Task 6 (L2 route enumeration)
+        // supersedes the exclusivity claim: the free around-path
+        // (vector {}) and the tolled direct shortcut (vector {None: 1})
+        // are DIFFERENT labels to the SAME destination, both affordable
+        // (money 5), so post-L2 BOTH must be offered -- the player
+        // chooses, the enumerator doesn't pick a favorite. The underlying
+        // I3 pricing fix (a canal crossing is always hop-count-shortest,
+        // so naive BFS would toll a destination even when a longer,
+        // toll-free route also reaches it) is still exactly what's pinned
+        // here: both routes' costs must be computed correctly.
         let (state, rules) = canal_vs_around_fixture();
         let legal = get_legal_moves(&state, &rules);
-        let mv = only_move_to(&legal, AreaId::new(1));
-        assert_eq!(
-            mv,
-            Move::MovePresident { path: vec![AreaId::new(2), AreaId::new(3), AreaId::new(1)], destination: AreaId::new(1) },
-            "must route around the canal for free instead of the tolled 1-hop shortcut"
-        );
-        let s = apply_move(&state, &mv, &rules).unwrap();
-        assert_eq!(s.player(mover()).money, state.player(mover()).money, "no toll paid via the around-path");
+        let dest = AreaId::new(1);
+        let free_path = Move::MovePresident {
+            path: vec![AreaId::new(2), AreaId::new(3), AreaId::new(1)],
+            destination: dest,
+        };
+        let tolled_path = Move::MovePresident { path: vec![AreaId::new(1)], destination: dest };
+        assert!(legal.contains(&free_path), "free around-path must still be offered: {legal:?}");
+        assert!(legal.contains(&tolled_path), "tolled direct shortcut must ALSO be offered (L2): {legal:?}");
+
+        let s_free = apply_move(&state, &free_path, &rules).unwrap();
+        assert_eq!(s_free.player(mover()).money, state.player(mover()).money, "no toll paid via the around-path");
+
+        let s_tolled = apply_move(&state, &tolled_path, &rules).unwrap();
+        assert_eq!(s_tolled.player(mover()).money, state.player(mover()).money - 1, "toll paid via the direct shortcut");
     }
 
     /// Reverse pin: same direct-vs-around topology as `canal_vs_around_fixture`,
@@ -814,16 +1002,350 @@ mod tests {
     }
 
     #[test]
-    fn movement_still_tolls_the_canal_when_it_is_genuinely_cheapest() {
+    fn movement_offers_both_routes_even_when_the_around_path_is_pricier() {
+        // Was `movement_still_tolls_the_canal_when_it_is_genuinely_cheapest`
+        // (I3 final-review reverse pin, pre-L2): `canal_still_cheapest_fixture`
+        // makes the around-route STRICTLY pricier (2 Yen: a Blue pass-through
+        // fee plus a second canal toll) than the direct 1-Yen crossing, to
+        // prove the old fix genuinely COMPARED total cost rather than
+        // unconditionally preferring the longer/non-canal route. Under L2
+        // both routes are still independently affordable (money 5) and
+        // both are now offered -- proving the enumerator isn't "always
+        // prefer non-canal" OR "always cheapest", it's "offer every
+        // affordable label" (income-denial routing doesn't require the
+        // pricier route to be a GOOD idea, only that it's legal and
+        // affordable).
         let (state, rules) = canal_still_cheapest_fixture();
         let legal = get_legal_moves(&state, &rules);
-        let mv = only_move_to(&legal, AreaId::new(1));
+        let dest = AreaId::new(1);
+        let direct = Move::MovePresident { path: vec![AreaId::new(1)], destination: dest };
+        let around = Move::MovePresident {
+            path: vec![AreaId::new(2), AreaId::new(3), AreaId::new(1)],
+            destination: dest,
+        };
+        assert!(legal.contains(&direct), "direct canal crossing must be offered: {legal:?}");
+        assert!(legal.contains(&around), "pricier around-route must ALSO be offered (L2): {legal:?}");
+
+        let s_direct = apply_move(&state, &direct, &rules).unwrap();
+        assert_eq!(s_direct.player(mover()).money, state.player(mover()).money - 1, "canal toll charged on the direct route");
+
+        let blue = PlayerId::new(1);
+        let s_around = apply_move(&state, &around, &rules).unwrap();
         assert_eq!(
-            mv,
-            Move::MovePresident { path: vec![AreaId::new(1)], destination: AreaId::new(1) },
-            "the direct canal crossing is still strictly cheaper than the now-pricier around-route"
+            s_around.player(mover()).money,
+            state.player(mover()).money - 2,
+            "fee + toll charged on the pricier around-route"
         );
-        let s = apply_move(&state, &mv, &rules).unwrap();
-        assert_eq!(s.player(mover()).money, state.player(mover()).money - 1, "canal toll still charged");
+        assert_eq!(
+            s_around.player(blue).money,
+            state.player(blue).money + 1,
+            "Blue collects the pass-through fee"
+        );
+    }
+
+    // === Task 6: L2 route enumeration =====================================
+    //
+    // Owner's L2 ruling (design 2026-07-19 §4.3): every distinct
+    // (destination, RouteVector) over simple affordable paths is its own
+    // legal move -- deliberately paying MORE to deny an opponent a fee (or
+    // simply to pay the bank instead of an opponent) is real, enumerable
+    // play. These fixtures are small diamond graphs -- `s`(0) branches into
+    // two arms that rejoin at `dest`(3) -- built with this module's usual
+    // by-hand `GameState` construction (via the shared `l2_base_state`
+    // skeleton below, which only factors out the boilerplate field list
+    // common to ALL of them; each fixture still owns its own board/
+    // assistant/president layout so a reviewer can check the fee/toll
+    // arithmetic directly against the fixture that produced it).
+
+    /// Shared `GameState` skeleton for the L2 fixtures below: 2 players,
+    /// Movement phase, empty tracks/decks/hands -- mirrors
+    /// `canal_crossing_fixture`'s field list exactly (this file's
+    /// established construction pattern), factored out only because THIS
+    /// task adds several more small board fixtures than any single prior
+    /// task did. Callers set `board_layout`, president locations,
+    /// assistants, and money.
+    fn l2_base_state(board_layout: BoardLayout) -> GameState {
+        let config = GameConfig::new(2, vec![PlayerColor::Red, PlayerColor::Blue], PlayerId::new(0));
+        let mut players = vec![
+            PlayerState::new(PlayerId::new(0), PlayerColor::Red, true),
+            PlayerState::new(PlayerId::new(1), PlayerColor::Blue, false),
+        ];
+        players[0].money = 5;
+        players[1].money = 5;
+
+        GameState {
+            config,
+            board_layout,
+            players,
+            current_player: PlayerId::new(0),
+            turn_phase: TurnPhase::Movement,
+            turn_number: 1,
+            additional_action_state: AdditionalActionState::new(),
+            current_action_power: None,
+            is_mercenary_action: false,
+            mercenary_target_area: None,
+            mercenary_return_phase: None,
+            president_start_area: None,
+            port_state: PortState::new(false),
+            lab_state: LabState::new(false),
+            order_deck: vec![],
+            tech_deck: vec![],
+            orders_removed: vec![],
+            church_track: ChurchTrack::new(),
+            customs_track: CustomsTrack::new(),
+            achievements: [
+                AchievementCard::new(AchievementType::Copper5),
+                AchievementCard::new(AchievementType::Money10),
+                AchievementCard::new(AchievementType::Production4),
+            ],
+            mercenary_supply: MercenarySupply::new(),
+            station_location: None,
+            end_game_triggered: false,
+            trigger_reason: None,
+            final_round: false,
+            trigger_player: None,
+            pending_choices: Vec::new(),
+        }
+    }
+
+    /// Diamond: `s`(0) branches to `x`(1) and `y`(2), both adjacent to
+    /// `dest`(3). Own assistants sit on x, y, AND dest (a path must hold
+    /// the mover's assistant at every hop). Route via x: Blue's President
+    /// occupies x (no Postal System, so x itself is never a legal stop, but
+    /// PASSING THROUGH it still costs 1 Yen to Blue; no canal on s-x or
+    /// x-dest). Route via y: canal toll on s-y (1 Yen to the bank; no
+    /// opponent at y, no canal on y-dest). Both routes total 1 Yen but pay
+    /// a DIFFERENT recipient.
+    fn l2_diamond_fixture() -> (GameState, Rules) {
+        let s = AreaId::new(0);
+        let x = AreaId::new(1);
+        let y = AreaId::new(2);
+        let dest = AreaId::new(3);
+
+        let mut areas = BTreeMap::new();
+        areas.insert(s, AreaConfig { area_type: AreaType::Bank, grid_position: (0, 0) });
+        areas.insert(x, AreaConfig { area_type: AreaType::CopperMine, grid_position: (0, 1) });
+        areas.insert(y, AreaConfig { area_type: AreaType::SilkMill, grid_position: (1, 0) });
+        areas.insert(dest, AreaConfig { area_type: AreaType::TeaPlantation, grid_position: (1, 1) });
+
+        let mut adjacency = BTreeMap::new();
+        adjacency.insert(s, vec![x, y]);
+        adjacency.insert(x, vec![s, dest]);
+        adjacency.insert(y, vec![s, dest]);
+        adjacency.insert(dest, vec![x, y]);
+
+        let board_layout = BoardLayout {
+            areas,
+            adjacency,
+            canal_crossings: vec![(s, y)],
+            building_sites: BTreeMap::new(),
+            five_power_tokens: BTreeMap::new(),
+        };
+
+        let mut state = l2_base_state(board_layout);
+        state.players[0].president_location = PresidentLocation::OnBoard(s);
+        state.players[0].assistants.on_board.insert(x, 1);
+        state.players[0].assistants.on_board.insert(y, 1);
+        state.players[0].assistants.on_board.insert(dest, 1);
+        state.players[1].president_location = PresidentLocation::OnBoard(x); // Blue blocks x
+
+        (state, Rules::empty_for_tests())
+    }
+
+    #[test]
+    fn equal_cost_routes_with_different_fee_recipients_are_both_enumerated() {
+        let (state, rules) = l2_diamond_fixture();
+        let p0 = PlayerId::new(0);
+        let blue = PlayerId::new(1);
+        let s = AreaId::new(0);
+        let dest = AreaId::new(3);
+
+        let routes = enumerate_president_routes(&state, p0, s, Some(&rules.techs));
+        let to_d: Vec<_> = routes.iter().filter(|(d, _)| *d == dest).collect();
+        assert_eq!(to_d.len(), 2, "two distinct fee vectors must both be offered: {to_d:?}");
+        let vectors: Vec<RouteVector> = to_d
+            .iter()
+            .map(|(_, path)| route_fee_vector(&state, p0, path, Some(&rules.techs), false))
+            .collect();
+        assert!(vectors.contains(&BTreeMap::from([(None, 1)])), "bank-toll route offered: {vectors:?}");
+        assert!(vectors.contains(&BTreeMap::from([(Some(blue), 1)])), "fee-to-Blue route offered: {vectors:?}");
+    }
+
+    /// Second diamond: `s`(0) branches to `z`(1) [free: no canal, no
+    /// opponent] and `w`(2) [BOTH edges into and out of w cross the canal:
+    /// 2 Yen to the bank], rejoining at `dest`(3). No opponent Presidents
+    /// anywhere -- the only cost differential is the canal.
+    fn l2_free_vs_detour_fixture() -> (GameState, Rules) {
+        let s = AreaId::new(0);
+        let z = AreaId::new(1);
+        let w = AreaId::new(2);
+        let dest = AreaId::new(3);
+
+        let mut areas = BTreeMap::new();
+        areas.insert(s, AreaConfig { area_type: AreaType::Bank, grid_position: (0, 0) });
+        areas.insert(z, AreaConfig { area_type: AreaType::CopperMine, grid_position: (0, 1) });
+        areas.insert(w, AreaConfig { area_type: AreaType::SilkMill, grid_position: (1, 0) });
+        areas.insert(dest, AreaConfig { area_type: AreaType::TeaPlantation, grid_position: (1, 1) });
+
+        let mut adjacency = BTreeMap::new();
+        adjacency.insert(s, vec![z, w]);
+        adjacency.insert(z, vec![s, dest]);
+        adjacency.insert(w, vec![s, dest]);
+        adjacency.insert(dest, vec![z, w]);
+
+        let board_layout = BoardLayout {
+            areas,
+            adjacency,
+            canal_crossings: vec![(s, w), (w, dest)],
+            building_sites: BTreeMap::new(),
+            five_power_tokens: BTreeMap::new(),
+        };
+
+        let mut state = l2_base_state(board_layout);
+        state.players[0].president_location = PresidentLocation::OnBoard(s);
+        state.players[0].assistants.on_board.insert(z, 1);
+        state.players[0].assistants.on_board.insert(w, 1);
+        state.players[0].assistants.on_board.insert(dest, 1);
+
+        (state, Rules::empty_for_tests())
+    }
+
+    #[test]
+    fn deliberately_pricier_routes_are_enumerated_when_affordable_and_pruned_when_not() {
+        let (mut state, rules) = l2_free_vs_detour_fixture();
+        let p0 = PlayerId::new(0);
+        let s = AreaId::new(0);
+        let dest = AreaId::new(3);
+
+        state.players[0].money = 2;
+        let routes = enumerate_president_routes(&state, p0, s, Some(&rules.techs));
+        let sums: Vec<u32> = routes
+            .iter()
+            .filter(|(d, _)| *d == dest)
+            .map(|(_, path)| route_fee_vector(&state, p0, path, Some(&rules.techs), false).values().sum())
+            .collect();
+        assert!(sums.contains(&0) && sums.contains(&2), "free AND pricier labels offered: {sums:?}");
+
+        state.players[0].money = 0;
+        let routes = enumerate_president_routes(&state, p0, s, Some(&rules.techs));
+        let sums: Vec<u32> = routes
+            .iter()
+            .filter(|(d, _)| *d == dest)
+            .map(|(_, path)| route_fee_vector(&state, p0, path, Some(&rules.techs), false).values().sum())
+            .collect();
+        assert_eq!(sums, vec![0], "unaffordable labels pruned: {sums:?}");
+    }
+
+    /// Diamond with BOTH branches entirely free (no canal, no opponent
+    /// President anywhere): `s`(0) -> `a`(1) -> `dest`(3) and `s`(0) ->
+    /// `b`(2) -> `dest`(3) are both 0-cost, so they collide on the SAME
+    /// (destination, RouteVector) key ({}) -- the tie-break must keep the
+    /// lexicographically-least path, i.e. through `a` (AreaId(1) <
+    /// AreaId(2)).
+    fn l2_tied_free_routes_fixture() -> (GameState, Rules) {
+        let s = AreaId::new(0);
+        let a = AreaId::new(1);
+        let b = AreaId::new(2);
+        let dest = AreaId::new(3);
+
+        let mut areas = BTreeMap::new();
+        areas.insert(s, AreaConfig { area_type: AreaType::Bank, grid_position: (0, 0) });
+        areas.insert(a, AreaConfig { area_type: AreaType::CopperMine, grid_position: (0, 1) });
+        areas.insert(b, AreaConfig { area_type: AreaType::SilkMill, grid_position: (1, 0) });
+        areas.insert(dest, AreaConfig { area_type: AreaType::TeaPlantation, grid_position: (1, 1) });
+
+        let mut adjacency = BTreeMap::new();
+        adjacency.insert(s, vec![a, b]);
+        adjacency.insert(a, vec![s, dest]);
+        adjacency.insert(b, vec![s, dest]);
+        adjacency.insert(dest, vec![a, b]);
+
+        let board_layout = BoardLayout {
+            areas,
+            adjacency,
+            canal_crossings: vec![],
+            building_sites: BTreeMap::new(),
+            five_power_tokens: BTreeMap::new(),
+        };
+
+        let mut state = l2_base_state(board_layout);
+        state.players[0].president_location = PresidentLocation::OnBoard(s);
+        state.players[0].assistants.on_board.insert(a, 1);
+        state.players[0].assistants.on_board.insert(b, 1);
+        state.players[0].assistants.on_board.insert(dest, 1);
+
+        (state, Rules::empty_for_tests())
+    }
+
+    #[test]
+    fn route_enumeration_is_deterministic_and_canonical() {
+        let (state, rules) = l2_tied_free_routes_fixture();
+        let p0 = PlayerId::new(0);
+        let s = AreaId::new(0);
+        let a = AreaId::new(1);
+        let b = AreaId::new(2);
+        let dest = AreaId::new(3);
+
+        let routes_a = enumerate_president_routes(&state, p0, s, Some(&rules.techs));
+        let routes_b = enumerate_president_routes(&state, p0, s, Some(&rules.techs));
+        assert_eq!(routes_a, routes_b, "enumeration must be deterministic across calls");
+
+        // Canonical representative: s->a->dest and s->b->dest tie on the
+        // empty RouteVector, so the lexicographically-least path (through
+        // a, AreaId(1) < AreaId(2)) must be the one kept.
+        assert!(
+            routes_a.contains(&(dest, vec![a, dest])),
+            "lexicographically-least tied path must be kept: {routes_a:?}"
+        );
+        assert!(
+            !routes_a.iter().any(|(d, path)| *d == dest && path == &vec![b, dest]),
+            "the lexicographically-greater tied path must be dropped: {routes_a:?}"
+        );
+    }
+
+    #[test]
+    fn cost_full_equals_vector_sum_on_random_walks() {
+        // Definitional identity, not an independent safety net:
+        // calculate_movement_cost_full IS
+        // route_fee_vector(...).values().sum() by construction (see its
+        // definition above), so the two sides here can never disagree --
+        // this cannot catch a pricing regression. What it actually pins is
+        // that both functions run to completion without panicking across a
+        // real range of paths: (a) the full enumerated set from two
+        // fixtures that between them exercise canal tolls, president
+        // pass-through fees, AND destination fees; (b) a few seeded random
+        // walks over a third fixture's graph, NOT restricted to simple
+        // paths or to enumerate_president_routes's affordability pruning --
+        // just "any sequence a naive path-builder might produce", including
+        // paths that revisit an area.
+        let p0 = PlayerId::new(0);
+
+        let (state1, rules1) = canal_vs_around_fixture();
+        for (_, path) in enumerate_president_routes(&state1, p0, AreaId::new(0), Some(&rules1.techs)) {
+            let full = calculate_movement_cost_full(&state1, p0, &path, Some(&rules1.techs), false);
+            let vector_sum: u32 =
+                route_fee_vector(&state1, p0, &path, Some(&rules1.techs), false).values().sum();
+            assert_eq!(full, vector_sum, "path {path:?} on canal_vs_around_fixture");
+        }
+
+        let (state2, rules2) = l2_diamond_fixture();
+        for (_, path) in enumerate_president_routes(&state2, p0, AreaId::new(0), Some(&rules2.techs)) {
+            let full = calculate_movement_cost_full(&state2, p0, &path, Some(&rules2.techs), false);
+            let vector_sum: u32 =
+                route_fee_vector(&state2, p0, &path, Some(&rules2.techs), false).values().sum();
+            assert_eq!(full, vector_sum, "path {path:?} on l2_diamond_fixture");
+        }
+
+        use rand::{Rng, SeedableRng};
+        let candidates = [AreaId::new(1), AreaId::new(2), AreaId::new(3)];
+        for seed in 0u64..5 {
+            let mut rng = rand_chacha::ChaCha8Rng::seed_from_u64(seed);
+            let len = 1 + rng.gen_range(0..3);
+            let path: Vec<AreaId> = (0..len).map(|_| candidates[rng.gen_range(0..candidates.len())]).collect();
+            let full = calculate_movement_cost_full(&state1, p0, &path, Some(&rules1.techs), false);
+            let vector_sum: u32 =
+                route_fee_vector(&state1, p0, &path, Some(&rules1.techs), false).values().sum();
+            assert_eq!(full, vector_sum, "seed {seed}: random walk path {path:?}");
+        }
     }
 }

@@ -4,17 +4,23 @@ use crate::types::*;
 use crate::game::*;
 use crate::game::actions::*;
 
-/// Apply a move to the game state, returning the new state.
-pub fn apply_move(state: &GameState, mv: &Move, rules: &Rules) -> Result<GameState, MoveError> {
+/// Apply a move to the game state, returning the new state. Raw per-arm
+/// validation only -- no membership check against `get_legal_moves`. Called
+/// deliberately by prechecked hot paths (Session's gate, the fuzz drivers,
+/// future search inner loops) AFTER choosing from an enumerated legal list;
+/// everything else should go through the checked `apply_move` below.
+pub fn apply_move_unchecked(state: &GameState, mv: &Move, rules: &Rules) -> Result<GameState, MoveError> {
     let mut new_state = state.clone();
 
     match mv {
         Move::EndAdditionalPhase => {
-            // apply_move is the pure authoritative API (a Phase-3 bot, or a
-            // tampered record, may call it directly, not just via
-            // legal-move pre-filtering) -- self-defended here the same way
-            // UseUniversity/UseSpinningMill defend their once-per-turn flag
-            // and apply_mercenary defends mercenary_used (T7 precedent):
+            // apply_move_unchecked is the raw arm, with no legal-list gate
+            // of its own -- a Phase-3 bot's search inner loop may call it
+            // directly after choosing from its own enumerated list, not
+            // necessarily through checked apply_move's pre-filtering -- so
+            // it self-defends here the same way UseUniversity/UseSpinningMill
+            // defend their once-per-turn flag and apply_mercenary defends
+            // mercenary_used (T7 precedent):
             // ending the phase with a choice still queued would advance
             // the turn (handing off to the next player, in the
             // AdditionalActionSecond case) while a reward from THIS turn
@@ -67,8 +73,8 @@ pub fn apply_move(state: &GameState, mv: &Move, rules: &Rules) -> Result<GameSta
             new_state.turn_phase = TurnPhase::AreaAction;
         }
 
-        Move::ReturnPresidentToHand { recover_assistants_from } => {
-            apply_return_to_hand(&mut new_state, recover_assistants_from)?;
+        Move::ReturnPresidentToHand { recover } => {
+            apply_return_to_hand(&mut new_state, recover)?;
             new_state.president_start_area = None; // Clear after return
             // Skip to Additional Action Second
             new_state.turn_phase = TurnPhase::AdditionalActionSecond;
@@ -117,10 +123,11 @@ pub fn apply_move(state: &GameState, mv: &Move, rules: &Rules) -> Result<GameSta
         Move::UseUniversity => {
             let player = new_state.current_player;
             // apply_university checks only resource preconditions, not the
-            // once-per-turn flag -- apply_move is the pure authoritative API
-            // (a Phase-3 bot will call it directly, not just via legal-move
-            // pre-filtering), so it must defend the flag itself, mirroring
-            // apply_mercenary's self-defended mercenary_used gate.
+            // once-per-turn flag -- apply_move_unchecked is the raw arm with
+            // no legal-list gate of its own (a Phase-3 bot's search inner
+            // loop may call it directly, not just via checked apply_move's
+            // legal-move pre-filtering), so it must defend the flag itself,
+            // mirroring apply_mercenary's self-defended mercenary_used gate.
             if !can_use_university(&new_state, player, &rules.techs) {
                 return Err(MoveError::RuleViolation("University not usable this turn"));
             }
@@ -142,10 +149,19 @@ pub fn apply_move(state: &GameState, mv: &Move, rules: &Rules) -> Result<GameSta
         | Move::DeclineAssistantMove
         | Move::ChooseChurchSpace { .. }
         | Move::ChooseCustomsSpace { .. }
-        | Move::ChooseRecoveryLeave { .. } => {
+        | Move::ChooseRecoveryLeave { .. }
+        | Move::ChooseStationPlace { .. } => {
             crate::game::choices::resolve_choice_move(&mut new_state, mv, rules)?;
         }
     }
+
+    // Task 9 (design §4.4): the resolution just above may have left another,
+    // still-queued choice further back in the queue degraded to Decline-only
+    // (e.g. two queued WarehouseTakes sharing one warehouse item -- the
+    // first resolution can empty it out from under the second). Normalize
+    // BEFORE the Recovery gate below, so a queue emptied entirely by
+    // normalization still triggers Recovery in this same apply.
+    crate::game::choices::normalize_queue_head(&mut new_state, rules);
 
     // Handle Recovery phase automatically -- deferred while a choice from
     // this turn's reward is still unresolved (design 2026-07-18 §5.1-5.2):
@@ -163,6 +179,18 @@ pub fn apply_move(state: &GameState, mv: &Move, rules: &Rules) -> Result<GameSta
     check_end_game_triggers(&mut new_state);
 
     Ok(new_state)
+}
+
+/// The ONE checked public transition (design §4.1): membership in
+/// `get_legal_moves` is the legality contract; per-arm validation then runs
+/// in the raw transition. Prechecked hot paths (Session's gate, the fuzz
+/// drivers, future search inner loops) call `apply_move_unchecked`
+/// deliberately, AFTER choosing from an enumerated legal list.
+pub fn apply_move(state: &GameState, mv: &Move, rules: &Rules) -> Result<GameState, MoveError> {
+    if !crate::game::legal_moves::get_legal_moves(state, rules).contains(mv) {
+        return Err(MoveError::NotLegal);
+    }
+    apply_move_unchecked(state, mv, rules)
 }
 
 /// Set president's starting area for movement restriction.
@@ -329,49 +357,26 @@ fn apply_movement(
     Ok(())
 }
 
-/// Credit 1 Yen to each opponent President's owner passed through on the
-/// path, AND (Postal System, I2 final-review fix) to each opponent
-/// President's owner occupying the destination itself - a non-empty path's
-/// last area, since an empty path is a free teleport (Station/Tram) exempt
-/// from this fee (see calculate_movement_cost_full's matching comment).
-/// Mirrors calculate_movement_cost_full's president component exactly:
-/// Stagecoach waives the fee entirely (nothing charged, nothing credited)
-/// and canal tolls are NOT credited (they go to the bank), so the payer's
-/// deduction and the sum of owner credits always match.
+/// Credit each fee recipient in `route_fee_vector`'s breakdown for `path`:
+/// `Some(owner)` entries (intermediate pass-through AND, Postal System, the
+/// destination stop -- I2 final-review fix) go to that opponent's
+/// President owner; `None` entries are canal tolls and are NOT credited to
+/// anyone (they go to the bank). Task 6 (L2 route enumeration, design
+/// 2026-07-19 §4.3): this function no longer re-derives who's owed what --
+/// it just pays out exactly what `route_fee_vector` priced (which already
+/// handles Stagecoach waiving president fees, never tolls), so
+/// `apply_movement`'s deduction and the sum of credits here can never
+/// drift apart -- single pricing source, end to end.
 fn credit_movement_president_fees(
     state: &mut GameState,
     payer: PlayerId,
     path: &[AreaId],
     tech_registry: Option<&TechRegistry>,
 ) {
-    let p = state.player(payer);
-    let has_stagecoach = tech_registry.is_some_and(|registry| {
-        p.technologies.iter().any(|&tech_id| {
-            registry.get(tech_id).map(|t| t.effect == TechEffect::Stagecoach).unwrap_or(false)
-        })
-    });
-    if has_stagecoach {
-        return;
-    }
-
-    let intermediate: &[AreaId] = if path.len() > 1 { &path[..path.len() - 1] } else { &[] };
-    for &area in intermediate {
-        let owners: Vec<PlayerId> = state.players.iter()
-            .filter(|o| o.id != payer && o.president_location == PresidentLocation::OnBoard(area))
-            .map(|o| o.id)
-            .collect();
-        for owner in owners {
-            state.player_mut(owner).money += 1;
-        }
-    }
-
-    if let Some(&destination) = path.last() {
-        let owners: Vec<PlayerId> = state.players.iter()
-            .filter(|o| o.id != payer && o.president_location == PresidentLocation::OnBoard(destination))
-            .map(|o| o.id)
-            .collect();
-        for owner in owners {
-            state.player_mut(owner).money += 1;
+    let vector = route_fee_vector(state, payer, path, tech_registry, false);
+    for (recipient, amount) in vector {
+        if let Some(owner) = recipient {
+            state.player_mut(owner).money += amount;
         }
     }
 }
@@ -430,21 +435,34 @@ fn credit_place_president_fee(
     }
 }
 
+/// Recover `recover[area]` assistants from each listed area back to hand
+/// and return the President to hand (I5 ruling: any number, not just
+/// all-or-nothing per area). Validate-all-then-mutate: every count is
+/// checked against the current on-board count before any mutation runs, so
+/// a rejected move leaves `state` untouched (matches this file's house
+/// pattern, e.g. `apply_placement`'s cost check before the mutating loop).
 fn apply_return_to_hand(
     state: &mut GameState,
-    areas: &[AreaId],
+    recover: &std::collections::BTreeMap<AreaId, u8>,
 ) -> Result<(), MoveError> {
     let player = state.current_player;
-    let p = state.player_mut(player);
-
-    p.president_location = PresidentLocation::InHand;
-
-    for &area in areas {
-        if let Some(&count) = p.assistants.on_board.get(&area) {
-            p.assistants.in_hand += count;
-            p.assistants.on_board.remove(&area);
+    for (&area, &count) in recover {
+        let have = state.player(player).assistants.on_board.get(&area).copied().unwrap_or(0);
+        if count == 0 || count > have {
+            return Err(MoveError::RuleViolation("recovery count exceeds assistants in area"));
         }
     }
+
+    let p = state.player_mut(player);
+    for (&area, &count) in recover {
+        let slot = p.assistants.on_board.get_mut(&area).expect("validated above");
+        *slot -= count;
+        if *slot == 0 {
+            p.assistants.on_board.remove(&area);
+        }
+        p.assistants.in_hand += count;
+    }
+    p.president_location = PresidentLocation::InHand;
 
     Ok(())
 }
@@ -495,6 +513,14 @@ fn apply_area_action(state: &mut GameState, action: &AreaAction, rules: &Rules) 
                 power, &rules.techs,
             )?;
             apply_lab_acquisition_bonuses(state, player, *card_id, &rules.techs, &rules.orders);
+
+            // Station (design §4.2): the token is placed on acquisition, as a
+            // queued choice. copies:1, but the is_none() guard is principled.
+            let purchased_effect_is_station =
+                rules.techs.get(*card_id).map(|t| t.effect == TechEffect::Station).unwrap_or(false);
+            if state.station_location.is_none() && purchased_effect_is_station {
+                crate::game::choices::push_choice(state, PendingChoice::StationPlace, rules);
+            }
         }
         AreaAction::Chinatown { exchanges } => {
             // Task 17 ruling: an empty exchanges list is no longer a legal
@@ -701,6 +727,17 @@ fn apply_take_5_power(state: &mut GameState, rules: &Rules) -> Result<(), MoveEr
 }
 
 fn apply_build_shophouse(state: &mut GameState, slot: u8, rules: &Rules) -> Result<(), MoveError> {
+    // `slot` indexes the site's fixed `SPACES_PER_SITE` arrays twice below
+    // (`spaces` for the reward, `shophouses_built` for ownership). Validate
+    // FIRST so the raw arm returns a typed error rather than aborting the
+    // process: checked `apply_move` masks this (the legal list never offers
+    // an out-of-range slot), but `apply_move_unchecked` is public and
+    // documented for future search inner loops, which cannot catch a panic.
+    // Same self-defence precedent as EndAdditionalPhase / UseUniversity /
+    // UseSpinningMill / apply_return_to_hand (C1, external review 2026-07-20).
+    if slot as usize >= SPACES_PER_SITE {
+        return Err(MoveError::InvalidSlot);
+    }
     let player = state.current_player;
     let p = state.player(player);
 
@@ -1190,7 +1227,11 @@ mod tests {
         state.pending_choices.push(PendingChoice::AnyGood);
         let rules = Rules::empty_for_tests();
 
-        let result = apply_move(&state, &Move::EndAdditionalPhase, &rules);
+        // apply_move_unchecked: per the doc comment above, the queue-first
+        // gate in get_legal_moves never offers EndAdditionalPhase while a
+        // choice is queued, so this never fires under checked apply_move --
+        // this test targets the raw arm's self-defense directly.
+        let result = apply_move_unchecked(&state, &Move::EndAdditionalPhase, &rules);
         assert!(matches!(result, Err(MoveError::RuleViolation(_))), "{result:?}");
         assert_eq!(state.turn_phase, TurnPhase::AdditionalActionFirst, "original state must be untouched");
     }
@@ -1687,8 +1728,12 @@ mod tests {
         state.players[1].president_location = PresidentLocation::OnBoard(area);
         state.players[0].money = 1;
 
+        // apply_move_unchecked: this exact placement is unaffordable, so
+        // get_legal_moves never offers it -- checked apply_move would
+        // reject with NotLegal before reaching the raw NotEnoughMoney arm
+        // under test.
         let rules = Rules::empty_for_tests();
-        let result = apply_move(
+        let result = apply_move_unchecked(
             &state,
             &Move::PlaceTwoSameArea { area, adjacent_bonus: None },
             &rules,
@@ -1716,8 +1761,12 @@ mod tests {
         let owner1_money_before = state.players[1].money;
         let owner2_money_before = state.players[2].money;
 
+        // apply_move_unchecked: create_minimal_state doesn't equip the
+        // player with Telegram, so get_legal_moves never offers the
+        // adjacent_bonus option here -- this test targets the raw fee math
+        // of the bonus arm directly, independent of tech-ownership gating.
         let rules = Rules::empty_for_tests();
-        let result = apply_move(
+        let result = apply_move_unchecked(
             &state,
             &Move::PlaceTwoSameArea { area: main_area, adjacent_bonus: Some(adj_area) },
             &rules,
@@ -2180,7 +2229,12 @@ mod tests {
         rules.techs.insert(gaslight_tech_fixture(1), "tech_gaslight");
         state.players[0].technologies.push(TechCardId(1));
 
-        let result = apply_move(&state, &Move::BuildShophouse { slot: 0 }, &rules);
+        // apply_move_unchecked: create_minimal_state defaults turn_phase to
+        // AdditionalActionFirst with no action power, so get_legal_moves
+        // never offers BuildShophouse here -- this test targets the raw
+        // build-reward arm directly (same for the rest of this file's
+        // test_build_shophouse_* cluster and its sibling shophouse tests).
+        let result = apply_move_unchecked(&state, &Move::BuildShophouse { slot: 0 }, &rules);
         assert!(result.is_ok());
         let new_state = result.unwrap();
 
@@ -2205,12 +2259,44 @@ mod tests {
         state.players[0].technologies.push(TechCardId(1));
         state.players[0].technologies.push(TechCardId(2));
 
-        let result = apply_move(&state, &Move::BuildShophouse { slot: 0 }, &rules);
+        // apply_move_unchecked: see test_build_shophouse_gaslight_vp_bonus.
+        let result = apply_move_unchecked(&state, &Move::BuildShophouse { slot: 0 }, &rules);
         assert!(result.is_ok());
         let new_state = result.unwrap();
 
         // 2 (space VP) + 4 (Gaslight, 2 owned copies x 2 VP).
         assert_eq!(new_state.players[0].victory_points, 6);
+    }
+
+    /// C1 regression (external six-agent review, 2026-07-20): the raw build
+    /// arm indexed `site.spaces[slot as usize]` (and `shophouses_built[..]`)
+    /// into a `[SpaceReward; 4]` with NO bound check, so an out-of-range slot
+    /// aborted the process instead of returning a `MoveError`. Checked
+    /// `apply_move` masked it -- the legal list never offers such a slot --
+    /// but `apply_move_unchecked` is public and documented for future search
+    /// inner loops, and a search loop cannot catch a panic. This arm now
+    /// self-defends the way `EndAdditionalPhase`, `UseUniversity`,
+    /// `UseSpinningMill` and `apply_return_to_hand` already do.
+    #[test]
+    fn out_of_range_shophouse_slot_is_rejected_by_the_raw_arm_not_a_panic() {
+        let mut state = create_minimal_state(2);
+        let area = AreaId::new(0);
+        state.players[0].president_location = PresidentLocation::OnBoard(area);
+        state.players[0].shophouses.in_hand = 1;
+        state.board_layout.building_sites.insert(area, BuildingSite::new([0, 0, 0, 0], 10));
+        let rules = Rules::empty_for_tests();
+
+        // apply_move_unchecked: see test_build_shophouse_gaslight_vp_bonus --
+        // the raw arm IS the subject here, since it is what must self-defend.
+        // 4 is the first out-of-range slot for a 4-space site; 250 is the
+        // value the review's reproduction used; u8::MAX is the ceiling.
+        for slot in [4u8, 250u8, u8::MAX] {
+            match apply_move_unchecked(&state, &Move::BuildShophouse { slot }, &rules) {
+                Err(MoveError::InvalidSlot) => {}
+                Err(other) => panic!("slot {slot} must be InvalidSlot, got {other:?}"),
+                Ok(_) => panic!("slot {slot} is out of range and must be rejected, was accepted"),
+            }
+        }
     }
 
     #[test]
@@ -2347,8 +2433,11 @@ mod tests {
         assert_eq!(state.president_start_area, Some(AreaId::new(0)));
         assert_eq!(state.turn_phase, TurnPhase::Movement);
 
-        // Try to move back to area 0 (should fail)
-        let result = apply_move(&state, &Move::MovePresident {
+        // Try to move back to area 0 (should fail). apply_move_unchecked:
+        // get_legal_moves excludes the starting area from movement
+        // destinations too, so this targets the raw arm's own
+        // validate_movement_destination check directly.
+        let result = apply_move_unchecked(&state, &Move::MovePresident {
             path: vec![AreaId::new(1), AreaId::new(0)],
             destination: AreaId::new(0),
         }, &rules);
@@ -2428,6 +2517,61 @@ mod tests {
             destination: AreaId::new(0),
         }, &rules);
         assert!(result.is_ok());
+    }
+
+    #[test]
+    fn partial_recovery_moves_exactly_the_requested_counts() {
+        // I5 ruling (2026-07-19): recovering a strict subset of one area's
+        // count must leave the remainder on board, untouched -- not the
+        // old all-or-nothing-per-area semantics.
+        let mut state = create_minimal_state(2);
+        let a0 = AreaId::new(0);
+        let a3 = AreaId::new(3);
+        state.players[0].president_location = PresidentLocation::OnBoard(a0);
+        state.players[0].assistants.on_board.insert(a0, 2);
+        state.players[0].assistants.on_board.insert(a3, 1);
+        let hand_before = state.players[0].assistants.in_hand;
+
+        let mut recover = BTreeMap::new();
+        recover.insert(a0, 1);
+        let rules = Rules::empty_for_tests();
+        let result = apply_move_unchecked(&state, &Move::ReturnPresidentToHand { recover }, &rules);
+        let new_state = result.expect("partial recovery within on-board counts should succeed");
+
+        let p = &new_state.players[0];
+        assert_eq!(p.assistants.in_hand, hand_before + 1);
+        assert_eq!(p.assistants.on_board.get(&a0), Some(&1), "1 of 2 remains at A0");
+        assert_eq!(p.assistants.on_board.get(&a3), Some(&1), "A3 untouched");
+        assert_eq!(p.president_location, PresidentLocation::InHand);
+    }
+
+    #[test]
+    fn over_count_recovery_is_rejected_by_the_raw_arm() {
+        // recover {A0: 3} exceeds on_board {A0: 2}. The checked path
+        // already rejects this shape by membership (it's not in
+        // enumerate_recovery_options's cartesian product); this pins the
+        // apply-layer guard directly, per the standing I1 lesson that raw
+        // arms must self-defend rather than relying solely on the
+        // legal-move pre-filter (T1: apply_move_unchecked is called by
+        // prechecked hot paths, but must still refuse an out-of-range
+        // count rather than underflow or over-credit).
+        let mut state = create_minimal_state(2);
+        let a0 = AreaId::new(0);
+        state.players[0].president_location = PresidentLocation::OnBoard(a0);
+        state.players[0].assistants.on_board.insert(a0, 2);
+        let hand_before = state.players[0].assistants.in_hand;
+
+        let mut recover = BTreeMap::new();
+        recover.insert(a0, 3);
+        let rules = Rules::empty_for_tests();
+        let result = apply_move_unchecked(&state, &Move::ReturnPresidentToHand { recover }, &rules);
+
+        assert!(matches!(result, Err(MoveError::RuleViolation(_))), "{result:?}");
+        // The original state (owned by the test, passed by shared
+        // reference) must be untouched.
+        assert_eq!(state.players[0].assistants.in_hand, hand_before);
+        assert_eq!(state.players[0].assistants.on_board.get(&a0), Some(&2));
+        assert_eq!(state.players[0].president_location, PresidentLocation::OnBoard(a0));
     }
 
     #[test]
@@ -2511,8 +2655,10 @@ mod tests {
         let mut rules = Rules::empty_for_tests();
         rules.orders = order_registry;
 
-        // Fulfill order should fail
-        let result = apply_move(
+        // Fulfill order should fail. apply_move_unchecked: insufficient
+        // resources means get_legal_moves never offers this FulfillOrder,
+        // so this targets the raw resource-check arm directly.
+        let result = apply_move_unchecked(
             &state,
             &Move::FulfillOrder { order_id },
             &rules,
@@ -2939,7 +3085,11 @@ mod tests {
         let snapshot_warehouse = after_first.players[0].assistants.in_warehouse;
         let snapshot_hand = after_first.players[0].assistants.in_hand;
 
-        let second = apply_move(&after_first, &Move::UseUniversity, &rules);
+        // apply_move_unchecked: with university_used set, get_legal_moves no
+        // longer offers UseUniversity, so this is exactly the raw-arm
+        // self-defense path the comment above describes -- a bot calling
+        // apply_move_unchecked directly, without pre-filtering.
+        let second = apply_move_unchecked(&after_first, &Move::UseUniversity, &rules);
         assert!(
             matches!(second, Err(MoveError::RuleViolation(_))),
             "second same-turn use must be rejected, got {second:?}"
@@ -2982,7 +3132,11 @@ mod tests {
         let snapshot_silk = after_first.players[0].silk;
         let snapshot_money = after_first.players[0].money;
 
-        let second = apply_move(&after_first, &Move::UseSpinningMill, &rules);
+        // apply_move_unchecked: same reasoning as
+        // apply_university_rejects_second_use_same_turn -- with
+        // spinning_mill_used set, get_legal_moves no longer offers
+        // UseSpinningMill.
+        let second = apply_move_unchecked(&after_first, &Move::UseSpinningMill, &rules);
         assert!(
             matches!(second, Err(MoveError::RuleViolation(_))),
             "second same-turn use must be rejected, got {second:?}"
@@ -3088,7 +3242,8 @@ mod tests {
         state.board_layout.building_sites.insert(area, site);
         let rules = Rules::empty_for_tests();
 
-        let result = apply_move(&state, &Move::BuildShophouse { slot: 0 }, &rules);
+        // apply_move_unchecked: see test_build_shophouse_gaslight_vp_bonus.
+        let result = apply_move_unchecked(&state, &Move::BuildShophouse { slot: 0 }, &rules);
         assert!(result.is_ok());
         let new_state = result.unwrap();
 
@@ -3108,7 +3263,8 @@ mod tests {
         state.board_layout.building_sites.insert(area, site);
         let rules = Rules::empty_for_tests();
 
-        let result = apply_move(&state, &Move::BuildShophouse { slot: 1 }, &rules);
+        // apply_move_unchecked: see test_build_shophouse_gaslight_vp_bonus.
+        let result = apply_move_unchecked(&state, &Move::BuildShophouse { slot: 1 }, &rules);
         assert!(result.is_ok());
         let new_state = result.unwrap();
 
@@ -3130,7 +3286,11 @@ mod tests {
         state.board_layout.building_sites.insert(area, site);
         let rules = Rules::empty_for_tests();
 
-        let result = apply_move(&state, &Move::BuildShophouse { slot: 2 }, &rules);
+        // apply_move_unchecked: see test_build_shophouse_gaslight_vp_bonus.
+        // Applied consistently through this test's whole chain (not just the
+        // initial build) even though the two queued-choice resolutions below
+        // would likely also pass the checked membership test on their own.
+        let result = apply_move_unchecked(&state, &Move::BuildShophouse { slot: 2 }, &rules);
         assert!(result.is_ok());
         let mid = result.unwrap();
 
@@ -3141,14 +3301,14 @@ mod tests {
         assert_eq!(mid.players[0].assistants.in_hand, starting_hand);
         assert_eq!(mid.players[0].assistants.in_warehouse, starting_warehouse);
 
-        let after_wh = apply_move(
+        let after_wh = apply_move_unchecked(
             &mid, &Move::ChooseWarehouseTake { item: WarehouseItem::Assistant }, &rules,
         ).unwrap();
         assert_eq!(after_wh.pending_choices, vec![PendingChoice::AnyGood]);
         assert_eq!(after_wh.players[0].assistants.in_hand, starting_hand + 1);
         assert_eq!(after_wh.players[0].assistants.in_warehouse, starting_warehouse - 1);
 
-        let done = apply_move(&after_wh, &Move::ChooseAnyGood { good: TradeGood::Copper }, &rules).unwrap();
+        let done = apply_move_unchecked(&after_wh, &Move::ChooseAnyGood { good: TradeGood::Copper }, &rules).unwrap();
         assert_eq!(done.players[0].copper, starting_copper + 1);
         assert!(done.pending_choices.is_empty());
     }
@@ -3165,7 +3325,8 @@ mod tests {
         state.board_layout.building_sites.insert(area, BuildingSite::new([2, 3, 4, 5], 10));
         let rules = Rules::empty_for_tests();
 
-        let result = apply_move(&state, &Move::BuildShophouse { slot: 2 }, &rules);
+        // apply_move_unchecked: see test_build_shophouse_gaslight_vp_bonus.
+        let result = apply_move_unchecked(&state, &Move::BuildShophouse { slot: 2 }, &rules);
         assert!(result.is_ok());
         let new_state = result.unwrap();
 
@@ -3188,7 +3349,8 @@ mod tests {
         rules.techs.insert(mining_tech_fixture(), "tech_mining");
         state.players[0].technologies.push(TechCardId(1));
 
-        let result = apply_move(&state, &Move::BuildShophouse { slot: 0 }, &rules);
+        // apply_move_unchecked: see test_build_shophouse_gaslight_vp_bonus.
+        let result = apply_move_unchecked(&state, &Move::BuildShophouse { slot: 0 }, &rules);
         assert!(result.is_ok());
         let new_state = result.unwrap();
 
@@ -3211,7 +3373,8 @@ mod tests {
         rules.techs.insert(mining_tech_fixture(), "tech_mining");
         state.players[0].technologies.push(TechCardId(1));
 
-        let mid = apply_move(&state, &Move::BuildShophouse { slot: 0 }, &rules).unwrap();
+        // apply_move_unchecked: see test_build_shophouse_gaslight_vp_bonus.
+        let mid = apply_move_unchecked(&state, &Move::BuildShophouse { slot: 0 }, &rules).unwrap();
         // any_good queues a choice instead of auto-granting copper at build
         // time (design §5.3-2).
         assert_eq!(mid.pending_choices, vec![PendingChoice::AnyGood]);
@@ -3219,7 +3382,7 @@ mod tests {
 
         // Resolving the choice as Copper: 1 base + 1 Mining bonus (1 owned
         // copy). Mining applies because the CHOSEN good IS copper.
-        let done = apply_move(&mid, &Move::ChooseAnyGood { good: TradeGood::Copper }, &rules).unwrap();
+        let done = apply_move_unchecked(&mid, &Move::ChooseAnyGood { good: TradeGood::Copper }, &rules).unwrap();
         assert_eq!(done.players[0].copper, starting_copper + 2);
     }
 
@@ -3239,7 +3402,8 @@ mod tests {
         rules.techs.insert(mining_tech_fixture(), "tech_mining");
         state.players[0].technologies.push(TechCardId(1));
 
-        let result = apply_move(&state, &Move::BuildShophouse { slot: 0 }, &rules);
+        // apply_move_unchecked: see test_build_shophouse_gaslight_vp_bonus.
+        let result = apply_move_unchecked(&state, &Move::BuildShophouse { slot: 0 }, &rules);
         assert!(result.is_ok());
         let new_state = result.unwrap();
 
@@ -3271,12 +3435,13 @@ mod tests {
         rules.techs.insert(mining_tech_fixture(), "tech_mining");
         state.players[0].technologies.push(TechCardId(1));
 
-        let mid = apply_move(&state, &Move::BuildShophouse { slot: 0 }, &rules).unwrap();
+        // apply_move_unchecked: see test_build_shophouse_gaslight_vp_bonus.
+        let mid = apply_move_unchecked(&state, &Move::BuildShophouse { slot: 0 }, &rules).unwrap();
         // Explicit copper receipt fires immediately: 1 base + 1 Mining bonus.
         assert_eq!(mid.players[0].copper, starting_copper + 2);
         assert_eq!(mid.pending_choices, vec![PendingChoice::AnyGood]);
 
-        let done = apply_move(&mid, &Move::ChooseAnyGood { good: TradeGood::Copper }, &rules).unwrap();
+        let done = apply_move_unchecked(&mid, &Move::ChooseAnyGood { good: TradeGood::Copper }, &rules).unwrap();
         // Any-good-as-copper is its OWN receipt: another 1 base + 1 Mining bonus.
         assert_eq!(done.players[0].copper, starting_copper + 4);
     }
@@ -3474,7 +3639,11 @@ mod tests {
                 card_id: TechCardId(24), extra_yen: 0, extra_imported: 0, fifth_tech_payment: None,
             },
         };
-        let result = apply_move(&state, &mv, &rules);
+        // apply_move_unchecked: get_legal_moves only enumerates Laboratory
+        // actions for cards actually present on the acting board, so this
+        // cross-board card id is never legal -- targets the raw arm's
+        // CardNotFound check directly.
+        let result = apply_move_unchecked(&state, &mv, &rules);
         assert!(matches!(result, Err(MoveError::CardNotFound)));
     }
 
@@ -4103,11 +4272,15 @@ mod tests {
         // Fixture: Building phase, president on an area whose site TR space has any_good: 1,
         // player has a shophouse in hand and an assistant on the acting area.
         let (state, rules) = building_any_good_fixture();
-        let mid = apply_move(&state, &Move::BuildShophouse { slot: 1 }, &rules).unwrap();
+        // apply_move_unchecked: the fixture hardcodes slot 1 to land on the
+        // TR any_good space, but next_shophouse_slot allocates slot 0 first
+        // (it's the only empty one here), so get_legal_moves never offers
+        // slot 1 -- this test targets the raw build-reward arm directly.
+        let mid = apply_move_unchecked(&state, &Move::BuildShophouse { slot: 1 }, &rules).unwrap();
         assert_eq!(mid.pending_choices, vec![PendingChoice::AnyGood]);
         // Recovery DEFERRED: the acting-area assistant has NOT been recovered yet.
         assert!(mid.current_player().assistants.on_board.contains_key(&acting_area()));
-        let done = apply_move(&mid, &Move::ChooseAnyGood { good: TradeGood::Copper }, &rules).unwrap();
+        let done = apply_move_unchecked(&mid, &Move::ChooseAnyGood { good: TradeGood::Copper }, &rules).unwrap();
         // Resolving the last choice runs the deferred Recovery + transition in the same apply.
         assert!(!done.current_player().assistants.on_board.contains_key(&acting_area()));
         assert_eq!(done.turn_phase, TurnPhase::AdditionalActionSecond);

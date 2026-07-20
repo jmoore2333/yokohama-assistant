@@ -55,6 +55,10 @@ fn generate_choice_resolutions_for(state: &GameState, choice: &PendingChoice, _r
             Move::ChooseRecoveryLeave { leave_one: false },
             Move::ChooseRecoveryLeave { leave_one: true },
         ],
+        PendingChoice::StationPlace => state.board_layout.areas.iter()
+            .filter(|(_, c)| c.area_type.allows_placement())
+            .map(|(&area, _)| Move::ChooseStationPlace { area })
+            .collect(),
     }
 }
 
@@ -107,6 +111,18 @@ pub fn assistant_move_options(state: &GameState) -> Vec<(MoveSource, AreaId)> {
 /// collapses to Decline alone whenever nothing in the warehouse is worth
 /// taking, and resolves immediately instead of round-tripping through the
 /// caller.
+///
+/// StationPlace (design §4.2, Task 5) is architecturally different from
+/// those two: it has no Decline resolution at all, so a true singleton
+/// (exactly 1 placeable area) auto-resolves to an ACTIVE effect -- the token
+/// silently lands there -- rather than an inert no-op. This is
+/// design-sanctioned ("if exactly one eligible area exists, place inline")
+/// and real-board-unreachable (the smallest generated board has far more
+/// than 1 placeable area), but it means StationPlace is the first variant
+/// whose singleton path is NOT inert; pinned directly below by
+/// `station_place_with_single_placeable_area_places_inline_no_choice_event`,
+/// with the scope of that behavior cross-referenced from `choice_encoding.rs`'s
+/// `assert_decline_or_never_singleton`.
 ///
 /// NOTE: the singleton path calls `resolve_choice_move`, which can itself
 /// push further choices (a cascade) -- bounded by the same small reward
@@ -205,9 +221,41 @@ pub fn resolve_choice_move(state: &mut GameState, mv: &Move, rules: &Rules) -> R
             apply_recovery_with_leave(state, *leave_one);
             finish_recovery_transition(state);
         }
+        (PendingChoice::StationPlace, Move::ChooseStationPlace { area }) => {
+            state.station_location = Some(*area);
+        }
         _ => unreachable!("membership check above guarantees type match"),
     }
     Ok(())
+}
+
+/// Design §4.4: after an apply, heads whose ONLY resolution is a Decline are
+/// dead questions -- resolve them silently (structural no-ops by the pinned
+/// two-prong invariant, `assert_decline_or_never_singleton` in
+/// `tests/choice_encoding.rs`). Loops down the queue: normalizing the head
+/// can expose a NEXT head that has independently degraded the same way
+/// (e.g. two queued WarehouseTakes sharing one warehouse item -- the first
+/// resolution empties it out from under the second). ONLY Decline-only heads
+/// normalize: a degraded-to-one ChurchSpace/CustomsSpace head still prompts
+/// its single placement (it's a real placement move, not a Decline), and
+/// StationPlace has no Decline resolution to begin with (design §4.2) -- so
+/// neither ever matches `lone_decline` below, and both fall through to the
+/// `return` on the first iteration. Deterministic pure-state fn (same
+/// inputs, same result every time), so replays re-derive identical
+/// normalization from the recorded moves alone, with nothing extra to log.
+pub(crate) fn normalize_queue_head(state: &mut GameState, rules: &Rules) {
+    loop {
+        let Some(head) = state.pending_choices.first().cloned() else { return };
+        let opts = generate_choice_resolutions_for(state, &head, rules);
+        let lone_decline = opts.len() == 1
+            && matches!(opts[0], Move::DeclineWarehouseTake | Move::DeclineAssistantMove);
+        if !lone_decline {
+            return;
+        }
+        let mv = opts.into_iter().next().unwrap();
+        resolve_choice_move(state, &mv, rules)
+            .expect("lone-decline resolution is legal by construction");
+    }
 }
 
 #[cfg(test)]
@@ -423,6 +471,29 @@ mod tests {
         // All 20 assistants in warehouse/locked: only Decline possible -> singleton auto.
         let (mut state, rules) = no_movable_assistant_fixture();
         push_choice(&mut state, PendingChoice::AssistantMove, &rules);
+        assert!(state.pending_choices.is_empty());
+    }
+
+    /// Direct-mechanism analogue of `actions/tracks.rs`'s
+    /// `church_with_single_eligible_space_places_inline_no_choice_event` /
+    /// `customs_with_one_pair_space_open_places_inline`, one layer down:
+    /// Station's degenerate singleton goes through `push_choice`'s OWN
+    /// generic singleton path (unlike ChurchSpace/CustomsSpace, which
+    /// `tracks.rs` pre-filters before ever reaching `push_choice`), and
+    /// unlike WarehouseTake/AssistantMove's singleton just above (always an
+    /// inert Decline), Station has no Decline at all -- its singleton
+    /// resolution is an ACTIVE effect: the token lands, unqueued.
+    #[test]
+    fn station_place_with_single_placeable_area_places_inline_no_choice_event() {
+        let mut state = create_test_game_state(2);
+        let rules = Rules::empty_for_tests();
+        state.board_layout.areas.insert(area_a(), AreaConfig { area_type: AreaType::Bank, grid_position: (0, 0) });
+        // Canal present too, to prove exclusion doesn't leave a real 2nd option.
+        state.board_layout.areas.insert(canal_area(), AreaConfig { area_type: AreaType::Canal, grid_position: (0, 2) });
+
+        push_choice(&mut state, PendingChoice::StationPlace, &rules);
+
+        assert_eq!(state.station_location, Some(area_a()));
         assert!(state.pending_choices.is_empty());
     }
 }
