@@ -51,6 +51,64 @@ fn plumbing_one_game_drives_to_terminal_and_compares() {
     );
 }
 
+/// Tie-break coverage census (Stage-2 gate): organic ties occur in only a
+/// few percent of random games, so the clockwise tie-break would otherwise
+/// ride on a handful of sweep games. This test CONSTRUCTS the tie
+/// deterministically: drive a real game to terminal, then surgically add
+/// money to the runner-up until both leaders' totals are equal (each 2 Yen
+/// = +1 remainder VP — scoring is a pure function of the state, so state
+/// surgery is sound for a scoring comparison, unlike enumeration
+/// reachability), and assert both sides agree on the FULL ranked order of
+/// the genuinely-tied state.
+#[test]
+fn constructed_tie_resolves_identically_on_both_sides() {
+    let rules = Rules::standard();
+    let (_stats, mut state) =
+        drive_game_to_end(0, 3, Policy::Uniform, &rules, None, |_, _, _| Ok(StepOutcome::Continue))
+            .expect("seed 0, 3p, uniform drives to completion");
+
+    // Equalize the top two totals by paying the runner-up in 2-Yen steps.
+    let before = compare_final(&state, &rules).expect("terminal");
+    let (leader, leader_total) = before.engine[0];
+    let (runner_up, runner_total) = before.engine[1];
+    let deficit = leader_total - runner_total;
+    let ru = state
+        .players
+        .iter_mut()
+        .find(|p| p.id == runner_up)
+        .expect("runner-up exists");
+    // Round money down to an even remainder base first so +2*deficit lands
+    // exactly on the leader's total.
+    ru.money -= ru.money % 2;
+    ru.money += 2 * deficit;
+
+    let cmp = compare_final(&state, &rules).expect("still terminal after fungible surgery");
+    assert_eq!(
+        cmp.engine[0].1, cmp.engine[1].1,
+        "surgery must produce a genuine top-two tie: {:?}",
+        cmp.engine
+    );
+    assert!(
+        !cmp.is_divergent(),
+        "engine and oracle must rank the tied state identically:\n  engine: {:?}\n  oracle: {:?}",
+        cmp.engine,
+        cmp.oracle
+    );
+    // The tie-break is the CLOCKWISE rule, not order-of-total insertion:
+    // whichever of the tied pair is closest clockwise from the start player
+    // must come first on BOTH sides.
+    let n = state.players.len() as u8;
+    let start = state.config.start_player;
+    let dist = |p: yokohama_core::PlayerId| (p.0 + n - start.0) % n;
+    let expect_first =
+        if dist(leader) <= dist(runner_up) { leader } else { runner_up };
+    assert_eq!(
+        cmp.engine[0].0, expect_first,
+        "clockwise-from-start must decide the tie (start={start:?}): {:?}",
+        cmp.engine
+    );
+}
+
 /// `compare_final` refuses non-terminal states: scoring comparison is
 /// defined ONLY at game over (a mid-game "final score" is not a thing the
 /// engine or oracle claims).
