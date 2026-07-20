@@ -248,6 +248,19 @@ pub fn tracks_view(state: &GameState) -> String {
         out.push_str(&format!("  space {} (cost {}): {}\n", space, CustomsTrack::space_cost(space), occ));
     }
 
+    // The Station token is board-level shared state like the two tracks
+    // above -- it grants EVERY player +1 Power in its area
+    // (`game::power::calculate_power`) -- so a live-tracking operator needs
+    // to be able to read its position back and reconcile it against the
+    // physical board. Before this line it was unrenderable anywhere in the
+    // CLI, and placing it produced an empty delta (I4, external review
+    // 2026-07-20).
+    out.push_str("Station:\n");
+    match state.station_location {
+        Some(area) => out.push_str(&format!("  {} (all players +1 Power there)\n", describe::area_label(state, area))),
+        None => out.push_str("  not placed\n"),
+    }
+
     out
 }
 
@@ -374,6 +387,28 @@ pub fn delta_summary(before: &GameState, after: &GameState, rules: &Rules) -> Ve
     }
     if before.tech_deck.len() != after.tech_deck.len() {
         lines.push(format!("tech deck {} -> {}", before.tech_deck.len(), after.tech_deck.len()));
+    }
+
+    // Station token: board-level, and it moves every player's Power in its
+    // area, so resolving `PendingChoice::StationPlace` must not produce an
+    // EMPTY delta window the operator can't see (I4, external review
+    // 2026-07-20).
+    if before.station_location != after.station_location {
+        match (before.station_location, after.station_location) {
+            (None, Some(to)) => lines.push(format!(
+                "Station token placed at {} (all players +1 Power there)",
+                describe::area_label(after, to)
+            )),
+            (Some(from), Some(to)) => lines.push(format!(
+                "Station token {} -> {}",
+                describe::area_label(before, from),
+                describe::area_label(after, to)
+            )),
+            (Some(from), None) => {
+                lines.push(format!("Station token removed from {}", describe::area_label(before, from)))
+            }
+            (None, None) => unreachable!("guarded by the inequality above"),
+        }
     }
 
     if after.end_game_triggered && !before.end_game_triggered {
@@ -918,6 +953,56 @@ mod tests {
         assert!(v.contains("Church"), "{v}");
         assert!(v.contains("Customs"), "{v}");
         assert!(v.contains('X'), "{v}");
+    }
+
+    /// I4 (external review 2026-07-20): the Station token grants EVERY
+    /// player +1 Power in its area, but was rendered by no view at all, so a
+    /// live-tracking operator could not read it back to reconcile against the
+    /// physical board. Both states must be legible -- unplaced and placed.
+    #[test]
+    fn tracks_view_shows_the_station_token_location() {
+        let mut state = test_state_2p();
+        assert_eq!(state.station_location, None, "fixture starts with the Station unplaced");
+
+        let unplaced = tracks_view(&state);
+        let station_line = unplaced
+            .lines()
+            .skip_while(|l| !l.starts_with("Station:"))
+            .nth(1)
+            .expect("a Station section with a value line");
+        assert!(station_line.contains("not placed"), "{unplaced}");
+
+        let area = *state.board_layout.areas.keys().next().expect("board has areas");
+        state.station_location = Some(area);
+        let placed = tracks_view(&state);
+        assert!(
+            placed.contains(&describe::area_label(&state, area)),
+            "placed Station must name its area: {placed}"
+        );
+        assert!(!placed.contains("not placed"), "{placed}");
+    }
+
+    /// I4 companion: resolving `PendingChoice::StationPlace` must not produce
+    /// an EMPTY delta window. `delta_summary` is a hand-maintained
+    /// field-by-field diff and simply had no `station_location` arm, so the
+    /// one move that places the token reported nothing at all.
+    #[test]
+    fn delta_summary_reports_a_station_placement() {
+        let rules = Rules::standard();
+        let before = test_state_2p();
+        let mut after = before.clone();
+        let area = *before.board_layout.areas.keys().next().expect("board has areas");
+        after.station_location = Some(area);
+
+        let lines = delta_summary(&before, &after, &rules);
+        assert!(
+            lines.iter().any(|l| l.contains("Station token placed")),
+            "placing the Station must be visible in the delta: {lines:?}"
+        );
+        assert!(
+            lines.iter().any(|l| l.contains(&describe::area_label(&after, area))),
+            "the delta must name WHERE it landed: {lines:?}"
+        );
     }
 
     /// Task 12: the engine blocks Church faith-7 in 2p games exactly the
