@@ -259,8 +259,13 @@ pub fn tracks_view(state: &GameState) -> String {
 /// `claimed_by` is listed, not just the first), then one indented line per
 /// player with their live progress (`achievement_progress`, Task 14/T2.3)
 /// as `cur/need` -- the SAME arithmetic `can_claim_achievement` gates the
-/// actual claim on, so this view can never show a player "ready" (cur >=
-/// need) when the engine would actually refuse the claim, or vice versa.
+/// actual claim on, so the printed `cur/need` numbers themselves can never
+/// disagree with the engine's. That arithmetic is not the WHOLE gate,
+/// though: `achievement_progress` deliberately excludes
+/// `can_claim_achievement`'s other two checks (already claimed by THIS
+/// player, and having no assistant in hand to place) -- so a player can
+/// still show `cur >= need` ("ready" by the numbers) here while an actual
+/// claim attempt is refused for one of those two reasons instead.
 /// `rules` is accepted for interface symmetry with the file's other
 /// `*_view` functions (same precedent as `sites_view`'s `_rules`) but
 /// unused: everything here comes from `state` alone.

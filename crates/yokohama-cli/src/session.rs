@@ -328,13 +328,17 @@ impl Session {
             }
             reveal_descriptions.push(desc);
         }
-        // The engine's apply_move does not itself validate that `mv` matches
-        // the current phase (that check was MoveError::WrongPhase, deleted
-        // as dead code at Task 13 -- design §5.3-7, guidingpath's decision
-        // log). Session enforces the plan's global constraint here instead:
-        // never apply a move get_legal_moves didn't offer. Checked against
-        // `staged` (post-reveal), since the group is atomic and legality is
-        // defined on the state the move will actually run against.
+        // Since the checked-boundary task, the engine's PUBLIC apply_move
+        // itself gates on get_legal_moves membership -- the phase check it
+        // used to lean on instead, MoveError::WrongPhase, was deleted as
+        // dead code at Task 13 (design §5.3-7, guidingpath's decision log).
+        // This call site deliberately uses apply_move_unchecked below
+        // rather than that public apply_move: Session runs its own
+        // identical legal-list gate right here, against `staged`
+        // (post-reveal, since the group is atomic and legality is defined
+        // on the state the move will actually run against), so it can skip
+        // a second, redundant get_legal_moves enumeration (see the comment
+        // on the apply_move_unchecked call itself, below).
         if !get_legal_moves(&staged, &self.rules).contains(&mv) {
             return Err(ApplyError::Illegal(format!("move not legal in the current state: {mv:?}")));
         }
@@ -693,9 +697,12 @@ mod tests {
     /// tampering move outright (with `ChurchSpace` queued, `get_legal_moves`
     /// offers only its resolutions), so the tampered `GameRecord` is built
     /// directly instead -- exactly how a hand-edited or corrupted save file
-    /// would bypass that gate: `Session::load` -> `replay` -> `replay_from`
-    /// applies every event via the ONE checked `apply_move` (core's
-    /// apply_move.rs), WITH legal-move pre-filtering. That rejects the
+    /// would bypass that gate: `Session::load` (since the T2.4/Task-15
+    /// fold-cache rewrite, its OWN inline `new_game`/`reconcile_setup`/
+    /// `finalize_setup` preamble plus a per-event loop over `replay_from`,
+    /// not a single `replay` call the way it used to be) applies every
+    /// event via the ONE checked `apply_move` (core's apply_move.rs), WITH
+    /// legal-move pre-filtering. That rejects the
     /// inserted `ReturnPresidentToHand` immediately with
     /// `MoveError::NotLegal` -- it isn't one of `ChurchSpace`'s own
     /// resolutions, so it's absent from `get_legal_moves` while that choice
