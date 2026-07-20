@@ -140,10 +140,18 @@ pub fn players_panel(state: &GameState, rules: &Rules) -> String {
         let techs = p.technologies.iter().map(|id| tech_name(*id, &rules.techs)).collect::<Vec<_>>().join(", ");
         out.push_str(&format!("  tech: {}\n", if techs.is_empty() { "-" } else { &techs }));
 
+        // Mercenaries print as "N (M unused)": `total()` alone cannot change
+        // when one is spent, and it is never the VP-relevant number --
+        // `calculate_remainder_bonus` awards 1 VP per UNUSED mercenary
+        // (`unused_count()` = available only). Showing the split lets the
+        // operator both reconcile face-up/face-down tiles against the table
+        // and predict their own remainder score (R1, render.rs deep audit
+        // 2026-07-20).
         out.push_str(&format!(
-            "  tokens: 5power {}  mercenaries {}\n",
+            "  tokens: 5power {}  mercenaries {} ({} unused)\n",
             p.five_power_tokens,
             p.mercenaries.total(),
+            p.mercenaries.unused_count(),
         ));
 
         let assistants_on_board: u32 = p.assistants.on_board.values().map(|&c| c as u32).sum();
@@ -609,11 +617,17 @@ fn church_customs_lines(lines: &mut Vec<String>, b: &PlayerState, a: &PlayerStat
     }
 }
 
-/// "gained mercenary (Country)" / "gained 5-Power token" lines. A per-move
-/// gain above 1 (not reachable under current rules -- `award_mercenaries_
-/// for_country_icons` awards at most 1 per country per call) is suffixed
-/// `x{n}` rather than pluralized, so the line still contains the literal
-/// substring "gained mercenary" regardless.
+/// "gained mercenary (Country)" / "spent mercenary (Country)" / "gained
+/// 5-Power token" lines. A per-move gain above 1 (not reachable under
+/// current rules -- `award_mercenaries_for_country_icons` awards at most 1
+/// per country per call) is suffixed `x{n}` rather than pluralized, so the
+/// line still contains the literal substring "gained mercenary" regardless.
+///
+/// GAINS are detected on `available + used` (a gain raises the total),
+/// SPENDS on `available` alone. Keying spends off the total would be
+/// structurally silent: using a mercenary moves the token `available ->
+/// used`, which leaves the total untouched (R1, render.rs deep audit
+/// 2026-07-20 -- 802/456/492 spends per 300 games went unnarrated).
 fn token_lines(lines: &mut Vec<String>, b: &PlayerState, a: &PlayerState) {
     for &country in &Country::ALL {
         let before_n = b.mercenaries.available.get(&country).copied().unwrap_or(0)
@@ -625,6 +639,21 @@ fn token_lines(lines: &mut Vec<String>, b: &PlayerState, a: &PlayerState) {
             let suffix = if n == 1 { String::new() } else { format!(" x{n}") };
             lines.push(format!(
                 "{}: gained mercenary ({}){}",
+                player_prefix(a.color), describe::country_name(country), suffix,
+            ));
+        }
+
+        // A spend is a fall in `available` that is NOT a fall in the total
+        // (that would be a gain reversal, which no rule produces). The
+        // operator owes the table a physical act here -- flip the tile
+        // face-down -- so it must be named, and named per country.
+        let before_avail = b.mercenaries.available.get(&country).copied().unwrap_or(0);
+        let after_avail = a.mercenaries.available.get(&country).copied().unwrap_or(0);
+        if after_avail < before_avail && after_n >= before_n {
+            let n = before_avail - after_avail;
+            let suffix = if n == 1 { String::new() } else { format!(" x{n}") };
+            lines.push(format!(
+                "{}: spent mercenary ({}){}",
                 player_prefix(a.color), describe::country_name(country), suffix,
             ));
         }
@@ -1128,6 +1157,62 @@ mod tests {
         after.players[0].mercenaries.available.insert(Country::English, 1);
         let lines = delta_summary(&before, &after, &rules);
         assert!(lines.iter().any(|l| l.contains("gained mercenary")), "{lines:?}");
+    }
+
+    /// R1 (render.rs deep audit, 2026-07-20): SPENDING a mercenary moves the
+    /// token `available -> used`, leaving `available + used` unchanged --
+    /// which is exactly what `token_lines` used to compare, so the delta was
+    /// silent 100% of the time (802/456/492 spends per 300 games at 2P/3P/4P,
+    /// none narrated). The operator owes the table a physical act here (flip
+    /// the tile face-down); an empty delta reads as "nothing happened".
+    #[test]
+    fn delta_summary_reports_a_spent_mercenary() {
+        let rules = Rules::standard();
+        let mut before = test_state_2p();
+        before.players[0].mercenaries.available.insert(Country::English, 1);
+        before.players[0].mercenaries.used.insert(Country::English, 0);
+
+        let mut after = before.clone();
+        after.players[0].mercenaries.available.insert(Country::English, 0);
+        after.players[0].mercenaries.used.insert(Country::English, 1);
+        // The sum is deliberately invariant -- that is the whole bug.
+        assert_eq!(
+            before.players[0].mercenaries.total(),
+            after.players[0].mercenaries.total(),
+            "fixture must hold total() constant, else it isn't testing the real failure"
+        );
+
+        let lines = delta_summary(&before, &after, &rules);
+        assert!(
+            lines.iter().any(|l| l.contains("spent mercenary")),
+            "spending a mercenary must be narrated: {lines:?}"
+        );
+        assert!(
+            lines.iter().any(|l| l.contains("Britain")),
+            "the line must name WHICH country's tile to flip: {lines:?}"
+        );
+    }
+
+    /// R1 companion: `players_panel` printed `mercenaries.total()`
+    /// (available + used) -- a number that cannot change when one is spent,
+    /// and never the VP-relevant one. `scoring.rs`'s remainder awards 1 VP
+    /// per UNUSED mercenary (`unused_count()` = available only), so the panel
+    /// must show the unused split or the operator cannot predict their score.
+    #[test]
+    fn players_panel_shows_the_unused_mercenary_split() {
+        let rules = Rules::standard();
+        let mut state = test_state_2p();
+        state.players[0].mercenaries.available.insert(Country::English, 1);
+        state.players[0].mercenaries.used.insert(Country::French, 2);
+
+        let panel = players_panel(&state, &rules);
+        let line = panel
+            .lines()
+            .find(|l| l.contains("mercenaries"))
+            .expect("panel has a mercenaries line");
+        // 3 held, 1 unused (= 1 VP at scoring), 2 already spent.
+        assert!(line.contains('3'), "total still shown: {line}");
+        assert!(line.contains("1 unused"), "unused split must be visible: {line}");
     }
 
     #[test]
