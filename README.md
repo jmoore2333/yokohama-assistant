@@ -46,8 +46,7 @@ Fastest playable game: answer the wizard `sim`, `2`, `red`, `blue`, `0`, Enter t
 `confirm`. At the prompt: type an option number, or use the direct grammars — placement
 `a 3 7 9` / `b 5`, assistant moves `m 4 7`, retreats `r 3:2 5:1`. Views: `board`, `sites`,
 `goals`, `tracks`, `labs`, `log`, `help`; plus `undo`, `save`, `q`. Full tester guide:
-[`docs/cli-guide.md`](docs/cli-guide.md). New-engineer overview:
-[`docs/engineer-primer.html`](docs/engineer-primer.html).
+[`docs/cli-guide.md`](docs/cli-guide.md).
 
 **Gates.** Per-edit (debug): the four crate suites + `cargo clippy --workspace --all-targets
 -- -D warnings`, all zero-warning. Pre-merge (release, ~80s total):
