@@ -394,6 +394,33 @@ pub fn describe_move(mv: &Move, state: &GameState, rules: &Rules) -> String {
     }
 }
 
+/// One plain-words line describing a `RecordedEvent` as it happened: a
+/// `Move` delegates to `describe_move` against `state`, while each
+/// `Reveal*` variant's wording depends only on the event's own fields, not
+/// `state` -- `state`/`rules` are threaded through regardless so every
+/// caller can call this ONE function uniformly regardless of variant,
+/// passing the state as of when the event actually happened. Moved here
+/// (T2.4) from the CLI's old `Repl::describe_event`, which always described
+/// against whatever state was CURRENT when `log` was invoked -- harmless
+/// for the Reveal arms (state-independent), but wrong for `Move` once
+/// state-dependent wording (movement fees/recipients, a trading-house
+/// take's printed price) went stale after the state it described moved on.
+/// `Session` (`apply`/`apply_standalone`/`load`) now calls this once per
+/// event, at the moment the event is folded, and caches the result.
+pub fn describe_recorded_event(ev: &RecordedEvent, state: &GameState, rules: &Rules) -> String {
+    match ev {
+        RecordedEvent::Move(mv) => describe_move(mv, state, rules),
+        RecordedEvent::RevealOrders(cards) => format!("reveal orders: {} card(s)", cards.len()),
+        RecordedEvent::RevealTechs(cards) => format!("reveal techs: {} card(s)", cards.len()),
+        RecordedEvent::RevealStartingOrder { player, card } => {
+            format!("reveal starting order: P{} = O{:02}", player.0, card.0)
+        }
+        RecordedEvent::RevealFivePowerToken { area, effect } => {
+            format!("reveal 5-power at A{:02}: {:?}", area.0, effect)
+        }
+    }
+}
+
 /// One plain-words summary line for the pending choice heading
 /// `GameState::pending_choices` -- feeds the `Choose: {...} -- {n}
 /// choice(s) pending` banner `Repl::prompt` renders in place of the normal

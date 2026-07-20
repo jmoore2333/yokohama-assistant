@@ -558,31 +558,21 @@ impl Repl {
         out
     }
 
-    /// Last 10 logged events (moves and reveal reconciliations) in
-    /// plain words, each with its global index into `record().events`.
+    /// Last 10 logged events (moves and reveal reconciliations) in plain
+    /// words, each with its global index into `record().events`. Reads
+    /// `Session::event_description` -- a description CACHED at the moment
+    /// the event applied (T2.4) -- rather than re-describing against the
+    /// CURRENT state as this used to: an old event's state-dependent text
+    /// (a trading-house take's printed price, a movement fee's recipient)
+    /// would otherwise silently go stale once state moved on past it.
     fn log_tail(&self) -> String {
-        let events = &self.session.record().events;
-        let n = events.len();
+        let n = self.session.record().events.len();
         let start = n.saturating_sub(10);
         let mut out = format!("log ({} of {} event(s)):\n", n - start, n);
-        for (i, ev) in events[start..].iter().enumerate() {
-            out.push_str(&format!("  {}: {}\n", start + i, self.describe_event(ev)));
+        for i in start..n {
+            out.push_str(&format!("  {}: {}\n", i, self.session.event_description(i)));
         }
         out
-    }
-
-    fn describe_event(&self, ev: &RecordedEvent) -> String {
-        match ev {
-            RecordedEvent::Move(mv) => describe::describe_move(mv, self.session.state(), self.session.rules()),
-            RecordedEvent::RevealOrders(cards) => format!("reveal orders: {} card(s)", cards.len()),
-            RecordedEvent::RevealTechs(cards) => format!("reveal techs: {} card(s)", cards.len()),
-            RecordedEvent::RevealStartingOrder { player, card } => {
-                format!("reveal starting order: P{} = O{:02}", player.0, card.0)
-            }
-            RecordedEvent::RevealFivePowerToken { area, effect } => {
-                format!("reveal 5-power at A{:02}: {:?}", area.0, effect)
-            }
-        }
     }
 
     fn lockdown_dump(&self) -> String {
