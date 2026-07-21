@@ -218,11 +218,14 @@ fn production_preview(state: &GameState, verb: &str, good: TradeGood, reward_fn:
 /// Blue, ...)`, or empty when free. One yen per assistant placed into an
 /// area holding an opponent President, credited per owner -- the same
 /// public-state read the engine's `calculate_placement_cost` /
-/// `credit_placement_fees` pair makes (a test pins this preview against the
-/// engine's actual charge). `placements` lists one entry PER ASSISTANT
-/// (Option B passes its area twice, plus the Telegram bonus area).
-/// `pub(crate)`: the Option-B picker reuses it for per-area fee marks so
-/// the picker and the option text can never disagree.
+/// `credit_placement_fees` pair makes. That engine fn is `pub(crate)` to
+/// yokohama-core (checked at the T6 review, 2026-07-21) and this crate may
+/// not widen it, so the mirror here plus the scratch-apply pin
+/// (`placement_fee_preview_matches_the_engine_charge`) IS the sourcing:
+/// drift from the engine's charge fails the test. `placements` lists one
+/// entry PER ASSISTANT (Option B passes its area twice, plus the Telegram
+/// bonus area). `pub(crate)`: the Option-B picker reuses it for per-area
+/// fee marks so the picker and the option text can never disagree.
 pub(crate) fn placement_fee_note(state: &GameState, placements: &[AreaId]) -> String {
     let me = state.current_player;
     let mut per_owner: std::collections::BTreeMap<PlayerId, u32> = std::collections::BTreeMap::new();

@@ -128,6 +128,10 @@ pub struct StepOutput {
     pub quit: bool,
 }
 
+/// One game-info menu row: the label the row shows and the render fn it
+/// dispatches to (see [`Repl::VIEW_MENU`]).
+type ViewEntry = (&'static str, fn(&mut Repl) -> StepOutput);
+
 impl Repl {
     pub fn new(session: crate::session::Session) -> Repl {
         // Restore a persisted lockdown (review §3): a session saved after a
@@ -852,26 +856,59 @@ impl Repl {
         }
     }
 
-    /// One entry per game-info surface: the label the menu shows, in menu
-    /// order. Indices into this array ARE the menu numbers, so the menu text
-    /// and the dispatch can't drift.
-    const VIEW_MENU: [&'static str; 10] = [
-        "Board — tiles, presidents, assistants, buildings",
-        "Players — every player's public holdings in full",
-        "Port offer — the order cards on display",
-        "Lab offer — the techs on display, with slot surcharges",
-        "Tracks — Church/Customs spaces (incl. the 2P dummy), Station, mercenary supply",
-        "Building sites — printed rewards, what's built and whose, adjacency",
-        "Goals — the achievement cards, claim VP, and per-player progress",
-        "Hand — the current player's order cards",
-        "Score — current VP and money",
-        "Log — the recent move/event trail",
+    /// One `(label, render)` pair per game-info surface, in menu order: the
+    /// label a row shows and the function that row dispatches to travel in
+    /// the same tuple, so relabeling, reordering, or adding a surface can't
+    /// desynchronize text from behavior (the array index is the menu
+    /// number). Each render fn is the SAME code path the surface's direct
+    /// command uses. NOTE this couples label to function only -- whether a
+    /// label's WORDING matches what its view renders remains a human
+    /// judgment (reviewed, not machine-checked).
+    const VIEW_MENU: [ViewEntry; 10] = [
+        ("Board — tiles, presidents, assistants, buildings", |r| r.board_cmd()),
+        ("Players — every player's public holdings in full", |r| {
+            let t = render::players_panel(r.session.state(), r.session.rules(), r.privacy);
+            r.out_view(t)
+        }),
+        ("Port offer — the order cards on display", |r| {
+            let t = render::ports_view(r.session.state(), r.session.rules());
+            r.out_view(t)
+        }),
+        ("Lab offer — the techs on display, with slot surcharges", |r| {
+            let t = render::labs_view(r.session.state(), r.session.rules());
+            r.out_view(t)
+        }),
+        ("Tracks — Church/Customs spaces (incl. the 2P dummy), Station, mercenary supply", |r| {
+            let t = render::tracks_view(r.session.state());
+            r.out_view(t)
+        }),
+        ("Building sites — printed rewards, what's built and whose, adjacency", |r| {
+            let t = render::sites_view(r.session.state(), r.session.rules());
+            r.out_view(t)
+        }),
+        ("Goals — the achievement cards, claim VP, and per-player progress", |r| {
+            let t = render::achievements_view(r.session.state(), r.session.rules());
+            r.out_view(t)
+        }),
+        ("Hand — the current player's order cards", |r| {
+            let t = r.hand_text();
+            r.out_view(t)
+        }),
+        ("Score — current VP and money", |r| {
+            let t = r.score_text();
+            r.out_view(t)
+        }),
+        ("Log — the recent move/event trail", |r| {
+            let t = r.log_tail();
+            r.out_view(t)
+        }),
     ];
 
     /// Game-info menu input (one-shot): a valid number closes the menu and
-    /// renders that surface through the SAME code path its direct command
-    /// uses; `cancel` closes it; anything else re-asks. Read-only -- no
-    /// state, record, or session field is ever touched from here.
+    /// dispatches that row's render fn from [`Self::VIEW_MENU`]; `cancel`
+    /// closes it; anything else re-asks. Read-only -- no state, record, or
+    /// session field is ever touched from here (`board_cmd`'s once-per-
+    /// session width-note flag is the sole, display-only exception).
     fn step_view_menu(&mut self, words: &[&str]) -> StepOutput {
         match words {
             ["cancel"] => {
@@ -880,41 +917,16 @@ impl Repl {
             }
             ["quit"] | ["q"] => StepOutput { text: "bye\n".to_string(), quit: true },
             [tok] if !tok.is_empty() && tok.chars().all(|c| c.is_ascii_digit()) => {
-                let Some(k) = tok.parse::<usize>().ok().filter(|&k| k < Self::VIEW_MENU.len()) else {
+                let Some(&(_, render_fn)) =
+                    tok.parse::<usize>().ok().and_then(|k| Self::VIEW_MENU.get(k))
+                else {
                     return self.out(
                         format!("! pick a number 0-{}, or 'cancel'", Self::VIEW_MENU.len() - 1),
                         false,
                     );
                 };
                 self.sub = SubPrompt::None;
-                match k {
-                    0 => self.board_cmd(),
-                    1 => {
-                        let t =
-                            render::players_panel(self.session.state(), self.session.rules(), self.privacy);
-                        self.out_view(t)
-                    }
-                    2 => {
-                        let t = render::ports_view(self.session.state(), self.session.rules());
-                        self.out_view(t)
-                    }
-                    3 => {
-                        let t = render::labs_view(self.session.state(), self.session.rules());
-                        self.out_view(t)
-                    }
-                    4 => self.out_view(render::tracks_view(self.session.state())),
-                    5 => {
-                        let t = render::sites_view(self.session.state(), self.session.rules());
-                        self.out_view(t)
-                    }
-                    6 => {
-                        let t = render::achievements_view(self.session.state(), self.session.rules());
-                        self.out_view(t)
-                    }
-                    7 => self.out_view(self.hand_text()),
-                    8 => self.out_view(self.score_text()),
-                    _ => self.out_view(self.log_tail()),
-                }
+                render_fn(self)
             }
             _ => self.out("! pick a numbered view, or 'cancel'".to_string(), false),
         }
@@ -1004,7 +1016,13 @@ impl Repl {
                     None => self.out("Illegal: that placement is not currently available.\n".to_string(), false),
                 }
             }
-            [tok] if !tok.is_empty() && tok.chars().all(|c| c.is_ascii_digit()) => {
+            // The gate admits the DISPLAYED id form too (`A03`/`a03`, SPOT-1)
+            // -- the directory and the Selected echo both print it, so the
+            // picker must accept what it shows.
+            [tok]
+                if !strip_area_prefix(tok).is_empty()
+                    && strip_area_prefix(tok).chars().all(|c| c.is_ascii_digit()) =>
+            {
                 let area = match parse_raw_area_token(tok) {
                     Ok(a) => a,
                     Err(e) => return self.out(format!("! {e}"), false),
@@ -1019,7 +1037,10 @@ impl Repl {
                 }
                 self.out(String::new(), false)
             }
-            _ => self.out("! toggle an area id, 'confirm', or 'cancel'".to_string(), false),
+            _ => self.out(
+                "! toggle an area id, 'confirm', or 'cancel' (cancel first to use views/help)".to_string(),
+                false,
+            ),
         }
     }
 
@@ -1242,8 +1263,8 @@ impl Repl {
             }
             SubPrompt::ViewMenu => {
                 let mut out = String::from("─ Game info ───────────────────────────\n");
-                for (i, entry) in Self::VIEW_MENU.iter().enumerate() {
-                    out.push_str(&format!("[{i}] {entry}\n"));
+                for (i, (label, _)) in Self::VIEW_MENU.iter().enumerate() {
+                    out.push_str(&format!("[{i}] {label}\n"));
                 }
                 out.push_str("> pick a number to open a view, or 'cancel'\n");
                 out
@@ -1540,27 +1561,38 @@ fn placement_area_directory(state: &GameState) -> String {
     out
 }
 
-/// Parse an area-id token with a friendly, non-panicking error: rejects
-/// non-numeric tokens and numbers outside AreaId's 0-17 range identically
-/// (a token like `"999999999999999999999"` fails `u8::parse`, not `unwrap`).
+/// Strip one optional leading `A`/`a` from an area token (SPOT-1): every
+/// display surface writes ids as `A03`, so every entry path — the pickers
+/// and the `a`/`b`/`m`/`r` grammars — accepts that displayed form too.
+fn strip_area_prefix(tok: &str) -> &str {
+    tok.strip_prefix(['A', 'a']).unwrap_or(tok)
+}
+
+/// Parse an area-id token (`3` or the displayed `A03`/`a03` form) with a
+/// friendly, non-panicking error: rejects non-numeric tokens and numbers
+/// outside AreaId's 0-17 range identically (a token like
+/// `"999999999999999999999"` fails `u8::parse`, not `unwrap`).
 fn parse_area_id(tok: &str) -> Result<AreaId, String> {
-    match tok.parse::<u8>().ok().and_then(|n| AreaId::try_new(n).ok()) {
+    match strip_area_prefix(tok).parse::<u8>().ok().and_then(|n| AreaId::try_new(n).ok()) {
         Some(id) => Ok(id),
         None => Err(format!("'{tok}' is not a valid area id (0-17)")),
     }
 }
 
-/// Parse an `m`-grammar area token into a raw, possibly off-board `AreaId`
-/// for legal-move membership testing. Unlike `parse_area_id`, values >=18
-/// are NOT rejected here as a range error -- `AreaId::unchecked` can't
-/// panic on them, so a destination like `99` reaches `try_assistant_move`'s
-/// `legal()` lookup and fails there with "not one of the legal assistant
-/// moves" (its options never include an area that isn't really on the
-/// board) instead of a separate, earlier range error. Only genuinely
-/// unparseable tokens (non-numeric, or too large for `u8`) are rejected
-/// here.
+/// Parse an `m`-grammar area token (`8` or the displayed `A08` form) into a
+/// raw, possibly off-board `AreaId` for legal-move membership testing.
+/// Unlike `parse_area_id`, values >=18 are NOT rejected here as a range
+/// error -- `AreaId::unchecked` can't panic on them, so a destination like
+/// `99` reaches `try_assistant_move`'s `legal()` lookup and fails there
+/// with "not one of the legal assistant moves" (its options never include
+/// an area that isn't really on the board) instead of a separate, earlier
+/// range error. Only genuinely unparseable tokens (non-numeric, or too
+/// large for `u8`) are rejected here.
 fn parse_raw_area_token(tok: &str) -> Result<AreaId, String> {
-    tok.parse::<u8>().map(AreaId::unchecked).map_err(|_| format!("'{tok}' is not a valid area number"))
+    strip_area_prefix(tok)
+        .parse::<u8>()
+        .map(AreaId::unchecked)
+        .map_err(|_| format!("'{tok}' is not a valid area number"))
 }
 
 /// The in-app `help` command's text. `pub` so the `guide_sync` integration
@@ -3128,6 +3160,87 @@ mod tests {
             r.session.record().events.last(),
             Some(RecordedEvent::Move(Move::PlaceThreeAreas { placements })) if placements.is_empty()
         ), "{:?}", r.session.record().events.last());
+    }
+
+    /// SPOT-1 regression: the picker accepts the id format it DISPLAYS --
+    /// the directory and Selected echo print `A03`, so `A03`/`a05` toggle
+    /// exactly like `3`/`5` (case-insensitive prefix), and the commit is the
+    /// same multiset.
+    #[test]
+    fn place_a_picker_accepts_the_displayed_area_id_format() {
+        let mut r = repl_2p(4);
+        r.step("0");
+        r.step("0"); // enter the Option A picker
+        let out = r.step("A03");
+        assert!(out.text.contains("Selected: A03"), "displayed-format toggle must work: {}", out.text);
+        let out = r.step("a05");
+        assert!(out.text.contains("Selected: A03, A05"), "lowercase prefix too: {}", out.text);
+        let out = r.step("A03"); // prefixed toggle-OFF must match the same area
+        assert!(out.text.contains("Selected: A05"), "prefixed re-toggle removes: {}", out.text);
+
+        let events_before = r.session.record().events.len();
+        let out = r.step("confirm");
+        assert!(!out.text.to_lowercase().contains("illegal"), "{}", out.text);
+        assert_eq!(r.session.record().events.len(), events_before + 1);
+        assert!(matches!(
+            r.session.record().events.last(),
+            Some(RecordedEvent::Move(Move::PlaceThreeAreas { placements }))
+                if placements.len() == 1 && placements.contains(&AreaId::new(5))
+        ), "{:?}", r.session.record().events.last());
+    }
+
+    /// SPOT-1 companion: the `a`/`b`/`m`/`r` grammars accept the displayed
+    /// `A<id>` form through the same shared prefix strip.
+    #[test]
+    fn grammars_accept_the_displayed_area_id_format() {
+        // `b A<id>` places, then `r A<id>:1` retreats with a count.
+        let mut r = repl_2p(4);
+        let area = drive_to_movement_with_on_board_assistants(&mut r);
+        let events_before = r.session.record().events.len();
+        let out = r.step(&format!("r A{:02}:1", area.0));
+        assert!(!out.text.contains("not in the legal list"), "{}", out.text);
+        assert_eq!(r.session.record().events.len(), events_before + 1);
+
+        // `a A.. a..` multiset-matches like bare ids.
+        let mut r2 = repl_2p(4);
+        r2.step("0");
+        let two = r2
+            .session
+            .legal()
+            .iter()
+            .find_map(|m| match m {
+                Move::PlaceThreeAreas { placements } if placements.len() == 2 => {
+                    Some((placements[0], placements[1]))
+                }
+                _ => None,
+            })
+            .expect("a 2-area Option A exists");
+        let out = r2.step(&format!("a A{:02} a{}", two.0.0, two.1.0));
+        assert!(!out.text.to_lowercase().contains("illegal"), "{}", out.text);
+        assert_eq!(r2.session.state().turn_phase, TurnPhase::Movement);
+
+        // `m A<from> A<to>` resolves the pending assistant-move choice.
+        let mut r3 = repl_2p(4);
+        let church = drive_to_double_assistant_move_cascade(&mut r3);
+        let out = r3.step(&format!("m A{:02} A09", church.0));
+        assert!(!out.text.to_lowercase().contains("illegal"), "{}", out.text);
+        assert_eq!(r3.session.state().pending_choices, vec![PendingChoice::AssistantMove]);
+    }
+
+    /// SPOT-2: the Option-A picker's refusal line says WHY commands are
+    /// unavailable and how to get out.
+    #[test]
+    fn place_a_picker_refusal_names_the_way_out() {
+        let mut r = repl_2p(4);
+        r.step("0");
+        r.step("0"); // enter the Option A picker
+        let out = r.step("help");
+        assert!(
+            out.text.contains("! toggle an area id, 'confirm', or 'cancel' (cancel first to use views/help)"),
+            "{}",
+            out.text
+        );
+        assert!(!out.text.contains("Commands:"), "help must not render mid-picker: {}", out.text);
     }
 
     /// An over-long selection (4 areas without Newspaper) survives toggling
