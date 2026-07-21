@@ -1,30 +1,35 @@
-//! Stage-3 worst-case battery (per-edit debug suite): the three-way
-//! pruning-soundness check on a CONSTRUCTED adversarial state on the real
-//! staggered topology, plus the affordability boundary cases the monotone-cutoff
-//! argument turns on.
+//! Stage-3 worst-case battery: the three-way pruning-soundness check on a
+//! CONSTRUCTED adversarial state on the real staggered topology, plus the
+//! affordability boundary cases the monotone-cutoff argument turns on.
 //!
-//! SCOPE / BOUND (Task 4, 2026-07-21 — honest, no silent cap). The BOARD is the
-//! real 4P staggered pyramid (Task 1), rows 6/5/4/3, with the Canal at a fully
+//! TWO TIERS (Task 4, 2026-07-21 — honest, no silent cap). The BOARD is the real
+//! 4P staggered pyramid (Task 1), rows 6/5/4/3, with the Canal at a fully
 //! interior cell — so its six brick neighbours plus nine any-to-any crossings
 //! form a COMPLETE K6 subgraph (all 15 pairs joined), the maximal staggered
-//! stress a board can present to the pruning enumerator. The adversarial STATE
-//! bounds the mover's own-assistant coverage to a dense-but-feasible induced
-//! subgraph: the TOP THREE pyramid rows (ids 0..=14 less the Canal = 14 areas),
-//! which contains the whole Canal K6 neighbourhood plus the dense upper core. It
-//! deliberately does NOT cover the full-density board (all 17 non-Canal areas
-//! steppable): the pruneless reference (`yokohama-oracle`'s `route_reference.rs`)
-//! enumerates ALL simple-path orderings, bounded only by the own-assistant step
-//! rule, so an assistants-everywhere 18-node staggered graph is combinatorially
-//! explosive BY CONSTRUCTION — measured ~47s in debug at full density vs ~4s on
-//! this bounded state. A queued independence-controlled follow-up will replace
-//! that DFS with an exact bitmask DP over (current, visited-set, toll-count)
-//! states, collapsing the ordering explosion; once landed the bound can be
-//! lifted. Recorded max label counts, all honest: 387 on this bounded state ·
-//! 405 on the old sparse 3x6 lattice · 519 on the infeasible full-density
-//! staggered board (printed by the battery). The bounded figure sits just below
-//! the old lattice's ONLY because the coverage is intentionally smaller, not
-//! because the geometry is sparser — at equal 15-area coverage the staggered
-//! board already outbranches it (417, measured).
+//! stress a board can present to the pruning enumerator. Two batteries assert the
+//! SAME three-way-equality property at different own-assistant coverage:
+//!
+//! - PER-EDIT SMOKE (`worst_case_smoke_battery_…`, NOT ignored): assistants cover
+//!   the Canal hub's complete six-tile neighbourhood (the whole interior K6) plus
+//!   the president's dense approach = 11 areas. Real staggered stress, enumerable
+//!   in ~0.5s, so it runs every edit. Recorded bound 183.
+//! - RELEASE GATE (`worst_case_battery_…` + `comparison_keys_…`, `#[ignore]`d):
+//!   assistants cover EVERY non-Canal area (all 17) — the true maximal stressor,
+//!   recorded bound 519. The pruneless reference (`yokohama-oracle`'s
+//!   `route_reference.rs`) enumerates ALL simple-path orderings, bounded only by
+//!   the own-assistant step rule, so an assistants-everywhere 18-node staggered
+//!   graph is combinatorially explosive BY CONSTRUCTION — ~47s debug / ~3s
+//!   release, hence a pre-merge gate run with `--ignored`. A queued
+//!   independence-controlled follow-up will replace that DFS with an exact
+//!   bitmask DP over (current, visited-set, toll-count) states, collapsing the
+//!   ordering explosion; once landed the maximal state becomes per-edit-feasible.
+//!
+//! Recorded max label counts, all honest: 183 (per-edit smoke) · 519 (release
+//! full density) · 405 (old sparse 3x6 lattice, lineage). The smoke figure is
+//! below the old lattice's ONLY because its coverage is intentionally smaller for
+//! speed, not because the staggered geometry is sparser — at equal coverage the
+//! staggered board outbranches the lattice (e.g. 417 at 15 areas, measured), and
+//! the release gate's 519 is the honest denser-graph maximum.
 //!
 //! This harness is openly implementation-aware (lib.rs header): states are
 //! hand-built from the public type constructors exactly like the engine's
@@ -36,11 +41,10 @@
 //!
 //! ANALYTIC-BOUND NOTE (plan mandate): guidingpath.md's Phase-3 section
 //! records `enumerate_president_routes` measured max ~16 labels ORGANICALLY
-//! (self-play measurement, not a bound). The constructed maximum printed by
-//! `worst_case_battery_three_way_equal_and_bound_recorded` is the adversarial
-//! counterpart. Both are printed; the test asserts three-way EQUALITY only —
-//! never against the organic figure, which is a measurement under a policy,
-//! not a property of the rules.
+//! (self-play measurement, not a bound). The constructed maxima printed by the
+//! two batteries are the adversarial counterpart. Both are printed; the tests
+//! assert three-way EQUALITY only — never against the organic figure, which is a
+//! measurement under a policy, not a property of the rules.
 
 //! PERF HISTORY (2026-07-20): the first battery run exposed a quadratic
 //! `dedup_moves` scan in the oracle — 2^17 retreat moves at this state made
@@ -49,9 +53,10 @@
 //! HashSet-keyed dedup (pinned semantically by the oracle's
 //! `dedup_moves_matches_quadratic_reference`). PERF UPDATE (2026-07-21, Task 1
 //! topology switch): the staggered graph's interior-Canal K6 makes the pruneless
-//! reference ~47s at full 17-area density, so the battery runs on the bounded
-//! 14-area state above (~4s). If it ever slows to MINUTES, suspect a dedup or
-//! enumeration regression on the 2^17-sized retreat family before the walks.
+//! reference ~47s at full 17-area density, so that maximal battery is the
+//! `#[ignore]`d release gate and the per-edit tier runs the 11-area smoke (~0.5s).
+//! If the smoke ever slows to MINUTES, suspect a dedup or enumeration regression
+//! on the 2^17-sized retreat family before the walks.
 
 use std::collections::BTreeMap;
 
@@ -220,85 +225,114 @@ fn tech_id(rules: &Rules, effect: TechEffect) -> yokohama_core::TechCardId {
         .expect("standard data carries the tech")
 }
 
-/// The adversarial 4p state (BOUNDED per the module SCOPE note): Canal at the
-/// interior cell (1,3)=AreaId(9) with all NINE any-to-any crossings, mover's
-/// president at corner (0,0). Mover assistants cover the TOP THREE pyramid rows
-/// — ids 0..=14 less the Canal = 14 own-assistant areas — which is the full
-/// Canal K6 neighbourhood ({3,4,8,10,13,14}) plus the dense upper core; the
-/// narrow bottom row (15/16/17) is deliberately left off so the pruneless
-/// reference's all-orderings walk stays feasible per-edit (see module SCOPE).
-/// Three opponent presidents sit on REACHABLE tiles for crossing-adjacent
-/// pass-through fee diversity: Canal flanks (0,3)=3 and (1,2)=8, plus the far
-/// reachable corner (2,0)=11. Money huge so no affordability cutoff ever bites
-/// (the boundary tests own the cutoff).
-fn worst_case_state() -> GameState {
-    let rows = row_lengths(4);
-    let canal_id = cell_to_area_id(WORST_CASE_CANAL.0, WORST_CASE_CANAL.1, &rows); // AreaId(9)
+/// Shared constructor: the worst-case staggered board, mover's president at the
+/// corner (0,0), own assistants on `assistant_ids`, three opponent presidents on
+/// `opponents` (REACHABLE tiles ⇒ crossing-adjacent pass-through fee diversity),
+/// money huge so no affordability cutoff bites (the boundary tests own that).
+fn worst_case_state_with(assistant_ids: &[u8], opponents: [u8; 3]) -> GameState {
     let mut s = movement_state(4, worst_case_board());
     s.players[0].president_location = PresidentLocation::OnBoard(AreaId::new(0)); // corner (0,0)
-    // Top three rows (rows 0-2 of the 6/5/4/3 pyramid) = ids 0..=14, less Canal.
-    for id in 0..15u8 {
-        let a = AreaId::new(id);
-        if a != canal_id {
-            s.players[0].assistants.on_board.insert(a, 1);
-        }
+    for &id in assistant_ids {
+        s.players[0].assistants.on_board.insert(AreaId::new(id), 1);
     }
-    s.players[1].president_location = PresidentLocation::OnBoard(AreaId::new(3));
-    s.players[2].president_location = PresidentLocation::OnBoard(AreaId::new(8));
-    s.players[3].president_location = PresidentLocation::OnBoard(AreaId::new(11));
+    for (i, &opp) in opponents.iter().enumerate() {
+        s.players[i + 1].president_location = PresidentLocation::OnBoard(AreaId::new(opp));
+    }
     s.players[0].money = 1_000;
     s
 }
 
-/// (a) + (b): the battery across Stagecoach/Postal on/off (plus one
-/// Tram+Station cell exercising the shared teleport surface), asserting FULL
-/// three-way equality (engine / pruned oracle / pruneless reference) on the
-/// bounded 14-area induced subgraph in every cell (module SCOPE note), and
-/// RECORDING the constructed maximum label count next to the organic ~16 claim
-/// (a measurement, not a bound — printed, never asserted against).
-#[test]
-fn worst_case_battery_three_way_equal_and_bound_recorded() {
-    let rules = Rules::standard();
-    let postal = tech_id(&rules, TechEffect::PostalSystem);
-    let stage = tech_id(&rules, TechEffect::Stagecoach);
-    let tram = tech_id(&rules, TechEffect::Tram);
-    let station = tech_id(&rules, TechEffect::Station);
-    let mut max_labels = 0usize;
-    let mut cases = 0usize;
+/// MAXIMAL release-tier state (used only behind `#[ignore]`, see module SCOPE):
+/// own assistants on EVERY non-Canal area (all 17), so the whole interior-Canal
+/// K6 is live and the mover can walk the entire pyramid. The true maximal
+/// route-label stressor — bound 519 — but the pruneless reference's all-orderings
+/// walk is ~47s in debug, so it runs as a release gate, not per-edit.
+fn worst_case_state() -> GameState {
+    let canal = cell_to_area_id(WORST_CASE_CANAL.0, WORST_CASE_CANAL.1, &row_lengths(4)).0;
+    let ids: Vec<u8> = (0..18u8).filter(|&id| id != canal).collect();
+    worst_case_state_with(&ids, [3, 8, 17])
+}
 
-    // Cell tech loadouts: the Stagecoach/Postal 2x2 plus one Tram+Station
-    // cell. The Station sits at (2,3)=AreaId(14), a far tile INSIDE the
-    // own-assistant subgraph (so the RULED §7.1-A1 Reading-2 assistant gate
-    // passes — it must be a covered area, not one of the bottom-row tips).
+/// FEASIBLE per-edit SMOKE state (see module SCOPE): own assistants on the Canal
+/// hub's COMPLETE six-tile neighbourhood {3,4,8,10,13,14} (the whole interior
+/// K6) plus the president's dense upper-row approach {0,1,2,6,7} = 11 areas. The
+/// K6 stays fully live (real staggered stress), while the walk space stays
+/// enumerable in ~1s so the three-way check runs every edit. Opponents on
+/// reachable Canal flanks (3, 8) + interior (7) for pass-through fee diversity.
+fn smoke_state() -> GameState {
+    worst_case_state_with(&[0, 1, 2, 3, 4, 6, 7, 8, 10, 13, 14], [3, 8, 7])
+}
+
+/// Run the Stagecoach/Postal 2x2 + one Tram+Station tech-matrix battery on
+/// `base`, asserting FULL three-way equality (engine / pruned oracle / pruneless
+/// reference) in every cell and returning the max label count. `station_at` must
+/// be a covered own-assistant area (RULED §7.1-A1 Reading-2 gate): AreaId(14), a
+/// far tile, is in BOTH the maximal and the smoke coverage.
+fn run_three_way_battery(base: &GameState, station_at: AreaId, rules: &Rules) -> usize {
+    let postal = tech_id(rules, TechEffect::PostalSystem);
+    let stage = tech_id(rules, TechEffect::Stagecoach);
+    let tram = tech_id(rules, TechEffect::Tram);
+    let station = tech_id(rules, TechEffect::Station);
     let cells: [(&str, Vec<yokohama_core::TechCardId>, Option<AreaId>); 5] = [
         ("plain", vec![], None),
         ("postal", vec![postal], None),
         ("stagecoach", vec![stage], None),
         ("postal+stagecoach", vec![postal, stage], None),
-        ("tram+station", vec![tram, station], Some(AreaId::new(14))),
+        ("tram+station", vec![tram, station], Some(station_at)),
     ];
-
-    for (name, techs, station_at) in cells {
-        let mut s = worst_case_state();
+    let mut max_labels = 0usize;
+    let mut cases = 0usize;
+    for (name, techs, station_loc) in cells {
+        let mut s = base.clone();
         s.players[0].technologies.extend(techs.iter().copied());
-        s.station_location = station_at;
-        let cmp = three_way_route_check(&s, &rules)
+        s.station_location = station_loc;
+        let cmp = three_way_route_check(&s, rules)
             .expect("constructed Movement state must qualify");
-        assert!(
-            !cmp.is_divergent(),
-            "{name}: three-way divergence on the bounded 14-area state: {:#?}",
-            cmp.diverged
-        );
+        assert!(!cmp.is_divergent(), "{name}: three-way divergence: {:#?}", cmp.diverged);
         assert!(cmp.label_count() > 0, "{name}: vacuously empty label set");
-        println!("worst-case cell {name}: {} labels (bounded 14-area induced subgraph)", cmp.label_count());
+        println!("  cell {name}: {} labels", cmp.label_count());
         max_labels = max_labels.max(cmp.label_count());
         cases += 1;
     }
-
     assert_eq!(cases, 5);
+    max_labels
+}
+
+/// RELEASE-GATE battery (maximal, `#[ignore]`d — the two-tier policy): FULL
+/// three-way equality on the full-density 17-area state in every tech cell,
+/// RECORDING the true maximal label bound (519). ~47s in debug (interior-Canal
+/// K6 × the all-orderings pruneless reference), so it runs with `-- --ignored`
+/// before merges/phase closes; the per-edit smoke below covers the same property
+/// fast. No silent cap — the three honest bounds are full-density 519 (here) ·
+/// the feasible smoke (below) · the old 3x6 lattice 405 (lineage). A queued
+/// bitmask-DP follow-up will make full density per-edit-feasible.
+#[test]
+#[ignore = "release gate (CLAUDE.md two-tier policy): full-density 17-area interior-Canal K6 (~47s pruneless walk, bound 519); run with --release before merges/phase closes"]
+fn worst_case_battery_three_way_equal_and_bound_recorded() {
+    let rules = Rules::standard();
+    let max_labels = run_three_way_battery(&worst_case_state(), AreaId::new(14), &rules);
     println!(
-        "CONSTRUCTED worst-case max label count: {max_labels} \
-         (organic claim, guidingpath Phase 3: enumerate_president_routes measured max ~16 labels)"
+        "CONSTRUCTED full-density worst-case max label count: {max_labels} \
+         (release gate; the per-edit smoke records its own bound; old 3x6 lattice was 405; \
+         organic self-play max ~16 — guidingpath Phase 3)"
+    );
+}
+
+/// PER-EDIT SMOKE battery (the debug tier of the worst case): the SAME FULL
+/// three-way equality property as the release gate above, on the feasible
+/// [`smoke_state`] (the complete interior-Canal K6 + president approach, 11
+/// areas), so it runs EVERY edit in ~1s. RECORDS its own bound. The maximal 519
+/// battery lives behind `#[ignore]` as a release gate; no silent cap — the three
+/// honest bounds are this smoke's max (printed) · full-density 519 · old lattice
+/// 405.
+#[test]
+fn worst_case_smoke_battery_three_way_equal_and_bound_recorded() {
+    let rules = Rules::standard();
+    let max_labels = run_three_way_battery(&smoke_state(), AreaId::new(14), &rules);
+    println!(
+        "CONSTRUCTED smoke worst-case max label count: {max_labels} \
+         (per-edit tier; release-gate full density = 519; old 3x6 lattice = 405; \
+         organic self-play max ~16 — guidingpath Phase 3)"
     );
 }
 
@@ -423,6 +457,7 @@ fn non_qualifying_states_return_none() {
 /// into the comparison keys (the check compares the LABEL family only) — a
 /// clean adversarial state's key sets are pure `route:` keys.
 #[test]
+#[ignore = "release gate (CLAUDE.md two-tier policy): runs on the full-density 17-area state (~10s pruneless walk); run with --release before merges/phase closes"]
 fn comparison_keys_are_route_labels_only() {
     let rules = Rules::standard();
     let cmp = three_way_route_check(&worst_case_state(), &rules).expect("qualifies");
