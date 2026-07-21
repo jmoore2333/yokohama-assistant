@@ -456,16 +456,47 @@ pub fn describe_move(mv: &Move, state: &GameState, rules: &Rules) -> String {
 /// take's printed price) went stale after the state it described moved on.
 /// `Session` (`apply`/`apply_standalone`/`load`) now calls this once per
 /// event, at the moment the event is folded, and caches the result.
+/// Plain-words label for a 5-Power token face (`2 copper`, `3 yen`, ...) --
+/// what the reveal echo shows the operator to eyeball against the physical
+/// token, and what the `log` view records, in place of the raw `{:?}` debug.
+pub fn five_power_effect_label(effect: FivePowerEffect) -> String {
+    match effect {
+        FivePowerEffect::ImportedGoods(n) => format!("{n} imported goods"),
+        FivePowerEffect::Copper(n) => format!("{n} copper"),
+        FivePowerEffect::Silk(n) => format!("{n} silk"),
+        FivePowerEffect::Tea(n) => format!("{n} tea"),
+        FivePowerEffect::Seafood(n) => format!("{n} seafood"),
+        FivePowerEffect::Money(n) => format!("{n} yen"),
+    }
+}
+
+/// Comma-joined `O<id>` codes for a reveal group (`(none)` when empty, a
+/// defensive case that shouldn't occur in real play).
+fn join_order_ids(cards: &[OrderCardId]) -> String {
+    let ids: Vec<String> = cards.iter().map(|c| format!("O{:02}", c.0)).collect();
+    if ids.is_empty() { "(none)".to_string() } else { ids.join(", ") }
+}
+
 pub fn describe_recorded_event(ev: &RecordedEvent, state: &GameState, rules: &Rules) -> String {
     match ev {
         RecordedEvent::Move(mv) => describe_move(mv, state, rules),
-        RecordedEvent::RevealOrders(cards) => format!("reveal orders: {} card(s)", cards.len()),
-        RecordedEvent::RevealTechs(cards) => format!("reveal techs: {} card(s)", cards.len()),
+        // Carry the card ids, not just a count, so the `log` view is an audit
+        // trail: an operator can read back exactly which physical cards were
+        // recorded and catch a mis-entry the desync guard structurally cannot
+        // (review §3 -- the guard proves the engine placed what was typed, not
+        // that what was typed matches the table).
+        RecordedEvent::RevealOrders(cards) => {
+            format!("reveal orders: {}", join_order_ids(cards))
+        }
+        RecordedEvent::RevealTechs(cards) => {
+            let ids: Vec<String> = cards.iter().map(|c| format!("T{:02}", c.0)).collect();
+            format!("reveal techs: {}", if ids.is_empty() { "(none)".to_string() } else { ids.join(", ") })
+        }
         RecordedEvent::RevealStartingOrder { player, card } => {
             format!("reveal starting order: P{} = O{:02}", player.0, card.0)
         }
         RecordedEvent::RevealFivePowerToken { area, effect } => {
-            format!("reveal 5-power at A{:02}: {:?}", area.0, effect)
+            format!("reveal 5-power token at A{:02}: {}", area.0, five_power_effect_label(*effect))
         }
     }
 }
@@ -524,6 +555,44 @@ mod tests {
         let some_area = *state.board_layout.areas.keys().next().unwrap();
         let label = area_label(&state, some_area);
         assert!(label.contains(&format!("(A{:02})", some_area.0)), "{label}");
+    }
+
+    #[test]
+    fn five_power_effect_label_reads_as_plain_goods() {
+        // One label per token face; the amounts match parse_token_letter's map.
+        assert_eq!(five_power_effect_label(FivePowerEffect::ImportedGoods(1)), "1 imported goods");
+        assert_eq!(five_power_effect_label(FivePowerEffect::Copper(2)), "2 copper");
+        assert_eq!(five_power_effect_label(FivePowerEffect::Silk(2)), "2 silk");
+        assert_eq!(five_power_effect_label(FivePowerEffect::Tea(3)), "3 tea");
+        assert_eq!(five_power_effect_label(FivePowerEffect::Seafood(3)), "3 seafood");
+        assert_eq!(five_power_effect_label(FivePowerEffect::Money(3)), "3 yen");
+    }
+
+    #[test]
+    fn reveal_event_descriptions_carry_the_recorded_card_ids_for_audit() {
+        let state = state_2p();
+        let rules = Rules::standard();
+        // Orders and techs list every recorded id (review §3: the `log` view is
+        // the operator's audit trail against a mis-entry the guard can't catch).
+        let orders = describe_recorded_event(
+            &RecordedEvent::RevealOrders(vec![OrderCardId(5), OrderCardId(17)]),
+            &state,
+            &rules,
+        );
+        assert_eq!(orders, "reveal orders: O05, O17", "{orders}");
+        let techs = describe_recorded_event(
+            &RecordedEvent::RevealTechs(vec![TechCardId(3)]),
+            &state,
+            &rules,
+        );
+        assert_eq!(techs, "reveal techs: T03", "{techs}");
+        // The other two reveal kinds already carried their identity; keep it.
+        let token = describe_recorded_event(
+            &RecordedEvent::RevealFivePowerToken { area: AreaId::new(2), effect: FivePowerEffect::Copper(2) },
+            &state,
+            &rules,
+        );
+        assert!(token.contains("A02") && token.contains("2 copper"), "{token}");
     }
 
     #[test]

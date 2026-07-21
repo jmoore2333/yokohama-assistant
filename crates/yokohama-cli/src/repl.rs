@@ -92,14 +92,27 @@ pub struct StepOutput {
 
 impl Repl {
     pub fn new(session: crate::session::Session) -> Repl {
+        // Restore a persisted lockdown (review §3): a session saved after a
+        // desync/invariant fault carries `record.lockdown`, so a reload comes
+        // back locked instead of silently playable again.
+        let locked = session.is_locked();
         Repl {
             session,
             page: 0,
             pending: Pending::None,
-            locked: false,
+            locked,
             sub: SubPrompt::None,
             board_width_note_shown: false,
         }
+    }
+
+    /// Engage a lockdown: flip the in-memory `locked` flag AND persist the
+    /// `reason` into the record (so it survives save/reload -- review §3),
+    /// returning any autosave-failure warning to append to the caller's output.
+    /// Every site that sets `locked` goes through here so the two never drift.
+    pub(crate) fn engage_lockdown(&mut self, reason: String) -> Option<String> {
+        self.locked = true;
+        self.session.lock_down(reason)
     }
 
     /// The whole prompt screen for the current state: header line, options
@@ -107,6 +120,13 @@ impl Repl {
     /// options are numbered by their GLOBAL 0-based index into
     /// `session.legal()`, 20 per page.
     pub fn prompt(&self) -> String {
+        // A locked session (including one reloaded from a persisted lockdown --
+        // review §3) shows only its lockdown status: the numbered options can't
+        // be used, so rendering them would mislead. `step` allows just
+        // save/log/quit from here.
+        if self.locked {
+            return self.lockdown_status();
+        }
         let state = self.session.state();
         let phase_text = match state.pending_choices.first() {
             Some(head) => {
@@ -360,8 +380,18 @@ impl Repl {
     }
 
     pub(crate) fn lockdown_status(&self) -> String {
+        // Surface the persisted reason (review §3) when one is recorded, so a
+        // reloaded locked session tells the operator WHY it locked, not just
+        // that it did. A directly-forced test lock has no recorded reason.
+        let reason = self
+            .session
+            .record()
+            .lockdown
+            .as_deref()
+            .map(|r| format!(" [{r}]"))
+            .unwrap_or_default();
         format!(
-            "{} turn {} | seed {} | {} logged event(s) -- only 'save', 'log', 'quit' available\n",
+            "{}{reason} turn {} | seed {} | {} logged event(s) -- only 'save', 'log', 'quit' available\n",
             paint(Tone::Warn, "[locked]"),
             self.session.state().turn_number,
             self.session.record().seed,
@@ -898,9 +928,13 @@ impl Repl {
                 (self.out(text, false), true)
             }
             Err(ApplyError::Invariant(msg)) => {
-                self.locked = true;
+                let warning = self.engage_lockdown(format!("invariant violation: {msg}"));
                 let mut text = format!("{}\n", paint(Tone::Warn, &format!("LOCKDOWN -- {msg}")));
                 text.push_str(&self.lockdown_dump());
+                if let Some(w) = warning {
+                    text.push_str(&w);
+                    text.push('\n');
+                }
                 (self.out(text, false), false)
             }
             // T13 rider (final-review cheap batch): a dedicated arm instead

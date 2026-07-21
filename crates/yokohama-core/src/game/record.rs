@@ -93,6 +93,17 @@ pub struct GameRecord {
     /// individually valid).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub terminal_digest: Option<String>,
+    /// CLI live-tracking session metadata (NOT part of the replayable game
+    /// history — it never affects `replay`/`replay_strict`, which read only
+    /// seed/config/choices/events/observations). `Some(reason)` once the
+    /// interactive driver locked the session after a desync or invariant fault
+    /// (`yokohama-cli`'s `Repl`); the operator's driver refuses all further play
+    /// and only allows save/log/quit. Persisted here so a lockdown SURVIVES
+    /// save → quit → reload instead of silently clearing (review §3): the driver
+    /// restores its `locked` flag from this on load. `None` = not locked (and
+    /// the serde default for records written before the field existed).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lockdown: Option<String>,
 }
 
 impl GameRecord {
@@ -113,6 +124,7 @@ impl GameRecord {
             events: Vec::new(),
             setup_observations: None,
             terminal_digest: None,
+            lockdown: None,
         }
     }
 

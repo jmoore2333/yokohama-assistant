@@ -88,7 +88,12 @@ impl Repl {
             // gracefully (not `unreachable!()`) rather than risk a panic.
             Pending::None => self.out(String::new(), false),
             Pending::OrderReveals { mv, slots, board_b, mut collected } => {
-                match parse_order_reveal(words, &self.session.state().order_deck, &collected) {
+                match parse_order_reveal(
+                    words,
+                    &self.session.state().order_deck,
+                    &self.session.state().orders_removed,
+                    &collected,
+                ) {
                     Ok(card) => {
                         collected.push(card);
                         if collected.len() == slots.len() {
@@ -120,7 +125,21 @@ impl Repl {
                 }
             }
             Pending::TokenReveal { mv, area } => match parse_token_letter(words) {
-                Ok(effect) => self.finish_apply(mv, vec![RecordedEvent::RevealFivePowerToken { area, effect }]),
+                Ok(effect) => {
+                    // Echo the recorded face so a mis-entry is visible immediately
+                    // (review §3): the token reveal has no post-apply desync guard
+                    // -- the letter picks WHICH goods the take grants, so a wrong
+                    // letter silently changes resources -- and no guard could
+                    // catch it (nothing on the board pins the face). Showing it
+                    // back, with the `undo` recourse, is the honest defense.
+                    let echo = format!(
+                        "Recorded 5-Power token at {}: {}. Check it against the physical token; `undo` if mis-entered.\n",
+                        describe::area_label(self.session.state(), area),
+                        describe::five_power_effect_label(effect),
+                    );
+                    let out = self.finish_apply(mv, vec![RecordedEvent::RevealFivePowerToken { area, effect }]);
+                    StepOutput { text: format!("{echo}{}", out.text), quit: out.quit }
+                }
                 Err(msg) => {
                     self.pending = Pending::TokenReveal { mv, area };
                     self.out(format!("{msg}\n{}", self.reveal_prompt()), false)
@@ -164,14 +183,11 @@ impl Repl {
         if matches_board {
             return out;
         }
-        self.locked = true;
+        let warning = self.engage_lockdown(
+            "desync: revealed order card(s) did not match the board after applying".to_string(),
+        );
         StepOutput {
-            text: format!(
-                "{}{}\n{}",
-                out.text,
-                paint(Tone::Warn, DESYNC_BANNER),
-                self.lockdown_status(),
-            ),
+            text: lockdown_text(&out.text, &self.lockdown_status(), warning),
             quit: false,
         }
     }
@@ -204,17 +220,27 @@ impl Repl {
         if matches_board {
             return out;
         }
-        self.locked = true;
+        let warning = self.engage_lockdown(
+            "desync: revealed tech card was not on the board after applying".to_string(),
+        );
         StepOutput {
-            text: format!(
-                "{}{}\n{}",
-                out.text,
-                paint(Tone::Warn, DESYNC_BANNER),
-                self.lockdown_status(),
-            ),
+            text: lockdown_text(&out.text, &self.lockdown_status(), warning),
             quit: false,
         }
     }
+}
+
+/// Assemble a desync-lockdown message: the prior output, the CRITICAL banner,
+/// the lockdown status line, and a persist-autosave-failure warning if the
+/// lockdown couldn't be written to disk (review §3: the lockdown is persisted
+/// on lock, and a failed persist must stay visible, not be swallowed).
+fn lockdown_text(prior: &str, status: &str, persist_warning: Option<String>) -> String {
+    let mut text = format!("{prior}{}\n{status}", paint(Tone::Warn, DESYNC_BANNER));
+    if let Some(w) = persist_warning {
+        text.push_str(&w);
+        text.push('\n');
+    }
+    text
 }
 
 /// Shared by both desync guards -- one banner, painted `Warn` as a unit so
@@ -262,9 +288,20 @@ pub(crate) fn claimed_token_area(before: &GameState, after: &GameState) -> Optio
     })
 }
 
-/// Parse one order-reveal answer: a real numeric id, currently in `deck`,
-/// and not already in `collected` (a card can't be drawn twice in one refill).
-pub(crate) fn parse_order_reveal(words: &[&str], deck: &[OrderCardId], collected: &[OrderCardId]) -> Result<OrderCardId, String> {
+/// Parse one order-reveal answer: a real numeric id, still UNREVEALED (in the
+/// live deck OR the boxed/removed pile), and not already in `collected` (a card
+/// can't be drawn twice in one refill). The removed pile counts because at
+/// 2p/3p the seeded deck/removed split among the ~18 boxed cards is fiction --
+/// the true top-of-deck card can be one the seeded guess parked in
+/// `orders_removed`; `GameState::arrange_orders_on_top` exchanges it into the
+/// deck on apply (conservation-by-exchange; see its doc), so the operator must
+/// be allowed to name it here. Only a card in NEITHER pile is a genuine desync.
+pub(crate) fn parse_order_reveal(
+    words: &[&str],
+    deck: &[OrderCardId],
+    removed: &[OrderCardId],
+    collected: &[OrderCardId],
+) -> Result<OrderCardId, String> {
     if words.len() != 1 {
         return Err("Enter exactly one order-card code (e.g. 'O17' or '17'), or 'cancel'.".to_string());
     }
@@ -276,8 +313,10 @@ pub(crate) fn parse_order_reveal(words: &[&str], deck: &[OrderCardId], collected
     if collected.contains(&card) {
         return Err(format!("O{n:02} was already recorded for this reveal."));
     }
-    if !deck.contains(&card) {
-        return Err(format!("O{n:02} is not currently in the order deck."));
+    if !deck.contains(&card) && !removed.contains(&card) {
+        return Err(format!(
+            "O{n:02} is not an unrevealed order card (not in the deck or the boxed/removed pile)."
+        ));
     }
     Ok(card)
 }
@@ -397,6 +436,51 @@ mod tests {
         assert_eq!(replay(r.session.record(), r.session.rules()).unwrap(), *r.session.state());
     }
 
+    /// Review §3 blocker 2 (the live gate is unrunnable): at 2p, ~18 of 36
+    /// order cards are boxed face-down at setup, so the engine's `order_deck`
+    /// is a seeded guess and the true top-of-deck card can be one the guess
+    /// parked in `orders_removed`. The operator, revealing what physically
+    /// refilled the Port, must be able to type THAT card. Before the
+    /// conservation-by-exchange fix the reveal was refused ("not currently in
+    /// the order deck") and re-prompted forever; now it is exchanged into the
+    /// deck, drawn, and lands on the board, conserving the 36-card multiset.
+    #[test]
+    fn live_port_reveal_accepts_a_card_the_seeded_setup_boxed() {
+        let (mut r, _others) = live_repl();
+        // Same walk to a Port-A take as live_port_take_...; see its comment.
+        let port_area = *r.session.state().board_layout.areas.iter()
+            .find(|(_, c)| c.area_type == AreaType::PortA).unwrap().0;
+        r.step("0");
+        r.step(&format!("a {}", port_area.0));
+        let k = r.session.legal().iter().position(|m| matches!(
+            m, Move::PlacePresident { destination } if *destination == port_area
+        )).expect("PlacePresident at Port A is legal from hand at game start");
+        r.step(&k.to_string());
+        let take = r.session.legal().iter().position(|m| matches!(
+            m, Move::ExecuteAreaAction { action: AreaAction::Port { cards_taken, .. } } if cards_taken.len() == 1
+        )).expect("1-card port take available");
+        let out = r.step(&take.to_string());
+        assert!(out.text.to_lowercase().contains("slot"), "{}", out.text);
+        // A physically-real order card the seeded setup boxed: in orders_removed,
+        // never in the deck (conservation makes the two piles disjoint).
+        let boxed = *r.session.state().orders_removed.iter()
+            .find(|c| !r.session.state().order_deck.contains(c))
+            .expect("2p setup boxes ~18 order cards into orders_removed");
+        assert!(!r.session.state().order_deck.contains(&boxed));
+        let events_before = r.session.record().events.len();
+        let out = r.step(&format!("O{}", boxed.0));
+        // Accepted (not refused), applied without a desync lock, and the boxed
+        // card the operator revealed is now physically on the Port A board.
+        assert!(!out.text.to_lowercase().contains("not currently in the order deck"),
+            "truthful reveal of a boxed card was refused: {}", out.text);
+        assert!(!out.text.contains("CRITICAL"), "{}", out.text);
+        assert_eq!(r.session.record().events.len(), events_before + 2, "RevealOrders + Move: {}", out.text);
+        assert!(r.session.state().port_state.port_a.slots.contains(&Some(boxed)),
+            "the revealed boxed card is now on Port A");
+        // The record still replays exactly (conservation + reveal fold agree).
+        assert_eq!(replay(r.session.record(), r.session.rules()).unwrap(), *r.session.state());
+    }
+
     /// Task 13 test (c), second half: `lock_on_order_desync` must skip its
     /// check because the apply did NOT succeed (`applied = false`), not
     /// because the formatted text happened to contain the substring
@@ -432,6 +516,29 @@ mod tests {
         let out = r.lock_on_tech_desync(wrong_card, false, out, true);
         assert!(r.locked, "a typed card absent from the board must lock the session");
         assert!(out.text.contains("CRITICAL"), "{}", out.text);
+    }
+
+    /// Review §3: a desync lockdown must SURVIVE save -> quit -> reload. The
+    /// `locked` flag lived only on the `Repl` before this fix, so a reloaded
+    /// session silently came back UNLOCKED and playable. Now the reason is
+    /// persisted into `GameRecord.lockdown` and the driver restores `locked`
+    /// from it on load.
+    #[test]
+    fn a_desync_lockdown_survives_save_and_reload() {
+        let (mut r, _others) = live_repl();
+        // Force a desync lock via the tech guard (a card never on any board).
+        let out = StepOutput { text: String::new(), quit: false };
+        let out = r.lock_on_tech_desync(TechCardId(200), false, out, true);
+        assert!(r.locked && out.text.contains("CRITICAL"), "guard must lock: {}", out.text);
+        // Persist and reload through the real save/load path.
+        let path = std::env::temp_dir().join(format!("yokohama_lockdown_{}.json", std::process::id()));
+        r.session.save(&path).unwrap();
+        let reloaded = Session::load(&path, Rules::standard()).unwrap();
+        let r2 = Repl::new(reloaded);
+        std::fs::remove_file(&path).ok();
+        assert!(r2.locked, "a desync lockdown must survive reload, not silently clear");
+        // The reason is preserved for the operator/postmortem, not just the flag.
+        assert!(r2.session.record().lockdown.is_some(), "the lockdown reason must be persisted");
     }
 
     /// `lock_on_tech_desync`'s no-op path, mirroring
@@ -512,17 +619,20 @@ mod tests {
     #[test]
     fn parse_order_reveal_never_panics_on_junk_and_rejects_correctly() {
         let deck = vec![OrderCardId(5), OrderCardId(9)];
+        let boxed = vec![OrderCardId(30)]; // physically real, boxed at setup
         let none: Vec<OrderCardId> = vec![];
-        assert!(parse_order_reveal(&[], &deck, &none).is_err()); // empty input line
-        assert!(parse_order_reveal(&["O"], &deck, &none).is_err());
-        assert!(parse_order_reveal(&["O99999"], &deck, &none).is_err()); // overflows u8
-        assert!(parse_order_reveal(&["🎉"], &deck, &none).is_err());
-        assert!(parse_order_reveal(&["O1"], &deck, &none).is_err()); // valid code, not in deck
-        assert!(parse_order_reveal(&["O5", "O9"], &deck, &none).is_err()); // too many tokens
-        assert_eq!(parse_order_reveal(&["O5"], &deck, &none), Ok(OrderCardId(5)));
-        assert_eq!(parse_order_reveal(&["9"], &deck, &none), Ok(OrderCardId(9))); // bare digits, no 'O'
+        assert!(parse_order_reveal(&[], &deck, &boxed, &none).is_err()); // empty input line
+        assert!(parse_order_reveal(&["O"], &deck, &boxed, &none).is_err());
+        assert!(parse_order_reveal(&["O99999"], &deck, &boxed, &none).is_err()); // overflows u8
+        assert!(parse_order_reveal(&["🎉"], &deck, &boxed, &none).is_err());
+        assert!(parse_order_reveal(&["O1"], &deck, &boxed, &none).is_err()); // valid code, in neither pile
+        assert!(parse_order_reveal(&["O5", "O9"], &deck, &boxed, &none).is_err()); // too many tokens
+        assert_eq!(parse_order_reveal(&["O5"], &deck, &boxed, &none), Ok(OrderCardId(5)));
+        assert_eq!(parse_order_reveal(&["9"], &deck, &boxed, &none), Ok(OrderCardId(9))); // bare digits, no 'O'
+        // A boxed/removed card is a valid reveal (conservation-by-exchange):
+        assert_eq!(parse_order_reveal(&["O30"], &deck, &boxed, &none), Ok(OrderCardId(30)));
         let already = vec![OrderCardId(5)];
-        assert!(parse_order_reveal(&["O5"], &deck, &already).is_err(), "a card can't be drawn twice");
+        assert!(parse_order_reveal(&["O5"], &deck, &boxed, &already).is_err(), "a card can't be drawn twice");
     }
 
     #[test]

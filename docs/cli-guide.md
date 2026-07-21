@@ -179,9 +179,9 @@ After each applied move the tool prints a **delta summary** — what changed (mo
 
 In live mode, whenever a move would draw hidden cards, the tool **does not apply it yet** — it asks what physically appeared:
 
-- **Port take** → for each refilled slot, right-to-left (the physical refill order): `What card is now in slot N (Zone)? Enter as 'O<id>' or '<id>'`. Type the order card's **corner number**.
-- **Lab take** → the one refilled tech slot: enter `T<id>` or a **name prefix** (e.g. `postal`). A prefix that matches both copies of a title still in the deck resolves automatically to the lowest matching id — the two copies are identical, so tracking is unaffected. (This is the opposite of the *wizard*, which rejects an ambiguous prefix, because setup records which *physical* card sits where — §3.6, §8.2.)
-- **5-Power token** (taken at 5 power) → one letter for the face-down token you flipped: `i` = 1 Imported Good, `c` = 2 Copper, `s` = 2 Silk, `t` = 3 Tea, `f` = 3 Seafood, `y` = 3 Yen.
+- **Port take** → for each refilled slot, right-to-left (the physical refill order): `What card is now in slot N (Zone)? Enter as 'O<id>' or '<id>'`. Type the order card's **corner number**. Any real, still-hidden order card is accepted — including one boxed face-down at setup (at 2–3 players most of the 36-card deck is never seen): the tool cannot know the true deck order, so it trusts the table and reconciles its hidden model to match. A truthful card is never refused for being one the tool "didn't expect"; only a card that is already face-up elsewhere, or not a real order card, is rejected.
+- **Lab take** → the one refilled tech slot: enter `T<id>` or a **name prefix** (e.g. `postal`). A prefix that matches both copies of a title still in the deck resolves automatically to the lowest matching id — the two copies are identical, so tracking is unaffected. (This is the opposite of the *wizard*, which rejects an ambiguous prefix, because setup records which *physical* card sits where — §3.6, §8.2.) Techs are never boxed at setup, so a tech that is not in the deck is a genuine mismatch and is refused.
+- **5-Power token** (taken at 5 power) → one letter for the face-down token you flipped: `i` = 1 Imported Good, `c` = 2 Copper, `s` = 2 Silk, `t` = 3 Tea, `f` = 3 Seafood, `y` = 3 Yen. The tool echoes the recorded face back (`Recorded 5-Power token at Copper Mine (A03): 2 copper`) so you can check it against the physical token.
 - `cancel` at any of these aborts the move entirely (nothing is applied or recorded); `quit`/`q` also exit the program from a reveal prompt, discarding the parked (un-applied) move the same way.
 
 While one of these prompts is showing, everything you type is read as the answer to it, not as a command — numbered picks, `m`, and view commands like `board` don't work until the reveal is answered, or you `cancel` (or `quit`/`q`, which exits and discards the parked move). (These prompts are unrelated to the choice banner and `m` grammar in §4/§5: reveals are about typing in what physically appeared on a hidden card or token, not about deciding between options the engine already knows.)
@@ -190,13 +190,15 @@ Once all reveals are typed, the move + reveals commit **as one atomic unit** —
 
 **Hidden starting orders:** when an opponent's starting order becomes public at the table (they fulfill it), enter `reveal <seat> O<n>` — e.g. `reveal 1 O23` → `Seat 1 revealed O23 as their starting order.`
 
-**Desync guard:** after applying, the tool verifies the typed cards are really where the board says. If not, you'll see:
+**Catching your own typos.** Nothing can detect that you typed the *wrong* real card — enter `O16` for a slot that physically shows `O17` and the tool faithfully records `O16`. Two things let you catch it yourself: every reveal is echoed as it applies (and the token face is spelled out, above), and the `log` view lists the exact card ids recorded for each reveal event, so you can read them back against the table. When you spot a mis-entry, `undo` removes the whole move-and-reveal group so you can re-enter it.
+
+**Desync guard.** After a reveal applies, the tool re-reads the board and confirms the engine placed the revealed card where it said it would. Because the engine places exactly the card you typed, this is an *internal* consistency check — a tripwire for a driver/engine bug, **not** a check that your entry matched the table (that is what the echo and `log` above are for). If it ever fails you'll see:
 
 ```
 CRITICAL: desync detected -- the revealed card(s) do not match the board after applying the move. Session locked.
 ```
 
-A locked session accepts only `save`, `log`, and `quit`. This means tracked state and reality have diverged (mis-entry somewhere upstream, or a tool bug). **Save immediately** and report with the file (§9).
+A locked session accepts only `save`, `log`, and `quit`, and the lockdown is **persisted**: it survives `save` → quit → reload (the reason is written into the save file and restored on load), so a desynced game can never be reopened as if nothing were wrong. **Save immediately** and report with the file (§9).
 
 ## 7. Save, load, undo
 

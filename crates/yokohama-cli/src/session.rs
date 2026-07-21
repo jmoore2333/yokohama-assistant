@@ -426,6 +426,24 @@ impl Session {
         Ok(delta)
     }
 
+    /// Record a desync/invariant lockdown so it PERSISTS across save/reload
+    /// (review §3): stamp `record.lockdown` with `reason` and autosave, so the
+    /// lockdown is durable even if the operator quits without a manual save.
+    /// The driver (`Repl`) keeps its own in-memory `locked` flag in step and
+    /// restores it from `record.lockdown` on load. Returns an autosave-failure
+    /// warning line if the persist write failed (`save_path` set but unwritable),
+    /// so the caller can surface it. Idempotent: re-locking overwrites the reason.
+    pub fn lock_down(&mut self, reason: String) -> Option<String> {
+        self.record.lockdown = Some(reason);
+        self.autosave()
+    }
+
+    /// Whether a lockdown was recorded (a desync/invariant fault). Read by the
+    /// driver to restore its `locked` flag after `load`.
+    pub fn is_locked(&self) -> bool {
+        self.record.lockdown.is_some()
+    }
+
     /// Replay-prefix undo of the last group (design §5.4): a trailing
     /// `Move` takes its contiguous immediately-preceding bound reveals
     /// (`RevealOrders`/`RevealTechs`/`RevealFivePowerToken`) with it; a
