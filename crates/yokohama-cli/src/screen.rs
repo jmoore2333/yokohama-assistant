@@ -74,6 +74,15 @@ pub fn banner() -> &'static str {
 "#
 }
 
+/// Whether `wrap` will actually compose a frame around `repl`'s next body --
+/// i.e. whether the board and legend are already on screen above it. The
+/// single source of truth for that question: `wrap` short-circuits on exactly
+/// this, and `Repl::board_cmd` suppresses its own board on exactly this (I5),
+/// so the two can never disagree about whether a board is already visible.
+pub(crate) fn frame_active(repl: &Repl) -> bool {
+    enabled() && repl.composed
+}
+
 /// Compose the full TTY frame around `body` (a step's delta/error lines +
 /// prompt block), or return `body` unchanged when frames are off (piped
 /// mode, or toggled off via the `screen` command). The board and panel are
@@ -81,7 +90,7 @@ pub fn banner() -> &'static str {
 /// always a truthful picture of the state the prompt below it offers moves
 /// against.
 pub fn wrap(repl: &Repl, body: &str) -> String {
-    if !enabled() || !repl.composed {
+    if !frame_active(repl) {
         return body.to_string();
     }
     let state = repl.session.state();
@@ -250,6 +259,137 @@ mod tests {
             let rows = frame.lines().count();
             assert!(rows <= 50, "the {n}P opening frame is {rows} rows; 50 is the documented height");
         }
+    }
+
+    /// A frame over a deliberately WIDE game position: turn 99, 3-digit
+    /// money and VP, 2-digit goods on every seat, and whatever `mutate` adds
+    /// (a pending-choice head, a phase, a lockdown). Built through
+    /// `for_test_from_state` because no short legal move sequence reaches a
+    /// 199-VP mid-game position, and the width bound has to hold there.
+    fn loaded_repl(n: u8, mutate: impl FnOnce(&mut GameState)) -> Repl {
+        let rules = Rules::standard();
+        let pending = new_game(GameConfig::for_player_count(n), &rules, 7).unwrap();
+        let mut state =
+            finalize_setup(pending, &vec![StartingOrderChoice::Keep(0); n as usize]).unwrap();
+        state.turn_number = 99;
+        for p in &mut state.players {
+            p.money = 199;
+            p.victory_points = 199;
+            p.copper = 15;
+            p.silk = 15;
+            p.tea = 15;
+            p.seafood = 15;
+            p.imported_goods = 15;
+        }
+        mutate(&mut state);
+        Repl::new(Session::for_test_from_state(state, rules))
+    }
+
+    /// Every frame the width pin below has to hold for, labelled so a
+    /// failure names WHICH screen blew the bound.
+    fn worst_case_frames(n: u8) -> Vec<(String, String)> {
+        let mut out = Vec::new();
+        force(true);
+        let opening = repl_np(n);
+        out.push(("opening".to_string(), wrap(&opening, &opening.prompt())));
+
+        for phase in [TurnPhase::Placement, TurnPhase::Movement, TurnPhase::Building] {
+            let r = loaded_repl(n, |s| s.turn_phase = phase);
+            out.push((format!("loaded {phase:?}"), wrap(&r, &r.prompt())));
+        }
+
+        // Every pending-choice head: the banner text is the longest thing
+        // that ever lands in the header's phase slot.
+        for choice in [
+            PendingChoice::AnyGood,
+            PendingChoice::WarehouseTake,
+            PendingChoice::AssistantMove,
+            PendingChoice::ChurchSpace { total_faith: 11 },
+            PendingChoice::CustomsSpace { cost: 4 },
+            PendingChoice::RecoveryLeave,
+            PendingChoice::StationPlace,
+        ] {
+            let label = format!("loaded choice {choice:?}");
+            let r = loaded_repl(n, |s| {
+                s.turn_phase = TurnPhase::AreaAction;
+                // A full queue, so the "N choices pending" tail is at its
+                // widest too.
+                s.pending_choices = vec![choice; 4];
+            });
+            out.push((label, wrap(&r, &r.prompt())));
+        }
+
+        // Lockdown: the status line replaces the whole prompt, and it
+        // carries a recorded desync reason.
+        let mut locked = loaded_repl(n, |_| {});
+        locked.engage_lockdown(
+            "desync: revealed order card(s) did not match the board after applying".to_string(),
+        );
+        // `prompt()` IS the lockdown status line once `locked` is set -- pass
+        // it, or this case measures an empty body and proves nothing.
+        out.push(("lockdown".to_string(), wrap(&locked, &locked.prompt())));
+
+        force(false);
+        out
+    }
+
+    /// I6 (third review): the frame had a `<= 50` HEIGHT pin and nothing at
+    /// all on WIDTH, so two runtime lines had quietly grown past the 140
+    /// columns guide §2 promises clears every layout -- the Movement prompt
+    /// hint at 142, and the pending-choice status line at 150, which split
+    /// the goods block mid-token (`i0` rendering as `i` with a stray
+    /// `0 | hand 1` below it, reading as corrupted state). Measured on the
+    /// same composed frame the height pin measures, over the widest
+    /// positions the driver can actually show.
+    #[test]
+    fn frame_fits_one_hundred_forty_columns_at_every_player_count() {
+        for n in [2u8, 3, 4] {
+            for (label, frame) in worst_case_frames(n) {
+                let over: Vec<(usize, &str)> = frame
+                    .lines()
+                    .map(|l| (visible_width(l), l))
+                    .filter(|(w, _)| *w > 140)
+                    .collect();
+                assert!(
+                    over.is_empty(),
+                    "the {n}P '{label}' frame has {} line(s) past the documented 140 columns: {over:#?}",
+                    over.len()
+                );
+            }
+        }
+    }
+
+    /// Organic companion to the constructed worst cases above: a constructed
+    /// state is only ever as wide as its author imagined, so walk a real
+    /// 4-player game and hold the same bound on every frame it draws. This is
+    /// what covers the OPTION lines real play produces -- movement routes
+    /// naming three fee recipients, build options carrying a site's printed
+    /// reward, the longest area labels -- none of which the fixtures force.
+    #[test]
+    fn every_frame_of_a_real_game_walk_fits_one_hundred_forty_columns() {
+        let mut r = repl_np(4);
+        force(true);
+        let mut steps = 0usize;
+        while !r.session.is_over() && steps < 250 {
+            let frame = wrap(&r, &r.prompt());
+            let over: Vec<(usize, &str)> =
+                frame.lines().map(|l| (visible_width(l), l)).filter(|(w, _)| *w > 140).collect();
+            assert!(over.is_empty(), "at move {steps} the frame ran past 140 columns: {over:#?}");
+            let legal = r.session.legal();
+            if legal.is_empty() {
+                break;
+            }
+            // Rotate through the list rather than always taking [0], so the
+            // walk reaches positions with buildings, techs and orders in
+            // them instead of replaying one degenerate line.
+            let mv = legal[steps % legal.len()].clone();
+            if r.session.apply(mv, Vec::new()).is_err() {
+                break;
+            }
+            steps += 1;
+        }
+        force(false);
+        assert!(steps > 100, "the walk must actually reach mid-game positions, only got {steps} moves");
     }
 
     /// `panel` hides/shows the players panel inside the frame; `screen`

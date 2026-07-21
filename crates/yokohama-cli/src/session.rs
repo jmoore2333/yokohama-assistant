@@ -170,7 +170,11 @@ impl Session {
     /// missing or different from this build's `SEMANTICS_REV` REFUSES the
     /// load (`Err`) -- the record describes a game under executable
     /// semantics this build no longer plays, and rebuilding it here would
-    /// resume a game on rules or a board it was never played on. An
+    /// resume a game on rules or a board it was never played on. A
+    /// `terminal_digest` the rebuilt state fails to reproduce refuses on the
+    /// same grounds (I2): it is the only field that can catch a tampered or
+    /// corrupted SETUP input, since everything else in the record is an
+    /// input to the rebuild rather than a check on its result. An
     /// engine_version or rules_hash drift stays lenient: the load succeeds
     /// and the drift comes back in `load_warnings` for the caller to show.
     pub fn load(path: &std::path::Path, rules: Rules) -> Result<Session, String> {
@@ -286,6 +290,38 @@ impl Session {
         debug_assert_eq!(event_descriptions.len(), record.events.len());
 
         check_invariants(&state, &rules)?;
+
+        // The third provenance REFUSAL (I2, third review). `save` stamps
+        // `terminal_digest` from the state it is saving
+        // (`stamp_terminal_digest`), and nothing here read it back: the loop
+        // above rebuilds state event-by-event rather than calling
+        // `replay_strict`, which is where core's own digest check lives
+        // (record.rs). That left the whole SETUP half of a record
+        // unprotected -- `load` reconstructs from `seed` + `config` +
+        // `choices`, so editing `seed` alone in an otherwise clean save
+        // replays with zero errors, passes `check_invariants` (a different
+        // board is still a structurally valid board), and resumes the game
+        // on tiles that are not the ones on the table. The digest is the
+        // only field that can see that, because it is the only one computed
+        // from the finished state rather than from the inputs. Guarded on
+        // `Some` so a record written before `save` stamped one still loads;
+        // a record that CLAIMS a terminal state and cannot reproduce it is
+        // refused, on the same grounds and through the same channel as the
+        // `semantics_rev` refusal above.
+        if let Some(expected_digest) = &record.terminal_digest {
+            let actual_digest = yokohama_core::state_digest(&state);
+            if &actual_digest != expected_digest {
+                return Err(format!(
+                    "this save records terminal-state digest {expected_digest}, but its own seed, \
+                     setup and {} recorded event(s) replay to {actual_digest} -- the file has been \
+                     edited or corrupted since it was written, so resuming it would continue the \
+                     game from a position (and possibly a board) it never recorded. Start a new \
+                     game; a save that cannot reproduce its own recorded state cannot be resumed.",
+                    record.events.len(),
+                ));
+            }
+        }
+
         let mode = if record.setup_observations.is_some() { TrackingMode::Live } else { TrackingMode::Simulation };
         Ok(Session {
             rules,
@@ -516,7 +552,11 @@ impl Session {
     /// `for_test_from_state` session (Task 13: previously a hand-kept
     /// CLI-side mirror of `replay`'s own fold loop, `replay_from_checkpoint`;
     /// now both paths share the one fold core exposes).
-    pub fn undo(&mut self) -> Result<(), String> {
+    ///
+    /// Returns the same warning-line vector `apply` does (empty on success,
+    /// one line when the post-undo autosave failed) so the caller can put it
+    /// on SCREEN -- see the comment at the autosave call below.
+    pub fn undo(&mut self) -> Result<Vec<String>, String> {
         let mut record = self.record.clone();
         match record.events.pop() {
             None => return Err("nothing to undo".to_string()),
@@ -546,14 +586,14 @@ impl Session {
         debug_assert_eq!(self.event_descriptions.len(), record.events.len());
         self.record = record;
         self.state = state;
-        // autosave failure must stay visible, but `undo`'s signature is
-        // pinned by the Task-11 REPL (which matches on `Ok(())`) -- eprintln
-        // is a known last-resort wart here, not a design choice; logged for
-        // the final whole-branch review rather than redesigned around.
-        if let Some(warning) = self.autosave() {
-            eprintln!("{warning}");
-        }
-        Ok(())
+        // An autosave failure here means the on-disk record still holds the
+        // move that was just undone, so it has to be SEEN. It used to go to
+        // stderr because this signature was `Result<(), String>`; the
+        // composed frame (which opens with clear-screen + home) then made
+        // stderr unreadable, so the signature moved instead -- warnings ride
+        // back on `Ok` exactly as they do out of `apply`, and the REPL
+        // appends them to the text it prints (I3, third review).
+        Ok(self.autosave().into_iter().collect())
     }
 
     pub fn final_scores(&self) -> Vec<(PlayerId, u32)> {
@@ -1028,6 +1068,75 @@ mod tests {
             err.to_lowercase().contains("start a new game"),
             "the refusal must say WHAT to do next: {err}"
         );
+    }
+
+    /// I2 (third review). `save` stamps a `terminal_digest` of the state its
+    /// events fold to; `load` has to CHECK it. It rebuilds state from
+    /// `seed` + `config` + `choices` + events rather than deserializing one,
+    /// so any tampering with the setup inputs -- `seed` most sharply --
+    /// replays perfectly cleanly, passes `check_invariants` (a different
+    /// board is still a structurally valid board), and silently resumes the
+    /// game on a board that is not the one on the table. The digest is the
+    /// only thing in the record that can notice.
+    #[test]
+    fn load_refuses_a_record_whose_terminal_digest_does_not_match_the_replay() {
+        let s = sim_2p(4);
+        let path = saved_with_json_edit(&s, "digest_seed", |v| {
+            // Only the seed -- every other field, including the digest, is
+            // exactly what this build wrote.
+            let seed = v["seed"].as_u64().expect("seed is a number");
+            v["seed"] = serde_json::json!(seed + 1);
+        });
+
+        let err = match Session::load(&path, Rules::standard()) {
+            Err(e) => e,
+            Ok(_) => panic!("a record whose replay does not reproduce its stamped digest must be refused"),
+        };
+        std::fs::remove_file(&path).ok();
+
+        assert!(err.contains("digest"), "the refusal must name what mismatched: {err}");
+        assert!(
+            err.to_lowercase().contains("start a new game"),
+            "the refusal must say WHAT to do next, like the semantics_rev one: {err}"
+        );
+    }
+
+    /// The digest check must not become a load-refusal machine: a save this
+    /// build just wrote loads, and a record with no digest at all (written
+    /// before `save` stamped one) still loads -- the check is guarded on
+    /// `Some`, so it can only ever reject a record that CLAIMS a terminal
+    /// state and then fails to reproduce it.
+    #[test]
+    fn load_accepts_a_clean_save_and_a_record_with_no_terminal_digest() {
+        let s = sim_2p(4);
+
+        let clean = saved_with_json_edit(&s, "digest_clean", |_| {});
+        let loaded = Session::load(&clean, Rules::standard()).expect("a clean save must still load");
+        assert_eq!(loaded.state().turn_number, s.state().turn_number);
+        std::fs::remove_file(&clean).ok();
+
+        let digestless = saved_with_json_edit(&s, "digest_missing", |v| {
+            v.as_object_mut().unwrap().remove("terminal_digest");
+        });
+        Session::load(&digestless, Rules::standard()).expect("a record with no digest must still load");
+        std::fs::remove_file(&digestless).ok();
+    }
+
+    /// The digest covers the EVENTS too, not just the setup inputs: a save
+    /// with real moves in it, replayed and re-stamped, still matches -- and
+    /// the check survives the round trip that `apply`'s autosave performs on
+    /// every move of a live game.
+    #[test]
+    fn load_verifies_the_digest_across_a_record_with_events() {
+        let mut s = sim_2p(4);
+        for _ in 0..3 {
+            let mv = s.legal()[0].clone();
+            s.apply(mv, Vec::new()).unwrap();
+        }
+        let path = saved_with_json_edit(&s, "digest_events", |_| {});
+        let loaded = Session::load(&path, Rules::standard()).expect("a real played save must load");
+        assert_eq!(loaded.record().events.len(), 3);
+        std::fs::remove_file(&path).ok();
     }
 
     /// I-1's companion for the two provenance checks that stay LENIENT: an

@@ -11,9 +11,9 @@
 //!
 //! The driver is adaptive: it reads each prompt and answers it (random
 //! numbered pick from what is SHOWN, one toggled area + confirm in the
-//! Option-A picker, max recovery in the guided retreat, Enter on forced
-//! options), with a hard input cap so a regression can never hang the
-//! suite.
+//! Option-A picker, one typed area id + confirm in the Option-B picker,
+//! max recovery in the guided retreat, Enter on forced options), with a
+//! hard input cap so a regression can never hang the suite.
 //!
 //! TIER: release gate. This ran per-edit from its introduction until
 //! 2026-07-21 (T6 review), then moved to the release tier per the repo's
@@ -103,6 +103,26 @@ fn area_ids(screen: &str) -> Vec<u8> {
     out
 }
 
+/// The eligible area ids listed by the Option-B picker, read from its OWN
+/// listing block only (between the `(by id):` header and the `Selected:`
+/// echo). Scanning the whole screen would also pick up ids out of the
+/// previous step's delta lines, which are not necessarily eligible here --
+/// the picker would refuse them and the driver would spin.
+fn option_b_area_ids(screen: &str) -> Vec<u8> {
+    let start = match screen.find(OPTION_B_HEADER) {
+        Some(i) => i + OPTION_B_HEADER.len(),
+        None => return Vec::new(),
+    };
+    let rest = &screen[start..];
+    let end = rest.find("Selected:").unwrap_or(rest.len());
+    area_ids(&rest[..end])
+}
+
+/// The Option-B picker's header line (C1: areas are addressed by id, and the
+/// list carries no `[N]` numbering at all, so the generic numbered-pick
+/// fallback below cannot answer this prompt).
+const OPTION_B_HEADER: &str = "Option B — place 2 assistants in one area (by id):";
+
 /// The `[0-N]` max of a guided-retreat question.
 fn recover_max(screen: &str) -> Option<u32> {
     let start = screen.rfind("[0-")? + 3;
@@ -154,6 +174,15 @@ fn full_piped_2p_game_runs_plain_to_winner() {
             if screen.contains("confirm places no assistants") {
                 let ids = area_ids(&screen);
                 assert!(!ids.is_empty(), "picker directory must list areas:\n{screen}");
+                ids[rng.gen_range(0..ids.len())].to_string()
+            } else {
+                "confirm".to_string()
+            }
+        } else if screen.contains(OPTION_B_HEADER) {
+            // Option-B picker (C1): type an eligible area id, then confirm.
+            if screen.contains("Selected: (none)") {
+                let ids = option_b_area_ids(&screen);
+                assert!(!ids.is_empty(), "Option-B picker must list eligible areas:\n{screen}");
                 ids[rng.gen_range(0..ids.len())].to_string()
             } else {
                 "confirm".to_string()

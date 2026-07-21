@@ -10,7 +10,7 @@ use crate::input::parse_order_id;
 use crate::reveal::{claimed_token_area, lab_b_changed, refilled_port_slots, Pending};
 use crate::session::{ApplyError, TrackingMode};
 use crate::style::{paint, Tone};
-use crate::{describe, render};
+use crate::{describe, render, screen};
 
 /// One REPL turn's worth of state layered over a `Session`: which options
 /// page is showing, any in-progress live-mode reveal collection, and
@@ -108,10 +108,14 @@ pub(crate) enum SubPrompt {
     /// against the legal list. `max_areas` is display guidance only -- the
     /// legal-list match stays the sole authority.
     PlaceA { selected: Vec<AreaId>, max_areas: usize },
-    /// Placement Option B picker: a numbered pick over the unique eligible
-    /// areas; choosing one commits its single variant directly or opens a
-    /// `Pick` over that area's Telegram-bonus variants.
-    PlaceB { areas: Vec<AreaId> },
+    /// Placement Option B picker: `areas` are the unique eligible areas,
+    /// addressed BY AREA ID exactly as they are displayed (C1, third review
+    /// -- a list index here silently placed in the wrong area for every id
+    /// past the Canal). `selected` holds the id typed so far so the screen
+    /// can preview the move before `confirm` commits it (or opens a `Pick`
+    /// over that area's Telegram-bonus variants), mirroring Option A's
+    /// select -> preview -> confirm shape.
+    PlaceB { areas: Vec<AreaId>, selected: Option<AreaId> },
     /// The `view` game-info menu (owner scope item 10, discoverability): a
     /// ONE-SHOT numbered menu over the read-only state views -- picking a
     /// number renders that surface and closes the menu. Purely an entry
@@ -174,19 +178,28 @@ impl Repl {
             return self.lockdown_status();
         }
         let state = self.session.state();
-        let phase_text = match state.pending_choices.first() {
-            Some(head) => {
-                let n = state.pending_choices.len();
-                format!(
+        // The pending-choice banner gets its OWN line rather than the
+        // header's phase slot (I6, third review): inlined, it pushed the
+        // header to 150 columns past the documented 140, and the terminal
+        // wrapped it mid-token -- the goods block's `i0` rendering as `i`
+        // with a stray `0 | hand 1` underneath, which reads as corrupted
+        // state rather than as a wrapped line. Split, both lines sit inside
+        // the bound at every player count, and the banner is if anything
+        // more prominent on a line of its own.
+        let mut out = render::prompt_header(state, describe::phase_name(state.turn_phase));
+        out.push('\n');
+        if let Some(head) = state.pending_choices.first() {
+            let n = state.pending_choices.len();
+            out.push_str(&paint(
+                Tone::Prompt,
+                &format!(
                     "Choose: {} — {n} choice{} pending",
                     describe::describe_pending_choice(head, state, self.session.rules()),
                     if n == 1 { "" } else { "s" },
-                )
-            }
-            None => describe::phase_name(state.turn_phase).to_string(),
-        };
-        let mut out = render::prompt_header(state, &phase_text);
-        out.push('\n');
+                ),
+            ));
+            out.push('\n');
+        }
         if self.session.is_over() {
             out.push_str("game over — commands only\n");
         } else {
@@ -261,7 +274,10 @@ impl Repl {
         match state.turn_phase {
             TurnPhase::Placement => format!("> enter a number, 'a'/'b' for placement, {TAIL}\n"),
             TurnPhase::Movement => {
-                format!("> enter a number, 'r' to retreat (or the numbered retreat entry for guided recovery), {TAIL}\n")
+                // Deliberately terser than the other two clauses: at 142
+                // columns this was the longest line the driver ever printed,
+                // past the 140 the guide promises (I6, third review).
+                format!("> enter a number, 'r' to retreat (the numbered retreat entry is guided), {TAIL}\n")
             }
             TurnPhase::AdditionalActionFirst
             | TurnPhase::AreaAction
@@ -356,9 +372,17 @@ impl Repl {
                 self.out(String::new(), false)
             }
             ["undo"] => match self.session.undo() {
-                Ok(()) => {
+                Ok(warnings) => {
                     self.page = 0;
-                    self.out("Undid last entry.\n".to_string(), false)
+                    // Warnings ride the same visible channel `apply`'s delta
+                    // lines and the load warnings use -- the frame erases
+                    // anything printed outside this text (I3).
+                    let mut text = String::from("Undid last entry.\n");
+                    for w in warnings {
+                        text.push_str(&w);
+                        text.push('\n');
+                    }
+                    self.out(text, false)
                 }
                 Err(e) => self.out(format!("Cannot undo: {e}\n"), false),
             },
@@ -456,6 +480,13 @@ impl Repl {
     /// on the board's OWN rendered width (all grid rows share one width, so
     /// the first line's column count is it), never on the terminal size (std
     /// exposes none). `&mut self` only to flip the once-per-session flag.
+    ///
+    /// Inside a composed frame this prints NO board at all (I5, third
+    /// review): `screen::wrap` puts the grid and the legend above every body,
+    /// so emitting them again cost 62 rows at 4 players in a 140x50 terminal
+    /// and scrolled the top of the real board away -- the F3 overflow, back
+    /// via the first row of the `view` menu. The width note still fires there
+    /// (it is about the terminal, not about this command's output).
     fn board_cmd(&mut self) -> StepOutput {
         let grid = render::board_grid(self.session.state());
         let width = grid.lines().next().map(|l| l.chars().count()).unwrap_or(0);
@@ -467,9 +498,14 @@ impl Repl {
                 "(board is {width} columns wide — widen the terminal if rows shear; guide §2)\n"
             ));
         }
-        text.push_str(&grid);
-        text.push_str(&render::board_legend(self.session.state()));
-        text.push('\n');
+        if screen::frame_active(self) {
+            text.push_str("(the board and its legend are already above — the frame redraws them every turn.)\n");
+            text.push_str("(type 'screen' for plain scrolling output instead.)\n");
+        } else {
+            text.push_str(&grid);
+            text.push_str(&render::board_legend(self.session.state()));
+            text.push('\n');
+        }
         self.out_view(text)
     }
 
@@ -477,15 +513,20 @@ impl Repl {
         // Surface the persisted reason (review §3) when one is recorded, so a
         // reloaded locked session tells the operator WHY it locked, not just
         // that it did. A directly-forced test lock has no recorded reason.
+        //
+        // The reason gets its OWN line (I6, third review): inlined between
+        // the marker and the turn/seed counters it ran the status line to 157
+        // columns -- past the documented 140 -- and a desync lockdown is
+        // precisely the moment the operator must be able to READ the screen.
         let reason = self
             .session
             .record()
             .lockdown
             .as_deref()
-            .map(|r| format!(" [{r}]"))
+            .map(|r| format!("  reason: {r}\n"))
             .unwrap_or_default();
         format!(
-            "{}{reason} turn {} | seed {} | {} logged event(s) -- only 'save', 'log', 'quit' available\n",
+            "{} turn {} | seed {} | {} logged event(s) -- only 'save', 'log', 'quit' available\n{reason}",
             paint(Tone::Warn, "[locked]"),
             self.session.state().turn_number,
             self.session.record().seed,
@@ -521,8 +562,12 @@ impl Repl {
                 )
             }
             Some(PromptOption::PlacementB { areas }) => {
-                self.sub = SubPrompt::PlaceB { areas };
-                self.out(String::new(), false)
+                self.sub = SubPrompt::PlaceB { areas, selected: None };
+                self.out(
+                    "Option B — type the id of the area to place 2 assistants in, then 'confirm'."
+                        .to_string(),
+                    false,
+                )
             }
             Some(PromptOption::MoveFrom { from, moves }) => {
                 let from_label = match from {
@@ -1054,9 +1099,13 @@ impl Repl {
         }
     }
 
-    /// Option-B picker input: a number picks the k-th eligible area; its
-    /// single legal variant commits directly, while a multi-variant area
-    /// (Telegram owner) opens a numbered pick over those exact variants.
+    /// Option-B picker input: an area id (bare `15` or the displayed `A15`)
+    /// SELECTS that area -- addressed by id, never by list position (C1) --
+    /// and the screen previews the move it assembles; `confirm` then commits
+    /// its single legal variant, or opens a numbered pick over a
+    /// multi-variant area's (Telegram owner's) exact variants. The
+    /// select-then-confirm shape is Option A's, and it is what makes a
+    /// mis-typed id visible before anything reaches the record.
     fn step_place_b(&mut self, words: &[&str]) -> StepOutput {
         match words {
             ["cancel"] => {
@@ -1065,49 +1114,80 @@ impl Repl {
                 self.out("Placement cancelled — back to the main options.".to_string(), false)
             }
             ["quit"] | ["q"] => StepOutput { text: "bye\n".to_string(), quit: true },
-            [tok] if !tok.is_empty() && tok.chars().all(|c| c.is_ascii_digit()) => {
-                let picked: Result<AreaId, usize> = match &self.sub {
-                    SubPrompt::PlaceB { areas } => {
-                        let n = areas.len();
-                        tok.parse::<usize>().ok().and_then(|k| areas.get(k).copied()).ok_or(n)
+            ["confirm"] => {
+                let area = match &self.sub {
+                    SubPrompt::PlaceB { selected: Some(area), .. } => *area,
+                    SubPrompt::PlaceB { selected: None, .. } => {
+                        return self.out("! select an area id first, or 'cancel'".to_string(), false)
                     }
                     _ => return self.out(String::new(), false),
                 };
-                match picked {
-                    Ok(area) => {
-                        let mut variants: Vec<Move> = self
-                            .session
-                            .legal()
-                            .into_iter()
-                            .filter(|m| matches!(m, Move::PlaceTwoSameArea { area: a, .. } if *a == area))
-                            .collect();
-                        match variants.len() {
-                            0 => {
-                                // Unreachable from a live entry (areas came from
-                                // this same legal list); defensive fall-back.
-                                self.sub = SubPrompt::None;
-                                self.page = 0;
-                                self.out("Illegal: that placement is not currently available.\n".to_string(), false)
-                            }
-                            1 => {
-                                self.sub = SubPrompt::None;
-                                self.page = 0;
-                                self.commit(variants.pop().unwrap())
-                            }
-                            _ => {
-                                let title = format!(
-                                    "Placement in {} — choose the Telegram bonus",
-                                    describe::area_label(self.session.state(), area)
-                                );
-                                self.enter_pick_subprompt(title, variants)
-                            }
-                        }
+                let mut variants = self.place_b_variants(area);
+                match variants.len() {
+                    0 => {
+                        // Unreachable from a live entry (areas came from this
+                        // same legal list); defensive fall-back.
+                        self.sub = SubPrompt::None;
+                        self.page = 0;
+                        self.out("Illegal: that placement is not currently available.\n".to_string(), false)
                     }
-                    Err(n) => self.out(format!("! pick a number 0-{}, or 'cancel'", n.saturating_sub(1)), false),
+                    1 => {
+                        self.sub = SubPrompt::None;
+                        self.page = 0;
+                        self.commit(variants.pop().unwrap())
+                    }
+                    _ => {
+                        let title = format!(
+                            "Placement in {} — choose the Telegram bonus",
+                            describe::area_label(self.session.state(), area)
+                        );
+                        self.enter_pick_subprompt(title, variants)
+                    }
                 }
             }
-            _ => self.out("! pick a numbered area, or 'cancel'".to_string(), false),
+            // The DISPLAYED id form (`A15`/`a15`) and the bare number mean the
+            // same area, through the same `strip_area_prefix` path every other
+            // entry surface uses (SPOT-1's rule, applied to the fifth path).
+            [tok]
+                if !strip_area_prefix(tok).is_empty()
+                    && strip_area_prefix(tok).chars().all(|c| c.is_ascii_digit()) =>
+            {
+                let area = match parse_raw_area_token(tok) {
+                    Ok(a) => a,
+                    Err(e) => return self.out(format!("! {e}"), false),
+                };
+                let eligible = match &self.sub {
+                    SubPrompt::PlaceB { areas, .. } => areas.contains(&area),
+                    _ => return self.out(String::new(), false),
+                };
+                if !eligible {
+                    return self.out(
+                        format!("! A{:02} is not one of the eligible areas — pick one listed above", area.0),
+                        false,
+                    );
+                }
+                if let SubPrompt::PlaceB { selected, .. } = &mut self.sub {
+                    *selected = Some(area);
+                }
+                self.out(String::new(), false)
+            }
+            _ => self.out(
+                "! type an area id, 'confirm', or 'cancel' (cancel first to use views/help)".to_string(),
+                false,
+            ),
         }
+    }
+
+    /// Every legal `PlaceTwoSameArea` in `area` (one, unless a Telegram owner
+    /// also has adjacent-bonus variants). Shared by the Option-B picker's
+    /// preview line and its `confirm`, so what the screen promises and what
+    /// commits are read off the same legal list.
+    fn place_b_variants(&self, area: AreaId) -> Vec<Move> {
+        self.session
+            .legal()
+            .into_iter()
+            .filter(|m| matches!(m, Move::PlaceTwoSameArea { area: a, .. } if *a == area))
+            .collect()
     }
 
     /// Guided retreat input. During the per-area questions a valid count
@@ -1262,13 +1342,33 @@ impl Repl {
                 out.push_str("> type an area id to toggle, 'confirm' to place, or 'cancel'\n");
                 out
             }
-            SubPrompt::PlaceB { areas } => {
-                let mut out = String::from("Option B — place 2 assistants in one area:\n");
-                for (i, area) in areas.iter().enumerate() {
+            SubPrompt::PlaceB { areas, selected } => {
+                // Listed BY ID, with no `[i]` numbering at all (C1): the only
+                // thing on screen that can be typed here is an area id, so
+                // there is no second numbering to confuse it with.
+                let mut out = String::from("Option B — place 2 assistants in one area (by id):\n");
+                for area in areas {
                     let fee = describe::placement_fee_note(state, &[*area, *area]);
-                    out.push_str(&format!("[{i}] {}{fee}\n", describe::area_label(state, *area)));
+                    out.push_str(&format!("  {}{fee}\n", describe::area_label(state, *area)));
                 }
-                out.push_str("> pick a numbered area, or 'cancel'\n");
+                // Live legality preview on the SELECTED id, read off the same
+                // legal list `confirm` commits from -- Option A's `-> legal —`
+                // precedent, and the reason a mis-typed id is now visible
+                // before it reaches the record.
+                let (selection_text, verdict) = match selected {
+                    None => ("(none)".to_string(), "type an area id to preview the placement".to_string()),
+                    Some(area) => {
+                        let variants = self.place_b_variants(*area);
+                        let verdict = match variants.len() {
+                            0 => "NOT currently offered (pick another area)".to_string(),
+                            1 => format!("legal — {}", describe::describe_move(&variants[0], state, rules)),
+                            n => format!("legal — {n} Telegram bonus variants (confirm to choose one)"),
+                        };
+                        (format!("A{:02}", area.0), verdict)
+                    }
+                };
+                out.push_str(&format!("Selected: {selection_text}\n  -> {verdict}\n"));
+                out.push_str("> type an area id, 'confirm' to place, or 'cancel'\n");
                 out
             }
             SubPrompt::ViewMenu => {
@@ -1617,7 +1717,7 @@ Commands:
   b <id> t <adj>  Placement Option B with the Telegram bonus: +1 assistant in an adjacent area
   m <from> <to>   resolve a pending assistant-move choice (<from> is 'hand' or an area id)
   r [id[:n]]...   Movement Option B: retreat the President, recovering all (bare id) or n assistants per area ('r' alone recovers none)
-  board           show the area grid (legend: * = unclaimed 5-Power token)
+  board           show the area grid — the composed screen already has it above (legend: * = unclaimed 5-Power token)
   players         show each player's resources, hand, tech, tokens, President
   ports           show both Port boards and the order-deck size
   labs            show both Laboratory boards (each tech's country + effect) and the tech-deck size
@@ -1735,6 +1835,67 @@ mod tests {
         let mut r = repl_2p(4);
         let out = r.step("board");
         assert!(!out.text.contains("columns wide"), "{}", out.text);
+    }
+
+    /// I5 (third review): inside the composed frame the board is ALREADY on
+    /// screen -- `wrap` re-renders it above every body -- so `board` must not
+    /// emit a second copy. It used to emit the grid plus a second legend, 62
+    /// rows at 4 players in a 140x50 terminal, losing 12 rows off the top:
+    /// exactly the overflow F3 fixed on this branch, reachable again from the
+    /// first entry of the `view` menu. In plain (piped / `screen` off) mode
+    /// there is no frame, so `board` must still print the grid.
+    #[test]
+    fn board_command_does_not_duplicate_the_board_inside_the_composed_frame() {
+        let mut r = repl_np(4, 7);
+        screen::force(true);
+        let out = r.step("board");
+        screen::force(false);
+        assert!(
+            !out.text.contains('┌'),
+            "the frame already shows the board; the body must not repeat it:\n{}",
+            out.text
+        );
+        assert!(
+            out.text.contains("already above"),
+            "and it must say where the board is instead: {}",
+            out.text
+        );
+    }
+
+    /// I5's other half: with frames off (a piped run, or `screen` toggled
+    /// off) nothing else draws the board, so `board` must still draw it.
+    #[test]
+    fn board_command_still_prints_the_board_in_plain_mode() {
+        let mut r = repl_np(4, 7);
+        screen::force(false);
+        let out = r.step("board");
+        assert!(out.text.contains('┌'), "plain mode has no frame; `board` is the only board:\n{}", out.text);
+        assert!(out.text.contains("* = unclaimed 5-Power token"), "{}", out.text);
+
+        // Same in a composed session whose user turned the screen off.
+        let mut r2 = repl_np(4, 7);
+        r2.step("screen"); // composed = false
+        screen::force(true);
+        let out2 = r2.step("board");
+        screen::force(false);
+        assert!(out2.text.contains('┌'), "`screen` off means no frame, so the board must print:\n{}", out2.text);
+    }
+
+    /// I5's height pin, mirroring `screen.rs`'s opening-frame one: the
+    /// composed frame around the `view` menu's board entry -- the FIRST row
+    /// of the discoverability menu, and the path a tester hits before any
+    /// other -- must fit the 50 rows the guide tells them to open.
+    #[test]
+    fn view_menu_board_entry_fits_fifty_rows_at_every_player_count() {
+        for n in [2u8, 3, 4] {
+            let mut r = repl_np(n, 7);
+            screen::force(true);
+            r.step("view");
+            let out = r.step("0"); // Board
+            let rows = screen::wrap(&r, &out.text).lines().count();
+            screen::force(false);
+            assert!(rows <= 50, "the {n}P view->board frame is {rows} rows; 50 is the documented height");
+        }
     }
 
     /// Item 7 (board connectivity): every `board` render carries a one-line
@@ -1980,6 +2141,49 @@ mod tests {
         assert!(path.exists());
         std::fs::remove_file(&path).ok();
         assert!(r.step("quit").quit);
+    }
+
+    /// I3 (third review): an autosave failure during `undo` has to be
+    /// VISIBLE. It used to go to stderr -- an in-code comment called that a
+    /// known wart, "logged for the final whole-branch review rather than
+    /// redesigned around" -- and that review then added the composed frame,
+    /// which opens with clear-screen + home, turning the warning from ugly
+    /// into unreadable. The live scenario: the save target has gone
+    /// unwritable, the operator undoes a mis-entry, reads "Undid last
+    /// entry.", and the on-disk record still contains the bad move. Assert
+    /// the CHANNEL -- `StepOutput.text` is the only thing `main.rs` folds
+    /// into a frame -- not merely that some string exists somewhere.
+    #[test]
+    fn undo_autosave_failure_is_reported_in_the_step_output_not_stderr() {
+        let mut r = repl_2p(4);
+        r.step("0"); // one real recorded event to undo
+        assert_eq!(r.session.record().events.len(), 1, "fixture: something to undo");
+        // A save target that cannot be written: its parent directory does not exist.
+        r.session.save_path =
+            Some(std::env::temp_dir().join("yokohama_i3_no_such_dir").join("game.json"));
+
+        let out = r.step("undo");
+        assert!(out.text.contains("Undid last entry."), "{}", out.text);
+        assert!(
+            out.text.contains("WARNING: autosave failed"),
+            "the autosave failure must reach the screen, not stderr: {}",
+            out.text
+        );
+    }
+
+    /// The other half of I3: a WRITABLE target undoes silently -- the
+    /// warning is a real failure report, not decoration on every undo.
+    #[test]
+    fn undo_with_a_writable_save_target_reports_no_warning() {
+        let mut r = repl_2p(4);
+        r.step("0");
+        let path = std::env::temp_dir().join(format!("yokohama_i3_ok_{}.json", std::process::id()));
+        r.session.save_path = Some(path.clone());
+
+        let out = r.step("undo");
+        std::fs::remove_file(&path).ok();
+        assert!(out.text.contains("Undid last entry."), "{}", out.text);
+        assert!(!out.text.contains("autosave failed"), "a successful autosave must stay quiet: {}", out.text);
     }
 
     /// Regression for `save_cmd` setting `save_path` BEFORE the save is
@@ -3333,18 +3537,25 @@ mod tests {
         assert!(out.text.contains("Option A —"), "{}", out.text);
     }
 
-    /// Option-B picker: numbered area list with per-area fee notes; picking
-    /// an index commits that area's single variant.
+    /// Option-B picker: an id-addressed area list with per-area fee notes;
+    /// typing an id previews that area's placement and `confirm` commits its
+    /// single variant. No `[i]` numbering exists here at all (C1) -- the only
+    /// thing typeable is an area id.
     #[test]
     fn place_b_picker_lists_areas_and_commits() {
         let mut r = repl_2p(4);
         r.step("0");
         let out = r.step("1"); // enter the Option B picker
-        assert!(out.text.contains("Option B — place 2 assistants in one area:"), "{}", out.text);
-        assert!(out.text.contains("[0] "), "{}", out.text);
+        assert!(out.text.contains("Option B — place 2 assistants in one area (by id):"), "{}", out.text);
+        assert!(!out.text.contains("[0] "), "areas must not be numbered: {}", out.text);
+        assert!(out.text.contains("Selected: (none)"), "{}", out.text);
 
         let events_before = r.session.record().events.len();
         let out = r.step("2");
+        assert!(out.text.contains("Selected: A02"), "{}", out.text);
+        assert!(out.text.contains("legal — "), "{}", out.text);
+        assert_eq!(r.session.record().events.len(), events_before, "selecting must not commit");
+        let out = r.step("confirm");
         assert!(!out.text.to_lowercase().contains("illegal"), "{}", out.text);
         assert_eq!(r.session.record().events.len(), events_before + 1);
         assert!(matches!(
@@ -3352,6 +3563,123 @@ mod tests {
             Some(RecordedEvent::Move(Move::PlaceTwoSameArea { area, adjacent_bonus: None }))
                 if area.0 == 2
         ), "{:?}", r.session.record().events.last());
+    }
+
+    /// C1 regression (third review, CRITICAL): the Option-B picker is driven
+    /// by the area IDS it displays, never by a list position. `b_areas` omits
+    /// the Canal (no `PlaceTwoSameArea` is ever legal there) while the id
+    /// space still contains it, so on a 4-player board whose Canal sits
+    /// mid-pyramid every area past it had a list index one BELOW its id: an
+    /// operator reading `A15` off the screen and typing `15` placed two
+    /// assistants in `A16` -- instantly, with no preview and no confirm --
+    /// silently diverging a live-tracked record from the physical table.
+    /// Seed 0 puts the 4-player Canal at A14, so A15..A17 are all past it.
+    #[test]
+    fn place_b_picker_places_in_the_area_id_typed_not_the_list_index() {
+        let mut r = repl_np(4, 0);
+        let canal = *r
+            .session
+            .state()
+            .board_layout
+            .areas
+            .iter()
+            .find(|(_, c)| c.area_type == AreaType::Canal)
+            .expect("the 4-player board has a Canal")
+            .0;
+        let target = AreaId::new(canal.0 + 1);
+        assert!(
+            r.session.state().board_layout.areas.contains_key(&target),
+            "fixture: the Canal (A{:02}) must sit BEFORE the last area, or there is no off-by-one to test",
+            canal.0
+        );
+
+        r.step("0"); // -> Placement
+        let b_entry =
+            display_index_containing(&r, "Option B").expect("Option B entry present at 4P turn 1");
+        let out = r.step(&b_entry.to_string());
+        assert!(
+            !out.text.contains(&format!("(A{:02})", canal.0)),
+            "the Canal is not Option-B eligible, so its absence is what shifts every later id: {}",
+            out.text
+        );
+
+        // The displayed id form is never refused, and it selects the area it
+        // names -- the id, not the position it happens to occupy.
+        let out = r.step(&format!("A{:02}", target.0));
+        assert!(
+            !out.text.contains("pick a numbered area"),
+            "the picker must accept the id form it displays: {}",
+            out.text
+        );
+        assert!(
+            out.text.contains(&format!("Selected: A{:02}", target.0)),
+            "the picker must echo the selected id: {}",
+            out.text
+        );
+        assert!(out.text.contains("legal — "), "and preview the move before it commits: {}", out.text);
+
+        let before = r.session.record().events.len();
+        let out = r.step("confirm");
+        assert!(!out.text.to_lowercase().contains("illegal"), "{}", out.text);
+        assert_eq!(r.session.record().events.len(), before + 1);
+        assert!(
+            matches!(
+                r.session.record().events.last(),
+                Some(RecordedEvent::Move(Move::PlaceTwoSameArea { area, .. })) if *area == target
+            ),
+            "typing A{:02} must place in A{:02}, not its neighbour: {:?}",
+            target.0,
+            target.0,
+            r.session.record().events.last()
+        );
+
+        // ...and a BARE number means the same id, not a list index.
+        let mut r2 = repl_np(4, 0);
+        r2.step("0");
+        let b_entry = display_index_containing(&r2, "Option B").expect("Option B entry present");
+        r2.step(&b_entry.to_string());
+        r2.step(&target.0.to_string());
+        r2.step("confirm");
+        assert!(
+            matches!(
+                r2.session.record().events.last(),
+                Some(RecordedEvent::Move(Move::PlaceTwoSameArea { area, .. })) if *area == target
+            ),
+            "a bare number is an area id too: {:?}",
+            r2.session.record().events.last()
+        );
+    }
+
+    /// C1 rider: an id that is NOT one of the eligible areas is refused by
+    /// name and nothing is applied -- the picker never silently substitutes a
+    /// neighbour for an id it cannot honor.
+    #[test]
+    fn place_b_picker_refuses_an_ineligible_area_id_by_name() {
+        let mut r = repl_np(4, 0);
+        let canal = *r
+            .session
+            .state()
+            .board_layout
+            .areas
+            .iter()
+            .find(|(_, c)| c.area_type == AreaType::Canal)
+            .expect("the 4-player board has a Canal")
+            .0;
+        r.step("0");
+        let b_entry = display_index_containing(&r, "Option B").expect("Option B entry present");
+        r.step(&b_entry.to_string());
+
+        let before = r.session.record().events.len();
+        let out = r.step(&format!("A{:02}", canal.0));
+        assert!(
+            out.text.contains(&format!("A{:02}", canal.0)) && out.text.contains("not one of the"),
+            "an ineligible id must be refused BY NAME: {}",
+            out.text
+        );
+        assert_eq!(r.session.record().events.len(), before, "nothing applies");
+        let out = r.step("confirm");
+        assert!(out.text.contains("select an area id first"), "and nothing is selected: {}", out.text);
+        assert_eq!(r.session.record().events.len(), before, "still nothing applies");
     }
 
     /// The Option-B picker's per-area lines carry the fee note when an

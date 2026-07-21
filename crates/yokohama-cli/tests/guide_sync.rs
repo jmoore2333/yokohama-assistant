@@ -30,6 +30,22 @@ const GUIDE_HTML: &str = include_str!("../../../docs/cli-guide.html");
 /// (`screen::wrap`); stripped before measuring a frame's visible width.
 const CLEAR_HOME: &str = "\u{1b}[2J\u{1b}[H";
 
+/// Serializes the two frame measurements below. `screen::force` is
+/// thread-local only under `cfg(test)`; an INTEGRATION test links the library
+/// without it, so here `force` writes a process-wide flag -- and libtest runs
+/// these two tests on parallel threads. Unserialized, `frame_width`'s closing
+/// `force(false)` could land inside `frame_height`'s measurement (and vice
+/// versa), leaving the frame un-composed and tripping the `CLEAR_HOME`
+/// assertion below. Reproduced roughly twice per 80 runs before this lock.
+static FRAME_FLAG: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+/// The guard for `FRAME_FLAG`, ignoring poisoning: if a measurement panicked
+/// while holding it, the flag is restored by the next `force` call anyway and
+/// a poisoned mutex must not turn one real failure into several.
+fn frame_flag_guard() -> std::sync::MutexGuard<'static, ()> {
+    FRAME_FLAG.lock().unwrap_or_else(|e| e.into_inner())
+}
+
 /// Undo the only three HTML entity escapes the guide contains, so escaped
 /// `.html` source can be matched against the plain-text `.md` and the CLI's
 /// own strings.
@@ -199,6 +215,7 @@ fn frame_width(players: u8) -> usize {
     )
     .expect("new_sim over a standard board");
     let repl = Repl::new(session);
+    let _frames = frame_flag_guard();
     screen::force(true);
     let frame = screen::wrap(&repl, "");
     screen::force(false);
@@ -222,6 +239,7 @@ fn frame_height(players: u8) -> usize {
     )
     .expect("new_sim over a standard board");
     let repl = Repl::new(session);
+    let _frames = frame_flag_guard();
     screen::force(true);
     let frame = screen::wrap(&repl, &repl.prompt());
     screen::force(false);
