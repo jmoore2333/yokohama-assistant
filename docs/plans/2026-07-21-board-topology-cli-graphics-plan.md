@@ -68,7 +68,14 @@ legality — the bump contract applies; old records become strict-rejected, corr
    hold by construction); add a **layout-fidelity pin**: per player count, assert the generated
    row shape and the exact undirected edge count (18/28/38) so the topology can never silently
    regress to a lattice.
-5. Fuzz/census/selfplay re-baselines (game length and branching will shift — more edges ⇒ more
+5. **2P dummy player (finding D1, rulebook p.9 NOTE):** model the setup-placed dummy
+   assistants on church faith-7 and customs space-4 as REAL slot occupants of a sentinel
+   owner (not eligibility blocks): space blocking, the 5-total trigger arithmetic (= 4 real
+   pawns, unchanged game behavior), and — the previously-unmodeled rule — dummy participation
+   in the church/customs MAJORITY bonuses (6/3, 8/4, rightmost tie-break) then all fall out of
+   one representation. Scoring + oracle scoring + invariants + CLI display updated together;
+   2P final scores change where the dummy denies/takes a place (SEMANTICS_REV 2 covers it).
+6. Fuzz/census/selfplay re-baselines (game length and branching will shift — more edges ⇒ more
    routes; document new numbers with provenance per the I6 convention).
 
 ### 3.2 Oracle + difftest
@@ -120,7 +127,8 @@ runs against the harness on the corrected topology); computer vision.
 
 - Tile arrangement: **CONFIRMED** (Jeremy, 2026-07-21, from the physical edition).
 - Canal transit: **RULED any-to-any** (Jeremy, 2026-07-21) — no box check needed.
-- 2P track trigger (4 vs 5 real pawns): **pending Jeremy's distinguishing answer** (the
-  dummy-is-a-blocker clarification re-opened it; engine stays at 4 until answered).
+- 2P track trigger: **CLOSED** (p.9 NOTE — dummy occupies and counts; 4 real pawns ends a 2P
+  game; engine confirmed). **NEW finding D1 rides in this plan:** the dummy player scores in
+  2P majority bonuses (previously unmodeled — see §3.1 item 5).
 - Card country distributions: **BOX-CONFIRMED** (orders NL5/FR8/US8/GB8/DE7; techs
   GB9/US7/NL5/FR5/DE4 — exact YAML matches, 2026-07-21).
