@@ -108,6 +108,12 @@ pub fn wrap(repl: &Repl, body: &str) -> String {
     }
     stage.push_str(&render::board_legend(state));
     stage.push('\n');
+    // Discoverability strip (owner scope item 10): every frame names the
+    // game-info surfaces and the command that opens them, so a player who
+    // never read the guide finds them on screen.
+    stage.push_str(
+        "info: type 'view' — board · players · ports · labs · tracks · sites · goals · hand · score · log\n",
+    );
 
     let width = stage.lines().map(visible_width).max().unwrap_or(0).max(60);
     let title = " Y O K O H A M A ";
@@ -180,6 +186,10 @@ mod tests {
         assert!(f.contains("┌"), "board expected in frame: {f}");
         assert!(f.contains("Players"), "panel expected in frame: {f}");
         assert!(f.contains("* = unclaimed 5-Power token"), "legend expected: {f}");
+        assert!(
+            f.contains("info: type 'view'"),
+            "the discoverability strip must be in every frame (owner scope item 10): {f}"
+        );
         assert!(f.ends_with("BODY-MARKER\n> hint\n"), "body must close the frame: {f}");
     }
 

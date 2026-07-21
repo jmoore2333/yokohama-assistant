@@ -112,6 +112,12 @@ pub(crate) enum SubPrompt {
     /// areas; choosing one commits its single variant directly or opens a
     /// `Pick` over that area's Telegram-bonus variants.
     PlaceB { areas: Vec<AreaId> },
+    /// The `view` game-info menu (owner scope item 10, discoverability): a
+    /// ONE-SHOT numbered menu over the read-only state views -- picking a
+    /// number renders that surface and closes the menu. Purely an entry
+    /// surface over the same render functions the direct commands call, so
+    /// the two can never disagree.
+    ViewMenu,
 }
 
 /// The result of one `Repl::step` call: the text to show the user (which
@@ -230,7 +236,7 @@ impl Repl {
     /// (`AnyGood`, `WarehouseTake`, `ChurchSpace`, ...), has no shorthand of
     /// its own, so it gets the bare numbers+'help' hint.
     fn input_hint(&self) -> String {
-        const TAIL: &str = "or a command ('help' for the list)";
+        const TAIL: &str = "or a command ('view' for game info, 'help' for the list)";
         let state = self.session.state();
         if matches!(state.pending_choices.first(), Some(PendingChoice::AssistantMove)) {
             return format!("> enter a number, 'm <from> <to>' to resolve (or the numbered Decline), {TAIL}\n");
@@ -323,6 +329,10 @@ impl Repl {
             ["hand"] => self.out_view(self.hand_text()),
             ["score"] => self.out_view(self.score_text()),
             ["log"] => self.out_view(self.log_tail()),
+            ["view"] | ["views"] | ["?"] => {
+                self.sub = SubPrompt::ViewMenu;
+                self.out(String::new(), false)
+            }
             ["more"] => {
                 self.advance_page();
                 self.out(String::new(), false)
@@ -837,7 +847,76 @@ impl Repl {
             SubPrompt::Retreat { .. } => self.step_retreat(words),
             SubPrompt::PlaceA { .. } => self.step_place_a(words),
             SubPrompt::PlaceB { .. } => self.step_place_b(words),
+            SubPrompt::ViewMenu => self.step_view_menu(words),
             SubPrompt::None => self.out(String::new(), false), // unreachable: gated by caller
+        }
+    }
+
+    /// One entry per game-info surface: the label the menu shows, in menu
+    /// order. Indices into this array ARE the menu numbers, so the menu text
+    /// and the dispatch can't drift.
+    const VIEW_MENU: [&'static str; 10] = [
+        "Board — tiles, presidents, assistants, buildings",
+        "Players — every player's public holdings in full",
+        "Port offer — the order cards on display",
+        "Lab offer — the techs on display, with slot surcharges",
+        "Tracks — Church/Customs spaces (incl. the 2P dummy), Station, mercenary supply",
+        "Building sites — printed rewards, what's built and whose, adjacency",
+        "Goals — the achievement cards, claim VP, and per-player progress",
+        "Hand — the current player's order cards",
+        "Score — current VP and money",
+        "Log — the recent move/event trail",
+    ];
+
+    /// Game-info menu input (one-shot): a valid number closes the menu and
+    /// renders that surface through the SAME code path its direct command
+    /// uses; `cancel` closes it; anything else re-asks. Read-only -- no
+    /// state, record, or session field is ever touched from here.
+    fn step_view_menu(&mut self, words: &[&str]) -> StepOutput {
+        match words {
+            ["cancel"] => {
+                self.sub = SubPrompt::None;
+                self.out(String::new(), false)
+            }
+            ["quit"] | ["q"] => StepOutput { text: "bye\n".to_string(), quit: true },
+            [tok] if !tok.is_empty() && tok.chars().all(|c| c.is_ascii_digit()) => {
+                let Some(k) = tok.parse::<usize>().ok().filter(|&k| k < Self::VIEW_MENU.len()) else {
+                    return self.out(
+                        format!("! pick a number 0-{}, or 'cancel'", Self::VIEW_MENU.len() - 1),
+                        false,
+                    );
+                };
+                self.sub = SubPrompt::None;
+                match k {
+                    0 => self.board_cmd(),
+                    1 => {
+                        let t =
+                            render::players_panel(self.session.state(), self.session.rules(), self.privacy);
+                        self.out_view(t)
+                    }
+                    2 => {
+                        let t = render::ports_view(self.session.state(), self.session.rules());
+                        self.out_view(t)
+                    }
+                    3 => {
+                        let t = render::labs_view(self.session.state(), self.session.rules());
+                        self.out_view(t)
+                    }
+                    4 => self.out_view(render::tracks_view(self.session.state())),
+                    5 => {
+                        let t = render::sites_view(self.session.state(), self.session.rules());
+                        self.out_view(t)
+                    }
+                    6 => {
+                        let t = render::achievements_view(self.session.state(), self.session.rules());
+                        self.out_view(t)
+                    }
+                    7 => self.out_view(self.hand_text()),
+                    8 => self.out_view(self.score_text()),
+                    _ => self.out_view(self.log_tail()),
+                }
+            }
+            _ => self.out("! pick a numbered view, or 'cancel'".to_string(), false),
         }
     }
 
@@ -1159,6 +1238,14 @@ impl Repl {
                     out.push_str(&format!("[{i}] {}{fee}\n", describe::area_label(state, *area)));
                 }
                 out.push_str("> pick a numbered area, or 'cancel'\n");
+                out
+            }
+            SubPrompt::ViewMenu => {
+                let mut out = String::from("─ Game info ───────────────────────────\n");
+                for (i, entry) in Self::VIEW_MENU.iter().enumerate() {
+                    out.push_str(&format!("[{i}] {entry}\n"));
+                }
+                out.push_str("> pick a number to open a view, or 'cancel'\n");
                 out
             }
             SubPrompt::Retreat { areas, collected } => {
@@ -1498,6 +1585,7 @@ Commands:
   hand            show the current player's order-card hand
   score           show current VP/money (or the final scores once the game is over)
   log             show the tail of the move/event log
+  view            open the numbered game-info menu over all of the views above ('views'/'?' also work)
   privacy         toggle hiding hand contents in views (default: hidden in live mode)
   panel           toggle the players panel inside the composed screen (terminal only)
   screen          toggle the composed screen itself (terminal only; pipes are always plain)
@@ -1828,7 +1916,7 @@ mod tests {
             let out = r.step(cmd);
             assert!(!out.text.contains("[0]"), "'{cmd}' unexpectedly showed the numbered options block: {}", out.text);
             assert!(
-                out.text.trim_end().ends_with("('help' for the list)"),
+                out.text.trim_end().ends_with("'help' for the list)"),
                 "'{cmd}' output is missing the one-line input hint: {}", out.text
             );
         }
@@ -1919,7 +2007,7 @@ mod tests {
     fn input_hint_is_phase_aware() {
         let mut r = repl_2p(4);
         let p = r.prompt();
-        assert!(p.contains("enter a number, or a command ('help' for the list)"), "{p}");
+        assert!(p.contains("enter a number, or a command ('view' for game info, 'help' for the list)"), "{p}");
         assert!(!p.contains("'a'/'b'"), "{p}");
         assert!(!p.contains("'r' to retreat"), "{p}");
 
@@ -1960,7 +2048,7 @@ mod tests {
     fn input_hint_is_plain_for_non_assistant_move_pending_choices() {
         let r = repl_with_any_good_cascade();
         let p = r.prompt();
-        assert!(p.contains("enter a number, or a command ('help' for the list)"), "{p}");
+        assert!(p.contains("enter a number, or a command ('view' for game info, 'help' for the list)"), "{p}");
         assert!(!p.contains("'m <from> <to>'"), "{p}");
         assert!(!p.contains("'a'/'b'"), "{p}");
     }
@@ -2002,6 +2090,63 @@ mod tests {
 
         r.step("privacy");
         assert!(r.step("hand").text.contains(" -> "), "toggle back restores contents");
+    }
+
+    /// Owner scope item 10 (discoverability): `view` opens a one-shot
+    /// numbered game-info menu naming every public-state surface; picking a
+    /// number renders that surface and drops back to the normal prompt.
+    #[test]
+    fn view_menu_lists_surfaces_and_renders_the_picked_one() {
+        let mut r = repl_2p(4);
+        let out = r.step("view");
+        assert!(out.text.contains("Game info"), "{}", out.text);
+        for name in ["Board", "Players", "Port offer", "Lab offer", "Tracks", "Building sites", "Goals", "Hand", "Score", "Log"] {
+            assert!(out.text.contains(name), "menu must name {name}: {}", out.text);
+        }
+        assert!(out.text.contains("'cancel'"), "{}", out.text);
+
+        // Pick the Goals entry by its number parsed from the menu itself.
+        let goals_idx = out
+            .text
+            .lines()
+            .find(|l| l.contains("Goals"))
+            .and_then(|l| l.strip_prefix('[')?.split(']').next()?.parse::<usize>().ok())
+            .expect("Goals entry carries its number");
+        let shown = r.step(&goals_idx.to_string());
+        assert!(shown.text.contains("G0:"), "picking Goals must render the goals view: {}", shown.text);
+        assert!(matches!(r.sub, SubPrompt::None), "the menu is one-shot");
+        assert!(r.session.record().events.is_empty(), "views never apply moves");
+
+        // Back at the normal prompt: a move command works again.
+        let p = r.prompt();
+        assert!(p.contains("[0]"), "{p}");
+    }
+
+    /// `views` and `?` alias the menu; `cancel` closes it; an out-of-range
+    /// number re-asks.
+    #[test]
+    fn view_menu_aliases_cancel_and_range() {
+        let mut r = repl_2p(4);
+        for alias in ["views", "?"] {
+            let out = r.step(alias);
+            assert!(out.text.contains("Game info"), "'{alias}' must open the menu: {}", out.text);
+            let out = r.step("cancel");
+            assert!(matches!(r.sub, SubPrompt::None), "cancel closes the menu");
+            assert!(out.text.contains("[0]"), "main prompt back after cancel: {}", out.text);
+        }
+        r.step("view");
+        let out = r.step("99");
+        assert!(out.text.contains("pick a number"), "out-of-range re-asks: {}", out.text);
+        assert!(out.text.contains("Game info"), "menu still showing: {}", out.text);
+    }
+
+    /// The hint line on EVERY prompt names the menu — the discoverability
+    /// layer that survives piped/rolling modes.
+    #[test]
+    fn input_hint_names_the_view_menu() {
+        let r = repl_2p(4);
+        let p = r.prompt();
+        assert!(p.contains("('view' for game info"), "{p}");
     }
 
     #[test]

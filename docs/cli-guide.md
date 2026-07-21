@@ -29,7 +29,7 @@ cargo run -p yokohama-cli -- save.json # resume a saved game
 
 **Resuming.** `cargo run -p yokohama-cli -- <save.json>` replays a saved game deterministically to exactly where you left off. The game autosaves after **every** applied move once a save path is set, and the wizard sets one by default — `yokohama-game-<seed>.json` in the current directory unless you gave a path — so a crash loses at most the move you were typing; just rerun with the save file.
 
-**The composed screen (terminal only).** On a real terminal the tool is a full game screen, redrawn after every input: a title strip, the board (one bordered tile box per area, laid out as the physical staggered pyramid — widest row on top, each row below offset half a tile), a live players panel (current player marked `>`, yen/VP, goods, assistant zones, built counts and the next trading-house take price, President location — beside the board at 2-3 players, below it at 4), the board legend, then the message zone (what the last move changed) and the prompt. `panel` hides/shows the players box; `screen` turns the whole composed mode off and back on (plain rolling text, same content). Piped or redirected output is always plain rolling text with zero escape codes — the composed screen and all color exist only on a terminal.
+**The composed screen (terminal only).** On a real terminal the tool is a full game screen, redrawn after every input: a title strip, the board (one bordered tile box per area, laid out as the physical staggered pyramid — widest row on top, each row below offset half a tile), a live players panel (current player marked `>`, yen/VP, goods, assistant zones, built counts and the next trading-house take price, President location — beside the board at 2-3 players, below it at 4), the board legend, a game-info strip naming every view, then the message zone (what the last move changed) and the prompt. `panel` hides/shows the players box; `screen` turns the whole composed mode off and back on (plain rolling text, same content). Piped or redirected output is always plain rolling text with zero escape codes — the composed screen and all color exist only on a terminal.
 
 **Color and width.** The tool colors what matters — player names and their pieces in their colors, tile names by area type, goods letters in resource tones, VP, warnings, the phase line — and setting the standard `NO_COLOR` environment variable turns color off in a terminal too (the composed screen stays; `screen` turns that off). The board is wide — 72 columns at 2 players, 90 at 3, and 108 at 4 — and there is no terminal-size detection, so the `board` command prints a one-time reminder of the exact width the first time you render a board wider than 100 columns; widen the window if the rows shear.
 
@@ -83,7 +83,7 @@ Every screen ends with a status header, the numbered legal options, and a hint l
 ```
 Turn 1 | Red | Additional actions (before) | 3 yen 0 VP | c0 s0 t0 f0 i0 | hand 1
 [0] End additional-action phase
-> enter a number, or a command ('help' for the list)
+> enter a number, or a command ('view' for game info, 'help' for the list)
 ```
 
 Header anatomy: turn number | whose turn | phase (§8.4) | money and VP | goods `c`opper `s`ilk `t`ea `f`ish(=Seafood) `i`mports | order cards in hand.
@@ -96,6 +96,8 @@ The hint line's own middle clause is phase/choice-aware — it only ever names a
 
 **Previews on the options.** Decisions carry their arithmetic inline, computed by the same engine code that will charge you: placement options show the fee and who receives it (`— fee 2 yen (2 to Blue)`); Employment Agency composites show their total (`— cost 6 yen`, from the 2-yen shophouse price and the printed 4/5/6/7 trading-house progression) or `(free)`; Church payment options show the faith they produce (`-> faith 6 (power 3 + 3 kinds)`); production options show the yield at your current power AND the next threshold (`Produce copper (power 2 -> +0 copper, next +1 at power 3)`), so a zero-yield line reads as "not yet", not as a bug.
 
+**Finding information.** Everything the physical game shows you is one menu away: `view` (also `views` or `?`) opens a numbered game-info menu — board, players, port offer, lab offer, tracks, building sites, goals, hand, score, log — and picking a number renders that surface and returns you to the prompt. The composed screen's info strip lists the same names on every frame, every hint line points at `view`, and each surface is also a direct command (§5) — the menu and the commands render through the same code, so they can never disagree.
+
 **Movement: destination-first, with sub-prompts.** The raw rules can offer thousands of Movement combinations — every route to every destination, every count of assistants to recover — so the Movement list is *collapsed*. Each reachable destination is ONE numbered entry: if a single route reaches it, that entry is the move itself (cost and who-gets-paid text unchanged); if several routes reach it — say a free walk versus a longer one that pays a pass-through fee — the entry reads `Move President to <Area> (Ann) — <k> route options`. The whole *retreat* family (Movement Option B) collapses to one `Retreat President to hand — choose recovery (<k> combinations; 'r' grammar works too)` entry (a lone bare retreat — no assistants on board — stays a plain numbered entry, no sub-prompt). A captured Movement list with both kinds:
 
 ```
@@ -103,7 +105,7 @@ Turn 3 | Red | Movement | 1 yen 3 VP | c0 s1 t1 f1 i0 | hand 1
 [0] Move President to Fishing Ground (A05) — 2 route options
 [1] Move President to Customs (A06) — 2 route options
 [2] Retreat President to hand — choose recovery (8 combinations; 'r' grammar works too)
-> enter a number, 'r' to retreat (or the numbered retreat entry for guided recovery), or a command ('help' for the list)
+> enter a number, 'r' to retreat (or the numbered retreat entry for guided recovery), or a command ('view' for game info, 'help' for the list)
 ```
 
 Selecting a `route options` entry opens a **route sub-prompt** — that destination's routes, each with its full cost/recipient text, so you pick which one:
@@ -134,7 +136,7 @@ Turn 1 | Red | Choose: Church space at faith 6 — 1 choice pending | 2 yen 0 VP
 [0] Place on Church faith-4 space (3 VP)
 [1] Place on Church faith-5 space (4 VP)
 [2] Place on Church faith-6 space (5 VP)
-> enter a number, or a command ('help' for the list)
+> enter a number, or a command ('view' for game info, 'help' for the list)
 ```
 
 A choice that lets you decline (warehouse take, assistant move) adds `Decline the ...` as one more numbered option; a choice that's purely "which one" (any-good, Church space, Customs space) has none, because the rulebook doesn't give you one there either. Resolving a choice can queue another — picking the Church space above queues its movement-rider(s) next — and the `— N pending` count tracks how many are still stacked up.
@@ -172,6 +174,7 @@ goals           show achievement cards with claim VP, claim state, and per-playe
 hand            show the current player's order-card hand
 score           show current VP/money (or the final scores once the game is over)
 log             show the tail of the move/event log
+view            open the numbered game-info menu over all of the views above ('views'/'?' also work)
 privacy         toggle hiding hand contents in views (default: hidden in live mode)
 panel           toggle the players panel inside the composed screen (terminal only)
 screen          toggle the composed screen itself (terminal only; pipes are always plain)
@@ -297,7 +300,7 @@ Each tile box shows: a header `A03 Copper Mn *` (area id, name in its type color
 
 Building sites (`sites` view): one line per area holding a site, e.g. `Copper Mine (A03)  S03  [1vp 2wh - 2move]  TH 7vp  sh ···· | th ·  adj: A01, A05  canal->A06` — `S<n>`'s number is the **area's id**, not the physical site card's printed index (that number is only used to validate your entry during wizard setup, §3, and isn't kept once the game starts); `[...]` is the site's four shophouse-space printed rewards (top-left, top-right, mid-left, mid-right; `-` = blank; `wh`/`move`/`any` are the icon rewards from §8.3, real choice prompts when taken); `TH` is the trading-house VP; `sh .. | th ..` are the same build/ownership marks the `board` grid shows for that cell, aligned space-for-space with the `[...]` rewards; `adj:` lists the area ids reachable from here (ascending) — the President's movement neighbors — with any canal-crossing partner shown separately as `canal-><id>` (a transit-only edge, see **Canal crossing** below). Building options during the Building phase print this same printed-reward text instead of a bare space number: you get one `Build a Shophouse` option per **empty** space — you choose the space — each named with its space number and printed reward, e.g. `Build a Shophouse (space 2: 2vp+1yen)`, so two blank spaces stay tellable apart; `Build a Trading House (7vp)` shows the site's TH value.
 
-Tracks (`tracks` view): Church spaces by faith value 4–11, each showing its printed VP and movement rider (`3vp 1move`); Customs spaces 1–7 with printed goods-costs `[1,1,2,2,3,3,4]`, each showing its printed VP and warehouse/yen rider (`5vp 2wh`, `4vp 2yen`; spaces 5–7 carry no rider). The occupant color letter sits directly after the space label, before the reward. In 2-player games `D` marks the dummy player's assistant on Church faith-7 and Customs space 4 — it occupies the space and competes in that track's majority scoring, and whenever it is on the board the view opens with its own legend line (`D = Dummy — the 2P neutral marker; it holds its space and competes in each track's majority bonus`). Below the two tracks, a **`Station:`** line reports where the Station token sits (`Copper Mine (A03) (all players +1 Power there)`) or `not placed` — it is board-level shared state, so once placed **every** player gets +1 Power when acting in that area (§8.6 item 6).
+Tracks (`tracks` view): Church spaces by faith value 4–11, each showing its printed VP and movement rider (`3vp 1move`); Customs spaces 1–7 with printed goods-costs `[1,1,2,2,3,3,4]`, each showing its printed VP and warehouse/yen rider (`5vp 2wh`, `4vp 2yen`; spaces 5–7 carry no rider). The occupant color letter sits directly after the space label, before the reward. In 2-player games `D` marks the dummy player's assistant on Church faith-7 and Customs space 4 — it occupies the space and competes in that track's majority scoring, and whenever it is on the board the view opens with its own legend line (`D = Dummy — the 2P neutral marker; it holds its space and competes in each track's majority bonus`). Below the two tracks, a **`Station:`** line reports where the Station token sits (`Copper Mine (A03) (all players +1 Power there)`) or `not placed` — it is board-level shared state, so once placed **every** player gets +1 Power when acting in that area (§8.6 item 6). A **`Mercenary supply:`** line follows with the public per-country pile counts (`GB`/`US`/`FR`/`DE`/`NL`, §8.4's codes).
 
 **Canal crossing:** the Canal tile can never hold an assistant, a President, or a building — on the board it draws as water — but President movement can cross straight through it in a single hop, shore to shore: ANY tile touching the Canal connects to ANY other tile touching it. Two shore tiles that already adjoin each other directly keep their ordinary free edge (the free step wins; no toll appears there) — the tolled crossings are exactly the pairs the Canal genuinely bridges, and `sites` lists them per area as `canal-><id>`. Each crossing costs 1 Yen to the bank — a separate, unconditional toll from the opponent-president pass-through fee (which instead goes to that president's owner) — and that includes the very first step out of the President's current area, if that step is itself a crossing. 2-player games have no Canal tile at all. Telegram's adjacent-area placement bonus (§4) does not extend across a canal crossing — it still needs a physically adjoining tile.
 

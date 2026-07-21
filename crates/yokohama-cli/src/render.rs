@@ -558,6 +558,15 @@ pub fn tracks_view(state: &GameState) -> String {
         None => out.push_str("  not placed\n"),
     }
 
+    // The shared mercenary SUPPLY piles are public table state (owner scope
+    // item 10 sufficiency gap) -- board-level like the Station, so they live
+    // here. Country codes match §8.4's GB/US/FR/DE/NL vocabulary.
+    let s = &state.mercenary_supply;
+    out.push_str(&format!(
+        "Mercenary supply:  GB {}  US {}  FR {}  DE {}  NL {}\n",
+        s.english, s.american, s.french, s.german, s.dutch,
+    ));
+
     out
 }
 
@@ -1493,6 +1502,24 @@ mod tests {
         let masked = players_panel(&state, &rules, true);
         assert!(!masked.contains("hand: O"), "masked mode must hide codes: {masked}");
         assert!(masked.contains("1 card (hidden"), "count survives masking: {masked}");
+    }
+
+    /// Owner scope item 10 (sufficiency): the shared mercenary SUPPLY piles
+    /// are public table state and must be readable -- `tracks` (the
+    /// board-level-shared-state view, same precedent as the Station line)
+    /// shows one count per country.
+    #[test]
+    fn tracks_view_shows_the_mercenary_supply() {
+        let mut state = test_state_2p();
+        state.mercenary_supply.french = 9; // sentinel: proves counts are live
+        let v = tracks_view(&state);
+        let line = v.lines().find(|l| l.contains("Mercenary supply")).expect("supply line present");
+        let s = &state.mercenary_supply;
+        for (code, n) in
+            [("GB", s.english), ("US", s.american), ("FR", s.french), ("DE", s.german), ("NL", s.dutch)]
+        {
+            assert!(line.contains(&format!("{code} {n}")), "want {code} {n} in: {line}");
+        }
     }
 
     /// Finding D1, redesigned display: the 2P dummy is a NAMED occupant --
