@@ -14,6 +14,14 @@
 //! Option-A picker, max recovery in the guided retreat, Enter on forced
 //! options), with a hard input cap so a regression can never hang the
 //! suite.
+//!
+//! TIER: release gate. This ran per-edit from its introduction until
+//! 2026-07-21 (T6 review), then moved to the release tier per the repo's
+//! two-tier policy: a ~12s full-game process test is a distributional
+//! regression net, not per-edit correctness — the per-edit slice of the
+//! same honesty properties stays covered by the fast unit pins
+//! (`screen::wrap` identity at rest, `style` NO_COLOR/paint-off, the
+//! strip-ANSI alignment equalities, and the line-protocol REPL suite).
 
 use std::io::{Read, Write};
 use std::process::{Child, Command, Stdio};
@@ -104,6 +112,7 @@ fn recover_max(screen: &str) -> Option<u32> {
 }
 
 #[test]
+#[ignore = "release gate (CLAUDE.md two-tier policy): full-game process test over pipes; run with cargo test --release -p yokohama-cli --test piped_dogfood -- --ignored before merges/phase closes (gate PASSES; see module docs)"]
 fn full_piped_2p_game_runs_plain_to_winner() {
     let mut child = Command::new(env!("CARGO_BIN_EXE_yokohama-cli"))
         .stdin(Stdio::piped())
