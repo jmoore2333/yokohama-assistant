@@ -238,7 +238,6 @@ struct LiveWizardState {
     seed: u64,
     save_path: String,
     config: GameConfig,
-    grid_n: usize,
     legal_tile_counts: HashMap<AreaType, u32>,
     all_tech_ids: Vec<TechCardId>,
     seen_order_ids: BTreeSet<u8>,
@@ -281,7 +280,6 @@ fn run_live_tail(
         *legal_tile_counts.entry(area.area_type).or_insert(0) += 1;
     }
     let all_tech_ids: Vec<TechCardId> = rules.techs.iter().map(|c| c.id).collect();
-    let grid_n = expected_tile_count(players);
 
     let mut seen_order_ids: BTreeSet<u8> = BTreeSet::new();
     let mut seen_tech_ids: BTreeSet<u8> = BTreeSet::new();
@@ -293,8 +291,8 @@ fn run_live_tail(
         deal_choices[seat as usize] = choice;
     }
 
-    let tiles = ask_tiles(input, out, grid_n, &legal_tile_counts)?;
-    let sites = ask_sites(input, out, &tiles, &rules)?;
+    let tiles = ask_tiles(input, out, players, &legal_tile_counts)?;
+    let sites = ask_sites(input, out, &tiles, &rules, players)?;
     let achievements = ask_achievements(input, out)?;
 
     let port_a: [OrderCardId; 6] = ask_orders(input, out, "Port A", 6, &rules, &mut seen_order_ids)?.try_into().unwrap();
@@ -318,7 +316,6 @@ fn run_live_tail(
         seed,
         save_path,
         config,
-        grid_n,
         legal_tile_counts,
         all_tech_ids,
         seen_order_ids,
@@ -334,45 +331,81 @@ fn run_live_tail(
         lab_b,
     };
 
-    loop {
-        out(&render_live_summary(&ws, &rules));
-        out("confirm / edit <section> / abort?\n");
-        let line = input.next().ok_or("input ended mid-wizard")?;
-        let line = line.trim().to_string();
-        if line.eq_ignore_ascii_case("abort") {
-            return Err("aborted".to_string());
+    // Two nested loops: the inner one is the answer review/edit step, the
+    // outer one is the BOARD CHECK (third review I1). `confirm` no longer
+    // starts the game -- it builds the session, draws the resulting board, and
+    // asks the operator whether it matches the table in front of them. A `no`
+    // falls back into the review loop, where `edit tiles` re-enters the board.
+    let mut session = loop {
+        loop {
+            out(&render_live_summary(&ws, &rules));
+            out("confirm / edit <section> / abort?\n");
+            let line = input.next().ok_or("input ended mid-wizard")?;
+            let line = line.trim().to_string();
+            if line.eq_ignore_ascii_case("abort") {
+                return Err("aborted".to_string());
+            }
+            if line == "confirm" {
+                break;
+            }
+            match line.strip_prefix("edit ") {
+                Some(section) => match perform_live_edit(&mut ws, section.trim(), input, out, &rules) {
+                    Ok(()) => {}
+                    Err(e) if e == "aborted" => return Err(e),
+                    Err(e) => out(&format!("  ! {e}\n")),
+                },
+                None => out(&format!("  ! '{line}' is not 'confirm', 'edit <section>', or 'abort'\n")),
+            }
         }
-        if line == "confirm" {
-            break;
-        }
-        match line.strip_prefix("edit ") {
-            Some(section) => match perform_live_edit(&mut ws, section.trim(), input, out, &rules) {
-                Ok(()) => {}
-                Err(e) if e == "aborted" => return Err(e),
-                Err(e) => out(&format!("  ! {e}\n")),
-            },
-            None => out(&format!("  ! '{line}' is not 'confirm', 'edit <section>', or 'abort'\n")),
-        }
-    }
 
-    let deals: Vec<(PlayerId, [OrderCardId; 2])> = ws
-        .known_deals
-        .iter()
-        .enumerate()
-        .filter_map(|(seat, d)| d.map(|cards| (PlayerId::new(seat as u8), cards)))
-        .collect();
-    let obs = SetupObservations {
-        board: Some(ObservedBoard { tiles: ws.tiles, sites: ws.sites }),
+        // Building the real session here (rather than after the loop) is what
+        // lets the check draw the board with the renderer play itself uses. It
+        // also moves reconcile failures INSIDE the loop: a setup that doesn't
+        // add up now sends the operator back to the review step instead of
+        // killing the wizard ~40 answers in.
+        match Session::new_live(
+            ws.config.clone(),
+            ws.seed,
+            live_observations(&ws),
+            ws.deal_choices.clone(),
+            rules.clone(),
+        ) {
+            Ok(candidate) => {
+                if ask_board_check(input, out, &candidate)? {
+                    break candidate;
+                }
+                out("  Board not confirmed -- back to the setup review. 'edit tiles' re-enters the\n");
+                out("  board, and the building-site cards with it (they sit on the tiles).\n");
+            }
+            Err(e) => {
+                out(&format!("  ! these answers do not make a playable setup: {e}\n"));
+                out("  Back to the setup review -- correct the section it names, then confirm again.\n");
+            }
+        }
+    };
+    session.save_path = Some(std::path::PathBuf::from(ws.save_path));
+    Ok(crate::repl::Repl::new(session))
+}
+
+/// Everything the live tail collected, in the shape `reconcile_setup` wants.
+/// Cloned rather than moved because the board check builds a candidate session
+/// on every pass through the review loop, and a `no` has to leave `ws` intact
+/// to edit.
+fn live_observations(ws: &LiveWizardState) -> SetupObservations {
+    SetupObservations {
+        board: Some(ObservedBoard { tiles: ws.tiles.clone(), sites: ws.sites.clone() }),
         achievements: Some(ws.achievements),
         port_a: Some(ws.port_a),
         port_b: ws.port_b,
         lab_a: Some(ws.lab_a),
         lab_b: ws.lab_b,
-        deals,
-    };
-    let mut session = Session::new_live(ws.config, ws.seed, obs, ws.deal_choices, rules)?;
-    session.save_path = Some(std::path::PathBuf::from(ws.save_path));
-    Ok(crate::repl::Repl::new(session))
+        deals: ws
+            .known_deals
+            .iter()
+            .enumerate()
+            .filter_map(|(seat, d)| d.map(|cards| (PlayerId::new(seat as u8), cards)))
+            .collect(),
+    }
 }
 
 /// Perform one `edit <section>` from the live review loop: retract the
@@ -419,11 +452,19 @@ fn perform_live_edit(
             ws.known_deals[seat as usize] = deal;
             ws.deal_choices[seat as usize] = choice;
         }
+        // The site cards sit ON the tiles, so a re-entered board moves them
+        // too: re-asking tiles alone would silently re-attach the OLD site
+        // cards to the NEW tile order -- the same class of unflagged
+        // mis-mapping the board check exists to catch, reintroduced by the
+        // very path that recovers from it.
         Some("tiles") => {
-            ws.tiles = ask_tiles(input, out, ws.grid_n, &ws.legal_tile_counts)?;
+            ws.tiles = ask_tiles(input, out, ws.players, &ws.legal_tile_counts)?;
+            out("  The building-site cards sit on the tiles, so they move with them:\n");
+            out("  re-entering the sites now as well.\n");
+            ws.sites = ask_sites(input, out, &ws.tiles, rules, ws.players)?;
         }
         Some("sites") => {
-            ws.sites = ask_sites(input, out, &ws.tiles, rules)?;
+            ws.sites = ask_sites(input, out, &ws.tiles, rules, ws.players)?;
         }
         Some("achievements") => {
             ws.achievements = ask_achievements(input, out)?;
@@ -483,10 +524,19 @@ fn render_live_summary(ws: &LiveWizardState, rules: &Rules) -> String {
     out.push_str(&format!("start seat: {}\n", ws.start_player.0));
     out.push_str(&format!("seed: {}\n", ws.seed));
     out.push_str(&format!("save path: {}\n", ws.save_path));
-    out.push_str("tiles:\n");
+    // Echoed in the SAME coordinate system the questions used -- a bare
+    // `cell 7: Bank` told an operator nothing about which physical tile that
+    // was, which is half of why a mis-ordered board used to survive review.
+    let rows = row_lengths(ws.players);
+    out.push_str("tiles (widest row first, left to right):\n");
     for (i, t) in ws.tiles.iter().enumerate() {
         let site = ws.sites[i].map(|s| format!(" S{s}")).unwrap_or_default();
-        out.push_str(&format!("  cell {i}: {}{}\n", crate::describe::area_type_name(*t), site));
+        out.push_str(&format!(
+            "  cell {i} ({}): {}{}\n",
+            cell_coords(i, &rows),
+            crate::describe::area_type_name(*t),
+            site
+        ));
     }
     out.push_str(&format!(
         "achievements: {}\n",
@@ -759,24 +809,116 @@ fn ask_tech_answer(
     Ok(id)
 }
 
+// ---------------------------------------------------------------------
+// Board entry (third review, finding I1)
+//
+// Cells are asked for in row-major order over the staggered pyramid, widest
+// row FIRST -- which is the vertical mirror of the way the rulebook's p.3
+// diagram prints the same board. `reconcile_board` accepts any permutation of
+// the tile multiset without complaint, so an operator who follows that picture
+// plays an entire game on a scrambled graph and is never told. The three
+// functions below are the guard rails: the shape and the rules stated up front
+// (`tile_entry_preamble`), the cell's position repeated on every single
+// question (`cell_coords`, `row_banner`), and the finished board drawn back
+// for confirmation (`ask_board_check`).
+// ---------------------------------------------------------------------
+
+/// Where cell `i` sits, in the words both the tile and the site question use:
+/// `row 2 of 4, tile 1 of 3`. Rows and positions count from 1 (an operator at
+/// a table counts tiles, not indices); the CELL number stays 0-based because
+/// it is the area id every other CLI surface names.
+fn cell_coords(i: usize, rows: &[u8]) -> String {
+    let (r, c) = area_id_to_cell(AreaId::new(i as u8), rows);
+    format!("row {} of {}, tile {} of {}", r + 1, rows.len(), c + 1, rows[r as usize])
+}
+
+/// Announces each row as entry reaches it, so the coordinates survive the
+/// skeleton scrolling off the top of a real terminal.
+fn row_banner(r: usize, rows: &[u8]) -> String {
+    let first: usize = rows[..r].iter().map(|&l| l as usize).sum();
+    let len = rows[r] as usize;
+    format!(
+        "-- row {} of {}: {} tile{}, cells {}-{}, left to right --\n",
+        r + 1,
+        rows.len(),
+        len,
+        if len == 1 { "" } else { "s" },
+        first,
+        first + len - 1
+    )
+}
+
+/// What the operator reads before typing a single tile: the numbered skeleton
+/// of the real shape, then the orientation in words. The picture alone still
+/// leaves a mirror ambiguity for someone holding the rulebook, so the words
+/// carry the load -- which physical row is entered first, which tile is cell
+/// 0, and the fact that the printed diagram is upside down relative to this.
+fn tile_entry_preamble(rows: &[u8], players: u8) -> String {
+    let lengths: Vec<String> = rows.iter().map(|l| l.to_string()).collect();
+    let (last, rest) = lengths.split_last().expect("every board has rows");
+    let widest = rows[0];
+    let narrowest = *rows.last().unwrap();
+    let mut out = String::from("\n--- Board tiles ---\n");
+    out.push_str(&format!(
+        "This board is a staggered pyramid: {} rows, of {} and {last} tiles, widest row first.\n\
+         The wizard asks for the cells in this order:\n\n",
+        rows.len(),
+        rest.join(", ")
+    ));
+    out.push_str(&crate::render::board_skeleton(players));
+    out.push_str(&format!(
+        "\nOrient the board before you type:\n\
+         * Turn the assembled board so its widest row ({widest} tiles) is the row FARTHEST\n\
+         \x20 from you, and the narrowest row ({narrowest} tile{}) is the one NEAREST you.\n\
+         * Cell 0 is the leftmost tile of that widest far row. Numbering runs left to right\n\
+         \x20 along a row, then down to the next row, the way you read a page.\n\
+         * Read every row in the SAME direction. Which end you start from does not matter --\n\
+         \x20 a consistently mirrored board is the same board to the engine -- but switching\n\
+         \x20 direction partway is not, and nor is changing the row order.\n\
+         * The rulebook's p.3 diagram prints this pyramid THE OTHER WAY UP, narrowest row at\n\
+         \x20 the top. Do not follow that picture's reading order: enter the widest row first.\n\
+         \x20 The engine models the adjacency graph, not the printed picture.\n\
+         The finished board is drawn back for you to check before play begins.\n\n",
+        if narrowest == 1 { "" } else { "s" }
+    ));
+    out
+}
+
 /// Board tiles: every grid cell's `AreaType`, validated against the legal
 /// per-type multiset (design §5.5 item 1). A fresh working copy of
 /// `legal_counts` is taken here every call, so both the initial pass and
-/// an `edit tiles` re-run start from the same full pool.
+/// an `edit tiles` re-run start from the same full pool -- and both get the
+/// full preamble, since `edit tiles` is exactly the path an operator takes
+/// after the board check told them the order was wrong.
 fn ask_tiles(
     input: &mut dyn Iterator<Item = String>,
     out: &mut dyn FnMut(&str),
-    n: usize,
+    players: u8,
     legal_counts: &HashMap<AreaType, u32>,
 ) -> Result<Vec<AreaType>, String> {
+    let rows = row_lengths(players);
+    let n: usize = rows.iter().map(|&l| l as usize).sum();
+    out(&tile_entry_preamble(&rows, players));
+
     let mut remaining = legal_counts.clone();
     let mut tiles: Vec<AreaType> = Vec::with_capacity(n);
+    let mut row = 0usize;
+    let mut row_end = rows[0] as usize;
+    out(&row_banner(0, &rows));
     for i in 0..n {
+        if i == row_end {
+            row += 1;
+            row_end += rows[row] as usize;
+            out(&row_banner(row, &rows));
+        }
         let mut chosen: Option<AreaType> = None;
         ask(
             input,
             out,
-            &format!("Cell {i}/{n} tile? (cm/sm/tp/fg/bank/pa/pb/la/lb/ea/ct/ch/cu/canal)"),
+            &format!(
+                "Cell {i}/{n} ({}) tile? (cm/sm/tp/fg/bank/pa/pb/la/lb/ea/ct/ch/cu/canal)",
+                cell_coords(i, &rows)
+            ),
             &mut |s: &str| -> Result<(), String> {
                 let area = parse_tile_abbrev(s)?;
                 match remaining.get_mut(&area) {
@@ -797,15 +939,35 @@ fn ask_tiles(
 /// A building-site index for every non-Canal cell (Canal cells carry no
 /// site and are not asked about). Distinctness is self-contained to this
 /// call (a fresh tracker every time, initial pass or `edit sites` alike).
+///
+/// This pass walks the same cells in the same order as `ask_tiles`, so it
+/// carries the same coordinates -- plus the tile already entered there, which
+/// is what actually lets an operator find the physical card they are holding.
 fn ask_sites(
     input: &mut dyn Iterator<Item = String>,
     out: &mut dyn FnMut(&str),
     tiles: &[AreaType],
     rules: &Rules,
+    players: u8,
 ) -> Result<Vec<Option<u8>>, String> {
+    let rows = row_lengths(players);
+    let n = tiles.len();
+    out("\n--- Building-site cards ---\n");
+    out("Same cells in the same order as the tiles: the widest row first, left to right.\n");
+    out("Each question names the tile you entered there. Canal cells carry no site and\n");
+    out("are skipped.\n");
+
     let mut seen_sites: BTreeSet<u8> = BTreeSet::new();
-    let mut sites: Vec<Option<u8>> = Vec::with_capacity(tiles.len());
+    let mut sites: Vec<Option<u8>> = Vec::with_capacity(n);
+    let mut row = 0usize;
+    let mut row_end = rows[0] as usize;
+    out(&row_banner(0, &rows));
     for (i, tile) in tiles.iter().enumerate() {
+        if i == row_end {
+            row += 1;
+            row_end += rows[row] as usize;
+            out(&row_banner(row, &rows));
+        }
         if *tile == AreaType::Canal {
             sites.push(None);
             continue;
@@ -814,7 +976,11 @@ fn ask_sites(
         ask(
             input,
             out,
-            &format!("Cell {i} building-site index? (S<idx> or a number)"),
+            &format!(
+                "Cell {i}/{n} ({}) {} -- building-site index? (S<idx> or a number)",
+                cell_coords(i, &rows),
+                crate::describe::area_type_name(*tile)
+            ),
             &mut |s: &str| -> Result<(), String> {
                 let idx = parse_site_index(s)?;
                 if idx as usize >= rules.building_sites.len() {
@@ -830,6 +996,45 @@ fn ask_sites(
         sites.push(Some(chosen.unwrap()));
     }
     Ok(sites)
+}
+
+/// The confirmation checkpoint the live gate turns on (required outcome 3):
+/// draw the assembled board with the SAME renderer play uses, and make the
+/// operator say out loud that it matches the physical table before a single
+/// move is entered. Nothing else is on screen for it, deliberately -- buried
+/// inside the setup summary this is a picture people skim past, and it is the
+/// only check that can catch a board entered in the wrong order (the engine's
+/// own `reconcile_board` accepts every permutation).
+///
+/// `no` is not a failure: the caller returns to the review loop, where
+/// `edit tiles` re-enters the board. `abort` still works here, like every
+/// other question -- `ask` checks it before this parser ever runs.
+fn ask_board_check(
+    input: &mut dyn Iterator<Item = String>,
+    out: &mut dyn FnMut(&str),
+    session: &Session,
+) -> Result<bool, String> {
+    out("\n--- Board check ---\n");
+    out("This is the board the engine will play. Compare it with the physical table: the\n");
+    out("SHAPE first (widest row on top), then the tile in every cell.\n\n");
+    out(&crate::render::board_grid(session.state()));
+    out("\nA00 is cell 0, the leftmost tile of the widest top row; ids run left to right\n");
+    out("along each row, then down to the next row.\n");
+    let mut matches: Option<bool> = None;
+    ask(input, out, "Does this match your physical board? (yes/no)", &mut |s: &str| -> Result<(), String> {
+        match s.to_lowercase().as_str() {
+            "yes" | "y" => {
+                matches = Some(true);
+                Ok(())
+            }
+            "no" | "n" => {
+                matches = Some(false);
+                Ok(())
+            }
+            _ => Err(format!("'{s}' is not 'yes' or 'no'")),
+        }
+    })?;
+    Ok(matches.unwrap()) // `ask` returned Ok(()) only after this was set
 }
 
 /// 3 distinct entries out of the 12 canonical achievement types.
@@ -1081,6 +1286,7 @@ mod tests {
             lines.push(format!("T{}", table.state.lab_state.lab_a.slots[i].unwrap().0));
         }
         lines.push("confirm".into()); // review/edit step (design §5.5 item 3)
+        lines.push("yes".into()); // board check (third review I1)
         let mut transcript = String::new();
         let mut it = lines.into_iter();
         let repl = {
@@ -1141,6 +1347,7 @@ mod tests {
         lines.extend(["O1", "O1", "O2", "O3", "O4", "O5", "O6"].iter().map(|s| s.to_string())); // O1 repeated
         lines.extend(["T1", "T2", "T3", "T4", "T5", "T6"].iter().map(|s| s.to_string()));
         lines.push("confirm".into());
+        lines.push("yes".into()); // board check (third review I1)
         let (repl, transcript) = feed_owned(lines);
         assert!(transcript.contains("already entered"), "{transcript}");
         let repl = repl.unwrap_or_else(|e| panic!("expected Ok, got Err({e}); transcript:\n{transcript}"));
@@ -1157,6 +1364,7 @@ mod tests {
         lines.extend(["O99", "O1", "O2", "O3", "O4", "O5", "O6"].iter().map(|s| s.to_string())); // O99 not in registry
         lines.extend(["T1", "T2", "T3", "T4", "T5", "T6"].iter().map(|s| s.to_string()));
         lines.push("confirm".into());
+        lines.push("yes".into()); // board check (third review I1)
         let (repl, transcript) = feed_owned(lines);
         assert!(transcript.contains("not a valid order card"), "{transcript}");
         assert!(repl.is_ok(), "{transcript}");
@@ -1178,6 +1386,7 @@ mod tests {
         lines.extend(["O1", "O2", "O3", "O4", "O5", "O6"].iter().map(|s| s.to_string()));
         lines.extend(["T1", "T2", "T3", "T4", "T5", "T6"].iter().map(|s| s.to_string()));
         lines.push("confirm".into());
+        lines.push("yes".into()); // board check (third review I1)
         let (repl, transcript) = feed_owned(lines);
         assert!(transcript.contains("no cm tiles remaining for this board"), "{transcript}");
         assert!(repl.is_ok(), "{transcript}");
@@ -1221,6 +1430,7 @@ mod tests {
         lines.push("edit porta".into());
         lines.extend(["O10", "O11", "O12", "O13", "O14", "O15"].iter().map(|s| s.to_string()));
         lines.push("confirm".into());
+        lines.push("yes".into()); // board check (third review I1)
         let (repl, transcript) = feed_owned(lines);
         assert!(transcript.contains("O01"), "summary must show the originally-entered Port A cards\n{transcript}");
         assert!(transcript.contains("cm"), "summary must show the entered tiles\n{transcript}");
@@ -1249,6 +1459,343 @@ mod tests {
         let repl = repl.unwrap_or_else(|e| panic!("expected Ok, got Err({e}); transcript:\n{transcript}"));
         assert!(!repl.session.legal().is_empty());
         std::fs::remove_file("yokohama-game-605.json").ok();
+    }
+
+    // ---- Third review, finding I1: unambiguous tile-entry order ----
+    //
+    // The live wizard used to ask `Cell 3/10 tile?` and say nothing about
+    // which physical tile that was. `reconcile_board` checks only that the
+    // observed tiles are a PERMUTATION of the player count's multiset, so any
+    // entry order at all is accepted in silence -- and this branch's board is
+    // a staggered pyramid ordered WIDEST ROW FIRST, the vertical mirror of the
+    // rulebook's own p.3 diagram, so an operator entering tiles in the order
+    // that picture reads supplies the apex first and plays the whole game on a
+    // scrambled graph. These tests pin the three things that now prevent it:
+    // the numbered skeleton + orientation rules before entry, per-cell
+    // coordinates on every prompt, and the board check after `confirm`.
+
+    /// 2P legal multiset in cell order, matching `live_2p_prefix`.
+    const P2_TILES: [&str; 10] = ["cm", "sm", "tp", "fg", "bank", "pa", "la", "ea", "ch", "cu"];
+
+    /// `live_2p_prefix` + Port A + Laboratory A -- everything up to (not
+    /// including) the review loop, so a caller only appends its own
+    /// `confirm`/`edit`/board-check answers.
+    fn live_2p_through_labs(seed: u64) -> Vec<String> {
+        let mut lines = live_2p_prefix(seed);
+        lines.extend(["O1", "O2", "O3", "O4", "O5", "O6"].iter().map(|s| s.to_string()));
+        lines.extend(["T1", "T2", "T3", "T4", "T5", "T6"].iter().map(|s| s.to_string()));
+        lines
+    }
+
+    /// Required outcome 1+2: before the first tile question the wizard prints
+    /// the numbered skeleton of the ACTUAL shape for this player count, and
+    /// states the orientation in words -- including the trap, that the
+    /// rulebook's diagram prints the pyramid the other way up. The skeleton is
+    /// asserted as the whole verbatim picture (`render::board_skeleton`, which
+    /// derives from `row_lengths`), so it can never drift from the shape the
+    /// engine actually plays.
+    #[test]
+    fn tile_entry_opens_with_the_numbered_skeleton_and_states_the_orientation() {
+        let mut lines = live_2p_through_labs(610);
+        lines.push("confirm".into());
+        lines.push("yes".into());
+        let (repl, transcript) = feed_owned(lines);
+        repl.unwrap_or_else(|e| panic!("expected Ok, got Err({e}); transcript:\n{transcript}"));
+        assert!(
+            transcript.contains(&crate::render::board_skeleton(2)),
+            "the numbered skeleton of the real 2P shape must precede the tile questions\n{transcript}"
+        );
+        // Matched case-insensitively: the wording SHOUTS the load-bearing
+        // words at the operator, but which ones are capitalized is styling,
+        // and a test that pins styling just punishes rewording.
+        let said = transcript.to_lowercase();
+        for needle in [
+            "widest row",            // which row is entered first
+            "cell 0",                // which physical tile cell 0 is
+            "same direction",        // the one degree of freedom that IS free
+            "other way up",          // the rulebook p.3 mirror trap
+            "adjacency graph",       // why the picture is not the authority
+        ] {
+            assert!(said.contains(needle), "orientation wording missing {needle:?}\n{transcript}");
+        }
+    }
+
+    /// Required outcome 1, at the moment of entry: every tile prompt names the
+    /// cell's row and position, so the coordinates survive the skeleton
+    /// scrolling off the top of a real terminal. 2P rows are 4/3/2/1.
+    #[test]
+    fn every_tile_prompt_names_its_row_and_position_on_the_board() {
+        let mut lines = live_2p_through_labs(611);
+        lines.push("confirm".into());
+        lines.push("yes".into());
+        let (_repl, transcript) = feed_owned(lines);
+        for needle in [
+            "row 1 of 4: 4 tiles, cells 0-3",       // row banner
+            "row 4 of 4: 1 tile, cells 9-9",
+            "Cell 0/10 (row 1 of 4, tile 1 of 4)",  // first cell of the widest row
+            "Cell 3/10 (row 1 of 4, tile 4 of 4)",  // last cell of the widest row
+            "Cell 4/10 (row 2 of 4, tile 1 of 3)",  // first cell of the next row
+            "Cell 9/10 (row 4 of 4, tile 1 of 1)",  // the apex, entered LAST
+        ] {
+            assert!(transcript.contains(needle), "tile prompts missing {needle:?}\n{transcript}");
+        }
+    }
+
+    /// Required outcome 5: the site pass walks the same cells in the same
+    /// order and had the same ambiguity, so it carries the same coordinates --
+    /// plus the tile already entered there, which is what actually lets an
+    /// operator find the physical card they are reading from.
+    #[test]
+    fn every_site_prompt_names_its_cell_and_the_tile_entered_there() {
+        let mut lines = live_2p_through_labs(612);
+        lines.push("confirm".into());
+        lines.push("yes".into());
+        let (_repl, transcript) = feed_owned(lines);
+        assert!(
+            transcript.contains("Cell 0/10 (row 1 of 4, tile 1 of 4) Copper Mine -- building-site"),
+            "site prompts must name the cell AND the tile entered there\n{transcript}"
+        );
+        assert!(
+            transcript.contains("Cell 9/10 (row 4 of 4, tile 1 of 1) Customs -- building-site"),
+            "{transcript}"
+        );
+    }
+
+    /// Required outcome 3: `confirm` no longer starts the game. The wizard
+    /// builds the real session, draws the board with the REAL renderer
+    /// (asserted byte-for-byte against `render::board_grid` of the session it
+    /// returned -- "exactly as the game will show it"), and only `yes` starts
+    /// play. A junk answer re-asks rather than being read as consent.
+    #[test]
+    fn board_check_draws_the_assembled_board_and_only_yes_starts_the_game() {
+        let mut lines = live_2p_through_labs(613);
+        lines.push("confirm".into());
+        lines.push("maybe".into()); // must NOT be taken for a yes
+        lines.push("yes".into());
+        let (repl, transcript) = feed_owned(lines);
+        let repl = repl.unwrap_or_else(|e| panic!("expected Ok, got Err({e}); transcript:\n{transcript}"));
+        assert!(transcript.contains("--- Board check ---"), "{transcript}");
+        assert!(
+            transcript.contains(&crate::render::board_grid(repl.session.state())),
+            "the check must draw the board with the same renderer play uses\n{transcript}"
+        );
+        assert!(transcript.contains("is not 'yes' or 'no'"), "a junk answer must re-ask\n{transcript}");
+        std::fs::remove_file("yokohama-game-613.json").ok();
+    }
+
+    /// Required outcome 3, the recovery half: answering `no` returns to the
+    /// review loop, where `edit tiles` re-enters the board -- and the corrected
+    /// board reaches the built session, with the check running again over it.
+    /// This is the path an operator takes after spotting a mirrored board.
+    #[test]
+    fn board_check_no_returns_to_review_where_edit_tiles_re_enters_the_board() {
+        let mut lines = live_2p_through_labs(614);
+        lines.push("confirm".into());
+        lines.push("no".into()); // the drawn board does not match the table
+        lines.push("edit tiles".into());
+        let mut corrected = P2_TILES;
+        corrected.reverse();
+        lines.extend(corrected.iter().map(|s| s.to_string()));
+        lines.extend((0u8..10).map(|i| i.to_string())); // sites come with the tiles
+        lines.push("confirm".into());
+        lines.push("yes".into());
+        let (repl, transcript) = feed_owned(lines);
+        let repl = repl.unwrap_or_else(|e| panic!("expected Ok, got Err({e}); transcript:\n{transcript}"));
+        assert_eq!(
+            repl.session.state().board_layout.areas[&AreaId::new(0)].area_type,
+            AreaType::Customs,
+            "the re-entered board must reach the built session\n{transcript}"
+        );
+        assert_eq!(
+            transcript.matches("--- Board check ---").count(),
+            2,
+            "the check must run again over the corrected board\n{transcript}"
+        );
+        std::fs::remove_file("yokohama-game-614.json").ok();
+    }
+
+    /// Building-site cards sit ON the tiles, so a re-entered board moves them
+    /// too: `edit tiles` re-asks the sites in the same pass. Without this the
+    /// recovery path silently re-attaches the OLD site cards to the NEW tile
+    /// order -- exactly the class of silent mis-mapping this whole finding is
+    /// about, reintroduced by its own fix.
+    #[test]
+    fn edit_tiles_re_asks_the_building_sites_because_they_sit_on_the_tiles() {
+        let mut lines = live_2p_through_labs(615);
+        lines.push("edit tiles".into());
+        lines.extend(P2_TILES.iter().map(|s| s.to_string()));
+        lines.extend((0u8..10).map(|i| i.to_string()));
+        lines.push("confirm".into());
+        lines.push("yes".into());
+        let (repl, transcript) = feed_owned(lines);
+        repl.unwrap_or_else(|e| panic!("expected Ok, got Err({e}); transcript:\n{transcript}"));
+        assert_eq!(
+            transcript.matches("building-site index?").count(),
+            20,
+            "10 site questions in the initial pass + 10 more after `edit tiles`\n{transcript}"
+        );
+        std::fs::remove_file("yokohama-game-615.json").ok();
+    }
+
+    /// Required outcome 4: the whole live wizard -- board check included --
+    /// still runs off ONE pre-built script with no interactive-only step. Run
+    /// at 3P (a shape with a Canal, so the site pass skips a cell) against a
+    /// real generated table, and asserted by EXHAUSTING the iterator: every
+    /// question consumed exactly one scripted line, and none was left over.
+    /// The Forge PTY recipe and every scripted test depend on this holding.
+    #[test]
+    fn the_whole_live_wizard_still_scripts_in_a_single_write_at_3p() {
+        let rules = Rules::standard();
+        let table = new_game(GameConfig::for_player_count(3), &rules, 909).unwrap();
+        let n = table.state.board_layout.areas.len();
+        let tile_of = |i: usize| table.state.board_layout.areas[&AreaId::new(i as u8)].area_type;
+        let abbrev = |t: AreaType| match t {
+            AreaType::CopperMine => "cm", AreaType::SilkMill => "sm",
+            AreaType::TeaPlantation => "tp", AreaType::FishingGround => "fg",
+            AreaType::Bank => "bank", AreaType::PortA => "pa", AreaType::PortB => "pb",
+            AreaType::LaboratoryA => "la", AreaType::LaboratoryB => "lb",
+            AreaType::EmploymentAgency => "ea", AreaType::Chinatown => "ct",
+            AreaType::Church => "ch", AreaType::Customs => "cu", AreaType::Canal => "canal",
+        };
+        let mut lines: Vec<String> = vec![
+            "live".into(), "3".into(), "red".into(), "blue".into(), "yellow".into(),
+            "0".into(), "909".into(), "".into(),
+            "hidden".into(), "hidden".into(), "hidden".into(),
+        ];
+        lines.extend((0..n).map(|i| abbrev(tile_of(i)).to_string()));
+        let mut site = 0u8;
+        for i in 0..n {
+            if tile_of(i) != AreaType::Canal {
+                lines.push(format!("{site}"));
+                site += 1;
+            }
+        }
+        lines.extend(table.state.achievements.iter().map(|a| format!("{:?}", a.achievement_type)));
+        for slot in 0..6 {
+            lines.push(format!("O{}", table.state.port_state.port_a.slots[slot].unwrap().0));
+        }
+        for slot in 0..6 {
+            lines.push(format!("O{}", table.state.port_state.port_b.as_ref().unwrap().slots[slot].unwrap().0));
+        }
+        for slot in 0..6 {
+            lines.push(format!("T{}", table.state.lab_state.lab_a.slots[slot].unwrap().0));
+        }
+        lines.push("confirm".into());
+        lines.push("yes".into());
+
+        let mut transcript = String::new();
+        let mut it = lines.into_iter();
+        let repl = {
+            let mut sink = |s: &str| transcript.push_str(s);
+            run_wizard(&mut it, &mut sink)
+                .unwrap_or_else(|e| panic!("expected Ok, got Err({e}); transcript:\n{transcript}"))
+        };
+        assert_eq!(it.next(), None, "the script must be consumed exactly, with nothing left over");
+        for i in 0..n {
+            assert_eq!(
+                repl.session.state().board_layout.areas[&AreaId::new(i as u8)].area_type,
+                tile_of(i),
+                "cell {i} must hold the tile the script put there"
+            );
+        }
+        std::fs::remove_file("yokohama-game-909.json").ok();
+    }
+
+    /// The orientation wording tells the operator that reading EVERY row from
+    /// the other end is harmless ("a consistently mirrored board is the same
+    /// board to the engine") while switching direction partway is not. That is
+    /// a claim about the pyramid's graph, made to someone who cannot check it,
+    /// so it is pinned here: mirroring every row maps the board onto itself --
+    /// tile types, adjacency, and canal crossings all transported by the
+    /// mirror map, on a REAL 4P board (the only shape with a Canal and 6-wide
+    /// rows). If this ever stops holding, the guide sentence must go.
+    #[test]
+    fn a_consistently_mirrored_entry_is_the_same_board_to_the_engine() {
+        let rules = Rules::standard();
+        let table = new_game(GameConfig::for_player_count(4), &rules, 4242).unwrap();
+        let rows = row_lengths(4);
+        let n = table.state.board_layout.areas.len();
+        // The mirror map: reverse each row in place.
+        let mirror = |id: AreaId| {
+            let (r, c) = area_id_to_cell(id, &rows);
+            cell_to_area_id(r, rows[r as usize] - 1 - c, &rows)
+        };
+
+        let tiles: Vec<AreaType> =
+            (0..n).map(|i| table.state.board_layout.areas[&AreaId::new(i as u8)].area_type).collect();
+        let mut sites: Vec<Option<u8>> = Vec::with_capacity(n);
+        let mut next = 0u8;
+        for t in &tiles {
+            if *t == AreaType::Canal {
+                sites.push(None);
+            } else {
+                sites.push(Some(next));
+                next += 1;
+            }
+        }
+        // What the operator types when they read every row from the other end.
+        let mut m_tiles = vec![AreaType::Canal; n];
+        let mut m_sites = vec![None; n];
+        for i in 0..n {
+            let j = mirror(AreaId::new(i as u8)).0 as usize;
+            m_tiles[j] = tiles[i];
+            m_sites[j] = sites[i];
+        }
+
+        let build = |tiles: Vec<AreaType>, sites: Vec<Option<u8>>| {
+            Session::new_live(
+                GameConfig::for_player_count(4),
+                4242,
+                SetupObservations {
+                    board: Some(ObservedBoard { tiles, sites }),
+                    ..Default::default()
+                },
+                vec![StartingOrderChoice::Keep(0); 4],
+                Rules::standard(),
+            )
+            .expect("a permutation of the seeded multiset is always reconcilable")
+        };
+        let plain = build(tiles, sites);
+        let mirrored = build(m_tiles, m_sites);
+
+        for i in 0..n {
+            let id = AreaId::new(i as u8);
+            let m = mirror(id);
+            assert_eq!(
+                mirrored.state().board_layout.areas[&m].area_type,
+                plain.state().board_layout.areas[&id].area_type,
+                "tile at cell {i} must land on its mirror image"
+            );
+            let mut want: Vec<u8> =
+                plain.state().board_layout.adjacent_areas(id).iter().map(|a| mirror(*a).0).collect();
+            let mut got: Vec<u8> =
+                mirrored.state().board_layout.adjacent_areas(m).iter().map(|a| a.0).collect();
+            want.sort_unstable();
+            got.sort_unstable();
+            assert_eq!(got, want, "neighbors of cell {i} must transport under the mirror");
+        }
+        let norm = |mut v: Vec<(u8, u8)>| {
+            for p in v.iter_mut() {
+                if p.0 > p.1 {
+                    *p = (p.1, p.0);
+                }
+            }
+            v.sort_unstable();
+            v
+        };
+        assert_eq!(
+            norm(mirrored.state().board_layout.canal_crossings.iter().map(|(a, b)| (a.0, b.0)).collect()),
+            norm(
+                plain
+                    .state()
+                    .board_layout
+                    .canal_crossings
+                    .iter()
+                    .map(|(a, b)| (mirror(*a).0, mirror(*b).0))
+                    .collect()
+            ),
+            "the Canal's tolled transit pairs must transport under the mirror too"
+        );
     }
 
     // ---- Task 14 fix wave (review of commit 0a01c95) ----

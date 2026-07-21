@@ -137,6 +137,50 @@ pub fn board_grid(state: &GameState) -> String {
     out
 }
 
+/// Interior text width of one numbered skeleton cell; a full cell adds 2
+/// border columns, exactly as a full-size tile box does.
+const SKEL_W: usize = 4;
+/// Horizontal pitch between skeleton cells. Rows below indent by HALF of it —
+/// the same brick offset [`board_grid`] draws at full tile size.
+const SKEL_PITCH: usize = SKEL_W + 2;
+
+/// The EMPTY numbered board a live operator is about to fill in: the real
+/// staggered pyramid for `player_count` (`board_gen::row_lengths` — widest row
+/// on top, each row below offset half a cell), every cell carrying the index
+/// the setup wizard will ask for it by.
+///
+/// Drawn at cell size rather than [`board_grid`]'s full tile size because the
+/// operator is matching a SHAPE and a numbering here, not reading tile
+/// contents — so the whole board fits any terminal, at any player count.
+///
+/// Third review, finding I1: `Cell 3/18 tile?` on its own names no physical
+/// tile, and entering the board apex-first (the order the rulebook's own p.3
+/// diagram reads, since it prints the pyramid the other way up) yields a
+/// scrambled graph that `reconcile_board` accepts silently — it checks only
+/// that the tile multiset matches. This picture, the orientation wording the
+/// wizard prints beside it, and the post-entry board check are the three
+/// places that error can now be caught.
+pub fn board_skeleton(player_count: u8) -> String {
+    let mut out = String::new();
+    let mut cell = 0usize;
+    for (r, &len) in row_lengths(player_count).iter().enumerate() {
+        let indent = " ".repeat(r * (SKEL_PITCH / 2));
+        let (mut top, mut mid, mut bottom) = (indent.clone(), indent.clone(), indent);
+        for _ in 0..len {
+            top.push('┌');
+            top.push_str(&"─".repeat(SKEL_W));
+            top.push('┐');
+            mid.push_str(&format!("│{cell:>3} │"));
+            bottom.push('└');
+            bottom.push_str(&"─".repeat(SKEL_W));
+            bottom.push('┘');
+            cell += 1;
+        }
+        out.push_str(&format!("{top}\n{mid}\n{bottom}\n"));
+    }
+    out
+}
+
 /// Legend footer for the `board` view: the `*` unclaimed-5-Power mark, the
 /// `[St]` Station marker, the `·` empty build slot — plus the canal crossing
 /// rule, but ONLY on a board that actually has a Canal tile (2P boards never
@@ -1405,6 +1449,74 @@ mod tests {
             let lead = top.chars().take_while(|c| *c == ' ').count();
             assert_eq!(lead, r * 9, "row {r} must indent half a box per row down: {top:?}");
         }
+    }
+
+    // ---- Third review I1: the numbered entry skeleton ----
+
+    /// The skeleton draws the SAME staggered shape the engine plays, at every
+    /// player count: `board_gen::row_lengths` row for row, widest row on top,
+    /// each row indented half a cell pitch below the one above it. If this
+    /// ever drifts from `row_lengths`, a live operator fills in a board shape
+    /// the engine does not have.
+    #[test]
+    fn board_skeleton_shape_matches_row_lengths_at_every_player_count() {
+        for players in [2u8, 3, 4] {
+            let rows = row_lengths(players);
+            let s = board_skeleton(players);
+            let lines: Vec<&str> = s.lines().collect();
+            assert_eq!(lines.len(), rows.len() * 3, "3 lines per row at {players}P:\n{s}");
+            for (r, &len) in rows.iter().enumerate() {
+                let top = lines[r * 3];
+                assert_eq!(top.matches('┌').count(), len as usize, "{players}P row {r} cell count: {top:?}");
+                let lead = top.chars().take_while(|c| *c == ' ').count();
+                assert_eq!(lead, r * (SKEL_PITCH / 2), "{players}P row {r} brick offset: {top:?}");
+            }
+        }
+    }
+
+    /// The 2P skeleton, byte for byte. This one IS the operator-facing
+    /// artifact -- it is what a tester holds against the physical board -- so
+    /// unlike the rest of the renderer (content-asserted by house rule), its
+    /// alignment is worth pinning: a half-cell offset that drifts by a column
+    /// stops reading as a brick pattern, which is the whole point of the
+    /// picture.
+    #[test]
+    fn board_skeleton_2p_is_the_exact_brick_pyramid() {
+        assert_eq!(
+            board_skeleton(2),
+            concat!(
+                "┌────┐┌────┐┌────┐┌────┐\n",
+                "│  0 ││  1 ││  2 ││  3 │\n",
+                "└────┘└────┘└────┘└────┘\n",
+                "   ┌────┐┌────┐┌────┐\n",
+                "   │  4 ││  5 ││  6 │\n",
+                "   └────┘└────┘└────┘\n",
+                "      ┌────┐┌────┐\n",
+                "      │  7 ││  8 │\n",
+                "      └────┘└────┘\n",
+                "         ┌────┐\n",
+                "         │  9 │\n",
+                "         └────┘\n",
+            )
+        );
+    }
+
+    /// Cell indices run 0..n row-major, top row first -- the exact order
+    /// `wizard::ask_tiles` asks for them and `ObservedBoard.tiles` is indexed
+    /// in. The apex cell of a 4P board is 17, never 0.
+    #[test]
+    fn board_skeleton_numbers_cells_row_major_from_the_widest_row() {
+        let s = board_skeleton(4);
+        let numbers: Vec<usize> = s
+            .lines()
+            .filter(|l| l.contains('│'))
+            .flat_map(|l| l.split('│').filter_map(|c: &str| c.trim().parse::<usize>().ok()).collect::<Vec<_>>())
+            .collect();
+        assert_eq!(numbers, (0..18).collect::<Vec<_>>(), "row-major 0..18:\n{s}");
+        let first_row = s.lines().nth(1).unwrap();
+        assert!(first_row.contains("  0 "), "cell 0 opens the WIDEST row:\n{s}");
+        let last_row = s.lines().nth(10).unwrap();
+        assert!(last_row.contains(" 17 "), "cell 17 closes the NARROWEST row:\n{s}");
     }
 
     /// Every line pads to ONE total width (the frame composer joins the board
