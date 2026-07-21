@@ -162,3 +162,30 @@ plain` stays pinned).
 None added. crossterm rejected for v1 (see §1); ANSI emitted remains confined to
 `style.rs` (SGR) and `screen.rs` (clear/home), both behind TTY-gated switches that
 default OFF, so libraries, tests, and pipes stay byte-plain without opting in.
+
+## 11. Information sufficiency + discoverability (owner scope item 10, added 2026-07-21)
+
+A table player must be able to SEE everything the physical game would show them, and
+must FIND those surfaces without having read the guide. Two halves:
+
+**Sufficiency** — every public physical surface has a view: achievement cards with
+conditions/claim VP/claim state/progress (`goals`); building sites with printed
+per-space rewards, what's built and WHOSE, TH value, adjacency (`sites`, plus the
+owner-lettered build marks on every board tile); the lab/tech offer with slot
+surcharges, costs, and effects (`labs`); the port order offer (`ports`); church/customs
+tracks including the 2P dummy and the Station token (`tracks`); players' full public
+holdings (`players`); plus `hand`/`score`/`log`. Gap closed by this item: the shared
+mercenary SUPPLY piles (public tiles on the table) join the `tracks` view.
+
+**Discoverability** — three layers, so no memorized command names are required:
+1. A **menu strip in every composed frame** (TTY): one always-visible line under the
+   board legend naming the info surfaces and the `view` command that opens them.
+2. A **`view` popup menu** (aliases `views`, `?`): a one-shot numbered menu — pick a
+   number, that surface renders, and you're back at the main prompt; `cancel` backs
+   out. Built on the same sub-prompt machinery as the pickers (read-only; refused
+   mid-collection like any other input capture; lockdown outranks it).
+3. The **hint line on every prompt** (all modes, pipes included) now names it:
+   `... or a command ('view' for game info, 'help' for the list)`.
+
+The direct view commands stay first-class; the menu is an entry surface over the same
+render functions, so the two can never disagree.
