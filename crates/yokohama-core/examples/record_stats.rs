@@ -17,7 +17,9 @@
 mod choice_metrics;
 
 use choice_metrics::ChoiceMetrics;
-use yokohama_core::{finalize_setup, new_game, reconcile_setup, replay_from, GameRecord, RecordedEvent, Rules};
+use yokohama_core::{
+    finalize_setup, new_game, reconcile_setup, replay_from, replay_strict, GameRecord, RecordedEvent, Rules,
+};
 
 fn main() {
     let args: Vec<String> = std::env::args().collect();
@@ -39,46 +41,63 @@ fn main() {
     // Same standard registries the CLI itself plays with (main.rs) --
     // GameRecord carries no custom Rules, only a seed/config/choices/events.
     let rules = Rules::standard();
-    let mut pending = new_game(record.config.clone(), &rules, record.seed).unwrap_or_else(|e| {
-        eprintln!("new_game failed: {e}");
+
+    // Tool-level fail-closed on the digest (FIX-B P1, Codex PR-3 review):
+    // `replay_strict` itself verifies the terminal digest only WHEN PRESENT
+    // (in-memory test records legitimately pre-date stamping), but a record
+    // submitted to THIS tool is retained-corpus input and must carry one.
+    if record.terminal_digest.is_none() {
+        eprintln!(
+            "{path}: record carries no terminal_digest -- a record without a digest is not \
+             acceptable retained-corpus input. Re-save it via the CLI Session (which stamps the \
+             digest at save) or stamp it with GameRecord::stamp_terminal_digest before submitting."
+        );
         std::process::exit(1);
-    });
-    if let Some(obs) = &record.setup_observations {
-        pending = reconcile_setup(pending, obs, &rules).unwrap_or_else(|e| {
-            eprintln!("reconcile_setup failed: {e}");
-            std::process::exit(1);
-        });
     }
-    let mut state = finalize_setup(pending, &record.choices).unwrap_or_else(|e| {
-        eprintln!("finalize_setup failed: {e}");
+
+    // Strict gate (guidingpath I5): before trusting any metric off a
+    // submitted save, hold it to the bar a training pipeline would. Strict
+    // replay rejects an engine_version / rules_hash / semantics_rev mismatch,
+    // runs check_invariants after every event, and (if the record was
+    // stamped) verifies the terminal-state digest -- so a corpus produced
+    // under different executable semantics fails loudly here instead of being
+    // silently reinterpreted and folded into the stats.
+    let final_state = replay_strict(&record, &rules).unwrap_or_else(|e| {
+        eprintln!("strict replay rejected {path} at event {}: {}", e.event_index, e.message);
         std::process::exit(1);
     });
 
-    // Calls replay_from per event (a length-1 slice), so the fold itself
-    // can never drift from yokohama-core's own replay logic (M4
-    // final-review fix: the previous version hand-duplicated replay_from's
-    // 5-arm match, a documented drift risk -- see the Task 16 report).
-    // metrics.observe runs on each Move BEFORE its event applies --
-    // replay_from has no hook for that, so it's still done here rather
-    // than folded into the same call; this is the one thing this loop
-    // still does that a single whole-slice replay_from(&state, &record.events, &rules)
-    // couldn't.
+    // Metrics need each Move observed against the state AS OF that move, which
+    // the final-state-only replay_strict has no hook for -- so re-fold
+    // leniently for the metrics walk. Strict replay just proved the setup
+    // rebuilds and every event applies, so these steps cannot fail now (hence
+    // `expect`, not a graceful exit -- a failure here would be an engine
+    // determinism bug, not bad input). Per-event replay_from keeps this fold
+    // from drifting from yokohama-core's own replay logic (M4).
+    let mut pending = new_game(record.config.clone(), &rules, record.seed)
+        .expect("strict replay already rebuilt setup from this seed/config");
+    if let Some(obs) = &record.setup_observations {
+        pending =
+            reconcile_setup(pending, obs, &rules).expect("strict replay already reconciled these observations");
+    }
+    let mut state =
+        finalize_setup(pending, &record.choices).expect("strict replay already finalized setup with these choices");
+
     let mut metrics = ChoiceMetrics::new();
-    for (i, ev) in record.events.iter().enumerate() {
+    for ev in &record.events {
         if let RecordedEvent::Move(mv) = ev {
             metrics.observe(&state, mv, &rules);
         }
-        state = replay_from(&state, std::slice::from_ref(ev), &rules).unwrap_or_else(|e| {
-            eprintln!("event {i}: {}", e.message);
-            std::process::exit(1);
-        });
+        state = replay_from(&state, std::slice::from_ref(ev), &rules)
+            .expect("strict replay already folded this event cleanly");
     }
-    // Some(&state): unlike selfplay's driver, this loop always ends holding
-    // the real resulting GameState (whether or not the replayed game
-    // actually finished), so the trailing Church/Customs classification (if
-    // any) can be exact instead of relying on finish_game's game-over
-    // invariant fallback.
-    metrics.finish_game(Some(&state));
+    debug_assert_eq!(state, final_state, "the metrics re-fold must reproduce strict replay's terminal state");
+
+    // final_state (== the loop's terminal state) is the real resulting
+    // GameState -- whether or not the replayed game actually finished -- so
+    // the trailing Church/Customs classification (if any) is exact instead of
+    // relying on finish_game's game-over invariant fallback.
+    metrics.finish_game(Some(&final_state));
 
     println!("record: {path} ({} events, seed {})", record.events.len(), record.seed);
     metrics.print();

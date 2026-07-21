@@ -9,7 +9,12 @@ use crate::types::PlayerId;
 pub struct ChurchSlot {
     /// Player who placed here.
     pub player: PlayerId,
-    /// Arrival order for tie-breaking (higher = later = wins ties).
+    /// Arrival order, recorded at placement. NOT used by final scoring:
+    /// the church/customs majority count-tie is POSITIONAL — rightmost
+    /// occupied space wins (RB p.9's examples compare pawn positions;
+    /// `game/scoring.rs`), differentially confirmed against the independent
+    /// oracle 2026-07-20. This field's old "higher = later = wins ties"
+    /// wording described a reading the engine never implemented.
     pub arrival_order: u8,
 }
 
@@ -98,7 +103,12 @@ impl Default for ChurchTrack {
 pub struct CustomsSlot {
     /// Player who placed here.
     pub player: PlayerId,
-    /// Arrival order for tie-breaking (higher = later = wins ties).
+    /// Arrival order, recorded at placement. NOT used by final scoring:
+    /// the church/customs majority count-tie is POSITIONAL — rightmost
+    /// occupied space wins (RB p.9's examples compare pawn positions;
+    /// `game/scoring.rs`), differentially confirmed against the independent
+    /// oracle 2026-07-20. This field's old "higher = later = wins ties"
+    /// wording described a reading the engine never implemented.
     pub arrival_order: u8,
 }
 

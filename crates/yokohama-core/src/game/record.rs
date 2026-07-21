@@ -16,6 +16,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::game::apply_move::apply_move;
 use crate::game::rules::Rules;
+use crate::game::semantics::{state_digest, SEMANTICS_REV};
 use crate::game::setup::{finalize_setup, new_game, reconcile_setup, SetupObservations, StartingOrderChoice};
 use crate::types::{AreaId, FivePowerEffect, GameConfig, GameState, Move, MoveError, OrderCardId, PlayerId, TechCardId};
 
@@ -67,6 +68,42 @@ pub struct GameRecord {
     /// seeded PendingSetup before finalize_setup. None = pure simulation.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub setup_observations: Option<SetupObservations>,
+    /// Executable-semantics revision (`SEMANTICS_REV`) of the engine that
+    /// produced this record. Unlike `engine_version` (the never-bumped
+    /// workspace crate version) and `rules_hash` (static card/site/token/board
+    /// DATA only), this identifies the behaviour of `get_legal_moves` /
+    /// `apply_move` / scoring / setup -- see `crate::game::semantics` for the
+    /// bump contract. `None` means the record predates the field (pre-Phase-2.9)
+    /// and its semantics provenance is UNKNOWN -- fail-closed (Codex PR-3
+    /// review, FIX-B P1: the previous serde-default of literal 1 made a
+    /// provenance-less record indistinguishable from a genuine current rev-1
+    /// record, so `replay_strict` silently accepted it). `GameRecord::new`
+    /// stamps `Some(SEMANTICS_REV)`, so every new record serializes the
+    /// number. `replay` warns on `None` (missing provenance) and on a `Some`
+    /// mismatch, replaying anyway; `replay_strict` rejects BOTH.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub semantics_rev: Option<u32>,
+    /// FNV-1a digest (`state_digest`) of the FINAL `GameState` this record's
+    /// event log folds to, stamped by `stamp_terminal_digest` at
+    /// finalization/save. `None` on a record that was never stamped (or was
+    /// written before the field existed). `replay_strict` recomputes the
+    /// digest from the replayed terminal state and rejects a mismatch --
+    /// defense in depth on top of its per-event invariant checks (it catches
+    /// an events-vs-digest divergence even when every intermediate state is
+    /// individually valid).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub terminal_digest: Option<String>,
+    /// CLI live-tracking session metadata (NOT part of the replayable game
+    /// history — it never affects `replay`/`replay_strict`, which read only
+    /// seed/config/choices/events/observations). `Some(reason)` once the
+    /// interactive driver locked the session after a desync or invariant fault
+    /// (`yokohama-cli`'s `Repl`); the operator's driver refuses all further play
+    /// and only allows save/log/quit. Persisted here so a lockdown SURVIVES
+    /// save → quit → reload instead of silently clearing (review §3): the driver
+    /// restores its `locked` flag from this on load. `None` = not locked (and
+    /// the serde default for records written before the field existed).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lockdown: Option<String>,
 }
 
 impl GameRecord {
@@ -80,11 +117,14 @@ impl GameRecord {
         Self {
             engine_version: env!("CARGO_PKG_VERSION").to_string(),
             rules_hash: rules.content_hash(),
+            semantics_rev: Some(SEMANTICS_REV),
             seed,
             config,
             choices,
             events: Vec::new(),
             setup_observations: None,
+            terminal_digest: None,
+            lockdown: None,
         }
     }
 
@@ -96,6 +136,18 @@ impl GameRecord {
     /// Append one reconciliation/reveal event to the log.
     pub fn push_event(&mut self, ev: RecordedEvent) {
         self.events.push(ev);
+    }
+
+    /// Stamp `terminal_digest` from `final_state` -- the `GameState` this
+    /// record's event log folds to. Call at finalization/save (the record is
+    /// built incrementally, so there is no single "complete" moment; callers
+    /// hold the resulting state already -- e.g. the CLI `Session` its live
+    /// `state`, which `replay` reproduces exactly). Lets `replay_strict` later
+    /// verify the replayed terminal state matches. Idempotent; re-stamping
+    /// after appending more events simply refreshes it, so it must be called
+    /// AFTER the last event that belongs to the saved run.
+    pub fn stamp_terminal_digest(&mut self, final_state: &GameState) {
+        self.terminal_digest = Some(state_digest(final_state));
     }
 }
 
@@ -229,15 +281,32 @@ pub fn replay(record: &GameRecord, rules: &Rules) -> Result<GameState, ReplayErr
             record.rules_hash,
         );
     }
+    match record.semantics_rev {
+        None => eprintln!(
+            "warning: GameRecord carries no semantics_rev (missing semantics provenance; pre-Phase-2.9 record) -- replaying anyway (v1 does not refuse on missing provenance)",
+        ),
+        Some(rev) if rev != SEMANTICS_REV => eprintln!(
+            "warning: GameRecord.semantics_rev={rev} does not match running engine SEMANTICS_REV={SEMANTICS_REV} -- replaying anyway (v1 does not refuse on a semantics_rev mismatch)",
+        ),
+        Some(_) => {}
+    }
 
+    // Lenient replay deliberately does NOT verify `terminal_digest`: that is a
+    // deep post-fold property, in the same strict-only bucket as the per-event
+    // invariant checks (see `replay_strict`).
     let state = rebuild_initial_state(record, rules)?;
     replay_from(&state, &record.events, rules)
 }
 
 /// Strict replay for training pipelines (design §4.1): reject, don't warn.
-/// - engine_version mismatch => Err at event_index 0
+/// - engine_version / rules_hash mismatch, or `semantics_rev` mismatch OR
+///   missing (`None` -- unknown provenance, fail-closed) => Err at event_index 0
 /// - every Move event goes through the checked `apply_move` (membership)
 /// - `check_invariants` runs after EVERY event
+/// - if the record carries a `terminal_digest`, the replayed terminal state
+///   must reproduce it (Err at the past-the-end event index otherwise) --
+///   defense in depth that catches an events-vs-digest divergence even when
+///   every intermediate state passed its invariant check
 ///
 /// Shares `rebuild_initial_state`/`fold_one_event` with `replay`/`replay_from`
 /// (Task 3) -- there is exactly one setup preamble and one event fold in
@@ -259,12 +328,40 @@ pub fn replay_strict(record: &GameRecord, rules: &Rules) -> Result<GameState, Re
         return Err(ReplayError { event_index: 0, message: format!(
             "rules_hash mismatch: record \"{}\" vs running \"{expected}\" (strict mode rejects)", record.rules_hash) });
     }
+    match record.semantics_rev {
+        // Fail-closed on UNKNOWN provenance (FIX-B P1): a record with no
+        // semantics_rev key predates the stamp -- strict mode must not
+        // silently treat it as a current record.
+        None => {
+            return Err(ReplayError { event_index: 0, message: format!(
+                "missing semantics provenance: record carries no semantics_rev (pre-Phase-2.9 record; running SEMANTICS_REV={SEMANTICS_REV}; strict mode rejects)") });
+        }
+        Some(rev) if rev != SEMANTICS_REV => {
+            return Err(ReplayError { event_index: 0, message: format!(
+                "semantics_rev mismatch: record {rev} vs running {SEMANTICS_REV} (strict mode rejects)") });
+        }
+        Some(_) => {}
+    }
     let initial = rebuild_initial_state(record, rules)?;
     let mut state = initial;
     for (i, ev) in record.events.iter().enumerate() {
         state = fold_one_event(&state, ev, rules).map_err(|message| ReplayError { event_index: i, message })?;
         crate::game::invariants::check_invariants(&state, rules)
             .map_err(|m| ReplayError { event_index: i, message: format!("invariant violated: {m}") })?;
+    }
+    // Defense in depth: if the record carries a terminal-state digest, the
+    // state the events folded to must reproduce it. `event_index` is the
+    // past-the-end index -- the digest covers the whole run, not one event.
+    if let Some(expected_digest) = &record.terminal_digest {
+        let actual_digest = state_digest(&state);
+        if &actual_digest != expected_digest {
+            return Err(ReplayError {
+                event_index: record.events.len(),
+                message: format!(
+                    "terminal-state digest mismatch: record {expected_digest} vs replayed {actual_digest} (strict mode rejects)"
+                ),
+            });
+        }
     }
     Ok(state)
 }
@@ -287,6 +384,10 @@ mod tests {
         assert_eq!(record.seed, 7);
         assert_eq!(record.config, config);
         assert!(record.events.is_empty());
+        // New records carry the running semantics revision and no digest yet
+        // (stamped only at finalization/save via `stamp_terminal_digest`).
+        assert_eq!(record.semantics_rev, Some(SEMANTICS_REV));
+        assert_eq!(record.terminal_digest, None);
     }
 
     #[test]

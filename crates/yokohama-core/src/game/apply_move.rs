@@ -38,6 +38,27 @@ pub fn apply_move_unchecked(state: &GameState, mv: &Move, rules: &Rules) -> Resu
         }
 
         Move::PlaceThreeAreas { placements } => {
+            // Stage-4 raw-arm self-defense (Phase-2.9 census): count cap
+            // (3, or 4 with Newspaper -- `placement_limit` is the same
+            // tech-ownership lookup the generator uses) and distinctness
+            // (Option A is "1 assistant in each of 1-N DIFFERENT areas";
+            // 2-in-one-area is Option B's encoding). Checked in usize, so a
+            // 260-entry payload can never truncate through a u8 and
+            // underflow `in_hand` (the census's conservation-destroying
+            // probe). Per-area board-membership + placeability live in
+            // `apply_placement` (shared with the Telegram bonus arm).
+            let player = new_state.current_player;
+            if placements.len() > placement_limit(&new_state, player, &rules.techs) as usize {
+                return Err(MoveError::RuleViolation(
+                    "Too many placement areas (limit 3, or 4 with Newspaper)",
+                ));
+            }
+            let mut seen = std::collections::BTreeSet::new();
+            if !placements.iter().all(|&a| seen.insert(a)) {
+                return Err(MoveError::RuleViolation(
+                    "Option A placements must be distinct areas",
+                ));
+            }
             apply_placement(&mut new_state, placements)?;
             // Record president's starting area for this turn's movement
             set_president_start_area(&mut new_state);
@@ -45,6 +66,15 @@ pub fn apply_move_unchecked(state: &GameState, mv: &Move, rules: &Rules) -> Resu
         }
 
         Move::PlaceTwoSameArea { area, adjacent_bonus } => {
+            // Stage-4 raw-arm self-defense (Phase-2.9 census): the Telegram
+            // adjacent-bonus placement is validated BEFORE any mutation --
+            // tech ownership + physical adjacency with crossing pairs
+            // excluded (transit-only edges), same gates the generator
+            // applies. Main-area membership/placeability is checked inside
+            // `apply_placement_same_area`.
+            if let Some(adj_area) = adjacent_bonus {
+                validate_telegram_bonus(&new_state, *area, *adj_area, rules)?;
+            }
             apply_placement_same_area(&mut new_state, *area)?;
             // Telegram bonus: place 1 in adjacent area, under the same fee
             // rules as ordinary placement. Reusing apply_placement guarantees
@@ -61,6 +91,9 @@ pub fn apply_move_unchecked(state: &GameState, mv: &Move, rules: &Rules) -> Resu
         Move::MovePresident { path, destination } => {
             // Validate: cannot return to starting area
             validate_movement_destination(&new_state, *destination)?;
+            // Stage-4 raw-arm self-defense (Phase-2.9 census): STRUCTURAL
+            // path validation only -- see `validate_president_path`.
+            validate_president_path(&new_state, path, *destination)?;
             apply_movement(&mut new_state, path, *destination, Some(&rules.techs))?;
             new_state.president_start_area = None; // Clear after movement
             new_state.turn_phase = TurnPhase::AreaAction;
@@ -259,11 +292,148 @@ fn advance_phase(state: &mut GameState, tech_registry: Option<&TechRegistry>) {
     };
 }
 
+/// Structural check shared by every arm that takes an `AreaId` payload:
+/// the area must exist on this board and allow placement (`allows_placement`
+/// is false only for the Canal). Stage-4 raw-arm self-defense (Phase-2.9
+/// census): ghost ids and Canal payloads reach the raw arm when the
+/// legal-list gate is bypassed, so each arm must reject them itself.
+fn require_placeable_area(state: &GameState, area: AreaId) -> Result<(), MoveError> {
+    let config = state
+        .board_layout
+        .areas
+        .get(&area)
+        .ok_or(MoveError::RuleViolation("Area does not exist on this board"))?;
+    if !config.area_type.allows_placement() {
+        return Err(MoveError::RuleViolation("The Canal is never a placeable area"));
+    }
+    Ok(())
+}
+
+/// Telegram adjacent-bonus validation for `Move::PlaceTwoSameArea` (Stage-4
+/// raw-arm self-defense): the bonus is only honored when the mover actually
+/// OWNS a Telegram copy, and the bonus area is physically adjacent to the
+/// main area with canal-crossing pairs excluded (crossings are
+/// movement-transit edges ONLY -- design 2026-07-18 decision log, Task 9 --
+/// the same exclusion the generator applies). Membership/placeability of
+/// both areas is also checked here so the whole move validates before any
+/// mutation runs.
+fn validate_telegram_bonus(
+    state: &GameState,
+    area: AreaId,
+    adj_area: AreaId,
+    rules: &Rules,
+) -> Result<(), MoveError> {
+    let p = state.player(state.current_player);
+    let has_telegram = p.technologies.iter().any(|&tech_id| {
+        rules.techs.get(tech_id).map(|t| t.effect == TechEffect::Telegram).unwrap_or(false)
+    });
+    if !has_telegram {
+        return Err(MoveError::RuleViolation(
+            "Adjacent-bonus placement requires the Telegram technology",
+        ));
+    }
+    require_placeable_area(state, area)?;
+    require_placeable_area(state, adj_area)?;
+    if !state.board_layout.adjacent_areas(area).contains(&adj_area) {
+        return Err(MoveError::RuleViolation(
+            "Telegram bonus area must be adjacent to the main placement area",
+        ));
+    }
+    if state.board_layout.is_canal_crossing(area, adj_area) {
+        return Err(MoveError::RuleViolation(
+            "Telegram bonus placement may not use a canal-crossing pair",
+        ));
+    }
+    Ok(())
+}
+
+/// STRUCTURAL validation for `Move::MovePresident` (Stage-4 raw-arm
+/// self-defense, Phase-2.9 census): the president must be OnBoard
+/// (`PlacePresident` is the from-hand encoding); the destination and every
+/// hop must exist on the board and not be the Canal; and a NON-EMPTY path
+/// must be a simple walk -- consecutive hops adjacent (board adjacency,
+/// which includes canal-crossing edges), no repeated areas (a repeated hop
+/// would multiply pass-through fees), never re-entering the start area, and
+/// ending exactly at `destination` (fees are priced off `path`, so the two
+/// must agree).
+///
+/// An EMPTY path stays permitted: it is the Station/Tram free-teleport
+/// ENCODING. Whether the mover actually owns the entitling technology --
+/// like assistant-chain traversal and affordability -- is SEMANTIC
+/// legality and deliberately remains the CHECKED boundary's job (Tier C):
+/// the raw arm's contract for those dimensions is legal-list inputs. One
+/// tolerance follows from that contract: an empty-path destination equal
+/// to the engine's own `station_location` is accepted WITHOUT a
+/// board-membership lookup, because the generator's Station teleport is
+/// keyed off `station_location` (engine state, not payload) and never
+/// consults the areas map -- a strict membership check here would reject a
+/// legal-list move on fixture boards whose station area isn't in `areas`
+/// (pinned by legal_moves.rs's
+/// `test_station_teleport_remains_free_even_onto_opponent_occupied_area`).
+/// Ghost/Canal payloads still die: they match neither the board nor the
+/// engine's station location.
+fn validate_president_path(
+    state: &GameState,
+    path: &[AreaId],
+    destination: AreaId,
+) -> Result<(), MoveError> {
+    let start = match state.player(state.current_player).president_location {
+        PresidentLocation::OnBoard(a) => a,
+        PresidentLocation::InHand => {
+            return Err(MoveError::RuleViolation(
+                "President must be on the board to move (use PlacePresident from hand)",
+            ));
+        }
+    };
+
+    if path.is_empty() {
+        // Teleport encoding -- entitlement is Tier C (see doc comment).
+        if state.station_location != Some(destination) {
+            require_placeable_area(state, destination)?;
+        }
+        return Ok(());
+    }
+    require_placeable_area(state, destination)?;
+
+    if *path.last().expect("non-empty") != destination {
+        return Err(MoveError::RuleViolation(
+            "Movement path must end at the declared destination",
+        ));
+    }
+    let mut seen = std::collections::BTreeSet::new();
+    seen.insert(start);
+    let mut prev = start;
+    for &hop in path {
+        require_placeable_area(state, hop)?;
+        if !seen.insert(hop) {
+            return Err(MoveError::RuleViolation(
+                "Movement path must not repeat areas (simple path)",
+            ));
+        }
+        if !state.board_layout.adjacent_areas(prev).contains(&hop) {
+            return Err(MoveError::RuleViolation(
+                "Movement path hops must be adjacent on the board",
+            ));
+        }
+        prev = hop;
+    }
+    Ok(())
+}
+
 fn apply_placement(state: &mut GameState, placements: &[AreaId]) -> Result<(), MoveError> {
     let player = state.current_player;
-    let p = state.player(player);
 
-    if (placements.len() as u8) > p.assistants.in_hand {
+    // Stage-4 raw-arm self-defense: every target area must exist and be
+    // placeable (never the Canal) -- checked before any mutation.
+    for &area in placements {
+        require_placeable_area(state, area)?;
+    }
+
+    let p = state.player(player);
+    // usize comparison (census fix): `placements.len() as u8` truncated a
+    // 260-entry payload to 4, passing this check and then underflowing
+    // `in_hand` in the mutating loop below.
+    if placements.len() > p.assistants.in_hand as usize {
         return Err(MoveError::RuleViolation("Not enough assistants in hand"));
     }
 
@@ -288,8 +458,12 @@ fn apply_placement(state: &mut GameState, placements: &[AreaId]) -> Result<(), M
 
 fn apply_placement_same_area(state: &mut GameState, area: AreaId) -> Result<(), MoveError> {
     let player = state.current_player;
-    let p = state.player(player);
 
+    // Stage-4 raw-arm self-defense: ghost/Canal main area (see
+    // `require_placeable_area`), checked before any mutation.
+    require_placeable_area(state, area)?;
+
+    let p = state.player(player);
     if p.assistants.in_hand < 2 {
         return Err(MoveError::RuleViolation("Not enough assistants in hand"));
     }
@@ -388,6 +562,17 @@ fn apply_place_president(
 ) -> Result<(), MoveError> {
     let player = state.current_player;
 
+    // Stage-4 raw-arm self-defense (Phase-2.9 census): PlacePresident is
+    // the from-hand encoding -- with the president already OnBoard it
+    // would duplicate-place (MovePresident is the on-board encoding). The
+    // destination must also exist and be placeable (never the Canal).
+    if state.player(player).president_location != PresidentLocation::InHand {
+        return Err(MoveError::RuleViolation(
+            "President is already on the board (use MovePresident)",
+        ));
+    }
+    require_placeable_area(state, destination)?;
+
     // Postal System destination stop fee (I2 final-review fix): mirrors
     // calculate_place_president_fee exactly, so the generator's gate and
     // this charge never drift apart.
@@ -467,6 +652,28 @@ fn apply_return_to_hand(
     Ok(())
 }
 
+/// Stage-4 raw-arm self-defense (Phase-2.9 census): the simple area-action
+/// arms (Produce*/Bank/EmploymentAgency/Chinatown) never resolved the acting
+/// area at all, so `ProduceCopper` fired at the Bank when the legal-list
+/// gate was bypassed. Resolves the acting area mercenary-aware through the
+/// SAME `resolve_acting_area` helper Port/Lab/Church/Customs use, then
+/// requires its printed type to match the action being executed.
+fn require_acting_area_type(state: &GameState, expected: AreaType) -> Result<(), MoveError> {
+    let area = resolve_acting_area(state, state.current_player).map_err(MoveError::RuleViolation)?;
+    let area_type = state
+        .board_layout
+        .areas
+        .get(&area)
+        .map(|c| c.area_type)
+        .ok_or(MoveError::RuleViolation("Acting area does not exist on this board"))?;
+    if area_type != expected {
+        return Err(MoveError::RuleViolation(
+            "Area action does not match the acting area's printed type",
+        ));
+    }
+    Ok(())
+}
+
 fn apply_area_action(state: &mut GameState, action: &AreaAction, rules: &Rules) -> Result<(), MoveError> {
     let player = state.current_player;
     let power = state.current_action_power.unwrap_or(0);
@@ -476,29 +683,35 @@ fn apply_area_action(state: &mut GameState, action: &AreaAction, rules: &Rules) 
 
     match action {
         AreaAction::ProduceCopper => {
+            require_acting_area_type(state, AreaType::CopperMine)?;
             let reward = copper_mine_reward(power);
             let bonus = copper_bonus(state, player, reward, &rules.techs);
             state.player_mut(player).copper += (reward + bonus) as u32;
         }
         AreaAction::ProduceSilk => {
+            require_acting_area_type(state, AreaType::SilkMill)?;
             let reward = silk_mill_reward(power);
             state.player_mut(player).silk += reward as u32;
         }
         AreaAction::ProduceTea => {
+            require_acting_area_type(state, AreaType::TeaPlantation)?;
             let reward = tea_plantation_reward(power);
             state.player_mut(player).tea += reward as u32;
         }
         AreaAction::ProduceSeafood => {
+            require_acting_area_type(state, AreaType::FishingGround)?;
             let reward = fishing_ground_reward(power);
             state.player_mut(player).seafood += reward as u32;
         }
         AreaAction::Bank => {
+            require_acting_area_type(state, AreaType::Bank)?;
             let reward = bank_reward(power);
             state.player_mut(player).money += reward as u32;
         }
 
         // Employment Agency - retrieve items from warehouse
         AreaAction::EmploymentAgency { assistants, shophouses, trading_houses } => {
+            require_acting_area_type(state, AreaType::EmploymentAgency)?;
             apply_employment_agency(state, player, power, *assistants, *shophouses, *trading_houses)?;
         }
 
@@ -523,6 +736,7 @@ fn apply_area_action(state: &mut GameState, action: &AreaAction, rules: &Rules) 
             }
         }
         AreaAction::Chinatown { exchanges } => {
+            require_acting_area_type(state, AreaType::Chinatown)?;
             // Task 17 ruling: an empty exchanges list is no longer a legal
             // encoding of "decline Chinatown" -- Skip is the sole canonical
             // decline, mirroring Task 16's Port `cards_taken.is_empty()` rule.
@@ -620,13 +834,16 @@ fn apply_employment_agency(
 ) -> Result<(), MoveError> {
     let max_items = employment_agency_tokens_allowed(power);
 
-    let total_items = assistants + shophouses + trading_houses;
+    // Widened sum (Stage-4 census fix): the u8 sum panicked in debug and
+    // wrapped in release for payloads like {200, 100, 0}, letting a wrapped
+    // total sneak under the power cap.
+    let total_items = assistants as u32 + shophouses as u32 + trading_houses as u32;
     // Task 17 ruling: {0,0,0} is no longer a legal encoding of "decline
     // Employment Agency" -- Skip is the sole canonical decline.
     if total_items == 0 {
         return Err(MoveError::RuleViolation("Must take at least 1 item (use Skip to decline)"));
     }
-    if total_items > max_items {
+    if total_items > max_items as u32 {
         return Err(MoveError::RuleViolation("Exceeds maximum items for power level"));
     }
 
@@ -683,44 +900,51 @@ fn apply_employment_agency(
 
 fn apply_take_5_power(state: &mut GameState, rules: &Rules) -> Result<(), MoveError> {
     let player = state.current_player;
-    let p = state.player(player);
+
+    // Stage-4 raw-arm self-defense (Phase-2.9 census): the printed rule is
+    // "at 5 Power, take the token" -- the raw arm used to grant it at any
+    // power, and silently no-op when no token was there (Skip5PowerBonus is
+    // the canonical encoding for "nothing to take"). The generator only
+    // offers this move at power 5 with a token present, so nothing changes
+    // for legal-list inputs.
+    if state.current_action_power != Some(5) {
+        return Err(MoveError::RuleViolation(
+            "5-Power bonus requires the action to have been taken at power 5",
+        ));
+    }
 
     // For mercenary sub-turns, use the mercenary target area
-    let area = if state.is_mercenary_action {
-        state.mercenary_target_area
-    } else {
-        match p.president_location {
-            PresidentLocation::OnBoard(a) => Some(a),
-            PresidentLocation::InHand => None,
-        }
+    let area = resolve_acting_area(state, player).map_err(MoveError::RuleViolation)?;
+
+    // `Option::take` on an empty/absent slot is a no-op, so the Err path
+    // leaves state untouched despite the mutate-shaped call (Stage-4 review
+    // F1: correctness relies on exactly that no-op).
+    let effect = state
+        .board_layout
+        .five_power_tokens
+        .get_mut(&area)
+        .and_then(|slot| slot.take())
+        .ok_or(MoveError::RuleViolation("No 5-Power token at the acting area"))?;
+
+    // Mining Technology bonus (KB "applies to": 5-Power tokens) fires only
+    // for the Copper variant. Computed here, after the board_layout borrow
+    // above ends but before the player is mutably borrowed below.
+    let mining_bonus = match effect {
+        FivePowerEffect::Copper(n) => copper_bonus(state, player, n, &rules.techs),
+        _ => 0,
     };
 
-    if let Some(area) = area {
-        if let Some(effect_opt) = state.board_layout.five_power_tokens.get_mut(&area) {
-            if let Some(effect) = effect_opt.take() {
-                // Mining Technology bonus (KB "applies to": 5-Power tokens)
-                // fires only for the Copper variant. Computed here, after the
-                // board_layout borrow above ends but before the player is
-                // mutably borrowed below.
-                let mining_bonus = match effect {
-                    FivePowerEffect::Copper(n) => copper_bonus(state, player, n, &rules.techs),
-                    _ => 0,
-                };
+    let p = state.player_mut(player);
+    p.five_power_tokens += 1;
 
-                let p = state.player_mut(player);
-                p.five_power_tokens += 1;
-
-                // Apply effect
-                match effect {
-                    FivePowerEffect::ImportedGoods(n) => p.imported_goods += n as u32,
-                    FivePowerEffect::Copper(n) => p.copper += n as u32 + mining_bonus as u32,
-                    FivePowerEffect::Silk(n) => p.silk += n as u32,
-                    FivePowerEffect::Tea(n) => p.tea += n as u32,
-                    FivePowerEffect::Seafood(n) => p.seafood += n as u32,
-                    FivePowerEffect::Money(n) => p.money += n as u32,
-                }
-            }
-        }
+    // Apply effect
+    match effect {
+        FivePowerEffect::ImportedGoods(n) => p.imported_goods += n as u32,
+        FivePowerEffect::Copper(n) => p.copper += n as u32 + mining_bonus as u32,
+        FivePowerEffect::Silk(n) => p.silk += n as u32,
+        FivePowerEffect::Tea(n) => p.tea += n as u32,
+        FivePowerEffect::Seafood(n) => p.seafood += n as u32,
+        FivePowerEffect::Money(n) => p.money += n as u32,
     }
 
     Ok(())
@@ -750,6 +974,20 @@ fn apply_build_shophouse(state: &mut GameState, slot: u8, rules: &Rules) -> Resu
             _ => return Err(MoveError::RuleViolation("President not on board")),
         }
     };
+
+    // Occupancy + duplicate-ownership self-defence (Phase-2.9 divergence
+    // fix, same class as the range check above): without these, an unchecked
+    // apply onto an occupied slot silently OVERWROTE the other player's
+    // shophouse, and a builder could stack a second own shophouse on the
+    // site. Checked before any mutation -- zero mutation on error.
+    if let Some(site) = state.board_layout.building_sites.get(&area) {
+        if site.shophouses_built[slot as usize].is_some() {
+            return Err(MoveError::RuleViolation("Shophouse slot already occupied"));
+        }
+        if site.shophouses_built.contains(&Some(player)) {
+            return Err(MoveError::RuleViolation("Already own a shophouse on this site"));
+        }
+    }
 
     // Get the space's full reward (before the mutable borrow of the player).
     let reward = state
@@ -800,6 +1038,20 @@ fn apply_build_trading_house(state: &mut GameState, rules: &Rules) -> Result<(),
             _ => return Err(MoveError::RuleViolation("President not on board")),
         }
     };
+
+    // Occupancy self-defence (Stage-4, Phase-2.9 census: the shophouse
+    // overwrite bug class, alive on this arm): without this, an unchecked
+    // apply onto an occupied Trading House space silently REPLACED the
+    // standing trading house (any owner's -- each site has exactly ONE TH
+    // space, so `trading_house_owner: Some(_)` means it's taken). Checked
+    // before any mutation -- zero mutation on error. A missing site is
+    // tolerated exactly the way the shophouse arm tolerates it (reward
+    // defaults; the site update below is `if let Some`).
+    if let Some(site) = state.board_layout.building_sites.get(&area) {
+        if site.trading_house_owner.is_some() {
+            return Err(MoveError::RuleViolation("Trading House space already occupied"));
+        }
+    }
 
     let vp = state
         .board_layout
@@ -1119,6 +1371,15 @@ fn apply_fulfill_achievement(
     achievement: AchievementType,
 ) -> Result<(), MoveError> {
     let player = state.current_player;
+    // Stage-4 raw-arm self-defense (Phase-2.9 census): only the game's 3
+    // drawn achievement cards are claimable -- `claim_achievement` used to
+    // fall through its card-search loop for an undrawn type, locking an
+    // assistant against a card that is not in this game.
+    if !state.achievements.iter().any(|c| c.achievement_type == achievement) {
+        return Err(MoveError::RuleViolation(
+            "Achievement is not among this game's drawn achievement cards",
+        ));
+    }
     claim_achievement(state, player, achievement).map_err(MoveError::RuleViolation)?;
     Ok(())
 }
@@ -1754,6 +2015,8 @@ mod tests {
             area_type: AreaType::CopperMine,
             grid_position: (0, 1),
         });
+        state.board_layout.adjacency.insert(main_area, vec![adj_area]);
+        state.board_layout.adjacency.insert(adj_area, vec![main_area]);
         state.turn_phase = TurnPhase::Placement;
         state.players[1].president_location = PresidentLocation::OnBoard(main_area);
         state.players[2].president_location = PresidentLocation::OnBoard(adj_area);
@@ -1761,11 +2024,14 @@ mod tests {
         let owner1_money_before = state.players[1].money;
         let owner2_money_before = state.players[2].money;
 
-        // apply_move_unchecked: create_minimal_state doesn't equip the
-        // player with Telegram, so get_legal_moves never offers the
-        // adjacent_bonus option here -- this test targets the raw fee math
-        // of the bonus arm directly, independent of tech-ownership gating.
-        let rules = Rules::empty_for_tests();
+        // apply_move_unchecked keeps this test targeting the raw fee math
+        // of the bonus arm directly. Since the Stage-4 raw-arm self-defense
+        // wave, that arm ALSO structurally validates the bonus (Telegram
+        // ownership + adjacency), so the fixture now equips both -- the
+        // assertions below stay purely about the fee arithmetic.
+        let mut rules = Rules::empty_for_tests();
+        rules.techs.insert(telegram_tech_fixture(1), "tech_telegram");
+        state.players[0].technologies.push(TechCardId(1));
         let result = apply_move_unchecked(
             &state,
             &Move::PlaceTwoSameArea { area: main_area, adjacent_bonus: Some(adj_area) },
@@ -2297,6 +2563,91 @@ mod tests {
                 Ok(_) => panic!("slot {slot} is out of range and must be rejected, was accepted"),
             }
         }
+    }
+
+    /// Phase-2.9 divergence fix (ENGINE BUG -- completeness): the raw arm
+    /// checked only slot range and token count, so an unchecked apply onto an
+    /// OCCUPIED slot silently overwrote the other player's shophouse. Same
+    /// self-defence class as the out-of-range guard above (C1 precedent).
+    #[test]
+    fn occupied_shophouse_slot_is_rejected_by_the_raw_arm_not_overwritten() {
+        let mut state = create_minimal_state(2);
+        let area = AreaId::new(0);
+        state.players[0].president_location = PresidentLocation::OnBoard(area);
+        state.players[0].shophouses.in_hand = 1;
+        let mut site = BuildingSite::new([2, 3, 4, 5], 10);
+        site.shophouses_built[1] = Some(PlayerId::new(1));
+        state.board_layout.building_sites.insert(area, site);
+        let rules = Rules::empty_for_tests();
+
+        // apply_move_unchecked: the raw arm IS the subject -- it must
+        // self-defend even when the legal list is bypassed.
+        match apply_move_unchecked(&state, &Move::BuildShophouse { slot: 1 }, &rules) {
+            Err(MoveError::RuleViolation(_)) => {}
+            Err(other) => panic!("occupied slot must be a RuleViolation, got {other:?}"),
+            Ok(_) => panic!("occupied slot 1 must be rejected, was accepted (overwrite)"),
+        }
+        // Zero mutation on error: the input state is untouched.
+        assert_eq!(
+            state.board_layout.building_sites[&area].shophouses_built[1],
+            Some(PlayerId::new(1))
+        );
+        assert_eq!(state.players[0].shophouses.in_hand, 1);
+        assert!(state.players[0].shophouses.built.is_empty());
+    }
+
+    /// Companion to the occupied-slot guard: a builder who already owns a
+    /// shophouse anywhere on the site may not add a second one, even via the
+    /// unchecked path onto a different (empty) slot.
+    #[test]
+    fn duplicate_own_shophouse_on_site_is_rejected_by_the_raw_arm() {
+        let mut state = create_minimal_state(2);
+        let area = AreaId::new(0);
+        state.players[0].president_location = PresidentLocation::OnBoard(area);
+        state.players[0].shophouses.in_hand = 1;
+        let mut site = BuildingSite::new([2, 3, 4, 5], 10);
+        site.shophouses_built[2] = Some(PlayerId::new(0));
+        state.board_layout.building_sites.insert(area, site);
+        let rules = Rules::empty_for_tests();
+
+        // apply_move_unchecked: see the occupied-slot test above.
+        match apply_move_unchecked(&state, &Move::BuildShophouse { slot: 0 }, &rules) {
+            Err(MoveError::RuleViolation(_)) => {}
+            Err(other) => panic!("own duplicate must be a RuleViolation, got {other:?}"),
+            Ok(_) => panic!("second own shophouse on the site must be rejected"),
+        }
+        // Zero mutation on error: the input state is untouched.
+        assert_eq!(state.board_layout.building_sites[&area].shophouses_built[0], None);
+        assert_eq!(state.players[0].shophouses.in_hand, 1);
+    }
+
+    /// Slot-specific printed rewards flow from the slot ACTUALLY built:
+    /// building slot 3 grants spaces[3]'s reward, not spaces[0]'s. This pins
+    /// the payoff side of per-slot enumeration (the four spaces print
+    /// materially different rewards, so the choice of slot matters).
+    #[test]
+    fn shophouse_reward_comes_from_the_slot_actually_built() {
+        let mut state = create_minimal_state(2);
+        let area = AreaId::new(0);
+        state.players[0].president_location = PresidentLocation::OnBoard(area);
+        state.players[0].shophouses.in_hand = 1;
+        let starting_tea = state.players[0].tea;
+
+        let mut site = BuildingSite::new([0, 0, 0, 0], 10);
+        site.spaces[0] = SpaceReward { vp: 9, ..Default::default() };
+        site.spaces[3] = SpaceReward { tea: 2, ..Default::default() };
+        state.board_layout.building_sites.insert(area, site);
+        let rules = Rules::empty_for_tests();
+
+        // apply_move_unchecked: see test_build_shophouse_gaslight_vp_bonus.
+        let result = apply_move_unchecked(&state, &Move::BuildShophouse { slot: 3 }, &rules);
+        assert!(result.is_ok());
+        let new_state = result.unwrap();
+
+        assert_eq!(new_state.players[0].tea, starting_tea + 2, "slot 3 grants spaces[3]'s tea");
+        assert_eq!(new_state.players[0].victory_points, 0, "spaces[0]'s VP must NOT be granted");
+        assert_eq!(new_state.board_layout.building_sites[&area].shophouses_built[3], Some(PlayerId::new(0)));
+        assert_eq!(new_state.board_layout.building_sites[&area].shophouses_built[0], None);
     }
 
     #[test]
@@ -4371,6 +4722,632 @@ mod tests {
         let s = apply_move(&mid, &Move::ChooseRecoveryLeave { leave_one: false }, &rules).unwrap();
         assert_eq!(s.current_player().assistants.on_board.get(&acting_area()), None);
         assert_eq!(s.turn_phase, TurnPhase::AdditionalActionSecond);
+    }
+
+    // --- Phase-2.9 Stage 4: raw-arm self-defense (census-driven guards) ---
+    //
+    // Each test below is the census probe's payload, replayed as a spec:
+    // the raw arm must reject it with a typed MoveError (never panic, wrap,
+    // or silently accept) and must leave the input state untouched. Tier C
+    // (full legality re-derivation: assistant-chain traversal, teleport
+    // tech entitlement, affordability enumeration) deliberately stays the
+    // CHECKED boundary's job -- see the guard doc comments.
+
+    /// `count` Bank areas 0..count on the board, player 0 with a full hand.
+    fn stage4_placement_fixture(count: u8) -> GameState {
+        let mut state = create_minimal_state(2);
+        for i in 0..count {
+            state.board_layout.areas.insert(AreaId::new(i), AreaConfig {
+                area_type: AreaType::Bank,
+                grid_position: (0, i),
+            });
+        }
+        state.turn_phase = TurnPhase::Placement;
+        state.players[0].assistants.in_hand = 8;
+        state.players[0].money = 5;
+        state
+    }
+
+    fn newspaper_tech_fixture(id: u8) -> TechCard {
+        TechCard {
+            id: TechCardId(id),
+            name: "Newspaper".to_string(),
+            country: Country::Dutch,
+            industry_cost: 5,
+            effect: TechEffect::Newspaper,
+        }
+    }
+
+    #[test]
+    fn option_a_placement_rejects_more_than_three_areas_without_newspaper() {
+        let state = stage4_placement_fixture(6);
+        let rules = Rules::empty_for_tests();
+        for n in [4u8, 6u8] {
+            let placements: Vec<AreaId> = (0..n).map(AreaId::new).collect();
+            let result = apply_move_unchecked(
+                &state, &Move::PlaceThreeAreas { placements }, &rules,
+            );
+            assert!(
+                matches!(result, Err(MoveError::RuleViolation(_))),
+                "{n} distinct areas must exceed the 3-area cap, got {result:?}"
+            );
+        }
+        assert_eq!(state.players[0].assistants.in_hand, 8, "input state untouched");
+    }
+
+    #[test]
+    fn option_a_placement_allows_four_areas_with_newspaper_but_not_five() {
+        let mut state = stage4_placement_fixture(6);
+        let mut rules = Rules::empty_for_tests();
+        rules.techs.insert(newspaper_tech_fixture(1), "tech_newspaper");
+        state.players[0].technologies.push(TechCardId(1));
+
+        let four: Vec<AreaId> = (0..4).map(AreaId::new).collect();
+        assert!(
+            apply_move_unchecked(&state, &Move::PlaceThreeAreas { placements: four }, &rules).is_ok(),
+            "4 areas are legal with Newspaper"
+        );
+
+        let five: Vec<AreaId> = (0..5).map(AreaId::new).collect();
+        let result =
+            apply_move_unchecked(&state, &Move::PlaceThreeAreas { placements: five }, &rules);
+        assert!(matches!(result, Err(MoveError::RuleViolation(_))), "{result:?}");
+    }
+
+    #[test]
+    fn option_a_placement_rejects_duplicate_areas() {
+        let state = stage4_placement_fixture(3);
+        let rules = Rules::empty_for_tests();
+        let a = AreaId::new(0);
+        // 2 entries -- under the count cap, so distinctness is the ONLY
+        // possible rejection reason (Option A is "1 in each of 1-3
+        // DIFFERENT areas"; 2-in-one-area is Option B's encoding).
+        let result = apply_move_unchecked(
+            &state, &Move::PlaceThreeAreas { placements: vec![a, a] }, &rules,
+        );
+        assert!(matches!(result, Err(MoveError::RuleViolation(_))), "{result:?}");
+        assert_eq!(state.players[0].assistants.in_hand, 8, "input state untouched");
+    }
+
+    #[test]
+    fn option_a_placement_rejects_ghost_and_canal_areas() {
+        let mut state = stage4_placement_fixture(2);
+        let canal = AreaId::new(9);
+        state.board_layout.areas.insert(canal, AreaConfig {
+            area_type: AreaType::Canal,
+            grid_position: (1, 0),
+        });
+        let rules = Rules::empty_for_tests();
+
+        for bad in [AreaId::unchecked(200), canal] {
+            let result = apply_move_unchecked(
+                &state, &Move::PlaceThreeAreas { placements: vec![bad] }, &rules,
+            );
+            assert!(
+                matches!(result, Err(MoveError::RuleViolation(_))),
+                "placement into {bad:?} must be rejected, got {result:?}"
+            );
+        }
+        assert_eq!(state.players[0].assistants.in_hand, 8, "input state untouched");
+    }
+
+    #[test]
+    fn option_a_placement_260_entry_vector_is_rejected_not_underflowed() {
+        // Census probe: `placements.len() as u8` TRUNCATED 260 to 4, which
+        // passed the in-hand check (hand 8), then the mutating loop
+        // decremented in_hand 260 times -- debug panic, release wrap
+        // destroying assistant conservation. The count cap (usize
+        // arithmetic) must reject this with a typed error instead.
+        let state = stage4_placement_fixture(2);
+        let rules = Rules::empty_for_tests();
+        let placements: Vec<AreaId> = std::iter::repeat_n(AreaId::new(0), 260).collect();
+        let result =
+            apply_move_unchecked(&state, &Move::PlaceThreeAreas { placements }, &rules);
+        assert!(matches!(result, Err(MoveError::RuleViolation(_))), "{result:?}");
+        assert_eq!(state.players[0].assistants.in_hand, 8, "input state untouched");
+        assert!(state.players[0].assistants.on_board.is_empty(), "input state untouched");
+    }
+
+    /// Two adjacent Bank areas 0,1 (bidirectional adjacency), Placement
+    /// phase, player 0 with hand 8 / money 5.
+    fn stage4_option_b_fixture() -> GameState {
+        let mut state = stage4_placement_fixture(2);
+        state.board_layout.adjacency.insert(AreaId::new(0), vec![AreaId::new(1)]);
+        state.board_layout.adjacency.insert(AreaId::new(1), vec![AreaId::new(0)]);
+        state
+    }
+
+    fn telegram_tech_fixture(id: u8) -> TechCard {
+        TechCard {
+            id: TechCardId(id),
+            name: "Telegram".to_string(),
+            country: Country::American,
+            industry_cost: 4,
+            effect: TechEffect::Telegram,
+        }
+    }
+
+    #[test]
+    fn place_two_same_area_telegram_bonus_requires_tech_ownership() {
+        // Census probe: the bonus placement was honored with NO Telegram
+        // tech owned (the generator's gate, bypassed at the raw arm).
+        let state = stage4_option_b_fixture();
+        let rules = Rules::empty_for_tests();
+        let result = apply_move_unchecked(
+            &state,
+            &Move::PlaceTwoSameArea { area: AreaId::new(0), adjacent_bonus: Some(AreaId::new(1)) },
+            &rules,
+        );
+        assert!(matches!(result, Err(MoveError::RuleViolation(_))), "{result:?}");
+        assert_eq!(state.players[0].assistants.in_hand, 8, "input state untouched");
+    }
+
+    #[test]
+    fn place_two_same_area_telegram_bonus_requires_physical_adjacency() {
+        // Areas 0 and 3 exist but are NOT adjacent.
+        let mut state = stage4_option_b_fixture();
+        state.board_layout.areas.insert(AreaId::new(3), AreaConfig {
+            area_type: AreaType::Bank,
+            grid_position: (1, 1),
+        });
+        let mut rules = Rules::empty_for_tests();
+        rules.techs.insert(telegram_tech_fixture(1), "tech_telegram");
+        state.players[0].technologies.push(TechCardId(1));
+
+        let result = apply_move_unchecked(
+            &state,
+            &Move::PlaceTwoSameArea { area: AreaId::new(0), adjacent_bonus: Some(AreaId::new(3)) },
+            &rules,
+        );
+        assert!(matches!(result, Err(MoveError::RuleViolation(_))), "{result:?}");
+    }
+
+    #[test]
+    fn place_two_same_area_telegram_bonus_rejects_canal_crossing_pair() {
+        // Crossing pairs are movement-transit edges ONLY (design 2026-07-18
+        // decision log, Task 9): adjacency lists the pair, but Telegram's
+        // bonus placement must exclude it -- same rule the generator applies.
+        let mut state = stage4_option_b_fixture();
+        state.board_layout.canal_crossings.push((AreaId::new(0), AreaId::new(1)));
+        let mut rules = Rules::empty_for_tests();
+        rules.techs.insert(telegram_tech_fixture(1), "tech_telegram");
+        state.players[0].technologies.push(TechCardId(1));
+
+        let result = apply_move_unchecked(
+            &state,
+            &Move::PlaceTwoSameArea { area: AreaId::new(0), adjacent_bonus: Some(AreaId::new(1)) },
+            &rules,
+        );
+        assert!(matches!(result, Err(MoveError::RuleViolation(_))), "{result:?}");
+    }
+
+    #[test]
+    fn place_two_same_area_rejects_ghost_and_canal_main_area() {
+        let mut state = stage4_option_b_fixture();
+        let canal = AreaId::new(9);
+        state.board_layout.areas.insert(canal, AreaConfig {
+            area_type: AreaType::Canal,
+            grid_position: (1, 0),
+        });
+        let rules = Rules::empty_for_tests();
+
+        for bad in [AreaId::unchecked(200), canal] {
+            let result = apply_move_unchecked(
+                &state,
+                &Move::PlaceTwoSameArea { area: bad, adjacent_bonus: None },
+                &rules,
+            );
+            assert!(
+                matches!(result, Err(MoveError::RuleViolation(_))),
+                "Option B into {bad:?} must be rejected, got {result:?}"
+            );
+        }
+        assert_eq!(state.players[0].assistants.in_hand, 8, "input state untouched");
+    }
+
+    /// Chain 0 - 1 - 2 of Bank/CopperMine/SilkMill, president at 0, own
+    /// assistants at 1 and 2 (same shape as `movement_toll_fixture`, minus
+    /// the opponent president), Movement phase.
+    fn stage4_movement_fixture() -> GameState {
+        let mut state = create_minimal_state(2);
+        for (id, ty) in [(0, AreaType::Bank), (1, AreaType::CopperMine), (2, AreaType::SilkMill)] {
+            state.board_layout.areas.insert(
+                AreaId::new(id),
+                AreaConfig { area_type: ty, grid_position: (0, id) },
+            );
+        }
+        state.board_layout.adjacency.insert(AreaId::new(0), vec![AreaId::new(1)]);
+        state.board_layout.adjacency.insert(AreaId::new(1), vec![AreaId::new(0), AreaId::new(2)]);
+        state.board_layout.adjacency.insert(AreaId::new(2), vec![AreaId::new(1)]);
+        state.turn_phase = TurnPhase::Movement;
+        state.players[0].president_location = PresidentLocation::OnBoard(AreaId::new(0));
+        state.players[0].assistants.on_board.insert(AreaId::new(1), 1);
+        state.players[0].assistants.on_board.insert(AreaId::new(2), 1);
+        state.players[0].money = 5;
+        state
+    }
+
+    #[test]
+    fn move_president_requires_president_on_board() {
+        // Census probe: MovePresident applied with the president InHand
+        // (PlacePresident is the from-hand encoding).
+        let mut state = stage4_movement_fixture();
+        state.players[0].president_location = PresidentLocation::InHand;
+        let rules = Rules::empty_for_tests();
+
+        for path in [vec![], vec![AreaId::new(1)]] {
+            let result = apply_move_unchecked(
+                &state,
+                &Move::MovePresident { path, destination: AreaId::new(1) },
+                &rules,
+            );
+            assert!(matches!(result, Err(MoveError::RuleViolation(_))), "{result:?}");
+        }
+        assert_eq!(state.players[0].president_location, PresidentLocation::InHand);
+    }
+
+    #[test]
+    fn move_president_rejects_ghost_and_canal_destination() {
+        // Ghost destination + Canal parking, via the empty-path (teleport)
+        // encoding so destination validation is the ONLY gate in play.
+        let mut state = stage4_movement_fixture();
+        let canal = AreaId::new(9);
+        state.board_layout.areas.insert(canal, AreaConfig {
+            area_type: AreaType::Canal,
+            grid_position: (1, 0),
+        });
+        let rules = Rules::empty_for_tests();
+
+        for bad in [AreaId::unchecked(200), canal] {
+            let result = apply_move_unchecked(
+                &state,
+                &Move::MovePresident { path: vec![], destination: bad },
+                &rules,
+            );
+            assert!(
+                matches!(result, Err(MoveError::RuleViolation(_))),
+                "movement to {bad:?} must be rejected, got {result:?}"
+            );
+        }
+        assert_eq!(
+            state.players[0].president_location,
+            PresidentLocation::OnBoard(AreaId::new(0)),
+            "input state untouched"
+        );
+    }
+
+    #[test]
+    fn move_president_rejects_path_destination_disagreement() {
+        // Census probe: fees were priced off `path` while the president
+        // landed on `destination` -- the two must agree.
+        let state = stage4_movement_fixture();
+        let rules = Rules::empty_for_tests();
+        let result = apply_move_unchecked(
+            &state,
+            &Move::MovePresident { path: vec![AreaId::new(1)], destination: AreaId::new(2) },
+            &rules,
+        );
+        assert!(matches!(result, Err(MoveError::RuleViolation(_))), "{result:?}");
+    }
+
+    #[test]
+    fn move_president_rejects_non_adjacent_hop() {
+        // Census probe: teleport-by-path -- a declared hop 0 -> 2 with no
+        // board edge between them.
+        let state = stage4_movement_fixture();
+        let rules = Rules::empty_for_tests();
+        let result = apply_move_unchecked(
+            &state,
+            &Move::MovePresident { path: vec![AreaId::new(2)], destination: AreaId::new(2) },
+            &rules,
+        );
+        assert!(matches!(result, Err(MoveError::RuleViolation(_))), "{result:?}");
+    }
+
+    #[test]
+    fn move_president_rejects_repeated_areas_in_path() {
+        // Census probe: duplicated fee hops -- a path that re-walks 1 - 2
+        // repeatedly would multiply pass-through fees. Paths must be simple.
+        let state = stage4_movement_fixture();
+        let rules = Rules::empty_for_tests();
+        let result = apply_move_unchecked(
+            &state,
+            &Move::MovePresident {
+                path: vec![AreaId::new(1), AreaId::new(2), AreaId::new(1), AreaId::new(2)],
+                destination: AreaId::new(2),
+            },
+            &rules,
+        );
+        assert!(matches!(result, Err(MoveError::RuleViolation(_))), "{result:?}");
+    }
+
+    #[test]
+    fn move_president_empty_path_teleport_stays_permitted() {
+        // Empty path is the Station/Tram teleport ENCODING and must stay
+        // applicable at the raw arm -- 0 and 2 are not adjacent, so only a
+        // teleport explains this move. Whether the mover actually OWNS the
+        // entitling tech is Tier C (checked-boundary scope), documented on
+        // the guard.
+        let state = stage4_movement_fixture();
+        let rules = Rules::empty_for_tests();
+        let result = apply_move_unchecked(
+            &state,
+            &Move::MovePresident { path: vec![], destination: AreaId::new(2) },
+            &rules,
+        );
+        let next = result.expect("empty-path teleport encoding must stay permitted");
+        assert_eq!(next.players[0].president_location, PresidentLocation::OnBoard(AreaId::new(2)));
+    }
+
+    #[test]
+    fn place_president_requires_president_in_hand() {
+        let state = stage4_movement_fixture(); // president OnBoard(0)
+        let rules = Rules::empty_for_tests();
+        let result = apply_move_unchecked(
+            &state,
+            &Move::PlacePresident { destination: AreaId::new(1) },
+            &rules,
+        );
+        assert!(matches!(result, Err(MoveError::RuleViolation(_))), "{result:?}");
+        assert_eq!(
+            state.players[0].president_location,
+            PresidentLocation::OnBoard(AreaId::new(0)),
+            "input state untouched"
+        );
+    }
+
+    #[test]
+    fn place_president_rejects_ghost_and_canal_destination() {
+        let mut state = stage4_movement_fixture();
+        state.players[0].president_location = PresidentLocation::InHand;
+        let canal = AreaId::new(9);
+        state.board_layout.areas.insert(canal, AreaConfig {
+            area_type: AreaType::Canal,
+            grid_position: (1, 0),
+        });
+        let rules = Rules::empty_for_tests();
+
+        for bad in [AreaId::unchecked(200), canal] {
+            let result = apply_move_unchecked(
+                &state,
+                &Move::PlacePresident { destination: bad },
+                &rules,
+            );
+            assert!(
+                matches!(result, Err(MoveError::RuleViolation(_))),
+                "placement to {bad:?} must be rejected, got {result:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn area_actions_require_matching_acting_area_type() {
+        // Census probe: ProduceCopper fired at the Bank (and every other
+        // mismatched pairing) -- the simple arms never resolved the acting
+        // area at all. Each must now check it, mercenary-aware, exactly
+        // like Port/Lab do.
+        let rules = Rules::empty_for_tests();
+        let cases: Vec<(AreaType, AreaAction)> = vec![
+            (AreaType::Bank, AreaAction::ProduceCopper),
+            (AreaType::CopperMine, AreaAction::ProduceSilk),
+            (AreaType::SilkMill, AreaAction::ProduceTea),
+            (AreaType::TeaPlantation, AreaAction::ProduceSeafood),
+            (AreaType::CopperMine, AreaAction::Bank),
+            (AreaType::Bank, AreaAction::EmploymentAgency { assistants: 1, shophouses: 0, trading_houses: 0 }),
+            (AreaType::Bank, AreaAction::Chinatown { exchanges: vec![ChinatownExchange::YenToTea] }),
+        ];
+        for (area_type, action) in cases {
+            let mut state = create_minimal_state(2);
+            let area = AreaId::new(0);
+            state.board_layout.areas.insert(area, AreaConfig { area_type, grid_position: (0, 0) });
+            state.turn_phase = TurnPhase::AreaAction;
+            state.current_action_power = Some(3);
+            state.players[0].president_location = PresidentLocation::OnBoard(area);
+            state.players[0].money = 5;
+            state.players[0].assistants.in_warehouse = 2;
+
+            let result = apply_move_unchecked(
+                &state, &Move::ExecuteAreaAction { action: action.clone() }, &rules,
+            );
+            assert!(
+                matches!(result, Err(MoveError::RuleViolation(_))),
+                "{action:?} at {area_type:?} must be rejected, got {result:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn area_action_type_check_is_mercenary_aware() {
+        // The acting area during a mercenary sub-turn is the TARGET area,
+        // not wherever the president is: a Bank action at a Bank target
+        // must pass even with the president parked at a CopperMine.
+        let rules = Rules::empty_for_tests();
+        let mut state = create_minimal_state(2);
+        let bank = AreaId::new(0);
+        let mine = AreaId::new(1);
+        state.board_layout.areas.insert(bank, AreaConfig { area_type: AreaType::Bank, grid_position: (0, 0) });
+        state.board_layout.areas.insert(mine, AreaConfig { area_type: AreaType::CopperMine, grid_position: (0, 1) });
+        state.turn_phase = TurnPhase::AreaAction;
+        state.current_action_power = Some(2);
+        state.players[0].president_location = PresidentLocation::OnBoard(mine);
+        state.players[0].assistants.on_board.insert(bank, 1);
+        state.is_mercenary_action = true;
+        state.mercenary_target_area = Some(bank);
+
+        let result = apply_move_unchecked(
+            &state, &Move::ExecuteAreaAction { action: AreaAction::Bank }, &rules,
+        );
+        assert!(result.is_ok(), "{result:?}");
+    }
+
+    #[test]
+    fn employment_agency_item_sum_cannot_overflow_u8() {
+        // Census probe: `assistants + shophouses + trading_houses` summed in
+        // u8 -- 200 + 100 panics in debug and wraps to 44 in release,
+        // sneaking under the power cap. The sum must be widened.
+        let rules = Rules::empty_for_tests();
+        let mut state = create_minimal_state(2);
+        let area = AreaId::new(0);
+        state.board_layout.areas.insert(area, AreaConfig {
+            area_type: AreaType::EmploymentAgency,
+            grid_position: (0, 0),
+        });
+        state.turn_phase = TurnPhase::AreaAction;
+        state.current_action_power = Some(5);
+        state.players[0].president_location = PresidentLocation::OnBoard(area);
+        state.players[0].money = 20;
+
+        let result = apply_move_unchecked(
+            &state,
+            &Move::ExecuteAreaAction {
+                action: AreaAction::EmploymentAgency { assistants: 200, shophouses: 100, trading_houses: 0 },
+            },
+            &rules,
+        );
+        assert!(matches!(result, Err(MoveError::RuleViolation(_))), "{result:?}");
+    }
+
+    #[test]
+    fn take_5_power_token_requires_power_five() {
+        // Census probe: the token was granted at power 1 -- the printed
+        // rule ("5 Power: take the token") never checked provenance.
+        let mut state = create_minimal_state(2);
+        let area = AreaId::new(0);
+        state.players[0].president_location = PresidentLocation::OnBoard(area);
+        state.turn_phase = TurnPhase::FivePowerBonus;
+        state.current_action_power = Some(1);
+        state.board_layout.five_power_tokens.insert(area, Some(FivePowerEffect::Money(3)));
+        let rules = Rules::empty_for_tests();
+
+        let result = apply_move_unchecked(&state, &Move::Take5PowerToken, &rules);
+        assert!(matches!(result, Err(MoveError::RuleViolation(_))), "{result:?}");
+        // Input untouched: token still on the board, nothing granted.
+        assert_eq!(
+            state.board_layout.five_power_tokens.get(&area),
+            Some(&Some(FivePowerEffect::Money(3)))
+        );
+    }
+
+    #[test]
+    fn take_5_power_token_requires_a_token_present() {
+        // At power 5 but with the token already claimed (None) or the area
+        // never stocked, the raw arm used to succeed as a silent no-op --
+        // Skip5PowerBonus is the canonical encoding for "no token to take".
+        let mut state = create_minimal_state(2);
+        let area = AreaId::new(0);
+        state.players[0].president_location = PresidentLocation::OnBoard(area);
+        state.turn_phase = TurnPhase::FivePowerBonus;
+        state.current_action_power = Some(5);
+        let rules = Rules::empty_for_tests();
+
+        // Area never stocked with a token at all.
+        let result = apply_move_unchecked(&state, &Move::Take5PowerToken, &rules);
+        assert!(matches!(result, Err(MoveError::RuleViolation(_))), "{result:?}");
+
+        // Token slot exists but was already claimed.
+        state.board_layout.five_power_tokens.insert(area, None);
+        let result = apply_move_unchecked(&state, &Move::Take5PowerToken, &rules);
+        assert!(matches!(result, Err(MoveError::RuleViolation(_))), "{result:?}");
+    }
+
+    #[test]
+    fn build_trading_house_rejects_occupied_space() {
+        // Census probe: the shophouse overwrite bug class, alive on the
+        // trading-house arm -- building onto a site whose TH space is taken
+        // silently REPLACED the other player's trading house.
+        let mut state = create_minimal_state(2);
+        let area = AreaId::new(0);
+        state.board_layout.areas.insert(area, AreaConfig {
+            area_type: AreaType::Bank,
+            grid_position: (0, 0),
+        });
+        let mut site = BuildingSite::new([1, 2, 3, 4], 7);
+        site.trading_house_owner = Some(PlayerId::new(1));
+        state.board_layout.building_sites.insert(area, site);
+        state.turn_phase = TurnPhase::Building;
+        state.current_action_power = Some(5);
+        state.players[0].president_location = PresidentLocation::OnBoard(area);
+        state.players[0].trading_houses.in_hand = 1;
+        let rules = Rules::empty_for_tests();
+
+        let result = apply_move_unchecked(&state, &Move::BuildTradingHouse, &rules);
+        assert!(matches!(result, Err(MoveError::RuleViolation(_))), "{result:?}");
+        // Zero mutation: the other player's trading house still stands.
+        assert_eq!(
+            state.board_layout.building_sites[&area].trading_house_owner,
+            Some(PlayerId::new(1))
+        );
+        assert_eq!(state.players[0].trading_houses.in_hand, 1);
+        assert!(state.players[0].trading_houses.built.is_empty());
+    }
+
+    #[test]
+    fn fulfill_achievement_rejects_achievement_not_among_drawn_cards() {
+        // Census probe: create_minimal_state draws Copper5/Money10/
+        // Production4; claiming Silk6 (requirements MET -- silk 6, assistant
+        // in hand) still succeeded, locking an assistant against a card
+        // that is not in this game.
+        let mut state = create_minimal_state(2);
+        state.turn_phase = TurnPhase::AdditionalActionFirst;
+        state.players[0].silk = 6;
+        state.players[0].assistants.in_hand = 2;
+        let rules = Rules::empty_for_tests();
+
+        let result = apply_move_unchecked(
+            &state,
+            &Move::FulfillAchievement { achievement: AchievementType::Silk6 },
+            &rules,
+        );
+        assert!(matches!(result, Err(MoveError::RuleViolation(_))), "{result:?}");
+        assert_eq!(state.players[0].assistants.in_hand, 2, "no assistant locked");
+        assert_eq!(state.players[0].assistants.on_achievements, 0);
+    }
+
+    #[test]
+    fn apply_is_deterministic_for_legal_moves_on_a_real_midgame_state() {
+        // Stage-4 PROPERTY: applying the same (state, move) twice yields
+        // PartialEq-identical results -- apply_move_unchecked is a pure
+        // function of its inputs (no hidden RNG, no interior mutability).
+        // Driven over a REAL seeded game folded to several depths, checking
+        // every legal move at each checkpoint.
+        let rules = Rules::standard();
+        let config = GameConfig::for_player_count(2);
+        let pending = new_game(config, &rules, 424242).expect("setup");
+        let choices = vec![StartingOrderChoice::Keep(0), StartingOrderChoice::Keep(1)];
+        let mut state = finalize_setup(pending, &choices).expect("finalize");
+
+        // Deterministic pseudo-random move picks (xorshift), no rand dep.
+        let mut rng_state: u64 = 0x9E3779B97F4A7C15;
+        let mut next = || {
+            rng_state ^= rng_state << 13;
+            rng_state ^= rng_state >> 7;
+            rng_state ^= rng_state << 17;
+            rng_state
+        };
+
+        let mut checked_moves = 0usize;
+        for depth in 0..60 {
+            if state.is_game_over() {
+                break;
+            }
+            let legal = get_legal_moves(&state, &rules);
+            assert!(!legal.is_empty(), "no legal moves at depth {depth}");
+
+            if depth % 10 == 0 {
+                for mv in &legal {
+                    let a = apply_move_unchecked(&state, mv, &rules)
+                        .expect("legal move must apply");
+                    let b = apply_move_unchecked(&state, mv, &rules)
+                        .expect("legal move must apply on the second try too");
+                    assert_eq!(a, b, "apply must be deterministic for {mv:?} at depth {depth}");
+                    checked_moves += 1;
+                }
+            }
+
+            let pick = (next() as usize) % legal.len();
+            state = apply_move_unchecked(&state, &legal[pick], &rules).expect("fold move");
+        }
+        assert!(checked_moves > 0, "property must have exercised at least one move");
     }
 
     #[test]

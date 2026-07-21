@@ -92,6 +92,59 @@ fn permuted_reveals_replay_to_identical_state_and_hold_invariants() {
     }
 }
 
+/// Review §3 blocker 2, the tech half: orders have a boxed-at-setup removed
+/// pile (`orders_removed`, ~18 cards at 2p), which is why an order reveal can
+/// name a card the seeded deck guessed out of play and `arrange_orders_on_top`
+/// must exchange it in. The tech deck has NO such setup removal — every tech is
+/// either in the deck or on a Lab board — so after a live setup reconciles the
+/// observed Labs, the tech deck's membership is the EXACT complement of the
+/// Labs (and of any owned techs). A tech reveal can therefore never name a card
+/// the engine has out of the deck, so `arrange_techs_on_top` needs no exchange
+/// path (a missing tech would be a genuine desync, correctly refused).
+#[test]
+fn tech_deck_membership_is_exact_after_live_setup_so_no_exchange_is_needed() {
+    let rules = Rules::standard();
+    for players in [2u8, 3, 4] {
+        let config = GameConfig::for_player_count(players);
+        // A different seed stands in for the physical table's Lab contents.
+        let table = new_game(config.clone(), &rules, 4242).unwrap();
+        let lab_a: [yokohama_core::TechCardId; 6] =
+            std::array::from_fn(|i| table.state.lab_state.lab_a.slots[i].unwrap());
+        let lab_b = table
+            .state
+            .lab_state
+            .lab_b
+            .as_ref()
+            .map(|b| std::array::from_fn(|i| b.slots[i].unwrap()));
+        let obs = yokohama_core::SetupObservations { lab_a: Some(lab_a), lab_b, ..Default::default() };
+        let pending = new_game(config.clone(), &rules, 7).unwrap();
+        let pending = yokohama_core::reconcile_setup(pending, &obs, &rules).unwrap();
+        let choices: Vec<StartingOrderChoice> =
+            (0..players).map(|_| StartingOrderChoice::Keep(0)).collect();
+        let state = finalize_setup(pending, &choices).unwrap();
+
+        // Every tech id (1..=30 across physical copies) is accounted for by
+        // deck ∪ labs, with NO third pile: the deck is exactly the complement.
+        let mut in_deck: std::collections::BTreeSet<u8> = state.tech_deck.iter().map(|c| c.0).collect();
+        let lab_ids: std::collections::BTreeSet<u8> = state
+            .lab_state
+            .lab_a
+            .slots
+            .iter()
+            .chain(state.lab_state.lab_b.iter().flat_map(|b| b.slots.iter()))
+            .flatten()
+            .map(|c| c.0)
+            .collect();
+        // Disjoint (a card can't be in the deck and a lab at once) and together
+        // exactly the 30 physical tech ids.
+        assert!(in_deck.is_disjoint(&lab_ids), "{players}p: a tech is both in the deck and a lab");
+        in_deck.extend(&lab_ids);
+        assert_eq!(in_deck.len(), 30, "{players}p: deck ∪ labs must be all 30 techs, no boxed pile");
+        // And the observed labs really are what we asked for (reconcile worked).
+        assert_eq!(std::array::from_fn::<_, 6, _>(|i| state.lab_state.lab_a.slots[i].unwrap()), lab_a);
+    }
+}
+
 #[test]
 fn revealed_hidden_starting_order_replays() {
     let rules = Rules::standard();

@@ -242,7 +242,13 @@ pub fn can_teleport_to_station_with_tech(
     // Must have a station placed
     let station_area = state.station_location?;
 
-    // Station area must have our assistant
+    // Station area must have our assistant — OWNER-RULED (Jeremy,
+    // 2026-07-20 decision-log row, closing ruling A1): the station token
+    // adds POWER only, like a shophouse/trading house; RB p.6's
+    // assistant-at-destination rule is NOT overridden. The card's explicit
+    // clauses stand: the jump is pathless, free, and ignores other
+    // President pawns AT the station. Was an assumed reading since
+    // inception; adjudicated after the Phase-2.9 differential surfaced it.
     if p.assistants.in_area(station_area) > 0 {
         Some(station_area)
     } else {

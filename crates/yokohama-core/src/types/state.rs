@@ -322,18 +322,56 @@ impl GameState {
     }
 
     /// Arrange the order deck so the next `cards.len()` draws (`Vec::pop`) yield
-    /// `cards` in order. Every named card must currently be in `order_deck`
-    /// (the removed pile does not count — arrangement only serves future draws);
-    /// the list must be duplicate-free. No mutation on error. Relative order of
-    /// all unnamed cards is preserved.
+    /// `cards` in order. Each named card must currently be in `order_deck` OR in
+    /// `orders_removed`; the list must be duplicate-free. No mutation on error.
+    /// Relative order of all unnamed deck cards is preserved.
+    ///
+    /// Conservation-by-exchange (the live-tracking fix, review §3 blocker 2): at
+    /// 2p/3p a large slice of the 36 order cards is boxed face-down at setup and
+    /// never observable, so the seeded `order_deck`/`orders_removed` SPLIT among
+    /// unobserved cards is pure fiction. When a physical reveal (a Port refill)
+    /// names a card the seeded guess parked in `orders_removed`, that card is
+    /// really in the deck — so we swap it INTO the deck, sending an unnamed deck
+    /// card the other way to keep the deck+removed multiset (and the standing
+    /// 36-card conservation invariant) exact. Same principle as
+    /// `reconcile_setup`'s zone swaps and `extract_order_from_deck`'s deck-then-
+    /// removed search. A card in NEITHER pile is a genuine desync — refused.
+    /// (`arrange_techs_on_top` has no such path: the tech deck has no boxed
+    /// setup removal, so its membership after reconciliation is exact — a tech
+    /// reveal missing from the deck is a real desync, not a seeded guess.)
     pub fn arrange_orders_on_top(&mut self, cards: &[OrderCardId]) -> Result<(), crate::types::MoveError> {
         for (i, c) in cards.iter().enumerate() {
             if cards[..i].contains(c) {
                 return Err(crate::types::MoveError::RuleViolation("duplicate card in deck arrangement"));
             }
         }
-        if !cards.iter().all(|c| self.order_deck.contains(c)) {
+        // Validate fully before any mutation (no-mutation-on-error contract):
+        // every named card must be physically accounted for (deck or removed),
+        // and the deck must be able to serve `cards.len()` distinct draws.
+        if !cards.iter().all(|c| self.order_deck.contains(c) || self.orders_removed.contains(c)) {
             return Err(crate::types::MoveError::CardNotFound);
+        }
+        // Deck slots holding a card NOT itself being arranged — the donors we
+        // can demote to the removed pile in exchange for cards pulled up from it.
+        let donor_positions: Vec<usize> = self
+            .order_deck
+            .iter()
+            .enumerate()
+            .filter(|(_, d)| !cards.contains(d))
+            .map(|(i, _)| i)
+            .collect();
+        let from_removed: Vec<OrderCardId> =
+            cards.iter().copied().filter(|c| self.orders_removed.contains(c)).collect();
+        if donor_positions.len() < from_removed.len() {
+            // deck_len - (named already in deck) < (named in removed) reduces to
+            // deck_len < cards.len(): too few cards to serve the draws at all.
+            return Err(crate::types::MoveError::RuleViolation("deck too small to serve the revealed draws"));
+        }
+        for (card, donor_pos) in from_removed.iter().zip(donor_positions) {
+            let removed_pos = self.orders_removed.iter().position(|id| id == card)
+                .expect("built from orders_removed membership; not yet mutated for this card");
+            self.orders_removed[removed_pos] = self.order_deck[donor_pos];
+            self.order_deck[donor_pos] = *card;
         }
         self.order_deck.retain(|id| !cards.contains(id));
         self.order_deck.extend(cards.iter().rev());
@@ -501,9 +539,12 @@ mod tests {
         state.order_deck = vec![OrderCardId(1), OrderCardId(2)];
         state.orders_removed = vec![OrderCardId(9)];
         let before = state.order_deck.clone();
-        // 9 is in orders_removed, not the deck: arrangement only serves future DRAWS.
-        assert_eq!(state.arrange_orders_on_top(&[OrderCardId(9)]), Err(crate::types::MoveError::CardNotFound));
+        let removed_before = state.orders_removed.clone();
+        // A card in NEITHER the deck nor the removed pile is genuinely absent
+        // (a real desync, not a seeded-deck guess): refused, no mutation.
+        assert_eq!(state.arrange_orders_on_top(&[OrderCardId(42)]), Err(crate::types::MoveError::CardNotFound));
         assert_eq!(state.order_deck, before);
+        assert_eq!(state.orders_removed, removed_before);
         assert!(matches!(
             state.arrange_orders_on_top(&[OrderCardId(1), OrderCardId(1)]),
             Err(crate::types::MoveError::RuleViolation(_))
@@ -511,6 +552,48 @@ mod tests {
         assert_eq!(state.order_deck, before);
         assert!(state.arrange_orders_on_top(&[]).is_ok());
         assert_eq!(state.order_deck, before);
+    }
+
+    #[test]
+    fn arrange_orders_on_top_exchanges_a_revealed_removed_card_into_the_deck() {
+        // Live-tracking reveal: the operator names a physically-real card that
+        // the seeded deck guessed into the boxed/removed pile (2p boxes ~18 of
+        // 36 order cards, so the engine's deck order is fiction until observed).
+        // It must be exchanged into the deck -- a multiset-preserving swap, the
+        // same principle as reconcile_setup's zone swaps -- and land on top for
+        // the next draw, so the port/lab refill it feeds cannot refuse reality.
+        let mut state = create_test_game_state(2);
+        state.order_deck = vec![OrderCardId(1), OrderCardId(2), OrderCardId(3)];
+        state.orders_removed = vec![OrderCardId(9)];
+        let mut before: Vec<u8> =
+            state.order_deck.iter().chain(&state.orders_removed).map(|c| c.0).collect();
+        before.sort_unstable();
+
+        state.arrange_orders_on_top(&[OrderCardId(9)]).unwrap();
+
+        // 9 is now the next draw...
+        assert_eq!(state.order_deck.last(), Some(&OrderCardId(9)));
+        // ...pulled OUT of the removed pile, which took a demoted deck card in
+        // exchange, so deck and removed keep their sizes and the whole
+        // deck+removed multiset is conserved exactly.
+        assert!(!state.orders_removed.contains(&OrderCardId(9)));
+        assert_eq!(state.order_deck.len(), 3);
+        assert_eq!(state.orders_removed.len(), 1);
+        let mut after: Vec<u8> =
+            state.order_deck.iter().chain(&state.orders_removed).map(|c| c.0).collect();
+        after.sort_unstable();
+        assert_eq!(before, after, "the deck+removed multiset is conserved by the exchange");
+
+        // A group mixing an in-deck card and a removed card still arranges both,
+        // in pop order, and the removed one is exchanged in.
+        let mut state = create_test_game_state(2);
+        state.order_deck = vec![OrderCardId(1), OrderCardId(2), OrderCardId(3)];
+        state.orders_removed = vec![OrderCardId(8), OrderCardId(9)];
+        state.arrange_orders_on_top(&[OrderCardId(2), OrderCardId(9)]).unwrap();
+        assert_eq!(state.order_deck.pop(), Some(OrderCardId(2))); // first draw
+        assert_eq!(state.order_deck.pop(), Some(OrderCardId(9))); // second draw, exchanged in
+        assert!(!state.orders_removed.contains(&OrderCardId(9)));
+        assert_eq!(state.orders_removed.len(), 2); // still two removed (one demoted in)
     }
 
     #[test]

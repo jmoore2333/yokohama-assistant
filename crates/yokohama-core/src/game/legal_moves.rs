@@ -706,20 +706,6 @@ fn generate_employment_agency_actions(state: &GameState, player: PlayerId, power
     moves
 }
 
-/// Documented v1 cap on the length of a single Chinatown move's exchange
-/// sequence, as enumerated by `generate_chinatown_actions`. The KB rule
-/// ("Number of exchanges = Power level", 07-rules-reference.md line 312)
-/// is now enforced end-to-end (Task 17b): `apply_area_action`'s Chinatown
-/// arm calls `validate_chinatown_exchanges` before any exchange executes,
-/// and the generator caps its own BFS depth at
-/// `min(power.min(5) as usize, CHINATOWN_ENUM_DEPTH)`. This constant only
-/// actually bites at power 5: a legal 5-exchange move exists per the rule
-/// there but is deliberately NOT enumerated (a plan-sanctioned v1
-/// enumeration bound, not a rules gap). At every power below 5, `power`
-/// itself is the binding constraint and this constant never limits
-/// anything.
-pub const CHINATOWN_ENUM_DEPTH: usize = 4;
-
 /// The 9 Chinatown exchange kinds, used to drive the enumeration BFS below.
 const ALL_CHINATOWN_EXCHANGES: [ChinatownExchange; 9] = [
     ChinatownExchange::CopperToYen,
@@ -756,54 +742,29 @@ fn try_apply_chinatown_exchange_simulated(
     mining_bonus: u32,
 ) -> Option<ChinatownResources> {
     let mut r = res;
-    match exchange {
-        ChinatownExchange::CopperToYen => {
-            if r.copper < 1 { return None; }
-            r.copper -= 1;
-            r.money += 2;
-        }
-        ChinatownExchange::SilkToYen => {
-            if r.silk < 1 { return None; }
-            r.silk -= 1;
-            r.money += 2;
-        }
-        ChinatownExchange::TeaToYen => {
-            if r.tea < 1 { return None; }
-            r.tea -= 1;
-            r.money += 1;
-        }
-        ChinatownExchange::SeafoodToYen => {
-            if r.seafood < 1 { return None; }
-            r.seafood -= 1;
-            r.money += 1;
-        }
-        ChinatownExchange::YenToCopper => {
-            if r.money < 2 { return None; }
-            r.money -= 2;
-            r.copper += 1 + mining_bonus;
-        }
-        ChinatownExchange::YenToSilk => {
-            if r.money < 2 { return None; }
-            r.money -= 2;
-            r.silk += 1;
-        }
-        ChinatownExchange::YenToTea => {
-            if r.money < 1 { return None; }
-            r.money -= 1;
-            r.tea += 1;
-        }
-        ChinatownExchange::YenToSeafood => {
-            if r.money < 1 { return None; }
-            r.money -= 1;
-            r.seafood += 1;
-        }
-        ChinatownExchange::YenToImported => {
-            if r.money < 4 { return None; }
-            r.money -= 4;
-            r.imported_goods += 1;
-        }
+    // Consume the SAME rate table the apply path uses -- no duplicated
+    // numbers here (Phase-2.9 review addendum, Tier 1).
+    let rate = chinatown_rate(exchange);
+    if *chinatown_res_field(&mut r, rate.spend) < rate.spend_amount {
+        return None;
     }
+    *chinatown_res_field(&mut r, rate.spend) -= rate.spend_amount;
+    // The Mining bonus is nonzero only for the copper-gaining exchange.
+    let bonus = if rate.gain == ChinatownGood::Copper { mining_bonus } else { 0 };
+    *chinatown_res_field(&mut r, rate.gain) += rate.gain_amount + bonus;
     Some(r)
+}
+
+/// Mutable accessor into a [`ChinatownResources`] field by good.
+fn chinatown_res_field(r: &mut ChinatownResources, good: ChinatownGood) -> &mut u32 {
+    match good {
+        ChinatownGood::Copper => &mut r.copper,
+        ChinatownGood::Silk => &mut r.silk,
+        ChinatownGood::Tea => &mut r.tea,
+        ChinatownGood::Seafood => &mut r.seafood,
+        ChinatownGood::Money => &mut r.money,
+        ChinatownGood::Imported => &mut r.imported_goods,
+    }
 }
 
 /// Canonical dedupe key for a multiset of exchanges: a fixed-size count per
@@ -832,12 +793,14 @@ fn chinatown_multiset_key(exchanges: &[ChinatownExchange]) -> [u8; 9] {
 }
 
 /// Enumerate legal Chinatown moves via breadth-first search over exchange
-/// sequences, up to `min(power.min(5) as usize, CHINATOWN_ENUM_DEPTH)`
-/// exchanges (Task 17b: the KB caps the exchange count at the acting
-/// power, exactly mirroring `validate_chinatown_exchanges`, which
-/// `apply_area_action`'s Chinatown arm now enforces), starting from the
-/// player's actual resource tuple and admitting only exchanges valid on
-/// the running simulated state (mirroring `apply_chinatown_exchange`'s
+/// sequences, up to `power.min(5)` exchanges (the KB rule "Number of
+/// exchanges = Power level", exactly mirroring
+/// `validate_chinatown_exchanges`, which `apply_area_action`'s Chinatown
+/// arm enforces -- the former v1 `CHINATOWN_ENUM_DEPTH = 4` enumeration
+/// cap was retired in the Phase-2.9 oracle fix wave: it hid legal,
+/// apply-valid length-5 moves at power 5), starting from the player's
+/// actual resource tuple and admitting only exchanges valid on the
+/// running simulated state (mirroring `apply_chinatown_exchange`'s
 /// costs/yields exactly, including the Mining Technology bonus on
 /// YenToCopper). Processing strictly by increasing sequence length means
 /// the first witness recorded for any reachable multiset is always found
@@ -846,10 +809,16 @@ fn chinatown_multiset_key(exchanges: &[ChinatownExchange]) -> [u8; 9] {
 /// path that reached it (a valid execution order BY CONSTRUCTION), never
 /// independently sorted: sorting a multiset can produce an order that
 /// fails validation (e.g. money 0, 1 copper: [CopperToYen, YenToTea] is
-/// valid, the reverse is not). One move per distinct multiset. Chinatown
-/// places no assistant, so (unlike the other five permissive areas) hand
-/// availability never gates it. Skip is always legal and always offered
-/// (Task 16/17 decision-log optionality ruling).
+/// valid, the reverse is not). One move per distinct multiset. Frontier
+/// expansion is gated on the same seen-multiset insert as emission --
+/// provably lossless, because every exchange is a fixed additive delta on
+/// the running resources, so a multiset determines the balance
+/// order-independently and the first visit's subtree is identical to any
+/// revisit's; this bounds the frontier to distinct multisets (small
+/// thousands at depth 5 over 9 variants). Chinatown places no assistant,
+/// so (unlike the other five permissive areas) hand availability never
+/// gates it. Skip is always legal and always offered (Task 16/17
+/// decision-log optionality ruling).
 fn generate_chinatown_actions(state: &GameState, player: PlayerId, power: u8, rules: &Rules) -> Vec<Move> {
     let p = state.player(player);
     let mining_bonus = copper_bonus(state, player, 1, &rules.techs) as u32;
@@ -861,7 +830,7 @@ fn generate_chinatown_actions(state: &GameState, player: PlayerId, power: u8, ru
         money: p.money,
         imported_goods: p.imported_goods,
     };
-    let depth = (power.min(5) as usize).min(CHINATOWN_ENUM_DEPTH);
+    let depth = power.min(5) as usize;
 
     let mut moves = Vec::new();
     let mut seen: std::collections::HashSet<[u8; 9]> = std::collections::HashSet::new();
@@ -878,8 +847,8 @@ fn generate_chinatown_actions(state: &GameState, player: PlayerId, power: u8, ru
                         moves.push(Move::ExecuteAreaAction {
                             action: AreaAction::Chinatown { exchanges: next_path.clone() },
                         });
+                        next_frontier.push((next_res, next_path));
                     }
-                    next_frontier.push((next_res, next_path));
                 }
             }
         }
@@ -942,10 +911,21 @@ fn generate_building_moves(state: &GameState) -> Vec<Move> {
     let power = state.current_action_power.unwrap_or(0);
 
     if let Some(site) = state.board_layout.building_sites.get(&area) {
-        // Shophouse: requires Power 4+
-        if power >= 4 && p.shophouses.in_hand > 0 {
-            if let Some(slot) = site.next_shophouse_slot(player) {
-                moves.push(Move::BuildShophouse { slot: slot as u8 });
+        // Shophouse: requires Power 4+. RB p.7 and 09-building-sites.yaml
+        // carry NO fill-order rule and the four spaces print materially
+        // different rewards, so the builder chooses the slot: one
+        // BuildShophouse per EMPTY slot (Phase-2.9 divergence fix; formerly
+        // pinned to the first empty slot via next_shophouse_slot). A player
+        // may own at most ONE shophouse per site, so an own shophouse
+        // anywhere on the site blocks all offers.
+        if power >= 4
+            && p.shophouses.in_hand > 0
+            && !site.shophouses_built.contains(&Some(player))
+        {
+            for (slot, occupant) in site.shophouses_built.iter().enumerate() {
+                if occupant.is_none() {
+                    moves.push(Move::BuildShophouse { slot: slot as u8 });
+                }
             }
         }
 
@@ -1027,20 +1007,53 @@ mod tests {
 
     #[test]
     fn test_placement_moves_with_assistants() {
-        let state = create_test_state();
+        // create_test_state has 2 placeable areas; add 3 more so 3- and
+        // 4-area placements are geometrically possible (item 7: the review
+        // demonstrated deleting every 3-area move passed the whole suite
+        // because no test asserted length >= 3).
+        let mut state = create_test_state();
+        state.board_layout.areas.insert(AreaId::new(2), AreaConfig { area_type: AreaType::SilkMill, grid_position: (0, 2) });
+        state.board_layout.areas.insert(AreaId::new(3), AreaConfig { area_type: AreaType::TeaPlantation, grid_position: (0, 3) });
+        state.board_layout.areas.insert(AreaId::new(4), AreaConfig { area_type: AreaType::FishingGround, grid_position: (0, 4) });
+
+        let placement_lengths = |moves: &[Move]| -> std::collections::BTreeSet<usize> {
+            moves
+                .iter()
+                .filter_map(|m| match m {
+                    Move::PlaceThreeAreas { placements } => Some(placements.len()),
+                    _ => None,
+                })
+                .collect()
+        };
+
+        // WITHOUT Newspaper: lengths 0,1,2,3 present; 4 must NOT appear.
         let moves = generate_placement_moves_with_tech(&state, None);
-
-        // Should have placement options
         assert!(!moves.is_empty());
-
-        // Should include empty placement (0 assistants)
-        assert!(moves.iter().any(|m| matches!(m, Move::PlaceThreeAreas { placements } if placements.is_empty())));
-
-        // Should include single area placements
-        assert!(moves.iter().any(|m| matches!(m, Move::PlaceThreeAreas { placements } if placements.len() == 1)));
-
-        // Should include Option B (2 in same area) since we have 8 assistants
+        let lens = placement_lengths(&moves);
+        assert!(lens.contains(&0), "empty placement must be offered");
+        assert!(lens.contains(&1), "single-area placement must be offered");
+        assert!(lens.contains(&2), "2-area placement must be offered");
+        assert!(lens.contains(&3), "3-area placement must be offered (kills 'delete all 3-area moves')");
+        assert!(!lens.contains(&4), "4-area placement must NOT appear without Newspaper");
+        // Option B (2 in one area) present since we have 8 assistants.
         assert!(moves.iter().any(|m| matches!(m, Move::PlaceTwoSameArea { .. })));
+
+        // WITH Newspaper: length 4 now appears.
+        let mut registry = TechRegistry::new();
+        registry.insert(
+            TechCard {
+                id: TechCardId(80),
+                name: "Newspaper".to_string(),
+                country: Country::English,
+                industry_cost: 5,
+                effect: TechEffect::Newspaper,
+            },
+            "tech_newspaper",
+        );
+        state.players[0].technologies.push(TechCardId(80));
+        let moves_np = generate_placement_moves_with_tech(&state, Some(&registry));
+        let lens_np = placement_lengths(&moves_np);
+        assert!(lens_np.contains(&4), "4-area placement must be offered WITH Newspaper");
     }
 
     #[test]
@@ -1670,6 +1683,80 @@ mod tests {
         state.current_action_power = Some(4);
         let moves = get_legal_moves(&state, &rules);
         assert!(moves.iter().any(|m| matches!(m, Move::BuildShophouse { .. })));
+    }
+
+    #[test]
+    fn shophouse_enumeration_offers_every_empty_slot() {
+        // Phase-2.9 divergence fix (ENGINE BUG -- completeness): RB p.7 and
+        // 09-building-sites.yaml carry NO fill-order rule, and the four
+        // spaces print materially different rewards, so the builder chooses
+        // the slot. The generator formerly pinned the first empty slot via
+        // next_shophouse_slot; it must emit one BuildShophouse per EMPTY slot.
+        let mut state = create_test_state();
+        let area = AreaId::new(0);
+        state.turn_phase = TurnPhase::Building;
+        state.current_action_power = Some(4);
+        state.players[0].president_location = PresidentLocation::OnBoard(area);
+        state.players[0].shophouses.in_hand = 2;
+        state.board_layout.building_sites.insert(area, BuildingSite::new([2, 3, 4, 5], 10));
+        let rules = Rules::empty_for_tests();
+
+        let moves = get_legal_moves(&state, &rules);
+        for slot in 0u8..4 {
+            assert!(
+                moves.iter().any(|m| matches!(m, Move::BuildShophouse { slot: s } if *s == slot)),
+                "all-empty site must offer slot {slot}"
+            );
+        }
+        assert!(moves.iter().any(|m| matches!(m, Move::SkipBuilding)));
+    }
+
+    #[test]
+    fn shophouse_enumeration_skips_occupied_slots() {
+        // Opponent shophouse on slot 1 => exactly slots {0, 2, 3} offered.
+        let mut state = create_test_state();
+        let area = AreaId::new(0);
+        state.turn_phase = TurnPhase::Building;
+        state.current_action_power = Some(4);
+        state.players[0].president_location = PresidentLocation::OnBoard(area);
+        state.players[0].shophouses.in_hand = 2;
+        let mut site = BuildingSite::new([2, 3, 4, 5], 10);
+        site.shophouses_built[1] = Some(PlayerId::new(1));
+        state.board_layout.building_sites.insert(area, site);
+        let rules = Rules::empty_for_tests();
+
+        let moves = get_legal_moves(&state, &rules);
+        let mut offered: Vec<u8> = moves
+            .iter()
+            .filter_map(|m| match m {
+                Move::BuildShophouse { slot } => Some(*slot),
+                _ => None,
+            })
+            .collect();
+        offered.sort_unstable();
+        assert_eq!(offered, vec![0, 2, 3], "occupied slot 1 must not be offered");
+    }
+
+    #[test]
+    fn shophouse_enumeration_blocked_by_own_shophouse_on_site() {
+        // A player may own at most one shophouse per site: an own shophouse
+        // on ANY slot blocks every BuildShophouse offer on that site.
+        let mut state = create_test_state();
+        let area = AreaId::new(0);
+        state.turn_phase = TurnPhase::Building;
+        state.current_action_power = Some(4);
+        state.players[0].president_location = PresidentLocation::OnBoard(area);
+        state.players[0].shophouses.in_hand = 2;
+        let mut site = BuildingSite::new([2, 3, 4, 5], 10);
+        site.shophouses_built[2] = Some(PlayerId::new(0));
+        state.board_layout.building_sites.insert(area, site);
+        let rules = Rules::empty_for_tests();
+
+        let moves = get_legal_moves(&state, &rules);
+        assert!(
+            !moves.iter().any(|m| matches!(m, Move::BuildShophouse { .. })),
+            "own shophouse on the site must block all further shophouse builds there"
+        );
     }
 
     #[test]
@@ -2554,9 +2641,11 @@ mod tests {
     }
 
     /// Places a Chinatown area on the board, puts the president there, and
-    /// enters the AreaAction phase at the given power (Task 17b: power now
-    /// caps the BFS enumeration depth -- see `CHINATOWN_ENUM_DEPTH`'s doc
-    /// comment).
+    /// enters the AreaAction phase at the given power (power caps the BFS
+    /// enumeration depth at `power.min(5)` -- see
+    /// `generate_chinatown_actions`'s doc comment; the former v1
+    /// `CHINATOWN_ENUM_DEPTH = 4` cap was retired in the Phase-2.9 oracle
+    /// fix wave).
     fn create_chinatown_area_state(power: u8) -> GameState {
         let mut state = create_test_state();
         let area = AreaId::new(5);
@@ -2818,8 +2907,8 @@ mod tests {
 
     #[test]
     fn chinatown_enumeration_hand_derived_small_fixture_power_3() {
-        // Fixture: money 1, everything else 0, power 3 (Task 17b: depth cap
-        // = min(3,4) = 3). HAND DERIVATION (full walk-through in the Task
+        // Fixture: money 1, everything else 0, power 3 (depth = power =
+        // 3). HAND DERIVATION (full walk-through in the Task
         // 17/17b report): the reachable exchange graph is a 2-leaf star --
         // R=(money:1) <-> T=(tea:1) via YenToTea/TeaToYen, and R <->
         // S=(seafood:1) via YenToSeafood/SeafoodToYen -- since money never
@@ -2853,8 +2942,8 @@ mod tests {
 
     #[test]
     fn chinatown_enumeration_hand_derived_small_fixture_power_2_caps_depth() {
-        // Same fixture as the power-3 pin above, at power 2 (depth cap =
-        // min(2,4) = 2): only the L=1 (2 raw) and L=2 (2 raw) walks survive
+        // Same fixture as the power-3 pin above, at power 2 (depth = power
+        // = 2): only the L=1 (2 raw) and L=2 (2 raw) walks survive
         // -- {YenToTea}, {YenToSeafood}, {YenToTea,TeaToYen},
         // {YenToSeafood,SeafoodToYen} -- all 4 distinct (no collision is
         // possible below length 4). 4 + Skip = 5.
@@ -2899,7 +2988,7 @@ mod tests {
     #[test]
     fn chinatown_enumeration_mining_bonus_three_exchange_chain_discriminates_drop() {
         // Player owns 1 Mining Technology copy, money 4, copper 0, power 3
-        // (depth cap = min(3,4) = 3). At the start, only YenToCopper is
+        // (depth = power = 3). At the start, only YenToCopper is
         // resource-valid (copper=0 blocks CopperToYen/etc.; money=4 covers
         // YenToCopper's cost of 2).
         //
@@ -2946,6 +3035,96 @@ mod tests {
                 ChinatownExchange::CopperToYen,
             ]
         )), "expected [YenToCopper, CopperToYen, CopperToYen] among the generated moves");
+        assert_all_moves_apply(&state, &moves, &rules);
+    }
+
+    #[test]
+    fn chinatown_enumeration_power_5_reaches_length_5_multisets() {
+        // Phase-2.9 oracle divergence fixture: money 2, seafood 14, power 5.
+        // The rules (and the executor's own validate_chinatown_exchanges)
+        // permit 1..=power exchanges, i.e. length 5 here. HAND ARITHMETIC
+        // for one achievable length-5 sequence,
+        // [SeafoodToYen, YenToCopper, CopperToYen, YenToCopper, CopperToYen]:
+        //   start           money 2, seafood 14, copper 0
+        //   SeafoodToYen -> money 3, seafood 13            (needs seafood >= 1: 14 ok)
+        //   YenToCopper  -> money 1, copper 1              (needs money >= 2: 3 ok)
+        //   CopperToYen  -> money 3, copper 0              (needs copper >= 1: 1 ok)
+        //   YenToCopper  -> money 1, copper 1              (needs money >= 2: 3 ok)
+        //   CopperToYen  -> money 3, copper 0              (needs copper >= 1: 1 ok)
+        // Every step is feasible on the running balance, so the multiset
+        // {SeafoodToYen: 1, YenToCopper: 2, CopperToYen: 2} MUST be
+        // enumerated at power 5. The generator emits one move per distinct
+        // multiset with whatever valid execution order its BFS found first,
+        // so we match on the multiset key, never a literal vector.
+        let mut state = create_chinatown_area_state(5);
+        state.players[0].copper = 0;
+        state.players[0].silk = 0;
+        state.players[0].tea = 0;
+        state.players[0].seafood = 14;
+        state.players[0].money = 2;
+        state.players[0].imported_goods = 0;
+        let rules = Rules::empty_for_tests();
+
+        let moves = get_legal_moves(&state, &rules);
+        let target = chinatown_multiset_key(&[
+            ChinatownExchange::SeafoodToYen,
+            ChinatownExchange::YenToCopper,
+            ChinatownExchange::YenToCopper,
+            ChinatownExchange::CopperToYen,
+            ChinatownExchange::CopperToYen,
+        ]);
+        assert!(moves.iter().any(|m| matches!(m,
+            Move::ExecuteAreaAction { action: AreaAction::Chinatown { exchanges } }
+            if chinatown_multiset_key(exchanges) == target
+        )), "power 5 must enumerate the feasible length-5 multiset {{SeafoodToYen:1, YenToCopper:2, CopperToYen:2}}");
+        for m in &moves {
+            if let Move::ExecuteAreaAction { action: AreaAction::Chinatown { exchanges } } = m {
+                assert!(
+                    exchanges.len() <= 5,
+                    "no enumerated sequence may exceed the acting power (5), got length {}",
+                    exchanges.len()
+                );
+            }
+        }
+        assert_all_moves_apply(&state, &moves, &rules);
+    }
+
+    #[test]
+    fn chinatown_enumeration_power_4_set_unchanged_by_frontier_prune() {
+        // Same money-1 star fixture as the power-2/3 pins above, at power 4
+        // (depth = 4). HAND DERIVATION, extending the power-3 walk count:
+        // valid walks of length L from R number 2^ceil(L/2) -- L=1 -> 2,
+        // L=2 -> 2, L=3 -> 4, and L=4 -> 4 raw walks (a Tea/Seafood choice
+        // at steps 1 and 3, steps 2 and 4 forced back to R): (T,T), (T,S),
+        // (S,T), (S,S). At L=4 the first multiset collision appears: (T,S)
+        // and (S,T) both collapse to {YenToTea, TeaToYen, YenToSeafood,
+        // SeafoodToYen}, so L=4 contributes 3 distinct multisets, not 4.
+        // Total: 2 + 2 + 4 + 3 = 11 + Skip = 12. This exact count plus the
+        // cross-branch multiset pin below hold both BEFORE and AFTER the
+        // frontier-expansion prune (gating next_frontier on the same
+        // seen-multiset insert as emission): the prune may only change
+        // performance, never the enumerated set.
+        let mut state = create_chinatown_area_state(4);
+        state.players[0].copper = 0;
+        state.players[0].silk = 0;
+        state.players[0].tea = 0;
+        state.players[0].seafood = 0;
+        state.players[0].money = 1;
+        state.players[0].imported_goods = 0;
+        let rules = Rules::empty_for_tests();
+
+        let moves = get_legal_moves(&state, &rules);
+        assert_eq!(moves.len(), 12);
+        let cross = chinatown_multiset_key(&[
+            ChinatownExchange::YenToTea,
+            ChinatownExchange::TeaToYen,
+            ChinatownExchange::YenToSeafood,
+            ChinatownExchange::SeafoodToYen,
+        ]);
+        assert!(moves.iter().any(|m| matches!(m,
+            Move::ExecuteAreaAction { action: AreaAction::Chinatown { exchanges } }
+            if chinatown_multiset_key(exchanges) == cross
+        )), "the known power-4 cross-branch multiset must still be enumerated");
         assert_all_moves_apply(&state, &moves, &rules);
     }
 

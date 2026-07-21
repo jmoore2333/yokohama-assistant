@@ -92,14 +92,27 @@ pub struct StepOutput {
 
 impl Repl {
     pub fn new(session: crate::session::Session) -> Repl {
+        // Restore a persisted lockdown (review §3): a session saved after a
+        // desync/invariant fault carries `record.lockdown`, so a reload comes
+        // back locked instead of silently playable again.
+        let locked = session.is_locked();
         Repl {
             session,
             page: 0,
             pending: Pending::None,
-            locked: false,
+            locked,
             sub: SubPrompt::None,
             board_width_note_shown: false,
         }
+    }
+
+    /// Engage a lockdown: flip the in-memory `locked` flag AND persist the
+    /// `reason` into the record (so it survives save/reload -- review §3),
+    /// returning any autosave-failure warning to append to the caller's output.
+    /// Every site that sets `locked` goes through here so the two never drift.
+    pub(crate) fn engage_lockdown(&mut self, reason: String) -> Option<String> {
+        self.locked = true;
+        self.session.lock_down(reason)
     }
 
     /// The whole prompt screen for the current state: header line, options
@@ -107,6 +120,13 @@ impl Repl {
     /// options are numbered by their GLOBAL 0-based index into
     /// `session.legal()`, 20 per page.
     pub fn prompt(&self) -> String {
+        // A locked session (including one reloaded from a persisted lockdown --
+        // review §3) shows only its lockdown status: the numbered options can't
+        // be used, so rendering them would mislead. `step` allows just
+        // save/log/quit from here.
+        if self.locked {
+            return self.lockdown_status();
+        }
         let state = self.session.state();
         let phase_text = match state.pending_choices.first() {
             Some(head) => {
@@ -360,8 +380,18 @@ impl Repl {
     }
 
     pub(crate) fn lockdown_status(&self) -> String {
+        // Surface the persisted reason (review §3) when one is recorded, so a
+        // reloaded locked session tells the operator WHY it locked, not just
+        // that it did. A directly-forced test lock has no recorded reason.
+        let reason = self
+            .session
+            .record()
+            .lockdown
+            .as_deref()
+            .map(|r| format!(" [{r}]"))
+            .unwrap_or_default();
         format!(
-            "{} turn {} | seed {} | {} logged event(s) -- only 'save', 'log', 'quit' available\n",
+            "{}{reason} turn {} | seed {} | {} logged event(s) -- only 'save', 'log', 'quit' available\n",
             paint(Tone::Warn, "[locked]"),
             self.session.state().turn_number,
             self.session.record().seed,
@@ -898,9 +928,13 @@ impl Repl {
                 (self.out(text, false), true)
             }
             Err(ApplyError::Invariant(msg)) => {
-                self.locked = true;
+                let warning = self.engage_lockdown(format!("invariant violation: {msg}"));
                 let mut text = format!("{}\n", paint(Tone::Warn, &format!("LOCKDOWN -- {msg}")));
                 text.push_str(&self.lockdown_dump());
+                if let Some(w) = warning {
+                    text.push_str(&w);
+                    text.push('\n');
+                }
                 (self.out(text, false), false)
             }
             // T13 rider (final-review cheap batch): a dedicated arm instead
@@ -1078,13 +1112,13 @@ Commands:
   b <id> t <adj>  Placement Option B with the Telegram bonus: +1 assistant in an adjacent area
   m <from> <to>   resolve a pending assistant-move choice (<from> is 'hand' or an area id)
   r [id[:n]]...   Movement Option B: retreat the President, recovering all (bare id) or n assistants per area ('r' alone recovers none)
-  board           show the area grid
+  board           show the area grid (legend: * = unclaimed 5-Power token)
   players         show each player's resources, hand, tech, tokens, President
   ports           show both Port boards and the order-deck size
-  labs            show both Laboratory boards and the tech-deck size
-  tracks          show the Church and Customs tracks
-  sites           show each area's building-site printed rewards and build marks
-  goals           show achievement cards, claim state, and per-player progress
+  labs            show both Laboratory boards (each tech's country + effect) and the tech-deck size
+  tracks          show the Church and Customs tracks with printed VP and rider icons
+  sites           show each area's building-site printed rewards, build marks, and adjacency
+  goals           show achievement cards with claim VP, claim state, and per-player progress
   hand            show the current player's order-card hand
   score           show current VP/money (or the final scores once the game is over)
   log             show the tail of the move/event log
@@ -1597,6 +1631,8 @@ mod tests {
     fn finish_apply_ex_reports_game_over_plainly_not_illegal_prefixed() {
         let mut state = create_test_game_state(2);
         state.end_game_triggered = true;
+        state.trigger_player = Some(PlayerId::new(0));
+        state.trigger_reason = Some(yokohama_core::EndGameTrigger::OrderDeckEmpty);
         state.final_round = true;
         state.turn_phase = TurnPhase::TurnEnd;
         state.current_player = PlayerId::new(1);
@@ -1620,6 +1656,8 @@ mod tests {
     fn game_over_screen_announces_winner_and_breakdown() {
         let mut state = create_test_game_state(2);
         state.end_game_triggered = true;
+        state.trigger_player = Some(PlayerId::new(0));
+        state.trigger_reason = Some(yokohama_core::EndGameTrigger::OrderDeckEmpty);
         state.final_round = true;
         state.turn_phase = TurnPhase::TurnEnd;
         state.current_player = PlayerId::new(1);

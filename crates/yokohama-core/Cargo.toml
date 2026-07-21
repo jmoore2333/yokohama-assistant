@@ -8,8 +8,6 @@ description = "Core game engine for Yokohama board game"
 
 [dependencies]
 serde.workspace = true
+serde_json.workspace = true
 rand.workspace = true
 rand_chacha.workspace = true
-
-[dev-dependencies]
-serde_json.workspace = true

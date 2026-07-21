@@ -158,6 +158,31 @@ pub fn resolve_choice_move(state: &mut GameState, mv: &Move, rules: &Rules) -> R
     if !generate_choice_resolutions(state, &head, rules).contains(mv) {
         return Err(MoveError::RuleViolation("Move does not resolve the pending choice"));
     }
+    // Raw-arm self-defense (Phase 2.9 Stage 4, census gap 4): cheap
+    // structural guards against TAMPERED heads, checked BEFORE the head
+    // pops so an Err leaves the state fully untouched. A genuine
+    // RecoveryLeave head only ever exists with turn_phase == Recovery
+    // (resolve_recovery queues it under apply_move's `pending_choices
+    // .is_empty() && turn_phase == Recovery` gate, and Choose* moves never
+    // touch turn_phase); resolving a forged head elsewhere would run
+    // finish_recovery_transition -- an arbitrary phase jump plus mercenary
+    // teardown. StationPlace's queue site guards `station_location
+    // .is_none()`, so a head with the token already down is forged too:
+    // the Station token is placed once and is immovable (Phase 2.9
+    // ruling), never silently relocated.
+    match &head {
+        PendingChoice::RecoveryLeave if state.turn_phase != TurnPhase::Recovery => {
+            return Err(MoveError::RuleViolation(
+                "RecoveryLeave choice is only resolvable during the Recovery phase",
+            ));
+        }
+        PendingChoice::StationPlace if state.station_location.is_some() => {
+            return Err(MoveError::RuleViolation(
+                "Station token is already placed (placed once, immovable)",
+            ));
+        }
+        _ => {}
+    }
     state.pending_choices.remove(0);
     let player = state.current_player;
     match (head, mv) {
@@ -472,6 +497,53 @@ mod tests {
         let (mut state, rules) = no_movable_assistant_fixture();
         push_choice(&mut state, PendingChoice::AssistantMove, &rules);
         assert!(state.pending_choices.is_empty());
+    }
+
+    // --- Phase 2.9 Stage 4: raw-arm self-defense (census gap 4) ---
+
+    #[test]
+    fn tampered_recovery_leave_head_outside_recovery_errors_not_phase_jumps() {
+        // Census gap 4a probe: a genuine RecoveryLeave head only ever exists
+        // with turn_phase == Recovery (resolve_recovery queues it under
+        // apply_move's `pending_choices.is_empty() && turn_phase == Recovery`
+        // gate, and Choose* moves never touch turn_phase). A tampered head in
+        // any other phase would run finish_recovery_transition on resolution
+        // -- an arbitrary phase jump (and mercenary teardown). Verified by
+        // reading the queue site: the machinery does NOT defend, so the
+        // cheap phase guard is added.
+        let mut state = create_test_game_state(2);
+        let rules = Rules::empty_for_tests();
+        state.turn_phase = TurnPhase::Placement;
+        state.pending_choices.push(PendingChoice::RecoveryLeave);
+        let before = state.clone();
+
+        let result = resolve_choice_move(
+            &mut state, &Move::ChooseRecoveryLeave { leave_one: false }, &rules,
+        );
+        assert!(matches!(result, Err(MoveError::RuleViolation(_))), "{result:?}");
+        assert_eq!(state, before, "zero mutation on Err: head not popped, phase not jumped");
+    }
+
+    #[test]
+    fn tampered_station_place_head_with_station_down_errors_not_overwrites() {
+        // Census gap 4b probe: the Station token is placed once and is
+        // immovable (Phase 2.9 ruling); the queue site guards
+        // `station_location.is_none()`, so a StationPlace head with the
+        // token already down is tampered by construction -- resolution must
+        // not silently relocate the token.
+        let mut state = create_test_game_state(2);
+        let rules = Rules::empty_for_tests();
+        state.board_layout.areas.insert(area_a(), AreaConfig { area_type: AreaType::Bank, grid_position: (0, 0) });
+        state.board_layout.areas.insert(area_b(), AreaConfig { area_type: AreaType::CopperMine, grid_position: (0, 1) });
+        state.station_location = Some(area_a());
+        state.pending_choices.push(PendingChoice::StationPlace);
+        let before = state.clone();
+
+        let result = resolve_choice_move(
+            &mut state, &Move::ChooseStationPlace { area: area_b() }, &rules,
+        );
+        assert!(matches!(result, Err(MoveError::RuleViolation(_))), "{result:?}");
+        assert_eq!(state, before, "zero mutation on Err: token stays where it was");
     }
 
     /// Direct-mechanism analogue of `actions/tracks.rs`'s

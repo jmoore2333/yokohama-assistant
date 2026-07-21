@@ -187,6 +187,16 @@ impl Session {
                 record.rules_hash,
             );
         }
+        match record.semantics_rev {
+            None => eprintln!(
+                "warning: GameRecord carries no semantics_rev (missing semantics provenance; pre-Phase-2.9 record) -- replaying anyway (interactive load is lenient; record_stats/replay_strict refuse)",
+            ),
+            Some(rev) if rev != yokohama_core::SEMANTICS_REV => eprintln!(
+                "warning: GameRecord.semantics_rev={rev} does not match running SEMANTICS_REV={} -- replaying anyway (interactive load is lenient; record_stats/replay_strict refuse)",
+                yokohama_core::SEMANTICS_REV,
+            ),
+            Some(_) => {}
+        }
 
         // Rebuilds the base state the same way `new_sim`/`new_live` do
         // (new_game -> optional reconcile_setup -> finalize_setup) rather
@@ -247,7 +257,13 @@ impl Session {
     /// save could still rename a not-yet-durable file onto `path`.
     pub fn save(&self, path: &std::path::Path) -> Result<(), String> {
         use std::io::Write;
-        let text = serde_json::to_string_pretty(&self.record).map_err(|e| e.to_string())?;
+        // Stamp the digest of the state-after-last-event on a clone (`save`
+        // is `&self`; the clone is cheaper than the JSON serialization that
+        // follows). Makes every tester/live-gate save strict-verifiable end
+        // to end — Phase-2.9 close-out follow-up (a).
+        let mut record = self.record.clone();
+        record.stamp_terminal_digest(&self.state);
+        let text = serde_json::to_string_pretty(&record).map_err(|e| e.to_string())?;
         let mut tmp = path.as_os_str().to_os_string();
         tmp.push(".tmp");
         let tmp = std::path::PathBuf::from(tmp);
@@ -408,6 +424,24 @@ impl Session {
             delta.push(warning);
         }
         Ok(delta)
+    }
+
+    /// Record a desync/invariant lockdown so it PERSISTS across save/reload
+    /// (review §3): stamp `record.lockdown` with `reason` and autosave, so the
+    /// lockdown is durable even if the operator quits without a manual save.
+    /// The driver (`Repl`) keeps its own in-memory `locked` flag in step and
+    /// restores it from `record.lockdown` on load. Returns an autosave-failure
+    /// warning line if the persist write failed (`save_path` set but unwritable),
+    /// so the caller can surface it. Idempotent: re-locking overwrites the reason.
+    pub fn lock_down(&mut self, reason: String) -> Option<String> {
+        self.record.lockdown = Some(reason);
+        self.autosave()
+    }
+
+    /// Whether a lockdown was recorded (a desync/invariant fault). Read by the
+    /// driver to restore its `locked` flag after `load`.
+    pub fn is_locked(&self) -> bool {
+        self.record.lockdown.is_some()
     }
 
     /// Replay-prefix undo of the last group (design §5.4): a trailing
@@ -595,6 +629,8 @@ mod tests {
     fn apply_on_finished_game_returns_typed_game_over() {
         let mut state = create_test_game_state(2);
         state.end_game_triggered = true;
+        state.trigger_player = Some(PlayerId::new(0));
+        state.trigger_reason = Some(yokohama_core::EndGameTrigger::OrderDeckEmpty);
         state.final_round = true;
         state.turn_phase = TurnPhase::TurnEnd;
         // is_game_over requires current_player == the seat before start_player
@@ -605,6 +641,32 @@ mod tests {
         let mut s = Session::for_test_from_state(state, Rules::empty_for_tests());
         let err = s.apply(Move::EndAdditionalPhase, vec![]).unwrap_err();
         assert!(matches!(err, ApplyError::GameOver), "{err:?}");
+    }
+
+    /// Phase-2.9 close-out follow-up (a): every save stamps the terminal
+    /// digest of the state-after-last-event, so tester/live-gate saves are
+    /// strict-verifiable end to end (record_stats and replay_strict check
+    /// the digest only when present).
+    #[test]
+    fn save_stamps_the_terminal_digest_and_it_verifies_strict() {
+        let mut s = sim_2p(4);
+        for _ in 0..5 {
+            let mv = s.legal()[0].clone();
+            s.apply(mv, vec![]).unwrap();
+        }
+        let path =
+            std::env::temp_dir().join(format!("yokohama_digest_{}.json", std::process::id()));
+        s.save(&path).unwrap();
+        let text = std::fs::read_to_string(&path).unwrap();
+        let record: yokohama_core::GameRecord = serde_json::from_str(&text).unwrap();
+        assert_eq!(
+            record.terminal_digest.as_deref(),
+            Some(yokohama_core::state_digest(s.state()).as_str()),
+            "save must stamp the digest of the state after the last event"
+        );
+        yokohama_core::replay_strict(&record, s.rules())
+            .expect("a freshly-saved record must strict-replay clean incl. digest");
+        std::fs::remove_file(&path).ok();
     }
 
     #[test]

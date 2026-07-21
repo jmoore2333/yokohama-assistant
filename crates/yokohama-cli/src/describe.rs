@@ -383,6 +383,10 @@ pub fn describe_move(mv: &Move, state: &GameState, rules: &Rules) -> String {
         Move::Take5PowerToken => "Take the 5-Power token".to_string(),
         Move::Skip5PowerBonus => "Skip the 5-Power token".to_string(),
         Move::BuildShophouse { slot } => {
+            // The space number is ALWAYS printed (Phase-2.9 per-slot
+            // enumeration: one option per empty slot, and two blank slots
+            // share the reward text "-", so the reward alone can't
+            // distinguish them at the table).
             let reward = acting_area(state)
                 .and_then(|a| state.board_layout.building_sites.get(&a))
                 // and_then, not map: `slot_reward_text` yields None for an
@@ -390,9 +394,12 @@ pub fn describe_move(mv: &Move, state: &GameState, rules: &Rules) -> String {
                 // through to the bare "(space N)" wording below instead of
                 // panicking. See C1, external review 2026-07-20.
                 .and_then(|site| slot_reward_text(site, *slot as usize));
+            // usize arithmetic: `slot + 1` on the raw u8 debug-overflows at
+            // slot = 255 (tampered record) — the None arm must stay total.
+            let space = (*slot as usize) + 1;
             match reward {
-                Some(r) => format!("Build a Shophouse ({r})"),
-                None => format!("Build a Shophouse (space {})", slot + 1),
+                Some(r) => format!("Build a Shophouse (space {space}: {r})"),
+                None => format!("Build a Shophouse (space {space})"),
             }
         }
         Move::BuildTradingHouse => {
@@ -449,16 +456,47 @@ pub fn describe_move(mv: &Move, state: &GameState, rules: &Rules) -> String {
 /// take's printed price) went stale after the state it described moved on.
 /// `Session` (`apply`/`apply_standalone`/`load`) now calls this once per
 /// event, at the moment the event is folded, and caches the result.
+/// Plain-words label for a 5-Power token face (`2 copper`, `3 yen`, ...) --
+/// what the reveal echo shows the operator to eyeball against the physical
+/// token, and what the `log` view records, in place of the raw `{:?}` debug.
+pub fn five_power_effect_label(effect: FivePowerEffect) -> String {
+    match effect {
+        FivePowerEffect::ImportedGoods(n) => format!("{n} imported goods"),
+        FivePowerEffect::Copper(n) => format!("{n} copper"),
+        FivePowerEffect::Silk(n) => format!("{n} silk"),
+        FivePowerEffect::Tea(n) => format!("{n} tea"),
+        FivePowerEffect::Seafood(n) => format!("{n} seafood"),
+        FivePowerEffect::Money(n) => format!("{n} yen"),
+    }
+}
+
+/// Comma-joined `O<id>` codes for a reveal group (`(none)` when empty, a
+/// defensive case that shouldn't occur in real play).
+fn join_order_ids(cards: &[OrderCardId]) -> String {
+    let ids: Vec<String> = cards.iter().map(|c| format!("O{:02}", c.0)).collect();
+    if ids.is_empty() { "(none)".to_string() } else { ids.join(", ") }
+}
+
 pub fn describe_recorded_event(ev: &RecordedEvent, state: &GameState, rules: &Rules) -> String {
     match ev {
         RecordedEvent::Move(mv) => describe_move(mv, state, rules),
-        RecordedEvent::RevealOrders(cards) => format!("reveal orders: {} card(s)", cards.len()),
-        RecordedEvent::RevealTechs(cards) => format!("reveal techs: {} card(s)", cards.len()),
+        // Carry the card ids, not just a count, so the `log` view is an audit
+        // trail: an operator can read back exactly which physical cards were
+        // recorded and catch a mis-entry the desync guard structurally cannot
+        // (review §3 -- the guard proves the engine placed what was typed, not
+        // that what was typed matches the table).
+        RecordedEvent::RevealOrders(cards) => {
+            format!("reveal orders: {}", join_order_ids(cards))
+        }
+        RecordedEvent::RevealTechs(cards) => {
+            let ids: Vec<String> = cards.iter().map(|c| format!("T{:02}", c.0)).collect();
+            format!("reveal techs: {}", if ids.is_empty() { "(none)".to_string() } else { ids.join(", ") })
+        }
         RecordedEvent::RevealStartingOrder { player, card } => {
             format!("reveal starting order: P{} = O{:02}", player.0, card.0)
         }
         RecordedEvent::RevealFivePowerToken { area, effect } => {
-            format!("reveal 5-power at A{:02}: {:?}", area.0, effect)
+            format!("reveal 5-power token at A{:02}: {}", area.0, five_power_effect_label(*effect))
         }
     }
 }
@@ -517,6 +555,44 @@ mod tests {
         let some_area = *state.board_layout.areas.keys().next().unwrap();
         let label = area_label(&state, some_area);
         assert!(label.contains(&format!("(A{:02})", some_area.0)), "{label}");
+    }
+
+    #[test]
+    fn five_power_effect_label_reads_as_plain_goods() {
+        // One label per token face; the amounts match parse_token_letter's map.
+        assert_eq!(five_power_effect_label(FivePowerEffect::ImportedGoods(1)), "1 imported goods");
+        assert_eq!(five_power_effect_label(FivePowerEffect::Copper(2)), "2 copper");
+        assert_eq!(five_power_effect_label(FivePowerEffect::Silk(2)), "2 silk");
+        assert_eq!(five_power_effect_label(FivePowerEffect::Tea(3)), "3 tea");
+        assert_eq!(five_power_effect_label(FivePowerEffect::Seafood(3)), "3 seafood");
+        assert_eq!(five_power_effect_label(FivePowerEffect::Money(3)), "3 yen");
+    }
+
+    #[test]
+    fn reveal_event_descriptions_carry_the_recorded_card_ids_for_audit() {
+        let state = state_2p();
+        let rules = Rules::standard();
+        // Orders and techs list every recorded id (review §3: the `log` view is
+        // the operator's audit trail against a mis-entry the guard can't catch).
+        let orders = describe_recorded_event(
+            &RecordedEvent::RevealOrders(vec![OrderCardId(5), OrderCardId(17)]),
+            &state,
+            &rules,
+        );
+        assert_eq!(orders, "reveal orders: O05, O17", "{orders}");
+        let techs = describe_recorded_event(
+            &RecordedEvent::RevealTechs(vec![TechCardId(3)]),
+            &state,
+            &rules,
+        );
+        assert_eq!(techs, "reveal techs: T03", "{techs}");
+        // The other two reveal kinds already carried their identity; keep it.
+        let token = describe_recorded_event(
+            &RecordedEvent::RevealFivePowerToken { area: AreaId::new(2), effect: FivePowerEffect::Copper(2) },
+            &state,
+            &rules,
+        );
+        assert!(token.contains("A02") && token.contains("2 copper"), "{token}");
     }
 
     #[test]
@@ -726,6 +802,54 @@ mod tests {
         assert!(!text.ends_with("(space 1)"), "bare space-number text must be gone: {text}");
         let expected = slot_reward_text(&site, 0).expect("slot 0 is always in range");
         assert!(text.contains(&expected), "{text}");
+    }
+
+    /// Phase-2.9 per-slot enumeration fix: the Building phase now offers one
+    /// `BuildShophouse` per empty slot, so each option must name WHICH space
+    /// it builds on alongside that space's printed reward -- two blank
+    /// spaces would otherwise render identical `(-)` options a tester at the
+    /// table cannot tell apart without opening the `sites` view.
+    #[test]
+    fn tampered_out_of_range_shophouse_slot_describes_without_panicking() {
+        // slot = 255 can only come from a tampered record; the description
+        // must stay total (usize arithmetic, no u8 overflow) — Stage-1
+        // review finding 5.
+        let state = state_2p();
+        let rules = Rules::standard();
+        let text = describe_move(&Move::BuildShophouse { slot: 255 }, &state, &rules);
+        assert!(text.contains("space 256"), "total fallback wording: {text}");
+    }
+
+    #[test]
+    fn build_shophouse_options_identify_the_slot_and_its_reward() {
+        let mut state = state_2p();
+        let rules = Rules::standard();
+        let (area, site) = state
+            .board_layout
+            .building_sites
+            .iter()
+            .next()
+            .map(|(&a, s)| (a, s.clone()))
+            .expect("a building site exists");
+        let cp = state.current_player;
+        state.players[cp.0 as usize].president_location = PresidentLocation::OnBoard(area);
+
+        let mut texts = Vec::new();
+        for slot in 0u8..4 {
+            let text = describe_move(&Move::BuildShophouse { slot }, &state, &rules);
+            assert!(
+                text.contains(&format!("space {}", slot + 1)),
+                "option must name its space (1-based): {text}"
+            );
+            let reward = slot_reward_text(&site, slot as usize).expect("slot in range");
+            assert!(text.contains(&reward), "option must keep the printed reward: {text}");
+            texts.push(text);
+        }
+        for (i, a) in texts.iter().enumerate() {
+            for b in texts.iter().skip(i + 1) {
+                assert_ne!(a, b, "per-slot options must be pairwise distinguishable");
+            }
+        }
     }
 
     /// Task 12 riding item: BuildTradingHouse should likewise show the

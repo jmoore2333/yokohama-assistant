@@ -652,12 +652,16 @@ Highest VP wins. Tiebreaker: Closest to Start Player (clockwise).
 
 Each area has one 5-Power token placed during setup. Effects vary (revealed when taken).
 
-Common effects include:
-- Gain Imported Good(s)
-- Gain specific Trade Goods
-- Gain Money
-- Gain Victory Points
-- Movement abilities
+The complete physical pool (box-verified by Jeremy 2026-07-18, decision log "BOX CHECK (a)";
+CORRECTED here 2026-07-20 — this section previously listed "Victory Points" and "Movement
+abilities" faces, which DO NOT EXIST):
+- 10× gain 1 Imported Good
+- 2× gain 2 Copper · 2× gain 2 Silk
+- 2× gain 3 Seafood · 2× gain 3 Tea
+- 2× gain 3 Yen
+
+(The engine's `FivePowerEffect` enum matches this pool exactly; the movement ICON on order
+cards/site spaces is a separate, real mechanic — see the icon glossary.)
 
 ---
 

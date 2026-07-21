@@ -1,0 +1,15 @@
+[package]
+name = "yokohama-difftest"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "Dev-only differential-testing harness for the Yokohama engine (Phase 2.9): seeded engine self-play compared per-state against the independent yokohama-oracle. Openly implementation-aware - the independence rule protects the oracle crate, not this one."
+
+[dependencies]
+yokohama-core = { path = "../yokohama-core" }
+yokohama-oracle = { path = "../yokohama-oracle" }
+rand = { workspace = true }
+rand_chacha = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }

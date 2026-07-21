@@ -21,7 +21,7 @@
 | Per player | 1 President, 20 Assistants, 1 VP counter, 8 Shophouses, 4 Trading Houses, 1 Warehouse tile | 4 colours |
 | Other | 4 x 100-point counters, VP track, 4 player summaries, Start Player card | |
 
-Order-country distribution: **not stated in the rulebook** (only the mercenary distribution is). The sprite-sheet transcription gives USA 8, Germany 7, Netherlands 5, Great Britain 8, France 8 (see `retranscription-orders.md`) — physical-box confirmation welcome at the human gate.
+Order-country distribution: **not stated in the rulebook** (only the mercenary distribution is). The sprite-sheet transcription gives USA 8, Germany 7, Netherlands 5, Great Britain 8, France 8 (see `retranscription-orders.md`) — **CONFIRMED against the physical box by Jeremy, 2026-07-21: NL 5, FR 8, US 8, GB 8, DE 7 — exact match.** Tech-card country distribution ALSO box-confirmed same session: GB 9, US 7, NL 5, FR 5, DE 4 (copy-weighted) — exact match to the YAML. Both decks' country data is now verified sprite × YAML × physical box.
 
 ## 2. Setup facts (rulebook p.3-4)
 

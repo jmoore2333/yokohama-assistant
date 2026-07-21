@@ -34,7 +34,10 @@ fn take_church_or_customs_assistant(p: &mut PlayerState, area: AreaId) {
 
 /// True if the player has an assistant available for a Church/Customs
 /// placement: in hand, or already on the acting area (I3 final-review fix).
-fn has_church_or_customs_assistant(p: &PlayerState, area: AreaId) -> bool {
+/// `pub(crate)` since FIX-B (Codex PR-3 review): `check_invariants`'s
+/// queue-head COHERENCE clause reuses this exact predicate so the invariant
+/// can never drift from the Stage-4 placement-tail guard it mirrors.
+pub(crate) fn has_church_or_customs_assistant(p: &PlayerState, area: AreaId) -> bool {
     p.assistants.in_hand >= 1 || p.assistants.in_area(area) >= 1
 }
 
@@ -256,6 +259,16 @@ pub fn execute_church_action(
 pub fn place_church_assistant(state: &mut GameState, player: PlayerId, space: u8, rules: &Rules) -> Result<(), &'static str> {
     let area = resolve_acting_area(state, player)?;
 
+    // Raw-arm self-defense (Phase 2.9 Stage 4, census gap 3): this tail can
+    // be reached by a tampered ChooseChurchSpace after the assistant that
+    // `execute_church_action` validated has been drained from both sources
+    // -- without this check `take_church_or_customs_assistant` silently
+    // no-ops and the `on_church` increment below conjures a pawn from
+    // nothing. Checked BEFORE any mutation (validate-all-then-mutate).
+    if !has_church_or_customs_assistant(state.player(player), area) {
+        return Err("No assistant available for Church placement (hand or acting area)");
+    }
+
     // Computed via immutable borrow before any mutation below.
     let winery_bonus = church_vp_bonus(state, player, &rules.techs);
     let base_vp = ChurchTrack::vp_reward(space) as u32;
@@ -428,6 +441,15 @@ pub fn execute_customs_action(
 /// as a typed `MoveError::RuleViolation` instead of panicking.
 pub fn place_customs_assistant(state: &mut GameState, player: PlayerId, space: u8, rules: &Rules) -> Result<(), &'static str> {
     let area = resolve_acting_area(state, player)?;
+
+    // Raw-arm self-defense (Phase 2.9 Stage 4, census gap 3): mirrors
+    // `place_church_assistant`'s guard -- a tampered ChooseCustomsSpace can
+    // arrive with both assistant sources empty, and the `on_customs`
+    // increment below would otherwise conjure a pawn from nothing. Checked
+    // BEFORE any mutation (validate-all-then-mutate).
+    if !has_church_or_customs_assistant(state.player(player), area) {
+        return Err("No assistant available for Customs placement (hand or acting area)");
+    }
 
     // Computed via immutable borrows before any mutation below.
     let brickyard_bonus = customs_vp_bonus(state, player, &rules.techs);
@@ -1786,6 +1808,76 @@ mod tests {
         assert_eq!(p.assistants.in_hand, starting_hand - 1 + 1, "placement spent 1, the Assistant take refunded 1");
         assert_eq!(p.assistants.in_warehouse, starting_warehouse - 1);
         assert_eq!(p.money, starting_money, "assistant take is free; decline spends nothing");
+    }
+
+    // --- Phase 2.9 Stage 4: raw-arm self-defense (census gap 3) ---
+
+    #[test]
+    fn tampered_church_space_resolution_with_no_assistant_errors_not_conjures() {
+        // Census gap 3 probe: queue the ChurchSpace choice legally (the
+        // executor validated an assistant was available THEN), tamper both
+        // assistant sources to zero, and resolve. The eligibility check on
+        // the queued choice depends only on the track/faith, so
+        // ChooseChurchSpace is still in the legal list -- without the
+        // tail's own assistant guard, on_church incremented with hand and
+        // acting area both empty, conjuring a pawn from nothing.
+        let (state, rules) = church_fixture(6);
+        let mid = apply_move(&state, &church_power_only_move(), &rules).unwrap();
+        assert_eq!(mid.pending_choices, vec![PendingChoice::ChurchSpace { total_faith: 6 }]);
+
+        let mut tampered = mid.clone();
+        tampered.players[0].assistants.in_hand = 0;
+        tampered.players[0].assistants.on_board.clear();
+
+        let result = apply_move(&tampered, &Move::ChooseChurchSpace { space: 6 }, &rules);
+        assert!(matches!(result, Err(MoveError::RuleViolation(_))), "{result:?}");
+    }
+
+    #[test]
+    fn place_church_assistant_with_no_assistant_anywhere_errors_zero_mutation() {
+        // Direct-tail form of the probe above, asserting the
+        // validate-all-then-mutate contract on the tail itself.
+        let rules = Rules::empty_for_tests();
+        let mut state = create_test_state();
+        place_president_at_church(&mut state);
+        state.players[0].assistants.in_hand = 0;
+        state.players[0].assistants.on_board.clear();
+        let before = state.clone();
+
+        let result = place_church_assistant(&mut state, PlayerId::new(0), 5, &rules);
+        assert!(result.is_err(), "{result:?}");
+        assert_eq!(state, before, "zero mutation on Err");
+    }
+
+    #[test]
+    fn tampered_customs_space_resolution_with_no_assistant_errors_not_conjures() {
+        // Customs counterpart of the Church probe: same tampering, same
+        // reasoning (eligible_customs_spaces_for_cost checks only the
+        // track/cost, never assistant availability).
+        let (state, rules) = customs_fixture(2);
+        let mid = apply_move(&state, &customs_move(2), &rules).unwrap();
+        assert_eq!(mid.pending_choices, vec![PendingChoice::CustomsSpace { cost: 2 }]);
+
+        let mut tampered = mid.clone();
+        tampered.players[0].assistants.in_hand = 0;
+        tampered.players[0].assistants.on_board.clear();
+
+        let result = apply_move(&tampered, &Move::ChooseCustomsSpace { space: 3 }, &rules);
+        assert!(matches!(result, Err(MoveError::RuleViolation(_))), "{result:?}");
+    }
+
+    #[test]
+    fn place_customs_assistant_with_no_assistant_anywhere_errors_zero_mutation() {
+        let rules = Rules::empty_for_tests();
+        let mut state = create_test_state();
+        place_president_at_customs(&mut state);
+        state.players[0].assistants.in_hand = 0;
+        state.players[0].assistants.on_board.clear();
+        let before = state.clone();
+
+        let result = place_customs_assistant(&mut state, PlayerId::new(0), 5, &rules);
+        assert!(result.is_err(), "{result:?}");
+        assert_eq!(state, before, "zero mutation on Err");
     }
 
     #[test]

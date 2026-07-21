@@ -2,3 +2,12 @@ target/
 *.swp
 *.swo
 .DS_Store
+
+# Phase-2.9 differential-harness divergence artifacts (generated repros;
+# never committed - the seed/players/policy/step in each filename is the
+# provenance, the state snapshot inside is the repro)
+crates/yokohama-difftest/artifacts/
+
+# Local, untracked docs — e.g. the engineer primer emailed outside the repo
+# (kept on disk, deliberately not part of the tracked tree)
+docs/temp/

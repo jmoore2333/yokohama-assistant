@@ -278,32 +278,32 @@ fn adjacency_suffix(state: &GameState, area: AreaId) -> String {
     out
 }
 
-/// DEPENDS ON PREFIX-PACKING (S2, render.rs deep audit 2026-07-20).
-/// Collecting owners in slot order drops WHICH slot each holds, which is
-/// unambiguous only because `shophouses_built` is prefix-packed: the engine
-/// offers exactly one `BuildShophouse` per site, at
-/// `BuildingSite::next_shophouse_slot` = the first empty index, and a built
-/// shophouse is never removed. That matters because `sites_view` prints the
-/// four DIFFERENT printed rewards positionally right beside these marks
-/// (`[1vp 4vp - 2yen]  sh RB`), so if a real per-slot choice were ever
-/// offered, this line would silently start attributing owners to the wrong
-/// rewards. `shophouse_slots_fill_prefix_packed_so_build_marks_stay_
-/// unambiguous` pins the premise so that change fails loudly here instead.
+/// POSITIONAL per-slot marks (Phase-2.9 per-slot enumeration fix). The
+/// engine offers one `BuildShophouse` per EMPTY slot, so `shophouses_built`
+/// carries gaps and a packed owners-only string would attribute owners to
+/// the wrong printed rewards -- `sites_view` prints the four DIFFERENT
+/// rewards positionally right beside these marks (`[1vp 4vp - 2yen]
+/// sh -B-R`). One mark per slot in printed order: the owner's color letter,
+/// or `-` for an empty slot. `build_marks_attribute_each_built_slot_to_its_
+/// owner_positionally` pins the attribution (this replaced the old
+/// prefix-packing pin, whose premise the engine fix deliberately broke).
 ///
-/// "sh RB | th Y" build/ownership marks for one site: shophouse owners'
-/// color letters in slot order (built slots only; `-` when none built),
-/// then the trading-house owner's letter or `-`. Shared by `area_cell_
-/// lines`'s board-grid cell and `sites_view`'s per-site line (Task 12) so
-/// the two views can't drift on the convention documented at docs/cli-
-/// guide.md §8.5.
+/// "sh -B-R | th Y" build/ownership marks for one site: one mark per
+/// shophouse slot in printed order (owner color letter or `-`), then the
+/// trading-house owner's letter or `-`. Shared by `area_cell_lines`'s
+/// board-grid cell and `sites_view`'s per-site line (Task 12) so the two
+/// views can't drift on the convention documented at docs/cli-guide.md §8.5.
 fn build_marks(state: &GameState, site: &BuildingSite) -> String {
-    let sh: String =
-        site.shophouses_built.iter().filter_map(|o| o.map(|pid| color_letter(state.player(pid).color))).collect();
+    let sh: String = site
+        .shophouses_built
+        .iter()
+        .map(|o| o.map_or('-', |pid| color_letter(state.player(pid).color)))
+        .collect();
     let th = site
         .trading_house_owner
         .map(|pid| color_letter(state.player(pid).color).to_string())
         .unwrap_or_else(|| "-".to_string());
-    format!("sh {} | th {}", if sh.is_empty() { "-".to_string() } else { sh }, th)
+    format!("sh {sh} | th {th}")
 }
 
 /// A Church faith space's printed reward: VP plus its movement rider, in
@@ -1206,7 +1206,7 @@ mod tests {
         let text = sites_view(&state, &rules);
         let label = describe::area_label(&state, area);
         let line = text.lines().find(|l| l.starts_with(&label)).unwrap_or_else(|| panic!("missing {label} in {text}"));
-        assert!(line.contains("sh R"), "{line}"); // Red is players[0]
+        assert!(line.contains("sh R---"), "{line}"); // Red is players[0]; positional marks
     }
 
     /// Board connectivity (pre-gate view batch item 7): each `sites` line
@@ -1589,46 +1589,38 @@ mod tests {
         );
     }
 
-    /// S2 (render.rs deep audit, 2026-07-20): `build_marks` renders shophouse
-    /// owners in slot order WITHOUT saying which slot each holds, and
-    /// `sites_view` prints the four different printed rewards positionally
-    /// right beside those marks. That is only unambiguous while
-    /// `shophouses_built` is prefix-packed.
-    ///
-    /// It is prefix-packed because `next_shophouse_slot` returns the FIRST
-    /// empty index and `legal_moves` offers exactly that one slot per site,
-    /// so builds fill 0,1,2,3 in order. Pinned here rather than left implicit:
-    /// the day a real per-slot choice is offered, this fails and points at
-    /// `build_marks`, instead of `sites_view` quietly attributing an owner to
-    /// a reward they didn't take.
+    /// Phase-2.9 per-slot enumeration fix: the engine now offers one
+    /// `BuildShophouse` per EMPTY slot, so `shophouses_built` is no longer
+    /// prefix-packed -- gaps are ordinary. `build_marks` must therefore be
+    /// POSITIONAL: one mark per slot in printed order (owner color letter or
+    /// `-`), so each built slot is attributed to the reward printed right
+    /// beside it in `sites_view` (`[1vp 4vp - 2yen]  sh -B-R`). This replaces
+    /// the old `shophouse_slots_fill_prefix_packed_so_build_marks_stay_
+    /// unambiguous` pin, whose premise the engine fix deliberately broke.
     #[test]
-    fn shophouse_slots_fill_prefix_packed_so_build_marks_stay_unambiguous() {
+    fn build_marks_attribute_each_built_slot_to_its_owner_positionally() {
+        let state = test_state_2p(); // players[0] = Red, players[1] = Blue
         let mut site = BuildingSite::new([1, 4, 0, 2], 8);
-        let players = [PlayerId::new(0), PlayerId::new(1), PlayerId::new(2), PlayerId::new(3)];
+        site.shophouses_built = [None, Some(PlayerId::new(1)), None, Some(PlayerId::new(0))];
 
-        for (expected_slot, &pid) in players.iter().enumerate() {
-            let slot = site
-                .next_shophouse_slot(pid)
-                .expect("an empty slot remains for a player who has not built here");
-            assert_eq!(
-                slot, expected_slot,
-                "the engine must hand out slots in ascending order, else slot-order marks lie"
-            );
-            site.shophouses_built[slot] = Some(pid);
+        // Slot 1 (printed reward "4vp") is Blue's, slot 3 ("2yen") is Red's;
+        // slots 0 and 2 are open. A packed "sh BR" would attribute Blue to
+        // "1vp" and Red to "4vp" -- rewards neither of them took.
+        assert_eq!(build_marks(&state, &site), "sh -B-R | th -");
+    }
 
-            // After each build the array must still be prefix-packed: no
-            // Some may follow a None.
-            let first_empty =
-                site.shophouses_built.iter().position(|p| p.is_none()).unwrap_or(SPACES_PER_SITE);
-            assert!(
-                site.shophouses_built[first_empty..].iter().all(|p| p.is_none()),
-                "shophouses_built must stay prefix-packed: {:?}",
-                site.shophouses_built
-            );
-        }
+    /// Positional-marks companion: an untouched site shows one `-` per slot
+    /// (never a collapsed single dash, which would break the slot<->reward
+    /// column correspondence), and the trading-house mark still carries the
+    /// owner's color letter independently of the shophouse slots.
+    #[test]
+    fn build_marks_show_a_dash_per_empty_slot_and_the_th_owner() {
+        let state = test_state_2p();
+        let mut site = BuildingSite::new([1, 4, 0, 2], 8);
+        assert_eq!(build_marks(&state, &site), "sh ---- | th -");
 
-        // A player who already built here is offered nothing (one per area).
-        assert_eq!(site.next_shophouse_slot(players[0]), None);
+        site.trading_house_owner = Some(PlayerId::new(0));
+        assert_eq!(build_marks(&state, &site), "sh ---- | th R");
     }
 
     /// S1 (render.rs deep audit, 2026-07-20): the track-placement reservation

@@ -1,177 +1,85 @@
-# Yokohama AI Assistant
+# Yokohama Assistant
 
-## Current status (2026-07-18): the engine is COMPLETE — it plays full, rules-correct games
+A Rust engine, live-game CLI tracker, and verification stack for the board game **Yokohama**
+(Hisashi Hayashi, 2016), built toward a computer player that provably plays to win.
 
-`yokohama-core` (Rust) passed its acceptance gate on 2026-07-17/18: **15,000/15,000 seeded
-random self-play games** complete across 2p/3p/4p with nine state invariants checked after
-every move, all five end-game triggers observed, and `GameRecord` save/replay determinism
-proven (including a JSON round-trip). A whole-branch final review (plus a fix wave closing
-four rules-fidelity findings) returned **Ready to merge**. Suite: **370 tests, zero warnings**.
+**Priority order:** 1) engine-validated move-by-move tracking of live games via CLI →
+2) a computer player → 3) computer vision / AR assist (deferred; the original 2025 AR-first
+vision lives in `docs/plans/2025-12-07-yokohama-assistant-design.md`).
 
-- **Authoritative status + roadmap + every rules ruling:** [`guidingpath.md`](guidingpath.md)
-- **Next up — Phase 2 (CLI game driver):** [`docs/plans/2026-07-18-phase2-entry-backlog.md`](docs/plans/2026-07-18-phase2-entry-backlog.md)
-- **Physical-verification aids:** [`analysis-1/yokohama-kb/01-rules-reference-engine-mapped.md`](analysis-1/yokohama-kb/01-rules-reference-engine-mapped.md) (every card/board value the engine uses) + [`docs/plans/2026-07-16-card-verification/box-check-brief.md`](docs/plans/2026-07-16-card-verification/box-check-brief.md)
-- **Try it:** `cargo test -p yokohama-core` · release fuzz gate: `cargo test --release -p yokohama-core --test fuzz_full_games -- --ignored` · self-play sweep: `cargo run --release -p yokohama-core --example selfplay -- 5000 4 0`
-- Priority order (reset July 2026): **1)** engine-validated live-game tracking via CLI → **2)** a computer player that provably plays to win → **3)** computer vision, deferred.
+## Status (2026-07-20)
 
-> **Historical note:** everything below this line describes the original 2025 AR-first vision
-> and its status tables — kept for the record; superseded by `guidingpath.md`.
+The engine plays complete, rules-correct games at 2–4 players and has been verified
+**differentially**: an independently-authored rules oracle — written from the rulebook and
+knowledge base only, never from engine code — agrees with the engine on every legal-move set
+(240/240 games after fixes), every president-route label (7,272 decision points plus
+adversarial worst-case batteries), and every final score including the official tie-break
+(540 games). The campaign (Phase 2.9) found and fixed four engine bugs and one oracle bug that
+self-play fuzzing structurally could not see, hardened every raw apply arm against ill-formed
+payloads, mutation-proved the invariant suite, and closed all four rules ambiguities it
+surfaced with owner rulings. Full report:
+[`docs/plans/2026-07-20-phase-2.9-final-report.md`](docs/plans/2026-07-20-phase-2.9-final-report.md).
 
-An AR-powered AI assistant for the board game **Yokohama** that observes the physical tabletop, extracts game state, and provides real-time strategic recommendations.
+**Next:** live-track a physical game start to finish (the Phase-2 gate), then Phase 3 — the
+computer player, with the differential harness as its standing regression net.
 
-## Project Vision
+## Workspace crates
 
-- **Overhead camera** observes the physical game board
-- **Cloud VLM** (Gemini/Claude) extracts game state from images
-- **MCTS AI** running on local hardware provides move recommendations
-- **Web UI** displays suggestions and game state
+| Crate | What it is |
+|---|---|
+| `yokohama-core` | The engine: serde-serializable `GameState` (history-free, cheap to clone for search), pure `get_legal_moves` / checked `apply_move`, seeded setup, `GameRecord` save/replay stamped with `rules_hash`, `semantics_rev`, and a terminal-state digest verified by `replay_strict` |
+| `yokohama-cli` | The game driver: setup wizard → REPL; simulated games today, live-table tracking machinery (reveal choreography, reconciliation, desync tripwire), save/load/undo, TTY-colored board |
+| `yokohama-oracle` | The independent referee: legal-move enumeration, final scoring + tie-break, and a prune-free route reference, authored from the rules sources under an audited independence rule (types-only dependency on the engine) |
+| `yokohama-difftest` | The harness comparing engine vs oracle: per-decision-point sweeps under two policies, terminal scoring comparison, three-way route-pruning check, self-contained divergence artifacts + `repro` tool |
+| `gen-data` | YAML → Rust generator for the verified card/site data (never hand-edit `game/data.rs`) |
 
-## Architecture
-
-```
-┌─────────────┐     ┌─────────────┐     ┌─────────────┐
-│   Camera    │────▶│  Python API │────▶│   Web UI    │
-│  (overhead) │     │  (FastAPI)  │     │  (React)    │
-└─────────────┘     └──────┬──────┘     └─────────────┘
-                          │
-                    ┌─────▼─────┐
-                    │ Cloud VLM │
-                    │(Gemini/   │
-                    │ Claude)   │
-                    └─────┬─────┘
-                          │
-                    ┌─────▼─────┐
-                    │Rust Engine│
-                    │(yokohama- │
-                    │  core)    │
-                    └───────────┘
-```
-
-## Current Status
-
-| Module | Description | Status |
-|--------|-------------|--------|
-| **A1** | Game Engine | 🔄 Logic complete, data collection in progress |
-| **A2** | MCTS Search | ⏳ Blocked by A1 |
-| **A3** | Heuristic Evaluator | ⏳ Blocked by A1 |
-| **B1** | VLM Prompts | ⏳ Not started |
-| **C1** | Web UI | ⏳ Not started |
-
-### A1 Progress Detail
-
-| Component | Status | Notes |
-|-----------|--------|-------|
-| Core Types | ✅ Done | `types/*.rs` |
-| Power Calculation | ✅ Done | `game/power.rs` |
-| Movement & Pathfinding | ✅ Done | `game/movement.rs` |
-| Legal Move Generation | ✅ Done | `game/legal_moves.rs` |
-| Apply Move | ✅ Done | `game/apply_move.rs` |
-| Scoring | ✅ Done | `game/scoring.rs` |
-| Tech Effects | ✅ Done | `game/tech_effects.rs` |
-| End Game Triggers | ✅ Done | `game/end_game.rs` |
-| Board Generation | ✅ Done | `game/board_gen.rs` |
-| Area Tiles | ✅ Verified | 10/14/18 for 2P/3P/4P |
-| **Order Cards (36)** | 📷 Extracted | Need transcription |
-| **Tech Cards (20)** | 📷 Extracted | Need transcription |
-| **Building Sites (24)** | 📷 Extracted | Need transcription |
-| **5-Power Tokens** | ⚠️ Incomplete | Only 8/17 found in TTS |
-
-**Tests:** 153 passing (147 unit + 6 integration)
-
-## What's Blocking A2/A3
-
-The game engine logic is complete. TTS extraction is done, but we need to:
-
-| Task | Status | Blocker |
-|------|--------|---------|
-| Verify 5-power tokens | ⚠️ Blocking | Only 8/17 found in TTS - need physical game |
-| Transcribe Order Cards | ⏳ Pending | 36 cards from sprite sheet |
-| Transcribe Tech Cards | ⏳ Pending | 20 cards from sprite sheet |
-| Transcribe Building Sites | ⏳ Pending | 24 cards from sprite sheet |
-
-**TTS Assets Location:** `tts-assets/organized/`
-
-See [`docs/plans/2025-12-07-A1-data-collection.md`](docs/plans/2025-12-07-A1-data-collection.md) for the full extraction plan.
-
-## Repository Structure
-
-```
-yokohama/
-├── README.md                          # This file
-├── agent-handover.md                  # Session context for AI assistants
-├── Cargo.toml                         # Workspace root
-├── crates/
-│   └── yokohama-core/                 # Rust game engine
-│       ├── src/
-│       │   ├── lib.rs
-│       │   ├── types/                 # Core type definitions
-│       │   │   ├── mod.rs
-│       │   │   ├── ids.rs             # PlayerId, AreaId, etc.
-│       │   │   ├── board.rs           # BoardLayout, AreaType
-│       │   │   ├── cards.rs           # OrderCard, TechCard, TechEffect
-│       │   │   ├── player.rs          # PlayerState, resources
-│       │   │   └── state.rs           # GameState, GameConfig
-│       │   └── game/                  # Game logic
-│       │       ├── mod.rs
-│       │       ├── power.rs           # Power calculation
-│       │       ├── movement.rs        # Pathfinding, tech integration
-│       │       ├── legal_moves.rs     # Move generation
-│       │       ├── apply_move.rs      # State transitions
-│       │       ├── board_gen.rs       # Board layout generation
-│       │       ├── cards.rs           # Order/Tech registries
-│       │       ├── achievements.rs    # Achievement validation
-│       │       ├── tech_effects.rs    # Technology effects
-│       │       ├── scoring.rs         # Final scoring
-│       │       ├── end_game.rs        # End game triggers
-│       │       ├── setup.rs           # Game setup
-│       │       └── actions/           # Area-specific actions
-│       └── tests/
-│           └── integration.rs
-├── analysis-1/
-│   ├── 00-yokohama-rulebook.pdf       # Official rules
-│   └── yokohama-kb/                   # Knowledge base
-│       ├── 01-rules-reference.md
-│       ├── 02-quick-reference.md
-│       └── ...
-└── docs/plans/
-    ├── 2025-12-07-A1-implementation.md
-    ├── 2025-12-07-A1-verification.md
-    └── 2025-12-07-A1-data-collection.md  # Current focus
-```
-
-## Quick Start
+## Quickstart
 
 ```bash
-# Run tests
-cargo test -p yokohama-core
-
-# Run specific test module
-cargo test -p yokohama-core board_gen
-
-# Check test count
-cargo test -p yokohama-core -- --list 2>&1 | grep -c "test"
+# prerequisites: Rust via rustup, then from the repo root:
+cargo test -p yokohama-core            # engine suite
+cargo run  -p yokohama-cli             # setup wizard → play a game
+cargo run  -p yokohama-cli -- save.json  # resume a save (autosaves every move)
 ```
 
-## Key Documents
+Fastest playable game: answer the wizard `sim`, `2`, `red`, `blue`, `0`, Enter twice, `0`, `0`,
+`confirm`. At the prompt: type an option number, or use the direct grammars — placement
+`a 3 7 9` / `b 5`, assistant moves `m 4 7`, retreats `r 3:2 5:1`. Views: `board`, `sites`,
+`goals`, `tracks`, `labs`, `log`, `help`; plus `undo`, `save`, `q`. Full tester guide:
+[`docs/cli-guide.md`](docs/cli-guide.md).
 
-| Document | Purpose |
-|----------|---------|
-| [`agent-handover.md`](agent-handover.md) | Context for AI coding assistants |
-| [`docs/plans/2025-12-07-A1-data-collection.md`](docs/plans/2025-12-07-A1-data-collection.md) | Current work: extracting game data |
-| [`analysis-1/yokohama-kb/01-rules-reference.md`](analysis-1/yokohama-kb/01-rules-reference.md) | Complete game rules reference |
-| [`analysis-1/yokohama-kb/02-quick-reference.md`](analysis-1/yokohama-kb/02-quick-reference.md) | Power/reward tables for quick lookup |
+**Gates.** Per-edit (debug): the four crate suites + `cargo clippy --workspace --all-targets
+-- -D warnings`, all zero-warning. Pre-merge (release, ~80s total):
 
-## Next Steps
+| Gate | Command | Proves |
+|---|---|---|
+| Fuzz | `cargo test --release -p yokohama-core --test fuzz_full_games -- --ignored` | 1,500 self-play games, per-move invariants |
+| Choice census | `cargo test --release -p yokohama-core --test choice_encoding -- --ignored` | every choice variant fires organically |
+| Differential | `cargo test --release -p yokohama-difftest --test differential -- --ignored` | engine ≡ oracle on every legal-move set |
+| Routes3 | `cargo test --release -p yokohama-difftest --test routes3_differential -- --ignored` | route pruning ≡ prune-free reference |
+| Scoring | `cargo test --release -p yokohama-difftest --test scoring_differential -- --ignored` | final scores + tie-break ≡ oracle |
 
-1. **Complete TTS extraction** - Get all card/token images and data
-2. **Transcribe to YAML** - Document all game components
-3. **Implement data registries** - `OrderRegistry::standard()`, etc.
-4. **Verify tile counts** - Confirm 10/14/18 vs 12/15/18 discrepancy
-5. **Begin A2 (MCTS)** - Once A1 data is complete
+## Data provenance (cards, boards, tokens)
 
-## Hardware Target
+All static game data is **verified, three ways** (program of 2026-07-16/17, artifacts in
+`docs/plans/2026-07-16-card-verification/`): blind per-cell re-transcription of the TTS sprite
+sheets, diffed against the YAML sources, with counts anchored to the rulebook's printed
+component list ("Contents of the Game": 36 order cards — corner indices 1–36 verified present
+exactly once; 30 technology cards — per-title copy counts summing to the rulebook's 30; 24
+building sites re-modeled to their positional space rewards). Jeremy's physical box check
+(2026-07-18) closed every flagged exception — including the full 5-Power token pool, board
+layouts, and canal geometry — and every owner ruling since is recorded in
+[`guidingpath.md`](guidingpath.md)'s decision log. The engine's registries are generated from
+the YAML by `gen-data`; a `rules_hash` stamps every saved game with the data that produced it.
 
-- **CPU:** Xeon
-- **GPU:** RTX 5000
-- **RAM:** 64GB
-- **Performance goal:** 10,000+ `apply_move` calls/second for MCTS
+## Where truth lives
+
+- [`guidingpath.md`](guidingpath.md) — **authoritative** status, roadmap, and every rules
+  ruling (decision log)
+- [`CLAUDE.md`](CLAUDE.md) — working conventions (TDD, gates, the oracle independence rule,
+  the `SEMANTICS_REV` bump contract)
+- [`docs/cli-guide.md`](docs/cli-guide.md) / [`.html`](docs/cli-guide.html) — tester-facing
+  CLI guide (kept word-identical, enforced by the `guide_sync` test)
+- [`docs/plans/`](docs/plans/) — dated designs, plans, and reports;
+  [`2026-07-20-phase-2.9-ruling-list.md`](docs/plans/2026-07-20-phase-2.9-ruling-list.md) is
+  the rules-ambiguity register (fully ruled)
