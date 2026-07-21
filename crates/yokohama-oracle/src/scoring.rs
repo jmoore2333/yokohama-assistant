@@ -20,9 +20,16 @@
 //!    by the RIGHTMOST assistant pawn (positional — RB p.9's example compares
 //!    "the position of the pawns"); players with no pawn on the board never
 //!    score ("If there is only 1 player on the board, that player earns 6
-//!    points and no other player receives points").
+//!    points and no other player receives points"). In a 2-player game the
+//!    setup dummy competes too [RB p.9 NOTE, via DL 2026-07-21 D1: "The dummy
+//!    player's assistants are taken into account during final scoring to
+//!    increase competition for majority bonuses"] — one pawn at faith-7,
+//!    ranked with the real players but never itself awarded (see
+//!    `track_awards`). Derived by rule from the 2-player count, so a "sole"
+//!    real player is never truly alone at 2P: the dummy is always on the board.
 //! 3. **Customs bonus** [RB p.9 §2; KB §Final Scoring 2] — same procedure,
-//!    8 VP / 4 VP, on the Customs Management Board.
+//!    8 VP / 4 VP, on the Customs Management Board; the 2-player dummy competes
+//!    here too, one pawn at space-4.
 //! 4. **Technology bonus** [RB p.9–10 §3; KB §Final Scoring 3] — highest total
 //!    printed Industry value on owned Technology cards: 10 VP, second: 5 VP.
 //!    Only players who own at least one Technology card participate. Ties
@@ -64,7 +71,7 @@
 //!   adjudicate positional-vs-arrival — the rulebook's examples do.)
 
 use serde::{Deserialize, Serialize};
-use yokohama_core::{Country, GameState, PlayerId, PlayerState, Rules};
+use yokohama_core::{ChurchTrack, Country, CustomsTrack, GameState, PlayerId, PlayerState, Rules};
 
 /// One row of the final ranking: a player and their final total VP.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -83,18 +90,36 @@ pub struct PlayerStanding {
 pub fn final_standings(state: &GameState, rules: &Rules) -> Vec<PlayerStanding> {
     let n = state.players.len();
 
+    // The 2-player setup dummy competes in BOTH majority bonuses [RB p.9 NOTE,
+    // via decision log 2026-07-21 D1: "The dummy player's assistants are taken
+    // into account during final scoring to increase competition for majority
+    // bonuses"]. It is one pawn at church faith-7 / customs space-4 — the
+    // spaces it pre-blocks. Derived BY RULE from the 2-player count (the same
+    // by-rule precedent the placement-eligibility code uses), NOT read from any
+    // engine dummy field: 3/4-player games have no dummy.
+    let (church_dummy_slot, customs_dummy_slot) = if state.config.player_count == 2 {
+        (
+            Some(ChurchTrack::faith_to_index(7).expect("faith 7 always maps")),
+            Some(CustomsTrack::space_to_index(4).expect("space 4 always maps")),
+        )
+    } else {
+        (None, None)
+    };
+
     // Comparative bonuses computed board-wide, then per-player additions.
     let church = track_awards(
         state.church_track.slots.iter().map(|s| s.map(|x| x.player)),
         n,
         6,
         3,
+        church_dummy_slot,
     );
     let customs = track_awards(
         state.customs_track.slots.iter().map(|s| s.map(|x| x.player)),
         n,
         8,
         4,
+        customs_dummy_slot,
     );
     let technology = technology_awards(state, rules);
 
@@ -135,11 +160,22 @@ fn clockwise_distance(state: &GameState, seat: usize) -> usize {
 /// takes `first_vp`, second most `second_vp`; count ties break by the
 /// RIGHTMOST pawn (highest occupied slot index — positional per RB p.9's
 /// example); players with no pawn never score. Returns per-seat awards.
+///
+/// `dummy_slot` carries the 2-player setup dummy [RB p.9 NOTE; DL 2026-07-21
+/// D1]: `Some(idx)` is the fixed slot of its single pawn (church faith-7 /
+/// customs space-4), `None` in 3/4-player games where no dummy exists. The
+/// dummy is RANKED alongside the real players so it can deny or take a place,
+/// but any place it takes is awarded to nobody. The caller derives it by rule
+/// from the player count, never from an engine dummy field; the dummy's fixed
+/// space is one no real player can occupy in a 2P game, so the real-player scan
+/// (which drops any owner id `>= n`, the `PlayerId::DUMMY` sentinel included)
+/// and the by-rule dummy never double-count.
 fn track_awards(
     slots: impl Iterator<Item = Option<PlayerId>>,
     n: usize,
     first_vp: u32,
     second_vp: u32,
+    dummy_slot: Option<usize>,
 ) -> Vec<u32> {
     let mut count = vec![0u32; n];
     let mut rightmost = vec![0usize; n]; // valid only where count > 0
@@ -152,16 +188,26 @@ fn track_awards(
             }
         }
     }
-    let mut on_board: Vec<usize> = (0..n).filter(|&i| count[i] > 0).collect();
-    // One pawn per space makes `rightmost` unique among on-board players, so
-    // (count desc, rightmost desc) is strict.
-    on_board.sort_by(|&a, &b| count[b].cmp(&count[a]).then(rightmost[b].cmp(&rightmost[a])));
-    let mut awards = vec![0u32; n];
-    if let Some(&first) = on_board.first() {
-        awards[first] = first_vp;
+    // Competitors for the two places: each real player holding a pawn, plus —
+    // in a 2P game — the dummy (one pawn at its fixed slot). `Some(seat)` is a
+    // real player; `None` is the dummy, ranked but never awarded.
+    let mut competitors: Vec<(u32, usize, Option<usize>)> =
+        (0..n).filter(|&i| count[i] > 0).map(|i| (count[i], rightmost[i], Some(i))).collect();
+    if let Some(slot) = dummy_slot {
+        competitors.push((1, slot, None));
     }
-    if let Some(&second) = on_board.get(1) {
-        awards[second] = second_vp;
+    // (count desc, rightmost desc). One pawn per space — the dummy's fixed
+    // space being one no real player can occupy — makes `rightmost` unique
+    // across all competitors, so the order is strict.
+    competitors.sort_by(|a, b| b.0.cmp(&a.0).then(b.1.cmp(&a.1)));
+    let mut awards = vec![0u32; n];
+    // A place held by the dummy (`None`) is awarded to nobody, but it still
+    // pushes the real players below it down a rank.
+    if let Some(&(_, _, Some(seat))) = competitors.first() {
+        awards[seat] = first_vp;
+    }
+    if let Some(&(_, _, Some(seat))) = competitors.get(1) {
+        awards[seat] = second_vp;
     }
     awards
 }
@@ -259,7 +305,7 @@ fn remainder_score(player: &PlayerState) -> u32 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::test_support::{three_player_state, two_player_state};
+    use crate::test_support::{four_player_state, three_player_state, two_player_state};
     use std::collections::HashMap;
     use yokohama_core::{ChurchSlot, CustomsSlot, PlayerId, Rules};
 
@@ -287,6 +333,21 @@ mod tests {
         standings.iter().map(|st| st.player.0).collect()
     }
 
+    /// Place one church pawn for `player` at Faith `faith` (rules-space terms,
+    /// so fixtures read in the units the rulebook uses).
+    fn church_pawn(s: &mut GameState, faith: u8, player: u8) {
+        let idx = yokohama_core::ChurchTrack::faith_to_index(faith).expect("faith 4-11 maps");
+        s.church_track.slots[idx] =
+            Some(ChurchSlot { player: PlayerId::new(player), arrival_order: 0 });
+    }
+
+    /// Place one customs pawn for `player` at printed space `space` (1-7).
+    fn customs_pawn(s: &mut GameState, space: u8, player: u8) {
+        let idx = yokohama_core::CustomsTrack::space_to_index(space).expect("spaces 1-7 map");
+        s.customs_track.slots[idx] =
+            Some(CustomsSlot { player: PlayerId::new(player), arrival_order: 0 });
+    }
+
     // --- 1. Banked VP only (no-op state) ---
 
     #[test]
@@ -308,7 +369,9 @@ mod tests {
 
     #[test]
     fn church_bonus_first_6_second_3() {
-        let mut s = two_player_state();
+        // 3-player (no dummy) isolates the generic first/second mechanic; the
+        // 2-player dummy-competition case is covered by the D1 tests below.
+        let mut s = three_player_state();
         zero_resources(&mut s);
         // P0: faith 4+5 (slots 0,1); P1: faith 6 (slot 2).
         s.church_track.slots[0] = Some(ChurchSlot { player: PlayerId::new(0), arrival_order: 0 });
@@ -342,7 +405,8 @@ mod tests {
     fn church_bonus_positional_not_arrival_order() {
         // Independence probe: a pawn placed LATER on a LEFT space must not
         // beat an earlier pawn on a RIGHT space — RB p.9 compares positions.
-        let mut s = two_player_state();
+        // 3-player (no dummy) keeps this a clean two-real-competitor race.
+        let mut s = three_player_state();
         zero_resources(&mut s);
         // P0 placed first at faith 9 (slot 5); P1 placed later at faith 4 (slot 0).
         s.church_track.slots[5] = Some(ChurchSlot { player: PlayerId::new(0), arrival_order: 0 });
@@ -355,8 +419,10 @@ mod tests {
     #[test]
     fn church_bonus_sole_player_no_second_place() {
         // "If there is only 1 player on the board, that player earns 6 points
-        // and no other player receives points" [RB p.9].
-        let mut s = two_player_state();
+        // and no other player receives points" [RB p.9]. Tested at 3 players so
+        // the player is GENUINELY sole — at 2P the setup dummy always competes
+        // (a lone real player then only takes second; see the D1 tests).
+        let mut s = three_player_state();
         zero_resources(&mut s);
         s.church_track.slots[3] = Some(ChurchSlot { player: PlayerId::new(0), arrival_order: 0 });
         let st = final_standings(&s, &Rules::empty_for_tests());
@@ -366,7 +432,8 @@ mod tests {
 
     #[test]
     fn church_bonus_empty_board_scores_nothing() {
-        let mut s = two_player_state();
+        // Genuinely empty: 3 players (no dummy) and no pawns ⇒ nobody scores.
+        let mut s = three_player_state();
         zero_resources(&mut s);
         let st = final_standings(&s, &Rules::empty_for_tests());
         assert_eq!(total_of(&st, 0), 0);
@@ -379,8 +446,9 @@ mod tests {
     fn customs_bonus_first_8_second_4_same_printed_cost_resolves_by_slot() {
         // Spaces 1 and 2 share printed cost 1 but are DISTINCT physical
         // spaces; rightmost is slot position, so the space-2 pawn wins the
-        // count tie [RB p.9 §2 + board: 7 spaces left-to-right].
-        let mut s = two_player_state();
+        // count tie [RB p.9 §2 + board: 7 spaces left-to-right]. 3-player (no
+        // dummy) keeps the comparison between the two real pawns only.
+        let mut s = three_player_state();
         zero_resources(&mut s);
         s.customs_track.slots[0] = Some(CustomsSlot { player: PlayerId::new(0), arrival_order: 0 });
         s.customs_track.slots[1] = Some(CustomsSlot { player: PlayerId::new(1), arrival_order: 1 });
@@ -394,13 +462,188 @@ mod tests {
         let mut s = two_player_state();
         zero_resources(&mut s);
         // P0 has 2 pawns (leftmost spaces), P1 has 1 pawn on the rightmost
-        // space: count decides FIRST, positions only break count ties.
+        // space: count decides FIRST, positions only break count ties. This is
+        // a 2P board, so the D1 dummy also competes (one pawn at space-4) — but
+        // P0's count-2 wins first outright and P1's space-7 pawn is rightmost of
+        // the dummy's space-4, so the dummy is cleanly beaten and the real
+        // awards stand (8 / 4).
         s.customs_track.slots[0] = Some(CustomsSlot { player: PlayerId::new(0), arrival_order: 0 });
         s.customs_track.slots[1] = Some(CustomsSlot { player: PlayerId::new(0), arrival_order: 1 });
         s.customs_track.slots[6] = Some(CustomsSlot { player: PlayerId::new(1), arrival_order: 2 });
         let st = final_standings(&s, &Rules::empty_for_tests());
         assert_eq!(total_of(&st, 0), 8);
         assert_eq!(total_of(&st, 1), 4);
+    }
+
+    // --- 2P setup dummy competes in the majority bonuses [RB p.9 NOTE, via
+    //     guidingpath.md decision log 2026-07-21 finding D1] ---
+    //
+    // "The dummy player's assistants are taken into account during final
+    // scoring to increase competition for majority bonuses" [RB p.9 NOTE]. The
+    // dummy holds ONE pawn at church faith-7 and ONE at customs space-4 (the
+    // spaces it pre-blocks — KB §Customs, DL 2026-07-17), modeled BY RULE from
+    // the 2-player game — never read from a slot. A place it takes is awarded
+    // to nobody; real players score the rank they reach with the dummy in the
+    // race. These fixtures leave the dummy's slot EMPTY on purpose: the oracle
+    // competes the dummy because `player_count == 2`, not because a pawn sits
+    // there.
+
+    #[test]
+    fn church_2p_dummy_takes_second_and_denies_a_real_player() {
+        // P0 has the most pawns (first, 6). The count-1 race for second is the
+        // dummy (faith-7) vs P1 (faith-4): the dummy's rightmost pawn wins, so
+        // it TAKES second (nobody scores it) and P1 drops to nothing.
+        let mut s = two_player_state();
+        zero_resources(&mut s);
+        church_pawn(&mut s, 8, 0);
+        church_pawn(&mut s, 9, 0); // P0: two pawns, most
+        church_pawn(&mut s, 4, 1); // P1: one pawn, left of the dummy
+        let st = final_standings(&s, &Rules::empty_for_tests());
+        assert_eq!(total_of(&st, 0), 6, "P0 has the most pawns: first place");
+        assert_eq!(total_of(&st, 1), 0, "the dummy at faith-7 takes second, denying P1");
+    }
+
+    #[test]
+    fn church_2p_dummy_wins_a_rightmost_tie_for_first() {
+        // All competitors hold one pawn; the dummy's faith-7 is rightmost of P0
+        // (faith-4) and P1 (faith-5). The dummy TAKES first (nobody scores 6);
+        // P1 is second (3), P0 third (0).
+        let mut s = two_player_state();
+        zero_resources(&mut s);
+        church_pawn(&mut s, 4, 0);
+        church_pawn(&mut s, 5, 1);
+        let st = final_standings(&s, &Rules::empty_for_tests());
+        assert_eq!(total_of(&st, 1), 3, "P1 (faith-5) is second behind the dummy");
+        assert_eq!(total_of(&st, 0), 0, "P0 (faith-4) is third: nothing");
+    }
+
+    #[test]
+    fn church_2p_dummy_beaten_cleanly_leaves_real_awards_intact() {
+        // P0 has the most pawns (first, 6); P1's single pawn at faith-8 is to
+        // the RIGHT of the dummy's faith-7, so P1 beats the dummy for second
+        // (3) and the dummy scores nobody — the real awards are unchanged.
+        let mut s = two_player_state();
+        zero_resources(&mut s);
+        church_pawn(&mut s, 10, 0);
+        church_pawn(&mut s, 11, 0); // P0: two pawns, most
+        church_pawn(&mut s, 8, 1); // P1: one pawn, right of the dummy
+        let st = final_standings(&s, &Rules::empty_for_tests());
+        assert_eq!(total_of(&st, 0), 6);
+        assert_eq!(total_of(&st, 1), 3, "faith-8 beats the dummy's faith-7 for second");
+    }
+
+    #[test]
+    fn church_2p_lone_real_player_only_takes_second_behind_the_dummy() {
+        // A single real player with a pawn LEFT of faith-7 is NOT sole at 2P —
+        // the dummy competes and, being rightmost, takes first. The lone real
+        // player gets only second (3), not the 6 a truly-sole player would.
+        let mut s = two_player_state();
+        zero_resources(&mut s);
+        church_pawn(&mut s, 4, 0);
+        let st = final_standings(&s, &Rules::empty_for_tests());
+        assert_eq!(total_of(&st, 0), 3, "the dummy denies the lone player first place");
+        assert_eq!(total_of(&st, 1), 0);
+    }
+
+    #[test]
+    fn church_2p_dummy_alone_awards_nobody() {
+        // No real pawns: the dummy is the sole competitor, takes first, and —
+        // being the dummy — that place is awarded to nobody. No real player
+        // scores from the church board.
+        let mut s = two_player_state();
+        zero_resources(&mut s);
+        let st = final_standings(&s, &Rules::empty_for_tests());
+        assert_eq!(total_of(&st, 0), 0);
+        assert_eq!(total_of(&st, 1), 0);
+    }
+
+    #[test]
+    fn church_2p_dummy_is_rule_derived_not_read_from_the_slot() {
+        // Independence: the oracle competes the dummy because the game is
+        // 2-player, NOT by reading a sentinel from the faith-7 slot. Whether
+        // that slot is empty or carries the engine's `PlayerId::DUMMY`, the
+        // awards are identical — the sentinel is filtered by the real-player
+        // `seat < n` scan and the by-rule dummy competes either way.
+        let awards = |fill_sentinel: bool| {
+            let mut s = two_player_state();
+            zero_resources(&mut s);
+            church_pawn(&mut s, 4, 1); // P1 alone at faith-4
+            if fill_sentinel {
+                let idx = yokohama_core::ChurchTrack::faith_to_index(7).unwrap();
+                s.church_track.slots[idx] =
+                    Some(ChurchSlot { player: PlayerId::DUMMY, arrival_order: 9 });
+            }
+            let st = final_standings(&s, &Rules::empty_for_tests());
+            (total_of(&st, 0), total_of(&st, 1))
+        };
+        // Dummy (faith-7) first → nobody; P1 (faith-4) second → 3.
+        assert_eq!(awards(false), (0, 3));
+        assert_eq!(awards(true), (0, 3), "same result whether or not the sentinel is present");
+    }
+
+    #[test]
+    fn customs_2p_dummy_takes_a_place() {
+        // Customs mirror (8/4). P0 has the most pawns (first, 8); the count-1
+        // race for second is the dummy (space-4) vs P1 (space-1) — the dummy's
+        // rightmost pawn wins and takes second, denying P1.
+        let mut s = two_player_state();
+        zero_resources(&mut s);
+        customs_pawn(&mut s, 5, 0);
+        customs_pawn(&mut s, 6, 0); // P0: two pawns, most
+        customs_pawn(&mut s, 1, 1); // P1: one pawn, left of the dummy
+        let st = final_standings(&s, &Rules::empty_for_tests());
+        assert_eq!(total_of(&st, 0), 8);
+        assert_eq!(total_of(&st, 1), 0, "the dummy at space-4 takes second, denying P1");
+    }
+
+    #[test]
+    fn customs_2p_dummy_wins_a_rightmost_tie() {
+        // Count-1 all round: the dummy's space-4 is rightmost of P0 (space-1)
+        // and P1 (space-3). Dummy first (nobody), P1 second (4), P0 nothing.
+        let mut s = two_player_state();
+        zero_resources(&mut s);
+        customs_pawn(&mut s, 1, 0);
+        customs_pawn(&mut s, 3, 1);
+        let st = final_standings(&s, &Rules::empty_for_tests());
+        assert_eq!(total_of(&st, 1), 4, "P1 (space-3) is second behind the dummy");
+        assert_eq!(total_of(&st, 0), 0);
+    }
+
+    #[test]
+    fn three_player_church_and_customs_have_no_dummy() {
+        // [DL 2026-07-21 D1] the dummy exists ONLY at 2 players. At 3P the
+        // faith-7 and space-4 spaces are ordinary board spaces — a pawn there
+        // scores for its owner, and no phantom competitor exists.
+        let mut s = three_player_state();
+        zero_resources(&mut s);
+        // Church: P2 occupies faith-7 (legal at 3P) and, as rightmost, takes
+        // first — proving faith-7 is a real space, not a dummy block.
+        church_pawn(&mut s, 4, 0);
+        church_pawn(&mut s, 5, 1);
+        church_pawn(&mut s, 7, 2);
+        // Customs: P2 occupies space-4 (legal at 3P) and takes first likewise.
+        customs_pawn(&mut s, 1, 0);
+        customs_pawn(&mut s, 3, 1);
+        customs_pawn(&mut s, 4, 2);
+        let st = final_standings(&s, &Rules::empty_for_tests());
+        // P2 first on both boards (6 + 8), P1 second (3 + 4), P0 nothing.
+        assert_eq!(total_of(&st, 2), 6 + 8);
+        assert_eq!(total_of(&st, 1), 3 + 4);
+        assert_eq!(total_of(&st, 0), 0);
+    }
+
+    #[test]
+    fn four_player_customs_has_no_dummy() {
+        // The no-dummy branch is `player_count != 2`; 4P takes it too, so
+        // space-4 is an ordinary space with no phantom competitor.
+        let mut s = four_player_state();
+        zero_resources(&mut s);
+        customs_pawn(&mut s, 1, 0);
+        customs_pawn(&mut s, 4, 1); // space-4 is ordinary at 4P
+        let st = final_standings(&s, &Rules::empty_for_tests());
+        // Both count-1: P1 (space-4, rightmost) first (8), P0 (space-1) second (4).
+        assert_eq!(total_of(&st, 1), 8);
+        assert_eq!(total_of(&st, 0), 4);
     }
 
     // --- 4. Technology bonus [RB p.9-10 §3] ---
@@ -615,7 +858,9 @@ mod tests {
             .iter()
             .find(|o| o.country != tech.country)
             .expect("an order of a different country exists");
-        let mut s = two_player_state();
+        // 3-player (no dummy) so the church/customs components are the clean
+        // sole-competitor bonuses this "all components sum" case intends.
+        let mut s = three_player_state();
         zero_resources(&mut s);
         s.players[0].victory_points = 5; // banked
         s.church_track.slots[2] = Some(ChurchSlot { player: PlayerId::new(0), arrival_order: 0 }); // +6 sole

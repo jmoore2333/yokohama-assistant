@@ -52,6 +52,16 @@ pub(crate) fn three_player_state() -> GameState {
     s
 }
 
+/// [`three_player_state`] extended additively to 4 players (P3 Green): same
+/// small board, `config` swapped to the 4-player one. Type-valid, not
+/// setup-valid — Stage-2 scoring fixtures need only seats and per-player state.
+pub(crate) fn four_player_state() -> GameState {
+    let mut s = three_player_state();
+    s.config = GameConfig::for_player_count(4);
+    s.players.push(PlayerState::new(PlayerId::new(3), PlayerColor::Green, false));
+    s
+}
+
 /// A minimal 2-player state on [`small_board`]: both presidents in hand,
 /// default resources, `AdditionalActionFirst`, empty queue. Tests mutate the
 /// fields they care about.
