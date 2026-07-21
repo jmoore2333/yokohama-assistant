@@ -1,11 +1,28 @@
 # Board topology correction + CLI graphical optimizations — mini-plan
 
-**Status:** QUEUED — the next PR after PR #3 merges, and the last engineering work before the
-Phase-3 (MCTS/computer player) spec. Owner-directed bundling (Jeremy, 2026-07-21): topology fix
-and CLI graphical work land together.
+**Status:** **EXECUTED 2026-07-21** on branch `board-topology-cli-graphics` (tasks T1–T8 complete;
+engineering sealed at commit `2c21709`, then this docs closeout; the fable whole-branch review + PR
+follow per the finishing contract in `.superpowers/sdd/progress.md`). Originally QUEUED as the next
+PR after PR #3 merges, and the last engineering work before the Phase-3 (MCTS/computer player) spec.
+Owner-directed bundling (Jeremy, 2026-07-21): topology fix and CLI graphical work land together.
 **Origin:** 11-lens review of PR #3 (Blocker 1), independently confirmed by the orchestrator
 against rulebook p.3 and by Jeremy from the physical edition ("this tile arrangement is the
 only way the game works").
+
+**Execution deviations** (full per-task detail in the ledger `.superpowers/sdd/progress.md`):
+- §3.1.1's "colinear through-lines" canal parenthetical was superseded PRE-execution by the §2
+  ruling (canal any-to-any, 1¥ bank toll, plain-vs-tolled edge distinction) — §2 + DL row 205
+  govern; T1 implemented all-neighbor-pairs with the free-edge-governs disjointness (ADJ-1).
+- The worst-case route battery evolved to TWO tiers (ADJ-5F): a per-edit 11-area smoke (bound 183)
+  plus a `#[ignore]`d release-gate 17-area maximal battery (bound 519); the release-gate roster
+  grew to six accordingly, and the piped dogfood was also demoted to the release tier.
+- The §3.3 CLI stage COLLAPSED into one full frontend-redesign task on a FABLE implementer + opus
+  reviewer (ADJ-3, owner-directed) rather than five incremental tasks — the CLI's reason-for-
+  existence changed from an in-flight engine tester to a v1-beta human frontend, with owner item 8
+  (composed frontend) and item 10 (information sufficiency) added at kickoff.
+- The §3.3.2 placement fee-note took the report-back branch: it would source from the engine's
+  `calculate_placement_cost`, but that fn is `pub(crate)`, so exposing it is a deferred engine
+  edit (carry-forward list), not done inside the CLI task's scope.
 
 ---
 

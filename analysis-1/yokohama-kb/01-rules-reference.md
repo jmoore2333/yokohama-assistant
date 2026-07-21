@@ -35,6 +35,20 @@
 - 1× Copper Mine, 1× Silk Mill, 1× Tea Plantation
 - 5 Order cards from deck
 
+**4 Players remove:** nothing.
+
+### Board Layout — Area Boards (staggered pyramid)
+
+The Area Boards form a **staggered pyramid**, widest row on top (rulebook p.3 step 2; owner-confirmed against the physical edition 2026-07-21). Rows, top to bottom:
+
+| Players | Rows (tiles per row) | Tiles | Undirected edges |
+|---------|----------------------|-------|------------------|
+| 2P | 4 / 3 / 2 / 1 | 10 | 18 |
+| 3P | 5 / 4 / 3 / 2 | 14 | 28 |
+| 4P | 6 / 5 / 4 / 3 | 18 | 38 |
+
+Rows are **brick-offset**: each tile touches up to **six** neighbors — 2 lateral (same row) + up to 2 in the row above + up to 2 in the row below, wherever those tiles exist. This is the adjacency graph that movement and pass-through fees read; it is NOT a rectangular grid. (An earlier engine model built 2×5 / 2×7 / 3×6 grids with orthogonal-only adjacency, which missed ~30% of the real edges and invented corner-only verticals — corrected 2026-07-21 [DL 2026-07-21].) Orientation is immaterial to the rules: the rulebook PDF and some editions print mirror-image orientations of the same pyramid, but the adjacency graph is identical, and it is the graph the engine models.
+
 ---
 
 ## Player Starting Resources
@@ -398,8 +412,10 @@ Pay Imported Goods to advance on Customs Management Board.
 | 7 | 4 | 22 | - |
 
 #### Canal (not in 2P)
-- No pawns or tokens may be placed
-- During Movement step: Pay 1 Yen to cross
+- No pawns or tokens may be placed; the Canal is **unplaceable and unstoppable** (transit-only). Removed from the board entirely at 2 players.
+- **Movement transit is ANY-TO-ANY** [DL 2026-07-21]: the Canal connects ANY of its adjacent tiles to ANY other, for **1 Yen per crossing paid to the BANK** (not to a player). This supersedes an earlier colinear-through-lines model, which had been reasoned on the old rectangular grid.
+- Where two of the Canal's neighbors are ALSO directly adjacent to each other (a brick-offset edge), the free direct step governs — the tolled crossing there is legal but dominated (the destination still requires one of your own assistants), so the engine records only the free edge. Every neighbor pair still ends up connected, freely or via a toll.
+- Placement adjacency (e.g. Telegram's adjacent-bonus) remains physical tile contiguity and EXCLUDES crossing pairs — the Canal is for transit, not placement.
 
 ---
 
@@ -515,12 +531,14 @@ Compare assistant count on Church Management Board:
 - 1st place: 6 VP
 - 2nd place: 3 VP
 - Ties: Rightmost assistant wins
+- **2-player games (finding D1):** the dummy player's pawn — a setup-placed assistant of an unused color at faith-7 — COMPETES in this majority [DL 2026-07-21]. Rulebook p.9 NOTE: "The dummy player's assistants are taken into account during final scoring to increase competition for majority bonuses." Sitting at the high/rightmost end, it wins ties, so it can deny a real player 1st or 2nd place; being one pawn, a real player can still out-count it. (Earlier the engine treated it as an eligibility block only and scored over real players — corrected 2026-07-21.)
 
 ### 2. Customs Bonus
 Compare assistant count on Customs Management Board:
 - 1st place: 8 VP
 - 2nd place: 4 VP
 - Ties: Rightmost assistant wins
+- **2-player games (finding D1):** the dummy player's pawn — setup-placed at space-4 — COMPETES in this majority [DL 2026-07-21], by the same rulebook p.9 NOTE as the Church bonus.
 
 ### 3. Technology Bonus
 Compare total Industry value on Technology cards:

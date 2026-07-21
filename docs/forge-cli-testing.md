@@ -83,7 +83,35 @@ close_terminal   {id}
   built; honesty properties (NO_COLOR, piped-plain byte-identical, engine-legality matching)
   are proven by tests, not by looking.
 
+## Terminal lifecycle (from the Forge project's skill)
+
+Condensed from the Forge project's own "Terminal Lifecycle Management" skill (provided by
+Jeremy 2026-07-21; full text at `.superpowers/sdd/briefs/forge-terminal-lifecycle.md`). The
+operative rules:
+
+- **Before `create_terminal`, always `list_terminals` first** and reuse a session when one fits
+  — filter by tag (`list_terminals({ tag: "yokohama" })`). Don't accumulate idle sessions.
+- **Tag on create.** `name` is the human-readable label; `tags` group sessions for bulk
+  operations — `close_group({ tag })` kills a whole group and `list_terminals({ tag })` filters.
+  Agent / worktree / `run_command` sessions are auto-tagged.
+- **Four read models, each for its job:** `read_terminal` = incremental new output since your
+  last read (progress checks, polling, command results — token-efficient); `read_screen` =
+  current viewport snapshot, ANSI stripped (TUI / redraw apps and any cursor-based UI, where
+  incremental reads don't make sense); `read_multiple` = several sessions in one call
+  (dashboard-style status); `grep_terminal` = regex over the whole buffer (find errors/warnings
+  or extract a port/URL/count without re-reading everything). For this repo's CLI, that maps to
+  "The two read models" above — `read_screen` to judge layout, `read_terminal` to prove the SGR.
+- **Clean up what you no longer need** — `close_terminal({ id })` for one, `close_group({ tag })`
+  for a run; `run_command` sessions auto-clean.
+- `list_templates` / `create_from_template` spin up pre-configured sessions.
+
 ## Baseline evidence captured at adoption (pre-topology-fix)
+
+**Historical (2026-07-21, pre-fix).** The staggered renderer and the composed frontend redesign
+LANDED on branch `board-topology-cli-graphics` (see `guidingpath.md` Current state and
+`docs/cli-guide.md` for the current frontend). The items below are the "before" state, kept for
+reference — the lattice board, thin color, 186-flat-option Placement, and bare-`X` dummy are all
+superseded.
 
 From the live 2026-07-21 session — the "before" pictures the board-topology + CLI-graphics PR
 changes, and the grounded UX findings behind its backlog (plan §7):
