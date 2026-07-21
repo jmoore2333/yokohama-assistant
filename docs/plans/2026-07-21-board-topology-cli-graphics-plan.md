@@ -75,7 +75,7 @@ legality — the bump contract applies; old records become strict-rejected, corr
 
 - The oracle consumes `state.board_layout` by construction (spec §4) — **no oracle logic
   change**; its test-support boards and the difftest worst-case battery are rebuilt on staggered
-  geometry (all four… now **three** canal through-line cells re-derived).
+  geometry (canal cells re-derived to the any-to-any neighbor-pair model).
 - **The whole differential suite re-runs on the corrected graph** — this is what makes the fix
   safe: enumeration, routes3 three-way (pruneless reference re-validates pruning on the denser
   graph), scoring, plus the per-edit smoke. Convergence on the new topology is the acceptance
@@ -106,8 +106,8 @@ legality — the bump contract applies; old records become strict-rejected, corr
 2. Full debug matrix + **all five release gates green on the corrected topology** — the
    differential convergence is the point of having built the oracle.
 3. Live-reconciliation suite green on staggered boards.
-4. Owner confirmations at the box: canal arrows (expected: three), and the 2P-dummy trigger
-   count question (rides along — it is a `track_trigger` question, independent of topology).
+4. Owner confirmations: canal transit RULED any-to-any (done, 2026-07-21); the 2P track
+   trigger 4-vs-5 answer (pending — a `track_trigger` question, independent of topology).
 5. Re-baselines published: moves/sec, game length, branching per phase, organic route-label
    max — all provenance-stamped.
 
