@@ -34,7 +34,10 @@ fn take_church_or_customs_assistant(p: &mut PlayerState, area: AreaId) {
 
 /// True if the player has an assistant available for a Church/Customs
 /// placement: in hand, or already on the acting area (I3 final-review fix).
-fn has_church_or_customs_assistant(p: &PlayerState, area: AreaId) -> bool {
+/// `pub(crate)` since FIX-B (Codex PR-3 review): `check_invariants`'s
+/// queue-head COHERENCE clause reuses this exact predicate so the invariant
+/// can never drift from the Stage-4 placement-tail guard it mirrors.
+pub(crate) fn has_church_or_customs_assistant(p: &PlayerState, area: AreaId) -> bool {
     p.assistants.in_hand >= 1 || p.assistants.in_area(area) >= 1
 }
 

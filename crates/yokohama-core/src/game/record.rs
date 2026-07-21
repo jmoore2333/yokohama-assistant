@@ -73,12 +73,16 @@ pub struct GameRecord {
     /// workspace crate version) and `rules_hash` (static card/site/token/board
     /// DATA only), this identifies the behaviour of `get_legal_moves` /
     /// `apply_move` / scoring / setup -- see `crate::game::semantics` for the
-    /// bump contract. `replay` warns on a mismatch; `replay_strict` rejects
-    /// it. Serde-defaults to 1 for records written before the field existed
-    /// (rev 1 was the semantics they were produced under -- see
-    /// `default_semantics_rev`).
-    #[serde(default = "default_semantics_rev")]
-    pub semantics_rev: u32,
+    /// bump contract. `None` means the record predates the field (pre-Phase-2.9)
+    /// and its semantics provenance is UNKNOWN -- fail-closed (Codex PR-3
+    /// review, FIX-B P1: the previous serde-default of literal 1 made a
+    /// provenance-less record indistinguishable from a genuine current rev-1
+    /// record, so `replay_strict` silently accepted it). `GameRecord::new`
+    /// stamps `Some(SEMANTICS_REV)`, so every new record serializes the
+    /// number. `replay` warns on `None` (missing provenance) and on a `Some`
+    /// mismatch, replaying anyway; `replay_strict` rejects BOTH.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub semantics_rev: Option<u32>,
     /// FNV-1a digest (`state_digest`) of the FINAL `GameState` this record's
     /// event log folds to, stamped by `stamp_terminal_digest` at
     /// finalization/save. `None` on a record that was never stamped (or was
@@ -89,15 +93,6 @@ pub struct GameRecord {
     /// individually valid).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub terminal_digest: Option<String>,
-}
-
-/// Serde default for `GameRecord::semantics_rev` on records written before the
-/// field existed: rev 1, the semantics revision in force when the field landed
-/// (see `crate::game::semantics`). Deliberately the LITERAL 1, never
-/// `SEMANTICS_REV` -- a later engine rev must NOT retroactively re-stamp old
-/// records as if they had been produced under the new semantics.
-fn default_semantics_rev() -> u32 {
-    1
 }
 
 impl GameRecord {
@@ -111,7 +106,7 @@ impl GameRecord {
         Self {
             engine_version: env!("CARGO_PKG_VERSION").to_string(),
             rules_hash: rules.content_hash(),
-            semantics_rev: SEMANTICS_REV,
+            semantics_rev: Some(SEMANTICS_REV),
             seed,
             config,
             choices,
@@ -274,11 +269,14 @@ pub fn replay(record: &GameRecord, rules: &Rules) -> Result<GameState, ReplayErr
             record.rules_hash,
         );
     }
-    if record.semantics_rev != SEMANTICS_REV {
-        eprintln!(
-            "warning: GameRecord.semantics_rev={} does not match running engine SEMANTICS_REV={SEMANTICS_REV} -- replaying anyway (v1 does not refuse on a semantics_rev mismatch)",
-            record.semantics_rev,
-        );
+    match record.semantics_rev {
+        None => eprintln!(
+            "warning: GameRecord carries no semantics_rev (missing semantics provenance; pre-Phase-2.9 record) -- replaying anyway (v1 does not refuse on missing provenance)",
+        ),
+        Some(rev) if rev != SEMANTICS_REV => eprintln!(
+            "warning: GameRecord.semantics_rev={rev} does not match running engine SEMANTICS_REV={SEMANTICS_REV} -- replaying anyway (v1 does not refuse on a semantics_rev mismatch)",
+        ),
+        Some(_) => {}
     }
 
     // Lenient replay deliberately does NOT verify `terminal_digest`: that is a
@@ -289,7 +287,8 @@ pub fn replay(record: &GameRecord, rules: &Rules) -> Result<GameState, ReplayErr
 }
 
 /// Strict replay for training pipelines (design §4.1): reject, don't warn.
-/// - engine_version / rules_hash / `semantics_rev` mismatch => Err at event_index 0
+/// - engine_version / rules_hash mismatch, or `semantics_rev` mismatch OR
+///   missing (`None` -- unknown provenance, fail-closed) => Err at event_index 0
 /// - every Move event goes through the checked `apply_move` (membership)
 /// - `check_invariants` runs after EVERY event
 /// - if the record carries a `terminal_digest`, the replayed terminal state
@@ -317,9 +316,19 @@ pub fn replay_strict(record: &GameRecord, rules: &Rules) -> Result<GameState, Re
         return Err(ReplayError { event_index: 0, message: format!(
             "rules_hash mismatch: record \"{}\" vs running \"{expected}\" (strict mode rejects)", record.rules_hash) });
     }
-    if record.semantics_rev != SEMANTICS_REV {
-        return Err(ReplayError { event_index: 0, message: format!(
-            "semantics_rev mismatch: record {} vs running {SEMANTICS_REV} (strict mode rejects)", record.semantics_rev) });
+    match record.semantics_rev {
+        // Fail-closed on UNKNOWN provenance (FIX-B P1): a record with no
+        // semantics_rev key predates the stamp -- strict mode must not
+        // silently treat it as a current record.
+        None => {
+            return Err(ReplayError { event_index: 0, message: format!(
+                "missing semantics provenance: record carries no semantics_rev (pre-Phase-2.9 record; running SEMANTICS_REV={SEMANTICS_REV}; strict mode rejects)") });
+        }
+        Some(rev) if rev != SEMANTICS_REV => {
+            return Err(ReplayError { event_index: 0, message: format!(
+                "semantics_rev mismatch: record {rev} vs running {SEMANTICS_REV} (strict mode rejects)") });
+        }
+        Some(_) => {}
     }
     let initial = rebuild_initial_state(record, rules)?;
     let mut state = initial;
@@ -365,7 +374,7 @@ mod tests {
         assert!(record.events.is_empty());
         // New records carry the running semantics revision and no digest yet
         // (stamped only at finalization/save via `stamp_terminal_digest`).
-        assert_eq!(record.semantics_rev, SEMANTICS_REV);
+        assert_eq!(record.semantics_rev, Some(SEMANTICS_REV));
         assert_eq!(record.terminal_digest, None);
     }
 

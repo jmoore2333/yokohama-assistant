@@ -137,6 +137,27 @@ pub fn format_side(side: &RankedTotals) -> Vec<String> {
     side.iter().map(|(p, total)| format!("P{}: {total}", p.0)).collect()
 }
 
+/// The `duplicates` line a scoring artifact carries when the oracle's
+/// emitted order contradicts its own totals.
+pub const ORACLE_RANKING_INCONSISTENT_LINE: &str =
+    "oracle: emitted ranking is not descending in its own totals";
+
+/// One comparison's stored-field projection — the exact
+/// `(engine_only, oracle_only, duplicates)` line triple a `FinalScoring`
+/// artifact carries. Shared by the Stage-2 writer
+/// (`runner::write_scoring_artifact`) and the repro re-run
+/// (`repro::repro_artifact`) so a fresh artifact reproduces byte-identically
+/// by construction.
+pub fn scoring_artifact_fields(
+    cmp: &ScoringComparison,
+) -> (Vec<String>, Vec<String>, Vec<String>) {
+    let mut duplicates = Vec::new();
+    if cmp.oracle_ranking_inconsistent {
+        duplicates.push(ORACLE_RANKING_INCONSISTENT_LINE.to_string());
+    }
+    (format_side(&cmp.engine), format_side(&cmp.oracle), duplicates)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

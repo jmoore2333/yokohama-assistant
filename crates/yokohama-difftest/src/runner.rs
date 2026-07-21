@@ -11,7 +11,7 @@ use yokohama_core::{GameState, Rules};
 use crate::artifact::{write_artifact, DivergenceArtifact, ARTIFACT_FORMAT_VERSION};
 use crate::compare::compare_moves;
 use crate::drive::{drive_game, drive_game_to_end, DriveStats, Policy, StepOutcome};
-use crate::scoring::{compare_final, format_side, ScoringComparison};
+use crate::scoring::{compare_final, scoring_artifact_fields, ScoringComparison};
 
 /// Outcome of one differentially-checked game.
 #[derive(Debug, Clone)]
@@ -124,10 +124,7 @@ pub fn write_scoring_artifact(
     comparison: &ScoringComparison,
     artifact_dir: &Path,
 ) -> Result<PathBuf, String> {
-    let mut duplicates = Vec::new();
-    if comparison.oracle_ranking_inconsistent {
-        duplicates.push("oracle: emitted ranking is not descending in its own totals".to_string());
-    }
+    let (engine_only, oracle_only, duplicates) = scoring_artifact_fields(comparison);
     let artifact = DivergenceArtifact {
         format_version: ARTIFACT_FORMAT_VERSION,
         seed,
@@ -138,8 +135,8 @@ pub fn write_scoring_artifact(
         phase: "FinalScoring".to_string(),
         state_json: serde_json::to_value(final_state)
             .map_err(|e| format!("state serialization for scoring artifact failed: {e}"))?,
-        engine_only: format_side(&comparison.engine),
-        oracle_only: format_side(&comparison.oracle),
+        engine_only,
+        oracle_only,
         duplicates,
     };
     write_artifact(&artifact, artifact_dir)

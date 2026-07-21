@@ -187,12 +187,15 @@ impl Session {
                 record.rules_hash,
             );
         }
-        if record.semantics_rev != yokohama_core::SEMANTICS_REV {
-            eprintln!(
-                "warning: GameRecord.semantics_rev={} does not match running SEMANTICS_REV={} -- replaying anyway (interactive load is lenient; record_stats/replay_strict refuse)",
-                record.semantics_rev,
+        match record.semantics_rev {
+            None => eprintln!(
+                "warning: GameRecord carries no semantics_rev (missing semantics provenance; pre-Phase-2.9 record) -- replaying anyway (interactive load is lenient; record_stats/replay_strict refuse)",
+            ),
+            Some(rev) if rev != yokohama_core::SEMANTICS_REV => eprintln!(
+                "warning: GameRecord.semantics_rev={rev} does not match running SEMANTICS_REV={} -- replaying anyway (interactive load is lenient; record_stats/replay_strict refuse)",
                 yokohama_core::SEMANTICS_REV,
-            );
+            ),
+            Some(_) => {}
         }
 
         // Rebuilds the base state the same way `new_sim`/`new_live` do

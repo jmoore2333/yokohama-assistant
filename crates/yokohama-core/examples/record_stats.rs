@@ -42,6 +42,19 @@ fn main() {
     // GameRecord carries no custom Rules, only a seed/config/choices/events.
     let rules = Rules::standard();
 
+    // Tool-level fail-closed on the digest (FIX-B P1, Codex PR-3 review):
+    // `replay_strict` itself verifies the terminal digest only WHEN PRESENT
+    // (in-memory test records legitimately pre-date stamping), but a record
+    // submitted to THIS tool is retained-corpus input and must carry one.
+    if record.terminal_digest.is_none() {
+        eprintln!(
+            "{path}: record carries no terminal_digest -- a record without a digest is not \
+             acceptable retained-corpus input. Re-save it via the CLI Session (which stamps the \
+             digest at save) or stamp it with GameRecord::stamp_terminal_digest before submitting."
+        );
+        std::process::exit(1);
+    }
+
     // Strict gate (guidingpath I5): before trusting any metric off a
     // submitted save, hold it to the bar a training pipeline would. Strict
     // replay rejects an engine_version / rules_hash / semantics_rev mismatch,

@@ -56,12 +56,54 @@ mod test_support;
 /// `Ord`/`Hash` are derived over `(destination, fees)` purely so labels live in
 /// sorted/hashed sets for the runner's set comparison — no semantic meaning
 /// attaches to the ordering.
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+///
+/// SERDE (custom, serialization plumbing only): the derived map encoding could
+/// not JSON-serialize the `None` (bank-toll) fee key — serde_json rejects null
+/// map keys — so `fees` is encoded as an entry LIST instead:
+/// `{"destination": <id>, "fees": [[null, 1], [2, 1]]}` (each entry
+/// `[recipient, yen]`, recipient `null` = bank). Every label — Canal bank
+/// tolls included — round-trips through JSON (pinned by
+/// `fees_with_none_key_round_trip_through_json`). Nothing persisted ever used
+/// the old derived encoding (artifacts store labels as `route:<Debug>` keys,
+/// never serde), so there is no legacy format to read.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct RouteLabel {
     /// Where the President ends the Movement step.
     pub destination: AreaId,
     /// Every Yen the mover pays on the effective route, keyed by recipient.
     pub fees: BTreeMap<Option<PlayerId>, u32>,
+}
+
+impl Serialize for RouteLabel {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        use serde::ser::SerializeStruct;
+        // BTreeMap iteration order makes the entry list deterministic.
+        let fees: Vec<(&Option<PlayerId>, &u32)> = self.fees.iter().collect();
+        let mut s = serializer.serialize_struct("RouteLabel", 2)?;
+        s.serialize_field("destination", &self.destination)?;
+        s.serialize_field("fees", &fees)?;
+        s.end()
+    }
+}
+
+impl<'de> Deserialize<'de> for RouteLabel {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        #[derive(Deserialize)]
+        struct Wire {
+            destination: AreaId,
+            fees: Vec<(Option<PlayerId>, u32)>,
+        }
+        let wire = Wire::deserialize(deserializer)?;
+        let mut fees = BTreeMap::new();
+        for (recipient, yen) in wire.fees {
+            if fees.insert(recipient, yen).is_some() {
+                return Err(serde::de::Error::custom(format!(
+                    "RouteLabel fees entry list repeats recipient {recipient:?}"
+                )));
+            }
+        }
+        Ok(RouteLabel { destination: wire.destination, fees })
+    }
 }
 
 impl RouteLabel {
@@ -298,24 +340,24 @@ mod tests {
     }
 
     #[test]
-    fn fees_with_none_key_do_not_json_serialize() {
-        // Verifies + documents a latent limitation of the pinned type: serde_json
-        // cannot use a `None` (null) map key, so a bank-toll (Canal) label does
-        // NOT serialize to JSON. The Stage-1 runner compares labels in-memory
-        // (Ord/Hash), so this does not affect the harness — flagged for any
-        // future consumer that serializes labels.
+    fn fees_with_none_key_round_trip_through_json() {
+        // The derived map encoding could not JSON-serialize a `None` (bank-toll)
+        // fee key — serde_json rejects null map keys. The custom entry-LIST
+        // encoding (`"fees": [[null, 1], [2, 1]]`) exists precisely so EVERY
+        // label — Canal bank tolls included — round-trips through JSON.
         let mut fees = BTreeMap::new();
-        fees.insert(None, 1u32);
+        fees.insert(None, 1u32); // bank (Canal) toll
+        fees.insert(Some(PlayerId::new(2)), 1u32); // president fee
         let label = RouteLabel { destination: AreaId::new(2), fees };
-        assert!(serde_json::to_string(&label).is_err());
+        let json = serde_json::to_string(&label).expect("bank-toll labels must serialize");
+        assert!(json.contains("null"), "the bank key must be encoded as an entry with null: {json}");
+        let back: RouteLabel = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(label, back);
     }
 
     #[test]
     fn route_label_serde_round_trip_empty_fees() {
         // Empty-fee (free-teleport) labels round-trip cleanly through JSON.
-        // NOTE (report caveat): serde_json cannot use a `None` map key, so
-        // bank-toll labels do NOT JSON-round-trip; the harness compares labels
-        // in-memory (Ord/Hash), so this does not affect Stage 1.
         let original = RouteLabel { destination: AreaId::new(5), fees: BTreeMap::new() };
         let json = serde_json::to_string(&original).expect("serialize");
         let back: RouteLabel = serde_json::from_str(&json).expect("deserialize");

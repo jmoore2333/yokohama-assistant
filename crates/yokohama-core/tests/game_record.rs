@@ -193,7 +193,7 @@ fn strict_replay_rejects_a_broken_state_though_every_event_applied() {
 fn records_stamp_the_running_semantics_rev() {
     let rules = Rules::standard();
     let (_, record) = common::run_recorded_game(7, 2, &rules);
-    assert_eq!(record.semantics_rev, SEMANTICS_REV);
+    assert_eq!(record.semantics_rev, Some(SEMANTICS_REV));
 }
 
 /// Strict replay rejects a record whose `semantics_rev` differs from this
@@ -204,7 +204,7 @@ fn records_stamp_the_running_semantics_rev() {
 fn strict_replay_rejects_semantics_rev_mismatch_but_lenient_continues() {
     let rules = Rules::standard();
     let (_, mut record) = common::run_recorded_game(7, 2, &rules);
-    record.semantics_rev = SEMANTICS_REV + 1;
+    record.semantics_rev = Some(SEMANTICS_REV + 1);
     let err = replay_strict(&record, &rules).unwrap_err();
     assert_eq!(err.event_index, 0);
     assert!(err.message.contains("semantics_rev"), "got: {}", err.message);
@@ -223,7 +223,7 @@ fn stamped_record_round_trips_and_strict_replay_verifies_the_terminal_digest() {
     let json = serde_json::to_string(&record).unwrap();
     let back: GameRecord = serde_json::from_str(&json).unwrap();
     assert_eq!(back.terminal_digest, record.terminal_digest, "digest survives round-trip");
-    assert_eq!(back.semantics_rev, SEMANTICS_REV, "semantics_rev survives round-trip");
+    assert_eq!(back.semantics_rev, Some(SEMANTICS_REV), "semantics_rev survives round-trip");
 
     // Strict replay recomputes the digest from the replayed terminal state
     // and must accept the match.
@@ -277,11 +277,13 @@ fn terminal_digest_catches_a_valid_but_wrong_terminal_state() {
 }
 
 /// Records written before these fields existed (no `semantics_rev`, no
-/// `terminal_digest` key) still deserialize: `semantics_rev` serde-defaults to
-/// rev 1 (the semantics in force when the field landed) and `terminal_digest`
-/// to `None`.
+/// `terminal_digest` key) still deserialize -- but with `semantics_rev: None`
+/// (UNKNOWN provenance), not a fabricated rev (Codex PR-3 review, FIX-B P1:
+/// the old serde-default of literal 1 made a pre-Phase-2.9 record
+/// indistinguishable from a genuine current rev-1 record, so `replay_strict`
+/// accepted it). `terminal_digest` still defaults to `None`.
 #[test]
-fn pre_field_records_deserialize_with_semantics_rev_1_and_no_digest() {
+fn pre_field_records_deserialize_with_no_semantics_rev_and_no_digest() {
     let rules = Rules::standard();
     let (_, record) = common::run_recorded_game(7, 2, &rules);
     let mut v = serde_json::to_value(&record).unwrap();
@@ -289,6 +291,26 @@ fn pre_field_records_deserialize_with_semantics_rev_1_and_no_digest() {
     obj.remove("semantics_rev");
     obj.remove("terminal_digest");
     let restored: GameRecord = serde_json::from_value(v).unwrap();
-    assert_eq!(restored.semantics_rev, 1, "pre-field records default to semantics rev 1");
+    assert_eq!(restored.semantics_rev, None, "a missing semantics_rev key is UNKNOWN provenance, not rev 1");
     assert_eq!(restored.terminal_digest, None);
+}
+
+/// FIX-B P1 (Codex PR-3 review): a record whose JSON carries NO
+/// `semantics_rev` key has UNKNOWN semantics provenance -- strict replay
+/// (the training-record path) must fail closed instead of silently treating
+/// it as a current record. Lenient `replay` keeps its warn-and-continue
+/// contract: it warns about the missing provenance and replays anyway.
+#[test]
+fn strict_replay_rejects_a_record_missing_semantics_provenance() {
+    let rules = Rules::standard();
+    let (_, record) = common::run_recorded_game(7, 2, &rules);
+    let mut v = serde_json::to_value(&record).unwrap();
+    v.as_object_mut().unwrap().remove("semantics_rev");
+    let restored: GameRecord = serde_json::from_value(v).unwrap();
+
+    let err = replay_strict(&restored, &rules).unwrap_err();
+    assert_eq!(err.event_index, 0);
+    assert!(err.message.contains("semantics"), "got: {}", err.message);
+    // Lenient contract unchanged: warns to stderr but still replays.
+    assert!(replay(&restored, &rules).is_ok(), "lenient replay warns but continues");
 }

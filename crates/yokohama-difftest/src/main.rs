@@ -42,28 +42,25 @@ use yokohama_difftest::routes3::run_routes3_game;
 use yokohama_difftest::runner::{run_differential_game, run_scoring_game};
 
 /// `repro [--strict] <artifact.json>`: reload a divergence artifact's state
-/// snapshot and re-run both sides' enumeration on it, printing the full key
-/// lists and the re-computed diff — the mechanical half of adversarial
-/// verification.
+/// snapshot and re-run the comparison THAT KIND of artifact stores
+/// (dispatched on `phase` — see [`yokohama_difftest::repro::repro_artifact`]:
+/// `"FinalScoring"` re-compares terminal scoring, `"Routes3"` re-runs the
+/// three-way route check, anything else re-runs both sides' enumeration),
+/// printing the re-run detail and the re-computed diff — the mechanical half
+/// of adversarial verification.
 ///
 /// Exit codes: 0 = no CURRENT divergence on the state; 1 = currently
-/// divergent; 2 = unreadable artifact; with `--strict`, 3 = the stored diff
-/// does not reproduce byte-identically. A stored-vs-fresh mismatch is
-/// EXPECTED for historical fixtures re-examined after a fix landed on either
-/// side (the stored diff documents the pre-fix divergence) — use `--strict`
-/// only when verifying a FRESH artifact.
+/// divergent; 2 = unreadable artifact (or a state that no longer supports
+/// the stored comparison); with `--strict`, 3 = the stored diff does not
+/// reproduce byte-identically. A stored-vs-fresh mismatch is EXPECTED for
+/// historical fixtures re-examined after a fix landed on either side (the
+/// stored diff documents the pre-fix divergence) — use `--strict` only when
+/// verifying a FRESH artifact.
 fn repro(path: &str, strict: bool) -> ExitCode {
     let artifact = match yokohama_difftest::artifact::read_artifact(std::path::Path::new(path)) {
         Ok(a) => a,
         Err(e) => {
             eprintln!("repro: cannot read artifact {path}: {e}");
-            return ExitCode::from(2);
-        }
-    };
-    let state: yokohama_core::GameState = match serde_json::from_value(artifact.state_json.clone()) {
-        Ok(s) => s,
-        Err(e) => {
-            eprintln!("repro: state snapshot does not deserialize: {e}");
             return ExitCode::from(2);
         }
     };
@@ -80,40 +77,17 @@ fn repro(path: &str, strict: bool) -> ExitCode {
         artifact.format_version, artifact.seed, artifact.players, artifact.policy,
         artifact.step_index, artifact.turn_number, artifact.phase
     );
-    println!(
-        "state: current_player={:?} pending_choices={:?}",
-        state.current_player, state.pending_choices
-    );
-    let engine_moves = yokohama_core::get_legal_moves(&state, &rules);
-    let oracle = yokohama_oracle::oracle_moves(&state, &rules);
-    let cmp = yokohama_difftest::compare::compare_moves(&state, &rules, &engine_moves, &oracle);
-    println!("\n== ENGINE ({} moves) ==", engine_moves.len());
-    for m in &engine_moves {
-        println!("  {m:?}");
+    let report = match yokohama_difftest::repro::repro_artifact(&artifact, &rules) {
+        Ok(r) => r,
+        Err(e) => {
+            eprintln!("repro: {e}");
+            return ExitCode::from(2);
+        }
+    };
+    for line in &report.lines {
+        println!("{line}");
     }
-    println!("\n== ORACLE ({} exact + {} labels) ==", oracle.exact.len(), oracle.movement.len());
-    for m in &oracle.exact {
-        println!("  {m:?}");
-    }
-    for l in &oracle.movement {
-        println!("  {l:?}");
-    }
-    println!("\n== RE-COMPUTED DIFF ==");
-    println!("engine_only ({}):", cmp.engine_only.len());
-    for k in &cmp.engine_only {
-        println!("  {k}");
-    }
-    println!("oracle_only ({}):", cmp.oracle_only.len());
-    for k in &cmp.oracle_only {
-        println!("  {k}");
-    }
-    println!("duplicates ({}):", cmp.duplicates.len());
-    for k in &cmp.duplicates {
-        println!("  {k}");
-    }
-    let stored = (&artifact.engine_only, &artifact.oracle_only, &artifact.duplicates);
-    let fresh = (&cmp.engine_only, &cmp.oracle_only, &cmp.duplicates);
-    let reproduces = stored == fresh;
+    let reproduces = report.reproduces(&artifact);
     println!(
         "\nreproduces stored diff: {}",
         if reproduces {
@@ -125,7 +99,7 @@ fn repro(path: &str, strict: bool) -> ExitCode {
     if strict && !reproduces {
         return ExitCode::from(3);
     }
-    if cmp.is_divergent() {
+    if report.divergent {
         ExitCode::from(1)
     } else {
         ExitCode::SUCCESS
