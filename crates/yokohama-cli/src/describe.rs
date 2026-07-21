@@ -221,7 +221,9 @@ fn production_preview(state: &GameState, verb: &str, good: TradeGood, reward_fn:
 /// `credit_placement_fees` pair makes (a test pins this preview against the
 /// engine's actual charge). `placements` lists one entry PER ASSISTANT
 /// (Option B passes its area twice, plus the Telegram bonus area).
-fn placement_fee_text(state: &GameState, placements: &[AreaId]) -> String {
+/// `pub(crate)`: the Option-B picker reuses it for per-area fee marks so
+/// the picker and the option text can never disagree.
+pub(crate) fn placement_fee_note(state: &GameState, placements: &[AreaId]) -> String {
     let me = state.current_player;
     let mut per_owner: std::collections::BTreeMap<PlayerId, u32> = std::collections::BTreeMap::new();
     for &area in placements {
@@ -389,7 +391,7 @@ pub fn describe_move(mv: &Move, state: &GameState, rules: &Rules) -> String {
         Move::PlaceThreeAreas { placements } => format!(
             "Place 1 assistant in each of: {}{}",
             placements.iter().map(|a| area_label(state, *a)).collect::<Vec<_>>().join(", "),
-            placement_fee_text(state, placements),
+            placement_fee_note(state, placements),
         ),
         Move::PlaceTwoSameArea { area, adjacent_bonus } => {
             let mut s = format!("Place 2 assistants in {}", area_label(state, *area));
@@ -401,7 +403,7 @@ pub fn describe_move(mv: &Move, state: &GameState, rules: &Rules) -> String {
                 s.push_str(&format!(" and 1 in {} (Telegram)", area_label(state, *adj)));
                 placements.push(*adj);
             }
-            s.push_str(&placement_fee_text(state, &placements));
+            s.push_str(&placement_fee_note(state, &placements));
             s
         }
         Move::MovePresident { path, destination } if path.is_empty() => {
