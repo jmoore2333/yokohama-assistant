@@ -622,7 +622,7 @@ fn generate_church_actions(state: &GameState, player: PlayerId, power: u8, area:
         }
 
         let total_faith = calculate_church_faith(power, copper, silk, tea, seafood, yen, imported_good);
-        if eligible_church_spaces(&state.church_track, total_faith, state.config.player_count).is_empty() {
+        if eligible_church_spaces(&state.church_track, total_faith).is_empty() {
             continue;
         }
 
@@ -650,7 +650,7 @@ fn generate_customs_actions(state: &GameState, player: PlayerId, power: u8, area
 
     for n in 1..=customs_max_imported_goods(power) {
         if validate_customs_action(state, player, area, n, power).is_ok()
-            && !eligible_customs_spaces_for_cost(&state.customs_track, n, state.config.player_count).is_empty()
+            && !eligible_customs_spaces_for_cost(&state.customs_track, n).is_empty()
         {
             moves.push(Move::ExecuteAreaAction { action: AreaAction::Customs { imported_goods_paid: n } });
         }
@@ -2607,6 +2607,10 @@ mod tests {
         state.players[0].president_location = PresidentLocation::OnBoard(area);
         state.turn_phase = TurnPhase::AreaAction;
         state.current_action_power = Some(power);
+        // create_test_state builds an ad-hoc 2P state; place the finding-D1
+        // setup dummy so faith-7 blocking is occupancy-derived here exactly as
+        // a real finalize_setup game would have it.
+        crate::game::place_setup_dummies(&mut state);
         state
     }
 
@@ -2622,6 +2626,10 @@ mod tests {
         state.players[0].president_location = PresidentLocation::OnBoard(area);
         state.turn_phase = TurnPhase::AreaAction;
         state.current_action_power = Some(power);
+        // create_test_state builds an ad-hoc 2P state; place the finding-D1
+        // setup dummy so space-4 blocking is occupancy-derived here exactly as
+        // a real finalize_setup game would have it.
+        crate::game::place_setup_dummies(&mut state);
         state
     }
 
@@ -2664,6 +2672,8 @@ mod tests {
     fn make_3p(state: &mut GameState) {
         state.config.player_count = 3;
         state.players.push(PlayerState::new(PlayerId::new(2), PlayerColor::Yellow, false));
+        // create_*_area_state placed the 2P dummy; a 3P game has none.
+        crate::game::clear_setup_dummies(state);
     }
 
     #[test]

@@ -164,7 +164,59 @@ pub fn new_game(mut config: GameConfig, rules: &Rules, seed: u64) -> Result<Pend
         }
     }
 
+    // Finding D1: the 2-player dummy assistants are board furniture placed
+    // once here (like the Port/Lab fills above). reconcile_setup re-types the
+    // board but never touches the two tracks, and finalize_setup only resolves
+    // starting-order choices, so this single placement carries through BOTH
+    // the normal and the live-tracked setup paths unchanged.
+    place_setup_dummies(&mut state);
+
     Ok(PendingSetup { state, deals })
+}
+
+/// Finding D1 (rulebook p.9 NOTE): in a 2-player game a "dummy" assistant of
+/// an unused colour is placed during setup on Church faith-7 and Customs
+/// space-4. Modelled as a real slot occupant owned by the sentinel
+/// [`PlayerId::DUMMY`] — the ONE representation from which every consumer
+/// derives: it BLOCKS real placement on those spaces (occupancy, via
+/// `eligible_church_spaces` / `eligible_customs_spaces_for_cost`), it is
+/// EXCLUDED from the end-game trigger's real-pawn tally (`total_assistants`
+/// skips it, so a 2P game still ends on the 4th REAL pawn — the printed
+/// 5-total being 4 real + 1 dummy), and it COMPETES in the Church/Customs
+/// majority bonuses (`game::scoring`). No-op for 3+ players, which have no
+/// dummy. `arrival_order` is irrelevant (final scoring's count-tie is
+/// positional, not by arrival) and is left 0 without advancing
+/// `next_arrival_order`, so real placements are numbered exactly as before.
+pub(crate) fn place_setup_dummies(state: &mut GameState) {
+    if state.config.player_count != 2 {
+        return;
+    }
+    let church_idx = ChurchTrack::faith_to_index(7).expect("faith 7 is on the track");
+    state.church_track.slots[church_idx] = Some(ChurchSlot {
+        player: PlayerId::DUMMY,
+        arrival_order: 0,
+    });
+    let customs_idx = CustomsTrack::space_to_index(4).expect("space 4 is on the track");
+    state.customs_track.slots[customs_idx] = Some(CustomsSlot {
+        player: PlayerId::DUMMY,
+        arrival_order: 0,
+    });
+}
+
+/// Inverse of [`place_setup_dummies`]: remove the 2-player dummy from Church
+/// faith-7 and Customs space-4 if (and only if) it is the sentinel occupant.
+/// Used by tests that convert a 2P fixture up to 3/4 players, where no dummy
+/// exists — it leaves any real-player pawn on those spaces untouched.
+#[cfg(test)]
+pub(crate) fn clear_setup_dummies(state: &mut GameState) {
+    let church_idx = ChurchTrack::faith_to_index(7).expect("faith 7 is on the track");
+    if state.church_track.slots[church_idx].map(|s| s.player) == Some(PlayerId::DUMMY) {
+        state.church_track.slots[church_idx] = None;
+    }
+    let customs_idx = CustomsTrack::space_to_index(4).expect("space 4 is on the track");
+    if state.customs_track.slots[customs_idx].map(|s| s.player) == Some(PlayerId::DUMMY) {
+        state.customs_track.slots[customs_idx] = None;
+    }
 }
 
 /// Resolve each player's starting-order choice against a `PendingSetup`, producing a playable
@@ -656,6 +708,63 @@ mod tests {
         assert_eq!(config.inactive_area_count(), 0);
     }
 
+    /// Finding D1 (rulebook p.9 NOTE): 2-player setup places a "dummy"
+    /// assistant of an unused colour on Church faith-7 (index 3) and Customs
+    /// space-4 (index 3), owned by the sentinel `PlayerId::DUMMY`. Modelled as
+    /// a real slot occupant so placement blocking and majority competition
+    /// both fall out of the one representation.
+    #[test]
+    fn finalize_setup_places_the_2p_dummy_on_faith7_and_space4() {
+        let rules = Rules::standard();
+        let pending = new_game(GameConfig::for_player_count(2), &rules, 3).unwrap();
+        let state = finalize_setup(
+            pending,
+            &[StartingOrderChoice::Keep(0), StartingOrderChoice::Keep(0)],
+        )
+        .unwrap();
+
+        assert_eq!(
+            state.church_track.slots[ChurchTrack::faith_to_index(7).unwrap()].map(|s| s.player),
+            Some(PlayerId::DUMMY),
+            "2P Church faith-7 must be held by the dummy"
+        );
+        assert_eq!(
+            state.customs_track.slots[CustomsTrack::space_to_index(4).unwrap()].map(|s| s.player),
+            Some(PlayerId::DUMMY),
+            "2P Customs space-4 must be held by the dummy"
+        );
+        // The dummy is furniture, not a real-player pawn: excluded from the
+        // end-game trigger's real-pawn tally (a 2P game still ends on the 4th
+        // REAL pawn -- the printed 5-total being 4 real + 1 dummy).
+        assert_eq!(
+            state.church_track.total_assistants(),
+            0,
+            "the dummy is excluded from the real-pawn trigger count"
+        );
+        assert_eq!(state.customs_track.total_assistants(), 0);
+    }
+
+    /// 3- and 4-player games have no dummy: faith-7 and space-4 are ordinary
+    /// open spaces there.
+    #[test]
+    fn finalize_setup_places_no_dummy_above_two_players() {
+        let rules = Rules::standard();
+        for players in [3u8, 4] {
+            let pending = new_game(GameConfig::for_player_count(players), &rules, 3).unwrap();
+            let choices: Vec<StartingOrderChoice> =
+                (0..players).map(|_| StartingOrderChoice::Keep(0)).collect();
+            let state = finalize_setup(pending, &choices).unwrap();
+            assert!(
+                state.church_track.slots[ChurchTrack::faith_to_index(7).unwrap()].is_none(),
+                "{players}P: Church faith-7 must be open (no dummy)"
+            );
+            assert!(
+                state.customs_track.slots[CustomsTrack::space_to_index(4).unwrap()].is_none(),
+                "{players}P: Customs space-4 must be open (no dummy)"
+            );
+        }
+    }
+
     #[test]
     fn test_create_players() {
         let config = GameConfig::for_player_count(3);
@@ -873,6 +982,38 @@ mod tests {
         // Determinism: same inputs, same output.
         let again = reconcile_setup(new_game(GameConfig::for_player_count(2), &rules, 11).unwrap(), &obs, &rules).unwrap();
         assert_eq!(again, reconciled);
+    }
+
+    /// Finding D1: the live-tracked setup path (new_game -> reconcile_setup ->
+    /// finalize_setup) yields the SAME dummy occupancy as the normal path.
+    /// reconcile_setup re-types the board and swaps cards but never touches the
+    /// two tracks, so the dummy new_game placed carries through unchanged.
+    #[test]
+    fn reconcile_then_finalize_2p_still_carries_the_dummy() {
+        let rules = Rules::standard();
+        let pending = new_game(GameConfig::for_player_count(2), &rules, 11).unwrap();
+        let table = new_game(GameConfig::for_player_count(2), &rules, 99).unwrap();
+        let obs = SetupObservations {
+            port_a: Some(std::array::from_fn(|i| table.state.port_state.port_a.slots[i].unwrap())),
+            deals: vec![(PlayerId::new(0), table.deals[0])],
+            ..Default::default()
+        };
+        let reconciled = reconcile_setup(pending, &obs, &rules).unwrap();
+        let state = finalize_setup(
+            reconciled,
+            &[StartingOrderChoice::Keep(0), StartingOrderChoice::Keep(0)],
+        )
+        .unwrap();
+        assert_eq!(
+            state.church_track.slots[ChurchTrack::faith_to_index(7).unwrap()].map(|s| s.player),
+            Some(PlayerId::DUMMY),
+            "the dummy must survive the reconcile path onto Church faith-7"
+        );
+        assert_eq!(
+            state.customs_track.slots[CustomsTrack::space_to_index(4).unwrap()].map(|s| s.player),
+            Some(PlayerId::DUMMY),
+            "the dummy must survive the reconcile path onto Customs space-4"
+        );
     }
 
     #[test]

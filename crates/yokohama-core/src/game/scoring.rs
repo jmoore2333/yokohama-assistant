@@ -163,14 +163,25 @@ fn calculate_church_bonus(state: &GameState) -> Vec<(PlayerId, u32)> {
         b.1.cmp(&a.1).then(b.2.cmp(&a.2))
     });
 
-    let mut bonuses = Vec::new();
-    if let Some((player, _, _)) = rankings.first() {
-        bonuses.push((*player, 6));
-    }
-    if let Some((player, _, _)) = rankings.get(1) {
-        bonuses.push((*player, 3));
-    }
+    award_top_two(&rankings, [6, 3])
+}
 
+/// Award the top two majority places, `vps[0]` to 1st and `vps[1]` to 2nd,
+/// over a ranking already sorted best-first. Finding D1: the 2P dummy
+/// ([`PlayerId::DUMMY`]) is ranked as a real competitor holding its one pawn,
+/// so it can TAKE a place — but, being no real player, that place is awarded
+/// to nobody. Its rank is still CONSUMED (the `place` index advances), so a
+/// real player only earns the place it actually achieves behind the dummy.
+/// For 3+ players (no dummy in the ranking) this is the plain top-two.
+fn award_top_two(rankings: &[(PlayerId, u8, u8)], vps: [u32; 2]) -> Vec<(PlayerId, u32)> {
+    let mut bonuses = Vec::new();
+    for (place, vp) in vps.into_iter().enumerate() {
+        if let Some((player, _, _)) = rankings.get(place) {
+            if !player.is_dummy() {
+                bonuses.push((*player, vp));
+            }
+        }
+    }
     bonuses
 }
 
@@ -195,15 +206,7 @@ fn calculate_customs_bonus(state: &GameState) -> Vec<(PlayerId, u32)> {
         b.1.cmp(&a.1).then(b.2.cmp(&a.2))
     });
 
-    let mut bonuses = Vec::new();
-    if let Some((player, _, _)) = rankings.first() {
-        bonuses.push((*player, 8));
-    }
-    if let Some((player, _, _)) = rankings.get(1) {
-        bonuses.push((*player, 4));
-    }
-
-    bonuses
+    award_top_two(&rankings, [8, 4])
 }
 
 /// Technology total industry value bonus: 1st = 10 VP, 2nd = 5 VP.
@@ -336,6 +339,107 @@ pub fn calculate_remainder_bonus(player: &PlayerState) -> u32 {
 mod tests {
     use super::*;
     use crate::game::create_test_game_state;
+    use crate::game::{finalize_setup, new_game, StartingOrderChoice};
+
+    /// A freshly finalized 2-player game (real board + decks). After finding
+    /// D1 this also carries the setup dummy on Church faith-7 (index 3) and
+    /// Customs space-4 (index 3) -- the D1 scoring tests park real-player
+    /// pawns at OTHER indices and read the dummy's competition back out of
+    /// the majority bonuses.
+    fn finalized_2p() -> (GameState, Rules) {
+        let rules = Rules::standard();
+        let pending = new_game(GameConfig::for_player_count(2), &rules, 7).unwrap();
+        let state = finalize_setup(
+            pending,
+            &[StartingOrderChoice::Keep(0), StartingOrderChoice::Keep(0)],
+        )
+        .unwrap();
+        (state, rules)
+    }
+
+    /// Finding D1 (rulebook p.9 NOTE) scenario (a): the 2P dummy on Church
+    /// faith-7 holds a majority PLACE, denying it to a real player. Both real
+    /// players hold one pawn LEFT of faith-7, so the dummy (rightmost) takes
+    /// 1st -- awarded to nobody -- and P1 collects only 2nd (3 VP) instead of
+    /// the 1st it would win with the dummy absent. RED before D1: setup places
+    /// no dummy, so P1 would hold 1st and receive 6.
+    #[test]
+    fn church_majority_2p_dummy_takes_first_place() {
+        let (mut state, _rules) = finalized_2p();
+        state.church_track.slots[ChurchTrack::faith_to_index(4).unwrap()] =
+            Some(ChurchSlot { player: PlayerId::new(0), arrival_order: 1 });
+        state.church_track.slots[ChurchTrack::faith_to_index(5).unwrap()] =
+            Some(ChurchSlot { player: PlayerId::new(1), arrival_order: 2 });
+
+        let bonuses = calculate_church_bonus(&state);
+        assert!(
+            !bonuses.iter().any(|(_, vp)| *vp == 6),
+            "the dummy holds 1st, so no real player receives the 6-VP first place: {bonuses:?}"
+        );
+        assert!(
+            bonuses.contains(&(PlayerId::new(1), 3)),
+            "P1 (rightmost real, faith-5) takes 2nd behind the dummy: {bonuses:?}"
+        );
+        assert!(
+            !bonuses.iter().any(|(p, _)| *p == PlayerId::new(0)),
+            "P0 (faith-4) is beaten by both the dummy and P1: {bonuses:?}"
+        );
+    }
+
+    /// Finding D1 scenario (b): the 2P dummy on Customs space-4 wins a
+    /// count-tie against a real player purely by the rightmost tie-break. P0
+    /// holds space-3, the dummy holds space-4 (further right) -- both count 1
+    /// -- so the dummy takes 1st and P0 drops to 2nd (4 VP) from the 1st (8
+    /// VP) it would win with the dummy absent. RED before D1.
+    #[test]
+    fn customs_majority_2p_dummy_wins_tie_via_rightmost() {
+        let (mut state, _rules) = finalized_2p();
+        state.customs_track.slots[CustomsTrack::space_to_index(3).unwrap()] =
+            Some(CustomsSlot { player: PlayerId::new(0), arrival_order: 1 });
+        state.customs_track.slots[CustomsTrack::space_to_index(1).unwrap()] =
+            Some(CustomsSlot { player: PlayerId::new(1), arrival_order: 2 });
+
+        let bonuses = calculate_customs_bonus(&state);
+        assert!(
+            !bonuses.iter().any(|(_, vp)| *vp == 8),
+            "the dummy wins the rightmost tie for 1st, so no real player gets 8: {bonuses:?}"
+        );
+        assert!(
+            bonuses.contains(&(PlayerId::new(0), 4)),
+            "P0 (space-3) takes 2nd behind the dummy: {bonuses:?}"
+        );
+        assert!(
+            !bonuses.iter().any(|(p, _)| *p == PlayerId::new(1)),
+            "P1 (space-1) is beaten by both the dummy and P0: {bonuses:?}"
+        );
+    }
+
+    /// Finding D1 scenario (c): when both real players outrank the dummy on
+    /// COUNT (2 pawns each vs the dummy's lone pawn), the dummy places third
+    /// and changes nothing -- 2P scores are identical to the pre-D1 behaviour.
+    /// GREEN both before and after: a regression guard, not a bug reproducer.
+    #[test]
+    fn church_majority_2p_dummy_beaten_by_both_leaves_scores_unchanged() {
+        let (mut state, _rules) = finalized_2p();
+        state.church_track.slots[ChurchTrack::faith_to_index(4).unwrap()] =
+            Some(ChurchSlot { player: PlayerId::new(0), arrival_order: 1 });
+        state.church_track.slots[ChurchTrack::faith_to_index(8).unwrap()] =
+            Some(ChurchSlot { player: PlayerId::new(0), arrival_order: 2 });
+        state.church_track.slots[ChurchTrack::faith_to_index(5).unwrap()] =
+            Some(ChurchSlot { player: PlayerId::new(1), arrival_order: 3 });
+        state.church_track.slots[ChurchTrack::faith_to_index(9).unwrap()] =
+            Some(ChurchSlot { player: PlayerId::new(1), arrival_order: 4 });
+
+        let bonuses = calculate_church_bonus(&state);
+        assert!(
+            bonuses.contains(&(PlayerId::new(1), 6)),
+            "P1 (rightmost of the count-2 tie) takes 1st: {bonuses:?}"
+        );
+        assert!(
+            bonuses.contains(&(PlayerId::new(0), 3)),
+            "P0 takes 2nd; the lone-pawn dummy is beaten by both: {bonuses:?}"
+        );
+    }
 
     #[test]
     fn final_result_breaks_ties_clockwise_from_start_player() {

@@ -331,27 +331,34 @@ fn customs_reward_text(space: u8) -> String {
     s
 }
 
-/// Church Management Board (faith values 4-11, occupant color or `-`, `X` on
-/// the 2P dummy-blocked faith-7 space -- `eligible_church_spaces` blocks it
-/// exactly the way `eligible_customs_spaces_for_cost` blocks Customs space
-/// 4) and Customs Management Board (printed cost via `CustomsTrack::
-/// space_cost` -- single source, Task 12 -- occupant or `-`, `X` on the 2P
-/// dummy-blocked space). Each space line also prints its printed VP + rider
-/// (`church_reward_text`/`customs_reward_text`, S5) after the occupant, and
-/// the occupant color letter is painted in the player's color (S4).
+/// One track slot's occupant marker: a real player as their color letter
+/// painted in their color (S4), or the 2-player setup dummy
+/// ([`PlayerId::DUMMY`], finding D1) as a dim `D` — a named occupant that
+/// holds the space AND competes in that track's majority bonus, not the bare
+/// `X` void it used to render as.
+fn track_occupant(state: &GameState, player: PlayerId) -> String {
+    if player.is_dummy() {
+        paint(Tone::Dim, "D")
+    } else {
+        let c = state.player(player).color;
+        paint(Tone::Player(c), &color_letter(c).to_string())
+    }
+}
+
+/// Church Management Board (faith values 4-11, occupant marker or `-`) and
+/// Customs Management Board (printed cost via `CustomsTrack::space_cost` --
+/// single source, Task 12 -- occupant marker or `-`). In 2-player games the
+/// setup dummy holds Church faith-7 and Customs space-4, shown as a dim `D`
+/// (`track_occupant`). Each space line also prints its printed VP + rider
+/// (`church_reward_text`/`customs_reward_text`, S5) after the occupant.
 pub fn tracks_view(state: &GameState) -> String {
     let mut out = String::new();
 
     out.push_str("Church:\n");
     for i in 0..8 {
         let faith = ChurchTrack::index_to_faith(i);
-        let blocked = state.config.player_count == 2 && faith == 7;
         let occ = match state.church_track.slots[i] {
-            Some(slot) => {
-                let c = state.player(slot.player).color;
-                paint(Tone::Player(c), &color_letter(c).to_string())
-            }
-            None if blocked => "X".to_string(),
+            Some(slot) => track_occupant(state, slot.player),
             None => "-".to_string(),
         };
         out.push_str(&format!("  faith {:2}: {}  {}\n", faith, occ, church_reward_text(faith)));
@@ -360,13 +367,8 @@ pub fn tracks_view(state: &GameState) -> String {
     out.push_str("Customs:\n");
     for i in 0..7 {
         let space = CustomsTrack::index_to_space(i);
-        let blocked = state.config.player_count == 2 && space == 4;
         let occ = match state.customs_track.slots[i] {
-            Some(slot) => {
-                let c = state.player(slot.player).color;
-                paint(Tone::Player(c), &color_letter(c).to_string())
-            }
-            None if blocked => "X".to_string(),
+            Some(slot) => track_occupant(state, slot.player),
             None => "-".to_string(),
         };
         out.push_str(&format!(
@@ -1259,7 +1261,12 @@ mod tests {
         let v = tracks_view(&state);
         assert!(v.contains("Church"), "{v}");
         assert!(v.contains("Customs"), "{v}");
-        assert!(v.contains('X'), "{v}");
+        // Finding D1: the 2P dummy holds Church faith-7 and Customs space-4,
+        // shown as a named `D` occupant (not the old bare `X` void).
+        let church7 = v.lines().find(|l| l.contains("faith  7:")).expect("faith-7 line");
+        assert!(church7.contains("faith  7: D"), "{church7}");
+        let customs4 = v.lines().find(|l| l.contains("space 4 ")).expect("space-4 line");
+        assert!(customs4.contains(": D "), "{customs4}");
     }
 
     /// I4 (external review 2026-07-20): the Station token grants EVERY
@@ -1312,10 +1319,9 @@ mod tests {
         );
     }
 
-    /// Task 12: the engine blocks Church faith-7 in 2p games exactly the
-    /// way it blocks Customs space 4 (`eligible_church_spaces` /
-    /// `eligible_customs_spaces_for_cost`, both gate on `player_count == 2`)
-    /// -- `tracks_view` must mark it with the same `X` dummy convention.
+    /// Finding D1 (rulebook p.9 NOTE): in 2p games the setup dummy holds
+    /// Church faith-7, so `tracks_view` renders it as a named `D` occupant
+    /// (which competes in the majority bonus), not the bare `X` it used to be.
     #[test]
     fn tracks_view_marks_church_faith_7_dummy_at_2p() {
         let state = test_state_2p();
@@ -1326,7 +1332,7 @@ mod tests {
         // after it), so the marker is checked there rather than at line-end.
         let needle = format!("faith {:2}:", 7);
         let line = v.lines().find(|l| l.contains(&needle)).expect("faith-7 line present");
-        assert!(line.contains(&format!("{needle} X")), "{line}");
+        assert!(line.contains(&format!("{needle} D")), "{line}");
     }
 
     /// S5 (pre-gate view batch): every track space line must show its PRINTED
