@@ -42,10 +42,13 @@ placement, canal crossing derivation, live-board reconciliation, CLI board rende
   Tea Plantation ×1, Fishing Port ×1; 3P returns Laboratory B, Copper Mine ×1, Silk Mill ×1,
   Tea Plantation ×1; 4P returns nothing. **Note: the 2-player board has NO Canal** — verify the
   engine agrees; if it does not, that is a second fidelity defect fixed here.
-- **Canal card/board art** — three crossing arrows (horizontal + both diagonals, no vertical);
-  the 2026-07-18 four-pair ruling was reasoned on the rectangular model and is **re-opened**
-  (decision-log commitment). On a staggered board no directly-above neighbor exists, so the
-  art's three arrows are expected to be exactly right. Jeremy re-confirms on his board.
+- **Canal transit — RULED 2026-07-21 (supersedes the re-open):** ANY-TO-ANY. The Canal
+  connects any of its adjacent tiles to any other for the 1-Yen bank toll (Jeremy, on the
+  staggered-neighborhood diagram: "you can go from any of the tiles you've indicated to any of
+  the other ones"), including neighbor pairs that are also directly adjacent (legal, dominated,
+  self-resolving — owner-noted). The colinear-pairs model and the bent-transit prohibition are
+  superseded; derivation becomes all-neighbor-pairs, which is simpler than colinearity
+  geometry. The Canal remains unplaceable and unstoppable.
 
 ## 3. Scope of work
 
@@ -116,6 +119,8 @@ runs against the harness on the corrected topology); computer vision.
 ## 6. Owner gates recorded
 
 - Tile arrangement: **CONFIRMED** (Jeremy, 2026-07-21, from the physical edition).
-- Canal arrows on the staggered board: **pending** (60s at the box, during this plan).
-- 2P printed-dummy trigger count: **pending** (60s at the box, rides along).
-- Order-card country distribution (8/8/8/7/5): **pending** (Jeremy has it in hand).
+- Canal transit: **RULED any-to-any** (Jeremy, 2026-07-21) — no box check needed.
+- 2P track trigger (4 vs 5 real pawns): **pending Jeremy's distinguishing answer** (the
+  dummy-is-a-blocker clarification re-opened it; engine stays at 4 until answered).
+- Card country distributions: **BOX-CONFIRMED** (orders NL5/FR8/US8/GB8/DE7; techs
+  GB9/US7/NL5/FR5/DE4 — exact YAML matches, 2026-07-21).
