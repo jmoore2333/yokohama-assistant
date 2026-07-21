@@ -281,8 +281,7 @@ fn run_live_tail(
         *legal_tile_counts.entry(area.area_type).or_insert(0) += 1;
     }
     let all_tech_ids: Vec<TechCardId> = rules.techs.iter().map(|c| c.id).collect();
-    let (rows, cols) = grid_dimensions(players);
-    let grid_n = rows as usize * cols as usize;
+    let grid_n = expected_tile_count(players);
 
     let mut seen_order_ids: BTreeSet<u8> = BTreeSet::new();
     let mut seen_tech_ids: BTreeSet<u8> = BTreeSet::new();

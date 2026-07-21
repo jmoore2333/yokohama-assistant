@@ -50,7 +50,13 @@ use crate::types::GameState;
 /// bump contract). Stamped into every `GameRecord` at creation; `replay`
 /// warns and `replay_strict` rejects when a record's stamp differs from the
 /// running engine's.
-pub const SEMANTICS_REV: u32 = 1;
+///
+/// Rev 2 (2026-07-21, Task 1 — board topology): the board became a staggered
+/// pyramid (was a rectangular lattice) and Canal crossings became any-to-any.
+/// That changes movement legality and president routes, so any rev-1 record
+/// replays to a different state under rev 2 — old records become
+/// strict-rejected, correctly.
+pub const SEMANTICS_REV: u32 = 2;
 
 /// FNV-1a 64 over `bytes`, seeded with the standard offset basis. Hand-rolled
 /// for the same reason `Rules::content_hash` hand-rolls it: `std::hash` is not

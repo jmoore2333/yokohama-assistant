@@ -1178,15 +1178,16 @@ mod tests {
     /// S3 (pre-gate view batch): the FIRST `board` render of a session, on a
     /// board wider than 100 columns, prints a one-time width note -- there is
     /// no terminal-size detection (std has none; no new deps), so the note is
-    /// keyed purely on the board's own rendered width. A 3-player board is
-    /// 120 columns; the note names that width and points at guide §2, and a
-    /// second render does NOT repeat it.
+    /// keyed purely on the board's own rendered width. A 4-player board is
+    /// 103 columns; the note names that width and points at guide §2, and a
+    /// second render does NOT repeat it. (On the staggered pyramid the 3-player
+    /// board is only 86 columns, so 4 players is the wide case now.)
     #[test]
     fn board_command_prints_a_one_time_width_note_on_a_wide_board() {
-        let mut r = repl_np(3, 7);
+        let mut r = repl_np(4, 7);
         let width =
             render::board_grid(r.session.state()).lines().next().map(|l| l.chars().count()).unwrap_or(0);
-        assert!(width > 100, "3p board should exceed 100 columns, got {width}");
+        assert!(width > 100, "4p board should exceed 100 columns, got {width}");
 
         let first = r.step("board");
         assert!(
@@ -1200,7 +1201,7 @@ mod tests {
         assert!(!second.text.contains("columns wide"), "note must print once per session: {}", second.text);
     }
 
-    /// S3: a narrow board (2 players = 86 columns, <= 100) never triggers the
+    /// S3: a narrow board (2 players = 69 columns, <= 100) never triggers the
     /// note, on the first render or any later one.
     #[test]
     fn board_command_omits_the_width_note_on_a_narrow_board() {

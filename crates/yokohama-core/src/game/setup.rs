@@ -220,8 +220,8 @@ pub struct SetupObservations {
 
 /// Observed physical board arrangement (handled in reconcile_setup's board
 /// pass): area tile per grid cell and building-site card per grid cell,
-/// row-major over `board_gen::grid_dimensions`. `sites` is None exactly
-/// where the tile carries no site (Canal).
+/// row-major over `board_gen::row_lengths` (the staggered pyramid). `sites`
+/// is None exactly where the tile carries no site (Canal).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ObservedBoard {
     pub tiles: Vec<crate::types::AreaType>,
@@ -436,18 +436,16 @@ pub fn reconcile_setup(
     Ok(pending)
 }
 
-/// Board pass: re-type the fixed row-major grid to the observed tiles,
-/// reassign building-site cards from registry indices, rebuild the 5-Power
-/// token pool over the new non-Canal cells (seeded values, order preserved),
-/// and rebuild adjacency and Canal crossings for the new Canal cell. Grid
-/// positions never move (AreaId i is always cell (i/cols, i%cols)), but
-/// flank-pair Canal-crossing adjacency depends on WHICH cell is the Canal,
-/// so a re-type CAN move it (design 2026-07-18 decision log, Task 9 -
-/// supersedes the earlier "adjacency never touched" assumption, which held
-/// only under the old Canal-as-node semantics). Adjacency is rebuilt
-/// wholesale from the same shared helpers `generate_board_layout` uses
-/// (grid-orthogonal edges + `derive_canal_crossings`), so reconciled output
-/// is identical to generating this tile arrangement directly.
+/// Board pass: re-type the fixed row-major staggered grid to the observed
+/// tiles, reassign building-site cards from registry indices, rebuild the
+/// 5-Power token pool over the new non-Canal cells (seeded values, order
+/// preserved), and rebuild adjacency and Canal crossings for the new Canal
+/// cell. Grid positions never move (AreaId i is always the same staggered
+/// cell), but the any-to-any Canal-crossing adjacency depends on WHICH cell is
+/// the Canal, so a re-type CAN move it. Adjacency is rebuilt wholesale from the
+/// same shared helpers `generate_board_layout` uses (`staggered_adjacency` +
+/// `derive_canal_crossings`), so reconciled output is identical to generating
+/// this tile arrangement directly.
 fn reconcile_board(
     pending: &mut PendingSetup,
     board: &ObservedBoard,
@@ -513,18 +511,19 @@ fn reconcile_board(
             );
         }
     }
-    // Rebuild adjacency: grid-orthogonal base plus the new Canal cell's
-    // derived flank pairs (both layered exactly the way generation does).
-    let (rows, cols) = crate::game::board_gen::grid_dimensions(pending.state.config.player_count);
+    // Rebuild adjacency: staggered brick-offset base plus the new Canal cell's
+    // derived any-to-any transit pairs (both layered exactly the way
+    // generation does).
+    let rows = crate::game::board_gen::row_lengths(pending.state.config.player_count);
     layout.adjacency.clear();
-    for (a, b) in crate::game::board_gen::grid_orthogonal_adjacency(rows, cols) {
+    for (a, b) in crate::game::board_gen::staggered_adjacency(&rows) {
         layout.adjacency.entry(a).or_default().push(b);
         layout.adjacency.entry(b).or_default().push(a);
     }
     layout.canal_crossings.clear();
     if let Some(ci) = board.tiles.iter().position(|t| *t == AreaType::Canal) {
-        let pos = ((ci / cols as usize) as u8, (ci % cols as usize) as u8);
-        for (a, b) in crate::game::board_gen::derive_canal_crossings(pos, rows, cols) {
+        let pos = crate::game::board_gen::area_id_to_cell(AreaId::new(ci as u8), &rows);
+        for (a, b) in crate::game::board_gen::derive_canal_crossings(pos, &rows) {
             layout.adjacency.entry(a).or_default().push(b);
             layout.adjacency.entry(b).or_default().push(a);
             layout.canal_crossings.push((a, b));
@@ -913,8 +912,8 @@ mod tests {
         let rules = Rules::standard();
         let pending = new_game(GameConfig::for_player_count(3), &rules, 5).unwrap();
         // Observed board: the seeded tiles REVERSED (a valid permutation), sites 0..13 in order.
-        let (rows, cols) = crate::game::board_gen::grid_dimensions(3);
-        let n = (rows * cols) as usize;
+        let rows = crate::game::board_gen::row_lengths(3);
+        let n = crate::game::board_gen::expected_tile_count(3);
         let mut tiles: Vec<AreaType> = (0..n)
             .map(|i| pending.state.board_layout.areas[&AreaId::new(i as u8)].area_type)
             .collect();
@@ -935,7 +934,10 @@ mod tests {
         for (i, tile) in tiles.iter().enumerate().take(n) {
             let id = AreaId::new(i as u8);
             assert_eq!(layout.areas[&id].area_type, *tile);
-            assert_eq!(layout.areas[&id].grid_position, ((i / cols as usize) as u8, (i % cols as usize) as u8));
+            assert_eq!(
+                layout.areas[&id].grid_position,
+                crate::game::board_gen::area_id_to_cell(id, &rows)
+            );
         }
         // Sites follow the observed assignment; Canal has none.
         // (No `clone_reset` helper on BuildingSite — compare the printed
@@ -961,20 +963,18 @@ mod tests {
         assert!(!layout.five_power_tokens.contains_key(
             &AreaId::new(tiles.iter().position(|t| *t == AreaType::Canal).unwrap() as u8)
         ));
-        // Canal crossings follow flank-pair semantics (design 2026-07-18
-        // decision log) for the Canal's NEW cell, matching
-        // derive_canal_crossings exactly (this seed's reversal happens to
-        // land the Canal on a grid edge, where every candidate line is
-        // out-of-bounds and the correct answer is legitimately empty - the
-        // both-cells-exist filter doing its job, not a weaker assertion) -
-        // and each pair is bidirectionally adjacent.
+        // Canal crossings follow the any-to-any transit model (decision log
+        // 2026-07-21) for the Canal's NEW cell, matching derive_canal_crossings
+        // exactly (reconcile reuses the same helper generation does) — and each
+        // pair is bidirectionally adjacent and marked as a crossing.
         let canal_i = tiles.iter().position(|t| *t == AreaType::Canal).unwrap();
-        let canal_pos = ((canal_i / cols as usize) as u8, (canal_i % cols as usize) as u8);
-        let expected = crate::game::board_gen::derive_canal_crossings(canal_pos, rows, cols);
+        let canal_pos = crate::game::board_gen::area_id_to_cell(AreaId::new(canal_i as u8), &rows);
+        let expected = crate::game::board_gen::derive_canal_crossings(canal_pos, &rows);
         assert_eq!(layout.canal_crossings, expected);
         for &(a, b) in &layout.canal_crossings {
             assert!(layout.adjacent_areas(a).contains(&b));
             assert!(layout.adjacent_areas(b).contains(&a));
+            assert!(layout.is_canal_crossing(a, b));
         }
     }
 
@@ -1005,8 +1005,8 @@ mod tests {
         let rules = Rules::standard();
         let pending = new_game(GameConfig::for_player_count(2), &rules, 123).unwrap();
         // 2p never has a Canal tile (tiles_for_player_count strips it).
-        let (rows, cols) = crate::game::board_gen::grid_dimensions(2);
-        let n = (rows * cols) as usize;
+        let rows = crate::game::board_gen::row_lengths(2);
+        let n = crate::game::board_gen::expected_tile_count(2);
         let mut tiles: Vec<AreaType> = (0..n)
             .map(|i| pending.state.board_layout.areas[&AreaId::new(i as u8)].area_type)
             .collect();
@@ -1020,11 +1020,15 @@ mod tests {
         };
         let r = reconcile_setup(pending, &obs, &rules).unwrap();
         let layout = &r.state.board_layout;
-        // (c) Types permuted as observed; grid positions unchanged (row-major (2,5) grid).
+        // (c) Types permuted as observed; grid positions unchanged (row-major
+        // staggered pyramid, 4/3/2/1).
         for (i, tile) in tiles.iter().enumerate().take(n) {
             let id = AreaId::new(i as u8);
             assert_eq!(layout.areas[&id].area_type, *tile);
-            assert_eq!(layout.areas[&id].grid_position, ((i / cols as usize) as u8, (i % cols as usize) as u8));
+            assert_eq!(
+                layout.areas[&id].grid_position,
+                crate::game::board_gen::area_id_to_cell(id, &rows)
+            );
         }
         // (d) Sites follow the observed assignment (every cell, since there's no Canal).
         for (i, site) in sites.iter().enumerate().take(n) {
