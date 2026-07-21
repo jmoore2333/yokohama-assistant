@@ -2,10 +2,15 @@ use std::io::{BufRead, Write};
 
 fn main() {
     yokohama_cli::style::init_from_tty();
+    yokohama_cli::screen::init_from_tty();
     let rules = yokohama_core::Rules::standard();
     let args: Vec<String> = std::env::args().collect();
     let stdin = std::io::stdin();
     let mut lines = stdin.lock().lines().map_while(Result::ok);
+
+    if yokohama_cli::screen::enabled() {
+        println!("{}", yokohama_cli::screen::banner());
+    }
 
     let mut repl = if let Some(path) = args.get(1) {
         match yokohama_cli::session::Session::load(std::path::Path::new(path), rules) {
@@ -29,14 +34,16 @@ fn main() {
         }
     };
 
-    print!("{}", repl.prompt());
+    print!("{}", yokohama_cli::screen::wrap(&repl, &repl.prompt()));
     std::io::stdout().flush().ok();
     for line in lines {
         let out = repl.step(&line);
-        print!("{}", out.text);
-        std::io::stdout().flush().ok();
         if out.quit {
+            print!("{}", out.text);
+            std::io::stdout().flush().ok();
             break;
         }
+        print!("{}", yokohama_cli::screen::wrap(&repl, &out.text));
+        std::io::stdout().flush().ok();
     }
 }

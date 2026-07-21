@@ -42,6 +42,12 @@ pub struct Repl {
     /// REPL rather than in `render` because that layer is a pure formatter --
     /// "once per session" is mutable session state the REPL owns.
     board_width_note_shown: bool,
+    /// Composed-frame flags (Task 6): `composed` opts this session into the
+    /// TTY frame (`screen` command toggles it; only effective when
+    /// `screen::enabled()` -- a pipe never frames regardless), `show_panel`
+    /// keeps the players box inside that frame (`panel` toggles).
+    pub composed: bool,
+    pub show_panel: bool,
 }
 
 /// One line in the Movement phase's collapsed numbered list (design.md:67,
@@ -103,6 +109,8 @@ impl Repl {
             locked,
             sub: SubPrompt::None,
             board_width_note_shown: false,
+            composed: true,
+            show_panel: true,
         }
     }
 
@@ -283,6 +291,16 @@ impl Repl {
                 }
                 Err(e) => self.out(format!("Cannot undo: {e}\n"), false),
             },
+            ["panel"] => {
+                self.show_panel = !self.show_panel;
+                let word = if self.show_panel { "shown" } else { "hidden" };
+                self.out(format!("Players panel {word} (composed screen only).\n"), false)
+            }
+            ["screen"] => {
+                self.composed = !self.composed;
+                let word = if self.composed { "on" } else { "off" };
+                self.out(format!("Composed screen {word} (takes effect on a real terminal).\n"), false)
+            }
             ["save"] => self.save_cmd(None),
             ["save", _] => self.save_cmd(Some(words[1])),
             ["reveal", seat_tok, card_tok] => self.reveal_cmd(seat_tok, card_tok),
@@ -1122,6 +1140,8 @@ Commands:
   hand            show the current player's order-card hand
   score           show current VP/money (or the final scores once the game is over)
   log             show the tail of the move/event log
+  panel           toggle the players panel inside the composed screen (terminal only)
+  screen          toggle the composed screen itself (terminal only; pipes are always plain)
   more            show the next page of legal options (wraps to page 0)
   list            reset to the first page of legal options
   undo            undo the last move (and any reveals bound to it)

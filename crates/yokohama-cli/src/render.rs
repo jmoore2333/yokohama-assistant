@@ -159,6 +159,78 @@ pub fn labs_view(state: &GameState, rules: &Rules) -> String {
     out
 }
 
+/// The composed frame's compact players box (Task 6, design note §2): the
+/// at-a-glance PUBLIC picture -- current-player marker (`>`), yen/VP, goods,
+/// assistant zones (with a `locked N` tally when any pawns sit on goals or
+/// tracks, so the visible numbers still reconcile), built counts + the next
+/// TH take cost, and the President's location. Hand CONTENTS never appear
+/// here (only the count), so the panel is safe to show while the laptop is
+/// passed around a live table regardless of the privacy flag; the full
+/// `players` view carries the detail. Player names paint in their colors
+/// after layout (plain twin is the width authority).
+pub fn compact_panel(state: &GameState, _rules: &Rules) -> String {
+    let mut lines: Vec<(String, String)> = Vec::new();
+    lines.push(("─ Players ".to_string(), "─ Players ".to_string()));
+    for p in &state.players {
+        let marker = if p.id == state.current_player { ">" } else { " " };
+        let name = color_name(p.color);
+        // Pad from the PLAIN name length -- the painted twin's escapes have
+        // zero display width (style.rs's alignment rule).
+        let name_pad = " ".repeat(7usize.saturating_sub(name.chars().count()));
+        lines.push((
+            format!("{marker} {name}{name_pad} {:>2} yen  {:>2} VP", p.money, p.victory_points),
+            format!(
+                "{marker} {}{name_pad} {:>2} yen  {:>2} VP",
+                paint(Tone::Player(p.color), name),
+                p.money,
+                p.victory_points
+            ),
+        ));
+        let goods = format!(
+            "   c{} s{} t{} f{} i{}   hand {}",
+            p.copper, p.silk, p.tea, p.seafood, p.imported_goods,
+            p.order_cards_in_hand.len()
+        );
+        lines.push((goods.clone(), goods));
+        let assistants_on_board: u32 = p.assistants.on_board.values().map(|&c| c as u32).sum();
+        let locked =
+            p.assistants.on_achievements + p.assistants.on_church + p.assistants.on_customs;
+        let mut asst = format!(
+            "   asst: hand {} board {} wh {}",
+            p.assistants.in_hand, assistants_on_board, p.assistants.in_warehouse
+        );
+        if locked > 0 {
+            asst.push_str(&format!(" locked {locked}"));
+        }
+        lines.push((asst.clone(), asst));
+        let build = format!(
+            "   built: sh {} th {}   next TH take {} yen",
+            p.shophouses.built.len(),
+            p.trading_houses.built.len(),
+            p.trading_houses.next_cost()
+        );
+        lines.push((build.clone(), build));
+        let pres = match p.president_location {
+            PresidentLocation::InHand => "in hand".to_string(),
+            PresidentLocation::OnBoard(area) => describe::area_label(state, area),
+        };
+        let pres_line = format!("   President: {pres}");
+        lines.push((pres_line.clone(), pres_line));
+    }
+    let width = lines.iter().map(|(plain, _)| plain.chars().count()).max().unwrap_or(0);
+    let mut out = String::new();
+    for (i, (plain, painted)) in lines.iter().enumerate() {
+        if i == 0 {
+            out.push_str(painted);
+            out.push_str(&"─".repeat(width.saturating_sub(plain.chars().count())));
+        } else {
+            out.push_str(painted);
+        }
+        out.push('\n');
+    }
+    out
+}
+
 /// Per player: color, money, VP, goods, imports, hand order codes, completed
 /// order count, technology names, tokens/mercenaries, assistant/shophouse/
 /// trading-house counts by zone (hand/board/warehouse, built) plus the
@@ -1312,6 +1384,50 @@ mod tests {
             checked += 1;
         }
         assert!(checked > 0, "fixture must populate at least one lab slot:\n{text}");
+    }
+
+    /// Task 6 (composed frame): the compact panel shows each player's
+    /// public at-a-glance line set -- current marker, yen/VP, goods, hand
+    /// COUNT (never contents -- the panel is privacy-safe by construction),
+    /// assistant zones, built counts + next TH take, President location.
+    #[test]
+    fn compact_panel_shows_public_info_and_marks_the_current_player() {
+        let state = test_state_2p();
+        let rules = Rules::standard();
+        let text = compact_panel(&state, &rules);
+        assert!(text.starts_with("─ Players ─"), "{text}");
+        assert!(text.contains("> Red"), "current player marked: {text}");
+        assert!(text.contains("  Blue"), "other players unmarked: {text}");
+        assert!(text.contains("yen"), "{text}");
+        assert!(text.contains("hand 1"), "hand renders as a COUNT: {text}");
+        assert!(!text.contains("O0") && !text.contains("O1"), "hand contents never appear: {text}");
+        assert!(text.contains("next TH take 4 yen"), "{text}");
+        assert!(text.contains("President: in hand"), "{text}");
+    }
+
+    /// Locked pawns (goals/church/customs) surface as a `locked N` tally so
+    /// the compact numbers still reconcile to the 20-pawn total.
+    #[test]
+    fn compact_panel_tallies_locked_assistants() {
+        let mut state = test_state_2p();
+        let rules = Rules::standard();
+        state.players[0].assistants.on_church = 2;
+        state.players[0].assistants.on_achievements = 1;
+        let text = compact_panel(&state, &rules);
+        assert!(text.contains("locked 3"), "{text}");
+    }
+
+    /// The panel paints player names after layout (strip-equality pin).
+    #[test]
+    fn colored_compact_panel_strips_back_to_plain() {
+        let state = test_state_2p();
+        let rules = Rules::standard();
+        crate::style::force(true);
+        let colored = compact_panel(&state, &rules);
+        crate::style::force(false);
+        let plain = compact_panel(&state, &rules);
+        assert_ne!(colored, plain, "forced mode must actually paint something");
+        assert_eq!(strip_ansi(&colored), plain);
     }
 
     #[test]

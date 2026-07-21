@@ -130,28 +130,35 @@ pub fn paint(tone: Tone, s: &str) -> String {
     }
 }
 
+/// Remove `ESC…` escape runs (SGR `ESC[…m` and the cursor controls the
+/// frame composer emits), leaving the plain text. Promoted out of
+/// test-support (Task 6): `screen::visible_width` computes display width
+/// with it when joining the board and panel, so painted lines never shear
+/// the seam. The equality `strip_ansi(colored) == plain` remains the
+/// alignment invariant the render tests pin: painting must never add,
+/// drop, or reorder a single visible character.
+pub(crate) fn strip_ansi(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let mut chars = s.chars();
+    while let Some(c) = chars.next() {
+        if c == '\u{1b}' {
+            for c2 in chars.by_ref() {
+                if c2.is_ascii_alphabetic() {
+                    break;
+                }
+            }
+        } else {
+            out.push(c);
+        }
+    }
+    out
+}
+
 #[cfg(test)]
 pub(crate) mod test_support {
-    /// Remove `ESC[…m` runs, leaving the plain text. The equality
-    /// `strip_ansi(colored) == plain` is the alignment invariant the
-    /// render tests pin: painting must never add, drop, or reorder a
-    /// single visible character.
-    pub(crate) fn strip_ansi(s: &str) -> String {
-        let mut out = String::with_capacity(s.len());
-        let mut chars = s.chars();
-        while let Some(c) = chars.next() {
-            if c == '\u{1b}' {
-                for c2 in chars.by_ref() {
-                    if c2 == 'm' {
-                        break;
-                    }
-                }
-            } else {
-                out.push(c);
-            }
-        }
-        out
-    }
+    /// Test alias for the crate-internal `strip_ansi` (kept so existing
+    /// test imports read unchanged).
+    pub(crate) use super::strip_ansi;
 }
 
 #[cfg(test)]
