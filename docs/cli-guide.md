@@ -148,6 +148,7 @@ Order of ids in `a` doesn't matter; the tool matches your entry against the lega
 
 ```
 <number>        apply the numbered legal option
+<Enter>         on a single-option prompt: apply that only option (recorded like any move)
 a [id id id]    Placement Option A: place 1 assistant in each of 0-3 areas (4 with Newspaper)
 b <id>          Placement Option B: place 2 assistants in one area
 b <id> t <adj>  Placement Option B with the Telegram bonus: +1 assistant in an adjacent area

@@ -207,6 +207,11 @@ impl Repl {
                 if total_pages > 1 {
                     out.push_str(&format!("page {}/{total_pages}\n", self.page + 1));
                 }
+                // Ceremony reduction (Task 6): a forced single-option prompt
+                // advertises the bare-Enter shortcut `step`'s `[]` arm honors.
+                if n == 1 {
+                    out.push_str("(only option — press Enter to apply)\n");
+                }
             }
         }
         out.push_str(&self.input_hint());
@@ -291,7 +296,19 @@ impl Repl {
             };
         }
         match words.as_slice() {
-            [] => self.out(String::new(), false),
+            // Ceremony reduction (Task 6, owner-chosen over silent
+            // auto-advance): bare Enter on a prompt whose displayed list is
+            // exactly ONE entry applies that entry through the normal commit
+            // path -- recorded honestly like any numbered pick. Multi-option
+            // prompts (and game-over/no-option screens) keep the old
+            // re-prompt behavior.
+            [] => {
+                if !self.session.is_over() && self.display_options().len() == 1 {
+                    self.pick_option(0)
+                } else {
+                    self.out(String::new(), false)
+                }
+            }
             ["quit"] | ["q"] => StepOutput { text: "bye\n".to_string(), quit: true },
             ["help"] => self.out_view(HELP_TEXT.to_string()),
             ["board"] => self.board_cmd(),
@@ -1465,6 +1482,7 @@ fn parse_raw_area_token(tok: &str) -> Result<AreaId, String> {
 pub const HELP_TEXT: &str = "\
 Commands:
   <number>        apply the numbered legal option
+  <Enter>         on a single-option prompt: apply that only option (recorded like any move)
   a [id id id]    Placement Option A: place 1 assistant in each of 0-3 areas (4 with Newspaper)
   b <id>          Placement Option B: place 2 assistants in one area
   b <id> t <adj>  Placement Option B with the Telegram bonus: +1 assistant in an adjacent area
@@ -1598,6 +1616,39 @@ mod tests {
         let p = r.prompt();
         assert!(p.contains("[0]"), "{p}");
         assert!(p.contains("End additional-action phase"), "{p}");
+    }
+
+    /// Ceremony reduction (Task 6): bare Enter on a forced single-option
+    /// prompt applies that option through the normal commit path -- one real
+    /// recorded event, phase advanced -- and the prompt advertised it.
+    #[test]
+    fn bare_enter_applies_a_forced_single_option() {
+        let mut r = repl_2p(4);
+        let p = r.prompt();
+        assert!(p.contains("(only option — press Enter to apply)"), "{p}");
+        let events_before = r.session.record().events.len();
+        let out = r.step("");
+        assert!(!out.quit);
+        assert_eq!(r.session.record().events.len(), events_before + 1, "Enter must record the move");
+        assert_eq!(r.session.state().turn_phase, TurnPhase::Placement);
+        assert!(matches!(
+            r.session.record().events.last(),
+            Some(RecordedEvent::Move(Move::EndAdditionalPhase))
+        ), "{:?}", r.session.record().events.last());
+    }
+
+    /// Bare Enter on a MULTI-option prompt stays a harmless re-prompt (no
+    /// advertisement line either), so a stray newline can never move.
+    #[test]
+    fn bare_enter_on_multi_option_prompt_applies_nothing() {
+        let mut r = repl_2p(4);
+        r.step(""); // -> Placement (3 grouped entries)
+        let p = r.prompt();
+        assert!(!p.contains("press Enter to apply"), "{p}");
+        let events_before = r.session.record().events.len();
+        r.step("");
+        assert_eq!(r.session.record().events.len(), events_before, "Enter must be a no-op here");
+        assert_eq!(r.session.state().turn_phase, TurnPhase::Placement);
     }
 
     #[test]
