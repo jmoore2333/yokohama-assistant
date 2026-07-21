@@ -189,3 +189,25 @@ Honesty constraints pinned for ALL of the above: the engine stays the sole legal
 authority (pickers assemble moves that must match the legal list, exactly like the
 grammars); piped output stays byte-identical plain; `NO_COLOR` honored; guide pair +
 `guide_sync` updated with every change; no display may claim state the engine doesn't hold.
+
+## 7.1 Kickoff prioritization (owner-answered 2026-07-21, execution session)
+
+Jeremy's kickoff answers, recorded at execution start:
+
+- **§7 optional items ALL IN**: guided pickers (item 2), colorized render layer (item 3),
+  threshold context on previews (item 5).
+- **Ceremony reduction (item 4): bare-Enter variant** — pressing Enter on a forced
+  single-option prompt applies the sole option, still recorded honestly. No silent
+  auto-advance.
+- **ASCII art (item 7): FULL treatment** — title banner + tile glyphs + legible build marks.
+- **NEW item 8 (owner-directed at kickoff): composed gamestate frontend.** Owner's words in
+  substance: a better-arranged gamestate layout — a proper ASCII CLI frontend, not the
+  rolling text built for internal testing. A side window/box shows the current player's
+  resources and the other players' public information; a hide/unhide flag guards private
+  information (e.g. private orders) so the laptop can be passed around during a real
+  tracked game; that panel/screen is toggleable on and off. Owner-stated constraint: this
+  must NOT change how the CLI interfaces with the engine (engine stays the sole legality
+  authority; the CLI stays a thin renderer over engine legal moves). Purpose: human
+  beta-testing of live tracking before Phase 3, with Forge as the creative-design loop.
+  The §7 honesty constraints apply unchanged (piped output byte-identical plain,
+  `NO_COLOR` honored, guide pair + `guide_sync` per change).
