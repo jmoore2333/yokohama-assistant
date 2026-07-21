@@ -393,7 +393,7 @@ fn run_live_tail(
 /// to edit.
 fn live_observations(ws: &LiveWizardState) -> SetupObservations {
     SetupObservations {
-        board: Some(ObservedBoard { tiles: ws.tiles.clone(), sites: ws.sites.clone() }),
+        board: Some(ObservedBoard { tiles: ws.tiles.clone(), sites: ws.sites.clone(), tokens: None }),
         achievements: Some(ws.achievements),
         port_a: Some(ws.port_a),
         port_b: ws.port_b,
@@ -1938,7 +1938,7 @@ mod tests {
                 GameConfig::for_player_count(4),
                 4242,
                 SetupObservations {
-                    board: Some(ObservedBoard { tiles, sites }),
+                    board: Some(ObservedBoard { tiles, sites, tokens: None }),
                     ..Default::default()
                 },
                 vec![StartingOrderChoice::Keep(0); 4],

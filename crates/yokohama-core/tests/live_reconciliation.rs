@@ -212,6 +212,7 @@ fn setup_observations_from_another_seed_replay_and_play_on() {
                     })
                     .collect()
             },
+            tokens: None,
         }),
         achievements: Some([
             table.state.achievements[0].achievement_type,
@@ -314,7 +315,7 @@ fn reconcile_moves_the_canal_and_adjacency_matches_direct_generation() {
             .collect()
     };
     let obs = yokohama_core::SetupObservations {
-        board: Some(yokohama_core::ObservedBoard { tiles, sites }),
+        board: Some(yokohama_core::ObservedBoard { tiles, sites, tokens: None }),
         ..Default::default()
     };
     let reconciled = yokohama_core::reconcile_setup(pending, &obs, &rules).unwrap();
