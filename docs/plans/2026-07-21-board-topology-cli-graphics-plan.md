@@ -93,11 +93,17 @@ legality — the bump contract applies; old records become strict-rejected, corr
 1. **Staggered board rendering** — replace the rectangular box-grid with offset rows matching
    Jeremy's edition (widest row on top); keep TTY color/`NO_COLOR`/piped-plain guarantees and
    the width-warning behavior; `sites`/adjacency lines re-derived from the corrected graph.
-2. **Decision-surface optimizations** (review §9.14 + standing candidates, Jeremy prioritizes
-   at execution): placement fee preview on `a`/`b` grammar echo, Employment Agency cost preview,
-   Church faith preview (power + selected goods → total faith before committing), and any
-   further graphical polish Jeremy names at kickoff.
-3. Guide pair + `guide_sync` updated for every user-visible change.
+2. **Decision-surface optimizations** (review §9.14 + standing candidates): placement fee
+   preview on `a`/`b` grammar echo, Employment Agency cost preview, Church faith preview
+   (power + selected goods → total faith before committing).
+3. **Expanded UX mandate (owner-directed 2026-07-21, superseding "graphical polish TBD"):**
+   the CLI should become graphically attractive and beta-testable — colorized, well-labeled,
+   ASCII-art-rich where it aids comprehension, and **grammar-optional** (the `a`/`b`/`m`/`r`
+   mini-language stays as a shortcut but must never be the only usable path). Concrete
+   backlog with captured evidence: **§7**. Jeremy prioritizes the §7 items at kickoff — ask
+   once, early; the staggered renderer (item 1) and decision-surface items above are core
+   regardless.
+4. Guide pair + `guide_sync` updated for every user-visible change.
 
 ### 3.4 Docs
 
@@ -117,6 +123,11 @@ legality — the bump contract applies; old records become strict-rejected, corr
    trigger 4-vs-5 answer (pending — a `track_trigger` question, independent of topology).
 5. Re-baselines published: moves/sec, game length, branching per phase, organic route-label
    max — all provenance-stamped.
+6. **Forge visual sign-off** (`docs/forge-cli-testing.md`): every rendering/UX task ends with
+   the agent driving the CLI in a Forge PTY and reading the actual screen — staggered board
+   shapes eyeballed at 2P/3P/4P, canal edge display, placement/movement decision surfaces,
+   wizard flow; the PR report includes captured screens as evidence. Complements the
+   automated gates (which remain the merge bar), never replaces them.
 
 ## 5. Explicitly out of scope
 
@@ -132,3 +143,49 @@ runs against the harness on the corrected topology); computer vision.
   2P majority bonuses (previously unmodeled — see §3.1 item 5).
 - Card country distributions: **BOX-CONFIRMED** (orders NL5/FR8/US8/GB8/DE7; techs
   GB9/US7/NL5/FR5/DE4 — exact YAML matches, 2026-07-21).
+
+---
+
+## 7. Addendum (2026-07-21): Forge-driven visual verification + grounded UX backlog
+
+**Tooling adopted:** the Forge MCP (PTY terminal server, `mcp__forge__*` tools) lets the
+executing agent RUN the CLI in a real TTY and read back both the raw ANSI stream and the
+rendered screen — verified end-to-end 2026-07-21 (wizard scripted in one write, game driven
+move-by-move, color confirmed live). Full recipe, setup facts, and the `posix_spawnp`
+chmod fix: **`docs/forge-cli-testing.md`**. Jeremy can watch any agent-driven game live at
+`http://127.0.0.1:3141/` — beta-testing observation in parallel with development.
+
+**Process rule for this PR:** every §3.3 task ends with a Forge visual check of the affected
+screens (gate §4.6). Renderer work without looking at the render is how the lattice board
+shipped in the first place.
+
+**UX backlog** (evidence captured live pre-fix, listed in `docs/forge-cli-testing.md`;
+Jeremy prioritizes at kickoff — items 1–2 are core):
+
+1. **Staggered board renderer** (§3.3.1) — offset rows, widest on top, canal transit edges
+   distinguishable from plain adjacency (the free-edge-governs rule needs the distinction
+   anyway).
+2. **Grammar-optional guided pickers** — first Placement today is 186 flat options over 10
+   pages; a guided flow (pick Option A/B, then toggle areas by id off the board view, fee
+   preview inline) makes the `a`/`b` grammar a shortcut instead of a necessity. Same
+   treatment for assistant-move (`m`) targets; retreat already has its guided flow.
+3. **Color the render layer** — today only player names + the phase line carry SGR; board
+   cells, option lists, and views are monochrome code-strings (`sh ---- | th -`). Per-player
+   color on assistants/presidents/buildings everywhere they appear; colored goods letters;
+   `NO_COLOR`/piped-plain guarantees unchanged.
+4. **Ceremony reduction** — 4 of 7 inputs in a typical opening turn are forced single-option
+   no-ops (End-AA ×2, Skip 5-Power, Skip building). Candidate: bare **Enter** applies the
+   sole option (still recorded honestly); explicit auto-advance is Jeremy's call.
+5. **Threshold context on previews** — `Produce copper (power 2 -> +0 copper)` is faithful
+   but reads like a bug; append the next threshold (`next: +1 at power 3`). Same spirit as
+   the §3.3.2 fee/cost/faith previews.
+6. **D1 dummy display** — `tracks` shows the 2P dummy as a bare `X`; once it scores in
+   majorities (§3.1.5) it must render as a named sentinel occupant wherever majority state
+   is shown.
+7. **ASCII-art richness where it aids comprehension** (taste-gated by Jeremy): title banner,
+   tile glyphs, legible build marks replacing the `sh ---- | th -` codes.
+
+Honesty constraints pinned for ALL of the above: the engine stays the sole legality
+authority (pickers assemble moves that must match the legal list, exactly like the
+grammars); piped output stays byte-identical plain; `NO_COLOR` honored; guide pair +
+`guide_sync` updated with every change; no display may claim state the engine doesn't hold.
