@@ -128,6 +128,7 @@ fn scoring_sweep_engine_vs_oracle() {
     let rules = Rules::standard();
     let artifact_dir = default_artifacts_dir();
     let mut divergences: Vec<String> = Vec::new();
+    let mut total_steps: u64 = 0;
 
     for policy in [Policy::Uniform, Policy::RetreatAverse] {
         for players in 2..=4u8 {
@@ -136,6 +137,7 @@ fn scoring_sweep_engine_vs_oracle() {
                     .unwrap_or_else(|e| {
                         panic!("seed {seed} {players}p {}: driver failure: {e}", policy.as_str())
                     });
+                total_steps += outcome.stats.steps;
                 if let Some(path) = outcome.divergence {
                     divergences.push(format!(
                         "seed {seed} {players}p {}: engine {:?} vs oracle {:?} -> {}",
@@ -148,6 +150,15 @@ fn scoring_sweep_engine_vs_oracle() {
             }
         }
     }
+
+    // Anti-vacuity (review §4.1): if every game were `is_game_over` at setup
+    // it would drive 0 steps and score a trivially-equal terminal state, and
+    // the sweep would pass having proven nothing. Assert real games were
+    // driven to completion (a full game applies hundreds of moves).
+    assert!(
+        total_steps > 0,
+        "scoring sweep drove 0 moves across all games — vacuous pass (nothing was scored)"
+    );
 
     assert!(
         divergences.is_empty(),

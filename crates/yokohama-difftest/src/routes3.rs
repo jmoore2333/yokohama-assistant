@@ -247,6 +247,7 @@ pub fn run_routes3_game(
             return Ok(StepOutcome::Continue);
         }
         let (engine_only, oracle_only) = format_pair_diffs(&cmp.diverged);
+        let (rules_hash, semantics_rev) = crate::artifact::current_provenance(rules);
         let artifact = DivergenceArtifact {
             format_version: ARTIFACT_FORMAT_VERSION,
             seed,
@@ -260,6 +261,8 @@ pub fn run_routes3_game(
             engine_only,
             oracle_only,
             duplicates: Vec::new(),
+            rules_hash,
+            semantics_rev,
         };
         let path = write_artifact(&artifact, artifact_dir)?;
         divergence = Some(path);

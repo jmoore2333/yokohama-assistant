@@ -44,7 +44,7 @@ fn fresh_scoring_artifact_reproduces_byte_identically() {
     let stats = DriveStats { seed: u64::MAX - 3, ..stats };
     let dir = default_artifacts_dir();
     let path = write_scoring_artifact(
-        stats.seed, stats.players, stats.policy, &stats, &final_state, &cmp, &dir,
+        stats.seed, stats.players, stats.policy, &stats, &final_state, &cmp, &rules, &dir,
     )
     .expect("write scoring artifact");
     let artifact = read_artifact(&path).expect("read back");
@@ -107,6 +107,8 @@ fn routes3_artifact_repro_reruns_the_three_way_check() {
         engine_only,
         oracle_only,
         duplicates: Vec::new(),
+        rules_hash: String::new(),
+        semantics_rev: None,
     };
     let dir = default_artifacts_dir();
     let path = write_artifact(&artifact, &dir).expect("write");
@@ -164,10 +166,55 @@ fn routes3_artifact_with_stale_stored_diff_is_clean_but_not_reproduced() {
         ],
         oracle_only: Vec::new(),
         duplicates: Vec::new(),
+        rules_hash: String::new(),
+        semantics_rev: None,
     };
     let report = repro_artifact(&artifact, &rules).expect("repro runs");
     assert!(!report.reproduces(&artifact), "the stale stored diff must not reproduce");
     assert!(!report.divergent, "fresh three-way check is clean");
+}
+
+/// An artifact whose `phase` is neither a scoring/routes3 tag NOR a valid
+/// `TurnPhase` enumeration phase must be an `Err` (the bin's exit 2), NOT a
+/// silent fall-through to the enumeration comparator (review §4.2). The old
+/// `_ => repro_enumeration` catch-all ran the Stage-1 comparison on any
+/// unrecognized phase; on a terminal state that comparison is unconditionally
+/// clean (0 engine moves, 0 oracle moves), so a mis-tagged artifact reported
+/// "no divergence, exit 0". Demonstrated across five spellings, all on a
+/// genuinely terminal state (the exact shape that used to pass silently).
+#[test]
+fn unknown_phase_is_an_error_not_a_silent_enumeration_pass() {
+    let rules = Rules::standard();
+    let (_stats, terminal) =
+        drive_game_to_end(0, 2, Policy::Uniform, &rules, None, |_, _, _| Ok(StepOutcome::Continue))
+            .expect("drive to terminal");
+    assert!(is_game_over(&terminal), "need a terminal state (the silent-pass shape)");
+    let state_json = serde_json::to_value(&terminal).expect("serialize");
+
+    for phase in ["FinalScore", "finalscoring", "Routes-3", "Scoring", "Enumeration"] {
+        let artifact = DivergenceArtifact {
+            format_version: ARTIFACT_FORMAT_VERSION,
+            seed: u64::MAX - 7,
+            players: 2,
+            policy: "uniform".to_string(),
+            step_index: 0,
+            turn_number: terminal.turn_number,
+            phase: phase.to_string(),
+            state_json: state_json.clone(),
+            engine_only: Vec::new(),
+            oracle_only: Vec::new(),
+            duplicates: Vec::new(),
+            rules_hash: String::new(),
+            semantics_rev: None,
+        };
+        let err = repro_artifact(&artifact, &rules).expect_err(
+            "unknown phase must be rejected, not silently re-enumerated to a clean pass",
+        );
+        assert!(
+            err.contains("unknown artifact phase"),
+            "phase {phase:?}: error must name the mis-tag: {err}"
+        );
+    }
 }
 
 /// A `FinalScoring` artifact whose snapshot is NOT terminal cannot be
@@ -190,6 +237,8 @@ fn scoring_artifact_with_non_terminal_state_is_an_error() {
         engine_only: vec!["P0: 1".to_string()],
         oracle_only: vec!["P0: 1".to_string()],
         duplicates: Vec::new(),
+        rules_hash: String::new(),
+        semantics_rev: None,
     };
     let err = repro_artifact(&artifact, &rules)
         .expect_err("a non-terminal FinalScoring snapshot must be an error, not an enumeration re-run");

@@ -15,11 +15,18 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 
 /// Current artifact schema version. Bump when `DivergenceArtifact`'s shape
-/// (or the meaning of a field) changes, so a future reader of an old file
-/// gets "predates schema N" instead of a raw serde error. Version 1 =
-/// Stage-1 full-GameState-snapshot form (blessed at the Stage-1 review:
-/// the state snapshot IS the repro; the plan's move-prefix + shrinking
-/// mandate is satisfied by a 0-move prefix).
+/// (or the meaning of a field) changes IN A NON-BACKWARD-COMPATIBLE way, so a
+/// future reader of an old file gets "predates schema N" instead of a raw
+/// serde error. Version 1 = Stage-1 full-GameState-snapshot form (blessed at
+/// the Stage-1 review: the state snapshot IS the repro; the plan's
+/// move-prefix + shrinking mandate is satisfied by a 0-move prefix).
+///
+/// The `rules_hash` / `semantics_rev` provenance fields (review §4.6) were
+/// added WITHOUT bumping this: they are purely additive and `#[serde(default)]`,
+/// so every pre-provenance file still deserializes cleanly (empty hash / no
+/// rev) — the committed `fixtures/ruling-a1/*.json` are exactly such files.
+/// A version bump is for shapes that BREAK old readers; a defaulted addition
+/// does not.
 pub const ARTIFACT_FORMAT_VERSION: u32 = 1;
 
 fn default_format_version() -> u32 {
@@ -55,6 +62,37 @@ pub struct DivergenceArtifact {
     pub oracle_only: Vec<String>,
     /// Duplicate keys per side (`"<side>: <key> x<count>"`).
     pub duplicates: Vec<String>,
+    /// `Rules::content_hash()` of the rules the artifact was written against
+    /// (review §4.6 provenance). Empty for pre-provenance files (serde
+    /// default). `repro` warns if it differs from the running rules.
+    #[serde(default)]
+    pub rules_hash: String,
+    /// `SEMANTICS_REV` of the engine that wrote the artifact (review §4.6
+    /// provenance). `None` for pre-provenance files (serde default). `repro`
+    /// warns if it differs from the running engine's revision.
+    #[serde(default)]
+    pub semantics_rev: Option<u32>,
+}
+
+/// Provenance stamp for a FRESH artifact: the running rules fingerprint and
+/// the engine's semantics revision. All three writers use this so an artifact
+/// records which rules/semantics produced it (review §4.6).
+pub fn current_provenance(rules: &yokohama_core::Rules) -> (String, Option<u32>) {
+    (rules.content_hash(), Some(yokohama_core::SEMANTICS_REV))
+}
+
+/// The artifact KIND segment, derived from `phase`: `"scoring"` for
+/// `FinalScoring`, `"routes3"` for `Routes3`, `"enum"` for a Stage-1
+/// enumeration artifact (any `TurnPhase` Debug string). Part of the filename
+/// so a routes3 (or scoring) divergence can never OVERWRITE a Stage-1
+/// artifact at the same `<seed>-<players>-<policy>-<step>` coordinates
+/// (review §4.6: `fs::write` truncates).
+pub fn artifact_kind(phase: &str) -> &'static str {
+    match phase {
+        "FinalScoring" => "scoring",
+        "Routes3" => "routes3",
+        _ => "enum",
+    }
 }
 
 /// The crate-local gitignored artifacts directory,
@@ -63,11 +101,18 @@ pub fn default_artifacts_dir() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("artifacts")
 }
 
-/// Canonical artifact filename: `<seed>-<players>-<policy>-<step>.json`.
+/// Canonical artifact filename:
+/// `<seed>-<players>-<policy>-<kind>-<step>.json`. The `<kind>` segment
+/// (review §4.6) keeps a routes3/scoring divergence from truncating a
+/// Stage-1 enumeration artifact at the same coordinates.
 pub fn artifact_filename(artifact: &DivergenceArtifact) -> String {
     format!(
-        "{}-{}-{}-{}.json",
-        artifact.seed, artifact.players, artifact.policy, artifact.step_index
+        "{}-{}-{}-{}-{}.json",
+        artifact.seed,
+        artifact.players,
+        artifact.policy,
+        artifact_kind(&artifact.phase),
+        artifact.step_index
     )
 }
 
@@ -112,15 +157,51 @@ mod tests {
             engine_only: vec!["move:A".to_string()],
             oracle_only: vec![],
             duplicates: vec!["oracle: route:X x2".to_string()],
+            rules_hash: "deadbeef".to_string(),
+            semantics_rev: Some(1),
         }
     }
 
     #[test]
     fn filename_encodes_provenance() {
+        // phase "Movement" -> kind "enum".
         assert_eq!(
             artifact_filename(&sample()),
-            format!("{}-2-uniform-17.json", u64::MAX),
+            format!("{}-2-uniform-enum-17.json", u64::MAX),
         );
+    }
+
+    #[test]
+    fn filename_kind_separates_scoring_and_routes3_from_enumeration() {
+        let mut a = sample();
+        a.phase = "FinalScoring".to_string();
+        assert!(artifact_filename(&a).contains("-scoring-"), "{}", artifact_filename(&a));
+        a.phase = "Routes3".to_string();
+        assert!(artifact_filename(&a).contains("-routes3-"), "{}", artifact_filename(&a));
+        // A routes3 and a Stage-1 artifact at identical coordinates get
+        // DISTINCT filenames (the review's overwrite hazard).
+        let mut enum_art = sample();
+        enum_art.phase = "Movement".to_string();
+        let mut routes_art = sample();
+        routes_art.phase = "Routes3".to_string();
+        assert_ne!(artifact_filename(&enum_art), artifact_filename(&routes_art));
+    }
+
+    #[test]
+    fn pre_provenance_artifact_loads_with_defaulted_fields() {
+        // A file written before the provenance fields existed (no rules_hash,
+        // no semantics_rev) must still deserialize — the committed
+        // fixtures/ruling-a1 files are exactly this shape.
+        let json = serde_json::json!({
+            "seed": 7, "players": 2, "policy": "uniform", "step_index": 3,
+            "turn_number": 4, "phase": "Movement",
+            "state_json": {"stub": true},
+            "engine_only": [], "oracle_only": [], "duplicates": []
+        });
+        let art: DivergenceArtifact = serde_json::from_value(json).expect("old-format loads");
+        assert_eq!(art.format_version, 1, "missing version defaults to 1");
+        assert_eq!(art.rules_hash, "", "missing rules_hash defaults to empty");
+        assert_eq!(art.semantics_rev, None, "missing semantics_rev defaults to None");
     }
 
     #[test]

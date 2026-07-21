@@ -1,10 +1,10 @@
-//! §3.4 production / Bank / Employment Agency / Chinatown — lane D implements
-//! per spec §3.4.
+//! §3.4 production / Bank / Employment Agency / Chinatown — implemented per
+//! spec §3.4 (lane D landed; bodies are complete, no `todo!()` remains).
 //!
-//! Skeleton authored by lane A so sibling lanes compile against these EXACT
-//! signatures; bodies are `todo!()` until lane D lands. `Skip` is NOT added
-//! here — the lib.rs area-action facade appends the single canonical decline
-//! (production areas and the Bank never get one, `allows_area_action_skip`).
+//! Signatures were skeletoned by lane A so sibling lanes could compile against
+//! these EXACT shapes. `Skip` is NOT added here — the lib.rs area-action facade
+//! appends the single canonical decline (production areas and the Bank never
+//! get one, `allows_area_action_skip`).
 
 use std::collections::BTreeSet;
 

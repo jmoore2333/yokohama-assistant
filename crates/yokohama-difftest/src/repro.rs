@@ -67,8 +67,37 @@ pub fn repro_artifact(
     match artifact.phase.as_str() {
         "FinalScoring" => repro_scoring(&state, rules),
         "Routes3" => repro_routes3(&state, rules),
-        _ => repro_enumeration(&state, rules),
+        phase if is_enumeration_phase(phase) => repro_enumeration(&state, rules),
+        other => Err(format!(
+            "unknown artifact phase {other:?}: not the \"FinalScoring\"/\"Routes3\" tag and \
+             not a TurnPhase enumeration phase — refusing to guess a comparator. A mis-tagged \
+             artifact must NOT fall through to the enumeration comparison, which is \
+             unconditionally clean on a terminal state and would report a silent false pass \
+             (review §4.2)."
+        )),
     }
+}
+
+/// The `phase` strings a legitimate Stage-1 enumeration artifact carries:
+/// the `Debug` rendering of each [`yokohama_core::TurnPhase`]. Built from the
+/// real enum values so it can never disagree with what the writers stamp
+/// (`format!("{:?}", state.turn_phase)`). Any string that is neither this set
+/// nor the two scoring/routes3 tags is a mis-tag and is rejected upstream.
+fn is_enumeration_phase(phase: &str) -> bool {
+    use yokohama_core::TurnPhase::*;
+    [
+        AdditionalActionFirst,
+        Placement,
+        Movement,
+        AreaAction,
+        FivePowerBonus,
+        Building,
+        Recovery,
+        AdditionalActionSecond,
+        TurnEnd,
+    ]
+    .iter()
+    .any(|p| format!("{p:?}") == phase)
 }
 
 /// Stage-2 re-run: the terminal scoring comparison

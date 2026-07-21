@@ -1,10 +1,11 @@
-//! §3.4 Church + Customs area actions — lane D implements per spec §3.4.
+//! §3.4 Church + Customs area actions — implemented per spec §3.4 (lane D
+//! landed; bodies are complete, no `todo!()` remains).
 //!
-//! Skeleton authored by lane A so sibling lanes compile against these EXACT
-//! signatures; bodies are `todo!()` until lane D lands. `Skip` is NOT added
-//! here — the lib.rs area-action facade appends the single canonical decline.
-//! The `eligible_*` helpers are shared with `choices.rs` (§2.4/§2.5), so they
-//! already have a caller and carry no `#[allow(dead_code)]`.
+//! Signatures were skeletoned by lane A so sibling lanes could compile against
+//! these EXACT shapes. `Skip` is NOT added here — the lib.rs area-action facade
+//! appends the single canonical decline. The `eligible_*` helpers are shared
+//! with `choices.rs` (§2.4/§2.5), so they already have a caller and carry no
+//! `#[allow(dead_code)]`.
 
 use yokohama_core::{AreaAction, AreaId, ChurchTrack, CustomsTrack, GameState, Move};
 

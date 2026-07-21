@@ -2,36 +2,44 @@
 //! `final_standings` (Stage 2).
 //!
 //! ENGINE DIVISION OF LABOR (load-bearing for interpreting divergences —
-//! verified against the engine source 2026-07-20):
+//! re-derived against the engine source 2026-07-21; anchored to function/field
+//! names, not line numbers, because the prior line citations had rotted):
 //!
 //! Folded into STATE during play (`apply_move_unchecked` path), so already
-//! inside `PlayerState::victory_points` (`types/player.rs:189`, `u32`) by
-//! the time a state is terminal:
-//! - achievement claims (`game/achievements.rs:176`);
-//! - church/customs track advancement VP + Winery/Brickyard tech bonuses
-//!   (`game/actions/tracks.rs:272,446`);
-//! - Gaslight bonus (`game/apply_move.rs:794`), order-completion VP +
-//!   Electrical Light (`game/apply_move.rs:839`), building-site space-reward
-//!   VP (`game/apply_move.rs:1024`), five-power token VP
-//!   (`game/apply_move.rs:1088`), Ball bonus (`game/apply_move.rs:1119`);
-//! - Port-at-5-power +3 VP (`game/actions/cards.rs:184`), Patent System
-//!   (`game/actions/cards.rs:419-422`).
+//! inside `PlayerState::victory_points` (`types/player.rs`, `u32`) by the time
+//! a state is terminal — the five `victory_points +=` sites in
+//! `game/apply_move.rs` plus the track/achievement/card sites:
+//! - achievement claims (`game/achievements.rs` `claim_achievement`);
+//! - church track VP + Winery bonus (`game/actions/tracks.rs`
+//!   `place_church_assistant`), customs track VP + Brickyard bonus
+//!   (`place_customs_assistant`);
+//! - Gaslight bonus (`game/apply_move.rs` `apply_build_shophouse`);
+//!   Trading-House site VP + Electrical Light bonus (`apply_build_trading_house`);
+//!   building-site space-reward VP (`apply_space_reward`); order-completion
+//!   reward VP + Ball bonus (`apply_fulfill_order`);
+//! - Port-at-5-power +3 VP (`game/actions/cards.rs` `execute_port_action`),
+//!   Patent System +2 / Exposition +10 (`apply_lab_acquisition_bonuses`).
+//!   (No five-power-token VP source exists — `FivePowerEffect::VictoryPoints`
+//!   was removed at the 2026-07-18 box check; a stale citation to one was
+//!   dropped in this pass.)
 //!
-//! End-game BOOKKEEPING is likewise folded: `check_end_game_triggers` after
-//! every apply (`game/apply_move.rs:179`, impl `game/end_game.rs:6-54`),
-//! `final_round`/`TurnEnd` transitions (`game/apply_move.rs:226-240`).
+//! End-game BOOKKEEPING is likewise folded: `check_end_game_triggers` is
+//! called from `game/apply_move.rs` `apply_move_unchecked` (impl in
+//! `game/end_game.rs`); the `final_round`/`TurnEnd` transitions live in
+//! `apply_move.rs` `advance_phase`.
 //!
-//! Computed at QUERY TIME inside `final_result` (`game/scoring.rs:55-67`,
-//! per-player components `breakdowns` at 72-142) — NEVER folded into state:
-//! - `base_vp` = `victory_points` verbatim (`game/scoring.rs:85,90`);
-//! - church majority 6/3 (145-175), customs majority 8/4 (178-207);
-//! - technology industry-value 10/5, zero-iv excluded (211-247);
-//! - country greedy set bonus 12/8/4/2 (250-308);
+//! Computed at QUERY TIME inside `final_result` (`game/scoring.rs`), never
+//! folded into state — per-player components assembled in `breakdowns`:
+//! - `base_vp` = `victory_points` verbatim (`breakdowns`);
+//! - church majority 6/3 (`calculate_church_bonus`), customs majority 8/4
+//!   (`calculate_customs_bonus`);
+//! - technology industry-value 10/5, zero-iv excluded (`calculate_technology_bonus`);
+//! - country greedy set bonus 12/8/4/2 (`calculate_country_bonus`);
 //! - remainder = unused mercenaries + imported goods + money/2 + goods/3
-//!   (311-327);
-//! - the ranking itself: sort by `(Reverse(total), clockwise distance from
-//!   start_player)` (`game/scoring.rs:59-62`), ranks 1..=n never shared,
-//!   `winner = standings[0]` (63-66).
+//!   (`calculate_remainder_bonus`);
+//! - the ranking itself: `final_result` sorts by `(Reverse(total), clockwise
+//!   distance from start_player)`, ranks 1..=n never shared,
+//!   `winner = standings[0]`.
 //!
 //! The comparable projection of the engine side is therefore
 //! `final_result(..).standings` in order, as `(player, breakdown.total)` —

@@ -215,6 +215,96 @@ mod tests {
         ));
     }
 
+    /// Two-sided near-threshold pin (Phase-2.9 review addendum, Tier 1):
+    /// the Trading-House end-game trigger fires at EXACTLY 4, not 3. The
+    /// existing `test_trading_house_complete_trigger` only checks the
+    /// positive side at 4, so mutating `>= 4` to `>= 3` survived. Here 3
+    /// built must NOT trigger, and the 4th build -- through the public apply
+    /// path (`apply_move_unchecked`, which runs `check_end_game_triggers`) --
+    /// must. Mirrors `tests/end_game_timing.rs`'s two-sided church pattern.
+    #[test]
+    fn trading_house_trigger_fires_at_4_not_3() {
+        let mut state = create_test_state();
+        let area = AreaId::new(0);
+        state.board_layout.areas.insert(
+            area,
+            AreaConfig { area_type: AreaType::Bank, grid_position: (0, 0) },
+        );
+        state
+            .board_layout
+            .building_sites
+            .insert(area, BuildingSite::new([1, 2, 3, 4], 7));
+        state.turn_phase = TurnPhase::Building;
+        state.current_player = PlayerId::new(0);
+        state.current_action_power = Some(5);
+        state.players[0].president_location = PresidentLocation::OnBoard(area);
+        // Three already built (distinct areas), one in hand to build the 4th.
+        state.players[0].trading_houses.built =
+            vec![AreaId::new(10), AreaId::new(11), AreaId::new(12)];
+        state.players[0].trading_houses.in_hand = 1;
+        state.players[0].trading_houses.in_warehouse = 0;
+        state.order_deck = vec![OrderCardId(99)]; // avoid the OrderDeckEmpty trigger
+
+        // 3 built must NOT trigger (kills the `>= 4` -> `>= 3` mutation).
+        let mut probe = state.clone();
+        check_end_game_triggers(&mut probe);
+        assert!(!probe.end_game_triggered, "3 trading houses must not trigger end game");
+
+        let rules = crate::game::Rules::empty_for_tests();
+        let next = crate::game::apply_move_unchecked(&state, &Move::BuildTradingHouse, &rules)
+            .expect("the 4th trading house builds");
+        assert_eq!(next.players[0].trading_houses.total_built(), 4);
+        assert!(next.end_game_triggered, "the 4th trading house must trigger end game");
+        assert!(matches!(
+            next.trigger_reason,
+            Some(EndGameTrigger::TradingHousesComplete(p)) if p == PlayerId::new(0)
+        ));
+    }
+
+    /// Two-sided near-threshold pin (Phase-2.9 review addendum, Tier 1): the
+    /// Shophouse end-game trigger fires at EXACTLY 8, not 7 -- mutating
+    /// `>= 8` to `>= 7` survived the one-sided existing test. 7 built must
+    /// NOT trigger; the 8th build through the public apply path must.
+    #[test]
+    fn shophouse_trigger_fires_at_8_not_7() {
+        let mut state = create_test_state();
+        let area = AreaId::new(0);
+        state.board_layout.areas.insert(
+            area,
+            AreaConfig { area_type: AreaType::Bank, grid_position: (0, 0) },
+        );
+        state
+            .board_layout
+            .building_sites
+            .insert(area, BuildingSite::new([1, 2, 3, 4], 7));
+        state.turn_phase = TurnPhase::Building;
+        state.current_player = PlayerId::new(0);
+        state.current_action_power = Some(5);
+        state.players[0].president_location = PresidentLocation::OnBoard(area);
+        // Seven already built (distinct areas), one in hand to build the 8th.
+        for i in 10..17u8 {
+            state.players[0].shophouses.built.insert(AreaId::new(i), 0);
+        }
+        state.players[0].shophouses.in_hand = 1;
+        state.order_deck = vec![OrderCardId(99)]; // avoid the OrderDeckEmpty trigger
+
+        // 7 built must NOT trigger (kills the `>= 8` -> `>= 7` mutation).
+        let mut probe = state.clone();
+        check_end_game_triggers(&mut probe);
+        assert!(!probe.end_game_triggered, "7 shophouses must not trigger end game");
+
+        let rules = crate::game::Rules::empty_for_tests();
+        let next =
+            crate::game::apply_move_unchecked(&state, &Move::BuildShophouse { slot: 0 }, &rules)
+                .expect("the 8th shophouse builds");
+        assert_eq!(next.players[0].shophouses.total_built(), 8);
+        assert!(next.end_game_triggered, "the 8th shophouse must trigger end game");
+        assert!(matches!(
+            next.trigger_reason,
+            Some(EndGameTrigger::ShophousesComplete(p)) if p == PlayerId::new(0)
+        ));
+    }
+
     #[test]
     fn test_shophouse_complete_trigger() {
         let mut state = create_test_state();

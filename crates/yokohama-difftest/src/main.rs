@@ -77,6 +77,39 @@ fn repro(path: &str, strict: bool) -> ExitCode {
         artifact.format_version, artifact.seed, artifact.players, artifact.policy,
         artifact.step_index, artifact.turn_number, artifact.phase
     );
+    // Provenance (review §4.6): print the artifact's rules_hash /
+    // semantics_rev and warn if either differs from the running engine —
+    // a mismatch means the comparison below may legitimately not reproduce.
+    let running_rules_hash = rules.content_hash();
+    if artifact.rules_hash.is_empty() {
+        println!(
+            "provenance: rules_hash=<none (pre-provenance artifact)> semantics_rev={:?}",
+            artifact.semantics_rev
+        );
+    } else {
+        println!(
+            "provenance: rules_hash={} semantics_rev={:?}",
+            artifact.rules_hash, artifact.semantics_rev
+        );
+        if artifact.rules_hash != running_rules_hash {
+            eprintln!(
+                "repro: WARNING rules_hash mismatch — artifact {} vs running {}; the static \
+                 rules data changed since this artifact was written, so a non-reproduction may \
+                 be expected",
+                artifact.rules_hash, running_rules_hash
+            );
+        }
+    }
+    if let Some(rev) = artifact.semantics_rev {
+        if rev != yokohama_core::SEMANTICS_REV {
+            eprintln!(
+                "repro: WARNING semantics_rev mismatch — artifact {} vs running {}; engine \
+                 semantics changed since this artifact was written",
+                rev,
+                yokohama_core::SEMANTICS_REV
+            );
+        }
+    }
     let report = match yokohama_difftest::repro::repro_artifact(&artifact, &rules) {
         Ok(r) => r,
         Err(e) => {

@@ -42,6 +42,7 @@ pub fn run_differential_game(
         if !cmp.is_divergent() {
             return Ok(StepOutcome::Continue);
         }
+        let (rules_hash, semantics_rev) = crate::artifact::current_provenance(rules);
         let artifact = DivergenceArtifact {
             format_version: crate::artifact::ARTIFACT_FORMAT_VERSION,
             seed,
@@ -55,6 +56,8 @@ pub fn run_differential_game(
             engine_only: cmp.engine_only,
             oracle_only: cmp.oracle_only,
             duplicates: cmp.duplicates,
+            rules_hash,
+            semantics_rev,
         };
         let path = write_artifact(&artifact, artifact_dir)?;
         divergence = Some(path);
@@ -98,7 +101,7 @@ pub fn run_scoring_game(
         format!("seed={seed} players={players}p: compare_final returned None on a driver-terminal state")
     })?;
     let divergence = if comparison.is_divergent() {
-        Some(write_scoring_artifact(seed, players, policy, &stats, &final_state, &comparison, artifact_dir)?)
+        Some(write_scoring_artifact(seed, players, policy, &stats, &final_state, &comparison, rules, artifact_dir)?)
     } else {
         None
     };
@@ -115,6 +118,7 @@ pub fn run_scoring_game(
 /// total moves applied (the terminal state's provenance), and `duplicates`
 /// carries the oracle self-consistency finding when its emitted order
 /// contradicts its own totals.
+#[allow(clippy::too_many_arguments)]
 pub fn write_scoring_artifact(
     seed: u64,
     players: u8,
@@ -122,9 +126,11 @@ pub fn write_scoring_artifact(
     stats: &DriveStats,
     final_state: &GameState,
     comparison: &ScoringComparison,
+    rules: &Rules,
     artifact_dir: &Path,
 ) -> Result<PathBuf, String> {
     let (engine_only, oracle_only, duplicates) = scoring_artifact_fields(comparison);
+    let (rules_hash, semantics_rev) = crate::artifact::current_provenance(rules);
     let artifact = DivergenceArtifact {
         format_version: ARTIFACT_FORMAT_VERSION,
         seed,
@@ -138,6 +144,8 @@ pub fn write_scoring_artifact(
         engine_only,
         oracle_only,
         duplicates,
+        rules_hash,
+        semantics_rev,
     };
     write_artifact(&artifact, artifact_dir)
 }
@@ -172,7 +180,7 @@ mod tests {
         };
         let dir = crate::artifact::default_artifacts_dir();
         let path = write_scoring_artifact(
-            stats.seed, stats.players, stats.policy, &stats, &state, &cmp, &dir,
+            stats.seed, stats.players, stats.policy, &stats, &state, &cmp, &rules, &dir,
         )
         .expect("write");
         let back = read_artifact(&path).expect("read");

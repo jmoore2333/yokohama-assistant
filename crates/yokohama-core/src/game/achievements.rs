@@ -350,95 +350,56 @@ mod tests {
         assert!(can_claim_achievement(&state, PlayerId::new(0), AchievementType::Production4));
     }
 
-    /// Fixture for `progress_matches_the_claim_gate` (Task 14, T2.3): a
-    /// 2-player state with deliberately varied resource/building counts --
-    /// some exactly AT a threshold, some above, some below -- and lopsided
-    /// production/commercial building counts (Red production-heavy and
-    /// commercial-empty, Blue the reverse) specifically to exercise the
-    /// AND-shaped Prod3Comm2/Prod2Comm3 arms, not just the linear ones.
-    /// Both players keep their full starting `assistants.in_hand` (8) and
-    /// neither has claimed anything, so `can_claim_achievement`'s two
-    /// pre-arithmetic gates (already claimed, no assistant in hand) never
-    /// fire here -- the property under test reduces to exactly the
-    /// arithmetic both functions must agree on.
-    fn progress_fixture_state() -> GameState {
-        let mut state = create_test_state();
-
-        let prod_areas = [AreaId::new(0), AreaId::new(1), AreaId::new(2)];
-        let comm_areas = [AreaId::new(3), AreaId::new(4)];
-        let prod_types = [AreaType::CopperMine, AreaType::SilkMill, AreaType::TeaPlantation];
-        let comm_types = [AreaType::Bank, AreaType::PortA];
-        for (i, &a) in prod_areas.iter().enumerate() {
-            state.board_layout.areas.insert(a, AreaConfig { area_type: prod_types[i], grid_position: (0, i as u8) });
-        }
-        for (i, &a) in comm_areas.iter().enumerate() {
-            state.board_layout.areas.insert(a, AreaConfig { area_type: comm_types[i], grid_position: (1, i as u8) });
-        }
-
-        // Red: exactly at threshold on every linear check; production-heavy
-        // (3, meets Prod3Comm2's production leg), commercial-empty (fails
-        // its commercial leg).
-        state.players[0].copper = 5;
-        state.players[0].silk = 2;
-        state.players[0].tea = 9;
-        state.players[0].seafood = 7;
-        state.players[0].money = 10;
-        state.players[0].five_power_tokens = 2;
-        state.players[0].mercenaries.available.insert(Country::English, 3);
-        state.players[0].completed_orders = (0..4).map(OrderCardId).collect();
-        state.players[0].technologies = (0..4).map(TechCardId).collect();
-        state.players[0].trading_houses.built = prod_areas.to_vec();
-
-        // Blue: the opposite skew -- commercial-only buildings (meets
-        // Prod3Comm2's commercial leg at exactly 2, fails its production
-        // leg at 0; also fails Prod2Comm3's commercial leg, which needs 3).
-        state.players[1].copper = 0;
-        state.players[1].silk = 6;
-        state.players[1].tea = 1;
-        state.players[1].seafood = 0;
-        state.players[1].money = 3;
-        state.players[1].five_power_tokens = 0;
-        state.players[1].completed_orders = (10..16).map(OrderCardId).collect();
-        state.players[1].technologies = Vec::new();
-        state.players[1].trading_houses.built = comm_areas.to_vec();
-
-        state
+    /// Item-5 rewrite (was `progress_matches_the_claim_gate`, a tautology:
+    /// it asserted `achievement_progress(..).0 >= .1 == can_claim_achievement`,
+    /// but `can_claim_achievement` computes its verdict from that SAME call,
+    /// so the identity held under ANY threshold mutation). Pins each
+    /// achievement's `needed` value to its LITERAL rulebook threshold, so a
+    /// mutation of any threshold constant is caught per-edit.
+    #[test]
+    fn achievement_thresholds_are_the_literal_rulebook_values() {
+        let state = create_test_state();
+        let p = PlayerId::new(0);
+        let need = |ach| achievement_progress(&state, p, ach).1;
+        assert_eq!(need(AchievementType::Copper5), 5);
+        assert_eq!(need(AchievementType::Silk6), 6);
+        assert_eq!(need(AchievementType::Tea7), 7);
+        assert_eq!(need(AchievementType::Seafood7), 7);
+        assert_eq!(need(AchievementType::Money10), 10);
+        assert_eq!(need(AchievementType::Tokens5), 5);
+        assert_eq!(need(AchievementType::Orders5), 5);
+        assert_eq!(need(AchievementType::Technologies4), 4);
+        assert_eq!(need(AchievementType::Production4), 4);
+        assert_eq!(need(AchievementType::Commercial4), 4);
+        assert_eq!(need(AchievementType::Prod3Comm2), 5); // production cap 3 + commercial cap 2
+        assert_eq!(need(AchievementType::Prod2Comm3), 5); // production cap 2 + commercial cap 3
     }
 
-    /// Task 14 (T2.3), brief Step 1: `achievement_progress` must carry the
-    /// SAME arithmetic `can_claim_achievement` uses, for every achievement
-    /// type (not just the 3 physically in play this game -- the "already
-    /// claimed" gate is a no-op for a type that isn't one of the 3 cards,
-    /// so the arithmetic-equivalence property holds regardless) and every
-    /// player in the fixture.
+    /// Two-sided boundary for the two Category-B thresholds the review found
+    /// unpinned per-edit (`achievements.rs:71` Money10, `:76` Technologies4 --
+    /// only the release differential caught mutating them). Just-below must
+    /// NOT be claimable; exactly-at must be.
     #[test]
-    fn progress_matches_the_claim_gate() {
-        let state = progress_fixture_state();
-        let all_achievements = [
-            AchievementType::Copper5,
-            AchievementType::Silk6,
-            AchievementType::Tea7,
-            AchievementType::Seafood7,
-            AchievementType::Money10,
-            AchievementType::Tokens5,
-            AchievementType::Orders5,
-            AchievementType::Technologies4,
-            AchievementType::Production4,
-            AchievementType::Commercial4,
-            AchievementType::Prod3Comm2,
-            AchievementType::Prod2Comm3,
-        ];
-        for &player in &[PlayerId::new(0), PlayerId::new(1)] {
-            for &ach in &all_achievements {
-                let (cur, need) = achievement_progress(&state, player, ach);
-                assert_eq!(
-                    cur >= need,
-                    can_claim_achievement(&state, player, ach),
-                    "player {:?} achievement {:?}: cur={} need={}",
-                    player, ach, cur, need,
-                );
-            }
-        }
+    fn money10_and_technologies4_thresholds_are_two_sided() {
+        let mut state = create_test_state();
+        let p = PlayerId::new(0);
+        state.players[0].assistants.in_hand = 1;
+
+        state.players[0].money = 9;
+        assert!(!can_claim_achievement(&state, p, AchievementType::Money10), "9 Yen must not claim Money10");
+        state.players[0].money = 10;
+        assert!(can_claim_achievement(&state, p, AchievementType::Money10), "10 Yen must claim Money10");
+
+        state.players[0].technologies = (0..3).map(TechCardId).collect();
+        assert!(
+            !can_claim_achievement(&state, p, AchievementType::Technologies4),
+            "3 techs must not claim Technologies4"
+        );
+        state.players[0].technologies = (0..4).map(TechCardId).collect();
+        assert!(
+            can_claim_achievement(&state, p, AchievementType::Technologies4),
+            "4 techs must claim Technologies4"
+        );
     }
 
     /// Pins the exact capped-sum encoding for the AND-shaped achievements

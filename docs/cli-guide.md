@@ -34,7 +34,7 @@ cargo run -p yokohama-cli -- save.json # resume a saved game
 **If something looks off:**
 
 - **Board rows shear or wrap** — the terminal is narrower than the grid; widen it to at least the width above for your player count (120 columns clears every board).
-- **A save won't load** — the tool prints `failed to load <path>: <reason>` and exits; the reason is a typed error. A JSON parse failure means the file is truncated or hand-edited; `replay failed at event N: ...` means a recorded move no longer reconstructs (a stale or tampered save). A mere engine- or rules-**version** mismatch only prints a `warning:` and replays anyway — v1 never refuses on version drift.
+- **A save won't load** — the tool prints `failed to load <path>: <reason>` and exits; the reason is a typed error. A JSON parse failure means the file is truncated or hand-edited; `replay failed at event N: ...` means a recorded move no longer reconstructs (a stale or tampered save). A mere engine- or rules-**version** mismatch only prints a `warning:` and replays anyway — v1 never refuses on version drift. A **semantics-revision** drift is the same: a save carrying no `semantics_rev` (a pre-Phase-2.9 record) or one that doesn't match this build prints a `warning:` about missing/mismatched semantics provenance and replays anyway — the interactive load is deliberately lenient (only the developer-only `record_stats`/`replay_strict` paths refuse on it).
 - **A move is rejected with `Illegal: ...`** — the engine disagrees that the move is legal right now. If it is legal at the table, that is a bug worth reporting: `save` and follow §9. Its more serious cousin, a mid-game `CRITICAL: desync` lockdown, is covered in §6.
 
 The release gates — `cargo test` and the fuzz sweep — are developer-only; a tester never runs them.
@@ -77,7 +77,7 @@ Every card/tile/site answer above is validated the moment you type it — a bad 
 Every screen ends with a status header, the numbered legal options, and a hint line:
 
 ```
-Turn 1 | Red | Additional actions (before) | 3 yen 0 VP | c1 s2 t0 f1 i0 | hand 1
+Turn 1 | Red | Additional actions (before) | 3 yen 0 VP | c0 s0 t0 f0 i0 | hand 1
 [0] End additional-action phase
 > enter a number, or a command ('help' for the list)
 ```
@@ -117,7 +117,7 @@ Return President to hand, recovering 2 assistant(s) (A02 x1, A09 x1)
 > confirm / cancel
 ```
 
-Inside either sub-prompt the only accepted inputs are a valid answer or `cancel` (which returns to the full Movement list, applying nothing); an out-of-range number re-asks with its range, and a view/`save`/`undo`/`more` mid-prompt is refused with `! finish or cancel this prompt first` (it would otherwise render or act against a state the half-finished prompt doesn't reflect yet). Whatever a sub-prompt assembles is matched against the real legal list before it applies — exactly like the `a`/`b`/`m`/`r` shorthands — so neither can produce a move the engine didn't offer.
+Inside either sub-prompt the accepted inputs are a valid answer or `cancel` (which returns to the full Movement list, applying nothing); `quit`/`q` also exit the program, silently discarding the un-applied sub-prompt (nothing was recorded). An out-of-range number re-asks with its range. The **route** sub-prompt is itself a real paged list, so `more`/`list` page it exactly like the main options; everywhere else in the two sub-prompts a view/`save`/`undo` — and `more` inside the *sequential* guided retreat, which is a question flow rather than a list — is refused with `! finish or cancel this prompt first` (it would otherwise render or act against a state the half-finished prompt doesn't reflect yet). Whatever a sub-prompt assembles is matched against the real legal list before it applies — exactly like the `a`/`b`/`m`/`r` shorthands — so neither can produce a move the engine didn't offer.
 
 **Choice prompts:** some rewards leave you a decision — which good, which warehouse item, where to move an assistant, which Church/Customs space (full inventory in §8.6). Whenever one or more of these is queued, the phase slot in the header is replaced by a `Choose: ... — N choice(s) pending` banner naming the head choice, and the numbered list below is exactly that choice's options — nothing about entering them differs from any other phase. A captured example, mid-Church-visit:
 
@@ -180,11 +180,11 @@ After each applied move the tool prints a **delta summary** — what changed (mo
 In live mode, whenever a move would draw hidden cards, the tool **does not apply it yet** — it asks what physically appeared:
 
 - **Port take** → for each refilled slot, right-to-left (the physical refill order): `What card is now in slot N (Zone)? Enter as 'O<id>' or '<id>'`. Type the order card's **corner number**.
-- **Lab take** → the one refilled tech slot: enter `T<id>` or a unique **name prefix** (e.g. `postal`).
+- **Lab take** → the one refilled tech slot: enter `T<id>` or a **name prefix** (e.g. `postal`). A prefix that matches both copies of a title still in the deck resolves automatically to the lowest matching id — the two copies are identical, so tracking is unaffected. (This is the opposite of the *wizard*, which rejects an ambiguous prefix, because setup records which *physical* card sits where — §3.6, §8.2.)
 - **5-Power token** (taken at 5 power) → one letter for the face-down token you flipped: `i` = 1 Imported Good, `c` = 2 Copper, `s` = 2 Silk, `t` = 3 Tea, `f` = 3 Seafood, `y` = 3 Yen.
-- `cancel` at any of these aborts the move entirely (nothing is applied or recorded).
+- `cancel` at any of these aborts the move entirely (nothing is applied or recorded); `quit`/`q` also exit the program from a reveal prompt, discarding the parked (un-applied) move the same way.
 
-While one of these prompts is showing, everything you type is read as the answer to it, not as a command — numbered picks, `m`, and view commands like `board` don't work until the reveal is answered or you `cancel`. (These prompts are unrelated to the choice banner and `m` grammar in §4/§5: reveals are about typing in what physically appeared on a hidden card or token, not about deciding between options the engine already knows.)
+While one of these prompts is showing, everything you type is read as the answer to it, not as a command — numbered picks, `m`, and view commands like `board` don't work until the reveal is answered, or you `cancel` (or `quit`/`q`, which exits and discards the parked move). (These prompts are unrelated to the choice banner and `m` grammar in §4/§5: reveals are about typing in what physically appeared on a hidden card or token, not about deciding between options the engine already knows.)
 
 Once all reveals are typed, the move + reveals commit **as one atomic unit** — and one `undo` removes the whole unit.
 
@@ -235,7 +235,7 @@ The engine's canonical vocabulary differs from the rulebook's in places. **Diffe
 | `tea` / `t` | Tea |
 | ⚠ `fish` / `f` | **Seafood** (the Fishing Ground good — the CLI abbreviates it "fish") |
 | `imp` / `i` | Imported Goods |
-| `yen` / `y` | Yen (money) |
+| `yen` | Yen (money) — shown spelled out in the status header (`3 yen`); it has **no** single-letter header code (the header goods letters are only `c s t f i`). |
 | `vp` | Victory Points |
 | ⚠ `wh` | The **Warehouse icon** (take 1 token from your Warehouse tile to hand, paying the Employment Agency cost). A real choice prompt — see §8.6. |
 | ⚠ `any` | An "any good of your choice" reward. A real choice prompt — see §8.6. |
@@ -283,7 +283,7 @@ Board-grid cells also show: `P:` line (Presidents present, by color letter), ass
 
 Building sites (`sites` view): one line per area holding a site, e.g. `Copper Mine (A03)  S03  [1vp 2wh - 2move]  TH 7vp  sh ---- | th -  adj: A01, A05  canal->A06` — `S<n>`'s number is the **area's id**, not the physical site card's printed index (that number is only used to validate your entry during wizard setup, §3, and isn't kept once the game starts); `[...]` is the site's four shophouse-space printed rewards (top-left, top-right, mid-left, mid-right; `-` = blank; `wh`/`move`/`any` are the icon rewards from §8.3, real choice prompts when taken); `TH` is the trading-house VP; `sh .. | th ..` are the same build/ownership marks the `board` grid shows for that cell, aligned space-for-space with the `[...]` rewards; `adj:` lists the area ids reachable from here (ascending) — the President's movement neighbors — with any canal-crossing partner shown separately as `canal-><id>` (a transit-only edge, see **Canal crossing** below). Building options during the Building phase print this same printed-reward text instead of a bare space number: you get one `Build a Shophouse` option per **empty** space — you choose the space — each named with its space number and printed reward, e.g. `Build a Shophouse (space 2: 2vp+1yen)`, so two blank spaces stay tellable apart; `Build a Trading House (7vp)` shows the site's TH value.
 
-Tracks (`tracks` view): Church spaces by faith value 4–11, each showing its printed VP and movement rider (`3vp 1move`); Customs spaces 1–7 with printed goods-costs `[1,1,2,2,3,3,4]`, each showing its printed VP and warehouse/yen rider (`5vp 2wh`, `4vp 2yen`; spaces 5–7 carry no rider). The occupant color letter sits directly after the space label, before the reward. In 2-player games `X` marks both pre-blocked dummy spaces — Church faith-7 and Customs space 4.
+Tracks (`tracks` view): Church spaces by faith value 4–11, each showing its printed VP and movement rider (`3vp 1move`); Customs spaces 1–7 with printed goods-costs `[1,1,2,2,3,3,4]`, each showing its printed VP and warehouse/yen rider (`5vp 2wh`, `4vp 2yen`; spaces 5–7 carry no rider). The occupant color letter sits directly after the space label, before the reward. In 2-player games `X` marks both pre-blocked dummy spaces — Church faith-7 and Customs space 4. Below the two tracks, a **`Station:`** line reports where the Station token sits (`Copper Mine (A03) (all players +1 Power there)`) or `not placed` — it is board-level shared state, so once placed **every** player gets +1 Power when acting in that area (§8.6 item 6).
 
 **Canal crossing:** the Canal tile can never hold an assistant, a President, or a building — that part is unchanged — but President movement can now cross straight through it in a single hop, connecting whichever of its (up to) four flanking pairs actually exist on this board's grid: left↔right, up↔down, and both diagonals. A 3-player board's grid is only 2 rows, so it can only ever have the left↔right pair; a 4-player board's 3-row grid can have all four; 2-player games have no Canal tile at all. Each crossing costs 1 Yen to the bank — a separate, unconditional toll from the opponent-president pass-through fee (which instead goes to that president's owner) — and that includes the very first step out of the President's current area, if that step is itself a crossing. "Bent" transits (entering one flank and exiting anywhere but the exact opposite one) are illegal and never offered: the tool only ever builds the straight-through edges, so there's nothing bent to pick from in the first place. Telegram's adjacent-area placement bonus (§4) does not extend across a canal crossing — it still needs a physically adjoining tile.
 

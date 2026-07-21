@@ -438,73 +438,149 @@ mod tests {
         assert_eq!(calculate_remainder_bonus(&player), 7);
     }
 
-    #[test]
-    fn test_country_bonus_full_set() {
-        // Test with 5 different countries = 12 VP
-        let _order_registry = OrderRegistry::new();
-        let _tech_registry = TechRegistry::new();
-
-        // Would need to populate registries for full test
-        // For now just verify function compiles
+    /// Standard order-card countries this file's country tests rely on
+    /// (data.rs): O01 American, O02 French, O03 English, O04 German,
+    /// O06 Dutch; O05 French, O08 Dutch, O09 German, O10 English,
+    /// O12 American, O13 English. Set completed_orders to these ids and the
+    /// real engine `calculate_country_bonus` scores the set.
+    fn country_bonus(state: &GameState, rules: &Rules, order_ids: &[u8]) -> u32 {
+        let mut state = state.clone();
+        state.players[0].completed_orders =
+            order_ids.iter().map(|&id| OrderCardId(id)).collect();
+        calculate_country_bonus(&state, PlayerId::new(0), &rules.orders, &rules.techs)
     }
 
+    /// Item-5 rewrite (was zero-assertion `test_country_bonus_full_set`):
+    /// FIVE distinct countries = one 5-set = 12 VP, driven through the real
+    /// engine `calculate_country_bonus` against a LITERAL expected value.
     #[test]
-    fn test_country_set_distinct_countries() {
-        // Verify: 3 English + 1 French + 1 German = 3 distinct = 4 VP (not 5 icons)
-        let mut country_counts: HashMap<Country, u8> = HashMap::new();
-        country_counts.insert(Country::English, 3);
-        country_counts.insert(Country::French, 1);
-        country_counts.insert(Country::German, 1);
-
-        // Count distinct countries
-        let available: Vec<Country> = country_counts
-            .iter()
-            .filter(|(_, &count)| count > 0)
-            .map(|(&country, _)| country)
-            .collect();
-
-        assert_eq!(available.len(), 3); // Only 3 distinct countries
+    fn country_bonus_full_set_is_12() {
+        let rules = Rules::standard();
+        let state = create_test_game_state(2);
+        // American, French, English, German, Dutch -> 5 distinct.
+        assert_eq!(country_bonus(&state, &rules, &[1, 2, 3, 4, 6]), 12);
     }
 
+    /// Item-5 rewrite (was `test_country_set_distinct_countries`, which never
+    /// called engine code): repeated icons of one country do NOT inflate the
+    /// set -- 3 English + 1 French + 1 German is 3 DISTINCT = 4 VP, not five
+    /// icons' worth. Literal expected value against the engine.
     #[test]
-    fn test_country_set_multiple_sets() {
-        // 2 of each country = two 5-sets = 24 VP
-        let mut country_counts: HashMap<Country, u8> = HashMap::new();
-        country_counts.insert(Country::English, 2);
-        country_counts.insert(Country::American, 2);
-        country_counts.insert(Country::French, 2);
-        country_counts.insert(Country::German, 2);
-        country_counts.insert(Country::Dutch, 2);
+    fn country_bonus_counts_distinct_not_icons() {
+        let rules = Rules::standard();
+        let state = create_test_game_state(2);
+        // O03/O10/O13 English + O02 French + O04 German: distinct = 3.
+        assert_eq!(country_bonus(&state, &rules, &[3, 10, 13, 2, 4]), 4);
+    }
 
-        let mut total_vp = 0u32;
-        loop {
-            let available: Vec<Country> = country_counts
-                .iter()
-                .filter(|(_, &count)| count > 0)
-                .map(|(&country, _)| country)
-                .collect();
+    /// Item-5 rewrite (was `test_country_set_multiple_sets`, which asserted
+    /// against its own copied algorithm): 2 icons of each of the 5 countries
+    /// = two 5-sets = 24 VP, through the engine, LITERAL expected value.
+    #[test]
+    fn country_bonus_two_full_sets_is_24() {
+        let rules = Rules::standard();
+        let state = create_test_game_state(2);
+        // {1,12}=American {2,5}=French {3,10}=English {4,9}=German {6,8}=Dutch.
+        assert_eq!(country_bonus(&state, &rules, &[1, 12, 2, 5, 3, 10, 4, 9, 6, 8]), 24);
+    }
 
-            let set_size = available.len();
-            if set_size < 2 {
-                break;
-            }
+    /// Item-6: the country-bonus set table (2/3/4/5 distinct = 2/4/8/12 VP)
+    /// plus a >5-ICON case that stays few-distinct, all through the engine
+    /// against literal values.
+    #[test]
+    fn calculate_country_bonus_covers_the_table() {
+        let rules = Rules::standard();
+        let state = create_test_game_state(2);
+        // 2 distinct = 2 VP (American + French).
+        assert_eq!(country_bonus(&state, &rules, &[1, 2]), 2);
+        // 3 distinct = 4 VP (American + French + English).
+        assert_eq!(country_bonus(&state, &rules, &[1, 2, 3]), 4);
+        // 4 distinct = 8 VP (+ German).
+        assert_eq!(country_bonus(&state, &rules, &[1, 2, 3, 4]), 8);
+        // 5 distinct = 12 VP (+ Dutch).
+        assert_eq!(country_bonus(&state, &rules, &[1, 2, 3, 4, 6]), 12);
+        // >5 ICONS, only 3 distinct: 4 English (3,10,13,15) + 1 French + 1
+        // German = 6 icons. Greedy: one 3-set (4 VP), then leftover English
+        // is a lone icon (< 2 distinct) = nothing more. Icons do not inflate.
+        assert_eq!(country_bonus(&state, &rules, &[3, 10, 13, 15, 2, 4]), 4);
+    }
 
-            let set_vp = match set_size {
-                5 => 12,
-                4 => 8,
-                3 => 4,
-                2 => 2,
-                _ => 0,
-            };
-            total_vp += set_vp;
+    /// Item-6: `calculate_church_bonus` directly (6 VP 1st / 3 VP 2nd),
+    /// including the POSITIONAL tie-break -- equal pawn counts resolve by
+    /// rightmost (higher-index) slot.
+    #[test]
+    fn calculate_church_bonus_awards_6_and_3_with_positional_tiebreak() {
+        let mut state = create_test_game_state(2);
+        // Both players have exactly 1 pawn; p0's is further right (index 5 >
+        // index 3), so p0 takes 1st (6 VP), p1 2nd (3 VP).
+        state.church_track.slots[5] =
+            Some(ChurchSlot { player: PlayerId::new(0), arrival_order: 0 });
+        state.church_track.slots[3] =
+            Some(ChurchSlot { player: PlayerId::new(1), arrival_order: 1 });
 
-            for country in available.iter().take(set_size.min(5)) {
-                if let Some(count) = country_counts.get_mut(country) {
-                    *count -= 1;
-                }
-            }
-        }
+        let bonuses = calculate_church_bonus(&state);
+        assert_eq!(bonuses.len(), 2);
+        assert_eq!(bonuses[0], (PlayerId::new(0), 6), "rightmost slot wins the tie -> 1st = 6");
+        assert_eq!(bonuses[1], (PlayerId::new(1), 3), "2nd place = 3");
+    }
 
-        assert_eq!(total_vp, 24); // Two 5-sets = 12 + 12 = 24 VP
+    /// Item-6: `calculate_customs_bonus` directly (8 VP 1st / 4 VP 2nd) on a
+    /// clear count majority.
+    #[test]
+    fn calculate_customs_bonus_awards_8_and_4() {
+        let mut state = create_test_game_state(2);
+        // p0 has 2 pawns, p1 has 1 -> p0 1st (8), p1 2nd (4).
+        state.customs_track.slots[0] =
+            Some(CustomsSlot { player: PlayerId::new(0), arrival_order: 0 });
+        state.customs_track.slots[1] =
+            Some(CustomsSlot { player: PlayerId::new(0), arrival_order: 1 });
+        state.customs_track.slots[6] =
+            Some(CustomsSlot { player: PlayerId::new(1), arrival_order: 2 });
+
+        let bonuses = calculate_customs_bonus(&state);
+        assert_eq!(bonuses.len(), 2);
+        assert_eq!(bonuses[0], (PlayerId::new(0), 8));
+        assert_eq!(bonuses[1], (PlayerId::new(1), 4));
+    }
+
+    /// Item-6: `calculate_technology_bonus` directly (10 VP 1st / 5 VP 2nd)
+    /// with the CLOCKWISE tie-break on equal industry value. p1 and p2 both
+    /// own one industry-value-3 tech; start player is 0, so p1 (distance 1)
+    /// outranks tied p2 (distance 2).
+    #[test]
+    fn calculate_technology_bonus_awards_10_and_5_with_clockwise_tiebreak() {
+        let rules = Rules::standard();
+        let mut state = create_test_game_state(3);
+        state.config.start_player = PlayerId::new(0);
+        // Language School copies (id 1 and 2), each industry_cost 3.
+        state.players[1].technologies = vec![TechCardId(1)];
+        state.players[2].technologies = vec![TechCardId(2)];
+        // p0 owns no tech -> industry value 0, excluded from the top two.
+
+        let bonuses = calculate_technology_bonus(&state, &rules.techs);
+        assert_eq!(bonuses.len(), 2);
+        assert_eq!(bonuses[0], (PlayerId::new(1), 10), "clockwise-nearest of the tie -> 1st = 10");
+        assert_eq!(bonuses[1], (PlayerId::new(2), 5), "2nd = 5");
+    }
+
+    /// Item-6: a remainder test whose MERCENARY leg is nonzero (both shipped
+    /// remainder tests use a fresh player with zero mercenaries, so that leg
+    /// contributed 0 in every existing case). 3 unused (face-up) mercenaries
+    /// = 3 VP, on top of the other conversions.
+    #[test]
+    fn remainder_bonus_counts_unused_mercenaries() {
+        let mut player = PlayerState::new(PlayerId::new(0), PlayerColor::Red, true);
+        // Zero the starting 1/1/1/1 trade goods so only the legs under test count.
+        player.copper = 0;
+        player.silk = 0;
+        player.tea = 0;
+        player.seafood = 0;
+        player.mercenaries.available.insert(Country::English, 2);
+        player.mercenaries.available.insert(Country::French, 1);
+        player.mercenaries.used.insert(Country::German, 4); // face-down: NOT scored
+        player.imported_goods = 1; // +1
+        player.money = 4; // +2 (4/2)
+        // 3 unused mercenaries + 1 imported + 2 money = 6 VP.
+        assert_eq!(calculate_remainder_bonus(&player), 6);
     }
 }

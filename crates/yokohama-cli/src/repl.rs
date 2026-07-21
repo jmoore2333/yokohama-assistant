@@ -1078,13 +1078,13 @@ Commands:
   b <id> t <adj>  Placement Option B with the Telegram bonus: +1 assistant in an adjacent area
   m <from> <to>   resolve a pending assistant-move choice (<from> is 'hand' or an area id)
   r [id[:n]]...   Movement Option B: retreat the President, recovering all (bare id) or n assistants per area ('r' alone recovers none)
-  board           show the area grid
+  board           show the area grid (legend: * = unclaimed 5-Power token)
   players         show each player's resources, hand, tech, tokens, President
   ports           show both Port boards and the order-deck size
-  labs            show both Laboratory boards and the tech-deck size
-  tracks          show the Church and Customs tracks
-  sites           show each area's building-site printed rewards and build marks
-  goals           show achievement cards, claim state, and per-player progress
+  labs            show both Laboratory boards (each tech's country + effect) and the tech-deck size
+  tracks          show the Church and Customs tracks with printed VP and rider icons
+  sites           show each area's building-site printed rewards, build marks, and adjacency
+  goals           show achievement cards with claim VP, claim state, and per-player progress
   hand            show the current player's order-card hand
   score           show current VP/money (or the final scores once the game is over)
   log             show the tail of the move/event log

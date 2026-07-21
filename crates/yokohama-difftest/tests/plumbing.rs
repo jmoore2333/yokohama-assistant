@@ -91,6 +91,8 @@ fn real_state_round_trips_through_an_artifact() {
         engine_only: vec![],
         oracle_only: vec![],
         duplicates: vec![],
+        rules_hash: String::new(),
+        semantics_rev: None,
     };
     let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("artifacts");
     let path = write_artifact(&artifact, &dir).expect("write");

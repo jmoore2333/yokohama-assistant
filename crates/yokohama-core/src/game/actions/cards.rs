@@ -1415,6 +1415,42 @@ mod tests {
         assert_eq!(state.players[0].victory_points, 0);
     }
 
+    /// RULED (Jeremy, 2026-07-21, ruling A5): Letter Press Printing is
+    /// self-EXCLUSIVE, exactly as Patent System is (ruling A4) -- rulebook
+    /// p.16 (the PDF is 16 pages; Patent System / Letter Press are on p.16):
+    /// "Whenever you obtain a technology (after this one), gain 1 Yen."
+    /// Acquiring Letter Press itself grants no Yen; a SUBSEQUENT acquisition
+    /// grants +1 Yen per owned copy. Mirrors
+    /// `test_lab_acquisition_bonus_excludes_just_acquired_card` (the Patent
+    /// System twin) and confirms the shipped `id != acquired` filter.
+    #[test]
+    fn test_lab_acquisition_letterpress_excludes_just_acquired_card() {
+        let mut state = create_test_state();
+        let player = PlayerId::new(0);
+        let tech_registry = make_bonus_tech_registry();
+        let order_registry = OrderRegistry::new();
+
+        // The ONLY Letter Press copy owned is the one just acquired: no Yen.
+        state.players[0].technologies = vec![TechCardId(3)];
+        let money_before = state.players[0].money;
+        apply_lab_acquisition_bonuses(&mut state, player, TechCardId(3), &tech_registry, &order_registry);
+        assert_eq!(
+            state.players[0].money, money_before,
+            "acquiring Letter Press itself grants no Yen (self-exclusive, ruling A5)"
+        );
+
+        // A subsequent acquisition (an unrelated tech) with Letter Press
+        // already owned grants +1 Yen for that owned copy.
+        let money_before = state.players[0].money;
+        state.players[0].technologies = vec![TechCardId(3), TechCardId(5)];
+        apply_lab_acquisition_bonuses(&mut state, player, TechCardId(5), &tech_registry, &order_registry);
+        assert_eq!(
+            state.players[0].money,
+            money_before + 1,
+            "a later acquisition scores +1 Yen per owned Letter Press copy"
+        );
+    }
+
     #[test]
     fn test_lab_acquisition_letterpress_bonus_grants_yen_per_owned_copy() {
         let mut state = create_test_state();

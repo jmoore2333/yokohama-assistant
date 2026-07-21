@@ -742,54 +742,29 @@ fn try_apply_chinatown_exchange_simulated(
     mining_bonus: u32,
 ) -> Option<ChinatownResources> {
     let mut r = res;
-    match exchange {
-        ChinatownExchange::CopperToYen => {
-            if r.copper < 1 { return None; }
-            r.copper -= 1;
-            r.money += 2;
-        }
-        ChinatownExchange::SilkToYen => {
-            if r.silk < 1 { return None; }
-            r.silk -= 1;
-            r.money += 2;
-        }
-        ChinatownExchange::TeaToYen => {
-            if r.tea < 1 { return None; }
-            r.tea -= 1;
-            r.money += 1;
-        }
-        ChinatownExchange::SeafoodToYen => {
-            if r.seafood < 1 { return None; }
-            r.seafood -= 1;
-            r.money += 1;
-        }
-        ChinatownExchange::YenToCopper => {
-            if r.money < 2 { return None; }
-            r.money -= 2;
-            r.copper += 1 + mining_bonus;
-        }
-        ChinatownExchange::YenToSilk => {
-            if r.money < 2 { return None; }
-            r.money -= 2;
-            r.silk += 1;
-        }
-        ChinatownExchange::YenToTea => {
-            if r.money < 1 { return None; }
-            r.money -= 1;
-            r.tea += 1;
-        }
-        ChinatownExchange::YenToSeafood => {
-            if r.money < 1 { return None; }
-            r.money -= 1;
-            r.seafood += 1;
-        }
-        ChinatownExchange::YenToImported => {
-            if r.money < 4 { return None; }
-            r.money -= 4;
-            r.imported_goods += 1;
-        }
+    // Consume the SAME rate table the apply path uses -- no duplicated
+    // numbers here (Phase-2.9 review addendum, Tier 1).
+    let rate = chinatown_rate(exchange);
+    if *chinatown_res_field(&mut r, rate.spend) < rate.spend_amount {
+        return None;
     }
+    *chinatown_res_field(&mut r, rate.spend) -= rate.spend_amount;
+    // The Mining bonus is nonzero only for the copper-gaining exchange.
+    let bonus = if rate.gain == ChinatownGood::Copper { mining_bonus } else { 0 };
+    *chinatown_res_field(&mut r, rate.gain) += rate.gain_amount + bonus;
     Some(r)
+}
+
+/// Mutable accessor into a [`ChinatownResources`] field by good.
+fn chinatown_res_field(r: &mut ChinatownResources, good: ChinatownGood) -> &mut u32 {
+    match good {
+        ChinatownGood::Copper => &mut r.copper,
+        ChinatownGood::Silk => &mut r.silk,
+        ChinatownGood::Tea => &mut r.tea,
+        ChinatownGood::Seafood => &mut r.seafood,
+        ChinatownGood::Money => &mut r.money,
+        ChinatownGood::Imported => &mut r.imported_goods,
+    }
 }
 
 /// Canonical dedupe key for a multiset of exchanges: a fixed-size count per
@@ -1032,20 +1007,53 @@ mod tests {
 
     #[test]
     fn test_placement_moves_with_assistants() {
-        let state = create_test_state();
+        // create_test_state has 2 placeable areas; add 3 more so 3- and
+        // 4-area placements are geometrically possible (item 7: the review
+        // demonstrated deleting every 3-area move passed the whole suite
+        // because no test asserted length >= 3).
+        let mut state = create_test_state();
+        state.board_layout.areas.insert(AreaId::new(2), AreaConfig { area_type: AreaType::SilkMill, grid_position: (0, 2) });
+        state.board_layout.areas.insert(AreaId::new(3), AreaConfig { area_type: AreaType::TeaPlantation, grid_position: (0, 3) });
+        state.board_layout.areas.insert(AreaId::new(4), AreaConfig { area_type: AreaType::FishingGround, grid_position: (0, 4) });
+
+        let placement_lengths = |moves: &[Move]| -> std::collections::BTreeSet<usize> {
+            moves
+                .iter()
+                .filter_map(|m| match m {
+                    Move::PlaceThreeAreas { placements } => Some(placements.len()),
+                    _ => None,
+                })
+                .collect()
+        };
+
+        // WITHOUT Newspaper: lengths 0,1,2,3 present; 4 must NOT appear.
         let moves = generate_placement_moves_with_tech(&state, None);
-
-        // Should have placement options
         assert!(!moves.is_empty());
-
-        // Should include empty placement (0 assistants)
-        assert!(moves.iter().any(|m| matches!(m, Move::PlaceThreeAreas { placements } if placements.is_empty())));
-
-        // Should include single area placements
-        assert!(moves.iter().any(|m| matches!(m, Move::PlaceThreeAreas { placements } if placements.len() == 1)));
-
-        // Should include Option B (2 in same area) since we have 8 assistants
+        let lens = placement_lengths(&moves);
+        assert!(lens.contains(&0), "empty placement must be offered");
+        assert!(lens.contains(&1), "single-area placement must be offered");
+        assert!(lens.contains(&2), "2-area placement must be offered");
+        assert!(lens.contains(&3), "3-area placement must be offered (kills 'delete all 3-area moves')");
+        assert!(!lens.contains(&4), "4-area placement must NOT appear without Newspaper");
+        // Option B (2 in one area) present since we have 8 assistants.
         assert!(moves.iter().any(|m| matches!(m, Move::PlaceTwoSameArea { .. })));
+
+        // WITH Newspaper: length 4 now appears.
+        let mut registry = TechRegistry::new();
+        registry.insert(
+            TechCard {
+                id: TechCardId(80),
+                name: "Newspaper".to_string(),
+                country: Country::English,
+                industry_cost: 5,
+                effect: TechEffect::Newspaper,
+            },
+            "tech_newspaper",
+        );
+        state.players[0].technologies.push(TechCardId(80));
+        let moves_np = generate_placement_moves_with_tech(&state, Some(&registry));
+        let lens_np = placement_lengths(&moves_np);
+        assert!(lens_np.contains(&4), "4-area placement must be offered WITH Newspaper");
     }
 
     #[test]
