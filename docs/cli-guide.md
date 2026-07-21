@@ -163,6 +163,7 @@ goals           show achievement cards with claim VP, claim state, and per-playe
 hand            show the current player's order-card hand
 score           show current VP/money (or the final scores once the game is over)
 log             show the tail of the move/event log
+privacy         toggle hiding hand contents in views (default: hidden in live mode)
 panel           toggle the players panel inside the composed screen (terminal only)
 screen          toggle the composed screen itself (terminal only; pipes are always plain)
 more            show the next page of legal options (wraps to page 0)

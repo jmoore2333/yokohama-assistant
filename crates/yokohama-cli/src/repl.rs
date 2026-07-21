@@ -48,6 +48,11 @@ pub struct Repl {
     /// keeps the players box inside that frame (`panel` toggles).
     pub composed: bool,
     pub show_panel: bool,
+    /// Privacy flag (Task 6): when set, hand CONTENTS mask to counts in the
+    /// `hand` and `players` views (the kept starting order lives in the
+    /// hand). Defaults ON in live mode -- the laptop gets passed around a
+    /// real table -- and OFF in simulation. `privacy` toggles.
+    pub privacy: bool,
 }
 
 /// One line in the Movement phase's collapsed numbered list (design.md:67,
@@ -102,6 +107,7 @@ impl Repl {
         // desync/invariant fault carries `record.lockdown`, so a reload comes
         // back locked instead of silently playable again.
         let locked = session.is_locked();
+        let privacy = matches!(session.mode, TrackingMode::Live);
         Repl {
             session,
             page: 0,
@@ -111,6 +117,7 @@ impl Repl {
             board_width_note_shown: false,
             composed: true,
             show_panel: true,
+            privacy,
         }
     }
 
@@ -267,7 +274,9 @@ impl Repl {
             ["quit"] | ["q"] => StepOutput { text: "bye\n".to_string(), quit: true },
             ["help"] => self.out_view(HELP_TEXT.to_string()),
             ["board"] => self.board_cmd(),
-            ["players"] => self.out_view(render::players_panel(self.session.state(), self.session.rules())),
+            ["players"] => {
+                self.out_view(render::players_panel(self.session.state(), self.session.rules(), self.privacy))
+            }
             ["ports"] => self.out_view(render::ports_view(self.session.state(), self.session.rules())),
             ["labs"] => self.out_view(render::labs_view(self.session.state(), self.session.rules())),
             ["tracks"] => self.out_view(render::tracks_view(self.session.state())),
@@ -291,6 +300,11 @@ impl Repl {
                 }
                 Err(e) => self.out(format!("Cannot undo: {e}\n"), false),
             },
+            ["privacy"] => {
+                self.privacy = !self.privacy;
+                let word = if self.privacy { "HIDDEN" } else { "shown" };
+                self.out(format!("Private info (hand contents) now {word} in views.\n"), false)
+            }
             ["panel"] => {
                 self.show_panel = !self.show_panel;
                 let word = if self.show_panel { "shown" } else { "hidden" };
@@ -1011,8 +1025,14 @@ impl Repl {
         let state = self.session.state();
         let rules = self.session.rules();
         let p = state.current_player();
-        let mut out = format!("{:?} hand:\n", p.color);
-        if p.order_cards_in_hand.is_empty() {
+        let mut out = format!("─ Hand: {:?} ─────────────────────────\n", p.color);
+        if self.privacy {
+            let n = p.order_cards_in_hand.len();
+            out.push_str(&format!(
+                "  {n} card{} (hidden — 'privacy' to toggle)\n",
+                if n == 1 { "" } else { "s" }
+            ));
+        } else if p.order_cards_in_hand.is_empty() {
             out.push_str("  (empty)\n");
         } else {
             for id in &p.order_cards_in_hand {
@@ -1140,6 +1160,7 @@ Commands:
   hand            show the current player's order-card hand
   score           show current VP/money (or the final scores once the game is over)
   log             show the tail of the move/event log
+  privacy         toggle hiding hand contents in views (default: hidden in live mode)
   panel           toggle the players panel inside the composed screen (terminal only)
   screen          toggle the composed screen itself (terminal only; pipes are always plain)
   more            show the next page of legal options (wraps to page 0)
@@ -1559,6 +1580,45 @@ mod tests {
         assert!(p.contains("enter a number, or a command ('help' for the list)"), "{p}");
         assert!(!p.contains("'m <from> <to>'"), "{p}");
         assert!(!p.contains("'a'/'b'"), "{p}");
+    }
+
+    /// Task 6 privacy: hidden by default in LIVE mode (the laptop gets
+    /// passed around a physical table), open by default in SIM.
+    #[test]
+    fn privacy_defaults_on_in_live_mode_and_off_in_sim() {
+        let sim = repl_2p(4);
+        assert!(!sim.privacy, "sim defaults open");
+
+        let rules = Rules::standard();
+        let config = GameConfig::for_player_count(2);
+        let live = Repl::new(
+            Session::new_live(
+                config, 903, SetupObservations::default(),
+                vec![StartingOrderChoice::Keep(0), StartingOrderChoice::Unknown],
+                rules,
+            )
+            .unwrap(),
+        );
+        assert!(live.privacy, "live defaults hidden");
+    }
+
+    /// The `privacy` command toggles, and a hidden hand masks its contents
+    /// (count only) in the `hand` view while the toggle-back restores them.
+    #[test]
+    fn privacy_toggle_masks_the_hand_view() {
+        let mut r = repl_2p(4);
+        let open = r.step("hand").text;
+        assert!(open.contains("O"), "sim shows codes by default: {open}");
+
+        let out = r.step("privacy");
+        assert!(out.text.contains("HIDDEN"), "{}", out.text);
+        let masked = r.step("hand").text;
+        assert!(masked.contains("hidden"), "{masked}");
+        assert!(masked.contains("1 card"), "count survives: {masked}");
+        assert!(!masked.contains(" -> "), "card text (order_compact_line) must not leak: {masked}");
+
+        r.step("privacy");
+        assert!(r.step("hand").text.contains(" -> "), "toggle back restores contents");
     }
 
     #[test]

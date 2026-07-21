@@ -66,6 +66,9 @@ pub enum GoodKind {
     Tea,
     Seafood,
     Yen,
+    /// Imported goods -- like `Yen`, not a core `TradeGood`, but a counted
+    /// resource the goods run displays (Task 6 full-color treatment).
+    Imports,
 }
 
 /// Semantic tones -- call sites name WHAT a token is, this module decides
@@ -101,6 +104,7 @@ fn sgr(tone: Tone) -> &'static str {
         Tone::Good(GoodKind::Tea) => "32",
         Tone::Good(GoodKind::Seafood) => "36",
         Tone::Good(GoodKind::Yen) => "93",
+        Tone::Good(GoodKind::Imports) => "95",
         Tone::Tile(AreaType::CopperMine) => "33",
         Tone::Tile(AreaType::SilkMill) => "37",
         Tone::Tile(AreaType::TeaPlantation) => "32",

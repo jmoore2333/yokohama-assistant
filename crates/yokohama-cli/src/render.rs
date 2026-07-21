@@ -13,7 +13,7 @@ use yokohama_core::*;
 
 use crate::describe;
 use crate::input::tech_name;
-use crate::style::{paint, Tone};
+use crate::style::{paint, GoodKind, Tone};
 
 /// Interior text width of one tile box; a full box adds 2 border columns.
 const TILE_W: usize = 16;
@@ -32,19 +32,36 @@ const TILE_PITCH: usize = TILE_W + 2;
 pub fn prompt_header(state: &GameState, phase_text: &str) -> String {
     let p = state.current_player();
     format!(
-        "Turn {} | {} | {} | {} yen {} VP | c{} s{} t{} f{} i{} | hand {}",
+        "Turn {} | {} | {} | {} {} | {} | hand {}",
         state.turn_number,
         paint(Tone::Player(p.color), color_name(p.color)),
         paint(Tone::Prompt, phase_text),
-        p.money,
-        p.victory_points,
-        p.copper,
-        p.silk,
-        p.tea,
-        p.seafood,
-        p.imported_goods,
+        paint(Tone::Good(GoodKind::Yen), &format!("{} yen", p.money)),
+        paint(Tone::Vp, &format!("{} VP", p.victory_points)),
+        goods_run(p),
         p.order_cards_in_hand.len(),
     )
+}
+
+/// The `c1 s2 t0 f1 i0` goods run, each token painted in its good's color
+/// (Task 6 full-color treatment). Space-joined AFTER painting, so the plain
+/// render is byte-identical to the old inline format string.
+fn goods_run(p: &PlayerState) -> String {
+    [
+        paint(Tone::Good(GoodKind::Copper), &format!("c{}", p.copper)),
+        paint(Tone::Good(GoodKind::Silk), &format!("s{}", p.silk)),
+        paint(Tone::Good(GoodKind::Tea), &format!("t{}", p.tea)),
+        paint(Tone::Good(GoodKind::Seafood), &format!("f{}", p.seafood)),
+        paint(Tone::Good(GoodKind::Imports), &format!("i{}", p.imported_goods)),
+    ]
+    .join(" ")
+}
+
+/// A `─ Title ─────...` rule header opening every state view (Task 6, one
+/// design language across views). 40 columns total.
+fn section(title: &str) -> String {
+    let head = format!("─ {title} ");
+    format!("{head}{}\n", "─".repeat(40usize.saturating_sub(head.chars().count())))
 }
 
 /// The staggered board: one independent bordered box per tile, positioned
@@ -138,7 +155,7 @@ pub fn board_legend(state: &GameState) -> String {
 /// Per Port board: slot number, zone, and the order card there via
 /// `order_compact_line` (or `-` when empty), then the shared order-deck size.
 pub fn ports_view(state: &GameState, rules: &Rules) -> String {
-    let mut out = String::new();
+    let mut out = section("Ports");
     render_port_board(describe::area_type_name(AreaType::PortA), &state.port_state.port_a, rules, &mut out);
     if let Some(port_b) = &state.port_state.port_b {
         render_port_board(describe::area_type_name(AreaType::PortB), port_b, rules, &mut out);
@@ -150,7 +167,7 @@ pub fn ports_view(state: &GameState, rules: &Rules) -> String {
 /// Per Laboratory board: slot number, position surcharge, and the tech card
 /// there (name + industry cost), or `-`, then the shared tech-deck size.
 pub fn labs_view(state: &GameState, rules: &Rules) -> String {
-    let mut out = String::new();
+    let mut out = section("Laboratories");
     render_lab_board(describe::area_type_name(AreaType::LaboratoryA), &state.lab_state.lab_a, rules, &mut out);
     if let Some(lab_b) = &state.lab_state.lab_b {
         render_lab_board(describe::area_type_name(AreaType::LaboratoryB), lab_b, rules, &mut out);
@@ -235,16 +252,26 @@ pub fn compact_panel(state: &GameState, _rules: &Rules) -> String {
 /// order count, technology names, tokens/mercenaries, assistant/shophouse/
 /// trading-house counts by zone (hand/board/warehouse, built) plus the
 /// trading house's next Employment-Agency take cost, and President location.
-pub fn players_panel(state: &GameState, rules: &Rules) -> String {
-    let mut out = String::new();
+/// With `hide_hands` (the privacy flag, Task 6) hand CONTENTS mask to a
+/// count -- the kept starting order lives in the hand, and a live-table
+/// laptop gets passed around.
+pub fn players_panel(state: &GameState, rules: &Rules, hide_hands: bool) -> String {
+    let mut out = section("Players");
     for p in &state.players {
         out.push_str(&format!(
             "{}: {} yen  {} VP  c{} s{} t{} f{}  imports {}\n",
             player_prefix(p.color), p.money, p.victory_points, p.copper, p.silk, p.tea, p.seafood, p.imported_goods,
         ));
 
-        let hand = p.order_cards_in_hand.iter().map(|id| format!("O{:02}", id.0)).collect::<Vec<_>>().join(", ");
-        out.push_str(&format!("  hand: {}\n", if hand.is_empty() { "-" } else { &hand }));
+        let hand = if hide_hands {
+            let n = p.order_cards_in_hand.len();
+            format!("{n} card{} (hidden — 'privacy' to toggle)", if n == 1 { "" } else { "s" })
+        } else {
+            let codes =
+                p.order_cards_in_hand.iter().map(|id| format!("O{:02}", id.0)).collect::<Vec<_>>().join(", ");
+            if codes.is_empty() { "-".to_string() } else { codes }
+        };
+        out.push_str(&format!("  hand: {hand}\n"));
 
         out.push_str(&format!("  completed: {}\n", p.completed_orders.len()));
 
@@ -323,7 +350,7 @@ pub fn players_panel(state: &GameState, rules: &Rules) -> String {
 /// precedent as `describe::describe_pending_choice`'s `_rules`) but
 /// currently unused: site data lives entirely in `state`.
 pub fn sites_view(state: &GameState, _rules: &Rules) -> String {
-    let mut out = String::new();
+    let mut out = section("Building sites");
     for (&area, site) in &state.board_layout.building_sites {
         out.push_str(&format!(
             "{}  {}  {}  {}\n",
@@ -477,7 +504,20 @@ fn track_occupant(state: &GameState, player: PlayerId) -> String {
 /// (`track_occupant`). Each space line also prints its printed VP + rider
 /// (`church_reward_text`/`customs_reward_text`, S5) after the occupant.
 pub fn tracks_view(state: &GameState) -> String {
-    let mut out = String::new();
+    let mut out = section("Tracks");
+
+    // Finding D1 (named-sentinel display): when the 2P dummy holds any track
+    // space, a legend names it and states that it competes in the majority
+    // bonus -- the `D` in the occupant column is a scoring occupant, not
+    // decoration.
+    let dummy_present = state.church_track.slots.iter().flatten().any(|s| s.player.is_dummy())
+        || state.customs_track.slots.iter().flatten().any(|s| s.player.is_dummy());
+    if dummy_present {
+        out.push_str(&format!(
+            "{} = Dummy — the 2P neutral marker; it holds its space and competes in each track's majority bonus\n",
+            paint(Tone::Dim, "D"),
+        ));
+    }
 
     out.push_str("Church:\n");
     for i in 0..8 {
@@ -540,7 +580,7 @@ pub fn tracks_view(state: &GameState) -> String {
 /// `*_view` functions (same precedent as `sites_view`'s `_rules`) but
 /// unused: everything here comes from `state` alone.
 pub fn achievements_view(state: &GameState, _rules: &Rules) -> String {
-    let mut out = String::new();
+    let mut out = section("Goals");
     for (i, card) in state.achievements.iter().enumerate() {
         let claim_state = if card.claimed_by.is_empty() {
             "open".to_string()
@@ -1434,11 +1474,78 @@ mod tests {
     fn players_panel_lists_each_player_by_color_and_money() {
         let state = test_state_2p();
         let rules = Rules::standard();
-        let v = players_panel(&state, &rules);
+        let v = players_panel(&state, &rules, false);
         assert!(v.contains("Red"), "{v}");
         assert!(v.contains("Blue"), "{v}");
         assert!(v.contains("3 yen"), "{v}");
         assert!(v.contains("4 yen"), "{v}");
+    }
+
+    /// Task 6 privacy: with `hide_hands` the full players view masks hand
+    /// CONTENTS (the kept starting order lives there) but keeps the count,
+    /// so a live-table laptop can be passed around without leaking.
+    #[test]
+    fn players_panel_masks_hand_contents_when_hidden() {
+        let state = test_state_2p();
+        let rules = Rules::standard();
+        let open = players_panel(&state, &rules, false);
+        assert!(open.contains("hand: O"), "open mode shows codes: {open}");
+        let masked = players_panel(&state, &rules, true);
+        assert!(!masked.contains("hand: O"), "masked mode must hide codes: {masked}");
+        assert!(masked.contains("1 card (hidden"), "count survives masking: {masked}");
+    }
+
+    /// Finding D1, redesigned display: the 2P dummy is a NAMED occupant --
+    /// the `D` mark stays in the occupant column, and a legend line explains
+    /// what it is and that it competes in the majority bonus. No dummy on
+    /// the board (a 3P/4P game, or an injected clean track) = no legend.
+    #[test]
+    fn tracks_view_names_the_dummy_in_a_legend() {
+        let state = test_state_2p();
+        let v = tracks_view(&state);
+        assert!(v.contains("D = Dummy"), "{v}");
+        assert!(v.contains("majorit"), "the legend must state it competes in majorities: {v}");
+
+        let mut clean = test_state_2p();
+        clean.church_track.slots = Default::default();
+        clean.customs_track.slots = Default::default();
+        let v2 = tracks_view(&clean);
+        assert!(!v2.contains("D = Dummy"), "no dummy, no legend: {v2}");
+    }
+
+    /// Task 6 restyle: the state views share one design language -- a
+    /// `─ Title ─...` rule header opens each of them.
+    #[test]
+    fn views_share_the_rule_header_style() {
+        let state = test_state_2p();
+        let rules = Rules::standard();
+        for (name, text) in [
+            ("ports", ports_view(&state, &rules)),
+            ("labs", labs_view(&state, &rules)),
+            ("tracks", tracks_view(&state)),
+            ("sites", sites_view(&state, &rules)),
+            ("goals", achievements_view(&state, &rules)),
+            ("players", players_panel(&state, &rules, false)),
+        ] {
+            assert!(text.starts_with("─ "), "view '{name}' must open with a rule header: {text}");
+        }
+    }
+
+    /// Task 6 full color: the prompt header's goods/yen/VP tokens paint
+    /// (strip-equality keeps the plain text authoritative).
+    #[test]
+    fn prompt_header_paints_goods_and_yen() {
+        let state = test_state_2p();
+        crate::style::force(true);
+        let colored = prompt_header(&state, "Placement");
+        crate::style::force(false);
+        let plain = prompt_header(&state, "Placement");
+        assert_eq!(strip_ansi(&colored), plain);
+        // The goods run itself must carry paint, not just the earlier
+        // player/phase tokens: escapes must appear AFTER the first goods
+        // token (its own close, and the later goods' opens).
+        let goods_start = colored.find("c1").expect("goods token present");
+        assert!(colored[goods_start..].contains('\u{1b}'), "goods tokens must paint: {colored:?}");
     }
 
     /// Task 11 (T2.1): the panel must show assistant/shophouse/trading-house
@@ -1463,7 +1570,7 @@ mod tests {
         state.players[0].trading_houses.in_hand = 1;
         state.players[0].trading_houses.in_warehouse -= 1;
 
-        let text = players_panel(&state, &rules);
+        let text = players_panel(&state, &rules, false);
         assert!(text.contains("assistants: hand"), "{text}");
         assert!(text.contains("shophouses: hand"), "{text}");
         assert!(text.contains("trading:"), "{text}");
@@ -1997,7 +2104,7 @@ mod tests {
         }
         let total = state.players[0].assistants.total();
 
-        let panel = players_panel(&state, &rules);
+        let panel = players_panel(&state, &rules, false);
         let line = panel
             .lines()
             .find(|l| l.contains("assistants:"))
@@ -2058,7 +2165,7 @@ mod tests {
         state.players[0].mercenaries.available.insert(Country::English, 1);
         state.players[0].mercenaries.used.insert(Country::French, 2);
 
-        let panel = players_panel(&state, &rules);
+        let panel = players_panel(&state, &rules, false);
         let line = panel
             .lines()
             .find(|l| l.contains("mercenaries"))
@@ -2171,9 +2278,9 @@ mod tests {
         let state = test_state_2p();
         let rules = Rules::standard();
         crate::style::force(true);
-        let colored = players_panel(&state, &rules);
+        let colored = players_panel(&state, &rules, false);
         crate::style::force(false);
-        let plain = players_panel(&state, &rules);
+        let plain = players_panel(&state, &rules, false);
         assert_ne!(colored, plain, "forced mode must actually paint something");
         assert_eq!(strip_ansi(&colored), plain);
     }
