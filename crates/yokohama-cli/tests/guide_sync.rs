@@ -210,6 +210,46 @@ fn frame_width(players: u8) -> usize {
         .unwrap_or(0)
 }
 
+/// The composed frame's rendered HEIGHT when a game opens: exactly what
+/// `main.rs` prints first, `wrap(repl, repl.prompt())`. Measured off the real
+/// `screen::wrap`, so it can never be a copied literal.
+fn frame_height(players: u8) -> usize {
+    let session = Session::new_sim(
+        GameConfig::for_player_count(players),
+        0,
+        vec![StartingOrderChoice::Keep(0); players as usize],
+        Rules::standard(),
+    )
+    .expect("new_sim over a standard board");
+    let repl = Repl::new(session);
+    screen::force(true);
+    let frame = screen::wrap(&repl, &repl.prompt());
+    screen::force(false);
+    assert!(frame.starts_with(CLEAR_HOME), "frames must be on for this measurement");
+    frame.lines().count()
+}
+
+/// (g) §2 states the composed screen's HEIGHT as well as its width (F3, Codex
+/// adversarial review of PR #4). The guide told testers how wide to size a
+/// window and nothing at all about how tall, while the 4-player screen -- the
+/// tallest, since its 108-column board stacks the players panel underneath
+/// rather than beside -- opened past 50 rows, scrolling the title and the top
+/// board row away before the game began. Derived from `screen::wrap`, never
+/// copied, so a layout change that costs rows must restate the number.
+#[test]
+fn section2_frame_heights_match_the_composed_screen() {
+    let (h2, h3, h4) = (frame_height(2), frame_height(3), frame_height(4));
+    let phrase = format!("{h2} rows at 2 players, {h3} at 3, and {h4} at 4");
+    for (file, text) in [("cli-guide.md", GUIDE_MD), ("cli-guide.html", GUIDE_HTML)] {
+        assert!(
+            text.contains(&phrase),
+            "{file} §2 does not state the composed screen's actual opening height. screen::wrap \
+             produces {h2}/{h3}/{h4} rows at 2/3/4 players, so §2 must read {phrase:?}. Update the \
+             guide (both formats) if the frame layout changed."
+        );
+    }
+}
+
 /// (f) The §2 width guidance states the width of the COMPOSED FRAME, not just
 /// the board's own grid. The frame is wider than the board at every player
 /// count (panel beside it, 96-column info strip below it), so board-only

@@ -83,30 +83,45 @@ pub fn achievement_desc(a: AchievementType) -> String {
 /// One-line plain-words statement of a Technology card's effect, for the
 /// `labs` view (item 5). A TOTAL match over `TechEffect` -- no wildcard arm,
 /// so adding a variant is a compile error here rather than a silently-missing
-/// line. Each line is authored from the engine's own `TechEffect` variant
-/// docs (`types/cards.rs`); the CLI guide's §8.2 lists card NAMES only, not
-/// per-effect wording, so these are the single display source for what a tech
-/// does. ASCII only, to stay terminal-safe.
+/// line. The CLI guide's §8.2 lists card NAMES only, not per-effect wording,
+/// so these are the SINGLE display source for what a tech does -- the `labs`
+/// view exists precisely so a player can choose without an external
+/// reference. ASCII only, to stay terminal-safe, and short enough that the
+/// composed lab line clears 140 columns
+/// (`labs_view_lines_fit_the_documented_terminal_width`).
+///
+/// AUTHORING RULE (F2, Codex adversarial review of PR #4): each line is
+/// authored from the RULES sources -- rulebook pp. 15-16, the KB reference
+/// `analysis-1/yokohama-kb/01-rules-reference.md`, and guidingpath's
+/// decision log for the rulings (A4: Patent System is self-exclusive) --
+/// and must carry every qualifier that would change a purchase decision:
+/// the cost it still charges, the restriction it does not lift, the timing
+/// it starts from. Five lines shipped without one (Patent System and
+/// Letterpress Printing read as self-paying, Postal System hid its stop
+/// fee, Stagecoach hid that it waives that fee, Telegram hid its bonus
+/// assistant's placement fee) because the only coverage was "non-empty".
+/// `tech_effect_text_carries_the_qualifiers_that_change_a_purchase` now
+/// pins them card by card.
 pub fn tech_effect_text(effect: TechEffect) -> &'static str {
     match effect {
         TechEffect::Tram => "Teleport the President to any area without an opponent President",
-        TechEffect::Stagecoach => "Move through opponent Presidents without paying the pass-through fee",
-        TechEffect::PostalSystem => "May stop and act in an area holding an opponent President",
-        TechEffect::Station => "Place the Station token: +1 Power for everyone there; teleport there while you have an assistant in its area",
+        TechEffect::Stagecoach => "Move through opponent Presidents fee-free; with Postal System, stopping on one is free too",
+        TechEffect::PostalSystem => "May stop and act where opponent Presidents stand; still pay 1 Yen each unless you own Stagecoach",
+        TechEffect::Station => "Place the Station token: +1 Power for everyone there; teleport there while you have an assistant there",
         TechEffect::Gaslight => "+2 VP when you build a Shophouse",
         TechEffect::ElectricalLight => "+3 VP when you build a Trading House",
-        TechEffect::MiningTechnology => "+1 Copper whenever you receive Copper",
+        TechEffect::MiningTechnology => "+1 Copper each time you receive 1 or more Copper (once per gain, not per token)",
         TechEffect::SpinningMill => "Once per turn: discard 1 Silk to gain 2 Yen",
         TechEffect::Ball => "+2 VP when you complete an Order",
         TechEffect::LanguageSchool => "+1 Yen when you complete an Order",
-        TechEffect::PatentSystem => "+2 VP when you acquire a Technology",
-        TechEffect::LetterPressPrinting => "+1 Yen when you acquire a Technology",
+        TechEffect::PatentSystem => "+2 VP for each Technology you acquire after this one (never for this card itself)",
+        TechEffect::LetterPressPrinting => "+1 Yen for each Technology you acquire after this one (never for this card itself)",
         TechEffect::Winery => "+3 VP when you place an assistant on the Church",
         TechEffect::Brickyard => "+4 VP when you place an assistant on Customs",
         TechEffect::SystemOfStock => "At turn start, if you have 1 Yen or less, refill to 2 Yen",
         TechEffect::University => "Once per turn: pay 1 Yen to take an assistant from the Warehouse",
         TechEffect::Newspaper => "Placement Option A may use 4 different areas instead of 3",
-        TechEffect::Telegram => "After placing 2 assistants in one area, may place 1 in an adjacent area",
+        TechEffect::Telegram => "After placing 2 assistants in one area, may place 1 in an adjacent area (normal placement fee applies)",
         TechEffect::Telephone => "During Recovery, may leave 1 assistant in the action area",
         TechEffect::Exposition => "Immediately gain 10 VP when acquired",
     }
@@ -1030,6 +1045,82 @@ mod tests {
         assert!(tech_effect_text(TechEffect::Gaslight).contains("Shophouse"), "{}", tech_effect_text(TechEffect::Gaslight));
         assert!(tech_effect_text(TechEffect::Brickyard).contains("Customs"), "{}", tech_effect_text(TechEffect::Brickyard));
         assert!(tech_effect_text(TechEffect::University).contains("Warehouse"), "{}", tech_effect_text(TechEffect::University));
+    }
+
+    /// F2 (Codex adversarial review of PR #4): `tech_effect_text` is the
+    /// ONLY player-facing statement of what a technology does -- the `labs`
+    /// view exists so a player can choose WITHOUT an external reference --
+    /// so an entry that drops a cost, a restriction or a timing qualifier
+    /// changes a purchase decision on wrong information. The coverage
+    /// before this was "every effect is non-empty", which is exactly why
+    /// five materially incomplete entries shipped; these assertions are
+    /// card-SPECIFIC so a future edit that drops a qualifier fails here
+    /// instead of reaching a player.
+    ///
+    /// Rules sources for the wording (never the engine's own logic):
+    /// rulebook pp. 15-16 (Technology Cards), the KB reference
+    /// `analysis-1/yokohama-kb/01-rules-reference.md`, and guidingpath's
+    /// decision log for ruling A4 (Patent System is SELF-EXCLUSIVE,
+    /// 2026-07-20, rulebook p.16 "after this one").
+    #[test]
+    fn tech_effect_text_carries_the_qualifiers_that_change_a_purchase() {
+        // A4: "Whenever you gain a Technology card AFTER THIS ONE..." --
+        // buying Patent System never pays its own bonus. Same class for
+        // Letterpress Printing (rulebook p.15, identical clause).
+        let patent = tech_effect_text(TechEffect::PatentSystem);
+        assert!(patent.contains("+2 VP"), "{patent}");
+        assert!(
+            patent.contains("after this one"),
+            "Patent System is self-exclusive (ruling A4, rulebook p.16): {patent}"
+        );
+        let letterpress = tech_effect_text(TechEffect::LetterPressPrinting);
+        assert!(letterpress.contains("+1 Yen"), "{letterpress}");
+        assert!(
+            letterpress.contains("after this one"),
+            "Letterpress Printing is self-exclusive (rulebook p.15): {letterpress}"
+        );
+
+        // Postal System buys the RIGHT to stop, not a free stop: rulebook
+        // p.15 "You must still pay these players (unless you also own the
+        // Stagecoach)" -- the engine prices that destination fee in
+        // `route_fee_vector`.
+        let postal = tech_effect_text(TechEffect::PostalSystem);
+        assert!(
+            postal.contains("fee") || postal.contains("pay"),
+            "Postal System still pays the players it stops on (rulebook p.15): {postal}"
+        );
+        assert!(
+            postal.contains("Stagecoach"),
+            "Postal System's fee is waived only by Stagecoach (rulebook p.15): {postal}"
+        );
+
+        // Stagecoach waives the pass-through fee AND (rulebook p.15's
+        // "unless you also own the Postal System" pairing, engine:
+        // "Stagecoach waives president fees entirely") Postal System's
+        // destination fee -- and it never lets you stop on its own.
+        let stagecoach = tech_effect_text(TechEffect::Stagecoach);
+        assert!(
+            stagecoach.contains("Postal System"),
+            "Stagecoach's value depends on the Postal System interaction (rulebook p.15): {stagecoach}"
+        );
+
+        // Telegram's bonus assistant is not free: rulebook p.16 "Pay the
+        // usual cost if another President pawn occupies this adjacent Area."
+        let telegram = tech_effect_text(TechEffect::Telegram);
+        assert!(
+            telegram.contains("fee") || telegram.contains("cost"),
+            "Telegram's bonus placement pays the normal President fee (rulebook p.16): {telegram}"
+        );
+
+        // Mining Technology pays ONCE per gain, not once per token
+        // (rulebook p.15 "Whenever you receive 1 or more Copper token, you
+        // receive 1 additional Copper token"; engine `copper_bonus` returns
+        // the owned-copy count, independent of `base_copper`).
+        let mining = tech_effect_text(TechEffect::MiningTechnology);
+        assert!(
+            mining.contains("1 or more") && mining.contains("not per token"),
+            "Mining Technology pays per GAIN, not per Copper token (rulebook p.15): {mining}"
+        );
     }
 
     /// Task B review minor: the Station effect line must not promise an

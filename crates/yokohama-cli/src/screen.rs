@@ -89,15 +89,21 @@ pub fn wrap(repl: &Repl, body: &str) -> String {
     let board_width = board.lines().next().map(visible_width).unwrap_or(0);
 
     let mut stage = if repl.show_panel {
-        let panel = render::compact_panel(state, repl.session.rules());
         if board_width <= 100 {
-            join_side_by_side(&board, &panel, 2)
+            join_side_by_side(&board, &render::compact_panel(state, repl.session.rules()), 2)
         } else {
+            // Stacked below the board, VERTICAL space is the scarce
+            // resource, not horizontal: the frame is already >= 108 columns
+            // here, so the panel folds to one line per player (F3, Codex
+            // review of PR #4 -- the 5-line block cost 16 rows and pushed
+            // the 4P opening frame off a 140x50 terminal). The side-by-side
+            // branch above is untouched, so the 2P/3P screens are
+            // byte-identical to before.
             let mut s = board.clone();
             if !s.is_empty() && !s.ends_with('\n') {
                 s.push('\n');
             }
-            s.push_str(&panel);
+            s.push_str(&render::compact_panel_oneline(state));
             s
         }
     } else {
@@ -211,7 +217,39 @@ mod tests {
         let side4 = f4.lines().any(|l| l.contains('│') && l.contains("President:"));
         assert!(!side4, "4P panel must stack below the 108-col board:\n{f4}");
         assert!(f4.contains("Players"), "4P panel still present, just below:\n{f4}");
+        // ...and stacked, it is the ONE-LINE-per-player fold (F3), so the
+        // panel costs 4 rows here, not 20: every player's President line is
+        // the same line as their name.
+        assert_eq!(
+            f4.lines().filter(|l| l.contains("President:")).count(),
+            4,
+            "the stacked panel must be one line per player:\n{f4}"
+        );
+        assert!(
+            f4.lines().any(|l| l.contains("Red") && l.contains("President:")),
+            "name and President must share one line in the stacked form:\n{f4}"
+        );
         force(false);
+    }
+
+    /// F3 (Codex adversarial review of PR #4): the composed screen has to
+    /// FIT the terminal the guide tells a tester to open. The opening frame
+    /// is exactly `wrap(repl, repl.prompt())` (`main.rs`), so measure that.
+    /// At 4 players the board is 108 columns and the panel stacks BELOW it;
+    /// with the 5-line-per-player block that stack ran the frame past 50
+    /// rows, and in a real 140x50 PTY the title strip and the whole top
+    /// board row had already scrolled off before the player could read
+    /// them. Every player count must open inside 50 rows.
+    #[test]
+    fn opening_frame_fits_fifty_rows_at_every_player_count() {
+        for n in [2u8, 3, 4] {
+            let r = repl_np(n);
+            force(true);
+            let frame = wrap(&r, &r.prompt());
+            force(false);
+            let rows = frame.lines().count();
+            assert!(rows <= 50, "the {n}P opening frame is {rows} rows; 50 is the documented height");
+        }
     }
 
     /// `panel` hides/shows the players panel inside the frame; `screen`

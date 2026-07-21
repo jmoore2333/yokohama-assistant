@@ -248,6 +248,73 @@ pub fn compact_panel(state: &GameState, _rules: &Rules) -> String {
     out
 }
 
+/// The compact panel folded to ONE LINE PER PLAYER, for the frame layout
+/// that stacks the panel BELOW the board instead of beside it (F3, Codex
+/// adversarial review of PR #4).
+///
+/// Same public fields as [`compact_panel`] -- current-player marker, money,
+/// VP, goods, hand COUNT (never contents), assistant zones with the `locked`
+/// tally, built counts, President location -- just laid out horizontally.
+/// The stacking branch only runs on the 4P board, which is already 108
+/// columns wide, so a wide line costs nothing there, while the 5 lines per
+/// player it replaces cost 16 rows: enough to push the opening frame past
+/// 50 rows, scrolling the title and the top board row off a 140x50
+/// terminal before the player could read them. The one field dropped
+/// against the multi-line form is the next trading-house take price (the
+/// `players` view carries it, and it is the only per-player number that is
+/// not a state reading).
+///
+/// Player names paint in their colors after layout, from the PLAIN name's
+/// length (style.rs's alignment rule), exactly as [`compact_panel`] does.
+pub fn compact_panel_oneline(state: &GameState) -> String {
+    let mut lines: Vec<(String, String)> = Vec::new();
+    lines.push(("─ Players ".to_string(), "─ Players ".to_string()));
+    for p in &state.players {
+        let marker = if p.id == state.current_player { ">" } else { " " };
+        let name = color_name(p.color);
+        let name_pad = " ".repeat(7usize.saturating_sub(name.chars().count()));
+        let assistants_on_board: u32 = p.assistants.on_board.values().map(|&c| c as u32).sum();
+        let locked = p.assistants.on_achievements + p.assistants.on_church + p.assistants.on_customs;
+        let locked_text = if locked > 0 { format!(" locked {locked}") } else { String::new() };
+        let pres = match p.president_location {
+            PresidentLocation::InHand => "in hand".to_string(),
+            PresidentLocation::OnBoard(area) => describe::area_label(state, area),
+        };
+        let tail = format!(
+            " {:>2} yen {:>2} VP  c{} s{} t{} f{} i{}  hand {}  asst h{} b{} w{}{}  built sh {} th {}  President: {}",
+            p.money,
+            p.victory_points,
+            p.copper,
+            p.silk,
+            p.tea,
+            p.seafood,
+            p.imported_goods,
+            p.order_cards_in_hand.len(),
+            p.assistants.in_hand,
+            assistants_on_board,
+            p.assistants.in_warehouse,
+            locked_text,
+            p.shophouses.built.len(),
+            p.trading_houses.built.len(),
+            pres,
+        );
+        lines.push((
+            format!("{marker} {name}{name_pad}{tail}"),
+            format!("{marker} {}{name_pad}{tail}", paint(Tone::Player(p.color), name)),
+        ));
+    }
+    let width = lines.iter().map(|(plain, _)| plain.chars().count()).max().unwrap_or(0);
+    let mut out = String::new();
+    for (i, (plain, painted)) in lines.iter().enumerate() {
+        out.push_str(painted);
+        if i == 0 {
+            out.push_str(&"─".repeat(width.saturating_sub(plain.chars().count())));
+        }
+        out.push('\n');
+    }
+    out
+}
+
 /// Per player: color, money, VP, goods, imports, hand order codes, completed
 /// order count, technology names, tokens/mercenaries, assistant/shophouse/
 /// trading-house counts by zone (hand/board/warehouse, built) plus the
@@ -364,17 +431,56 @@ pub fn sites_view(state: &GameState, _rules: &Rules) -> String {
 }
 
 /// The `adj: ...` board-connectivity suffix for a `sites_view` line
-/// (item 7): adjacent area ids ascending, then each canal-crossing partner
-/// as `canal-><id>`. Both are read straight off `board_layout` --
-/// `adjacent_areas` (the `adjacency` graph) and `canal_crossings` -- never
-/// re-derived, so this can't disagree with what movement actually offers.
-/// Canal crossings are transit-only edges kept separate from ordinary
-/// adjacency (box ruling 2026-07-18), hence the distinct `canal->` marks;
-/// each pair is scanned in both orders so it shows on both members' lines.
-/// `adj: -` when an area has no neighbors (defensive -- every real sited
-/// area has at least one).
+/// (item 7), in TWO honestly separated categories: `adj:` = the ordinary
+/// FREE movement neighbors ascending, then each tolled canal-crossing
+/// partner as `canal-><id>`.
+///
+/// Both come straight off `board_layout` -- `adjacent_areas` (the
+/// `adjacency` graph) and `canal_crossings` -- never re-derived from
+/// geometry, so this can't disagree with what movement actually offers.
+/// But `adjacency` is NOT the free-neighbor set on its own: since the
+/// staggered-topology work it also carries every derived canal-crossing
+/// edge AND the brick edges to the Canal tile itself. Printing it raw
+/// (Codex review of PR #4, F1) showed a tolled crossing twice -- once
+/// disguised as free adjacency -- and offered the Canal as a destination,
+/// which it never is: it holds no assistant, so a President can never step
+/// onto it and Telegram's adjacent bonus can never target it. `adj:` is
+/// therefore derived by SUBTRACTION here: adjacency minus the crossing
+/// partners minus the Canal tile(s). The Canal needs no line of its own --
+/// its shore relationships are exactly the `canal->` entries, and the board
+/// render draws it as water.
+///
+/// Each crossing pair is scanned in both orders so it shows on both
+/// members' lines. `adj: -` when an area has no ordinary neighbor left (a
+/// real possibility now: a tile whose only connections are crossings).
 fn adjacency_suffix(state: &GameState, area: AreaId) -> String {
-    let mut ids: Vec<u8> = state.board_layout.adjacent_areas(area).iter().map(|a| a.0).collect();
+    let mut crossings: Vec<AreaId> = state
+        .board_layout
+        .canal_crossings
+        .iter()
+        .filter_map(|&(a, b)| {
+            if a == area {
+                Some(b)
+            } else if b == area {
+                Some(a)
+            } else {
+                None
+            }
+        })
+        .collect();
+    crossings.sort_unstable_by_key(|a| a.0);
+    crossings.dedup();
+
+    let is_canal = |id: &AreaId| {
+        state.board_layout.areas.get(id).map(|c| c.area_type == AreaType::Canal).unwrap_or(false)
+    };
+    let mut ids: Vec<u8> = state
+        .board_layout
+        .adjacent_areas(area)
+        .iter()
+        .filter(|a| !crossings.contains(a) && !is_canal(a))
+        .map(|a| a.0)
+        .collect();
     ids.sort_unstable();
     ids.dedup();
     let adj = if ids.is_empty() {
@@ -383,26 +489,9 @@ fn adjacency_suffix(state: &GameState, area: AreaId) -> String {
         ids.iter().map(|n| format!("A{:02}", n)).collect::<Vec<_>>().join(", ")
     };
 
-    let mut crossings: Vec<u8> = state
-        .board_layout
-        .canal_crossings
-        .iter()
-        .filter_map(|&(a, b)| {
-            if a == area {
-                Some(b.0)
-            } else if b == area {
-                Some(a.0)
-            } else {
-                None
-            }
-        })
-        .collect();
-    crossings.sort_unstable();
-    crossings.dedup();
-
     let mut out = format!("adj: {adj}");
-    for n in crossings {
-        out.push_str(&format!("  canal->A{:02}", n));
+    for a in crossings {
+        out.push_str(&format!("  canal->A{:02}", a.0));
     }
     out
 }
@@ -1252,9 +1341,16 @@ mod tests {
     use crate::style::test_support::strip_ansi;
 
     fn test_state_2p() -> GameState {
+        test_state_np(2)
+    }
+
+    /// A REAL generated board at `n` players (3P/4P carry a Canal tile; 2P
+    /// does not), so topology-sensitive assertions run against the shipped
+    /// geometry rather than an injected fixture.
+    fn test_state_np(n: u8) -> GameState {
         let rules = Rules::standard();
-        let pending = new_game(GameConfig::for_player_count(2), &rules, 1).unwrap();
-        finalize_setup(pending, &[StartingOrderChoice::Keep(0), StartingOrderChoice::Keep(0)]).unwrap()
+        let pending = new_game(GameConfig::for_player_count(n), &rules, 1).unwrap();
+        finalize_setup(pending, &vec![StartingOrderChoice::Keep(0); n as usize]).unwrap()
     }
 
     #[test]
@@ -1435,6 +1531,31 @@ mod tests {
         assert!(checked > 0, "fixture must populate at least one lab slot:\n{text}");
     }
 
+    /// F2 (Codex adversarial review of PR #4) lengthened five tech effect
+    /// one-liners to carry the qualifiers that change a purchase decision,
+    /// which lengthens the `labs` lines that print them. §2 of the guide
+    /// promises a 140-column terminal clears every screen, so no lab line
+    /// may exceed that. Measured over EVERY card in the registry (each
+    /// slotted into a real lab board and run through the real `labs_view`,
+    /// never a copy of its format string), so a future wording edit that
+    /// would wrap on a tester's terminal fails here.
+    #[test]
+    fn labs_view_lines_fit_the_documented_terminal_width() {
+        let mut state = test_state_2p();
+        let rules = Rules::standard();
+        let mut worst = (0usize, String::new());
+        for card in rules.techs.iter() {
+            state.lab_state.lab_a.slots[0] = Some(card.id);
+            for line in labs_view(&state, &rules).lines() {
+                let w = crate::screen::visible_width(line);
+                if w > worst.0 {
+                    worst = (w, line.to_string());
+                }
+            }
+        }
+        assert!(worst.0 <= 140, "a labs line is {} columns wide (140 max): {}", worst.0, worst.1);
+    }
+
     /// Task 6 (composed frame): the compact panel shows each player's
     /// public at-a-glance line set -- current marker, yen/VP, goods, hand
     /// COUNT (never contents -- the panel is privacy-safe by construction),
@@ -1464,6 +1585,47 @@ mod tests {
         state.players[0].assistants.on_achievements = 1;
         let text = compact_panel(&state, &rules);
         assert!(text.contains("locked 3"), "{text}");
+    }
+
+    /// F3 (Codex adversarial review of PR #4): the stacked-below layout's
+    /// panel is ONE LINE PER PLAYER -- that fold is what brings the 4P
+    /// composed screen back inside a 50-row terminal. It must stay
+    /// genuinely useful (every public at-a-glance field of the multi-line
+    /// form except the next TH take) and just as privacy-safe: hand is a
+    /// COUNT, never contents.
+    #[test]
+    fn compact_panel_oneline_is_one_row_per_player_with_the_public_fields() {
+        let state = test_state_np(4);
+        let text = compact_panel_oneline(&state);
+        assert!(text.starts_with("─ Players ─"), "{text}");
+        assert_eq!(
+            text.lines().count(),
+            state.players.len() + 1,
+            "one header + exactly one line per player:\n{text}"
+        );
+        let red = text.lines().find(|l| l.contains("Red")).expect("a Red line");
+        assert!(red.starts_with("> Red"), "current player marked: {red}");
+        for field in ["yen", "VP", "c1", "hand 1", "asst h", "built sh", "President: in hand"] {
+            assert!(red.contains(field), "want {field:?} in the one-line form: {red}");
+        }
+        assert!(!text.contains("O0") && !text.contains("O1"), "hand contents never appear: {text}");
+        // Locked pawns still reconcile the visible assistant numbers.
+        let mut locked_state = state.clone();
+        locked_state.players[0].assistants.on_church = 2;
+        locked_state.players[0].assistants.on_achievements = 1;
+        assert!(compact_panel_oneline(&locked_state).contains("locked 3"), "{text}");
+    }
+
+    /// The one-line panel paints names after layout, like its taller twin.
+    #[test]
+    fn colored_compact_panel_oneline_strips_back_to_plain() {
+        let state = test_state_np(4);
+        crate::style::force(true);
+        let colored = compact_panel_oneline(&state);
+        crate::style::force(false);
+        let plain = compact_panel_oneline(&state);
+        assert_ne!(colored, plain, "forced mode must actually paint something");
+        assert_eq!(strip_ansi(&colored), plain);
     }
 
     /// The panel paints player names after layout (strip-equality pin).
@@ -1639,7 +1801,11 @@ mod tests {
     /// Board connectivity (pre-gate view batch item 7): each `sites` line
     /// gains an `adj:` suffix listing its adjacent area ids ascending, sourced
     /// from `board_layout.adjacency` (never re-derived) so a state inventory
-    /// reads as a navigable board.
+    /// reads as a navigable board. On the 2P board raw adjacency IS the
+    /// free-neighbor set (no Canal tile exists, hence no crossings), so
+    /// comparing against it directly is sound here; the three-category
+    /// separation the 3P/4P boards need is pinned by
+    /// `sites_view_separates_free_neighbors_from_crossings_and_the_canal_tile`.
     #[test]
     fn sites_view_lists_adjacent_area_ids_ascending() {
         let state = test_state_2p();
@@ -1678,6 +1844,105 @@ mod tests {
         let other_line =
             text.lines().find(|l| l.starts_with(&other_label)).unwrap_or_else(|| panic!("{other_label} line"));
         assert!(other_line.contains(&format!("canal->A{:02}", area.0)), "want reverse crossing in '{other_line}'");
+    }
+
+    /// The two connectivity categories a `sites` line prints, parsed back
+    /// off the rendered text: the `adj:` ids and the `canal->` ids.
+    fn connectivity_of(line: &str) -> (Vec<u8>, Vec<u8>) {
+        let tail = line.split("adj: ").nth(1).unwrap_or_else(|| panic!("no adj: suffix in '{line}'"));
+        let mut parts = tail.split("  canal->");
+        let adj_text = parts.next().unwrap_or("").trim();
+        let parse = |t: &str| {
+            t.trim().trim_start_matches('A').parse::<u8>().unwrap_or_else(|_| panic!("area id in '{line}'"))
+        };
+        let adj: Vec<u8> =
+            if adj_text == "-" { Vec::new() } else { adj_text.split(", ").map(parse).collect() };
+        (adj, parts.map(parse).collect())
+    }
+
+    /// F1 (Codex adversarial review of PR #4): `adj:` must be the
+    /// President's ORDINARY free-neighbor list and nothing else. Since the
+    /// staggered-topology work `board_layout.adjacency` carries three
+    /// different relationships at once -- brick edges, edges to the
+    /// unplaceable Canal tile, and the derived canal-crossing edges -- so
+    /// printing it raw showed a TOLLED crossing as if it were free (and
+    /// again as `canal->`), and offered the Canal itself, which can never
+    /// hold a President and is never a legal Telegram bonus target. The
+    /// three categories are separated by SUBTRACTION off the authoritative
+    /// layout (geometry is never re-derived here): `adj:` = adjacency minus
+    /// crossing partners minus Canal; `canal->` = exactly the crossing
+    /// partners. Run on REAL generated 3P and 4P boards -- the ones that
+    /// carry a Canal.
+    #[test]
+    fn sites_view_separates_free_neighbors_from_crossings_and_the_canal_tile() {
+        for players in [3u8, 4] {
+            let state = test_state_np(players);
+            let rules = Rules::standard();
+            let canal: Vec<AreaId> = state
+                .board_layout
+                .areas
+                .iter()
+                .filter(|(_, cfg)| cfg.area_type == AreaType::Canal)
+                .map(|(&id, _)| id)
+                .collect();
+            assert!(!canal.is_empty(), "the {players}P board must carry a Canal tile");
+            let text = sites_view(&state, &rules);
+
+            let mut shores_checked = 0usize;
+            let mut subtraction_was_load_bearing = false;
+            for &area in state.board_layout.building_sites.keys() {
+                let label = describe::area_label(&state, area);
+                let line = text
+                    .lines()
+                    .find(|l| l.starts_with(&label))
+                    .unwrap_or_else(|| panic!("{label} line in\n{text}"));
+                let (adj, crossings) = connectivity_of(line);
+
+                let mut want_crossings: Vec<u8> = state
+                    .board_layout
+                    .canal_crossings
+                    .iter()
+                    .filter_map(|&(a, b)| match () {
+                        _ if a == area => Some(b.0),
+                        _ if b == area => Some(a.0),
+                        _ => None,
+                    })
+                    .collect();
+                want_crossings.sort_unstable();
+                want_crossings.dedup();
+
+                let raw: Vec<u8> =
+                    state.board_layout.adjacent_areas(area).iter().map(|a| a.0).collect();
+                let mut want_adj: Vec<u8> = raw
+                    .iter()
+                    .copied()
+                    .filter(|n| !want_crossings.contains(n) && !canal.iter().any(|c| c.0 == *n))
+                    .collect();
+                want_adj.sort_unstable();
+                want_adj.dedup();
+                if want_adj.len() != raw.len() {
+                    subtraction_was_load_bearing = true;
+                }
+
+                assert_eq!(crossings, want_crossings, "canal-> list on '{line}'");
+                assert_eq!(adj, want_adj, "adj: list on '{line}'");
+                for c in &canal {
+                    assert!(!adj.contains(&c.0), "the Canal tile A{:02} must never be an adj: entry: {line}", c.0);
+                }
+                for c in &want_crossings {
+                    assert!(!adj.contains(c), "tolled crossing A{c:02} must not read as free adjacency: {line}");
+                }
+                if !want_crossings.is_empty() {
+                    shores_checked += 1;
+                }
+            }
+            assert!(shores_checked > 0, "the {players}P board must have shore areas with crossings");
+            assert!(
+                subtraction_was_load_bearing,
+                "the {players}P board must actually exercise the subtraction (raw adjacency \
+                 containing a Canal id or a crossing partner)"
+            );
+        }
     }
 
     #[test]

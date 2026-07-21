@@ -69,8 +69,13 @@ close_terminal   {id}
   every move; a blank answer would drop `yokohama-game-<seed>.json` into the repo).
 - **`cargo build -p yokohama-cli` (plain Bash) before the session** so `cargo run` inside the
   PTY starts in ~0.1s instead of compiling; every `wait_for` above then returns instantly.
-- Sizing: ≥120 cols renders every current board without shear (2P 86 / 3P 120 / 4P 103; the
-  staggered renderer will change these — re-check its width warning). 140×50 was comfortable.
+- Sizing (measured on the staggered renderer, 2026-07-21, and pinned by `guide_sync`'s
+  `section2_frame_widths_match_the_composed_screen` / `..._heights_...`): the COMPOSED FRAME —
+  not the board alone — is 114 cols × 32 rows at 2 players, 132 × 33 at 3, and 108 × 38 at 4
+  (the board grids themselves are 72 / 90 / 108 cols). So **140×50 fits every player count with
+  room to spare**, and 140×40 is the true floor for seeing a whole opening screen. Rows are the
+  scarce axis, not columns: everything below the board (option list, 20 per page; message zone)
+  pushes the title and top board row off the top.
 
 ## Housekeeping rules
 

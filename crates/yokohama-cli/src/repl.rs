@@ -219,8 +219,18 @@ impl Repl {
                 }
                 // Ceremony reduction (Task 6): a forced single-option prompt
                 // advertises the bare-Enter shortcut `step`'s `[]` arm honors.
+                // What that keystroke DOES depends on the entry, though: a
+                // `Direct` commits a move, while a grouped family opens a
+                // sub-prompt (`pick_option`'s own split). Saying "apply" for
+                // the grouped case over-promised (F4, Codex review of PR #4)
+                // -- most visibly in an emergency-retreat position, whose
+                // only displayed entry is the Retreat family.
                 if n == 1 {
-                    out.push_str("(only option — press Enter to apply)\n");
+                    let verb = match options.first() {
+                        Some(PromptOption::Direct(_)) => "apply",
+                        _ => "open",
+                    };
+                    out.push_str(&format!("(only option — press Enter to {verb})\n"));
                 }
             }
         }
@@ -1601,7 +1611,7 @@ fn parse_raw_area_token(tok: &str) -> Result<AreaId, String> {
 pub const HELP_TEXT: &str = "\
 Commands:
   <number>        apply the numbered legal option
-  <Enter>         on a single-option prompt: apply that only option (recorded like any move)
+  <Enter>         on a single-option prompt: apply that only option, or open it if it is a grouped family
   a [id id id]    Placement Option A: place 1 assistant in each of 0-3 areas (4 with Newspaper)
   b <id>          Placement Option B: place 2 assistants in one area
   b <id> t <adj>  Placement Option B with the Telegram bonus: +1 assistant in an adjacent area
@@ -1761,6 +1771,58 @@ mod tests {
             r.session.record().events.last(),
             Some(RecordedEvent::Move(Move::EndAdditionalPhase))
         ), "{:?}", r.session.record().events.last());
+    }
+
+    /// A Movement-phase state whose ONLY displayed entry is the GROUPED
+    /// retreat family: the President stands in the single area the player
+    /// occupies, so no destination is reachable (ordinary movement needs
+    /// the mover's own assistant at the destination) and the two
+    /// assistants there give the retreat family three recovery variants,
+    /// past the singleton that would stay a `Direct`. Hand-built via
+    /// `for_test_from_state` for the same reason the Newspaper fixture
+    /// above is: the real path to an emergency-retreat position is many
+    /// turns long.
+    fn retreat_only_movement_fixture() -> Repl {
+        let mut state = create_test_game_state(2);
+        state.turn_phase = TurnPhase::Movement;
+        let area = AreaId::new(0);
+        state
+            .board_layout
+            .areas
+            .insert(area, AreaConfig { area_type: AreaType::CopperMine, grid_position: (0, 0) });
+        let p = &mut state.players[0];
+        p.president_location = PresidentLocation::OnBoard(area);
+        p.assistants.in_hand = p.assistants.in_hand.saturating_sub(2);
+        p.assistants.on_board.insert(area, 2);
+        p.money = 0;
+        Repl::new(Session::for_test_from_state(state, Rules::empty_for_tests()))
+    }
+
+    /// F4 (Codex adversarial review of PR #4): the bare-Enter hint fires on
+    /// one DISPLAYED entry, but a displayed entry is not always a move --
+    /// a grouped family (Route/Retreat/placement) opens a sub-prompt
+    /// instead. Promising "press Enter to apply" there tells a player their
+    /// keystroke commits something when it only opens a picker, which is
+    /// exactly the wrong thing to say in the emergency-retreat position
+    /// this fixture reproduces. The hint must be family-aware.
+    #[test]
+    fn bare_enter_hint_says_open_not_apply_for_a_grouped_single_option() {
+        let mut r = retreat_only_movement_fixture();
+        let p = r.prompt();
+        assert_eq!(r.display_options().len(), 1, "fixture must display exactly one entry:\n{p}");
+        assert!(p.contains("Retreat President to hand"), "the lone entry is the grouped family:\n{p}");
+        assert!(
+            p.contains("(only option — press Enter to open)"),
+            "a grouped entry OPENS a sub-prompt; it does not apply a move:\n{p}"
+        );
+        assert!(!p.contains("press Enter to apply"), "must not promise an apply here:\n{p}");
+
+        // And the behavior the wording now describes: Enter opens the
+        // guided retreat sub-prompt without recording anything.
+        let events_before = r.session.record().events.len();
+        let out = r.step("");
+        assert!(out.text.contains("Guided retreat"), "{}", out.text);
+        assert_eq!(r.session.record().events.len(), events_before, "opening a picker records no move");
     }
 
     /// Bare Enter on a MULTI-option prompt stays a harmless re-prompt (no
