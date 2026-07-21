@@ -1020,6 +1020,7 @@ fn ask_board_check(
     out(&crate::render::board_grid(session.state()));
     out("\nA00 is cell 0, the leftmost tile of the widest top row; ids run left to right\n");
     out("along each row, then down to the next row.\n");
+    out(&dummy_placement_notice(session.state()));
     let mut matches: Option<bool> = None;
     ask(input, out, "Does this match your physical board? (yes/no)", &mut |s: &str| -> Result<(), String> {
         match s.to_lowercase().as_str() {
@@ -1035,6 +1036,62 @@ fn ask_board_check(
         }
     })?;
     Ok(matches.unwrap()) // `ask` returned Ok(()) only after this was set
+}
+
+/// The 2-player dummy is the one piece of setup nothing in the live path
+/// observes: `SetupObservations` carries no track state, so the engine places
+/// both neutral assistants itself (`game::setup::place_setup_dummies`) and
+/// never asks whether the table did. An operator who forgets the physical
+/// pawns then plays a whole game against a tool that refuses two spaces they
+/// see as open, ends the game a pawn early on either track, and awards part
+/// of both majority bonuses to a rival nobody at the table can see. Observing
+/// them is core work and deferred; SAYING where they go is not, and the board
+/// check is where it belongs -- the last screen with a question still to
+/// answer, and so the last one a real terminal shows before the first
+/// composed frame clears everything above it (main.rs's I-1 note).
+///
+/// Derived from the built session rather than from the player count, so the
+/// spaces named are the ones the engine actually occupied and cannot drift
+/// from `place_setup_dummies`. A board carrying no dummy -- every 3- and
+/// 4-player game -- yields the empty string, which `out` swallows.
+fn dummy_placement_notice(state: &GameState) -> String {
+    let mut spots: Vec<String> = state
+        .church_track
+        .slots
+        .iter()
+        .enumerate()
+        .filter(|(_, slot)| matches!(slot, Some(s) if s.player.is_dummy()))
+        .map(|(i, _)| format!("Church faith-{}", ChurchTrack::index_to_faith(i)))
+        .collect();
+    spots.extend(
+        state
+            .customs_track
+            .slots
+            .iter()
+            .enumerate()
+            .filter(|(_, slot)| matches!(slot, Some(s) if s.player.is_dummy()))
+            .map(|(i, _)| format!("Customs space-{}", CustomsTrack::index_to_space(i))),
+    );
+    if spots.is_empty() {
+        return String::new();
+    }
+    // `track_trigger` counts REAL pawns -- `total_assistants` skips the dummy
+    // -- so it is exactly the ordinal an operator counts to at the table. Its
+    // three values (4/5/6) all take "th".
+    format!(
+        "\n{}-player setup -- place the neutral dummy assistants before the first move:\n\
+         * One goes on {}.\n\
+         \x20 Use pawns of an unused player color. They are NOT printed board art: nothing\n\
+         \x20 you entered above describes them, and the engine has both either way, so only\n\
+         \x20 your table can be missing them.\n\
+         * Each one BLOCKS its space against both of you, counts toward the occupied\n\
+         \x20 spaces that end the game on its track (so your {}th assistant there is the\n\
+         \x20 last one), and COMPETES in that track's majority bonus at final scoring.\n\
+         * The 'tracks' view shows them as D once play starts.\n\n",
+        state.config.player_count,
+        spots.join(" and another on "),
+        state.config.track_trigger(),
+    )
 }
 
 /// 3 distinct entries out of the 12 canonical achievement types.
@@ -1635,6 +1692,140 @@ mod tests {
             "10 site questions in the initial pass + 10 more after `edit tiles`\n{transcript}"
         );
         std::fs::remove_file("yokohama-game-615.json").ok();
+    }
+
+    // ---- Third review, wave D: the 2-player dummy is unobserved setup ----
+    //
+    // `SetupObservations` carries no track state, so nothing in the live path
+    // asks whether the two neutral assistants are physically on the table --
+    // the engine simply has them. An operator who never places them plays a
+    // whole game against a tool that blocks two spaces they see as open, ends
+    // the game a pawn early on either track, and awards both majority bonuses
+    // partly to a rival that is not on their board. Observing them is core
+    // work and deferred; TELLING the operator is not, and lands on the last
+    // screen before play.
+
+    /// The instruction reaches a 2-player live operator inside the board
+    /// check -- the last screen with a question still to answer, and so the
+    /// last one a real terminal shows before the first composed frame clears
+    /// everything above it (main.rs's I-1 note). It names both spaces and
+    /// says what goes wrong without them.
+    #[test]
+    fn board_check_tells_a_2p_live_operator_to_place_the_dummy_assistants() {
+        let mut lines = live_2p_through_labs(616);
+        lines.push("confirm".into());
+        lines.push("yes".into());
+        let (repl, transcript) = feed_owned(lines);
+        repl.unwrap_or_else(|e| panic!("expected Ok, got Err({e}); transcript:\n{transcript}"));
+        for needle in [
+            "Church faith-7",  // where the first one goes
+            "Customs space-4", // where the second one goes
+        ] {
+            assert!(transcript.contains(needle), "dummy instruction missing {needle:?}\n{transcript}");
+        }
+        // The rest matched case-insensitively -- the wording shouts some of
+        // these, and pinning capitalization only punishes rewording.
+        let said = transcript.to_lowercase();
+        for needle in ["not printed board art", "block", "end the game", "majority bonus"] {
+            assert!(said.contains(needle), "dummy instruction missing the {needle:?} reason\n{transcript}");
+        }
+        // Inside the board-check screen, ahead of the question it is asked to
+        // be read with -- not stranded after the last answer, where the first
+        // frame would wipe it unread.
+        let header = transcript.find("--- Board check ---").expect("board check ran");
+        let question = transcript.find("Does this match your physical board?").expect("board check asked");
+        let notice = transcript.find("Church faith-7").expect("checked above");
+        assert!(header < notice && notice < question, "the instruction must sit inside the board check\n{transcript}");
+        std::fs::remove_file("yokohama-game-616.json").ok();
+    }
+
+    /// 3 players have no dummy, so the instruction must not appear -- an
+    /// operator told to place a pawn that does not exist would corrupt a
+    /// setup the tool then has no way to detect.
+    #[test]
+    fn no_dummy_instruction_in_the_3p_live_wizard() {
+        let rules = Rules::standard();
+        let table = new_game(GameConfig::for_player_count(3), &rules, 617).unwrap();
+        let n = table.state.board_layout.areas.len();
+        let tile_of = |i: usize| table.state.board_layout.areas[&AreaId::new(i as u8)].area_type;
+        let mut lines: Vec<String> = vec![
+            "live".into(), "3".into(), "red".into(), "blue".into(), "yellow".into(),
+            "0".into(), "617".into(), "".into(),
+            "hidden".into(), "hidden".into(), "hidden".into(),
+        ];
+        lines.extend((0..n).map(|i| tile_abbrev_for_test(tile_of(i)).to_string()));
+        let mut site = 0u8;
+        for i in 0..n {
+            if tile_of(i) != AreaType::Canal {
+                lines.push(format!("{site}"));
+                site += 1;
+            }
+        }
+        lines.extend(table.state.achievements.iter().map(|a| format!("{:?}", a.achievement_type)));
+        for slot in 0..6 {
+            lines.push(format!("O{}", table.state.port_state.port_a.slots[slot].unwrap().0));
+        }
+        for slot in 0..6 {
+            lines.push(format!("O{}", table.state.port_state.port_b.as_ref().unwrap().slots[slot].unwrap().0));
+        }
+        for slot in 0..6 {
+            lines.push(format!("T{}", table.state.lab_state.lab_a.slots[slot].unwrap().0));
+        }
+        lines.push("confirm".into());
+        lines.push("yes".into());
+        let (repl, transcript) = feed_owned(lines);
+        repl.unwrap_or_else(|e| panic!("expected Ok, got Err({e}); transcript:\n{transcript}"));
+        assert!(transcript.contains("--- Board check ---"), "the board check still runs at 3P\n{transcript}");
+        let said = transcript.to_lowercase();
+        assert!(!said.contains("dummy"), "3 players have no dummy -- no instruction\n{transcript}");
+        std::fs::remove_file("yokohama-game-617.json").ok();
+    }
+
+    /// Sim mode has no physical board to put anything on, so even at 2
+    /// players -- where the engine's dummy is just as real -- there is
+    /// nothing for the operator to do and nothing to say.
+    #[test]
+    fn no_dummy_instruction_in_the_2p_sim_wizard() {
+        let (repl, transcript) = feed(&["sim", "2", "red", "blue", "0", "618", "", "0", "1", "confirm"]);
+        repl.unwrap_or_else(|e| panic!("expected Ok, got Err({e}); transcript:\n{transcript}"));
+        let said = transcript.to_lowercase();
+        assert!(!said.contains("dummy"), "sim has no table to place pawns on\n{transcript}");
+        std::fs::remove_file("yokohama-game-618.json").ok();
+    }
+
+    /// 4 players is the remaining player count, and scripting its whole
+    /// 18-cell wizard to assert an ABSENCE would pin the script, not the
+    /// rule. The rule is that the notice is read off the built state: a board
+    /// the engine put no dummy on produces nothing to print, at any player
+    /// count, however the state was reached.
+    #[test]
+    fn the_dummy_notice_is_empty_for_every_board_without_a_dummy() {
+        let rules = Rules::standard();
+        for players in [2u8, 3, 4] {
+            let state = new_game(GameConfig::for_player_count(players), &rules, 619).unwrap().state;
+            let notice = dummy_placement_notice(&state);
+            if players == 2 {
+                assert!(notice.contains("Church faith-7"), "2P names the church space: {notice}");
+                assert!(notice.contains("Customs space-4"), "2P names the customs space: {notice}");
+                assert!(notice.contains("4th assistant"), "the ordinal comes from track_trigger: {notice}");
+            } else {
+                assert_eq!(notice, "", "{players} players have no dummy, so nothing to say");
+            }
+        }
+    }
+
+    /// Tile abbreviation for the scripted live tests -- the inverse of
+    /// `parse_tile_abbrev`, shared by the tests that drive a generated table
+    /// back through the wizard.
+    fn tile_abbrev_for_test(t: AreaType) -> &'static str {
+        match t {
+            AreaType::CopperMine => "cm", AreaType::SilkMill => "sm",
+            AreaType::TeaPlantation => "tp", AreaType::FishingGround => "fg",
+            AreaType::Bank => "bank", AreaType::PortA => "pa", AreaType::PortB => "pb",
+            AreaType::LaboratoryA => "la", AreaType::LaboratoryB => "lb",
+            AreaType::EmploymentAgency => "ea", AreaType::Chinatown => "ct",
+            AreaType::Church => "ch", AreaType::Customs => "cu", AreaType::Canal => "canal",
+        }
     }
 
     /// Required outcome 4: the whole live wizard -- board check included --
