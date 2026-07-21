@@ -112,7 +112,7 @@ Selecting a `route options` entry opens a **route sub-prompt** — that destinat
 Routes to Fishing Ground (A05):
 [0] Move President to Fishing Ground (A05) — free
 [1] Move President to Fishing Ground (A05) — pay 1 yen (1 to Blue)
-> pick a route number, or 'cancel'
+> pick a number, or 'cancel'
 ```
 
 Selecting the collapsed retreat entry opens a **guided retreat**: for each area holding your assistants (ascending area id) it asks `recover how many from <Area> [0-n]?`, then shows the assembled move for a final `confirm`:

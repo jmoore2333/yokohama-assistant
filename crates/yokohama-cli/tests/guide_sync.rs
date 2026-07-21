@@ -140,7 +140,7 @@ fn move_grammar_and_subprompt_strings_appear_in_both_guides() {
         "route options",
         "choose recovery",
         "'r' grammar works too",
-        "pick a route number, or 'cancel'",
+        "pick a number, or 'cancel'",
         "recover how many from",
         "confirm / cancel",
     ];

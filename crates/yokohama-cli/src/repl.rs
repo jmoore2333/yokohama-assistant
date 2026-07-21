@@ -1126,7 +1126,7 @@ impl Repl {
                 if total_pages > 1 {
                     out.push_str(&format!("page {}/{total_pages}\n", self.page + 1));
                 }
-                out.push_str("> pick a route number, or 'cancel'\n");
+                out.push_str("> pick a number, or 'cancel'\n");
                 out
             }
             SubPrompt::PlaceA { selected, max_areas } => {
