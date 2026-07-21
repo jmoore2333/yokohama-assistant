@@ -1690,9 +1690,15 @@ mod tests {
     /// board wider than 100 columns, prints a one-time width note -- there is
     /// no terminal-size detection (std has none; no new deps), so the note is
     /// keyed purely on the board's own rendered width. A 4-player board is
-    /// 103 columns; the note names that width and points at guide §2, and a
+    /// 108 columns; the note names that width and points at guide §2, and a
     /// second render does NOT repeat it. (On the staggered pyramid the 3-player
-    /// board is only 86 columns, so 4 players is the wide case now.)
+    /// board is only 90 columns, so 4 players is the wide case now.)
+    ///
+    /// The note keys on the GRID width, not the composed frame's — the frame is
+    /// wider still (114/132/108 at 2/3/4 players, since the players panel sits
+    /// beside the board at 2-3p), so it never fires at 2 players despite the
+    /// frame exceeding 100 there. Guide §2 states the frame widths; making the
+    /// note frame-aware is on the carry-forward list.
     #[test]
     fn board_command_prints_a_one_time_width_note_on_a_wide_board() {
         let mut r = repl_np(4, 7);
@@ -1712,7 +1718,7 @@ mod tests {
         assert!(!second.text.contains("columns wide"), "note must print once per session: {}", second.text);
     }
 
-    /// S3: a narrow board (2 players = 69 columns, <= 100) never triggers the
+    /// S3: a narrow board (2 players = 72 columns, <= 100) never triggers the
     /// note, on the first render or any later one.
     #[test]
     fn board_command_omits_the_width_note_on_a_narrow_board() {
