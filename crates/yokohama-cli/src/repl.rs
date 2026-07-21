@@ -374,7 +374,7 @@ impl Repl {
             ));
         }
         text.push_str(&grid);
-        text.push_str(render::board_legend());
+        text.push_str(&render::board_legend(self.session.state()));
         text.push('\n');
         self.out_view(text)
     }

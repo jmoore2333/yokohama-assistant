@@ -11,7 +11,7 @@
 
 use std::sync::atomic::{AtomicBool, Ordering};
 
-use yokohama_core::PlayerColor;
+use yokohama_core::{AreaType, PlayerColor};
 
 /// Process-wide switch. `false` at rest: a library user that never calls
 /// `init_from_tty`/`force` gets plain text forever.
@@ -76,6 +76,10 @@ pub enum GoodKind {
 pub enum Tone {
     Player(PlayerColor),
     Good(GoodKind),
+    /// A board tile's display name/art, colored by area type (Task 6
+    /// redesign: production areas in their good's color, commercial areas
+    /// in distinct hues, the Canal in water cyan).
+    Tile(AreaType),
     Vp,
     Warn,
     Prompt,
@@ -97,6 +101,18 @@ fn sgr(tone: Tone) -> &'static str {
         Tone::Good(GoodKind::Tea) => "32",
         Tone::Good(GoodKind::Seafood) => "36",
         Tone::Good(GoodKind::Yen) => "93",
+        Tone::Tile(AreaType::CopperMine) => "33",
+        Tone::Tile(AreaType::SilkMill) => "37",
+        Tone::Tile(AreaType::TeaPlantation) => "32",
+        Tone::Tile(AreaType::FishingGround) => "36",
+        Tone::Tile(AreaType::Bank) => "93",
+        Tone::Tile(AreaType::PortA | AreaType::PortB) => "94",
+        Tone::Tile(AreaType::LaboratoryA | AreaType::LaboratoryB) => "95",
+        Tone::Tile(AreaType::EmploymentAgency) => "90",
+        Tone::Tile(AreaType::Chinatown) => "91",
+        Tone::Tile(AreaType::Church) => "97",
+        Tone::Tile(AreaType::Customs) => "34",
+        Tone::Tile(AreaType::Canal) => "96",
         Tone::Vp => "1;97",
         Tone::Warn => "1;31",
         Tone::Prompt => "1",
