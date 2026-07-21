@@ -597,8 +597,9 @@ mod tests {
     }
 
     /// Two distinct real areas that are NOT adjacent. Exists on every board
-    /// bigger than a single clique -- the 2x5 golden board has many (opposite
-    /// corners, any two cells >1 grid step apart).
+    /// bigger than a single clique -- the 2p golden board (a 4/3/2/1 staggered
+    /// pyramid) has many: the two ends of its 4-tile top row, or its apex and
+    /// any top-row tile.
     fn non_adjacent_pair(layout: &crate::types::BoardLayout) -> (AreaId, AreaId) {
         let areas: Vec<AreaId> = layout.areas.keys().copied().collect();
         for &a in &areas {
