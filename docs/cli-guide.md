@@ -157,7 +157,7 @@ Choose: Church space at faith 6 — 1 choice pending
 
 A choice that lets you decline (warehouse take, assistant move) adds `Decline the ...` as one more numbered option; a choice that's purely "which one" (any-good, Church space, Customs space) has none, because the rulebook doesn't give you one there either. Resolving a choice can queue another — picking the Church space above queues its movement-rider(s) next — and the `— N pending` count tracks how many are still stacked up.
 
-**Placement: pickers, with a grammar bypass.** The raw rules offer every legal combination (186 options on a fresh 2-player board), so the Placement list is collapsed to three entries — `Option A — place 1 assistant each in up to 3 areas (pick areas; 'a' grammar works too)`, `Option B — place 2 assistants in one area (10 eligible; 'b' grammar works too)`, and `Place no assistants`. Selecting **Option A** opens an area-toggle picker: a compact directory of every placeable area (with a `(fee)` mark wherever an opponent President stands — on a terminal the full board is right above it), and typing an area id toggles it in or out of the selection. After every toggle the picker echoes the exact move your selection currently assembles — with its fee text — or warns `NOT currently offered (adjust the selection)`; `confirm` places, `cancel` backs out. Selecting **Option B** lists the eligible areas **by id**, each with its fee note — the same grammar Option A uses, and deliberately *unnumbered* so an id can never be read as a list position. Typing an id selects that area and previews the exact move it will place (`-> legal — ...`), `confirm` places it, `cancel` backs out (a Telegram owner gets one more numbered pick over that area's bonus variants at `confirm`). The grammars do the same thing in one line:
+**Placement: pickers, with a grammar bypass.** The raw rules offer every legal combination (186 options on a fresh 2-player board), so the Placement list is collapsed to three entries — `Option A — place 1 assistant each in up to 3 areas (pick areas; 'a' grammar works too)`, `Option B — place 2 assistants in one area (10 eligible; 'b' grammar works too)`, and `Place no assistants`. Selecting **Option A** opens an area-toggle picker: a compact directory of every placeable area (with a `(fee)` mark wherever an opponent President stands — on a terminal the full board is right above it), and typing an area id toggles it in or out of the selection. After every toggle the picker echoes the exact move your selection currently assembles — with its fee text — or warns `NOT currently offered (adjust the selection)`; `confirm` places, `cancel` backs out. Selecting **Option B** lists the eligible areas **by id**, each with its fee note — the same grammar Option A uses, and deliberately *unnumbered* so an id can never be read as a list position. **Option B does not commit on the id alone.** Typing an id only *selects* that area and previews the exact move it will place (`-> legal — ...`); **`confirm` is the step that actually places it**, and `cancel` backs out (a Telegram owner gets one more numbered pick over that area's bonus variants at `confirm`). That second step is deliberate: the picker used to place the instant you typed an id, so a mis-typed area entered the game with nothing on screen to catch it — the preview is your chance to see the wrong area *before* it is committed. Read the preview line every time; it is the only mis-entry check this flow has. The grammars do the same thing in one line — and note that a grammar line, unlike the picker, has **no preview and no `confirm` step**, so it commits immediately:
 
 - `a` — place nothing (legal per the rules: 0–3 assistants, 0–4 with Newspaper)
 - `a 4 9 12` — Option A: 1 assistant in each listed area (area ids `0`–`17` as shown on the board, up to 3 — 4 with Newspaper tech)
@@ -180,7 +180,7 @@ b <id>          Placement Option B: place 2 assistants in one area
 b <id> t <adj>  Placement Option B with the Telegram bonus: +1 assistant in an adjacent area
 m <from> <to>   resolve a pending assistant-move choice (<from> is 'hand' or an area id)
 r [id[:n]]...   Movement Option B: retreat the President, recovering all (bare id) or n assistants per area ('r' alone recovers none)
-board           show the area grid — the composed screen already has it above (legend: * = unclaimed 5-Power token)
+board           show the area grid and its legend (* unclaimed 5-Power, [St] Station, · empty build slot, ~ Canal toll)
 players         show each player's resources, hand, tech, tokens, President
 ports           show both Port boards and the order-deck size
 labs            show both Laboratory boards (each tech's country + effect) and the tech-deck size
@@ -199,7 +199,7 @@ list            reset to the first page of legal options
 undo            undo the last move (and any reveals bound to it)
 save [path]     save to path (or to the last-used path if omitted)
 reveal <seat> <O..>  live mode: make a hidden opponent starting order public
-cancel          abort an in-progress reveal prompt (live mode) or a route/retreat sub-prompt
+cancel          back out of any sub-prompt: reveal collection (live), view menu, numbered pick, either Placement picker, guided retreat
 help            show this text
 quit            exit the REPL ('q' also works)
 ```

@@ -2121,7 +2121,7 @@ mod tests {
         );
     }
 
-    /// Finding D1 (rulebook p.9 NOTE): in 2p games the setup dummy holds
+    /// Finding D1 (rulebook p.9 NOTE, Jeremy's edition -- not the bundled PDF; see guidingpath's 2026-07-21 DL rows): in 2p games the setup dummy holds
     /// Church faith-7, so `tracks_view` renders it as a named `D` occupant
     /// (which competes in the majority bonus), not the bare `X` it used to be.
     #[test]

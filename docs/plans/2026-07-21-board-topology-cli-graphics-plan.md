@@ -85,7 +85,7 @@ legality — the bump contract applies; old records become strict-rejected, corr
    hold by construction); add a **layout-fidelity pin**: per player count, assert the generated
    row shape and the exact undirected edge count (18/28/38) so the topology can never silently
    regress to a lattice.
-5. **2P dummy player (finding D1, rulebook p.9 NOTE):** model the setup-placed dummy
+5. **2P dummy player (finding D1, rulebook p.9 NOTE — Jeremy's edition, not the bundled PDF):** model the setup-placed dummy
    assistants on church faith-7 and customs space-4 as REAL slot occupants of a sentinel
    owner (not eligibility blocks): space blocking, the 5-total trigger arithmetic (= 4 real
    pawns, unchanged game behavior), and — the previously-unmodeled rule — dummy participation
@@ -155,7 +155,7 @@ runs against the harness on the corrected topology); computer vision.
 
 - Tile arrangement: **CONFIRMED** (Jeremy, 2026-07-21, from the physical edition).
 - Canal transit: **RULED any-to-any** (Jeremy, 2026-07-21) — no box check needed.
-- 2P track trigger: **CLOSED** (p.9 NOTE — dummy occupies and counts; 4 real pawns ends a 2P
+- 2P track trigger: **CLOSED** (p.9 NOTE, Jeremy's edition — dummy occupies and counts; 4 real pawns ends a 2P
   game; engine confirmed). **NEW finding D1 rides in this plan:** the dummy player scores in
   2P majority bonuses (previously unmodeled — see §3.1 item 5).
 - Card country distributions: **BOX-CONFIRMED** (orders NL5/FR8/US8/GB8/DE7; techs

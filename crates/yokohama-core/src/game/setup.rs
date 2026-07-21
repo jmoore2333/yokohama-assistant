@@ -174,7 +174,7 @@ pub fn new_game(mut config: GameConfig, rules: &Rules, seed: u64) -> Result<Pend
     Ok(PendingSetup { state, deals })
 }
 
-/// Finding D1 (rulebook p.9 NOTE): in a 2-player game a "dummy" assistant of
+/// Finding D1 (rulebook p.9 NOTE, Jeremy's edition -- not the bundled PDF; see guidingpath's 2026-07-21 DL rows): in a 2-player game a "dummy" assistant of
 /// an unused colour is placed during setup on Church faith-7 and Customs
 /// space-4. Modelled as a real slot occupant owned by the sentinel
 /// [`PlayerId::DUMMY`] — the ONE representation from which every consumer
@@ -708,7 +708,7 @@ mod tests {
         assert_eq!(config.inactive_area_count(), 0);
     }
 
-    /// Finding D1 (rulebook p.9 NOTE): 2-player setup places a "dummy"
+    /// Finding D1 (rulebook p.9 NOTE, Jeremy's edition -- not the bundled PDF; see guidingpath's 2026-07-21 DL rows): 2-player setup places a "dummy"
     /// assistant of an unused colour on Church faith-7 (index 3) and Customs
     /// space-4 (index 3), owned by the sentinel `PlayerId::DUMMY`. Modelled as
     /// a real slot occupant so placement blocking and majority competition

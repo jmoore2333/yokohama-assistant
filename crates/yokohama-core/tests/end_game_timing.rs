@@ -154,9 +154,11 @@ fn church_threshold_fires_exactly(players: u8, seed: u64) {
 
 #[test]
 fn church_track_2p_trigger_fires_exactly_at_4_pawns() {
-    // Rulebook p.9: "2 Players: 4". (2p also has the printed faith-7 dummy,
-    // which must NOT count toward the 4 -- it is an eligibility block, not
-    // a pawn; staging leaves faith 4-6 free so both placements land inline.)
+    // Rulebook p.9: "2 Players: 4". (2p also carries the SETUP-PLACED faith-7
+    // dummy -- a pawn of an unused colour, not printed board art, finding D1.
+    // It is a real slot occupant and counts toward the board's printed 5, so
+    // the trigger fires on the 4th REAL pawn and the dummy must not be tallied
+    // among them; staging leaves faith 4-6 free so both placements land inline.)
     church_threshold_fires_exactly(2, 201);
 }
 

@@ -49,9 +49,11 @@ impl PlayerId {
         Self(id)
     }
 
-    /// Sentinel owner for the 2-player setup "dummy" assistant (rulebook
-    /// p.9): a placed pawn of an unused colour that occupies Church faith-7
-    /// and Customs space-4. It is never a real player — no `PlayerState`
+    /// Sentinel owner for the 2-player setup "dummy" assistant (rulebook p.9
+    /// NOTE of **Jeremy's edition** — the English PDF bundled in `analysis-1/`
+    /// describes no 2P dummy at all, so the citable source is guidingpath's
+    /// 2026-07-21 decision-log rows, finding D1): a placed pawn of an unused
+    /// colour that occupies Church faith-7 and Customs space-4. It is never a real player — no `PlayerState`
     /// carries this id, and `state.player(DUMMY)` would panic — so every
     /// consumer that enumerates real players (per-player invariants, the
     /// end-game trigger's pawn count, score breakdown rows) skips it, while

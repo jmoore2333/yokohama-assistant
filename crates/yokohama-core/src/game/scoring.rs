@@ -357,7 +357,7 @@ mod tests {
         (state, rules)
     }
 
-    /// Finding D1 (rulebook p.9 NOTE) scenario (a): the 2P dummy on Church
+    /// Finding D1 (rulebook p.9 NOTE, Jeremy's edition -- not the bundled PDF; see guidingpath's 2026-07-21 DL rows) scenario (a): the 2P dummy on Church
     /// faith-7 holds a majority PLACE, denying it to a real player. Both real
     /// players hold one pawn LEFT of faith-7, so the dummy (rightmost) takes
     /// 1st -- awarded to nobody -- and P1 collects only 2nd (3 VP) instead of

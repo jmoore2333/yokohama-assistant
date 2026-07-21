@@ -21,9 +21,13 @@
 //!    "the position of the pawns"); players with no pawn on the board never
 //!    score ("If there is only 1 player on the board, that player earns 6
 //!    points and no other player receives points"). In a 2-player game the
-//!    setup dummy competes too [RB p.9 NOTE, via DL 2026-07-21 D1: "The dummy
-//!    player's assistants are taken into account during final scoring to
-//!    increase competition for majority bonuses"] — one pawn at faith-7,
+//!    setup dummy competes too [RB p.9 NOTE — **Jeremy's edition**, which the
+//!    English PDF bundled in `analysis-1/` does NOT carry, so the authoritative
+//!    text for this one is the decision-log row itself; via DL 2026-07-21 D1:
+//!    "The dummy player's assistants are taken into account during final
+//!    scoring to increase competition for majority bonuses"] — one pawn at
+//!    faith-7 (index 3 of the eight faith-4..11 spaces, i.e. MID-track, with
+//!    faith 8–11 to its right — it wins a tie only against pawns left of it),
 //!    ranked with the real players but never itself awarded (see
 //!    `track_awards`). Derived by rule from the 2-player count, so a "sole"
 //!    real player is never truly alone at 2P: the dummy is always on the board.
@@ -90,8 +94,10 @@ pub struct PlayerStanding {
 pub fn final_standings(state: &GameState, rules: &Rules) -> Vec<PlayerStanding> {
     let n = state.players.len();
 
-    // The 2-player setup dummy competes in BOTH majority bonuses [RB p.9 NOTE,
-    // via decision log 2026-07-21 D1: "The dummy player's assistants are taken
+    // The 2-player setup dummy competes in BOTH majority bonuses [RB p.9 NOTE
+    // (Jeremy's edition — NOT in the bundled `analysis-1/` PDF, so the DL row
+    // is the citable source), via decision log 2026-07-21 D1: "The dummy
+    // player's assistants are taken
     // into account during final scoring to increase competition for majority
     // bonuses"]. It is one pawn at church faith-7 / customs space-4 — the
     // spaces it pre-blocks. Derived BY RULE from the 2-player count (the same
@@ -161,7 +167,8 @@ fn clockwise_distance(state: &GameState, seat: usize) -> usize {
 /// RIGHTMOST pawn (highest occupied slot index — positional per RB p.9's
 /// example); players with no pawn never score. Returns per-seat awards.
 ///
-/// `dummy_slot` carries the 2-player setup dummy [RB p.9 NOTE; DL 2026-07-21
+/// `dummy_slot` carries the 2-player setup dummy [RB p.9 NOTE of Jeremy's
+/// edition, absent from the bundled PDF; DL 2026-07-21
 /// D1]: `Some(idx)` is the fixed slot of its single pawn (church faith-7 /
 /// customs space-4), `None` in 3/4-player games where no dummy exists. The
 /// dummy is RANKED alongside the real players so it can deny or take a place,
@@ -479,8 +486,10 @@ mod tests {
     //     guidingpath.md decision log 2026-07-21 finding D1] ---
     //
     // "The dummy player's assistants are taken into account during final
-    // scoring to increase competition for majority bonuses" [RB p.9 NOTE]. The
-    // dummy holds ONE pawn at church faith-7 and ONE at customs space-4 (the
+    // scoring to increase competition for majority bonuses" [RB p.9 NOTE of
+    // Jeremy's edition — absent from the bundled PDF; the DL row is the
+    // citable source]. The dummy holds ONE pawn at church faith-7 and ONE at
+    // customs space-4 (the
     // spaces it pre-blocks — KB §Customs, DL 2026-07-17), modeled BY RULE from
     // the 2-player game — never read from a slot. A place it takes is awarded
     // to nobody; real players score the rank they reach with the dummy in the

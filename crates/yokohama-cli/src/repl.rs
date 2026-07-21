@@ -1717,7 +1717,7 @@ Commands:
   b <id> t <adj>  Placement Option B with the Telegram bonus: +1 assistant in an adjacent area
   m <from> <to>   resolve a pending assistant-move choice (<from> is 'hand' or an area id)
   r [id[:n]]...   Movement Option B: retreat the President, recovering all (bare id) or n assistants per area ('r' alone recovers none)
-  board           show the area grid — the composed screen already has it above (legend: * = unclaimed 5-Power token)
+  board           show the area grid and its legend (* unclaimed 5-Power, [St] Station, · empty build slot, ~ Canal toll)
   players         show each player's resources, hand, tech, tokens, President
   ports           show both Port boards and the order-deck size
   labs            show both Laboratory boards (each tech's country + effect) and the tech-deck size
@@ -1736,7 +1736,7 @@ Commands:
   undo            undo the last move (and any reveals bound to it)
   save [path]     save to path (or to the last-used path if omitted)
   reveal <seat> <O..>  live mode: make a hidden opponent starting order public
-  cancel          abort an in-progress reveal prompt (live mode) or a route/retreat sub-prompt
+  cancel          back out of any sub-prompt: reveal collection (live), view menu, numbered pick, either Placement picker, guided retreat
   help            show this text
   quit            exit the REPL ('q' also works)
 ";

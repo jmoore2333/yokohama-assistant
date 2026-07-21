@@ -101,13 +101,17 @@ pub fn achievement_desc(a: AchievementType) -> String {
 /// fee, Stagecoach hid that it waives that fee, Telegram hid its bonus
 /// assistant's placement fee) because the only coverage was "non-empty".
 /// `tech_effect_text_carries_the_qualifiers_that_change_a_purchase` now
-/// pins them card by card.
+/// pins them card by card. A sixth followed (third review, I4): Station
+/// dropped p.15's "and you do not need to pay even if there are other
+/// President pawns in the Area", which is the whole reason the card is
+/// worth 4 industry -- a standing Postal System PLUS Stagecoach for one
+/// area, rather than the conditional shortcut the old line described.
 pub fn tech_effect_text(effect: TechEffect) -> &'static str {
     match effect {
         TechEffect::Tram => "Teleport the President to any area without an opponent President",
         TechEffect::Stagecoach => "Move through opponent Presidents fee-free; with Postal System, stopping on one is free too",
         TechEffect::PostalSystem => "May stop and act where opponent Presidents stand; still pay 1 Yen each unless you own Stagecoach",
-        TechEffect::Station => "Place the Station token: +1 Power for everyone there; teleport there while you have an assistant there",
+        TechEffect::Station => "Place the Station token: +1 Power for all there; free teleport, no President fee; your assistant needed",
         TechEffect::Gaslight => "+2 VP when you build a Shophouse",
         TechEffect::ElectricalLight => "+3 VP when you build a Trading House",
         TechEffect::MiningTechnology => "+1 Copper each time you receive 1 or more Copper (once per gain, not per token)",
@@ -1102,6 +1106,38 @@ mod tests {
         assert!(
             stagecoach.contains("Postal System"),
             "Stagecoach's value depends on the Postal System interaction (rulebook p.15): {stagecoach}"
+        );
+
+        // Station is a PERMANENT free stop at one area, not a convenience:
+        // rulebook p.15 "You may move your President pawn to this area
+        // during the Movement Step for free, AND YOU DO NOT NEED TO PAY EVEN
+        // IF THERE ARE OTHER PRESIDENT PAWNS IN THE AREA" -- the clause the
+        // line dropped (third review, I4). Without it Station reads as a
+        // conditional shortcut; with it, it is a standing Postal System PLUS
+        // Stagecoach for that one area, which is what justifies a 4-industry
+        // buy. The engine agrees three ways: `movement.rs`'s station arm
+        // never checks for an opponent President, the empty-path teleport is
+        // exempted from the Postal destination fee, and `legal_moves.rs`
+        // places no block on acting there. Ruling A1 (2026-07-20) retracted
+        // the broader "no assistants needed" reading but PRESERVED this one
+        // ("The card's explicit clauses stand (free; no payment for other
+        // President pawns there)"), so the own-assistant precondition it
+        // confirmed must survive the rewrite too.
+        let station = tech_effect_text(TechEffect::Station);
+        assert!(
+            station.contains("President fee") || station.contains("no fee"),
+            "Station charges NOTHING for other Presidents standing at the Station area \
+             (rulebook p.15; ruling A1 preserved the clause) -- without it the card reads as \
+             a conditional convenience: {station}"
+        );
+        assert!(
+            station.contains("free"),
+            "Station's move is free (rulebook p.15): {station}"
+        );
+        assert!(
+            station.contains("assistant"),
+            "Station still requires one of YOUR assistants at the Station area \
+             (ruling A1 Reading 2, 2026-07-20): {station}"
         );
 
         // Telegram's bonus assistant is not free: rulebook p.16 "Pay the

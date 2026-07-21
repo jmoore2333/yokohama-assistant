@@ -91,8 +91,9 @@ close_terminal   {id}
 ## Terminal lifecycle (from the Forge project's skill)
 
 Condensed from the Forge project's own "Terminal Lifecycle Management" skill (provided by
-Jeremy 2026-07-21; full text at `.superpowers/sdd/briefs/forge-terminal-lifecycle.md`). The
-operative rules:
+Jeremy 2026-07-21). The source brief lived in the working area under `.superpowers/sdd/`,
+which is gitignored in full, so it is NOT in a clone and is deliberately not cited as a
+retrievable source — the rules below are the whole of what this project relies on:
 
 - **Before `create_terminal`, always `list_terminals` first** and reuse a session when one fits
   — filter by tag (`list_terminals({ tag: "yokohama" })`). Don't accumulate idle sessions.
