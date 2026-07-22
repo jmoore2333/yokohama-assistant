@@ -120,8 +120,8 @@ pub fn tech_effect_text(effect: TechEffect) -> &'static str {
         TechEffect::LanguageSchool => "+1 Yen when you complete an Order",
         TechEffect::PatentSystem => "+2 VP for each Technology you acquire after this one (never for this card itself)",
         TechEffect::LetterPressPrinting => "+1 Yen for each Technology you acquire after this one (never for this card itself)",
-        TechEffect::Winery => "+3 VP when you place an assistant on the Church",
-        TechEffect::Brickyard => "+4 VP when you place an assistant on Customs",
+        TechEffect::Winery => "+3 VP when you carry out the Church action and place an assistant",
+        TechEffect::Brickyard => "+4 VP when you carry out the Customs action and place an assistant",
         TechEffect::SystemOfStock => "At turn start, if you have 1 Yen or less, refill to 2 Yen",
         TechEffect::University => "Once per turn: pay 1 Yen to take an assistant from the Warehouse",
         TechEffect::Newspaper => "Placement Option A may use 4 different areas instead of 3",
@@ -1140,8 +1140,20 @@ mod tests {
     fn tech_effect_text_spot_checks() {
         assert_eq!(tech_effect_text(TechEffect::Exposition), "Immediately gain 10 VP when acquired");
         assert!(tech_effect_text(TechEffect::Gaslight).contains("Shophouse"), "{}", tech_effect_text(TechEffect::Gaslight));
-        assert!(tech_effect_text(TechEffect::Brickyard).contains("Customs"), "{}", tech_effect_text(TechEffect::Brickyard));
         assert!(tech_effect_text(TechEffect::University).contains("Warehouse"), "{}", tech_effect_text(TechEffect::University));
+
+        // Winery/Brickyard fire on the Church/Customs *area action* (which
+        // seats a pawn on the faith/space track), NOT the Placement step --
+        // rulebook p.15/p.16 "Whenever you carry out a Church/Customs action
+        // and place an Assistant pawn". "place an assistant on the Church"
+        // collided with the Placement step's own assistant placement, so the
+        // disambiguating word is "action": pin that both name it.
+        let winery = tech_effect_text(TechEffect::Winery);
+        assert!(winery.contains("+3 VP"), "{winery}");
+        assert!(winery.contains("Church action"), "Winery fires on the Church ACTION, not the Placement step (rulebook p.15): {winery}");
+        let brickyard = tech_effect_text(TechEffect::Brickyard);
+        assert!(brickyard.contains("+4 VP"), "{brickyard}");
+        assert!(brickyard.contains("Customs action"), "Brickyard fires on the Customs ACTION, not the Placement step (rulebook p.16): {brickyard}");
     }
 
     /// F2 (Codex adversarial review of PR #4): `tech_effect_text` is the
