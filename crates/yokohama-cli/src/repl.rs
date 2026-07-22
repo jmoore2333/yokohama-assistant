@@ -1553,8 +1553,19 @@ impl Repl {
             None => return self.out(format!("'{card_tok}' is not a valid order-card code.\n"), false),
         };
         match self.session.apply_standalone(RecordedEvent::RevealStartingOrder { player: seat, card }) {
-            Ok(_delta) => {
-                self.out(format!("Seat {} revealed O{:02} as their starting order.\n", seat.0, card.0), false)
+            Ok(delta) => {
+                // Surface the delta the same way `undo`/`apply` do (item 5,
+                // third review): it carries the state diff (the card entering
+                // the seat's hand) AND any autosave-failure warning, which this
+                // used to discard -- leaving a failed live-tracking autosave
+                // invisible on the composed frame (same bug as the `undo` I3
+                // fix). `StepOutput.text` is the only channel `main.rs` renders.
+                let mut text = format!("Seat {} revealed O{:02} as their starting order.\n", seat.0, card.0);
+                for line in delta {
+                    text.push_str(&line);
+                    text.push('\n');
+                }
+                self.out(text, false)
             }
             Err(e) => self.out(format!("Illegal: {e}\n"), false),
         }
@@ -2213,6 +2224,60 @@ mod tests {
             "the autosave failure must reach the screen, not stderr: {}",
             out.text
         );
+    }
+
+    /// A live Repl where player 1's starting order was dealt but kept hidden
+    /// (`Unknown`), returned with the card that was dealt so a test can reveal
+    /// it. Seed 21 is the same fixture `session::tests`'
+    /// `apply_standalone_reveals_hidden_starting_order_in_a_live_session` uses.
+    fn repl_live_hidden(seed: u64) -> (Repl, OrderCardId) {
+        let rules = Rules::standard();
+        let config = GameConfig::for_player_count(2);
+        let hidden = new_game(config.clone(), &rules, seed).unwrap().deals[1][0];
+        let session = Session::new_live(
+            config,
+            seed,
+            SetupObservations::default(),
+            vec![StartingOrderChoice::Keep(0), StartingOrderChoice::Unknown],
+            rules,
+        )
+        .unwrap();
+        (Repl::new(session), hidden)
+    }
+
+    /// Item 5 (third review): `reveal <seat> <card>` discarded the delta
+    /// `apply_standalone` returns, swallowing the autosave-failure warning it
+    /// carries -- the same family as the already-fixed `undo` delta bug (I3).
+    /// The warning must reach the screen (`StepOutput.text`, the only channel
+    /// `main.rs` folds into a frame), not stderr where the composed frame
+    /// erases it.
+    #[test]
+    fn reveal_cmd_surfaces_the_autosave_failure_warning() {
+        let (mut r, hidden) = repl_live_hidden(21);
+        // A save target that cannot be written: its parent directory is absent.
+        r.session.save_path =
+            Some(std::env::temp_dir().join("yokohama_reveal_no_such_dir").join("game.json"));
+        let out = r.step(&format!("reveal 1 O{:02}", hidden.0));
+        assert!(out.text.contains("revealed"), "the explicit confirmation still prints: {}", out.text);
+        assert!(
+            out.text.contains("WARNING: autosave failed"),
+            "the autosave failure must reach the screen, not stderr: {}",
+            out.text
+        );
+    }
+
+    /// The other half: a WRITABLE target reveals with no warning -- the
+    /// warning is a real failure report, not decoration on every reveal -- and
+    /// the surfaced delta shows the revealed card entering the seat's hand.
+    #[test]
+    fn reveal_cmd_with_a_writable_target_reports_no_warning() {
+        let (mut r, hidden) = repl_live_hidden(21);
+        let path = std::env::temp_dir().join(format!("yokohama_reveal_ok_{}.json", std::process::id()));
+        r.session.save_path = Some(path.clone());
+        let out = r.step(&format!("reveal 1 O{:02}", hidden.0));
+        std::fs::remove_file(&path).ok();
+        assert!(!out.text.contains("autosave failed"), "a successful autosave must stay quiet: {}", out.text);
+        assert!(out.text.contains(&format!("hand +O{:02}", hidden.0)), "the delta is surfaced: {}", out.text);
     }
 
     /// The other half of I3: a WRITABLE target undoes silently -- the

@@ -223,7 +223,7 @@ While one of these prompts is showing, everything you type is read as the answer
 
 Once all reveals are typed, the move + reveals commit **as one atomic unit** — and one `undo` removes the whole unit.
 
-**Hidden starting orders:** when an opponent's starting order becomes public at the table (they fulfill it), enter `reveal <seat> O<n>` — e.g. `reveal 1 O23` → `Seat 1 revealed O23 as their starting order.`
+**Hidden starting orders:** when an opponent's starting order becomes public at the table (they fulfill it), enter `reveal <seat> O<n>` — e.g. `reveal 1 O23` → `Seat 1 revealed O23 as their starting order.`, and the card then shows entering that seat's hand (any autosave failure is reported inline)
 
 **Catching your own typos.** Nothing can detect that you typed the *wrong* real card — enter `O16` for a slot that physically shows `O17` and the tool faithfully records `O16`. Two things let you catch it yourself: every reveal is echoed as it applies, and the `log` view lists the exact card ids recorded for each reveal event, so you can read them back against the table. When you spot a mis-entry, `undo` removes the whole move-and-reveal group so you can re-enter it.
 
