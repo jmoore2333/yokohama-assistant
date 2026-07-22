@@ -7,7 +7,7 @@
 use yokohama_core::*;
 
 use crate::input::parse_order_id;
-use crate::reveal::{claimed_token_area, lab_b_changed, refilled_port_slots, Pending};
+use crate::reveal::{lab_b_changed, refilled_port_slots, Pending};
 use crate::session::{ApplyError, TrackingMode};
 use crate::style::{paint, Tone};
 use crate::{describe, render, screen};
@@ -1403,10 +1403,11 @@ impl Repl {
     /// Route `mv` through live-mode reveal detection (`TrackingMode::Live`
     /// only), then apply. A scratch-apply against the CURRENT state (never
     /// mutates -- the probe below calls `apply_move_unchecked`, which clones
-    /// like every arm in that module) reveals whether `mv` draws
-    /// from either deck or claims a 5-Power token; when it does, `mv` is
-    /// parked in `self.pending` and the operator is prompted instead of
-    /// applying immediately. Everything else -- including every move in
+    /// like every arm in that module) reveals whether `mv` draws from either
+    /// deck; when it does, `mv` is parked in `self.pending` and the operator is
+    /// prompted for the refilled card(s) instead of applying immediately. A
+    /// 5-Power token take needs no such prompt (its face is observed FACE-UP at
+    /// setup, §1.1). Everything else -- including every move in
     /// `TrackingMode::Simulation` -- applies at once via `finish_apply`.
     fn commit(&mut self, mv: Move) -> StepOutput {
         if matches!(self.session.mode, TrackingMode::Live) {
@@ -1429,12 +1430,10 @@ impl Repl {
                         self.pending = Pending::TechReveal { mv, board_b };
                         return self.out(self.reveal_prompt(), false);
                     }
-                    if matches!(mv, Move::Take5PowerToken) {
-                        if let Some(area) = claimed_token_area(self.session.state(), &scratch) {
-                            self.pending = Pending::TokenReveal { mv, area };
-                            return self.out(self.reveal_prompt(), false);
-                        }
-                    }
+                    // A 5-Power token take needs no reveal: the token faces are
+                    // FACE-UP open information observed at setup (§1.1), so the
+                    // layout already holds the true face and the take just reads
+                    // it -- it falls through to `finish_apply` like any move.
                 }
             }
         }

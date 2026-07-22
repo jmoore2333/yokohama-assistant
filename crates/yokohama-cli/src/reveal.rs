@@ -5,7 +5,6 @@
 
 use yokohama_core::*;
 
-use crate::describe;
 use crate::input::{parse_order_id, parse_tech_entry, TechAmbiguity, TechEntryError};
 use crate::repl::{Repl, StepOutput};
 use crate::style::{paint, Tone};
@@ -31,10 +30,11 @@ pub(crate) enum Pending {
     /// tech deck (only one tech ever leaves the Lab per action -- see
     /// `remove_and_slide_lab`'s doc comment -- so there's no slot list to
     /// walk, unlike `OrderReveals`).
+    ///
+    /// There is no token-reveal variant: the 5-Power token faces are FACE-UP
+    /// open information observed at setup (§1.1), so a token take reads the
+    /// known face and applies with no prompt.
     TechReveal { mv: Move, board_b: bool },
-    /// `Move::Take5PowerToken` just claimed the (always face-down until
-    /// taken) token at `area` -- see `claimed_token_area`.
-    TokenReveal { mv: Move, area: AreaId },
 }
 
 impl Repl {
@@ -68,11 +68,6 @@ impl Repl {
                      What tech card is now there? Enter as 'T<id>' or a name (or 'cancel'):\n"
                 )
             }
-            Pending::TokenReveal { area, .. } => format!(
-                "LIVE: 5-Power token claimed at {}. What was it? \
-                 Enter i=Imported c=Copper s=Silk t=Tea f=Seafood y=Yen (or 'cancel'):\n",
-                describe::area_label(self.session.state(), *area),
-            ),
         }
     }
 
@@ -124,27 +119,6 @@ impl Repl {
                     }
                 }
             }
-            Pending::TokenReveal { mv, area } => match parse_token_letter(words) {
-                Ok(effect) => {
-                    // Echo the recorded face so a mis-entry is visible immediately
-                    // (review §3): the token reveal has no post-apply desync guard
-                    // -- the letter picks WHICH goods the take grants, so a wrong
-                    // letter silently changes resources -- and no guard could
-                    // catch it (nothing on the board pins the face). Showing it
-                    // back, with the `undo` recourse, is the honest defense.
-                    let echo = format!(
-                        "Recorded 5-Power token at {}: {}. Check it against the physical token; `undo` if mis-entered.\n",
-                        describe::area_label(self.session.state(), area),
-                        describe::five_power_effect_label(effect),
-                    );
-                    let out = self.finish_apply(mv, vec![RecordedEvent::RevealFivePowerToken { area, effect }]);
-                    StepOutput { text: format!("{echo}{}", out.text), quit: out.quit }
-                }
-                Err(msg) => {
-                    self.pending = Pending::TokenReveal { mv, area };
-                    self.out(format!("{msg}\n{}", self.reveal_prompt()), false)
-                }
-            },
         }
     }
 
@@ -276,16 +250,6 @@ pub(crate) fn lab_b_changed(before: &GameState, after: &GameState) -> bool {
         (Some(b0), Some(b1)) => b0.slots != b1.slots,
         _ => false,
     }
-}
-
-/// The area whose 5-Power token just went from unclaimed to claimed.
-/// `Move::Take5PowerToken` is only ever legal when the President's area
-/// holds one (`generate_five_power_moves`), so this is `Some` at every real
-/// call site; `None` is a defensive fallback that's never expected to fire.
-pub(crate) fn claimed_token_area(before: &GameState, after: &GameState) -> Option<AreaId> {
-    before.board_layout.five_power_tokens.iter().find_map(|(area, effect)| {
-        (effect.is_some() && after.board_layout.five_power_tokens.get(area) == Some(&None)).then_some(*area)
-    })
 }
 
 /// Parse one order-reveal answer: a real numeric id, still UNREVEALED (in the
