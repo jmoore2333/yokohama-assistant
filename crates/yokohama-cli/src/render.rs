@@ -609,7 +609,9 @@ fn build_marks_pair(state: &GameState, site: &BuildingSite) -> (String, String) 
 /// `ChurchTrack` tables -- the same `vp_reward` `delta_summary` prints after a
 /// placement, plus the `movement_rider` the engine queues as assistant-move
 /// choices. Every faith 4-11 carries a movement rider, so it is always shown.
-fn church_reward_text(faith: u8) -> String {
+/// `pub(crate)`: the Church space-choice option text (`describe::describe_move`)
+/// reuses this so the choice shows the SAME VP+rider as the `tracks` view.
+pub(crate) fn church_reward_text(faith: u8) -> String {
     format!("{}vp {}move", ChurchTrack::vp_reward(faith), ChurchTrack::movement_rider(faith))
 }
 
@@ -617,7 +619,9 @@ fn church_reward_text(faith: u8) -> String {
 /// vocabulary. `CustomsTrack::rider` returns `(warehouse_takes, yen)` --
 /// rendered `Nwh`/`Nyen` -- and spaces 5-7 carry no rider, so those lines show
 /// VP alone. Single-sourced from the `CustomsTrack` tables.
-fn customs_reward_text(space: u8) -> String {
+/// `pub(crate)`: the Customs space-choice option text (`describe::describe_move`)
+/// reuses this so the choice shows the SAME VP+rider as the `tracks` view.
+pub(crate) fn customs_reward_text(space: u8) -> String {
     let mut s = format!("{}vp", CustomsTrack::vp_reward(space));
     let (warehouse_takes, yen) = CustomsTrack::rider(space);
     if warehouse_takes > 0 {

@@ -570,11 +570,19 @@ pub fn describe_move(mv: &Move, state: &GameState, rules: &Rules) -> String {
             format!("Move an assistant from {from_label} to {} (reward move)", area_label(state, *to))
         }
         Move::DeclineAssistantMove => "Decline the assistant move".to_string(),
+        // Show the space's FULL printed reward -- VP plus its movement rider
+        // (Church) or warehouse/yen rider (Customs) -- in the SAME vocabulary
+        // the `tracks` view prints, single-sourced from `render`'s reward-text
+        // helpers so the choice can never disagree with `tracks`. The rider is
+        // decision-relevant when the choice offers more than one space (Church
+        // faith 4/5 = 1move vs 6 = 2move; Customs cost-1 space 1 = 2wh vs
+        // space 2 = 2yen), and each space's placement queues that rider next
+        // (rulebook p.13/p.14).
         Move::ChooseChurchSpace { space } => {
-            format!("Place on Church faith-{space} space ({} VP)", ChurchTrack::vp_reward(*space))
+            format!("Place on Church faith-{space} space ({})", render::church_reward_text(*space))
         }
         Move::ChooseCustomsSpace { space } => {
-            format!("Place on Customs space {space} ({} VP)", CustomsTrack::vp_reward(*space))
+            format!("Place on Customs space {space} ({})", render::customs_reward_text(*space))
         }
         Move::ChooseRecoveryLeave { leave_one: false } => {
             "Recover all assistants from the action area".to_string()
@@ -839,24 +847,54 @@ mod tests {
         assert_eq!(describe_move(&Move::DeclineAssistantMove, &state, &rules), "Decline the assistant move");
     }
 
+    /// The Church space choice shows the space's FULL printed reward -- VP
+    /// plus its movement rider -- in the SAME vocabulary the `tracks` view
+    /// prints, single-sourced from `render::church_reward_text`. A player
+    /// choosing among open faith spaces (faith-4 "3vp 1move" vs faith-6 "5vp
+    /// 2move") then compares on the whole reward, not VP alone. Rulebook p.13:
+    /// a Church placement grants the space's VP AND its movement-icon rider(s)
+    /// ("the reward of 5 Victory points and the ability to move 2 pawns").
     #[test]
-    fn church_space_choice_reads_as_plain_words_with_vp() {
+    fn church_space_choice_shows_vp_and_movement_rider() {
         let state = state_2p();
         let rules = Rules::standard();
         assert_eq!(
             describe_move(&Move::ChooseChurchSpace { space: 6 }, &state, &rules),
-            format!("Place on Church faith-6 space ({} VP)", ChurchTrack::vp_reward(6))
+            format!("Place on Church faith-6 space ({})", render::church_reward_text(6))
         );
+        assert_eq!(
+            describe_move(&Move::ChooseChurchSpace { space: 6 }, &state, &rules),
+            "Place on Church faith-6 space (5vp 2move)"
+        );
+        // The rider varies across the offered spaces, so it must appear.
+        assert!(describe_move(&Move::ChooseChurchSpace { space: 4 }, &state, &rules).contains("1move"));
     }
 
+    /// The Customs space choice likewise shows VP + the space's warehouse/yen
+    /// rider, single-sourced from `render::customs_reward_text` (matches
+    /// `tracks`). Decision-relevant: within one printed-cost pair the two
+    /// spaces differ on rider -- cost-1's space 1 ("5vp 2wh", warehouse takes)
+    /// vs space 2 ("4vp 2yen", yen) -- rulebook p.14. Spaces 5-7 carry no
+    /// rider, so those show VP alone.
     #[test]
-    fn customs_space_choice_reads_as_plain_words_with_vp() {
+    fn customs_space_choice_shows_vp_and_warehouse_or_yen_rider() {
         let state = state_2p();
         let rules = Rules::standard();
         assert_eq!(
             describe_move(&Move::ChooseCustomsSpace { space: 3 }, &state, &rules),
-            format!("Place on Customs space 3 ({} VP)", CustomsTrack::vp_reward(3))
+            format!("Place on Customs space 3 ({})", render::customs_reward_text(3))
         );
+        assert_eq!(
+            describe_move(&Move::ChooseCustomsSpace { space: 1 }, &state, &rules),
+            "Place on Customs space 1 (5vp 2wh)"
+        );
+        assert_eq!(
+            describe_move(&Move::ChooseCustomsSpace { space: 2 }, &state, &rules),
+            "Place on Customs space 2 (4vp 2yen)"
+        );
+        // Spaces 5-7 carry no rider: VP only.
+        let s5 = describe_move(&Move::ChooseCustomsSpace { space: 5 }, &state, &rules);
+        assert_eq!(s5, "Place on Customs space 5 (16vp)", "{s5}");
     }
 
     #[test]
