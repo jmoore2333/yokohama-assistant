@@ -267,11 +267,30 @@ impl Session {
         // `describe_recorded_event` with `replay_from` one event at a time
         // -- the same per-event pattern `examples/record_stats.rs` uses to
         // interleave its own `metrics.observe` call.
+        // A malformed/tampered config would otherwise reach board generation,
+        // where `row_lengths` panics outside 2..=4 (aborting the process on
+        // this load path), or would silently honour an impossible
+        // `has_port_b`/`has_lab_b` flag. Validate it BEFORE building anything so
+        // a bad config is a typed error, not a panic or a silent mis-load
+        // (§3.1, third review).
+        validate_config(&record.config).map_err(|e| format!("this save has an invalid config: {e}"))?;
+
         let mut pending = new_game(record.config.clone(), &rules, record.seed).map_err(|e| e.to_string())?;
         if let Some(obs) = &record.setup_observations {
             pending = reconcile_setup(pending, obs, &rules).map_err(|e| e.to_string())?;
         }
         let mut state = finalize_setup(pending, &record.choices).map_err(|e| e.to_string())?;
+
+        // Backstop: `validate_config` above already rejected an inconsistent
+        // config before building, so on this rebuild path the state is expected
+        // to match its config -- but this is the check `validate_game_state_
+        // consistency` was written for and had zero production callers (§3.1),
+        // and it guards against any future setup change that drifts state from
+        // config. The port/lab/board fields it checks are immutable after
+        // setup, so validating the freshly-built state (before the event fold)
+        // is sufficient.
+        validate_game_state_consistency(&state)
+            .map_err(|e| format!("this save's state is inconsistent with its config: {e}"))?;
 
         let mut event_descriptions = Vec::with_capacity(record.events.len());
         for (i, ev) in record.events.iter().enumerate() {
@@ -884,6 +903,41 @@ mod tests {
         std::fs::remove_file(&path).ok();
 
         assert!(result.is_err(), "a tampered record must surface as a typed load error, never a panic");
+    }
+
+    /// A tampered/corrupt `config.player_count` used to reach board
+    /// generation's `row_lengths`, which `panic!`s outside 2..=4 -- aborting
+    /// the whole process on the live-tracking load path. `Session::load` now
+    /// validates the config BEFORE building from it, so a bad player count is a
+    /// typed error (§3.1, third review).
+    #[test]
+    fn load_of_a_save_with_a_bad_player_count_is_a_typed_error_not_panic() {
+        let s = sim_2p(4);
+        let mut record = s.record().clone();
+        record.config.player_count = 5; // outside the real 2..=4 range (row_lengths panics)
+        let path = std::env::temp_dir().join(format!("yokohama_badpc_{}.json", std::process::id()));
+        std::fs::write(&path, serde_json::to_string_pretty(&record).unwrap()).unwrap();
+        let result = Session::load(&path, Rules::standard());
+        std::fs::remove_file(&path).ok();
+        assert!(result.is_err(), "a bad player_count must surface as a typed load error, never a panic");
+    }
+
+    /// `has_port_b` is a function of player count (Port B board in 3-4p only).
+    /// A save that sets `has_port_b: true` at 2 players is an internally
+    /// inconsistent config that used to load SILENTLY -- the state was built to
+    /// match the tampered flag, so nothing downstream disagreed. `Session::load`
+    /// now rejects it up front (§3.1).
+    #[test]
+    fn load_of_a_2p_save_with_port_b_is_a_typed_error() {
+        let s = sim_2p(4);
+        let mut record = s.record().clone();
+        assert_eq!(record.config.player_count, 2, "fixture is 2p");
+        record.config.has_port_b = true; // never valid at 2 players
+        let path = std::env::temp_dir().join(format!("yokohama_portb2p_{}.json", std::process::id()));
+        std::fs::write(&path, serde_json::to_string_pretty(&record).unwrap()).unwrap();
+        let result = Session::load(&path, Rules::standard());
+        std::fs::remove_file(&path).ok();
+        assert!(result.is_err(), "has_port_b at 2p must surface as a typed load error, not a silent load");
     }
 
     /// C1 regression (external six-agent review, 2026-07-20). The guard test

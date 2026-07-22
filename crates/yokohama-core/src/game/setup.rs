@@ -634,6 +634,50 @@ fn reconcile_board(
     Ok(())
 }
 
+/// Validate a `GameConfig`'s internal consistency BEFORE any state is built
+/// from it. `new_game` feeds `player_count` straight to board generation's
+/// `row_lengths`, which `panic!`s outside 2..=4 (aborting the process on the
+/// live-tracking load path), and would otherwise silently honour an impossible
+/// `has_port_b`/`has_lab_b` flag or an out-of-range `start_player`. The load
+/// path (`Session::load`) runs this on a deserialized config so a tampered or
+/// corrupt save is a typed error, not a panic or a silent mis-load (§3.1, third
+/// review). Returns `Ok(())` if the config could have come from `new`/
+/// `for_player_count`, or a message naming the inconsistency.
+pub fn validate_config(config: &GameConfig) -> Result<(), String> {
+    if !(2..=4).contains(&config.player_count) {
+        return Err(format!("player_count {} is out of range (must be 2, 3, or 4)", config.player_count));
+    }
+    if config.player_colors.len() != config.player_count as usize {
+        return Err(format!(
+            "player_colors has {} entr{} but player_count is {}",
+            config.player_colors.len(),
+            if config.player_colors.len() == 1 { "y" } else { "ies" },
+            config.player_count,
+        ));
+    }
+    if config.start_player.0 as usize >= config.player_count as usize {
+        return Err(format!(
+            "start_player {} is not a seat in a {}-player game",
+            config.start_player.0, config.player_count,
+        ));
+    }
+    let expect_port_b = config.player_count >= 3;
+    if config.has_port_b != expect_port_b {
+        return Err(format!(
+            "has_port_b is {} but a {}-player game requires {expect_port_b} (Port B is a 3-4 player board)",
+            config.has_port_b, config.player_count,
+        ));
+    }
+    let expect_lab_b = config.player_count >= 4;
+    if config.has_lab_b != expect_lab_b {
+        return Err(format!(
+            "has_lab_b is {} but a {}-player game requires {expect_lab_b} (Lab B is a 4 player board)",
+            config.has_lab_b, config.player_count,
+        ));
+    }
+    Ok(())
+}
+
 /// Validate that a GameState is consistent with its GameConfig.
 /// Returns Ok(()) if valid, or an error message describing the inconsistency.
 pub fn validate_game_state_consistency(state: &GameState) -> Result<(), &'static str> {
@@ -963,6 +1007,39 @@ mod tests {
         let result = validate_game_state_consistency(&state);
         assert!(result.is_err());
         assert_eq!(result.unwrap_err(), "Board contains area that should be removed for player count");
+    }
+
+    #[test]
+    fn validate_config_accepts_the_canonical_configs_and_rejects_malformed_ones() {
+        // The three canonical configs pass.
+        for pc in [2u8, 3, 4] {
+            assert!(validate_config(&GameConfig::for_player_count(pc)).is_ok(), "pc {pc} must validate");
+        }
+
+        // player_count out of range (would panic in `row_lengths`).
+        let mut bad = GameConfig::for_player_count(2);
+        bad.player_count = 5;
+        assert!(validate_config(&bad).is_err());
+
+        // player_colors length disagrees with player_count.
+        let mut bad = GameConfig::for_player_count(3);
+        bad.player_colors.pop();
+        assert!(validate_config(&bad).is_err());
+
+        // start_player is not a real seat.
+        let mut bad = GameConfig::for_player_count(2);
+        bad.start_player = PlayerId::unchecked(2);
+        assert!(validate_config(&bad).is_err());
+
+        // has_port_b true at 2 players (Port B is a 3-4p board).
+        let mut bad = GameConfig::for_player_count(2);
+        bad.has_port_b = true;
+        assert!(validate_config(&bad).is_err());
+
+        // has_lab_b true below 4 players (Lab B is a 4p board).
+        let mut bad = GameConfig::for_player_count(3);
+        bad.has_lab_b = true;
+        assert!(validate_config(&bad).is_err());
     }
 
     #[test]
