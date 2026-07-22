@@ -1,0 +1,127 @@
+name: release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  ubuntu:
+    name: Ubuntu x86_64
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-unknown-linux-musl
+      - name: Install static-linking toolchain
+        run: sudo apt-get update && sudo apt-get install --yes musl-tools
+      - name: Test the CLI
+        run: cargo test --locked -p yokohama-cli --target x86_64-unknown-linux-musl
+      - name: Run the full-game release smoke test
+        run: cargo test --locked --release -p yokohama-cli --target x86_64-unknown-linux-musl --test piped_dogfood -- --ignored
+      - name: Build a static Ubuntu binary
+        run: cargo build --locked --release -p yokohama-cli --target x86_64-unknown-linux-musl
+      - name: Package the Ubuntu release
+        shell: bash
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          package="yokohama-cli-${RELEASE_TAG}-ubuntu-x86_64"
+          mkdir -p "dist/${package}"
+          install -m 0755 \
+            target/x86_64-unknown-linux-musl/release/yokohama-cli \
+            "dist/${package}/yokohama-cli"
+          install -m 0644 README.md "dist/${package}/README.md"
+          install -m 0644 docs/cli-guide.html "dist/${package}/CLI-GUIDE.html"
+          tar -C dist -czf "dist/${package}.tar.gz" "${package}"
+          file "dist/${package}/yokohama-cli"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ubuntu-release
+          path: dist/*.tar.gz
+          if-no-files-found: error
+
+  macos:
+    name: macOS Apple Silicon
+    runs-on: macos-14
+    env:
+      RUSTFLAGS: -C target-cpu=native
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin
+      - name: Test the CLI
+        run: cargo test --locked -p yokohama-cli --target aarch64-apple-darwin
+      - name: Build for Apple Silicon
+        run: cargo build --locked --release -p yokohama-cli --target aarch64-apple-darwin
+      - name: Package the Apple Silicon release
+        shell: bash
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          package="yokohama-cli-${RELEASE_TAG}-macos-apple-silicon"
+          mkdir -p "dist/${package}"
+          install -m 0755 \
+            target/aarch64-apple-darwin/release/yokohama-cli \
+            "dist/${package}/yokohama-cli"
+          codesign --force --sign - "dist/${package}/yokohama-cli"
+          install -m 0644 README.md "dist/${package}/README.md"
+          install -m 0644 docs/cli-guide.html "dist/${package}/CLI-GUIDE.html"
+          tar -C dist -czf "dist/${package}.tar.gz" "${package}"
+          file "dist/${package}/yokohama-cli"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: macos-release
+          path: dist/*.tar.gz
+          if-no-files-found: error
+
+  publish:
+    name: Publish GitHub release
+    needs: [ubuntu, macos]
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: "*-release"
+          path: dist
+          merge-multiple: true
+      - name: Assemble release assets
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(find dist -maxdepth 1 -name '*.tar.gz' | wc -l)" -eq 2
+          install -m 0644 docs/cli-guide.html dist/yokohama-cli-guide.html
+          cd dist
+          sha256sum ./*.tar.gz ./yokohama-cli-guide.html > SHA256SUMS
+      - name: Create or update the release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          prerelease=()
+          if [[ "${RELEASE_TAG}" == *-* ]]; then
+            prerelease+=(--prerelease)
+          fi
+
+          if gh release view "${RELEASE_TAG}" >/dev/null 2>&1; then
+            gh release upload "${RELEASE_TAG}" dist/* --clobber
+          else
+            gh release create "${RELEASE_TAG}" dist/* \
+              --verify-tag \
+              --title "Yokohama CLI ${RELEASE_TAG}" \
+              --generate-notes \
+              "${prerelease[@]}"
+          fi
