@@ -668,7 +668,7 @@ Highest VP wins. Tiebreaker: Closest to Start Player (clockwise).
 
 ## 5-Power Tokens
 
-Each area has one 5-Power token placed during setup. Effects vary (revealed when taken).
+Each area has one 5-Power token placed **face-up** during setup (rulebook p.3 step 5: the tokens are *shuffled* face-down, then placed **face-up** on each Area Board's 5-space), so its effect is public information from the start. A player gains the effect when they take the token at 5 Power, then keeps the token face-down. Effects vary.
 
 The complete physical pool (box-verified by Jeremy 2026-07-18, decision log "BOX CHECK (a)";
 CORRECTED here 2026-07-20 — this section previously listed "Victory Points" and "Movement
