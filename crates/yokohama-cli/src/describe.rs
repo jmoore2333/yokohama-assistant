@@ -318,9 +318,14 @@ fn describe_area_action(action: &AreaAction, state: &GameState, rules: &Rules) -
             if *extra_imported > 0 {
                 s.push_str(&format!(", +{extra_imported} imported"));
             }
+            // Rulebook p.12: "the 5th Technology card and later each cost
+            // either an extra 2 Yen or 1 Imported Good token" -- the penalty
+            // fires for the 5th AND every later acquisition (engine:
+            // `fifth_tech_penalty_required`, owns 4+), so the label reads
+            // "5th+" rather than a fixed "5th" that misnames a 6th/7th buy.
             match fifth_tech_payment {
-                Some(true) => s.push_str(", 5th-tech fee: 2 yen"),
-                Some(false) => s.push_str(", 5th-tech fee: 1 imported good"),
+                Some(true) => s.push_str(", 5th+ tech fee: 2 yen"),
+                Some(false) => s.push_str(", 5th+ tech fee: 1 imported good"),
                 None => {}
             }
             s
@@ -760,6 +765,41 @@ mod tests {
             &rules,
         );
         assert!(ch.contains("1 copper -> 2 yen"), "{ch}");
+    }
+
+    /// The Laboratory acquisition's `fifth_tech_payment` surcharge is the
+    /// rulebook p.12 penalty on "the 5th Technology card AND LATER" (engine:
+    /// `fifth_tech_penalty_required` fires once the player owns 4+ techs), so
+    /// it applies unchanged to the 6th, 7th, ... acquisition too. The label
+    /// must not hard-code the ordinal "5th" (which is false for a 6th/7th
+    /// buy) -- "5th+" names the surcharge accurately. NOTE: this is a
+    /// different surcharge from the board-position surcharge (`extra_yen`/
+    /// `extra_imported`, slots 3-6 = +1,+1,+2,+2); this test pins only the
+    /// 5th+ tech-CARD penalty label.
+    #[test]
+    fn laboratory_fifth_plus_tech_fee_is_not_hard_coded_to_the_fifth() {
+        let state = state_2p();
+        let rules = Rules::standard();
+        let yen = describe_move(
+            &Move::ExecuteAreaAction {
+                action: AreaAction::Laboratory {
+                    card_id: TechCardId(20), extra_yen: 0, extra_imported: 0, fifth_tech_payment: Some(true),
+                },
+            },
+            &state,
+            &rules,
+        );
+        assert!(yen.contains("5th+ tech fee: 2 yen"), "{yen}");
+        let imported = describe_move(
+            &Move::ExecuteAreaAction {
+                action: AreaAction::Laboratory {
+                    card_id: TechCardId(20), extra_yen: 0, extra_imported: 0, fifth_tech_payment: Some(false),
+                },
+            },
+            &state,
+            &rules,
+        );
+        assert!(imported.contains("5th+ tech fee: 1 imported good"), "{imported}");
     }
 
     #[test]
