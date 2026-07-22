@@ -58,8 +58,11 @@ fn goods_run(p: &PlayerState) -> String {
 }
 
 /// A `─ Title ─────...` rule header opening every state view (Task 6, one
-/// design language across views). 40 columns total.
-fn section(title: &str) -> String {
+/// design language across views). 40 columns total. `pub(crate)` so the
+/// repl-side views (`score`/`log`/`final_score`/`hand`) share the exact same
+/// header machinery as the render.rs views rather than hand-rolling their own
+/// (item 4, third review).
+pub(crate) fn section(title: &str) -> String {
     let head = format!("─ {title} ");
     format!("{head}{}\n", "─".repeat(40usize.saturating_sub(head.chars().count())))
 }
@@ -1904,7 +1907,12 @@ mod tests {
     }
 
     /// Task 6 restyle: the state views share one design language -- a
-    /// `─ Title ─...` rule header opens each of them.
+    /// `─ Title ─...` rule header opens each of them. This covers the six views
+    /// that live HERE as free functions; the four that live in repl.rs
+    /// (`score`/`log`/`final_score`/`hand`) are held to the same header by
+    /// `repl::tests::all_state_views_share_the_rule_header_style`, which drives
+    /// every `VIEW_MENU` row plus `final_score` (item 4, third review -- this
+    /// test alone structurally could not see those four).
     #[test]
     fn views_share_the_rule_header_style() {
         let state = test_state_2p();

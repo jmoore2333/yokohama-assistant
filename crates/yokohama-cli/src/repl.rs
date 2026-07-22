@@ -1596,7 +1596,9 @@ impl Repl {
         let state = self.session.state();
         let rules = self.session.rules();
         let p = state.current_player();
-        let mut out = format!("─ Hand: {:?} ─────────────────────────\n", p.color);
+        // Shares render::section, like every other view (item 4), rather than
+        // hand-rolling its own dash run.
+        let mut out = render::section(&format!("Hand: {:?}", p.color));
         if self.privacy {
             let n = p.order_cards_in_hand.len();
             out.push_str(&format!(
@@ -1620,7 +1622,7 @@ impl Repl {
         if self.session.is_over() {
             self.final_score_table()
         } else {
-            let mut out = String::from("Score:\n");
+            let mut out = render::section("Score");
             for p in &self.session.state().players {
                 out.push_str(&format!(
                     "  {:?}: {}, {} yen\n",
@@ -1641,7 +1643,8 @@ impl Repl {
     fn final_score_table(&self) -> String {
         let result = self.session.final_result();
         let state = self.session.state();
-        let mut out = format!("WINNER: {}\n", render::color_name(state.player(result.winner).color));
+        let mut out = render::section("Final scores");
+        out.push_str(&format!("WINNER: {}\n", render::color_name(state.player(result.winner).color)));
         for s in &result.standings {
             let b = &s.breakdown;
             out.push_str(&format!(
@@ -1670,7 +1673,7 @@ impl Repl {
     fn log_tail(&self) -> String {
         let n = self.session.record().events.len();
         let start = n.saturating_sub(10);
-        let mut out = format!("log ({} of {} event(s)):\n", n - start, n);
+        let mut out = render::section(&format!("Log ({} of {} event(s))", n - start, n));
         for i in start..n {
             out.push_str(&format!("  {}: {}\n", i, self.session.event_description(i)));
         }
@@ -2278,6 +2281,39 @@ mod tests {
         std::fs::remove_file(&path).ok();
         assert!(!out.text.contains("autosave failed"), "a successful autosave must stay quiet: {}", out.text);
         assert!(out.text.contains(&format!("hand +O{:02}", hidden.0)), "the delta is surfaced: {}", out.text);
+    }
+
+    /// Item 4 (third review): every state VIEW opens with the same `─ Title ─`
+    /// rule header. The render.rs pinning test enumerates only the six views
+    /// that live there, so it structurally could not see the four that live in
+    /// repl.rs (`score`/`log`/`final_score`/`hand`). This drives every view
+    /// through the actual `VIEW_MENU` dispatch -- so it cannot miss one that is
+    /// in the menu -- plus the game-over `final_score` table (which is not a
+    /// menu row, being `score`'s game-over form), and holds the shared header
+    /// on all of them. The board grid is its own layout, not a `─ Title ─`
+    /// view, and is skipped.
+    #[test]
+    fn all_state_views_share_the_rule_header_style() {
+        let mut r = repl_2p(4);
+        for (label, render_fn) in Repl::VIEW_MENU.iter() {
+            if label.starts_with("Board") {
+                continue;
+            }
+            let out = render_fn(&mut r);
+            assert!(
+                out.text.starts_with("─ "),
+                "view '{label}' must open with a `─ Title ─` rule header, got: {:?}",
+                out.text.lines().next().unwrap_or("")
+            );
+        }
+        // `final_score` is not a menu row (it is `score`'s game-over form);
+        // pin it directly. `final_score_table` scores the current state, so it
+        // renders on a live game without needing to drive it to a winner.
+        assert!(
+            r.final_score_table().starts_with("─ "),
+            "final_score must open with a rule header, got: {:?}",
+            r.final_score_table().lines().next().unwrap_or("")
+        );
     }
 
     /// The other half of I3: a WRITABLE target undoes silently -- the
