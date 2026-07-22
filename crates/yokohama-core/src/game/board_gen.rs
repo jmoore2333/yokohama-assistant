@@ -684,6 +684,16 @@ mod tests {
         }
     }
 
+    /// Normalize an undirected `AreaId` pair to `(min_id, max_id)` for
+    /// set-membership tests over undirected edges.
+    fn norm(a: AreaId, b: AreaId) -> (u8, u8) {
+        if a.0 <= b.0 {
+            (a.0, b.0)
+        } else {
+            (b.0, a.0)
+        }
+    }
+
     /// Sort each pair's endpoints and sort the resulting list, for
     /// order-independent comparison of a set of undirected crossing pairs.
     fn normalize_pairs(pairs: &[(AreaId, AreaId)]) -> Vec<(AreaId, AreaId)> {
@@ -746,75 +756,12 @@ mod tests {
         );
     }
 
-    #[test]
-    fn interior_canal_yields_nine_transit_pairs() {
-        // Seed 5's 3p Canal lands at AreaId(6), staggered grid (1,1) — a fully
-        // interior cell with all six neighbors, so C(6,2)=15 neighbor pairs,
-        // of which six are already brick-offset-adjacent (free) and NINE are
-        // tolled any-to-any transits. (On the old 2x7 lattice this seed put
-        // the Canal in a corner with zero crossings — the topology switch is
-        // exactly what makes it interior.)
-        let config = GameConfig::for_player_count(3);
-        let mut rng = ChaCha8Rng::seed_from_u64(5);
-        let building_sites = make_test_building_sites(13);
-        let tokens = make_test_five_power_tokens(13);
-        let layout = generate_board_layout(&config, &mut rng, building_sites, tokens)
-            .expect("should generate valid layout");
-
-        let canal = layout.areas.iter()
-            .find(|(_, c)| c.area_type == AreaType::Canal)
-            .map(|(id, _)| *id);
-        assert_eq!(canal, Some(AreaId::new(6)));
-        assert_eq!(layout.areas[&AreaId::new(6)].grid_position, (1, 1));
-
-        // Neighbors of (1,1): LL=5 LR=7 UL=1 UR=2 DL=9 DR=10. The nine
-        // non-adjacent (tolled) pairs:
-        let expected = [
-            (AreaId::new(5), AreaId::new(7)),  // LL-LR
-            (AreaId::new(5), AreaId::new(2)),  // LL-UR
-            (AreaId::new(5), AreaId::new(10)), // LL-DR
-            (AreaId::new(7), AreaId::new(1)),  // LR-UL
-            (AreaId::new(7), AreaId::new(9)),  // LR-DL
-            (AreaId::new(1), AreaId::new(9)),  // UL-DL
-            (AreaId::new(1), AreaId::new(10)), // UL-DR
-            (AreaId::new(2), AreaId::new(9)),  // UR-DL
-            (AreaId::new(2), AreaId::new(10)), // UR-DR
-        ];
-        assert_eq!(normalize_pairs(&layout.canal_crossings), normalize_pairs(&expected));
-    }
-
-    #[test]
-    fn four_player_interior_canal_yields_nine_transit_pairs() {
-        // Seed 4's 4p Canal lands at AreaId(9), staggered grid (1,3) — also a
-        // fully interior cell, exercising all six neighbors on the 4p board.
-        let config = GameConfig::for_player_count(4);
-        let mut rng = ChaCha8Rng::seed_from_u64(4);
-        let building_sites = make_test_building_sites(17);
-        let tokens = make_test_five_power_tokens(17);
-        let layout = generate_board_layout(&config, &mut rng, building_sites, tokens)
-            .expect("should generate valid layout");
-
-        let canal = layout.areas.iter()
-            .find(|(_, c)| c.area_type == AreaType::Canal)
-            .map(|(id, _)| *id);
-        assert_eq!(canal, Some(AreaId::new(9)));
-        assert_eq!(layout.areas[&AreaId::new(9)].grid_position, (1, 3));
-
-        // Neighbors of (1,3): LL=8 LR=10 UL=3 UR=4 DL=13 DR=14. The nine
-        // non-adjacent (tolled) pairs:
-        let expected = [
-            (AreaId::new(8), AreaId::new(10)),  // LL-LR (old "horizontal")
-            (AreaId::new(8), AreaId::new(4)),   // LL-UR
-            (AreaId::new(8), AreaId::new(14)),  // LL-DR
-            (AreaId::new(10), AreaId::new(3)),  // LR-UL
-            (AreaId::new(10), AreaId::new(13)), // LR-DL
-            (AreaId::new(3), AreaId::new(13)),  // UL-DL
-            (AreaId::new(3), AreaId::new(14)),  // UL-DR (old "vertical")
-            (AreaId::new(4), AreaId::new(13)),  // UR-DL
-            (AreaId::new(4), AreaId::new(14)),  // UR-DR
-        ];
-        assert_eq!(normalize_pairs(&layout.canal_crossings), normalize_pairs(&expected));
-    }
+    // NOTE (PR #5 §2.2): the two seed-pinned exact crossing-set tests that
+    // used to sit here — `interior_canal_yields_nine_transit_pairs` (seed 5,
+    // 3p) and `four_player_interior_canal_yields_nine_transit_pairs` (seed 4,
+    // 4p) — were REPLACED by `staggered_geometry_properties_hold_over_every_cell`
+    // above, which derives and checks the exact crossing set at EVERY canal
+    // position of every board rather than pasting one hand-listed set per seed.
 
     #[test]
     fn two_player_boards_unchanged() {
@@ -888,6 +835,119 @@ mod tests {
         let ns = layout.adjacent_areas(t10);
         assert!(ns.contains(&t00), "(1,0) must touch (0,0)");
         assert!(ns.contains(&t01), "(1,0) must touch (0,1) — the notch neighbor the lattice missed");
+    }
+
+    /// I10 (PR #5 §2.2): a SEED-FREE geometry property test over every cell of
+    /// every player count's board (2/3/4). REPLACES the two brittle
+    /// seed-pinned exact crossing-set tests (`interior_canal_yields_nine_transit_pairs`,
+    /// `four_player_interior_canal_yields_nine_transit_pairs`), whose failure
+    /// was a bare list inequality whose cheapest "repair" was pasting in the
+    /// new list — precisely the failure mode that lets a topology regression
+    /// through. This derives every expected relation from first principles, so
+    /// it cannot be silently re-baselined.
+    ///
+    /// The blind spot it closes: a row-above off-by-one in `neighbor_cells` is
+    /// DEAD for `staggered_adjacency` (which emits an edge only when
+    /// `nid.0 > id.0`, so every cross-row edge comes from the upper cell's
+    /// row-BELOW branch — the row-above output is always filtered out) yet LIVE
+    /// for `cells_adjacent`, which `derive_canal_crossings` uses as its
+    /// disjointness test. Such a mutation keeps rows 6/5/4/3, exactly 38 edges,
+    /// max degree 6, and the notch pin — but makes `cells_adjacent` disagree
+    /// with edge membership (clause b), tolls a free brick edge (clause c), and
+    /// leaves a genuine canal-neighbour pair connected by nothing (clause d).
+    #[test]
+    fn staggered_geometry_properties_hold_over_every_cell() {
+        for pc in [2u8, 3, 4] {
+            let rows = row_lengths(pc);
+            let n = expected_tile_count(pc);
+            let cells: Vec<(u8, u8)> =
+                (0..n).map(|i| area_id_to_cell(AreaId::new(i as u8), &rows)).collect();
+
+            // The pure brick-offset edge set from `staggered_adjacency` — the
+            // ground truth `cells_adjacent` and the Canal derivation are checked
+            // against. Unaffected by the row-above branch (its output is always
+            // dropped by the `nid.0 > id.0` filter).
+            let brick: std::collections::BTreeSet<(u8, u8)> =
+                staggered_adjacency(&rows).into_iter().map(|(a, b)| norm(a, b)).collect();
+            let id_of = |rc: (u8, u8)| cell_to_area_id(rc.0, rc.1, &rows);
+            let is_brick_edge =
+                |a: (u8, u8), b: (u8, u8)| brick.contains(&norm(id_of(a), id_of(b)));
+
+            // (a) neighbor_cells symmetry: b in neighbors(a) <=> a in neighbors(b).
+            for &(r, c) in &cells {
+                for nb in neighbor_cells(r, c, &rows) {
+                    assert!(
+                        neighbor_cells(nb.0, nb.1, &rows).contains(&(r, c)),
+                        "{pc}P: neighbor relation asymmetric: ({r},{c}) -> {nb:?} but not back",
+                    );
+                }
+            }
+
+            // (b) cells_adjacent(a,b) <=> (a,b) in staggered_adjacency, over
+            // EVERY ordered pair (so both directions are exercised). This is the
+            // clause that catches the dead row-above branch: for a LOWER->UPPER
+            // pair `cells_adjacent` reads the row-above branch directly, while
+            // edge membership comes from the upper cell's (unmutated) row-below
+            // branch — an off-by-one makes the two disagree.
+            for &a in &cells {
+                for &b in &cells {
+                    if a == b {
+                        continue;
+                    }
+                    assert_eq!(
+                        cells_adjacent(a, b, &rows),
+                        is_brick_edge(a, b),
+                        "{pc}P: cells_adjacent({a:?},{b:?}) disagrees with staggered_adjacency membership",
+                    );
+                }
+            }
+
+            // (c)+(d) The Canal derivation, checked at EVERY cell as the
+            // hypothetical Canal (pure geometry, seed-free). Crossings must be
+            // exactly the Canal's NON-adjacent neighbour pairs, giving:
+            //   (c) disjointness — no crossing is also a free brick edge; and
+            //   (d) completeness — every canal-neighbour pair ends up connected,
+            //       a free brick edge if adjacent else a toll, partitioning them.
+            for &canal in &cells {
+                let crossings: std::collections::BTreeSet<(u8, u8)> =
+                    derive_canal_crossings(canal, &rows).into_iter().map(|(a, b)| norm(a, b)).collect();
+                for x in &crossings {
+                    assert!(
+                        !brick.contains(x),
+                        "{pc}P canal {canal:?}: crossing {x:?} is also a free brick edge (c)",
+                    );
+                }
+                let neighbors = neighbor_cells(canal.0, canal.1, &rows);
+                let mut expected: std::collections::BTreeSet<(u8, u8)> =
+                    std::collections::BTreeSet::new();
+                for i in 0..neighbors.len() {
+                    for j in (i + 1)..neighbors.len() {
+                        let (x, y) = (neighbors[i], neighbors[j]);
+                        let edge = norm(id_of(x), id_of(y));
+                        let free = brick.contains(&edge);
+                        let tolled = crossings.contains(&edge);
+                        assert!(
+                            free || tolled,
+                            "{pc}P canal {canal:?}: neighbour pair {x:?}-{y:?} connected by neither a brick edge nor a toll (d)",
+                        );
+                        assert!(
+                            !(free && tolled),
+                            "{pc}P canal {canal:?}: neighbour pair {x:?}-{y:?} is BOTH a brick edge and a toll",
+                        );
+                        if !free {
+                            expected.insert(edge);
+                        }
+                    }
+                }
+                // Together with (d) this pins the crossing SET exactly (no
+                // spurious tolls, none missing) — the property that subsumes the
+                // removed exact-list tests at EVERY canal position, not one seed.
+                assert_eq!(
+                    crossings, expected,
+                    "{pc}P canal {canal:?}: derive_canal_crossings != the non-adjacent neighbour pairs",
+                );
+            }
+        }
     }
 
     #[test]
