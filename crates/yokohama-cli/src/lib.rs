@@ -6,6 +6,7 @@ pub(crate) mod input;
 pub mod render;
 pub mod repl;
 pub(crate) mod reveal;
+pub mod screen;
 pub mod session;
 pub mod style;
 pub mod wizard;

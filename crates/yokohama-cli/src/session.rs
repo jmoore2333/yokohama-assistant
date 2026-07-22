@@ -92,6 +92,15 @@ pub struct Session {
     /// cases Task 13's review flagged). Not part of `GameRecord`, so never
     /// serialized -- `load` rebuilds it from scratch by folding.
     event_descriptions: Vec<String>,
+    /// Provenance drifts `load` warned about but did NOT refuse
+    /// (engine_version / rules_hash -- see `load`). Handed back on the
+    /// Session instead of printed there, because an `eprintln!` from `load`
+    /// is erased unread by the first composed frame's clear-screen (I-1,
+    /// final whole-branch review): `main.rs` folds these lines into that
+    /// frame's body, above the opening prompt, where they stay readable.
+    /// Always empty for `new_sim`/`new_live`/`for_test_from_state`, which
+    /// build their record from the running engine.
+    pub load_warnings: Vec<String>,
 }
 
 impl Session {
@@ -119,6 +128,7 @@ impl Session {
             save_path: None,
             checkpoint: None,
             event_descriptions: Vec::new(),
+            load_warnings: Vec::new(),
         })
     }
 
@@ -146,6 +156,7 @@ impl Session {
             save_path: None,
             checkpoint: None,
             event_descriptions: Vec::new(),
+            load_warnings: Vec::new(),
         })
     }
 
@@ -154,48 +165,98 @@ impl Session {
     /// `record.setup_observations.is_some()`. Runs `check_invariants` on
     /// the replayed state before returning, so a corrupt save file surfaces
     /// as a load error rather than propagating silently into play.
+    ///
+    /// Provenance is checked at two strengths. A `semantics_rev` that is
+    /// missing or different from this build's `SEMANTICS_REV` REFUSES the
+    /// load (`Err`) -- the record describes a game under executable
+    /// semantics this build no longer plays, and rebuilding it here would
+    /// resume a game on rules or a board it was never played on. A
+    /// `terminal_digest` the rebuilt state fails to reproduce refuses on the
+    /// same grounds (I2): it is the only field that can catch a tampered or
+    /// corrupted SETUP input, since everything else in the record is an
+    /// input to the rebuild rather than a check on its result. An
+    /// engine_version or rules_hash drift stays lenient: the load succeeds
+    /// and the drift comes back in `load_warnings` for the caller to show.
     pub fn load(path: &std::path::Path, rules: Rules) -> Result<Session, String> {
         let text = std::fs::read_to_string(path).map_err(|e| e.to_string())?;
         let record: GameRecord = serde_json::from_str(&text).map_err(|e| e.to_string())?;
 
-        // Mirrors `replay`'s own lenient mismatch diagnostics (core's
-        // record.rs) verbatim: v1 warns but does not refuse to replay a
-        // record produced by a different engine build or against different
-        // rules data. `load` can no longer just call `replay` for this --
+        // Semantics provenance is a REFUSAL, and it runs before anything
+        // else touches the record (I-1, final whole-branch review). `load`
+        // does not deserialize a state -- it REBUILDS one from seed +
+        // recorded events -- so a record written under different executable
+        // semantics can still replay perfectly cleanly and hand back a game
+        // that no longer means what it meant when it was recorded. The
+        // rev-1 -> rev-2 board-topology correction is exactly that case: it
+        // preserved RNG consumption order, so a rev-1 save reconstructs the
+        // same areas in the same tile types and only the grid positions,
+        // adjacency and canal crossings differ -- silently, on the live
+        // tracking path this build exists to serve. A warning could not
+        // even be read here (`main.rs` prints the first composed frame
+        // straight after `load`, and that frame leads with clear-screen +
+        // home), and CLAUDE.md's SEMANTICS_REV contract already says
+        // pre-bump records are strict-rejected, so the lenient interactive
+        // load contradicted documented intent. `None` is refused on the
+        // same grounds as a mismatch: it is UNKNOWN provenance (a
+        // pre-Phase-2.9 record, older still), never "assume current" --
+        // the same reading `replay_strict` takes.
+        match record.semantics_rev {
+            Some(rev) if rev == yokohama_core::SEMANTICS_REV => {}
+            Some(rev) => {
+                return Err(format!(
+                    "this save was recorded under game-semantics revision {rev}, but this build \
+                     plays revision {} -- the rules and board semantics changed in between, so \
+                     replaying it would silently rebuild the game under semantics it was never \
+                     played under. Start a new game; a save from an older revision cannot be \
+                     resumed against the corrected board.",
+                    yokohama_core::SEMANTICS_REV,
+                ));
+            }
+            None => {
+                return Err(format!(
+                    "this save carries no semantics provenance (no semantics_rev -- a \
+                     pre-Phase-2.9 record), so there is no way to tell whether it was recorded \
+                     under this build's game semantics (revision {}), and the rules and board \
+                     semantics have changed since such records were written. Start a new game; \
+                     a save of unknown provenance cannot be resumed against the corrected board.",
+                    yokohama_core::SEMANTICS_REV,
+                ));
+            }
+        }
+
+        // The other two provenance checks stay LENIENT (a version or
+        // rules-data drift is not the same hazard as a semantics drift):
+        // they mirror `replay`'s own warn-and-continue diagnostics (core's
+        // record.rs). `load` can no longer just call `replay` for this --
         // see below -- so these two checks are duplicated here rather than
         // silently dropped (Task 15 review Finding 2: `check_invariants`
         // below checks only structural conservation, NOT engine_version/
         // rules_hash, so it does NOT backstop a rules-data drift that
         // happens to leave conservation intact -- an earlier version of
-        // this comment claimed otherwise; that was wrong). Correct only
-        // because yokohama-cli and yokohama-core share one workspace
+        // this comment claimed otherwise; that was wrong). They are
+        // COLLECTED, not printed: an `eprintln!` from here is erased
+        // unread by the first composed frame's clear-screen (the same I-1
+        // hazard as above), so `main.rs` folds `load_warnings` into that
+        // frame's body instead. The engine_version comparison is correct
+        // only because yokohama-cli and yokohama-core share one workspace
         // version (`version.workspace = true` in both Cargo.tomls) --
         // `env!("CARGO_PKG_VERSION")` is resolved per-crate at compile
-        // time, so this comparison would silently stop meaning anything if
-        // the two crates' versions were ever allowed to diverge.
+        // time, so it would silently stop meaning anything if the two
+        // crates' versions were ever allowed to diverge.
+        let mut load_warnings = Vec::new();
         let running_version = env!("CARGO_PKG_VERSION");
         if record.engine_version != running_version {
-            eprintln!(
+            load_warnings.push(format!(
                 "warning: GameRecord.engine_version=\"{}\" does not match running engine version \"{running_version}\" -- replaying anyway (v1 does not refuse on a version mismatch)",
                 record.engine_version,
-            );
+            ));
         }
         let running_rules_hash = rules.content_hash();
         if record.rules_hash != running_rules_hash {
-            eprintln!(
+            load_warnings.push(format!(
                 "warning: GameRecord.rules_hash=\"{}\" does not match running rules content hash \"{running_rules_hash}\" -- replaying anyway (v1 does not refuse on a rules_hash mismatch)",
                 record.rules_hash,
-            );
-        }
-        match record.semantics_rev {
-            None => eprintln!(
-                "warning: GameRecord carries no semantics_rev (missing semantics provenance; pre-Phase-2.9 record) -- replaying anyway (interactive load is lenient; record_stats/replay_strict refuse)",
-            ),
-            Some(rev) if rev != yokohama_core::SEMANTICS_REV => eprintln!(
-                "warning: GameRecord.semantics_rev={rev} does not match running SEMANTICS_REV={} -- replaying anyway (interactive load is lenient; record_stats/replay_strict refuse)",
-                yokohama_core::SEMANTICS_REV,
-            ),
-            Some(_) => {}
+            ));
         }
 
         // Rebuilds the base state the same way `new_sim`/`new_live` do
@@ -229,6 +290,38 @@ impl Session {
         debug_assert_eq!(event_descriptions.len(), record.events.len());
 
         check_invariants(&state, &rules)?;
+
+        // The third provenance REFUSAL (I2, third review). `save` stamps
+        // `terminal_digest` from the state it is saving
+        // (`stamp_terminal_digest`), and nothing here read it back: the loop
+        // above rebuilds state event-by-event rather than calling
+        // `replay_strict`, which is where core's own digest check lives
+        // (record.rs). That left the whole SETUP half of a record
+        // unprotected -- `load` reconstructs from `seed` + `config` +
+        // `choices`, so editing `seed` alone in an otherwise clean save
+        // replays with zero errors, passes `check_invariants` (a different
+        // board is still a structurally valid board), and resumes the game
+        // on tiles that are not the ones on the table. The digest is the
+        // only field that can see that, because it is the only one computed
+        // from the finished state rather than from the inputs. Guarded on
+        // `Some` so a record written before `save` stamped one still loads;
+        // a record that CLAIMS a terminal state and cannot reproduce it is
+        // refused, on the same grounds and through the same channel as the
+        // `semantics_rev` refusal above.
+        if let Some(expected_digest) = &record.terminal_digest {
+            let actual_digest = yokohama_core::state_digest(&state);
+            if &actual_digest != expected_digest {
+                return Err(format!(
+                    "this save records terminal-state digest {expected_digest}, but its own seed, \
+                     setup and {} recorded event(s) replay to {actual_digest} -- the file has been \
+                     edited or corrupted since it was written, so resuming it would continue the \
+                     game from a position (and possibly a board) it never recorded. Start a new \
+                     game; a save that cannot reproduce its own recorded state cannot be resumed.",
+                    record.events.len(),
+                ));
+            }
+        }
+
         let mode = if record.setup_observations.is_some() { TrackingMode::Live } else { TrackingMode::Simulation };
         Ok(Session {
             rules,
@@ -238,6 +331,7 @@ impl Session {
             save_path: Some(path.to_path_buf()),
             checkpoint: None,
             event_descriptions,
+            load_warnings,
         })
     }
 
@@ -458,7 +552,11 @@ impl Session {
     /// `for_test_from_state` session (Task 13: previously a hand-kept
     /// CLI-side mirror of `replay`'s own fold loop, `replay_from_checkpoint`;
     /// now both paths share the one fold core exposes).
-    pub fn undo(&mut self) -> Result<(), String> {
+    ///
+    /// Returns the same warning-line vector `apply` does (empty on success,
+    /// one line when the post-undo autosave failed) so the caller can put it
+    /// on SCREEN -- see the comment at the autosave call below.
+    pub fn undo(&mut self) -> Result<Vec<String>, String> {
         let mut record = self.record.clone();
         match record.events.pop() {
             None => return Err("nothing to undo".to_string()),
@@ -488,14 +586,14 @@ impl Session {
         debug_assert_eq!(self.event_descriptions.len(), record.events.len());
         self.record = record;
         self.state = state;
-        // autosave failure must stay visible, but `undo`'s signature is
-        // pinned by the Task-11 REPL (which matches on `Ok(())`) -- eprintln
-        // is a known last-resort wart here, not a design choice; logged for
-        // the final whole-branch review rather than redesigned around.
-        if let Some(warning) = self.autosave() {
-            eprintln!("{warning}");
-        }
-        Ok(())
+        // An autosave failure here means the on-disk record still holds the
+        // move that was just undone, so it has to be SEEN. It used to go to
+        // stderr because this signature was `Result<(), String>`; the
+        // composed frame (which opens with clear-screen + home) then made
+        // stderr unreadable, so the signature moved instead -- warnings ride
+        // back on `Ok` exactly as they do out of `apply`, and the REPL
+        // appends them to the text it prints (I3, third review).
+        Ok(self.autosave().into_iter().collect())
     }
 
     pub fn final_scores(&self) -> Vec<(PlayerId, u32)> {
@@ -560,6 +658,7 @@ impl Session {
             mode: TrackingMode::Simulation,
             save_path: None,
             event_descriptions: Vec::new(),
+            load_warnings: Vec::new(),
         }
     }
 }
@@ -881,6 +980,194 @@ mod tests {
         assert!(
             err.contains(&format!("event {expected_failing_index}")),
             "error must name the TRUE failing event index ({expected_failing_index}), not always 0: {err}"
+        );
+    }
+
+    /// Save `s`, then hand-edit the saved JSON through `mutate` and return
+    /// the path -- how the semantics-provenance tests below manufacture a
+    /// record stamped by an engine that is not this one. Editing the JSON
+    /// (rather than the `GameRecord` in memory) is deliberate: it is exactly
+    /// the shape of a save left on disk by an older build.
+    fn saved_with_json_edit(s: &Session, tag: &str, mutate: impl FnOnce(&mut serde_json::Value)) -> std::path::PathBuf {
+        let path = std::env::temp_dir().join(format!("yokohama_{tag}_{}.json", std::process::id()));
+        s.save(&path).unwrap();
+        let mut v: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        mutate(&mut v);
+        std::fs::write(&path, serde_json::to_string_pretty(&v).unwrap()).unwrap();
+        path
+    }
+
+    /// I-1 (final whole-branch review). A save recorded under a DIFFERENT
+    /// `SEMANTICS_REV` must be refused outright, not warned about.
+    ///
+    /// The hazard this closes is specific and live: `load` does not
+    /// deserialize a state, it REBUILDS one from seed + recorded events, and
+    /// the rev-1 -> rev-2 board-topology change preserved RNG consumption
+    /// order -- so a rev-1 save replays clean and resumes on a board graph
+    /// (grid positions, adjacency, canal crossings) that does not match the
+    /// table it was played on. The old lenient `eprintln!` warning could not
+    /// even be read: `main.rs` prints the first composed frame immediately
+    /// after `load`, and that frame leads with clear-screen + home
+    /// (`screen::wrap`), erasing it.
+    #[test]
+    fn load_refuses_a_record_recorded_under_a_different_semantics_rev() {
+        let older = yokohama_core::SEMANTICS_REV.saturating_sub(1);
+        assert_ne!(
+            older,
+            yokohama_core::SEMANTICS_REV,
+            "fixture needs a rev that actually differs from the running one"
+        );
+        let s = sim_2p(4);
+        let path = saved_with_json_edit(&s, "semrev", |v| {
+            v["semantics_rev"] = serde_json::json!(older);
+        });
+
+        let err = match Session::load(&path, Rules::standard()) {
+            Err(e) => e,
+            Ok(_) => panic!("a record from another semantics revision must be refused, not loaded"),
+        };
+        std::fs::remove_file(&path).ok();
+
+        assert!(
+            err.contains("semantics"),
+            "the refusal must say WHY (the game's semantics changed): {err}"
+        );
+        assert!(
+            err.contains(&older.to_string()) && err.contains(&yokohama_core::SEMANTICS_REV.to_string()),
+            "the refusal must name both revisions (record's and this build's): {err}"
+        );
+        assert!(
+            err.to_lowercase().contains("start a new game"),
+            "the refusal must say WHAT to do next: {err}"
+        );
+    }
+
+    /// I-1, the unknown-provenance half: a record with no `semantics_rev` at
+    /// all (pre-Phase-2.9) cannot be shown to match this build's semantics
+    /// either, so it is refused on the same grounds -- the contract
+    /// `replay_strict` already applies to the training path.
+    #[test]
+    fn load_refuses_a_record_with_no_semantics_provenance() {
+        let s = sim_2p(4);
+        let path = saved_with_json_edit(&s, "semrev_missing", |v| {
+            v.as_object_mut().unwrap().remove("semantics_rev");
+        });
+
+        let err = match Session::load(&path, Rules::standard()) {
+            Err(e) => e,
+            Ok(_) => panic!("a record with no semantics provenance must be refused, not loaded"),
+        };
+        std::fs::remove_file(&path).ok();
+
+        assert!(
+            err.contains("semantics"),
+            "the refusal must say WHY (no semantics provenance): {err}"
+        );
+        assert!(
+            err.to_lowercase().contains("start a new game"),
+            "the refusal must say WHAT to do next: {err}"
+        );
+    }
+
+    /// I2 (third review). `save` stamps a `terminal_digest` of the state its
+    /// events fold to; `load` has to CHECK it. It rebuilds state from
+    /// `seed` + `config` + `choices` + events rather than deserializing one,
+    /// so any tampering with the setup inputs -- `seed` most sharply --
+    /// replays perfectly cleanly, passes `check_invariants` (a different
+    /// board is still a structurally valid board), and silently resumes the
+    /// game on a board that is not the one on the table. The digest is the
+    /// only thing in the record that can notice.
+    #[test]
+    fn load_refuses_a_record_whose_terminal_digest_does_not_match_the_replay() {
+        let s = sim_2p(4);
+        let path = saved_with_json_edit(&s, "digest_seed", |v| {
+            // Only the seed -- every other field, including the digest, is
+            // exactly what this build wrote.
+            let seed = v["seed"].as_u64().expect("seed is a number");
+            v["seed"] = serde_json::json!(seed + 1);
+        });
+
+        let err = match Session::load(&path, Rules::standard()) {
+            Err(e) => e,
+            Ok(_) => panic!("a record whose replay does not reproduce its stamped digest must be refused"),
+        };
+        std::fs::remove_file(&path).ok();
+
+        assert!(err.contains("digest"), "the refusal must name what mismatched: {err}");
+        assert!(
+            err.to_lowercase().contains("start a new game"),
+            "the refusal must say WHAT to do next, like the semantics_rev one: {err}"
+        );
+    }
+
+    /// The digest check must not become a load-refusal machine: a save this
+    /// build just wrote loads, and a record with no digest at all (written
+    /// before `save` stamped one) still loads -- the check is guarded on
+    /// `Some`, so it can only ever reject a record that CLAIMS a terminal
+    /// state and then fails to reproduce it.
+    #[test]
+    fn load_accepts_a_clean_save_and_a_record_with_no_terminal_digest() {
+        let s = sim_2p(4);
+
+        let clean = saved_with_json_edit(&s, "digest_clean", |_| {});
+        let loaded = Session::load(&clean, Rules::standard()).expect("a clean save must still load");
+        assert_eq!(loaded.state().turn_number, s.state().turn_number);
+        std::fs::remove_file(&clean).ok();
+
+        let digestless = saved_with_json_edit(&s, "digest_missing", |v| {
+            v.as_object_mut().unwrap().remove("terminal_digest");
+        });
+        Session::load(&digestless, Rules::standard()).expect("a record with no digest must still load");
+        std::fs::remove_file(&digestless).ok();
+    }
+
+    /// The digest covers the EVENTS too, not just the setup inputs: a save
+    /// with real moves in it, replayed and re-stamped, still matches -- and
+    /// the check survives the round trip that `apply`'s autosave performs on
+    /// every move of a live game.
+    #[test]
+    fn load_verifies_the_digest_across_a_record_with_events() {
+        let mut s = sim_2p(4);
+        for _ in 0..3 {
+            let mv = s.legal()[0].clone();
+            s.apply(mv, Vec::new()).unwrap();
+        }
+        let path = saved_with_json_edit(&s, "digest_events", |_| {});
+        let loaded = Session::load(&path, Rules::standard()).expect("a real played save must load");
+        assert_eq!(loaded.record().events.len(), 3);
+        std::fs::remove_file(&path).ok();
+    }
+
+    /// I-1's companion for the two provenance checks that stay LENIENT: an
+    /// engine_version (or rules_hash) drift still loads, but the warning has
+    /// to survive long enough to be read. Printing it from `load` cannot do
+    /// that -- `main.rs` composes the first frame immediately afterwards and
+    /// that frame opens with clear-screen + home -- so `load` hands the
+    /// warnings back on the `Session` and `main.rs` folds them into the
+    /// frame's body, above the opening prompt. A clean save must carry none.
+    #[test]
+    fn load_returns_lenient_provenance_warnings_instead_of_printing_them() {
+        let s = sim_2p(4);
+
+        let clean = saved_with_json_edit(&s, "provenance_clean", |_| {});
+        let loaded = Session::load(&clean, Rules::standard()).unwrap();
+        std::fs::remove_file(&clean).ok();
+        assert!(
+            loaded.load_warnings.is_empty(),
+            "a save from this very build must load without provenance warnings: {:?}",
+            loaded.load_warnings
+        );
+
+        let drifted = saved_with_json_edit(&s, "provenance_drift", |v| {
+            v["engine_version"] = serde_json::json!("0.0.0-older-build");
+        });
+        let loaded = Session::load(&drifted, Rules::standard()).unwrap();
+        std::fs::remove_file(&drifted).ok();
+        assert!(
+            loaded.load_warnings.iter().any(|w| w.contains("engine_version")),
+            "an engine_version drift must come back as a warning the caller can display: {:?}",
+            loaded.load_warnings
         );
     }
 

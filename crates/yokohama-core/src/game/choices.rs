@@ -40,13 +40,13 @@ fn generate_choice_resolutions_for(state: &GameState, choice: &PendingChoice, _r
             moves
         }
         PendingChoice::ChurchSpace { total_faith } => {
-            eligible_church_spaces(&state.church_track, *total_faith, state.config.player_count)
+            eligible_church_spaces(&state.church_track, *total_faith)
                 .into_iter()
                 .map(|space| Move::ChooseChurchSpace { space })
                 .collect()
         }
         PendingChoice::CustomsSpace { cost } => {
-            eligible_customs_spaces_for_cost(&state.customs_track, *cost, state.config.player_count)
+            eligible_customs_spaces_for_cost(&state.customs_track, *cost)
                 .into_iter()
                 .map(|space| Move::ChooseCustomsSpace { space })
                 .collect()

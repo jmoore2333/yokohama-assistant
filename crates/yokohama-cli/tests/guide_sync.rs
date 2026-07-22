@@ -18,13 +18,33 @@
 //! * The .html quotes the CLI inside entity-escaped `<code>`/`<pre>`; compare
 //!   the two formats and the CLI strings on the same footing by unescaping.
 
-use yokohama_cli::render;
-use yokohama_cli::repl::HELP_TEXT;
+use yokohama_cli::repl::{Repl, HELP_TEXT};
 use yokohama_cli::session::Session;
+use yokohama_cli::{render, screen};
 use yokohama_core::{GameConfig, Rules, StartingOrderChoice};
 
 const GUIDE_MD: &str = include_str!("../../../docs/cli-guide.md");
 const GUIDE_HTML: &str = include_str!("../../../docs/cli-guide.html");
+
+/// The clear-screen + cursor-home escape every composed frame opens with
+/// (`screen::wrap`); stripped before measuring a frame's visible width.
+const CLEAR_HOME: &str = "\u{1b}[2J\u{1b}[H";
+
+/// Serializes the two frame measurements below. `screen::force` is
+/// thread-local only under `cfg(test)`; an INTEGRATION test links the library
+/// without it, so here `force` writes a process-wide flag -- and libtest runs
+/// these two tests on parallel threads. Unserialized, `frame_width`'s closing
+/// `force(false)` could land inside `frame_height`'s measurement (and vice
+/// versa), leaving the frame un-composed and tripping the `CLEAR_HOME`
+/// assertion below. Reproduced roughly twice per 80 runs before this lock.
+static FRAME_FLAG: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+/// The guard for `FRAME_FLAG`, ignoring poisoning: if a measurement panicked
+/// while holding it, the flag is restored by the next `force` call anyway and
+/// a poisoned mutex must not turn one real failure into several.
+fn frame_flag_guard() -> std::sync::MutexGuard<'static, ()> {
+    FRAME_FLAG.lock().unwrap_or_else(|e| e.into_inner())
+}
 
 /// Undo the only three HTML entity escapes the guide contains, so escaped
 /// `.html` source can be matched against the plain-text `.md` and the CLI's
@@ -140,7 +160,7 @@ fn move_grammar_and_subprompt_strings_appear_in_both_guides() {
         "route options",
         "choose recovery",
         "'r' grammar works too",
-        "pick a route number, or 'cancel'",
+        "pick a number, or 'cancel'",
         "recover how many from",
         "confirm / cancel",
     ];
@@ -173,6 +193,97 @@ fn section2_board_widths_match_the_renderer() {
             "{file} §2 does not state the renderer's actual board widths. render::board_grid \
              produces {w2}/{w3}/{w4} columns at 2/3/4 players, so §2 must read {phrase:?}. Update \
              the guide (both formats) if the grid geometry changed."
+        );
+    }
+}
+
+/// The composed frame's rendered width at the start of a game: `screen::wrap`
+/// sizes the frame to its widest element, which is never the board alone (the
+/// players panel joins it side by side at 2-3 players, and the game-info strip
+/// is 96 columns on its own), so this is the width a tester's terminal actually
+/// has to be -- the number §2 owes them. Measured off the real `screen::wrap`,
+/// so it can never be a copied literal. Frames are forced on (an integration
+/// test links the lib without `cfg(test)`, so `force` sets the process-wide
+/// flag) and the frame comes back plain apart from its leading clear-screen,
+/// since color is off at rest.
+fn frame_width(players: u8) -> usize {
+    let session = Session::new_sim(
+        GameConfig::for_player_count(players),
+        0,
+        vec![StartingOrderChoice::Keep(0); players as usize],
+        Rules::standard(),
+    )
+    .expect("new_sim over a standard board");
+    let repl = Repl::new(session);
+    let _frames = frame_flag_guard();
+    screen::force(true);
+    let frame = screen::wrap(&repl, "");
+    screen::force(false);
+    assert!(frame.starts_with(CLEAR_HOME), "frames must be on for this measurement");
+    frame[CLEAR_HOME.len()..]
+        .lines()
+        .map(|line| line.chars().count())
+        .max()
+        .unwrap_or(0)
+}
+
+/// The composed frame's rendered HEIGHT when a game opens: exactly what
+/// `main.rs` prints first, `wrap(repl, repl.prompt())`. Measured off the real
+/// `screen::wrap`, so it can never be a copied literal.
+fn frame_height(players: u8) -> usize {
+    let session = Session::new_sim(
+        GameConfig::for_player_count(players),
+        0,
+        vec![StartingOrderChoice::Keep(0); players as usize],
+        Rules::standard(),
+    )
+    .expect("new_sim over a standard board");
+    let repl = Repl::new(session);
+    let _frames = frame_flag_guard();
+    screen::force(true);
+    let frame = screen::wrap(&repl, &repl.prompt());
+    screen::force(false);
+    assert!(frame.starts_with(CLEAR_HOME), "frames must be on for this measurement");
+    frame.lines().count()
+}
+
+/// (g) §2 states the composed screen's HEIGHT as well as its width (F3, Codex
+/// adversarial review of PR #4). The guide told testers how wide to size a
+/// window and nothing at all about how tall, while the 4-player screen -- the
+/// tallest, since its 108-column board stacks the players panel underneath
+/// rather than beside -- opened past 50 rows, scrolling the title and the top
+/// board row away before the game began. Derived from `screen::wrap`, never
+/// copied, so a layout change that costs rows must restate the number.
+#[test]
+fn section2_frame_heights_match_the_composed_screen() {
+    let (h2, h3, h4) = (frame_height(2), frame_height(3), frame_height(4));
+    let phrase = format!("{h2} rows at 2 players, {h3} at 3, and {h4} at 4");
+    for (file, text) in [("cli-guide.md", GUIDE_MD), ("cli-guide.html", GUIDE_HTML)] {
+        assert!(
+            text.contains(&phrase),
+            "{file} §2 does not state the composed screen's actual opening height. screen::wrap \
+             produces {h2}/{h3}/{h4} rows at 2/3/4 players, so §2 must read {phrase:?}. Update the \
+             guide (both formats) if the frame layout changed."
+        );
+    }
+}
+
+/// (f) The §2 width guidance states the width of the COMPOSED FRAME, not just
+/// the board's own grid. The frame is wider than the board at every player
+/// count (panel beside it, 96-column info strip below it), so board-only
+/// guidance under-states what the terminal needs and a tester on an 80-column
+/// window gets a wrapped screen with no warning (final whole-branch review,
+/// M-4). Derived from `screen::wrap`, never copied.
+#[test]
+fn section2_frame_widths_match_the_composed_screen() {
+    let (f2, f3, f4) = (frame_width(2), frame_width(3), frame_width(4));
+    let phrase = format!("{f2} columns at 2 players, {f3} at 3, and {f4} at 4");
+    for (file, text) in [("cli-guide.md", GUIDE_MD), ("cli-guide.html", GUIDE_HTML)] {
+        assert!(
+            text.contains(&phrase),
+            "{file} §2 does not state the composed screen's actual widths. screen::wrap produces \
+             {f2}/{f3}/{f4} columns at 2/3/4 players, so §2 must read {phrase:?}. Update the guide \
+             (both formats) if the frame layout changed."
         );
     }
 }

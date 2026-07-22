@@ -13,10 +13,14 @@ use yokohama_core::*;
 
 use crate::describe;
 use crate::input::tech_name;
-use crate::style::{paint, Tone};
+use crate::style::{paint, GoodKind, Tone};
 
-/// Fixed cell width for `board_grid`'s bordered layout.
-const CELL_WIDTH: usize = 16;
+/// Interior text width of one tile box; a full box adds 2 border columns.
+const TILE_W: usize = 16;
+/// Horizontal pitch between adjacent tile boxes in a row (boxes touch, so
+/// the pitch is the full box width). Rows below indent by HALF this pitch
+/// per row — the brick offset of the physical staggered layout.
+const TILE_PITCH: usize = TILE_W + 2;
 
 /// One-line turn/phase/resource summary, e.g.
 /// `"Turn 12 | Red | Placement | 5 yen 3 VP | c1 s2 t0 f1 i0 | hand 2"`.
@@ -28,87 +32,174 @@ const CELL_WIDTH: usize = 16;
 pub fn prompt_header(state: &GameState, phase_text: &str) -> String {
     let p = state.current_player();
     format!(
-        "Turn {} | {} | {} | {} yen {} VP | c{} s{} t{} f{} i{} | hand {}",
+        "Turn {} | {} | {} | {} {} | {} | hand {}",
         state.turn_number,
         paint(Tone::Player(p.color), color_name(p.color)),
         paint(Tone::Prompt, phase_text),
-        p.money,
-        p.victory_points,
-        p.copper,
-        p.silk,
-        p.tea,
-        p.seafood,
-        p.imported_goods,
+        paint(Tone::Good(GoodKind::Yen), &format!("{} yen", p.money)),
+        paint(Tone::Vp, &format!("{} VP", p.victory_points)),
+        goods_run(p),
         p.order_cards_in_hand.len(),
     )
 }
 
-/// Box-drawing grid, one framed cell per area: id + type abbreviation (with
-/// a trailing `*` while its 5-Power token is unclaimed), which Presidents
-/// are present, which assistants are present, and building ownership.
-/// Rulers meet content columns at real junctions (`┌┬┐` / `├┼┤` / `└┴┘`),
-/// so every vertical `│` runs unbroken from top corner to bottom.
+/// The `c1 s2 t0 f1 i0` goods run, each token painted in its good's color
+/// (Task 6 full-color treatment). Space-joined AFTER painting, so the plain
+/// render is byte-identical to the old inline format string.
+fn goods_run(p: &PlayerState) -> String {
+    [
+        paint(Tone::Good(GoodKind::Copper), &format!("c{}", p.copper)),
+        paint(Tone::Good(GoodKind::Silk), &format!("s{}", p.silk)),
+        paint(Tone::Good(GoodKind::Tea), &format!("t{}", p.tea)),
+        paint(Tone::Good(GoodKind::Seafood), &format!("f{}", p.seafood)),
+        paint(Tone::Good(GoodKind::Imports), &format!("i{}", p.imported_goods)),
+    ]
+    .join(" ")
+}
+
+/// A `─ Title ─────...` rule header opening every state view (Task 6, one
+/// design language across views). 40 columns total.
+fn section(title: &str) -> String {
+    let head = format!("─ {title} ");
+    format!("{head}{}\n", "─".repeat(40usize.saturating_sub(head.chars().count())))
+}
+
+/// The staggered board: one independent bordered box per tile, positioned
+/// purely from `AreaConfig::grid_position` — row r's boxes indent by
+/// `r * TILE_PITCH/2` (the brick half-offset of the physical pyramid, widest
+/// row on top), rows stack top-first, boxes in a row touch (`┐┌` double
+/// wall, like tiles laid side by side on a table). No pyramid shape is
+/// assumed: any geometry the engine (or a test fixture) hands us renders.
+/// Every line pads to one total width so the frame composer can join a side
+/// panel line-by-line without shear. Content: header `A{id} {name} {*}`,
+/// presidents (+ `[St]` Station marker), assistants, build marks; the Canal
+/// tile renders as water with its printed toll instead.
 pub fn board_grid(state: &GameState) -> String {
     let areas = &state.board_layout.areas;
-    let rows = areas.values().map(|c| c.grid_position.0 as usize).max().map(|m| m + 1).unwrap_or(0);
-    let cols = areas.values().map(|c| c.grid_position.1 as usize).max().map(|m| m + 1).unwrap_or(0);
-    if rows == 0 || cols == 0 {
+    if areas.is_empty() {
         return String::new();
     }
 
-    let mut grid: Vec<Vec<Option<AreaId>>> = vec![vec![None; cols]; rows];
+    let mut rows: BTreeMap<u8, BTreeMap<u8, AreaId>> = BTreeMap::new();
     for (&id, cfg) in areas.iter() {
-        grid[cfg.grid_position.0 as usize][cfg.grid_position.1 as usize] = Some(id);
+        rows.entry(cfg.grid_position.0).or_default().insert(cfg.grid_position.1, id);
     }
 
-    let segment = "─".repeat(CELL_WIDTH);
-    let ruler = |left: char, junction: char, right: char| {
-        let mut line = String::from(left);
-        for col in 0..cols {
-            if col > 0 {
-                line.push(junction);
+    let indent_of = |r: u8| (r as usize) * (TILE_PITCH / 2);
+    let total_width = rows
+        .iter()
+        .map(|(&r, cols)| indent_of(r) + (*cols.keys().max().unwrap() as usize + 1) * TILE_PITCH)
+        .max()
+        .unwrap();
+
+    let mut out = String::new();
+    for (&r, cols) in &rows {
+        let indent = " ".repeat(indent_of(r));
+        let max_col = *cols.keys().max().unwrap();
+        // 6 raw lines per row of boxes: top border, 4 content, bottom border.
+        // Each entry is (visible_width, painted_text) so painted content
+        // never distorts the trailing pad.
+        let mut lines: Vec<(usize, String)> = vec![(indent_of(r), indent.clone()); 6];
+        for col in 0..=max_col {
+            match cols.get(&col) {
+                Some(&id) => {
+                    let content = tile_content_lines(state, id);
+                    lines[0].1.push('┌');
+                    lines[0].1.push_str(&"─".repeat(TILE_W));
+                    lines[0].1.push('┐');
+                    lines[5].1.push('└');
+                    lines[5].1.push_str(&"─".repeat(TILE_W));
+                    lines[5].1.push('┘');
+                    for (i, cell) in content.iter().enumerate() {
+                        lines[i + 1].1.push('│');
+                        lines[i + 1].1.push_str(cell);
+                        lines[i + 1].1.push('│');
+                    }
+                    for line in lines.iter_mut() {
+                        line.0 += TILE_PITCH;
+                    }
+                }
+                None => {
+                    // A gap in this row (non-canonical fixture): hold the pitch.
+                    for line in lines.iter_mut() {
+                        line.1.push_str(&" ".repeat(TILE_PITCH));
+                        line.0 += TILE_PITCH;
+                    }
+                }
             }
-            line.push_str(&segment);
         }
-        line.push(right);
-        line.push('\n');
-        line
-    };
-
-    let mut out = ruler('┌', '┬', '┐');
-    for (row_idx, row) in grid.iter().enumerate() {
-        if row_idx > 0 {
-            out.push_str(&ruler('├', '┼', '┤'));
-        }
-        let cells: Vec<[String; 4]> = row
-            .iter()
-            .map(|slot| match slot {
-                Some(id) => area_cell_lines(state, *id),
-                None => [fit_cell(""), fit_cell(""), fit_cell(""), fit_cell("")],
-            })
-            .collect();
-        for line_idx in 0..4 {
-            out.push('│');
-            out.push_str(&cells.iter().map(|c| c[line_idx].as_str()).collect::<Vec<_>>().join("│"));
-            out.push_str("│\n");
+        for (width, text) in lines {
+            out.push_str(&text);
+            out.push_str(&" ".repeat(total_width - width));
+            out.push('\n');
         }
     }
-    out.push_str(&ruler('└', '┴', '┘'));
     out
 }
 
-/// One-line legend for the `board` grid documenting the `*` mark (item 7).
-/// Kept out of `board_grid` itself so that function's uniform-width frame
-/// invariant (`board_grid_uses_box_drawing_rulers`) is undisturbed -- the
-/// REPL's `board` command appends this footer after the grid.
-pub fn board_legend() -> &'static str {
-    "* = unclaimed 5-Power token"
+/// Interior text width of one numbered skeleton cell; a full cell adds 2
+/// border columns, exactly as a full-size tile box does.
+const SKEL_W: usize = 4;
+/// Horizontal pitch between skeleton cells. Rows below indent by HALF of it —
+/// the same brick offset [`board_grid`] draws at full tile size.
+const SKEL_PITCH: usize = SKEL_W + 2;
+
+/// The EMPTY numbered board a live operator is about to fill in: the real
+/// staggered pyramid for `player_count` (`board_gen::row_lengths` — widest row
+/// on top, each row below offset half a cell), every cell carrying the index
+/// the setup wizard will ask for it by.
+///
+/// Drawn at cell size rather than [`board_grid`]'s full tile size because the
+/// operator is matching a SHAPE and a numbering here, not reading tile
+/// contents — so the whole board fits any terminal, at any player count.
+///
+/// Third review, finding I1: `Cell 3/18 tile?` on its own names no physical
+/// tile, and entering the board apex-first (the order the rulebook's own p.3
+/// diagram reads, since it prints the pyramid the other way up) yields a
+/// scrambled graph that `reconcile_board` accepts silently — it checks only
+/// that the tile multiset matches. This picture, the orientation wording the
+/// wizard prints beside it, and the post-entry board check are the three
+/// places that error can now be caught.
+pub fn board_skeleton(player_count: u8) -> String {
+    let mut out = String::new();
+    let mut cell = 0usize;
+    for (r, &len) in row_lengths(player_count).iter().enumerate() {
+        let indent = " ".repeat(r * (SKEL_PITCH / 2));
+        let (mut top, mut mid, mut bottom) = (indent.clone(), indent.clone(), indent);
+        for _ in 0..len {
+            top.push('┌');
+            top.push_str(&"─".repeat(SKEL_W));
+            top.push('┐');
+            mid.push_str(&format!("│{cell:>3} │"));
+            bottom.push('└');
+            bottom.push_str(&"─".repeat(SKEL_W));
+            bottom.push('┘');
+            cell += 1;
+        }
+        out.push_str(&format!("{top}\n{mid}\n{bottom}\n"));
+    }
+    out
+}
+
+/// Legend footer for the `board` view: the `*` unclaimed-5-Power mark, the
+/// `[St]` Station marker, the `·` empty build slot — plus the canal crossing
+/// rule, but ONLY on a board that actually has a Canal tile (2P boards never
+/// do). The REPL's `board` command appends this after the grid.
+pub fn board_legend(state: &GameState) -> String {
+    let mut out =
+        String::from("* = unclaimed 5-Power token   [St] = Station token   · = empty build slot");
+    if state.board_layout.areas.values().any(|c| c.area_type == AreaType::Canal) {
+        out.push_str(
+            "\n~ Canal: the President may cross shore to shore for 1 yen to the bank ('sites' lists the pairs)",
+        );
+    }
+    out
 }
 
 /// Per Port board: slot number, zone, and the order card there via
 /// `order_compact_line` (or `-` when empty), then the shared order-deck size.
 pub fn ports_view(state: &GameState, rules: &Rules) -> String {
-    let mut out = String::new();
+    let mut out = section("Ports");
     render_port_board(describe::area_type_name(AreaType::PortA), &state.port_state.port_a, rules, &mut out);
     if let Some(port_b) = &state.port_state.port_b {
         render_port_board(describe::area_type_name(AreaType::PortB), port_b, rules, &mut out);
@@ -120,7 +211,7 @@ pub fn ports_view(state: &GameState, rules: &Rules) -> String {
 /// Per Laboratory board: slot number, position surcharge, and the tech card
 /// there (name + industry cost), or `-`, then the shared tech-deck size.
 pub fn labs_view(state: &GameState, rules: &Rules) -> String {
-    let mut out = String::new();
+    let mut out = section("Laboratories");
     render_lab_board(describe::area_type_name(AreaType::LaboratoryA), &state.lab_state.lab_a, rules, &mut out);
     if let Some(lab_b) = &state.lab_state.lab_b {
         render_lab_board(describe::area_type_name(AreaType::LaboratoryB), lab_b, rules, &mut out);
@@ -129,20 +220,169 @@ pub fn labs_view(state: &GameState, rules: &Rules) -> String {
     out
 }
 
+/// The composed frame's compact players box (Task 6, design note §2): the
+/// at-a-glance PUBLIC picture -- current-player marker (`>`), yen/VP, goods,
+/// assistant zones (with a `locked N` tally when any pawns sit on goals or
+/// tracks, so the visible numbers still reconcile), built counts + the next
+/// TH take cost, and the President's location. Hand CONTENTS never appear
+/// here (only the count), so the panel is safe to show while the laptop is
+/// passed around a live table regardless of the privacy flag; the full
+/// `players` view carries the detail. Player names paint in their colors
+/// after layout (plain twin is the width authority).
+pub fn compact_panel(state: &GameState, _rules: &Rules) -> String {
+    let mut lines: Vec<(String, String)> = Vec::new();
+    lines.push(("─ Players ".to_string(), "─ Players ".to_string()));
+    for p in &state.players {
+        let marker = if p.id == state.current_player { ">" } else { " " };
+        let name = color_name(p.color);
+        // Pad from the PLAIN name length -- the painted twin's escapes have
+        // zero display width (style.rs's alignment rule).
+        let name_pad = " ".repeat(7usize.saturating_sub(name.chars().count()));
+        lines.push((
+            format!("{marker} {name}{name_pad} {:>2} yen  {:>2} VP", p.money, p.victory_points),
+            format!(
+                "{marker} {}{name_pad} {:>2} yen  {:>2} VP",
+                paint(Tone::Player(p.color), name),
+                p.money,
+                p.victory_points
+            ),
+        ));
+        let goods = format!(
+            "   c{} s{} t{} f{} i{}   hand {}",
+            p.copper, p.silk, p.tea, p.seafood, p.imported_goods,
+            p.order_cards_in_hand.len()
+        );
+        lines.push((goods.clone(), goods));
+        let assistants_on_board: u32 = p.assistants.on_board.values().map(|&c| c as u32).sum();
+        let locked =
+            p.assistants.on_achievements + p.assistants.on_church + p.assistants.on_customs;
+        let mut asst = format!(
+            "   asst: hand {} board {} wh {}",
+            p.assistants.in_hand, assistants_on_board, p.assistants.in_warehouse
+        );
+        if locked > 0 {
+            asst.push_str(&format!(" locked {locked}"));
+        }
+        lines.push((asst.clone(), asst));
+        let build = format!(
+            "   built: sh {} th {}   next TH take {} yen",
+            p.shophouses.built.len(),
+            p.trading_houses.built.len(),
+            p.trading_houses.next_cost()
+        );
+        lines.push((build.clone(), build));
+        let pres = match p.president_location {
+            PresidentLocation::InHand => "in hand".to_string(),
+            PresidentLocation::OnBoard(area) => describe::area_label(state, area),
+        };
+        let pres_line = format!("   President: {pres}");
+        lines.push((pres_line.clone(), pres_line));
+    }
+    let width = lines.iter().map(|(plain, _)| plain.chars().count()).max().unwrap_or(0);
+    let mut out = String::new();
+    for (i, (plain, painted)) in lines.iter().enumerate() {
+        if i == 0 {
+            out.push_str(painted);
+            out.push_str(&"─".repeat(width.saturating_sub(plain.chars().count())));
+        } else {
+            out.push_str(painted);
+        }
+        out.push('\n');
+    }
+    out
+}
+
+/// The compact panel folded to ONE LINE PER PLAYER, for the frame layout
+/// that stacks the panel BELOW the board instead of beside it (F3, Codex
+/// adversarial review of PR #4).
+///
+/// Same public fields as [`compact_panel`] -- current-player marker, money,
+/// VP, goods, hand COUNT (never contents), assistant zones with the `locked`
+/// tally, built counts, President location -- just laid out horizontally.
+/// The stacking branch only runs on the 4P board, which is already 108
+/// columns wide, so a wide line costs nothing there, while the 5 lines per
+/// player it replaces cost 16 rows: enough to push the opening frame past
+/// 50 rows, scrolling the title and the top board row off a 140x50
+/// terminal before the player could read them. The one field dropped
+/// against the multi-line form is the next trading-house take price (the
+/// `players` view carries it, and it is the only per-player number that is
+/// not a state reading).
+///
+/// Player names paint in their colors after layout, from the PLAIN name's
+/// length (style.rs's alignment rule), exactly as [`compact_panel`] does.
+pub fn compact_panel_oneline(state: &GameState) -> String {
+    let mut lines: Vec<(String, String)> = Vec::new();
+    lines.push(("─ Players ".to_string(), "─ Players ".to_string()));
+    for p in &state.players {
+        let marker = if p.id == state.current_player { ">" } else { " " };
+        let name = color_name(p.color);
+        let name_pad = " ".repeat(7usize.saturating_sub(name.chars().count()));
+        let assistants_on_board: u32 = p.assistants.on_board.values().map(|&c| c as u32).sum();
+        let locked = p.assistants.on_achievements + p.assistants.on_church + p.assistants.on_customs;
+        let locked_text = if locked > 0 { format!(" locked {locked}") } else { String::new() };
+        let pres = match p.president_location {
+            PresidentLocation::InHand => "in hand".to_string(),
+            PresidentLocation::OnBoard(area) => describe::area_label(state, area),
+        };
+        let tail = format!(
+            " {:>2} yen {:>2} VP  c{} s{} t{} f{} i{}  hand {}  asst h{} b{} w{}{}  built sh {} th {}  President: {}",
+            p.money,
+            p.victory_points,
+            p.copper,
+            p.silk,
+            p.tea,
+            p.seafood,
+            p.imported_goods,
+            p.order_cards_in_hand.len(),
+            p.assistants.in_hand,
+            assistants_on_board,
+            p.assistants.in_warehouse,
+            locked_text,
+            p.shophouses.built.len(),
+            p.trading_houses.built.len(),
+            pres,
+        );
+        lines.push((
+            format!("{marker} {name}{name_pad}{tail}"),
+            format!("{marker} {}{name_pad}{tail}", paint(Tone::Player(p.color), name)),
+        ));
+    }
+    let width = lines.iter().map(|(plain, _)| plain.chars().count()).max().unwrap_or(0);
+    let mut out = String::new();
+    for (i, (plain, painted)) in lines.iter().enumerate() {
+        out.push_str(painted);
+        if i == 0 {
+            out.push_str(&"─".repeat(width.saturating_sub(plain.chars().count())));
+        }
+        out.push('\n');
+    }
+    out
+}
+
 /// Per player: color, money, VP, goods, imports, hand order codes, completed
 /// order count, technology names, tokens/mercenaries, assistant/shophouse/
 /// trading-house counts by zone (hand/board/warehouse, built) plus the
 /// trading house's next Employment-Agency take cost, and President location.
-pub fn players_panel(state: &GameState, rules: &Rules) -> String {
-    let mut out = String::new();
+/// With `hide_hands` (the privacy flag, Task 6) hand CONTENTS mask to a
+/// count -- the kept starting order lives in the hand, and a live-table
+/// laptop gets passed around.
+pub fn players_panel(state: &GameState, rules: &Rules, hide_hands: bool) -> String {
+    let mut out = section("Players");
     for p in &state.players {
         out.push_str(&format!(
             "{}: {} yen  {} VP  c{} s{} t{} f{}  imports {}\n",
             player_prefix(p.color), p.money, p.victory_points, p.copper, p.silk, p.tea, p.seafood, p.imported_goods,
         ));
 
-        let hand = p.order_cards_in_hand.iter().map(|id| format!("O{:02}", id.0)).collect::<Vec<_>>().join(", ");
-        out.push_str(&format!("  hand: {}\n", if hand.is_empty() { "-" } else { &hand }));
+        let hand = if hide_hands {
+            let n = p.order_cards_in_hand.len();
+            format!("{n} card{} (hidden — 'privacy' to toggle)", if n == 1 { "" } else { "s" })
+        } else {
+            let codes =
+                p.order_cards_in_hand.iter().map(|id| format!("O{:02}", id.0)).collect::<Vec<_>>().join(", ");
+            if codes.is_empty() { "-".to_string() } else { codes }
+        };
+        out.push_str(&format!("  hand: {hand}\n"));
 
         out.push_str(&format!("  completed: {}\n", p.completed_orders.len()));
 
@@ -221,7 +461,7 @@ pub fn players_panel(state: &GameState, rules: &Rules) -> String {
 /// precedent as `describe::describe_pending_choice`'s `_rules`) but
 /// currently unused: site data lives entirely in `state`.
 pub fn sites_view(state: &GameState, _rules: &Rules) -> String {
-    let mut out = String::new();
+    let mut out = section("Building sites");
     for (&area, site) in &state.board_layout.building_sites {
         out.push_str(&format!(
             "{}  {}  {}  {}\n",
@@ -235,17 +475,56 @@ pub fn sites_view(state: &GameState, _rules: &Rules) -> String {
 }
 
 /// The `adj: ...` board-connectivity suffix for a `sites_view` line
-/// (item 7): adjacent area ids ascending, then each canal-crossing partner
-/// as `canal-><id>`. Both are read straight off `board_layout` --
-/// `adjacent_areas` (the `adjacency` graph) and `canal_crossings` -- never
-/// re-derived, so this can't disagree with what movement actually offers.
-/// Canal crossings are transit-only edges kept separate from ordinary
-/// adjacency (box ruling 2026-07-18), hence the distinct `canal->` marks;
-/// each pair is scanned in both orders so it shows on both members' lines.
-/// `adj: -` when an area has no neighbors (defensive -- every real sited
-/// area has at least one).
+/// (item 7), in TWO honestly separated categories: `adj:` = the ordinary
+/// FREE movement neighbors ascending, then each tolled canal-crossing
+/// partner as `canal-><id>`.
+///
+/// Both come straight off `board_layout` -- `adjacent_areas` (the
+/// `adjacency` graph) and `canal_crossings` -- never re-derived from
+/// geometry, so this can't disagree with what movement actually offers.
+/// But `adjacency` is NOT the free-neighbor set on its own: since the
+/// staggered-topology work it also carries every derived canal-crossing
+/// edge AND the brick edges to the Canal tile itself. Printing it raw
+/// (Codex review of PR #4, F1) showed a tolled crossing twice -- once
+/// disguised as free adjacency -- and offered the Canal as a destination,
+/// which it never is: it holds no assistant, so a President can never step
+/// onto it and Telegram's adjacent bonus can never target it. `adj:` is
+/// therefore derived by SUBTRACTION here: adjacency minus the crossing
+/// partners minus the Canal tile(s). The Canal needs no line of its own --
+/// its shore relationships are exactly the `canal->` entries, and the board
+/// render draws it as water.
+///
+/// Each crossing pair is scanned in both orders so it shows on both
+/// members' lines. `adj: -` when an area has no ordinary neighbor left (a
+/// real possibility now: a tile whose only connections are crossings).
 fn adjacency_suffix(state: &GameState, area: AreaId) -> String {
-    let mut ids: Vec<u8> = state.board_layout.adjacent_areas(area).iter().map(|a| a.0).collect();
+    let mut crossings: Vec<AreaId> = state
+        .board_layout
+        .canal_crossings
+        .iter()
+        .filter_map(|&(a, b)| {
+            if a == area {
+                Some(b)
+            } else if b == area {
+                Some(a)
+            } else {
+                None
+            }
+        })
+        .collect();
+    crossings.sort_unstable_by_key(|a| a.0);
+    crossings.dedup();
+
+    let is_canal = |id: &AreaId| {
+        state.board_layout.areas.get(id).map(|c| c.area_type == AreaType::Canal).unwrap_or(false)
+    };
+    let mut ids: Vec<u8> = state
+        .board_layout
+        .adjacent_areas(area)
+        .iter()
+        .filter(|a| !crossings.contains(a) && !is_canal(a))
+        .map(|a| a.0)
+        .collect();
     ids.sort_unstable();
     ids.dedup();
     let adj = if ids.is_empty() {
@@ -254,26 +533,9 @@ fn adjacency_suffix(state: &GameState, area: AreaId) -> String {
         ids.iter().map(|n| format!("A{:02}", n)).collect::<Vec<_>>().join(", ")
     };
 
-    let mut crossings: Vec<u8> = state
-        .board_layout
-        .canal_crossings
-        .iter()
-        .filter_map(|&(a, b)| {
-            if a == area {
-                Some(b.0)
-            } else if b == area {
-                Some(a.0)
-            } else {
-                None
-            }
-        })
-        .collect();
-    crossings.sort_unstable();
-    crossings.dedup();
-
     let mut out = format!("adj: {adj}");
-    for n in crossings {
-        out.push_str(&format!("  canal->A{:02}", n));
+    for a in crossings {
+        out.push_str(&format!("  canal->A{:02}", a.0));
     }
     out
 }
@@ -288,22 +550,45 @@ fn adjacency_suffix(state: &GameState, area: AreaId) -> String {
 /// owner_positionally` pins the attribution (this replaced the old
 /// prefix-packing pin, whose premise the engine fix deliberately broke).
 ///
-/// "sh -B-R | th Y" build/ownership marks for one site: one mark per
-/// shophouse slot in printed order (owner color letter or `-`), then the
-/// trading-house owner's letter or `-`. Shared by `area_cell_lines`'s
+/// "sh ·B·R | th Y" build/ownership marks for one site: one mark per
+/// shophouse slot in printed order (owner color letter or `·`), then the
+/// trading-house owner's letter or `·`. Shared by `tile_content_lines`'s
 /// board-grid cell and `sites_view`'s per-site line (Task 12) so the two
 /// views can't drift on the convention documented at docs/cli-guide.md §8.5.
 fn build_marks(state: &GameState, site: &BuildingSite) -> String {
-    let sh: String = site
-        .shophouses_built
-        .iter()
-        .map(|o| o.map_or('-', |pid| color_letter(state.player(pid).color)))
-        .collect();
-    let th = site
-        .trading_house_owner
-        .map(|pid| color_letter(state.player(pid).color).to_string())
-        .unwrap_or_else(|| "-".to_string());
-    format!("sh {sh} | th {th}")
+    build_marks_pair(state, site).0
+}
+
+/// `(plain, painted)` twins of `build_marks`: owner letters paint in their
+/// player's color (a who-owns-what surface), empty slots stay a plain `·`.
+/// The plain twin is the layout/width authority per style.rs's rule.
+fn build_marks_pair(state: &GameState, site: &BuildingSite) -> (String, String) {
+    let mut sh = String::new();
+    let mut sh_painted = String::new();
+    for o in &site.shophouses_built {
+        match o {
+            Some(pid) => {
+                let c = state.player(*pid).color;
+                sh.push(color_letter(c));
+                sh_painted.push_str(&paint(Tone::Player(c), &color_letter(c).to_string()));
+            }
+            None => {
+                sh.push('·');
+                sh_painted.push('·');
+            }
+        }
+    }
+    let (th, th_painted) = match site.trading_house_owner {
+        Some(pid) => {
+            let c = state.player(pid).color;
+            (
+                color_letter(c).to_string(),
+                paint(Tone::Player(c), &color_letter(c).to_string()),
+            )
+        }
+        None => ("·".to_string(), "·".to_string()),
+    };
+    (format!("sh {sh} | th {th}"), format!("sh {sh_painted} | th {th_painted}"))
 }
 
 /// A Church faith space's printed reward: VP plus its movement rider, in
@@ -331,27 +616,47 @@ fn customs_reward_text(space: u8) -> String {
     s
 }
 
-/// Church Management Board (faith values 4-11, occupant color or `-`, `X` on
-/// the 2P dummy-blocked faith-7 space -- `eligible_church_spaces` blocks it
-/// exactly the way `eligible_customs_spaces_for_cost` blocks Customs space
-/// 4) and Customs Management Board (printed cost via `CustomsTrack::
-/// space_cost` -- single source, Task 12 -- occupant or `-`, `X` on the 2P
-/// dummy-blocked space). Each space line also prints its printed VP + rider
-/// (`church_reward_text`/`customs_reward_text`, S5) after the occupant, and
-/// the occupant color letter is painted in the player's color (S4).
+/// One track slot's occupant marker: a real player as their color letter
+/// painted in their color (S4), or the 2-player setup dummy
+/// ([`PlayerId::DUMMY`], finding D1) as a dim `D` — a named occupant that
+/// holds the space AND competes in that track's majority bonus, not the bare
+/// `X` void it used to render as.
+fn track_occupant(state: &GameState, player: PlayerId) -> String {
+    if player.is_dummy() {
+        paint(Tone::Dim, "D")
+    } else {
+        let c = state.player(player).color;
+        paint(Tone::Player(c), &color_letter(c).to_string())
+    }
+}
+
+/// Church Management Board (faith values 4-11, occupant marker or `-`) and
+/// Customs Management Board (printed cost via `CustomsTrack::space_cost` --
+/// single source, Task 12 -- occupant marker or `-`). In 2-player games the
+/// setup dummy holds Church faith-7 and Customs space-4, shown as a dim `D`
+/// (`track_occupant`). Each space line also prints its printed VP + rider
+/// (`church_reward_text`/`customs_reward_text`, S5) after the occupant.
 pub fn tracks_view(state: &GameState) -> String {
-    let mut out = String::new();
+    let mut out = section("Tracks");
+
+    // Finding D1 (named-sentinel display): when the 2P dummy holds any track
+    // space, a legend names it and states that it competes in the majority
+    // bonus -- the `D` in the occupant column is a scoring occupant, not
+    // decoration.
+    let dummy_present = state.church_track.slots.iter().flatten().any(|s| s.player.is_dummy())
+        || state.customs_track.slots.iter().flatten().any(|s| s.player.is_dummy());
+    if dummy_present {
+        out.push_str(&format!(
+            "{} = Dummy — the 2P neutral marker; it holds its space and competes in each track's majority bonus\n",
+            paint(Tone::Dim, "D"),
+        ));
+    }
 
     out.push_str("Church:\n");
     for i in 0..8 {
         let faith = ChurchTrack::index_to_faith(i);
-        let blocked = state.config.player_count == 2 && faith == 7;
         let occ = match state.church_track.slots[i] {
-            Some(slot) => {
-                let c = state.player(slot.player).color;
-                paint(Tone::Player(c), &color_letter(c).to_string())
-            }
-            None if blocked => "X".to_string(),
+            Some(slot) => track_occupant(state, slot.player),
             None => "-".to_string(),
         };
         out.push_str(&format!("  faith {:2}: {}  {}\n", faith, occ, church_reward_text(faith)));
@@ -360,13 +665,8 @@ pub fn tracks_view(state: &GameState) -> String {
     out.push_str("Customs:\n");
     for i in 0..7 {
         let space = CustomsTrack::index_to_space(i);
-        let blocked = state.config.player_count == 2 && space == 4;
         let occ = match state.customs_track.slots[i] {
-            Some(slot) => {
-                let c = state.player(slot.player).color;
-                paint(Tone::Player(c), &color_letter(c).to_string())
-            }
-            None if blocked => "X".to_string(),
+            Some(slot) => track_occupant(state, slot.player),
             None => "-".to_string(),
         };
         out.push_str(&format!(
@@ -391,6 +691,15 @@ pub fn tracks_view(state: &GameState) -> String {
         None => out.push_str("  not placed\n"),
     }
 
+    // The shared mercenary SUPPLY piles are public table state (owner scope
+    // item 10 sufficiency gap) -- board-level like the Station, so they live
+    // here. Country codes match §8.4's GB/US/FR/DE/NL vocabulary.
+    let s = &state.mercenary_supply;
+    out.push_str(&format!(
+        "Mercenary supply:  GB {}  US {}  FR {}  DE {}  NL {}\n",
+        s.english, s.american, s.french, s.german, s.dutch,
+    ));
+
     out
 }
 
@@ -413,7 +722,7 @@ pub fn tracks_view(state: &GameState) -> String {
 /// `*_view` functions (same precedent as `sites_view`'s `_rules`) but
 /// unused: everything here comes from `state` alone.
 pub fn achievements_view(state: &GameState, _rules: &Rules) -> String {
-    let mut out = String::new();
+    let mut out = section("Goals");
     for (i, card) in state.achievements.iter().enumerate() {
         let claim_state = if card.claimed_by.is_empty() {
             "open".to_string()
@@ -926,29 +1235,54 @@ fn render_lab_board(label: &str, board: &LabBoard, rules: &Rules, out: &mut Stri
     }
 }
 
-/// The 4 fixed-width lines for one `board_grid` cell. President and
-/// assistant tokens are painted in their player's color; both lines are
-/// built as (plain, painted) twins so `fit_cell_painted` can size the cell
-/// from the plain text and emit the painted one -- the alignment-trap rule
-/// from style.rs's module doc.
-fn area_cell_lines(state: &GameState, id: AreaId) -> [String; 4] {
+/// The 4 fixed-width (painted) content lines for one tile box. President
+/// and assistant tokens are painted in their player's color, the tile name
+/// in its type tone; every line is built as (plain, painted) twins so
+/// `fit_cell_painted` can size the cell from the plain text and emit the
+/// painted one -- the alignment-trap rule from style.rs's module doc.
+fn tile_content_lines(state: &GameState, id: AreaId) -> [String; 4] {
     let cfg = &state.board_layout.areas[&id];
-    let marker = matches!(state.board_layout.five_power_tokens.get(&id), Some(Some(_)));
-    let header = format!("A{:02} {}{}", id.0, area_abbrev(cfg.area_type), if marker { " *" } else { "" });
 
+    if cfg.area_type == AreaType::Canal {
+        // Water tile: no site, no tokens, nothing can ever stand here.
+        let tone = Tone::Tile(AreaType::Canal);
+        let header = format!("A{:02} Canal", id.0);
+        let wave = "~".repeat(TILE_W);
+        let toll = "~~ toll 1 yen ~~"; // exactly TILE_W chars
+        return [
+            fit_cell_painted(&header, &paint(tone, &header)),
+            fit_cell_painted(&wave, &paint(tone, &wave)),
+            fit_cell_painted(toll, &paint(tone, toll)),
+            fit_cell_painted(&wave, &paint(tone, &wave)),
+        ];
+    }
+
+    let marker = matches!(state.board_layout.five_power_tokens.get(&id), Some(Some(_)));
+    let name = tile_name(cfg.area_type);
+    let header_plain = format!("A{:02} {}{}", id.0, name, if marker { " *" } else { "" });
+    let header_painted = format!(
+        "A{:02} {}{}",
+        id.0,
+        paint(Tone::Tile(cfg.area_type), name),
+        if marker { format!(" {}", paint(Tone::Vp, "*")) } else { String::new() },
+    );
+
+    let station = state.station_location == Some(id);
     let pres_colors: Vec<PlayerColor> = state
         .players
         .iter()
         .filter(|p| p.president_location == PresidentLocation::OnBoard(id))
         .map(|p| p.color)
         .collect();
+    let st_plain = if station { " [St]" } else { "" };
+    let st_painted = if station { format!(" {}", paint(Tone::Prompt, "[St]")) } else { String::new() };
     let (pres_line, pres_line_painted) = if pres_colors.is_empty() {
-        ("P: -".to_string(), "P: -".to_string())
+        (format!("P: -{st_plain}"), format!("P: -{st_painted}"))
     } else {
         let plain: String = pres_colors.iter().map(|&c| color_letter(c)).collect();
         let painted: String =
             pres_colors.iter().map(|&c| paint(Tone::Player(c), &color_letter(c).to_string())).collect();
-        (format!("P: {plain}"), format!("P: {painted}"))
+        (format!("P: {plain}{st_plain}"), format!("P: {painted}{st_painted}"))
     };
 
     let mut assist_parts: Vec<String> = Vec::new();
@@ -967,23 +1301,23 @@ fn area_cell_lines(state: &GameState, id: AreaId) -> [String; 4] {
         (assist_parts.join(" "), assist_parts_painted.join(" "))
     };
 
-    let build_line = match state.board_layout.building_sites.get(&id) {
-        Some(site) => build_marks(state, site),
-        None => "no site".to_string(),
+    let (build_line, build_line_painted) = match state.board_layout.building_sites.get(&id) {
+        Some(site) => build_marks_pair(state, site),
+        None => ("no site".to_string(), "no site".to_string()),
     };
 
     [
-        fit_cell(&header),
+        fit_cell_painted(&header_plain, &header_painted),
         fit_cell_painted(&pres_line, &pres_line_painted),
         fit_cell_painted(&assist_line, &assist_line_painted),
-        fit_cell(&build_line),
+        fit_cell_painted(&build_line, &build_line_painted),
     ]
 }
 
-/// Truncate/pad to `CELL_WIDTH` so grid rows line up under `│` separators.
+/// Truncate/pad to `TILE_W` so tile content lines fill their box exactly.
 fn fit_cell(s: &str) -> String {
-    let truncated: String = s.chars().take(CELL_WIDTH).collect();
-    format!("{:<width$}", truncated, width = CELL_WIDTH)
+    let truncated: String = s.chars().take(TILE_W).collect();
+    format!("{:<width$}", truncated, width = TILE_W)
 }
 
 /// `fit_cell` for a painted cell line: the pad is computed from `plain`
@@ -995,27 +1329,29 @@ fn fit_cell(s: &str) -> String {
 /// exactly `fit_cell`.
 fn fit_cell_painted(plain: &str, painted: &str) -> String {
     let width = plain.chars().count();
-    if width > CELL_WIDTH {
+    if width > TILE_W {
         return fit_cell(plain);
     }
-    format!("{}{}", painted, " ".repeat(CELL_WIDTH - width))
+    format!("{}{}", painted, " ".repeat(TILE_W - width))
 }
 
-fn area_abbrev(t: AreaType) -> &'static str {
+/// Legible tile display name, sized to fit a `A00 {name} *` header inside
+/// `TILE_W` (name <= 10 chars).
+fn tile_name(t: AreaType) -> &'static str {
     match t {
-        AreaType::CopperMine => "CuM",
-        AreaType::SilkMill => "SiM",
-        AreaType::TeaPlantation => "TeaP",
-        AreaType::FishingGround => "FishG",
+        AreaType::CopperMine => "Copper Mn",
+        AreaType::SilkMill => "Silk Mill",
+        AreaType::TeaPlantation => "Tea Plant",
+        AreaType::FishingGround => "Fishing",
         AreaType::Bank => "Bank",
-        AreaType::PortA => "PortA",
-        AreaType::PortB => "PortB",
-        AreaType::LaboratoryA => "LabA",
-        AreaType::LaboratoryB => "LabB",
-        AreaType::EmploymentAgency => "EmpAg",
-        AreaType::Chinatown => "Chna",
-        AreaType::Church => "Chrch",
-        AreaType::Customs => "Cstms",
+        AreaType::PortA => "Port A",
+        AreaType::PortB => "Port B",
+        AreaType::LaboratoryA => "Lab A",
+        AreaType::LaboratoryB => "Lab B",
+        AreaType::EmploymentAgency => "Employ Ag",
+        AreaType::Chinatown => "Chinatown",
+        AreaType::Church => "Church",
+        AreaType::Customs => "Customs",
         AreaType::Canal => "Canal",
     }
 }
@@ -1049,9 +1385,16 @@ mod tests {
     use crate::style::test_support::strip_ansi;
 
     fn test_state_2p() -> GameState {
+        test_state_np(2)
+    }
+
+    /// A REAL generated board at `n` players (3P/4P carry a Canal tile; 2P
+    /// does not), so topology-sensitive assertions run against the shipped
+    /// geometry rather than an injected fixture.
+    fn test_state_np(n: u8) -> GameState {
         let rules = Rules::standard();
-        let pending = new_game(GameConfig::for_player_count(2), &rules, 1).unwrap();
-        finalize_setup(pending, &[StartingOrderChoice::Keep(0), StartingOrderChoice::Keep(0)]).unwrap()
+        let pending = new_game(GameConfig::for_player_count(n), &rules, 1).unwrap();
+        finalize_setup(pending, &vec![StartingOrderChoice::Keep(0); n as usize]).unwrap()
     }
 
     #[test]
@@ -1088,6 +1431,169 @@ mod tests {
         for id in state.board_layout.areas.keys() {
             assert!(g.contains(&format!("A{:02}", id.0)), "missing A{:02} in\n{g}", id.0);
         }
+    }
+
+    /// Task 6 redesign: the board renders the true staggered pyramid — one
+    /// bordered box per tile, rows top (widest) first, each row indented half
+    /// a box pitch relative to the row above (brick pattern), all derived
+    /// from `grid_position` alone. The real 2P board is rows 4/3/2/1.
+    #[test]
+    fn board_grid_renders_the_staggered_pyramid() {
+        let state = test_state_2p();
+        let g = board_grid(&state);
+        let lines: Vec<&str> = g.lines().collect();
+        assert_eq!(lines.len(), 4 * 6, "4 rows x 6 lines (border+4 content+border):\n{g}");
+        for r in 0..4usize {
+            let top = lines[r * 6];
+            assert_eq!(top.matches('┌').count(), 4 - r, "row {r} box count: {top:?}");
+            let lead = top.chars().take_while(|c| *c == ' ').count();
+            assert_eq!(lead, r * 9, "row {r} must indent half a box per row down: {top:?}");
+        }
+    }
+
+    // ---- Third review I1: the numbered entry skeleton ----
+
+    /// The skeleton draws the SAME staggered shape the engine plays, at every
+    /// player count: `board_gen::row_lengths` row for row, widest row on top,
+    /// each row indented half a cell pitch below the one above it. If this
+    /// ever drifts from `row_lengths`, a live operator fills in a board shape
+    /// the engine does not have.
+    #[test]
+    fn board_skeleton_shape_matches_row_lengths_at_every_player_count() {
+        for players in [2u8, 3, 4] {
+            let rows = row_lengths(players);
+            let s = board_skeleton(players);
+            let lines: Vec<&str> = s.lines().collect();
+            assert_eq!(lines.len(), rows.len() * 3, "3 lines per row at {players}P:\n{s}");
+            for (r, &len) in rows.iter().enumerate() {
+                let top = lines[r * 3];
+                assert_eq!(top.matches('┌').count(), len as usize, "{players}P row {r} cell count: {top:?}");
+                let lead = top.chars().take_while(|c| *c == ' ').count();
+                assert_eq!(lead, r * (SKEL_PITCH / 2), "{players}P row {r} brick offset: {top:?}");
+            }
+        }
+    }
+
+    /// The 2P skeleton, byte for byte. This one IS the operator-facing
+    /// artifact -- it is what a tester holds against the physical board -- so
+    /// unlike the rest of the renderer (content-asserted by house rule), its
+    /// alignment is worth pinning: a half-cell offset that drifts by a column
+    /// stops reading as a brick pattern, which is the whole point of the
+    /// picture.
+    #[test]
+    fn board_skeleton_2p_is_the_exact_brick_pyramid() {
+        assert_eq!(
+            board_skeleton(2),
+            concat!(
+                "┌────┐┌────┐┌────┐┌────┐\n",
+                "│  0 ││  1 ││  2 ││  3 │\n",
+                "└────┘└────┘└────┘└────┘\n",
+                "   ┌────┐┌────┐┌────┐\n",
+                "   │  4 ││  5 ││  6 │\n",
+                "   └────┘└────┘└────┘\n",
+                "      ┌────┐┌────┐\n",
+                "      │  7 ││  8 │\n",
+                "      └────┘└────┘\n",
+                "         ┌────┐\n",
+                "         │  9 │\n",
+                "         └────┘\n",
+            )
+        );
+    }
+
+    /// Cell indices run 0..n row-major, top row first -- the exact order
+    /// `wizard::ask_tiles` asks for them and `ObservedBoard.tiles` is indexed
+    /// in. The apex cell of a 4P board is 17, never 0.
+    #[test]
+    fn board_skeleton_numbers_cells_row_major_from_the_widest_row() {
+        let s = board_skeleton(4);
+        let numbers: Vec<usize> = s
+            .lines()
+            .filter(|l| l.contains('│'))
+            .flat_map(|l| l.split('│').filter_map(|c: &str| c.trim().parse::<usize>().ok()).collect::<Vec<_>>())
+            .collect();
+        assert_eq!(numbers, (0..18).collect::<Vec<_>>(), "row-major 0..18:\n{s}");
+        let first_row = s.lines().nth(1).unwrap();
+        assert!(first_row.contains("  0 "), "cell 0 opens the WIDEST row:\n{s}");
+        let last_row = s.lines().nth(10).unwrap();
+        assert!(last_row.contains(" 17 "), "cell 17 closes the NARROWEST row:\n{s}");
+    }
+
+    /// Every line pads to ONE total width (the frame composer joins the board
+    /// with the side panel line-by-line, so a ragged right edge would shear
+    /// it), and the 2P board's width is the documented 72 columns.
+    #[test]
+    fn board_grid_lines_share_one_width_and_2p_is_72_cols() {
+        let state = test_state_2p();
+        let g = board_grid(&state);
+        for glyph in ['─', '│', '┌', '┐', '└', '┘'] {
+            assert!(g.contains(glyph), "missing {glyph} in:\n{g}");
+        }
+        let widths: HashSet<usize> = g.lines().map(|l| l.chars().count()).collect();
+        assert_eq!(widths.len(), 1, "all board lines must share one width:\n{g}");
+        assert_eq!(g.lines().next().unwrap().chars().count(), 72, "2P board width:\n{g}");
+    }
+
+    /// Tiles carry a legible name, not the old 3-5 letter code string.
+    #[test]
+    fn board_grid_names_tiles_legibly() {
+        let state = test_state_2p();
+        let g = board_grid(&state);
+        // The 2P tile pool always includes these four (Chinatown/PortB/LabB/
+        // Canal are removed at 2P); their new display names must appear (the
+        // old codes CuM/Chrch/Cstms must not).
+        for name in ["Church", "Customs", "Bank", "Employ Ag"] {
+            assert!(g.contains(name), "missing tile name {name} in:\n{g}");
+        }
+        assert!(!g.contains("Chrch") && !g.contains("Cstms"), "old code-strings must be gone:\n{g}");
+    }
+
+    /// The Canal tile renders as water with its printed toll — no build
+    /// marks, no president/assistant lines (nothing can ever be there).
+    /// The renderer keys on the tile TYPE, so a flipped fixture suffices.
+    #[test]
+    fn board_grid_canal_tile_renders_as_water_with_toll() {
+        let mut state = test_state_2p();
+        let tip = *state
+            .board_layout
+            .areas
+            .iter()
+            .find(|(_, c)| c.grid_position == (3, 0))
+            .expect("2P pyramid has a (3,0) tip tile")
+            .0;
+        state.board_layout.areas.get_mut(&tip).unwrap().area_type = AreaType::Canal;
+        let g = board_grid(&state);
+        assert!(g.contains("~~"), "canal water fill expected:\n{g}");
+        assert!(g.contains("toll 1 yen"), "canal toll label expected:\n{g}");
+    }
+
+    /// The Station token's area is marked `[St]` on the board (it grants
+    /// EVERY player +1 Power there, so it must be visible at a glance, not
+    /// only in the `tracks` view).
+    #[test]
+    fn board_grid_marks_the_station_area() {
+        let mut state = test_state_2p();
+        let area = *state.board_layout.areas.keys().next().unwrap();
+        assert!(!board_grid(&state).contains("[St]"), "unplaced Station must not mark anything");
+        state.station_location = Some(area);
+        assert!(board_grid(&state).contains("[St]"), "placed Station must mark its tile");
+    }
+
+    /// The legend documents the canal crossing rule ONLY on a board that has
+    /// a Canal (2P boards never do), and always documents `*`/`[St]`/`·`.
+    #[test]
+    fn board_legend_documents_canal_only_when_present() {
+        let mut state = test_state_2p();
+        let without = board_legend(&state);
+        assert!(without.contains("* = unclaimed 5-Power token"), "{without}");
+        assert!(without.contains("[St]"), "{without}");
+        assert!(!without.contains("Canal"), "no canal on this board: {without}");
+
+        let tip = *state.board_layout.areas.keys().next().unwrap();
+        state.board_layout.areas.get_mut(&tip).unwrap().area_type = AreaType::Canal;
+        let with = board_legend(&state);
+        assert!(with.contains("Canal"), "{with}");
+        assert!(with.contains("1 yen"), "the toll and its recipient (bank) belong in the legend: {with}");
     }
 
     #[test]
@@ -1137,15 +1643,210 @@ mod tests {
         assert!(checked > 0, "fixture must populate at least one lab slot:\n{text}");
     }
 
+    /// F2 (Codex adversarial review of PR #4) lengthened five tech effect
+    /// one-liners to carry the qualifiers that change a purchase decision,
+    /// which lengthens the `labs` lines that print them. §2 of the guide
+    /// promises a 140-column terminal clears every screen, so no lab line
+    /// may exceed that. Measured over EVERY card in the registry (each
+    /// slotted into a real lab board and run through the real `labs_view`,
+    /// never a copy of its format string), so a future wording edit that
+    /// would wrap on a tester's terminal fails here.
+    #[test]
+    fn labs_view_lines_fit_the_documented_terminal_width() {
+        let mut state = test_state_2p();
+        let rules = Rules::standard();
+        let mut worst = (0usize, String::new());
+        for card in rules.techs.iter() {
+            state.lab_state.lab_a.slots[0] = Some(card.id);
+            for line in labs_view(&state, &rules).lines() {
+                let w = crate::screen::visible_width(line);
+                if w > worst.0 {
+                    worst = (w, line.to_string());
+                }
+            }
+        }
+        assert!(worst.0 <= 140, "a labs line is {} columns wide (140 max): {}", worst.0, worst.1);
+    }
+
+    /// Task 6 (composed frame): the compact panel shows each player's
+    /// public at-a-glance line set -- current marker, yen/VP, goods, hand
+    /// COUNT (never contents -- the panel is privacy-safe by construction),
+    /// assistant zones, built counts + next TH take, President location.
+    #[test]
+    fn compact_panel_shows_public_info_and_marks_the_current_player() {
+        let state = test_state_2p();
+        let rules = Rules::standard();
+        let text = compact_panel(&state, &rules);
+        assert!(text.starts_with("─ Players ─"), "{text}");
+        assert!(text.contains("> Red"), "current player marked: {text}");
+        assert!(text.contains("  Blue"), "other players unmarked: {text}");
+        assert!(text.contains("yen"), "{text}");
+        assert!(text.contains("hand 1"), "hand renders as a COUNT: {text}");
+        assert!(!text.contains("O0") && !text.contains("O1"), "hand contents never appear: {text}");
+        assert!(text.contains("next TH take 4 yen"), "{text}");
+        assert!(text.contains("President: in hand"), "{text}");
+    }
+
+    /// Locked pawns (goals/church/customs) surface as a `locked N` tally so
+    /// the compact numbers still reconcile to the 20-pawn total.
+    #[test]
+    fn compact_panel_tallies_locked_assistants() {
+        let mut state = test_state_2p();
+        let rules = Rules::standard();
+        state.players[0].assistants.on_church = 2;
+        state.players[0].assistants.on_achievements = 1;
+        let text = compact_panel(&state, &rules);
+        assert!(text.contains("locked 3"), "{text}");
+    }
+
+    /// F3 (Codex adversarial review of PR #4): the stacked-below layout's
+    /// panel is ONE LINE PER PLAYER -- that fold is what brings the 4P
+    /// composed screen back inside a 50-row terminal. It must stay
+    /// genuinely useful (every public at-a-glance field of the multi-line
+    /// form except the next TH take) and just as privacy-safe: hand is a
+    /// COUNT, never contents.
+    #[test]
+    fn compact_panel_oneline_is_one_row_per_player_with_the_public_fields() {
+        let state = test_state_np(4);
+        let text = compact_panel_oneline(&state);
+        assert!(text.starts_with("─ Players ─"), "{text}");
+        assert_eq!(
+            text.lines().count(),
+            state.players.len() + 1,
+            "one header + exactly one line per player:\n{text}"
+        );
+        let red = text.lines().find(|l| l.contains("Red")).expect("a Red line");
+        assert!(red.starts_with("> Red"), "current player marked: {red}");
+        for field in ["yen", "VP", "c1", "hand 1", "asst h", "built sh", "President: in hand"] {
+            assert!(red.contains(field), "want {field:?} in the one-line form: {red}");
+        }
+        assert!(!text.contains("O0") && !text.contains("O1"), "hand contents never appear: {text}");
+        // Locked pawns still reconcile the visible assistant numbers.
+        let mut locked_state = state.clone();
+        locked_state.players[0].assistants.on_church = 2;
+        locked_state.players[0].assistants.on_achievements = 1;
+        assert!(compact_panel_oneline(&locked_state).contains("locked 3"), "{text}");
+    }
+
+    /// The one-line panel paints names after layout, like its taller twin.
+    #[test]
+    fn colored_compact_panel_oneline_strips_back_to_plain() {
+        let state = test_state_np(4);
+        crate::style::force(true);
+        let colored = compact_panel_oneline(&state);
+        crate::style::force(false);
+        let plain = compact_panel_oneline(&state);
+        assert_ne!(colored, plain, "forced mode must actually paint something");
+        assert_eq!(strip_ansi(&colored), plain);
+    }
+
+    /// The panel paints player names after layout (strip-equality pin).
+    #[test]
+    fn colored_compact_panel_strips_back_to_plain() {
+        let state = test_state_2p();
+        let rules = Rules::standard();
+        crate::style::force(true);
+        let colored = compact_panel(&state, &rules);
+        crate::style::force(false);
+        let plain = compact_panel(&state, &rules);
+        assert_ne!(colored, plain, "forced mode must actually paint something");
+        assert_eq!(strip_ansi(&colored), plain);
+    }
+
     #[test]
     fn players_panel_lists_each_player_by_color_and_money() {
         let state = test_state_2p();
         let rules = Rules::standard();
-        let v = players_panel(&state, &rules);
+        let v = players_panel(&state, &rules, false);
         assert!(v.contains("Red"), "{v}");
         assert!(v.contains("Blue"), "{v}");
         assert!(v.contains("3 yen"), "{v}");
         assert!(v.contains("4 yen"), "{v}");
+    }
+
+    /// Task 6 privacy: with `hide_hands` the full players view masks hand
+    /// CONTENTS (the kept starting order lives there) but keeps the count,
+    /// so a live-table laptop can be passed around without leaking.
+    #[test]
+    fn players_panel_masks_hand_contents_when_hidden() {
+        let state = test_state_2p();
+        let rules = Rules::standard();
+        let open = players_panel(&state, &rules, false);
+        assert!(open.contains("hand: O"), "open mode shows codes: {open}");
+        let masked = players_panel(&state, &rules, true);
+        assert!(!masked.contains("hand: O"), "masked mode must hide codes: {masked}");
+        assert!(masked.contains("1 card (hidden"), "count survives masking: {masked}");
+    }
+
+    /// Owner scope item 10 (sufficiency): the shared mercenary SUPPLY piles
+    /// are public table state and must be readable -- `tracks` (the
+    /// board-level-shared-state view, same precedent as the Station line)
+    /// shows one count per country.
+    #[test]
+    fn tracks_view_shows_the_mercenary_supply() {
+        let mut state = test_state_2p();
+        state.mercenary_supply.french = 9; // sentinel: proves counts are live
+        let v = tracks_view(&state);
+        let line = v.lines().find(|l| l.contains("Mercenary supply")).expect("supply line present");
+        let s = &state.mercenary_supply;
+        for (code, n) in
+            [("GB", s.english), ("US", s.american), ("FR", s.french), ("DE", s.german), ("NL", s.dutch)]
+        {
+            assert!(line.contains(&format!("{code} {n}")), "want {code} {n} in: {line}");
+        }
+    }
+
+    /// Finding D1, redesigned display: the 2P dummy is a NAMED occupant --
+    /// the `D` mark stays in the occupant column, and a legend line explains
+    /// what it is and that it competes in the majority bonus. No dummy on
+    /// the board (a 3P/4P game, or an injected clean track) = no legend.
+    #[test]
+    fn tracks_view_names_the_dummy_in_a_legend() {
+        let state = test_state_2p();
+        let v = tracks_view(&state);
+        assert!(v.contains("D = Dummy"), "{v}");
+        assert!(v.contains("majorit"), "the legend must state it competes in majorities: {v}");
+
+        let mut clean = test_state_2p();
+        clean.church_track.slots = Default::default();
+        clean.customs_track.slots = Default::default();
+        let v2 = tracks_view(&clean);
+        assert!(!v2.contains("D = Dummy"), "no dummy, no legend: {v2}");
+    }
+
+    /// Task 6 restyle: the state views share one design language -- a
+    /// `─ Title ─...` rule header opens each of them.
+    #[test]
+    fn views_share_the_rule_header_style() {
+        let state = test_state_2p();
+        let rules = Rules::standard();
+        for (name, text) in [
+            ("ports", ports_view(&state, &rules)),
+            ("labs", labs_view(&state, &rules)),
+            ("tracks", tracks_view(&state)),
+            ("sites", sites_view(&state, &rules)),
+            ("goals", achievements_view(&state, &rules)),
+            ("players", players_panel(&state, &rules, false)),
+        ] {
+            assert!(text.starts_with("─ "), "view '{name}' must open with a rule header: {text}");
+        }
+    }
+
+    /// Task 6 full color: the prompt header's goods/yen/VP tokens paint
+    /// (strip-equality keeps the plain text authoritative).
+    #[test]
+    fn prompt_header_paints_goods_and_yen() {
+        let state = test_state_2p();
+        crate::style::force(true);
+        let colored = prompt_header(&state, "Placement");
+        crate::style::force(false);
+        let plain = prompt_header(&state, "Placement");
+        assert_eq!(strip_ansi(&colored), plain);
+        // The goods run itself must carry paint, not just the earlier
+        // player/phase tokens: escapes must appear AFTER the first goods
+        // token (its own close, and the later goods' opens).
+        let goods_start = colored.find("c1").expect("goods token present");
+        assert!(colored[goods_start..].contains('\u{1b}'), "goods tokens must paint: {colored:?}");
     }
 
     /// Task 11 (T2.1): the panel must show assistant/shophouse/trading-house
@@ -1170,7 +1871,7 @@ mod tests {
         state.players[0].trading_houses.in_hand = 1;
         state.players[0].trading_houses.in_warehouse -= 1;
 
-        let text = players_panel(&state, &rules);
+        let text = players_panel(&state, &rules, false);
         assert!(text.contains("assistants: hand"), "{text}");
         assert!(text.contains("shophouses: hand"), "{text}");
         assert!(text.contains("trading:"), "{text}");
@@ -1206,13 +1907,17 @@ mod tests {
         let text = sites_view(&state, &rules);
         let label = describe::area_label(&state, area);
         let line = text.lines().find(|l| l.starts_with(&label)).unwrap_or_else(|| panic!("missing {label} in {text}"));
-        assert!(line.contains("sh R---"), "{line}"); // Red is players[0]; positional marks
+        assert!(line.contains("sh R···"), "{line}"); // Red is players[0]; positional marks
     }
 
     /// Board connectivity (pre-gate view batch item 7): each `sites` line
     /// gains an `adj:` suffix listing its adjacent area ids ascending, sourced
     /// from `board_layout.adjacency` (never re-derived) so a state inventory
-    /// reads as a navigable board.
+    /// reads as a navigable board. On the 2P board raw adjacency IS the
+    /// free-neighbor set (no Canal tile exists, hence no crossings), so
+    /// comparing against it directly is sound here; the three-category
+    /// separation the 3P/4P boards need is pinned by
+    /// `sites_view_separates_free_neighbors_from_crossings_and_the_canal_tile`.
     #[test]
     fn sites_view_lists_adjacent_area_ids_ascending() {
         let state = test_state_2p();
@@ -1253,13 +1958,117 @@ mod tests {
         assert!(other_line.contains(&format!("canal->A{:02}", area.0)), "want reverse crossing in '{other_line}'");
     }
 
+    /// The two connectivity categories a `sites` line prints, parsed back
+    /// off the rendered text: the `adj:` ids and the `canal->` ids.
+    fn connectivity_of(line: &str) -> (Vec<u8>, Vec<u8>) {
+        let tail = line.split("adj: ").nth(1).unwrap_or_else(|| panic!("no adj: suffix in '{line}'"));
+        let mut parts = tail.split("  canal->");
+        let adj_text = parts.next().unwrap_or("").trim();
+        let parse = |t: &str| {
+            t.trim().trim_start_matches('A').parse::<u8>().unwrap_or_else(|_| panic!("area id in '{line}'"))
+        };
+        let adj: Vec<u8> =
+            if adj_text == "-" { Vec::new() } else { adj_text.split(", ").map(parse).collect() };
+        (adj, parts.map(parse).collect())
+    }
+
+    /// F1 (Codex adversarial review of PR #4): `adj:` must be the
+    /// President's ORDINARY free-neighbor list and nothing else. Since the
+    /// staggered-topology work `board_layout.adjacency` carries three
+    /// different relationships at once -- brick edges, edges to the
+    /// unplaceable Canal tile, and the derived canal-crossing edges -- so
+    /// printing it raw showed a TOLLED crossing as if it were free (and
+    /// again as `canal->`), and offered the Canal itself, which can never
+    /// hold a President and is never a legal Telegram bonus target. The
+    /// three categories are separated by SUBTRACTION off the authoritative
+    /// layout (geometry is never re-derived here): `adj:` = adjacency minus
+    /// crossing partners minus Canal; `canal->` = exactly the crossing
+    /// partners. Run on REAL generated 3P and 4P boards -- the ones that
+    /// carry a Canal.
+    #[test]
+    fn sites_view_separates_free_neighbors_from_crossings_and_the_canal_tile() {
+        for players in [3u8, 4] {
+            let state = test_state_np(players);
+            let rules = Rules::standard();
+            let canal: Vec<AreaId> = state
+                .board_layout
+                .areas
+                .iter()
+                .filter(|(_, cfg)| cfg.area_type == AreaType::Canal)
+                .map(|(&id, _)| id)
+                .collect();
+            assert!(!canal.is_empty(), "the {players}P board must carry a Canal tile");
+            let text = sites_view(&state, &rules);
+
+            let mut shores_checked = 0usize;
+            let mut subtraction_was_load_bearing = false;
+            for &area in state.board_layout.building_sites.keys() {
+                let label = describe::area_label(&state, area);
+                let line = text
+                    .lines()
+                    .find(|l| l.starts_with(&label))
+                    .unwrap_or_else(|| panic!("{label} line in\n{text}"));
+                let (adj, crossings) = connectivity_of(line);
+
+                let mut want_crossings: Vec<u8> = state
+                    .board_layout
+                    .canal_crossings
+                    .iter()
+                    .filter_map(|&(a, b)| match () {
+                        _ if a == area => Some(b.0),
+                        _ if b == area => Some(a.0),
+                        _ => None,
+                    })
+                    .collect();
+                want_crossings.sort_unstable();
+                want_crossings.dedup();
+
+                let raw: Vec<u8> =
+                    state.board_layout.adjacent_areas(area).iter().map(|a| a.0).collect();
+                let mut want_adj: Vec<u8> = raw
+                    .iter()
+                    .copied()
+                    .filter(|n| !want_crossings.contains(n) && !canal.iter().any(|c| c.0 == *n))
+                    .collect();
+                want_adj.sort_unstable();
+                want_adj.dedup();
+                if want_adj.len() != raw.len() {
+                    subtraction_was_load_bearing = true;
+                }
+
+                assert_eq!(crossings, want_crossings, "canal-> list on '{line}'");
+                assert_eq!(adj, want_adj, "adj: list on '{line}'");
+                for c in &canal {
+                    assert!(!adj.contains(&c.0), "the Canal tile A{:02} must never be an adj: entry: {line}", c.0);
+                }
+                for c in &want_crossings {
+                    assert!(!adj.contains(c), "tolled crossing A{c:02} must not read as free adjacency: {line}");
+                }
+                if !want_crossings.is_empty() {
+                    shores_checked += 1;
+                }
+            }
+            assert!(shores_checked > 0, "the {players}P board must have shore areas with crossings");
+            assert!(
+                subtraction_was_load_bearing,
+                "the {players}P board must actually exercise the subtraction (raw adjacency \
+                 containing a Canal id or a crossing partner)"
+            );
+        }
+    }
+
     #[test]
     fn tracks_view_shows_church_and_customs_with_2p_block() {
         let state = test_state_2p();
         let v = tracks_view(&state);
         assert!(v.contains("Church"), "{v}");
         assert!(v.contains("Customs"), "{v}");
-        assert!(v.contains('X'), "{v}");
+        // Finding D1: the 2P dummy holds Church faith-7 and Customs space-4,
+        // shown as a named `D` occupant (not the old bare `X` void).
+        let church7 = v.lines().find(|l| l.contains("faith  7:")).expect("faith-7 line");
+        assert!(church7.contains("faith  7: D"), "{church7}");
+        let customs4 = v.lines().find(|l| l.contains("space 4 ")).expect("space-4 line");
+        assert!(customs4.contains(": D "), "{customs4}");
     }
 
     /// I4 (external review 2026-07-20): the Station token grants EVERY
@@ -1312,10 +2121,9 @@ mod tests {
         );
     }
 
-    /// Task 12: the engine blocks Church faith-7 in 2p games exactly the
-    /// way it blocks Customs space 4 (`eligible_church_spaces` /
-    /// `eligible_customs_spaces_for_cost`, both gate on `player_count == 2`)
-    /// -- `tracks_view` must mark it with the same `X` dummy convention.
+    /// Finding D1 (rulebook p.9 NOTE, Jeremy's edition -- not the bundled PDF; see guidingpath's 2026-07-21 DL rows): in 2p games the setup dummy holds
+    /// Church faith-7, so `tracks_view` renders it as a named `D` occupant
+    /// (which competes in the majority bonus), not the bare `X` it used to be.
     #[test]
     fn tracks_view_marks_church_faith_7_dummy_at_2p() {
         let state = test_state_2p();
@@ -1326,7 +2134,7 @@ mod tests {
         // after it), so the marker is checked there rather than at line-end.
         let needle = format!("faith {:2}:", 7);
         let line = v.lines().find(|l| l.contains(&needle)).expect("faith-7 line present");
-        assert!(line.contains(&format!("{needle} X")), "{line}");
+        assert!(line.contains(&format!("{needle} D")), "{line}");
     }
 
     /// S5 (pre-gate view batch): every track space line must show its PRINTED
@@ -1606,7 +2414,7 @@ mod tests {
         // Slot 1 (printed reward "4vp") is Blue's, slot 3 ("2yen") is Red's;
         // slots 0 and 2 are open. A packed "sh BR" would attribute Blue to
         // "1vp" and Red to "4vp" -- rewards neither of them took.
-        assert_eq!(build_marks(&state, &site), "sh -B-R | th -");
+        assert_eq!(build_marks(&state, &site), "sh ·B·R | th ·");
     }
 
     /// Positional-marks companion: an untouched site shows one `-` per slot
@@ -1614,13 +2422,13 @@ mod tests {
     /// column correspondence), and the trading-house mark still carries the
     /// owner's color letter independently of the shophouse slots.
     #[test]
-    fn build_marks_show_a_dash_per_empty_slot_and_the_th_owner() {
+    fn build_marks_show_a_dot_per_empty_slot_and_the_th_owner() {
         let state = test_state_2p();
         let mut site = BuildingSite::new([1, 4, 0, 2], 8);
-        assert_eq!(build_marks(&state, &site), "sh ---- | th -");
+        assert_eq!(build_marks(&state, &site), "sh ···· | th ·");
 
         site.trading_house_owner = Some(PlayerId::new(0));
-        assert_eq!(build_marks(&state, &site), "sh ---- | th R");
+        assert_eq!(build_marks(&state, &site), "sh ···· | th R");
     }
 
     /// S1 (render.rs deep audit, 2026-07-20): the track-placement reservation
@@ -1700,7 +2508,7 @@ mod tests {
         }
         let total = state.players[0].assistants.total();
 
-        let panel = players_panel(&state, &rules);
+        let panel = players_panel(&state, &rules, false);
         let line = panel
             .lines()
             .find(|l| l.contains("assistants:"))
@@ -1761,7 +2569,7 @@ mod tests {
         state.players[0].mercenaries.available.insert(Country::English, 1);
         state.players[0].mercenaries.used.insert(Country::French, 2);
 
-        let panel = players_panel(&state, &rules);
+        let panel = players_panel(&state, &rules, false);
         let line = panel
             .lines()
             .find(|l| l.contains("mercenaries"))
@@ -1874,9 +2682,9 @@ mod tests {
         let state = test_state_2p();
         let rules = Rules::standard();
         crate::style::force(true);
-        let colored = players_panel(&state, &rules);
+        let colored = players_panel(&state, &rules, false);
         crate::style::force(false);
-        let plain = players_panel(&state, &rules);
+        let plain = players_panel(&state, &rules, false);
         assert_ne!(colored, plain, "forced mode must actually paint something");
         assert_eq!(strip_ansi(&colored), plain);
     }
@@ -1909,17 +2717,4 @@ mod tests {
         assert_eq!(strip_ansi(&colored), plain);
     }
 
-    /// Task 16 (T2.5): the board frame is box-drawing, not `-`/`|` ASCII --
-    /// and every line (rulers and content rows alike) shares one display
-    /// width, or the frame shears.
-    #[test]
-    fn board_grid_uses_box_drawing_rulers() {
-        let state = test_state_2p();
-        let g = board_grid(&state);
-        for glyph in ['─', '│', '┌', '┬', '┐', '├', '┼', '┤', '└', '┴', '┘'] {
-            assert!(g.contains(glyph), "missing {glyph} in:\n{g}");
-        }
-        let widths: HashSet<usize> = g.lines().map(|l| l.chars().count()).collect();
-        assert_eq!(widths.len(), 1, "all grid lines must share one width:\n{g}");
-    }
 }

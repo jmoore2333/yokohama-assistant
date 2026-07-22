@@ -35,6 +35,20 @@
 - 1× Copper Mine, 1× Silk Mill, 1× Tea Plantation
 - 5 Order cards from deck
 
+**4 Players remove:** nothing.
+
+### Board Layout — Area Boards (staggered pyramid)
+
+The Area Boards form a **staggered pyramid**, widest row on top (rulebook p.3 step 2; owner-confirmed against the physical edition 2026-07-21). Rows, top to bottom:
+
+| Players | Rows (tiles per row) | Tiles | Undirected edges |
+|---------|----------------------|-------|------------------|
+| 2P | 4 / 3 / 2 / 1 | 10 | 18 |
+| 3P | 5 / 4 / 3 / 2 | 14 | 28 |
+| 4P | 6 / 5 / 4 / 3 | 18 | 38 |
+
+Rows are **brick-offset**: each tile touches up to **six** neighbors — 2 lateral (same row) + up to 2 in the row above + up to 2 in the row below, wherever those tiles exist. This is the adjacency graph that movement and pass-through fees read; it is NOT a rectangular grid. (An earlier engine model built 2×5 / 2×7 / 3×6 grids with orthogonal-only adjacency, which missed ~30% of the real edges and invented corner-only verticals — corrected 2026-07-21 [DL 2026-07-21].) Orientation is immaterial to the rules: the rulebook PDF and some editions print mirror-image orientations of the same pyramid, but the adjacency graph is identical, and it is the graph the engine models.
+
 ---
 
 ## Player Starting Resources
@@ -385,7 +399,7 @@ Pay Imported Goods to advance on Customs Management Board.
 
 **Customs Management Board rewards (board-art verified 2026-07-17 — CORRECTS the table below, which previously modeled a goods-keyed 8-slot track with 1/3/4-Imported-Good bonuses that don't exist on the physical board):**
 
-7 printed spaces, numbered 1-7 left to right, each with a fixed printed cost (Imported Goods) and VP reward. A payment must EXACTLY match a space's printed cost — both spaces of a cost pair filled means that payment is unplaceable. v1 auto-places on the higher-VP (leftmost) empty space of the matching pair, falling back to the other space of the pair if it's occupied. In 2-player games, space 4 (9 VP) is pre-blocked by a printed dummy pawn.
+7 printed spaces, numbered 1-7 left to right, each with a fixed printed cost (Imported Goods) and VP reward. A payment must EXACTLY match a space's printed cost — both spaces of a cost pair filled means that payment is unplaceable. v1 auto-places on the higher-VP (leftmost) empty space of the matching pair, falling back to the other space of the pair if it's occupied. In 2-player games, space 4 (9 VP) is occupied for the whole game by the dummy player's assistant — a pawn of an UNUSED PLAYER COLOR that setup places there (finding D1). It is **not printed board art**: at a physical table the operator must place it during setup, and nothing later reconciles a board that is missing it. Same for the Church board's faith-7. Being a placed assistant, it also competes in the final majority bonus (see Final Scoring).
 
 | Space | Cost (Imported Goods) | VP | Rider |
 |-------|------------------------|-----|-------|
@@ -398,8 +412,10 @@ Pay Imported Goods to advance on Customs Management Board.
 | 7 | 4 | 22 | - |
 
 #### Canal (not in 2P)
-- No pawns or tokens may be placed
-- During Movement step: Pay 1 Yen to cross
+- No pawns or tokens may be placed; the Canal is **unplaceable and unstoppable** (transit-only). Removed from the board entirely at 2 players.
+- **Movement transit is ANY-TO-ANY** [DL 2026-07-21]: the Canal connects ANY of its adjacent tiles to ANY other, for **1 Yen per crossing paid to the BANK** (not to a player). This supersedes an earlier colinear-through-lines model, which had been reasoned on the old rectangular grid.
+- Where two of the Canal's neighbors are ALSO directly adjacent to each other (a brick-offset edge), the free direct step governs: crossing the Canal between them is legal but strictly dominated — it reaches the same destination under the same conditions (you still need one of your own assistants there) and costs 1 Yen more, so a player never has reason to pay the toll on such a pair. The rule to derive from this: **every pair of Canal-adjacent tiles is connected for President movement** — free where the two tiles physically touch, otherwise for the 1-Yen toll.
+- Placement adjacency (e.g. Telegram's adjacent-bonus) remains physical tile contiguity and EXCLUDES crossing pairs — the Canal is for transit, not placement.
 
 ---
 
@@ -515,12 +531,14 @@ Compare assistant count on Church Management Board:
 - 1st place: 6 VP
 - 2nd place: 3 VP
 - Ties: Rightmost assistant wins
+- **2-player games (finding D1):** the dummy player's pawn — a setup-placed assistant of an unused color at faith-7 — COMPETES in this majority [DL 2026-07-21]. Rulebook p.9 NOTE (**Jeremy's edition**; the English PDF bundled in `analysis-1/` does NOT carry this NOTE — verbatim quote and provenance in `docs/plans/2026-07-20-phase-2.9-ruling-list.md` §D1): "The dummy player's assistants are taken into account during final scoring to increase competition for majority bonuses." **It sits MID-track, not at the high end:** faith-7 is index 3 of the eight spaces (faith 4–11), leaving four spaces (faith 8–11) to its right. So under the rightmost tie-break it beats a tied real pawn on faith 4–6 and LOSES to a tied real pawn on faith 8–11; holding one pawn, it takes a place only on a tie it wins, and any two real pawns out-count it outright. (Earlier the engine treated it as an eligibility block only and scored over real players — corrected 2026-07-21.)
 
 ### 2. Customs Bonus
 Compare assistant count on Customs Management Board:
 - 1st place: 8 VP
 - 2nd place: 4 VP
 - Ties: Rightmost assistant wins
+- **2-player games (finding D1):** the dummy player's pawn — setup-placed at space-4 — COMPETES in this majority [DL 2026-07-21], by the same rulebook p.9 NOTE (**Jeremy's edition**, not the bundled PDF) as the Church bonus. It is mid-track here too: space-4 is index 3 of the seven spaces, leaving spaces 5–7 to its right, so it wins a tie against a real pawn on spaces 1–3 and loses one against spaces 5–7.
 
 ### 3. Technology Bonus
 Compare total Industry value on Technology cards:

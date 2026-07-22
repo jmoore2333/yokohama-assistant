@@ -2,7 +2,10 @@
 //! the CLI's option text (design docs/plans/2026-07-18-phase2-cli-driver-design.md).
 
 use yokohama_core::*;
-use yokohama_core::game::actions::{copper_mine_reward, fishing_ground_reward, silk_mill_reward, tea_plantation_reward};
+use yokohama_core::game::actions::{
+    calculate_church_faith, copper_mine_reward, fishing_ground_reward, silk_mill_reward,
+    tea_plantation_reward,
+};
 
 use crate::render;
 
@@ -80,30 +83,49 @@ pub fn achievement_desc(a: AchievementType) -> String {
 /// One-line plain-words statement of a Technology card's effect, for the
 /// `labs` view (item 5). A TOTAL match over `TechEffect` -- no wildcard arm,
 /// so adding a variant is a compile error here rather than a silently-missing
-/// line. Each line is authored from the engine's own `TechEffect` variant
-/// docs (`types/cards.rs`); the CLI guide's §8.2 lists card NAMES only, not
-/// per-effect wording, so these are the single display source for what a tech
-/// does. ASCII only, to stay terminal-safe.
+/// line. The CLI guide's §8.2 lists card NAMES only, not per-effect wording,
+/// so these are the SINGLE display source for what a tech does -- the `labs`
+/// view exists precisely so a player can choose without an external
+/// reference. ASCII only, to stay terminal-safe, and short enough that the
+/// composed lab line clears 140 columns
+/// (`labs_view_lines_fit_the_documented_terminal_width`).
+///
+/// AUTHORING RULE (F2, Codex adversarial review of PR #4): each line is
+/// authored from the RULES sources -- rulebook pp. 15-16, the KB reference
+/// `analysis-1/yokohama-kb/01-rules-reference.md`, and guidingpath's
+/// decision log for the rulings (A4: Patent System is self-exclusive) --
+/// and must carry every qualifier that would change a purchase decision:
+/// the cost it still charges, the restriction it does not lift, the timing
+/// it starts from. Five lines shipped without one (Patent System and
+/// Letterpress Printing read as self-paying, Postal System hid its stop
+/// fee, Stagecoach hid that it waives that fee, Telegram hid its bonus
+/// assistant's placement fee) because the only coverage was "non-empty".
+/// `tech_effect_text_carries_the_qualifiers_that_change_a_purchase` now
+/// pins them card by card. A sixth followed (third review, I4): Station
+/// dropped p.15's "and you do not need to pay even if there are other
+/// President pawns in the Area", which is the whole reason the card is
+/// worth 4 industry -- a standing Postal System PLUS Stagecoach for one
+/// area, rather than the conditional shortcut the old line described.
 pub fn tech_effect_text(effect: TechEffect) -> &'static str {
     match effect {
         TechEffect::Tram => "Teleport the President to any area without an opponent President",
-        TechEffect::Stagecoach => "Move through opponent Presidents without paying the pass-through fee",
-        TechEffect::PostalSystem => "May stop and act in an area holding an opponent President",
-        TechEffect::Station => "Place the Station token: +1 Power for everyone there; teleport there while you have an assistant in its area",
+        TechEffect::Stagecoach => "Move through opponent Presidents fee-free; with Postal System, stopping on one is free too",
+        TechEffect::PostalSystem => "May stop and act where opponent Presidents stand; still pay 1 Yen each unless you own Stagecoach",
+        TechEffect::Station => "Place the Station token: +1 Power for all there; free teleport, no President fee; your assistant needed",
         TechEffect::Gaslight => "+2 VP when you build a Shophouse",
         TechEffect::ElectricalLight => "+3 VP when you build a Trading House",
-        TechEffect::MiningTechnology => "+1 Copper whenever you receive Copper",
+        TechEffect::MiningTechnology => "+1 Copper each time you receive 1 or more Copper (once per gain, not per token)",
         TechEffect::SpinningMill => "Once per turn: discard 1 Silk to gain 2 Yen",
         TechEffect::Ball => "+2 VP when you complete an Order",
         TechEffect::LanguageSchool => "+1 Yen when you complete an Order",
-        TechEffect::PatentSystem => "+2 VP when you acquire a Technology",
-        TechEffect::LetterPressPrinting => "+1 Yen when you acquire a Technology",
+        TechEffect::PatentSystem => "+2 VP for each Technology you acquire after this one (never for this card itself)",
+        TechEffect::LetterPressPrinting => "+1 Yen for each Technology you acquire after this one (never for this card itself)",
         TechEffect::Winery => "+3 VP when you place an assistant on the Church",
         TechEffect::Brickyard => "+4 VP when you place an assistant on Customs",
         TechEffect::SystemOfStock => "At turn start, if you have 1 Yen or less, refill to 2 Yen",
         TechEffect::University => "Once per turn: pay 1 Yen to take an assistant from the Warehouse",
         TechEffect::Newspaper => "Placement Option A may use 4 different areas instead of 3",
-        TechEffect::Telegram => "After placing 2 assistants in one area, may place 1 in an adjacent area",
+        TechEffect::Telegram => "After placing 2 assistants in one area, may place 1 in an adjacent area (normal placement fee applies)",
         TechEffect::Telephone => "During Recovery, may leave 1 assistant in the action area",
         TechEffect::Exposition => "Immediately gain 10 VP when acquired",
     }
@@ -177,15 +199,20 @@ fn acting_area(state: &GameState) -> Option<AreaId> {
     }
 }
 
-/// Production-area preview text: `"{verb} (power {p} -> +{r} {good})"`
-/// where `r` is the REAL reward `reward_fn` computes for power `p`.
-/// Production is NOT always power-for-power -- Copper Mine and Silk Mill
-/// under-produce at low power (e.g. `copper_mine_reward(3) == 1`); only
-/// Tea Plantation/Fishing Ground are a flat 1:1 (`game::actions::
-/// production`) -- so this always calls the engine's own reward function
-/// rather than echoing the power number, which would misstate the yield
-/// for the two non-linear areas. Falls back to the bare verb when the
-/// acting area can't be determined (see `acting_area`).
+/// Production-area preview text: `"{verb} (power {p} -> +{r} {good}, next
+/// +{r2} at power {q})"` where `r` is the REAL reward `reward_fn` computes
+/// for power `p` and the `next` clause names the closest higher power that
+/// increases the yield (omitted at the table cap). Production is NOT always
+/// power-for-power -- Copper Mine and Silk Mill under-produce at low power
+/// (e.g. `copper_mine_reward(3) == 1`); only Tea Plantation/Fishing Ground
+/// are a flat 1:1 (`game::actions::production`) -- so this always calls the
+/// engine's own reward function rather than echoing the power number, which
+/// would misstate the yield for the two non-linear areas. The threshold
+/// clause probes the SAME function upward (every table caps by power 6, so
+/// the probe is bounded), keeping `+0 copper` legible as "not yet" rather
+/// than reading as a bug (Task 6; grounded UX finding, forge baseline).
+/// Falls back to the bare verb when the acting area can't be determined
+/// (see `acting_area`).
 fn production_preview(state: &GameState, verb: &str, good: TradeGood, reward_fn: fn(u8) -> u8) -> String {
     match acting_area(state) {
         Some(area) => {
@@ -195,10 +222,48 @@ fn production_preview(state: &GameState, verb: &str, good: TradeGood, reward_fn:
             // target area is guaranteed not to hold it.
             let power = calculate_power(state, state.current_player, area);
             let reward = reward_fn(power);
-            format!("{verb} (power {power} -> +{reward} {})", trade_good_name(good))
+            let next = (power + 1..=6).find(|&q| reward_fn(q) > reward);
+            let threshold = match next {
+                Some(q) => format!(", next +{} at power {q}", reward_fn(q)),
+                None => String::new(),
+            };
+            format!("{verb} (power {power} -> +{reward} {}{threshold})", trade_good_name(good))
         }
         None => verb.to_string(),
     }
+}
+
+/// Fee preview suffix for a placement option (Task 6): ` — fee N yen (1 to
+/// Blue, ...)`, or empty when free. One yen per assistant placed into an
+/// area holding an opponent President, credited per owner -- the same
+/// public-state read the engine's `calculate_placement_cost` /
+/// `credit_placement_fees` pair makes. That engine fn is `pub(crate)` to
+/// yokohama-core (checked at the T6 review, 2026-07-21) and this crate may
+/// not widen it, so the mirror here plus the scratch-apply pin
+/// (`placement_fee_preview_matches_the_engine_charge`) IS the sourcing:
+/// drift from the engine's charge fails the test. `placements` lists one
+/// entry PER ASSISTANT (Option B passes its area twice, plus the Telegram
+/// bonus area). `pub(crate)`: the Option-B picker reuses it for per-area
+/// fee marks so the picker and the option text can never disagree.
+pub(crate) fn placement_fee_note(state: &GameState, placements: &[AreaId]) -> String {
+    let me = state.current_player;
+    let mut per_owner: std::collections::BTreeMap<PlayerId, u32> = std::collections::BTreeMap::new();
+    for &area in placements {
+        for p in &state.players {
+            if p.id != me && p.president_location == PresidentLocation::OnBoard(area) {
+                *per_owner.entry(p.id).or_insert(0) += 1;
+            }
+        }
+    }
+    if per_owner.is_empty() {
+        return String::new();
+    }
+    let total: u32 = per_owner.values().sum();
+    let parts: Vec<String> = per_owner
+        .iter()
+        .map(|(&owner, &n)| format!("{n} to {}", render::color_name(state.player(owner).color)))
+        .collect();
+    format!(" — fee {total} yen ({})", parts.join(", "))
 }
 
 /// One plain-words line describing an `AreaAction` (called from
@@ -256,7 +321,19 @@ fn describe_area_action(action: &AreaAction, state: &GameState, rules: &Rules) -
                     if *trading_houses == 1 { "" } else { "s" }
                 ));
             }
-            format!("Employment Agency: take {}", parts.join(", "))
+            // Cost preview (Task 6): assistants free, shophouses at their
+            // flat price, trading houses at the printed 4/5/6/7 progression
+            // -- the same WarehouseItem::flat_cost / TradingHouseState::
+            // take_cost tables the engine charges from (test-pinned against
+            // an actual apply's money delta).
+            let already = state.current_player().trading_houses.already_taken();
+            let sh_cost = WarehouseItem::Shophouse.flat_cost().unwrap_or(0) * (*shophouses as u32);
+            let th_cost: u32 =
+                (0..*trading_houses).map(|i| TradingHouseState::take_cost(already + i as usize)).sum();
+            let cost = sh_cost + th_cost;
+            let cost_text =
+                if cost == 0 { " (free)".to_string() } else { format!(" — cost {cost} yen") };
+            format!("Employment Agency: take {}{cost_text}", parts.join(", "))
         }
         AreaAction::Chinatown { exchanges } => {
             let parts = exchanges.iter().map(|e| chinatown_exchange_text(*e)).collect::<Vec<_>>().join(", ");
@@ -282,10 +359,27 @@ fn describe_area_action(action: &AreaAction, state: &GameState, rules: &Rules) -
             if *imported_good {
                 parts.push("imported good");
             }
+            // Faith preview (Task 6): the engine's own power + faith
+            // arithmetic (`calculate_power` + `calculate_church_faith`), so
+            // the number shown is exactly the `ChurchSpace { total_faith }`
+            // the engine will queue (test-pinned). Skipped when the acting
+            // area can't be determined (defensive fixture case).
+            let kinds = parts.len();
+            let faith_text = match acting_area(state) {
+                Some(area) => {
+                    let power = calculate_power(state, state.current_player, area);
+                    let faith = calculate_church_faith(
+                        power, *copper, *silk, *tea, *seafood, *yen, *imported_good,
+                    );
+                    let kinds_text = if kinds == 1 { "kind" } else { "kinds" };
+                    format!(" -> faith {faith} (power {power} + {kinds} {kinds_text})")
+                }
+                None => String::new(),
+            };
             if parts.is_empty() {
-                "Church: pay nothing (faith from power only)".to_string()
+                format!("Church: pay nothing{faith_text}")
             } else {
-                format!("Church: pay {}", parts.join(", "))
+                format!("Church: pay {}{faith_text}", parts.join(", "))
             }
         }
         AreaAction::Customs { imported_goods_paid } => {
@@ -317,14 +411,21 @@ pub fn describe_move(mv: &Move, state: &GameState, rules: &Rules) -> String {
         Move::EndAdditionalPhase => "End additional-action phase".to_string(),
         Move::PlaceThreeAreas { placements } if placements.is_empty() => "Place no assistants".to_string(),
         Move::PlaceThreeAreas { placements } => format!(
-            "Place 1 assistant in each of: {}",
-            placements.iter().map(|a| area_label(state, *a)).collect::<Vec<_>>().join(", ")
+            "Place 1 assistant in each of: {}{}",
+            placements.iter().map(|a| area_label(state, *a)).collect::<Vec<_>>().join(", "),
+            placement_fee_note(state, placements),
         ),
         Move::PlaceTwoSameArea { area, adjacent_bonus } => {
             let mut s = format!("Place 2 assistants in {}", area_label(state, *area));
+            // One fee entry PER ASSISTANT: the area twice, plus Telegram's
+            // bonus assistant (which pays under the same rule -- see
+            // apply_place_two_same_area's reuse of apply_placement).
+            let mut placements = vec![*area, *area];
             if let Some(adj) = adjacent_bonus {
                 s.push_str(&format!(" and 1 in {} (Telegram)", area_label(state, *adj)));
+                placements.push(*adj);
             }
+            s.push_str(&placement_fee_note(state, &placements));
             s
         }
         Move::MovePresident { path, destination } if path.is_empty() => {
@@ -950,6 +1051,114 @@ mod tests {
         assert!(tech_effect_text(TechEffect::University).contains("Warehouse"), "{}", tech_effect_text(TechEffect::University));
     }
 
+    /// F2 (Codex adversarial review of PR #4): `tech_effect_text` is the
+    /// ONLY player-facing statement of what a technology does -- the `labs`
+    /// view exists so a player can choose WITHOUT an external reference --
+    /// so an entry that drops a cost, a restriction or a timing qualifier
+    /// changes a purchase decision on wrong information. The coverage
+    /// before this was "every effect is non-empty", which is exactly why
+    /// five materially incomplete entries shipped; these assertions are
+    /// card-SPECIFIC so a future edit that drops a qualifier fails here
+    /// instead of reaching a player.
+    ///
+    /// Rules sources for the wording (never the engine's own logic):
+    /// rulebook pp. 15-16 (Technology Cards), the KB reference
+    /// `analysis-1/yokohama-kb/01-rules-reference.md`, and guidingpath's
+    /// decision log for ruling A4 (Patent System is SELF-EXCLUSIVE,
+    /// 2026-07-20, rulebook p.16 "after this one").
+    #[test]
+    fn tech_effect_text_carries_the_qualifiers_that_change_a_purchase() {
+        // A4: "Whenever you gain a Technology card AFTER THIS ONE..." --
+        // buying Patent System never pays its own bonus. Same class for
+        // Letterpress Printing (rulebook p.15, identical clause).
+        let patent = tech_effect_text(TechEffect::PatentSystem);
+        assert!(patent.contains("+2 VP"), "{patent}");
+        assert!(
+            patent.contains("after this one"),
+            "Patent System is self-exclusive (ruling A4, rulebook p.16): {patent}"
+        );
+        let letterpress = tech_effect_text(TechEffect::LetterPressPrinting);
+        assert!(letterpress.contains("+1 Yen"), "{letterpress}");
+        assert!(
+            letterpress.contains("after this one"),
+            "Letterpress Printing is self-exclusive (rulebook p.15): {letterpress}"
+        );
+
+        // Postal System buys the RIGHT to stop, not a free stop: rulebook
+        // p.15 "You must still pay these players (unless you also own the
+        // Stagecoach)" -- the engine prices that destination fee in
+        // `route_fee_vector`.
+        let postal = tech_effect_text(TechEffect::PostalSystem);
+        assert!(
+            postal.contains("fee") || postal.contains("pay"),
+            "Postal System still pays the players it stops on (rulebook p.15): {postal}"
+        );
+        assert!(
+            postal.contains("Stagecoach"),
+            "Postal System's fee is waived only by Stagecoach (rulebook p.15): {postal}"
+        );
+
+        // Stagecoach waives the pass-through fee AND (rulebook p.15's
+        // "unless you also own the Postal System" pairing, engine:
+        // "Stagecoach waives president fees entirely") Postal System's
+        // destination fee -- and it never lets you stop on its own.
+        let stagecoach = tech_effect_text(TechEffect::Stagecoach);
+        assert!(
+            stagecoach.contains("Postal System"),
+            "Stagecoach's value depends on the Postal System interaction (rulebook p.15): {stagecoach}"
+        );
+
+        // Station is a PERMANENT free stop at one area, not a convenience:
+        // rulebook p.15 "You may move your President pawn to this area
+        // during the Movement Step for free, AND YOU DO NOT NEED TO PAY EVEN
+        // IF THERE ARE OTHER PRESIDENT PAWNS IN THE AREA" -- the clause the
+        // line dropped (third review, I4). Without it Station reads as a
+        // conditional shortcut; with it, it is a standing Postal System PLUS
+        // Stagecoach for that one area, which is what justifies a 4-industry
+        // buy. The engine agrees three ways: `movement.rs`'s station arm
+        // never checks for an opponent President, the empty-path teleport is
+        // exempted from the Postal destination fee, and `legal_moves.rs`
+        // places no block on acting there. Ruling A1 (2026-07-20) retracted
+        // the broader "no assistants needed" reading but PRESERVED this one
+        // ("The card's explicit clauses stand (free; no payment for other
+        // President pawns there)"), so the own-assistant precondition it
+        // confirmed must survive the rewrite too.
+        let station = tech_effect_text(TechEffect::Station);
+        assert!(
+            station.contains("President fee") || station.contains("no fee"),
+            "Station charges NOTHING for other Presidents standing at the Station area \
+             (rulebook p.15; ruling A1 preserved the clause) -- without it the card reads as \
+             a conditional convenience: {station}"
+        );
+        assert!(
+            station.contains("free"),
+            "Station's move is free (rulebook p.15): {station}"
+        );
+        assert!(
+            station.contains("assistant"),
+            "Station still requires one of YOUR assistants at the Station area \
+             (ruling A1 Reading 2, 2026-07-20): {station}"
+        );
+
+        // Telegram's bonus assistant is not free: rulebook p.16 "Pay the
+        // usual cost if another President pawn occupies this adjacent Area."
+        let telegram = tech_effect_text(TechEffect::Telegram);
+        assert!(
+            telegram.contains("fee") || telegram.contains("cost"),
+            "Telegram's bonus placement pays the normal President fee (rulebook p.16): {telegram}"
+        );
+
+        // Mining Technology pays ONCE per gain, not once per token
+        // (rulebook p.15 "Whenever you receive 1 or more Copper token, you
+        // receive 1 additional Copper token"; engine `copper_bonus` returns
+        // the owned-copy count, independent of `base_copper`).
+        let mining = tech_effect_text(TechEffect::MiningTechnology);
+        assert!(
+            mining.contains("1 or more") && mining.contains("not per token"),
+            "Mining Technology pays per GAIN, not per Copper token (rulebook p.15): {mining}"
+        );
+    }
+
     /// Task B review minor: the Station effect line must not promise an
     /// UNCONDITIONAL teleport -- the engine gates it on the owner holding an
     /// assistant in the Station's area (`can_teleport_to_station`,
@@ -972,6 +1181,197 @@ mod tests {
         ] {
             assert!(!phase_name(p).is_empty());
         }
+    }
+
+    /// Task 6 (decision-surface previews): placement options carry a fee
+    /// preview naming amount and recipient(s) whenever an opponent President
+    /// occupies a chosen area -- computed from the same public-state read
+    /// the engine's `calculate_placement_cost`/`credit_placement_fees` pair
+    /// makes (1 yen per assistant placed there, per owner).
+    #[test]
+    fn placement_options_preview_the_fee_with_recipients() {
+        let mut state = state_2p();
+        let rules = Rules::standard();
+        let area = *state.board_layout.areas.keys().next().unwrap();
+        let other = *state.board_layout.areas.keys().nth(1).unwrap();
+        // Blue's President sits in `area`; Red is current.
+        state.players[1].president_location = PresidentLocation::OnBoard(area);
+
+        let a = describe_move(&Move::PlaceThreeAreas { placements: vec![area, other] }, &state, &rules);
+        assert!(a.contains("fee 1 yen (1 to Blue)"), "{a}");
+
+        let b = describe_move(&Move::PlaceTwoSameArea { area, adjacent_bonus: None }, &state, &rules);
+        assert!(b.contains("fee 2 yen (2 to Blue)"), "Option B places 2 assistants: {b}");
+
+        // Telegram's bonus assistant pays the same per-assistant fee
+        // (apply_place_two_same_area routes it through apply_placement).
+        let t = describe_move(&Move::PlaceTwoSameArea { area: other, adjacent_bonus: Some(area) }, &state, &rules);
+        assert!(t.contains("fee 1 yen (1 to Blue)"), "{t}");
+
+        // No opponent President anywhere on the path: no fee text at all.
+        let free = describe_move(&Move::PlaceThreeAreas { placements: vec![other] }, &state, &rules);
+        assert!(!free.contains("fee"), "{free}");
+    }
+
+    /// The previewed fee must equal what the engine actually charges: apply
+    /// the placement and compare the payer's money delta.
+    #[test]
+    fn placement_fee_preview_matches_the_engine_charge() {
+        let rules = Rules::standard();
+        let mut state = state_2p();
+        state.turn_phase = TurnPhase::Placement;
+        let area = *state
+            .board_layout
+            .areas
+            .iter()
+            .find(|(_, c)| c.area_type != AreaType::Canal)
+            .unwrap()
+            .0;
+        state.players[1].president_location = PresidentLocation::OnBoard(area);
+
+        let mv = Move::PlaceTwoSameArea { area, adjacent_bonus: None };
+        let text = describe_move(&mv, &state, &rules);
+        let money_before = state.current_player().money;
+        let after = apply_move_unchecked(&state, &mv, &rules).expect("placement applies");
+        let charged = money_before - after.players[state.current_player.0 as usize].money;
+        assert_eq!(charged, 2, "fixture: two assistants into Blue's area");
+        assert!(text.contains(&format!("fee {charged} yen")), "preview must equal the charge: {text}");
+    }
+
+    /// Task 6: Employment Agency options preview their total cost --
+    /// assistants free, shophouses 2 yen each, trading houses at the printed
+    /// 4/5/6/7 progression -- and the previewed number equals the engine's
+    /// actual charge.
+    #[test]
+    fn employment_agency_option_previews_cost_matching_the_engine() {
+        let rules = Rules::standard();
+        let mut state = state_2p();
+        let ea = *state
+            .board_layout
+            .areas
+            .iter()
+            .find(|(_, c)| c.area_type == AreaType::EmploymentAgency)
+            .expect("2P board has an Employment Agency")
+            .0;
+        let me = state.current_player;
+        state.players[me.0 as usize].president_location = PresidentLocation::OnBoard(ea);
+        state.players[me.0 as usize].money = 10;
+        // Power 5 (president + 4 assistants): the EA item cap is a power
+        // table (`employment_agency_tokens_allowed`, 5+ -> 4 items), and
+        // this composite takes 3.
+        state.players[me.0 as usize].assistants.on_board.insert(ea, 4);
+        state.players[me.0 as usize].assistants.in_hand -= 4;
+        state.turn_phase = TurnPhase::AreaAction;
+        state.current_action_power = Some(calculate_power(&state, me, ea));
+
+        let action = AreaAction::EmploymentAgency { assistants: 1, shophouses: 1, trading_houses: 1 };
+        let mv = Move::ExecuteAreaAction { action };
+        let text = describe_move(&mv, &state, &rules);
+        assert!(text.contains("cost 6 yen"), "0 + 2 + first-TH 4: {text}");
+
+        let after = apply_move_unchecked(&state, &mv, &rules).expect("EA composite applies");
+        let charged = 10 - after.players[me.0 as usize].money;
+        assert_eq!(charged, 6, "preview must equal the engine's charge");
+
+        // A free take (assistants only) shows no cost suffix.
+        let free = describe_move(
+            &Move::ExecuteAreaAction {
+                action: AreaAction::EmploymentAgency { assistants: 2, shophouses: 0, trading_houses: 0 },
+            },
+            &state,
+            &rules,
+        );
+        assert!(free.contains("(free)"), "{free}");
+    }
+
+    /// Task 6: Church options preview the resulting faith (engine's own
+    /// `calculate_power` + `calculate_church_faith`), and the number matches
+    /// the `ChurchSpace { total_faith }` choice the engine actually queues.
+    #[test]
+    fn church_option_previews_faith_matching_the_engine_queue() {
+        let rules = Rules::standard();
+        let mut state = state_2p();
+        let church = *state
+            .board_layout
+            .areas
+            .iter()
+            .find(|(_, c)| c.area_type == AreaType::Church)
+            .expect("2P board has a Church")
+            .0;
+        let me = state.current_player;
+        state.players[me.0 as usize].president_location = PresidentLocation::OnBoard(church);
+        state.turn_phase = TurnPhase::AreaAction;
+        state.current_action_power = Some(calculate_power(&state, me, church));
+
+        // President alone = power 1 -> faith 1, +3 payment kinds = faith 4.
+        let action = AreaAction::Church { copper: true, silk: true, tea: false, seafood: false, yen: true, imported_good: false };
+        let mv = Move::ExecuteAreaAction { action };
+        let text = describe_move(&mv, &state, &rules);
+        assert!(text.contains("-> faith 4"), "{text}");
+        assert!(text.contains("power 1 + 3 kinds"), "{text}");
+
+        let after = apply_move_unchecked(&state, &mv, &rules).expect("church action applies");
+        match after.pending_choices.first() {
+            Some(PendingChoice::ChurchSpace { total_faith }) => {
+                assert_eq!(*total_faith, 4, "preview must equal the queued faith")
+            }
+            other => {
+                // Faith 4 with only space 4 eligible can resolve inline; the
+                // placement then lands on faith-4 directly.
+                assert!(
+                    after.players[me.0 as usize].church_positions.contains(&4) || other.is_some(),
+                    "faith-4 outcome expected, got {other:?}"
+                );
+            }
+        }
+    }
+
+    /// Task 6: production previews carry threshold context -- the next power
+    /// step that increases the yield -- so `+0 copper` reads as "not yet",
+    /// not as a bug.
+    #[test]
+    fn production_preview_names_the_next_threshold() {
+        let mut state = state_2p();
+        let rules = Rules::standard();
+        let mine = *state
+            .board_layout
+            .areas
+            .iter()
+            .find(|(_, cfg)| cfg.area_type == AreaType::CopperMine)
+            .expect("a Copper Mine area exists")
+            .0;
+        let cp = state.current_player;
+        state.players[cp.0 as usize].president_location = PresidentLocation::OnBoard(mine);
+        state.players[cp.0 as usize].assistants.on_board.insert(mine, 1);
+        state.players[cp.0 as usize].assistants.in_hand -= 1;
+        // President (1) + 1 assistant = power 2; copper_mine_reward(2) = 0,
+        // and the next step is +1 at power 3.
+        let text = describe_move(&Move::ExecuteAreaAction { action: AreaAction::ProduceCopper }, &state, &rules);
+        assert!(text.contains("power 2 -> +0 copper"), "{text}");
+        assert!(text.contains("next +1 at power 3"), "{text}");
+    }
+
+    /// At the table cap (power 5+ on every production table) there is no
+    /// next step, so no threshold clause prints.
+    #[test]
+    fn production_preview_omits_the_threshold_at_cap() {
+        let mut state = state_2p();
+        let rules = Rules::standard();
+        let mine = *state
+            .board_layout
+            .areas
+            .iter()
+            .find(|(_, cfg)| cfg.area_type == AreaType::CopperMine)
+            .expect("a Copper Mine area exists")
+            .0;
+        let cp = state.current_player;
+        state.players[cp.0 as usize].president_location = PresidentLocation::OnBoard(mine);
+        state.players[cp.0 as usize].assistants.on_board.insert(mine, 5);
+        state.players[cp.0 as usize].assistants.in_hand -= 5;
+        // Power 6 -> copper capped at 3; no further step exists.
+        let text = describe_move(&Move::ExecuteAreaAction { action: AreaAction::ProduceCopper }, &state, &rules);
+        assert!(text.contains("+3 copper"), "{text}");
+        assert!(!text.contains("next +"), "{text}");
     }
 
     /// Task 13 (T2.2b): a small hand-built board for MovePresident cost

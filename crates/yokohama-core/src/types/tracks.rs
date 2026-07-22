@@ -74,9 +74,18 @@ impl ChurchTrack {
             .count() as u8
     }
 
-    /// Total assistants placed (for end-game trigger).
+    /// Real-player assistants on the track — the end-game trigger's currency.
+    /// EXCLUDES the 2-player setup dummy ([`PlayerId::DUMMY`]): a 2P game ends
+    /// on the 4th REAL pawn (the printed 5-total being 4 real + 1 dummy;
+    /// finding D1), so the trigger's 4/5/6 thresholds must count real pawns
+    /// only. The dummy still occupies its slot for blocking and majority
+    /// scoring — it is just not a pawn the trigger tallies.
     pub fn total_assistants(&self) -> u8 {
-        self.slots.iter().filter(|s| s.is_some()).count() as u8
+        self.slots
+            .iter()
+            .flatten()
+            .filter(|d| !d.player.is_dummy())
+            .count() as u8
     }
 
     /// Movement-icon riders per Faith space (decision log 2026-07-17):
@@ -206,9 +215,18 @@ impl CustomsTrack {
             .count() as u8
     }
 
-    /// Total assistants placed (for end-game trigger).
+    /// Real-player assistants on the track — the end-game trigger's currency.
+    /// EXCLUDES the 2-player setup dummy ([`PlayerId::DUMMY`]): a 2P game ends
+    /// on the 4th REAL pawn (the printed 5-total being 4 real + 1 dummy;
+    /// finding D1), so the trigger's 4/5/6 thresholds must count real pawns
+    /// only. The dummy still occupies its slot for blocking and majority
+    /// scoring — it is just not a pawn the trigger tallies.
     pub fn total_assistants(&self) -> u8 {
-        self.slots.iter().filter(|s| s.is_some()).count() as u8
+        self.slots
+            .iter()
+            .flatten()
+            .filter(|d| !d.player.is_dummy())
+            .count() as u8
     }
 }
 

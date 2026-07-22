@@ -147,12 +147,12 @@ pub fn validate_church_action(
     Ok(())
 }
 
-/// Empty Church spaces with value <= `total_faith`, ascending. In
-/// 2-player games the faith-7 space is pre-blocked by a printed dummy pawn
-/// — an eligibility rule, not a `slots` entry, so arrival-order and
-/// end-trigger pawn counts (which count real players only) stay untouched.
-/// Faith below 4 yields no eligible space; faith above 11 is capped at the
-/// top of the track.
+/// Empty Church spaces with value <= `total_faith`, ascending. Blocking is
+/// pure occupancy (finding D1): in 2-player games faith-7 is held by the
+/// setup dummy ([`PlayerId::DUMMY`], placed by `place_setup_dummies`), so the
+/// space is excluded exactly because its slot is taken — no player-count
+/// special case. Faith below 4 yields no eligible space; faith above 11 is
+/// capped at the top of the track.
 ///
 /// `pub` (Task 17, extended Task 4): reused directly by the Church
 /// legal-move generator (feasibility only) and by `execute_church_action` /
@@ -161,12 +161,9 @@ pub fn validate_church_action(
 /// Supersedes `highest_eligible_church_space`: choosing a lower space is no
 /// longer auto-decided by the executor — Task 4 defers that pick to the
 /// player via `PendingChoice::ChurchSpace` whenever >=2 spaces qualify.
-pub fn eligible_church_spaces(track: &ChurchTrack, total_faith: u8, player_count: u8) -> Vec<u8> {
+pub fn eligible_church_spaces(track: &ChurchTrack, total_faith: u8) -> Vec<u8> {
     let ceiling = total_faith.min(11);
     (4..=ceiling).filter(|&faith| {
-        if player_count == 2 && faith == 7 {
-            return false;
-        }
         let index = ChurchTrack::faith_to_index(faith).expect("4..=11 always maps to a valid index");
         track.slots[index].is_none()
     }).collect()
@@ -209,7 +206,7 @@ pub fn execute_church_action(
     validate_church_action(state, player, area, copper, silk, tea, seafood, yen, imported_good)?;
 
     let total_faith = calculate_church_faith(power, copper, silk, tea, seafood, yen, imported_good);
-    let spaces = eligible_church_spaces(&state.church_track, total_faith, state.config.player_count);
+    let spaces = eligible_church_spaces(&state.church_track, total_faith);
     if spaces.is_empty() {
         return Err("No eligible Church space for this Faith total");
     }
@@ -337,12 +334,13 @@ pub fn validate_customs_action(
 
 /// Empty, unblocked Customs spaces for an exact printed cost, ordered
 /// LOWER SPACE NUMBER FIRST (which is VP-descending for every printed pair
-/// -- unlike Church, where higher space numbers carry higher VP). In
-/// 2-player games space 4 (VP 9) is pre-blocked by a printed dummy pawn --
-/// an eligibility rule, not a `slots` entry, mirroring the Church faith-7
-/// 2P block so arrival order and the end-trigger assistant count stay
-/// untouched. Returns an empty `Vec` if `cost` doesn't match a printed
-/// cost, or every candidate space is occupied/blocked.
+/// -- unlike Church, where higher space numbers carry higher VP). Blocking
+/// is pure occupancy (finding D1): in 2-player games space 4 (VP 9) is held
+/// by the setup dummy ([`PlayerId::DUMMY`], placed by `place_setup_dummies`),
+/// so it is excluded exactly because its slot is taken — mirroring the
+/// Church faith-7 block, no player-count special case. Returns an empty `Vec`
+/// if `cost` doesn't match a printed cost, or every candidate space is
+/// occupied.
 ///
 /// `pub`: reused directly by the Customs legal-move generator (feasibility
 /// only) and by `execute_customs_action` / the `CustomsSpace` choice
@@ -352,15 +350,12 @@ pub fn validate_customs_action(
 /// space of a pair is no longer auto-decided by the executor -- Task 5
 /// defers that pick to the player via `PendingChoice::CustomsSpace`
 /// whenever >=2 spaces qualify.
-pub fn eligible_customs_spaces_for_cost(track: &CustomsTrack, cost: u8, player_count: u8) -> Vec<u8> {
+pub fn eligible_customs_spaces_for_cost(track: &CustomsTrack, cost: u8) -> Vec<u8> {
     let candidates = match CustomsTrack::spaces_for_cost(cost) {
         Some(c) => c,
         None => return Vec::new(),
     };
     candidates.iter().copied().filter(|&space| {
-        if player_count == 2 && space == 4 {
-            return false;
-        }
         let index = CustomsTrack::space_to_index(space).expect("space always in 1..=7");
         track.slots[index].is_none()
     }).collect()
@@ -396,11 +391,7 @@ pub fn execute_customs_action(
 
     validate_customs_action(state, player, area, imported_goods_paid, power)?;
 
-    let spaces = eligible_customs_spaces_for_cost(
-        &state.customs_track,
-        imported_goods_paid,
-        state.config.player_count,
-    );
+    let spaces = eligible_customs_spaces_for_cost(&state.customs_track, imported_goods_paid);
     if spaces.is_empty() {
         return Err("No eligible Customs space for this payment");
     }
@@ -507,7 +498,7 @@ mod tests {
             PlayerState::new(PlayerId::new(1), PlayerColor::Blue, false),
         ];
 
-        GameState {
+        let mut state = GameState {
             config,
             board_layout,
             players,
@@ -539,7 +530,11 @@ mod tests {
             final_round: false,
             trigger_player: None,
             pending_choices: Vec::new(),
-        }
+        };
+        // Finding D1: give this ad-hoc 2P fixture the setup dummy so faith-7
+        // and space-4 blocking is occupancy-derived exactly as a real game's.
+        crate::game::place_setup_dummies(&mut state);
+        state
     }
 
     /// Places a Church area on the board and puts the president there.
@@ -574,6 +569,8 @@ mod tests {
             PlayerId::new(0),
         );
         state.players.push(PlayerState::new(PlayerId::new(2), PlayerColor::Yellow, false));
+        // create_test_state placed the 2P dummy; a 3P game has none.
+        crate::game::clear_setup_dummies(&mut state);
         state
     }
 
@@ -590,7 +587,7 @@ mod tests {
     #[test]
     fn test_eligible_church_spaces_basic() {
         let track = ChurchTrack::new();
-        assert_eq!(eligible_church_spaces(&track, 5, 3), vec![4, 5]);
+        assert_eq!(eligible_church_spaces(&track, 5), vec![4, 5]);
     }
 
     #[test]
@@ -598,13 +595,13 @@ mod tests {
         let mut track = ChurchTrack::new();
         let idx5 = ChurchTrack::faith_to_index(5).unwrap();
         track.slots[idx5] = Some(ChurchSlot { player: PlayerId::new(1), arrival_order: 0 });
-        assert_eq!(eligible_church_spaces(&track, 5, 3), vec![4]);
+        assert_eq!(eligible_church_spaces(&track, 5), vec![4]);
     }
 
     #[test]
     fn test_eligible_church_spaces_below_4_is_empty() {
         let track = ChurchTrack::new();
-        assert_eq!(eligible_church_spaces(&track, 3, 3), Vec::<u8>::new());
+        assert_eq!(eligible_church_spaces(&track, 3), Vec::<u8>::new());
     }
 
     #[test]
@@ -614,15 +611,19 @@ mod tests {
             let idx = ChurchTrack::faith_to_index(faith).unwrap();
             track.slots[idx] = Some(ChurchSlot { player: PlayerId::new(1), arrival_order: 0 });
         }
-        assert_eq!(eligible_church_spaces(&track, 5, 3), Vec::<u8>::new());
+        assert_eq!(eligible_church_spaces(&track, 5), Vec::<u8>::new());
     }
 
     #[test]
     fn test_eligible_church_spaces_2p_blocks_faith_7() {
-        let track = ChurchTrack::new();
-        assert_eq!(eligible_church_spaces(&track, 7, 2), vec![4, 5, 6]);
-        // 3P (and 4P): no dummy pawn, faith-7 is reachable.
-        assert_eq!(eligible_church_spaces(&track, 7, 3), vec![4, 5, 6, 7]);
+        // Occupancy governs (finding D1): with the 2P dummy on faith-7 that
+        // space is excluded exactly because its slot is taken; an empty track
+        // (3P/4P, no dummy) leaves faith-7 reachable.
+        let mut with_dummy = ChurchTrack::new();
+        with_dummy.slots[ChurchTrack::faith_to_index(7).unwrap()] =
+            Some(ChurchSlot { player: PlayerId::DUMMY, arrival_order: 0 });
+        assert_eq!(eligible_church_spaces(&with_dummy, 7), vec![4, 5, 6]);
+        assert_eq!(eligible_church_spaces(&ChurchTrack::new(), 7), vec![4, 5, 6, 7]);
     }
 
     #[test]
@@ -1199,10 +1200,10 @@ mod tests {
     #[test]
     fn test_eligible_customs_spaces_for_cost_basic() {
         let track = CustomsTrack::new();
-        assert_eq!(eligible_customs_spaces_for_cost(&track, 1, 3), vec![1, 2]);
-        assert_eq!(eligible_customs_spaces_for_cost(&track, 2, 3), vec![3, 4]);
-        assert_eq!(eligible_customs_spaces_for_cost(&track, 3, 3), vec![5, 6]);
-        assert_eq!(eligible_customs_spaces_for_cost(&track, 4, 3), vec![7]);
+        assert_eq!(eligible_customs_spaces_for_cost(&track, 1), vec![1, 2]);
+        assert_eq!(eligible_customs_spaces_for_cost(&track, 2), vec![3, 4]);
+        assert_eq!(eligible_customs_spaces_for_cost(&track, 3), vec![5, 6]);
+        assert_eq!(eligible_customs_spaces_for_cost(&track, 4), vec![7]);
     }
 
     #[test]
@@ -1210,7 +1211,7 @@ mod tests {
         let mut track = CustomsTrack::new();
         let idx1 = CustomsTrack::space_to_index(1).unwrap();
         track.slots[idx1] = Some(CustomsSlot { player: PlayerId::new(1), arrival_order: 0 });
-        assert_eq!(eligible_customs_spaces_for_cost(&track, 1, 3), vec![2]);
+        assert_eq!(eligible_customs_spaces_for_cost(&track, 1), vec![2]);
     }
 
     #[test]
@@ -1220,24 +1221,30 @@ mod tests {
             let idx = CustomsTrack::space_to_index(space).unwrap();
             track.slots[idx] = Some(CustomsSlot { player: PlayerId::new(1), arrival_order: 0 });
         }
-        assert_eq!(eligible_customs_spaces_for_cost(&track, 1, 3), Vec::<u8>::new());
+        assert_eq!(eligible_customs_spaces_for_cost(&track, 1), Vec::<u8>::new());
     }
 
     #[test]
     fn test_eligible_customs_spaces_for_cost_invalid_cost_is_empty() {
         let track = CustomsTrack::new();
-        assert_eq!(eligible_customs_spaces_for_cost(&track, 0, 3), Vec::<u8>::new());
-        assert_eq!(eligible_customs_spaces_for_cost(&track, 5, 3), Vec::<u8>::new());
+        assert_eq!(eligible_customs_spaces_for_cost(&track, 0), Vec::<u8>::new());
+        assert_eq!(eligible_customs_spaces_for_cost(&track, 5), Vec::<u8>::new());
     }
 
     #[test]
     fn test_eligible_customs_spaces_for_cost_2p_blocks_space4() {
+        // Occupancy governs (finding D1): cost 2 is the {3,4} pair. With
+        // space 3 taken by a real player AND the 2P dummy on space 4, the
+        // pair is empty. Freeing space 4 (the 3P/4P case, no dummy) makes it
+        // reachable again.
         let mut track = CustomsTrack::new();
-        let idx3 = CustomsTrack::space_to_index(3).unwrap();
-        track.slots[idx3] = Some(CustomsSlot { player: PlayerId::new(1), arrival_order: 0 });
-        assert_eq!(eligible_customs_spaces_for_cost(&track, 2, 2), Vec::<u8>::new());
-        // 3P (and 4P): no dummy pawn, space 4 is reachable.
-        assert_eq!(eligible_customs_spaces_for_cost(&track, 2, 3), vec![4]);
+        track.slots[CustomsTrack::space_to_index(3).unwrap()] =
+            Some(CustomsSlot { player: PlayerId::new(1), arrival_order: 0 });
+        track.slots[CustomsTrack::space_to_index(4).unwrap()] =
+            Some(CustomsSlot { player: PlayerId::DUMMY, arrival_order: 0 });
+        assert_eq!(eligible_customs_spaces_for_cost(&track, 2), Vec::<u8>::new());
+        track.slots[CustomsTrack::space_to_index(4).unwrap()] = None;
+        assert_eq!(eligible_customs_spaces_for_cost(&track, 2), vec![4]);
     }
 
     #[test]

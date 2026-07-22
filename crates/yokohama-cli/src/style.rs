@@ -11,7 +11,7 @@
 
 use std::sync::atomic::{AtomicBool, Ordering};
 
-use yokohama_core::PlayerColor;
+use yokohama_core::{AreaType, PlayerColor};
 
 /// Process-wide switch. `false` at rest: a library user that never calls
 /// `init_from_tty`/`force` gets plain text forever.
@@ -66,6 +66,9 @@ pub enum GoodKind {
     Tea,
     Seafood,
     Yen,
+    /// Imported goods -- like `Yen`, not a core `TradeGood`, but a counted
+    /// resource the goods run displays (Task 6 full-color treatment).
+    Imports,
 }
 
 /// Semantic tones -- call sites name WHAT a token is, this module decides
@@ -76,6 +79,10 @@ pub enum GoodKind {
 pub enum Tone {
     Player(PlayerColor),
     Good(GoodKind),
+    /// A board tile's display name/art, colored by area type (Task 6
+    /// redesign: production areas in their good's color, commercial areas
+    /// in distinct hues, the Canal in water cyan).
+    Tile(AreaType),
     Vp,
     Warn,
     Prompt,
@@ -97,6 +104,19 @@ fn sgr(tone: Tone) -> &'static str {
         Tone::Good(GoodKind::Tea) => "32",
         Tone::Good(GoodKind::Seafood) => "36",
         Tone::Good(GoodKind::Yen) => "93",
+        Tone::Good(GoodKind::Imports) => "95",
+        Tone::Tile(AreaType::CopperMine) => "33",
+        Tone::Tile(AreaType::SilkMill) => "37",
+        Tone::Tile(AreaType::TeaPlantation) => "32",
+        Tone::Tile(AreaType::FishingGround) => "36",
+        Tone::Tile(AreaType::Bank) => "93",
+        Tone::Tile(AreaType::PortA | AreaType::PortB) => "94",
+        Tone::Tile(AreaType::LaboratoryA | AreaType::LaboratoryB) => "95",
+        Tone::Tile(AreaType::EmploymentAgency) => "90",
+        Tone::Tile(AreaType::Chinatown) => "91",
+        Tone::Tile(AreaType::Church) => "97",
+        Tone::Tile(AreaType::Customs) => "34",
+        Tone::Tile(AreaType::Canal) => "96",
         Tone::Vp => "1;97",
         Tone::Warn => "1;31",
         Tone::Prompt => "1",
@@ -114,28 +134,35 @@ pub fn paint(tone: Tone, s: &str) -> String {
     }
 }
 
+/// Remove `ESC…` escape runs (SGR `ESC[…m` and the cursor controls the
+/// frame composer emits), leaving the plain text. Promoted out of
+/// test-support (Task 6): `screen::visible_width` computes display width
+/// with it when joining the board and panel, so painted lines never shear
+/// the seam. The equality `strip_ansi(colored) == plain` remains the
+/// alignment invariant the render tests pin: painting must never add,
+/// drop, or reorder a single visible character.
+pub(crate) fn strip_ansi(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let mut chars = s.chars();
+    while let Some(c) = chars.next() {
+        if c == '\u{1b}' {
+            for c2 in chars.by_ref() {
+                if c2.is_ascii_alphabetic() {
+                    break;
+                }
+            }
+        } else {
+            out.push(c);
+        }
+    }
+    out
+}
+
 #[cfg(test)]
 pub(crate) mod test_support {
-    /// Remove `ESC[…m` runs, leaving the plain text. The equality
-    /// `strip_ansi(colored) == plain` is the alignment invariant the
-    /// render tests pin: painting must never add, drop, or reorder a
-    /// single visible character.
-    pub(crate) fn strip_ansi(s: &str) -> String {
-        let mut out = String::with_capacity(s.len());
-        let mut chars = s.chars();
-        while let Some(c) = chars.next() {
-            if c == '\u{1b}' {
-                for c2 in chars.by_ref() {
-                    if c2 == 'm' {
-                        break;
-                    }
-                }
-            } else {
-                out.push(c);
-            }
-        }
-        out
-    }
+    /// Test alias for the crate-internal `strip_ansi` (kept so existing
+    /// test imports read unchanged).
+    pub(crate) use super::strip_ansi;
 }
 
 #[cfg(test)]

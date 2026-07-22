@@ -164,7 +164,59 @@ pub fn new_game(mut config: GameConfig, rules: &Rules, seed: u64) -> Result<Pend
         }
     }
 
+    // Finding D1: the 2-player dummy assistants are board furniture placed
+    // once here (like the Port/Lab fills above). reconcile_setup re-types the
+    // board but never touches the two tracks, and finalize_setup only resolves
+    // starting-order choices, so this single placement carries through BOTH
+    // the normal and the live-tracked setup paths unchanged.
+    place_setup_dummies(&mut state);
+
     Ok(PendingSetup { state, deals })
+}
+
+/// Finding D1 (rulebook p.9 NOTE, Jeremy's edition -- not the bundled PDF; see guidingpath's 2026-07-21 DL rows): in a 2-player game a "dummy" assistant of
+/// an unused colour is placed during setup on Church faith-7 and Customs
+/// space-4. Modelled as a real slot occupant owned by the sentinel
+/// [`PlayerId::DUMMY`] — the ONE representation from which every consumer
+/// derives: it BLOCKS real placement on those spaces (occupancy, via
+/// `eligible_church_spaces` / `eligible_customs_spaces_for_cost`), it is
+/// EXCLUDED from the end-game trigger's real-pawn tally (`total_assistants`
+/// skips it, so a 2P game still ends on the 4th REAL pawn — the printed
+/// 5-total being 4 real + 1 dummy), and it COMPETES in the Church/Customs
+/// majority bonuses (`game::scoring`). No-op for 3+ players, which have no
+/// dummy. `arrival_order` is irrelevant (final scoring's count-tie is
+/// positional, not by arrival) and is left 0 without advancing
+/// `next_arrival_order`, so real placements are numbered exactly as before.
+pub(crate) fn place_setup_dummies(state: &mut GameState) {
+    if state.config.player_count != 2 {
+        return;
+    }
+    let church_idx = ChurchTrack::faith_to_index(7).expect("faith 7 is on the track");
+    state.church_track.slots[church_idx] = Some(ChurchSlot {
+        player: PlayerId::DUMMY,
+        arrival_order: 0,
+    });
+    let customs_idx = CustomsTrack::space_to_index(4).expect("space 4 is on the track");
+    state.customs_track.slots[customs_idx] = Some(CustomsSlot {
+        player: PlayerId::DUMMY,
+        arrival_order: 0,
+    });
+}
+
+/// Inverse of [`place_setup_dummies`]: remove the 2-player dummy from Church
+/// faith-7 and Customs space-4 if (and only if) it is the sentinel occupant.
+/// Used by tests that convert a 2P fixture up to 3/4 players, where no dummy
+/// exists — it leaves any real-player pawn on those spaces untouched.
+#[cfg(test)]
+pub(crate) fn clear_setup_dummies(state: &mut GameState) {
+    let church_idx = ChurchTrack::faith_to_index(7).expect("faith 7 is on the track");
+    if state.church_track.slots[church_idx].map(|s| s.player) == Some(PlayerId::DUMMY) {
+        state.church_track.slots[church_idx] = None;
+    }
+    let customs_idx = CustomsTrack::space_to_index(4).expect("space 4 is on the track");
+    if state.customs_track.slots[customs_idx].map(|s| s.player) == Some(PlayerId::DUMMY) {
+        state.customs_track.slots[customs_idx] = None;
+    }
 }
 
 /// Resolve each player's starting-order choice against a `PendingSetup`, producing a playable
@@ -220,8 +272,8 @@ pub struct SetupObservations {
 
 /// Observed physical board arrangement (handled in reconcile_setup's board
 /// pass): area tile per grid cell and building-site card per grid cell,
-/// row-major over `board_gen::grid_dimensions`. `sites` is None exactly
-/// where the tile carries no site (Canal).
+/// row-major over `board_gen::row_lengths` (the staggered pyramid). `sites`
+/// is None exactly where the tile carries no site (Canal).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ObservedBoard {
     pub tiles: Vec<crate::types::AreaType>,
@@ -436,18 +488,16 @@ pub fn reconcile_setup(
     Ok(pending)
 }
 
-/// Board pass: re-type the fixed row-major grid to the observed tiles,
-/// reassign building-site cards from registry indices, rebuild the 5-Power
-/// token pool over the new non-Canal cells (seeded values, order preserved),
-/// and rebuild adjacency and Canal crossings for the new Canal cell. Grid
-/// positions never move (AreaId i is always cell (i/cols, i%cols)), but
-/// flank-pair Canal-crossing adjacency depends on WHICH cell is the Canal,
-/// so a re-type CAN move it (design 2026-07-18 decision log, Task 9 -
-/// supersedes the earlier "adjacency never touched" assumption, which held
-/// only under the old Canal-as-node semantics). Adjacency is rebuilt
-/// wholesale from the same shared helpers `generate_board_layout` uses
-/// (grid-orthogonal edges + `derive_canal_crossings`), so reconciled output
-/// is identical to generating this tile arrangement directly.
+/// Board pass: re-type the fixed row-major staggered grid to the observed
+/// tiles, reassign building-site cards from registry indices, rebuild the
+/// 5-Power token pool over the new non-Canal cells (seeded values, order
+/// preserved), and rebuild adjacency and Canal crossings for the new Canal
+/// cell. Grid positions never move (AreaId i is always the same staggered
+/// cell), but the any-to-any Canal-crossing adjacency depends on WHICH cell is
+/// the Canal, so a re-type CAN move it. Adjacency is rebuilt wholesale from the
+/// same shared helpers `generate_board_layout` uses (`staggered_adjacency` +
+/// `derive_canal_crossings`), so reconciled output is identical to generating
+/// this tile arrangement directly.
 fn reconcile_board(
     pending: &mut PendingSetup,
     board: &ObservedBoard,
@@ -513,18 +563,19 @@ fn reconcile_board(
             );
         }
     }
-    // Rebuild adjacency: grid-orthogonal base plus the new Canal cell's
-    // derived flank pairs (both layered exactly the way generation does).
-    let (rows, cols) = crate::game::board_gen::grid_dimensions(pending.state.config.player_count);
+    // Rebuild adjacency: staggered brick-offset base plus the new Canal cell's
+    // derived any-to-any transit pairs (both layered exactly the way
+    // generation does).
+    let rows = crate::game::board_gen::row_lengths(pending.state.config.player_count);
     layout.adjacency.clear();
-    for (a, b) in crate::game::board_gen::grid_orthogonal_adjacency(rows, cols) {
+    for (a, b) in crate::game::board_gen::staggered_adjacency(&rows) {
         layout.adjacency.entry(a).or_default().push(b);
         layout.adjacency.entry(b).or_default().push(a);
     }
     layout.canal_crossings.clear();
     if let Some(ci) = board.tiles.iter().position(|t| *t == AreaType::Canal) {
-        let pos = ((ci / cols as usize) as u8, (ci % cols as usize) as u8);
-        for (a, b) in crate::game::board_gen::derive_canal_crossings(pos, rows, cols) {
+        let pos = crate::game::board_gen::area_id_to_cell(AreaId::new(ci as u8), &rows);
+        for (a, b) in crate::game::board_gen::derive_canal_crossings(pos, &rows) {
             layout.adjacency.entry(a).or_default().push(b);
             layout.adjacency.entry(b).or_default().push(a);
             layout.canal_crossings.push((a, b));
@@ -655,6 +706,63 @@ mod tests {
         assert_eq!(config.track_trigger(), 6);
         assert_eq!(config.order_cards_to_remove(), 0);
         assert_eq!(config.inactive_area_count(), 0);
+    }
+
+    /// Finding D1 (rulebook p.9 NOTE, Jeremy's edition -- not the bundled PDF; see guidingpath's 2026-07-21 DL rows): 2-player setup places a "dummy"
+    /// assistant of an unused colour on Church faith-7 (index 3) and Customs
+    /// space-4 (index 3), owned by the sentinel `PlayerId::DUMMY`. Modelled as
+    /// a real slot occupant so placement blocking and majority competition
+    /// both fall out of the one representation.
+    #[test]
+    fn finalize_setup_places_the_2p_dummy_on_faith7_and_space4() {
+        let rules = Rules::standard();
+        let pending = new_game(GameConfig::for_player_count(2), &rules, 3).unwrap();
+        let state = finalize_setup(
+            pending,
+            &[StartingOrderChoice::Keep(0), StartingOrderChoice::Keep(0)],
+        )
+        .unwrap();
+
+        assert_eq!(
+            state.church_track.slots[ChurchTrack::faith_to_index(7).unwrap()].map(|s| s.player),
+            Some(PlayerId::DUMMY),
+            "2P Church faith-7 must be held by the dummy"
+        );
+        assert_eq!(
+            state.customs_track.slots[CustomsTrack::space_to_index(4).unwrap()].map(|s| s.player),
+            Some(PlayerId::DUMMY),
+            "2P Customs space-4 must be held by the dummy"
+        );
+        // The dummy is furniture, not a real-player pawn: excluded from the
+        // end-game trigger's real-pawn tally (a 2P game still ends on the 4th
+        // REAL pawn -- the printed 5-total being 4 real + 1 dummy).
+        assert_eq!(
+            state.church_track.total_assistants(),
+            0,
+            "the dummy is excluded from the real-pawn trigger count"
+        );
+        assert_eq!(state.customs_track.total_assistants(), 0);
+    }
+
+    /// 3- and 4-player games have no dummy: faith-7 and space-4 are ordinary
+    /// open spaces there.
+    #[test]
+    fn finalize_setup_places_no_dummy_above_two_players() {
+        let rules = Rules::standard();
+        for players in [3u8, 4] {
+            let pending = new_game(GameConfig::for_player_count(players), &rules, 3).unwrap();
+            let choices: Vec<StartingOrderChoice> =
+                (0..players).map(|_| StartingOrderChoice::Keep(0)).collect();
+            let state = finalize_setup(pending, &choices).unwrap();
+            assert!(
+                state.church_track.slots[ChurchTrack::faith_to_index(7).unwrap()].is_none(),
+                "{players}P: Church faith-7 must be open (no dummy)"
+            );
+            assert!(
+                state.customs_track.slots[CustomsTrack::space_to_index(4).unwrap()].is_none(),
+                "{players}P: Customs space-4 must be open (no dummy)"
+            );
+        }
     }
 
     #[test]
@@ -876,6 +984,38 @@ mod tests {
         assert_eq!(again, reconciled);
     }
 
+    /// Finding D1: the live-tracked setup path (new_game -> reconcile_setup ->
+    /// finalize_setup) yields the SAME dummy occupancy as the normal path.
+    /// reconcile_setup re-types the board and swaps cards but never touches the
+    /// two tracks, so the dummy new_game placed carries through unchanged.
+    #[test]
+    fn reconcile_then_finalize_2p_still_carries_the_dummy() {
+        let rules = Rules::standard();
+        let pending = new_game(GameConfig::for_player_count(2), &rules, 11).unwrap();
+        let table = new_game(GameConfig::for_player_count(2), &rules, 99).unwrap();
+        let obs = SetupObservations {
+            port_a: Some(std::array::from_fn(|i| table.state.port_state.port_a.slots[i].unwrap())),
+            deals: vec![(PlayerId::new(0), table.deals[0])],
+            ..Default::default()
+        };
+        let reconciled = reconcile_setup(pending, &obs, &rules).unwrap();
+        let state = finalize_setup(
+            reconciled,
+            &[StartingOrderChoice::Keep(0), StartingOrderChoice::Keep(0)],
+        )
+        .unwrap();
+        assert_eq!(
+            state.church_track.slots[ChurchTrack::faith_to_index(7).unwrap()].map(|s| s.player),
+            Some(PlayerId::DUMMY),
+            "the dummy must survive the reconcile path onto Church faith-7"
+        );
+        assert_eq!(
+            state.customs_track.slots[CustomsTrack::space_to_index(4).unwrap()].map(|s| s.player),
+            Some(PlayerId::DUMMY),
+            "the dummy must survive the reconcile path onto Customs space-4"
+        );
+    }
+
     #[test]
     fn reconcile_setup_rejects_bad_observations() {
         let rules = Rules::standard();
@@ -913,8 +1053,8 @@ mod tests {
         let rules = Rules::standard();
         let pending = new_game(GameConfig::for_player_count(3), &rules, 5).unwrap();
         // Observed board: the seeded tiles REVERSED (a valid permutation), sites 0..13 in order.
-        let (rows, cols) = crate::game::board_gen::grid_dimensions(3);
-        let n = (rows * cols) as usize;
+        let rows = crate::game::board_gen::row_lengths(3);
+        let n = crate::game::board_gen::expected_tile_count(3);
         let mut tiles: Vec<AreaType> = (0..n)
             .map(|i| pending.state.board_layout.areas[&AreaId::new(i as u8)].area_type)
             .collect();
@@ -935,7 +1075,10 @@ mod tests {
         for (i, tile) in tiles.iter().enumerate().take(n) {
             let id = AreaId::new(i as u8);
             assert_eq!(layout.areas[&id].area_type, *tile);
-            assert_eq!(layout.areas[&id].grid_position, ((i / cols as usize) as u8, (i % cols as usize) as u8));
+            assert_eq!(
+                layout.areas[&id].grid_position,
+                crate::game::board_gen::area_id_to_cell(id, &rows)
+            );
         }
         // Sites follow the observed assignment; Canal has none.
         // (No `clone_reset` helper on BuildingSite — compare the printed
@@ -961,20 +1104,18 @@ mod tests {
         assert!(!layout.five_power_tokens.contains_key(
             &AreaId::new(tiles.iter().position(|t| *t == AreaType::Canal).unwrap() as u8)
         ));
-        // Canal crossings follow flank-pair semantics (design 2026-07-18
-        // decision log) for the Canal's NEW cell, matching
-        // derive_canal_crossings exactly (this seed's reversal happens to
-        // land the Canal on a grid edge, where every candidate line is
-        // out-of-bounds and the correct answer is legitimately empty - the
-        // both-cells-exist filter doing its job, not a weaker assertion) -
-        // and each pair is bidirectionally adjacent.
+        // Canal crossings follow the any-to-any transit model (decision log
+        // 2026-07-21) for the Canal's NEW cell, matching derive_canal_crossings
+        // exactly (reconcile reuses the same helper generation does) — and each
+        // pair is bidirectionally adjacent and marked as a crossing.
         let canal_i = tiles.iter().position(|t| *t == AreaType::Canal).unwrap();
-        let canal_pos = ((canal_i / cols as usize) as u8, (canal_i % cols as usize) as u8);
-        let expected = crate::game::board_gen::derive_canal_crossings(canal_pos, rows, cols);
+        let canal_pos = crate::game::board_gen::area_id_to_cell(AreaId::new(canal_i as u8), &rows);
+        let expected = crate::game::board_gen::derive_canal_crossings(canal_pos, &rows);
         assert_eq!(layout.canal_crossings, expected);
         for &(a, b) in &layout.canal_crossings {
             assert!(layout.adjacent_areas(a).contains(&b));
             assert!(layout.adjacent_areas(b).contains(&a));
+            assert!(layout.is_canal_crossing(a, b));
         }
     }
 
@@ -1005,8 +1146,8 @@ mod tests {
         let rules = Rules::standard();
         let pending = new_game(GameConfig::for_player_count(2), &rules, 123).unwrap();
         // 2p never has a Canal tile (tiles_for_player_count strips it).
-        let (rows, cols) = crate::game::board_gen::grid_dimensions(2);
-        let n = (rows * cols) as usize;
+        let rows = crate::game::board_gen::row_lengths(2);
+        let n = crate::game::board_gen::expected_tile_count(2);
         let mut tiles: Vec<AreaType> = (0..n)
             .map(|i| pending.state.board_layout.areas[&AreaId::new(i as u8)].area_type)
             .collect();
@@ -1020,11 +1161,15 @@ mod tests {
         };
         let r = reconcile_setup(pending, &obs, &rules).unwrap();
         let layout = &r.state.board_layout;
-        // (c) Types permuted as observed; grid positions unchanged (row-major (2,5) grid).
+        // (c) Types permuted as observed; grid positions unchanged (row-major
+        // staggered pyramid, 4/3/2/1).
         for (i, tile) in tiles.iter().enumerate().take(n) {
             let id = AreaId::new(i as u8);
             assert_eq!(layout.areas[&id].area_type, *tile);
-            assert_eq!(layout.areas[&id].grid_position, ((i / cols as usize) as u8, (i % cols as usize) as u8));
+            assert_eq!(
+                layout.areas[&id].grid_position,
+                crate::game::board_gen::area_id_to_cell(id, &rows)
+            );
         }
         // (d) Sites follow the observed assignment (every cell, since there's no Canal).
         for (i, site) in sites.iter().enumerate().take(n) {

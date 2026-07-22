@@ -10,7 +10,7 @@ use crate::input::parse_order_id;
 use crate::reveal::{claimed_token_area, lab_b_changed, refilled_port_slots, Pending};
 use crate::session::{ApplyError, TrackingMode};
 use crate::style::{paint, Tone};
-use crate::{describe, render};
+use crate::{describe, render, screen};
 
 /// One REPL turn's worth of state layered over a `Session`: which options
 /// page is showing, any in-progress live-mode reveal collection, and
@@ -42,6 +42,17 @@ pub struct Repl {
     /// REPL rather than in `render` because that layer is a pure formatter --
     /// "once per session" is mutable session state the REPL owns.
     board_width_note_shown: bool,
+    /// Composed-frame flags (Task 6): `composed` opts this session into the
+    /// TTY frame (`screen` command toggles it; only effective when
+    /// `screen::enabled()` -- a pipe never frames regardless), `show_panel`
+    /// keeps the players box inside that frame (`panel` toggles).
+    pub composed: bool,
+    pub show_panel: bool,
+    /// Privacy flag (Task 6): when set, hand CONTENTS mask to counts in the
+    /// `hand` and `players` views (the kept starting order lives in the
+    /// hand). Defaults ON in live mode -- the laptop gets passed around a
+    /// real table -- and OFF in simulation. `privacy` toggles.
+    pub privacy: bool,
 }
 
 /// One line in the Movement phase's collapsed numbered list (design.md:67,
@@ -55,7 +66,7 @@ enum PromptOption {
     /// A single move rendered and committed exactly as today (`describe_move`).
     Direct(Move),
     /// A walk/teleport destination reachable by >1 route label -- selecting it
-    /// opens the route sub-prompt over `moves` (all `MovePresident` to `destination`).
+    /// opens a numbered pick over `moves` (all `MovePresident` to `destination`).
     Route { destination: AreaId, moves: Vec<Move> },
     /// The whole retreat family (>1 `ReturnPresidentToHand` variant) collapsed to
     /// one line; `count` is the family size, shown in the entry text. Selecting it
@@ -63,6 +74,18 @@ enum PromptOption {
     /// from state -- the moves themselves are never cloned into the entry, so a
     /// pathological 100k-variant retreat family stays cheap to display).
     Retreat { count: usize },
+    /// Placement Option A collapsed (Task 6 picker): the whole non-empty
+    /// `PlaceThreeAreas` family behind one entry; selecting it opens the
+    /// area-toggle picker. `max_areas` is the largest placement the engine
+    /// offered (3, 4 with Newspaper, fewer when the hand runs short).
+    PlacementA { max_areas: usize },
+    /// Placement Option B collapsed: one entry over the unique eligible
+    /// areas; selecting it opens a numbered area pick (then a Telegram
+    /// bonus pick when >1 variant exists for the chosen area).
+    PlacementB { areas: Vec<AreaId> },
+    /// A pending assistant-move choice's options for ONE source, collapsed
+    /// (>1 destination); selecting it opens a numbered destination pick.
+    MoveFrom { from: MoveSource, moves: Vec<Move> },
 }
 
 /// An in-progress Movement sub-prompt. Both variants are ENTRY HELPERS: whatever
@@ -70,16 +93,35 @@ enum PromptOption {
 /// neither can construct-and-apply anything the engine didn't offer.
 pub(crate) enum SubPrompt {
     None,
-    /// Picking one of a multi-label destination's route labels. `moves` are the
-    /// `MovePresident` variants to `destination` (bounded small -- one per distinct
-    /// fee vector); a numeric answer commits `moves[k]` directly.
-    Route { destination: AreaId, moves: Vec<Move> },
+    /// A numbered pick over a captured slice of the legal list (route labels,
+    /// assistant-move destinations, Telegram-bonus variants): a numeric
+    /// answer commits `moves[k]` directly. `title` heads the list screen.
+    Pick { title: String, moves: Vec<Move> },
     /// Guided recovery: `areas` are the current player's occupied areas ascending
     /// (AreaId, count-there), captured at entry (state is frozen until commit);
     /// `collected` grows one answer per area. Once `collected.len() == areas.len()`
     /// the confirm line shows, and `confirm` assembles + exact-matches the
     /// `ReturnPresidentToHand { recover }`.
     Retreat { areas: Vec<(AreaId, u8)>, collected: Vec<u8> },
+    /// Placement Option A picker (Task 6): toggle areas by id off the board
+    /// view; `confirm` multiset-matches the assembled `PlaceThreeAreas`
+    /// against the legal list. `max_areas` is display guidance only -- the
+    /// legal-list match stays the sole authority.
+    PlaceA { selected: Vec<AreaId>, max_areas: usize },
+    /// Placement Option B picker: `areas` are the unique eligible areas,
+    /// addressed BY AREA ID exactly as they are displayed (C1, third review
+    /// -- a list index here silently placed in the wrong area for every id
+    /// past the Canal). `selected` holds the id typed so far so the screen
+    /// can preview the move before `confirm` commits it (or opens a `Pick`
+    /// over that area's Telegram-bonus variants), mirroring Option A's
+    /// select -> preview -> confirm shape.
+    PlaceB { areas: Vec<AreaId>, selected: Option<AreaId> },
+    /// The `view` game-info menu (owner scope item 10, discoverability): a
+    /// ONE-SHOT numbered menu over the read-only state views -- picking a
+    /// number renders that surface and closes the menu. Purely an entry
+    /// surface over the same render functions the direct commands call, so
+    /// the two can never disagree.
+    ViewMenu,
 }
 
 /// The result of one `Repl::step` call: the text to show the user (which
@@ -90,12 +132,17 @@ pub struct StepOutput {
     pub quit: bool,
 }
 
+/// One game-info menu row: the label the row shows and the render fn it
+/// dispatches to (see [`Repl::VIEW_MENU`]).
+type ViewEntry = (&'static str, fn(&mut Repl) -> StepOutput);
+
 impl Repl {
     pub fn new(session: crate::session::Session) -> Repl {
         // Restore a persisted lockdown (review §3): a session saved after a
         // desync/invariant fault carries `record.lockdown`, so a reload comes
         // back locked instead of silently playable again.
         let locked = session.is_locked();
+        let privacy = matches!(session.mode, TrackingMode::Live);
         Repl {
             session,
             page: 0,
@@ -103,6 +150,9 @@ impl Repl {
             locked,
             sub: SubPrompt::None,
             board_width_note_shown: false,
+            composed: true,
+            show_panel: true,
+            privacy,
         }
     }
 
@@ -128,19 +178,28 @@ impl Repl {
             return self.lockdown_status();
         }
         let state = self.session.state();
-        let phase_text = match state.pending_choices.first() {
-            Some(head) => {
-                let n = state.pending_choices.len();
-                format!(
+        // The pending-choice banner gets its OWN line rather than the
+        // header's phase slot (I6, third review): inlined, it pushed the
+        // header to 150 columns past the documented 140, and the terminal
+        // wrapped it mid-token -- the goods block's `i0` rendering as `i`
+        // with a stray `0 | hand 1` underneath, which reads as corrupted
+        // state rather than as a wrapped line. Split, both lines sit inside
+        // the bound at every player count, and the banner is if anything
+        // more prominent on a line of its own.
+        let mut out = render::prompt_header(state, describe::phase_name(state.turn_phase));
+        out.push('\n');
+        if let Some(head) = state.pending_choices.first() {
+            let n = state.pending_choices.len();
+            out.push_str(&paint(
+                Tone::Prompt,
+                &format!(
                     "Choose: {} — {n} choice{} pending",
                     describe::describe_pending_choice(head, state, self.session.rules()),
                     if n == 1 { "" } else { "s" },
-                )
-            }
-            None => describe::phase_name(state.turn_phase).to_string(),
-        };
-        let mut out = render::prompt_header(state, &phase_text);
-        out.push('\n');
+                ),
+            ));
+            out.push('\n');
+        }
         if self.session.is_over() {
             out.push_str("game over — commands only\n");
         } else {
@@ -171,6 +230,21 @@ impl Repl {
                 if total_pages > 1 {
                     out.push_str(&format!("page {}/{total_pages}\n", self.page + 1));
                 }
+                // Ceremony reduction (Task 6): a forced single-option prompt
+                // advertises the bare-Enter shortcut `step`'s `[]` arm honors.
+                // What that keystroke DOES depends on the entry, though: a
+                // `Direct` commits a move, while a grouped family opens a
+                // sub-prompt (`pick_option`'s own split). Saying "apply" for
+                // the grouped case over-promised (F4, Codex review of PR #4)
+                // -- most visibly in an emergency-retreat position, whose
+                // only displayed entry is the Retreat family.
+                if n == 1 {
+                    let verb = match options.first() {
+                        Some(PromptOption::Direct(_)) => "apply",
+                        _ => "open",
+                    };
+                    out.push_str(&format!("(only option — press Enter to {verb})\n"));
+                }
             }
         }
         out.push_str(&self.input_hint());
@@ -189,7 +263,7 @@ impl Repl {
     /// (`AnyGood`, `WarehouseTake`, `ChurchSpace`, ...), has no shorthand of
     /// its own, so it gets the bare numbers+'help' hint.
     fn input_hint(&self) -> String {
-        const TAIL: &str = "or a command ('help' for the list)";
+        const TAIL: &str = "or a command ('view' for game info, 'help' for the list)";
         let state = self.session.state();
         if matches!(state.pending_choices.first(), Some(PendingChoice::AssistantMove)) {
             return format!("> enter a number, 'm <from> <to>' to resolve (or the numbered Decline), {TAIL}\n");
@@ -200,7 +274,10 @@ impl Repl {
         match state.turn_phase {
             TurnPhase::Placement => format!("> enter a number, 'a'/'b' for placement, {TAIL}\n"),
             TurnPhase::Movement => {
-                format!("> enter a number, 'r' to retreat (or the numbered retreat entry for guided recovery), {TAIL}\n")
+                // Deliberately terser than the other two clauses: at 142
+                // columns this was the longest line the driver ever printed,
+                // past the 140 the guide promises (I6, third review).
+                format!("> enter a number, 'r' to retreat (the numbered retreat entry is guided), {TAIL}\n")
             }
             TurnPhase::AdditionalActionFirst
             | TurnPhase::AreaAction
@@ -255,11 +332,25 @@ impl Repl {
             };
         }
         match words.as_slice() {
-            [] => self.out(String::new(), false),
+            // Ceremony reduction (Task 6, owner-chosen over silent
+            // auto-advance): bare Enter on a prompt whose displayed list is
+            // exactly ONE entry applies that entry through the normal commit
+            // path -- recorded honestly like any numbered pick. Multi-option
+            // prompts (and game-over/no-option screens) keep the old
+            // re-prompt behavior.
+            [] => {
+                if !self.session.is_over() && self.display_options().len() == 1 {
+                    self.pick_option(0)
+                } else {
+                    self.out(String::new(), false)
+                }
+            }
             ["quit"] | ["q"] => StepOutput { text: "bye\n".to_string(), quit: true },
             ["help"] => self.out_view(HELP_TEXT.to_string()),
             ["board"] => self.board_cmd(),
-            ["players"] => self.out_view(render::players_panel(self.session.state(), self.session.rules())),
+            ["players"] => {
+                self.out_view(render::players_panel(self.session.state(), self.session.rules(), self.privacy))
+            }
             ["ports"] => self.out_view(render::ports_view(self.session.state(), self.session.rules())),
             ["labs"] => self.out_view(render::labs_view(self.session.state(), self.session.rules())),
             ["tracks"] => self.out_view(render::tracks_view(self.session.state())),
@@ -268,6 +359,10 @@ impl Repl {
             ["hand"] => self.out_view(self.hand_text()),
             ["score"] => self.out_view(self.score_text()),
             ["log"] => self.out_view(self.log_tail()),
+            ["view"] | ["views"] | ["?"] => {
+                self.sub = SubPrompt::ViewMenu;
+                self.out(String::new(), false)
+            }
             ["more"] => {
                 self.advance_page();
                 self.out(String::new(), false)
@@ -277,12 +372,35 @@ impl Repl {
                 self.out(String::new(), false)
             }
             ["undo"] => match self.session.undo() {
-                Ok(()) => {
+                Ok(warnings) => {
                     self.page = 0;
-                    self.out("Undid last entry.\n".to_string(), false)
+                    // Warnings ride the same visible channel `apply`'s delta
+                    // lines and the load warnings use -- the frame erases
+                    // anything printed outside this text (I3).
+                    let mut text = String::from("Undid last entry.\n");
+                    for w in warnings {
+                        text.push_str(&w);
+                        text.push('\n');
+                    }
+                    self.out(text, false)
                 }
                 Err(e) => self.out(format!("Cannot undo: {e}\n"), false),
             },
+            ["privacy"] => {
+                self.privacy = !self.privacy;
+                let word = if self.privacy { "HIDDEN" } else { "shown" };
+                self.out(format!("Private info (hand contents) now {word} in views.\n"), false)
+            }
+            ["panel"] => {
+                self.show_panel = !self.show_panel;
+                let word = if self.show_panel { "shown" } else { "hidden" };
+                self.out(format!("Players panel {word} (composed screen only).\n"), false)
+            }
+            ["screen"] => {
+                self.composed = !self.composed;
+                let word = if self.composed { "on" } else { "off" };
+                self.out(format!("Composed screen {word} (takes effect on a real terminal).\n"), false)
+            }
             ["save"] => self.save_cmd(None),
             ["save", _] => self.save_cmd(Some(words[1])),
             ["reveal", seat_tok, card_tok] => self.reveal_cmd(seat_tok, card_tok),
@@ -362,6 +480,13 @@ impl Repl {
     /// on the board's OWN rendered width (all grid rows share one width, so
     /// the first line's column count is it), never on the terminal size (std
     /// exposes none). `&mut self` only to flip the once-per-session flag.
+    ///
+    /// Inside a composed frame this prints NO board at all (I5, third
+    /// review): `screen::wrap` puts the grid and the legend above every body,
+    /// so emitting them again cost 62 rows at 4 players in a 140x50 terminal
+    /// and scrolled the top of the real board away -- the F3 overflow, back
+    /// via the first row of the `view` menu. The width note still fires there
+    /// (it is about the terminal, not about this command's output).
     fn board_cmd(&mut self) -> StepOutput {
         let grid = render::board_grid(self.session.state());
         let width = grid.lines().next().map(|l| l.chars().count()).unwrap_or(0);
@@ -373,9 +498,14 @@ impl Repl {
                 "(board is {width} columns wide — widen the terminal if rows shear; guide §2)\n"
             ));
         }
-        text.push_str(&grid);
-        text.push_str(render::board_legend());
-        text.push('\n');
+        if screen::frame_active(self) {
+            text.push_str("(the board and its legend are already above — the frame redraws them every turn.)\n");
+            text.push_str("(type 'screen' for plain scrolling output instead.)\n");
+        } else {
+            text.push_str(&grid);
+            text.push_str(&render::board_legend(self.session.state()));
+            text.push('\n');
+        }
         self.out_view(text)
     }
 
@@ -383,15 +513,20 @@ impl Repl {
         // Surface the persisted reason (review §3) when one is recorded, so a
         // reloaded locked session tells the operator WHY it locked, not just
         // that it did. A directly-forced test lock has no recorded reason.
+        //
+        // The reason gets its OWN line (I6, third review): inlined between
+        // the marker and the turn/seed counters it ran the status line to 157
+        // columns -- past the documented 140 -- and a desync lockdown is
+        // precisely the moment the operator must be able to READ the screen.
         let reason = self
             .session
             .record()
             .lockdown
             .as_deref()
-            .map(|r| format!(" [{r}]"))
+            .map(|r| format!("  reason: {r}\n"))
             .unwrap_or_default();
         format!(
-            "{}{reason} turn {} | seed {} | {} logged event(s) -- only 'save', 'log', 'quit' available\n",
+            "{} turn {} | seed {} | {} logged event(s) -- only 'save', 'log', 'quit' available\n{reason}",
             paint(Tone::Warn, "[locked]"),
             self.session.state().turn_number,
             self.session.record().seed,
@@ -414,8 +549,33 @@ impl Repl {
         let len = options.len();
         match options.into_iter().nth(k) {
             Some(PromptOption::Direct(mv)) => self.commit(mv),
-            Some(PromptOption::Route { destination, moves }) => self.enter_route_subprompt(destination, moves),
+            Some(PromptOption::Route { destination, moves }) => {
+                let title = format!("Routes to {}", describe::area_label(self.session.state(), destination));
+                self.enter_pick_subprompt(title, moves)
+            }
             Some(PromptOption::Retreat { .. }) => self.enter_retreat_subprompt(),
+            Some(PromptOption::PlacementA { max_areas }) => {
+                self.sub = SubPrompt::PlaceA { selected: Vec::new(), max_areas };
+                self.out(
+                    "Option A — toggle areas by id off the board, then 'confirm'.".to_string(),
+                    false,
+                )
+            }
+            Some(PromptOption::PlacementB { areas }) => {
+                self.sub = SubPrompt::PlaceB { areas, selected: None };
+                self.out(
+                    "Option B — type the id of the area to place 2 assistants in, then 'confirm'."
+                        .to_string(),
+                    false,
+                )
+            }
+            Some(PromptOption::MoveFrom { from, moves }) => {
+                let from_label = match from {
+                    MoveSource::Hand => "hand".to_string(),
+                    MoveSource::Area(a) => describe::area_label(self.session.state(), a),
+                };
+                self.enter_pick_subprompt(format!("Assistant destinations from {from_label}"), moves)
+            }
             None => self.out(format!("option {k} out of range (0..{len})\n"), false),
         }
     }
@@ -433,11 +593,26 @@ impl Repl {
     fn display_options(&self) -> Vec<PromptOption> {
         let legal = self.session.legal();
         let state = self.session.state();
-        let group = state.turn_phase == TurnPhase::Movement && state.pending_choices.is_empty();
-        if !group {
-            return legal.into_iter().map(PromptOption::Direct).collect();
+        // A pending AssistantMove choice groups its options by SOURCE (Task
+        // 6 picker) -- checked ahead of phase, same priority order the
+        // banner/hint use.
+        if matches!(state.pending_choices.first(), Some(PendingChoice::AssistantMove)) {
+            return Self::group_assistant_moves(legal);
         }
+        if state.pending_choices.is_empty() {
+            match state.turn_phase {
+                TurnPhase::Movement => return Self::group_movement(legal),
+                TurnPhase::Placement => return Self::group_placement(legal),
+                _ => {}
+            }
+        }
+        legal.into_iter().map(PromptOption::Direct).collect()
+    }
 
+    /// Movement main-list grouping (design.md:67, destination-first): one
+    /// entry per walk/teleport destination (a `Route` when >1 fee label),
+    /// the retreat family folded to one `Retreat` line.
+    fn group_movement(legal: Vec<Move>) -> Vec<PromptOption> {
         let mut routes: std::collections::BTreeMap<AreaId, Vec<Move>> = std::collections::BTreeMap::new();
         let mut others: Vec<Move> = Vec::new();
         let mut retreat_count = 0usize;
@@ -475,6 +650,81 @@ impl Repl {
         out
     }
 
+    /// Placement main-list grouping (Task 6 picker): the combinatorial
+    /// `PlaceThreeAreas` wall (186 options on a fresh 2P board) collapses to
+    /// ONE Option-A entry (area-toggle picker), the `PlaceTwoSameArea`
+    /// family to ONE Option-B entry (area pick), the empty placement stays a
+    /// direct line, and anything else passes through untouched. The
+    /// `a`/`b` grammars remain first-class alongside (never removed).
+    fn group_placement(legal: Vec<Move>) -> Vec<PromptOption> {
+        let mut max_areas = 0usize;
+        let mut option_a_present = false;
+        let mut empty_placement: Option<Move> = None;
+        let mut b_areas: Vec<AreaId> = Vec::new();
+        let mut others: Vec<Move> = Vec::new();
+        for mv in legal {
+            match &mv {
+                Move::PlaceThreeAreas { placements } if placements.is_empty() => {
+                    empty_placement = Some(mv);
+                }
+                Move::PlaceThreeAreas { placements } => {
+                    option_a_present = true;
+                    max_areas = max_areas.max(placements.len());
+                }
+                Move::PlaceTwoSameArea { area, .. } => {
+                    if !b_areas.contains(area) {
+                        b_areas.push(*area);
+                    }
+                }
+                _ => others.push(mv),
+            }
+        }
+        b_areas.sort_unstable_by_key(|a| a.0);
+
+        let mut out = Vec::new();
+        if option_a_present {
+            out.push(PromptOption::PlacementA { max_areas });
+        }
+        if !b_areas.is_empty() {
+            out.push(PromptOption::PlacementB { areas: b_areas });
+        }
+        if let Some(mv) = empty_placement {
+            out.push(PromptOption::Direct(mv));
+        }
+        out.extend(others.into_iter().map(PromptOption::Direct));
+        out
+    }
+
+    /// Assistant-move grouping (Task 6 picker): one entry per SOURCE (hand,
+    /// each occupied area) opening a destination pick; a single-destination
+    /// source stays a direct line (the Route singleton rule); Decline and
+    /// anything else pass through untouched.
+    fn group_assistant_moves(legal: Vec<Move>) -> Vec<PromptOption> {
+        let mut by_source: Vec<(MoveSource, Vec<Move>)> = Vec::new();
+        let mut others: Vec<Move> = Vec::new();
+        for mv in legal {
+            match &mv {
+                Move::ChooseAssistantMove { from, .. } => {
+                    match by_source.iter_mut().find(|(s, _)| s == from) {
+                        Some((_, moves)) => moves.push(mv),
+                        None => by_source.push((*from, vec![mv])),
+                    }
+                }
+                _ => others.push(mv),
+            }
+        }
+        let mut out = Vec::new();
+        for (from, mut moves) in by_source {
+            if moves.len() == 1 {
+                out.push(PromptOption::Direct(moves.pop().unwrap()));
+            } else {
+                out.push(PromptOption::MoveFrom { from, moves });
+            }
+        }
+        out.extend(others.into_iter().map(PromptOption::Direct));
+        out
+    }
+
     /// One numbered-line's text for a display entry. `Direct` reuses
     /// `describe_move` verbatim; the two collapsing variants get their own
     /// single-line summaries (the `<k>` counts come from the grouped family sizes).
@@ -489,6 +739,20 @@ impl Repl {
             PromptOption::Retreat { count } => format!(
                 "Retreat President to hand — choose recovery ({count} combinations; 'r' grammar works too)"
             ),
+            PromptOption::PlacementA { max_areas } => format!(
+                "Option A — place 1 assistant each in up to {max_areas} areas (pick areas; 'a' grammar works too)"
+            ),
+            PromptOption::PlacementB { areas } => format!(
+                "Option B — place 2 assistants in one area ({} eligible; 'b' grammar works too)",
+                areas.len()
+            ),
+            PromptOption::MoveFrom { from, moves } => {
+                let from_label = match from {
+                    MoveSource::Hand => "hand".to_string(),
+                    MoveSource::Area(a) => describe::area_label(state, *a),
+                };
+                format!("Move an assistant from {from_label} — {} destinations", moves.len())
+            }
         }
     }
 
@@ -634,41 +898,121 @@ impl Repl {
         })
     }
 
-    /// Route one line of input into the active Movement sub-prompt. `matches!`
-    /// takes only a momentary borrow, so the `&mut self` dispatch is clean.
+    /// Route one line of input into the active sub-prompt. `matches!` takes
+    /// only a momentary borrow, so the `&mut self` dispatch is clean.
     fn step_sub_prompt(&mut self, words: &[&str]) -> StepOutput {
-        if matches!(self.sub, SubPrompt::Route { .. }) {
-            self.step_route(words)
-        } else {
-            self.step_retreat(words)
+        match self.sub {
+            SubPrompt::Pick { .. } => self.step_pick(words),
+            SubPrompt::Retreat { .. } => self.step_retreat(words),
+            SubPrompt::PlaceA { .. } => self.step_place_a(words),
+            SubPrompt::PlaceB { .. } => self.step_place_b(words),
+            SubPrompt::ViewMenu => self.step_view_menu(words),
+            SubPrompt::None => self.out(String::new(), false), // unreachable: gated by caller
         }
     }
 
-    /// Route sub-prompt input: a valid route number commits that exact
-    /// `MovePresident` (taken straight from `legal()` -- never re-derived),
-    /// `cancel` returns to the main list, `quit`/`q` exits (the un-applied
-    /// sub-prompt is simply discarded -- nothing was recorded, same escape the
-    /// reveal collector honors). A bare out-of-range number re-asks with its
-    /// range; any other non-answer re-asks with `! finish or cancel this prompt
-    /// first` (a view/`save`/`undo`/`more` mid-collection would render or mutate
-    /// against a state the collection doesn't reflect).
-    fn step_route(&mut self, words: &[&str]) -> StepOutput {
+    /// One `(label, render)` pair per game-info surface, in menu order: the
+    /// label a row shows and the function that row dispatches to travel in
+    /// the same tuple, so relabeling, reordering, or adding a surface can't
+    /// desynchronize text from behavior (the array index is the menu
+    /// number). Each render fn is the SAME code path the surface's direct
+    /// command uses. NOTE this couples label to function only -- whether a
+    /// label's WORDING matches what its view renders remains a human
+    /// judgment (reviewed, not machine-checked).
+    const VIEW_MENU: [ViewEntry; 10] = [
+        ("Board — tiles, presidents, assistants, buildings", |r| r.board_cmd()),
+        ("Players — every player's public holdings in full", |r| {
+            let t = render::players_panel(r.session.state(), r.session.rules(), r.privacy);
+            r.out_view(t)
+        }),
+        ("Port offer — the order cards on display", |r| {
+            let t = render::ports_view(r.session.state(), r.session.rules());
+            r.out_view(t)
+        }),
+        ("Lab offer — the techs on display, with slot surcharges", |r| {
+            let t = render::labs_view(r.session.state(), r.session.rules());
+            r.out_view(t)
+        }),
+        ("Tracks — Church/Customs spaces (incl. the 2P dummy), Station, mercenary supply", |r| {
+            let t = render::tracks_view(r.session.state());
+            r.out_view(t)
+        }),
+        ("Building sites — printed rewards, what's built and whose, adjacency", |r| {
+            let t = render::sites_view(r.session.state(), r.session.rules());
+            r.out_view(t)
+        }),
+        ("Goals — the achievement cards, claim VP, and per-player progress", |r| {
+            let t = render::achievements_view(r.session.state(), r.session.rules());
+            r.out_view(t)
+        }),
+        ("Hand — the current player's order cards", |r| {
+            let t = r.hand_text();
+            r.out_view(t)
+        }),
+        ("Score — current VP and money", |r| {
+            let t = r.score_text();
+            r.out_view(t)
+        }),
+        ("Log — the recent move/event trail", |r| {
+            let t = r.log_tail();
+            r.out_view(t)
+        }),
+    ];
+
+    /// Game-info menu input (one-shot): a valid number closes the menu and
+    /// dispatches that row's render fn from [`Self::VIEW_MENU`]; `cancel`
+    /// closes it; anything else re-asks. Read-only -- no state, record, or
+    /// session field is ever touched from here (`board_cmd`'s once-per-
+    /// session width-note flag is the sole, display-only exception).
+    fn step_view_menu(&mut self, words: &[&str]) -> StepOutput {
+        match words {
+            ["cancel"] => {
+                self.sub = SubPrompt::None;
+                self.out(String::new(), false)
+            }
+            ["quit"] | ["q"] => StepOutput { text: "bye\n".to_string(), quit: true },
+            [tok] if !tok.is_empty() && tok.chars().all(|c| c.is_ascii_digit()) => {
+                let Some(&(_, render_fn)) =
+                    tok.parse::<usize>().ok().and_then(|k| Self::VIEW_MENU.get(k))
+                else {
+                    return self.out(
+                        format!("! pick a number 0-{}, or 'cancel'", Self::VIEW_MENU.len() - 1),
+                        false,
+                    );
+                };
+                self.sub = SubPrompt::None;
+                render_fn(self)
+            }
+            _ => self.out("! pick a numbered view, or 'cancel'".to_string(), false),
+        }
+    }
+
+    /// Numbered-pick sub-prompt input (route labels, assistant destinations,
+    /// Telegram variants): a valid number commits that exact move (taken
+    /// straight from `legal()` -- never re-derived), `cancel` returns to the
+    /// main list, `quit`/`q` exits (the un-applied sub-prompt is simply
+    /// discarded -- nothing was recorded, same escape the reveal collector
+    /// honors). A bare out-of-range number re-asks with its range; any other
+    /// non-answer re-asks with `! finish or cancel this prompt first` (a
+    /// view/`save`/`undo` mid-collection would render or mutate against a
+    /// state the collection doesn't reflect).
+    fn step_pick(&mut self, words: &[&str]) -> StepOutput {
         match words {
             ["cancel"] => {
                 self.sub = SubPrompt::None;
                 self.page = 0;
-                self.out("Route selection cancelled — back to the movement options.".to_string(), false)
+                self.out("Selection cancelled — back to the main options.".to_string(), false)
             }
             ["quit"] | ["q"] => StepOutput { text: "bye\n".to_string(), quit: true },
             [tok] if !tok.is_empty() && tok.chars().all(|c| c.is_ascii_digit()) => {
                 // Resolve while borrowing `self.sub`, but yield an OWNED result so
                 // the borrow is released before the mutation/commit below.
                 let selected: Result<Move, usize> = match &self.sub {
-                    SubPrompt::Route { moves, .. } => {
+                    SubPrompt::Pick { moves, .. } => {
                         let n = moves.len();
                         tok.parse::<usize>().ok().and_then(|k| moves.get(k).cloned()).ok_or(n)
                     }
-                    _ => return self.out(String::new(), false), // unreachable: dispatched as Route
+                    _ => return self.out(String::new(), false), // unreachable: dispatched as Pick
                 };
                 match selected {
                     Ok(mv) => {
@@ -676,18 +1020,16 @@ impl Repl {
                         self.page = 0;
                         self.commit(mv)
                     }
-                    Err(n) => self.out(format!("! pick a route 0-{}, or 'cancel'", n.saturating_sub(1)), false),
+                    Err(n) => self.out(format!("! pick a number 0-{}, or 'cancel'", n.saturating_sub(1)), false),
                 }
             }
-            // The route list pages like the main list (brief item 5): `more`/
-            // `list` drive its pager rather than being refused, so the mirrored
-            // "type 'more'" footer is honest. (A deliberate refinement of the
-            // discipline's default "more re-asks" -- only for the route list,
-            // which is the only paged sub-prompt surface; retreat questions are
+            // Pick lists page like the main list (brief item 5): `more`/`list`
+            // drive its pager rather than being refused, so the mirrored
+            // "type 'more'" footer is honest. (Retreat questions are
             // sequential, not a list, so `step_retreat` still refuses them.)
             ["more"] => {
                 let n = match &self.sub {
-                    SubPrompt::Route { moves, .. } => moves.len(),
+                    SubPrompt::Pick { moves, .. } => moves.len(),
                     _ => 0,
                 };
                 self.page = (self.page + 1) % total_pages_for(n);
@@ -699,6 +1041,153 @@ impl Repl {
             }
             _ => self.out("! finish or cancel this prompt first".to_string(), false),
         }
+    }
+
+    /// Option-A picker input: an area id TOGGLES membership in the selection
+    /// (no cap here -- the legal-list match at `confirm` is the sole
+    /// authority, so an over-long or unaffordable selection gets the
+    /// standard rejection); `confirm` multiset-matches the assembled
+    /// `PlaceThreeAreas` (the empty selection legitimately matches "place no
+    /// assistants" when the engine offers it); `cancel` returns to the main
+    /// list.
+    fn step_place_a(&mut self, words: &[&str]) -> StepOutput {
+        match words {
+            ["cancel"] => {
+                self.sub = SubPrompt::None;
+                self.page = 0;
+                self.out("Placement cancelled — back to the main options.".to_string(), false)
+            }
+            ["quit"] | ["q"] => StepOutput { text: "bye\n".to_string(), quit: true },
+            ["confirm"] => {
+                let selected = match &self.sub {
+                    SubPrompt::PlaceA { selected, .. } => selected.clone(),
+                    _ => return self.out(String::new(), false),
+                };
+                self.sub = SubPrompt::None;
+                self.page = 0;
+                let candidate = Move::PlaceThreeAreas { placements: selected };
+                match self.find_placement_match(&candidate) {
+                    Some(mv) => self.commit(mv),
+                    None => self.out("Illegal: that placement is not currently available.\n".to_string(), false),
+                }
+            }
+            // The gate admits the DISPLAYED id form too (`A03`/`a03`, SPOT-1)
+            // -- the directory and the Selected echo both print it, so the
+            // picker must accept what it shows.
+            [tok]
+                if !strip_area_prefix(tok).is_empty()
+                    && strip_area_prefix(tok).chars().all(|c| c.is_ascii_digit()) =>
+            {
+                let area = match parse_raw_area_token(tok) {
+                    Ok(a) => a,
+                    Err(e) => return self.out(format!("! {e}"), false),
+                };
+                if let SubPrompt::PlaceA { selected, .. } = &mut self.sub {
+                    match selected.iter().position(|&a| a == area) {
+                        Some(i) => {
+                            selected.remove(i);
+                        }
+                        None => selected.push(area),
+                    }
+                }
+                self.out(String::new(), false)
+            }
+            _ => self.out(
+                "! toggle an area id, 'confirm', or 'cancel' (cancel first to use views/help)".to_string(),
+                false,
+            ),
+        }
+    }
+
+    /// Option-B picker input: an area id (bare `15` or the displayed `A15`)
+    /// SELECTS that area -- addressed by id, never by list position (C1) --
+    /// and the screen previews the move it assembles; `confirm` then commits
+    /// its single legal variant, or opens a numbered pick over a
+    /// multi-variant area's (Telegram owner's) exact variants. The
+    /// select-then-confirm shape is Option A's, and it is what makes a
+    /// mis-typed id visible before anything reaches the record.
+    fn step_place_b(&mut self, words: &[&str]) -> StepOutput {
+        match words {
+            ["cancel"] => {
+                self.sub = SubPrompt::None;
+                self.page = 0;
+                self.out("Placement cancelled — back to the main options.".to_string(), false)
+            }
+            ["quit"] | ["q"] => StepOutput { text: "bye\n".to_string(), quit: true },
+            ["confirm"] => {
+                let area = match &self.sub {
+                    SubPrompt::PlaceB { selected: Some(area), .. } => *area,
+                    SubPrompt::PlaceB { selected: None, .. } => {
+                        return self.out("! select an area id first, or 'cancel'".to_string(), false)
+                    }
+                    _ => return self.out(String::new(), false),
+                };
+                let mut variants = self.place_b_variants(area);
+                match variants.len() {
+                    0 => {
+                        // Unreachable from a live entry (areas came from this
+                        // same legal list); defensive fall-back.
+                        self.sub = SubPrompt::None;
+                        self.page = 0;
+                        self.out("Illegal: that placement is not currently available.\n".to_string(), false)
+                    }
+                    1 => {
+                        self.sub = SubPrompt::None;
+                        self.page = 0;
+                        self.commit(variants.pop().unwrap())
+                    }
+                    _ => {
+                        let title = format!(
+                            "Placement in {} — choose the Telegram bonus",
+                            describe::area_label(self.session.state(), area)
+                        );
+                        self.enter_pick_subprompt(title, variants)
+                    }
+                }
+            }
+            // The DISPLAYED id form (`A15`/`a15`) and the bare number mean the
+            // same area, through the same `strip_area_prefix` path every other
+            // entry surface uses (SPOT-1's rule, applied to the fifth path).
+            [tok]
+                if !strip_area_prefix(tok).is_empty()
+                    && strip_area_prefix(tok).chars().all(|c| c.is_ascii_digit()) =>
+            {
+                let area = match parse_raw_area_token(tok) {
+                    Ok(a) => a,
+                    Err(e) => return self.out(format!("! {e}"), false),
+                };
+                let eligible = match &self.sub {
+                    SubPrompt::PlaceB { areas, .. } => areas.contains(&area),
+                    _ => return self.out(String::new(), false),
+                };
+                if !eligible {
+                    return self.out(
+                        format!("! A{:02} is not one of the eligible areas — pick one listed above", area.0),
+                        false,
+                    );
+                }
+                if let SubPrompt::PlaceB { selected, .. } = &mut self.sub {
+                    *selected = Some(area);
+                }
+                self.out(String::new(), false)
+            }
+            _ => self.out(
+                "! type an area id, 'confirm', or 'cancel' (cancel first to use views/help)".to_string(),
+                false,
+            ),
+        }
+    }
+
+    /// Every legal `PlaceTwoSameArea` in `area` (one, unless a Telegram owner
+    /// also has adjacent-bonus variants). Shared by the Option-B picker's
+    /// preview line and its `confirm`, so what the screen promises and what
+    /// commits are read off the same legal list.
+    fn place_b_variants(&self, area: AreaId) -> Vec<Move> {
+        self.session
+            .legal()
+            .into_iter()
+            .filter(|m| matches!(m, Move::PlaceTwoSameArea { area: a, .. } if *a == area))
+            .collect()
     }
 
     /// Guided retreat input. During the per-area questions a valid count
@@ -769,11 +1258,11 @@ impl Repl {
         }
     }
 
-    /// Open the route sub-prompt for a multi-label destination. `out()` appends
-    /// `sub_prompt_text()` (the route list) since `self.sub` is now set.
-    fn enter_route_subprompt(&mut self, destination: AreaId, moves: Vec<Move>) -> StepOutput {
-        self.sub = SubPrompt::Route { destination, moves };
-        self.page = 0; // the route list gets its own paging, starting at page 0
+    /// Open a numbered-pick sub-prompt over `moves`. `out()` appends
+    /// `sub_prompt_text()` (the numbered list) since `self.sub` is now set.
+    fn enter_pick_subprompt(&mut self, title: String, moves: Vec<Move>) -> StepOutput {
+        self.sub = SubPrompt::Pick { title, moves };
+        self.page = 0; // the pick list gets its own paging, starting at page 0
         self.out(String::new(), false)
     }
 
@@ -808,12 +1297,12 @@ impl Repl {
         let rules = self.session.rules();
         match &self.sub {
             SubPrompt::None => String::new(),
-            SubPrompt::Route { destination, moves } => {
+            SubPrompt::Pick { title, moves } => {
                 // Same 20/page + footer machinery the main list uses (brief item
                 // 5). Bounded ~16 in real play, so this rarely pages -- but when
-                // it does, `more`/`list` step it (see `step_route`), so the
+                // it does, `more`/`list` step it (see `step_pick`), so the
                 // mirrored "type 'more'" footer stays honest.
-                let mut out = format!("Routes to {}:\n", describe::area_label(state, *destination));
+                let mut out = format!("{title}:\n");
                 let n = moves.len();
                 let total_pages = total_pages_for(n);
                 let start = (self.page * 20).min(n);
@@ -827,7 +1316,67 @@ impl Repl {
                 if total_pages > 1 {
                     out.push_str(&format!("page {}/{total_pages}\n", self.page + 1));
                 }
-                out.push_str("> pick a route number, or 'cancel'\n");
+                out.push_str("> pick a number, or 'cancel'\n");
+                out
+            }
+            SubPrompt::PlaceA { selected, max_areas } => {
+                let mut out = format!(
+                    "Option A — place 1 assistant each in up to {max_areas} areas (toggle by id):\n"
+                );
+                out.push_str(&placement_area_directory(state));
+                let selection_text = if selected.is_empty() {
+                    "(none — confirm places no assistants)".to_string()
+                } else {
+                    selected.iter().map(|a| format!("A{:02}", a.0)).collect::<Vec<_>>().join(", ")
+                };
+                // Live legality + fee preview: the CANDIDATE the current
+                // toggles assemble, checked against the same legal list
+                // `confirm` will match (display only -- the match at commit
+                // stays the sole authority).
+                let candidate = Move::PlaceThreeAreas { placements: selected.clone() };
+                let verdict = match self.find_placement_match(&candidate) {
+                    Some(mv) => format!("legal — {}", describe::describe_move(&mv, state, rules)),
+                    None => "NOT currently offered (adjust the selection)".to_string(),
+                };
+                out.push_str(&format!("Selected: {selection_text}\n  -> {verdict}\n"));
+                out.push_str("> type an area id to toggle, 'confirm' to place, or 'cancel'\n");
+                out
+            }
+            SubPrompt::PlaceB { areas, selected } => {
+                // Listed BY ID, with no `[i]` numbering at all (C1): the only
+                // thing on screen that can be typed here is an area id, so
+                // there is no second numbering to confuse it with.
+                let mut out = String::from("Option B — place 2 assistants in one area (by id):\n");
+                for area in areas {
+                    let fee = describe::placement_fee_note(state, &[*area, *area]);
+                    out.push_str(&format!("  {}{fee}\n", describe::area_label(state, *area)));
+                }
+                // Live legality preview on the SELECTED id, read off the same
+                // legal list `confirm` commits from -- Option A's `-> legal —`
+                // precedent, and the reason a mis-typed id is now visible
+                // before it reaches the record.
+                let (selection_text, verdict) = match selected {
+                    None => ("(none)".to_string(), "type an area id to preview the placement".to_string()),
+                    Some(area) => {
+                        let variants = self.place_b_variants(*area);
+                        let verdict = match variants.len() {
+                            0 => "NOT currently offered (pick another area)".to_string(),
+                            1 => format!("legal — {}", describe::describe_move(&variants[0], state, rules)),
+                            n => format!("legal — {n} Telegram bonus variants (confirm to choose one)"),
+                        };
+                        (format!("A{:02}", area.0), verdict)
+                    }
+                };
+                out.push_str(&format!("Selected: {selection_text}\n  -> {verdict}\n"));
+                out.push_str("> type an area id, 'confirm' to place, or 'cancel'\n");
+                out
+            }
+            SubPrompt::ViewMenu => {
+                let mut out = String::from("─ Game info ───────────────────────────\n");
+                for (i, (label, _)) in Self::VIEW_MENU.iter().enumerate() {
+                    out.push_str(&format!("[{i}] {label}\n"));
+                }
+                out.push_str("> pick a number to open a view, or 'cancel'\n");
                 out
             }
             SubPrompt::Retreat { areas, collected } => {
@@ -993,8 +1542,14 @@ impl Repl {
         let state = self.session.state();
         let rules = self.session.rules();
         let p = state.current_player();
-        let mut out = format!("{:?} hand:\n", p.color);
-        if p.order_cards_in_hand.is_empty() {
+        let mut out = format!("─ Hand: {:?} ─────────────────────────\n", p.color);
+        if self.privacy {
+            let n = p.order_cards_in_hand.len();
+            out.push_str(&format!(
+                "  {n} card{} (hidden — 'privacy' to toggle)\n",
+                if n == 1 { "" } else { "s" }
+            ));
+        } else if p.order_cards_in_hand.is_empty() {
             out.push_str("  (empty)\n");
         } else {
             for id in &p.order_cards_in_hand {
@@ -1078,27 +1633,76 @@ impl Repl {
     }
 }
 
-/// Parse an area-id token with a friendly, non-panicking error: rejects
-/// non-numeric tokens and numbers outside AreaId's 0-17 range identically
-/// (a token like `"999999999999999999999"` fails `u8::parse`, not `unwrap`).
+/// Compact directory of placeable areas for the Option-A picker, three per
+/// line, with a `(fee)` mark wherever an opponent President stands (the
+/// exact per-selection amount shows live on the `Selected:` line via
+/// `describe_move`'s fee preview). In the composed TTY frame the full board
+/// sits right above this; the directory keeps the piped/rolling view
+/// self-sufficient.
+fn placement_area_directory(state: &GameState) -> String {
+    let me = state.current_player;
+    let mut cells: Vec<String> = Vec::new();
+    for (&id, cfg) in &state.board_layout.areas {
+        if !cfg.area_type.allows_placement() {
+            continue;
+        }
+        let fee = state
+            .players
+            .iter()
+            .any(|p| p.id != me && p.president_location == PresidentLocation::OnBoard(id));
+        cells.push(format!(
+            "A{:02} {}{}",
+            id.0,
+            describe::area_type_name(cfg.area_type),
+            if fee { " (fee)" } else { "" }
+        ));
+    }
+    let mut out = String::new();
+    for chunk in cells.chunks(3) {
+        out.push(' ');
+        for c in chunk {
+            out.push_str(&format!(" {:<27}", c));
+        }
+        while out.ends_with(' ') {
+            out.pop();
+        }
+        out.push('\n');
+    }
+    out
+}
+
+/// Strip one optional leading `A`/`a` from an area token (SPOT-1): every
+/// display surface writes ids as `A03`, so every entry path — the pickers
+/// and the `a`/`b`/`m`/`r` grammars — accepts that displayed form too.
+fn strip_area_prefix(tok: &str) -> &str {
+    tok.strip_prefix(['A', 'a']).unwrap_or(tok)
+}
+
+/// Parse an area-id token (`3` or the displayed `A03`/`a03` form) with a
+/// friendly, non-panicking error: rejects non-numeric tokens and numbers
+/// outside AreaId's 0-17 range identically (a token like
+/// `"999999999999999999999"` fails `u8::parse`, not `unwrap`).
 fn parse_area_id(tok: &str) -> Result<AreaId, String> {
-    match tok.parse::<u8>().ok().and_then(|n| AreaId::try_new(n).ok()) {
+    match strip_area_prefix(tok).parse::<u8>().ok().and_then(|n| AreaId::try_new(n).ok()) {
         Some(id) => Ok(id),
         None => Err(format!("'{tok}' is not a valid area id (0-17)")),
     }
 }
 
-/// Parse an `m`-grammar area token into a raw, possibly off-board `AreaId`
-/// for legal-move membership testing. Unlike `parse_area_id`, values >=18
-/// are NOT rejected here as a range error -- `AreaId::unchecked` can't
-/// panic on them, so a destination like `99` reaches `try_assistant_move`'s
-/// `legal()` lookup and fails there with "not one of the legal assistant
-/// moves" (its options never include an area that isn't really on the
-/// board) instead of a separate, earlier range error. Only genuinely
-/// unparseable tokens (non-numeric, or too large for `u8`) are rejected
-/// here.
+/// Parse an `m`-grammar area token (`8` or the displayed `A08` form) into a
+/// raw, possibly off-board `AreaId` for legal-move membership testing.
+/// Unlike `parse_area_id`, values >=18 are NOT rejected here as a range
+/// error -- `AreaId::unchecked` can't panic on them, so a destination like
+/// `99` reaches `try_assistant_move`'s `legal()` lookup and fails there
+/// with "not one of the legal assistant moves" (its options never include
+/// an area that isn't really on the board) instead of a separate, earlier
+/// range error. Only genuinely unparseable tokens (non-numeric, or too
+/// large for `u8`) are rejected here.
 fn parse_raw_area_token(tok: &str) -> Result<AreaId, String> {
-    tok.parse::<u8>().map(AreaId::unchecked).map_err(|_| format!("'{tok}' is not a valid area number"))
+    strip_area_prefix(tok)
+        .parse::<u8>()
+        .map(AreaId::unchecked)
+        .map_err(|_| format!("'{tok}' is not a valid area number"))
 }
 
 /// The in-app `help` command's text. `pub` so the `guide_sync` integration
@@ -1107,12 +1711,13 @@ fn parse_raw_area_token(tok: &str) -> Result<AreaId, String> {
 pub const HELP_TEXT: &str = "\
 Commands:
   <number>        apply the numbered legal option
+  <Enter>         on a single-option prompt: apply that only option, or open it if it is a grouped family
   a [id id id]    Placement Option A: place 1 assistant in each of 0-3 areas (4 with Newspaper)
   b <id>          Placement Option B: place 2 assistants in one area
   b <id> t <adj>  Placement Option B with the Telegram bonus: +1 assistant in an adjacent area
   m <from> <to>   resolve a pending assistant-move choice (<from> is 'hand' or an area id)
   r [id[:n]]...   Movement Option B: retreat the President, recovering all (bare id) or n assistants per area ('r' alone recovers none)
-  board           show the area grid (legend: * = unclaimed 5-Power token)
+  board           show the area grid and its legend (* unclaimed 5-Power, [St] Station, · empty build slot, ~ Canal toll)
   players         show each player's resources, hand, tech, tokens, President
   ports           show both Port boards and the order-deck size
   labs            show both Laboratory boards (each tech's country + effect) and the tech-deck size
@@ -1122,12 +1727,16 @@ Commands:
   hand            show the current player's order-card hand
   score           show current VP/money (or the final scores once the game is over)
   log             show the tail of the move/event log
+  view            open the numbered game-info menu over all of the views above ('views'/'?' also work)
+  privacy         toggle hiding hand contents in views (default: hidden in live mode)
+  panel           toggle the players panel inside the composed screen (terminal only)
+  screen          toggle the composed screen itself (terminal only; pipes are always plain)
   more            show the next page of legal options (wraps to page 0)
   list            reset to the first page of legal options
   undo            undo the last move (and any reveals bound to it)
   save [path]     save to path (or to the last-used path if omitted)
   reveal <seat> <O..>  live mode: make a hidden opponent starting order public
-  cancel          abort an in-progress reveal prompt (live mode) or a route/retreat sub-prompt
+  cancel          back out of any sub-prompt: reveal collection (live), view menu, numbered pick, either Placement picker, guided retreat
   help            show this text
   quit            exit the REPL ('q' also works)
 ";
@@ -1160,6 +1769,18 @@ mod tests {
         ).unwrap())
     }
 
+    /// The DISPLAY index (what a numbered answer addresses) of the first
+    /// grouped entry whose rendered text contains `needle` -- fixtures pick
+    /// by text now that grouping means raw legal-list positions no longer
+    /// address the prompt (Task 6).
+    fn display_index_containing(r: &Repl, needle: &str) -> Option<usize> {
+        let state = r.session.state();
+        let rules = r.session.rules();
+        r.display_options()
+            .iter()
+            .position(|o| r.render_option(o, state, rules).contains(needle))
+    }
+
     /// A REPL over a fresh `n`-player simulation (n in 2..=4). Used for the
     /// board-width note (S3): 3p/4p boards render wider than 100 columns,
     /// which the 2p board (86 columns) never does.
@@ -1178,15 +1799,22 @@ mod tests {
     /// S3 (pre-gate view batch): the FIRST `board` render of a session, on a
     /// board wider than 100 columns, prints a one-time width note -- there is
     /// no terminal-size detection (std has none; no new deps), so the note is
-    /// keyed purely on the board's own rendered width. A 3-player board is
-    /// 120 columns; the note names that width and points at guide §2, and a
-    /// second render does NOT repeat it.
+    /// keyed purely on the board's own rendered width. A 4-player board is
+    /// 108 columns; the note names that width and points at guide §2, and a
+    /// second render does NOT repeat it. (On the staggered pyramid the 3-player
+    /// board is only 90 columns, so 4 players is the wide case now.)
+    ///
+    /// The note keys on the GRID width, not the composed frame's — the frame is
+    /// wider still (114/132/108 at 2/3/4 players, since the players panel sits
+    /// beside the board at 2-3p), so it never fires at 2 players despite the
+    /// frame exceeding 100 there. Guide §2 states the frame widths; making the
+    /// note frame-aware is on the carry-forward list.
     #[test]
     fn board_command_prints_a_one_time_width_note_on_a_wide_board() {
-        let mut r = repl_np(3, 7);
+        let mut r = repl_np(4, 7);
         let width =
             render::board_grid(r.session.state()).lines().next().map(|l| l.chars().count()).unwrap_or(0);
-        assert!(width > 100, "3p board should exceed 100 columns, got {width}");
+        assert!(width > 100, "4p board should exceed 100 columns, got {width}");
 
         let first = r.step("board");
         assert!(
@@ -1200,13 +1828,74 @@ mod tests {
         assert!(!second.text.contains("columns wide"), "note must print once per session: {}", second.text);
     }
 
-    /// S3: a narrow board (2 players = 86 columns, <= 100) never triggers the
+    /// S3: a narrow board (2 players = 72 columns, <= 100) never triggers the
     /// note, on the first render or any later one.
     #[test]
     fn board_command_omits_the_width_note_on_a_narrow_board() {
         let mut r = repl_2p(4);
         let out = r.step("board");
         assert!(!out.text.contains("columns wide"), "{}", out.text);
+    }
+
+    /// I5 (third review): inside the composed frame the board is ALREADY on
+    /// screen -- `wrap` re-renders it above every body -- so `board` must not
+    /// emit a second copy. It used to emit the grid plus a second legend, 62
+    /// rows at 4 players in a 140x50 terminal, losing 12 rows off the top:
+    /// exactly the overflow F3 fixed on this branch, reachable again from the
+    /// first entry of the `view` menu. In plain (piped / `screen` off) mode
+    /// there is no frame, so `board` must still print the grid.
+    #[test]
+    fn board_command_does_not_duplicate_the_board_inside_the_composed_frame() {
+        let mut r = repl_np(4, 7);
+        screen::force(true);
+        let out = r.step("board");
+        screen::force(false);
+        assert!(
+            !out.text.contains('┌'),
+            "the frame already shows the board; the body must not repeat it:\n{}",
+            out.text
+        );
+        assert!(
+            out.text.contains("already above"),
+            "and it must say where the board is instead: {}",
+            out.text
+        );
+    }
+
+    /// I5's other half: with frames off (a piped run, or `screen` toggled
+    /// off) nothing else draws the board, so `board` must still draw it.
+    #[test]
+    fn board_command_still_prints_the_board_in_plain_mode() {
+        let mut r = repl_np(4, 7);
+        screen::force(false);
+        let out = r.step("board");
+        assert!(out.text.contains('┌'), "plain mode has no frame; `board` is the only board:\n{}", out.text);
+        assert!(out.text.contains("* = unclaimed 5-Power token"), "{}", out.text);
+
+        // Same in a composed session whose user turned the screen off.
+        let mut r2 = repl_np(4, 7);
+        r2.step("screen"); // composed = false
+        screen::force(true);
+        let out2 = r2.step("board");
+        screen::force(false);
+        assert!(out2.text.contains('┌'), "`screen` off means no frame, so the board must print:\n{}", out2.text);
+    }
+
+    /// I5's height pin, mirroring `screen.rs`'s opening-frame one: the
+    /// composed frame around the `view` menu's board entry -- the FIRST row
+    /// of the discoverability menu, and the path a tester hits before any
+    /// other -- must fit the 50 rows the guide tells them to open.
+    #[test]
+    fn view_menu_board_entry_fits_fifty_rows_at_every_player_count() {
+        for n in [2u8, 3, 4] {
+            let mut r = repl_np(n, 7);
+            screen::force(true);
+            r.step("view");
+            let out = r.step("0"); // Board
+            let rows = screen::wrap(&r, &out.text).lines().count();
+            screen::force(false);
+            assert!(rows <= 50, "the {n}P view->board frame is {rows} rows; 50 is the documented height");
+        }
     }
 
     /// Item 7 (board connectivity): every `board` render carries a one-line
@@ -1224,6 +1913,91 @@ mod tests {
         let p = r.prompt();
         assert!(p.contains("[0]"), "{p}");
         assert!(p.contains("End additional-action phase"), "{p}");
+    }
+
+    /// Ceremony reduction (Task 6): bare Enter on a forced single-option
+    /// prompt applies that option through the normal commit path -- one real
+    /// recorded event, phase advanced -- and the prompt advertised it.
+    #[test]
+    fn bare_enter_applies_a_forced_single_option() {
+        let mut r = repl_2p(4);
+        let p = r.prompt();
+        assert!(p.contains("(only option — press Enter to apply)"), "{p}");
+        let events_before = r.session.record().events.len();
+        let out = r.step("");
+        assert!(!out.quit);
+        assert_eq!(r.session.record().events.len(), events_before + 1, "Enter must record the move");
+        assert_eq!(r.session.state().turn_phase, TurnPhase::Placement);
+        assert!(matches!(
+            r.session.record().events.last(),
+            Some(RecordedEvent::Move(Move::EndAdditionalPhase))
+        ), "{:?}", r.session.record().events.last());
+    }
+
+    /// A Movement-phase state whose ONLY displayed entry is the GROUPED
+    /// retreat family: the President stands in the single area the player
+    /// occupies, so no destination is reachable (ordinary movement needs
+    /// the mover's own assistant at the destination) and the two
+    /// assistants there give the retreat family three recovery variants,
+    /// past the singleton that would stay a `Direct`. Hand-built via
+    /// `for_test_from_state` for the same reason the Newspaper fixture
+    /// above is: the real path to an emergency-retreat position is many
+    /// turns long.
+    fn retreat_only_movement_fixture() -> Repl {
+        let mut state = create_test_game_state(2);
+        state.turn_phase = TurnPhase::Movement;
+        let area = AreaId::new(0);
+        state
+            .board_layout
+            .areas
+            .insert(area, AreaConfig { area_type: AreaType::CopperMine, grid_position: (0, 0) });
+        let p = &mut state.players[0];
+        p.president_location = PresidentLocation::OnBoard(area);
+        p.assistants.in_hand = p.assistants.in_hand.saturating_sub(2);
+        p.assistants.on_board.insert(area, 2);
+        p.money = 0;
+        Repl::new(Session::for_test_from_state(state, Rules::empty_for_tests()))
+    }
+
+    /// F4 (Codex adversarial review of PR #4): the bare-Enter hint fires on
+    /// one DISPLAYED entry, but a displayed entry is not always a move --
+    /// a grouped family (Route/Retreat/placement) opens a sub-prompt
+    /// instead. Promising "press Enter to apply" there tells a player their
+    /// keystroke commits something when it only opens a picker, which is
+    /// exactly the wrong thing to say in the emergency-retreat position
+    /// this fixture reproduces. The hint must be family-aware.
+    #[test]
+    fn bare_enter_hint_says_open_not_apply_for_a_grouped_single_option() {
+        let mut r = retreat_only_movement_fixture();
+        let p = r.prompt();
+        assert_eq!(r.display_options().len(), 1, "fixture must display exactly one entry:\n{p}");
+        assert!(p.contains("Retreat President to hand"), "the lone entry is the grouped family:\n{p}");
+        assert!(
+            p.contains("(only option — press Enter to open)"),
+            "a grouped entry OPENS a sub-prompt; it does not apply a move:\n{p}"
+        );
+        assert!(!p.contains("press Enter to apply"), "must not promise an apply here:\n{p}");
+
+        // And the behavior the wording now describes: Enter opens the
+        // guided retreat sub-prompt without recording anything.
+        let events_before = r.session.record().events.len();
+        let out = r.step("");
+        assert!(out.text.contains("Guided retreat"), "{}", out.text);
+        assert_eq!(r.session.record().events.len(), events_before, "opening a picker records no move");
+    }
+
+    /// Bare Enter on a MULTI-option prompt stays a harmless re-prompt (no
+    /// advertisement line either), so a stray newline can never move.
+    #[test]
+    fn bare_enter_on_multi_option_prompt_applies_nothing() {
+        let mut r = repl_2p(4);
+        r.step(""); // -> Placement (3 grouped entries)
+        let p = r.prompt();
+        assert!(!p.contains("press Enter to apply"), "{p}");
+        let events_before = r.session.record().events.len();
+        r.step("");
+        assert_eq!(r.session.record().events.len(), events_before, "Enter must be a no-op here");
+        assert_eq!(r.session.state().turn_phase, TurnPhase::Placement);
     }
 
     #[test]
@@ -1369,6 +2143,49 @@ mod tests {
         assert!(r.step("quit").quit);
     }
 
+    /// I3 (third review): an autosave failure during `undo` has to be
+    /// VISIBLE. It used to go to stderr -- an in-code comment called that a
+    /// known wart, "logged for the final whole-branch review rather than
+    /// redesigned around" -- and that review then added the composed frame,
+    /// which opens with clear-screen + home, turning the warning from ugly
+    /// into unreadable. The live scenario: the save target has gone
+    /// unwritable, the operator undoes a mis-entry, reads "Undid last
+    /// entry.", and the on-disk record still contains the bad move. Assert
+    /// the CHANNEL -- `StepOutput.text` is the only thing `main.rs` folds
+    /// into a frame -- not merely that some string exists somewhere.
+    #[test]
+    fn undo_autosave_failure_is_reported_in_the_step_output_not_stderr() {
+        let mut r = repl_2p(4);
+        r.step("0"); // one real recorded event to undo
+        assert_eq!(r.session.record().events.len(), 1, "fixture: something to undo");
+        // A save target that cannot be written: its parent directory does not exist.
+        r.session.save_path =
+            Some(std::env::temp_dir().join("yokohama_i3_no_such_dir").join("game.json"));
+
+        let out = r.step("undo");
+        assert!(out.text.contains("Undid last entry."), "{}", out.text);
+        assert!(
+            out.text.contains("WARNING: autosave failed"),
+            "the autosave failure must reach the screen, not stderr: {}",
+            out.text
+        );
+    }
+
+    /// The other half of I3: a WRITABLE target undoes silently -- the
+    /// warning is a real failure report, not decoration on every undo.
+    #[test]
+    fn undo_with_a_writable_save_target_reports_no_warning() {
+        let mut r = repl_2p(4);
+        r.step("0");
+        let path = std::env::temp_dir().join(format!("yokohama_i3_ok_{}.json", std::process::id()));
+        r.session.save_path = Some(path.clone());
+
+        let out = r.step("undo");
+        std::fs::remove_file(&path).ok();
+        assert!(out.text.contains("Undid last entry."), "{}", out.text);
+        assert!(!out.text.contains("autosave failed"), "a successful autosave must stay quiet: {}", out.text);
+    }
+
     /// Regression for `save_cmd` setting `save_path` BEFORE the save is
     /// confirmed to succeed (final-review ledger-minor bundled with the
     /// autosave-atomicity Important finding): a typo'd `save <bad path>`
@@ -1403,7 +2220,7 @@ mod tests {
             let out = r.step(cmd);
             assert!(!out.text.contains("[0]"), "'{cmd}' unexpectedly showed the numbered options block: {}", out.text);
             assert!(
-                out.text.trim_end().ends_with("('help' for the list)"),
+                out.text.trim_end().ends_with("'help' for the list)"),
                 "'{cmd}' output is missing the one-line input hint: {}", out.text
             );
         }
@@ -1450,36 +2267,36 @@ mod tests {
         assert!(out.text.contains("'q'"), "{}", out.text);
     }
 
+    /// The main-list pager (20/page + "page N/M" footer + `more` wrap) still
+    /// serves genuinely large DIRECT lists. Placement no longer produces one
+    /// (Task 6 collapsed it to picker entries), so this drives the pager off
+    /// an Employment Agency composite list at power 5 -- the engine offers
+    /// every take combination up to 4 items, comfortably over 20.
     #[test]
-    fn pagination_pages_through_large_placement_lists() {
-        let mut r = repl_2p(4);
-        r.step("0");
-        let n = r.session.legal().len();
-        if n > 20 {
-            let p0 = r.prompt();
-            assert!(p0.contains("more"), "{p0}");
-            let p1 = r.step("more").text;
-            assert_ne!(p0, p1);
-        }
-    }
+    fn prompt_pages_large_direct_lists_with_page_footer() {
+        let mut state = create_test_game_state(2);
+        let ea = AreaId::new(0);
+        state
+            .board_layout
+            .areas
+            .insert(ea, AreaConfig { area_type: AreaType::EmploymentAgency, grid_position: (0, 0) });
+        let me = state.current_player;
+        state.players[me.0 as usize].president_location = PresidentLocation::OnBoard(ea);
+        state.players[me.0 as usize].money = 20;
+        state.players[me.0 as usize].assistants.on_board.insert(ea, 4);
+        state.players[me.0 as usize].assistants.in_hand -= 4;
+        state.turn_phase = TurnPhase::AreaAction;
+        state.current_action_power = Some(5);
+        let mut r = Repl::new(Session::for_test_from_state(state, Rules::empty_for_tests()));
 
-    /// Codex review Item 2 (page-count footer): the pager already told a
-    /// player how many options were left ("...N more"), but never how many
-    /// PAGES there were in total, or which one they were currently on --
-    /// this pins the new "page N/M" footer on both the first and second
-    /// page of a real Placement-phase list (verified >20 options here, so
-    /// the pagination path actually engages -- `Placement`'s combinatorial
-    /// Option-A enumeration is comfortably over that on a real board).
-    #[test]
-    fn prompt_shows_page_count_footer_when_paginated() {
-        let mut r = repl_2p(4);
-        r.step("0"); // -> Placement
         let n = r.session.legal().len();
-        assert!(n > 20, "fixture assumption: Placement must offer >20 options here, got {n}");
+        assert!(n > 20, "fixture assumption: EA at power 5 must offer >20 composites, got {n}");
         let p0 = r.prompt();
+        assert!(p0.contains("more"), "{p0}");
         assert!(p0.contains("page 1/"), "{p0}");
         let p1 = r.step("more").text;
         assert!(p1.contains("page 2/"), "{p1}");
+        assert_ne!(p0, p1);
     }
 
     /// Codex review Item 2 (phase-aware hint): the trailing input hint used
@@ -1494,7 +2311,7 @@ mod tests {
     fn input_hint_is_phase_aware() {
         let mut r = repl_2p(4);
         let p = r.prompt();
-        assert!(p.contains("enter a number, or a command ('help' for the list)"), "{p}");
+        assert!(p.contains("enter a number, or a command ('view' for game info, 'help' for the list)"), "{p}");
         assert!(!p.contains("'a'/'b'"), "{p}");
         assert!(!p.contains("'r' to retreat"), "{p}");
 
@@ -1535,9 +2352,105 @@ mod tests {
     fn input_hint_is_plain_for_non_assistant_move_pending_choices() {
         let r = repl_with_any_good_cascade();
         let p = r.prompt();
-        assert!(p.contains("enter a number, or a command ('help' for the list)"), "{p}");
+        assert!(p.contains("enter a number, or a command ('view' for game info, 'help' for the list)"), "{p}");
         assert!(!p.contains("'m <from> <to>'"), "{p}");
         assert!(!p.contains("'a'/'b'"), "{p}");
+    }
+
+    /// Task 6 privacy: hidden by default in LIVE mode (the laptop gets
+    /// passed around a physical table), open by default in SIM.
+    #[test]
+    fn privacy_defaults_on_in_live_mode_and_off_in_sim() {
+        let sim = repl_2p(4);
+        assert!(!sim.privacy, "sim defaults open");
+
+        let rules = Rules::standard();
+        let config = GameConfig::for_player_count(2);
+        let live = Repl::new(
+            Session::new_live(
+                config, 903, SetupObservations::default(),
+                vec![StartingOrderChoice::Keep(0), StartingOrderChoice::Unknown],
+                rules,
+            )
+            .unwrap(),
+        );
+        assert!(live.privacy, "live defaults hidden");
+    }
+
+    /// The `privacy` command toggles, and a hidden hand masks its contents
+    /// (count only) in the `hand` view while the toggle-back restores them.
+    #[test]
+    fn privacy_toggle_masks_the_hand_view() {
+        let mut r = repl_2p(4);
+        let open = r.step("hand").text;
+        assert!(open.contains("O"), "sim shows codes by default: {open}");
+
+        let out = r.step("privacy");
+        assert!(out.text.contains("HIDDEN"), "{}", out.text);
+        let masked = r.step("hand").text;
+        assert!(masked.contains("hidden"), "{masked}");
+        assert!(masked.contains("1 card"), "count survives: {masked}");
+        assert!(!masked.contains(" -> "), "card text (order_compact_line) must not leak: {masked}");
+
+        r.step("privacy");
+        assert!(r.step("hand").text.contains(" -> "), "toggle back restores contents");
+    }
+
+    /// Owner scope item 10 (discoverability): `view` opens a one-shot
+    /// numbered game-info menu naming every public-state surface; picking a
+    /// number renders that surface and drops back to the normal prompt.
+    #[test]
+    fn view_menu_lists_surfaces_and_renders_the_picked_one() {
+        let mut r = repl_2p(4);
+        let out = r.step("view");
+        assert!(out.text.contains("Game info"), "{}", out.text);
+        for name in ["Board", "Players", "Port offer", "Lab offer", "Tracks", "Building sites", "Goals", "Hand", "Score", "Log"] {
+            assert!(out.text.contains(name), "menu must name {name}: {}", out.text);
+        }
+        assert!(out.text.contains("'cancel'"), "{}", out.text);
+
+        // Pick the Goals entry by its number parsed from the menu itself.
+        let goals_idx = out
+            .text
+            .lines()
+            .find(|l| l.contains("Goals"))
+            .and_then(|l| l.strip_prefix('[')?.split(']').next()?.parse::<usize>().ok())
+            .expect("Goals entry carries its number");
+        let shown = r.step(&goals_idx.to_string());
+        assert!(shown.text.contains("G0:"), "picking Goals must render the goals view: {}", shown.text);
+        assert!(matches!(r.sub, SubPrompt::None), "the menu is one-shot");
+        assert!(r.session.record().events.is_empty(), "views never apply moves");
+
+        // Back at the normal prompt: a move command works again.
+        let p = r.prompt();
+        assert!(p.contains("[0]"), "{p}");
+    }
+
+    /// `views` and `?` alias the menu; `cancel` closes it; an out-of-range
+    /// number re-asks.
+    #[test]
+    fn view_menu_aliases_cancel_and_range() {
+        let mut r = repl_2p(4);
+        for alias in ["views", "?"] {
+            let out = r.step(alias);
+            assert!(out.text.contains("Game info"), "'{alias}' must open the menu: {}", out.text);
+            let out = r.step("cancel");
+            assert!(matches!(r.sub, SubPrompt::None), "cancel closes the menu");
+            assert!(out.text.contains("[0]"), "main prompt back after cancel: {}", out.text);
+        }
+        r.step("view");
+        let out = r.step("99");
+        assert!(out.text.contains("pick a number"), "out-of-range re-asks: {}", out.text);
+        assert!(out.text.contains("Game info"), "menu still showing: {}", out.text);
+    }
+
+    /// The hint line on EVERY prompt names the menu — the discoverability
+    /// layer that survives piped/rolling modes.
+    #[test]
+    fn input_hint_names_the_view_menu() {
+        let r = repl_2p(4);
+        let p = r.prompt();
+        assert!(p.contains("('view' for game info"), "{p}");
     }
 
     #[test]
@@ -1842,16 +2755,23 @@ mod tests {
                 .expect("EndAdditionalPhase reaches Placement");
             r.step(&end.to_string());
         }
-        let place = r.session.legal().iter().position(|m| matches!(m,
-            Move::PlaceTwoSameArea { area, adjacent_bonus: None } if *area == church_area
-        )).expect("Option B at Church is legal turn 1");
-        r.step(&place.to_string());
+        // Task 6: the Placement list is grouped (picker entries), so raw
+        // legal-list indices no longer address it -- the `b` grammar does
+        // the same placement in one line.
+        assert!(
+            r.session.legal().iter().any(|m| matches!(m,
+                Move::PlaceTwoSameArea { area, adjacent_bonus: None } if *area == church_area)),
+            "Option B at Church is legal turn 1"
+        );
+        r.step(&format!("b {}", church_area.0));
 
-        let pres = r.session.legal().iter().position(|m| {
-            matches!(m, Move::PlacePresident { destination } if *destination == church_area)
-                || matches!(m, Move::MovePresident { destination, .. } if *destination == church_area)
-        }).expect("President can reach Church turn 1");
-        r.step(&pres.to_string());
+        // Movement phase: PlacePresident entries stay Direct in the grouped
+        // display; find the one for Church by its rendered text.
+        let church_label = crate::describe::area_label(r.session.state(), church_area);
+        let idx = display_index_containing(r, &format!("Place President from hand in {church_label}"))
+            .or_else(|| display_index_containing(r, &format!("Move President to {church_label}")))
+            .expect("President can reach Church turn 1");
+        r.step(&idx.to_string());
 
         let church_mv = r.session.legal().iter().position(|m| matches!(m, Move::ExecuteAreaAction {
             action: AreaAction::Church {
@@ -1936,14 +2856,18 @@ mod tests {
                 .expect("EndAdditionalPhase reaches Placement");
             r.step(&end.to_string());
         }
-        let legal = r.session.legal();
-        let place = legal.iter().position(|m| matches!(m, Move::PlaceTwoSameArea { adjacent_bonus: None, .. }))
+        // Task 6 (grouped Placement list): drive the placement via the `b`
+        // grammar rather than a raw legal-list index.
+        let area = r
+            .session
+            .legal()
+            .iter()
+            .find_map(|m| match m {
+                Move::PlaceTwoSameArea { area, adjacent_bonus: None } => Some(*area),
+                _ => None,
+            })
             .expect("some Option B placement is legal and affordable turn 1 (no President is on board yet to charge a fee)");
-        let area = match &legal[place] {
-            Move::PlaceTwoSameArea { area, .. } => *area,
-            _ => unreachable!("position() above only matches PlaceTwoSameArea"),
-        };
-        r.step(&place.to_string());
+        r.step(&format!("b {}", area.0));
         assert_eq!(r.session.state().turn_phase, TurnPhase::Movement, "placement must reach Movement phase");
         area
     }
@@ -2013,15 +2937,20 @@ mod tests {
                 .expect("EndAdditionalPhase reaches Placement");
             r.step(&end.to_string());
         }
-        let legal = r.session.legal();
-        let place = legal.iter()
-            .position(|m| matches!(m, Move::PlaceThreeAreas { placements } if placements.len() == 2))
+        // Task 6 (grouped Placement list): drive the placement via the `a`
+        // grammar rather than a raw legal-list index.
+        let (a, b) = r
+            .session
+            .legal()
+            .iter()
+            .find_map(|m| match m {
+                Move::PlaceThreeAreas { placements } if placements.len() == 2 => {
+                    Some((placements[0], placements[1]))
+                }
+                _ => None,
+            })
             .expect("a 2-area Option A placement is legal and affordable turn 1 (same reasoning as the Option B fixture -- no President is on board yet to charge a fee)");
-        let (a, b) = match &legal[place] {
-            Move::PlaceThreeAreas { placements } => (placements[0], placements[1]),
-            _ => unreachable!("position() above only matches PlaceThreeAreas"),
-        };
-        r.step(&place.to_string());
+        r.step(&format!("a {} {}", a.0, b.0));
         assert_eq!(r.session.state().turn_phase, TurnPhase::Movement, "placement must reach Movement phase");
         (a, b)
     }
@@ -2434,6 +3363,391 @@ mod tests {
         ), "{:?}", r.session.record().events.last());
     }
 
+    // ===================================================================
+    // Task 6: Placement pickers + assistant-move grouping.
+
+    /// The Placement main list collapses the 186-option wall into picker
+    /// entries: Option A, Option B, the empty placement -- three lines, no
+    /// pagination footer.
+    #[test]
+    fn placement_list_collapses_to_picker_entries() {
+        let mut r = repl_2p(4);
+        r.step("0"); // -> Placement
+        assert!(r.session.legal().len() > 100, "fixture: the raw wall is still combinatorial");
+        let p = r.prompt();
+        assert!(p.contains("[0] Option A — place 1 assistant each in up to 3 areas"), "{p}");
+        assert!(p.contains("[1] Option B — place 2 assistants in one area (10 eligible"), "{p}");
+        assert!(p.contains("[2] Place no assistants"), "{p}");
+        assert!(!p.contains("[3]"), "exactly three entries: {p}");
+        assert!(!p.contains("page 1/"), "no pagination on the grouped list: {p}");
+        assert!(p.contains("'a' grammar works too") && p.contains("'b' grammar works too"), "{p}");
+    }
+
+    /// Option-A picker: toggling two areas assembles the exact 2-area
+    /// placement; the screen shows the live selection + legality/fee line;
+    /// `confirm` commits it through the standard legal-list match.
+    #[test]
+    fn place_a_picker_toggles_areas_and_commits() {
+        let mut r = repl_2p(4);
+        r.step("0");
+        let out = r.step("0"); // enter the Option A picker
+        assert!(out.text.contains("toggle areas by id"), "{}", out.text);
+        assert!(out.text.contains("confirm places no assistants"), "{}", out.text);
+
+        let out = r.step("3");
+        assert!(out.text.contains("Selected: A03"), "{}", out.text);
+        assert!(out.text.contains("legal — "), "a 1-area selection is offered: {}", out.text);
+        let out = r.step("5");
+        assert!(out.text.contains("Selected: A03, A05"), "{}", out.text);
+
+        let events_before = r.session.record().events.len();
+        let out = r.step("confirm");
+        assert!(!out.text.to_lowercase().contains("illegal"), "{}", out.text);
+        assert_eq!(r.session.record().events.len(), events_before + 1);
+        assert!(matches!(
+            r.session.record().events.last(),
+            Some(RecordedEvent::Move(Move::PlaceThreeAreas { placements }))
+                if placements.len() == 2
+                    && placements.contains(&AreaId::new(3))
+                    && placements.contains(&AreaId::new(5))
+        ), "{:?}", r.session.record().events.last());
+    }
+
+    /// Toggling an area a second time removes it; confirming an empty
+    /// selection applies the engine's own "place no assistants" option.
+    #[test]
+    fn place_a_picker_toggle_off_and_empty_confirm() {
+        let mut r = repl_2p(4);
+        r.step("0");
+        r.step("0"); // enter picker
+        r.step("3");
+        let out = r.step("3"); // toggle back off
+        assert!(out.text.contains("confirm places no assistants"), "{}", out.text);
+
+        let events_before = r.session.record().events.len();
+        let out = r.step("confirm");
+        assert!(!out.text.to_lowercase().contains("illegal"), "{}", out.text);
+        assert_eq!(r.session.record().events.len(), events_before + 1);
+        assert!(matches!(
+            r.session.record().events.last(),
+            Some(RecordedEvent::Move(Move::PlaceThreeAreas { placements })) if placements.is_empty()
+        ), "{:?}", r.session.record().events.last());
+    }
+
+    /// SPOT-1 regression: the picker accepts the id format it DISPLAYS --
+    /// the directory and Selected echo print `A03`, so `A03`/`a05` toggle
+    /// exactly like `3`/`5` (case-insensitive prefix), and the commit is the
+    /// same multiset.
+    #[test]
+    fn place_a_picker_accepts_the_displayed_area_id_format() {
+        let mut r = repl_2p(4);
+        r.step("0");
+        r.step("0"); // enter the Option A picker
+        let out = r.step("A03");
+        assert!(out.text.contains("Selected: A03"), "displayed-format toggle must work: {}", out.text);
+        let out = r.step("a05");
+        assert!(out.text.contains("Selected: A03, A05"), "lowercase prefix too: {}", out.text);
+        let out = r.step("A03"); // prefixed toggle-OFF must match the same area
+        assert!(out.text.contains("Selected: A05"), "prefixed re-toggle removes: {}", out.text);
+
+        let events_before = r.session.record().events.len();
+        let out = r.step("confirm");
+        assert!(!out.text.to_lowercase().contains("illegal"), "{}", out.text);
+        assert_eq!(r.session.record().events.len(), events_before + 1);
+        assert!(matches!(
+            r.session.record().events.last(),
+            Some(RecordedEvent::Move(Move::PlaceThreeAreas { placements }))
+                if placements.len() == 1 && placements.contains(&AreaId::new(5))
+        ), "{:?}", r.session.record().events.last());
+    }
+
+    /// SPOT-1 companion: the `a`/`b`/`m`/`r` grammars accept the displayed
+    /// `A<id>` form through the same shared prefix strip.
+    #[test]
+    fn grammars_accept_the_displayed_area_id_format() {
+        // `b A<id>` places, then `r A<id>:1` retreats with a count.
+        let mut r = repl_2p(4);
+        let area = drive_to_movement_with_on_board_assistants(&mut r);
+        let events_before = r.session.record().events.len();
+        let out = r.step(&format!("r A{:02}:1", area.0));
+        assert!(!out.text.contains("not in the legal list"), "{}", out.text);
+        assert_eq!(r.session.record().events.len(), events_before + 1);
+
+        // `a A.. a..` multiset-matches like bare ids.
+        let mut r2 = repl_2p(4);
+        r2.step("0");
+        let two = r2
+            .session
+            .legal()
+            .iter()
+            .find_map(|m| match m {
+                Move::PlaceThreeAreas { placements } if placements.len() == 2 => {
+                    Some((placements[0], placements[1]))
+                }
+                _ => None,
+            })
+            .expect("a 2-area Option A exists");
+        let out = r2.step(&format!("a A{:02} a{}", two.0.0, two.1.0));
+        assert!(!out.text.to_lowercase().contains("illegal"), "{}", out.text);
+        assert_eq!(r2.session.state().turn_phase, TurnPhase::Movement);
+
+        // `m A<from> A<to>` resolves the pending assistant-move choice.
+        let mut r3 = repl_2p(4);
+        let church = drive_to_double_assistant_move_cascade(&mut r3);
+        let out = r3.step(&format!("m A{:02} A09", church.0));
+        assert!(!out.text.to_lowercase().contains("illegal"), "{}", out.text);
+        assert_eq!(r3.session.state().pending_choices, vec![PendingChoice::AssistantMove]);
+    }
+
+    /// SPOT-2: the Option-A picker's refusal line says WHY commands are
+    /// unavailable and how to get out.
+    #[test]
+    fn place_a_picker_refusal_names_the_way_out() {
+        let mut r = repl_2p(4);
+        r.step("0");
+        r.step("0"); // enter the Option A picker
+        let out = r.step("help");
+        assert!(
+            out.text.contains("! toggle an area id, 'confirm', or 'cancel' (cancel first to use views/help)"),
+            "{}",
+            out.text
+        );
+        assert!(!out.text.contains("Commands:"), "help must not render mid-picker: {}", out.text);
+    }
+
+    /// An over-long selection (4 areas without Newspaper) survives toggling
+    /// -- the picker warns live -- and `confirm` gets the standard
+    /// legal-list rejection, applying nothing (the match stays the sole
+    /// authority; the picker has no rules logic of its own).
+    #[test]
+    fn place_a_picker_overlong_selection_is_rejected_at_confirm() {
+        let mut r = repl_2p(4);
+        r.step("0");
+        r.step("0"); // enter picker
+        r.step("3");
+        r.step("5");
+        r.step("6");
+        let out = r.step("7");
+        assert!(out.text.contains("NOT currently offered"), "live warning expected: {}", out.text);
+        let events_before = r.session.record().events.len();
+        let out = r.step("confirm");
+        assert!(out.text.contains("not currently available"), "{}", out.text);
+        assert_eq!(r.session.record().events.len(), events_before, "nothing applies");
+        // Back on the main grouped list.
+        assert!(out.text.contains("Option A —"), "{}", out.text);
+    }
+
+    /// Option-B picker: an id-addressed area list with per-area fee notes;
+    /// typing an id previews that area's placement and `confirm` commits its
+    /// single variant. No `[i]` numbering exists here at all (C1) -- the only
+    /// thing typeable is an area id.
+    #[test]
+    fn place_b_picker_lists_areas_and_commits() {
+        let mut r = repl_2p(4);
+        r.step("0");
+        let out = r.step("1"); // enter the Option B picker
+        assert!(out.text.contains("Option B — place 2 assistants in one area (by id):"), "{}", out.text);
+        assert!(!out.text.contains("[0] "), "areas must not be numbered: {}", out.text);
+        assert!(out.text.contains("Selected: (none)"), "{}", out.text);
+
+        let events_before = r.session.record().events.len();
+        let out = r.step("2");
+        assert!(out.text.contains("Selected: A02"), "{}", out.text);
+        assert!(out.text.contains("legal — "), "{}", out.text);
+        assert_eq!(r.session.record().events.len(), events_before, "selecting must not commit");
+        let out = r.step("confirm");
+        assert!(!out.text.to_lowercase().contains("illegal"), "{}", out.text);
+        assert_eq!(r.session.record().events.len(), events_before + 1);
+        assert!(matches!(
+            r.session.record().events.last(),
+            Some(RecordedEvent::Move(Move::PlaceTwoSameArea { area, adjacent_bonus: None }))
+                if area.0 == 2
+        ), "{:?}", r.session.record().events.last());
+    }
+
+    /// C1 regression (third review, CRITICAL): the Option-B picker is driven
+    /// by the area IDS it displays, never by a list position. `b_areas` omits
+    /// the Canal (no `PlaceTwoSameArea` is ever legal there) while the id
+    /// space still contains it, so on a 4-player board whose Canal sits
+    /// mid-pyramid every area past it had a list index one BELOW its id: an
+    /// operator reading `A15` off the screen and typing `15` placed two
+    /// assistants in `A16` -- instantly, with no preview and no confirm --
+    /// silently diverging a live-tracked record from the physical table.
+    /// Seed 0 puts the 4-player Canal at A14, so A15..A17 are all past it.
+    #[test]
+    fn place_b_picker_places_in_the_area_id_typed_not_the_list_index() {
+        let mut r = repl_np(4, 0);
+        let canal = *r
+            .session
+            .state()
+            .board_layout
+            .areas
+            .iter()
+            .find(|(_, c)| c.area_type == AreaType::Canal)
+            .expect("the 4-player board has a Canal")
+            .0;
+        let target = AreaId::new(canal.0 + 1);
+        assert!(
+            r.session.state().board_layout.areas.contains_key(&target),
+            "fixture: the Canal (A{:02}) must sit BEFORE the last area, or there is no off-by-one to test",
+            canal.0
+        );
+
+        r.step("0"); // -> Placement
+        let b_entry =
+            display_index_containing(&r, "Option B").expect("Option B entry present at 4P turn 1");
+        let out = r.step(&b_entry.to_string());
+        assert!(
+            !out.text.contains(&format!("(A{:02})", canal.0)),
+            "the Canal is not Option-B eligible, so its absence is what shifts every later id: {}",
+            out.text
+        );
+
+        // The displayed id form is never refused, and it selects the area it
+        // names -- the id, not the position it happens to occupy.
+        let out = r.step(&format!("A{:02}", target.0));
+        assert!(
+            !out.text.contains("pick a numbered area"),
+            "the picker must accept the id form it displays: {}",
+            out.text
+        );
+        assert!(
+            out.text.contains(&format!("Selected: A{:02}", target.0)),
+            "the picker must echo the selected id: {}",
+            out.text
+        );
+        assert!(out.text.contains("legal — "), "and preview the move before it commits: {}", out.text);
+
+        let before = r.session.record().events.len();
+        let out = r.step("confirm");
+        assert!(!out.text.to_lowercase().contains("illegal"), "{}", out.text);
+        assert_eq!(r.session.record().events.len(), before + 1);
+        assert!(
+            matches!(
+                r.session.record().events.last(),
+                Some(RecordedEvent::Move(Move::PlaceTwoSameArea { area, .. })) if *area == target
+            ),
+            "typing A{:02} must place in A{:02}, not its neighbour: {:?}",
+            target.0,
+            target.0,
+            r.session.record().events.last()
+        );
+
+        // ...and a BARE number means the same id, not a list index.
+        let mut r2 = repl_np(4, 0);
+        r2.step("0");
+        let b_entry = display_index_containing(&r2, "Option B").expect("Option B entry present");
+        r2.step(&b_entry.to_string());
+        r2.step(&target.0.to_string());
+        r2.step("confirm");
+        assert!(
+            matches!(
+                r2.session.record().events.last(),
+                Some(RecordedEvent::Move(Move::PlaceTwoSameArea { area, .. })) if *area == target
+            ),
+            "a bare number is an area id too: {:?}",
+            r2.session.record().events.last()
+        );
+    }
+
+    /// C1 rider: an id that is NOT one of the eligible areas is refused by
+    /// name and nothing is applied -- the picker never silently substitutes a
+    /// neighbour for an id it cannot honor.
+    #[test]
+    fn place_b_picker_refuses_an_ineligible_area_id_by_name() {
+        let mut r = repl_np(4, 0);
+        let canal = *r
+            .session
+            .state()
+            .board_layout
+            .areas
+            .iter()
+            .find(|(_, c)| c.area_type == AreaType::Canal)
+            .expect("the 4-player board has a Canal")
+            .0;
+        r.step("0");
+        let b_entry = display_index_containing(&r, "Option B").expect("Option B entry present");
+        r.step(&b_entry.to_string());
+
+        let before = r.session.record().events.len();
+        let out = r.step(&format!("A{:02}", canal.0));
+        assert!(
+            out.text.contains(&format!("A{:02}", canal.0)) && out.text.contains("not one of the"),
+            "an ineligible id must be refused BY NAME: {}",
+            out.text
+        );
+        assert_eq!(r.session.record().events.len(), before, "nothing applies");
+        let out = r.step("confirm");
+        assert!(out.text.contains("select an area id first"), "and nothing is selected: {}", out.text);
+        assert_eq!(r.session.record().events.len(), before, "still nothing applies");
+    }
+
+    /// The Option-B picker's per-area lines carry the fee note when an
+    /// opponent President stands there (single-sourced from the same
+    /// describe-side preview the option text uses), and only there.
+    #[test]
+    fn place_b_picker_marks_fee_areas() {
+        let mut state = create_test_game_state(2);
+        state.turn_phase = TurnPhase::Placement;
+        let a0 = AreaId::new(0);
+        let a1 = AreaId::new(1);
+        state
+            .board_layout
+            .areas
+            .insert(a0, AreaConfig { area_type: AreaType::Bank, grid_position: (0, 0) });
+        state
+            .board_layout
+            .areas
+            .insert(a1, AreaConfig { area_type: AreaType::Church, grid_position: (0, 1) });
+        state.players[1].president_location = PresidentLocation::OnBoard(a0); // Blue blocks A00
+        let mut r = Repl::new(Session::for_test_from_state(state, Rules::empty_for_tests()));
+
+        let p = r.prompt();
+        let b_entry = p
+            .lines()
+            .find(|l| l.contains("Option B"))
+            .expect("Option B entry present")
+            .trim_start()
+            .trim_start_matches('[')
+            .chars()
+            .next()
+            .unwrap();
+        let out = r.step(&b_entry.to_string());
+        let a0_line = out.text.lines().find(|l| l.contains("(A00)")).expect("A00 listed");
+        assert!(a0_line.contains("fee 2 yen (2 to Blue)"), "{a0_line}");
+        let a1_line = out.text.lines().find(|l| l.contains("(A01)")).expect("A01 listed");
+        assert!(!a1_line.contains("fee"), "no opponent President at A01: {a1_line}");
+    }
+
+    /// A pending AssistantMove choice groups its flat source x destination
+    /// options by SOURCE; picking a source opens the numbered destination
+    /// list; committing applies the exact engine move. Decline stays a
+    /// direct line, and the `m` grammar still bypasses everything.
+    #[test]
+    fn assistant_move_options_group_by_source() {
+        let mut r = repl_2p(4);
+        drive_to_double_assistant_move_cascade(&mut r);
+        let p = r.prompt();
+        assert!(p.contains("Move an assistant from"), "{p}");
+        assert!(p.contains("destinations"), "grouped entries show a destination count: {p}");
+        assert!(p.contains("Decline the assistant move"), "{p}");
+        let flat = r.session.legal().len();
+        let shown = p.matches("\n[").count();
+        assert!(shown < flat, "grouping must shrink the list ({shown} shown vs {flat} legal): {p}");
+
+        // Pick the first grouped entry -> destination list -> commit [0].
+        let out = r.step("0");
+        assert!(out.text.contains("Assistant destinations from"), "{}", out.text);
+        let events_before = r.session.record().events.len();
+        let out = r.step("0");
+        assert!(!out.text.to_lowercase().contains("illegal"), "{}", out.text);
+        assert_eq!(r.session.record().events.len(), events_before + 1);
+        assert!(matches!(
+            r.session.record().events.last(),
+            Some(RecordedEvent::Move(Move::ChooseAssistantMove { .. }))
+        ), "{:?}", r.session.record().events.last());
+    }
+
     /// Bare-retreat-only Movement state (no on-board assistants): exactly one
     /// retreat variant, so it stays a DIRECT numbered entry -- picking it
     /// commits immediately with no guided sub-prompt.
@@ -2465,7 +3779,7 @@ mod tests {
         let mut r = repl_2p(4);
         let moves: Vec<Move> =
             (0..25).map(|i| Move::MovePresident { path: vec![], destination: AreaId::new((i % 10) as u8) }).collect();
-        r.sub = SubPrompt::Route { destination: AreaId::new(0), moves };
+        r.sub = SubPrompt::Pick { title: "Routes to Bank (A00)".to_string(), moves };
 
         // Page 1 caps at 20 entries ([0]..[19]) and shows both footer lines.
         let p0 = r.sub_prompt_text();
@@ -2484,7 +3798,7 @@ mod tests {
         let p2 = r.step("list").text;
         assert!(p2.contains("[0] ") && p2.contains("page 1/2"), "{p2}");
         // Still in the sub-prompt, nothing applied.
-        assert!(matches!(r.sub, SubPrompt::Route { .. }));
+        assert!(matches!(r.sub, SubPrompt::Pick { .. }));
         assert!(r.session.record().events.is_empty());
     }
 

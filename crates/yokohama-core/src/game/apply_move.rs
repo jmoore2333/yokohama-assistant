@@ -4235,6 +4235,11 @@ mod tests {
         // mercenary_target_area, not president_location.
         let rules = Rules::empty_for_tests();
         let mut state = create_test_game_state(2);
+        // Finding D1: create_test_game_state builds an ad-hoc 2P state without
+        // the setup dummy; place it so the space-4 block below is occupancy-
+        // derived (this fixture uses the scoring-shared helper, which stays
+        // dummy-free for the isolated majority tests).
+        crate::game::place_setup_dummies(&mut state);
         let customs_area = AreaId::new(5);
         state.board_layout.areas.insert(customs_area, AreaConfig {
             area_type: AreaType::Customs,
