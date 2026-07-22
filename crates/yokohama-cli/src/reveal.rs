@@ -318,7 +318,7 @@ pub(crate) fn parse_tech_reveal(words: &[&str], deck: &[TechCardId], techs: &Tec
 /// phantom `VictoryPoints`/`Movement` variants were removed once the
 /// physical box check confirmed only these six faces exist).
 pub(crate) fn parse_token_letter(words: &[&str]) -> Result<FivePowerEffect, String> {
-    let usage = "Enter one letter: i/c/s/t/f/y (or 'cancel').".to_string();
+    let usage = "Enter one letter: i/c/s/t/f/y.".to_string();
     if words.len() != 1 {
         return Err(usage);
     }

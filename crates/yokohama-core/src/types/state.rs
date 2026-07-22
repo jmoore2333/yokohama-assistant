@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::types::{
     AchievementCard, AreaId, BoardLayout, ChurchTrack, CustomsTrack,
-    FivePowerEffect, LabBoard, MercenarySupply, OrderCardId, PendingChoice, PlayerId, PlayerColor,
+    LabBoard, MercenarySupply, OrderCardId, PendingChoice, PlayerId, PlayerColor,
     PlayerState, PortBoard, TechCardId, TurnPhase,
 };
 
@@ -439,35 +439,6 @@ impl GameState {
         p.starting_order_hidden = false;
         Ok(())
     }
-
-    /// Reconcile a face-down 5-Power token with its physical reveal at `area`
-    /// (tokens are face-down until taken — KB 01-rules-reference.md:653, so the
-    /// seeded assignment is fiction until observed). Prefer swapping with the
-    /// lowest-AreaId other area holding an unclaimed matching token (multiset-
-    /// preserving); if the effect is absent from the board, replace outright —
-    /// the board only carries a random 10/13/17-of-20 subset of the pool, and
-    /// claimed identities are forgotten (None), so no pool accounting is
-    /// possible or attempted (design 2026-07-18 §5.2: tracking never rejects
-    /// physical reality).
-    pub fn reveal_five_power_token(&mut self, area: AreaId, effect: FivePowerEffect) -> Result<(), crate::types::MoveError> {
-        match self.board_layout.five_power_tokens.get(&area) {
-            None => return Err(crate::types::MoveError::RuleViolation("area has no 5-Power token slot")),
-            Some(None) => return Err(crate::types::MoveError::RuleViolation("5-Power token already claimed at this area")),
-            Some(Some(e)) if *e == effect => return Ok(()),
-            Some(Some(_)) => {}
-        }
-        let donor = self
-            .board_layout
-            .five_power_tokens
-            .iter()
-            .find(|(a, t)| **a != area && **t == Some(effect))
-            .map(|(a, _)| *a);
-        let displaced = self.board_layout.five_power_tokens.insert(area, Some(effect)).flatten();
-        if let Some(donor) = donor {
-            self.board_layout.five_power_tokens.insert(donor, displaced);
-        }
-        Ok(())
-    }
 }
 
 #[cfg(test)]
@@ -635,43 +606,5 @@ mod tests {
             Err(crate::types::MoveError::CardNotFound)
         );
         assert!(state.players[1].starting_order_hidden);
-    }
-
-    #[test]
-    fn reveal_five_power_token_swaps_with_matching_unclaimed_area() {
-        let mut state = create_test_game_state(2);
-        state.board_layout.five_power_tokens.insert(AreaId::new(0), Some(FivePowerEffect::Copper(2)));
-        state.board_layout.five_power_tokens.insert(AreaId::new(1), Some(FivePowerEffect::Money(3)));
-        state.board_layout.five_power_tokens.insert(AreaId::new(2), Some(FivePowerEffect::Money(3)));
-        state.reveal_five_power_token(AreaId::new(0), FivePowerEffect::Money(3)).unwrap();
-        // Swapped with the LOWEST matching area id (1), not area 2.
-        assert_eq!(state.board_layout.five_power_tokens[&AreaId::new(0)], Some(FivePowerEffect::Money(3)));
-        assert_eq!(state.board_layout.five_power_tokens[&AreaId::new(1)], Some(FivePowerEffect::Copper(2)));
-        assert_eq!(state.board_layout.five_power_tokens[&AreaId::new(2)], Some(FivePowerEffect::Money(3)));
-    }
-
-    #[test]
-    fn reveal_five_power_token_replaces_when_effect_absent_from_board() {
-        let mut state = create_test_game_state(2);
-        state.board_layout.five_power_tokens.insert(AreaId::new(0), Some(FivePowerEffect::Copper(2)));
-        // Tea(3) is nowhere on the seeded board (it stayed in the unplaced 20-pool remainder).
-        state.reveal_five_power_token(AreaId::new(0), FivePowerEffect::Tea(3)).unwrap();
-        assert_eq!(state.board_layout.five_power_tokens[&AreaId::new(0)], Some(FivePowerEffect::Tea(3)));
-    }
-
-    #[test]
-    fn reveal_five_power_token_matching_is_noop_and_structural_errors_reject() {
-        let mut state = create_test_game_state(2);
-        state.board_layout.five_power_tokens.insert(AreaId::new(0), Some(FivePowerEffect::Silk(2)));
-        state.board_layout.five_power_tokens.insert(AreaId::new(1), None); // claimed
-        assert!(state.reveal_five_power_token(AreaId::new(0), FivePowerEffect::Silk(2)).is_ok());
-        assert!(matches!(
-            state.reveal_five_power_token(AreaId::new(1), FivePowerEffect::Silk(2)),
-            Err(crate::types::MoveError::RuleViolation("5-Power token already claimed at this area"))
-        ));
-        assert!(matches!(
-            state.reveal_five_power_token(AreaId::new(5), FivePowerEffect::Silk(2)),
-            Err(crate::types::MoveError::RuleViolation("area has no 5-Power token slot"))
-        ));
     }
 }

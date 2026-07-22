@@ -165,29 +165,6 @@ fn revealed_hidden_starting_order_replays() {
 }
 
 #[test]
-fn revealed_five_power_token_replays_through_fold() {
-    let rules = Rules::standard();
-    let config = GameConfig::for_player_count(2);
-    let choices = vec![StartingOrderChoice::Keep(0), StartingOrderChoice::Keep(0)];
-    let mut record = GameRecord::new(33, config.clone(), choices.clone(), &rules);
-    let pending = new_game(config, &rules, 33).unwrap();
-    let mut state = finalize_setup(pending, &choices).unwrap();
-    // Pick any tokened area and reveal a DIFFERENT canonical effect there.
-    let (&area, current) = state.board_layout.five_power_tokens.iter()
-        .find(|(_, t)| t.is_some()).expect("setup places tokens");
-    let observed = if *current == Some(yokohama_core::FivePowerEffect::Money(3)) {
-        yokohama_core::FivePowerEffect::ImportedGoods(1)
-    } else {
-        yokohama_core::FivePowerEffect::Money(3)
-    };
-    state.reveal_five_power_token(area, observed).unwrap();
-    record.push_event(RecordedEvent::RevealFivePowerToken { area, effect: observed });
-    check_invariants(&state, &rules).unwrap();
-    assert_eq!(replay(&record, &rules).unwrap(), state);
-    assert_eq!(state.board_layout.five_power_tokens[&area], Some(observed));
-}
-
-#[test]
 fn setup_observations_from_another_seed_replay_and_play_on() {
     // Full live-setup shape: board + achievements + ports + labs + own deal
     // observed from a DIFFERENT seed's game (standing in for the physical

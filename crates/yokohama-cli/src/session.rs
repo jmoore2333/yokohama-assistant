@@ -431,9 +431,6 @@ impl Session {
                 RecordedEvent::RevealTechs(c) => {
                     staged.arrange_techs_on_top(c).map_err(|e| ApplyError::Reveal(e.to_string()))?
                 }
-                RecordedEvent::RevealFivePowerToken { area, effect } => staged
-                    .reveal_five_power_token(*area, *effect)
-                    .map_err(|e| ApplyError::Reveal(e.to_string()))?,
                 other => return Err(ApplyError::Reveal(format!("event not allowed as a bound reveal: {other:?}"))),
             }
             reveal_descriptions.push(desc);
@@ -565,7 +562,6 @@ impl Session {
                     record.events.last(),
                     Some(RecordedEvent::RevealOrders(_))
                         | Some(RecordedEvent::RevealTechs(_))
-                        | Some(RecordedEvent::RevealFivePowerToken { .. })
                 ) {
                     record.events.pop();
                 }

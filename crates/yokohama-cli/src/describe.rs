@@ -596,9 +596,6 @@ pub fn describe_recorded_event(ev: &RecordedEvent, state: &GameState, rules: &Ru
         RecordedEvent::RevealStartingOrder { player, card } => {
             format!("reveal starting order: P{} = O{:02}", player.0, card.0)
         }
-        RecordedEvent::RevealFivePowerToken { area, effect } => {
-            format!("reveal 5-power token at A{:02}: {}", area.0, five_power_effect_label(*effect))
-        }
     }
 }
 
@@ -687,13 +684,6 @@ mod tests {
             &rules,
         );
         assert_eq!(techs, "reveal techs: T03", "{techs}");
-        // The other two reveal kinds already carried their identity; keep it.
-        let token = describe_recorded_event(
-            &RecordedEvent::RevealFivePowerToken { area: AreaId::new(2), effect: FivePowerEffect::Copper(2) },
-            &state,
-            &rules,
-        );
-        assert!(token.contains("A02") && token.contains("2 copper"), "{token}");
     }
 
     #[test]
