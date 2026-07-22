@@ -1109,9 +1109,23 @@ fn ask_board_check(
     out(&crate::render::board_grid(session.state()));
     out("\nA00 is cell 0, the leftmost tile of the widest top row; ids run left to right\n");
     out("along each row, then down to the next row.\n");
-    out(&dummy_placement_notice(session.state()));
+    let notice = dummy_placement_notice(session.state());
+    out(&notice);
+    // §1.2 -- the observing half: the board-match question the operator MUST
+    // answer NAMES the dummy pawns for a 2-player table, so a "yes" explicitly
+    // confirms the physical pawns are placed. Their positions are rules-fixed,
+    // so this catches only operator OMISSION -- the one way a 2P table diverges
+    // from the tracked game. A 3-/4-player board has no dummy (empty notice) and
+    // gets the plain question.
+    let question = if notice.is_empty() {
+        "Does this match your physical board? (yes/no)".to_string()
+    } else {
+        "Does this match your physical board? (At 2 players a 'yes' also confirms the two neutral \
+         dummy pawns above are physically placed.) (yes/no)"
+            .to_string()
+    };
     let mut matches: Option<bool> = None;
-    ask(input, out, "Does this match your physical board? (yes/no)", &mut |s: &str| -> Result<(), String> {
+    ask(input, out, &question, &mut |s: &str| -> Result<(), String> {
         match s.to_lowercase().as_str() {
             "yes" | "y" => {
                 matches = Some(true);
@@ -1963,6 +1977,13 @@ mod tests {
         let question = transcript.find("Does this match your physical board?").expect("board check asked");
         let notice = transcript.find("Church faith-7").expect("checked above");
         assert!(header < notice && notice < question, "the instruction must sit inside the board check\n{transcript}");
+        // §1.2 observing half: the board-match question the operator MUST answer
+        // NAMES the dummy pawns at 2 players, so a "yes" explicitly confirms
+        // they are physically placed (not just that the tiles match).
+        assert!(
+            transcript[question..].to_lowercase().contains("two neutral dummy pawns"),
+            "the 2P board-match question must name the dummy pawns so 'yes' confirms them\n{transcript}"
+        );
         std::fs::remove_file("yokohama-game-616.json").ok();
     }
 
