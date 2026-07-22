@@ -1541,7 +1541,7 @@ mod tests {
         players[1].president_location = PresidentLocation::OnBoard(blocked); // Blue charges the pass-through fee
         players[1].money = 10;
 
-        let state = GameState {
+        let mut state = GameState {
             config,
             board_layout,
             players,
@@ -1575,6 +1575,7 @@ mod tests {
             pending_choices: Vec::new(),
         };
 
+        place_setup_dummies(&mut state); // I9 (PR #5 §2.1): a valid 2P state carries the setup dummy
         (state, Rules::empty_for_tests())
     }
 

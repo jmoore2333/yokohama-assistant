@@ -187,7 +187,14 @@ pub fn new_game(mut config: GameConfig, rules: &Rules, seed: u64) -> Result<Pend
 /// dummy. `arrival_order` is irrelevant (final scoring's count-tie is
 /// positional, not by arrival) and is left 0 without advancing
 /// `next_arrival_order`, so real placements are numbered exactly as before.
-pub(crate) fn place_setup_dummies(state: &mut GameState) {
+///
+/// PUBLIC (PR #5 §2.1): the supported primitive for making a hand-built 2P
+/// `GameState` valid outside `new_game` — it single-sources the 2P dummy
+/// placement so callers (test fixtures, and the Phase-3 state constructors the
+/// spec anticipates) never drift from the setup path. Without it a 2P state has
+/// an empty faith-7/space-4 that `check_invariants`' I9 clause rejects. No-op at
+/// 3/4 players.
+pub fn place_setup_dummies(state: &mut GameState) {
     if state.config.player_count != 2 {
         return;
     }

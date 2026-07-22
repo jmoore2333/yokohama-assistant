@@ -2043,6 +2043,7 @@ mod tests {
     /// single-card registry never trips them.
     fn newspaper_placement_fixture() -> Repl {
         let mut state = create_test_game_state(2);
+        place_setup_dummies(&mut state); // I9 (PR #5 §2.1): a valid 2P state carries the setup dummy
         state.turn_phase = TurnPhase::Placement;
 
         let mut areas = std::collections::BTreeMap::new();
@@ -2613,6 +2614,7 @@ mod tests {
     fn repl_with_any_good_cascade() -> Repl {
         let rules = Rules::empty_for_tests();
         let mut state = create_test_game_state(2);
+        place_setup_dummies(&mut state); // I9 (PR #5 §2.1): a valid 2P state carries the setup dummy
         push_choice(&mut state, PendingChoice::AnyGood, &rules);
         push_choice(&mut state, PendingChoice::AnyGood, &rules);
         Repl::new(Session::for_test_from_state(state, rules))
@@ -3044,7 +3046,7 @@ mod tests {
         players[1].president_location = PresidentLocation::OnBoard(a2); // Blue blocks A2
         players[1].money = 10;
 
-        let state = GameState {
+        let mut state = GameState {
             config,
             board_layout,
             players,
@@ -3077,6 +3079,7 @@ mod tests {
             trigger_player: None,
             pending_choices: Vec::new(),
         };
+        place_setup_dummies(&mut state); // I9 (PR #5 §2.1): a valid 2P state carries the setup dummy
         Repl::new(Session::for_test_from_state(state, Rules::empty_for_tests()))
     }
 
@@ -3105,7 +3108,7 @@ mod tests {
             PlayerState::new(PlayerId::new(1), PlayerColor::Blue, false),
         ];
         players[0].president_location = PresidentLocation::OnBoard(a0); // on board, but no assistants anywhere
-        let state = GameState {
+        let mut state = GameState {
             config,
             board_layout,
             players,
@@ -3138,6 +3141,7 @@ mod tests {
             trigger_player: None,
             pending_choices: Vec::new(),
         };
+        place_setup_dummies(&mut state); // I9 (PR #5 §2.1): a valid 2P state carries the setup dummy
         Repl::new(Session::for_test_from_state(state, Rules::empty_for_tests()))
     }
 
