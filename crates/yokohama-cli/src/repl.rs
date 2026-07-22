@@ -1059,16 +1059,32 @@ impl Repl {
             }
             ["quit"] | ["q"] => StepOutput { text: "bye\n".to_string(), quit: true },
             ["confirm"] => {
-                let selected = match &self.sub {
-                    SubPrompt::PlaceA { selected, .. } => selected.clone(),
+                let (selected, max_areas) = match &self.sub {
+                    SubPrompt::PlaceA { selected, max_areas } => (selected.clone(), *max_areas),
                     _ => return self.out(String::new(), false),
                 };
-                self.sub = SubPrompt::None;
-                self.page = 0;
-                let candidate = Move::PlaceThreeAreas { placements: selected };
+                let candidate = Move::PlaceThreeAreas { placements: selected.clone() };
                 match self.find_placement_match(&candidate) {
-                    Some(mv) => self.commit(mv),
-                    None => self.out("Illegal: that placement is not currently available.\n".to_string(), false),
+                    Some(mv) => {
+                        self.sub = SubPrompt::None;
+                        self.page = 0;
+                        self.commit(mv)
+                    }
+                    // Keep the picker OPEN with the selection intact (item 1,
+                    // third review): dropping to the main list here discarded
+                    // everything the operator had toggled. Name the over-limit
+                    // case distinctly from a generic legal-list miss (item 2).
+                    None => {
+                        let msg = if selected.len() > max_areas {
+                            format!(
+                                "! too many areas — Option A places in at most {max_areas}; deselect {} then 'confirm', or 'cancel'.\n",
+                                selected.len() - max_areas,
+                            )
+                        } else {
+                            "! that selection is not currently available — adjust it or 'cancel'.\n".to_string()
+                        };
+                        self.out(msg, false)
+                    }
                 }
             }
             // The gate admits the DISPLAYED id form too (`A03`/`a03`, SPOT-1)
@@ -1082,6 +1098,29 @@ impl Repl {
                     Ok(a) => a,
                     Err(e) => return self.out(format!("! {e}"), false),
                 };
+                // Validate the id against the real placeable-area set at TOGGLE
+                // time (item 1, third review): a numeric-but-nonexistent id
+                // (`A99`, or any id past this board's last area) used to enter
+                // the selection unchecked and only fail at `confirm`, which then
+                // discarded the whole selection. Reject it here with its own
+                // message -- the same set the directory above lists -- leaving
+                // the selection untouched. (Over the per-turn area limit is NOT
+                // rejected here: max_areas is display guidance and the
+                // legal-list match at `confirm` stays the sole authority; the
+                // live preview and `confirm` name that case distinctly, item 2.)
+                let placeable = self
+                    .session
+                    .state()
+                    .board_layout
+                    .areas
+                    .get(&area)
+                    .is_some_and(|c| c.area_type.allows_placement());
+                if !placeable {
+                    return self.out(
+                        format!("! A{:02} is not a placement area on this board.\n", area.0),
+                        false,
+                    );
+                }
                 if let SubPrompt::PlaceA { selected, .. } = &mut self.sub {
                     match selected.iter().position(|&a| a == area) {
                         Some(i) => {
@@ -1332,11 +1371,16 @@ impl Repl {
                 // Live legality + fee preview: the CANDIDATE the current
                 // toggles assemble, checked against the same legal list
                 // `confirm` will match (display only -- the match at commit
-                // stays the sole authority).
+                // stays the sole authority). An over-limit selection is named
+                // distinctly from a generic miss (item 2, third review).
                 let candidate = Move::PlaceThreeAreas { placements: selected.clone() };
-                let verdict = match self.find_placement_match(&candidate) {
-                    Some(mv) => format!("legal — {}", describe::describe_move(&mv, state, rules)),
-                    None => "NOT currently offered (adjust the selection)".to_string(),
+                let verdict = if selected.len() > *max_areas {
+                    format!("too many areas (max {max_areas}) — deselect {}", selected.len() - max_areas)
+                } else {
+                    match self.find_placement_match(&candidate) {
+                        Some(mv) => format!("legal — {}", describe::describe_move(&mv, state, rules)),
+                        None => "NOT currently offered (adjust the selection)".to_string(),
+                    }
                 };
                 out.push_str(&format!("Selected: {selection_text}\n  -> {verdict}\n"));
                 out.push_str("> type an area id to toggle, 'confirm' to place, or 'cancel'\n");
@@ -3518,26 +3562,57 @@ mod tests {
         assert!(!out.text.contains("Commands:"), "help must not render mid-picker: {}", out.text);
     }
 
-    /// An over-long selection (4 areas without Newspaper) survives toggling
-    /// -- the picker warns live -- and `confirm` gets the standard
-    /// legal-list rejection, applying nothing (the match stays the sole
-    /// authority; the picker has no rules logic of its own).
+    /// Item 1 (third review): a numeric-but-nonexistent area id (A99 on a
+    /// 10-area board) is rejected at TOGGLE time against the real placeable
+    /// set, with its OWN message, and the existing selection is untouched --
+    /// it never enters the selection to be discarded at `confirm`.
     #[test]
-    fn place_a_picker_overlong_selection_is_rejected_at_confirm() {
+    fn place_a_picker_rejects_a_nonexistent_area_id_at_toggle_and_keeps_selection() {
+        let mut r = repl_2p(4);
+        r.step("0");
+        r.step("0"); // enter picker
+        r.step("3"); // a real area
+        // Fixture sanity: the 2P board has 10 areas (ids 0-9), so A99 is off-board.
+        assert_eq!(r.session.state().board_layout.areas.len(), 10, "2P board is 10 areas");
+        let out = r.step("99"); // A99: parses as a u8, but not an area on this board
+        assert!(out.text.contains("not a placement area"), "bad id gets its own message: {}", out.text);
+        // The prior selection survives, and A99 never entered it: the Selected
+        // line is exactly A03 (the message above echoes "A99", so a bare
+        // !contains("A99") would be wrong -- pin the Selected line instead).
+        assert!(out.text.contains("Selected: A03\n"), "the prior selection survives untouched: {}", out.text);
+    }
+
+    /// Item 2 (third review): an over-limit selection (4 areas without
+    /// Newspaper) survives toggling -- max_areas is display guidance, the
+    /// legal-list match stays the sole authority -- but it now gets its OWN
+    /// message (distinct from the bad-id message) in both the live preview and
+    /// at `confirm`, and `confirm` KEEPS the selection open (item 1) instead
+    /// of discarding it to the main list. Deselecting one then commits.
+    #[test]
+    fn place_a_picker_over_limit_has_its_own_message_and_keeps_the_selection() {
         let mut r = repl_2p(4);
         r.step("0");
         r.step("0"); // enter picker
         r.step("3");
         r.step("5");
         r.step("6");
-        let out = r.step("7");
-        assert!(out.text.contains("NOT currently offered"), "live warning expected: {}", out.text);
+        let out = r.step("7"); // 4th area, over the max of 3
+        assert!(out.text.contains("too many areas"), "live preview names over-limit distinctly: {}", out.text);
+        assert!(!out.text.contains("not a placement area"), "distinct from the bad-id message: {}", out.text);
+
         let events_before = r.session.record().events.len();
         let out = r.step("confirm");
-        assert!(out.text.contains("not currently available"), "{}", out.text);
+        assert!(out.text.contains("too many areas"), "confirm names over-limit distinctly: {}", out.text);
         assert_eq!(r.session.record().events.len(), events_before, "nothing applies");
-        // Back on the main grouped list.
-        assert!(out.text.contains("Option A —"), "{}", out.text);
+        // Picker STAYS OPEN with the selection intact (item 1: don't discard).
+        assert!(out.text.contains("Selected: A03, A05, A06, A07"), "selection kept on rejection: {}", out.text);
+
+        // Deselecting one returns to a legal 3-area placement, which commits.
+        r.step("7");
+        let out = r.step("confirm");
+        assert!(!out.text.to_lowercase().contains("illegal"), "{}", out.text);
+        assert!(!out.text.contains("too many"), "{}", out.text);
+        assert_eq!(r.session.record().events.len(), events_before + 1, "the 3-area placement applies");
     }
 
     /// Option-B picker: an id-addressed area list with per-area fee notes;
