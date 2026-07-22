@@ -508,8 +508,10 @@ pub fn sites_view(state: &GameState, _rules: &Rules) -> String {
 /// render draws it as water.
 ///
 /// Each crossing pair is scanned in both orders so it shows on both
-/// members' lines. `adj: -` when an area has no ordinary neighbor left (a
-/// real possibility now: a tile whose only connections are crossings).
+/// members' lines. `adj: -` is a defensive fallback for an area with no
+/// ordinary neighbor left; the staggered geometry never produces it — every
+/// non-Canal tile keeps at least one free brick-offset neighbor (a tip tile
+/// still has two brick neighbors, at most one of them the Canal).
 fn adjacency_suffix(state: &GameState, area: AreaId) -> String {
     let mut crossings: Vec<AreaId> = state
         .board_layout
@@ -558,8 +560,8 @@ fn adjacency_suffix(state: &GameState, area: AreaId) -> String {
 /// carries gaps and a packed owners-only string would attribute owners to
 /// the wrong printed rewards -- `sites_view` prints the four DIFFERENT
 /// rewards positionally right beside these marks (`[1vp 4vp - 2yen]
-/// sh -B-R`). One mark per slot in printed order: the owner's color letter,
-/// or `-` for an empty slot. `build_marks_attribute_each_built_slot_to_its_
+/// sh ·B·R`). One mark per slot in printed order: the owner's color letter,
+/// or `·` for an empty slot. `build_marks_attribute_each_built_slot_to_its_
 /// owner_positionally` pins the attribution (this replaced the old
 /// prefix-packing pin, whose premise the engine fix deliberately broke).
 ///
@@ -2502,8 +2504,8 @@ mod tests {
     /// `BuildShophouse` per EMPTY slot, so `shophouses_built` is no longer
     /// prefix-packed -- gaps are ordinary. `build_marks` must therefore be
     /// POSITIONAL: one mark per slot in printed order (owner color letter or
-    /// `-`), so each built slot is attributed to the reward printed right
-    /// beside it in `sites_view` (`[1vp 4vp - 2yen]  sh -B-R`). This replaces
+    /// `·`), so each built slot is attributed to the reward printed right
+    /// beside it in `sites_view` (`[1vp 4vp - 2yen]  sh ·B·R`). This replaces
     /// the old `shophouse_slots_fill_prefix_packed_so_build_marks_stay_
     /// unambiguous` pin, whose premise the engine fix deliberately broke.
     #[test]

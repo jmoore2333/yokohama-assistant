@@ -2319,18 +2319,18 @@ mod tests {
         // Canal crossings are movement-transit edges ONLY (design 2026-07-18
         // decision log, Task 9): Telegram's adjacent-bonus placement must
         // never be offered across one, even though the two areas are
-        // adjacent in the graph. A genuinely orthogonal neighbor is still offered.
+        // adjacent in the graph. A genuinely brick-offset neighbor is still offered.
         let mut state = create_test_state();
         let main_area = AreaId::new(0); // Bank
-        let across_canal = AreaId::new(1); // CopperMine - flank pair across the Canal
-        let orthogonal = AreaId::new(2); // SilkMill - ordinary grid neighbor
-        state.board_layout.areas.insert(orthogonal, AreaConfig {
+        let across_canal = AreaId::new(1); // CopperMine - cross-canal pair (bridged only by a crossing)
+        let brick_neighbor = AreaId::new(2); // SilkMill - ordinary brick-offset neighbor
+        state.board_layout.areas.insert(brick_neighbor, AreaConfig {
             area_type: AreaType::SilkMill,
             grid_position: (0, 2),
         });
-        state.board_layout.adjacency.insert(main_area, vec![across_canal, orthogonal]);
+        state.board_layout.adjacency.insert(main_area, vec![across_canal, brick_neighbor]);
         state.board_layout.adjacency.insert(across_canal, vec![main_area]);
-        state.board_layout.adjacency.insert(orthogonal, vec![main_area]);
+        state.board_layout.adjacency.insert(brick_neighbor, vec![main_area]);
         state.board_layout.canal_crossings.push((main_area, across_canal));
 
         state.turn_phase = TurnPhase::Placement;
@@ -2355,10 +2355,10 @@ mod tests {
         ));
         assert!(!offers_across_canal, "Telegram bonus must never be offered across the Canal");
 
-        let offers_orthogonal = moves.iter().any(|m| matches!(m,
-            Move::PlaceTwoSameArea { area, adjacent_bonus: Some(a) } if *area == main_area && *a == orthogonal
+        let offers_brick_neighbor = moves.iter().any(|m| matches!(m,
+            Move::PlaceTwoSameArea { area, adjacent_bonus: Some(a) } if *area == main_area && *a == brick_neighbor
         ));
-        assert!(offers_orthogonal, "Telegram bonus should still be offered for a physically-orthogonal neighbor");
+        assert!(offers_brick_neighbor, "Telegram bonus should still be offered for a physically-adjacent brick-offset neighbor");
     }
 
     // --- Task 16: Port & Laboratory enumeration -----------------------

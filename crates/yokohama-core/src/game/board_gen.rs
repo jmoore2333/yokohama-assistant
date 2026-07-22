@@ -154,6 +154,9 @@ fn remove_one_production_duplicate(tiles: &mut Vec<AreaType>, area_type: AreaTyp
 /// 2026-07-21). Sums to [`expected_tile_count`]. The single source of the
 /// board's shape: tile placement, [`staggered_adjacency`], and
 /// [`derive_canal_crossings`] all read it.
+///
+/// # Panics
+/// Panics if `player_count` is not 2, 3, or 4.
 pub fn row_lengths(player_count: u8) -> Vec<u8> {
     match player_count {
         2 => vec![4, 3, 2, 1], // 10 tiles
@@ -165,6 +168,10 @@ pub fn row_lengths(player_count: u8) -> Vec<u8> {
 
 /// Row-major AreaId for staggered cell `(row, col)`: the summed lengths of all
 /// rows above `row`, plus `col`. Inverse of [`area_id_to_cell`].
+///
+/// # Panics
+/// Panics (via [`AreaId::new`]) if `(row, col)` is off the board — i.e. the
+/// computed row-major index is >= 18.
 pub fn cell_to_area_id(row: u8, col: u8, rows: &[u8]) -> AreaId {
     let base: u16 = rows[..row as usize].iter().map(|&l| l as u16).sum();
     AreaId::new((base + col as u16) as u8)
@@ -173,6 +180,10 @@ pub fn cell_to_area_id(row: u8, col: u8, rows: &[u8]) -> AreaId {
 /// The `(row, col)` of a row-major AreaId on a board with the given `rows`
 /// lengths. Inverse of [`cell_to_area_id`]; used by live-board reconciliation
 /// to find the Canal's cell after a re-type.
+///
+/// # Panics
+/// Panics if `id` is off the board — i.e. `id.0` is not within any row of
+/// `rows`.
 pub fn area_id_to_cell(id: AreaId, rows: &[u8]) -> (u8, u8) {
     let mut remaining = id.0 as u16;
     for (r, &len) in rows.iter().enumerate() {

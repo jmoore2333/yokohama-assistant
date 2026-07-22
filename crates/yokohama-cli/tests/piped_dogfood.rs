@@ -54,7 +54,8 @@ fn spawn_reader(child: &mut Child) -> Receiver<Vec<u8>> {
 }
 
 /// Accumulate output until the newest text ends in a prompt line (starts
-/// with `"> "`), or `deadline_hit` panics with the transcript tail.
+/// with `"> "`), or panic with the transcript tail once the 20s per-read
+/// deadline is hit.
 fn read_to_prompt(rx: &Receiver<Vec<u8>>, transcript: &mut Vec<u8>) -> String {
     let start = transcript.len();
     loop {

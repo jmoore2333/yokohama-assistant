@@ -55,8 +55,9 @@ pub struct Repl {
     pub privacy: bool,
 }
 
-/// One line in the Movement phase's collapsed numbered list (design.md:67,
-/// destination-first). Outside Movement -- and inside it whenever a choice is
+/// One line in the Movement phase's collapsed numbered list
+/// (docs/plans/2026-07-18-phase2-cli-driver-design.md, destination-first).
+/// Outside Movement -- and inside it whenever a choice is
 /// queued -- every option is a bare `Direct`, so the list is byte-identical to
 /// the ungrouped `legal()` rendering; the two collapsing variants only ever
 /// appear in the Movement main list. The legal list stays the SOLE authority:
@@ -583,7 +584,8 @@ impl Repl {
     /// Build the numbered entries for the current prompt. Outside the Movement
     /// phase -- and inside it while a choice is queued -- every legal move is a
     /// bare `Direct` (byte-identical to the old ungrouped rendering). In the
-    /// Movement main list it collapses the family (design.md:67): one entry per
+    /// Movement main list it collapses the family
+    /// (docs/plans/2026-07-18-phase2-cli-driver-design.md): one entry per
     /// walk/teleport destination (a `Route` when that destination has >1 fee
     /// label, else the single move `Direct`), each `PlacePresident`/other move
     /// left as `Direct` in place, and the whole `ReturnPresidentToHand` family
@@ -609,7 +611,8 @@ impl Repl {
         legal.into_iter().map(PromptOption::Direct).collect()
     }
 
-    /// Movement main-list grouping (design.md:67, destination-first): one
+    /// Movement main-list grouping (destination-first,
+    /// docs/plans/2026-07-18-phase2-cli-driver-design.md): one
     /// entry per walk/teleport destination (a `Route` when >1 fee label),
     /// the retreat family folded to one `Retreat` line.
     fn group_movement(legal: Vec<Move>) -> Vec<PromptOption> {
@@ -1839,8 +1842,8 @@ mod tests {
     }
 
     /// A REPL over a fresh `n`-player simulation (n in 2..=4). Used for the
-    /// board-width note (S3): 3p/4p boards render wider than 100 columns,
-    /// which the 2p board (86 columns) never does.
+    /// board-width note (S3): only the 4p board renders wider than 100 columns,
+    /// which the 3p (90) and 2p (72) boards never do.
     fn repl_np(n: u8, seed: u64) -> Repl {
         Repl::new(
             Session::new_sim(
