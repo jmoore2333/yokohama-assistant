@@ -3,8 +3,8 @@
 
 use yokohama_core::*;
 use yokohama_core::game::actions::{
-    calculate_church_faith, copper_mine_reward, fishing_ground_reward, silk_mill_reward,
-    tea_plantation_reward,
+    bank_reward, calculate_church_faith, copper_mine_reward, eligible_customs_spaces_for_cost,
+    fishing_ground_reward, silk_mill_reward, tea_plantation_reward,
 };
 
 use crate::render;
@@ -280,7 +280,25 @@ fn describe_area_action(action: &AreaAction, state: &GameState, rules: &Rules) -
         AreaAction::ProduceSeafood => {
             production_preview(state, "Produce seafood", TradeGood::Seafood, fishing_ground_reward)
         }
-        AreaAction::Bank => "Take money at the Bank".to_string(),
+        AreaAction::Bank => {
+            // Yield preview (item 3, third review): 1 yen per power, capped at
+            // 5, at the current power -- the same `bank_reward` the engine pays,
+            // in the shape of the production/Church previews. Falls back to the
+            // bare verb when the acting area can't be determined.
+            match acting_area(state) {
+                Some(area) => {
+                    let power = calculate_power(state, state.current_player, area);
+                    let reward = bank_reward(power);
+                    let next = (power + 1..=6).find(|&q| bank_reward(q) > reward);
+                    let threshold = match next {
+                        Some(q) => format!(", next +{} at power {q}", bank_reward(q)),
+                        None => String::new(),
+                    };
+                    format!("Take money at the Bank (power {power} -> +{reward} yen{threshold})")
+                }
+                None => "Take money at the Bank".to_string(),
+            }
+        }
         AreaAction::Port { cards_taken, second_card_payment } => {
             let cards = cards_taken.iter().map(|id| format!("O{:02}", id.0)).collect::<Vec<_>>().join(", ");
             let mut s = format!("Port: take {cards}");
@@ -383,10 +401,31 @@ fn describe_area_action(action: &AreaAction, state: &GameState, rules: &Rules) -
             }
         }
         AreaAction::Customs { imported_goods_paid } => {
-            if *imported_goods_paid == 1 {
+            let pay = if *imported_goods_paid == 1 {
                 "Customs: pay 1 imported good".to_string()
             } else {
                 format!("Customs: pay {imported_goods_paid} imported goods")
+            };
+            // Outcome preview (item 3, third review): the space(s) this payment
+            // lands on and their printed VP, read from the same
+            // `eligible_customs_spaces_for_cost` the engine places from --
+            // mirroring Church's faith preview, so the option shows what it
+            // gains, not only what it costs. Gated on an acting context (like
+            // the power-based previews above): outside one the option never
+            // appears in real play, and the base plain-words form stays intact.
+            let spaces = eligible_customs_spaces_for_cost(&state.customs_track, *imported_goods_paid);
+            match (acting_area(state), spaces.as_slice()) {
+                (Some(_), [s]) => format!("{pay} -> space {s} (+{} VP)", CustomsTrack::vp_reward(*s)),
+                (Some(_), many @ [_, _, ..]) => {
+                    let list = many
+                        .iter()
+                        .map(|s| format!("space {s} (+{} VP)", CustomsTrack::vp_reward(*s)))
+                        .collect::<Vec<_>>()
+                        .join(" or ");
+                    format!("{pay} -> choose {list}")
+                }
+                // No acting context, or (defensively) no eligible space.
+                _ => pay,
             }
         }
         AreaAction::Skip => "Take the area action, declining all optional parts".to_string(),
@@ -988,6 +1027,70 @@ mod tests {
             describe_move(&Move::ExecuteAreaAction { action: AreaAction::ProduceTea }, &state, &rules);
         assert!(text.contains("power 3"), "{text}");
         assert!(text.contains("+3 tea"), "{text}");
+    }
+
+    /// Item 3 (third review): the Bank action option previews its yield (1 yen
+    /// per power, capped at 5) at the current power, mirroring the production
+    /// and Church previews -- it used to read only "Take money at the Bank",
+    /// showing no amount.
+    #[test]
+    fn bank_action_previews_the_yen_yield() {
+        let mut state = state_2p();
+        let rules = Rules::standard();
+        let area = *state
+            .board_layout
+            .areas
+            .iter()
+            .find(|(_, cfg)| cfg.area_type == AreaType::Bank)
+            .expect("a Bank area exists")
+            .0;
+        let cp = state.current_player;
+        state.players[cp.0 as usize].president_location = PresidentLocation::OnBoard(area);
+        state.players[cp.0 as usize].assistants.on_board.insert(area, 2);
+        state.players[cp.0 as usize].assistants.in_hand -= 2;
+        // President (1) + 2 assistants = power 3 -> +3 yen (bank_reward is linear to 5).
+        let text = describe_move(&Move::ExecuteAreaAction { action: AreaAction::Bank }, &state, &rules);
+        assert!(text.contains("power 3"), "{text}");
+        assert!(text.contains("+3 yen"), "{text}");
+    }
+
+    /// Item 3 (third review): the Customs action option previews the space(s)
+    /// it lands on and their printed VP, mirroring Church's faith preview -- it
+    /// used to name only the imported goods paid, previewing nothing gained.
+    /// (The applied delta already shows the imports spent and the placement;
+    /// this closes the OPTION-preview gap the other area actions don't have.)
+    #[test]
+    fn customs_action_previews_the_space_and_vp() {
+        let mut state = state_2p();
+        let rules = Rules::standard();
+        // The preview shows the outcome only in an acting context (like the
+        // power previews): put the President on the Customs area.
+        let area = *state
+            .board_layout
+            .areas
+            .iter()
+            .find(|(_, cfg)| cfg.area_type == AreaType::Customs)
+            .expect("a Customs area exists")
+            .0;
+        let cp = state.current_player;
+        state.players[cp.0 as usize].president_location = PresidentLocation::OnBoard(area);
+        // On a fresh 2P track, paying 1 imported good is eligible for the two
+        // cost-1 spaces (1 and 2); the dummy sits on space 4 (cost 2) and does
+        // not block them. vp_reward(1)=5, vp_reward(2)=4.
+        let text = describe_move(
+            &Move::ExecuteAreaAction { action: AreaAction::Customs { imported_goods_paid: 1 } },
+            &state,
+            &rules,
+        );
+        assert!(text.contains("pay 1 imported good"), "still names the cost: {text}");
+        assert!(
+            text.contains(&format!("+{} VP", CustomsTrack::vp_reward(1))),
+            "previews space 1's VP: {text}"
+        );
+        assert!(
+            text.contains(&format!("+{} VP", CustomsTrack::vp_reward(2))),
+            "previews space 2's VP: {text}"
+        );
     }
 
     /// Task 12 correctness guard: Copper Mine's reward table is NOT 1:1
