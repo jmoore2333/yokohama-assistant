@@ -1350,8 +1350,9 @@ fn fit_cell_painted(plain: &str, painted: &str) -> String {
 /// The board glyph for a face-up 5-Power token: the good's one-letter code
 /// (matching the players-panel goods run and the wizard's token letters) and
 /// its `GoodKind` for color. Magnitude is fixed per kind, so the letter alone
-/// identifies the face; `board_legend` spells out the amounts.
-fn five_power_face(e: FivePowerEffect) -> (char, GoodKind) {
+/// identifies the face; `board_legend` spells out the amounts. `pub(crate)` so
+/// the setup wizard's review summary prints the same letter the board shows.
+pub(crate) fn five_power_face(e: FivePowerEffect) -> (char, GoodKind) {
     match e {
         FivePowerEffect::ImportedGoods(_) => ('i', GoodKind::Imports),
         FivePowerEffect::Copper(_) => ('c', GoodKind::Copper),

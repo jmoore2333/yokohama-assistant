@@ -246,6 +246,7 @@ struct LiveWizardState {
     deal_choices: Vec<StartingOrderChoice>,
     tiles: Vec<AreaType>,
     sites: Vec<Option<u8>>,
+    tokens: Vec<Option<FivePowerEffect>>,
     achievements: [AchievementType; 3],
     port_a: [OrderCardId; 6],
     port_b: Option<[OrderCardId; 6]>,
@@ -293,6 +294,7 @@ fn run_live_tail(
 
     let tiles = ask_tiles(input, out, players, &legal_tile_counts)?;
     let sites = ask_sites(input, out, &tiles, &rules, players)?;
+    let tokens = ask_tokens(input, out, &tiles, &rules, players)?;
     let achievements = ask_achievements(input, out)?;
 
     let port_a: [OrderCardId; 6] = ask_orders(input, out, "Port A", 6, &rules, &mut seen_order_ids)?.try_into().unwrap();
@@ -324,6 +326,7 @@ fn run_live_tail(
         deal_choices,
         tiles,
         sites,
+        tokens,
         achievements,
         port_a,
         port_b,
@@ -393,7 +396,11 @@ fn run_live_tail(
 /// to edit.
 fn live_observations(ws: &LiveWizardState) -> SetupObservations {
     SetupObservations {
-        board: Some(ObservedBoard { tiles: ws.tiles.clone(), sites: ws.sites.clone(), tokens: None }),
+        board: Some(ObservedBoard {
+            tiles: ws.tiles.clone(),
+            sites: ws.sites.clone(),
+            tokens: Some(ws.tokens.clone()),
+        }),
         achievements: Some(ws.achievements),
         port_a: Some(ws.port_a),
         port_b: ws.port_b,
@@ -452,19 +459,23 @@ fn perform_live_edit(
             ws.known_deals[seat as usize] = deal;
             ws.deal_choices[seat as usize] = choice;
         }
-        // The site cards sit ON the tiles, so a re-entered board moves them
-        // too: re-asking tiles alone would silently re-attach the OLD site
-        // cards to the NEW tile order -- the same class of unflagged
-        // mis-mapping the board check exists to catch, reintroduced by the
-        // very path that recovers from it.
+        // The site cards AND the 5-Power tokens both sit ON the tiles, so a
+        // re-entered board moves them too: re-asking tiles alone would silently
+        // re-attach the OLD site cards / tokens to the NEW tile order -- the
+        // same class of unflagged mis-mapping the board check exists to catch,
+        // reintroduced by the very path that recovers from it.
         Some("tiles") => {
             ws.tiles = ask_tiles(input, out, ws.players, &ws.legal_tile_counts)?;
-            out("  The building-site cards sit on the tiles, so they move with them:\n");
-            out("  re-entering the sites now as well.\n");
+            out("  The building-site cards and 5-Power tokens sit on the tiles, so they move\n");
+            out("  with them: re-entering the sites and tokens now as well.\n");
             ws.sites = ask_sites(input, out, &ws.tiles, rules, ws.players)?;
+            ws.tokens = ask_tokens(input, out, &ws.tiles, rules, ws.players)?;
         }
         Some("sites") => {
             ws.sites = ask_sites(input, out, &ws.tiles, rules, ws.players)?;
+        }
+        Some("tokens") => {
+            ws.tokens = ask_tokens(input, out, &ws.tiles, rules, ws.players)?;
         }
         Some("achievements") => {
             ws.achievements = ask_achievements(input, out)?;
@@ -502,7 +513,7 @@ fn perform_live_edit(
         }
         _ => {
             return Err(format!(
-                "'{section}' is not an editable section (colors/seed/save/deal <seat>/tiles/sites/achievements/porta/portb/laba/labb)"
+                "'{section}' is not an editable section (colors/seed/save/deal <seat>/tiles/sites/tokens/achievements/porta/portb/laba/labb)"
             ))
         }
     }
@@ -531,11 +542,15 @@ fn render_live_summary(ws: &LiveWizardState, rules: &Rules) -> String {
     out.push_str("tiles (widest row first, left to right):\n");
     for (i, t) in ws.tiles.iter().enumerate() {
         let site = ws.sites[i].map(|s| format!(" S{s}")).unwrap_or_default();
+        // Compact face letter, matching the board (`render::five_power_face`);
+        // blank at the Canal cell, which carries no token.
+        let token = ws.tokens[i].map(|e| format!(" 5P:{}", crate::render::five_power_face(e).0)).unwrap_or_default();
         out.push_str(&format!(
-            "  cell {i} ({}): {}{}\n",
+            "  cell {i} ({}): {}{}{}\n",
             cell_coords(i, &rows),
             crate::describe::area_type_name(*t),
-            site
+            site,
+            token
         ));
     }
     out.push_str(&format!(
@@ -998,6 +1013,80 @@ fn ask_sites(
     Ok(sites)
 }
 
+/// A face-up 5-Power token for every non-Canal cell (Canal cells carry no
+/// token and are not asked about -- `None` is pushed there). Rulebook p.3
+/// step 5: the tokens are placed FACE-UP, so their arrangement is open
+/// information observed at setup, exactly like the building-site cards --
+/// which is why this pass exists at all, and why the redundant claim-time
+/// reveal is retired (the layout already holds the true faces).
+///
+/// Walks the same cells in the same order as `ask_tiles`/`ask_sites`, so it
+/// carries the same coordinates -- plus the tile already entered there. Each
+/// answer is validated live against a decrementing copy of the canonical token
+/// pool (`rules.five_power_tokens`: 10 import, 2 each of copper/silk/tea/
+/// seafood/yen), so a third copper is refused AT THE QUESTION and re-asks --
+/// the same sub-multiset tripwire `reconcile_board` applies as a backstop,
+/// caught early like the duplicate-site check.
+fn ask_tokens(
+    input: &mut dyn Iterator<Item = String>,
+    out: &mut dyn FnMut(&str),
+    tiles: &[AreaType],
+    rules: &Rules,
+    players: u8,
+) -> Result<Vec<Option<FivePowerEffect>>, String> {
+    let rows = row_lengths(players);
+    let n = tiles.len();
+    out("\n--- 5-Power tokens ---\n");
+    out("The 5-Power tokens are placed FACE-UP (rulebook p.3 step 5): enter the one you\n");
+    out("see on each tile. Same cells in the same order as the tiles, each question naming\n");
+    out("the tile you entered there; Canal cells carry no token and are skipped. Letters:\n");
+    out("  i = 1 imported good   c = 2 copper   s = 2 silk\n");
+    out("  t = 3 tea   f = 3 seafood   y = 3 yen\n");
+
+    let mut pool = rules.five_power_tokens.clone();
+    let mut tokens: Vec<Option<FivePowerEffect>> = Vec::with_capacity(n);
+    let mut row = 0usize;
+    let mut row_end = rows[0] as usize;
+    out(&row_banner(0, &rows));
+    for (i, tile) in tiles.iter().enumerate() {
+        if i == row_end {
+            row += 1;
+            row_end += rows[row] as usize;
+            out(&row_banner(row, &rows));
+        }
+        if *tile == AreaType::Canal {
+            tokens.push(None);
+            continue;
+        }
+        let mut chosen: Option<FivePowerEffect> = None;
+        ask(
+            input,
+            out,
+            &format!(
+                "Cell {i}/{n} ({}) {} -- 5-Power token? (i/c/s/t/f/y)",
+                cell_coords(i, &rows),
+                crate::describe::area_type_name(*tile)
+            ),
+            &mut |s: &str| -> Result<(), String> {
+                let effect = crate::reveal::parse_token_letter(&[s])?;
+                match pool.iter().position(|p| *p == effect) {
+                    Some(idx) => {
+                        pool.swap_remove(idx);
+                        chosen = Some(effect);
+                        Ok(())
+                    }
+                    None => Err(format!(
+                        "no more {} tokens available for this board",
+                        crate::describe::five_power_effect_label(effect)
+                    )),
+                }
+            },
+        )?;
+        tokens.push(Some(chosen.unwrap()));
+    }
+    Ok(tokens)
+}
+
 /// The confirmation checkpoint the live gate turns on (required outcome 3):
 /// draw the assembled board with the SAME renderer play uses, and make the
 /// operator say out loud that it matches the physical table before a single
@@ -1333,6 +1422,7 @@ mod tests {
             let t = table.state.board_layout.areas[&AreaId::new(i as u8)].area_type;
             if t != AreaType::Canal { lines.push(format!("{site}")); site += 1; }
         }
+        lines.extend(token_letters_for_count(site as usize)); // one token per non-Canal cell
         for a in table.state.achievements.iter() {
             lines.push(format!("{:?}", a.achievement_type)); // menu accepts the type name
         }
@@ -1381,6 +1471,7 @@ mod tests {
         ];
         lines.extend(["cm", "sm", "tp", "fg", "bank", "pa", "la", "ea", "ch", "cu"].iter().map(|s| s.to_string()));
         lines.extend((0u8..10).map(|i| i.to_string()));
+        lines.extend(token_letters_for_count(10)); // 5-Power tokens: 2P is 10 cells, no Canal
         lines.extend(["Copper5", "Silk6", "Tea7"].iter().map(|s| s.to_string()));
         lines
     }
@@ -1439,6 +1530,7 @@ mod tests {
         ];
         lines.extend(["cm", "cm", "sm", "tp", "fg", "bank", "pa", "la", "ea", "ch", "cu"].iter().map(|s| s.to_string())); // cell 1's first attempt repeats cell 0's "cm"
         lines.extend((0u8..10).map(|i| i.to_string()));
+        lines.extend(token_letters_for_count(10)); // 5-Power tokens
         lines.extend(["Copper5", "Silk6", "Tea7"].iter().map(|s| s.to_string()));
         lines.extend(["O1", "O2", "O3", "O4", "O5", "O6"].iter().map(|s| s.to_string()));
         lines.extend(["T1", "T2", "T3", "T4", "T5", "T6"].iter().map(|s| s.to_string()));
@@ -1542,6 +1634,139 @@ mod tests {
         lines.extend(["O1", "O2", "O3", "O4", "O5", "O6"].iter().map(|s| s.to_string()));
         lines.extend(["T1", "T2", "T3", "T4", "T5", "T6"].iter().map(|s| s.to_string()));
         lines
+    }
+
+    // ---- §1.1: face-up 5-Power tokens are observed at live setup ----
+    //
+    // Rulebook p.3 step 5 places the 5-Power tokens FACE-UP, so a live game
+    // observes the arrangement at setup, exactly like the building sites. The
+    // wizard now has a token-entry pass after the sites, `reconcile_board`
+    // applies the observed faces, and the board renders them.
+
+    /// A valid token-letter sequence covering `count` non-Canal cells: the
+    /// letters for the first `count` faces of the canonical 20-token pool,
+    /// which is always a sub-multiset (a board has at most 17 non-Canal cells).
+    /// The live scripts observe tokens independently of the seeded board, so
+    /// any valid sub-multiset drives the wizard -- this one is deterministic.
+    fn token_letters_for_count(count: usize) -> Vec<String> {
+        canonical_five_power_tokens()
+            .iter()
+            .take(count)
+            .map(|e| match e {
+                FivePowerEffect::ImportedGoods(_) => "i",
+                FivePowerEffect::Copper(_) => "c",
+                FivePowerEffect::Silk(_) => "s",
+                FivePowerEffect::Tea(_) => "t",
+                FivePowerEffect::Seafood(_) => "f",
+                FivePowerEffect::Money(_) => "y",
+            })
+            .map(str::to_string)
+            .collect()
+    }
+
+    /// The token-entry pass runs after the sites, names each cell and the tile
+    /// there, applies the observed faces to the built session (each on its own
+    /// cell), and the setup summary echoes each cell's token. 2P is 10 cells,
+    /// no Canal, so a token sits on every cell.
+    #[test]
+    fn live_wizard_collects_face_up_tokens_that_reach_the_session() {
+        let mut lines: Vec<String> = vec![
+            "live".into(), "2".into(), "red".into(), "blue".into(), "0".into(), "620".into(), "".into(),
+            "hidden".into(), "hidden".into(),
+        ];
+        lines.extend(P2_TILES.iter().map(|s| s.to_string()));
+        lines.extend((0u8..10).map(|i| i.to_string())); // sites
+        // A distinct, valid sub-multiset: 1c 1s 1t 1f 1y + 5 imports = 10.
+        lines.extend(["c", "s", "t", "f", "y", "i", "i", "i", "i", "i"].iter().map(|s| s.to_string()));
+        lines.extend(["Copper5", "Silk6", "Tea7"].iter().map(|s| s.to_string()));
+        lines.extend(["O1", "O2", "O3", "O4", "O5", "O6"].iter().map(|s| s.to_string()));
+        lines.extend(["T1", "T2", "T3", "T4", "T5", "T6"].iter().map(|s| s.to_string()));
+        lines.push("confirm".into());
+        lines.push("yes".into());
+        let (repl, transcript) = feed_owned(lines);
+        let repl = repl.unwrap_or_else(|e| panic!("expected Ok, got Err({e}); transcript:\n{transcript}"));
+        // The token pass ran, with a header and per-cell prompts naming the tile.
+        assert!(transcript.contains("--- 5-Power tokens ---"), "{transcript}");
+        assert!(
+            transcript.contains("Cell 0/10 (row 1 of 4, tile 1 of 4) Copper Mine -- 5-Power token?"),
+            "token prompts must name the cell AND the tile entered there\n{transcript}"
+        );
+        // Each observed face reached the built session, on its own cell.
+        let expect = [
+            FivePowerEffect::Copper(2), FivePowerEffect::Silk(2), FivePowerEffect::Tea(3),
+            FivePowerEffect::Seafood(3), FivePowerEffect::Money(3),
+            FivePowerEffect::ImportedGoods(1), FivePowerEffect::ImportedGoods(1),
+            FivePowerEffect::ImportedGoods(1), FivePowerEffect::ImportedGoods(1),
+            FivePowerEffect::ImportedGoods(1),
+        ];
+        let toks = &repl.session.state().board_layout.five_power_tokens;
+        for (i, e) in expect.iter().enumerate() {
+            assert_eq!(toks[&AreaId::new(i as u8)], Some(*e), "cell {i} token must be the observed face");
+        }
+        // The setup summary echoes each cell's token (cell 0 is copper).
+        assert!(transcript.contains("5P:c"), "the setup summary must show each cell's token\n{transcript}");
+        std::fs::remove_file("yokohama-game-620.json").ok();
+    }
+
+    /// The canonical pool has exactly 2 coppers, so a third is refused AT the
+    /// question with a clear message and re-asks that same cell -- the same
+    /// sub-multiset tripwire `reconcile_board` applies as a backstop, caught
+    /// live like the duplicate-site check. The recovered valid face then lands.
+    #[test]
+    fn a_third_copper_token_is_rejected_at_the_question_and_reasks() {
+        let mut lines: Vec<String> = vec![
+            "live".into(), "2".into(), "red".into(), "blue".into(), "0".into(), "621".into(), "".into(),
+            "hidden".into(), "hidden".into(),
+        ];
+        lines.extend(P2_TILES.iter().map(|s| s.to_string()));
+        lines.extend((0u8..10).map(|i| i.to_string()));
+        // cells 0,1 copper; cell 2's first answer is a THIRD copper (rejected),
+        // then 'i'; cells 3-9 import. 3 c-attempts (1 rejected) + 8 i = 11 lines.
+        lines.extend(["c", "c", "c", "i", "i", "i", "i", "i", "i", "i", "i"].iter().map(|s| s.to_string()));
+        lines.extend(["Copper5", "Silk6", "Tea7"].iter().map(|s| s.to_string()));
+        lines.extend(["O1", "O2", "O3", "O4", "O5", "O6"].iter().map(|s| s.to_string()));
+        lines.extend(["T1", "T2", "T3", "T4", "T5", "T6"].iter().map(|s| s.to_string()));
+        lines.push("confirm".into());
+        lines.push("yes".into());
+        let (repl, transcript) = feed_owned(lines);
+        assert!(
+            transcript.contains("no more 2 copper tokens available for this board"),
+            "a third copper must be refused at the question\n{transcript}"
+        );
+        let repl = repl.unwrap_or_else(|e| panic!("expected Ok, got Err({e}); transcript:\n{transcript}"));
+        let toks = &repl.session.state().board_layout.five_power_tokens;
+        assert_eq!(toks[&AreaId::new(0)], Some(FivePowerEffect::Copper(2)));
+        assert_eq!(toks[&AreaId::new(1)], Some(FivePowerEffect::Copper(2)));
+        assert_eq!(toks[&AreaId::new(2)], Some(FivePowerEffect::ImportedGoods(1)), "cell 2 is the recovered import");
+        std::fs::remove_file("yokohama-game-621.json").ok();
+    }
+
+    /// `edit tokens` re-asks the whole token pass and the edit reaches the
+    /// built session.
+    #[test]
+    fn edit_tokens_re_asks_the_face_up_tokens_and_the_edit_reaches_the_session() {
+        let mut lines: Vec<String> = vec![
+            "live".into(), "2".into(), "red".into(), "blue".into(), "0".into(), "622".into(), "".into(),
+            "hidden".into(), "hidden".into(),
+        ];
+        lines.extend(P2_TILES.iter().map(|s| s.to_string()));
+        lines.extend((0u8..10).map(|i| i.to_string()));
+        lines.extend(token_letters_for_count(10)); // initial: 10 imports
+        lines.extend(["Copper5", "Silk6", "Tea7"].iter().map(|s| s.to_string()));
+        lines.extend(["O1", "O2", "O3", "O4", "O5", "O6"].iter().map(|s| s.to_string()));
+        lines.extend(["T1", "T2", "T3", "T4", "T5", "T6"].iter().map(|s| s.to_string()));
+        lines.push("edit tokens".into());
+        lines.extend(["c", "s", "t", "f", "y", "i", "i", "i", "i", "i"].iter().map(|s| s.to_string()));
+        lines.push("confirm".into());
+        lines.push("yes".into());
+        let (repl, transcript) = feed_owned(lines);
+        let repl = repl.unwrap_or_else(|e| panic!("expected Ok, got Err({e}); transcript:\n{transcript}"));
+        assert_eq!(
+            repl.session.state().board_layout.five_power_tokens[&AreaId::new(0)],
+            Some(FivePowerEffect::Copper(2)),
+            "the edited token must reach the built session\n{transcript}"
+        );
+        std::fs::remove_file("yokohama-game-622.json").ok();
     }
 
     /// Required outcome 1+2: before the first tile question the wizard prints
@@ -1654,6 +1879,7 @@ mod tests {
         corrected.reverse();
         lines.extend(corrected.iter().map(|s| s.to_string()));
         lines.extend((0u8..10).map(|i| i.to_string())); // sites come with the tiles
+        lines.extend(token_letters_for_count(10)); // tokens come with the tiles too
         lines.push("confirm".into());
         lines.push("yes".into());
         let (repl, transcript) = feed_owned(lines);
@@ -1682,6 +1908,7 @@ mod tests {
         lines.push("edit tiles".into());
         lines.extend(P2_TILES.iter().map(|s| s.to_string()));
         lines.extend((0u8..10).map(|i| i.to_string()));
+        lines.extend(token_letters_for_count(10)); // edit tiles re-asks the tokens too
         lines.push("confirm".into());
         lines.push("yes".into());
         let (repl, transcript) = feed_owned(lines);
@@ -1761,6 +1988,7 @@ mod tests {
                 site += 1;
             }
         }
+        lines.extend(token_letters_for_count(site as usize)); // one 5-Power token per non-Canal cell
         lines.extend(table.state.achievements.iter().map(|a| format!("{:?}", a.achievement_type)));
         for slot in 0..6 {
             lines.push(format!("O{}", table.state.port_state.port_a.slots[slot].unwrap().0));
@@ -1861,6 +2089,7 @@ mod tests {
                 site += 1;
             }
         }
+        lines.extend(token_letters_for_count(site as usize)); // one 5-Power token per non-Canal cell
         lines.extend(table.state.achievements.iter().map(|a| format!("{:?}", a.achievement_type)));
         for slot in 0..6 {
             lines.push(format!("O{}", table.state.port_state.port_a.slots[slot].unwrap().0));
