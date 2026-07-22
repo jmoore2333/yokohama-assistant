@@ -307,6 +307,24 @@ impl BoardLayoutBuilder {
             }
         }
 
+        // Validate: every canal crossing is also a (bidirectional) adjacency
+        // edge -- transit edges ARE adjacency edges (any-to-any Canal, decision
+        // log 2026-07-21). Real boards guarantee this because `board_gen` adds
+        // each crossing to BOTH `adjacency` and `canal_crossings`, but a builder
+        // driven directly (e.g. an oracle fixture that takes adjacency and
+        // crossings as independent parameters) could otherwise list a crossing
+        // the movement graph can never traverse -- a topology
+        // `derive_canal_crossings` never produces. This is the identical check
+        // `invariants.rs` runs on a finished board; enforcing it in `build()`
+        // is where fixtures actually hit it (types §3.4, third review).
+        for (a, b) in &self.canal_crossings {
+            let a_to_b = self.adjacency.get(a).is_some_and(|ns| ns.contains(b));
+            let b_to_a = self.adjacency.get(b).is_some_and(|ns| ns.contains(a));
+            if !(a_to_b && b_to_a) {
+                return Err(BoardLayoutError::CanalCrossingNotAdjacent(*a, *b));
+            }
+        }
+
         Ok(BoardLayout {
             areas: self.areas,
             adjacency: self.adjacency,
@@ -345,6 +363,10 @@ pub enum BoardLayoutError {
     InvalidFivePowerTokenArea(AreaId),
     InvalidAreaReference(AreaId),
     InvalidCanalCrossing(AreaId, AreaId),
+    /// A canal crossing whose endpoints exist but are not joined by an
+    /// adjacency edge -- an untraversable crossing the movement graph can
+    /// never use (see `build`).
+    CanalCrossingNotAdjacent(AreaId, AreaId),
     /// Area type should be removed for this player count.
     InvalidAreaForPlayerCount(AreaId, AreaType, u8),
 }
@@ -357,6 +379,9 @@ impl std::fmt::Display for BoardLayoutError {
             Self::InvalidFivePowerTokenArea(a) => write!(f, "5-Power token on invalid area: {:?}", a),
             Self::InvalidAreaReference(a) => write!(f, "Invalid area reference: {:?}", a),
             Self::InvalidCanalCrossing(a, b) => write!(f, "Invalid canal crossing: {:?} <-> {:?}", a, b),
+            Self::CanalCrossingNotAdjacent(a, b) => {
+                write!(f, "Canal crossing {:?} <-> {:?} is not an adjacency edge", a, b)
+            }
             Self::InvalidAreaForPlayerCount(a, t, p) => {
                 write!(f, "Area {:?} ({:?}) should be removed for {} players", a, t, p)
             }

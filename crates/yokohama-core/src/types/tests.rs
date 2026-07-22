@@ -354,6 +354,63 @@ fn test_game_config_removed_area_types() {
 }
 
 #[test]
+fn board_layout_builder_rejects_a_crossing_that_is_not_an_adjacency_edge() {
+    // A canal crossing that is NOT also a (bidirectional) adjacency edge is a
+    // topology `derive_canal_crossings` can never produce -- board_gen adds
+    // every crossing to BOTH adjacency and canal_crossings. `build()` must
+    // reject it, the same check `invariants.rs` runs on a finished board, so a
+    // directly-constructed fixture cannot smuggle an untraversable crossing in
+    // (types §3.4, third review).
+    let mut builder = BoardLayoutBuilder::new();
+    for id in [0u8, 1] {
+        builder.add_area(AreaId::new(id), AreaConfig { area_type: AreaType::CopperMine, grid_position: (0, id) });
+        builder.set_building_site(AreaId::new(id), BuildingSite::new([1, 1, 1, 1], 3));
+        builder.set_five_power_token(AreaId::new(id), FivePowerEffect::Money(1));
+    }
+    // A crossing (0,1) with NO adjacency edge backing it.
+    builder.add_canal_crossing(AreaId::new(0), AreaId::new(1));
+    assert_eq!(
+        builder.build(),
+        Err(BoardLayoutError::CanalCrossingNotAdjacent(AreaId::new(0), AreaId::new(1))),
+    );
+
+    // The legitimate any-to-any case -- a crossing that IS an adjacency edge
+    // (how board_gen layers it in) -- still builds.
+    let mut ok = BoardLayoutBuilder::new();
+    for id in [0u8, 1] {
+        ok.add_area(AreaId::new(id), AreaConfig { area_type: AreaType::CopperMine, grid_position: (0, id) });
+        ok.set_building_site(AreaId::new(id), BuildingSite::new([1, 1, 1, 1], 3));
+        ok.set_five_power_token(AreaId::new(id), FivePowerEffect::Money(1));
+    }
+    ok.add_adjacency(AreaId::new(0), AreaId::new(1));
+    ok.add_canal_crossing(AreaId::new(0), AreaId::new(1));
+    assert!(ok.build().is_ok());
+}
+
+/// `PlayerId::DUMMY` is a reserved sentinel deliberately outside the boundary
+/// constructors' valid range: it must never be validated via `try_new` (which
+/// rejects it) nor passed to `state.player()` (which would index out of
+/// bounds). This pins the exemption documented at its definition (types §3.4).
+#[test]
+fn player_dummy_is_a_reserved_sentinel_outside_try_new() {
+    assert_eq!(PlayerId::DUMMY.0, u8::MAX);
+    assert!(PlayerId::DUMMY.is_dummy());
+    assert!(!PlayerId::new(0).is_dummy());
+    // The boundary constructor rejects the sentinel value, by design.
+    assert!(PlayerId::try_new(PlayerId::DUMMY.0).is_err());
+}
+
+/// The guard-rail half of the exemption: `state.player(DUMMY)` is a misuse
+/// (the sentinel has no `PlayerState`), and the debug guard names it rather
+/// than surfacing an opaque out-of-bounds index (types §3.4).
+#[test]
+#[should_panic(expected = "reserved sentinel")]
+fn state_player_rejects_the_dummy_sentinel_in_debug() {
+    let state = crate::game::create_test_game_state(2);
+    let _ = state.player(PlayerId::DUMMY);
+}
+
+#[test]
 fn test_board_layout_builder_rejects_invalid_areas_for_player_count() {
     let config_2p = GameConfig::for_player_count(2);
     let config_4p = GameConfig::for_player_count(4);

@@ -261,12 +261,20 @@ impl GameState {
     }
 
     /// Get a player's state by ID.
+    ///
+    /// [`PlayerId::DUMMY`] is a reserved sentinel with no `PlayerState`; passing
+    /// it here is a bug. The debug guard names it so a misuse surfaces as
+    /// "reserved sentinel" rather than an opaque out-of-bounds index (types
+    /// §3.4). Release behaviour is unchanged -- a real 0..player_count id
+    /// indexes exactly as before.
     pub fn player(&self, id: PlayerId) -> &PlayerState {
+        debug_assert!(!id.is_dummy(), "PlayerId::DUMMY is a reserved sentinel, not a real player -- never pass it to state.player()");
         &self.players[id.0 as usize]
     }
 
-    /// Get a player's state mutably.
+    /// Get a player's state mutably. See [`Self::player`] on the `DUMMY` guard.
     pub fn player_mut(&mut self, id: PlayerId) -> &mut PlayerState {
+        debug_assert!(!id.is_dummy(), "PlayerId::DUMMY is a reserved sentinel, not a real player -- never pass it to state.player_mut()");
         &mut self.players[id.0 as usize]
     }
 

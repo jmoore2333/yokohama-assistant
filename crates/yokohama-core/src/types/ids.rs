@@ -49,17 +49,30 @@ impl PlayerId {
         Self(id)
     }
 
-    /// Sentinel owner for the 2-player setup "dummy" assistant (rulebook p.9
-    /// NOTE of **Jeremy's edition** — the English PDF bundled in `analysis-1/`
-    /// describes no 2P dummy at all, so the citable source is guidingpath's
-    /// 2026-07-21 decision-log rows, finding D1): a placed pawn of an unused
-    /// colour that occupies Church faith-7 and Customs space-4. It is never a real player — no `PlayerState`
-    /// carries this id, and `state.player(DUMMY)` would panic — so every
-    /// consumer that enumerates real players (per-player invariants, the
-    /// end-game trigger's pawn count, score breakdown rows) skips it, while
-    /// the ONE representation that carries it (a track slot owned by DUMMY)
-    /// still blocks placement and competes in the majority bonuses. The value
-    /// sits far outside the real 0..=3 range so it can never collide.
+    /// Reserved sentinel owner for the 2-player setup "dummy" assistant
+    /// (rulebook p.9 NOTE of **Jeremy's edition** — the English PDF bundled in
+    /// `analysis-1/` describes no 2P dummy at all, so the citable source is
+    /// guidingpath's 2026-07-21 decision-log rows, finding D1): a placed pawn of
+    /// an unused colour that occupies Church faith-7 and Customs space-4.
+    ///
+    /// EXEMPTION (types §3.4, third-review decision — a documented exemption,
+    /// deliberately NOT a separate occupant type and NOT a change to `try_new`):
+    /// `DUMMY` is a sentinel that is **not a real player index**. It is
+    /// constructed only as this `const` (the value `u8::MAX` sits far outside
+    /// the real `0..=3` range, so it can never collide) and it must NEVER be:
+    ///   - passed to [`try_new`](Self::try_new) or [`new`](Self::new) — both
+    ///     reject/panic on it, by design (a real player index of `u8::MAX` must
+    ///     stay invalid); nor
+    ///   - passed to `GameState::player` / `player_mut` — it has no
+    ///     `PlayerState`, so that would index out of bounds (guarded by a
+    ///     `debug_assert` at those entry points).
+    ///
+    /// It appears ONLY as a track-slot owner, and only where invariant I9 pins
+    /// it (the 2P Church faith-7 / Customs space-4 pawns). Every consumer that
+    /// enumerates real players (per-player invariants, the end-game trigger's
+    /// pawn count, score-breakdown rows) skips it via [`is_dummy`](Self::is_dummy),
+    /// while the track slot it owns still blocks placement and competes in the
+    /// majority bonuses.
     pub const DUMMY: PlayerId = PlayerId(u8::MAX);
 
     /// True for the 2-player majority "dummy" sentinel owner ([`PlayerId::DUMMY`]).
