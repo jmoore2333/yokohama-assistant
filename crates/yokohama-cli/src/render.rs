@@ -236,13 +236,17 @@ pub fn compact_panel(state: &GameState, _rules: &Rules) -> String {
     for p in &state.players {
         let marker = if p.id == state.current_player { ">" } else { " " };
         let name = color_name(p.color);
-        // Pad from the PLAIN name length -- the painted twin's escapes have
-        // zero display width (style.rs's alignment rule).
-        let name_pad = " ".repeat(7usize.saturating_sub(name.chars().count()));
+        // The digit after the marker is the player's SEAT number -- the
+        // `reveal <seat>` key (item 7, third review). Width-neutral: the name
+        // field drops from 7 to 6 to make room, so the panel width (and the
+        // 140-column frame budget) is unchanged. Pad from the PLAIN name length
+        // -- the painted twin's escapes have zero display width (style.rs).
+        let name_pad = " ".repeat(6usize.saturating_sub(name.chars().count()));
         lines.push((
-            format!("{marker} {name}{name_pad} {:>2} yen  {:>2} VP", p.money, p.victory_points),
+            format!("{marker}{} {name}{name_pad} {:>2} yen  {:>2} VP", p.id.0, p.money, p.victory_points),
             format!(
-                "{marker} {}{name_pad} {:>2} yen  {:>2} VP",
+                "{marker}{} {}{name_pad} {:>2} yen  {:>2} VP",
+                p.id.0,
                 paint(Tone::Player(p.color), name),
                 p.money,
                 p.victory_points
@@ -317,7 +321,8 @@ pub fn compact_panel_oneline(state: &GameState) -> String {
     for p in &state.players {
         let marker = if p.id == state.current_player { ">" } else { " " };
         let name = color_name(p.color);
-        let name_pad = " ".repeat(7usize.saturating_sub(name.chars().count()));
+        // Seat digit after the marker (item 7); width-neutral name field 7->6.
+        let name_pad = " ".repeat(6usize.saturating_sub(name.chars().count()));
         let assistants_on_board: u32 = p.assistants.on_board.values().map(|&c| c as u32).sum();
         let locked = p.assistants.on_achievements + p.assistants.on_church + p.assistants.on_customs;
         let locked_text = if locked > 0 { format!(" locked {locked}") } else { String::new() };
@@ -344,8 +349,8 @@ pub fn compact_panel_oneline(state: &GameState) -> String {
             pres,
         );
         lines.push((
-            format!("{marker} {name}{name_pad}{tail}"),
-            format!("{marker} {}{name_pad}{tail}", paint(Tone::Player(p.color), name)),
+            format!("{marker}{} {name}{name_pad}{tail}", p.id.0),
+            format!("{marker}{} {}{name_pad}{tail}", p.id.0, paint(Tone::Player(p.color), name)),
         ));
     }
     let width = lines.iter().map(|(plain, _)| plain.chars().count()).max().unwrap_or(0);
@@ -370,9 +375,13 @@ pub fn compact_panel_oneline(state: &GameState) -> String {
 pub fn players_panel(state: &GameState, rules: &Rules, hide_hands: bool) -> String {
     let mut out = section("Players");
     for p in &state.players {
+        // The `(seat N)` label is the `reveal <seat>` key (item 7, third
+        // review): it appeared nowhere on the game screen, so the seat<->color
+        // mapping the reveal command needs was learnable only from the wizard
+        // transcript and this panel's ordering.
         out.push_str(&format!(
-            "{}: {} yen  {} VP  c{} s{} t{} f{}  imports {}\n",
-            player_prefix(p.color), p.money, p.victory_points, p.copper, p.silk, p.tea, p.seafood, p.imported_goods,
+            "{} (seat {}): {} yen  {} VP  c{} s{} t{} f{}  imports {}\n",
+            player_prefix(p.color), p.id.0, p.money, p.victory_points, p.copper, p.silk, p.tea, p.seafood, p.imported_goods,
         ));
 
         let hand = if hide_hands {
@@ -1735,13 +1744,36 @@ mod tests {
         let rules = Rules::standard();
         let text = compact_panel(&state, &rules);
         assert!(text.starts_with("─ Players ─"), "{text}");
-        assert!(text.contains("> Red"), "current player marked: {text}");
-        assert!(text.contains("  Blue"), "other players unmarked: {text}");
+        assert!(text.contains(">0 Red"), "current player marked, seat 0: {text}");
+        assert!(text.contains(" 1 Blue"), "other players unmarked, seat 1: {text}");
         assert!(text.contains("yen"), "{text}");
         assert!(text.contains("hand 1"), "hand renders as a COUNT: {text}");
         assert!(!text.contains("O0") && !text.contains("O1"), "hand contents never appear: {text}");
         assert!(text.contains("next TH take 4 yen"), "{text}");
         assert!(text.contains("President: in hand"), "{text}");
+    }
+
+    /// Item 7 (third review): every panel labels each player with its SEAT
+    /// number -- the `reveal <seat>` key, which used to appear nowhere on the
+    /// game screen (learnable only from the wizard transcript and the players
+    /// ordering). The full `players` view spells it out; the compact frame
+    /// panels carry the digit right after the current-player marker.
+    #[test]
+    fn panels_show_the_seat_number_for_the_reveal_key() {
+        let state = test_state_2p(); // Red = seat 0 (current), Blue = seat 1
+        let rules = Rules::standard();
+
+        let full = players_panel(&state, &rules, false);
+        assert!(full.contains("(seat 0)"), "players view labels seat 0: {full}");
+        assert!(full.contains("(seat 1)"), "players view labels seat 1: {full}");
+
+        let compact = compact_panel(&state, &rules);
+        assert!(compact.contains(">0 Red"), "compact: current player Red is seat 0: {compact}");
+        assert!(compact.contains(" 1 Blue"), "compact: Blue is seat 1: {compact}");
+
+        let oneline = compact_panel_oneline(&state);
+        assert!(oneline.contains(">0 Red"), "oneline: seat 0 Red: {oneline}");
+        assert!(oneline.contains(" 1 Blue"), "oneline: seat 1 Blue: {oneline}");
     }
 
     /// Locked pawns (goals/church/customs) surface as a `locked N` tally so
@@ -1773,7 +1805,7 @@ mod tests {
             "one header + exactly one line per player:\n{text}"
         );
         let red = text.lines().find(|l| l.contains("Red")).expect("a Red line");
-        assert!(red.starts_with("> Red"), "current player marked: {red}");
+        assert!(red.starts_with(">0 Red"), "current player marked, seat 0: {red}");
         for field in ["yen", "VP", "c1", "hand 1", "asst h", "built sh", "President: in hand"] {
             assert!(red.contains(field), "want {field:?} in the one-line form: {red}");
         }
