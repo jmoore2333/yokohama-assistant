@@ -110,7 +110,7 @@ pub fn tech_effect_text(effect: TechEffect) -> &'static str {
     match effect {
         TechEffect::Tram => "Teleport the President to any area without an opponent President",
         TechEffect::Stagecoach => "Move through opponent Presidents fee-free; with Postal System, stopping on one is free too",
-        TechEffect::PostalSystem => "May stop and act where opponent Presidents stand; still pay 1 Yen each unless you own Stagecoach",
+        TechEffect::PostalSystem => "May stop and act where opponent Presidents stand; pay each owner 1 Yen unless you own Stagecoach",
         TechEffect::Station => "Place the Station token: +1 Power for all there; free teleport, no President fee; your assistant needed",
         TechEffect::Gaslight => "+2 VP when you build a Shophouse",
         TechEffect::ElectricalLight => "+3 VP when you build a Trading House",
@@ -1230,13 +1230,20 @@ mod tests {
         );
 
         // Postal System buys the RIGHT to stop, not a free stop: rulebook
-        // p.15 "You must still pay these players (unless you also own the
-        // Stagecoach)" -- the engine prices that destination fee in
-        // `route_fee_vector`.
+        // p.15 "You must still pay THESE PLAYERS (unless you also own the
+        // Stagecoach)" -- the fee goes to the owner(s) of the President
+        // pawn(s) you stop on (the standing movement-fee recipient, 1 Yen
+        // each), not the bank. The engine prices that destination fee in
+        // `route_fee_vector`. The line must NAME that recipient, not just
+        // say a fee is owed.
         let postal = tech_effect_text(TechEffect::PostalSystem);
         assert!(
             postal.contains("fee") || postal.contains("pay"),
             "Postal System still pays the players it stops on (rulebook p.15): {postal}"
+        );
+        assert!(
+            postal.contains("owner"),
+            "Postal System's stop fee goes to the President's OWNER, and the line must name that (rulebook p.15 'pay these players'): {postal}"
         );
         assert!(
             postal.contains("Stagecoach"),
