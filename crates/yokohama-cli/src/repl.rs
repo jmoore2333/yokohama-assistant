@@ -1717,7 +1717,7 @@ Commands:
   b <id> t <adj>  Placement Option B with the Telegram bonus: +1 assistant in an adjacent area
   m <from> <to>   resolve a pending assistant-move choice (<from> is 'hand' or an area id)
   r [id[:n]]...   Movement Option B: retreat the President, recovering all (bare id) or n assistants per area ('r' alone recovers none)
-  board           show the area grid and its legend (* unclaimed 5-Power, [St] Station, · empty build slot, ~ Canal toll)
+  board           show the area grid and its legend (5-Power token faces, [St] Station, · empty build slot, ~ Canal toll)
   players         show each player's resources, hand, tech, tokens, President
   ports           show both Port boards and the order-deck size
   labs            show both Laboratory boards (each tech's country + effect) and the tech-deck size
@@ -1870,7 +1870,7 @@ mod tests {
         screen::force(false);
         let out = r.step("board");
         assert!(out.text.contains('┌'), "plain mode has no frame; `board` is the only board:\n{}", out.text);
-        assert!(out.text.contains("* = unclaimed 5-Power token"), "{}", out.text);
+        assert!(out.text.contains("5-Power tokens (face-up)"), "{}", out.text);
 
         // Same in a composed session whose user turned the screen off.
         let mut r2 = repl_np(4, 7);
@@ -1899,12 +1899,12 @@ mod tests {
     }
 
     /// Item 7 (board connectivity): every `board` render carries a one-line
-    /// legend documenting the `*` = unclaimed 5-Power token mark.
+    /// legend documenting the face-up 5-Power token letters.
     #[test]
     fn board_command_prints_the_five_power_legend() {
         let mut r = repl_2p(4);
         let out = r.step("board");
-        assert!(out.text.contains("* = unclaimed 5-Power token"), "{}", out.text);
+        assert!(out.text.contains("5-Power tokens (face-up)"), "{}", out.text);
     }
 
     #[test]

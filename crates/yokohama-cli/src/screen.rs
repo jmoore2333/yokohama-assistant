@@ -200,7 +200,7 @@ mod tests {
         assert!(f.contains("Y O K O H A M A"), "{f}");
         assert!(f.contains("┌"), "board expected in frame: {f}");
         assert!(f.contains("Players"), "panel expected in frame: {f}");
-        assert!(f.contains("* = unclaimed 5-Power token"), "legend expected: {f}");
+        assert!(f.contains("5-Power tokens (face-up)"), "legend expected: {f}");
         assert!(
             f.contains("info: type 'view'"),
             "the discoverability strip must be in every frame (owner scope item 10): {f}"

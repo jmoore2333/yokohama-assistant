@@ -181,13 +181,14 @@ pub fn board_skeleton(player_count: u8) -> String {
     out
 }
 
-/// Legend footer for the `board` view: the `*` unclaimed-5-Power mark, the
+/// Legend footer for the `board` view: the face-up 5-Power token letters, the
 /// `[St]` Station marker, the `·` empty build slot — plus the canal crossing
 /// rule, but ONLY on a board that actually has a Canal tile (2P boards never
 /// do). The REPL's `board` command appends this after the grid.
 pub fn board_legend(state: &GameState) -> String {
-    let mut out =
-        String::from("* = unclaimed 5-Power token   [St] = Station token   · = empty build slot");
+    let mut out = String::from(
+        "5-Power tokens (face-up): i=import  c=copper  s=silk  t=tea  f=seafood  y=yen   [St]=Station  ·=empty slot",
+    );
     if state.board_layout.areas.values().any(|c| c.area_type == AreaType::Canal) {
         out.push_str(
             "\n~ Canal: the President may cross shore to shore for 1 yen to the bank ('sites' lists the pairs)",
@@ -1257,14 +1258,25 @@ fn tile_content_lines(state: &GameState, id: AreaId) -> [String; 4] {
         ];
     }
 
-    let marker = matches!(state.board_layout.five_power_tokens.get(&id), Some(Some(_)));
+    // Face-up 5-Power token: show the good's letter in its color (rulebook p.3
+    // step 5). `Some(None)` = claimed, `None` = no token slot (Canal is handled
+    // above), both render nothing.
+    let token = match state.board_layout.five_power_tokens.get(&id) {
+        Some(Some(effect)) => Some(five_power_face(*effect)),
+        _ => None,
+    };
     let name = tile_name(cfg.area_type);
-    let header_plain = format!("A{:02} {}{}", id.0, name, if marker { " *" } else { "" });
+    let header_plain = format!(
+        "A{:02} {}{}",
+        id.0,
+        name,
+        token.map(|(c, _)| format!(" {c}")).unwrap_or_default(),
+    );
     let header_painted = format!(
         "A{:02} {}{}",
         id.0,
         paint(Tone::Tile(cfg.area_type), name),
-        if marker { format!(" {}", paint(Tone::Vp, "*")) } else { String::new() },
+        token.map(|(c, k)| format!(" {}", paint(Tone::Good(k), &c.to_string()))).unwrap_or_default(),
     );
 
     let station = state.station_location == Some(id);
@@ -1335,8 +1347,24 @@ fn fit_cell_painted(plain: &str, painted: &str) -> String {
     format!("{}{}", painted, " ".repeat(TILE_W - width))
 }
 
-/// Legible tile display name, sized to fit a `A00 {name} *` header inside
-/// `TILE_W` (name <= 10 chars).
+/// The board glyph for a face-up 5-Power token: the good's one-letter code
+/// (matching the players-panel goods run and the wizard's token letters) and
+/// its `GoodKind` for color. Magnitude is fixed per kind, so the letter alone
+/// identifies the face; `board_legend` spells out the amounts.
+fn five_power_face(e: FivePowerEffect) -> (char, GoodKind) {
+    match e {
+        FivePowerEffect::ImportedGoods(_) => ('i', GoodKind::Imports),
+        FivePowerEffect::Copper(_) => ('c', GoodKind::Copper),
+        FivePowerEffect::Silk(_) => ('s', GoodKind::Silk),
+        FivePowerEffect::Tea(_) => ('t', GoodKind::Tea),
+        FivePowerEffect::Seafood(_) => ('f', GoodKind::Seafood),
+        FivePowerEffect::Money(_) => ('y', GoodKind::Yen),
+    }
+}
+
+/// Legible tile display name, sized to fit a `A00 {name} c` header inside
+/// `TILE_W` (name <= 10 chars; the trailing 1-char token face fits where the
+/// old `*` did).
 fn tile_name(t: AreaType) -> &'static str {
     match t {
         AreaType::CopperMine => "Copper Mn",
@@ -1585,7 +1613,7 @@ mod tests {
     fn board_legend_documents_canal_only_when_present() {
         let mut state = test_state_2p();
         let without = board_legend(&state);
-        assert!(without.contains("* = unclaimed 5-Power token"), "{without}");
+        assert!(without.contains("5-Power tokens (face-up)"), "{without}");
         assert!(without.contains("[St]"), "{without}");
         assert!(!without.contains("Canal"), "no canal on this board: {without}");
 
@@ -1594,6 +1622,34 @@ mod tests {
         let with = board_legend(&state);
         assert!(with.contains("Canal"), "{with}");
         assert!(with.contains("1 yen"), "the toll and its recipient (bank) belong in the legend: {with}");
+    }
+
+    #[test]
+    fn five_power_face_maps_each_token_to_its_good_letter() {
+        assert_eq!(five_power_face(FivePowerEffect::ImportedGoods(1)), ('i', GoodKind::Imports));
+        assert_eq!(five_power_face(FivePowerEffect::Copper(2)), ('c', GoodKind::Copper));
+        assert_eq!(five_power_face(FivePowerEffect::Silk(2)), ('s', GoodKind::Silk));
+        assert_eq!(five_power_face(FivePowerEffect::Tea(3)), ('t', GoodKind::Tea));
+        assert_eq!(five_power_face(FivePowerEffect::Seafood(3)), ('f', GoodKind::Seafood));
+        assert_eq!(five_power_face(FivePowerEffect::Money(3)), ('y', GoodKind::Yen));
+    }
+
+    /// The board shows a face-up token's FACE (its good letter), not a boolean
+    /// `*` (rulebook p.3 step 5 — tokens are face-up). A claimed slot shows nothing.
+    #[test]
+    fn board_tile_header_shows_the_token_face_letter_not_a_star() {
+        let mut state = test_state_2p();
+        let area = *state.board_layout.areas.keys().next().unwrap();
+        // Force a name with no 'c' so the assertion pins the token, not the name.
+        state.board_layout.areas.get_mut(&area).unwrap().area_type = AreaType::Bank;
+        state.board_layout.five_power_tokens.insert(area, Some(FivePowerEffect::Copper(2)));
+        let header = tile_content_lines(&state, area)[0].clone();
+        assert!(header.contains(" c"), "a Copper token shows its 'c' face: {header:?}");
+        assert!(!header.contains('*'), "the boolean star is gone: {header:?}");
+        // A claimed slot (Some(None)) shows no face.
+        state.board_layout.five_power_tokens.insert(area, None);
+        let claimed = tile_content_lines(&state, area)[0].clone();
+        assert!(!claimed.contains(" c") && !claimed.contains('*'), "a claimed token shows no face: {claimed:?}");
     }
 
     #[test]
