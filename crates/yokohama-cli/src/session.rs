@@ -537,7 +537,7 @@ impl Session {
 
     /// Replay-prefix undo of the last group (design §5.4): a trailing
     /// `Move` takes its contiguous immediately-preceding bound reveals
-    /// (`RevealOrders`/`RevealTechs`/`RevealFivePowerToken`) with it; a
+    /// (`RevealOrders`/`RevealTechs`) with it; a
     /// trailing standalone reveal (`RevealStartingOrder`, or a bound reveal
     /// left with no following move -- possible only after a mid-group
     /// crash) pops alone. Err when the log is empty. This is the one path

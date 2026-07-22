@@ -176,7 +176,7 @@ impl std::error::Error for ReplayError {}
 /// Apply one `RecordedEvent` to `state`: `RecordedEvent::Move` applies via
 /// `apply_move`; each `Reveal*` variant applies via its matching `GameState`
 /// reconciliation method (`arrange_orders_on_top`, `arrange_techs_on_top`,
-/// `reveal_starting_order`, `reveal_five_power_token`). Returns the
+/// `reveal_starting_order`). Returns the
 /// underlying `MoveError`'s message on failure.
 ///
 /// This is the ONE fold implementation (Task 3 -- the a6faa87 lesson was
