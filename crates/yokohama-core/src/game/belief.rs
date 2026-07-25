@@ -238,6 +238,16 @@ mod tests {
         (finalize_setup(pending, &choices).unwrap(), rules)
     }
 
+    /// Viewer keeps; every OTHER seat is a live `Unknown` (the shape a
+    /// physically-tracked game produces).
+    fn live_game(players: u8, seed: u64) -> (GameState, Rules) {
+        let rules = Rules::standard();
+        let pending = new_game(GameConfig::for_player_count(players), &rules, seed).unwrap();
+        let mut choices = vec![StartingOrderChoice::Keep(0)];
+        choices.extend((1..players).map(|_| StartingOrderChoice::Unknown));
+        (finalize_setup(pending, &choices).unwrap(), rules)
+    }
+
     #[test]
     fn a_sample_conserves_every_card_exactly_once() {
         let (state, rules) = keep_game(2, 7);
@@ -306,6 +316,37 @@ mod tests {
                     observe(&w, PlayerId(0)).unwrap(),
                     view,
                     "{players}P: a sampled world must be indistinguishable from truth to this seat"
+                );
+            }
+        }
+    }
+
+    /// Beyond the brief's six: the LIVE tracking shape is this project's
+    /// first-priority use case, and it is where sampling actually earns its
+    /// keep -- the engine holds NOTHING for an `Unknown` seat (both dealt
+    /// cards sit in `orders_removed`), so the sampler is what turns a tracked
+    /// physical game into a world a search can roll forward. The round trip is
+    /// non-obvious here in a way the Keep shape is not: the sampled world is
+    /// Keep-shaped, so `observe` must derive the same view from a DIFFERENT
+    /// underlying representation than the one that produced it.
+    #[test]
+    fn a_sample_from_a_live_tracked_view_round_trips_and_is_valid() {
+        for players in [2u8, 3, 4] {
+            let (state, rules) = live_game(players, 7);
+            let view = observe(&state, PlayerId(0)).unwrap();
+            let mut s = BeliefSampler::from_view(&view, &rules, 3).unwrap();
+            for _ in 0..5 {
+                let w = s.sample();
+                assert!(
+                    w.players.iter().all(|p| !p.starting_order_hidden),
+                    "{players}P: sampling materializes the unrecorded deal"
+                );
+                assert!(check_invariants(&w, &rules).is_ok(), "{players}P: valid world");
+                assert_eq!(
+                    observe(&w, PlayerId(0)).unwrap(),
+                    view,
+                    "{players}P: a world sampled from a live-tracked view must \
+                     observe back to it, despite being Keep-shaped underneath"
                 );
             }
         }
