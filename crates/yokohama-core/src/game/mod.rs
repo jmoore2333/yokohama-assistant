@@ -18,6 +18,7 @@ mod invariants;
 mod record;
 mod choices;
 mod semantics;
+mod observe;
 pub mod actions;
 
 pub use power::*;
@@ -37,3 +38,4 @@ pub use invariants::*;
 pub use record::*;
 pub use choices::*;
 pub use semantics::*;
+pub use observe::*;
