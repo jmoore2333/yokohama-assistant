@@ -10,11 +10,15 @@
 //! *families* first, then pages/samples within a family without ever building
 //! the exploding `Vec`.
 //!
-//! Task 1 (this commit) delivers [`MoveFamily`] + [`families`] — the dispatch
-//! skeleton that mirrors `get_legal_moves`' queue-first + phase dispatch. The
-//! per-family machinery (the retreat mixed-radix constructor/index/sample, the
-//! placement combination construction, the small-family delegations) and the
-//! lazy route enumerator land in later 3.1a/3.1b tasks.
+//! The delivered 3.1a surface: [`families`] dispatch (queue-first + phase,
+//! mirroring `get_legal_moves`), the bespoke lazy retreat family (mixed-radix
+//! constructor/iter/sample — the six-figure family, never materialized), the
+//! bespoke lazy placement family (combination construction with
+//! per-combination affordability), and delegate-and-filter for the small
+//! families. [`MoveFamily::MovementRoutes`] is the single exhaustive-backed
+//! stub until 3.1b lands the lazy route enumerator. The plan's `ActionSource`
+//! shipped as these free functions (the plan-sanctioned alternative), not a
+//! struct — there is no `ActionSource` type to grep for.
 
 use std::collections::BTreeMap;
 
@@ -27,8 +31,8 @@ use crate::types::*;
 ///
 /// Returned by [`families`], which mirrors [`get_legal_moves`]'s queue-first +
 /// `match turn_phase` dispatch (`legal_moves.rs:9-24`) but yields these tags
-/// instead of moves; later 3.1a/3.1b tasks page and sample the actual moves
-/// per tag.
+/// instead of moves; [`family_len`]/[`iter_family`]/[`sample_family`] page and
+/// sample the actual moves per tag.
 ///
 /// Only [`MoveFamily::MovementRetreat`] carries a payload: it owns a clone of
 /// the current player's `on_board` assistant map so the exploding retreat
@@ -97,9 +101,10 @@ pub enum MoveFamily {
 /// (`⋃ iter_family == get_legal_moves`) still hold. `Recovery` and `TurnEnd`
 /// are automatic/terminal and dispatch to no family.
 ///
-/// `rules` is unused today — the dispatch is a pure function of the turn phase,
-/// the pending-choice queue, and the President's location — but is part of the
-/// shared `ActionSource` signature the later per-family functions use.
+/// `rules` is unused — the dispatch is a pure function of the turn phase, the
+/// pending-choice queue, and the President's location — but is kept so every
+/// entry point of this module shares the one `(&GameState, &Rules, …)` shape
+/// ([`family_len`]/[`iter_family`]/[`sample_family`]).
 pub fn families(state: &GameState, _rules: &Rules) -> Vec<MoveFamily> {
     // Queue short-circuit (mirrors `legal_moves.rs:9-11`): while a
     // `PendingChoice` heads the queue, the only legal moves are its
@@ -661,7 +666,11 @@ pub fn placement_sample(state: &GameState, rules: &Rules, rng: &mut impl Rng) ->
 // guarantee only binds retreat/placement). `MovementRoutes` is a 3.1b STUB that
 // delegates the same way (filter to MovePresident/PlacePresident) so the union
 // of families stays complete for the equivalence tests; 3.1b replaces it with a
-// lazy route enumerator.
+// lazy route enumerator. The stub's cost, stated honestly: the delegating call
+// re-runs the WHOLE `get_legal_moves` before filtering, so at a Movement
+// decision point the routes stub re-pays the exhaustive ceiling — retreat
+// product included. The serve-one bound therefore holds PER FAMILY; the
+// per-Movement-decision-point ceiling is unchanged until 3.1b.
 // ---------------------------------------------------------------------------
 
 /// The [`MoveFamily`] a given [`Move`] belongs to, as a discriminant so the
@@ -750,8 +759,10 @@ pub fn family_len(state: &GameState, rules: &Rules, family: &MoveFamily) -> usiz
 /// moves as `get_legal_moves` filtered to that family. Retreat and placement
 /// page/serve lazily (Tasks 2/3) without materializing the family; every other
 /// family delegates to the frozen generator (a materialized but bounded-small
-/// slice). Boxed because the arms have heterogeneous iterator types (the lazy
-/// `RetreatIter`/`PlacementIter` and the delegated `vec::IntoIter`).
+/// slice — though the delegating call itself re-runs the WHOLE generator, so
+/// the routes stub re-pays the exhaustive ceiling until 3.1b; see the module
+/// note above). Boxed because the arms have heterogeneous iterator types (the
+/// lazy `RetreatIter`/`PlacementIter` and the delegated `vec::IntoIter`).
 pub fn iter_family<'a>(
     state: &'a GameState,
     rules: &Rules,

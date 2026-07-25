@@ -25,13 +25,15 @@
 //!     moves, ~1.02M allocs) to record concretely the gap the factored serve
 //!     avoids, while re-proving the serve-one bound on the same snapshot.
 //!
-//! MUTATION-DISCRIMINATION (recorded in the Task-6 report): because Tasks 2/5
-//! already made retreat lazy, the COUNT bound passes on first write. Its
-//! discriminating power was proven by temporarily routing the measured serve
-//! through a materialize-then-index path
-//! (`retreat_iter(&on_board).collect::<Vec<_>>()[k].clone()`): the count leapt to
-//! ~442k and the bound FAILED — confirming `< BOUND` genuinely separates
-//! `O(#areas)` from `O(product)`. Reverted to the lazy path here.
+//! MUTATION-DISCRIMINATION (recorded in guidingpath's 2026-07-25 3.1a rows):
+//! because Tasks 2/5 already made retreat lazy, the COUNT bound passes on first
+//! write. Its discriminating power was proven by temporarily routing the
+//! measured serve through a materialize-then-index path
+//! (`retreat_iter(&on_board).collect::<Vec<_>>()[k].clone()`): the count leapt
+//! to 539,096 — the measured ALLOCATION count of the full collect, reproducible
+//! as `examples/action_cost.rs`'s `retreat_iter().collect()` row (the MOVE
+//! count is 442,368) — and the bound FAILED, confirming `< BOUND` genuinely
+//! separates `O(#areas)` from `O(product)`. Reverted to the lazy path here.
 
 #[path = "action_cost_meter/mod.rs"]
 mod meter;
