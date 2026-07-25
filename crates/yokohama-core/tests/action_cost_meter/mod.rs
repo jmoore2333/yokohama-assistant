@@ -115,8 +115,14 @@ pub struct Meter {
 
 /// Run `f` with the meter armed on THIS thread, returning its value and the
 /// region's [`Meter`]. Counters reset before arming (the resets are themselves
-/// uncounted and non-allocating), so nested/prior activity never leaks in.
+/// uncounted and non-allocating), so PRIOR activity never leaks in. NOT
+/// RE-ENTRANT: a nested `measure` would wipe the outer region's counters and
+/// disarm its remainder — under-counting whose only failure mode on the `<
+/// BOUND` gate is a false PASS — so nesting is asserted against at entry.
 pub fn measure<R>(f: impl FnOnce() -> R) -> (R, Meter) {
+    ARMED.with(|a| {
+        assert!(!a.get(), "action_cost_meter::measure is not re-entrant (nested region would corrupt the outer count)");
+    });
     ALLOCS.with(|n| n.set(0));
     OUTSTANDING.with(|o| o.set(0));
     PEAK.with(|p| p.set(0));

@@ -26,7 +26,7 @@ use rand::SeedableRng;
 use rand_chacha::ChaCha8Rng;
 
 use yokohama_core::{
-    families, family_len, get_legal_moves, placement_iter, placement_upper_len, retreat_iter,
+    families, get_legal_moves, placement_iter, placement_upper_len, retreat_iter,
     retreat_len, retreat_sample, AchievementCard, AchievementType, AreaConfig, AreaId, AreaType,
     BoardLayout, ChurchTrack, CustomsTrack, GameConfig, GameState, LabState, MercenarySupply,
     MoveFamily, PlayerColor, PlayerId, PlayerState, PortState, PresidentLocation, Rules, TechEffect,
@@ -177,12 +177,15 @@ fn main() {
 
     // -- Placement: combinations (secondary, smaller family) -------------------
     let pstate = placement_state(&rules);
-    let placement = families(&pstate, &rules)
-        .into_iter()
-        .find(|f| matches!(f, MoveFamily::Placement))
-        .expect("Placement dispatches a Placement family");
+    assert!(
+        families(&pstate, &rules).into_iter().any(|f| matches!(f, MoveFamily::Placement)),
+        "Placement dispatches a Placement family",
+    );
     let upper = placement_upper_len(&pstate, &rules);
-    let realized = family_len(&pstate, &rules, &placement);
+    // Realized comes from the iterator — the module's authority on realized
+    // placement moves; `family_len` for Placement IS `placement_upper_len`, so
+    // printing it here would show the bound twice and never the gap.
+    let realized = placement_iter(&pstate, &rules).count();
     println!("PLACEMENT family (4P + Newspaper, in_hand 4): upper_len {upper} (realized {realized})\n");
 
     let pfirst_lat = time_avg(50_000, || placement_iter(&pstate, &rules).next());

@@ -892,8 +892,14 @@ mod alloc_probe {
     static GLOBAL: Counting = Counting;
 
     /// Run `f` with allocation counting armed on THIS thread; return its value
-    /// and the number of allocations (alloc + zeroed + realloc) it made.
+    /// and the number of allocations (alloc + zeroed + realloc) it made. NOT
+    /// RE-ENTRANT (asserted): a nested call would zero the outer count and
+    /// disarm the outer region's remainder — a silent under-count whose only
+    /// failure mode on a `< BOUND` assertion is a false pass.
     pub fn count_allocs<R>(f: impl FnOnce() -> R) -> (R, usize) {
+        ARMED.with(|a| {
+            assert!(!a.get(), "alloc_probe::count_allocs is not re-entrant (nested call would corrupt the outer count)");
+        });
         ALLOCS.with(|n| n.set(0));
         ARMED.with(|a| a.set(true));
         let r = f();

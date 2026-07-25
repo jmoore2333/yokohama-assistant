@@ -88,21 +88,19 @@ fn multiset_diff(a: &[Move], b: &[Move]) -> Option<String> {
 
 /// Outcome of a sweep, for the caller's anti-vacuity assertions.
 struct SweepStats {
-    /// Total decision points visited.
+    /// Total decision points visited — every one takes the strong
+    /// string-multiset union check (the cap below is a tripwire assert, not a
+    /// branch to a weaker check).
     decision_points: usize,
-    /// Decision points that took the strong string-multiset union check (all of
-    /// them, organically — see [`UNION_MATERIALIZE_CAP`]).
-    full_checks: usize,
-    /// Decision points whose exhaustive list exceeded the cap and fell back to
-    /// the cheap no-materialization invariant. Expected 0 organically.
-    guard_trips: usize,
 }
 
-/// Only string-key the union when the exhaustive list is small enough that a
-/// second pass is cheap. Organic random play stays far below this (the Task-4
-/// unit test collects `iter_family` for every family every step at these same
-/// seeds without trouble); the constructed retreat worst case exercises the
-/// exploding path by COUNT instead, in its own test.
+/// Tripwire ceiling on materializing the union for the strong string-multiset
+/// check. Organic random play stays far below this (the Task-4 unit test
+/// collects `iter_family` for every family every step at these same seeds
+/// without trouble); the constructed retreat worst case exercises the exploding
+/// path by COUNT instead, in its own test. The sweep hard-asserts the cap
+/// rather than branching to a weaker check — a state that trips it demands a
+/// deliberate decision, not a silent downgrade.
 const UNION_MATERIALIZE_CAP: usize = 50_000;
 
 /// Drive uniform-random games (via the shared `common` seeded driver) and, at
@@ -111,7 +109,7 @@ const UNION_MATERIALIZE_CAP: usize = 50_000;
 /// contract (exact for every family except Placement, whose `family_len` is an
 /// honest upper bound ≥ the realized count).
 fn run_union_sweep(rules: &Rules, seeds: std::ops::Range<u64>, cap: usize) -> SweepStats {
-    let mut stats = SweepStats { decision_points: 0, full_checks: 0, guard_trips: 0 };
+    let mut stats = SweepStats { decision_points: 0 };
 
     for players in [2u8, 3, 4] {
         for seed in seeds.clone() {
@@ -127,51 +125,43 @@ fn run_union_sweep(rules: &Rules, seeds: std::ops::Range<u64>, cap: usize) -> Sw
                 }
                 let fams = families(&state, rules);
 
-                if legal.len() <= UNION_MATERIALIZE_CAP {
-                    // Strong check: materialize each family, pin its `family_len`
-                    // contract, and assert the concatenated union == legal.
-                    let mut union: Vec<Move> = Vec::with_capacity(legal.len());
-                    for family in &fams {
-                        let got: Vec<Move> = iter_family(&state, rules, family).collect();
-                        let len = family_len(&state, rules, family);
-                        if matches!(family, MoveFamily::Placement) {
-                            assert!(
-                                len >= got.len(),
-                                "placement family_len {len} < realized {} at {:?} ({players}p seed {seed})",
-                                got.len(),
-                                state.turn_phase,
-                            );
-                        } else {
-                            assert_eq!(
-                                len,
-                                got.len(),
-                                "family_len {len} != realized {} for {family:?} ({players}p seed {seed})",
-                                got.len(),
-                            );
-                        }
-                        union.extend(got);
-                    }
-                    if let Some(diff) = multiset_diff(&union, &legal) {
-                        panic!(
-                            "factored union != get_legal_moves at {:?} ({players}p seed {seed} turn {}):\n{diff}",
-                            state.turn_phase, state.turn_number,
+                // Tripwire, not a branch: an organic state past the cap fails
+                // loudly instead of silently downgrading to a weaker check.
+                assert!(
+                    legal.len() <= UNION_MATERIALIZE_CAP,
+                    "exhaustive list {} exceeds the materialize cap at {:?} ({players}p seed {seed}) — investigate before raising the cap",
+                    legal.len(),
+                    state.turn_phase,
+                );
+
+                // Strong check: materialize each family, pin its `family_len`
+                // contract, and assert the concatenated union == legal.
+                let mut union: Vec<Move> = Vec::with_capacity(legal.len());
+                for family in &fams {
+                    let got: Vec<Move> = iter_family(&state, rules, family).collect();
+                    let len = family_len(&state, rules, family);
+                    if matches!(family, MoveFamily::Placement) {
+                        assert!(
+                            len >= got.len(),
+                            "placement family_len {len} < realized {} at {:?} ({players}p seed {seed})",
+                            got.len(),
+                            state.turn_phase,
+                        );
+                    } else {
+                        assert_eq!(
+                            len,
+                            got.len(),
+                            "family_len {len} != realized {} for {family:?} ({players}p seed {seed})",
+                            got.len(),
                         );
                     }
-                    stats.full_checks += 1;
-                } else {
-                    // Fallback for an (organically-unreachable) exploding state:
-                    // a cheap no-materialization invariant — Σ family_len is an
-                    // upper bound on |legal| (exact except placement's honest
-                    // over-estimate), and holds even at a 442k retreat state
-                    // without collecting the family.
-                    let sum_len: usize = fams.iter().map(|f| family_len(&state, rules, f)).sum();
-                    assert!(
-                        sum_len >= legal.len(),
-                        "Σ family_len {sum_len} < |legal| {} at {:?} ({players}p seed {seed})",
-                        legal.len(),
-                        state.turn_phase,
+                    union.extend(got);
+                }
+                if let Some(diff) = multiset_diff(&union, &legal) {
+                    panic!(
+                        "factored union != get_legal_moves at {:?} ({players}p seed {seed} turn {}):\n{diff}",
+                        state.turn_phase, state.turn_number,
                     );
-                    stats.guard_trips += 1;
                 }
 
                 stats.decision_points += 1;
@@ -197,16 +187,6 @@ fn factored_union_equals_get_legal_moves_across_driven_games() {
     let stats = run_union_sweep(&rules, 0..5, 800);
 
     assert!(stats.decision_points > 500, "expected many decision points, saw {}", stats.decision_points);
-    assert_eq!(
-        stats.guard_trips, 0,
-        "no organic decision point should exceed the materialize cap ({} did — raise the cap or investigate)",
-        stats.guard_trips,
-    );
-    assert_eq!(
-        stats.full_checks, stats.decision_points,
-        "every organic decision point should take the strong multiset check ({} of {})",
-        stats.full_checks, stats.decision_points,
-    );
 }
 
 // ---------------------------------------------------------------------------
@@ -461,12 +441,6 @@ fn release_union_sweep_seeds_0_20() {
     let stats = run_union_sweep(&rules, 0..20, 8000);
 
     assert!(stats.decision_points > 5000, "expected a large sweep, saw {}", stats.decision_points);
-    assert_eq!(stats.guard_trips, 0, "no organic state should exceed the materialize cap ({} did)", stats.guard_trips);
-    assert_eq!(
-        stats.full_checks, stats.decision_points,
-        "every decision point should take the strong multiset check ({} of {})",
-        stats.full_checks, stats.decision_points,
-    );
     println!(
         "release union sweep: {} decision points, all full-multiset-checked against get_legal_moves",
         stats.decision_points,
