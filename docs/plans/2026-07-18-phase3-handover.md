@@ -1,5 +1,17 @@
 # Phase-3 handover — prompt for a fresh agent (2026-07-18)
 
+> ## ⚠️ STATUS: HISTORICAL — CONSUMED INPUT, NOT A CURRENT REQUIREMENTS LIST
+>
+> **Banner added 2026-07-25.** This handover was written on 2026-07-18, before PRs #2–#5. Its
+> project-state claims (test counts, "two phases done", open blockers) and several of its Phase-3
+> premises are now stale — including its hidden-information model, which named the starting Order
+> as the only hidden fact. That is false from a seated player's view: unrevealed deck order and the
+> boxed-card pile are also unknown. See CLAUDE.md's "Hidden information" bullet.
+>
+> **Do not paste this into a fresh session as-is.** Read `guidingpath.md` for current state, then
+> CLAUDE.md. Kept for provenance — the items it deferred "with teeth" were tracked forward into
+> the decision log, which is where their live status lives.
+
 > Paste everything below the line into a new Claude Code session in this repo.
 
 ---
