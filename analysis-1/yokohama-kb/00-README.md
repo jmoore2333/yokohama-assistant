@@ -92,7 +92,7 @@
 - Achievement card progress
 
 ### Hidden Information
-- Order cards in hand (except your own)
+- An opponent's starting Order card only -- every OTHER card in their hand was taken from the Port in public view (see Tracking Insight below)
 - Starting Order card (draw 2, keep 1 at game start)
 
 ### Tracking Insight

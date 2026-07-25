@@ -55,6 +55,35 @@ pub fn check_invariants(state: &GameState, rules: &Rules) -> Result<(), String> 
                 p.trading_houses.built.len()
             ));
         }
+        // I11 (Phase 3.0): starting-order coherence. `starting_order` is
+        // effectively write-only in the engine (types/player.rs:244 init,
+        // game/setup.rs:251, types/state.rs:446 -- each pairing the record with
+        // the card's arrival in hand) and no legal move ever clears it, while
+        // the one hand-removal site (apply_move.rs:1335) pushes straight to
+        // `completed_orders`. So no reachable state violates either clause --
+        // but Phase 3 derives seat views and SAMPLES states from them, and both
+        // read `starting_order` to decide what to mask. A dangling value would
+        // mask the wrong card (or nothing) with no error, so the guarantee
+        // moves into the mutation-proven invariant net. Same class as I9:
+        // invariant/test-only, no SEMANTICS_REV implication.
+        if let Some(c) = p.starting_order {
+            if !p.order_cards_in_hand.contains(&c) && !p.completed_orders.contains(&c) {
+                return Err(format!(
+                    "P{} starting_order {} is in neither the hand nor the completed pile",
+                    p.id.0, c.0
+                ));
+            }
+        }
+        // The live-tracking fiction is that a hidden deal is recorded NOWHERE
+        // (both dealt cards park in orders_removed until reveal_starting_order
+        // pulls one out and clears the flag in the same breath), so the flag
+        // and an identity are mutually exclusive.
+        if p.starting_order_hidden && p.starting_order.is_some() {
+            return Err(format!(
+                "P{} starting_order_hidden is set but an identity is recorded",
+                p.id.0
+            ));
+        }
     }
 
     // Order conservation: deck + ports (6 slots/board) + hands + completed +
@@ -909,6 +938,69 @@ mod tests {
             Some(CustomsSlot { player: PlayerId::DUMMY, arrival_order: 0 });
         let e = check_invariants(&s, &rules).unwrap_err();
         assert!(e.contains("dummy") && e.contains("Customs"), "{e}");
+    }
+
+    /// I11 (Phase 3.0) clause (a): `starting_order` must name a card the
+    /// player actually holds — in hand, or in the completed pile once played.
+    /// No reachable state violates it (the field's only three write sites all
+    /// pair it with the card's arrival, and the sole hand-removal site pushes
+    /// straight to `completed_orders`), but Phase 3 derives seat views and
+    /// SAMPLES states from them, and both read `starting_order` to decide what
+    /// to mask — a dangling value masks the wrong card, silently.
+    #[test]
+    fn a_dangling_starting_order_is_caught() {
+        let (state, rules) = golden_standard_game();
+        assert!(check_invariants(&state, &rules).is_ok(), "control: real setup is clean");
+        let card = state.players[1].starting_order.unwrap();
+
+        // Positive control for the second zone: completing the starting order
+        // moves it hand -> completed pile (apply_move.rs:1335-1336 does exactly
+        // that pair of writes), and the result is still coherent. The clause
+        // must accept BOTH zones or it fires on ordinary play.
+        let mut s = state.clone();
+        s.players[1].order_cards_in_hand.retain(|&c| c != card);
+        s.players[1].completed_orders.push(card);
+        assert!(check_invariants(&s, &rules).is_ok(), "a COMPLETED starting order is coherent");
+
+        // Dangling: recorded, but held in neither zone.
+        let mut s = state.clone();
+        s.players[1].order_cards_in_hand.retain(|&c| c != card);
+        s.orders_removed.push(card); // keep the 36-card count honest
+        let err = check_invariants(&s, &rules).unwrap_err();
+        assert!(
+            err.contains("starting_order") && err.contains("neither the hand"),
+            "got: {err}"
+        );
+    }
+
+    /// I11 clause (b): `starting_order_hidden` is the live-tracking fiction
+    /// that an opponent's kept card is recorded NOWHERE (both dealt cards sit
+    /// in `orders_removed` until `reveal_starting_order` pulls one out and
+    /// clears the flag in the same breath). Flag-set-plus-identity is the
+    /// contradiction: an observation mask would treat the seat as unknown
+    /// while the state names the card.
+    ///
+    /// The recorded card is a REAL card in P1's hand, so clause (a) is
+    /// satisfied and only the contradiction itself can fire.
+    #[test]
+    fn a_hidden_deal_that_also_records_a_card_is_caught() {
+        let rules = Rules::standard();
+        let pending = new_game(GameConfig::for_player_count(2), &rules, 42).unwrap();
+        let mut state =
+            finalize_setup(pending, &[StartingOrderChoice::Keep(0), StartingOrderChoice::Unknown])
+                .unwrap();
+        assert!(check_invariants(&state, &rules).is_ok(), "control: live setup is clean");
+
+        // removed -> hand keeps the 36-card count honest, exactly as a real
+        // reveal would; then record it WITHOUT clearing the hidden flag.
+        let card = state.orders_removed.pop().unwrap();
+        state.players[1].order_cards_in_hand.push(card);
+        state.players[1].starting_order = Some(card);
+        let err = check_invariants(&state, &rules).unwrap_err();
+        assert!(
+            err.contains("starting_order_hidden") && err.contains("identity is recorded"),
+            "got: {err}"
+        );
     }
 
     /// I9, the symmetric 3/4-player direction: a game with no dummy is clean,

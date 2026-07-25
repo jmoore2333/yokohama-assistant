@@ -8,7 +8,7 @@
 - **Players:** 2-4
 - **Duration:** ~90 minutes
 - **Theme:** Meiji-era Yokohama merchants competing for fame through trade
-- **Information:** Nearly perfect (only hidden: each player's starting Order card)
+- **Information:** Nearly perfect. The only player-to-player secret is each player's starting Order card; the shuffled Order/Tech deck order and the boxed setup removals are hidden from everyone (symmetric uncertainty, no one's advantage)
 
 ---
 

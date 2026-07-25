@@ -18,6 +18,9 @@ mod invariants;
 mod record;
 mod choices;
 mod semantics;
+mod observe;
+mod belief;
+mod agent;
 pub mod actions;
 
 pub use power::*;
@@ -37,3 +40,6 @@ pub use invariants::*;
 pub use record::*;
 pub use choices::*;
 pub use semantics::*;
+pub use observe::*;
+pub use belief::*;
+pub use agent::*;

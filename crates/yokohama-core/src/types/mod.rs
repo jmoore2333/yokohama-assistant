@@ -9,6 +9,7 @@ mod moves;
 mod state;
 mod errors;
 mod choices;
+mod view;
 
 pub use ids::*;
 pub use player::*;
@@ -19,6 +20,7 @@ pub use moves::*;
 pub use state::*;
 pub use errors::*;
 pub use choices::*;
+pub use view::*;
 
 #[cfg(test)]
 mod tests;
