@@ -19,6 +19,7 @@ mod record;
 mod choices;
 mod semantics;
 mod observe;
+mod belief;
 pub mod actions;
 
 pub use power::*;
@@ -39,3 +40,4 @@ pub use record::*;
 pub use choices::*;
 pub use semantics::*;
 pub use observe::*;
+pub use belief::*;
