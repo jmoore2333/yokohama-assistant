@@ -299,4 +299,120 @@ mod tests {
         );
         assert!(view.players[1].completed_orders.contains(&card));
     }
+
+    /// Viewer keeps; every OTHER seat is a live `Unknown`.
+    fn live_game(players: u8, seed: u64) -> (GameState, Rules) {
+        let rules = Rules::standard();
+        let pending = new_game(GameConfig::for_player_count(players), &rules, seed).unwrap();
+        let mut choices = vec![StartingOrderChoice::Keep(0)];
+        choices.extend((1..players).map(|_| StartingOrderChoice::Unknown));
+        (finalize_setup(pending, &choices).unwrap(), rules)
+    }
+
+    #[test]
+    fn live_unknown_opponent_gets_a_synthesized_hidden_slot_at_index_zero() {
+        let (mut state, _rules) = live_game(2, 7);
+        // The engine really does hold NOTHING for that seat.
+        assert!(state.players[1].order_cards_in_hand.is_empty());
+        assert_eq!(state.players[1].starting_order, None);
+        assert!(state.players[1].starting_order_hidden);
+
+        let view = observe(&state, PlayerId(0)).unwrap();
+        assert_eq!(view.players[1].hand.first(), Some(&HandCard::HiddenStartingOrder));
+        assert_eq!(view.players[1].hand.len(), 1, "physically they hold exactly one card");
+
+        // The INDEX is only observable once the seat holds a second card. A
+        // Port take is witnessed by the table (01-rules-reference.md:703), so
+        // it must land AFTER the setup card -- exactly where the Keep shape
+        // stores it (setup pushes the kept card first, takes append).
+        let taken = *state.order_deck.last().expect("deck is not empty");
+        state.players[1].order_cards_in_hand.push(taken);
+        let view = observe(&state, PlayerId(0)).unwrap();
+        assert_eq!(
+            view.players[1].hand,
+            vec![HandCard::HiddenStartingOrder, HandCard::Known(taken)],
+            "the synthesized slot sits at index 0, ahead of witnessed Port takes"
+        );
+    }
+
+    #[test]
+    fn removed_length_is_the_physical_box_not_the_engine_fiction() {
+        // 2P: 16 setup removals + 1 discard per seat = 18 physical boxed cards,
+        // whichever tracking shape the game was finalized in.
+        let (sim, _r1) = keep_game(2, 7);
+        let (live, _r2) = live_game(2, 7);
+        assert_eq!(sim.orders_removed.len(), 18, "engine SIM pile");
+        assert_eq!(live.orders_removed.len(), 19, "engine LIVE pile is one larger");
+
+        assert_eq!(observe(&sim, PlayerId(0)).unwrap().orders_removed_len, 18);
+        assert_eq!(observe(&live, PlayerId(0)).unwrap().orders_removed_len, 18);
+    }
+
+    #[test]
+    fn a_viewer_whose_own_deal_is_unrecorded_is_refused() {
+        let rules = Rules::standard();
+        let pending = new_game(GameConfig::for_player_count(2), &rules, 7).unwrap();
+        let state = finalize_setup(
+            pending,
+            &[StartingOrderChoice::Unknown, StartingOrderChoice::Keep(0)],
+        )
+        .unwrap();
+        assert_eq!(
+            observe(&state, PlayerId(0)),
+            Err(ViewError::ViewerDealUnrecorded(PlayerId(0))),
+            "a seat cannot be unknown to itself"
+        );
+        // Seat 1 CAN view -- seat 0 is just a hidden opponent from there.
+        assert!(observe(&state, PlayerId(1)).is_ok());
+    }
+
+    #[test]
+    fn sim_and_live_views_agree_when_the_physical_truth_agrees() {
+        // Same seed => same board, same deck, same deals. The only difference
+        // is whether the opponent's kept card was RECORDED. Seat 0's view must
+        // be identical either way -- it never knew that card.
+        let (mut sim, _r1) = keep_game(3, 21);
+        let (mut live, _r2) = live_game(3, 21);
+        let a = observe(&sim, PlayerId(0)).unwrap();
+        let b = observe(&live, PlayerId(0)).unwrap();
+        assert_eq!(a, b, "tracking shape must not be visible in a seat view");
+
+        // BOTH opponents are masked at both storage sites, not just seat 1 --
+        // this is the Keep-shaped 3P view (`a`), so the mask is in-place.
+        for opp in [1usize, 2] {
+            assert_eq!(a.players[opp].starting_order, None, "seat {opp} starting_order masked");
+            assert_eq!(
+                a.players[opp]
+                    .hand
+                    .iter()
+                    .filter(|c| matches!(c, HandCard::HiddenStartingOrder))
+                    .count(),
+                1,
+                "seat {opp} holds exactly one masked slot"
+            );
+            assert_eq!(
+                a.players[opp].hand.len(),
+                sim.players[opp].order_cards_in_hand.len(),
+                "seat {opp} hand SIZE stays public"
+            );
+        }
+
+        // Agreement must survive past setup, where the two shapes hold their
+        // cards at DIFFERENT hand indices: the Keep seat's masked card is at 0
+        // with the take at 1, while the Unknown seat physically holds only the
+        // take. Same deck under the same seed, so give each opponent a distinct
+        // witnessed take.
+        assert_eq!(sim.order_deck, live.order_deck, "tracking shape leaves the deck alone");
+        let top = sim.order_deck.len();
+        let takes = [sim.order_deck[top - 1], sim.order_deck[top - 2]];
+        for (opp, take) in [1usize, 2].into_iter().zip(takes) {
+            sim.players[opp].order_cards_in_hand.push(take);
+            live.players[opp].order_cards_in_hand.push(take);
+        }
+        assert_eq!(
+            observe(&sim, PlayerId(0)).unwrap(),
+            observe(&live, PlayerId(0)).unwrap(),
+            "a witnessed Port take must not expose the tracking shape either"
+        );
+    }
 }
