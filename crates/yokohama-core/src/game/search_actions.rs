@@ -20,7 +20,7 @@ use std::collections::BTreeMap;
 
 use rand::Rng;
 
-use crate::game::Rules;
+use crate::game::{calculate_placement_cost, Rules};
 use crate::types::*;
 
 /// A tag naming one decision-phase move family legal at the current state.
@@ -278,6 +278,364 @@ pub fn retreat_sample(on_board: &BTreeMap<AreaId, u8>, rng: &mut impl Rng) -> Mo
         }
     }
     Move::ReturnPresidentToHand { recover }
+}
+
+// ---------------------------------------------------------------------------
+// Placement family (Task 3): Option A distinct-area k-subsets and Option B
+// two-in-one-area (plus the optional Telegram neighbour). The exhaustive
+// generator materializes both blocks (`generate_placement_moves_with_tech`,
+// `legal_moves.rs:115-246`); this factored source reproduces them lazily and in
+// the same order. The one structural difference from the clean-product retreat
+// family above is the affordability gate: `calculate_placement_cost`
+// (`legal_moves.rs:99`) sums 1 Yen per (placed-area, opponent-president) pair
+// over ALL placed areas, so a k-subset of individually-affordable areas can
+// still exceed money and must be filtered as a WHOLE, per combination -- not per
+// area. Two consequences, both honored below: [`placement_upper_len`] is an
+// UPPER bound (affordable subsets are not contiguous in the enumeration order,
+// so no cheap closed form gives the exact post-filter count), and
+// [`placement_sample`] is NOT rejection-free.
+// ---------------------------------------------------------------------------
+
+/// The static inputs both placement paging and counting read off `state`+`rules`
+/// once. `placeable` is the placement-allowing areas in ascending `AreaId` order
+/// -- the combination index space, matching the generator's BTreeMap-ordered
+/// `placeable_areas`. `k_max = min(n, max_areas, in_hand)` bounds the Option-A
+/// subset size (`max_areas` = 4 with Newspaper else 3). `option_b`
+/// (`in_hand >= 2`) and `telegram_bonus` (Telegram owned AND `in_hand >= 3`)
+/// gate the Option-B block and its neighbour bonus.
+struct PlacementParams {
+    placeable: Vec<AreaId>,
+    player: PlayerId,
+    money: u32,
+    k_max: usize,
+    option_b: bool,
+    telegram_bonus: bool,
+}
+
+fn placement_params(state: &GameState, rules: &Rules) -> PlacementParams {
+    let player = state.current_player;
+    let p = state.player(player);
+    let in_hand = p.assistants.in_hand as usize;
+
+    let has_effect = |effect: TechEffect| {
+        p.technologies
+            .iter()
+            .any(|&tech_id| rules.techs.get(tech_id).is_some_and(|t| t.effect == effect))
+    };
+    let max_areas = if has_effect(TechEffect::Newspaper) { 4 } else { 3 };
+
+    let placeable: Vec<AreaId> = state
+        .board_layout
+        .areas
+        .iter()
+        .filter(|(_, config)| config.area_type.allows_placement())
+        .map(|(&id, _)| id)
+        .collect();
+
+    let k_max = placeable.len().min(max_areas).min(in_hand);
+
+    PlacementParams {
+        placeable,
+        player,
+        money: p.money,
+        k_max,
+        option_b: in_hand >= 2,
+        telegram_bonus: has_effect(TechEffect::Telegram) && in_hand >= 3,
+    }
+}
+
+/// Build one [`Move::PlaceThreeAreas`] (Option A) from a combination expressed
+/// as ascending indices into `areas_sorted` (the placeable list). No
+/// validation: distinctness/cap/affordability are the `apply_placement` arm's
+/// job (`apply_move.rs:428`), exactly as the generator emits the vector then
+/// leaves the arm to re-check. An empty `selection` is the always-legal empty
+/// placement.
+pub fn place_combo(areas_sorted: &[AreaId], selection: &[usize]) -> Move {
+    Move::PlaceThreeAreas { placements: selection.iter().map(|&i| areas_sorted[i]).collect() }
+}
+
+/// Upper bound on the placement family size: `Σ_{k=0}^{k_max} C(n, k)` for
+/// Option A plus Option B's structural count, WITHOUT subtracting the
+/// per-combination affordability holes (an over-budget subset is still counted).
+/// Exact when every combination is affordable -- no opponent president on a
+/// placed area, or enough money to pay every fee -- and a strict over-estimate
+/// once a fee gate punches a hole. This is the honest `family_len` the spec
+/// (§3.4) calls for; [`placement_iter`] is the authority on the realized moves.
+///
+/// The Option-B term counts one basic `PlaceTwoSameArea` per placeable area plus
+/// (Telegram owned, `in_hand >= 3`) each non-crossing placeable neighbour -- the
+/// fee-independent shape of the generator's Option-B block, so it too is
+/// exact-when-affordable and an upper bound otherwise.
+pub fn placement_upper_len(state: &GameState, rules: &Rules) -> usize {
+    let params = placement_params(state, rules);
+    let n = params.placeable.len();
+
+    // Option A: every k-subset for k in 0..=k_max, fees ignored.
+    let mut upper: usize = (0..=params.k_max).map(|k| binomial(n, k)).sum();
+
+    // Option B: one basic per area + each Telegram non-crossing placeable
+    // neighbour (structural, fee-independent).
+    if params.option_b {
+        upper += n;
+        if params.telegram_bonus {
+            for &area in &params.placeable {
+                for &adj in state.board_layout.adjacent_areas(area) {
+                    let placeable_adj = state
+                        .board_layout
+                        .areas
+                        .get(&adj)
+                        .is_some_and(|c| c.area_type.allows_placement());
+                    if placeable_adj && !state.board_layout.is_canal_crossing(area, adj) {
+                        upper += 1;
+                    }
+                }
+            }
+        }
+    }
+
+    upper
+}
+
+/// `C(n, k)` by the multiplicative recurrence (stays integral each step, no
+/// factorial overflow). Here `n <= 17`, `k <= 4`, far from `usize` limits.
+fn binomial(n: usize, k: usize) -> usize {
+    if k > n {
+        return 0;
+    }
+    let k = k.min(n - k);
+    let mut result = 1usize;
+    for i in 0..k {
+        result = result * (n - i) / (i + 1);
+    }
+    result
+}
+
+/// Lazily enumerate the placement family in the **same order and with the same
+/// moves** as `get_legal_moves` at a `Placement` state, filtered to
+/// `PlaceThreeAreas`/`PlaceTwoSameArea`: Option A first (all k-subsets, `k`
+/// ascending `0..=k_max`, each `k`'s subsets in the generator's ascending-index
+/// `j < k < l` loop order, `legal_moves.rs:147-195`), then Option B per
+/// placeable area (basic then Telegram neighbours, `legal_moves.rs:207-243`).
+///
+/// **Generate-and-filter, never materialized.** Each candidate combination is
+/// built one at a time and dropped when `calculate_placement_cost` exceeds money
+/// (the per-COMBINATION gate -- see the module note), exactly as the generator's
+/// inline `if player_money >= cost` does, so the emitted sequence equals the
+/// generator's post-filter output move-for-move without ever collecting the
+/// `Σ C(n,k)` combinations. The empty (`k = 0`) placement is always emitted
+/// first (cost 0), which also covers the generator's `in_hand == 0` degenerate
+/// case: `k_max` collapses to 0 and Option B is gated off, leaving exactly the
+/// lone empty placement.
+pub fn placement_iter<'a>(state: &'a GameState, rules: &Rules) -> impl Iterator<Item = Move> + 'a {
+    let params = placement_params(state, rules);
+    PlacementIter { state, params, stage: PlacementStage::OptionA { k: 0, combo: None } }
+}
+
+/// Lazy placement enumerator returned by [`placement_iter`]. Holds the
+/// `&GameState` (for `calculate_placement_cost` and adjacency at page time), the
+/// once-computed [`PlacementParams`], and a cursor through Option A's per-`k`
+/// combinations then Option B's per-area basic/neighbour moves.
+struct PlacementIter<'a> {
+    state: &'a GameState,
+    params: PlacementParams,
+    stage: PlacementStage,
+}
+
+/// Cursor position for [`PlacementIter`]. `OptionA.combo == None` means "emit the
+/// first combination of size `k` next"; `Some(v)` is the last-yielded
+/// combination whose successor comes next. `OptionB.sub` tracks basic-vs-
+/// neighbour within the current area.
+enum PlacementStage {
+    OptionA { k: usize, combo: Option<Vec<usize>> },
+    OptionB { area_idx: usize, sub: OptionBSub },
+    Done,
+}
+
+enum OptionBSub {
+    Basic,
+    Neighbor(usize),
+}
+
+impl Iterator for PlacementIter<'_> {
+    type Item = Move;
+
+    fn next(&mut self) -> Option<Move> {
+        loop {
+            // Take the stage out so each arm can freely read `self.state` /
+            // `self.params` (disjoint fields) and reassign `self.stage` without
+            // a borrow conflict; every arm restores it before returning/looping.
+            match std::mem::replace(&mut self.stage, PlacementStage::Done) {
+                PlacementStage::OptionA { mut k, combo } => {
+                    let n = self.params.placeable.len();
+                    let next = match combo {
+                        None => first_combination(n, k),
+                        Some(mut v) => advance_combination(&mut v, n).then_some(v),
+                    };
+                    match next {
+                        Some(indices) => {
+                            let placements: Vec<AreaId> =
+                                indices.iter().map(|&i| self.params.placeable[i]).collect();
+                            self.stage = PlacementStage::OptionA { k, combo: Some(indices) };
+                            let cost =
+                                calculate_placement_cost(self.state, self.params.player, &placements);
+                            if self.params.money >= cost {
+                                return Some(Move::PlaceThreeAreas { placements });
+                            }
+                            // Over budget: cursor kept, try the next combination.
+                        }
+                        None => {
+                            // This k is exhausted: advance k, else fall through to
+                            // Option B, else finish.
+                            if k < self.params.k_max {
+                                k += 1;
+                                self.stage = PlacementStage::OptionA { k, combo: None };
+                            } else if self.params.option_b {
+                                self.stage =
+                                    PlacementStage::OptionB { area_idx: 0, sub: OptionBSub::Basic };
+                            } else {
+                                self.stage = PlacementStage::Done;
+                            }
+                        }
+                    }
+                }
+                PlacementStage::OptionB { area_idx, sub } => {
+                    if area_idx >= self.params.placeable.len() {
+                        self.stage = PlacementStage::Done;
+                        continue;
+                    }
+                    let area = self.params.placeable[area_idx];
+                    // Two assistants land in `area`: price the 2-element slice,
+                    // matching the generator (`legal_moves.rs:212`).
+                    let basic_cost =
+                        calculate_placement_cost(self.state, self.params.player, &[area, area]);
+                    if self.params.money < basic_cost {
+                        // Basic unaffordable => the whole area (basic AND its
+                        // Telegram bonuses) is skipped, exactly as the generator's
+                        // per-area `if player_money >= cost` block gate does.
+                        self.stage = PlacementStage::OptionB {
+                            area_idx: area_idx + 1,
+                            sub: OptionBSub::Basic,
+                        };
+                        continue;
+                    }
+                    match sub {
+                        OptionBSub::Basic => {
+                            self.stage = PlacementStage::OptionB {
+                                area_idx,
+                                sub: OptionBSub::Neighbor(0),
+                            };
+                            return Some(Move::PlaceTwoSameArea { area, adjacent_bonus: None });
+                        }
+                        OptionBSub::Neighbor(j) => {
+                            if !self.params.telegram_bonus {
+                                self.stage = PlacementStage::OptionB {
+                                    area_idx: area_idx + 1,
+                                    sub: OptionBSub::Basic,
+                                };
+                                continue;
+                            }
+                            let neighbors = self.state.board_layout.adjacent_areas(area);
+                            if j >= neighbors.len() {
+                                self.stage = PlacementStage::OptionB {
+                                    area_idx: area_idx + 1,
+                                    sub: OptionBSub::Basic,
+                                };
+                                continue;
+                            }
+                            let adj = neighbors[j];
+                            self.stage = PlacementStage::OptionB {
+                                area_idx,
+                                sub: OptionBSub::Neighbor(j + 1),
+                            };
+                            // Canal crossings are movement-transit edges only,
+                            // never a Telegram bonus target (`legal_moves.rs:223`).
+                            if self.state.board_layout.is_canal_crossing(area, adj) {
+                                continue;
+                            }
+                            let adj_placeable = self
+                                .state
+                                .board_layout
+                                .areas
+                                .get(&adj)
+                                .is_some_and(|c| c.area_type.allows_placement());
+                            if !adj_placeable {
+                                continue;
+                            }
+                            let adj_cost =
+                                calculate_placement_cost(self.state, self.params.player, &[adj]);
+                            if self.params.money >= basic_cost + adj_cost {
+                                return Some(Move::PlaceTwoSameArea {
+                                    area,
+                                    adjacent_bonus: Some(adj),
+                                });
+                            }
+                            // Bonus over budget: cursor already advanced, retry.
+                        }
+                    }
+                }
+                PlacementStage::Done => return None,
+            }
+        }
+    }
+}
+
+/// The first (lex-least) size-`k` combination of `0..n`: `[0, 1, …, k-1]`, or
+/// `None` if `k > n`. `k = 0` yields the empty combination (the always-legal
+/// empty placement).
+fn first_combination(n: usize, k: usize) -> Option<Vec<usize>> {
+    (k <= n).then(|| (0..k).collect())
+}
+
+/// Advance `combo` (a strictly-ascending size-`k` combination of `0..n`) to its
+/// lex successor in place, returning `false` when it is already the last
+/// (`[n-k, …, n-1]`, or the empty combination). Reproduces the generator's
+/// nested ascending-index loops (`legal_moves.rs:159-195`): bump the rightmost
+/// index that can still grow, then reset every index after it to the tightest
+/// ascending run.
+fn advance_combination(combo: &mut [usize], n: usize) -> bool {
+    let k = combo.len();
+    if k == 0 {
+        return false;
+    }
+    let mut i = k - 1;
+    loop {
+        if combo[i] < n - k + i {
+            combo[i] += 1;
+            for j in (i + 1)..k {
+                combo[j] = combo[j - 1] + 1;
+            }
+            return true;
+        }
+        if i == 0 {
+            return false;
+        }
+        i -= 1;
+    }
+}
+
+/// Draw one uniformly-random legal placement move. Unlike [`retreat_sample`],
+/// placement is NOT a clean product space: affordability is a per-COMBINATION
+/// gate (the summed fee over all placed areas), so an O(1) draw of a
+/// per-area-affordable subset can land over budget. Rather than reject-and-
+/// redraw (unbounded worst case, though the always-free empty placement
+/// guarantees eventual termination), this reservoir-samples the affordability-
+/// filtered [`placement_iter`] in a single lazy pass -- keeping the i-th yielded
+/// move with probability 1/i. That is uniform over the whole realized family,
+/// always returns a legal move (every candidate already passed the cost filter),
+/// and runs in O(family size) time / O(1) space without materializing the
+/// family. (An affordability-aware O(1) unrank that skips holes is a 3.3
+/// widening concern, per spec §3.4.)
+pub fn placement_sample(state: &GameState, rules: &Rules, rng: &mut impl Rng) -> Move {
+    let mut chosen: Option<Move> = None;
+    for (i, mv) in placement_iter(state, rules).enumerate() {
+        // Reservoir of size 1: the (i+1)-th candidate replaces the running pick
+        // with probability 1/(i+1), leaving each candidate equally likely.
+        if rng.gen_range(0..=i) == 0 {
+            chosen = Some(mv);
+        }
+    }
+    // placement_iter always yields at least the empty (k = 0) placement.
+    chosen.expect("placement family is never empty (the empty placement is always legal)")
 }
 
 /// Thread-local counting allocator for the no-materialization bound
@@ -806,5 +1164,269 @@ mod tests {
         let (_s, sample_allocs) =
             alloc_probe::count_allocs(|| retreat_sample(&on_board, &mut rng));
         assert!(sample_allocs < 64, "retreat_sample allocated {sample_allocs} (>= 64)");
+    }
+
+    // -- Placement family (Task 3) ----------------------------------------
+
+    /// The generator's placement sequence at `state`, via the public surface:
+    /// `get_legal_moves` filtered to the two placement variants. At a
+    /// `Placement` state with no pending choice this filter keeps the whole
+    /// list; the filter guards against a caller passing a non-placement state.
+    /// This is the authority `placement_iter` is pinned against.
+    fn generator_placements(state: &GameState, rules: &Rules) -> Vec<Move> {
+        get_legal_moves(state, rules)
+            .into_iter()
+            .filter(|m| matches!(m, Move::PlaceThreeAreas { .. } | Move::PlaceTwoSameArea { .. }))
+            .collect()
+    }
+
+    /// A `Placement`-phase state with `players` players (current = player 0) and
+    /// `n_areas` placement-allowing areas (ids `0..n_areas`). Reuses
+    /// `base_state`'s known-good field layout, overriding only the config,
+    /// player roster, and board so the generator and `placement_iter` treat it
+    /// as a real placement decision point. Callers set the per-test knobs
+    /// afterwards (in_hand, money, technologies, opponent president locations,
+    /// adjacency, canal crossings).
+    fn placement_state(players: u8, n_areas: u8) -> GameState {
+        let colors = [PlayerColor::Red, PlayerColor::Blue, PlayerColor::Yellow, PlayerColor::Green];
+        let color_vec: Vec<PlayerColor> = colors[..players as usize].to_vec();
+
+        let mut s = base_state();
+        s.config = GameConfig::new(players, color_vec.clone(), PlayerId::new(0));
+        s.players = (0..players)
+            .map(|i| PlayerState::new(PlayerId::new(i), color_vec[i as usize], i == 0))
+            .collect();
+
+        let mut areas = BTreeMap::new();
+        for i in 0..n_areas {
+            areas.insert(
+                AreaId::new(i),
+                AreaConfig { area_type: AreaType::CopperMine, grid_position: (0, i) },
+            );
+        }
+        s.board_layout = BoardLayout {
+            areas,
+            adjacency: BTreeMap::new(),
+            canal_crossings: vec![],
+            building_sites: BTreeMap::new(),
+            five_power_tokens: BTreeMap::new(),
+        };
+        s
+    }
+
+    /// Drive a seeded real game (standard rules) and collect up to `want`
+    /// distinct `Placement`-phase states (no pending choice), for cross-checking
+    /// `placement_iter` against organically-reached decision points.
+    fn driven_placement_states(rules: &Rules, seed: u64, players: u8, want: usize) -> Vec<GameState> {
+        use rand::SeedableRng;
+        let config = GameConfig::for_player_count(players);
+        let pending = crate::new_game(config, rules, seed).expect("new_game");
+        let mut rng = rand_chacha::ChaCha8Rng::seed_from_u64(seed);
+        let choices: Vec<crate::StartingOrderChoice> =
+            (0..players).map(|_| crate::StartingOrderChoice::Keep(rng.gen_range(0..2u8))).collect();
+        let mut state = crate::finalize_setup(pending, &choices).expect("finalize_setup");
+
+        let mut out = Vec::new();
+        for _ in 0..4000 {
+            if out.len() >= want || crate::is_game_over(&state) {
+                break;
+            }
+            if state.pending_choices.is_empty() && state.turn_phase == TurnPhase::Placement {
+                out.push(state.clone());
+            }
+            let moves = get_legal_moves(&state, rules);
+            if moves.is_empty() {
+                break;
+            }
+            let mv = moves[rng.gen_range(0..moves.len())].clone();
+            state = apply_move_unchecked(&state, &mv, rules).expect("apply drawn move");
+        }
+        out
+    }
+
+    /// `place_combo` maps selected indices through the sorted-areas list into a
+    /// `PlaceThreeAreas` move; an empty selection is the always-legal empty
+    /// placement.
+    #[test]
+    fn place_combo_builds_place_three_areas_from_indices() {
+        let areas = [AreaId::new(3), AreaId::new(7), AreaId::new(9), AreaId::new(12)];
+        assert_eq!(
+            place_combo(&areas, &[0, 2, 3]),
+            Move::PlaceThreeAreas { placements: vec![AreaId::new(3), AreaId::new(9), AreaId::new(12)] },
+        );
+        assert_eq!(place_combo(&areas, &[]), Move::PlaceThreeAreas { placements: vec![] });
+    }
+
+    /// THE load-bearing pin: `placement_iter` reproduces the generator's
+    /// placement sequence exactly -- same ORDER and same moves -- across
+    /// organically-driven states at 2/3/4P, and `placement_upper_len` never
+    /// undercounts.
+    #[test]
+    fn placement_iter_matches_generator_on_driven_states() {
+        let rules = Rules::standard();
+        let mut checked = 0usize;
+        for players in [2u8, 3, 4] {
+            for seed in 0..3u64 {
+                for state in driven_placement_states(&rules, seed, players, 6) {
+                    let got: Vec<Move> = placement_iter(&state, &rules).collect();
+                    let want = generator_placements(&state, &rules);
+                    assert_eq!(got, want, "order+multiset mismatch, seed {seed} {players}p");
+                    assert!(
+                        placement_upper_len(&state, &rules) >= got.len(),
+                        "upper bound below actual, seed {seed} {players}p",
+                    );
+                    checked += 1;
+                }
+            }
+        }
+        assert!(checked >= 3, "expected several driven placement states, saw {checked}");
+    }
+
+    /// Per-COMBINATION affordability pin: with three opponent presidents on
+    /// three distinct areas, each of those areas is affordable ALONE (fee 1) but
+    /// the 3-subset spanning all three costs 3 > money 2. The generator excludes
+    /// exactly that one subset while keeping every single; `placement_iter` must
+    /// match, and `placement_upper_len` (which ignores the hole) must strictly
+    /// exceed the realized count. A per-AREA filter would wrongly keep {0,1,2}.
+    #[test]
+    fn placement_per_combination_affordability_excludes_costly_subset() {
+        let rules = Rules::empty_for_tests();
+        let a = AreaId::new;
+        let mut s = placement_state(4, 4);
+        s.players[0].assistants.in_hand = 3;
+        s.players[0].money = 2;
+        s.players[1].president_location = PresidentLocation::OnBoard(a(0));
+        s.players[2].president_location = PresidentLocation::OnBoard(a(1));
+        s.players[3].president_location = PresidentLocation::OnBoard(a(2));
+
+        // Each area is affordable alone (fee 1 <= 2) ...
+        for area in [a(0), a(1), a(2)] {
+            assert_eq!(calculate_placement_cost(&s, PlayerId::new(0), &[area]), 1);
+        }
+        // ... but the combination of all three is not (fee 3 > 2).
+        assert_eq!(calculate_placement_cost(&s, PlayerId::new(0), &[a(0), a(1), a(2)]), 3);
+
+        let got: Vec<Move> = placement_iter(&s, &rules).collect();
+        assert_eq!(got, generator_placements(&s, &rules), "order+multiset must match generator");
+
+        let costly = Move::PlaceThreeAreas { placements: vec![a(0), a(1), a(2)] };
+        assert!(!got.contains(&costly), "over-budget 3-subset must be filtered as a whole");
+        for area in [a(0), a(1), a(2)] {
+            assert!(
+                got.contains(&Move::PlaceThreeAreas { placements: vec![area] }),
+                "each individually-affordable single must survive",
+            );
+        }
+
+        // The single punched hole makes the upper bound a STRICT over-estimate.
+        let upper = placement_upper_len(&s, &rules);
+        assert!(upper > got.len(), "affordability hole must make upper {upper} > {}", got.len());
+    }
+
+    /// Newspaper raises the Option-A ceiling to 4 areas: with in_hand 4 and no
+    /// fees, `placement_iter` reaches k=4 combinations, matches the generator,
+    /// and (fully affordable) `placement_upper_len` is EXACT.
+    #[test]
+    fn placement_iter_reaches_k4_with_newspaper() {
+        let rules = Rules::standard();
+        let newspaper =
+            rules.techs.iter().find(|c| c.effect == TechEffect::Newspaper).expect("has Newspaper").id;
+        let mut s = placement_state(4, 5);
+        s.players[0].assistants.in_hand = 4;
+        s.players[0].money = 100;
+        s.players[0].technologies = vec![newspaper];
+
+        let got: Vec<Move> = placement_iter(&s, &rules).collect();
+        assert_eq!(got, generator_placements(&s, &rules), "order+multiset must match generator");
+        assert!(
+            got.iter().any(
+                |m| matches!(m, Move::PlaceThreeAreas { placements } if placements.len() == 4),
+            ),
+            "Newspaper + in_hand 4 must reach k=4",
+        );
+        assert_eq!(
+            placement_upper_len(&s, &rules),
+            got.len(),
+            "fully affordable => upper bound is exact",
+        );
+    }
+
+    /// Option B with Telegram: the bonus offers the non-crossing placeable
+    /// neighbour and EXCLUDES the canal-crossing one (transit-only adjacency).
+    /// `placement_iter` matches the generator, including that exclusion.
+    #[test]
+    fn placement_iter_matches_generator_with_telegram() {
+        let rules = Rules::standard();
+        let telegram =
+            rules.techs.iter().find(|c| c.effect == TechEffect::Telegram).expect("has Telegram").id;
+        let a = AreaId::new;
+        let mut s = placement_state(2, 4);
+        s.players[0].assistants.in_hand = 3;
+        s.players[0].money = 100;
+        s.players[0].technologies = vec![telegram];
+        // area 0 ~ {1 (free edge), 2 (canal crossing)}.
+        s.board_layout.adjacency.insert(a(0), vec![a(1), a(2)]);
+        s.board_layout.adjacency.insert(a(1), vec![a(0)]);
+        s.board_layout.adjacency.insert(a(2), vec![a(0)]);
+        s.board_layout.canal_crossings = vec![(a(0), a(2))];
+
+        let got: Vec<Move> = placement_iter(&s, &rules).collect();
+        assert_eq!(got, generator_placements(&s, &rules), "order+multiset must match generator");
+
+        assert!(
+            got.contains(&Move::PlaceTwoSameArea { area: a(0), adjacent_bonus: Some(a(1)) }),
+            "free neighbour must be offered as a Telegram bonus",
+        );
+        assert!(
+            !got.iter().any(|m| matches!(
+                m,
+                Move::PlaceTwoSameArea { area, adjacent_bonus: Some(adj) }
+                    if *area == a(0) && *adj == a(2)
+            )),
+            "canal-crossing neighbour must be excluded from the Telegram bonus",
+        );
+
+        // Fully affordable (no fees): the upper bound -- including its Option-B
+        // Telegram non-crossing-neighbour term -- is EXACT here.
+        assert_eq!(placement_upper_len(&s, &rules), got.len(), "upper bound must be exact");
+    }
+
+    /// The `in_hand == 0` degenerate case: the generator returns only the empty
+    /// placement (`legal_moves.rs:121-125`); `placement_iter` reproduces it via
+    /// the general path (`k_max` collapses to 0, Option B gated off).
+    #[test]
+    fn placement_iter_handles_in_hand_zero_degenerate() {
+        let rules = Rules::empty_for_tests();
+        let mut s = placement_state(3, 5);
+        s.players[0].assistants.in_hand = 0;
+
+        let got: Vec<Move> = placement_iter(&s, &rules).collect();
+        assert_eq!(got, vec![Move::PlaceThreeAreas { placements: vec![] }]);
+        assert_eq!(got, generator_placements(&s, &rules));
+        assert_eq!(placement_upper_len(&s, &rules), 1);
+    }
+
+    /// 1000 `placement_sample` draws off a rich (4P + Newspaper, in_hand 4)
+    /// state all apply `Ok`, and the sampler yields variety (not a degenerate
+    /// always-empty draw).
+    #[test]
+    fn placement_sample_draws_always_apply() {
+        use rand::SeedableRng;
+        let rules = Rules::standard();
+        let newspaper =
+            rules.techs.iter().find(|c| c.effect == TechEffect::Newspaper).expect("has Newspaper").id;
+        let mut s = placement_state(4, 5);
+        s.players[0].assistants.in_hand = 4;
+        s.players[0].money = 100;
+        s.players[0].technologies = vec![newspaper];
+
+        let mut rng = rand_chacha::ChaCha8Rng::seed_from_u64(20_260_725);
+        let mut distinct = std::collections::HashSet::new();
+        for _ in 0..1000 {
+            let mv = placement_sample(&s, &rules, &mut rng);
+            apply_move_unchecked(&s, &mv, &rules).expect("sampled placement applies");
+            distinct.insert(format!("{mv:?}"));
+        }
+        assert!(distinct.len() > 1, "sampler must draw more than one distinct move");
     }
 }
