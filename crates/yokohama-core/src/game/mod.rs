@@ -21,6 +21,7 @@ mod semantics;
 mod observe;
 mod belief;
 mod agent;
+mod search_actions;
 pub mod actions;
 
 pub use power::*;
@@ -43,3 +44,4 @@ pub use semantics::*;
 pub use observe::*;
 pub use belief::*;
 pub use agent::*;
+pub use search_actions::*;
