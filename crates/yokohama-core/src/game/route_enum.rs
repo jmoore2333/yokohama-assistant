@@ -157,7 +157,13 @@ fn has_tech(state: &GameState, player: PlayerId, reg: Option<&TechRegistry>, eff
 /// `BoardLayout::areas` — `can_step_onto` and `is_possible_action_area_with_tech`
 /// read assistants and President locations, not board membership, so a state
 /// whose assistants sit off the declared area map still enumerates identically.
-pub struct RouteGraph {
+///
+/// `pub(crate)` deliberately: the precondition is only debug-asserted, so a
+/// crate-external caller could construct one on an oversized board and hit an
+/// index panic in release — [`enumerate_routes`] (which pre-flights and
+/// delegates) is the total public surface; this type is plumbing for it and
+/// for the in-crate 3.1b family assembly.
+pub(crate) struct RouteGraph {
     /// Search root: the area the President walks from.
     from: u8,
     money: u32,
@@ -189,7 +195,7 @@ pub struct RouteGraph {
 
 impl RouteGraph {
     /// Precompute the subgraph for `player` walking from `from`.
-    pub fn build(
+    pub(crate) fn build(
         state: &GameState,
         player: PlayerId,
         from: AreaId,
