@@ -89,6 +89,21 @@ pub(crate) fn track_assistant_available(state: &GameState, area: AreaId) -> bool
     p.assistants.in_hand >= 1 || p.assistants.in_area(area) >= 1
 }
 
+/// True iff a pawn may ever OCCUPY `area` — stand on it, be placed on it, or
+/// walk over it. Every area qualifies EXCEPT the Canal: "No pawns or tokens may
+/// be placed; the Canal is unplaceable and unstoppable (transit-only)"
+/// [RB p.14; KB 01-rules-reference §Canal; re-stated by the DL 2026-07-21
+/// any-to-any Canal re-ruling, which changes only WHAT the Canal connects]. The
+/// Canal contributes CROSSINGS between two other tiles; it is never itself a
+/// tile a pawn is on. An `AreaId` absent from the layout occupies nothing.
+///
+/// This is a rule in its own right, NOT a corollary of the per-step
+/// own-assistant test [RB p.6] — the two only coincide while no pawn is on the
+/// Canal, which is the very thing the rule guarantees.
+pub(crate) fn allows_pawn(state: &GameState, area: AreaId) -> bool {
+    state.board_layout.areas.get(&area).is_some_and(|cfg| cfg.area_type.allows_placement())
+}
+
 /// Non-Canal areas of the board, ascending `AreaId` (every area that
 /// `allows_placement`).
 pub(crate) fn placeable_areas(state: &GameState) -> Vec<AreaId> {
