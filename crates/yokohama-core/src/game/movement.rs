@@ -2,7 +2,7 @@
 
 use std::cmp::Reverse;
 use std::collections::{BTreeMap, BTreeSet, BinaryHeap};
-use crate::types::{AreaId, GameState, Move, PlayerId, PresidentLocation, TechEffect};
+use crate::types::{AreaId, GameState, PlayerId, PresidentLocation, TechEffect};
 use super::cards::TechRegistry;
 
 /// Fee vector for one Movement-step path: `None` is the bank (canal tolls),
@@ -202,10 +202,15 @@ pub fn find_reachable_areas_with_tech(
 /// the same fees. Excluding `start` from every hop therefore enumerates one
 /// representative per effective route rather than narrowing the legal set.
 ///
-/// Shared by
-/// `find_reachable_areas_with_tech` (Dijkstra, one path per destination)
-/// and `enumerate_president_routes` (DFS, every simple affordable path) so
-/// the two searches can never diverge on what counts as a legal hop.
+/// This is THE hop-legality predicate — every consumer that decides whether a
+/// President may step somewhere calls it rather than restating the test, so no
+/// two of them can diverge on what counts as a legal hop. That currently means
+/// the two frozen searches (`find_reachable_areas_with_tech`'s Dijkstra, one
+/// path per destination, and `enumerate_president_routes`' DFS, every simple
+/// affordable path), the 3.1b lazy enumerator (`route_enum::RouteGraph::build`,
+/// which precomputes it per area), and the single-candidate predicate
+/// (`move_legality`). The class is what the guarantee is stated over; a fifth
+/// consumer joins it by calling this function, not by being listed here.
 pub(crate) fn can_step_onto(state: &GameState, player: PlayerId, start: AreaId, to: AreaId) -> bool {
     to != start && state.player(player).assistants.in_area(to) > 0
 }
@@ -254,26 +259,6 @@ pub fn can_teleport_to_station_with_tech(
     } else {
         None
     }
-}
-
-/// Generate station teleport move if available.
-pub fn generate_station_teleport_move(
-    state: &GameState,
-    player: PlayerId,
-) -> Option<Move> {
-    let station_area = can_teleport_to_station(state, player)?;
-
-    // Can't teleport to where we already are
-    let p = state.player(player);
-    if p.president_location == PresidentLocation::OnBoard(station_area) {
-        return None;
-    }
-
-    // Teleport is free (empty path, 0 cost)
-    Some(Move::MovePresident {
-        path: vec![], // No intermediate areas
-        destination: station_area,
-    })
 }
 
 /// Calculate movement cost (opponent Presidents and canal tolls).
