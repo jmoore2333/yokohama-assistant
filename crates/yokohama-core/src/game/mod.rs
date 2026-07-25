@@ -22,6 +22,8 @@ mod observe;
 mod belief;
 mod agent;
 mod search_actions;
+mod route_enum;
+mod move_legality;
 pub mod actions;
 
 pub use power::*;
@@ -45,3 +47,5 @@ pub use observe::*;
 pub use belief::*;
 pub use agent::*;
 pub use search_actions::*;
+pub use route_enum::*;
+pub use move_legality::*;
