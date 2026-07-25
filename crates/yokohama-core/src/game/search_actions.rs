@@ -20,7 +20,7 @@ use std::collections::BTreeMap;
 
 use rand::Rng;
 
-use crate::game::{calculate_placement_cost, Rules};
+use crate::game::{calculate_placement_cost, get_legal_moves, Rules};
 use crate::types::*;
 
 /// A tag naming one decision-phase move family legal at the current state.
@@ -638,6 +638,152 @@ pub fn placement_sample(state: &GameState, rules: &Rules, rng: &mut impl Rng) ->
     chosen.expect("placement family is never empty (the empty placement is always legal)")
 }
 
+// ---------------------------------------------------------------------------
+// Unified dispatch (Task 4): family_len / iter_family / sample_family over a
+// `MoveFamily`. The two exploding families are bespoke -- retreat via the
+// mixed-radix constructor (Task 2), placement via lazy combination
+// construction with per-combination affordability (Task 3). EVERY other family
+// DELEGATES to the frozen `get_legal_moves`, filtered to the family by
+// `family_kind`: that is equivalence by construction -- the yielded moves ARE a
+// contiguous filter of the generator's own output, so they inherit its order
+// and multiset exactly, including FulfillOrder's `order_cards_in_hand`
+// insertion order (`legal_moves.rs:59`), never a sorted key. Those families are
+// bounded-small, so materializing the filtered slice is fine (the laziness
+// guarantee only binds retreat/placement). `MovementRoutes` is a 3.1b STUB that
+// delegates the same way (filter to MovePresident/PlacePresident) so the union
+// of families stays complete for the equivalence tests; 3.1b replaces it with a
+// lazy route enumerator.
+// ---------------------------------------------------------------------------
+
+/// The [`MoveFamily`] a given [`Move`] belongs to, as a discriminant so the
+/// payload-carrying `MovementRetreat` compares by variant only. Exhaustive on
+/// purpose (no `_` arm): a new `Move` variant must be classified here or this
+/// stops compiling. Used by the delegate-and-filter dispatch to slice
+/// `get_legal_moves` down to one family, and by the tests to check membership.
+fn family_kind(mv: &Move) -> std::mem::Discriminant<MoveFamily> {
+    use std::mem::discriminant as d;
+    match mv {
+        Move::UseMercenary { .. }
+        | Move::UseUniversity
+        | Move::UseSpinningMill
+        | Move::FulfillAchievement { .. }
+        | Move::FulfillOrder { .. }
+        | Move::EndAdditionalPhase => d(&MoveFamily::AdditionalAction),
+
+        Move::PlaceThreeAreas { .. } | Move::PlaceTwoSameArea { .. } => d(&MoveFamily::Placement),
+
+        Move::MovePresident { .. } | Move::PlacePresident { .. } => d(&MoveFamily::MovementRoutes),
+
+        Move::ReturnPresidentToHand { .. } => {
+            d(&MoveFamily::MovementRetreat { on_board: BTreeMap::new(), from_hand: false })
+        }
+
+        Move::ExecuteAreaAction { .. } => d(&MoveFamily::AreaAction),
+
+        Move::Take5PowerToken | Move::Skip5PowerBonus => d(&MoveFamily::FivePower),
+
+        Move::BuildShophouse { .. } | Move::BuildTradingHouse | Move::SkipBuilding => {
+            d(&MoveFamily::Building)
+        }
+
+        Move::ChooseAnyGood { .. }
+        | Move::ChooseWarehouseTake { .. }
+        | Move::DeclineWarehouseTake
+        | Move::ChooseAssistantMove { .. }
+        | Move::DeclineAssistantMove
+        | Move::ChooseChurchSpace { .. }
+        | Move::ChooseCustomsSpace { .. }
+        | Move::ChooseRecoveryLeave { .. }
+        | Move::ChooseStationPlace { .. } => d(&MoveFamily::ChoiceResolution),
+    }
+}
+
+/// The moves `get_legal_moves` emits that belong to `family`, in the generator's
+/// order. This is the delegate-and-filter path shared by the small families and
+/// the `MovementRoutes` 3.1b stub: it re-reads the frozen generator and keeps
+/// the slice whose [`family_kind`] matches `family`, so the result is the
+/// generator's own output move-for-move (equivalence by construction). Retreat
+/// and placement never reach here -- they are served by their bespoke lazy
+/// generators.
+fn delegated_family_moves(state: &GameState, rules: &Rules, family: &MoveFamily) -> Vec<Move> {
+    let want = std::mem::discriminant(family);
+    get_legal_moves(state, rules).into_iter().filter(|mv| family_kind(mv) == want).collect()
+}
+
+/// Size of `family` at `state`: the bespoke closed form for retreat
+/// (`∏(count+1)`, [`retreat_len`]) and the honest upper bound for placement
+/// ([`placement_upper_len`], a strict over-estimate once a fee gate punches a
+/// hole); the exact realized count for every delegated family. Equals the
+/// number of moves [`iter_family`] yields for every family EXCEPT placement,
+/// where it is an upper bound (`iter_family` is the authority on the realized
+/// placement moves).
+pub fn family_len(state: &GameState, rules: &Rules, family: &MoveFamily) -> usize {
+    match family {
+        MoveFamily::MovementRetreat { on_board, .. } => retreat_len(on_board),
+        MoveFamily::Placement => placement_upper_len(state, rules),
+        MoveFamily::MovementRoutes
+        | MoveFamily::AdditionalAction
+        | MoveFamily::AreaAction
+        | MoveFamily::FivePower
+        | MoveFamily::Building
+        | MoveFamily::ChoiceResolution => delegated_family_moves(state, rules, family).len(),
+    }
+}
+
+/// Lazily yield `family`'s moves at `state`, in the same order and with the same
+/// moves as `get_legal_moves` filtered to that family. Retreat and placement
+/// page/serve lazily (Tasks 2/3) without materializing the family; every other
+/// family delegates to the frozen generator (a materialized but bounded-small
+/// slice). Boxed because the arms have heterogeneous iterator types (the lazy
+/// `RetreatIter`/`PlacementIter` and the delegated `vec::IntoIter`).
+pub fn iter_family<'a>(
+    state: &'a GameState,
+    rules: &Rules,
+    family: &MoveFamily,
+) -> Box<dyn Iterator<Item = Move> + 'a> {
+    match family {
+        MoveFamily::MovementRetreat { on_board, .. } => Box::new(retreat_iter(on_board)),
+        MoveFamily::Placement => Box::new(placement_iter(state, rules)),
+        MoveFamily::MovementRoutes
+        | MoveFamily::AdditionalAction
+        | MoveFamily::AreaAction
+        | MoveFamily::FivePower
+        | MoveFamily::Building
+        | MoveFamily::ChoiceResolution => {
+            Box::new(delegated_family_moves(state, rules, family).into_iter())
+        }
+    }
+}
+
+/// Draw one uniformly-random legal move from `family` at `state`. Retreat and
+/// placement use their bespoke samplers (Task 2's rejection-free per-area draw;
+/// Task 3's affordability-aware reservoir); every delegated family draws a
+/// uniform index into its materialized legal slice. Panics on an empty family --
+/// a caller must size a structurally-emptyable family (e.g. `MovementRoutes`
+/// with no legal route) via [`family_len`] `> 0` before sampling it.
+pub fn sample_family(
+    state: &GameState,
+    rules: &Rules,
+    family: &MoveFamily,
+    rng: &mut impl Rng,
+) -> Move {
+    match family {
+        MoveFamily::MovementRetreat { on_board, .. } => retreat_sample(on_board, rng),
+        MoveFamily::Placement => placement_sample(state, rules, rng),
+        MoveFamily::MovementRoutes
+        | MoveFamily::AdditionalAction
+        | MoveFamily::AreaAction
+        | MoveFamily::FivePower
+        | MoveFamily::Building
+        | MoveFamily::ChoiceResolution => {
+            let mut moves = delegated_family_moves(state, rules, family);
+            assert!(!moves.is_empty(), "sample_family on an empty {family:?} family");
+            let i = rng.gen_range(0..moves.len());
+            moves.swap_remove(i)
+        }
+    }
+}
+
 /// Thread-local counting allocator for the no-materialization bound
 /// ([`tests::serving_one_retreat_candidate_is_o_areas_not_o_product`]). It
 /// forwards every (de)allocation to the process `System` allocator unchanged
@@ -772,52 +918,6 @@ mod tests {
         let mut s = base_state();
         s.turn_phase = phase;
         s
-    }
-
-    /// Which `MoveFamily` a given `Move` belongs to, as a discriminant so the
-    /// payload-carrying `MovementRetreat` compares by variant only. Exhaustive
-    /// on purpose (no `_` arm): a new `Move` variant must be classified here,
-    /// or this test stops compiling.
-    fn family_kind(mv: &Move) -> std::mem::Discriminant<MoveFamily> {
-        use std::mem::discriminant as d;
-        match mv {
-            Move::UseMercenary { .. }
-            | Move::UseUniversity
-            | Move::UseSpinningMill
-            | Move::FulfillAchievement { .. }
-            | Move::FulfillOrder { .. }
-            | Move::EndAdditionalPhase => d(&MoveFamily::AdditionalAction),
-
-            Move::PlaceThreeAreas { .. } | Move::PlaceTwoSameArea { .. } => {
-                d(&MoveFamily::Placement)
-            }
-
-            Move::MovePresident { .. } | Move::PlacePresident { .. } => {
-                d(&MoveFamily::MovementRoutes)
-            }
-
-            Move::ReturnPresidentToHand { .. } => {
-                d(&MoveFamily::MovementRetreat { on_board: BTreeMap::new(), from_hand: false })
-            }
-
-            Move::ExecuteAreaAction { .. } => d(&MoveFamily::AreaAction),
-
-            Move::Take5PowerToken | Move::Skip5PowerBonus => d(&MoveFamily::FivePower),
-
-            Move::BuildShophouse { .. } | Move::BuildTradingHouse | Move::SkipBuilding => {
-                d(&MoveFamily::Building)
-            }
-
-            Move::ChooseAnyGood { .. }
-            | Move::ChooseWarehouseTake { .. }
-            | Move::DeclineWarehouseTake
-            | Move::ChooseAssistantMove { .. }
-            | Move::DeclineAssistantMove
-            | Move::ChooseChurchSpace { .. }
-            | Move::ChooseCustomsSpace { .. }
-            | Move::ChooseRecoveryLeave { .. }
-            | Move::ChooseStationPlace { .. } => d(&MoveFamily::ChoiceResolution),
-        }
     }
 
     #[test]
@@ -1428,5 +1528,270 @@ mod tests {
             distinct.insert(format!("{mv:?}"));
         }
         assert!(distinct.len() > 1, "sampler must draw more than one distinct move");
+    }
+
+    // -- Unified dispatch (Task 4) ----------------------------------------
+
+    /// A short name for `family`, for the driven-game anti-vacuity coverage set.
+    fn family_name(f: &MoveFamily) -> &'static str {
+        match f {
+            MoveFamily::AdditionalAction => "AdditionalAction",
+            MoveFamily::Placement => "Placement",
+            MoveFamily::MovementRoutes => "MovementRoutes",
+            MoveFamily::MovementRetreat { .. } => "MovementRetreat",
+            MoveFamily::AreaAction => "AreaAction",
+            MoveFamily::FivePower => "FivePower",
+            MoveFamily::Building => "Building",
+            MoveFamily::ChoiceResolution => "ChoiceResolution",
+        }
+    }
+
+    /// THE Task-4 equivalence pin: at every organically-reached decision point
+    /// across 2/3/4P games, `iter_family(state, family)` reproduces
+    /// `get_legal_moves` filtered to that family EXACTLY -- same order and
+    /// multiset -- for every family `families()` lists (retreat/placement via
+    /// their bespoke lazy generators, the rest via delegate-and-filter). And
+    /// `family_len` equals that realized count for every family EXCEPT
+    /// Placement, where it is the honest upper bound (>= realized). The coverage
+    /// set pins that the per-turn-guaranteed families were actually exercised.
+    #[test]
+    fn iter_family_and_len_match_generator_across_driven_games() {
+        use rand::SeedableRng;
+        let rules = Rules::standard();
+        let mut seen: std::collections::HashSet<&'static str> = std::collections::HashSet::new();
+
+        for players in [2u8, 3, 4] {
+            for seed in 0..5u64 {
+                let config = GameConfig::for_player_count(players);
+                let pending = crate::new_game(config, &rules, seed).expect("new_game");
+                let mut rng = rand_chacha::ChaCha8Rng::seed_from_u64(seed);
+                let choices: Vec<crate::StartingOrderChoice> = (0..players)
+                    .map(|_| crate::StartingOrderChoice::Keep(rng.gen_range(0..2u8)))
+                    .collect();
+                let mut state = crate::finalize_setup(pending, &choices).expect("finalize_setup");
+
+                for _ in 0..2000 {
+                    if crate::is_game_over(&state) {
+                        break;
+                    }
+                    let legal = get_legal_moves(&state, &rules);
+                    if legal.is_empty() {
+                        break;
+                    }
+                    for family in families(&state, &rules) {
+                        let want = std::mem::discriminant(&family);
+                        let expected: Vec<Move> =
+                            legal.iter().filter(|m| family_kind(m) == want).cloned().collect();
+                        let got: Vec<Move> = iter_family(&state, &rules, &family).collect();
+                        assert_eq!(
+                            got, expected,
+                            "iter_family != generator-filtered for {family:?} ({players}p seed {seed})",
+                        );
+
+                        let len = family_len(&state, &rules, &family);
+                        if matches!(family, MoveFamily::Placement) {
+                            assert!(
+                                len >= got.len(),
+                                "placement upper {len} < realized {} ({players}p seed {seed})",
+                                got.len(),
+                            );
+                        } else {
+                            assert_eq!(
+                                len,
+                                got.len(),
+                                "family_len != realized for {family:?} ({players}p seed {seed})",
+                            );
+                        }
+                        seen.insert(family_name(&family));
+                    }
+
+                    let mv = legal[rng.gen_range(0..legal.len())].clone();
+                    state = apply_move_unchecked(&state, &mv, &rules).expect("apply drawn move");
+                }
+            }
+        }
+
+        // Anti-vacuity: every family structurally guaranteed each turn must have
+        // been exercised on a real state (ChoiceResolution is covered by its own
+        // targeted test, as it is not guaranteed every game).
+        for name in [
+            "AdditionalAction",
+            "Placement",
+            "MovementRoutes",
+            "MovementRetreat",
+            "AreaAction",
+            "FivePower",
+            "Building",
+        ] {
+            assert!(seen.contains(name), "family {name} never exercised across driven games");
+        }
+    }
+
+    /// THE FulfillOrder anti-vacuity pin: `iter_family(AdditionalAction)`
+    /// preserves the generator's `order_cards_in_hand` INSERTION order for
+    /// FulfillOrder moves (`legal_moves.rs:59`). A sorted-by-id iterator would
+    /// reorder this deliberately-descending hand ([id 2, id 1]) and FAIL. The
+    /// delegate-and-filter dispatch inherits the generator's order for free.
+    #[test]
+    fn additional_action_iter_preserves_nonsorted_fulfill_order_hand_order() {
+        let rules = Rules::standard();
+        let mut s = at_phase(TurnPhase::AdditionalActionFirst);
+        // No assistant in hand -> achievements are unclaimable, keeping the
+        // family focused on the two FulfillOrder moves + EndAdditionalPhase.
+        s.players[0].assistants.in_hand = 0;
+        // Abundant goods so both orders are fulfillable regardless of their
+        // printed copper/silk/tea/seafood requirements.
+        s.players[0].copper = 99;
+        s.players[0].silk = 99;
+        s.players[0].tea = 99;
+        s.players[0].seafood = 99;
+        // Non-sorted hand: id 2 BEFORE id 1 (a sorted key would emit 1 then 2).
+        s.players[0].order_cards_in_hand = vec![OrderCardId(2), OrderCardId(1)];
+
+        let family = MoveFamily::AdditionalAction;
+        let got: Vec<Move> = iter_family(&s, &rules, &family).collect();
+
+        // Equivalence by construction with the whole generator list (every
+        // additional-action move is in this one family here).
+        assert_eq!(got, get_legal_moves(&s, &rules), "iter_family must equal the generator list");
+
+        // The load-bearing order pin: FulfillOrder ids in HAND order [2, 1].
+        let order_ids: Vec<OrderCardId> = got
+            .iter()
+            .filter_map(|m| match m {
+                Move::FulfillOrder { order_id } => Some(*order_id),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            order_ids,
+            vec![OrderCardId(2), OrderCardId(1)],
+            "FulfillOrder must follow order_cards_in_hand insertion order, not a sorted key",
+        );
+
+        assert_eq!(family_len(&s, &rules, &family), got.len(), "family_len == realized count");
+    }
+
+    /// Every `sample_family` draw is a legal move OF THE SAMPLED FAMILY that
+    /// applies `Ok`, across organically-reached states. Retreat/placement route
+    /// to their bespoke samplers; the delegated families draw a uniform index
+    /// into the legal slice. A structurally-empty family (e.g. no legal route)
+    /// is skipped -- sampling is only defined on `family_len > 0`.
+    #[test]
+    fn sample_family_draws_apply_across_driven_games() {
+        use rand::SeedableRng;
+        let rules = Rules::standard();
+        let mut drawn = 0usize;
+
+        for players in [2u8, 3, 4] {
+            for seed in 0..3u64 {
+                let config = GameConfig::for_player_count(players);
+                let pending = crate::new_game(config, &rules, seed).expect("new_game");
+                let mut rng = rand_chacha::ChaCha8Rng::seed_from_u64(seed + 4242);
+                let choices: Vec<crate::StartingOrderChoice> = (0..players)
+                    .map(|_| crate::StartingOrderChoice::Keep(rng.gen_range(0..2u8)))
+                    .collect();
+                let mut state = crate::finalize_setup(pending, &choices).expect("finalize_setup");
+
+                for _ in 0..1500 {
+                    if crate::is_game_over(&state) {
+                        break;
+                    }
+                    let legal = get_legal_moves(&state, &rules);
+                    if legal.is_empty() {
+                        break;
+                    }
+                    for family in families(&state, &rules) {
+                        if family_len(&state, &rules, &family) == 0 {
+                            continue;
+                        }
+                        for _ in 0..3 {
+                            let mv = sample_family(&state, &rules, &family, &mut rng);
+                            assert_eq!(
+                                family_kind(&mv),
+                                std::mem::discriminant(&family),
+                                "sample_family drew {mv:?} outside {family:?}",
+                            );
+                            apply_move_unchecked(&state, &mv, &rules).unwrap_or_else(|e| {
+                                panic!("sampled {mv:?} from {family:?} failed to apply: {e:?}")
+                            });
+                            drawn += 1;
+                        }
+                    }
+                    let mv = legal[rng.gen_range(0..legal.len())].clone();
+                    state = apply_move_unchecked(&state, &mv, &rules).expect("apply drawn move");
+                }
+            }
+        }
+        assert!(drawn > 200, "expected many sampled draws, saw {drawn}");
+    }
+
+    /// Dispatch smoke: `iter_family`/`family_len`/`sample_family` on the bespoke
+    /// families forward to the Task-2/3 functions (deeply tested there), so a
+    /// mis-routed arm (e.g. retreat sent through the delegate path) is caught.
+    #[test]
+    fn retreat_and_placement_dispatch_to_bespoke_generators() {
+        use rand::SeedableRng;
+        let rules = Rules::standard();
+
+        // Retreat: iter_family/family_len read only the family payload's
+        // on_board, so a bare base state suffices for the signature.
+        let on_board = on_board_of(&[(0, 2), (1, 1), (5, 2)]);
+        let retreat = MoveFamily::MovementRetreat { on_board: on_board.clone(), from_hand: true };
+        let s = base_state();
+        assert_eq!(
+            iter_family(&s, &rules, &retreat).collect::<Vec<_>>(),
+            retreat_iter(&on_board).collect::<Vec<_>>(),
+            "retreat dispatch must equal retreat_iter",
+        );
+        assert_eq!(family_len(&s, &rules, &retreat), retreat_len(&on_board));
+
+        // Placement: iter_family == placement_iter, family_len ==
+        // placement_upper_len.
+        let mut ps = placement_state(2, 3);
+        ps.players[0].assistants.in_hand = 3;
+        ps.players[0].money = 100;
+        assert_eq!(
+            iter_family(&ps, &rules, &MoveFamily::Placement).collect::<Vec<_>>(),
+            placement_iter(&ps, &rules).collect::<Vec<_>>(),
+            "placement dispatch must equal placement_iter",
+        );
+        assert_eq!(
+            family_len(&ps, &rules, &MoveFamily::Placement),
+            placement_upper_len(&ps, &rules),
+        );
+
+        // Samples land in the right family.
+        let mut rng = rand_chacha::ChaCha8Rng::seed_from_u64(4);
+        assert_eq!(
+            family_kind(&sample_family(&s, &rules, &retreat, &mut rng)),
+            std::mem::discriminant(&retreat),
+        );
+        assert_eq!(
+            family_kind(&sample_family(&ps, &rules, &MoveFamily::Placement, &mut rng)),
+            std::mem::discriminant(&MoveFamily::Placement),
+        );
+    }
+
+    /// The ChoiceResolution family delegates to the generator's choice
+    /// resolutions: at a pending `AnyGood`, `iter_family` yields exactly the four
+    /// `ChooseAnyGood` moves in generator order, `family_len` is 4, and a sample
+    /// applies `Ok`.
+    #[test]
+    fn choice_resolution_family_delegates_to_generator() {
+        use rand::SeedableRng;
+        let rules = Rules::standard();
+        let mut s = at_phase(TurnPhase::Placement);
+        s.pending_choices.push(PendingChoice::AnyGood);
+
+        let family = MoveFamily::ChoiceResolution;
+        let got: Vec<Move> = iter_family(&s, &rules, &family).collect();
+        assert_eq!(got, get_legal_moves(&s, &rules), "delegates to the whole choice list");
+        assert_eq!(family_len(&s, &rules, &family), 4);
+        assert!(got.iter().all(|m| matches!(m, Move::ChooseAnyGood { .. })));
+
+        let mut rng = rand_chacha::ChaCha8Rng::seed_from_u64(9);
+        let mv = sample_family(&s, &rules, &family, &mut rng);
+        apply_move_unchecked(&s, &mv, &rules).expect("sampled choice resolution applies");
     }
 }
