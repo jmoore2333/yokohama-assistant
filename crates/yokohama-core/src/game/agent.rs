@@ -2,8 +2,11 @@
 //!
 //! `HonestAgent`'s method signatures are the honesty boundary. They cannot
 //! name `GameState` or `PendingSetup`, so a bot CANNOT read the deck order,
-//! the boxed pile, an opponent's hidden starting order, or the setup seed --
-//! not by discipline, by types.
+//! the boxed pile, or an opponent's hidden starting order -- not by
+//! discipline, by types. The setup seed is likewise unreadable *directly*, but
+//! the public board is an injective fingerprint of it: a disclosed residual,
+//! closed by seed hygiene and exercised by the seed-recovery red team (see
+//! SEED HYGIENE below), not by these signatures.
 //!
 //! Scope, stated honestly (spec §3.5):
 //!   * per-decision channel -- closed by these signatures;
@@ -26,6 +29,8 @@
 //! seed-recovery red-team test instead.
 
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Arc;
 
 use rand::{Rng, SeedableRng};
 use rand_chacha::ChaCha8Rng;
@@ -58,6 +63,12 @@ pub trait HonestAgent {
 
     /// Play: choose one of `legal`.
     ///
+    /// PRECONDITION: `legal` is non-empty. `run_honest_game` returns a dead-end
+    /// error before it would ever call an agent on an empty list, so an
+    /// implementation may index `legal` without a bounds check (as
+    /// `TrivialHonestAgent`'s uniform pick does). A caller reusing this trait
+    /// (3.1+) owes the same guarantee.
+    ///
     /// Being handed the engine's own legal list is leak-free for Keep-shaped
     /// states: legality is a pure function of the acting seat's legitimate
     /// view (verified exhaustively and by the independent oracle; pinned
@@ -66,15 +77,58 @@ pub trait HonestAgent {
     fn choose_move(&mut self, view: &PlayerView, legal: &[Move], rules: &Rules) -> Move;
 }
 
+/// A cloneable tally of which arm `TrivialHonestAgent::choose_move` took. Every
+/// clone shares one set of counters, so a driver can read the totals AFTER the
+/// agent has been moved into `run_honest_game` and dropped (a game's agents are
+/// built by the driver's factory and never handed back).
+///
+/// Its reason to exist is ANTI-VACUITY. A full-game release sweep can complete
+/// every game while the belief sampler never actually drives a decision: the
+/// fallback arm resolves to the same true legal list, so a suite that only
+/// asserted "the game finished" would pass even if `from_view` errored on every
+/// call. These counters make the two arms observable, so a gate can PROVE the
+/// sampler path fired.
+#[derive(Clone, Default)]
+pub struct AgentPathTally {
+    sampled: Arc<AtomicU64>,
+    fallback: Arc<AtomicU64>,
+}
+
+impl AgentPathTally {
+    /// Decisions resolved by the belief-sampler arm: a move drawn from a
+    /// SAMPLED world's own legal list that was also in the seat's true list.
+    pub fn sampled_pick_count(&self) -> u64 {
+        self.sampled.load(Ordering::Relaxed)
+    }
+
+    /// Decisions resolved by the fallback arm: `from_view` errored, the sampled
+    /// world had no legal move, or its pick was not in the true legal list (the
+    /// documented L8 live-`Unknown` case). The fallback still returns a legal
+    /// move -- only which arm produced it differs. Provably zero for Keep-shaped
+    /// games, where the sampled and true legal lists coincide (spec F5).
+    pub fn fallback_count(&self) -> u64 {
+        self.fallback.load(Ordering::Relaxed)
+    }
+}
+
 /// The 3.0 gate's agent: keeps a random card, then samples ONE world from its
 /// view and picks uniformly from that world's legal moves.
 pub struct TrivialHonestAgent {
     rng: ChaCha8Rng,
+    tally: AgentPathTally,
 }
 
 impl TrivialHonestAgent {
     pub fn new(seed: u64) -> Self {
-        Self { rng: ChaCha8Rng::seed_from_u64(seed) }
+        Self { rng: ChaCha8Rng::seed_from_u64(seed), tally: AgentPathTally::default() }
+    }
+
+    /// A cloneable handle to this agent's arm tally. Clone it out BEFORE the
+    /// agent is moved into `run_honest_game` to read the counters after the
+    /// game -- the release sweep's mechanism for proving the sampler path (not
+    /// the fallback) drove the decisions.
+    pub fn tally(&self) -> AgentPathTally {
+        self.tally.clone()
     }
 }
 
@@ -110,12 +164,14 @@ impl HonestAgent for TrivialHonestAgent {
                     );
                 }
                 if legal.contains(&pick) {
+                    self.tally.sampled.fetch_add(1, Ordering::Relaxed);
                     return pick;
                 }
             }
         }
         // Fall back to the true legal list (equal to the sampled one for
         // Keep-shaped states; a live `Unknown` seat is the documented L8 case).
+        self.tally.fallback.fetch_add(1, Ordering::Relaxed);
         legal[self.rng.gen_range(0..legal.len())].clone()
     }
 }

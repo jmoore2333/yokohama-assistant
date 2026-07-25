@@ -56,7 +56,7 @@ pub fn check_invariants(state: &GameState, rules: &Rules) -> Result<(), String> 
             ));
         }
         // I11 (Phase 3.0): starting-order coherence. `starting_order` is
-        // effectively write-only in the engine (types/player.rs:244 init,
+        // effectively write-only in the engine (types/player.rs:248 init,
         // game/setup.rs:251, types/state.rs:446 -- each pairing the record with
         // the card's arrival in hand) and no legal move ever clears it, while
         // the one hand-removal site (apply_move.rs:1335) pushes straight to

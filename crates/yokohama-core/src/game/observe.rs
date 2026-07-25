@@ -355,8 +355,9 @@ mod tests {
 
     #[test]
     fn a_fulfilled_starting_order_is_no_longer_masked() {
-        // Rules: a fulfilled order is placed face-up (01-rules-reference.md:457)
-        // and never returns to hand (:464) -- the mask lifts permanently.
+        // Rules: a fulfilled order is placed face-up in front of you
+        // (01-rules-reference.md:457); no rule ever moves a completed order back
+        // to hand -- the mask lifts permanently.
         let (mut state, _rules) = keep_game(2, 7);
         let card = state.players[1].starting_order.expect("Keep shape stores it");
         state.players[1].order_cards_in_hand.retain(|&c| c != card);

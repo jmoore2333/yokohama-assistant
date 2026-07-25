@@ -27,7 +27,8 @@ use rand::SeedableRng;
 use rand_chacha::ChaCha8Rng;
 use yokohama_core::{
     apply_move_unchecked, check_invariants, finalize_setup, get_legal_moves, is_game_over, new_game,
-    observe, view_digest, BeliefSampler, GameConfig, GameState, PlayerId, Rules, StartingOrderChoice,
+    observe, run_honest_game, view_digest, AgentPathTally, BeliefSampler, GameConfig, GameState,
+    PlayerId, Rules, StartingOrderChoice, TrivialHonestAgent,
 };
 
 // Cross-pin (Task 6 carry-forward): the engine's honest-driver turn cap
@@ -319,7 +320,7 @@ fn observation_honesty_per_edit() {
 }
 
 #[test]
-#[ignore = "release gate (CLAUDE.md two-tier policy): 30 uncapped games with per-decision sampling; run with cargo test --release -p yokohama-core --test observation_honesty -- --ignored before merges/phase closes"]
+#[ignore = "release gate (CLAUDE.md two-tier policy): 30 uncapped games, sampling every 25th decision point; run with cargo test --release -p yokohama-core --test observation_honesty -- --ignored before merges/phase closes"]
 fn observation_honesty_release_sweep() {
     let rules = Rules::standard();
     let seeds: Vec<u64> = (0..10).collect();
@@ -329,6 +330,75 @@ fn observation_honesty_release_sweep() {
         assert!(n >= 500, "family {f} effective only {n} times (release floor 500)");
     }
     assert!(tally.deck_differing >= 2_000, "deck-differing samples: {}", tally.deck_differing);
+}
+
+/// Gate item 2 (spec §9 / §4-T7) at the RELEASE tier: the AGENT path, uncapped.
+///
+/// `observation_honesty_release_sweep` above drives moves by uniform-random on
+/// the true state -- it never touches `run_honest_game` or `TrivialHonestAgent`,
+/// so it is not evidence that the observe -> sample -> pick loop plays a full
+/// game. This test is: it runs `TrivialHonestAgent`s through `run_honest_game`
+/// across 2/3/4P x seeds 0..10, uncapped to completion, and asserts each game
+/// finished, named an end trigger, and ranked every seat.
+///
+/// NON-VACUITY (the load-bearing part -- parked finding agent.rs:92). A sweep
+/// that completed every game while the sampler silently fell back on every call
+/// would prove nothing about the belief path, because the fallback arm resolves
+/// to the same true legal list. The per-agent `AgentPathTally` makes the two
+/// arms observable. `sampled > 0` pins that the sampler arm actually drove
+/// decisions; `fallback == 0` pins that it drove ALL of them -- provable for
+/// these all-`Keep` games, where the sampled and true legal lists coincide
+/// (spec F5), so a nonzero fallback would be an F5 regression surfacing through
+/// the agent path.
+#[test]
+#[ignore = "release gate (CLAUDE.md two-tier policy): 30 uncapped agent-driven full games (run_honest_game + TrivialHonestAgent) at 2/3/4P x seeds 0..10; run with cargo test --release -p yokohama-core --test observation_honesty -- --ignored before merges/phase closes"]
+fn trivial_honest_agents_complete_full_games_release_sweep() {
+    let rules = Rules::standard();
+    let mut tallies: Vec<AgentPathTally> = Vec::new();
+    let mut games = 0u32;
+
+    for &players in &[2u8, 3, 4] {
+        for seed in 0..10u64 {
+            let stats = run_honest_game(seed, players, &rules, &mut |seat, _n| {
+                let agent =
+                    TrivialHonestAgent::new(seed.wrapping_mul(131).wrapping_add(seat.0 as u64));
+                tallies.push(agent.tally());
+                Box::new(agent)
+            })
+            .unwrap_or_else(|e| panic!("{players}P seed {seed} did not complete: {e}"));
+
+            assert_eq!(stats.players, players);
+            assert!(stats.moves_applied > 0, "{players}P seed {seed}: no moves applied");
+            assert!(
+                stats.trigger.is_some(),
+                "{players}P seed {seed}: a completed game names its end trigger"
+            );
+            assert_eq!(
+                stats.result.standings.len(),
+                players as usize,
+                "{players}P seed {seed}: standings must rank every seat"
+            );
+            games += 1;
+        }
+    }
+    assert_eq!(games, 30, "2/3/4P x seeds 0..10 is 30 games");
+
+    let sampled: u64 = tallies.iter().map(|t| t.sampled_pick_count()).sum();
+    let fallback: u64 = tallies.iter().map(|t| t.fallback_count()).sum();
+    eprintln!(
+        "agent-path release sweep: {games} games, {} agents, sampler-arm decisions {sampled}, fallback {fallback}",
+        tallies.len()
+    );
+    assert!(
+        sampled > 0,
+        "the belief-sampler arm never drove a decision across 30 games -- the sweep is vacuous"
+    );
+    assert_eq!(
+        fallback, 0,
+        "these games are all Keep-shaped, where the sampled and true legal lists coincide (F5); \
+         a nonzero fallback ({fallback}) means the sampler arm was skipped -- an F5 regression \
+         surfacing through the agent path"
+    );
 }
 
 /// Task 6 carry-forward: the honest game driver's non-termination cap
