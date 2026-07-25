@@ -14,6 +14,20 @@
 //! row before it discovers there is nothing to walk, so it is SLOWER than the
 //! frozen search exactly there, and the honest figure set has to show it.
 //!
+//! PRUNE RE-DERIVATION: NOT PERFORMED IN-REPO, stated rather than implied
+//! (spec §8 asked for it; T6 review). The shipped port IS the no-oracle shape
+//! (spec F3's `Prune::None` decision) — the saturation-oracle variants were
+//! scratch-prototype-only and were never ported, so there is nothing in-repo
+//! to A/B against. The F3 decision therefore still rests on the out-of-repo
+//! bench3.log data. What THIS example's bucket table bears on it: 83.6% of
+//! organic decision points sit at ≤5 labels — the regime where the scratch
+//! data had Adaptive ~3× faster — but the absolute per-call cost there is
+//! hundreds of nanoseconds paid once per decision point, so the trade is
+//! immaterial at organic scale, and the dense regime (where the no-oracle
+//! shape WINS) is where cost is real. Recorded in guidingpath's 3.1b ledger:
+//! flip-or-confirm requires porting an oracle variant — worth doing only if
+//! 3.3 profiling ever shows the label-poor regime mattering.
+//!
 //! **B. DENSE.** The four adversarial cells of `tests/action_source_equivalence.rs`'s
 //! release battery (labels 458 / 519 / 612 / 694, each an observation under that
 //! harness and never a ceiling — spec F5/L9), timed AND allocation-metered on
@@ -330,7 +344,8 @@ fn report_organic(points: &[Point], shape: &SweepShape) {
          build — every board row — before it can discover there is nothing to walk, so at\n\
          the zero-label end it is SLOWER than the frozen search, which returns almost\n\
          immediately. Recorded, NOT optimized: restricting the build to steppable rows is a\n\
-         named follow-up, deliberately not taken in a measurement task. The two allocation\n\
+         follow-up recorded in guidingpath's 3.1b ledger row (T7), deliberately not taken in\n\
+         a measurement task. The two allocation\n\
          columns are printed so the counting-allocator caveat can be CHECKED per bucket\n\
          instead of taken on trust — where both sides allocate nothing, the meter's tax\n\
          cannot be what separates them.)\n"

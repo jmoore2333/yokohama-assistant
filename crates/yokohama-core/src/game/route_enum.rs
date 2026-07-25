@@ -246,7 +246,7 @@ impl RouteGraph {
         let mut first_toll = [false; MAX_AREAS];
         for i in 0..MAX_AREAS {
             let area = AreaId::new(i as u8);
-            // The REAL `can_step_onto` (movement.rs:209, `pub(crate)` since
+            // The REAL `can_step_onto` (movement.rs:214, `pub(crate)` since
             // 3.1b T5), not a transcription of it: this table is the whole
             // assistant-chain rule for the search, so a hand-mirrored copy here
             // was a live drift channel against the frozen enumerator, which

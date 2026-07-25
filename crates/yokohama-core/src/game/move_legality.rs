@@ -394,7 +394,7 @@ fn opponent_president_on(state: &GameState, player: PlayerId, area: AreaId) -> b
 ///    re-entered — MIRRORING the frozen `validate_president_path`
 ///    (`apply_move.rs:375-421`), which cannot be called (private, frozen file);
 /// 4. each hop passes `can_step_onto` — the real predicate
-///    (`movement.rs:209`, `pub(crate)` for this), never a copy, so the
+///    (`movement.rs:214`, `pub(crate)` for this), never a copy, so the
 ///    assistant-chain rule cannot drift between the searches and this;
 /// 5. `destination` is a Possible Action Area (`is_possible_action_area_full`
 ///    via `is_possible_action_area_with_tech`). WITHOUT this the predicate
