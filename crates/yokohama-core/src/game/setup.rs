@@ -187,7 +187,14 @@ pub fn new_game(mut config: GameConfig, rules: &Rules, seed: u64) -> Result<Pend
 /// dummy. `arrival_order` is irrelevant (final scoring's count-tie is
 /// positional, not by arrival) and is left 0 without advancing
 /// `next_arrival_order`, so real placements are numbered exactly as before.
-pub(crate) fn place_setup_dummies(state: &mut GameState) {
+///
+/// PUBLIC (PR #5 §2.1): the supported primitive for making a hand-built 2P
+/// `GameState` valid outside `new_game` — it single-sources the 2P dummy
+/// placement so callers (test fixtures, and the Phase-3 state constructors the
+/// spec anticipates) never drift from the setup path. Without it a 2P state has
+/// an empty faith-7/space-4 that `check_invariants`' I9 clause rejects. No-op at
+/// 3/4 players.
+pub fn place_setup_dummies(state: &mut GameState) {
     if state.config.player_count != 2 {
         return;
     }
@@ -273,11 +280,20 @@ pub struct SetupObservations {
 /// Observed physical board arrangement (handled in reconcile_setup's board
 /// pass): area tile per grid cell and building-site card per grid cell,
 /// row-major over `board_gen::row_lengths` (the staggered pyramid). `sites`
-/// is None exactly where the tile carries no site (Canal).
+/// and `tokens` are None exactly where the tile carries no site/token (Canal).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ObservedBoard {
     pub tiles: Vec<crate::types::AreaType>,
     pub sites: Vec<Option<u8>>,
+    /// Observed FACE-UP 5-Power token face per grid cell (rulebook p.3 step 5:
+    /// tokens are shuffled face-down but placed FACE-UP on the 5-space), row-
+    /// major like `sites`, `None` exactly at the Canal cell. The whole field is
+    /// `None` when tokens were not observed (sim, or a pre-`SEMANTICS_REV`-3
+    /// record) — reconcile then relays the seeded assignment. `#[serde(default)]`
+    /// keeps older records deserializable (they then meet the semantics_rev
+    /// refusal, not a serde error).
+    #[serde(default)]
+    pub tokens: Option<Vec<Option<crate::types::FivePowerEffect>>>,
 }
 
 /// Every place an order card can sit inside a PendingSetup.
@@ -538,8 +554,9 @@ fn reconcile_board(
             None => {}
         }
     }
-    // Seeded token values, reassigned over the NEW non-Canal ids in order.
-    let tokens: Vec<Option<crate::types::FivePowerEffect>> =
+    // Seeded token values (the fallback relayed over the new non-Canal ids when
+    // tokens were not observed). Collected before the map is cleared below.
+    let seeded_tokens: Vec<Option<crate::types::FivePowerEffect>> =
         layout.five_power_tokens.values().copied().collect();
     // Re-type areas (grid positions are fixed: AreaId i is cell (i/cols, i%cols)).
     for (i, t) in board.tiles.iter().enumerate() {
@@ -552,15 +569,48 @@ fn reconcile_board(
             layout.building_sites.insert(AreaId::new(i as u8), rules.building_sites[*idx as usize].clone());
         }
     }
-    // Reassign tokens over new non-Canal ids.
+    // Reassign 5-Power tokens over the new non-Canal ids. Rulebook p.3 step 5:
+    // tokens are placed FACE-UP, so when the operator observed the arrangement
+    // (`board.tokens`) APPLY it; otherwise relay the seeded values (sim, or a
+    // record without token observations).
     layout.five_power_tokens.clear();
-    let mut token_iter = tokens.into_iter();
-    for (i, t) in board.tiles.iter().enumerate() {
-        if *t != AreaType::Canal {
-            layout.five_power_tokens.insert(
-                AreaId::new(i as u8),
-                token_iter.next().ok_or("token pool smaller than non-Canal cell count")?,
-            );
+    match &board.tokens {
+        Some(observed) => {
+            if observed.len() != n {
+                return Err("observed 5-Power token list length must match the tile list");
+            }
+            // A physical board carries a random N-of-20 subset, so the observed
+            // faces must be a sub-multiset of the canonical pool -- a data-entry
+            // tripwire that is sound only because at setup every token is face-up
+            // and fully accounted for (the claim-time reveal cannot count, which
+            // is why IT never rejects).
+            let mut pool = crate::game::board_gen::canonical_five_power_tokens();
+            for (i, (tok, t)) in observed.iter().zip(board.tiles.iter()).enumerate() {
+                match (tok, *t == AreaType::Canal) {
+                    (None, true) => {}
+                    (None, false) => return Err("missing 5-Power token on a non-Canal tile"),
+                    (Some(_), true) => return Err("Canal cell cannot carry a 5-Power token"),
+                    (Some(effect), false) => {
+                        let idx = pool
+                            .iter()
+                            .position(|p| p == effect)
+                            .ok_or("observed 5-Power tokens exceed the canonical token pool")?;
+                        pool.swap_remove(idx);
+                        layout.five_power_tokens.insert(AreaId::new(i as u8), Some(*effect));
+                    }
+                }
+            }
+        }
+        None => {
+            let mut token_iter = seeded_tokens.into_iter();
+            for (i, t) in board.tiles.iter().enumerate() {
+                if *t != AreaType::Canal {
+                    layout.five_power_tokens.insert(
+                        AreaId::new(i as u8),
+                        token_iter.next().ok_or("token pool smaller than non-Canal cell count")?,
+                    );
+                }
+            }
         }
     }
     // Rebuild adjacency: staggered brick-offset base plus the new Canal cell's
@@ -580,6 +630,50 @@ fn reconcile_board(
             layout.adjacency.entry(b).or_default().push(a);
             layout.canal_crossings.push((a, b));
         }
+    }
+    Ok(())
+}
+
+/// Validate a `GameConfig`'s internal consistency BEFORE any state is built
+/// from it. `new_game` feeds `player_count` straight to board generation's
+/// `row_lengths`, which `panic!`s outside 2..=4 (aborting the process on the
+/// live-tracking load path), and would otherwise silently honour an impossible
+/// `has_port_b`/`has_lab_b` flag or an out-of-range `start_player`. The load
+/// path (`Session::load`) runs this on a deserialized config so a tampered or
+/// corrupt save is a typed error, not a panic or a silent mis-load (§3.1, third
+/// review). Returns `Ok(())` if the config could have come from `new`/
+/// `for_player_count`, or a message naming the inconsistency.
+pub fn validate_config(config: &GameConfig) -> Result<(), String> {
+    if !(2..=4).contains(&config.player_count) {
+        return Err(format!("player_count {} is out of range (must be 2, 3, or 4)", config.player_count));
+    }
+    if config.player_colors.len() != config.player_count as usize {
+        return Err(format!(
+            "player_colors has {} entr{} but player_count is {}",
+            config.player_colors.len(),
+            if config.player_colors.len() == 1 { "y" } else { "ies" },
+            config.player_count,
+        ));
+    }
+    if config.start_player.0 as usize >= config.player_count as usize {
+        return Err(format!(
+            "start_player {} is not a seat in a {}-player game",
+            config.start_player.0, config.player_count,
+        ));
+    }
+    let expect_port_b = config.player_count >= 3;
+    if config.has_port_b != expect_port_b {
+        return Err(format!(
+            "has_port_b is {} but a {}-player game requires {expect_port_b} (Port B is a 3-4 player board)",
+            config.has_port_b, config.player_count,
+        ));
+    }
+    let expect_lab_b = config.player_count >= 4;
+    if config.has_lab_b != expect_lab_b {
+        return Err(format!(
+            "has_lab_b is {} but a {}-player game requires {expect_lab_b} (Lab B is a 4 player board)",
+            config.has_lab_b, config.player_count,
+        ));
     }
     Ok(())
 }
@@ -916,6 +1010,39 @@ mod tests {
     }
 
     #[test]
+    fn validate_config_accepts_the_canonical_configs_and_rejects_malformed_ones() {
+        // The three canonical configs pass.
+        for pc in [2u8, 3, 4] {
+            assert!(validate_config(&GameConfig::for_player_count(pc)).is_ok(), "pc {pc} must validate");
+        }
+
+        // player_count out of range (would panic in `row_lengths`).
+        let mut bad = GameConfig::for_player_count(2);
+        bad.player_count = 5;
+        assert!(validate_config(&bad).is_err());
+
+        // player_colors length disagrees with player_count.
+        let mut bad = GameConfig::for_player_count(3);
+        bad.player_colors.pop();
+        assert!(validate_config(&bad).is_err());
+
+        // start_player is not a real seat.
+        let mut bad = GameConfig::for_player_count(2);
+        bad.start_player = PlayerId::unchecked(2);
+        assert!(validate_config(&bad).is_err());
+
+        // has_port_b true at 2 players (Port B is a 3-4p board).
+        let mut bad = GameConfig::for_player_count(2);
+        bad.has_port_b = true;
+        assert!(validate_config(&bad).is_err());
+
+        // has_lab_b true below 4 players (Lab B is a 4p board).
+        let mut bad = GameConfig::for_player_count(3);
+        bad.has_lab_b = true;
+        assert!(validate_config(&bad).is_err());
+    }
+
+    #[test]
     fn new_game_is_seed_deterministic_and_decks_are_correct() {
         let rules = Rules::standard();
         let a = new_game(GameConfig::for_player_count(4), &rules, 42).unwrap();
@@ -1066,7 +1193,7 @@ mod tests {
             })
             .collect();
         let obs = SetupObservations {
-            board: Some(ObservedBoard { tiles: tiles.clone(), sites: sites.clone() }),
+            board: Some(ObservedBoard { tiles: tiles.clone(), sites: sites.clone(), tokens: None }),
             ..Default::default()
         };
         let r = reconcile_setup(pending, &obs, &rules).unwrap();
@@ -1126,7 +1253,7 @@ mod tests {
         let n = pending.state.board_layout.areas.len();
         // Wrong multiset: all Bank tiles.
         let obs = SetupObservations {
-            board: Some(ObservedBoard { tiles: vec![AreaType::Bank; n], sites: vec![Some(0); n] }),
+            board: Some(ObservedBoard { tiles: vec![AreaType::Bank; n], sites: vec![Some(0); n], tokens: None }),
             ..Default::default()
         };
         assert!(reconcile_setup(pending.clone(), &obs, &rules).is_err());
@@ -1135,7 +1262,7 @@ mod tests {
             .map(|i| pending.state.board_layout.areas[&AreaId::new(i as u8)].area_type)
             .collect();
         let obs = SetupObservations {
-            board: Some(ObservedBoard { tiles, sites: vec![Some(0); n] }),
+            board: Some(ObservedBoard { tiles, sites: vec![Some(0); n], tokens: None }),
             ..Default::default()
         };
         assert!(reconcile_setup(pending, &obs, &rules).is_err());
@@ -1156,7 +1283,7 @@ mod tests {
         // Every cell carries a distinct site (no Canal to skip).
         let sites: Vec<Option<u8>> = (0..n as u8).map(Some).collect();
         let obs = SetupObservations {
-            board: Some(ObservedBoard { tiles: tiles.clone(), sites: sites.clone() }),
+            board: Some(ObservedBoard { tiles: tiles.clone(), sites: sites.clone(), tokens: None }),
             ..Default::default()
         };
         let r = reconcile_setup(pending, &obs, &rules).unwrap();
@@ -1189,5 +1316,119 @@ mod tests {
         // (a) No Canal cell exists, so the `if let Some(ci)` branch in
         // reconcile_board is never taken — crossings stay empty.
         assert!(layout.canal_crossings.is_empty());
+    }
+
+    #[test]
+    fn reconcile_board_applies_observed_face_up_five_power_tokens() {
+        // Rulebook p.3 step 5: 5-Power tokens are placed FACE-UP, so the live
+        // wizard observes the real arrangement and reconcile must APPLY it, not
+        // relay the seeded fiction.
+        let rules = Rules::standard();
+        let pending = new_game(GameConfig::for_player_count(2), &rules, 123).unwrap();
+        let n = crate::game::board_gen::expected_tile_count(2); // 10 cells, no Canal
+        let tiles: Vec<AreaType> = (0..n)
+            .map(|i| pending.state.board_layout.areas[&AreaId::new(i as u8)].area_type)
+            .collect();
+        let sites: Vec<Option<u8>> = (0..n as u8).map(Some).collect();
+        // A valid sub-multiset of the 20-token pool (1c,1s,1t,1f,1y,5i),
+        // deliberately arranged so it cannot be mistaken for a seeded relay.
+        use crate::types::FivePowerEffect as E;
+        let faces = [
+            E::Copper(2), E::Silk(2), E::Tea(3), E::Seafood(3), E::Money(3),
+            E::ImportedGoods(1), E::ImportedGoods(1), E::ImportedGoods(1),
+            E::ImportedGoods(1), E::ImportedGoods(1),
+        ];
+        assert_eq!(faces.len(), n);
+        let obs = SetupObservations {
+            board: Some(ObservedBoard {
+                tiles,
+                sites,
+                tokens: Some(faces.iter().copied().map(Some).collect()),
+            }),
+            ..Default::default()
+        };
+        let layout = reconcile_setup(pending, &obs, &rules).unwrap().state.board_layout;
+        for (i, face) in faces.iter().enumerate() {
+            assert_eq!(
+                layout.five_power_tokens[&AreaId::new(i as u8)],
+                Some(*face),
+                "cell {i} must carry the OBSERVED token face, not a seeded one",
+            );
+        }
+    }
+
+    #[test]
+    fn reconcile_board_rejects_impossible_and_misplaced_tokens() {
+        let rules = Rules::standard();
+        use crate::types::FivePowerEffect as E;
+        let n = crate::game::board_gen::expected_tile_count(2); // 10 cells, no Canal
+        let base = || {
+            let pending = new_game(GameConfig::for_player_count(2), &rules, 123).unwrap();
+            let tiles: Vec<AreaType> = (0..n)
+                .map(|i| pending.state.board_layout.areas[&AreaId::new(i as u8)].area_type)
+                .collect();
+            let sites: Vec<Option<u8>> = (0..n as u8).map(Some).collect();
+            (pending, tiles, sites)
+        };
+        // (a) Impossible multiset: 3 Copper, but the canonical pool holds only 2.
+        let (pending, tiles, sites) = base();
+        let mut faces: Vec<Option<E>> = vec![Some(E::ImportedGoods(1)); n];
+        faces[0] = Some(E::Copper(2));
+        faces[1] = Some(E::Copper(2));
+        faces[2] = Some(E::Copper(2));
+        let obs = SetupObservations {
+            board: Some(ObservedBoard { tiles: tiles.clone(), sites: sites.clone(), tokens: Some(faces) }),
+            ..Default::default()
+        };
+        let err = reconcile_setup(pending, &obs, &rules).unwrap_err();
+        assert!(err.contains("pool"), "3 Copper must fail the sub-multiset check, got: {err}");
+        // (b) Wrong length.
+        let (pending, tiles, sites) = base();
+        let obs = SetupObservations {
+            board: Some(ObservedBoard { tiles, sites, tokens: Some(vec![Some(E::ImportedGoods(1)); n - 1]) }),
+            ..Default::default()
+        };
+        let err = reconcile_setup(pending, &obs, &rules).unwrap_err();
+        assert!(err.contains("length"), "a short token list must be rejected, got: {err}");
+        // (c) Missing token on a non-Canal cell (None where a face is required).
+        let (pending, tiles, sites) = base();
+        let mut faces: Vec<Option<E>> = vec![Some(E::ImportedGoods(1)); n];
+        faces[0] = None;
+        let obs = SetupObservations {
+            board: Some(ObservedBoard { tiles, sites, tokens: Some(faces) }),
+            ..Default::default()
+        };
+        let err = reconcile_setup(pending, &obs, &rules).unwrap_err();
+        assert!(err.contains("missing"), "a None on a non-Canal cell must be rejected, got: {err}");
+    }
+
+    #[test]
+    fn reconcile_board_rejects_a_token_on_the_canal_cell() {
+        let rules = Rules::standard();
+        use crate::types::FivePowerEffect as E;
+        let pending = new_game(GameConfig::for_player_count(3), &rules, 5).unwrap();
+        let n = crate::game::board_gen::expected_tile_count(3);
+        let tiles: Vec<AreaType> = (0..n)
+            .map(|i| pending.state.board_layout.areas[&AreaId::new(i as u8)].area_type)
+            .collect();
+        let sites: Vec<Option<u8>> = tiles
+            .iter()
+            .scan(0u8, |next, t| Some(if *t == AreaType::Canal { None } else { let s = *next; *next += 1; Some(s) }))
+            .collect();
+        // A valid 13-of-20 subset over the non-Canal cells, plus an (illegal)
+        // token planted on the Canal cell.
+        let mut subset = vec![E::ImportedGoods(1); 10];
+        subset.extend([E::Copper(2), E::Copper(2), E::Silk(2)]);
+        let mut it = subset.into_iter();
+        let faces: Vec<Option<E>> = tiles
+            .iter()
+            .map(|t| if *t == AreaType::Canal { Some(E::ImportedGoods(1)) } else { Some(it.next().unwrap()) })
+            .collect();
+        let obs = SetupObservations {
+            board: Some(ObservedBoard { tiles, sites, tokens: Some(faces) }),
+            ..Default::default()
+        };
+        let err = reconcile_setup(pending, &obs, &rules).unwrap_err();
+        assert!(err.contains("Canal"), "a token on the Canal cell must be rejected, got: {err}");
     }
 }

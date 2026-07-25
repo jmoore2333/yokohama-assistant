@@ -18,13 +18,14 @@ use crate::game::apply_move::apply_move;
 use crate::game::rules::Rules;
 use crate::game::semantics::{state_digest, SEMANTICS_REV};
 use crate::game::setup::{finalize_setup, new_game, reconcile_setup, SetupObservations, StartingOrderChoice};
-use crate::types::{AreaId, FivePowerEffect, GameConfig, GameState, Move, MoveError, OrderCardId, PlayerId, TechCardId};
+use crate::types::{GameConfig, GameState, Move, MoveError, OrderCardId, PlayerId, TechCardId};
 
 /// One entry in a `GameRecord`'s event log. `Move` is ordinary play; the
 /// `Reveal*` variants are live-tracking reconciliation events (design
 /// 2026-07-18 §5.2) — they mutate hidden-information fiction (deck order,
-/// hidden starting orders, face-down 5-Power tokens) and MUST be in the
-/// record so `replay` reproduces the reconciled state.
+/// hidden starting orders) and MUST be in the record so `replay` reproduces
+/// the reconciled state. (5-Power tokens are FACE-UP open information observed
+/// at setup, PR #5 §1.1 — they are never revealed, so there is no token variant.)
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum RecordedEvent {
     Move(Move),
@@ -34,8 +35,6 @@ pub enum RecordedEvent {
     RevealTechs(Vec<TechCardId>),
     /// A hidden starting order became public.
     RevealStartingOrder { player: PlayerId, card: OrderCardId },
-    /// A face-down 5-Power token was revealed at `area`.
-    RevealFivePowerToken { area: AreaId, effect: FivePowerEffect },
 }
 
 /// A complete, replayable record of one game.
@@ -177,7 +176,7 @@ impl std::error::Error for ReplayError {}
 /// Apply one `RecordedEvent` to `state`: `RecordedEvent::Move` applies via
 /// `apply_move`; each `Reveal*` variant applies via its matching `GameState`
 /// reconciliation method (`arrange_orders_on_top`, `arrange_techs_on_top`,
-/// `reveal_starting_order`, `reveal_five_power_token`). Returns the
+/// `reveal_starting_order`). Returns the
 /// underlying `MoveError`'s message on failure.
 ///
 /// This is the ONE fold implementation (Task 3 -- the a6faa87 lesson was
@@ -202,11 +201,6 @@ fn fold_one_event(state: &GameState, ev: &RecordedEvent, rules: &Rules) -> Resul
             RecordedEvent::RevealStartingOrder { player, card } => {
                 let mut s = state.clone();
                 s.reveal_starting_order(*player, *card)?;
-                s
-            }
-            RecordedEvent::RevealFivePowerToken { area, effect } => {
-                let mut s = state.clone();
-                s.reveal_five_power_token(*area, *effect)?;
                 s
             }
         })

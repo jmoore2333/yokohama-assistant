@@ -3,8 +3,8 @@
 
 use yokohama_core::*;
 use yokohama_core::game::actions::{
-    calculate_church_faith, copper_mine_reward, fishing_ground_reward, silk_mill_reward,
-    tea_plantation_reward,
+    bank_reward, calculate_church_faith, copper_mine_reward, eligible_customs_spaces_for_cost,
+    fishing_ground_reward, silk_mill_reward, tea_plantation_reward,
 };
 
 use crate::render;
@@ -110,7 +110,7 @@ pub fn tech_effect_text(effect: TechEffect) -> &'static str {
     match effect {
         TechEffect::Tram => "Teleport the President to any area without an opponent President",
         TechEffect::Stagecoach => "Move through opponent Presidents fee-free; with Postal System, stopping on one is free too",
-        TechEffect::PostalSystem => "May stop and act where opponent Presidents stand; still pay 1 Yen each unless you own Stagecoach",
+        TechEffect::PostalSystem => "May stop and act where opponent Presidents stand; pay each owner 1 Yen unless you own Stagecoach",
         TechEffect::Station => "Place the Station token: +1 Power for all there; free teleport, no President fee; your assistant needed",
         TechEffect::Gaslight => "+2 VP when you build a Shophouse",
         TechEffect::ElectricalLight => "+3 VP when you build a Trading House",
@@ -120,8 +120,8 @@ pub fn tech_effect_text(effect: TechEffect) -> &'static str {
         TechEffect::LanguageSchool => "+1 Yen when you complete an Order",
         TechEffect::PatentSystem => "+2 VP for each Technology you acquire after this one (never for this card itself)",
         TechEffect::LetterPressPrinting => "+1 Yen for each Technology you acquire after this one (never for this card itself)",
-        TechEffect::Winery => "+3 VP when you place an assistant on the Church",
-        TechEffect::Brickyard => "+4 VP when you place an assistant on Customs",
+        TechEffect::Winery => "+3 VP when you carry out the Church action and place an assistant",
+        TechEffect::Brickyard => "+4 VP when you carry out the Customs action and place an assistant",
         TechEffect::SystemOfStock => "At turn start, if you have 1 Yen or less, refill to 2 Yen",
         TechEffect::University => "Once per turn: pay 1 Yen to take an assistant from the Warehouse",
         TechEffect::Newspaper => "Placement Option A may use 4 different areas instead of 3",
@@ -280,7 +280,25 @@ fn describe_area_action(action: &AreaAction, state: &GameState, rules: &Rules) -
         AreaAction::ProduceSeafood => {
             production_preview(state, "Produce seafood", TradeGood::Seafood, fishing_ground_reward)
         }
-        AreaAction::Bank => "Take money at the Bank".to_string(),
+        AreaAction::Bank => {
+            // Yield preview (item 3, third review): 1 yen per power, capped at
+            // 5, at the current power -- the same `bank_reward` the engine pays,
+            // in the shape of the production/Church previews. Falls back to the
+            // bare verb when the acting area can't be determined.
+            match acting_area(state) {
+                Some(area) => {
+                    let power = calculate_power(state, state.current_player, area);
+                    let reward = bank_reward(power);
+                    let next = (power + 1..=6).find(|&q| bank_reward(q) > reward);
+                    let threshold = match next {
+                        Some(q) => format!(", next +{} at power {q}", bank_reward(q)),
+                        None => String::new(),
+                    };
+                    format!("Take money at the Bank (power {power} -> +{reward} yen{threshold})")
+                }
+                None => "Take money at the Bank".to_string(),
+            }
+        }
         AreaAction::Port { cards_taken, second_card_payment } => {
             let cards = cards_taken.iter().map(|id| format!("O{:02}", id.0)).collect::<Vec<_>>().join(", ");
             let mut s = format!("Port: take {cards}");
@@ -300,9 +318,14 @@ fn describe_area_action(action: &AreaAction, state: &GameState, rules: &Rules) -
             if *extra_imported > 0 {
                 s.push_str(&format!(", +{extra_imported} imported"));
             }
+            // Rulebook p.12: "the 5th Technology card and later each cost
+            // either an extra 2 Yen or 1 Imported Good token" -- the penalty
+            // fires for the 5th AND every later acquisition (engine:
+            // `fifth_tech_penalty_required`, owns 4+), so the label reads
+            // "5th+" rather than a fixed "5th" that misnames a 6th/7th buy.
             match fifth_tech_payment {
-                Some(true) => s.push_str(", 5th-tech fee: 2 yen"),
-                Some(false) => s.push_str(", 5th-tech fee: 1 imported good"),
+                Some(true) => s.push_str(", 5th+ tech fee: 2 yen"),
+                Some(false) => s.push_str(", 5th+ tech fee: 1 imported good"),
                 None => {}
             }
             s
@@ -383,10 +406,31 @@ fn describe_area_action(action: &AreaAction, state: &GameState, rules: &Rules) -
             }
         }
         AreaAction::Customs { imported_goods_paid } => {
-            if *imported_goods_paid == 1 {
+            let pay = if *imported_goods_paid == 1 {
                 "Customs: pay 1 imported good".to_string()
             } else {
                 format!("Customs: pay {imported_goods_paid} imported goods")
+            };
+            // Outcome preview (item 3, third review): the space(s) this payment
+            // lands on and their printed VP, read from the same
+            // `eligible_customs_spaces_for_cost` the engine places from --
+            // mirroring Church's faith preview, so the option shows what it
+            // gains, not only what it costs. Gated on an acting context (like
+            // the power-based previews above): outside one the option never
+            // appears in real play, and the base plain-words form stays intact.
+            let spaces = eligible_customs_spaces_for_cost(&state.customs_track, *imported_goods_paid);
+            match (acting_area(state), spaces.as_slice()) {
+                (Some(_), [s]) => format!("{pay} -> space {s} (+{} VP)", CustomsTrack::vp_reward(*s)),
+                (Some(_), many @ [_, _, ..]) => {
+                    let list = many
+                        .iter()
+                        .map(|s| format!("space {s} (+{} VP)", CustomsTrack::vp_reward(*s)))
+                        .collect::<Vec<_>>()
+                        .join(" or ");
+                    format!("{pay} -> choose {list}")
+                }
+                // No acting context, or (defensively) no eligible space.
+                _ => pay,
             }
         }
         AreaAction::Skip => "Take the area action, declining all optional parts".to_string(),
@@ -526,11 +570,19 @@ pub fn describe_move(mv: &Move, state: &GameState, rules: &Rules) -> String {
             format!("Move an assistant from {from_label} to {} (reward move)", area_label(state, *to))
         }
         Move::DeclineAssistantMove => "Decline the assistant move".to_string(),
+        // Show the space's FULL printed reward -- VP plus its movement rider
+        // (Church) or warehouse/yen rider (Customs) -- in the SAME vocabulary
+        // the `tracks` view prints, single-sourced from `render`'s reward-text
+        // helpers so the choice can never disagree with `tracks`. The rider is
+        // decision-relevant when the choice offers more than one space (Church
+        // faith 4/5 = 1move vs 6 = 2move; Customs cost-1 space 1 = 2wh vs
+        // space 2 = 2yen), and each space's placement queues that rider next
+        // (rulebook p.13/p.14).
         Move::ChooseChurchSpace { space } => {
-            format!("Place on Church faith-{space} space ({} VP)", ChurchTrack::vp_reward(*space))
+            format!("Place on Church faith-{space} space ({})", render::church_reward_text(*space))
         }
         Move::ChooseCustomsSpace { space } => {
-            format!("Place on Customs space {space} ({} VP)", CustomsTrack::vp_reward(*space))
+            format!("Place on Customs space {space} ({})", render::customs_reward_text(*space))
         }
         Move::ChooseRecoveryLeave { leave_one: false } => {
             "Recover all assistants from the action area".to_string()
@@ -595,9 +647,6 @@ pub fn describe_recorded_event(ev: &RecordedEvent, state: &GameState, rules: &Ru
         }
         RecordedEvent::RevealStartingOrder { player, card } => {
             format!("reveal starting order: P{} = O{:02}", player.0, card.0)
-        }
-        RecordedEvent::RevealFivePowerToken { area, effect } => {
-            format!("reveal 5-power token at A{:02}: {}", area.0, five_power_effect_label(*effect))
         }
     }
 }
@@ -687,13 +736,6 @@ mod tests {
             &rules,
         );
         assert_eq!(techs, "reveal techs: T03", "{techs}");
-        // The other two reveal kinds already carried their identity; keep it.
-        let token = describe_recorded_event(
-            &RecordedEvent::RevealFivePowerToken { area: AreaId::new(2), effect: FivePowerEffect::Copper(2) },
-            &state,
-            &rules,
-        );
-        assert!(token.contains("A02") && token.contains("2 copper"), "{token}");
     }
 
     #[test]
@@ -733,6 +775,41 @@ mod tests {
         assert!(ch.contains("1 copper -> 2 yen"), "{ch}");
     }
 
+    /// The Laboratory acquisition's `fifth_tech_payment` surcharge is the
+    /// rulebook p.12 penalty on "the 5th Technology card AND LATER" (engine:
+    /// `fifth_tech_penalty_required` fires once the player owns 4+ techs), so
+    /// it applies unchanged to the 6th, 7th, ... acquisition too. The label
+    /// must not hard-code the ordinal "5th" (which is false for a 6th/7th
+    /// buy) -- "5th+" names the surcharge accurately. NOTE: this is a
+    /// different surcharge from the board-position surcharge (`extra_yen`/
+    /// `extra_imported`, slots 3-6 = +1,+1,+2,+2); this test pins only the
+    /// 5th+ tech-CARD penalty label.
+    #[test]
+    fn laboratory_fifth_plus_tech_fee_is_not_hard_coded_to_the_fifth() {
+        let state = state_2p();
+        let rules = Rules::standard();
+        let yen = describe_move(
+            &Move::ExecuteAreaAction {
+                action: AreaAction::Laboratory {
+                    card_id: TechCardId(20), extra_yen: 0, extra_imported: 0, fifth_tech_payment: Some(true),
+                },
+            },
+            &state,
+            &rules,
+        );
+        assert!(yen.contains("5th+ tech fee: 2 yen"), "{yen}");
+        let imported = describe_move(
+            &Move::ExecuteAreaAction {
+                action: AreaAction::Laboratory {
+                    card_id: TechCardId(20), extra_yen: 0, extra_imported: 0, fifth_tech_payment: Some(false),
+                },
+            },
+            &state,
+            &rules,
+        );
+        assert!(imported.contains("5th+ tech fee: 1 imported good"), "{imported}");
+    }
+
     #[test]
     fn warehouse_take_moves_read_as_plain_words() {
         // Fresh game: no trading houses out yet, so the first take is 4 yen.
@@ -770,24 +847,54 @@ mod tests {
         assert_eq!(describe_move(&Move::DeclineAssistantMove, &state, &rules), "Decline the assistant move");
     }
 
+    /// The Church space choice shows the space's FULL printed reward -- VP
+    /// plus its movement rider -- in the SAME vocabulary the `tracks` view
+    /// prints, single-sourced from `render::church_reward_text`. A player
+    /// choosing among open faith spaces (faith-4 "3vp 1move" vs faith-6 "5vp
+    /// 2move") then compares on the whole reward, not VP alone. Rulebook p.13:
+    /// a Church placement grants the space's VP AND its movement-icon rider(s)
+    /// ("the reward of 5 Victory points and the ability to move 2 pawns").
     #[test]
-    fn church_space_choice_reads_as_plain_words_with_vp() {
+    fn church_space_choice_shows_vp_and_movement_rider() {
         let state = state_2p();
         let rules = Rules::standard();
         assert_eq!(
             describe_move(&Move::ChooseChurchSpace { space: 6 }, &state, &rules),
-            format!("Place on Church faith-6 space ({} VP)", ChurchTrack::vp_reward(6))
+            format!("Place on Church faith-6 space ({})", render::church_reward_text(6))
         );
+        assert_eq!(
+            describe_move(&Move::ChooseChurchSpace { space: 6 }, &state, &rules),
+            "Place on Church faith-6 space (5vp 2move)"
+        );
+        // The rider varies across the offered spaces, so it must appear.
+        assert!(describe_move(&Move::ChooseChurchSpace { space: 4 }, &state, &rules).contains("1move"));
     }
 
+    /// The Customs space choice likewise shows VP + the space's warehouse/yen
+    /// rider, single-sourced from `render::customs_reward_text` (matches
+    /// `tracks`). Decision-relevant: within one printed-cost pair the two
+    /// spaces differ on rider -- cost-1's space 1 ("5vp 2wh", warehouse takes)
+    /// vs space 2 ("4vp 2yen", yen) -- rulebook p.14. Spaces 5-7 carry no
+    /// rider, so those show VP alone.
     #[test]
-    fn customs_space_choice_reads_as_plain_words_with_vp() {
+    fn customs_space_choice_shows_vp_and_warehouse_or_yen_rider() {
         let state = state_2p();
         let rules = Rules::standard();
         assert_eq!(
             describe_move(&Move::ChooseCustomsSpace { space: 3 }, &state, &rules),
-            format!("Place on Customs space 3 ({} VP)", CustomsTrack::vp_reward(3))
+            format!("Place on Customs space 3 ({})", render::customs_reward_text(3))
         );
+        assert_eq!(
+            describe_move(&Move::ChooseCustomsSpace { space: 1 }, &state, &rules),
+            "Place on Customs space 1 (5vp 2wh)"
+        );
+        assert_eq!(
+            describe_move(&Move::ChooseCustomsSpace { space: 2 }, &state, &rules),
+            "Place on Customs space 2 (4vp 2yen)"
+        );
+        // Spaces 5-7 carry no rider: VP only.
+        let s5 = describe_move(&Move::ChooseCustomsSpace { space: 5 }, &state, &rules);
+        assert_eq!(s5, "Place on Customs space 5 (16vp)", "{s5}");
     }
 
     #[test]
@@ -1000,6 +1107,70 @@ mod tests {
         assert!(text.contains("+3 tea"), "{text}");
     }
 
+    /// Item 3 (third review): the Bank action option previews its yield (1 yen
+    /// per power, capped at 5) at the current power, mirroring the production
+    /// and Church previews -- it used to read only "Take money at the Bank",
+    /// showing no amount.
+    #[test]
+    fn bank_action_previews_the_yen_yield() {
+        let mut state = state_2p();
+        let rules = Rules::standard();
+        let area = *state
+            .board_layout
+            .areas
+            .iter()
+            .find(|(_, cfg)| cfg.area_type == AreaType::Bank)
+            .expect("a Bank area exists")
+            .0;
+        let cp = state.current_player;
+        state.players[cp.0 as usize].president_location = PresidentLocation::OnBoard(area);
+        state.players[cp.0 as usize].assistants.on_board.insert(area, 2);
+        state.players[cp.0 as usize].assistants.in_hand -= 2;
+        // President (1) + 2 assistants = power 3 -> +3 yen (bank_reward is linear to 5).
+        let text = describe_move(&Move::ExecuteAreaAction { action: AreaAction::Bank }, &state, &rules);
+        assert!(text.contains("power 3"), "{text}");
+        assert!(text.contains("+3 yen"), "{text}");
+    }
+
+    /// Item 3 (third review): the Customs action option previews the space(s)
+    /// it lands on and their printed VP, mirroring Church's faith preview -- it
+    /// used to name only the imported goods paid, previewing nothing gained.
+    /// (The applied delta already shows the imports spent and the placement;
+    /// this closes the OPTION-preview gap the other area actions don't have.)
+    #[test]
+    fn customs_action_previews_the_space_and_vp() {
+        let mut state = state_2p();
+        let rules = Rules::standard();
+        // The preview shows the outcome only in an acting context (like the
+        // power previews): put the President on the Customs area.
+        let area = *state
+            .board_layout
+            .areas
+            .iter()
+            .find(|(_, cfg)| cfg.area_type == AreaType::Customs)
+            .expect("a Customs area exists")
+            .0;
+        let cp = state.current_player;
+        state.players[cp.0 as usize].president_location = PresidentLocation::OnBoard(area);
+        // On a fresh 2P track, paying 1 imported good is eligible for the two
+        // cost-1 spaces (1 and 2); the dummy sits on space 4 (cost 2) and does
+        // not block them. vp_reward(1)=5, vp_reward(2)=4.
+        let text = describe_move(
+            &Move::ExecuteAreaAction { action: AreaAction::Customs { imported_goods_paid: 1 } },
+            &state,
+            &rules,
+        );
+        assert!(text.contains("pay 1 imported good"), "still names the cost: {text}");
+        assert!(
+            text.contains(&format!("+{} VP", CustomsTrack::vp_reward(1))),
+            "previews space 1's VP: {text}"
+        );
+        assert!(
+            text.contains(&format!("+{} VP", CustomsTrack::vp_reward(2))),
+            "previews space 2's VP: {text}"
+        );
+    }
+
     /// Task 12 correctness guard: Copper Mine's reward table is NOT 1:1
     /// with power (power 3 -> only 1 copper, per `copper_mine_reward`) --
     /// the preview must show the REAL yield, not echo the power number, or
@@ -1047,8 +1218,20 @@ mod tests {
     fn tech_effect_text_spot_checks() {
         assert_eq!(tech_effect_text(TechEffect::Exposition), "Immediately gain 10 VP when acquired");
         assert!(tech_effect_text(TechEffect::Gaslight).contains("Shophouse"), "{}", tech_effect_text(TechEffect::Gaslight));
-        assert!(tech_effect_text(TechEffect::Brickyard).contains("Customs"), "{}", tech_effect_text(TechEffect::Brickyard));
         assert!(tech_effect_text(TechEffect::University).contains("Warehouse"), "{}", tech_effect_text(TechEffect::University));
+
+        // Winery/Brickyard fire on the Church/Customs *area action* (which
+        // seats a pawn on the faith/space track), NOT the Placement step --
+        // rulebook p.15/p.16 "Whenever you carry out a Church/Customs action
+        // and place an Assistant pawn". "place an assistant on the Church"
+        // collided with the Placement step's own assistant placement, so the
+        // disambiguating word is "action": pin that both name it.
+        let winery = tech_effect_text(TechEffect::Winery);
+        assert!(winery.contains("+3 VP"), "{winery}");
+        assert!(winery.contains("Church action"), "Winery fires on the Church ACTION, not the Placement step (rulebook p.15): {winery}");
+        let brickyard = tech_effect_text(TechEffect::Brickyard);
+        assert!(brickyard.contains("+4 VP"), "{brickyard}");
+        assert!(brickyard.contains("Customs action"), "Brickyard fires on the Customs ACTION, not the Placement step (rulebook p.16): {brickyard}");
     }
 
     /// F2 (Codex adversarial review of PR #4): `tech_effect_text` is the
@@ -1085,13 +1268,20 @@ mod tests {
         );
 
         // Postal System buys the RIGHT to stop, not a free stop: rulebook
-        // p.15 "You must still pay these players (unless you also own the
-        // Stagecoach)" -- the engine prices that destination fee in
-        // `route_fee_vector`.
+        // p.15 "You must still pay THESE PLAYERS (unless you also own the
+        // Stagecoach)" -- the fee goes to the owner(s) of the President
+        // pawn(s) you stop on (the standing movement-fee recipient, 1 Yen
+        // each), not the bank. The engine prices that destination fee in
+        // `route_fee_vector`. The line must NAME that recipient, not just
+        // say a fee is owed.
         let postal = tech_effect_text(TechEffect::PostalSystem);
         assert!(
             postal.contains("fee") || postal.contains("pay"),
             "Postal System still pays the players it stops on (rulebook p.15): {postal}"
+        );
+        assert!(
+            postal.contains("owner"),
+            "Postal System's stop fee goes to the President's OWNER, and the line must name that (rulebook p.15 'pay these players'): {postal}"
         );
         assert!(
             postal.contains("Stagecoach"),

@@ -11,3 +11,16 @@ crates/yokohama-difftest/artifacts/
 # Local, untracked docs — e.g. the engineer primer emailed outside the repo
 # (kept on disk, deliberately not part of the tracked tree)
 docs/temp/
+
+# Per-developer agent/editor tooling. These are machine-local preferences, not
+# project contracts: which plugins and MCP servers a given workstation has
+# wired up, which permissions that operator has pre-approved, which editor is
+# in use. Committing them would churn shared history with one machine's setup.
+# The project's agent CONTRACTS live in CLAUDE.md (and AGENTS.md, which points
+# at it) — those ARE tracked.
+.agents/
+.codex/
+.vscode/
+.claude/settings.local.json
+.claude/skills/
+skills-lock.json

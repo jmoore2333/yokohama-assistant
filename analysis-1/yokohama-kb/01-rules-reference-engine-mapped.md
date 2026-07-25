@@ -451,8 +451,9 @@ on any nonzero receipt.
 
 ### 5.8 5-Power tokens
 
-20 tokens total (verified physical component count), one dealt per non-Canal area tile at setup,
-shuffled independently of the building-site deal:
+20 tokens total (verified physical component count), one dealt **face-up** per non-Canal area tile at
+setup (rulebook p.3 step 5 — shuffled face-down, placed face-up; the effect is public from the start),
+independently of the building-site deal:
 
 | Effect | Count | Amount |
 |---|---|---|

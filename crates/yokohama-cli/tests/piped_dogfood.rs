@@ -54,7 +54,8 @@ fn spawn_reader(child: &mut Child) -> Receiver<Vec<u8>> {
 }
 
 /// Accumulate output until the newest text ends in a prompt line (starts
-/// with `"> "`), or `deadline_hit` panics with the transcript tail.
+/// with `"> "`), or panic with the transcript tail once the 20s per-read
+/// deadline is hit.
 fn read_to_prompt(rx: &Receiver<Vec<u8>>, transcript: &mut Vec<u8>) -> String {
     let start = transcript.len();
     loop {
@@ -169,9 +170,16 @@ fn full_piped_2p_game_runs_plain_to_winner() {
             break;
         }
         let answer: String = if screen.contains("type an area id to toggle") {
-            // Option-A picker: with nothing selected, toggle one random
-            // area; once something is selected, place it.
-            if screen.contains("confirm places no assistants") {
+            // Option-A picker: with nothing selected, toggle one random area;
+            // once a VALID area is selected, place it. §3.1 made the picker keep
+            // the selection open when a toggled area is not a legal placement
+            // right now ("NOT currently offered") instead of exit-discarding on
+            // confirm, so escape that state with 'cancel' (the explicit exit) --
+            // exactly as the old exit-on-invalid-confirm let this random-play
+            // driver move on to a different move.
+            if screen.contains("NOT currently offered") {
+                "cancel".to_string()
+            } else if screen.contains("confirm places no assistants") {
                 let ids = area_ids(&screen);
                 assert!(!ids.is_empty(), "picker directory must list areas:\n{screen}");
                 ids[rng.gen_range(0..ids.len())].to_string()

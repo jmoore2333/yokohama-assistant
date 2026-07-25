@@ -66,14 +66,6 @@ impl ChurchTrack {
         }
     }
 
-    /// Count assistants placed by a specific player.
-    pub fn player_assistant_count(&self, player: PlayerId) -> u8 {
-        self.slots
-            .iter()
-            .filter(|slot| slot.map(|s| s.player) == Some(player))
-            .count() as u8
-    }
-
     /// Real-player assistants on the track — the end-game trigger's currency.
     /// EXCLUDES the 2-player setup dummy ([`PlayerId::DUMMY`]): a 2P game ends
     /// on the 4th REAL pawn (the printed 5-total being 4 real + 1 dummy;
@@ -205,14 +197,6 @@ impl CustomsTrack {
             4 => (0, 1),
             _ => (0, 0),
         }
-    }
-
-    /// Count assistants placed by a specific player.
-    pub fn player_assistant_count(&self, player: PlayerId) -> u8 {
-        self.slots
-            .iter()
-            .filter(|slot| slot.map(|s| s.player) == Some(player))
-            .count() as u8
     }
 
     /// Real-player assistants on the track — the end-game trigger's currency.

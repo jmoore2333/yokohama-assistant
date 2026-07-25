@@ -7,7 +7,7 @@
 use yokohama_core::*;
 
 use crate::input::parse_order_id;
-use crate::reveal::{claimed_token_area, lab_b_changed, refilled_port_slots, Pending};
+use crate::reveal::{lab_b_changed, refilled_port_slots, Pending};
 use crate::session::{ApplyError, TrackingMode};
 use crate::style::{paint, Tone};
 use crate::{describe, render, screen};
@@ -55,8 +55,9 @@ pub struct Repl {
     pub privacy: bool,
 }
 
-/// One line in the Movement phase's collapsed numbered list (design.md:67,
-/// destination-first). Outside Movement -- and inside it whenever a choice is
+/// One line in the Movement phase's collapsed numbered list
+/// (docs/plans/2026-07-18-phase2-cli-driver-design.md, destination-first).
+/// Outside Movement -- and inside it whenever a choice is
 /// queued -- every option is a bare `Direct`, so the list is byte-identical to
 /// the ungrouped `legal()` rendering; the two collapsing variants only ever
 /// appear in the Movement main list. The legal list stays the SOLE authority:
@@ -583,7 +584,8 @@ impl Repl {
     /// Build the numbered entries for the current prompt. Outside the Movement
     /// phase -- and inside it while a choice is queued -- every legal move is a
     /// bare `Direct` (byte-identical to the old ungrouped rendering). In the
-    /// Movement main list it collapses the family (design.md:67): one entry per
+    /// Movement main list it collapses the family
+    /// (docs/plans/2026-07-18-phase2-cli-driver-design.md): one entry per
     /// walk/teleport destination (a `Route` when that destination has >1 fee
     /// label, else the single move `Direct`), each `PlacePresident`/other move
     /// left as `Direct` in place, and the whole `ReturnPresidentToHand` family
@@ -609,7 +611,8 @@ impl Repl {
         legal.into_iter().map(PromptOption::Direct).collect()
     }
 
-    /// Movement main-list grouping (design.md:67, destination-first): one
+    /// Movement main-list grouping (destination-first,
+    /// docs/plans/2026-07-18-phase2-cli-driver-design.md): one
     /// entry per walk/teleport destination (a `Route` when >1 fee label),
     /// the retreat family folded to one `Retreat` line.
     fn group_movement(legal: Vec<Move>) -> Vec<PromptOption> {
@@ -1059,16 +1062,32 @@ impl Repl {
             }
             ["quit"] | ["q"] => StepOutput { text: "bye\n".to_string(), quit: true },
             ["confirm"] => {
-                let selected = match &self.sub {
-                    SubPrompt::PlaceA { selected, .. } => selected.clone(),
+                let (selected, max_areas) = match &self.sub {
+                    SubPrompt::PlaceA { selected, max_areas } => (selected.clone(), *max_areas),
                     _ => return self.out(String::new(), false),
                 };
-                self.sub = SubPrompt::None;
-                self.page = 0;
-                let candidate = Move::PlaceThreeAreas { placements: selected };
+                let candidate = Move::PlaceThreeAreas { placements: selected.clone() };
                 match self.find_placement_match(&candidate) {
-                    Some(mv) => self.commit(mv),
-                    None => self.out("Illegal: that placement is not currently available.\n".to_string(), false),
+                    Some(mv) => {
+                        self.sub = SubPrompt::None;
+                        self.page = 0;
+                        self.commit(mv)
+                    }
+                    // Keep the picker OPEN with the selection intact (item 1,
+                    // third review): dropping to the main list here discarded
+                    // everything the operator had toggled. Name the over-limit
+                    // case distinctly from a generic legal-list miss (item 2).
+                    None => {
+                        let msg = if selected.len() > max_areas {
+                            format!(
+                                "! too many areas — Option A places in at most {max_areas}; deselect {} then 'confirm', or 'cancel'.\n",
+                                selected.len() - max_areas,
+                            )
+                        } else {
+                            "! that selection is not currently available — adjust it or 'cancel'.\n".to_string()
+                        };
+                        self.out(msg, false)
+                    }
                 }
             }
             // The gate admits the DISPLAYED id form too (`A03`/`a03`, SPOT-1)
@@ -1082,6 +1101,29 @@ impl Repl {
                     Ok(a) => a,
                     Err(e) => return self.out(format!("! {e}"), false),
                 };
+                // Validate the id against the real placeable-area set at TOGGLE
+                // time (item 1, third review): a numeric-but-nonexistent id
+                // (`A99`, or any id past this board's last area) used to enter
+                // the selection unchecked and only fail at `confirm`, which then
+                // discarded the whole selection. Reject it here with its own
+                // message -- the same set the directory above lists -- leaving
+                // the selection untouched. (Over the per-turn area limit is NOT
+                // rejected here: max_areas is display guidance and the
+                // legal-list match at `confirm` stays the sole authority; the
+                // live preview and `confirm` name that case distinctly, item 2.)
+                let placeable = self
+                    .session
+                    .state()
+                    .board_layout
+                    .areas
+                    .get(&area)
+                    .is_some_and(|c| c.area_type.allows_placement());
+                if !placeable {
+                    return self.out(
+                        format!("! A{:02} is not a placement area on this board.\n", area.0),
+                        false,
+                    );
+                }
                 if let SubPrompt::PlaceA { selected, .. } = &mut self.sub {
                     match selected.iter().position(|&a| a == area) {
                         Some(i) => {
@@ -1332,11 +1374,16 @@ impl Repl {
                 // Live legality + fee preview: the CANDIDATE the current
                 // toggles assemble, checked against the same legal list
                 // `confirm` will match (display only -- the match at commit
-                // stays the sole authority).
+                // stays the sole authority). An over-limit selection is named
+                // distinctly from a generic miss (item 2, third review).
                 let candidate = Move::PlaceThreeAreas { placements: selected.clone() };
-                let verdict = match self.find_placement_match(&candidate) {
-                    Some(mv) => format!("legal — {}", describe::describe_move(&mv, state, rules)),
-                    None => "NOT currently offered (adjust the selection)".to_string(),
+                let verdict = if selected.len() > *max_areas {
+                    format!("too many areas (max {max_areas}) — deselect {}", selected.len() - max_areas)
+                } else {
+                    match self.find_placement_match(&candidate) {
+                        Some(mv) => format!("legal — {}", describe::describe_move(&mv, state, rules)),
+                        None => "NOT currently offered (adjust the selection)".to_string(),
+                    }
                 };
                 out.push_str(&format!("Selected: {selection_text}\n  -> {verdict}\n"));
                 out.push_str("> type an area id to toggle, 'confirm' to place, or 'cancel'\n");
@@ -1403,10 +1450,11 @@ impl Repl {
     /// Route `mv` through live-mode reveal detection (`TrackingMode::Live`
     /// only), then apply. A scratch-apply against the CURRENT state (never
     /// mutates -- the probe below calls `apply_move_unchecked`, which clones
-    /// like every arm in that module) reveals whether `mv` draws
-    /// from either deck or claims a 5-Power token; when it does, `mv` is
-    /// parked in `self.pending` and the operator is prompted instead of
-    /// applying immediately. Everything else -- including every move in
+    /// like every arm in that module) reveals whether `mv` draws from either
+    /// deck; when it does, `mv` is parked in `self.pending` and the operator is
+    /// prompted for the refilled card(s) instead of applying immediately. A
+    /// 5-Power token take needs no such prompt (its face is observed FACE-UP at
+    /// setup, §1.1). Everything else -- including every move in
     /// `TrackingMode::Simulation` -- applies at once via `finish_apply`.
     fn commit(&mut self, mv: Move) -> StepOutput {
         if matches!(self.session.mode, TrackingMode::Live) {
@@ -1429,12 +1477,10 @@ impl Repl {
                         self.pending = Pending::TechReveal { mv, board_b };
                         return self.out(self.reveal_prompt(), false);
                     }
-                    if matches!(mv, Move::Take5PowerToken) {
-                        if let Some(area) = claimed_token_area(self.session.state(), &scratch) {
-                            self.pending = Pending::TokenReveal { mv, area };
-                            return self.out(self.reveal_prompt(), false);
-                        }
-                    }
+                    // A 5-Power token take needs no reveal: the token faces are
+                    // FACE-UP open information observed at setup (§1.1), so the
+                    // layout already holds the true face and the take just reads
+                    // it -- it falls through to `finish_apply` like any move.
                 }
             }
         }
@@ -1510,8 +1556,19 @@ impl Repl {
             None => return self.out(format!("'{card_tok}' is not a valid order-card code.\n"), false),
         };
         match self.session.apply_standalone(RecordedEvent::RevealStartingOrder { player: seat, card }) {
-            Ok(_delta) => {
-                self.out(format!("Seat {} revealed O{:02} as their starting order.\n", seat.0, card.0), false)
+            Ok(delta) => {
+                // Surface the delta the same way `undo`/`apply` do (item 5,
+                // third review): it carries the state diff (the card entering
+                // the seat's hand) AND any autosave-failure warning, which this
+                // used to discard -- leaving a failed live-tracking autosave
+                // invisible on the composed frame (same bug as the `undo` I3
+                // fix). `StepOutput.text` is the only channel `main.rs` renders.
+                let mut text = format!("Seat {} revealed O{:02} as their starting order.\n", seat.0, card.0);
+                for line in delta {
+                    text.push_str(&line);
+                    text.push('\n');
+                }
+                self.out(text, false)
             }
             Err(e) => self.out(format!("Illegal: {e}\n"), false),
         }
@@ -1542,7 +1599,9 @@ impl Repl {
         let state = self.session.state();
         let rules = self.session.rules();
         let p = state.current_player();
-        let mut out = format!("─ Hand: {:?} ─────────────────────────\n", p.color);
+        // Shares render::section, like every other view (item 4), rather than
+        // hand-rolling its own dash run.
+        let mut out = render::section(&format!("Hand: {:?}", p.color));
         if self.privacy {
             let n = p.order_cards_in_hand.len();
             out.push_str(&format!(
@@ -1566,7 +1625,7 @@ impl Repl {
         if self.session.is_over() {
             self.final_score_table()
         } else {
-            let mut out = String::from("Score:\n");
+            let mut out = render::section("Score");
             for p in &self.session.state().players {
                 out.push_str(&format!(
                     "  {:?}: {}, {} yen\n",
@@ -1587,7 +1646,8 @@ impl Repl {
     fn final_score_table(&self) -> String {
         let result = self.session.final_result();
         let state = self.session.state();
-        let mut out = format!("WINNER: {}\n", render::color_name(state.player(result.winner).color));
+        let mut out = render::section("Final scores");
+        out.push_str(&format!("WINNER: {}\n", render::color_name(state.player(result.winner).color)));
         for s in &result.standings {
             let b = &s.breakdown;
             out.push_str(&format!(
@@ -1616,7 +1676,7 @@ impl Repl {
     fn log_tail(&self) -> String {
         let n = self.session.record().events.len();
         let start = n.saturating_sub(10);
-        let mut out = format!("log ({} of {} event(s)):\n", n - start, n);
+        let mut out = render::section(&format!("Log ({} of {} event(s))", n - start, n));
         for i in start..n {
             out.push_str(&format!("  {}: {}\n", i, self.session.event_description(i)));
         }
@@ -1717,7 +1777,7 @@ Commands:
   b <id> t <adj>  Placement Option B with the Telegram bonus: +1 assistant in an adjacent area
   m <from> <to>   resolve a pending assistant-move choice (<from> is 'hand' or an area id)
   r [id[:n]]...   Movement Option B: retreat the President, recovering all (bare id) or n assistants per area ('r' alone recovers none)
-  board           show the area grid and its legend (* unclaimed 5-Power, [St] Station, · empty build slot, ~ Canal toll)
+  board           show the area grid and its legend (5-Power token faces, [St] Station, · empty build slot, ~ Canal toll)
   players         show each player's resources, hand, tech, tokens, President
   ports           show both Port boards and the order-deck size
   labs            show both Laboratory boards (each tech's country + effect) and the tech-deck size
@@ -1782,8 +1842,8 @@ mod tests {
     }
 
     /// A REPL over a fresh `n`-player simulation (n in 2..=4). Used for the
-    /// board-width note (S3): 3p/4p boards render wider than 100 columns,
-    /// which the 2p board (86 columns) never does.
+    /// board-width note (S3): only the 4p board renders wider than 100 columns,
+    /// which the 3p (90) and 2p (72) boards never do.
     fn repl_np(n: u8, seed: u64) -> Repl {
         Repl::new(
             Session::new_sim(
@@ -1870,7 +1930,7 @@ mod tests {
         screen::force(false);
         let out = r.step("board");
         assert!(out.text.contains('┌'), "plain mode has no frame; `board` is the only board:\n{}", out.text);
-        assert!(out.text.contains("* = unclaimed 5-Power token"), "{}", out.text);
+        assert!(out.text.contains("5-Power tokens (face-up)"), "{}", out.text);
 
         // Same in a composed session whose user turned the screen off.
         let mut r2 = repl_np(4, 7);
@@ -1899,12 +1959,12 @@ mod tests {
     }
 
     /// Item 7 (board connectivity): every `board` render carries a one-line
-    /// legend documenting the `*` = unclaimed 5-Power token mark.
+    /// legend documenting the face-up 5-Power token letters.
     #[test]
     fn board_command_prints_the_five_power_legend() {
         let mut r = repl_2p(4);
         let out = r.step("board");
-        assert!(out.text.contains("* = unclaimed 5-Power token"), "{}", out.text);
+        assert!(out.text.contains("5-Power tokens (face-up)"), "{}", out.text);
     }
 
     #[test]
@@ -2044,6 +2104,7 @@ mod tests {
     /// single-card registry never trips them.
     fn newspaper_placement_fixture() -> Repl {
         let mut state = create_test_game_state(2);
+        place_setup_dummies(&mut state); // I9 (PR #5 §2.1): a valid 2P state carries the setup dummy
         state.turn_phase = TurnPhase::Placement;
 
         let mut areas = std::collections::BTreeMap::new();
@@ -2168,6 +2229,93 @@ mod tests {
             out.text.contains("WARNING: autosave failed"),
             "the autosave failure must reach the screen, not stderr: {}",
             out.text
+        );
+    }
+
+    /// A live Repl where player 1's starting order was dealt but kept hidden
+    /// (`Unknown`), returned with the card that was dealt so a test can reveal
+    /// it. Seed 21 is the same fixture `session::tests`'
+    /// `apply_standalone_reveals_hidden_starting_order_in_a_live_session` uses.
+    fn repl_live_hidden(seed: u64) -> (Repl, OrderCardId) {
+        let rules = Rules::standard();
+        let config = GameConfig::for_player_count(2);
+        let hidden = new_game(config.clone(), &rules, seed).unwrap().deals[1][0];
+        let session = Session::new_live(
+            config,
+            seed,
+            SetupObservations::default(),
+            vec![StartingOrderChoice::Keep(0), StartingOrderChoice::Unknown],
+            rules,
+        )
+        .unwrap();
+        (Repl::new(session), hidden)
+    }
+
+    /// Item 5 (third review): `reveal <seat> <card>` discarded the delta
+    /// `apply_standalone` returns, swallowing the autosave-failure warning it
+    /// carries -- the same family as the already-fixed `undo` delta bug (I3).
+    /// The warning must reach the screen (`StepOutput.text`, the only channel
+    /// `main.rs` folds into a frame), not stderr where the composed frame
+    /// erases it.
+    #[test]
+    fn reveal_cmd_surfaces_the_autosave_failure_warning() {
+        let (mut r, hidden) = repl_live_hidden(21);
+        // A save target that cannot be written: its parent directory is absent.
+        r.session.save_path =
+            Some(std::env::temp_dir().join("yokohama_reveal_no_such_dir").join("game.json"));
+        let out = r.step(&format!("reveal 1 O{:02}", hidden.0));
+        assert!(out.text.contains("revealed"), "the explicit confirmation still prints: {}", out.text);
+        assert!(
+            out.text.contains("WARNING: autosave failed"),
+            "the autosave failure must reach the screen, not stderr: {}",
+            out.text
+        );
+    }
+
+    /// The other half: a WRITABLE target reveals with no warning -- the
+    /// warning is a real failure report, not decoration on every reveal -- and
+    /// the surfaced delta shows the revealed card entering the seat's hand.
+    #[test]
+    fn reveal_cmd_with_a_writable_target_reports_no_warning() {
+        let (mut r, hidden) = repl_live_hidden(21);
+        let path = std::env::temp_dir().join(format!("yokohama_reveal_ok_{}.json", std::process::id()));
+        r.session.save_path = Some(path.clone());
+        let out = r.step(&format!("reveal 1 O{:02}", hidden.0));
+        std::fs::remove_file(&path).ok();
+        assert!(!out.text.contains("autosave failed"), "a successful autosave must stay quiet: {}", out.text);
+        assert!(out.text.contains(&format!("hand +O{:02}", hidden.0)), "the delta is surfaced: {}", out.text);
+    }
+
+    /// Item 4 (third review): every state VIEW opens with the same `─ Title ─`
+    /// rule header. The render.rs pinning test enumerates only the six views
+    /// that live there, so it structurally could not see the four that live in
+    /// repl.rs (`score`/`log`/`final_score`/`hand`). This drives every view
+    /// through the actual `VIEW_MENU` dispatch -- so it cannot miss one that is
+    /// in the menu -- plus the game-over `final_score` table (which is not a
+    /// menu row, being `score`'s game-over form), and holds the shared header
+    /// on all of them. The board grid is its own layout, not a `─ Title ─`
+    /// view, and is skipped.
+    #[test]
+    fn all_state_views_share_the_rule_header_style() {
+        let mut r = repl_2p(4);
+        for (label, render_fn) in Repl::VIEW_MENU.iter() {
+            if label.starts_with("Board") {
+                continue;
+            }
+            let out = render_fn(&mut r);
+            assert!(
+                out.text.starts_with("─ "),
+                "view '{label}' must open with a `─ Title ─` rule header, got: {:?}",
+                out.text.lines().next().unwrap_or("")
+            );
+        }
+        // `final_score` is not a menu row (it is `score`'s game-over form);
+        // pin it directly. `final_score_table` scores the current state, so it
+        // renders on a live game without needing to drive it to a winner.
+        assert!(
+            r.final_score_table().starts_with("─ "),
+            "final_score must open with a rule header, got: {:?}",
+            r.final_score_table().lines().next().unwrap_or("")
         );
     }
 
@@ -2614,6 +2762,7 @@ mod tests {
     fn repl_with_any_good_cascade() -> Repl {
         let rules = Rules::empty_for_tests();
         let mut state = create_test_game_state(2);
+        place_setup_dummies(&mut state); // I9 (PR #5 §2.1): a valid 2P state carries the setup dummy
         push_choice(&mut state, PendingChoice::AnyGood, &rules);
         push_choice(&mut state, PendingChoice::AnyGood, &rules);
         Repl::new(Session::for_test_from_state(state, rules))
@@ -3045,7 +3194,7 @@ mod tests {
         players[1].president_location = PresidentLocation::OnBoard(a2); // Blue blocks A2
         players[1].money = 10;
 
-        let state = GameState {
+        let mut state = GameState {
             config,
             board_layout,
             players,
@@ -3078,6 +3227,7 @@ mod tests {
             trigger_player: None,
             pending_choices: Vec::new(),
         };
+        place_setup_dummies(&mut state); // I9 (PR #5 §2.1): a valid 2P state carries the setup dummy
         Repl::new(Session::for_test_from_state(state, Rules::empty_for_tests()))
     }
 
@@ -3106,7 +3256,7 @@ mod tests {
             PlayerState::new(PlayerId::new(1), PlayerColor::Blue, false),
         ];
         players[0].president_location = PresidentLocation::OnBoard(a0); // on board, but no assistants anywhere
-        let state = GameState {
+        let mut state = GameState {
             config,
             board_layout,
             players,
@@ -3139,6 +3289,7 @@ mod tests {
             trigger_player: None,
             pending_choices: Vec::new(),
         };
+        place_setup_dummies(&mut state); // I9 (PR #5 §2.1): a valid 2P state carries the setup dummy
         Repl::new(Session::for_test_from_state(state, Rules::empty_for_tests()))
     }
 
@@ -3515,26 +3666,57 @@ mod tests {
         assert!(!out.text.contains("Commands:"), "help must not render mid-picker: {}", out.text);
     }
 
-    /// An over-long selection (4 areas without Newspaper) survives toggling
-    /// -- the picker warns live -- and `confirm` gets the standard
-    /// legal-list rejection, applying nothing (the match stays the sole
-    /// authority; the picker has no rules logic of its own).
+    /// Item 1 (third review): a numeric-but-nonexistent area id (A99 on a
+    /// 10-area board) is rejected at TOGGLE time against the real placeable
+    /// set, with its OWN message, and the existing selection is untouched --
+    /// it never enters the selection to be discarded at `confirm`.
     #[test]
-    fn place_a_picker_overlong_selection_is_rejected_at_confirm() {
+    fn place_a_picker_rejects_a_nonexistent_area_id_at_toggle_and_keeps_selection() {
+        let mut r = repl_2p(4);
+        r.step("0");
+        r.step("0"); // enter picker
+        r.step("3"); // a real area
+        // Fixture sanity: the 2P board has 10 areas (ids 0-9), so A99 is off-board.
+        assert_eq!(r.session.state().board_layout.areas.len(), 10, "2P board is 10 areas");
+        let out = r.step("99"); // A99: parses as a u8, but not an area on this board
+        assert!(out.text.contains("not a placement area"), "bad id gets its own message: {}", out.text);
+        // The prior selection survives, and A99 never entered it: the Selected
+        // line is exactly A03 (the message above echoes "A99", so a bare
+        // !contains("A99") would be wrong -- pin the Selected line instead).
+        assert!(out.text.contains("Selected: A03\n"), "the prior selection survives untouched: {}", out.text);
+    }
+
+    /// Item 2 (third review): an over-limit selection (4 areas without
+    /// Newspaper) survives toggling -- max_areas is display guidance, the
+    /// legal-list match stays the sole authority -- but it now gets its OWN
+    /// message (distinct from the bad-id message) in both the live preview and
+    /// at `confirm`, and `confirm` KEEPS the selection open (item 1) instead
+    /// of discarding it to the main list. Deselecting one then commits.
+    #[test]
+    fn place_a_picker_over_limit_has_its_own_message_and_keeps_the_selection() {
         let mut r = repl_2p(4);
         r.step("0");
         r.step("0"); // enter picker
         r.step("3");
         r.step("5");
         r.step("6");
-        let out = r.step("7");
-        assert!(out.text.contains("NOT currently offered"), "live warning expected: {}", out.text);
+        let out = r.step("7"); // 4th area, over the max of 3
+        assert!(out.text.contains("too many areas"), "live preview names over-limit distinctly: {}", out.text);
+        assert!(!out.text.contains("not a placement area"), "distinct from the bad-id message: {}", out.text);
+
         let events_before = r.session.record().events.len();
         let out = r.step("confirm");
-        assert!(out.text.contains("not currently available"), "{}", out.text);
+        assert!(out.text.contains("too many areas"), "confirm names over-limit distinctly: {}", out.text);
         assert_eq!(r.session.record().events.len(), events_before, "nothing applies");
-        // Back on the main grouped list.
-        assert!(out.text.contains("Option A —"), "{}", out.text);
+        // Picker STAYS OPEN with the selection intact (item 1: don't discard).
+        assert!(out.text.contains("Selected: A03, A05, A06, A07"), "selection kept on rejection: {}", out.text);
+
+        // Deselecting one returns to a legal 3-area placement, which commits.
+        r.step("7");
+        let out = r.step("confirm");
+        assert!(!out.text.to_lowercase().contains("illegal"), "{}", out.text);
+        assert!(!out.text.contains("too many"), "{}", out.text);
+        assert_eq!(r.session.record().events.len(), events_before + 1, "the 3-area placement applies");
     }
 
     /// Option-B picker: an id-addressed area list with per-area fee notes;

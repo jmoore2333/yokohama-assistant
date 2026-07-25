@@ -1,5 +1,17 @@
 # Phase-3 entry backlog — Codex PR-#1 review, verified triage (2026-07-19)
 
+> ## ⚠️ STATUS: HISTORICAL — CONSUMED, NOT AN OPEN BACKLOG
+>
+> **Banner added 2026-07-25.** Every finding in this triage was dispositioned across PRs #2–#5;
+> the engine-authority and CLI-depth work it specified LANDED on 2026-07-19 and after. The
+> sentence below calling this "the REQUIRED spec input for the next dated plan" was true when
+> written and is now spent — the plan it fed was
+> `docs/plans/2026-07-19-engine-authority-cli-depth-plan.md`.
+>
+> Its one still-relevant note is about `AGENTS.md`, which is now TRACKED and is a pointer at
+> CLAUDE.md rather than an untracked duplicate (2026-07-25). Live status for anything here lives
+> in `guidingpath.md`'s decision log. Kept for provenance.
+
 Codex reviewed PR #1 (choice-encoding) against the bar Jeremy set for the next phase: the rules engine must be authoritative enough to train on (no bad data), and the ASCII CLI must be good enough that playtesting is pleasant. Every load-bearing claim below was independently verified against source by the orchestrator (session 2026-07-19); verdicts are recorded per finding. **This document is the REQUIRED spec input for the next dated plan** (brainstorm → design → plan per repo convention), exactly as `2026-07-18-phase2-entry-backlog.md` was for choice encoding.
 
 Jeremy's dispositions (2026-07-19): PR #1 merged as-is (no finding is a regression introduced by the branch); clippy adopted as a gate (findings fixed on the branch pre-merge); rustfmt deliberately DEFERRED (1,049-diff-block whole-repo reformat — revisit at a phase boundary); AGENTS.md's four stale rules corrected (Jeremy-authorized edit of his untracked file).

@@ -1,7 +1,16 @@
 # PR #5 — Pre-Phase-3 hardening + live-tracking observation gaps
 
-**Status:** SPEC — written 2026-07-21 at the close of PR #4 (`efed61f`), from the third review's
-deferred items plus two findings the PR #4 fix waves surfaced themselves.
+> ## ✅ STATUS: EXECUTED — every section of this spec LANDED on `pr5-pre-phase3-hardening`
+>
+> **Banner added 2026-07-25.** §1.1 (face-up 5-Power tokens, SEMANTICS_REV 2→3), §1.2 (2P dummy
+> board check), §1.3 (setup-observation sweep — exactly two gaps, no third), §2 (I9 + I10), and
+> §3 (triaged minors) are all implemented and merged into the branch. All 7 release gates and all
+> 4 debug suites are green at head. This file is now the RECORD of what was specified, not a work
+> queue — read it to understand *why* something is the way it is, not to find something to do.
+
+**Status:** SPEC (EXECUTED — see the banner above) — written 2026-07-21 at the close of PR #4
+(`efed61f`), from the third review's deferred items plus two findings the PR #4 fix waves
+surfaced themselves.
 **Predecessor:** PR #4 (staggered topology, canal any-to-any, finding D1, CLI v1-beta frontend,
 SEMANTICS_REV 2). Everything below was deliberately *not* folded into it — see §0 for the rule used.
 **Successor:** Phase 3 (computer-player ladder). This PR is the last engineering before that spec.

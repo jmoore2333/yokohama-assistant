@@ -3,11 +3,16 @@
 A Rust engine, live-game CLI tracker, and verification stack for the board game **Yokohama**
 (Hisashi Hayashi, 2016), built toward a computer player that provably plays to win.
 
+> [!IMPORTANT]
+> **Testing the CLI? Start with the [HTML CLI guide](docs/cli-guide.html).** Ready-to-run
+> Ubuntu and Apple Silicon macOS builds are on the [Releases page](https://github.com/jmoore2333/yokohama-assistant/releases);
+> each download also includes an offline copy of the guide.
+
 **Priority order:** 1) engine-validated move-by-move tracking of live games via CLI →
 2) a computer player → 3) computer vision / AR assist (deferred; the original 2025 AR-first
 vision lives in `docs/plans/2025-12-07-yokohama-assistant-design.md`).
 
-## Status (2026-07-20)
+## Status (2026-07-22)
 
 The engine plays complete, rules-correct games at 2–4 players and has been verified
 **differentially**: an independently-authored rules oracle — written from the rulebook and
@@ -23,17 +28,42 @@ surfaced with owner rulings. Full report:
 **Next:** live-track a physical game start to finish (the Phase-2 gate), then Phase 3 — the
 computer player, with the differential harness as its standing regression net.
 
+PR #5 adds the last pre-gate setup corrections and hardening. Its CLI is ready for tester use;
+start with the linked HTML guide and report any table/CLI mismatch.
+
 ## Workspace crates
 
 | Crate | What it is |
 |---|---|
 | `yokohama-core` | The engine: serde-serializable `GameState` (history-free, cheap to clone for search), pure `get_legal_moves` / checked `apply_move`, seeded setup, `GameRecord` save/replay stamped with `rules_hash`, `semantics_rev`, and a terminal-state digest verified by `replay_strict` |
-| `yokohama-cli` | The game driver: setup wizard → REPL; simulated games today, live-table tracking machinery (reveal choreography, reconciliation, desync tripwire), save/load/undo, TTY-colored board |
+| `yokohama-cli` | The game driver: setup wizard → REPL; simulated games and live-table tracking (reconciliation, desync tripwire), save/load/undo, TTY-colored board |
 | `yokohama-oracle` | The independent referee: legal-move enumeration, final scoring + tie-break, and a prune-free route reference, authored from the rules sources under an audited independence rule (types-only dependency on the engine) |
 | `yokohama-difftest` | The harness comparing engine vs oracle: per-decision-point sweeps under two policies, terminal scoring comparison, three-way route-pruning check, self-contained divergence artifacts + `repro` tool |
 | `gen-data` | YAML → Rust generator for the verified card/site data (never hand-edit `game/data.rs`) |
 
-## Quickstart
+## Download and run
+
+Download the archive for your system from
+[GitHub Releases](https://github.com/jmoore2333/yokohama-assistant/releases):
+
+- `ubuntu-x86_64` is a static binary for 64-bit Ubuntu Linux.
+- `macos-apple-silicon` is optimized for Apple Silicon Macs (M1 or newer).
+
+Extract the archive, open a terminal in the extracted directory, and run:
+
+```bash
+./yokohama-cli
+```
+
+The macOS build is ad-hoc signed rather than notarized. If macOS quarantines it, approve it in
+**System Settings → Privacy & Security**, or run
+`xattr -d com.apple.quarantine ./yokohama-cli` before launching it.
+
+For the full walkthrough, setup instructions, commands, and troubleshooting, use the
+**[HTML CLI guide](docs/cli-guide.html)**. The same guide is included as `CLI-GUIDE.html` in each
+release archive.
+
+## Build from source
 
 ```bash
 # prerequisites: Rust via rustup, then from the repo root:
@@ -46,10 +76,12 @@ Fastest playable game: answer the wizard `sim`, `2`, `red`, `blue`, `0`, Enter t
 `confirm`. At the prompt: type an option number, or use the direct grammars — placement
 `a 3 7 9` / `b 5`, assistant moves `m 4 7`, retreats `r 3:2 5:1`. Views: `board`, `sites`,
 `goals`, `tracks`, `labs`, `log`, `help`; plus `undo`, `save`, `q`. Full tester guide:
-[`docs/cli-guide.md`](docs/cli-guide.md).
+**[HTML](docs/cli-guide.html)** or [Markdown](docs/cli-guide.md).
 
 **Gates.** Per-edit (debug): the four crate suites + `cargo clippy --workspace --all-targets
--- -D warnings`, all zero-warning. Pre-merge (release, ~80s total):
+-- -D warnings`, all zero-warning. Pre-merge: all **seven** release gates below (~87s total,
+measured 2026-07-25 at PR #5 head). This table is the binding list — if it and CLAUDE.md's
+two-tier policy ever disagree, they are both wrong until reconciled.
 
 | Gate | Command | Proves |
 |---|---|---|
@@ -58,6 +90,8 @@ Fastest playable game: answer the wizard `sim`, `2`, `red`, `blue`, `0`, Enter t
 | Differential | `cargo test --release -p yokohama-difftest --test differential -- --ignored` | engine ≡ oracle on every legal-move set |
 | Routes3 | `cargo test --release -p yokohama-difftest --test routes3_differential -- --ignored` | route pruning ≡ prune-free reference |
 | Scoring | `cargo test --release -p yokohama-difftest --test scoring_differential -- --ignored` | final scores + tie-break ≡ oracle |
+| Worst-case routes | `cargo test --release -p yokohama-difftest --test routes3_worstcase -- --ignored` | maximal 17-area interior-Canal K6 battery (bound 519) + route-label key purity |
+| Piped dogfood | `cargo test --release -p yokohama-cli --test piped_dogfood -- --ignored` | the shipped binary plays a full 2P game over pipes to a winner, zero ESC bytes |
 
 ## Data provenance (cards, boards, tokens)
 

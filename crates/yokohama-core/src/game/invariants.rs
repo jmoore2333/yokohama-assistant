@@ -121,6 +121,51 @@ pub fn check_invariants(state: &GameState, rules: &Rules) -> Result<(), String> 
         }
     }
 
+    // I9 (PR #5 §2.1): the 2-player setup dummy (`PlayerId::DUMMY`) occupies
+    // EXACTLY Church faith-7 and Customs space-4, and only at 2 players. Since
+    // finding D1 the engine reads "is this a 2P game" off `slots[3].is_some()`
+    // while the oracle reads it off `player_count == 2`; without this clause a
+    // 2P state with an empty faith-7 (or a dummy loose on some other slot, or a
+    // stray dummy at 3/4 players) is representable and the two crates silently
+    // disagree. No production path builds one -- every setup path funnels
+    // through `place_setup_dummies` and no legal move ever vacates or adds a
+    // track dummy -- but Phase 3 constructs states outside `new_game`, so this
+    // moves the guarantee into the per-edit, mutation-proven, fuzz-exercised net.
+    {
+        let church_dummy = crate::types::ChurchTrack::faith_to_index(7)
+            .expect("faith 7 is on the Church track");
+        let customs_dummy = crate::types::CustomsTrack::space_to_index(4)
+            .expect("space 4 is on the Customs track");
+        let is_two_player = state.config.player_count == 2;
+        // Presence: at 2 players the two fixed spaces MUST carry the dummy.
+        if is_two_player {
+            if !state.church_track.slots[church_dummy].is_some_and(|s| s.player.is_dummy()) {
+                return Err("2-player state missing the setup dummy on Church faith-7".to_string());
+            }
+            if !state.customs_track.slots[customs_dummy].is_some_and(|s| s.player.is_dummy()) {
+                return Err("2-player state missing the setup dummy on Customs space-4".to_string());
+            }
+        }
+        // Exclusivity: the dummy may appear ONLY on those two spaces at 2
+        // players, and nowhere at all above two players.
+        for (i, slot) in state.church_track.slots.iter().enumerate() {
+            if slot.is_some_and(|s| s.player.is_dummy()) && !(is_two_player && i == church_dummy) {
+                return Err(format!(
+                    "setup dummy on Church slot {i} (faith {}) -- the dummy is legal only on 2-player Church faith-7",
+                    crate::types::ChurchTrack::index_to_faith(i)
+                ));
+            }
+        }
+        for (i, slot) in state.customs_track.slots.iter().enumerate() {
+            if slot.is_some_and(|s| s.player.is_dummy()) && !(is_two_player && i == customs_dummy) {
+                return Err(format!(
+                    "setup dummy on Customs slot {i} (space {}) -- the dummy is legal only on 2-player Customs space-4",
+                    crate::types::CustomsTrack::index_to_space(i)
+                ));
+            }
+        }
+    }
+
     // I1(b) final-review fix (design §5.1 queue invariant): pending_choices
     // must be empty at TurnEnd -- the phase machine's one player hand-off
     // point (nothing else ever assigns TurnPhase::TurnEnd; see
@@ -354,14 +399,25 @@ pub fn check_invariants(state: &GameState, rules: &Rules) -> Result<(), String> 
 mod tests {
     use super::*;
     use crate::game::{create_test_game_state, finalize_setup, new_game, StartingOrderChoice};
-    use crate::types::{AreaId, OrderCardId, PresidentLocation};
+    use crate::types::{
+        AreaId, ChurchSlot, ChurchTrack, CustomsSlot, CustomsTrack, GameConfig, OrderCardId,
+        PlayerId, PresidentLocation,
+    };
 
     /// Baseline fixture for the per-player / structural checks: a minimal
     /// state (empty decks/board) is fine here because these tests use
     /// `Rules::empty_for_tests()`, which gates the card-conservation checks
     /// off (see module docs) — those get their own golden fixture below.
     fn baseline() -> (GameState, Rules) {
-        (create_test_game_state(2), Rules::empty_for_tests())
+        let mut state = create_test_game_state(2);
+        // I9 (PR #5 §2.1): a valid 2-player state carries the setup dummy on
+        // Church faith-7 / Customs space-4. `create_test_game_state` is a bare
+        // skeleton that skips it (it is not a production setup path), so place
+        // it here -- exactly as `new_game` does -- so the fixture satisfies the
+        // new track-dummy invariant that every other clause's mutation test
+        // builds on.
+        crate::game::setup::place_setup_dummies(&mut state);
+        (state, Rules::empty_for_tests())
     }
 
     /// Golden fixture for the two card-conservation checks: a real,
@@ -811,5 +867,72 @@ mod tests {
         assert_deadlocked(&s, &rules);
         let e = check_invariants(&s, &rules).unwrap_err();
         assert!(e.contains("acting area"), "{e}");
+    }
+
+    /// I9 (PR #5 §2.1): the 2-player setup dummy (`PlayerId::DUMMY`) occupies
+    /// EXACTLY Church faith-7 and Customs space-4 — and nowhere else. Since
+    /// finding D1 the engine reads "is this a 2P game" off `slots[3].is_some()`
+    /// while the oracle reads it off `player_count == 2`, so a 2P state with an
+    /// empty faith-7 (or a dummy loose on some other slot) is representable and
+    /// the two crates silently disagree. Mutates the golden real-2P fixture
+    /// (dummy present by construction) one clause at a time.
+    #[test]
+    fn two_player_setup_dummy_must_sit_on_faith7_and_space4_and_nowhere_else() {
+        let church_dummy = ChurchTrack::faith_to_index(7).unwrap();
+        let customs_dummy = CustomsTrack::space_to_index(4).unwrap();
+        let (state, rules) = golden_standard_game();
+        assert!(check_invariants(&state, &rules).is_ok());
+
+        // Presence (a): 2P with an empty Church faith-7.
+        let mut s = state.clone();
+        s.church_track.slots[church_dummy] = None;
+        let e = check_invariants(&s, &rules).unwrap_err();
+        assert!(e.contains("dummy") && e.contains("Church faith-7"), "{e}");
+
+        // Presence (a): 2P with an empty Customs space-4.
+        let mut s = state.clone();
+        s.customs_track.slots[customs_dummy] = None;
+        let e = check_invariants(&s, &rules).unwrap_err();
+        assert!(e.contains("dummy") && e.contains("Customs space-4"), "{e}");
+
+        // Exclusivity (b): a dummy loose on ANOTHER Church slot (faith-4). The
+        // real dummy stays on faith-7, so ONLY the "nowhere else" clause fires.
+        let mut s = state.clone();
+        s.church_track.slots[ChurchTrack::faith_to_index(4).unwrap()] =
+            Some(ChurchSlot { player: PlayerId::DUMMY, arrival_order: 0 });
+        let e = check_invariants(&s, &rules).unwrap_err();
+        assert!(e.contains("dummy") && e.contains("Church"), "{e}");
+
+        // Exclusivity (b): a dummy loose on ANOTHER Customs slot (space-1).
+        let mut s = state.clone();
+        s.customs_track.slots[CustomsTrack::space_to_index(1).unwrap()] =
+            Some(CustomsSlot { player: PlayerId::DUMMY, arrival_order: 0 });
+        let e = check_invariants(&s, &rules).unwrap_err();
+        assert!(e.contains("dummy") && e.contains("Customs"), "{e}");
+    }
+
+    /// I9, the symmetric 3/4-player direction: a game with no dummy is clean,
+    /// and a dummy planted on ANY track slot above two players is rejected.
+    #[test]
+    fn no_setup_dummy_above_two_players() {
+        let rules = Rules::standard();
+        for players in [3u8, 4] {
+            let pending = new_game(GameConfig::for_player_count(players), &rules, 3).unwrap();
+            let choices: Vec<StartingOrderChoice> =
+                (0..players).map(|_| StartingOrderChoice::Keep(0)).collect();
+            let state = finalize_setup(pending, &choices).unwrap();
+            assert!(check_invariants(&state, &rules).is_ok(), "{players}P golden must be clean");
+
+            let mut s = state.clone();
+            s.church_track.slots[0] = Some(ChurchSlot { player: PlayerId::DUMMY, arrival_order: 0 });
+            let e = check_invariants(&s, &rules).unwrap_err();
+            assert!(e.contains("dummy"), "{players}P church dummy: {e}");
+
+            let mut s = state.clone();
+            s.customs_track.slots[0] =
+                Some(CustomsSlot { player: PlayerId::DUMMY, arrival_order: 0 });
+            let e = check_invariants(&s, &rules).unwrap_err();
+            assert!(e.contains("dummy"), "{players}P customs dummy: {e}");
+        }
     }
 }

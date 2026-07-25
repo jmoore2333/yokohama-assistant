@@ -24,10 +24,15 @@ use crate::style::strip_ansi;
 
 static ENABLED: AtomicBool = AtomicBool::new(false);
 
-#[cfg(test)]
 thread_local! {
-    /// Per-thread override mirroring `style::FORCED` so parallel tests can
-    /// force frames on/off hermetically.
+    /// Per-thread override of `ENABLED`. Unconditionally thread-local (NOT
+    /// `cfg(test)`-gated): an integration test links this library without
+    /// `cfg(test)`, so gating this on it would make `force` write the
+    /// process-wide `ENABLED` there and let parallel frame-toggling tests race
+    /// (the old `FRAME_FLAG` mutex in `guide_sync` papered over exactly that).
+    /// The real CLI is single-threaded and never calls `force`, so `FORCED`
+    /// stays `None` on the main thread and `enabled` falls through to `ENABLED`
+    /// exactly as before -- no behavioural change to the shipped app.
     static FORCED: std::cell::Cell<Option<bool>> = const { std::cell::Cell::new(None) };
 }
 
@@ -38,17 +43,14 @@ pub fn init_from_tty() {
     ENABLED.store(std::io::stdout().is_terminal(), Ordering::Relaxed);
 }
 
-/// Test hook: force frames on/off regardless of TTY state (thread-local
-/// under `cfg(test)`, process-wide otherwise -- the `style::force` pattern).
+/// Test hook: force frames on/off regardless of TTY state. Per-thread, so
+/// parallel tests (lib unit tests AND integration tests) stay hermetic;
+/// production never calls it.
 pub fn force(enabled: bool) {
-    #[cfg(test)]
     FORCED.with(|f| f.set(Some(enabled)));
-    #[cfg(not(test))]
-    ENABLED.store(enabled, Ordering::Relaxed);
 }
 
 pub fn enabled() -> bool {
-    #[cfg(test)]
     if let Some(forced) = FORCED.with(|f| f.get()) {
         return forced;
     }
@@ -200,7 +202,7 @@ mod tests {
         assert!(f.contains("Y O K O H A M A"), "{f}");
         assert!(f.contains("┌"), "board expected in frame: {f}");
         assert!(f.contains("Players"), "panel expected in frame: {f}");
-        assert!(f.contains("* = unclaimed 5-Power token"), "legend expected: {f}");
+        assert!(f.contains("5-Power tokens (face-up)"), "legend expected: {f}");
         assert!(
             f.contains("info: type 'view'"),
             "the discoverability strip must be in every frame (owner scope item 10): {f}"

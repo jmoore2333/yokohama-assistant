@@ -58,8 +58,11 @@ fn goods_run(p: &PlayerState) -> String {
 }
 
 /// A `─ Title ─────...` rule header opening every state view (Task 6, one
-/// design language across views). 40 columns total.
-fn section(title: &str) -> String {
+/// design language across views). 40 columns total. `pub(crate)` so the
+/// repl-side views (`score`/`log`/`final_score`/`hand`) share the exact same
+/// header machinery as the render.rs views rather than hand-rolling their own
+/// (item 4, third review).
+pub(crate) fn section(title: &str) -> String {
     let head = format!("─ {title} ");
     format!("{head}{}\n", "─".repeat(40usize.saturating_sub(head.chars().count())))
 }
@@ -181,13 +184,14 @@ pub fn board_skeleton(player_count: u8) -> String {
     out
 }
 
-/// Legend footer for the `board` view: the `*` unclaimed-5-Power mark, the
+/// Legend footer for the `board` view: the face-up 5-Power token letters, the
 /// `[St]` Station marker, the `·` empty build slot — plus the canal crossing
 /// rule, but ONLY on a board that actually has a Canal tile (2P boards never
 /// do). The REPL's `board` command appends this after the grid.
 pub fn board_legend(state: &GameState) -> String {
-    let mut out =
-        String::from("* = unclaimed 5-Power token   [St] = Station token   · = empty build slot");
+    let mut out = String::from(
+        "5-Power tokens (face-up): i=import  c=copper  s=silk  t=tea  f=seafood  y=yen   [St]=Station  ·=empty slot",
+    );
     if state.board_layout.areas.values().any(|c| c.area_type == AreaType::Canal) {
         out.push_str(
             "\n~ Canal: the President may cross shore to shore for 1 yen to the bank ('sites' lists the pairs)",
@@ -235,13 +239,17 @@ pub fn compact_panel(state: &GameState, _rules: &Rules) -> String {
     for p in &state.players {
         let marker = if p.id == state.current_player { ">" } else { " " };
         let name = color_name(p.color);
-        // Pad from the PLAIN name length -- the painted twin's escapes have
-        // zero display width (style.rs's alignment rule).
-        let name_pad = " ".repeat(7usize.saturating_sub(name.chars().count()));
+        // The digit after the marker is the player's SEAT number -- the
+        // `reveal <seat>` key (item 7, third review). Width-neutral: the name
+        // field drops from 7 to 6 to make room, so the panel width (and the
+        // 140-column frame budget) is unchanged. Pad from the PLAIN name length
+        // -- the painted twin's escapes have zero display width (style.rs).
+        let name_pad = " ".repeat(6usize.saturating_sub(name.chars().count()));
         lines.push((
-            format!("{marker} {name}{name_pad} {:>2} yen  {:>2} VP", p.money, p.victory_points),
+            format!("{marker}{} {name}{name_pad} {:>2} yen  {:>2} VP", p.id.0, p.money, p.victory_points),
             format!(
-                "{marker} {}{name_pad} {:>2} yen  {:>2} VP",
+                "{marker}{} {}{name_pad} {:>2} yen  {:>2} VP",
+                p.id.0,
                 paint(Tone::Player(p.color), name),
                 p.money,
                 p.victory_points
@@ -316,7 +324,8 @@ pub fn compact_panel_oneline(state: &GameState) -> String {
     for p in &state.players {
         let marker = if p.id == state.current_player { ">" } else { " " };
         let name = color_name(p.color);
-        let name_pad = " ".repeat(7usize.saturating_sub(name.chars().count()));
+        // Seat digit after the marker (item 7); width-neutral name field 7->6.
+        let name_pad = " ".repeat(6usize.saturating_sub(name.chars().count()));
         let assistants_on_board: u32 = p.assistants.on_board.values().map(|&c| c as u32).sum();
         let locked = p.assistants.on_achievements + p.assistants.on_church + p.assistants.on_customs;
         let locked_text = if locked > 0 { format!(" locked {locked}") } else { String::new() };
@@ -343,8 +352,8 @@ pub fn compact_panel_oneline(state: &GameState) -> String {
             pres,
         );
         lines.push((
-            format!("{marker} {name}{name_pad}{tail}"),
-            format!("{marker} {}{name_pad}{tail}", paint(Tone::Player(p.color), name)),
+            format!("{marker}{} {name}{name_pad}{tail}", p.id.0),
+            format!("{marker}{} {}{name_pad}{tail}", p.id.0, paint(Tone::Player(p.color), name)),
         ));
     }
     let width = lines.iter().map(|(plain, _)| plain.chars().count()).max().unwrap_or(0);
@@ -369,9 +378,13 @@ pub fn compact_panel_oneline(state: &GameState) -> String {
 pub fn players_panel(state: &GameState, rules: &Rules, hide_hands: bool) -> String {
     let mut out = section("Players");
     for p in &state.players {
+        // The `(seat N)` label is the `reveal <seat>` key (item 7, third
+        // review): it appeared nowhere on the game screen, so the seat<->color
+        // mapping the reveal command needs was learnable only from the wizard
+        // transcript and this panel's ordering.
         out.push_str(&format!(
-            "{}: {} yen  {} VP  c{} s{} t{} f{}  imports {}\n",
-            player_prefix(p.color), p.money, p.victory_points, p.copper, p.silk, p.tea, p.seafood, p.imported_goods,
+            "{} (seat {}): {} yen  {} VP  c{} s{} t{} f{}  imports {}\n",
+            player_prefix(p.color), p.id.0, p.money, p.victory_points, p.copper, p.silk, p.tea, p.seafood, p.imported_goods,
         ));
 
         let hand = if hide_hands {
@@ -495,8 +508,10 @@ pub fn sites_view(state: &GameState, _rules: &Rules) -> String {
 /// render draws it as water.
 ///
 /// Each crossing pair is scanned in both orders so it shows on both
-/// members' lines. `adj: -` when an area has no ordinary neighbor left (a
-/// real possibility now: a tile whose only connections are crossings).
+/// members' lines. `adj: -` is a defensive fallback for an area with no
+/// ordinary neighbor left; the staggered geometry never produces it — every
+/// non-Canal tile keeps at least one free brick-offset neighbor (a tip tile
+/// still has two brick neighbors, at most one of them the Canal).
 fn adjacency_suffix(state: &GameState, area: AreaId) -> String {
     let mut crossings: Vec<AreaId> = state
         .board_layout
@@ -545,8 +560,8 @@ fn adjacency_suffix(state: &GameState, area: AreaId) -> String {
 /// carries gaps and a packed owners-only string would attribute owners to
 /// the wrong printed rewards -- `sites_view` prints the four DIFFERENT
 /// rewards positionally right beside these marks (`[1vp 4vp - 2yen]
-/// sh -B-R`). One mark per slot in printed order: the owner's color letter,
-/// or `-` for an empty slot. `build_marks_attribute_each_built_slot_to_its_
+/// sh ·B·R`). One mark per slot in printed order: the owner's color letter,
+/// or `·` for an empty slot. `build_marks_attribute_each_built_slot_to_its_
 /// owner_positionally` pins the attribution (this replaced the old
 /// prefix-packing pin, whose premise the engine fix deliberately broke).
 ///
@@ -596,7 +611,9 @@ fn build_marks_pair(state: &GameState, site: &BuildingSite) -> (String, String) 
 /// `ChurchTrack` tables -- the same `vp_reward` `delta_summary` prints after a
 /// placement, plus the `movement_rider` the engine queues as assistant-move
 /// choices. Every faith 4-11 carries a movement rider, so it is always shown.
-fn church_reward_text(faith: u8) -> String {
+/// `pub(crate)`: the Church space-choice option text (`describe::describe_move`)
+/// reuses this so the choice shows the SAME VP+rider as the `tracks` view.
+pub(crate) fn church_reward_text(faith: u8) -> String {
     format!("{}vp {}move", ChurchTrack::vp_reward(faith), ChurchTrack::movement_rider(faith))
 }
 
@@ -604,7 +621,9 @@ fn church_reward_text(faith: u8) -> String {
 /// vocabulary. `CustomsTrack::rider` returns `(warehouse_takes, yen)` --
 /// rendered `Nwh`/`Nyen` -- and spaces 5-7 carry no rider, so those lines show
 /// VP alone. Single-sourced from the `CustomsTrack` tables.
-fn customs_reward_text(space: u8) -> String {
+/// `pub(crate)`: the Customs space-choice option text (`describe::describe_move`)
+/// reuses this so the choice shows the SAME VP+rider as the `tracks` view.
+pub(crate) fn customs_reward_text(space: u8) -> String {
     let mut s = format!("{}vp", CustomsTrack::vp_reward(space));
     let (warehouse_takes, yen) = CustomsTrack::rider(space);
     if warehouse_takes > 0 {
@@ -1257,14 +1276,25 @@ fn tile_content_lines(state: &GameState, id: AreaId) -> [String; 4] {
         ];
     }
 
-    let marker = matches!(state.board_layout.five_power_tokens.get(&id), Some(Some(_)));
+    // Face-up 5-Power token: show the good's letter in its color (rulebook p.3
+    // step 5). `Some(None)` = claimed, `None` = no token slot (Canal is handled
+    // above), both render nothing.
+    let token = match state.board_layout.five_power_tokens.get(&id) {
+        Some(Some(effect)) => Some(five_power_face(*effect)),
+        _ => None,
+    };
     let name = tile_name(cfg.area_type);
-    let header_plain = format!("A{:02} {}{}", id.0, name, if marker { " *" } else { "" });
+    let header_plain = format!(
+        "A{:02} {}{}",
+        id.0,
+        name,
+        token.map(|(c, _)| format!(" {c}")).unwrap_or_default(),
+    );
     let header_painted = format!(
         "A{:02} {}{}",
         id.0,
         paint(Tone::Tile(cfg.area_type), name),
-        if marker { format!(" {}", paint(Tone::Vp, "*")) } else { String::new() },
+        token.map(|(c, k)| format!(" {}", paint(Tone::Good(k), &c.to_string()))).unwrap_or_default(),
     );
 
     let station = state.station_location == Some(id);
@@ -1335,8 +1365,25 @@ fn fit_cell_painted(plain: &str, painted: &str) -> String {
     format!("{}{}", painted, " ".repeat(TILE_W - width))
 }
 
-/// Legible tile display name, sized to fit a `A00 {name} *` header inside
-/// `TILE_W` (name <= 10 chars).
+/// The board glyph for a face-up 5-Power token: the good's one-letter code
+/// (matching the players-panel goods run and the wizard's token letters) and
+/// its `GoodKind` for color. Magnitude is fixed per kind, so the letter alone
+/// identifies the face; `board_legend` spells out the amounts. `pub(crate)` so
+/// the setup wizard's review summary prints the same letter the board shows.
+pub(crate) fn five_power_face(e: FivePowerEffect) -> (char, GoodKind) {
+    match e {
+        FivePowerEffect::ImportedGoods(_) => ('i', GoodKind::Imports),
+        FivePowerEffect::Copper(_) => ('c', GoodKind::Copper),
+        FivePowerEffect::Silk(_) => ('s', GoodKind::Silk),
+        FivePowerEffect::Tea(_) => ('t', GoodKind::Tea),
+        FivePowerEffect::Seafood(_) => ('f', GoodKind::Seafood),
+        FivePowerEffect::Money(_) => ('y', GoodKind::Yen),
+    }
+}
+
+/// Legible tile display name, sized to fit a `A00 {name} c` header inside
+/// `TILE_W` (name <= 10 chars; the trailing 1-char token face fits where the
+/// old `*` did).
 fn tile_name(t: AreaType) -> &'static str {
     match t {
         AreaType::CopperMine => "Copper Mn",
@@ -1585,7 +1632,7 @@ mod tests {
     fn board_legend_documents_canal_only_when_present() {
         let mut state = test_state_2p();
         let without = board_legend(&state);
-        assert!(without.contains("* = unclaimed 5-Power token"), "{without}");
+        assert!(without.contains("5-Power tokens (face-up)"), "{without}");
         assert!(without.contains("[St]"), "{without}");
         assert!(!without.contains("Canal"), "no canal on this board: {without}");
 
@@ -1594,6 +1641,34 @@ mod tests {
         let with = board_legend(&state);
         assert!(with.contains("Canal"), "{with}");
         assert!(with.contains("1 yen"), "the toll and its recipient (bank) belong in the legend: {with}");
+    }
+
+    #[test]
+    fn five_power_face_maps_each_token_to_its_good_letter() {
+        assert_eq!(five_power_face(FivePowerEffect::ImportedGoods(1)), ('i', GoodKind::Imports));
+        assert_eq!(five_power_face(FivePowerEffect::Copper(2)), ('c', GoodKind::Copper));
+        assert_eq!(five_power_face(FivePowerEffect::Silk(2)), ('s', GoodKind::Silk));
+        assert_eq!(five_power_face(FivePowerEffect::Tea(3)), ('t', GoodKind::Tea));
+        assert_eq!(five_power_face(FivePowerEffect::Seafood(3)), ('f', GoodKind::Seafood));
+        assert_eq!(five_power_face(FivePowerEffect::Money(3)), ('y', GoodKind::Yen));
+    }
+
+    /// The board shows a face-up token's FACE (its good letter), not a boolean
+    /// `*` (rulebook p.3 step 5 — tokens are face-up). A claimed slot shows nothing.
+    #[test]
+    fn board_tile_header_shows_the_token_face_letter_not_a_star() {
+        let mut state = test_state_2p();
+        let area = *state.board_layout.areas.keys().next().unwrap();
+        // Force a name with no 'c' so the assertion pins the token, not the name.
+        state.board_layout.areas.get_mut(&area).unwrap().area_type = AreaType::Bank;
+        state.board_layout.five_power_tokens.insert(area, Some(FivePowerEffect::Copper(2)));
+        let header = tile_content_lines(&state, area)[0].clone();
+        assert!(header.contains(" c"), "a Copper token shows its 'c' face: {header:?}");
+        assert!(!header.contains('*'), "the boolean star is gone: {header:?}");
+        // A claimed slot (Some(None)) shows no face.
+        state.board_layout.five_power_tokens.insert(area, None);
+        let claimed = tile_content_lines(&state, area)[0].clone();
+        assert!(!claimed.contains(" c") && !claimed.contains('*'), "a claimed token shows no face: {claimed:?}");
     }
 
     #[test]
@@ -1678,13 +1753,36 @@ mod tests {
         let rules = Rules::standard();
         let text = compact_panel(&state, &rules);
         assert!(text.starts_with("─ Players ─"), "{text}");
-        assert!(text.contains("> Red"), "current player marked: {text}");
-        assert!(text.contains("  Blue"), "other players unmarked: {text}");
+        assert!(text.contains(">0 Red"), "current player marked, seat 0: {text}");
+        assert!(text.contains(" 1 Blue"), "other players unmarked, seat 1: {text}");
         assert!(text.contains("yen"), "{text}");
         assert!(text.contains("hand 1"), "hand renders as a COUNT: {text}");
         assert!(!text.contains("O0") && !text.contains("O1"), "hand contents never appear: {text}");
         assert!(text.contains("next TH take 4 yen"), "{text}");
         assert!(text.contains("President: in hand"), "{text}");
+    }
+
+    /// Item 7 (third review): every panel labels each player with its SEAT
+    /// number -- the `reveal <seat>` key, which used to appear nowhere on the
+    /// game screen (learnable only from the wizard transcript and the players
+    /// ordering). The full `players` view spells it out; the compact frame
+    /// panels carry the digit right after the current-player marker.
+    #[test]
+    fn panels_show_the_seat_number_for_the_reveal_key() {
+        let state = test_state_2p(); // Red = seat 0 (current), Blue = seat 1
+        let rules = Rules::standard();
+
+        let full = players_panel(&state, &rules, false);
+        assert!(full.contains("(seat 0)"), "players view labels seat 0: {full}");
+        assert!(full.contains("(seat 1)"), "players view labels seat 1: {full}");
+
+        let compact = compact_panel(&state, &rules);
+        assert!(compact.contains(">0 Red"), "compact: current player Red is seat 0: {compact}");
+        assert!(compact.contains(" 1 Blue"), "compact: Blue is seat 1: {compact}");
+
+        let oneline = compact_panel_oneline(&state);
+        assert!(oneline.contains(">0 Red"), "oneline: seat 0 Red: {oneline}");
+        assert!(oneline.contains(" 1 Blue"), "oneline: seat 1 Blue: {oneline}");
     }
 
     /// Locked pawns (goals/church/customs) surface as a `locked N` tally so
@@ -1716,7 +1814,7 @@ mod tests {
             "one header + exactly one line per player:\n{text}"
         );
         let red = text.lines().find(|l| l.contains("Red")).expect("a Red line");
-        assert!(red.starts_with("> Red"), "current player marked: {red}");
+        assert!(red.starts_with(">0 Red"), "current player marked, seat 0: {red}");
         for field in ["yen", "VP", "c1", "hand 1", "asst h", "built sh", "President: in hand"] {
             assert!(red.contains(field), "want {field:?} in the one-line form: {red}");
         }
@@ -1815,7 +1913,12 @@ mod tests {
     }
 
     /// Task 6 restyle: the state views share one design language -- a
-    /// `─ Title ─...` rule header opens each of them.
+    /// `─ Title ─...` rule header opens each of them. This covers the six views
+    /// that live HERE as free functions; the four that live in repl.rs
+    /// (`score`/`log`/`final_score`/`hand`) are held to the same header by
+    /// `repl::tests::all_state_views_share_the_rule_header_style`, which drives
+    /// every `VIEW_MENU` row plus `final_score` (item 4, third review -- this
+    /// test alone structurally could not see those four).
     #[test]
     fn views_share_the_rule_header_style() {
         let state = test_state_2p();
@@ -2401,8 +2504,8 @@ mod tests {
     /// `BuildShophouse` per EMPTY slot, so `shophouses_built` is no longer
     /// prefix-packed -- gaps are ordinary. `build_marks` must therefore be
     /// POSITIONAL: one mark per slot in printed order (owner color letter or
-    /// `-`), so each built slot is attributed to the reward printed right
-    /// beside it in `sites_view` (`[1vp 4vp - 2yen]  sh -B-R`). This replaces
+    /// `·`), so each built slot is attributed to the reward printed right
+    /// beside it in `sites_view` (`[1vp 4vp - 2yen]  sh ·B·R`). This replaces
     /// the old `shophouse_slots_fill_prefix_packed_so_build_marks_stay_
     /// unambiguous` pin, whose premise the engine fix deliberately broke.
     #[test]

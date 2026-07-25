@@ -56,7 +56,15 @@ use crate::types::GameState;
 /// That changes movement legality and president routes, so any rev-1 record
 /// replays to a different state under rev 2 — old records become
 /// strict-rejected, correctly.
-pub const SEMANTICS_REV: u32 = 2;
+///
+/// Rev 3 (2026-07-21, PR #5 §1.1 — 5-Power token observation): 5-Power tokens
+/// are FACE-UP at setup (rulebook p.3 step 5), so `reconcile_setup` now derives
+/// their faces from a new `ObservedBoard.tokens` observation instead of relaying
+/// the seeded assignment. A live record carrying token observations replays to a
+/// board with the observed faces — a setup-reconciliation change per the bump
+/// contract. Self-play / sim is unaffected (no token observations ⇒ the seeded
+/// relay is retained); older records are strict-rejected as usual.
+pub const SEMANTICS_REV: u32 = 3;
 
 /// FNV-1a 64 over `bytes`, seeded with the standard offset basis. Hand-rolled
 /// for the same reason `Rules::content_hash` hand-rolls it: `std::hash` is not
