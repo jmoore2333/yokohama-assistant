@@ -68,6 +68,7 @@
 use std::cmp::Ordering;
 use std::collections::BTreeSet;
 
+use crate::game::movement::can_step_onto;
 use crate::game::{
     calculate_movement_cost_with_tech, calculate_place_president_fee,
     can_teleport_to_station_with_tech, enumerate_president_routes,
@@ -245,8 +246,12 @@ impl RouteGraph {
         let mut first_toll = [false; MAX_AREAS];
         for i in 0..MAX_AREAS {
             let area = AreaId::new(i as u8);
-            // Mirrors `can_step_onto` (movement.rs:209) exactly.
-            steppable[i] = area != from && p.assistants.in_area(area) > 0;
+            // The REAL `can_step_onto` (movement.rs:209, `pub(crate)` since
+            // 3.1b T5), not a transcription of it: this table is the whole
+            // assistant-chain rule for the search, so a hand-mirrored copy here
+            // was a live drift channel against the frozen enumerator, which
+            // calls the same function (T1 review follow-up).
+            steppable[i] = can_step_onto(state, player, from, area);
             is_dest[i] = is_possible_action_area_with_tech(state, player, area, reg);
             if !stagecoach {
                 let mut mask = 0u8;

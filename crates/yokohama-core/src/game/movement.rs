@@ -206,7 +206,7 @@ pub fn find_reachable_areas_with_tech(
 /// `find_reachable_areas_with_tech` (Dijkstra, one path per destination)
 /// and `enumerate_president_routes` (DFS, every simple affordable path) so
 /// the two searches can never diverge on what counts as a legal hop.
-fn can_step_onto(state: &GameState, player: PlayerId, start: AreaId, to: AreaId) -> bool {
+pub(crate) fn can_step_onto(state: &GameState, player: PlayerId, start: AreaId, to: AreaId) -> bool {
     to != start && state.player(player).assistants.in_area(to) > 0
 }
 
