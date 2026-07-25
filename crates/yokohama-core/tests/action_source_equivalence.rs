@@ -1,12 +1,34 @@
-//! Phase 3.1a Task 5: per-family factored↔exhaustive equivalence, TWO TIERS.
+//! Phase 3.1a Task 5 (+ Phase 3.1b Task 3): per-family factored↔exhaustive
+//! equivalence, TWO TIERS.
 //!
 //! Proves the whole point of the factored action source (`game/search_actions.rs`):
 //! the UNION of the move families [`families`] lists — each served by
 //! [`iter_family`] — reconstructs the frozen exhaustive [`get_legal_moves`]
-//! surface EXACTLY, as a multiset, at every reachable decision point. The
-//! factored source pages/samples the six-figure retreat family without
-//! materializing it, but the moves it can serve must still be precisely the
-//! exhaustive ones — no more (soundness), no fewer (completeness).
+//! surface EXACTLY at every reachable decision point. The factored source
+//! pages/samples the six-figure retreat family without materializing it and
+//! computes the routes family from a separate enumerator, but the moves it can
+//! serve must still be precisely the exhaustive ones — no more (soundness), no
+//! fewer (completeness), and since 3.1b in the same ORDER.
+//!
+//! TWO CHECKS, NEITHER IMPLYING THE OTHER'S DIAGNOSTIC (3.1b Task 3, spec §4-1a).
+//! Every decision point takes both, in this order:
+//!  1. MEMBERSHIP — the string-multiset diff ([`multiset_diff`]), which names the
+//!     keys whose counts differ. It is order-blind by construction: a factored
+//!     source that emitted the right moves in the wrong order would pass it
+//!     silently, which is exactly the bug class 3.1b's `cmp_label` port can
+//!     introduce.
+//!  2. ORDER — elementwise [`Vec<Move>`] equality ([`first_divergence`]), for the
+//!     `MovementRoutes` family against the `MovePresident`/`PlacePresident`
+//!     subsequence of the legal list (the 3.1b contract) and then for the whole
+//!     concatenated union, since [`families`] emits its tags in the order
+//!     `get_legal_moves` emits their moves. It reports the first differing index,
+//!     which a membership diff cannot, and cannot report a missing move as
+//!     anything but a divergence at wherever the two lists first slip.
+//!
+//! Check 1 is retained deliberately: on a membership failure its report is the
+//! useful one (WHICH moves appeared or vanished), while check 2 would only say
+//! "index 137 differs". Neither is the other's fallback — they fail with
+//! different information about different bug classes.
 //!
 //! This lives in `yokohama-core` and compares the factored surface against the
 //! engine's own `get_legal_moves`, NOT via the oracle. It reuses the
@@ -21,17 +43,23 @@
 //! rather than being normalized away.
 //!
 //! TWO TIERS (CLAUDE.md two-tier policy):
-//! - PER-EDIT (not ignored): the driven-game union check at seeds 0..5 × 2/3/4P
-//!   (capped), plus the constructed adversarial fixtures — the retreat 442,368
-//!   worst case (checked by COUNT + spot-checks, never a second 442k
+//! - PER-EDIT (not ignored): the driven-game union+order check at seeds 0..5 ×
+//!   2/3/4P (capped), plus the constructed adversarial fixtures — the retreat
+//!   442,368 worst case (checked by COUNT + spot-checks, never a second 442k
 //!   collection), the placement family hard-pinned at its full 3,231 ceiling,
-//!   and the non-sorted-hand FulfillOrder order round-trip.
-//! - RELEASE (`#[ignore]`d): the same union check swept at seeds 0..20 × 2/3/4P,
-//!   deeper into each game — the distributional regression net.
+//!   the non-sorted-hand FulfillOrder order round-trip, and the 3.1b routes
+//!   cells (Station suppression fires / a tolled walk and a free teleport both
+//!   survive / from-hand `PlacePresident` / oversized-board delegation), all
+//!   ≤ 10 areas so the per-edit tier stays fast.
+//! - RELEASE (`#[ignore]`d): the same sweep at seeds 0..20 × 2/3/4P deeper into
+//!   each game — the distributional regression net — plus the 3.1b DENSE
+//!   adversarial route cells, which are release-tier because each pays a full
+//!   frozen-reference enumeration on a money-saturated 17-area staggered board.
 //!
-//! `MovementRoutes` is still exhaustive-backed (a 3.1b stub that delegates to
-//! `get_legal_moves`), so the union stays COMPLETE here; 3.1b replaces it with a
-//! lazy route enumerator and this test keeps holding.
+//! `MovementRoutes` is no longer the exhaustive-backed 3.1b stub: it is served
+//! by `game/route_enum.rs`'s enumerator, which is why the ordered check above
+//! exists and why the dense cells below stress the enumerator at hundreds of
+//! labels rather than at organic play's tens.
 
 mod common;
 
@@ -40,10 +68,13 @@ use std::collections::BTreeMap;
 use rand::Rng;
 
 use yokohama_core::{
-    apply_move_unchecked, families, family_len, get_legal_moves, is_game_over, iter_family,
-    AchievementCard, AchievementType, AreaConfig, AreaId, AreaType, BoardLayout, ChurchTrack,
-    CustomsTrack, GameConfig, GameState, LabState, MercenarySupply, Move, MoveFamily, OrderCardId,
-    PlayerColor, PlayerId, PlayerState, PortState, PresidentLocation, Rules, TechEffect, TurnPhase,
+    apply_move_unchecked, can_teleport_to_station_with_tech, cell_to_area_id,
+    derive_canal_crossings, enumerate_routes, families, family_len, fits_fixed_arrays,
+    get_legal_moves, is_game_over, iter_family, row_lengths, staggered_adjacency, AchievementCard,
+    AchievementType, AreaConfig, AreaId, AreaType, BoardLayout, BoardLayoutBuilder, BuildingSite,
+    ChurchTrack, CustomsTrack, FivePowerEffect, GameConfig, GameState, LabState, MercenarySupply,
+    Move, MoveFamily, OrderCardId, PlayerColor, PlayerId, PlayerState, PortState,
+    PresidentLocation, Rules, TechCardId, TechEffect, TurnPhase,
 };
 
 // ---------------------------------------------------------------------------
@@ -82,6 +113,49 @@ fn multiset_diff(a: &[Move], b: &[Move]) -> Option<String> {
     Some(format!("multiset mismatch ({} key(s) differ):\n{}", lines.len(), lines.join("\n")))
 }
 
+/// `None` when `got` and `want` are equal ELEMENT FOR ELEMENT; otherwise the
+/// first index at which they differ, with both entries (or the length mismatch
+/// when one is a prefix of the other) — so a failure at a several-hundred-move
+/// Movement family stays as readable as one at a four-move fixture.
+///
+/// The order gate (3.1b Task 3). `multiset_diff` above cannot see a pure
+/// permutation, and a permutation is precisely what a wrong `cmp_label`
+/// (`route_enum.rs`'s ported comparator) or a mis-sequenced family assembly
+/// produces: same moves, wrong order, silently passing every membership check.
+fn first_divergence(got: &[Move], want: &[Move]) -> Option<String> {
+    if got == want {
+        return None;
+    }
+    for (i, (g, w)) in got.iter().zip(want).enumerate() {
+        if g != w {
+            return Some(format!(
+                "order mismatch at index {i} of {}/{}:\n  factored: {g:?}\n  legal:    {w:?}",
+                got.len(),
+                want.len(),
+            ));
+        }
+    }
+    Some(format!(
+        "one list is a prefix of the other: factored {} moves, legal {} moves",
+        got.len(),
+        want.len(),
+    ))
+}
+
+/// The `MovePresident`/`PlacePresident` subsequence of `moves`, in order — the
+/// `MoveFamily::MovementRoutes` partition of a Movement decision point, as seen
+/// from OUTSIDE the crate. `search_actions`' own `family_kind` is private, so the
+/// integration tier names the same partition by move constructor; the two agree
+/// because the retreat family is `ReturnPresidentToHand` and nothing else, which
+/// the sweep's union check independently pins.
+fn routes_partition(moves: &[Move]) -> Vec<Move> {
+    moves
+        .iter()
+        .filter(|m| matches!(m, Move::MovePresident { .. } | Move::PlacePresident { .. }))
+        .cloned()
+        .collect()
+}
+
 // ---------------------------------------------------------------------------
 // Driven-game union sweep (shared by both tiers).
 // ---------------------------------------------------------------------------
@@ -89,9 +163,19 @@ fn multiset_diff(a: &[Move], b: &[Move]) -> Option<String> {
 /// Outcome of a sweep, for the caller's anti-vacuity assertions.
 struct SweepStats {
     /// Total decision points visited — every one takes the strong
-    /// string-multiset union check (the cap below is a tripwire assert, not a
-    /// branch to a weaker check).
+    /// string-multiset union check AND the elementwise order check (the cap
+    /// below is a tripwire assert, not a branch to a weaker check).
     decision_points: usize,
+    /// Decision points that dispatched a `MovementRoutes` family, i.e. that took
+    /// the per-family ordered compare against the routes partition. Without
+    /// this, a sweep that never reached Movement would report a green order gate
+    /// having never exercised it.
+    routes_points: usize,
+    /// Total `MovePresident`/`PlacePresident` moves the routes families served
+    /// across the sweep — a routes family is legitimately empty at some decision
+    /// points, so `routes_points > 0` alone would not prove the compare saw any
+    /// move at all.
+    routes_moves: usize,
 }
 
 /// Tripwire ceiling on materializing the union for the strong string-multiset
@@ -105,11 +189,20 @@ const UNION_MATERIALIZE_CAP: usize = 50_000;
 
 /// Drive uniform-random games (via the shared `common` seeded driver) and, at
 /// every decision point, assert `⋃_family iter_family(state, family)` equals
-/// `get_legal_moves(state)` as a MULTISET, plus the per-family `family_len`
-/// contract (exact for every family except Placement, whose `family_len` is an
-/// honest upper bound ≥ the realized count).
+/// `get_legal_moves(state)` as a MULTISET **and** element for element, plus the
+/// per-family `family_len` contract (exact for every family except Placement,
+/// whose `family_len` is an honest upper bound ≥ the realized count).
+///
+/// The order half is 3.1b Task 3's new capability, in two steps: the
+/// `MovementRoutes` family against the legal list's routes partition (the
+/// contract — it is the family 3.1b re-implemented), then the whole concatenated
+/// union against the whole legal list, which extends the same guarantee to every
+/// other family for free because [`families`] emits its tags in
+/// `get_legal_moves`' own emission order. The second subsumes the first, but the
+/// first is what names the routes family when it breaks, and it is the only one
+/// whose anti-vacuity counters prove Movement was reached at all.
 fn run_union_sweep(rules: &Rules, seeds: std::ops::Range<u64>, cap: usize) -> SweepStats {
-    let mut stats = SweepStats { decision_points: 0 };
+    let mut stats = SweepStats { decision_points: 0, routes_points: 0, routes_moves: 0 };
 
     for players in [2u8, 3, 4] {
         for seed in seeds.clone() {
@@ -135,7 +228,8 @@ fn run_union_sweep(rules: &Rules, seeds: std::ops::Range<u64>, cap: usize) -> Sw
                 );
 
                 // Strong check: materialize each family, pin its `family_len`
-                // contract, and assert the concatenated union == legal.
+                // contract and (for routes) its order, then assert the
+                // concatenated union == legal as a multiset AND in order.
                 let mut union: Vec<Move> = Vec::with_capacity(legal.len());
                 for family in &fams {
                     let got: Vec<Move> = iter_family(&state, rules, family).collect();
@@ -155,11 +249,35 @@ fn run_union_sweep(rules: &Rules, seeds: std::ops::Range<u64>, cap: usize) -> Sw
                             got.len(),
                         );
                     }
+
+                    // ORDER, per family (3.1b): the routes family must be the
+                    // legal list's routes partition element for element.
+                    if matches!(family, MoveFamily::MovementRoutes) {
+                        if let Some(diff) = first_divergence(&got, &routes_partition(&legal)) {
+                            panic!(
+                                "MovementRoutes family is not the legal list's routes partition at {:?} ({players}p seed {seed} turn {}):\n{diff}",
+                                state.turn_phase, state.turn_number,
+                            );
+                        }
+                        stats.routes_points += 1;
+                        stats.routes_moves += got.len();
+                    }
+
                     union.extend(got);
                 }
+                // MEMBERSHIP first: on a membership failure this report names the
+                // moves that appeared or vanished, which the order check cannot.
                 if let Some(diff) = multiset_diff(&union, &legal) {
                     panic!(
                         "factored union != get_legal_moves at {:?} ({players}p seed {seed} turn {}):\n{diff}",
+                        state.turn_phase, state.turn_number,
+                    );
+                }
+                // ORDER, whole union: same members (just proven) in the same
+                // sequence — the check a permutation bug cannot survive.
+                if let Some(diff) = first_divergence(&union, &legal) {
+                    panic!(
+                        "factored union is a permutation of get_legal_moves, not a reproduction, at {:?} ({players}p seed {seed} turn {}):\n{diff}",
                         state.turn_phase, state.turn_number,
                     );
                 }
@@ -175,9 +293,9 @@ fn run_union_sweep(rules: &Rules, seeds: std::ops::Range<u64>, cap: usize) -> Sw
 
 /// PER-EDIT union equivalence: at every organically-reached decision point
 /// across seeds 0..5 × 2/3/4P (capped), the union of the factored families
-/// reproduces `get_legal_moves` exactly as a multiset, and every `family_len`
-/// holds. Organic play never explodes a family past the cap, so every decision
-/// point takes the strong string-multiset check.
+/// reproduces `get_legal_moves` exactly as a multiset AND in order, and every
+/// `family_len` holds. Organic play never explodes a family past the cap, so
+/// every decision point takes both strong checks.
 #[test]
 fn factored_union_equals_get_legal_moves_across_driven_games() {
     let rules = Rules::standard();
@@ -187,6 +305,10 @@ fn factored_union_equals_get_legal_moves_across_driven_games() {
     let stats = run_union_sweep(&rules, 0..5, 800);
 
     assert!(stats.decision_points > 500, "expected many decision points, saw {}", stats.decision_points);
+    // Anti-vacuity for the ordered compare: it must have RUN on the routes
+    // family, and that family must have served real moves.
+    assert!(stats.routes_points > 50, "expected many Movement points, saw {}", stats.routes_points);
+    assert!(stats.routes_moves > 100, "routes families served {} moves — too few to order-check", stats.routes_moves);
 }
 
 // ---------------------------------------------------------------------------
@@ -427,22 +549,533 @@ fn fulfill_order_subsequence_preserves_nonsorted_hand_order() {
 }
 
 // ---------------------------------------------------------------------------
+// Phase 3.1b: the MovementRoutes family through the PUBLIC factored surface.
+//
+// `game/route_enum.rs`'s unit tests pin the same behaviours against the
+// crate-private assembly (`movement_routes_family`) and against the frozen
+// `enumerate_president_routes`. These cells are the INTEGRATION tier: the same
+// shapes reached the way a bot reaches them — `families()` dispatch, then
+// `iter_family`/`family_len` — where the family tag, the boxed iterator and the
+// public partition are all in the loop. A regression that only broke the public
+// wiring (a mis-dispatched tag, a stale `family_len` arm) would leave every unit
+// test green.
+//
+// All ≤ 10 areas by mandate: the enumerator's lex-drift `debug_assert` is
+// O(prefixes × labels), so a money-rich dense board costs seconds in the debug
+// profile. The dense cells are release-tier, at the bottom of this file.
+// ---------------------------------------------------------------------------
+
+/// Add the undirected edge `a`~`b` to `state`'s adjacency, tolled 1 Yen to the
+/// bank when `tolled`. [`state_with_areas`] builds an edgeless board (the
+/// retreat and placement fixtures above need no graph); route cells need one.
+fn connect(state: &mut GameState, a: AreaId, b: AreaId, tolled: bool) {
+    state.board_layout.adjacency.entry(a).or_default().push(b);
+    state.board_layout.adjacency.entry(b).or_default().push(a);
+    if tolled {
+        state.board_layout.canal_crossings.push((a, b));
+    }
+}
+
+/// The id of the standard-rules technology with `effect`.
+fn tech_id(rules: &Rules, effect: TechEffect) -> TechCardId {
+    rules
+        .techs
+        .iter()
+        .find(|t| t.effect == effect)
+        .map(|t| t.id)
+        .expect("standard data carries the tech")
+}
+
+/// The four-area diamond `route_enum`'s unit fixtures are built on, rebuilt here
+/// over [`state_with_areas`]: 0 branches to 1 and 2, which rejoin at 3; the
+/// mover's President stands on 0 with own assistants on 1, 2 and 3 (a hop may
+/// only land where the mover already has one); `canals` names the edges that toll
+/// 1 Yen. 5 Yen affords every label these cells build.
+fn routes_diamond(canals: &[(u8, u8)]) -> GameState {
+    let mut s = state_with_areas(2, TurnPhase::Movement, 4);
+    let edges = [(0u8, 1u8), (0, 2), (1, 3), (2, 3)];
+    for (a, b) in edges {
+        connect(&mut s, AreaId::new(a), AreaId::new(b), canals.contains(&(a, b)));
+    }
+    // A canal naming an edge that does not exist (or naming it in the other
+    // orientation) would silently produce an UNTOLLED diamond, which is exactly
+    // how the tolled-walk cell below would go vacuous without saying so.
+    for c in canals {
+        assert!(edges.contains(c), "fixture names a canal {c:?} that is not one of {edges:?}");
+    }
+    s.players[0].president_location = PresidentLocation::OnBoard(AreaId::new(0));
+    for a in [1u8, 2, 3] {
+        s.players[0].assistants.on_board.insert(AreaId::new(a), 1);
+    }
+    s.players[0].money = 5;
+    s
+}
+
+/// THE 3.1b integration assertion. At a Movement `state`:
+///  - [`families`] dispatches a `MovementRoutes` tag (the public entry point);
+///  - [`iter_family`] on it equals the legal list's routes partition ELEMENT FOR
+///    ELEMENT, at a fixture rich enough to discriminate (`min_moves`);
+///  - [`family_len`] is that exact realized count (routes is the exact-but-
+///    costs-one-enumeration arm, unlike placement's upper bound);
+///  - the routes and retreat partitions together account for the WHOLE legal
+///    list, so a move the routes family dropped cannot be hiding in retreat.
+///
+/// The last point is checked by COUNT off the already-materialized legal list,
+/// never by collecting the retreat family — the dense cells below sit on a
+/// 2¹⁷-member retreat product, and re-materializing it would buy no information
+/// the driven sweep does not already provide.
+fn assert_routes_family_ordered(
+    state: &GameState,
+    rules: &Rules,
+    min_moves: usize,
+    label: &str,
+) -> Vec<Move> {
+    assert_eq!(state.turn_phase, TurnPhase::Movement, "{label}: fixture must be at Movement");
+    let fams = families(state, rules);
+    let routes = fams
+        .iter()
+        .find(|f| matches!(f, MoveFamily::MovementRoutes))
+        .unwrap_or_else(|| panic!("{label}: Movement must dispatch a routes family, got {fams:?}"));
+
+    let legal = get_legal_moves(state, rules);
+    let want = routes_partition(&legal);
+    assert!(
+        want.len() >= min_moves,
+        "{label}: anti-vacuity — the generator emitted {} routes-family moves, expected >= {min_moves}",
+        want.len(),
+    );
+
+    let got: Vec<Move> = iter_family(state, rules, routes).collect();
+    if let Some(diff) = first_divergence(&got, &want) {
+        panic!("{label}: routes family != the legal list's routes partition:\n{diff}");
+    }
+    assert_eq!(
+        family_len(state, rules, routes),
+        got.len(),
+        "{label}: routes family_len must be the exact realized count",
+    );
+
+    let retreat = legal.iter().filter(|m| matches!(m, Move::ReturnPresidentToHand { .. })).count();
+    assert_eq!(
+        got.len() + retreat,
+        legal.len(),
+        "{label}: routes + retreat must partition the whole Movement legal list",
+    );
+    got
+}
+
+/// The `(destination, path)` pairs of `moves`' `MovePresident` entries that end
+/// on `dest`, in order. A teleport is the empty path.
+fn moves_to(moves: &[Move], dest: u8) -> Vec<(AreaId, Vec<AreaId>)> {
+    moves
+        .iter()
+        .filter_map(|m| match m {
+            Move::MovePresident { path, destination } if *destination == AreaId::new(dest) => {
+                Some((*destination, path.clone()))
+            }
+            _ => None,
+        })
+        .collect()
+}
+
+/// The destinations of `moves`' `PlacePresident` entries, in order.
+fn place_destinations(moves: &[Move]) -> Vec<AreaId> {
+    moves
+        .iter()
+        .filter_map(|m| match m {
+            Move::PlacePresident { destination } => Some(*destination),
+            _ => None,
+        })
+        .collect()
+}
+
+/// ANTI-VACUITY (c), suppression FIRES: a FREE walk to the station area already
+/// carries that area's `(destination, {})` label, so the Station teleport would
+/// duplicate it and is suppressed — EXACTLY ONE survivor to that area, and it is
+/// the walk. The control matters as much as the count: the teleport is
+/// independently confirmed available (`can_teleport_to_station_with_tech` says
+/// `Some`), so its absence is suppression rather than an unmet precondition.
+#[test]
+fn a_free_walk_suppresses_the_station_teleport_through_the_public_surface() {
+    let rules = Rules::standard();
+    let mut s = routes_diamond(&[]);
+    s.players[0].technologies = vec![tech_id(&rules, TechEffect::Station)];
+    s.station_location = Some(AreaId::new(1));
+
+    assert_eq!(
+        can_teleport_to_station_with_tech(&s, PlayerId::new(0), Some(&rules.techs)),
+        Some(AreaId::new(1)),
+        "control: every teleport precondition other than suppression must hold",
+    );
+
+    let moves = assert_routes_family_ordered(&s, &rules, 3, "free walk + Station");
+    assert_eq!(
+        moves_to(&moves, 1),
+        vec![(AreaId::new(1), vec![AreaId::new(1)])],
+        "exactly one survivor to the station area, and it is the walk: {moves:?}",
+    );
+}
+
+/// ANTI-VACUITY (c), suppression does NOT fire — the I-1 regression. Both edges
+/// into area 1 are canal crossings, so every WALK there costs 1 Yen while the
+/// Station teleport is free: different `(destination, fee vector)` labels, so
+/// BOTH must survive. An implementation that suppressed on destination rather
+/// than on zero cost silently drops the teleport here.
+#[test]
+fn a_tolled_walk_and_a_free_teleport_both_survive_through_the_public_surface() {
+    let rules = Rules::standard();
+    let mut s = routes_diamond(&[(0, 1), (1, 3)]);
+    s.players[0].technologies = vec![tech_id(&rules, TechEffect::Station)];
+    s.station_location = Some(AreaId::new(1));
+
+    let moves = assert_routes_family_ordered(&s, &rules, 4, "tolled walk + Station");
+    assert_eq!(
+        moves_to(&moves, 1),
+        vec![(AreaId::new(1), vec![AreaId::new(1)]), (AreaId::new(1), vec![])],
+        "the tolled walk and the free teleport are distinct labels — both survive: {moves:?}",
+    );
+}
+
+/// From hand: the routes family is `PlacePresident` over ASCENDING area ids,
+/// gated on the possible-action-area test and on affording the destination fee —
+/// and the family tag `families()` pairs it with records `from_hand: true`, the
+/// public-surface fact the crate-private assembly cannot show.
+#[test]
+fn place_president_from_hand_through_the_public_surface() {
+    let rules = Rules::standard();
+    let mut s = routes_diamond(&[]);
+    s.players[0].president_location = PresidentLocation::InHand;
+    s.players[1].president_location = PresidentLocation::OnBoard(AreaId::new(2));
+
+    let fams = families(&s, &rules);
+    assert!(
+        fams.iter().any(|f| matches!(
+            f,
+            MoveFamily::MovementRetreat { from_hand: true, .. }
+        )),
+        "a President in hand must tag the retreat family from_hand: {fams:?}",
+    );
+
+    // No Postal: the opponent's area is not a Possible Action Area.
+    let moves = assert_routes_family_ordered(&s, &rules, 2, "from hand, no Postal");
+    assert_eq!(place_destinations(&moves), vec![AreaId::new(1), AreaId::new(3)]);
+    assert!(
+        !moves.iter().any(|m| matches!(m, Move::MovePresident { .. })),
+        "a President in hand walks nowhere: {moves:?}",
+    );
+
+    // Postal opens area 2 at a 1-Yen destination fee, which 5 Yen affords.
+    s.players[0].technologies = vec![tech_id(&rules, TechEffect::PostalSystem)];
+    let moves = assert_routes_family_ordered(&s, &rules, 3, "from hand, Postal");
+    assert_eq!(
+        place_destinations(&moves),
+        vec![AreaId::new(1), AreaId::new(2), AreaId::new(3)],
+        "ascending, including the fee-paying destination",
+    );
+
+    // Broke: the fee gates area 2 back out; the free destinations remain.
+    s.players[0].money = 0;
+    let moves = assert_routes_family_ordered(&s, &rules, 2, "from hand, Postal, broke");
+    assert_eq!(
+        place_destinations(&moves),
+        vec![AreaId::new(1), AreaId::new(3)],
+        "an unaffordable destination fee excludes the destination",
+    );
+}
+
+/// The pre-flight's delegation arm, driven through the PUBLIC surface. A board
+/// carrying `AreaId(18)` exceeds `route_enum::MAX_AREAS`, so the enumerator
+/// hands the whole walk back to the frozen `enumerate_president_routes` — and
+/// `iter_family` must still be the legal list's routes partition, in order.
+/// `AreaId::new` refuses ids ≥ 18, so the tuple constructor is used deliberately:
+/// no generated board reaches this shape (`route_enum`'s
+/// `every_generated_board_fits_the_fixed_arrays` pins that), and the fixture
+/// exists only to drive the fallback.
+#[test]
+fn an_oversized_board_delegates_and_still_serves_the_partition() {
+    let rules = Rules::standard();
+    let mut s = state_with_areas(2, TurnPhase::Movement, 1);
+    s.board_layout.areas.insert(
+        AreaId(18),
+        AreaConfig { area_type: AreaType::CopperMine, grid_position: (0, 1) },
+    );
+    connect(&mut s, AreaId::new(0), AreaId(18), false);
+    s.players[0].president_location = PresidentLocation::OnBoard(AreaId::new(0));
+    s.players[0].assistants.on_board.insert(AreaId(18), 1);
+    s.players[0].money = 5;
+
+    assert!(!fits_fixed_arrays(&s), "an AreaId past MAX_AREAS must fail the pre-flight");
+    let moves = assert_routes_family_ordered(&s, &rules, 1, "oversized board");
+    assert_eq!(
+        moves,
+        vec![Move::MovePresident { path: vec![AreaId(18)], destination: AreaId(18) }],
+        "the delegated walk must still be served: {moves:?}",
+    );
+}
+
+// ---------------------------------------------------------------------------
 // Release tier.
 // ---------------------------------------------------------------------------
 
 /// RELEASE-GATE union sweep (CLAUDE.md two-tier policy): the same per-decision
-/// union-equivalence property as the per-edit driven test, swept broader (seeds
-/// 0..20 × 2/3/4P) and deeper into each game — the distributional regression net
-/// that need not re-run on every edit.
+/// union-and-order equivalence property as the per-edit driven test, swept
+/// broader (seeds 0..20 × 2/3/4P) and deeper into each game — the distributional
+/// regression net that need not re-run on every edit.
 #[test]
-#[ignore = "release gate (CLAUDE.md two-tier policy): union-equivalence sweep at seeds 0..20 x 2/3/4P deep into each game; run with cargo test --release -p yokohama-core --test action_source_equivalence -- --ignored before merges/phase closes"]
+#[ignore = "release gate (CLAUDE.md two-tier policy): union+order equivalence sweep at seeds 0..20 x 2/3/4P deep into each game; run with cargo test --release -p yokohama-core --test action_source_equivalence -- --ignored before merges/phase closes"]
 fn release_union_sweep_seeds_0_20() {
     let rules = Rules::standard();
     let stats = run_union_sweep(&rules, 0..20, 8000);
 
     assert!(stats.decision_points > 5000, "expected a large sweep, saw {}", stats.decision_points);
+    assert!(stats.routes_points > 500, "expected many Movement points, saw {}", stats.routes_points);
+    assert!(stats.routes_moves > 1000, "routes families served only {} moves", stats.routes_moves);
     println!(
-        "release union sweep: {} decision points, all full-multiset-checked against get_legal_moves",
-        stats.decision_points,
+        "release union sweep: {} decision points, all multiset- AND order-checked against \
+         get_legal_moves; {} of them dispatched a MovementRoutes family, serving {} route moves",
+        stats.decision_points, stats.routes_points, stats.routes_moves,
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Phase 3.1b: DENSE adversarial route cells (release tier only).
+//
+// Organic play offers the enumerator tens of labels; these cells offer hundreds,
+// which is where a comparator or witness bug that the sparse cells tolerate
+// actually surfaces. They are release-tier for cost, not for character: each one
+// pays a full frozen-reference enumeration inside `get_legal_moves` on a
+// money-saturated board, plus that board's 2¹⁷-member retreat product, and the
+// enumerator's lex-drift `debug_assert` is O(prefixes × labels) in the debug
+// profile — a per-edit dense cell would cost seconds.
+//
+// EVERY LABEL FIGURE HERE IS AN OBSERVATION, NEVER A CEILING (spec F5/L9). The
+// label space is unsearched; the floors below are `>=` against counts THIS
+// harness reproduced on this machine, and the recorded maxima are printed, never
+// asserted. Nothing in this file may be read as a bound on route-label count.
+// ---------------------------------------------------------------------------
+
+/// The Canal's grid cell for the dense board: `(row 1, col 3)` = `AreaId(9)` on
+/// the staggered 4P pyramid, a fully-interior tile with all SIX brick neighbours.
+/// That is the maximal-neighbour placement, so the any-to-any derivation yields
+/// NINE tolled crossings and the Canal's neighbourhood is a complete K6 — the
+/// densest graph a real board can present to the enumerator.
+const DENSE_CANAL: (u8, u8) = (1, 3);
+
+/// The real 4P STAGGERED pyramid (rows 6/5/4/3, 18 tiles) with the Canal at
+/// [`DENSE_CANAL`], built from the engine's own topology primitives
+/// ([`staggered_adjacency`] + [`derive_canal_crossings`]) so the fixture cannot
+/// drift from the board the generator produces.
+///
+/// The SHAPE is `yokohama-difftest/tests/routes3_worstcase.rs`'s — the harness
+/// whose battery recorded the 458/519 label observations these cells reproduce —
+/// re-built here rather than imported: `yokohama-core` does not depend on the
+/// difftest crate, and a test crate is not a fixture library.
+fn dense_board() -> BoardLayout {
+    let rows = row_lengths(4);
+    // Area types are irrelevant to route enumeration except `allows_placement`
+    // (which gates Tram destinations and the Canal); a rotating palette keeps the
+    // board plausible without claiming setup validity.
+    let palette = [
+        AreaType::CopperMine,
+        AreaType::SilkMill,
+        AreaType::TeaPlantation,
+        AreaType::FishingGround,
+        AreaType::Bank,
+        AreaType::Chinatown,
+    ];
+    let mut b = BoardLayoutBuilder::new();
+    let mut idx = 0u8;
+    for (r, &len) in rows.iter().enumerate() {
+        for col in 0..len {
+            let id = AreaId::new(idx);
+            let ty = if (r as u8, col) == DENSE_CANAL {
+                AreaType::Canal
+            } else {
+                palette[(idx as usize) % palette.len()]
+            };
+            b.add_area(id, AreaConfig { area_type: ty, grid_position: (r as u8, col) });
+            if ty != AreaType::Canal {
+                b.set_building_site(id, BuildingSite::new([1, 1, 1, 1], 3));
+                b.set_five_power_token(id, FivePowerEffect::Money(1));
+            }
+            idx += 1;
+        }
+    }
+    for (a, z) in staggered_adjacency(&rows) {
+        b.add_adjacency(a, z);
+    }
+    // Any-to-any Canal transit: adjacency (a walk may cross without stopping) AND
+    // a crossing (the cross tolls 1 Yen to the bank).
+    for (a, z) in derive_canal_crossings(DENSE_CANAL, &rows) {
+        b.add_adjacency(a, z);
+        b.add_canal_crossing(a, z);
+    }
+    b.build().expect("dense staggered board validates")
+}
+
+/// A dense Movement state: the [`dense_board`], the mover's President on `start`,
+/// own assistants on EVERY non-Canal area (all 17, so the whole interior K6 is
+/// live and the mover can walk the entire pyramid), the three opponents'
+/// Presidents on `opponents`, `techs` granted, and 1,000 Yen so no affordability
+/// cutoff bites — money is the enumerator's cost driver (spec F6), and these
+/// cells exist to be expensive.
+fn dense_state(start: u8, opponents: [u8; 3], techs: &[TechEffect], rules: &Rules) -> GameState {
+    let canal = cell_to_area_id(DENSE_CANAL.0, DENSE_CANAL.1, &row_lengths(4));
+    let colors = [PlayerColor::Red, PlayerColor::Blue, PlayerColor::Yellow, PlayerColor::Green];
+
+    let mut s = state_with_areas(4, TurnPhase::Movement, 1);
+    s.board_layout = dense_board();
+    s.players = (0..4)
+        .map(|i| PlayerState::new(PlayerId::new(i), colors[i as usize], i == 0))
+        .collect();
+    s.players[0].president_location = PresidentLocation::OnBoard(AreaId::new(start));
+    for id in (0..18u8).filter(|&id| AreaId::new(id) != canal) {
+        s.players[0].assistants.on_board.insert(AreaId::new(id), 1);
+    }
+    for (i, &opp) in opponents.iter().enumerate() {
+        s.players[i + 1].president_location = PresidentLocation::OnBoard(AreaId::new(opp));
+    }
+    s.players[0].money = 1_000;
+    s.players[0].technologies = techs.iter().map(|&e| tech_id(rules, e)).collect();
+    s
+}
+
+/// One dense cell: a geometry plus the label count THIS harness reproduced for
+/// it, as a FLOOR (`>=`), never as a ceiling.
+struct DenseCell {
+    name: &'static str,
+    /// The mover's President's area.
+    start: u8,
+    /// The three opponents' President areas.
+    opponents: [u8; 3],
+    techs: &'static [TechEffect],
+    /// Max label count OBSERVED under THIS harness (recorded in the test's doc
+    /// comment with the reproduction it came from). Asserted only as a floor.
+    floor: usize,
+}
+
+/// The dense battery. `plain` and `postal` reproduce
+/// `routes3_worstcase.rs`'s maximal state (start 0, opponents [3,8,17]); the last
+/// two reproduce the two label-richest geometries the 3.1b research recorded
+/// (spec F5: R1's start-12 cell and the critic probe's start-17 cell, both
+/// Postal, both previously UNTIMED — this battery times them).
+///
+/// **The four floors are this harness's own measurements, and they came back
+/// EQUAL to the four figures the spec quotes from three different harnesses**
+/// (458 / 519 from the difftest battery, 612 from R1's sweep, 694 from the critic
+/// probe). That agreement is evidence the geometries were reproduced faithfully;
+/// it is NOT evidence that any of them is a maximum. Every one stays a `>=` floor
+/// (spec F5/L9: the label space is unsearched, so no figure is a ceiling).
+const DENSE_CELLS: [DenseCell; 4] = [
+    DenseCell { name: "plain", start: 0, opponents: [3, 8, 17], techs: &[], floor: 458 },
+    DenseCell {
+        name: "postal",
+        start: 0,
+        opponents: [3, 8, 17],
+        techs: &[TechEffect::PostalSystem],
+        floor: 519,
+    },
+    DenseCell {
+        name: "postal, start 12, opponents [1,6,11]",
+        start: 12,
+        opponents: [1, 6, 11],
+        techs: &[TechEffect::PostalSystem],
+        floor: 612,
+    },
+    DenseCell {
+        name: "postal, start 17, opponents [2,7,12]",
+        start: 17,
+        opponents: [2, 7, 12],
+        techs: &[TechEffect::PostalSystem],
+        floor: 694,
+    },
+];
+
+/// RELEASE GATE — the dense adversarial route cells. At each cell the
+/// `MovementRoutes` family served through the public factored surface equals the
+/// legal list's routes partition ELEMENT FOR ELEMENT at hundreds of labels, meets
+/// its observed floor, and has its realized label count and wall time RECORDED.
+///
+/// MEASURED 2026-07-25, release profile, this Mac, whole test 0.75 s. The
+/// binary's release gate was 20.77 s before this battery and measured 21.24 s
+/// then 20.90 s after: the two release tests run on separate threads, so the
+/// dense cells overlap the longer sweep and the wall-clock delta lands inside
+/// run-to-run noise rather than adding 0.75 s.
+///
+/// | cell                                | labels | `enumerate_routes` | ordered compare |
+/// |-------------------------------------|--------|--------------------|-----------------|
+/// | plain                               |    458 |            4.56 ms |       224.34 ms |
+/// | postal                              |    519 |            3.81 ms |       214.64 ms |
+/// | postal, start 12, opponents [1,6,11]|    612 |            1.87 ms |       113.23 ms |
+/// | postal, start 17, opponents [2,7,12]|    694 |            2.69 ms |       162.55 ms |
+///
+/// The right column is dominated by the frozen reference inside `get_legal_moves`
+/// (its route DFS plus the 2¹⁷ retreat product) — i.e. by the cost the factored
+/// serve exists to avoid, not by the factored serve. Both columns are RECORDED,
+/// never asserted, and the run-to-run spread is real: the `plain` cell runs
+/// first and enumerated in 9.27 ms on a cold binary against 4.56 ms on a repeat,
+/// which is why no timing here is a threshold. The label counts, by contrast,
+/// were bit-identical across both runs.
+///
+/// DISCRIMINATION (mutation-probed 2026-07-25, on the driven sweep this file's
+/// order gate shares): reversing the `MovementRoutes` `Vec` before the compare
+/// fails at 2P seed 0 turn 1, index 0 — while the retained `multiset_diff` check
+/// PASSES the same reversal unchanged. The order gate is therefore a genuinely
+/// new capability over the landed 3.1a sweep, not a restatement of it. Both
+/// mutations were reverted.
+#[test]
+#[ignore = "release gate (CLAUDE.md two-tier policy): dense adversarial route cells (17-area staggered board, money-saturated) — each pays a full frozen-reference enumeration plus a 2^17 retreat product; run with cargo test --release -p yokohama-core --test action_source_equivalence -- --ignored before merges/phase closes"]
+fn release_dense_route_cells_ordered_and_floored() {
+    let rules = Rules::standard();
+    let mut lines = Vec::new();
+
+    for cell in &DENSE_CELLS {
+        let s = dense_state(cell.start, cell.opponents, cell.techs, &rules);
+        assert!(fits_fixed_arrays(&s), "{}: dense cell must take the fixed-array path", cell.name);
+
+        // The factored enumeration alone: the walked-label set and its cost.
+        let t = std::time::Instant::now();
+        let labels = enumerate_routes(&s, &rules).len();
+        let enum_time = t.elapsed();
+
+        // The ordered compare, whose cost is dominated by the frozen reference
+        // inside `get_legal_moves` (the reference route DFS plus this board's
+        // 2^17-member retreat product) — the ceiling the factored serve avoids.
+        let t = std::time::Instant::now();
+        let moves = assert_routes_family_ordered(&s, &rules, cell.floor, cell.name);
+        let compare_time = t.elapsed();
+
+        // No teleport tech in any cell, so the family IS the walked-label set —
+        // which is what makes `labels` the figure the floor is stated against.
+        assert_eq!(
+            moves.len(),
+            labels,
+            "{}: without Station/Tram the family must be exactly the walked labels",
+            cell.name,
+        );
+        // The floor is asserted on BOTH sides independently — on the generator's
+        // partition inside the helper above, and here on the enumerator's own
+        // output. The ordered compare forces the two to agree, so either alone
+        // would do; stating both means a regression that silently emptied one
+        // side names the side it emptied.
+        assert!(
+            labels >= cell.floor,
+            "{}: enumerate_routes returned {labels} labels, below the {} this harness observed",
+            cell.name,
+            cell.floor,
+        );
+
+        lines.push(format!(
+            "  {:38} {labels:>4} labels (floor {:>4})  enumerate_routes {:>8.2?}  \
+             ordered-compare-incl-reference {:>9.2?}",
+            cell.name, cell.floor, enum_time, compare_time,
+        ));
+    }
+
+    println!(
+        "DENSE ROUTE CELLS (release; 4P staggered pyramid, interior Canal, 17 own-assistant \
+         areas, money 1000). Label counts are OBSERVATIONS under this harness, never ceilings \
+         (spec F5/L9); times are recorded, never asserted:\n{}",
+        lines.join("\n"),
     );
 }
