@@ -56,8 +56,10 @@ dissolves; disposition table findings per the map's §7 exposure map (rules corr
 `SEMANTICS_REV` + oracle co-evolution + corpus regeneration; observability facts → the 3.0
 mask list).
 
-**Queued truth-pass items** (map §10.1–2, land at 3.2 with the arena's fresh numbers): the
-4.5× mis-citation correction and the stale Movement-branching row flag in `guidingpath.md`.
+**Truth-pass status:** map §10's three items are ALL APPLIED (2026-07-25) — guidingpath's
+4.5× row is corrected in place and the pre-L2 branching row is flagged SUPERSEDED. Your only
+remaining obligation there: 3.2 re-verifies the A/B at arena scale and records those numbers
+beside the correction.
 
 **First deliverable:** the 3.0 (observation & belief) spec, brainstormed against the map's 3.0
 envelope, then its implementation plan, then TDD execution through to a reviewed, merged PR.
