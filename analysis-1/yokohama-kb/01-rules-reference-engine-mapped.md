@@ -565,7 +565,7 @@ AdditionalAction phase it was invoked from (`is_mercenary_action` / `mercenary_r
 | Canal toll 1 Yen (goes to the bank, not credited to anyone) | same cost function; canal tolls are deliberately excluded from the credit function |
 | Cannot return to the turn's starting area | `apply_move.rs::validate_movement_destination` / `president_start_area` |
 | Option B: return President to hand, optionally recover any assistants, skip straight to Phase C | `apply_move.rs::apply_return_to_hand`; always legal, including from-hand (2026-07-17 ruling — the required Movement step must never dead-end) |
-| Station: free teleport to the token's area | `movement.rs::can_teleport_to_station_with_tech` / `generate_station_teleport_move` (mechanic works; nothing ever places the token — §9) |
+| Station: free teleport to the token's area | `movement.rs::can_teleport_to_station_with_tech`, emitted by `legal_moves.rs::generate_movement_moves_with_tech` (the suppression-aware caller) and mirrored on the factored side by `route_enum::movement_routes_family` (mechanic works; nothing ever places the token — §9) |
 
 ### Area Action (all six "permissive" areas support `AreaAction::Skip`; Production areas + Bank do not — 2026-07-17 optionality ruling)
 
@@ -675,7 +675,8 @@ choice to auto-resolve; these three are simply not wired to anything.)
 **3. Station's acquisition effect is a known but under-documented gap.** Grepping for
 `station_location =` assignments shows the only ones anywhere in the crate are inside test
 fixtures (`power.rs`, `legal_moves.rs`); no production code path ever places the token. The
-teleport mechanic itself (`can_teleport_to_station`, `generate_station_teleport_move`) is correctly
+teleport mechanic itself (`can_teleport_to_station` / `can_teleport_to_station_with_tech`, emitted
+by `legal_moves.rs::generate_movement_moves_with_tech`) is correctly
 implemented and would work fine *if* a token were ever placed. This is called out in a code
 comment (`apply_lab_acquisition_bonuses`: *"Station's token placement on acquisition is a
 deliberate v1 engine limitation"*) but isn't in the decision log or CLAUDE.md, so it's easy to miss
