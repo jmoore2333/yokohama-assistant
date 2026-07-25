@@ -24,8 +24,8 @@
 //! - PER-EDIT (not ignored): the driven-game union check at seeds 0..5 × 2/3/4P
 //!   (capped), plus the constructed adversarial fixtures — the retreat 442,368
 //!   worst case (checked by COUNT + spot-checks, never a second 442k
-//!   collection), the ≥ C(17,3) placement family, and the non-sorted-hand
-//!   FulfillOrder order round-trip.
+//!   collection), the placement family hard-pinned at its full 3,231 ceiling,
+//!   and the non-sorted-hand FulfillOrder order round-trip.
 //! - RELEASE (`#[ignore]`d): the same union check swept at seeds 0..20 × 2/3/4P,
 //!   deeper into each game — the distributional regression net.
 //!
@@ -381,7 +381,11 @@ fn placement_family_at_scale_matches_and_exceeds_c_17_3() {
 
     let placement = MoveFamily::Placement;
     let len = family_len(&state, &rules, &placement);
-    assert!(len >= C_17_3, "placement family_len {len} must exceed C(17,3)={C_17_3} (exercised at scale)");
+    assert_eq!(
+        len, 3_231,
+        "placement family_len must be the published ceiling Σ C(17,k) (k=0..=4) + 17 Option-B \
+         basics = 3231, far above the C(17,3)={C_17_3} anti-vacuity floor",
+    );
 
     let got: Vec<Move> = iter_family(&state, &rules, &placement).collect();
     let legal = get_legal_moves(&state, &rules);

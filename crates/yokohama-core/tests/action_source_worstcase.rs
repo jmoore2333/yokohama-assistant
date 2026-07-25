@@ -203,11 +203,13 @@ fn worst_case_state() -> GameState {
 /// Build the full 4P OnBoard state and materialize `get_legal_moves` (MEASURED on
 /// this fixture: 442,369 moves = 442,368 retreat + 1 route, ~1.02M allocs, ~57.8
 /// MB peak) — the exact cost the factored serve avoids — then re-prove the
-/// serve-one COUNT bound on the same snapshot. `#[ignore]`d because the ceiling
-/// materialization is the multi-hundred-ms work the two-tier policy keeps off
-/// every edit.
+/// serve-one COUNT bound on the same snapshot. `#[ignore]`d for its
+/// recorded-curve character: the ceiling run is a regression-net MEASUREMENT,
+/// not a per-edit correctness property — an equal-cost 442k materialization
+/// already runs per-edit in `action_source_equivalence`'s retreat fixture, so
+/// runtime is not the tiering reason.
 #[test]
-#[ignore = "release gate (CLAUDE.md two-tier policy): materializes the 442k exhaustive get_legal_moves ceiling (~1.02M allocs, ~0.4s debug) to record the gap the factored serve avoids; run with cargo test --release -p yokohama-core --test action_source_worstcase -- --ignored before merges/phase closes"]
+#[ignore = "release gate (CLAUDE.md two-tier policy): a recorded-curve measurement, not a per-edit correctness property — re-pays the 442k exhaustive ceiling (~1.02M allocs) to record the gap the factored serve avoids (an equal-cost materialization already runs per-edit in action_source_equivalence); run with cargo test --release -p yokohama-core --test action_source_worstcase -- --ignored before merges/phase closes"]
 fn exhaustive_ceiling_recorded_and_serve_one_still_bounded() {
     let rules = Rules::standard();
     let state = worst_case_state();
