@@ -73,8 +73,15 @@ impl BeliefSampler {
         let unseen_orders = view.unseen_orders(rules);
         let tech_remainder = view.tech_deck_remainder(rules);
 
+        // A masked slot is materializable only if it is SOMEONE ELSE'S single
+        // unfulfilled deal. Both refusals below are unreachable through
+        // `observe` -- exactly like the two size guards -- and are here for the
+        // same reason: `PlayerView` has public fields, and the worlds these
+        // shapes would produce conserve and pass `check_invariants` while
+        // silently failing to observe back to the view that produced them.
         let mut hidden_slots: Vec<(usize, usize)> = Vec::new();
         for (pi, p) in view.players.iter().enumerate() {
+            let mut slots_this_seat = 0usize;
             for (hi, c) in p.hand.iter().enumerate() {
                 if *c == HandCard::HiddenStartingOrder {
                     // The hand-size cap is an engine invariant
@@ -84,10 +91,35 @@ impl BeliefSampler {
                     if p.hand.len() > 3 {
                         return Err(BeliefError::HandOverflow(p.id));
                     }
+                    // A seat cannot be unknown to itself. Sampling one would
+                    // invent a card for our OWN hand and clobber the real
+                    // `starting_order` carried through by `materialize_player`.
+                    if p.id == view.viewer {
+                        return Err(BeliefError::Inconsistent(format!(
+                            "seat {} is the viewer and cannot hold a hidden starting order",
+                            p.id.0
+                        )));
+                    }
+                    slots_this_seat += 1;
+                    // One deal, one hidden card. `starting_order` holds a
+                    // single id, so a second slot would leave a hand position
+                    // holding a card no record points at -- and `observe`
+                    // would re-mask only one of the two.
+                    if slots_this_seat > 1 {
+                        return Err(BeliefError::Inconsistent(format!(
+                            "seat {} carries more than one hidden starting-order slot; \
+                             a seat is dealt exactly one",
+                            p.id.0
+                        )));
+                    }
                     hidden_slots.push((pi, hi));
                 }
             }
         }
+        // Single-sources the census against the reconciliation identity Task 3
+        // pinned with `hidden_slot_count()`: if the two ever disagree, `need`
+        // below is computed from a different set than `sample` writes.
+        debug_assert_eq!(hidden_slots.len(), view.hidden_slot_count());
 
         if tech_remainder.len() != view.tech_deck_len {
             return Err(BeliefError::RegistryMismatch(format!(
@@ -410,6 +442,68 @@ mod tests {
             BeliefSampler::from_view(&view, &rules, 1),
             Err(BeliefError::RegistryMismatch(_))
         ));
+    }
+
+    /// A seat cannot be unknown to ITSELF. `observe` can never build such a
+    /// view (the viewer's hand is rendered all-`Known`, and an unrecorded own
+    /// deal is refused outright), so this is hand-constructed -- but without a
+    /// guard the sampler would invent a card for our own hand, overwrite the
+    /// real `starting_order` with it, and hand back a world that conserves and
+    /// passes `check_invariants` yet silently does NOT observe back to the
+    /// view it came from.
+    #[test]
+    fn a_hidden_slot_on_the_viewers_own_seat_is_refused() {
+        let (state, rules) = keep_game(2, 7);
+        let mut view = observe(&state, PlayerId(0)).unwrap();
+        view.players[0].hand[0] = HandCard::HiddenStartingOrder;
+
+        // The mutated view still RECONCILES (the unmasked card leaves the
+        // located set exactly as the slot count rises), so it is this guard
+        // under test and not the size guard behind it.
+        assert_eq!(
+            view.unseen_orders(&rules).len(),
+            view.order_deck_len + view.orders_removed_len + view.hidden_slot_count(),
+            "the offending view must still reconcile, or this test proves nothing"
+        );
+
+        // `.err()` because `BeliefSampler` is deliberately not `Debug` -- the
+        // sampler holds a whole `PlayerView`, and a Debug impl on it would be
+        // a public surface this task has no reason to add.
+        match BeliefSampler::from_view(&view, &rules, 1).err() {
+            Some(BeliefError::Inconsistent(m)) => {
+                assert!(m.contains("seat 0"), "the refusal must name the seat; got: {m}")
+            }
+            other => panic!("expected Inconsistent, got {other:?}"),
+        }
+    }
+
+    /// One deal, one hidden card: two masked slots in a single hand cannot be
+    /// materialized coherently. `starting_order` can only hold the last one
+    /// written, so the other hand slot would carry a card the seat does not
+    /// own a record of -- and `observe` would then re-mask only one of the two
+    /// positions.
+    #[test]
+    fn two_hidden_slots_in_one_hand_are_refused() {
+        let (mut state, rules) = keep_game(2, 7);
+        // Seat 1 needs a second card before two slots can even be expressed.
+        let take = state.order_deck.pop().expect("deck is not empty");
+        state.players[1].order_cards_in_hand.push(take);
+        let mut view = observe(&state, PlayerId(0)).unwrap();
+        assert_eq!(view.players[1].hand.len(), 2);
+        view.players[1].hand[1] = HandCard::HiddenStartingOrder;
+
+        assert_eq!(
+            view.unseen_orders(&rules).len(),
+            view.order_deck_len + view.orders_removed_len + view.hidden_slot_count(),
+            "the offending view must still reconcile, or this test proves nothing"
+        );
+
+        match BeliefSampler::from_view(&view, &rules, 1).err() {
+            Some(BeliefError::Inconsistent(m)) => {
+                assert!(m.contains("seat 1"), "the refusal must name the seat; got: {m}")
+            }
+            other => panic!("expected Inconsistent, got {other:?}"),
+        }
     }
 
     #[test]
