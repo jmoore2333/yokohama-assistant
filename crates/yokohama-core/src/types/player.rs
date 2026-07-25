@@ -204,12 +204,15 @@ pub struct PlayerState {
 
     // Cards
     pub order_cards_in_hand: Vec<OrderCardId>,
-    /// The starting Order card (hidden from other players).
-    /// The only PLAYER-TO-PLAYER secret in base Yokohama -- but NOT the whole
-    /// hidden set: `order_deck`/`tech_deck` order, `orders_removed` contents
-    /// and `config.setup_seed` are engine-visible fiction no seated player can
-    /// inspect. A Phase-3 bot takes a `PlayerView` (game/observe.rs), never a
-    /// raw `GameState`.
+    /// The starting Order card (hidden from other players). The only
+    /// player-to-player secret base Yokohama MODELS in state -- with two hedges.
+    /// (1) It is not the whole hidden set: `order_deck`/`tech_deck` order,
+    /// `orders_removed` contents and `config.setup_seed` are engine-visible
+    /// fiction no seated player can inspect. (2) A seat also privately knows the
+    /// OTHER card it was dealt but did not keep (spec L1/F13, the own-discard
+    /// gap), anonymized into `orders_removed` and recorded by no field here. A
+    /// Phase-3 bot takes a `PlayerView` (game/observe.rs), never a raw
+    /// `GameState`.
     /// None if not yet assigned (pre-setup) or if the deal was never recorded.
     pub starting_order: Option<OrderCardId>,
     /// True when this player chose to keep their starting order deal hidden (live-tracked

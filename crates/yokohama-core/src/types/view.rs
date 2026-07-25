@@ -92,11 +92,20 @@ pub struct PlayerView {
     pub lab_state: LabState,
     /// Deck SIZE is public (a countable stack; the end trigger requires it to
     /// be observable -- `01-rules-reference.md:514`). Its ORDER is not.
+    ///
+    /// RECONCILIATION IDENTITY (constrains this field, `orders_removed_len`, and
+    /// the masked hand slots together): the three unseen-order sinks partition
+    /// the unseen order pool exactly --
+    ///   `order_deck_len + orders_removed_len + hidden_slot_count()
+    ///        == unseen_orders(rules).len()`.
+    /// `BeliefSampler::from_view` (game/belief.rs) is what validates it, refusing
+    /// any view where it fails rather than emitting an out-of-range slice.
     pub order_deck_len: usize,
     pub tech_deck_len: usize,
     /// The PHYSICAL box size, derived rather than copied -- see
     /// `game::observe::observe`. Under the live `Unknown` fiction the engine's
-    /// `orders_removed` holds one extra card per hidden seat.
+    /// `orders_removed` holds one extra card per hidden seat. Bound to
+    /// `order_deck_len` by the reconciliation identity documented there.
     pub orders_removed_len: usize,
     pub church_track: ChurchTrack,
     pub customs_track: CustomsTrack,
