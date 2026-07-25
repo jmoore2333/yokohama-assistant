@@ -37,6 +37,13 @@ use crate::types::*;
 /// bare tag suffices — the owned snapshot is only paid where it removes a
 /// borrow from the returned iterators.
 ///
+/// PRECONDITION: a family is only meaningful against the `state` it was derived
+/// from. The per-family functions take both, and the retreat arms
+/// `debug_assert` that the snapshot still matches the current player's
+/// `on_board` — serving a stale or foreign snapshot is a caller bug (the debug
+/// assert makes it loud; in release the served moves would simply be rejected
+/// by the checked `apply_move` boundary as a typed `MoveError`).
+///
 /// `MovementRoutes` covers **both** on-board President movement
 /// (`Move::MovePresident`, including Station/Tram teleports) and placing the
 /// President from hand (`Move::PlacePresident`) — the two ways the President
@@ -268,7 +275,9 @@ impl ExactSizeIterator for RetreatIter {}
 /// probability `∏ 1/(count+1) = 1/retreat_len`) — while doing only `O(#areas)`
 /// work and allocation, never touching the product. Every draw is legal by
 /// construction (0 = recover nothing there, `count` = recover all), so it is
-/// rejection-free and always yields an applicable move.
+/// rejection-free and always yields a move applicable to the state the
+/// `on_board` snapshot was taken from (a stale snapshot's draw is caught by the
+/// checked `apply_move` boundary, per the [`MoveFamily`] precondition).
 pub fn retreat_sample(on_board: &BTreeMap<AreaId, u8>, rng: &mut impl Rng) -> Move {
     let mut recover = BTreeMap::new();
     for (&area, &count) in on_board.iter().filter(|&(_, &count)| count > 0) {
@@ -719,7 +728,14 @@ fn delegated_family_moves(state: &GameState, rules: &Rules, family: &MoveFamily)
 /// placement moves).
 pub fn family_len(state: &GameState, rules: &Rules, family: &MoveFamily) -> usize {
     match family {
-        MoveFamily::MovementRetreat { on_board, .. } => retreat_len(on_board),
+        MoveFamily::MovementRetreat { on_board, .. } => {
+            debug_assert_eq!(
+                on_board,
+                &state.current_player().assistants.on_board,
+                "MoveFamily::MovementRetreat used against a state it was not derived from",
+            );
+            retreat_len(on_board)
+        }
         MoveFamily::Placement => placement_upper_len(state, rules),
         MoveFamily::MovementRoutes
         | MoveFamily::AdditionalAction
@@ -742,7 +758,14 @@ pub fn iter_family<'a>(
     family: &MoveFamily,
 ) -> Box<dyn Iterator<Item = Move> + 'a> {
     match family {
-        MoveFamily::MovementRetreat { on_board, .. } => Box::new(retreat_iter(on_board)),
+        MoveFamily::MovementRetreat { on_board, .. } => {
+            debug_assert_eq!(
+                on_board,
+                &state.current_player().assistants.on_board,
+                "MoveFamily::MovementRetreat used against a state it was not derived from",
+            );
+            Box::new(retreat_iter(on_board))
+        }
         MoveFamily::Placement => Box::new(placement_iter(state, rules)),
         MoveFamily::MovementRoutes
         | MoveFamily::AdditionalAction
@@ -755,21 +778,37 @@ pub fn iter_family<'a>(
     }
 }
 
-/// Draw one uniformly-random legal move from `family` at `state`. Retreat and
-/// placement use their bespoke samplers (Task 2's rejection-free per-area draw;
-/// Task 3's affordability-aware reservoir); every delegated family draws a
-/// uniform index into its materialized legal slice. Panics on an empty family --
-/// a caller must size a structurally-emptyable family (e.g. `MovementRoutes`
-/// with no legal route) via [`family_len`] `> 0` before sampling it.
+/// Draw one uniformly-random legal move from `family` at `state`, or `None`
+/// when the family is empty at this decision point. Retreat and placement use
+/// their bespoke samplers (Task 2's rejection-free per-area draw; Task 3's
+/// affordability-aware reservoir) and are never empty (the recover-nothing and
+/// empty-placement moves are always legal), so those arms always return `Some`;
+/// a delegated family draws a uniform index into its materialized legal slice
+/// and yields `None` when the slice is empty — [`families`] deliberately tags
+/// structurally-emptyable families (e.g. `MovementRoutes` with no Possible
+/// Action Area to enter), and `Option` puts that case in the signature instead
+/// of a panic or a redundant [`family_len`] pre-check (which would materialize
+/// a delegated family twice).
+///
+/// (Deviation from spec §3.2's literal `-> Move` signature, adopted at the PR
+/// #8 review: the spec predates the observation that `families()`'s structural
+/// dispatch emits organically-reachable empty route families.)
 pub fn sample_family(
     state: &GameState,
     rules: &Rules,
     family: &MoveFamily,
     rng: &mut impl Rng,
-) -> Move {
+) -> Option<Move> {
     match family {
-        MoveFamily::MovementRetreat { on_board, .. } => retreat_sample(on_board, rng),
-        MoveFamily::Placement => placement_sample(state, rules, rng),
+        MoveFamily::MovementRetreat { on_board, .. } => {
+            debug_assert_eq!(
+                on_board,
+                &state.current_player().assistants.on_board,
+                "MoveFamily::MovementRetreat used against a state it was not derived from",
+            );
+            Some(retreat_sample(on_board, rng))
+        }
+        MoveFamily::Placement => Some(placement_sample(state, rules, rng)),
         MoveFamily::MovementRoutes
         | MoveFamily::AdditionalAction
         | MoveFamily::AreaAction
@@ -777,9 +816,11 @@ pub fn sample_family(
         | MoveFamily::Building
         | MoveFamily::ChoiceResolution => {
             let mut moves = delegated_family_moves(state, rules, family);
-            assert!(!moves.is_empty(), "sample_family on an empty {family:?} family");
+            if moves.is_empty() {
+                return None;
+            }
             let i = rng.gen_range(0..moves.len());
-            moves.swap_remove(i)
+            Some(moves.swap_remove(i))
         }
     }
 }
@@ -1676,7 +1717,8 @@ mod tests {
     /// applies `Ok`, across organically-reached states. Retreat/placement route
     /// to their bespoke samplers; the delegated families draw a uniform index
     /// into the legal slice. A structurally-empty family (e.g. no legal route)
-    /// is skipped -- sampling is only defined on `family_len > 0`.
+    /// yields `None` and is skipped — the `Option` contract, pinned separately
+    /// by `sample_family_returns_none_on_structurally_empty_family`.
     #[test]
     fn sample_family_draws_apply_across_driven_games() {
         use rand::SeedableRng;
@@ -1702,11 +1744,11 @@ mod tests {
                         break;
                     }
                     for family in families(&state, &rules) {
-                        if family_len(&state, &rules, &family) == 0 {
-                            continue;
-                        }
                         for _ in 0..3 {
-                            let mv = sample_family(&state, &rules, &family, &mut rng);
+                            let Some(mv) = sample_family(&state, &rules, &family, &mut rng)
+                            else {
+                                continue;
+                            };
                             assert_eq!(
                                 family_kind(&mv),
                                 std::mem::discriminant(&family),
@@ -1726,6 +1768,44 @@ mod tests {
         assert!(drawn > 200, "expected many sampled draws, saw {drawn}");
     }
 
+    /// A structurally-empty family yields `None` from `sample_family` rather
+    /// than panicking. The shape is organically reachable: President in hand,
+    /// the only own-assistant area blocked by an opponent President ⇒
+    /// `families()` still tags `MovementRoutes` (structural dispatch, no
+    /// emptiness probe) but no `PlacePresident` destination is a Possible
+    /// Action Area, so the family is empty — while the retreat family keeps
+    /// the Movement step alive and still samples `Some`.
+    #[test]
+    fn sample_family_returns_none_on_structurally_empty_family() {
+        use rand::SeedableRng;
+        let rules = Rules::empty_for_tests();
+        let mut s = at_phase(TurnPhase::Movement);
+        s.players[0].president_location = PresidentLocation::InHand;
+        s.players[0].assistants.on_board.insert(AreaId::new(0), 1);
+        s.players[1].president_location = PresidentLocation::OnBoard(AreaId::new(0));
+
+        let fams = families(&s, &rules);
+        let routes = fams
+            .iter()
+            .find(|f| matches!(f, MoveFamily::MovementRoutes))
+            .expect("Movement dispatches a routes family");
+        let retreat = fams
+            .iter()
+            .find(|f| matches!(f, MoveFamily::MovementRetreat { .. }))
+            .expect("Movement dispatches a retreat family");
+
+        assert_eq!(family_len(&s, &rules, routes), 0, "no Possible Action Area ⇒ empty routes");
+        let mut rng = rand_chacha::ChaCha8Rng::seed_from_u64(7);
+        assert!(
+            sample_family(&s, &rules, routes, &mut rng).is_none(),
+            "an empty family must yield None, not panic",
+        );
+        assert!(
+            sample_family(&s, &rules, retreat, &mut rng).is_some(),
+            "the never-empty retreat family must still yield Some",
+        );
+    }
+
     /// Dispatch smoke: `iter_family`/`family_len`/`sample_family` on the bespoke
     /// families forward to the Task-2/3 functions (deeply tested there), so a
     /// mis-routed arm (e.g. retreat sent through the delegate path) is caught.
@@ -1734,11 +1814,12 @@ mod tests {
         use rand::SeedableRng;
         let rules = Rules::standard();
 
-        // Retreat: iter_family/family_len read only the family payload's
-        // on_board, so a bare base state suffices for the signature.
+        // Retreat: the payload's on_board drives the serve; the state mirrors
+        // it, per the MoveFamily precondition (debug-asserted in the arms).
         let on_board = on_board_of(&[(0, 2), (1, 1), (5, 2)]);
         let retreat = MoveFamily::MovementRetreat { on_board: on_board.clone(), from_hand: true };
-        let s = base_state();
+        let mut s = base_state();
+        s.players[0].assistants.on_board = on_board.clone();
         assert_eq!(
             iter_family(&s, &rules, &retreat).collect::<Vec<_>>(),
             retreat_iter(&on_board).collect::<Vec<_>>(),
@@ -1761,14 +1842,17 @@ mod tests {
             placement_upper_len(&ps, &rules),
         );
 
-        // Samples land in the right family.
+        // Samples land in the right family (both families are never empty).
         let mut rng = rand_chacha::ChaCha8Rng::seed_from_u64(4);
         assert_eq!(
-            family_kind(&sample_family(&s, &rules, &retreat, &mut rng)),
+            family_kind(&sample_family(&s, &rules, &retreat, &mut rng).expect("retreat non-empty")),
             std::mem::discriminant(&retreat),
         );
         assert_eq!(
-            family_kind(&sample_family(&ps, &rules, &MoveFamily::Placement, &mut rng)),
+            family_kind(
+                &sample_family(&ps, &rules, &MoveFamily::Placement, &mut rng)
+                    .expect("placement non-empty"),
+            ),
             std::mem::discriminant(&MoveFamily::Placement),
         );
     }
@@ -1791,7 +1875,7 @@ mod tests {
         assert!(got.iter().all(|m| matches!(m, Move::ChooseAnyGood { .. })));
 
         let mut rng = rand_chacha::ChaCha8Rng::seed_from_u64(9);
-        let mv = sample_family(&s, &rules, &family, &mut rng);
+        let mv = sample_family(&s, &rules, &family, &mut rng).expect("choice family non-empty");
         apply_move_unchecked(&s, &mv, &rules).expect("sampled choice resolution applies");
     }
 }
