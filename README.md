@@ -12,7 +12,7 @@ A Rust engine, live-game CLI tracker, and verification stack for the board game 
 2) a computer player → 3) computer vision / AR assist (deferred; the original 2025 AR-first
 vision lives in `docs/plans/2025-12-07-yokohama-assistant-design.md`).
 
-## Status (2026-07-22)
+## Status (2026-07-25)
 
 The engine plays complete, rules-correct games at 2–4 players and has been verified
 **differentially**: an independently-authored rules oracle — written from the rulebook and
@@ -26,7 +26,9 @@ surfaced with owner rulings. Full report:
 [`docs/plans/2026-07-20-phase-2.9-final-report.md`](docs/plans/2026-07-20-phase-2.9-final-report.md).
 
 **Next:** live-track a physical game start to finish (the Phase-2 gate), then Phase 3 — the
-computer player, with the differential harness as its standing regression net.
+computer player, with the differential harness as its standing regression net. Phase 3 is now
+mapped: [`docs/plans/2026-07-25-phase3-map.md`](docs/plans/2026-07-25-phase3-map.md)
+(accepted 2026-07-25) is its governing document — sub-phases, gates, and execution model.
 
 PR #5 adds the last pre-gate setup corrections and hardening. Its CLI is ready for tester use;
 start with the linked HTML guide and report any table/CLI mismatch.
