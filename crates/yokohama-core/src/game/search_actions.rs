@@ -667,7 +667,9 @@ pub fn placement_sample(state: &GameState, rules: &Rules, rng: &mut impl Rng) ->
 // its order and multiset exactly, including FulfillOrder's
 // `order_cards_in_hand` insertion order (`legal_moves.rs:59`), never a sorted
 // key. Those families are bounded-small, so materializing the filtered slice is
-// fine (the laziness guarantee only binds retreat/placement/routes).
+// fine. (The LAZINESS guarantee binds retreat/placement only; routes is a
+// compute-per-call SMALL family — the whole Vec materializes per call, which is
+// its documented, deliberately different contract, spec §3.1.)
 //
 // What the routes rewire bought (3.1b): the retired stub delegated like the
 // small families, so serving ONE route re-ran the whole generator -- retreat
@@ -771,7 +773,11 @@ pub fn family_len(state: &GameState, rules: &Rules, family: &MoveFamily) -> usiz
 }
 
 /// Lazily yield `family`'s moves at `state`, in the same order and with the same
-/// moves as `get_legal_moves` filtered to that family. Retreat and placement
+/// moves as `get_legal_moves` filtered to that family — at a decision point
+/// [`families`] actually reached: `families()` is the only tag producer and is
+/// phase- and queue-guarded, so a tag served against an off-phase or
+/// queue-headed state is caller misuse (the bespoke families would yield their
+/// structural moves where the generator yields none). Retreat and placement
 /// page/serve lazily (Tasks 2/3) without materializing the family; routes are
 /// computed per call by 3.1b's enumerator and served as the resulting `Vec`
 /// (O(labels), and never the exhaustive list — see the module note above);
