@@ -20,6 +20,7 @@ mod choices;
 mod semantics;
 mod observe;
 mod belief;
+mod agent;
 pub mod actions;
 
 pub use power::*;
@@ -41,3 +42,4 @@ pub use choices::*;
 pub use semantics::*;
 pub use observe::*;
 pub use belief::*;
+pub use agent::*;
