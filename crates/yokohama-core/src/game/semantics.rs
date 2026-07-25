@@ -101,6 +101,19 @@ pub fn state_digest(state: &GameState) -> String {
     format!("{:016x}", fnv1a_64(canon.as_bytes()))
 }
 
+/// Stable content digest of a `PlayerView` -- the OBSERVATION identity the
+/// leakage suites compare on. Same FNV-1a-64-over-canonical-JSON recipe as
+/// `state_digest` and sound for the same reason: a `PlayerView`'s maps are
+/// all `BTreeMap`s (it copies only `BTreeMap`-bearing state types), so serde
+/// emits them in key order.
+///
+/// `state_digest` cannot serve this purpose: it hashes the hidden members, so
+/// two worlds a seat cannot tell apart get different state digests.
+pub fn view_digest(view: &crate::types::PlayerView) -> String {
+    let canon = serde_json::to_string(view).expect("PlayerView serializes to JSON");
+    format!("{:016x}", fnv1a_64(canon.as_bytes()))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -132,5 +145,37 @@ mod tests {
         let moves = crate::game::legal_moves::get_legal_moves(&state, &rules);
         let next = crate::game::apply_move::apply_move(&state, &moves[0], &rules).unwrap();
         assert_ne!(before, state_digest(&next), "a real move must change the digest");
+    }
+
+    #[test]
+    fn view_digest_is_16_hex_and_equal_for_equal_views() {
+        use crate::game::observe::observe;
+        use crate::types::PlayerId;
+        let state = a_state(5);
+        let v1 = observe(&state, PlayerId(0)).unwrap();
+        let v2 = observe(&state.clone(), PlayerId(0)).unwrap();
+        let d = view_digest(&v1);
+        assert_eq!(d.len(), 16);
+        assert!(d.chars().all(|c| c.is_ascii_hexdigit()));
+        assert_eq!(d, view_digest(&v2));
+    }
+
+    #[test]
+    fn view_digest_ignores_hidden_state_that_state_digest_does_not() {
+        use crate::game::observe::observe;
+        use crate::types::PlayerId;
+        let state = a_state(5);
+        let mut scrambled = state.clone();
+        scrambled.order_deck.reverse();
+        assert_ne!(
+            state_digest(&state),
+            state_digest(&scrambled),
+            "the FULL-state digest sees the deck order"
+        );
+        assert_eq!(
+            view_digest(&observe(&state, PlayerId(0)).unwrap()),
+            view_digest(&observe(&scrambled, PlayerId(0)).unwrap()),
+            "a seat cannot see the deck order, so its view digest must not move"
+        );
     }
 }

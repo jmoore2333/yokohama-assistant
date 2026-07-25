@@ -17,9 +17,10 @@
 //!   4. `orders_removed` contents -- derived size only
 //!   5. each opponent's UNFULFILLED starting order, at both storage sites
 
+use crate::game::rules::Rules;
 use crate::types::{
-    GameConfig, GameState, HandCard, PlayerId, PlayerState, PlayerView, ViewConfig, ViewError,
-    VisiblePlayer,
+    GameConfig, GameState, HandCard, OrderCardId, PlayerId, PlayerState, PlayerView, TechCardId,
+    ViewConfig, ViewError, VisiblePlayer,
 };
 
 pub fn observe(state: &GameState, seat: PlayerId) -> Result<PlayerView, ViewError> {
@@ -200,6 +201,75 @@ fn visible_player(p: &PlayerState, viewer: PlayerId) -> VisiblePlayer {
         mercenaries: mercenaries.clone(),
         church_positions: church_positions.clone(),
         customs_positions: customs_positions.clone(),
+    }
+}
+
+impl PlayerView {
+    /// How many hidden starting-order slots this view carries (one per
+    /// opponent whose starting order is still unfulfilled).
+    pub fn hidden_slot_count(&self) -> usize {
+        self.players
+            .iter()
+            .flat_map(|p| p.hand.iter())
+            .filter(|c| **c == HandCard::HiddenStartingOrder)
+            .count()
+    }
+
+    /// Every order card this seat cannot locate: the registry minus the
+    /// face-up Port displays, minus every known hand card, minus every
+    /// completed order. Ascending by id -- the registries are `HashMap`-backed
+    /// and their iteration order is process-randomized, which would make a
+    /// seeded sampler irreproducible ACROSS PROCESSES (silently).
+    pub fn unseen_orders(&self, rules: &Rules) -> Vec<OrderCardId> {
+        let mut located: Vec<OrderCardId> = Vec::new();
+        for slot in self.port_state.port_a.slots.iter().flatten() {
+            located.push(*slot);
+        }
+        if let Some(b) = &self.port_state.port_b {
+            for slot in b.slots.iter().flatten() {
+                located.push(*slot);
+            }
+        }
+        for p in &self.players {
+            for c in &p.hand {
+                if let HandCard::Known(id) = c {
+                    located.push(*id);
+                }
+            }
+            located.extend(p.completed_orders.iter().copied());
+        }
+        rules
+            .orders
+            .iter_sorted_by_id()
+            .into_iter()
+            .map(|c| c.id)
+            .filter(|id| !located.contains(id))
+            .collect()
+    }
+
+    /// The exact multiset of technologies still in the deck: no tech card is
+    /// ever removed at setup, so `30 - labs - owned` is EXACT and only the
+    /// permutation is unknown. Ascending by id, same reason as above.
+    pub fn tech_deck_remainder(&self, rules: &Rules) -> Vec<TechCardId> {
+        let mut located: Vec<TechCardId> = Vec::new();
+        for slot in self.lab_state.lab_a.slots.iter().flatten() {
+            located.push(*slot);
+        }
+        if let Some(b) = &self.lab_state.lab_b {
+            for slot in b.slots.iter().flatten() {
+                located.push(*slot);
+            }
+        }
+        for p in &self.players {
+            located.extend(p.technologies.iter().copied());
+        }
+        rules
+            .techs
+            .iter_sorted_by_id()
+            .into_iter()
+            .map(|c| c.id)
+            .filter(|id| !located.contains(id))
+            .collect()
     }
 }
 
@@ -414,5 +484,77 @@ mod tests {
             observe(&live, PlayerId(0)).unwrap(),
             "a witnessed Port take must not expose the tracking shape either"
         );
+    }
+
+    #[test]
+    fn unseen_orders_is_sorted_and_reconciles_with_the_published_sizes() {
+        for (players, expect_unseen) in [(2u8, 29usize), (3, 23), (4, 23)] {
+            let (state, rules) = keep_game(players, 7);
+            let view = observe(&state, PlayerId(0)).unwrap();
+            let u = view.unseen_orders(&rules);
+
+            assert_eq!(u.len(), expect_unseen, "{players}P unseen pool");
+            let mut sorted = u.clone();
+            sorted.sort_by_key(|c| c.0);
+            assert_eq!(u, sorted, "registry enumeration must be sorted (HashMap order is random)");
+
+            // THE RECONCILIATION IDENTITY the sampler depends on.
+            assert_eq!(
+                u.len(),
+                view.order_deck_len + view.orders_removed_len + view.hidden_slot_count(),
+                "|U| = deck + box + hidden slots"
+            );
+        }
+    }
+
+    #[test]
+    fn tech_remainder_is_exactly_the_deck_and_is_sorted() {
+        let (state, rules) = keep_game(4, 7);
+        let view = observe(&state, PlayerId(0)).unwrap();
+        let t = view.tech_deck_remainder(&rules);
+        // No tech card is ever boxed at setup, so the remainder is EXACT --
+        // only the permutation is unknown (spec F9).
+        assert_eq!(t.len(), view.tech_deck_len);
+        let mut expected: Vec<_> = state.tech_deck.clone();
+        expected.sort_by_key(|c| c.0);
+        assert_eq!(t, expected, "tech identities are fully derivable");
+    }
+
+    #[test]
+    fn unseen_orders_excludes_every_publicly_located_card() {
+        let (state, rules) = keep_game(2, 7);
+        let view = observe(&state, PlayerId(0)).unwrap();
+        let u = view.unseen_orders(&rules);
+        for slot in state.port_state.port_a.slots.iter().flatten() {
+            assert!(!u.contains(slot), "port cards are face-up");
+        }
+        for c in &state.players[0].order_cards_in_hand {
+            assert!(!u.contains(c), "own hand is known to us");
+        }
+    }
+
+    #[test]
+    fn the_pool_and_the_identity_survive_the_live_tracking_shape() {
+        // The identity is NON-OBVIOUS under the live `Unknown` fiction: that
+        // seat's card sits in the engine's `orders_removed`, so it would be
+        // double-counted if `orders_removed_len` were copied rather than
+        // derived. Both terms must move together, at every player count.
+        for players in [2u8, 3, 4] {
+            let (live, rules) = live_game(players, 7);
+            let view = observe(&live, PlayerId(0)).unwrap();
+            assert_eq!(
+                view.unseen_orders(&rules).len(),
+                view.order_deck_len + view.orders_removed_len + view.hidden_slot_count(),
+                "{players}P live |U| = deck + box + hidden slots"
+            );
+
+            // Same physical truth under either tracking shape => same pool.
+            let (sim, _) = keep_game(players, 7);
+            assert_eq!(
+                view.unseen_orders(&rules),
+                observe(&sim, PlayerId(0)).unwrap().unseen_orders(&rules),
+                "{players}P: tracking shape must not move the unseen pool"
+            );
+        }
     }
 }
