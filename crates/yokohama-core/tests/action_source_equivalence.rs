@@ -43,7 +43,7 @@ use yokohama_core::{
     apply_move_unchecked, families, family_len, get_legal_moves, is_game_over, iter_family,
     AchievementCard, AchievementType, AreaConfig, AreaId, AreaType, BoardLayout, ChurchTrack,
     CustomsTrack, GameConfig, GameState, LabState, MercenarySupply, Move, MoveFamily, OrderCardId,
-    PlayerColor, PlayerId, PlayerState, PortState, PresidentLocation, Rules, TurnPhase,
+    PlayerColor, PlayerId, PlayerState, PortState, PresidentLocation, Rules, TechEffect, TurnPhase,
 };
 
 // ---------------------------------------------------------------------------
@@ -352,16 +352,26 @@ fn retreat_worst_case_442368_union_matches_by_count() {
     }
 }
 
-/// ANTI-VACUITY (a), placement: a placement family above C(17,3) — 17
-/// placement-allowing areas, in_hand 3, no fees ⇒ `family_len` ≥ 680, and the
-/// union matches `get_legal_moves` exactly (fully affordable ⇒ the honest upper
-/// bound is exact and the realized set materializes cheaply).
+/// ANTI-VACUITY (a), placement: a placement family FAR above C(17,3) — 17
+/// placement-allowing areas, Newspaper (k up to 4), in_hand 4, no fees ⇒
+/// `family_len` = Σ_{k=0}^{4} C(17,k) + 17 Option-B basics = 3231 (the plan's
+/// Test-sizing fixture), well past C(17,3)=680 and exercising the k=4
+/// combination construction at integration scale. The union matches
+/// `get_legal_moves` exactly (fully affordable ⇒ the honest upper bound is exact
+/// and the realized set materializes cheaply).
 #[test]
 fn placement_family_at_scale_matches_and_exceeds_c_17_3() {
     let rules = Rules::standard();
+    let newspaper = rules
+        .techs
+        .iter()
+        .find(|t| t.effect == TechEffect::Newspaper)
+        .expect("standard data carries Newspaper")
+        .id;
     let mut state = state_with_areas(4, TurnPhase::Placement, 17);
-    state.players[0].assistants.in_hand = 3;
+    state.players[0].assistants.in_hand = 4;
     state.players[0].money = 1_000;
+    state.players[0].technologies = vec![newspaper];
 
     assert_eq!(
         families(&state, &rules),
@@ -380,8 +390,8 @@ fn placement_family_at_scale_matches_and_exceeds_c_17_3() {
     }
     assert_eq!(len, got.len(), "no fees ⇒ the placement upper bound is exact here");
     assert!(
-        got.iter().any(|m| matches!(m, Move::PlaceThreeAreas { placements } if placements.len() == 3)),
-        "a 3-area placement must be present at in_hand 3",
+        got.iter().any(|m| matches!(m, Move::PlaceThreeAreas { placements } if placements.len() == 4)),
+        "a 4-area placement must be present at in_hand 4 with Newspaper (k reaches 4)",
     );
 }
 
