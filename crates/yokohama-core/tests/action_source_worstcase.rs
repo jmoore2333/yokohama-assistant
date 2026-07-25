@@ -365,13 +365,17 @@ fn route_bound(labels: usize) -> usize {
 ///
 /// REPLICATED (not imported) from `action_source_equivalence.rs`'s
 /// `state_with_areas(players, TurnPhase::Movement, n_areas)`: cargo compiles
-/// every `tests/*.rs` as its own binary, so two test binaries cannot share a
-/// helper without a `tests/common/` module — and that module is the shared
-/// self-play driver, not a fixture library. Spec §4-2 requires this file's route
-/// cells and the equivalence gate's to stand on IDENTICAL fixture constructions
-/// (the bound is only meaningful because that gate pins the same fixture's label
-/// LIST), so the replication is deliberate; the label-count tripwires below are
-/// what keep it honest if either copy drifts.
+/// every `tests/*.rs` as its own binary; sharing across binaries IS possible
+/// via a `#[path]`-included subdirectory module (exactly how `action_cost_meter`
+/// stays single-sourced between this binary and the example), and a shared
+/// `tests/route_fixtures/` would make spec §4-2's same-fixture rule STRUCTURAL —
+/// carried as a named follow-up (T4 review) rather than reshaping T3's committed
+/// file mid-wave. Until then the replication is deliberate and its guard is
+/// honest but LIMITED: the frozen-reference equality below is computed on THIS
+/// file's construction, so both sides move together under a drift — the floor
+/// catches an EMPTIED enumerator, not a diverged copy (empirically checked at
+/// review: a Postal-drifted copy passes self-consistently). The same-fixture
+/// property rests on review discipline + spec §4-2 until the shared module lands.
 fn route_base_state(players: u8, n_areas: u8) -> GameState {
     let colors = [PlayerColor::Red, PlayerColor::Blue, PlayerColor::Yellow, PlayerColor::Green];
     let mut areas = BTreeMap::new();
@@ -530,6 +534,13 @@ fn assert_route_labels(labels: usize, reference_len: usize, floor: usize, label:
     );
 }
 
+/// The smoke fixture's label floor: 44 OBSERVED under this harness, asserted at
+/// 40 so a benign label-space change is not a false failure while an emptied
+/// enumerator still trips it. Seven times the plan's "≥ 6 labels so the bound
+/// isn't trivial" mandate — the three opponent Presidents multiply each
+/// destination's label set. A floor, never a ceiling (spec F5/L9).
+const SMOKE_FLOOR: usize = 40;
+
 /// PER-EDIT (not ignored) — THE ROUTE BOUND at a small route-rich fixture:
 /// [`enumerate_routes`] computes the WHOLE label set in at most
 /// [`route_bound`]`(labels)` allocations, and so does the same family served
@@ -583,13 +594,6 @@ fn enumerating_a_small_route_family_is_bounded_allocation_count() {
         m_enum.allocs, m_enum.peak_bytes, m_family.allocs, m_family.peak_bytes,
     );
 }
-
-/// The smoke fixture's label floor: 44 OBSERVED under this harness, asserted at
-/// 40 so a benign label-space change is not a false failure while an emptied
-/// enumerator still trips it. Seven times the plan's "≥ 6 labels so the bound
-/// isn't trivial" mandate — the three opponent Presidents multiply each
-/// destination's label set. A floor, never a ceiling (spec F5/L9).
-const SMOKE_FLOOR: usize = 40;
 
 /// The Canal's grid cell for the dense board: `(row 1, col 3)` = `AreaId(9)` on
 /// the staggered 4P pyramid, a fully-interior tile with all SIX brick
@@ -652,8 +656,10 @@ fn dense_board() -> BoardLayout {
 /// `techs` parameter: this file instantiates only the no-tech `plain` cell
 /// ([`DENSE_FLOOR`]), and `dense_state(_, _, &[], _)` assigns an empty
 /// technology list over the empty one `PlayerState::new` already gives — so
-/// dropping the parameter is construction-identical, and the label-count
-/// tripwire in [`assert_route_labels`] would catch it if it were not.
+/// dropping the parameter is construction-identical. (A divergence between the
+/// two copies is NOT mechanically caught — see the module note above; the
+/// [`assert_route_labels`] equality is against the frozen reference on THIS
+/// file's state, so it stays self-consistent under drift.)
 fn dense_state(start: u8, opponents: [u8; 3]) -> GameState {
     let canal = cell_to_area_id(DENSE_CANAL.0, DENSE_CANAL.1, &row_lengths(4));
 
@@ -746,17 +752,33 @@ fn route_reference_ceiling_recorded_and_enumeration_bounded() {
         m_enum.allocs,
     );
 
+    // The FAMILY surface at the same cell (T4 review's strengthening): assembly
+    // adds only a handful of allocations over the enumerator (479 observed at
+    // 458 labels), so the whole-family claim is gated at BOTH tiers, not
+    // smoke-only. No teleport tech on this cell ⇒ the family IS the walked set.
+    let (family_moves, m_family) =
+        meter::measure(|| iter_family(&s, &rules, &MoveFamily::MovementRoutes).count());
+    assert_eq!(family_moves, labels, "dense plain: the family serves exactly the label set");
+    assert!(
+        m_family.allocs <= bound,
+        "dense plain: iter_family(MovementRoutes) allocated {} for {labels} labels (> {bound})",
+        m_family.allocs,
+    );
+
     println!(
         "ROUTE CEILING vs O(labels) ENUMERATION (release; dense `plain` cell — 4P staggered \
          pyramid, interior Canal, 17 own-assistant areas, money 1000).\n  \
          {labels} labels (floor {DENSE_FLOOR}; an observation under this harness, never a \
          ceiling), bound {bound} = 2·labels + 32\n  \
          enumerate_routes (factored):           {} allocs, {} peak outstanding bytes, {enum_time:.2?}\n  \
+         iter_family(MovementRoutes):           {} allocs, {} peak outstanding bytes\n  \
          enumerate_president_routes (frozen):   {} allocs, {} peak outstanding bytes, {reference_time:.2?}\n  \
          allocation ratio: {}x — the recorded discharge figure. Times and bytes are RECORDED, \
          never asserted.",
         m_enum.allocs,
         m_enum.peak_bytes,
+        m_family.allocs,
+        m_family.peak_bytes,
         m_reference.allocs,
         m_reference.peak_bytes,
         m_reference.allocs / m_enum.allocs.max(1),
