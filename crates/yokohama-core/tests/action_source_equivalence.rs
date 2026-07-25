@@ -49,8 +49,11 @@
 //!   collection), the placement family hard-pinned at its full 3,231 ceiling,
 //!   the non-sorted-hand FulfillOrder order round-trip, and the 3.1b routes
 //!   cells (Station suppression fires / a tolled walk and a free teleport both
-//!   survive / from-hand `PlacePresident` / oversized-board delegation), all
-//!   ≤ 10 areas so the per-edit tier stays fast.
+//!   survive / Tram to a walk-unreachable area / from-hand `PlacePresident` /
+//!   oversized-board delegation). The ROUTES cells are all ≤ 10 areas so the
+//!   enumerator's lex-drift `debug_assert` stays cheap per-edit; the 17-area
+//!   retreat/placement fixtures above predate that constraint and never touch
+//!   the enumerator.
 //! - RELEASE (`#[ignore]`d): the same sweep at seeds 0..20 × 2/3/4P deeper into
 //!   each game — the distributional regression net — plus the 3.1b DENSE
 //!   adversarial route cells, which are release-tier because each pays a full
@@ -736,6 +739,33 @@ fn a_tolled_walk_and_a_free_teleport_both_survive_through_the_public_surface() {
     );
 }
 
+/// Tram at the PER-EDIT tier (T3 review): organic play at these seeds never
+/// emits a teleport, so without this cell Tram's public-surface path would be
+/// exercised only by the release sweep. Area 3's assistant is removed, making
+/// it walk-unreachable; Tram (and only Tram) offers it as the free teleport,
+/// while the free-walk destinations stay suppressed.
+#[test]
+fn tram_offers_the_walk_unreachable_area_through_the_public_surface() {
+    let rules = Rules::standard();
+    let mut s = routes_diamond(&[]);
+    s.players[0].technologies = vec![tech_id(&rules, TechEffect::Tram)];
+    s.players[0].assistants.on_board.remove(&AreaId::new(3));
+
+    let moves = assert_routes_family_ordered(&s, &rules, 3, "Tram to the uncovered area");
+    assert_eq!(
+        moves_to(&moves, 3),
+        vec![(AreaId::new(3), vec![])],
+        "area 3 has no own assistant, so only Tram's free teleport reaches it: {moves:?}",
+    );
+    for dest in [1u8, 2] {
+        assert_eq!(
+            moves_to(&moves, dest).len(),
+            1,
+            "the free walk to area {dest} suppresses Tram's duplicate teleport",
+        );
+    }
+}
+
 /// From hand: the routes family is `PlacePresident` over ASCENDING area ids,
 /// gated on the possible-action-area test and on affording the destination fee —
 /// and the family tag `families()` pairs it with records `from_hand: true`, the
@@ -921,13 +951,11 @@ fn dense_board() -> BoardLayout {
 /// cells exist to be expensive.
 fn dense_state(start: u8, opponents: [u8; 3], techs: &[TechEffect], rules: &Rules) -> GameState {
     let canal = cell_to_area_id(DENSE_CANAL.0, DENSE_CANAL.1, &row_lengths(4));
-    let colors = [PlayerColor::Red, PlayerColor::Blue, PlayerColor::Yellow, PlayerColor::Green];
 
+    // state_with_areas already builds the 4P roster; only the board is
+    // replaced wholesale (its n_areas argument is irrelevant here).
     let mut s = state_with_areas(4, TurnPhase::Movement, 1);
     s.board_layout = dense_board();
-    s.players = (0..4)
-        .map(|i| PlayerState::new(PlayerId::new(i), colors[i as usize], i == 0))
-        .collect();
     s.players[0].president_location = PresidentLocation::OnBoard(AreaId::new(start));
     for id in (0..18u8).filter(|&id| AreaId::new(id) != canal) {
         s.players[0].assistants.on_board.insert(AreaId::new(id), 1);
