@@ -1272,6 +1272,37 @@ mod tests {
         }
     }
 
+    /// Distributional pin for `retreat_sample`'s documented uniformity over the
+    /// whole product family (review S2): on a 6-member family ({a0: 2, a1: 1} ⇒
+    /// 3·2), 60k seeded draws must hit EVERY member, each within a generous
+    /// band around len/6. Kills the support-shrinking mutation
+    /// (`gen_range(0..count)`, which silently drops every recover-max vector
+    /// while every legality test stays green) and any gross per-digit skew.
+    #[test]
+    fn retreat_sample_is_uniform_over_the_product_family() {
+        use rand::SeedableRng;
+        let on_board = on_board_of(&[(0, 2), (1, 1)]);
+        let len = retreat_len(&on_board);
+        assert_eq!(len, 6);
+
+        let mut rng = rand_chacha::ChaCha8Rng::seed_from_u64(20_260_725);
+        let mut counts: BTreeMap<String, usize> = BTreeMap::new();
+        const DRAWS: usize = 60_000;
+        for _ in 0..DRAWS {
+            let mv = retreat_sample(&on_board, &mut rng);
+            *counts.entry(format!("{mv:?}")).or_insert(0) += 1;
+        }
+
+        assert_eq!(counts.len(), len, "every member of the product family must be drawn");
+        let expected = DRAWS / len;
+        for (key, n) in &counts {
+            assert!(
+                (expected * 9 / 10..=expected * 11 / 10).contains(n),
+                "draw frequency for {key} is {n}, outside ±10% of {expected} — not uniform",
+            );
+        }
+    }
+
     /// No-materialization: serving ONE candidate off the 442k worst case
     /// allocates `O(#areas)`, not `O(product)`. The thread-local counting
     /// allocator gives the hard, parallel-safe COUNT bound; laziness is also
@@ -1569,6 +1600,76 @@ mod tests {
             distinct.insert(format!("{mv:?}"));
         }
         assert!(distinct.len() > 1, "sampler must draw more than one distinct move");
+    }
+
+    /// Distributional pin for `placement_sample`'s documented uniformity over
+    /// the realized family (review S2): 3 areas, in_hand 3, no fees ⇒ 11
+    /// members (Σ C(3,k), k=0..=3, = 8 Option-A subsets + 3 Option-B basics).
+    /// 22k seeded draws hit every member within a generous band of len/11 —
+    /// killing reservoir-skew mutations (e.g. always keeping the first
+    /// candidate) that legality tests cannot see.
+    #[test]
+    fn placement_sample_is_uniform_over_the_realized_family() {
+        use rand::SeedableRng;
+        let rules = Rules::empty_for_tests();
+        let mut s = placement_state(2, 3);
+        s.players[0].assistants.in_hand = 3;
+        s.players[0].money = 100;
+
+        let realized: Vec<Move> = placement_iter(&s, &rules).collect();
+        assert_eq!(realized.len(), 11, "Σ C(3,k) (k=0..=3) + 3 Option-B basics");
+
+        let mut rng = rand_chacha::ChaCha8Rng::seed_from_u64(20_260_726);
+        let mut counts: BTreeMap<String, usize> = BTreeMap::new();
+        const DRAWS: usize = 22_000;
+        for _ in 0..DRAWS {
+            let mv = placement_sample(&s, &rules, &mut rng);
+            *counts.entry(format!("{mv:?}")).or_insert(0) += 1;
+        }
+
+        assert_eq!(counts.len(), realized.len(), "every realized member must be drawn");
+        let expected = DRAWS / realized.len();
+        for (key, n) in &counts {
+            assert!(
+                (expected * 85 / 100..=expected * 115 / 100).contains(n),
+                "draw frequency for {key} is {n}, outside ±15% of {expected} — not uniform",
+            );
+        }
+    }
+
+    /// Telegram's Option-B neighbour bonus requires `in_hand >= 3` (2 for the
+    /// same-area pair + 1 for the neighbour). At exactly `in_hand == 2` with
+    /// Telegram owned the bonus must NOT appear: `placement_iter` matches the
+    /// generator, no `adjacent_bonus` move exists, basic Option B IS still
+    /// offered, and `placement_upper_len` omits the neighbour term (review S11
+    /// — the `>= 3` gate previously had no boundary fixture, so an off-by-one
+    /// to `>= 2` was organically invisible).
+    #[test]
+    fn placement_telegram_bonus_gated_off_at_in_hand_two() {
+        let rules = Rules::standard();
+        let telegram =
+            rules.techs.iter().find(|c| c.effect == TechEffect::Telegram).expect("has Telegram").id;
+        let a = AreaId::new;
+        let mut s = placement_state(2, 4);
+        s.players[0].assistants.in_hand = 2;
+        s.players[0].money = 100;
+        s.players[0].technologies = vec![telegram];
+        s.board_layout.adjacency.insert(a(0), vec![a(1)]);
+        s.board_layout.adjacency.insert(a(1), vec![a(0)]);
+
+        let got: Vec<Move> = placement_iter(&s, &rules).collect();
+        assert_eq!(got, generator_placements(&s, &rules), "order+multiset must match generator");
+        assert!(
+            !got.iter()
+                .any(|m| matches!(m, Move::PlaceTwoSameArea { adjacent_bonus: Some(_), .. })),
+            "in_hand 2 must not offer the Telegram neighbour bonus",
+        );
+        assert!(
+            got.iter().any(|m| matches!(m, Move::PlaceTwoSameArea { adjacent_bonus: None, .. })),
+            "basic Option B is still legal at in_hand 2",
+        );
+        // Upper bound omits the neighbour term: Σ C(4,k) (k=0..=2) + 4 basics.
+        assert_eq!(placement_upper_len(&s, &rules), 1 + 4 + 6 + 4);
     }
 
     // -- Unified dispatch (Task 4) ----------------------------------------
