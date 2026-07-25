@@ -66,8 +66,13 @@
 //! input panics.
 
 use std::cmp::Ordering;
+use std::collections::BTreeSet;
 
-use crate::game::{enumerate_president_routes, is_possible_action_area_with_tech, Rules, TechRegistry};
+use crate::game::{
+    calculate_movement_cost_with_tech, calculate_place_president_fee,
+    can_teleport_to_station_with_tech, enumerate_president_routes,
+    is_possible_action_area_with_tech, Rules, TechRegistry,
+};
 use crate::types::*;
 
 /// Fixed-array capacity for board areas: `AreaId` is a `u8` the type asserts
@@ -466,14 +471,52 @@ pub fn enumerate_routes(state: &GameState, rules: &Rules) -> Vec<(AreaId, Vec<Ar
 /// from `president_location`). Nothing in the engine separates the two, so
 /// [`enumerate_routes`] never does either; the parameter exists so the port
 /// mirrors the frozen contract rather than a coincidence of its callers.
+///
+/// Drops [`walk_routes_costed`]'s per-route cost, at one extra `Vec` for the
+/// whole enumeration — paid on this pair-shaped compatibility surface, never on
+/// the family assembly, which reads the costs.
 fn walk_routes(
     state: &GameState,
     player: PlayerId,
     from: AreaId,
     reg: Option<&TechRegistry>,
 ) -> Vec<(AreaId, Vec<AreaId>)> {
+    walk_routes_costed(state, player, from, reg)
+        .into_iter()
+        .map(|(dest, path, _)| (dest, path))
+        .collect()
+}
+
+/// [`walk_routes`] with each route's Yen cost alongside it.
+///
+/// The cost is **read off the search, never re-derived from the path**: a
+/// witness carries `(owner mask, toll count)` and the whole fee vector is
+/// exactly those two scalars (the module's closed-form note above), so
+/// `mask.count_ones() + tolls` IS `calculate_movement_cost_with_tech`'s sum —
+/// pinned by `the_surfaced_route_cost_equals_the_frozen_pricing`. Re-pricing
+/// each path instead would rebuild a `RouteVector` per label, allocating per
+/// route in the one place this module exists to keep allocation-bounded; the
+/// generator does exactly that (`legal_moves.rs:303`) because it has no witness
+/// to read from.
+///
+/// The delegation arm has no such witness either, so it does re-price — an
+/// unreachable path on any generated board (pinned by
+/// `every_generated_board_fits_the_fixed_arrays`) where being output-identical
+/// to the frozen generator is the only property that matters.
+fn walk_routes_costed(
+    state: &GameState,
+    player: PlayerId,
+    from: AreaId,
+    reg: Option<&TechRegistry>,
+) -> Vec<(AreaId, Vec<AreaId>, u32)> {
     if !fits_fixed_arrays(state) {
-        return enumerate_president_routes(state, player, from, reg);
+        return enumerate_president_routes(state, player, from, reg)
+            .into_iter()
+            .map(|(dest, path)| {
+                let cost = calculate_movement_cost_with_tech(state, player, &path, reg);
+                (dest, path, cost)
+            })
+            .collect();
     }
 
     let graph = RouteGraph::build(state, player, from, reg);
@@ -496,15 +539,106 @@ fn walk_routes(
             (
                 AreaId::new(w.dest),
                 w.path[..w.len as usize].iter().map(|&a| AreaId::new(a)).collect(),
+                w.mask.count_ones() + w.tolls,
             )
         })
         .collect()
 }
 
+/// The whole `MovementRoutes` family at `state`: exactly the
+/// `Move::MovePresident` / `Move::PlacePresident` subsequence of
+/// `get_legal_moves` at a Movement decision point, in the generator's order.
+///
+/// Reproduces `generate_movement_moves_with_tech` (`legal_moves.rs:248-377`)
+/// arm for arm, with [`walk_routes_costed`] standing in for the frozen
+/// `enumerate_president_routes` + per-route `calculate_movement_cost_with_tech`
+/// pair:
+///
+/// - **President in hand** (`legal_moves.rs:254-265`): `PlacePresident` over
+///   ascending area ids, gated on `is_possible_action_area_with_tech` and on
+///   affording `calculate_place_president_fee`.
+/// - **President on board** (`legal_moves.rs:278-368`): the walked routes
+///   first, each free one recorded in `zero_cost_destinations`; then at most ONE
+///   Station teleport (`legal_moves.rs:316-328`), skipped when the station area
+///   is the current area or is already zero-cost-covered, inserting itself when
+///   emitted; then Tram teleports over ascending area ids
+///   (`legal_moves.rs:345-367`), skipping the current area, non-placement areas
+///   (the Canal), areas holding an opponent's President, and zero-cost-covered
+///   destinations — each likewise inserting itself, which is how Station's push
+///   suppresses Tram's duplicate.
+///
+/// The retreat block both arms end with (`legal_moves.rs:274,370`) belongs to
+/// `MoveFamily::MovementRetreat`, not here.
+///
+/// **Suppression tests ZERO COST, not the destination** (the I-1 final-review
+/// fix, `legal_moves.rs:289-300`): a tolled walk and a free teleport to one
+/// area are different `(destination, fee vector)` labels and both survive.
+/// The `cost <= money` re-check mirrors the generator's belt-and-braces line
+/// (`legal_moves.rs:284-288`); the enumerator has already pruned by
+/// affordability, so it never fires.
+///
+/// Compute-per-call by contract (spec §3.1): one enumeration per call, no
+/// cache. `get_legal_moves` remains the authority `apply_move` checks against —
+/// this is the same list, reached without paying the retreat product.
+pub(crate) fn movement_routes_family(state: &GameState, rules: &Rules) -> Vec<Move> {
+    let player = state.current_player;
+    let p = state.player(player);
+    let reg = Some(&rules.techs);
+    let mut moves = Vec::new();
+
+    match p.president_location {
+        PresidentLocation::InHand => {
+            for &area in state.board_layout.areas.keys() {
+                if is_possible_action_area_with_tech(state, player, area, reg)
+                    && calculate_place_president_fee(state, player, area, reg) <= p.money
+                {
+                    moves.push(Move::PlacePresident { destination: area });
+                }
+            }
+        }
+        PresidentLocation::OnBoard(current) => {
+            let mut zero_cost_destinations: BTreeSet<AreaId> = BTreeSet::new();
+            for (dest, path, cost) in walk_routes_costed(state, player, current, reg) {
+                if cost <= p.money {
+                    if cost == 0 {
+                        zero_cost_destinations.insert(dest);
+                    }
+                    moves.push(Move::MovePresident { path, destination: dest });
+                }
+            }
+
+            if let Some(station_area) = can_teleport_to_station_with_tech(state, player, reg) {
+                if station_area != current && !zero_cost_destinations.contains(&station_area) {
+                    moves.push(Move::MovePresident { path: vec![], destination: station_area });
+                    zero_cost_destinations.insert(station_area);
+                }
+            }
+
+            if has_tech(state, player, reg, TechEffect::Tram) {
+                for (&area, config) in &state.board_layout.areas {
+                    if area == current || !config.area_type.allows_placement() {
+                        continue;
+                    }
+                    let opponent_present = state.players.iter().any(|o| {
+                        o.id != player && o.president_location == PresidentLocation::OnBoard(area)
+                    });
+                    if opponent_present || zero_cost_destinations.contains(&area) {
+                        continue;
+                    }
+                    moves.push(Move::MovePresident { path: vec![], destination: area });
+                    zero_cost_destinations.insert(area);
+                }
+            }
+        }
+    }
+
+    moves
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::game::RouteVector;
+    use crate::game::{get_legal_moves, RouteVector};
     use std::collections::BTreeMap;
 
     // -- fixture construction -------------------------------------------------
@@ -602,12 +736,15 @@ mod tests {
     }
 
     /// Give player 0 a technology with `effect`. Ids are allocated by effect so
-    /// two calls can stack (Postal + Stagecoach) without colliding.
+    /// several calls can stack (Postal + Stagecoach, Station + Tram) without
+    /// colliding.
     fn grant_tech(state: &mut GameState, rules: &mut Rules, effect: TechEffect) {
         let (id, name) = match effect {
             TechEffect::PostalSystem => (TechCardId(101), "Postal System"),
             TechEffect::Stagecoach => (TechCardId(102), "Stagecoach"),
-            _ => panic!("fixture only grants Postal/Stagecoach"),
+            TechEffect::Station => (TechCardId(103), "Station"),
+            TechEffect::Tram => (TechCardId(104), "Tram"),
+            _ => panic!("fixture only grants Postal/Stagecoach/Station/Tram"),
         };
         rules.techs.insert(
             TechCard {
@@ -1013,5 +1150,357 @@ mod tests {
 
         assert!(checked >= 50, "expected many OnBoard Movement points, saw {checked}");
         assert!(total_routes > 0, "every checked point enumerated zero routes — vacuous");
+    }
+
+    // -- (f) the whole Movement routes family (T2) ----------------------------
+
+    /// THE family assertion: [`movement_routes_family`] reproduces the
+    /// `MovePresident`/`PlacePresident` subsequence of `get_legal_moves`
+    /// EXACTLY — same moves, same order — at a fixture rich enough to
+    /// discriminate (`min_moves`), and never reaches into the retreat block the
+    /// generator emits from the same branch.
+    fn assert_family_matches_generator(
+        state: &GameState,
+        rules: &Rules,
+        min_moves: usize,
+        label: &str,
+    ) -> Vec<Move> {
+        assert_eq!(state.turn_phase, TurnPhase::Movement, "{label}: fixture must be at Movement");
+        let legal = get_legal_moves(state, rules);
+        assert!(
+            legal.iter().any(|m| matches!(m, Move::ReturnPresidentToHand { .. })),
+            "{label}: every Movement state offers retreat — this fixture is not one",
+        );
+        let want: Vec<Move> = legal
+            .into_iter()
+            .filter(|m| matches!(m, Move::MovePresident { .. } | Move::PlacePresident { .. }))
+            .collect();
+        assert!(
+            want.len() >= min_moves,
+            "{label}: anti-vacuity — generator emitted {} family moves, expected >= {min_moves}",
+            want.len(),
+        );
+
+        let got = movement_routes_family(state, rules);
+        assert_eq!(got, want, "{label}: family must equal the generator subsequence, in order");
+        assert!(
+            !got.iter().any(|m| matches!(m, Move::ReturnPresidentToHand { .. })),
+            "{label}: retreat is MovementRetreat's family, never this one's",
+        );
+        got
+    }
+
+    /// The `(destination, path)` pairs of `moves`' `MovePresident` entries, in
+    /// order. A teleport is the empty path.
+    fn president_moves(moves: &[Move]) -> Vec<(AreaId, Vec<AreaId>)> {
+        moves
+            .iter()
+            .filter_map(|m| match m {
+                Move::MovePresident { path, destination } => Some((*destination, path.clone())),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// `moves`' `MovePresident` entries that reach `dest`, in order.
+    fn moves_to(moves: &[Move], dest: u8) -> Vec<(AreaId, Vec<AreaId>)> {
+        president_moves(moves).into_iter().filter(|(d, _)| *d == AreaId(dest)).collect()
+    }
+
+    /// The destinations of `moves`' `PlacePresident` entries, in order.
+    fn place_destinations(moves: &[Move]) -> Vec<AreaId> {
+        moves
+            .iter()
+            .filter_map(|m| match m {
+                Move::PlacePresident { destination } => Some(*destination),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// A Station fixture over the diamond: Station tech, the station token on
+    /// `station`, and the lone opponent's President off the board so the only
+    /// thing under test is the suppression rule.
+    fn station_diamond(canals: &[(u8, u8)], station: u8) -> (GameState, Rules) {
+        let mut rules = Rules::empty_for_tests();
+        let mut s = diamond(2, canals);
+        s.players[1].president_location = PresidentLocation::InHand;
+        grant_tech(&mut s, &mut rules, TechEffect::Station);
+        s.station_location = Some(AreaId(station));
+        (s, rules)
+    }
+
+    /// I-1 cell (i) — suppression FIRES. A FREE walk to the station area
+    /// already carries that area's `(dest, {})` label, so the Station teleport
+    /// would be a second free move to the same label and is suppressed. The
+    /// survivor is the WALK, with its real path (the routes block is pushed
+    /// first).
+    #[test]
+    fn a_free_walk_suppresses_the_station_teleport() {
+        let (s, rules) = station_diamond(&[], 1);
+        let moves = assert_family_matches_generator(&s, &rules, 3, "free walk + Station");
+        assert_eq!(
+            moves_to(&moves, 1),
+            vec![(AreaId(1), vec![AreaId(1)])],
+            "exactly one move to the station area, and it is the walk: {moves:?}",
+        );
+    }
+
+    /// I-1 cell (ii) — suppression does NOT fire; THE regression this class
+    /// exists for. Both canals sit on the only edges into the station area, so
+    /// every walk there is TOLLED (`{None:1}`) and the teleport's `{}` is a
+    /// DIFFERENT label: both must survive. An implementation that suppressed on
+    /// destination rather than on zero cost drops the teleport here.
+    #[test]
+    fn a_tolled_walk_keeps_both_itself_and_the_free_station_teleport() {
+        let (s, rules) = station_diamond(&[(0, 1), (1, 3)], 1);
+        let moves = assert_family_matches_generator(&s, &rules, 4, "tolled walk + Station");
+        assert_eq!(
+            moves_to(&moves, 1),
+            vec![(AreaId(1), vec![AreaId(1)]), (AreaId(1), vec![])],
+            "the tolled walk and the free teleport are distinct labels: {moves:?}",
+        );
+    }
+
+    /// I-1 cell (iii) — Station and Tram compose on one destination: Station
+    /// pushes its teleport and inserts itself into `zero_cost_destinations`, so
+    /// Tram finds the area already covered and does NOT emit a second one. The
+    /// Tram-only control shows the area is genuinely Tram-eligible, so the
+    /// single teleport under Station+Tram is suppression and not an accident.
+    #[test]
+    fn the_station_teleport_suppresses_the_trams_duplicate() {
+        // Every walk into 1 is tolled, so 1 is teleport-eligible for both techs.
+        let canals = &[(0u8, 1u8), (1, 3)];
+
+        let (mut station_only, mut rules) = station_diamond(canals, 1);
+        let moves = assert_family_matches_generator(&station_only, &rules, 4, "Station only");
+        assert_eq!(moves_to(&moves, 1).len(), 2, "walk + Station teleport");
+
+        grant_tech(&mut station_only, &mut rules, TechEffect::Tram);
+        let both = assert_family_matches_generator(&station_only, &rules, 4, "Station + Tram");
+        assert_eq!(
+            moves_to(&both, 1),
+            vec![(AreaId(1), vec![AreaId(1)]), (AreaId(1), vec![])],
+            "Tram must not add a second teleport to the station area: {both:?}",
+        );
+
+        // Control: Tram alone reaches the same area, so the pairing above is a
+        // real suppression rather than a Tram filter firing for another reason.
+        let mut tram_only = Rules::empty_for_tests();
+        let mut t = diamond(2, canals);
+        t.players[1].president_location = PresidentLocation::InHand;
+        grant_tech(&mut t, &mut tram_only, TechEffect::Tram);
+        let moves = assert_family_matches_generator(&t, &tram_only, 4, "Tram only");
+        assert_eq!(
+            moves_to(&moves, 1),
+            vec![(AreaId(1), vec![AreaId(1)]), (AreaId(1), vec![])],
+            "Tram alone teleports to the tolled-walk area: {moves:?}",
+        );
+    }
+
+    /// `station_area == current`: the teleport that would move the President
+    /// nowhere is refused by the generator's own `station_area != current`
+    /// guard. The own assistant on the current area is what makes the fixture
+    /// non-vacuous — without it `can_teleport_to_station_with_tech` would
+    /// already return `None` for a different reason.
+    #[test]
+    fn a_station_on_the_current_area_emits_no_teleport() {
+        let (mut s, rules) = station_diamond(&[], 0);
+        s.players[0].assistants.on_board.insert(AreaId(0), 1);
+        assert_eq!(
+            can_teleport_to_station_with_tech(&s, PlayerId::new(0), Some(&rules.techs)),
+            Some(AreaId(0)),
+            "fixture must satisfy every OTHER teleport precondition",
+        );
+
+        let moves = assert_family_matches_generator(&s, &rules, 3, "station on current area");
+        assert!(moves_to(&moves, 0).is_empty(), "no move may end on the current area: {moves:?}");
+        assert!(
+            president_moves(&moves).iter().all(|(_, path)| !path.is_empty()),
+            "no teleport at all should be emitted: {moves:?}",
+        );
+    }
+
+    /// Tram's four filters, one board: it skips the current area, the Canal
+    /// (`allows_placement`), an area holding an opponent's President, and any
+    /// destination a zero-cost walk already covers — leaving exactly the one
+    /// area nothing else can reach.
+    #[test]
+    fn tram_skips_current_canal_opponent_and_zero_cost_destinations() {
+        let mut rules = Rules::empty_for_tests();
+        let mut s = base_state(2, board(&[0, 1, 2, 3, 4], &[(0, 1), (0, 3)], &[]));
+        s.board_layout.areas.get_mut(&AreaId(2)).expect("area 2").area_type = AreaType::Canal;
+        s.players[0].president_location = PresidentLocation::OnBoard(AreaId(0));
+        s.players[0].assistants.on_board.insert(AreaId(1), 1);
+        s.players[0].assistants.on_board.insert(AreaId(3), 1);
+        s.players[1].president_location = PresidentLocation::OnBoard(AreaId(3));
+        grant_tech(&mut s, &mut rules, TechEffect::Tram);
+
+        let moves = assert_family_matches_generator(&s, &rules, 2, "Tram filters");
+        assert_eq!(
+            president_moves(&moves),
+            vec![(AreaId(1), vec![AreaId(1)]), (AreaId(4), vec![])],
+            "only the free walk to 1 and the Tram teleport to 4 survive: {moves:?}",
+        );
+    }
+
+    /// From hand: `PlacePresident` over ASCENDING area ids, gated on the
+    /// possible-action-area test and on affording
+    /// `calculate_place_president_fee`. The Postal cell is what makes the fee
+    /// gate reachable at all — an opponent-occupied destination is otherwise
+    /// not a legal destination to price.
+    #[test]
+    fn place_president_from_hand_is_ascending_and_fee_gated() {
+        let mut rules = Rules::empty_for_tests();
+        let mut s = diamond(2, &[]);
+        s.players[0].president_location = PresidentLocation::InHand;
+        s.players[1].president_location = PresidentLocation::OnBoard(AreaId(2));
+
+        // No Postal: the opponent's area is not a Possible Action Area.
+        let moves = assert_family_matches_generator(&s, &rules, 2, "from hand, no Postal");
+        assert_eq!(place_destinations(&moves), vec![AreaId(1), AreaId(3)]);
+        assert!(president_moves(&moves).is_empty(), "from hand emits no MovePresident");
+
+        // Postal opens area 2 at a 1-Yen destination fee, which 5 Yen affords.
+        grant_tech(&mut s, &mut rules, TechEffect::PostalSystem);
+        let moves = assert_family_matches_generator(&s, &rules, 3, "from hand, Postal");
+        assert_eq!(
+            place_destinations(&moves),
+            vec![AreaId(1), AreaId(2), AreaId(3)],
+            "ascending, including the fee-paying destination",
+        );
+
+        // Broke: the 1-Yen fee gates area 2 back out; the free ones remain.
+        s.players[0].money = 0;
+        let moves = assert_family_matches_generator(&s, &rules, 2, "from hand, Postal, broke");
+        assert_eq!(
+            place_destinations(&moves),
+            vec![AreaId(1), AreaId(3)],
+            "an unaffordable destination fee excludes the destination",
+        );
+    }
+
+    /// The T2 handoff, pinned: the scalar the search surfaces
+    /// (`mask.count_ones() + tolls`) is the same number
+    /// `calculate_movement_cost_with_tech` computes from the path — the
+    /// identity the whole `zero_cost_destinations` block rests on, since a
+    /// wrong cost would mis-classify a route as free (over-suppressing) or as
+    /// paid (under-suppressing).
+    #[test]
+    fn the_surfaced_route_cost_equals_the_frozen_pricing() {
+        let mut checked = 0usize;
+        for (label, state, rules) in costed_fixtures() {
+            let PresidentLocation::OnBoard(from) = state.player(PlayerId::new(0)).president_location
+            else {
+                panic!("{label}: needs the President on the board");
+            };
+            let costed = walk_routes_costed(&state, PlayerId::new(0), from, Some(&rules.techs));
+            assert!(!costed.is_empty(), "{label}: no routes to price — vacuous");
+            for (dest, path, cost) in costed {
+                let want = calculate_movement_cost_with_tech(
+                    &state,
+                    PlayerId::new(0),
+                    &path,
+                    Some(&rules.techs),
+                );
+                assert_eq!(cost, want, "{label}: cost of {path:?} -> {dest:?}");
+                checked += 1;
+            }
+        }
+        assert!(checked >= 12, "expected many priced routes, saw {checked}");
+    }
+
+    /// Fixtures spanning every term of the fee closed form: canal tolls, owner
+    /// fees (one and two owners), Postal destination fees, and Stagecoach's
+    /// waiver.
+    fn costed_fixtures() -> Vec<(&'static str, GameState, Rules)> {
+        let mut out = Vec::new();
+
+        let mut rules = Rules::empty_for_tests();
+        let mut s = diamond(2, &[]);
+        s.players[1].president_location = PresidentLocation::OnBoard(AreaId(3));
+        grant_tech(&mut s, &mut rules, TechEffect::PostalSystem);
+        out.push(("postal destination fee", s, rules));
+
+        let mut s = diamond(2, &[(0, 1), (0, 2), (2, 3)]);
+        s.players[1].president_location = PresidentLocation::InHand;
+        out.push(("multi-toll", s, Rules::empty_for_tests()));
+
+        let mut rules = Rules::empty_for_tests();
+        let mut s = diamond(3, &[(0, 2)]);
+        s.players[1].president_location = PresidentLocation::OnBoard(AreaId(1));
+        s.players[2].president_location = PresidentLocation::OnBoard(AreaId(1));
+        grant_tech(&mut s, &mut rules, TechEffect::PostalSystem);
+        out.push(("two owners on one area, tolled arm", s, rules));
+
+        let mut rules = Rules::empty_for_tests();
+        let mut s = diamond(2, &[(0, 2)]);
+        s.players[1].president_location = PresidentLocation::OnBoard(AreaId(1));
+        grant_tech(&mut s, &mut rules, TechEffect::Stagecoach);
+        out.push(("Stagecoach waives fees but not tolls", s, rules));
+
+        out
+    }
+
+    /// THE organic pin for the whole family: at every Movement decision point a
+    /// real game reaches — President on the board AND in hand —
+    /// `movement_routes_family` reproduces the generator's subsequence in
+    /// order. Seeds are capped for the per-edit tier; the release-tier sweep is
+    /// `tests/action_source_equivalence.rs`.
+    #[test]
+    fn movement_routes_family_matches_generator_across_driven_games() {
+        use rand::{Rng, SeedableRng};
+        let rules = Rules::standard();
+        let mut on_board = 0usize;
+        let mut in_hand = 0usize;
+        let mut total_moves = 0usize;
+
+        for players in [2u8, 3, 4] {
+            for seed in 0..3u64 {
+                let config = GameConfig::for_player_count(players);
+                let pending = crate::new_game(config, &rules, seed).expect("new_game");
+                let mut rng = rand_chacha::ChaCha8Rng::seed_from_u64(seed);
+                let choices: Vec<crate::StartingOrderChoice> = (0..players)
+                    .map(|_| crate::StartingOrderChoice::Keep(rng.gen_range(0..2u8)))
+                    .collect();
+                let mut state = crate::finalize_setup(pending, &choices).expect("finalize_setup");
+
+                for _ in 0..1200 {
+                    if crate::is_game_over(&state) {
+                        break;
+                    }
+                    let legal = get_legal_moves(&state, &rules);
+                    if legal.is_empty() {
+                        break;
+                    }
+                    if state.pending_choices.is_empty() && state.turn_phase == TurnPhase::Movement {
+                        let want: Vec<Move> = legal
+                            .iter()
+                            .filter(|m| {
+                                matches!(m, Move::MovePresident { .. } | Move::PlacePresident { .. })
+                            })
+                            .cloned()
+                            .collect();
+                        assert_eq!(
+                            movement_routes_family(&state, &rules),
+                            want,
+                            "family mismatch at {players}p seed {seed}",
+                        );
+                        total_moves += want.len();
+                        match state.current_player().president_location {
+                            PresidentLocation::OnBoard(_) => on_board += 1,
+                            PresidentLocation::InHand => in_hand += 1,
+                        }
+                    }
+
+                    let mv = legal[rng.gen_range(0..legal.len())].clone();
+                    state = crate::apply_move_unchecked(&state, &mv, &rules).expect("apply");
+                }
+            }
+        }
+
+        assert!(on_board >= 50, "expected many OnBoard Movement points, saw {on_board}");
+        assert!(in_hand >= 10, "expected several from-hand Movement points, saw {in_hand}");
+        assert!(total_moves > 0, "every checked point emitted an empty family — vacuous");
     }
 }

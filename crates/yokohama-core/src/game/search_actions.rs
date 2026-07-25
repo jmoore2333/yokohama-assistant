@@ -10,20 +10,21 @@
 //! *families* first, then pages/samples within a family without ever building
 //! the exploding `Vec`.
 //!
-//! The delivered 3.1a surface: [`families`] dispatch (queue-first + phase,
+//! The delivered surface: [`families`] dispatch (queue-first + phase,
 //! mirroring `get_legal_moves`), the bespoke lazy retreat family (mixed-radix
 //! constructor/iter/sample — the six-figure family, never materialized), the
 //! bespoke lazy placement family (combination construction with
-//! per-combination affordability), and delegate-and-filter for the small
-//! families. [`MoveFamily::MovementRoutes`] is the single exhaustive-backed
-//! stub until 3.1b lands the lazy route enumerator. The plan's `ActionSource`
-//! shipped as these free functions (the plan-sanctioned alternative), not a
-//! struct — there is no `ActionSource` type to grep for.
+//! per-combination affordability), [`MoveFamily::MovementRoutes`] served by
+//! 3.1b's route enumerator (`game/route_enum.rs`), and delegate-and-filter for
+//! the small families. The plan's `ActionSource` shipped as these free
+//! functions (the plan-sanctioned alternative), not a struct — there is no
+//! `ActionSource` type to grep for.
 
 use std::collections::BTreeMap;
 
 use rand::Rng;
 
+use crate::game::route_enum::movement_routes_family;
 use crate::game::{calculate_placement_cost, get_legal_moves, Rules};
 use crate::types::*;
 
@@ -65,8 +66,9 @@ pub enum MoveFamily {
     /// two-in-one-area (with the optional Telegram neighbour).
     Placement,
     /// Movement step, President-onto-board: `MovePresident` routes (President
-    /// on board) or `PlacePresident` (President in hand). The lazy enumerator
-    /// is 3.1b.
+    /// on board, teleports included) or `PlacePresident` (President in hand).
+    /// Served by `route_enum::movement_routes_family` — compute-per-call, one
+    /// enumeration per call.
     MovementRoutes,
     /// Movement step, `ReturnPresidentToHand`: the per-area recovery-count
     /// product `∏(count + 1)` — the six-figure family. Carries an owned clone
@@ -654,23 +656,26 @@ pub fn placement_sample(state: &GameState, rules: &Rules, rng: &mut impl Rng) ->
 
 // ---------------------------------------------------------------------------
 // Unified dispatch (Task 4): family_len / iter_family / sample_family over a
-// `MoveFamily`. The two exploding families are bespoke -- retreat via the
-// mixed-radix constructor (Task 2), placement via lazy combination
-// construction with per-combination affordability (Task 3). EVERY other family
-// DELEGATES to the frozen `get_legal_moves`, filtered to the family by
-// `family_kind`: that is equivalence by construction -- the yielded moves ARE a
-// contiguous filter of the generator's own output, so they inherit its order
-// and multiset exactly, including FulfillOrder's `order_cards_in_hand`
-// insertion order (`legal_moves.rs:59`), never a sorted key. Those families are
-// bounded-small, so materializing the filtered slice is fine (the laziness
-// guarantee only binds retreat/placement). `MovementRoutes` is a 3.1b STUB that
-// delegates the same way (filter to MovePresident/PlacePresident) so the union
-// of families stays complete for the equivalence tests; 3.1b replaces it with a
-// lazy route enumerator. The stub's cost, stated honestly: the delegating call
-// re-runs the WHOLE `get_legal_moves` before filtering, so at a Movement
-// decision point the routes stub re-pays the exhaustive ceiling — retreat
-// product included. The serve-one bound therefore holds PER FAMILY; the
-// per-Movement-decision-point ceiling is unchanged until 3.1b.
+// `MoveFamily`. Three families are bespoke -- retreat via the mixed-radix
+// constructor (Task 2), placement via lazy combination construction with
+// per-combination affordability (Task 3), and routes via 3.1b's enumerator
+// (`route_enum::movement_routes_family`, which assembles walked routes +
+// teleports + the from-hand arm without touching `get_legal_moves`). EVERY
+// other family DELEGATES to the frozen `get_legal_moves`, filtered to the
+// family by `family_kind`: that is equivalence by construction -- the yielded
+// moves ARE a contiguous filter of the generator's own output, so they inherit
+// its order and multiset exactly, including FulfillOrder's
+// `order_cards_in_hand` insertion order (`legal_moves.rs:59`), never a sorted
+// key. Those families are bounded-small, so materializing the filtered slice is
+// fine (the laziness guarantee only binds retreat/placement/routes).
+//
+// What the routes rewire bought (3.1b): the retired stub delegated like the
+// small families, so serving ONE route re-ran the whole generator -- retreat
+// product included, up to 442,368 moves materialized to hand back a handful.
+// The serve-one bound used to hold only PER FAMILY; a Movement decision point
+// now pays one route enumeration for the routes family and a mixed-radix decode
+// per served retreat candidate, so the exhaustive ceiling is off that path
+// entirely.
 // ---------------------------------------------------------------------------
 
 /// The [`MoveFamily`] a given [`Move`] belongs to, as a discriminant so the
@@ -717,24 +722,34 @@ fn family_kind(mv: &Move) -> std::mem::Discriminant<MoveFamily> {
 }
 
 /// The moves `get_legal_moves` emits that belong to `family`, in the generator's
-/// order. This is the delegate-and-filter path shared by the small families and
-/// the `MovementRoutes` 3.1b stub: it re-reads the frozen generator and keeps
-/// the slice whose [`family_kind`] matches `family`, so the result is the
-/// generator's own output move-for-move (equivalence by construction). Retreat
-/// and placement never reach here -- they are served by their bespoke lazy
-/// generators.
+/// order. This is the delegate-and-filter path the small families take: it
+/// re-reads the frozen generator and keeps the slice whose [`family_kind`]
+/// matches `family`, so the result is the generator's own output move-for-move
+/// (equivalence by construction). Retreat, placement and routes never reach
+/// here -- they are served by their bespoke generators.
 fn delegated_family_moves(state: &GameState, rules: &Rules, family: &MoveFamily) -> Vec<Move> {
     let want = std::mem::discriminant(family);
     get_legal_moves(state, rules).into_iter().filter(|mv| family_kind(mv) == want).collect()
 }
 
-/// Size of `family` at `state`: the bespoke closed form for retreat
-/// (`∏(count+1)`, [`retreat_len`]) and the honest upper bound for placement
-/// ([`placement_upper_len`], a strict over-estimate once a fee gate punches a
-/// hole); the exact realized count for every delegated family. Equals the
-/// number of moves [`iter_family`] yields for every family EXCEPT placement,
-/// where it is an upper bound (`iter_family` is the authority on the realized
-/// placement moves).
+/// Size of `family` at `state`. **The three family-cost shapes differ and the
+/// difference is the point:**
+///
+/// - **retreat** — a closed form ([`retreat_len`]'s `∏(count+1)`): exact, O(#areas),
+///   no enumeration at any family size;
+/// - **placement** — an honest UPPER bound ([`placement_upper_len`]), a strict
+///   over-estimate once a per-combination fee gate punches a hole, because
+///   affordable subsets are not contiguous in the enumeration order;
+/// - **routes** — EXACT, but it costs one full enumeration
+///   (`route_enum::movement_routes_family`), the same work [`iter_family`] does;
+///   a caller that needs both the count and the moves should page the iterator
+///   rather than ask twice (spec §3.1 / ledger L10: compute-per-call, no cache
+///   in 3.1b);
+/// - **every delegated family** — exact, one `get_legal_moves` call, bounded-small.
+///
+/// So this equals the number of moves [`iter_family`] yields for every family
+/// EXCEPT placement, where it is an upper bound (`iter_family` is the authority
+/// on the realized placement moves).
 pub fn family_len(state: &GameState, rules: &Rules, family: &MoveFamily) -> usize {
     match family {
         MoveFamily::MovementRetreat { on_board, .. } => {
@@ -746,8 +761,8 @@ pub fn family_len(state: &GameState, rules: &Rules, family: &MoveFamily) -> usiz
             retreat_len(on_board)
         }
         MoveFamily::Placement => placement_upper_len(state, rules),
-        MoveFamily::MovementRoutes
-        | MoveFamily::AdditionalAction
+        MoveFamily::MovementRoutes => movement_routes_family(state, rules).len(),
+        MoveFamily::AdditionalAction
         | MoveFamily::AreaAction
         | MoveFamily::FivePower
         | MoveFamily::Building
@@ -757,12 +772,12 @@ pub fn family_len(state: &GameState, rules: &Rules, family: &MoveFamily) -> usiz
 
 /// Lazily yield `family`'s moves at `state`, in the same order and with the same
 /// moves as `get_legal_moves` filtered to that family. Retreat and placement
-/// page/serve lazily (Tasks 2/3) without materializing the family; every other
-/// family delegates to the frozen generator (a materialized but bounded-small
-/// slice — though the delegating call itself re-runs the WHOLE generator, so
-/// the routes stub re-pays the exhaustive ceiling until 3.1b; see the module
-/// note above). Boxed because the arms have heterogeneous iterator types (the
-/// lazy `RetreatIter`/`PlacementIter` and the delegated `vec::IntoIter`).
+/// page/serve lazily (Tasks 2/3) without materializing the family; routes are
+/// computed per call by 3.1b's enumerator and served as the resulting `Vec`
+/// (O(labels), and never the exhaustive list — see the module note above);
+/// every other family delegates to the frozen generator, a materialized but
+/// bounded-small slice. Boxed because the arms have heterogeneous iterator types
+/// (the lazy `RetreatIter`/`PlacementIter` and the two `vec::IntoIter`s).
 pub fn iter_family<'a>(
     state: &'a GameState,
     rules: &Rules,
@@ -778,8 +793,8 @@ pub fn iter_family<'a>(
             Box::new(retreat_iter(on_board))
         }
         MoveFamily::Placement => Box::new(placement_iter(state, rules)),
-        MoveFamily::MovementRoutes
-        | MoveFamily::AdditionalAction
+        MoveFamily::MovementRoutes => Box::new(movement_routes_family(state, rules).into_iter()),
+        MoveFamily::AdditionalAction
         | MoveFamily::AreaAction
         | MoveFamily::FivePower
         | MoveFamily::Building
@@ -794,12 +809,12 @@ pub fn iter_family<'a>(
 /// their bespoke samplers (Task 2's rejection-free per-area draw; Task 3's
 /// affordability-aware reservoir) and are never empty (the recover-nothing and
 /// empty-placement moves are always legal), so those arms always return `Some`;
-/// a delegated family draws a uniform index into its materialized legal slice
-/// and yields `None` when the slice is empty — [`families`] deliberately tags
-/// structurally-emptyable families (e.g. `MovementRoutes` with no Possible
-/// Action Area to enter), and `Option` puts that case in the signature instead
-/// of a panic or a redundant [`family_len`] pre-check (which would materialize
-/// a delegated family twice).
+/// the routes family and the delegated families draw a uniform index into their
+/// materialized slice ([`draw_one`]) and yield `None` when it is empty —
+/// [`families`] deliberately tags structurally-emptyable families (e.g.
+/// `MovementRoutes` with no Possible Action Area to enter), and `Option` puts
+/// that case in the signature instead of a panic or a redundant [`family_len`]
+/// pre-check (which would enumerate or delegate a second time).
 ///
 /// (Deviation from spec §3.2's literal `-> Move` signature, adopted at the PR
 /// #8 review: the spec predates the observation that `families()`'s structural
@@ -820,20 +835,26 @@ pub fn sample_family(
             Some(retreat_sample(on_board, rng))
         }
         MoveFamily::Placement => Some(placement_sample(state, rules, rng)),
-        MoveFamily::MovementRoutes
-        | MoveFamily::AdditionalAction
+        MoveFamily::MovementRoutes => draw_one(movement_routes_family(state, rules), rng),
+        MoveFamily::AdditionalAction
         | MoveFamily::AreaAction
         | MoveFamily::FivePower
         | MoveFamily::Building
         | MoveFamily::ChoiceResolution => {
-            let mut moves = delegated_family_moves(state, rules, family);
-            if moves.is_empty() {
-                return None;
-            }
-            let i = rng.gen_range(0..moves.len());
-            Some(moves.swap_remove(i))
+            draw_one(delegated_family_moves(state, rules, family), rng)
         }
     }
+}
+
+/// Draw one move uniformly from a materialized family slice, or `None` when it
+/// is empty. Shared by the routes arm and the delegated arms so the two can
+/// never drift on the empty-family contract.
+fn draw_one(mut moves: Vec<Move>, rng: &mut impl Rng) -> Option<Move> {
+    if moves.is_empty() {
+        return None;
+    }
+    let i = rng.gen_range(0..moves.len());
+    Some(moves.swap_remove(i))
 }
 
 /// Thread-local counting allocator for the no-materialization bound
@@ -1973,6 +1994,86 @@ mod tests {
             ),
             std::mem::discriminant(&MoveFamily::Placement),
         );
+    }
+
+    /// Dispatch smoke for the 3.1b routes family: all three entry points route
+    /// through `movement_routes_family` (the compute-per-call enumerator) and
+    /// not through the retired delegate-and-filter stub. The family's own
+    /// equivalence to the generator is pinned in `route_enum`; what is checked
+    /// here is that the dispatch reaches it.
+    #[test]
+    fn movement_routes_dispatch_to_the_route_enumerator() {
+        use rand::SeedableRng;
+        let rules = Rules::standard();
+
+        // Movement, President on board with own assistants on two adjacent
+        // areas, so the family is non-empty and has more than one member.
+        let mut s = base_state();
+        s.turn_phase = TurnPhase::Movement;
+        s.board_layout.adjacency.insert(AreaId::new(0), vec![AreaId::new(1)]);
+        s.board_layout.adjacency.insert(AreaId::new(1), vec![AreaId::new(0)]);
+        s.players[0].president_location = PresidentLocation::OnBoard(AreaId::new(0));
+        s.players[0].assistants.on_board.insert(AreaId::new(1), 1);
+        s.players[0].money = 5;
+
+        let family = MoveFamily::MovementRoutes;
+        let want = crate::game::route_enum::movement_routes_family(&s, &rules);
+        assert!(!want.is_empty(), "fixture must produce routes to compare");
+        assert_eq!(
+            iter_family(&s, &rules, &family).collect::<Vec<_>>(),
+            want,
+            "iter_family must serve movement_routes_family's output",
+        );
+        assert_eq!(family_len(&s, &rules, &family), want.len(), "family_len is the exact count");
+
+        let mut rng = rand_chacha::ChaCha8Rng::seed_from_u64(11);
+        let drawn = sample_family(&s, &rules, &family, &mut rng).expect("non-empty routes family");
+        assert!(want.contains(&drawn), "a draw must come from the family: {drawn:?}");
+    }
+
+    /// THE stub-retirement pin, and the only test that can tell the 3.1b rewire
+    /// from the 3.1a stub: both serve identical MOVES, so every equivalence
+    /// test passes either way — what changed is the cost, so the cost is what
+    /// gets asserted. This state's retreat family is the 442,368-move product,
+    /// which the retired stub materialized in full (via `get_legal_moves`)
+    /// before filtering it away to hand back one route.
+    ///
+    /// Measured on this fixture: 7 allocations through the enumerator, against
+    /// 1,017,596 through the stub (mutation-probed by routing the arm back to
+    /// `delegated_family_moves`, 2026-07-25, which fails this assertion) — five
+    /// orders of magnitude, so the generous `< 128` bound discriminates without
+    /// pinning a count that churns on unrelated `Vec` growth.
+    #[test]
+    fn serving_the_routes_family_never_pays_the_retreat_product() {
+        let rules = Rules::empty_for_tests();
+        let mut s = base_state();
+        s.turn_phase = TurnPhase::Movement;
+        // One walkable edge, so the routes family is non-empty (a vacuously
+        // empty family would meet any allocation bound).
+        s.board_layout.adjacency.insert(AreaId::new(0), vec![AreaId::new(1)]);
+        s.board_layout.adjacency.insert(AreaId::new(1), vec![AreaId::new(0)]);
+        s.players[0].president_location = PresidentLocation::OnBoard(AreaId::new(0));
+        s.players[0].assistants.on_board = worst_case_on_board();
+        s.players[0].money = 5;
+
+        let family = MoveFamily::MovementRoutes;
+        assert_eq!(
+            retreat_len(&s.players[0].assistants.on_board),
+            442_368,
+            "the sibling retreat family must really be the six-figure product",
+        );
+
+        let (routes, allocs) =
+            alloc_probe::count_allocs(|| iter_family(&s, &rules, &family).collect::<Vec<_>>());
+        assert_eq!(
+            routes,
+            vec![Move::MovePresident {
+                path: vec![AreaId::new(1)],
+                destination: AreaId::new(1),
+            }],
+            "the fixture's one walkable route must be served",
+        );
+        assert!(allocs < 128, "serving the routes family allocated {allocs} (>= 128)");
     }
 
     /// The ChoiceResolution family delegates to the generator's choice
