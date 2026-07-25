@@ -1352,7 +1352,7 @@ mod tests {
     /// Task B review minor: the Station effect line must not promise an
     /// UNCONDITIONAL teleport -- the engine gates it on the owner holding an
     /// assistant in the Station's area (`can_teleport_to_station`,
-    /// movement.rs:249-252: `in_area(station_area) > 0`). The one-liner must
+    /// movement.rs:257, in `can_teleport_to_station_with_tech`: `in_area(station_area) > 0`). The one-liner must
     /// therefore carry that assistant-presence gate, not just say "teleport
     /// to it".
     #[test]

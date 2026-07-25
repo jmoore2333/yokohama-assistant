@@ -13,7 +13,7 @@
 //!
 //! ## The label is three scalars, so no `RouteVector` is built during search
 //!
-//! `route_fee_vector` (movement.rs:330) prices a path as a closed form: 1 Yen
+//! `route_fee_vector` (movement.rs:315) prices a path as a closed form: 1 Yen
 //! per opponent-President owner per path AREA — the "intermediate" and
 //! "Postal destination" loops apply the identical charge to disjoint slices of
 //! `path`, so every area is priced exactly once, position-independently, and
@@ -42,7 +42,7 @@
 //! tie-break — pinned live by the `debug_assert` in [`Search::step`], which
 //! fires if a later encounter is ever lex-smaller than the stored witness.
 //!
-//! **(ii) The frozen reference.** `RouteDfs::step` (movement.rs:508) does a
+//! **(ii) The frozen reference.** `RouteDfs::step`'s compare-and-keep (movement.rs:493, inside the fn at :475) does a
 //! compare-and-keep — `path < existing` replaces the stored witness — which
 //! selects the lex-least member of whatever set it visits, independent of
 //! traversal order (and so is insensitive to `BoardLayout`'s neighbour order).

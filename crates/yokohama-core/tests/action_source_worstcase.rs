@@ -65,7 +65,7 @@
 //! `route_enum::enumerate_routes` computes the WHOLE walked-label set in
 //! [`route_bound`] allocations — linear in the labels it RETURNS, never in the
 //! simple paths it WALKS. The frozen `enumerate_president_routes` is the
-//! contrast: `RouteDfs::step` (movement.rs:490) builds a fresh `RouteVector`
+//! contrast: `RouteDfs::step` (movement.rs:475) builds a fresh `RouteVector`
 //! (`BTreeMap`) for every hop it prices, plus visited-`BTreeSet` traffic per
 //! recursion and a witness `Vec` clone per kept label, so its count tracks
 //! PATHS. Worst-case TIME remains `O(affordable simple paths)` for both — spec

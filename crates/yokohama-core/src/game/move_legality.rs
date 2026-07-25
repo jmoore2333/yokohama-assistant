@@ -1425,6 +1425,44 @@ mod tests {
         assert!(!legal(&s, &rules, &tram(3)), "never onto an opponent President's area");
     }
 
+    /// THE ONE NARROWING, PINNED EXECUTABLE (PR #9 review must-fix): on a
+    /// fixture-only state — own assistant on a Canal-TYPED area, President in
+    /// hand — the frozen generator EMITS `PlacePresident{canal}` while both
+    /// apply paths and this predicate REJECT it: a pre-existing
+    /// generator/apply inconsistency on the frozen surface, recorded as an
+    /// owner-visible carry-forward (PR #9). Until this test existed, the claim
+    /// was proven only by an out-of-repo probe cited in a commit message.
+    /// Three legs:
+    /// (1) the generator emits — the MEANING-PIN: if `legal_moves.rs` is ever
+    ///     fixed, this leg fails LOUDLY and the narrowing comment at this
+    ///     module's `PlacePresident` arm gets retired instead of rotting;
+    /// (2) `is_move_legal` rejects in BOTH modes — siding with apply is what
+    ///     keeps the accepts⟹apply-Ok property true;
+    /// (3) `apply_move_unchecked` rejects — the split is generator-vs-APPLY on
+    ///     the frozen surface, not generator-vs-this-module.
+    #[test]
+    fn the_canal_narrowing_generator_emits_while_apply_and_predicate_reject() {
+        let rules = Rules::empty_for_tests();
+        let mut s = diamond(2, &[]);
+        s.players[0].president_location = PresidentLocation::InHand;
+        s.board_layout.areas.get_mut(&AreaId(1)).expect("area 1").area_type = AreaType::Canal;
+
+        let mv = Move::PlacePresident { destination: AreaId(1) };
+
+        assert!(
+            get_legal_moves(&s, &rules).contains(&mv),
+            "meaning-pin: the frozen generator emits PlacePresident onto the Canal-typed area \
+             today; if this leg fails, legal_moves.rs was fixed — retire the narrowing comment",
+        );
+        assert!(!legal(&s, &rules, &mv), "the predicate rejects it (RulesLegal)");
+        assert!(!canonical(&s, &rules, &mv), "the predicate rejects it (Canonical)");
+        assert!(
+            apply_move_unchecked(&s, &mv, &rules).is_err(),
+            "apply rejects it — the inconsistency is generator-vs-apply, and this predicate \
+             sides with apply",
+        );
+    }
+
     /// Station's own preconditions, from the predicate side: the token must be
     /// placed, the tech owned, and an own assistant must stand on the station
     /// area (owner ruling A1, 2026-07-20).
