@@ -18,7 +18,7 @@
 //! - **B — apply-and-see:** `apply_move_unchecked(state, mv, rules).is_ok()`,
 //!   i.e. let the raw transition arms judge.
 //!
-//! | cell (4P worst case) | A ns | A allocs | B ns | B allocs | B/A |
+//! | cell (R3 PROTOTYPE at master `15dd5c5`, 4P worst case — not this port) | A ns | A allocs | B ns | B allocs | B/A |
 //! |---|---:|---:|---:|---:|---:|
 //! | retreat ACCEPT (mid-family) | 12 | **0** | 777–856 | 43 | ~66× |
 //! | retreat REJECT | 5 | **0** | 747–974 | 43 | ~158× |
@@ -194,10 +194,19 @@ pub fn is_move_legal(state: &GameState, mv: &Move, rules: &Rules, mode: PathMode
             phase == TurnPhase::Movement
                 // The from-hand encoding, and a real board area: both are what
                 // `apply_place_president` itself refuses (`apply_move.rs:569-574`).
-                // The generator reaches placeability differently — it iterates
-                // the areas map and lets `is_possible_action_area_with_tech`'s
-                // own-assistant requirement exclude the Canal, which no
-                // placement arm will ever put an assistant on.
+                // THE MODULE'S ONE NARROWING (T5 review, verified by probe): on
+                // a fixture with an own assistant ON the Canal, the generator
+                // EMITS `PlacePresident{Canal}` while both apply paths reject
+                // it — a pre-existing generator/apply inconsistency in frozen
+                // files. Siding with apply is what keeps this module's
+                // accepts⟹apply-Ok property true. Unreachable by legal play:
+                // both placement arms check placeability
+                // (`require_placeable_area`), and the one unguarded
+                // assistant-writer — `ChooseAssistantMove`'s apply arm — is fed
+                // only by `assistant_move_options`, which excludes the Canal.
+                // The walk arm has the identical, already-sanctioned class (a
+                // route ENDING on the Canal mirrors `validate_president_path`'s
+                // rejection), so the two arms are consistent.
                 && p.president_location == PresidentLocation::InHand
                 && placeable(state, *destination)
                 && is_possible_action_area_with_tech(state, player, *destination, techs)
@@ -397,6 +406,12 @@ fn opponent_president_on(state: &GameState, player: PlayerId, area: AreaId) -> b
 /// DRIFT GUARD: step 3 re-states ~35 lines of a frozen file. The mirror is
 /// pinned by tests, not by this comment — `accepted_candidates_apply_and_add_no_new_labels`
 /// fails the moment an acceptance stops applying cleanly.
+///
+/// `player` is a parameter for signature symmetry, but the no-return-to-start
+/// rule reads `state.president_start_area` — a TURN-GLOBAL latched for the
+/// CURRENT player's Movement step — so passing another seat applies the wrong
+/// start restriction. Call it for `state.current_player` (as `is_move_legal`
+/// does) unless you know the field's provenance.
 pub fn is_president_path_legal(
     state: &GameState,
     player: PlayerId,
@@ -1289,7 +1304,11 @@ mod tests {
     ///
     /// CONSTRUCTED rather than driven, deliberately: mercenaries arrive only on
     /// order cards and no uniform-random game in this module's sweeps ever used
-    /// one, so a driven version of this pin would assert nothing. Here the
+    /// one, so a driven version of this pin would assert nothing. That fact is
+    /// WIDTH-DEPENDENT, not seed-dependent (its falsifier, measured at review:
+    /// `drive(3, 400)` = 0 mercenary uses in 3,600 decision points, but the
+    /// same seeds at a 2,000-step cap fire 6 times) — if this module's sweep
+    /// width ever grows, re-check the story rather than inheriting it. Here the
     /// sub-turn is entered from the move that starts it and driven to its end,
     /// at eight seeds so different branches through it are covered.
     #[test]
