@@ -81,14 +81,16 @@ Fastest playable game: answer the wizard `sim`, `2`, `red`, `blue`, `0`, Enter t
 **[HTML](docs/cli-guide.html)** or [Markdown](docs/cli-guide.md).
 
 **Gates.** Per-edit (debug): the four crate suites + `cargo clippy --workspace --all-targets
--- -D warnings`, all zero-warning. Pre-merge: all **seven** release gates below (~87s total,
-measured 2026-07-25 at PR #5 head). This table is the binding list — if it and CLAUDE.md's
-two-tier policy ever disagree, they are both wrong until reconciled.
+-- -D warnings`, all zero-warning. Pre-merge: all **eight** release gates below (~89s total —
+the seven measured 2026-07-25 at PR #5 head plus the ~2.3s Phase-3.0 observation-honesty
+sweep). This table is the binding list — if it and CLAUDE.md's two-tier policy ever disagree,
+they are both wrong until reconciled.
 
 | Gate | Command | Proves |
 |---|---|---|
 | Fuzz | `cargo test --release -p yokohama-core --test fuzz_full_games -- --ignored` | 1,500 self-play games, per-move invariants |
 | Choice census | `cargo test --release -p yokohama-core --test choice_encoding -- --ignored` | every choice variant fires organically |
+| Observation honesty | `cargo test --release -p yokohama-core --test observation_honesty -- --ignored` | the view masks the hidden set, the sampler conserves, no leakage (Phase 3.0) |
 | Differential | `cargo test --release -p yokohama-difftest --test differential -- --ignored` | engine ≡ oracle on every legal-move set |
 | Routes3 | `cargo test --release -p yokohama-difftest --test routes3_differential -- --ignored` | route pruning ≡ prune-free reference |
 | Scoring | `cargo test --release -p yokohama-difftest --test scoring_differential -- --ignored` | final scores + tie-break ≡ oracle |
