@@ -1241,15 +1241,16 @@ const ALL_ACHIEVEMENTS: [yokohama_core::AchievementType; 12] = {
 ///   2. the property it exists to buy, stated directly — at every supported
 ///      player count, the WORST value a place can take strictly exceeds the
 ///      BEST value of the place below it.
+///
 /// At clamp 600 both fail; at the shipped 400 both hold with 2e8 headroom.
 #[test]
 fn the_terminal_ladder_cannot_invert_adjacent_places_by_construction() {
-    assert!(
-        2 * TERMINAL_MARGIN_CLAMP * TERMINAL_MARGIN_STEP < TERMINAL_RANK_STEP,
-        "two clamped margins ({}) must span strictly less than one rank step ({})",
-        2 * TERMINAL_MARGIN_CLAMP * TERMINAL_MARGIN_STEP,
-        TERMINAL_RANK_STEP,
-    );
+    // The global inequality is a compile-time fact about three consts, so it
+    // is pinned as one (the repo's L12 preference — the strongest pins are the
+    // ones the compiler carries): clamp 600 makes this a COMPILE error here.
+    const {
+        assert!(2 * TERMINAL_MARGIN_CLAMP * TERMINAL_MARGIN_STEP < TERMINAL_RANK_STEP);
+    }
     for players in 2u8..=4 {
         for rank in 1..players {
             let worst_here = TERMINAL_RANK_STEP * place_signal(rank)
