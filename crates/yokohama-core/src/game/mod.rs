@@ -36,6 +36,11 @@ pub mod actions;
 /// same shape `actions` above uses; `pub use game::*` in `lib.rs` still makes
 /// the MODULE reachable as `yokohama_core::eval`.
 pub mod eval;
+/// Greedy-v1, the one-ply evaluator rung (Phase 3.3 T3). NAMESPACED for the
+/// same reason [`eval`] is: the crate glob re-exports every `pub use x::*`
+/// below to the crate root, and `candidates` is far too generic to live there.
+/// Callers write `greedy::GreedyAgent` / `greedy::candidates`.
+pub mod greedy;
 
 pub use power::*;
 pub use movement::*;
