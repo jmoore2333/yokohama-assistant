@@ -29,6 +29,13 @@ mod metrics;
 mod policy;
 mod arena;
 pub mod actions;
+/// Evaluator v1 (Phase 3.3 T1). NAMESPACED deliberately — the crate glob
+/// re-exports every `pub use x::*` below to the crate root, and `score`/
+/// `explain` are far too generic to live there (`yokohama_core::score` says
+/// nothing about what it scores). Callers write `eval::score(&view, ..)`, the
+/// same shape `actions` above uses; `pub use game::*` in `lib.rs` still makes
+/// the MODULE reachable as `yokohama_core::eval`.
+pub mod eval;
 
 pub use power::*;
 pub use movement::*;
