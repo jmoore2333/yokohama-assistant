@@ -41,6 +41,16 @@
 //! enumerations per candidate (`family_len` + `iter_family().nth(i)` pays two).
 //!
 //!   cargo run --release -p yokohama-core --example route_cost
+//!   cargo run --release -p yokohama-core --example route_cost -- --policy family-weighted
+//!
+//! **L11 (added 3.2 Task 13).** Block A's driver is selectable. The default is
+//! the legacy uniform-over-`get_legal_moves` driver every figure above was
+//! recorded under; `--policy <name>` drives it with a shipped [`RolloutPolicy`]
+//! through a `DecisionHandle` instead. This exists because a route-label
+//! distribution is a statement about a POLICY and not about the game: uniform
+//! play returns the President to hand far more often than any competent policy
+//! would, so its organic maxima under-describe what a real player's search
+//! pays. Both arms are on the record; neither may be quoted as the other.
 //!
 //! Meter: the shared `action_cost_meter` (3.1a), so `allocs` (deterministic
 //! event count) and `peak_bytes` (peak OUTSTANDING requested bytes,
@@ -78,8 +88,8 @@ use rand::Rng;
 
 use yokohama_core::{
     apply_move_unchecked, enumerate_president_routes, enumerate_routes, fits_fixed_arrays,
-    get_legal_moves, is_game_over, AreaId, GameState, PlayerId, PresidentLocation, Rules,
-    TechCardId, TechEffect, TurnPhase,
+    get_legal_moves, is_game_over, AreaId, DecisionHandle, GameState, PlayerId, PresidentLocation,
+    RolloutPolicy, Rules, TechCardId, TechEffect, TurnPhase,
 };
 
 // ---------------------------------------------------------------------------
@@ -87,7 +97,54 @@ use yokohama_core::{
 // and nothing else; any figure quoted elsewhere cites it.
 // ---------------------------------------------------------------------------
 
-/// Seeds swept at each player count.
+/// Block A's move-selection driver, chosen by `--policy` (default `uniform`).
+///
+/// The distinction is ledger L11's whole subject: route labels are a property
+/// of the STATES a game visits, so a label distribution is a statement about a
+/// POLICY, never about Yokohama. Two arms exist so both statements are on the
+/// record and neither can be quoted as the other.
+#[derive(Clone, Copy)]
+enum SweepDriver {
+    /// Uniform-random over the materialized `get_legal_moves` list — the driver
+    /// every committed 3.1b organic figure was recorded under, kept as the
+    /// DEFAULT so an argument-free run still reproduces those curves. It is not
+    /// `RolloutPolicy::Uniform`: that rung draws families-first over the
+    /// factored surface, which is the same distribution by construction but a
+    /// different code path, and re-baselining the 3.1b curves onto it would buy
+    /// nothing and cost their comparability.
+    LegacyUniform,
+    /// A shipped [`RolloutPolicy`] drawn through a `DecisionHandle`, exactly as
+    /// the arena's raw-state driver does. This is L11's re-measure arm (spec
+    /// §6): the shipped `FAMILY_WEIGHTED_DEFAULT` visits materially different
+    /// boards from uniform play, and the organic label maxima move with it.
+    Policy(RolloutPolicy),
+}
+
+impl SweepDriver {
+    /// The policy label printed on every figure this driver produces.
+    fn label(self) -> String {
+        match self {
+            Self::LegacyUniform => {
+                "uniform-random self-play over `get_legal_moves` (legacy 3.1b driver)".to_string()
+            }
+            Self::Policy(p) => {
+                let (name, version, params) = p.descriptor();
+                let knobs: Vec<String> =
+                    params.iter().map(|(k, v)| format!("{k}={v}")).collect();
+                format!(
+                    "RolloutPolicy `{name}` v{version} [{}] over a DecisionHandle \
+                     (the arena's raw-state driver shape)",
+                    knobs.join(", "),
+                )
+            }
+        }
+    }
+}
+
+/// Seeds swept at each player count. Small literal seeds are deliberate here
+/// and permitted by spec §3: this binary RECORDS a cost curve, it is not a
+/// bot-facing evaluation whose figures get quoted as strength, and a curve you
+/// cannot re-run is not a curve.
 const SEEDS: std::ops::Range<u64> = 0..12;
 /// Per-game step cap — set to run games to their natural END, which is what a
 /// distribution needs. Uniform-random Yokohama games are long: `tests/common`
@@ -196,16 +253,20 @@ struct SweepShape {
     /// by construction rather than states that found nothing to walk.
     from_hand_points: usize,
     truncated_games: usize,
+    /// Games that ended on a structurally empty family rather than on
+    /// `is_game_over` — expected to be zero, printed so it cannot hide.
+    dead_end_games: usize,
     wall: Duration,
 }
 
-fn organic_sweep(rules: &Rules) -> (Vec<Point>, SweepShape) {
+fn organic_sweep(rules: &Rules, driver: SweepDriver) -> (Vec<Point>, SweepShape) {
     let mut points = Vec::new();
     let mut shape = SweepShape {
         games: 0,
         decision_points: 0,
         from_hand_points: 0,
         truncated_games: 0,
+        dead_end_games: 0,
         wall: Duration::ZERO,
     };
     let sweep_start = Instant::now();
@@ -220,25 +281,42 @@ fn organic_sweep(rules: &Rules) -> (Vec<Point>, SweepShape) {
                 if is_game_over(&state) {
                     break;
                 }
-                let legal = get_legal_moves(&state, rules);
-                if legal.is_empty() {
-                    break;
-                }
-                shape.decision_points += 1;
 
-                // A routes family is dispatched exactly when the queue is empty
-                // and the phase is Movement (`search_actions::families`).
-                if state.pending_choices.is_empty() && state.turn_phase == TurnPhase::Movement {
-                    let player = state.current_player;
-                    match state.player(player).president_location {
-                        PresidentLocation::OnBoard(from) => {
-                            points.push(measure_point(&state, rules, player, from));
+                // The two arms differ ONLY in how the next move is drawn. The
+                // legacy arm's control flow is preserved exactly — same probe,
+                // same order, same rng call — because every 3.1b figure was
+                // recorded under it and a default run must still reproduce them.
+                let drawn = match driver {
+                    SweepDriver::LegacyUniform => {
+                        let legal = get_legal_moves(&state, rules);
+                        if legal.is_empty() {
+                            break;
                         }
-                        _ => shape.from_hand_points += 1,
+                        shape.decision_points += 1;
+                        measure_if_walkable(&mut points, &mut shape, &state, rules);
+                        Some(legal[rng.gen_range(0..legal.len())].clone())
                     }
-                }
+                    SweepDriver::Policy(policy) => {
+                        let handle = DecisionHandle::new(&state, rules);
+                        if handle.families().is_empty() {
+                            break;
+                        }
+                        shape.decision_points += 1;
+                        measure_if_walkable(&mut points, &mut shape, &state, rules);
+                        policy.pick(&handle, &mut rng)
+                    }
+                };
 
-                let mv = legal[rng.gen_range(0..legal.len())].clone();
+                // `pick` returns `None` only on a structurally empty family, and
+                // never at a Movement point (the retreat family always holds the
+                // recover-nothing move). Counted and printed rather than
+                // silently swallowed — the arena driver treats it as an error,
+                // and a recording example should at least show it happened.
+                let Some(mv) = drawn else {
+                    shape.dead_end_games += 1;
+                    break;
+                };
+
                 state = apply_move_unchecked(&state, &mv, rules).expect("apply drawn move");
                 steps += 1;
                 if steps >= STEP_CAP {
@@ -251,6 +329,26 @@ fn organic_sweep(rules: &Rules) -> (Vec<Point>, SweepShape) {
 
     shape.wall = sweep_start.elapsed();
     (points, shape)
+}
+
+/// A routes family is dispatched exactly when the queue is empty and the phase
+/// is Movement (`search_actions::families`); only the President-on-board case
+/// actually walks, so only it is measured.
+fn measure_if_walkable(
+    points: &mut Vec<Point>,
+    shape: &mut SweepShape,
+    state: &GameState,
+    rules: &Rules,
+) {
+    if state.pending_choices.is_empty() && state.turn_phase == TurnPhase::Movement {
+        let player = state.current_player;
+        match state.player(player).president_location {
+            PresidentLocation::OnBoard(from) => {
+                points.push(measure_point(state, rules, player, from));
+            }
+            _ => shape.from_hand_points += 1,
+        }
+    }
 }
 
 /// Both variants on one state: label count once, then latency and allocations
@@ -286,7 +384,7 @@ const BUCKETS: [(&str, usize, usize); 6] = [
     ("21+", 21, usize::MAX),
 ];
 
-fn report_organic(points: &[Point], shape: &SweepShape) {
+fn report_organic(points: &[Point], shape: &SweepShape, driver: SweepDriver) {
     let movement_points = points.len() + shape.from_hand_points;
     let on_board_share = if movement_points == 0 {
         0.0
@@ -296,10 +394,9 @@ fn report_organic(points: &[Point], shape: &SweepShape) {
     println!(
         "== A. ORGANIC ROUTE COST ==\n\n\
          POLICY (the one every figure in this block is stated under, and the only one):\n\
-         uniform-random self-play over `get_legal_moves` from `common::new_seeded_game`\n\
-         (the equivalence sweep's own driver), seeds {}..{} x 2/3/4 players = {} games,\n\
-         played to their natural end under a {}-step safety cap; {} games hit the cap.\n\
-         Sweep wall clock {:.2?}. Total decision points driven: {}.\n\n\
+         {}, from `common::new_seeded_game`, seeds {}..{} x 2/3/4 players = {} games,\n\
+         played to their natural end under a {}-step safety cap; {} games hit the cap and\n\
+         {} ended on an empty family. Sweep wall clock {:.2?}. Decision points driven: {}.\n\n\
          Measured at every Movement decision point with the President ON BOARD: {} points.\n\
          A further {} Movement points had the President IN HAND: a routes family is\n\
          dispatched there too, but it is the `PlacePresident` arm and `enumerate_routes`\n\
@@ -307,17 +404,19 @@ fn report_organic(points: &[Point], shape: &SweepShape) {
          itself a POLICY ARTIFACT, not a fact about Yokohama — uniform-random play draws\n\
          from a retreat family that returns the President to hand far more often than any\n\
          competent policy would, so a real player pays the walk enumeration at a much\n\
-         higher rate than these counts suggest (ledger L11: 3.2/3.3 re-measure under their\n\
-         own policy).\n\n\
+         higher rate than uniform's counts suggest. That is ledger L11, and `--policy\n\
+         family-weighted` is the arm that measures it rather than asserting it.\n\n\
          This SUPERSEDES the 21/32/38 organic-label maxima (three harnesses, three\n\
          trajectories, no canonical figure) and the 679 ns mean / 3.3 us max latencies\n\
          (measured out of repo under Prune::Adaptive). Latency repeats: shipped x{},\n\
          frozen x{}.\n",
+        driver.label(),
         SEEDS.start,
         SEEDS.end,
         shape.games,
         STEP_CAP,
         shape.truncated_games,
+        shape.dead_end_games,
         shape.wall,
         shape.decision_points,
         points.len(),
@@ -587,7 +686,45 @@ fn report_k_table(anchors: &[(String, u128)]) {
     );
 }
 
+/// `--policy <name>` → the block-A driver. Names are `RolloutPolicy`'s own
+/// (`RolloutPolicy::from_str_name`), plus `uniform` meaning the legacy driver,
+/// so the default run is unchanged.
+fn parse_driver(args: &[String]) -> Result<SweepDriver, String> {
+    let mut driver = SweepDriver::LegacyUniform;
+    let mut rest = args.iter();
+    while let Some(arg) = rest.next() {
+        match arg.as_str() {
+            "--policy" => {
+                let name = rest.next().ok_or("--policy needs a value")?;
+                driver = match name.as_str() {
+                    "uniform" => SweepDriver::LegacyUniform,
+                    other => SweepDriver::Policy(
+                        RolloutPolicy::from_str_name(other)
+                            .ok_or_else(|| format!("unknown policy `{other}`"))?,
+                    ),
+                };
+            }
+            other => return Err(format!("unexpected argument `{other}`")),
+        }
+    }
+    Ok(driver)
+}
+
 fn main() {
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    let driver = match parse_driver(&args) {
+        Ok(d) => d,
+        Err(message) => {
+            eprintln!(
+                "{message}\n\nusage: route_cost [--policy uniform|retreat-averse|family-weighted]\n\
+                 \n  uniform (default) is the legacy 3.1b driver — an argument-free run\n\
+                 reproduces the committed curves. Any other name drives block A with that\n\
+                 shipped RolloutPolicy (ledger L11's re-measure arm)."
+            );
+            std::process::exit(2);
+        }
+    };
+
     let rules = Rules::standard();
     println!(
         "== Phase 3.1b route-cost re-measure (release; peak = peak OUTSTANDING requested bytes) ==\n\n\
@@ -598,8 +735,8 @@ fn main() {
          advantage. Label and allocation counts are unaffected.\n"
     );
 
-    let (points, shape) = organic_sweep(&rules);
-    report_organic(&points, &shape);
+    let (points, shape) = organic_sweep(&rules, driver);
+    report_organic(&points, &shape, driver);
     let (dense_worst_name, dense_worst_ns) = report_dense(&rules);
 
     let shipped: Vec<u128> = points.iter().map(|p| p.shipped_ns).collect();
