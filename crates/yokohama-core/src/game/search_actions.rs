@@ -993,6 +993,18 @@ impl<'a> DecisionHandle<'a> {
         &self.families
     }
 
+    /// The turn phase this decision point is in.
+    ///
+    /// A handle is built FOR one decision point, so it already knows the phase;
+    /// exposing it spares every consumer a redundant `&GameState` parameter
+    /// alongside the handle it was built from — and a second parameter is a
+    /// second thing that can disagree with the first. `game/metrics.rs` keys
+    /// its report rows by phase (spec §6's per-(player count × phase × policy)
+    /// reporting rule), which is the first such consumer.
+    pub fn turn_phase(&self) -> TurnPhase {
+        self.state.turn_phase
+    }
+
     /// `family`'s memoized moves, or `None` when it is a lazily-paged family or
     /// one this handle was not built for.
     fn memoized(&self, family: &MoveFamily) -> Option<&[Move]> {
@@ -1158,8 +1170,15 @@ mod alloc_probe {
     }
 }
 
+/// `pub(crate)` so sibling modules' unit tests can build decision points from
+/// the SAME fixtures these tests pin, rather than re-deriving a state whose
+/// load-bearing property (an affordability hole under the placement fee gate; a
+/// walkable Movement edge) is subtle enough to get silently wrong — the
+/// single-fixture discipline `tests/route_fixtures/` applies to the integration
+/// binaries, applied here to the unit ones. `#[cfg(test)]` still confines all of
+/// it to test builds. Current outside reader: `game/metrics.rs`.
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use crate::apply_move_unchecked;
     use crate::game::get_legal_moves;
@@ -1222,7 +1241,7 @@ mod tests {
         }
     }
 
-    fn at_phase(phase: TurnPhase) -> GameState {
+    pub(crate) fn at_phase(phase: TurnPhase) -> GameState {
         let mut s = base_state();
         s.turn_phase = phase;
         s
@@ -2380,7 +2399,7 @@ mod tests {
 
     /// A Movement decision point with the President ON BOARD and one walkable
     /// edge, so the routes family is non-empty and a route DFS really runs.
-    fn handle_movement_state() -> GameState {
+    pub(crate) fn handle_movement_state() -> GameState {
         let mut s = at_phase(TurnPhase::Movement);
         s.board_layout.adjacency.insert(AreaId::new(0), vec![AreaId::new(1)]);
         s.board_layout.adjacency.insert(AreaId::new(1), vec![AreaId::new(0)]);
@@ -2394,7 +2413,7 @@ mod tests {
     /// [`placement_per_combination_affordability_excludes_costly_subset`]: an
     /// unaffordable 3-subset punches a hole, so `placement_upper_len` is a
     /// STRICT over-estimate and the handle must report `UpperBound`.
-    fn handle_fee_gated_placement_state() -> GameState {
+    pub(crate) fn handle_fee_gated_placement_state() -> GameState {
         let a = AreaId::new;
         let mut s = placement_state(4, 4);
         s.players[0].assistants.in_hand = 3;
