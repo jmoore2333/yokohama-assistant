@@ -51,7 +51,8 @@ create_terminal  {command: "/bin/zsh", cwd: <repo root>, cols: 140, rows: 50,
                   name: "yokohama-cli", tags: ["yokohama"]}
 write_terminal   {id, input: "cargo run -p yokohama-cli"}     # prebuild first — see notes
 wait_for         {id, pattern: "Mode\\? \\(sim/live\\)"}
-write_terminal   {id, input: "sim\n2\nred\nblue\n0\n42\n<scratchpad>/game.json\n0\n0"}
+write_terminal   {id, input: "sim\n2\nred\nblue\n0\n42\n<scratchpad>/game.json\n0\n0\n"}
+                  # the trailing blank answers the "Bot seats?" question (3.2) — blank = none
 wait_for         {id, pattern: "confirm / edit"}
 write_terminal   {id, input: "confirm"}
 wait_for         {id, pattern: "Turn 1"}

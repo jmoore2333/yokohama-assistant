@@ -37,7 +37,7 @@ use std::process::ExitCode;
 
 use yokohama_core::Rules;
 use yokohama_difftest::artifact::default_artifacts_dir;
-use yokohama_difftest::drive::Policy;
+use yokohama_difftest::drive::{parse_cli_policy, Policy};
 use yokohama_difftest::routes3::run_routes3_game;
 use yokohama_difftest::runner::{run_differential_game, run_scoring_game};
 
@@ -149,7 +149,8 @@ fn score_sweep(games: u64, players: u8, base_seed: u64, policy: Policy) -> ExitC
     let mut diverged: u64 = 0;
 
     for i in 0..games {
-        let seed = base_seed + i;
+        // DIAGNOSTIC sweep seeds (consecutive by design; NOT bot-facing evaluation — see game/seeds.rs and the SEED HYGIENE note in game/agent.rs). wrapping_add so a full-entropy base cannot panic in debug.
+        let seed = base_seed.wrapping_add(i);
         match run_scoring_game(seed, players, policy, &rules, &artifact_dir) {
             Ok(outcome) => match outcome.divergence {
                 None => {
@@ -205,7 +206,8 @@ fn routes3_sweep(games: u64, players: u8, base_seed: u64, policy: Policy) -> Exi
     let mut max_labels: usize = 0;
 
     for i in 0..games {
-        let seed = base_seed + i;
+        // DIAGNOSTIC sweep seeds (consecutive by design; NOT bot-facing evaluation — see game/seeds.rs and the SEED HYGIENE note in game/agent.rs). wrapping_add so a full-entropy base cannot panic in debug.
+        let seed = base_seed.wrapping_add(i);
         match run_routes3_game(seed, players, policy, &rules, &artifact_dir) {
             Ok(outcome) => {
                 qualifying_total += outcome.qualifying_steps;
@@ -261,7 +263,7 @@ fn main() -> ExitCode {
             args[2].parse::<u64>(),
             args[3].parse::<u8>(),
             args[4].parse::<u64>(),
-            args[5].parse::<Policy>(),
+            parse_cli_policy(&args[5]),
         ) {
             (Ok(g), Ok(p), Ok(s), Ok(pol)) if (2..=4).contains(&p) => {
                 if args[1] == "score" {
@@ -290,7 +292,7 @@ fn main() -> ExitCode {
         args[1].parse::<u64>(),
         args[2].parse::<u8>(),
         args[3].parse::<u64>(),
-        args[4].parse::<Policy>(),
+        parse_cli_policy(&args[4]),
     ) {
         (Ok(g), Ok(p), Ok(s), Ok(pol)) if (2..=4).contains(&p) => (g, p, s, pol),
         _ => {
@@ -305,7 +307,8 @@ fn main() -> ExitCode {
     let mut diverged: u64 = 0;
 
     for i in 0..games {
-        let seed = base_seed + i;
+        // DIAGNOSTIC sweep seeds (consecutive by design; NOT bot-facing evaluation — see game/seeds.rs and the SEED HYGIENE note in game/agent.rs). wrapping_add so a full-entropy base cannot panic in debug.
+        let seed = base_seed.wrapping_add(i);
         match run_differential_game(seed, players, policy, &rules, &artifact_dir) {
             Ok(outcome) => match outcome.divergence {
                 None => {

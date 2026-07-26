@@ -1,0 +1,52 @@
+{
+  "engine_version": "0.1.0",
+  "rules_hash": "d85445c479cb1ead",
+  "seed": 99001,
+  "config": {
+    "player_count": 2,
+    "player_colors": [
+      "Red",
+      "Blue"
+    ],
+    "start_player": 0,
+    "has_port_b": false,
+    "has_lab_b": false,
+    "setup_seed": 0
+  },
+  "choices": [
+    {
+      "Keep": 0
+    },
+    {
+      "Keep": 1
+    }
+  ],
+  "events": [
+    {
+      "Move": "EndAdditionalPhase"
+    }
+  ],
+  "semantics_rev": 5,
+  "terminal_digest": "1f4e66e050626103",
+  "run": {
+    "schema": 1,
+    "seats": [
+      {
+        "controller": "human",
+        "version": 0,
+        "params": {},
+        "observation": "view"
+      },
+      {
+        "controller": "family-weighted",
+        "version": 1,
+        "params": {
+          "recovery_min_of": 5,
+          "retreat_ppm": 166667
+        },
+        "agent_seed": 5562716734125718143,
+        "observation": "view"
+      }
+    ]
+  }
+}

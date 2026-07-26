@@ -9,7 +9,9 @@ authors.workspace = true
 yokohama-core = { path = "../yokohama-core" }
 serde.workspace = true
 serde_json.workspace = true
-
-[dev-dependencies]
+# Promoted from dev-dependencies at Phase 3.2 Task 12: the sim-mode bot seats
+# draw their per-decision moves through `RolloutPolicy::pick`, which takes an
+# `impl rand::Rng`. Both crates were already workspace dependencies used by the
+# CLI's tests -- no new crate enters the tree.
 rand.workspace = true
 rand_chacha.workspace = true

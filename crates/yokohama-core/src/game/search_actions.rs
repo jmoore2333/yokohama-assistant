@@ -56,7 +56,8 @@ use crate::types::*;
 /// `TurnPhase::Movement` branch and there is no separate place-President phase,
 /// so they share one family tag. `MovementRetreat` is the
 /// `Move::ReturnPresidentToHand` family, offered from either President location
-/// (`from_hand` records which).
+/// — and the tag deliberately does NOT record which, because the family's
+/// members do not depend on it (see the variant's own doc).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum MoveFamily {
     /// Phase A/C additional actions: end-phase, mercenaries, fulfill
@@ -73,12 +74,20 @@ pub enum MoveFamily {
     /// Movement step, `ReturnPresidentToHand`: the per-area recovery-count
     /// product `∏(count + 1)` — the six-figure family. Carries an owned clone
     /// of the current player's `on_board` counts so it is indexable/sampleable
-    /// without touching `GameState`; `from_hand` is true when the President is
-    /// already in hand (Option B from hand) rather than on the board.
-    MovementRetreat {
-        on_board: BTreeMap<AreaId, u8>,
-        from_hand: bool,
-    },
+    /// without touching `GameState`.
+    ///
+    /// The President's LOCATION is not part of the tag (a `from_hand: bool`
+    /// rode here through 3.1a and was removed in 3.2 — spec §8 parked item 3).
+    /// It never had a reader outside tests: the family's members are the
+    /// mixed-radix product over `on_board` alone, and none of
+    /// [`retreat_move`]/[`retreat_len`]/[`retreat_iter`]/[`retreat_sample`]
+    /// consults the President. Option B is legal from either location, so the
+    /// two cases offer the SAME move set — a flag distinguishing tags that
+    /// serve identical moves is a shape a consumer can mistake for a
+    /// dispatch. The distinction itself is not lost: it is `president_location`
+    /// on the state (and on a seat's `PlayerView`), where a 3.3 consumer that
+    /// wants it should read it.
+    MovementRetreat { on_board: BTreeMap<AreaId, u8> },
     /// Area-action step: the six optional-component areas plus production and
     /// the Bank.
     AreaAction,
@@ -124,14 +133,13 @@ pub fn families(state: &GameState, _rules: &Rules) -> Vec<MoveFamily> {
             // Both President locations emit a routes family (PlacePresident
             // from hand, MovePresident on board) followed by the retreat
             // family — the same order `generate_movement_moves_with_tech`
-            // uses (`legal_moves.rs:254-373`).
+            // uses (`legal_moves.rs:254-373`). The location changes which MOVES
+            // the routes family serves; it changes nothing about the two TAGS,
+            // which is why the retreat tag does not record it.
             let p = state.current_player();
             vec![
                 MoveFamily::MovementRoutes,
-                MoveFamily::MovementRetreat {
-                    on_board: p.assistants.on_board.clone(),
-                    from_hand: matches!(p.president_location, PresidentLocation::InHand),
-                },
+                MoveFamily::MovementRetreat { on_board: p.assistants.on_board.clone() },
             ]
         }
         TurnPhase::AreaAction => vec![MoveFamily::AreaAction],
@@ -162,12 +170,35 @@ pub fn families(state: &GameState, _rules: &Rules) -> Vec<MoveFamily> {
 /// `RuleViolation`, not pre-checked here (the frozen apply boundary owns
 /// legality, per the plan's read-only constraint).
 ///
-/// `on_board` is unused by construction — a `recover` map is fully determined
-/// by the chosen `per_area` counts — and is present only so the retreat
-/// family's four entry points (`retreat_move` / [`retreat_len`] /
-/// [`retreat_iter`] / [`retreat_sample`]) share one shape over the family's
-/// owned `on_board` snapshot.
-pub fn retreat_move(_on_board: &BTreeMap<AreaId, u8>, per_area: &[(AreaId, u8)]) -> Move {
+/// `on_board` is not read to BUILD the move — a `recover` map is fully
+/// determined by the chosen `per_area` counts. It is a parameter for two other
+/// reasons: it gives the retreat family's four entry points (`retreat_move` /
+/// [`retreat_len`] / [`retreat_iter`] / [`retreat_sample`]) one shape over the
+/// family's owned snapshot, and it is what the `debug_assert` below checks
+/// against.
+///
+/// **The over-count `debug_assert` is a caller-bug tripwire, not the validation
+/// the paragraph above rules out** (Phase 3.2 Task 3; spec §8 parked item 2).
+/// Recovering more assistants from an area than stand there cannot arise from
+/// this module's own paging — [`retreat_iter`] decodes digits bounded by the
+/// snapshot and [`retreat_sample`] draws in `0..=count` — so it means the
+/// caller assembled its counts wrong, and the weighted policy's per-area draw
+/// is this constructor's direct caller. Debug builds panic at the constructor
+/// rather than let the bad move travel a phase before `apply_return_to_hand`
+/// names it; in release the constructor builds the over-count VERBATIM and that
+/// arm stays the sole validator — a property only a release build can observe
+/// (the debug tripwire fires first), pinned release-tier by
+/// `retreat_move_builds_an_over_count_verbatim_in_release` in
+/// `tests/action_source_worstcase.rs` under the documented worstcase gate
+/// command (T3 review F1).
+pub fn retreat_move(on_board: &BTreeMap<AreaId, u8>, per_area: &[(AreaId, u8)]) -> Move {
+    debug_assert!(
+        per_area
+            .iter()
+            .all(|&(area, count)| count <= on_board.get(&area).copied().unwrap_or(0)),
+        "retreat_move: a per-area recovery count exceeds the assistants on board \
+         (per_area {per_area:?} against on_board {on_board:?})",
+    );
     let recover: BTreeMap<AreaId, u8> =
         per_area.iter().copied().filter(|&(_, count)| count > 0).collect();
     Move::ReturnPresidentToHand { recover }
@@ -700,7 +731,7 @@ fn family_kind(mv: &Move) -> std::mem::Discriminant<MoveFamily> {
         Move::MovePresident { .. } | Move::PlacePresident { .. } => d(&MoveFamily::MovementRoutes),
 
         Move::ReturnPresidentToHand { .. } => {
-            d(&MoveFamily::MovementRetreat { on_board: BTreeMap::new(), from_hand: false })
+            d(&MoveFamily::MovementRetreat { on_board: BTreeMap::new() })
         }
 
         Move::ExecuteAreaAction { .. } => d(&MoveFamily::AreaAction),
@@ -863,6 +894,237 @@ fn draw_one(mut moves: Vec<Move>, rng: &mut impl Rng) -> Option<Move> {
     Some(moves.swap_remove(i))
 }
 
+// ---------------------------------------------------------------------------
+// The enumerate-once decision handle (Phase 3.2 Task 2, spec
+// `docs/plans/2026-07-25-phase3.2-arena-spec.md` §8)
+// ---------------------------------------------------------------------------
+
+/// How exact a [`family_len`]-shaped count is — the distinction the free
+/// functions could only state in prose.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FamilySize {
+    /// The family yields exactly this many moves.
+    Exact(u64),
+    /// The family yields AT MOST this many moves. Only placement is
+    /// upper-bounded: a per-combination fee gate punches holes that are not
+    /// contiguous in enumeration order, so the count is a strict over-estimate
+    /// wherever a subset is unaffordable.
+    UpperBound(u64),
+}
+
+impl FamilySize {
+    /// The count itself, discarding the exactness. Callers that SUM sizes (the
+    /// per-decision volume metric) want the number plus a separate "did an
+    /// upper-bound term enter" flag — see [`DecisionHandle::volume`].
+    pub const fn value(self) -> u64 {
+        match self {
+            Self::Exact(n) | Self::UpperBound(n) => n,
+        }
+    }
+}
+
+/// One decision point's move families, with the materializing ones enumerated
+/// AT MOST ONCE however many times they are read.
+///
+/// The free functions above are stateless, so "the routes family is enumerated
+/// once per Movement decision point" was call-site discipline: `family_len` and
+/// `iter_family` each pay a full [`movement_routes_family`] call, and 3.2 adds
+/// a SECOND consumer of that same count (the per-decision volume metric) beside
+/// the policy that samples it. A handle makes the guarantee structural, and
+/// `route_enum`'s DFS counter makes it executable
+/// (`tests/l10_enumeration_pin.rs`).
+///
+/// **Which families are memoized is a cost decision, not a uniformity one.**
+/// Routes and the delegated families materialize a `Vec` however they are
+/// served, so the handle keeps it; retreat and placement must NEVER be
+/// materialized — the 442,368-member retreat product is the whole reason the
+/// factored source exists — so they keep paging lazily through
+/// [`iter_family`]/[`sample_family`] on every call, and the handle stores
+/// nothing for them.
+///
+/// [`size`](Self::size) answers from the memo wherever one exists (routes AND
+/// the delegated families — the memo's length equals [`family_len`]'s value by
+/// construction, so the arithmetic authority is unchanged) and delegates to
+/// [`family_len`] only for the never-memoized families (retreat's closed form,
+/// placement's upper bound). One handle therefore pays each delegated family's
+/// `get_legal_moves` pass AT MOST ONCE across any mix of
+/// `size`/`iter`/`sample`/`volume` — the T2 review measured the prior shape
+/// paying it twice for a single cold `size()`.
+///
+/// PRECONDITION, same as the free functions': a family is only meaningful
+/// against the state it came from. Serving a family this handle did not build
+/// is caller misuse — `debug_assert`ed, and in release it degrades to the
+/// unmemoized free-function path rather than panicking or answering wrongly.
+///
+/// Single-threaded by construction (`OnceCell`, not `OnceLock`): a handle
+/// belongs to the decision it was built for.
+pub struct DecisionHandle<'a> {
+    state: &'a GameState,
+    rules: &'a Rules,
+    families: Vec<MoveFamily>,
+    /// One slot per entry of `families`, filled on first read. Only the
+    /// materializing families ever fill theirs — see [`is_memoized`].
+    memo: Vec<std::cell::OnceCell<Vec<Move>>>,
+}
+
+/// Whether `family` is served from a handle's memo (it materializes a `Vec`
+/// either way) rather than paged lazily on every call.
+///
+/// Excluding `MovementRetreat` here is ALSO what keeps the payload-carrying
+/// variant's `==` out of handle dispatch entirely (`memoized` returns before
+/// its `position` compare) — the premise Task 3's `from_hand` removal leaned on
+/// when it widened that variant's equality. Do not "optimize" the short-circuit
+/// away without re-examining that decision (T3 review, probe 1).
+fn is_memoized(family: &MoveFamily) -> bool {
+    !matches!(family, MoveFamily::MovementRetreat { .. } | MoveFamily::Placement)
+}
+
+impl<'a> DecisionHandle<'a> {
+    /// Build a handle over `state`. Calls [`families`] once and enumerates
+    /// NOTHING — the first read of a memoized family pays for it.
+    pub fn new(state: &'a GameState, rules: &'a Rules) -> Self {
+        let families = families(state, rules);
+        let memo = families.iter().map(|_| std::cell::OnceCell::new()).collect();
+        Self { state, rules, families, memo }
+    }
+
+    /// The families legal at this decision point, in [`families`]' order.
+    pub fn families(&self) -> &[MoveFamily] {
+        &self.families
+    }
+
+    /// The turn phase this decision point is in.
+    ///
+    /// A handle is built FOR one decision point, so it already knows the phase;
+    /// exposing it spares every consumer a redundant `&GameState` parameter
+    /// alongside the handle it was built from — and a second parameter is a
+    /// second thing that can disagree with the first. `game/metrics.rs` keys
+    /// its report rows by phase (spec §6's per-(player count × phase × policy)
+    /// reporting rule), which is the first such consumer.
+    pub fn turn_phase(&self) -> TurnPhase {
+        self.state.turn_phase
+    }
+
+    /// `family`'s memoized moves, or `None` when it is a lazily-paged family or
+    /// one this handle was not built for.
+    fn memoized(&self, family: &MoveFamily) -> Option<&[Move]> {
+        if !is_memoized(family) {
+            return None;
+        }
+        let at = self.families.iter().position(|f| f == family);
+        debug_assert!(
+            at.is_some(),
+            "DecisionHandle served {family:?}, which is not one of its own {:?}",
+            self.families,
+        );
+        let slot = &self.memo[at?];
+        Some(slot.get_or_init(|| match family {
+            MoveFamily::MovementRoutes => movement_routes_family(self.state, self.rules),
+            _ => delegated_family_moves(self.state, self.rules, family),
+        }))
+    }
+
+    /// The size of `family` at this decision point: [`FamilySize::UpperBound`]
+    /// for placement (the affordability holes make it a strict over-estimate),
+    /// [`FamilySize::Exact`] for every other family.
+    ///
+    /// Delegates to [`family_len`] EXCEPT for routes, where it reports the
+    /// memoized enumeration's length — asking `family_len` there would run the
+    /// route search a second time, which is precisely what this type exists to
+    /// prevent.
+    pub fn size(&self, family: &MoveFamily) -> FamilySize {
+        // Any memoized family (routes AND the delegated small families) answers
+        // from the memo: its length IS `family_len`'s value by construction
+        // (same generator output), so one arithmetic authority survives while
+        // the pass is paid at most once per handle. The prior shape evaluated
+        // the memo inside a tuple pattern BEFORE discriminating and then still
+        // called `family_len` for non-routes — two `get_legal_moves` for one
+        // cold `size()` on a delegated family (T2 review, allocation-metered).
+        if let Some(moves) = self.memoized(family) {
+            return FamilySize::Exact(moves.len() as u64);
+        }
+        // Never-memoized families (retreat, placement) delegate to the closed
+        // form / upper bound without materializing anything.
+        let n = family_len(self.state, self.rules, family) as u64;
+        match family {
+            MoveFamily::Placement => FamilySize::UpperBound(n),
+            _ => FamilySize::Exact(n),
+        }
+    }
+
+    /// `family`'s moves, in the same order and with the same moves as
+    /// [`iter_family`] — served from the memo where there is one, and paged
+    /// lazily where the family must never be materialized.
+    ///
+    /// NOTE (T5 review R1): the memoized branch's `nth` is LINEAR — it clones
+    /// every skipped move, because `Cloned<slice::Iter>` carries no `nth`
+    /// specialisation — metered at ~47% of a RetreatAverse pick's allocations
+    /// at the dense 458-label cell. Indexed access wants [`get`](Self::get),
+    /// which is O(1) over a memo. (`retreat_iter`'s own `nth` is constant by
+    /// design; the caveat is about the memoized branch only.)
+    pub fn iter(&self, family: &MoveFamily) -> impl Iterator<Item = Move> + '_ {
+        match self.memoized(family) {
+            Some(moves) => Box::new(moves.iter().cloned()) as Box<dyn Iterator<Item = Move> + '_>,
+            None => iter_family(self.state, self.rules, family),
+        }
+    }
+
+    /// Draw one uniformly-random move from `family`, or `None` when the family
+    /// is empty — [`sample_family`]'s contract, over the memo where there is
+    /// one. Consumes exactly one `gen_range` draw either way, and picks the
+    /// same index `sample_family` would from the same stream.
+    pub fn sample(&self, family: &MoveFamily, rng: &mut impl Rng) -> Option<Move> {
+        let Some(moves) = self.memoized(family) else {
+            return sample_family(self.state, self.rules, family, rng);
+        };
+        if moves.is_empty() {
+            return None;
+        }
+        Some(moves[rng.gen_range(0..moves.len())].clone())
+    }
+
+    /// The move at `index` within `family` (`None` past the end) — O(1) over a
+    /// memoized family (indexes the memo directly) and delegating to the lazy
+    /// iterators otherwise, whose `nth` is constant for retreat by design.
+    /// Exists because `iter(...).nth(index)` on a memoized family clones every
+    /// skipped move (see `iter`'s note; T5 review R1). Same element as the
+    /// iterator path, and consumes no randomness.
+    pub fn get(&self, family: &MoveFamily, index: usize) -> Option<Move> {
+        match self.memoized(family) {
+            Some(moves) => moves.get(index).cloned(),
+            None => iter_family(self.state, self.rules, family).nth(index),
+        }
+    }
+
+    /// Σ of every family's size at this decision point, and whether an
+    /// upper-bounded term entered the sum (i.e. a placement family is present,
+    /// so the total OVER-counts the realized moves).
+    ///
+    /// CONSUMERS WANT [`crate::game::metrics::decision_volume`] INSTEAD: at a
+    /// state with NO families (Recovery/TurnEnd — automatic phases, not
+    /// decision points) this returns `(0, false)`, which is NOT a measured
+    /// zero, and the metrics wrapper is where that distinction is typed
+    /// (`None` vs `Some`) — the T4 review's finding 3 is this exact trap, one
+    /// call away, signed here so nobody falls into it.
+    ///
+    /// Reads the same memoized routes enumeration the policy samples from — the
+    /// L10 property in one call. The sum saturates as cheap belt-and-braces
+    /// only: a retreat product large enough to overflow the sum would already
+    /// have overflowed inside [`retreat_len`]'s own `.product()` (a debug
+    /// panic) before any sum formed, so the saturating arm is not a live path
+    /// (T2 review finding 2).
+    pub fn volume(&self) -> (u64, bool) {
+        let mut total = 0u64;
+        let mut has_upper_bound_term = false;
+        for family in &self.families {
+            let size = self.size(family);
+            has_upper_bound_term |= matches!(size, FamilySize::UpperBound(_));
+            total = total.saturating_add(size.value());
+        }
+        (total, has_upper_bound_term)
+    }
+}
+
 /// Thread-local counting allocator for the no-materialization bound
 /// ([`tests::serving_one_retreat_candidate_is_o_areas_not_o_product`]). It
 /// forwards every (de)allocation to the process `System` allocator unchanged
@@ -935,8 +1197,15 @@ mod alloc_probe {
     }
 }
 
+/// `pub(crate)` so sibling modules' unit tests can build decision points from
+/// the SAME fixtures these tests pin, rather than re-deriving a state whose
+/// load-bearing property (an affordability hole under the placement fee gate; a
+/// walkable Movement edge) is subtle enough to get silently wrong — the
+/// single-fixture discipline `tests/route_fixtures/` applies to the integration
+/// binaries, applied here to the unit ones. `#[cfg(test)]` still confines all of
+/// it to test builds. Current outside reader: `game/metrics.rs`.
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use crate::apply_move_unchecked;
     use crate::game::get_legal_moves;
@@ -999,7 +1268,7 @@ mod tests {
         }
     }
 
-    fn at_phase(phase: TurnPhase) -> GameState {
+    pub(crate) fn at_phase(phase: TurnPhase) -> GameState {
         let mut s = base_state();
         s.turn_phase = phase;
         s
@@ -1031,37 +1300,68 @@ mod tests {
         assert_eq!(families(&at_phase(TurnPhase::TurnEnd), &rules), vec![]);
     }
 
+    /// Movement dispatches routes-then-retreat from EITHER President location,
+    /// with the same two tags and the same `on_board` snapshot — and the
+    /// location shows up where it belongs, in the MOVES the routes family
+    /// serves (`PlacePresident` from hand, `MovePresident` from the board).
+    ///
+    /// This is the pin that replaced 3.1a's `from_hand` flag check when the flag
+    /// was removed (spec §8 parked item 3): the flag only ever restated the
+    /// state, so the property worth holding is that the state — not a tag field
+    /// — drives what a Movement decision point offers.
     #[test]
-    fn movement_yields_routes_then_retreat_with_snapshot() {
+    fn movement_yields_routes_then_retreat_from_either_president_location() {
         let rules = Rules::empty_for_tests();
 
         let mut on_board = BTreeMap::new();
         on_board.insert(AreaId::new(0), 2);
         on_board.insert(AreaId::new(1), 1);
 
-        // President in hand: routes family (PlacePresident) then retreat with
-        // from_hand=true, carrying an exact clone of on_board.
+        let expected = vec![
+            MoveFamily::MovementRoutes,
+            MoveFamily::MovementRetreat { on_board: on_board.clone() },
+        ];
+
+        // President in hand: the two tags, the exact on_board clone, and a
+        // routes family that PLACES from hand and walks nowhere.
         let mut in_hand = at_phase(TurnPhase::Movement);
         in_hand.players[0].president_location = PresidentLocation::InHand;
         in_hand.players[0].assistants.on_board = on_board.clone();
-        assert_eq!(
-            families(&in_hand, &rules),
-            vec![
-                MoveFamily::MovementRoutes,
-                MoveFamily::MovementRetreat { on_board: on_board.clone(), from_hand: true },
-            ],
+        assert_eq!(families(&in_hand, &rules), expected);
+
+        let from_hand_moves: Vec<Move> =
+            iter_family(&in_hand, &rules, &MoveFamily::MovementRoutes).collect();
+        assert!(
+            !from_hand_moves.is_empty()
+                && from_hand_moves.iter().all(|m| matches!(m, Move::PlacePresident { .. })),
+            "a President in hand reaches the board only by PlacePresident: {from_hand_moves:?}",
         );
 
-        // President on board: same routes-then-retreat order and snapshot, but
-        // from_hand=false.
+        // President on board, same on_board snapshot: the IDENTICAL two tags —
+        // the retreat family does not depend on where the President stands — while
+        // the routes family now WALKS (0~1 joined so a real route exists) and
+        // never places from hand.
         let mut on_board_state = in_hand.clone();
         on_board_state.players[0].president_location = PresidentLocation::OnBoard(AreaId::new(0));
+        let (a0, a1) = (AreaId::new(0), AreaId::new(1));
+        on_board_state.board_layout.adjacency.entry(a0).or_default().push(a1);
+        on_board_state.board_layout.adjacency.entry(a1).or_default().push(a0);
+        assert_eq!(families(&on_board_state, &rules), expected);
+
+        let on_board_moves: Vec<Move> =
+            iter_family(&on_board_state, &rules, &MoveFamily::MovementRoutes).collect();
+        assert!(
+            !on_board_moves.is_empty()
+                && on_board_moves.iter().all(|m| matches!(m, Move::MovePresident { .. })),
+            "a President on the board walks, never places from hand: {on_board_moves:?}",
+        );
+
+        // And the retreat family serves the same moves either way — the fact the
+        // dropped flag would have implied a difference about.
         assert_eq!(
-            families(&on_board_state, &rules),
-            vec![
-                MoveFamily::MovementRoutes,
-                MoveFamily::MovementRetreat { on_board, from_hand: false },
-            ],
+            iter_family(&in_hand, &rules, &expected[1]).collect::<Vec<_>>(),
+            iter_family(&on_board_state, &rules, &expected[1]).collect::<Vec<_>>(),
+            "the retreat family is the on_board product, independent of the President",
         );
     }
 
@@ -1283,13 +1583,53 @@ mod tests {
             Move::ReturnPresidentToHand { recover: BTreeMap::new() },
         );
 
-        // Over-count: constructor builds it verbatim; the arm rejects it.
-        let over = retreat_move(&on_board, &[(a0, 3)]);
-        assert_eq!(over, Move::ReturnPresidentToHand { recover: on_board_of(&[(0, 3)]) });
+        // Over-count: NOT built through the constructor (whose debug guard would
+        // panic on it — see `retreat_move_rejects_a_per_area_count_above_on_board`).
+        // Hand-assembled here so this test keeps pinning what it always pinned:
+        // that legality lives in the apply arm, which rejects the over-count move
+        // whatever built it — the release behaviour of `retreat_move` unchanged.
+        let over = Move::ReturnPresidentToHand { recover: on_board_of(&[(0, 3)]) };
         assert!(matches!(
             apply_move_unchecked(&state, &over, &rules),
             Err(MoveError::RuleViolation(_)),
         ));
+    }
+
+    /// The constructor's CALLER-BUG guard (Phase 3.2 Task 3; spec §8 parked
+    /// item 2): a per-area count above what that area holds can only come from a
+    /// caller that built its counts wrong — the weighted policy's per-area draw
+    /// (Task 5) is `retreat_move`'s direct caller, exactly the error path the
+    /// park's ruling named — so a debug build panics at the constructor instead
+    /// of handing an illegal move on to be rejected a phase later.
+    ///
+    /// Debug tier only, and deliberately so: this is a `debug_assert`, not a
+    /// validation. In release the constructor has no pre-check, the move is
+    /// built verbatim, and `apply_return_to_hand` stays the sole validator —
+    /// unobservable from any debug test (this tripwire fires first), so it is
+    /// pinned at the only tier that can watch it:
+    /// `retreat_move_builds_an_over_count_verbatim_in_release` in
+    /// `tests/action_source_worstcase.rs`, release-tier under the documented
+    /// worstcase gate command (T3 review F1).
+    /// (`retreat_move_builds_move_and_arm_validates` pins the OTHER half —
+    /// that the apply arm rejects an over-count move however it was built.)
+    #[test]
+    #[cfg(debug_assertions)]
+    #[should_panic(expected = "per-area recovery count exceeds")]
+    fn retreat_move_rejects_a_per_area_count_above_on_board() {
+        let on_board = on_board_of(&[(0, 2), (3, 1)]);
+        let _ = retreat_move(&on_board, &[(AreaId::new(0), 3)]);
+    }
+
+    /// The same guard's other branch: an area absent from the snapshot holds
+    /// ZERO assistants, so any positive count there is an over-count too. Pinned
+    /// separately because it exercises the `unwrap_or(0)` arm rather than the
+    /// count comparison.
+    #[test]
+    #[cfg(debug_assertions)]
+    #[should_panic(expected = "per-area recovery count exceeds")]
+    fn retreat_move_rejects_an_area_absent_from_on_board() {
+        let on_board = on_board_of(&[(0, 2), (3, 1)]);
+        let _ = retreat_move(&on_board, &[(AreaId::new(7), 1)]);
     }
 
     /// Every `retreat_sample` draw is a legal recovery (rejection-free): 10k
@@ -1962,7 +2302,7 @@ mod tests {
         // Retreat: the payload's on_board drives the serve; the state mirrors
         // it, per the MoveFamily precondition (debug-asserted in the arms).
         let on_board = on_board_of(&[(0, 2), (1, 1), (5, 2)]);
-        let retreat = MoveFamily::MovementRetreat { on_board: on_board.clone(), from_hand: true };
+        let retreat = MoveFamily::MovementRetreat { on_board: on_board.clone() };
         let mut s = base_state();
         s.players[0].assistants.on_board = on_board.clone();
         assert_eq!(
@@ -2080,6 +2420,188 @@ mod tests {
             "the fixture's one walkable route must be served",
         );
         assert!(allocs < 128, "serving the routes family allocated {allocs} (>= 128)");
+    }
+
+    // -- DecisionHandle (Phase 3.2 Task 2) ------------------------------------
+
+    /// A Movement decision point with the President ON BOARD and one walkable
+    /// edge, so the routes family is non-empty and a route DFS really runs.
+    pub(crate) fn handle_movement_state() -> GameState {
+        let mut s = at_phase(TurnPhase::Movement);
+        s.board_layout.adjacency.insert(AreaId::new(0), vec![AreaId::new(1)]);
+        s.board_layout.adjacency.insert(AreaId::new(1), vec![AreaId::new(0)]);
+        s.players[0].president_location = PresidentLocation::OnBoard(AreaId::new(0));
+        s.players[0].assistants.on_board.insert(AreaId::new(1), 2);
+        s.players[0].money = 5;
+        s
+    }
+
+    /// The fee-gated placement state of
+    /// [`placement_per_combination_affordability_excludes_costly_subset`]: an
+    /// unaffordable 3-subset punches a hole, so `placement_upper_len` is a
+    /// STRICT over-estimate and the handle must report `UpperBound`.
+    pub(crate) fn handle_fee_gated_placement_state() -> GameState {
+        let a = AreaId::new;
+        let mut s = placement_state(4, 4);
+        s.players[0].assistants.in_hand = 3;
+        s.players[0].money = 2;
+        s.players[1].president_location = PresidentLocation::OnBoard(a(0));
+        s.players[2].president_location = PresidentLocation::OnBoard(a(1));
+        s.players[3].president_location = PresidentLocation::OnBoard(a(2));
+        s
+    }
+
+    /// A queued-choice decision point: the pending `AnyGood` short-circuits the
+    /// phase, so the only family is the delegated `ChoiceResolution`.
+    fn handle_queued_choice_state() -> GameState {
+        let mut s = at_phase(TurnPhase::Placement);
+        s.pending_choices.push(PendingChoice::AnyGood);
+        s
+    }
+
+    /// Moves sorted by their debug rendering — a multiset comparison that
+    /// reports the offending members rather than just a length mismatch. The
+    /// handle is not required to preserve the generator's ORDER across families
+    /// (that is `iter_family`'s own pin, and the equivalence gate's); what it
+    /// must not do is add, drop, or alter a move.
+    fn as_multiset(moves: &[Move]) -> Vec<String> {
+        let mut v: Vec<String> = moves.iter().map(|m| format!("{m:?}")).collect();
+        v.sort();
+        v
+    }
+
+    /// THE handle union pin: `⋃ handle.iter(family)` over `handle.families()`
+    /// is `get_legal_moves` — the same guarantee the free functions carry,
+    /// re-asserted through the memoizing surface a bot actually calls, at the
+    /// three decision-point shapes whose serving paths differ (routes + the
+    /// lazy retreat product; the lazy fee-gated placement family; a delegated
+    /// family).
+    #[test]
+    fn handle_serves_the_same_union_as_get_legal_moves() {
+        let rules = Rules::standard();
+        let cases = [
+            ("movement on board", handle_movement_state()),
+            ("fee-gated placement", handle_fee_gated_placement_state()),
+            ("queued choice", handle_queued_choice_state()),
+        ];
+
+        for (label, state) in cases {
+            let want = get_legal_moves(&state, &rules);
+            assert!(!want.is_empty(), "{label}: fixture must be a real decision point");
+
+            let handle = DecisionHandle::new(&state, &rules);
+            assert!(!handle.families().is_empty(), "{label}: a decision point has families");
+
+            let mut got: Vec<Move> = Vec::new();
+            for family in handle.families() {
+                got.extend(handle.iter(family));
+            }
+            assert_eq!(
+                as_multiset(&got),
+                as_multiset(&want),
+                "{label}: the handle's union must be the legal list",
+            );
+        }
+    }
+
+    /// `size()` reports `Exact` for retreat, routes and the delegated families
+    /// and `UpperBound` for placement, and its VALUE agrees with `family_len`
+    /// everywhere — `family_len` stays the one arithmetic authority (spec §8),
+    /// so a handle that computed its own counts would show up here.
+    #[test]
+    fn handle_size_matches_family_len_shape() {
+        let rules = Rules::standard();
+
+        // Movement: routes (Exact, realized) + retreat (Exact, closed form).
+        let movement = handle_movement_state();
+        let handle = DecisionHandle::new(&movement, &rules);
+        for family in handle.families() {
+            let size = handle.size(family);
+            assert!(
+                matches!(size, FamilySize::Exact(_)),
+                "{}: Movement families are exact, got {size:?}",
+                family_name(family),
+            );
+            assert_eq!(
+                size.value(),
+                family_len(&movement, &rules, family) as u64,
+                "{}: size must agree with family_len",
+                family_name(family),
+            );
+        }
+        // Anti-vacuity: the retreat family is the real product, not a lone
+        // recover-nothing move, and the routes family is non-empty.
+        let retreat = handle
+            .families()
+            .iter()
+            .find(|f| matches!(f, MoveFamily::MovementRetreat { .. }))
+            .expect("Movement dispatches a retreat family");
+        assert_eq!(handle.size(retreat), FamilySize::Exact(3), "on_board {{1: 2}} ⇒ ∏(2+1) = 3");
+        assert!(handle.size(&MoveFamily::MovementRoutes).value() > 0, "routes must be non-empty");
+
+        // Placement: upper-bounded, and STRICTLY above the realized count here.
+        let placement = handle_fee_gated_placement_state();
+        let handle = DecisionHandle::new(&placement, &rules);
+        let size = handle.size(&MoveFamily::Placement);
+        let FamilySize::UpperBound(upper) = size else {
+            panic!("placement must be upper-bounded, got {size:?}");
+        };
+        assert_eq!(
+            upper,
+            placement_upper_len(&placement, &rules) as u64,
+            "the bound must be placement_upper_len itself",
+        );
+        let realized = handle.iter(&MoveFamily::Placement).count() as u64;
+        assert!(upper > realized, "fee gate must make the bound strict: {upper} vs {realized}");
+        assert_eq!(handle.volume(), (upper, true), "an UpperBound term must flag the volume");
+
+        // A delegated family: exact, and no upper-bound term in the volume.
+        let choice = handle_queued_choice_state();
+        let handle = DecisionHandle::new(&choice, &rules);
+        let size = handle.size(&MoveFamily::ChoiceResolution);
+        assert_eq!(size, FamilySize::Exact(4), "the four ChooseAnyGood resolutions");
+        assert_eq!(handle.volume(), (4, false));
+    }
+
+    /// THE L10 pin at unit scale: every one of `size` / `iter` / `sample` /
+    /// `volume` reads the routes family, and together they cost exactly ONE
+    /// route DFS. The counter is the executable half of the guarantee — without
+    /// it "enumerate once" is call-site discipline, and the volume metric
+    /// (Task 4) is a second consumer of the same enumeration.
+    ///
+    /// Anti-vacuity: the fixture's route family is non-empty, so the single
+    /// counted DFS is real work rather than an early return.
+    #[test]
+    fn handle_routes_are_enumerated_at_most_once() {
+        use rand::SeedableRng;
+        let rules = Rules::standard();
+        let state = handle_movement_state();
+        let mut rng = rand_chacha::ChaCha8Rng::seed_from_u64(3);
+
+        crate::game::route_dfs_reset();
+        let handle = DecisionHandle::new(&state, &rules);
+        assert_eq!(
+            crate::game::route_dfs_count(),
+            0,
+            "construction must enumerate nothing (families() only)",
+        );
+
+        let size = handle.size(&MoveFamily::MovementRoutes);
+        let served: Vec<Move> = handle.iter(&MoveFamily::MovementRoutes).collect();
+        let drawn = handle.sample(&MoveFamily::MovementRoutes, &mut rng);
+        let (volume, upper) = handle.volume();
+
+        assert!(!served.is_empty(), "anti-vacuity: the fixture must serve real routes");
+        assert_eq!(size, FamilySize::Exact(served.len() as u64));
+        assert!(served.contains(&drawn.expect("non-empty family samples Some")));
+        assert!(volume > served.len() as u64, "volume must also carry the retreat family");
+        assert!(!upper, "Movement has no upper-bounded family");
+
+        assert_eq!(
+            crate::game::route_dfs_count(),
+            1,
+            "size + iter + sample + volume must share ONE route enumeration",
+        );
     }
 
     /// The ChoiceResolution family delegates to the generator's choice

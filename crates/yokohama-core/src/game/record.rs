@@ -37,6 +37,104 @@ pub enum RecordedEvent {
     RevealStartingOrder { player: PlayerId, card: OrderCardId },
 }
 
+/// Current [`RunProvenance`] shape. Bumped ONLY when a change breaks readers —
+/// a field added with `#[serde(default)]` does not, since an older document
+/// still parses and a newer one still means what it said.
+pub const RUN_PROVENANCE_SCHEMA: u32 = 1;
+
+/// [`SeatProvenance::observation`] for a seat that played from a `PlayerView`
+/// — the honest boundary. Every seat a human or an arena agent played is this.
+pub const OBSERVATION_VIEW: &str = "view";
+
+/// [`SeatProvenance::observation`] for a seat whose controller read the true
+/// `GameState`. Privileged play by construction (`arena::run_raw_game`, the
+/// fuzzer's shape): correct for screening cells, and NOT training data. Spec
+/// §4 requires this label to ride the ARTIFACT rather than the prose, which is
+/// what `arena::corpus`'s emitter enforces.
+pub const OBSERVATION_FULL_STATE_DIAGNOSTIC: &str = "full-state-diagnostic";
+
+/// The `SeatProvenance::controller` value for a HUMAN seat (spec §5 names it on
+/// the same footing as the policy names, under the same never-hand-typed rule).
+/// T12's CLI is the consumer — the wizard, the panel, and the resume path all
+/// read THIS const, never a scattered literal (T8 review finding 2).
+pub const CONTROLLER_HUMAN: &str = "human";
+
+/// Who played this game — the run-level provenance ONE field serves for both
+/// the arena and the CLI (spec §5).
+///
+/// **Replay-inert by design.** `replay`/`replay_strict` read only
+/// seed/config/choices/events/observations, and `state_digest` takes a
+/// `GameState`, so nothing here can move a replayed state or a digest
+/// (`provenance_is_replay_inert` pins it). It sits on the record for the same
+/// reason `lockdown` does: it is what a reader of the FILE needs and what the
+/// state deliberately does not carry.
+///
+/// **Why a name and a params map, and not a typed policy enum** (spec §5, M2's
+/// trade stated): serde REFUSES an unknown enum variant, so the day a fourth
+/// rung ships, every older binary reading the new corpus would hard-fail at
+/// parse — the opposite of ledger row 7's replay-compat intent. A string name
+/// plus an integer params map degrades instead: an old reader still gets the
+/// seed, the events and the seat count, and can say "controller I do not know"
+/// rather than refusing the file.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RunProvenance {
+    /// [`RUN_PROVENANCE_SCHEMA`] at write time.
+    #[serde(default)]
+    /// (`0` on a document that carried no key at all — "the writer said
+    /// nothing" — never a valid written value; `RUN_PROVENANCE_SCHEMA` is 1.)
+    pub schema: u32,
+    /// The seed schedule's master, when the run had one above it. `None` for a
+    /// single game played on its own world seed — an honest absence, not a
+    /// zero (`arena::run_cell` threads the cell's master; a bare
+    /// `arena::run_arena_game` caller may have no schedule at all).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub master_seed: Option<u64>,
+    /// The run this game belonged to — the arena CELL name, which is also the
+    /// corpus directory segment. `None` for an ungrouped game.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub run_id: Option<String>,
+    /// One entry per seat, in `PlayerId` order.
+    pub seats: Vec<SeatProvenance>,
+}
+
+/// Who played ONE seat.
+///
+/// Per SEAT rather than per run because a mixed-controller game is the
+/// sub-phase's headline capability: X against Y, human against bot. A run-level
+/// field could not express either.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SeatProvenance {
+    /// The controller's stable NAME: `"human"`, or a rollout policy's
+    /// `RolloutPolicy::as_str()`. Never hand-typed at a call site — the policy
+    /// is the one authority for its own name, and its serde tag is pinned equal
+    /// to it (`policy.rs`'s `serde_names_match_as_str_for_every_rung`).
+    pub controller: String,
+    /// The controller IMPLEMENTATION version under that stable name
+    /// (`game::policy::POLICY_IMPL_VERSION`), bumped when a policy's sampling
+    /// SEMANTICS change — i.e. when figures recorded under the same name stop
+    /// being comparable. Distinct from [`RunProvenance::schema`], which is about
+    /// this struct's shape and not about behaviour.
+    pub version: u32,
+    /// The controller's knobs in their declared integer units — fixed-point
+    /// PARTS PER MILLION for a probability, a plain count for a count.
+    ///
+    /// Integers, not floats, because `GameRecord` derives `Eq`: a float knob
+    /// would make record comparison and round-trip identity depend on decimal
+    /// formatting (critic #1). A knobless controller reports an empty map.
+    #[serde(default)]
+    pub params: std::collections::BTreeMap<String, i64>,
+    /// The seat's own RNG stream seed, when it had one — enough, with the
+    /// record's seed and this map, to re-derive the seat's play.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent_seed: Option<u64>,
+    /// What this seat could SEE: [`OBSERVATION_VIEW`] or
+    /// [`OBSERVATION_FULL_STATE_DIAGNOSTIC`]. Single-sourced from the DRIVER
+    /// that built the seat, never from the controller — a controller labelling
+    /// its own information access is exactly the claim that needs an
+    /// independent witness.
+    pub observation: String,
+}
+
 /// A complete, replayable record of one game.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct GameRecord {
@@ -103,6 +201,13 @@ pub struct GameRecord {
     /// the serde default for records written before the field existed).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub lockdown: Option<String>,
+    /// Who played this game (Phase 3.2, spec §5) — see [`RunProvenance`].
+    /// `None` on a record whose producer said nothing about its controllers,
+    /// including every record written before the field existed. Replay-inert:
+    /// modelled on `lockdown`, the in-tree precedent for metadata that rides
+    /// the record without entering the replayed game.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub run: Option<RunProvenance>,
 }
 
 impl GameRecord {
@@ -124,6 +229,43 @@ impl GameRecord {
             setup_observations: None,
             terminal_digest: None,
             lockdown: None,
+            run: None,
+        }
+    }
+
+    /// Stamp WHO played, per seat (spec §5). Callers: the arena driver, which
+    /// knows each seat's controller, and the CLI, which knows which seats are
+    /// human.
+    ///
+    /// `master_seed`/`run_id` start empty — a driver playing one game has no
+    /// schedule or cell above it to name. The harness that does fills them in
+    /// with [`set_run_context`](Self::set_run_context).
+    pub fn set_run_seats(&mut self, seats: Vec<SeatProvenance>) {
+        self.run = Some(RunProvenance {
+            schema: RUN_PROVENANCE_SCHEMA,
+            master_seed: None,
+            run_id: None,
+            seats,
+        });
+    }
+
+    /// Name the RUN this game belonged to: its seed schedule's master and the
+    /// cell that ran it. A no-op on a record with no seat provenance — there is
+    /// no run to contextualize, and inventing one would claim a controller
+    /// nobody recorded.
+    pub fn set_run_context(&mut self, master_seed: u64, run_id: &str) {
+        // T8 review ruling (probe 3): the None arm stays a no-op — fabricating
+        // a zero-seat RunProvenance to hold the context would be worse — but
+        // it is LOUD in debug, because the only wrong path here is a caller
+        // ordering this before set_run_seats (or forgetting seats entirely),
+        // which would silently produce corpus records with no run-level label.
+        debug_assert!(
+            self.run.is_some(),
+            "set_run_context before set_run_seats: the context has no provenance to land in",
+        );
+        if let Some(run) = &mut self.run {
+            run.master_seed = Some(master_seed);
+            run.run_id = Some(run_id.to_string());
         }
     }
 
@@ -428,6 +570,132 @@ mod tests {
 
         let err = replay(&record, &rules).unwrap_err();
         assert_eq!(err.event_index, 1);
+    }
+
+    /// A record with some events to hang the provenance pins off. Setup plus
+    /// the first `moves` legal moves of a real 2P game, terminal digest stamped
+    /// — i.e. a record `replay_strict` accepts.
+    fn strict_clean_record(seed: u64, moves: usize) -> (GameRecord, GameState, Rules) {
+        let rules = Rules::standard();
+        let config = GameConfig::for_player_count(2);
+        let pending = new_game(config, &rules, seed).unwrap();
+        let choices = vec![StartingOrderChoice::Keep(0), StartingOrderChoice::Keep(1)];
+        // From `pending.state.config`, so `config.setup_seed == record.seed`.
+        let mut record = GameRecord::new(seed, pending.state.config.clone(), choices.clone(), &rules);
+        let mut state = finalize_setup(pending, &choices).unwrap();
+        for _ in 0..moves {
+            let mv = crate::game::legal_moves::get_legal_moves(&state, &rules)[0].clone();
+            state = apply_move(&state, &mv, &rules).unwrap();
+            record.push_move(mv);
+        }
+        record.stamp_terminal_digest(&state);
+        (record, state, rules)
+    }
+
+    fn sample_provenance() -> RunProvenance {
+        RunProvenance {
+            schema: RUN_PROVENANCE_SCHEMA,
+            master_seed: Some(0xA3E1_2026_0726_0008),
+            run_id: Some("ra-vs-fw".to_string()),
+            seats: vec![
+                SeatProvenance {
+                    controller: "uniform".to_string(),
+                    version: 1,
+                    params: std::collections::BTreeMap::new(),
+                    agent_seed: Some(11),
+                    observation: OBSERVATION_VIEW.to_string(),
+                },
+                SeatProvenance {
+                    controller: "family-weighted".to_string(),
+                    version: 1,
+                    params: [("retreat_ppm".to_string(), 166_667i64)].into_iter().collect(),
+                    agent_seed: Some(22),
+                    observation: OBSERVATION_VIEW.to_string(),
+                },
+            ],
+        }
+    }
+
+    /// Provenance is METADATA: it says who played, and nothing about the game
+    /// changes when it changes. Pinned rather than argued because the whole
+    /// design (`GameRecord.run` serving arena AND CLI, spec §5) rests on it —
+    /// if provenance could move a replayed state, a corpus record's label and
+    /// its content would be entangled and neither could be trusted alone.
+    #[test]
+    fn provenance_is_replay_inert() {
+        let (mut record, terminal, rules) = strict_clean_record(41, 6);
+        assert!(record.run.is_none(), "a fresh record carries no provenance");
+        let baseline = replay_strict(&record, &rules).expect("the fixture must be strict-clean");
+        assert_eq!(baseline, terminal);
+        let baseline_digest = record.terminal_digest.clone().expect("stamped above");
+        let baseline_rules_hash = record.rules_hash.clone();
+
+        // None -> Some.
+        record.run = Some(sample_provenance());
+        let with_provenance = replay_strict(&record, &rules)
+            .expect("adding provenance must not change what strict replay accepts");
+        assert_eq!(with_provenance, baseline, "provenance moved the replayed state");
+
+        // Some -> a DIFFERENT Some: every field mutated, including the seat
+        // vector's length (a record claiming three seats for a 2P game).
+        let mut lying = sample_provenance();
+        lying.schema = 99;
+        lying.master_seed = Some(0);
+        lying.run_id = Some("not-the-cell-that-ran".to_string());
+        lying.seats.push(SeatProvenance {
+            controller: "a controller that never existed".to_string(),
+            version: 7,
+            params: [("nonsense".to_string(), -1i64)].into_iter().collect(),
+            agent_seed: None,
+            observation: "not an observation mode".to_string(),
+        });
+        record.run = Some(lying);
+        let mutated = replay_strict(&record, &rules)
+            .expect("mutating provenance must not change what strict replay accepts");
+        assert_eq!(mutated, baseline, "provenance moved the replayed state");
+
+        // ...and it entered NEITHER digest. `state_digest` takes a `GameState`,
+        // so it cannot see provenance by construction; `rules_hash` covers the
+        // static registries. Asserted anyway — this is the property spec §5
+        // states as a non-goal, and a non-goal nobody checks is a hope.
+        assert_eq!(record.terminal_digest.as_ref(), Some(&baseline_digest));
+        assert_eq!(state_digest(&mutated), baseline_digest);
+        assert_eq!(record.rules_hash, baseline_rules_hash);
+    }
+
+    /// Every record written before this field existed has no `run` key at all.
+    /// Ledger row 7's replay-compat intent says those records keep replaying —
+    /// which is exactly why provenance is a `#[serde(default)]` Option and why
+    /// the policy identity inside it is a NAME plus a params map rather than a
+    /// typed enum (serde refuses an unknown enum variant, so a future rung
+    /// would turn every older binary's read of a new corpus into a hard error).
+    #[test]
+    fn an_old_shape_record_without_run_still_replays_strict_clean() {
+        let (mut record, terminal, rules) = strict_clean_record(42, 6);
+        record.run = Some(sample_provenance());
+
+        // Delete the key from the serialized document, which is what an
+        // old-shape file IS — not a `None` in memory, which would test the
+        // writer instead of the reader.
+        let mut document: serde_json::Value = serde_json::to_value(&record).unwrap();
+        assert!(document.get("run").is_some(), "the writer must emit a Some provenance");
+        document.as_object_mut().unwrap().remove("run");
+        let text = serde_json::to_string(&document).unwrap();
+        assert!(!text.contains("\"run\""), "the run key survived deletion");
+
+        let old_shape: GameRecord = serde_json::from_str(&text).expect("an old-shape record must parse");
+        assert_eq!(old_shape.run, None, "a missing key must read as no provenance");
+        assert_eq!(
+            replay_strict(&old_shape, &rules).expect("an old-shape record must replay strict-clean"),
+            terminal,
+        );
+
+        // The complementary direction: a record whose provenance IS present
+        // round-trips bit-exactly, which is what `Eq`-safe params buy (the
+        // fixed-point ppm integers of spec §5 — a float would make this
+        // comparison depend on formatting).
+        let round_tripped: GameRecord = serde_json::from_str(&serde_json::to_string(&record).unwrap()).unwrap();
+        assert_eq!(round_tripped, record);
     }
 
     #[test]

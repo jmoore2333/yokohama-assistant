@@ -9,16 +9,37 @@
 //! `cargo test --release -p yokohama-core --test fuzz_full_games -- --ignored`.
 //!
 //! End-trigger coverage strategy (orchestrator-adjudicated, Task 18.4):
-//! uniform-random play organically reaches only OrderDeckEmpty and
-//! ChurchTrackFull — across 15,000 games the other three triggers occurred
-//! zero times (random players never hold customs imports, and the deck or
-//! church ends the game long before anyone accumulates 8 shophouses or 4
-//! trading houses). The corpus test therefore asserts the organic pair,
-//! and the three rare triggers are each proven END-TO-END by a seeded
-//! near-threshold scenario below: surgically construct a legal state one
-//! step from the trigger, fire it through the public `apply_move_unchecked`
-//! API, then random-play the final round to a completed, invariant-checked
-//! game.
+//! uniform-random play organically reaches OrderDeckEmpty and
+//! ChurchTrackFull reliably, and essentially nothing else — random players
+//! never hold customs imports, and the deck or church ends the game long
+//! before anyone accumulates 8 shophouses or 4 trading houses. The corpus
+//! test therefore asserts that organic PAIR, and the three rare triggers
+//! are each proven END-TO-END by a seeded near-threshold scenario below:
+//! surgically construct a legal state one step from the trigger, fire it
+//! through the public `apply_move_unchecked` API, then random-play the
+//! final round to a completed, invariant-checked game.
+//!
+//! MEASURED DISTRIBUTION (Phase 3.2 Task 10, re-measured 2026-07-26 at
+//! `SEMANTICS_REV` 5; uniform policy, this binary's own driver, 500 games
+//! per count at seeds 0..500 — i.e. exactly the corpus
+//! `fuzz_500_games_per_player_count` builds — release, via
+//! `cargo run --release -p yokohama-core --example selfplay -- 500 <n> 0`):
+//! 2P OrderDeckEmpty 266 / ChurchTrackFull 231 / TradingHousesComplete 3;
+//! 3P OrderDeckEmpty 416 / ChurchTrackFull 84; 4P OrderDeckEmpty 499 /
+//! ChurchTrackFull 1. ShophousesComplete and CustomsTrackFull were 0 at
+//! every count. This CORRECTS a stale line that said the other three
+//! triggers "occurred zero times" across 15,000 games: TradingHousesComplete
+//! does fire organically at 2P, rarely (3 in 500). It stays out of the
+//! asserted pair deliberately — 3/500 at one player count is far too thin
+//! to gate on, and its end-to-end proof is the scenario test below.
+//!
+//! The 4P ChurchTrackFull row (1/500 = 0.20%) is the trigger collapse
+//! Phase 3.2's spec §0-R1 is written about, reproduced here at this HEAD:
+//! uniform play barely reaches the church at 4P. That is a fact about the
+//! POLICY, not about the engine, which is why the fix was a new policy and
+//! a new binary (`tests/policy_diversity.rs`) rather than a change here —
+//! this binary's uniform corpus is deliberately kept, since uniform and the
+//! weighted policy cover disjoint halves of the apply surface.
 
 mod common;
 use common::{run_random_game, run_random_game_from};

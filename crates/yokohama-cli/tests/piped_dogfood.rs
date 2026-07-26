@@ -15,6 +15,13 @@
 //! max recovery in the guided retreat, Enter on forced options), with a
 //! hard input cap so a regression can never hang the suite.
 //!
+//! TWO games run here, sharing that one driver: all-human, and (Phase 3.2
+//! Task 12) human-vs-bot with seat 1 played by the shipped family-weighted
+//! rung. The driver answers only the HUMAN's prompts in both -- a bot's turn
+//! arrives already played, since the REPL pumps it before printing the next
+//! prompt -- so a pump that stopped working would hang this test on a prompt
+//! addressed to a seat the driver does not play, rather than passing quietly.
+//!
 //! TIER: release gate. This ran per-edit from its introduction until
 //! 2026-07-21 (T6 review), then moved to the release tier per the repo's
 //! two-tier policy: a ~12s full-game process test is a distributional
@@ -135,6 +142,44 @@ fn recover_max(screen: &str) -> Option<u32> {
 #[test]
 #[ignore = "release gate (CLAUDE.md two-tier policy): full-game process test over pipes; run with cargo test --release -p yokohama-cli --test piped_dogfood -- --ignored before merges/phase closes (gate PASSES; see module docs)"]
 fn full_piped_2p_game_runs_plain_to_winner() {
+    play_a_full_2p_game("all-human", "");
+}
+
+/// The bot line the variant below looks for: `describe_move`'s output for a
+/// bot seat, prefixed by the seat it was played on (`Repl::pump_bots`).
+const BOT_MOVE_PREFIX: &str = "Seat 1 (Blue) \u{2014}";
+
+/// Phase 3.2 Task 12: the same full game with seat 1 played by the shipped
+/// family-weighted bot. Same binary, same driver, same honesty assertions --
+/// the driver answers the HUMAN's prompts and the bot's turns arrive already
+/// played, because the REPL pumps them before printing the prompt. That is the
+/// property this variant exists to prove on the shipped executable: a piped
+/// human-vs-bot game reaches a WINNER with no ESC byte and no prompt the driver
+/// cannot answer (a bot turn that failed to pump would hang here on a prompt
+/// addressed to a seat the driver does not play).
+///
+/// Lives in THIS binary deliberately: the documented gate command runs the
+/// whole binary, so the variant needs no new gate bullet (one command per test
+/// binary, CLAUDE.md's two-tier policy).
+#[test]
+#[ignore = "release gate (CLAUDE.md two-tier policy): full-game process test over pipes; run with cargo test --release -p yokohama-cli --test piped_dogfood -- --ignored before merges/phase closes (gate PASSES; see module docs)"]
+fn full_piped_2p_human_vs_bot_game_runs_plain_to_winner() {
+    let transcript = play_a_full_2p_game("human-vs-bot", "1");
+    assert!(
+        transcript.contains(BOT_MOVE_PREFIX),
+        "the bot's own moves must be reported on screen, not applied invisibly; transcript tail:\n{}",
+        &transcript[transcript.len().saturating_sub(2000)..]
+    );
+    assert!(
+        transcript.contains("bot seed:"),
+        "the drawn bot seed must be echoed so the game is reproducible from its transcript"
+    );
+}
+
+/// One full piped 2P game to a winner. `bots` is the wizard's bot-seats answer
+/// (`""` for none); `label` keeps the two runs' save files apart, since both
+/// tests share one process id.
+fn play_a_full_2p_game(label: &str, bots: &str) -> String {
     let mut child = Command::new(env!("CARGO_BIN_EXE_yokohama-cli"))
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -146,17 +191,18 @@ fn full_piped_2p_game_runs_plain_to_winner() {
     let mut transcript: Vec<u8> = Vec::new();
     let mut rng = StdRng::seed_from_u64(0x59_4F_4B_4F); // "YOKO"
 
-    let save = std::env::temp_dir().join(format!("yokohama_dogfood_{}.json", std::process::id()));
+    let save = std::env::temp_dir().join(format!("yokohama_dogfood_{label}_{}.json", std::process::id()));
     let send = |line: &str, stdin: &mut std::process::ChildStdin| {
         stdin.write_all(line.as_bytes()).expect("write stdin");
         stdin.write_all(b"\n").expect("write newline");
         stdin.flush().expect("flush stdin");
     };
 
-    // Wizard: 2P sim, fixed seed, save into the temp dir.
+    // Wizard: 2P sim, fixed seed, save into the temp dir, then the bot-seats
+    // answer (blank = none).
     for line in [
         "sim", "2", "red", "blue", "0", "20260721",
-        &save.display().to_string(), "0", "0", "confirm",
+        &save.display().to_string(), "0", "0", bots, "confirm",
     ] {
         send(line, &mut stdin);
     }
@@ -235,7 +281,8 @@ fn full_piped_2p_game_runs_plain_to_winner() {
         !transcript.contains(&0x1b),
         "piped output must be byte-plain: found an ESC byte in the transcript"
     );
-    let full = String::from_utf8_lossy(&transcript);
+    let full = String::from_utf8_lossy(&transcript).into_owned();
     assert!(full.contains("WINNER:"), "final score table expected in the transcript");
     std::fs::remove_file(&save).ok();
+    full
 }

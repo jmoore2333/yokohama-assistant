@@ -19,7 +19,18 @@ use yokohama_core::{
 /// without `is_game_over` is treated as non-termination, not looped on.
 pub const MAX_TURNS: u32 = 10_000;
 
-/// Move-selection policy for self-play.
+/// Move-selection policy for self-play — **since Phase 3.2 Task 5 this is
+/// `yokohama_core::RolloutPolicy`, re-exported**, not a local enum.
+///
+/// The two rungs this crate uses keep their exact behaviour and their exact
+/// names: `as_str` still yields `"uniform"` / `"retreat-averse"`, which three
+/// checked-in artifacts under `fixtures/` carry in both filename and payload, so
+/// every recorded figure and every repro path is unchanged. What moved is
+/// OWNERSHIP: the arena needs the same rungs, and two enums that must agree
+/// forever is the shape a fidelity pin exists to compensate for. Now there is
+/// one enum and the pin below checks the two IMPLEMENTATIONS instead — this
+/// crate's list-based [`pick_move`] against core's handle-based
+/// `RolloutPolicy::pick`.
 ///
 /// `RetreatAverse` differs from `Uniform` ONLY in never VOLUNTEERING
 /// retreats, implementing the external probe's policy from guidingpath.md's
@@ -32,32 +43,23 @@ pub const MAX_TURNS: u32 = 10_000;
 /// all-zero `recover` map recovers nothing and counts as a non-retreat —
 /// the excluded family is exactly the Movement-Option-B count-vector
 /// product that uniform-random play over-selects.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Policy {
-    /// Uniform-random over the full legal list (the fuzzer's policy).
-    Uniform,
-    /// Uniform-random over non-retreat moves when any exist (see above).
-    RetreatAverse,
-}
+pub use yokohama_core::RolloutPolicy as Policy;
 
-impl Policy {
-    /// Stable name used in artifact filenames and CLI args.
-    pub fn as_str(&self) -> &'static str {
-        match self {
-            Policy::Uniform => "uniform",
-            Policy::RetreatAverse => "retreat-averse",
-        }
-    }
-}
-
-impl std::str::FromStr for Policy {
-    type Err = String;
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        match s {
-            "uniform" => Ok(Policy::Uniform),
-            "retreat-averse" | "retreat_averse" => Ok(Policy::RetreatAverse),
-            other => Err(format!("unknown policy {other:?} (expected uniform | retreat-averse)")),
-        }
+/// Parse a policy name from THIS crate's CLI, which accepts **exactly two**:
+/// `uniform` and `retreat-averse` (plus the `retreat_averse` alias it has
+/// always taken). Byte-identical accept set and error text to the `FromStr` it
+/// replaced.
+///
+/// Deliberately NOT `Policy::from_str`, which core widened to three names: the
+/// third rung (`family-weighted`) has no list-based implementation, and
+/// [`pick_move`]'s arm for it is `unimplemented!`. Keeping the CLI's accept set
+/// at two is what makes that arm unreachable from any subcommand rather than a
+/// panic a user can trigger — and it keeps every sweep, stream and recorded
+/// figure in this crate exactly reproducible.
+pub fn parse_cli_policy(s: &str) -> Result<Policy, String> {
+    match Policy::from_str_name(s) {
+        Some(p @ (Policy::Uniform | Policy::RetreatAverse)) => Ok(p),
+        _ => Err(format!("unknown policy {s:?} (expected uniform | retreat-averse)")),
     }
 }
 
@@ -69,6 +71,13 @@ pub fn is_volunteered_retreat(m: &Move) -> bool {
 }
 
 /// Pick one move from `moves` (must be non-empty) under `policy`.
+///
+/// LIST-BASED by design: this driver already holds the materialized
+/// `get_legal_moves` output (the differential comparison is against it), so
+/// there is nothing for a factored source to save here. Core's
+/// `RolloutPolicy::pick` is the handle-based twin, and
+/// [`tests::core_retreat_averse_agrees_with_pick_move_move_for_move_and_draw_for_draw`]
+/// pins the two together.
 pub fn pick_move<'a>(moves: &'a [Move], policy: Policy, rng: &mut ChaCha8Rng) -> &'a Move {
     match policy {
         Policy::Uniform => &moves[rng.gen_range(0..moves.len())],
@@ -82,6 +91,22 @@ pub fn pick_move<'a>(moves: &'a [Move], policy: Policy, rng: &mut ChaCha8Rng) ->
                 non_retreat[rng.gen_range(0..non_retreat.len())]
             }
         }
+        // DEFENDED-UNREACHABLE, not unimplemented-by-omission. The weighted rung
+        // is defined over move FAMILIES (a routes-vs-retreat scalar plus a
+        // per-area recovery draw); a flat list of moves has no family structure
+        // to weight, so there is no faithful list-based reading of it — the
+        // arena is where it belongs. [`parse_cli_policy`] is this crate's only
+        // way to name a policy from outside and it accepts exactly the two
+        // above, so no subcommand can route here.
+        //
+        // (Deviation from spec §2, which said "typed error": every `pick_move`
+        // caller takes `&Move` through fourteen call sites that would all grow a
+        // `Result` for an arm none of them can reach. Recorded in the Task-5
+        // commit body and folded into the spec at close-out.)
+        Policy::FamilyWeighted { .. } => unimplemented!(
+            "family-weighted is not supported by the list-based difftest driver; use \
+             yokohama-core's arena"
+        ),
     }
 }
 
@@ -288,11 +313,160 @@ mod tests {
         assert!(moves.contains(picked));
     }
 
+    /// This crate's CLI accept set is EXACTLY two names, unchanged by the move
+    /// of the enum into core — including the error text, which the usage strings
+    /// in `main.rs` mirror.
+    ///
+    /// The `family-weighted` case is the load-bearing one: core parses it, this
+    /// parser must not, and that is precisely what keeps `pick_move`'s
+    /// `unimplemented!` arm unreachable from every subcommand.
     #[test]
-    fn policy_parses_from_cli_names() {
-        assert_eq!("uniform".parse::<Policy>().unwrap(), Policy::Uniform);
-        assert_eq!("retreat-averse".parse::<Policy>().unwrap(), Policy::RetreatAverse);
-        assert_eq!("retreat_averse".parse::<Policy>().unwrap(), Policy::RetreatAverse);
-        assert!("greedy".parse::<Policy>().is_err());
+    fn the_cli_parser_accepts_exactly_the_two_list_based_policies() {
+        assert_eq!(parse_cli_policy("uniform").unwrap(), Policy::Uniform);
+        assert_eq!(parse_cli_policy("retreat-averse").unwrap(), Policy::RetreatAverse);
+        assert_eq!(parse_cli_policy("retreat_averse").unwrap(), Policy::RetreatAverse);
+
+        assert_eq!(
+            parse_cli_policy("greedy"),
+            Err("unknown policy \"greedy\" (expected uniform | retreat-averse)".to_string()),
+        );
+        // Core knows the third rung; this CLI deliberately does not.
+        assert!(Policy::from_str_name("family-weighted").is_some());
+        assert!(parse_cli_policy("family-weighted").is_err());
+    }
+
+    /// The artifact-compatibility half of the re-export: three checked-in
+    /// fixtures carry these names in their filenames AND their payloads, so a
+    /// change here silently orphans them.
+    #[test]
+    fn policy_names_stay_byte_identical_for_artifact_compatibility() {
+        assert_eq!(Policy::Uniform.as_str(), "uniform");
+        assert_eq!(Policy::RetreatAverse.as_str(), "retreat-averse");
+    }
+
+    /// **THE FIDELITY PIN** (spec §2; T2 review probe 3). Core's handle-based
+    /// `RolloutPolicy::RetreatAverse` and this crate's list-based [`pick_move`],
+    /// given the SAME state, the SAME legal list and the SAME ChaCha8 stream,
+    /// select the SAME move and leave the RNG at the SAME position.
+    ///
+    /// Position, not just the move: two implementations that agree on every pick
+    /// while consuming different amounts of randomness would diverge the moment
+    /// either one drives a game, and E2's recorded retreat-averse figures were
+    /// measured with THIS implementation. `get_word_pos()` is the direct
+    /// observation of that, which is why the assertion is on it rather than on a
+    /// subsequent draw.
+    ///
+    /// ## The Placement partition, and why it is not a weakened claim
+    ///
+    /// At a Placement decision point the two CANNOT share a stream and the
+    /// difference is structural, not incidental: `pick_move` indexes the
+    /// materialized list with one draw, while core reaches placement through
+    /// `placement_sample`'s reservoir, which spends one draw PER candidate
+    /// exactly so the family is never materialized. Both are uniform over the
+    /// realized moves; they are not the same draw, and making them one would
+    /// mean materializing what the factored source exists not to materialize.
+    /// So Placement points are asserted on what IS true of them (a legal
+    /// placement move from the same list) and counted separately, and the
+    /// identity claim is made — in full, on both halves — everywhere else.
+    ///
+    /// Both partitions carry a floor, so neither can quietly empty out.
+    ///
+    /// Also pinned here, because the index mapping above depends on it: the
+    /// handle's per-family serving order is ELEMENTWISE `iter_family`'s. Core
+    /// maps one drawn index onto the routes family while this crate maps the
+    /// same index onto the legal list's non-retreat prefix; if those orders ever
+    /// diverged the two would still agree in DISTRIBUTION and silently disagree
+    /// on the move. Families above [`ORDER_COMPARE_CAP`] moves are skipped and
+    /// counted — the retreat family reaches six figures, and materializing it to
+    /// compare orders is the one thing this whole design forbids.
+    ///
+    /// MEASURED at HEAD (debug, seed 7, 4P, 600 decision points): 502
+    /// non-Placement points, every one identical in move AND word position; 98
+    /// Placement points; 698 elementwise order comparisons made, 0 skipped (no
+    /// organic family on this game exceeded the cap).
+    ///
+    /// MUTATION-PROVEN 2026-07-26, both halves separately, both in core's
+    /// `RolloutPolicy::pick` and both reverted by inverse edit (L7):
+    ///
+    /// - MOVE half — reversing the routes index mapping
+    ///   (`handle.iter(routes).nth(routes_len - 1 - i)`), which leaves the DRAW
+    ///   and therefore the whole distribution untouched: FAILED at step 2 with
+    ///   "the two implementations picked different moves from one stream";
+    /// - POSITION half — one extra `rng.gen::<u32>()` after the index draw,
+    ///   which leaves every selected MOVE identical: FAILED at step 2 with "same
+    ///   move, different stream consumption", word position 2 against 3.
+    ///
+    /// Neither mutation is caught by the other's assertion, which is why the pin
+    /// asserts both rather than treating the move as evidence of the stream.
+    #[test]
+    fn core_retreat_averse_agrees_with_pick_move_move_for_move_and_draw_for_draw() {
+        use yokohama_core::{iter_family, DecisionHandle, MoveFamily};
+
+        /// Families larger than this are not order-compared: the retreat product
+        /// reaches 442,368 and collecting it is exactly what the factored source
+        /// exists to avoid.
+        const ORDER_COMPARE_CAP: u64 = 4_096;
+
+        let rules = Rules::standard();
+        let (mut identical, mut placement, mut compared, mut skipped) = (0u32, 0u32, 0u32, 0u32);
+
+        drive_game(7, 4, Policy::RetreatAverse, &rules, Some(600), |state, moves, step| {
+            // ONE stream, two readers: `probe_b` is a clone taken before either
+            // implementation draws, so "the same stream" is literal.
+            let mut probe_a = ChaCha8Rng::seed_from_u64(0xD1FF_0000_0000_0000 ^ step);
+            let mut probe_b = probe_a.clone();
+
+            let listwise = pick_move(moves, Policy::RetreatAverse, &mut probe_a).clone();
+            let handle = DecisionHandle::new(state, &rules);
+            let factored = Policy::RetreatAverse
+                .pick(&handle, &mut probe_b)
+                .expect("a decision point yields a move");
+
+            for family in handle.families() {
+                if handle.size(family).value() > ORDER_COMPARE_CAP {
+                    skipped += 1;
+                    continue;
+                }
+                let from_handle: Vec<Move> = handle.iter(family).collect();
+                let from_free: Vec<Move> = iter_family(state, &rules, family).collect();
+                assert_eq!(
+                    from_handle, from_free,
+                    "step {step}: handle.iter({family:?}) is not elementwise iter_family's",
+                );
+                compared += 1;
+            }
+
+            if matches!(handle.families(), [MoveFamily::Placement]) {
+                placement += 1;
+                assert!(
+                    moves.contains(&factored),
+                    "step {step}: the reservoir returned a move outside the legal list",
+                );
+            } else {
+                assert_eq!(
+                    factored, listwise,
+                    "step {step}: the two implementations picked different moves from one stream",
+                );
+                assert_eq!(
+                    probe_a.get_word_pos(),
+                    probe_b.get_word_pos(),
+                    "step {step}: same move, different stream consumption ({listwise:?})",
+                );
+                identical += 1;
+            }
+            Ok(StepOutcome::Continue)
+        })
+        .expect("the driven game must not fail");
+
+        println!(
+            "retreat-averse fidelity: {identical} non-Placement points identical in move and word \
+             position, {placement} Placement points (reservoir, uniform-equivalent by \
+             construction); {compared} family orders compared, {skipped} over the {ORDER_COMPARE_CAP} cap",
+        );
+        // Floors: half the measured counts, so neither partition can empty out
+        // and leave the other proving the whole claim on its own.
+        assert!(identical >= 250, "only {identical} non-Placement identity points were reached");
+        assert!(placement >= 45, "only {placement} Placement points were reached");
+        assert!(compared >= 349, "only {compared} family orders were compared");
     }
 }

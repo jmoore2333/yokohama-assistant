@@ -33,7 +33,7 @@ cargo run -p yokohama-cli -- save.json # resume a saved game
 
 **Color and width.** The tool colors what matters — player names and their pieces in their colors, tile names by area type, goods letters in resource tones, VP, warnings, the phase line — and setting the standard `NO_COLOR` environment variable turns color off in a terminal too (the composed screen stays; `screen` turns that off). The composed screen is wide, and wider than the board alone: the board grid is 72 columns at 2 players, 90 at 3, and 108 at 4, but the players panel sits beside it at 2-3 players and the game-info strip runs 96 columns on its own, so the whole frame starts at 114 columns at 2 players, 132 at 3, and 108 at 4 — and creeps a couple of columns wider as scores and area names get longer. There is no terminal-size detection, so size the window before you start: **140 columns** clears every layout's width — a test now pins every line the driver *lays out* (board, panel, option lists, prompts and hints, the choice banner, a lockdown notice) at or under 140 columns, so none of them wraps mid-token; the one thing that can still wrap is a message quoting something you typed, such as an autosave warning naming a long save path — and the screen opens 32 rows at 2 players, 33 at 3, and 38 at 4 — so a **140x40** window shows the whole opening screen at any player count, and 50 rows leaves comfortable room under it. What eats the extra rows is the part below the board: a long option list (20 per page — `more` pages them) or a big message zone pushes the title and the top board row off the top. `panel` (hide the players box) and `screen` (plain rolling text) buy those rows back. The `board` command's one-time reminder covers only the board grid's own width (and only when that grid is wider than 100 columns), so it will not warn you at 2 players.
 
-**Privacy at a live table.** The one genuinely hidden thing in Yokohama is a starting order, and it sits in a hand — so in **live** mode hand contents start hidden: `hand` and `players` show counts (`1 card (hidden — 'privacy' to toggle)`) instead of card text, and the players panel never shows hand contents at all. Toggle with `privacy` (sim mode starts open). Everything public at the table — the board, tracks, buildings, port displays, deltas of face-up takes — never masks.
+**Privacy at a live table.** The one genuinely hidden thing in Yokohama is a starting order, and it sits in a hand — so in **live** mode hand contents start hidden: `hand` and `players` show counts (`1 card (hidden — 'privacy' to toggle)`) instead of card text, and the players panel never shows hand contents at all. Toggle with `privacy` (sim mode starts open). Everything public at the table — the board, tracks, buildings, port displays, deltas of face-up takes — never masks. **Bot seats mask on their own.** With a bot at the table (§3) that seat's hand stays hidden whatever `privacy` says — a bot's hand holds its unfulfilled starting order, and sim mode starts open — while your own hand keeps following the toggle; the bot's seat is marked `[bot]` in the players panel. That mask is table manners, not a sealed envelope: you set the game up, so you saw every seat's dealt cards in the wizard, and `log` still replays everything that happened.
 
 **If something looks off:**
 
@@ -60,6 +60,8 @@ Questions are asked one at a time. An invalid answer re-asks the SAME question a
 
 **Sim tail:** for each seat the two dealt order cards are shown (`O07 [Britain]  needs …  ->  …`); answer `keep 0/1` with `0` or `1`.
 
+**Bot seats (sim only):** the sim tail's last question is `Bot seats?`. **Blank** — just Enter — means none, and the game is exactly the all-human one described everywhere else. Otherwise type the seat numbers a bot should play, space-separated: `1`, or `0 2`. At least one seat must stay human (an all-bot table is refused and the question re-asks), and there is no live-mode equivalent — a bot cannot read a face-down card off your table. Every bot plays the engine's `family-weighted` policy; the wizard draws a full-width stream key for them and echoes it as `bot seed: N`, so write that down beside the game seed if you want the bot's line to be reproducible. The setup review names them (`bots: seat 1 playing family-weighted (seed N)`), `edit bots` re-asks the question, and the answer travels in the save file — a resumed game comes back with the same seats botted.
+
 **Live tail** (you're describing the physical table):
 
 1. Per seat: `known` (your own seat — then type its two dealt cards and the keep choice) or `hidden` (opponents whose starting order you can't see).
@@ -84,7 +86,7 @@ Why it matters: the engine checks that your tiles are the right *set* for the pl
 **Review before you commit:** once every question is answered, the tool prints a full summary of everything entered so far (`--- Setup review ---`: mode, players, colors, start seat, seed, save path, plus the mode-specific tail) and asks `confirm / edit <section> / abort?`. `edit <section>` re-asks that section's questions from scratch — with the same live validation — then reprints the updated summary; repeat as many times as you like before confirming. In the live tail the tile lines echo the same coordinates the questions used (`cell 7 (row 2 of 4, tile 3 of 4): Port A S6`). Editable sections:
 
 - **live**: `colors`, `seed`, `save`, `deal <seat>`, `tiles`, `sites`, `achievements`, `porta`, `portb` (3-4p only), `laba`, `labb` (4p only)
-- **sim**: `colors`, `seed`, `save`, `deal <seat>`
+- **sim**: `colors`, `seed`, `save`, `deal <seat>`, `bots`
 
 In the live tail, `edit tiles` re-asks the **building-site cards** in the same pass: the site cards sit on the tiles, so a re-entered board moves them too, and re-asking the tiles alone would silently re-attach the old site cards to the new tile order.
 
@@ -173,6 +175,26 @@ Order of ids in `a` doesn't matter; picker and grammar alike match your entry ag
 
 **Retreat shorthand** (Movement Option B: return the President to hand, optionally recovering assistants — the rulebook's other Step-2 option alongside moving him, §8.4): `r` by itself returns the President to hand recovering no assistants; `r <id>` recovers *every* assistant you currently have on board in area `<id>`; `r <id>:<n>` recovers exactly `n` from area `<id>` (`n` must be ≥ 1). Chain several area tokens in one command: `r 4:1 9` recovers 1 assistant from area 4 *and* every assistant you have in area 9. The numbered list still works too, but the whole retreat family now collapses to the single **guided retreat** entry described under Movement grouping above — `r` is the shorthand that *bypasses* that guided flow, assembling and applying the exact retreat in one line instead of stepping through the per-area questions. Like `a`/`b`/`m`, `r` only ever matches against the real legal list — asking for more assistants than are actually there (or any other combination the rules don't offer) gets `That retreat is not in the legal list (check areas/counts).`, the same rejection a wrong option number would get. Bad input: a non-numeric area token → `Bad area token '<tok>'. Usage: r [<area>[:<n>]]...`; a zero, negative, or non-numeric count after `:` → `Bad count in '<tok>'.` An area number that simply isn't on this board (`r 99`) parses fine and falls through to the legal-list rejection above — the legal list, not the parser, is what rules it out.
 
+**Playing against a bot.** A bot seat plays itself. When your move hands the turn over, the bot's whole turn is already played by the time the next prompt appears — you never wait for it and you never type for it — and a bot sitting on the start seat plays before the very first prompt of the game. Each of its moves is reported on one line prefixed by its seat (at most 10 lines, then `` …N more — type `log` ``), followed by ONE summary of everything that turn changed. A captured hand-over, seat 1 botted:
+
+```
+Phase: Additional actions (after) -> Additional actions (before)
+Turn 1 Red -> Turn 2 Blue
+Seat 1 (Blue) — End additional-action phase
+Seat 1 (Blue) — Place 1 assistant in each of: Silk Mill (A02), Laboratory A (A07)
+Seat 1 (Blue) — Return President to hand (recover no assistants)
+Seat 1 (Blue) — End additional-action phase
+Blue: assistant moved from hand to Silk Mill (A02)
+Blue: assistant moved from hand to Laboratory A (A07)
+Turn 2 Blue -> Turn 3 Red
+Turn 3 | Red | Additional actions (before) | 3 yen 0 VP | c1 s1 t1 f1 i0 | hand 1
+[0] End additional-action phase
+(only option — press Enter to apply)
+> enter a number, or a command ('view' for game info, 'help' for the list)
+```
+
+The first two lines are your own move's summary; the four `Seat 1` lines are the bot's turn; the two `Blue:` lines are that turn's single summary, and the `Turn … -> Turn …` line between them is the hand-over marker the summary brackets. Read the summary as a NET change — an assistant a bot places and then recovers in the same turn nets out of it, which is why the per-move lines above it, and `log`, are the record of what actually happened. The bot decides from the same masked view of the game a seated player gets — its own hand, the public board, and a guess at everything hidden — and never from the engine's private state; that is a property the test suite pins rather than a claim about how well it plays. It is a rollout policy, not a strong opponent: it is here so a whole game can be driven end to end without a second person, and playing to win is a later phase's job.
+
 ## 5. Commands
 
 ```
@@ -239,7 +261,7 @@ A locked session accepts only `save`, `log`, and `quit`, and the lockdown is **p
 
 - `save` / autosave writes the full game record as JSON — seed, setup, every move and reveal. Saves are atomic (a crash mid-save can't corrupt the previous good file).
 - Resume: `cargo run -p yokohama-cli -- <file>`. The game replays deterministically to exactly where you left off — unless the save predates a change to the game's rules or board semantics, which the tool refuses to resume rather than replay onto semantics the game was never played under (§2).
-- `undo` works all the way back to the first move, one entry at a time (a live move takes its bound reveals with it). Page position resets after each undo.
+- `undo` works all the way back to the first move, one entry at a time (a live move takes its bound reveals with it). With a bot at the table one `undo` takes back the bot's whole reply AND your own last move, so you land back at your own decision instead of in the middle of the opponent's turn; it says how many entries went (`Undid your last move and the bot's reply (5 entries).`). If the log holds nothing but the bot's opening turn there is nothing of yours to take back, and it says so — that turn replays unchanged from the same seed. Undo still works after a reload, because who played what is worked out by replaying the record rather than remembered in memory. Page position resets after each undo.
 - If `save <path>` fails (bad directory), the previous save path is kept — autosave keeps working against the old target.
 
 ## 8. LANGUAGE: how the CLI names things vs. the rulebook

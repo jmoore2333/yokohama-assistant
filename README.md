@@ -38,7 +38,7 @@ start with the linked HTML guide and report any table/CLI mismatch.
 | Crate | What it is |
 |---|---|
 | `yokohama-core` | The engine: serde-serializable `GameState` (history-free, cheap to clone for search), pure `get_legal_moves` / checked `apply_move`, seeded setup, `GameRecord` save/replay stamped with `rules_hash`, `semantics_rev`, and a terminal-state digest verified by `replay_strict` |
-| `yokohama-cli` | The game driver: setup wizard → REPL; simulated games and live-table tracking (reconciliation, desync tripwire), save/load/undo, TTY-colored board |
+| `yokohama-cli` | The game driver: setup wizard → REPL; simulated games and live-table tracking (reconciliation, desync tripwire), save/load/undo, TTY-colored board, and **human-vs-bot play** in sim mode (any seat mix with ≥1 human; the bot runs the same honest view → belief-sampler → policy path the arena does) |
 | `yokohama-oracle` | The independent referee: legal-move enumeration, final scoring + tie-break, and a prune-free route reference, authored from the rules sources under an audited independence rule (types-only dependency on the engine) |
 | `yokohama-difftest` | The harness comparing engine vs oracle: per-decision-point sweeps under two policies, terminal scoring comparison, three-way route-pruning check, self-contained divergence artifacts + `repro` tool |
 | `gen-data` | YAML → Rust generator for the verified card/site data (never hand-edit `game/data.rs`) |
@@ -81,8 +81,11 @@ Fastest playable game: answer the wizard `sim`, `2`, `red`, `blue`, `0`, Enter t
 **[HTML](docs/cli-guide.html)** or [Markdown](docs/cli-guide.md).
 
 **Gates.** Per-edit (debug): the four crate suites + `cargo clippy --workspace --all-targets
--- -D warnings`, all zero-warning. Pre-merge: all **ten** release gates below (~113s total, the
-whole table re-measured together 2026-07-25 at `phase3.1b-routes-validation` head). This table is the
+-- -D warnings`, all zero-warning. Pre-merge: all **twelve** release gates below
+(**152.17s**, re-measured together as one sequence 2026-07-26 at the `phase3.2-arena` close —
+Apple M5 10-core, quiet machine, release binaries pre-built, the arena gate single-threaded
+because its documented command says so). Re-measure the whole table as one run at every close: a
+sum of per-command times from separate sessions is not a measured total. This table is the
 binding list — if it and CLAUDE.md's two-tier policy ever disagree, they are both wrong until
 reconciled.
 
@@ -96,7 +99,9 @@ reconciled.
 | Differential | `cargo test --release -p yokohama-difftest --test differential -- --ignored` | engine ≡ oracle on every legal-move set |
 | Routes3 | `cargo test --release -p yokohama-difftest --test routes3_differential -- --ignored` | route pruning ≡ prune-free reference |
 | Scoring | `cargo test --release -p yokohama-difftest --test scoring_differential -- --ignored` | final scores + tie-break ≡ oracle |
-| Worst-case routes | `cargo test --release -p yokohama-difftest --test routes3_worstcase -- --ignored` | maximal 17-area interior-Canal K6 battery (bound 519) + route-label key purity |
+| Worst-case routes | `cargo test --release -p yokohama-difftest --test routes3_worstcase -- --ignored` | maximal 17-area interior-Canal K6 battery (bound 519 — that harness's RECORDED observation, never a ceiling; ledger L9) + route-label key purity |
+| Arena | `cargo test --release -p yokohama-core --test arena_gate -- --ignored --test-threads=1` | the arena ranks seat policies with HONEST intervals: a same-policy null cell containing its null with nonzero SE, a non-degenerate edge cell plus a guaranteed edge from two shipped knob settings, the zero-width refusal exercised on the real blowout (never a printed ±0.000), byte-identical re-runs at both unit shapes, interval-machinery validation against known truth (R=2,000 synthetic) AND against real clustered games (R=100 replicates), honest-play counters, and freshly emitted records that all `replay_strict`-clean (Phase 3.2) |
+| Policy diversity | `cargo test --release -p yokohama-core --test policy_diversity -- --ignored` | the fuzzer runs the SHIPPED family-weighted policy at 2/3/4P (N=500/count, per-move invariants, raw-state driver): 4P trigger diversity recovers against a frozen held-out uniform ceiling (ChurchTrackFull Wilson95 lower bound 1.83% > 0.72%), applied-move coverage clears floors measured before they were set, and per-phase option-count tails are RECORDED — never bounded, since no bound is known (Phase 3.2) |
 | Piped dogfood | `cargo test --release -p yokohama-cli --test piped_dogfood -- --ignored` | the shipped binary plays a full 2P game over pipes to a winner, zero ESC bytes |
 
 ## Data provenance (cards, boards, tokens)
