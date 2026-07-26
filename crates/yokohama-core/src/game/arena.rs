@@ -35,11 +35,14 @@
 //! is the corpus strict-replay check (spec §5), which pushes every emitted move
 //! through the checked boundary.
 //!
-//! NO L10 COUNTER ASSERTIONS LIVE HERE (T2 review, carried). That cross-check
-//! is itself a `get_legal_moves` call, so at an on-board Movement point this
-//! driver legitimately runs TWO route DFSes in debug — the handle's and the
-//! assert's. `tests/l10_enumeration_pin.rs` owns the counter property over its
-//! own harness loop; arming it against this driver would read 2 and be wrong.
+//! NO L10 COUNTER ASSERTIONS LIVE HERE (T2 review, carried). The membership
+//! cross-check is itself a `get_legal_moves` call and the volume cross-check
+//! (T6 review F3) builds a fresh true-state handle, so at an on-board Movement
+//! point this driver legitimately runs THREE route DFSes in debug — the
+//! agent's, the membership assert's, and the volume assert's. In RELEASE both
+//! asserts compile out and the count is exactly the agent's one.
+//! `tests/l10_enumeration_pin.rs` owns the counter property over its own
+//! harness loop; arming it against this driver would over-read and be wrong.
 //!
 //! SEED KEYING (spec §4, E2's CRN rule) is the trap this module is shaped
 //! around, and the two streams are keyed DIFFERENTLY on purpose:
@@ -61,10 +64,12 @@
 //! `acc = salt`, then `acc = splitmix64(acc ^ component)` per component in
 //! order (`seeds::splitmix64`, the same primitive `SeedSchedule` streams with,
 //! so there is one mixing authority and not a re-typed copy of its constants).
-//! Each step is a bijection in `acc`, so two component lists OF THE SAME LENGTH
-//! that differ anywhere derive different seeds — collision-freedom by
-//! construction rather than by hope. Distinct salts keep the setup and play
-//! streams in separate domains.
+//! Each step is a bijection in `acc`, so the derivation is INJECTIVE IN ANY ONE
+//! COMPONENT with the others held fixed — the property every keying test needs.
+//! Two lists differing in SEVERAL components can collide at the ~2^-64 density
+//! of any 64-bit hash (the T6 review computed a two-component counterexample),
+//! so cross-component collision-freedom is probabilistic, not constructed.
+//! Distinct salts keep the setup and play streams in separate domains.
 //!
 //! WHAT THE DERIVATION DOES NOT BUY. It is public arithmetic over the world
 //! seed, so an ADVERSARIAL agent handed its own seed could invert it and
@@ -114,7 +119,8 @@ const SALT_SETUP_STREAM: u64 = 0xA3E1_5E70_0000_0002;
 const SALT_RAW_STREAM: u64 = 0xA3E1_4157_0000_0003;
 
 /// Fold `components` into one full-width sub-seed under `salt` — the module
-/// doc's derivation. Injective over equal-length component lists.
+/// doc's derivation. Injective in any single component (others fixed); see the
+/// module doc for what is NOT claimed across several.
 fn mix(salt: u64, components: &[u64]) -> u64 {
     let mut acc = salt;
     for &component in components {
@@ -441,6 +447,17 @@ pub struct ArenaGameStats {
 /// agent from privileged setup data. `invariants` runs `check_invariants` after
 /// every applied move (ON in tests and gates; bulk corpus generation may
 /// disable it, since those records are verified by strict replay instead).
+/// Typed guard shared by both public drivers (T6 review F4): every other bad
+/// input here is a typed `ArenaError`, and Task 9 wires these entry points to
+/// argv, where a `--players 5` panic would be user-facing.
+fn require_supported_player_count(players: u8) -> Result<(), ArenaError> {
+    if (2..=4).contains(&players) {
+        Ok(())
+    } else {
+        Err(ArenaError::Driver(format!("unsupported player count {players} (the engine plays 2-4)")))
+    }
+}
+
 pub fn run_arena_game(
     seed: WorldSeed,
     players: u8,
@@ -468,6 +485,7 @@ pub fn run_arena_game_capped(
     invariants: bool,
     max_turns: u32,
 ) -> Result<ArenaGameStats, ArenaError> {
+    require_supported_player_count(players)?;
     let pending = new_game(GameConfig::for_player_count(players), rules, seed.0)
         .map_err(|e| ArenaError::Driver(format!("new_game failed ({players}P): {e}")))?;
 
@@ -497,6 +515,7 @@ pub fn run_raw_game(
     rng_master: u64,
     invariants: bool,
 ) -> Result<ArenaGameStats, ArenaError> {
+    require_supported_player_count(players)?;
     if seat_policies.len() != players as usize {
         return Err(ArenaError::Driver(format!(
             "run_raw_game got {} seat policies for {players} seats",
@@ -510,7 +529,12 @@ pub fn run_raw_game(
         .iter()
         .enumerate()
         .map(|(i, &policy)| {
-            let stream = mix(SALT_RAW_STREAM, &[rng_master, i as u64]);
+            // The WORLD seed is folded in (T6 review F1): a sweep holding
+            // `rng_master` fixed across games — the natural reading of a
+            // "master" — must not hand seat i the identical stream in every
+            // game, or the §7 cells' distributional figures sit on cross-game
+            // common random numbers.
+            let stream = mix(SALT_RAW_STREAM, &[seed.0, rng_master, i as u64]);
             (policy, ChaCha8Rng::seed_from_u64(stream))
         })
         .collect();
@@ -676,6 +700,27 @@ fn drive(
             seat.0,
         );
 
+        // The agent-attested volume is cross-checked against the TRUE state in
+        // the same debug tier as the membership assert (T6 review F3): the
+        // report's figure crosses the agent seam unvalidated otherwise, and a
+        // per-family-invariance failure should die here, loudly, not surface
+        // as a skewed published quantile. (Reviewer-verified to hold across
+        // 14,572 decisions before this assert existed.) This is the THIRD
+        // debug-tier route DFS at an on-board Movement point — see the module
+        // doc's counter paragraph.
+        #[cfg(debug_assertions)]
+        {
+            let truth = crate::game::metrics::decision_volume(
+                &crate::game::search_actions::DecisionHandle::new(&state, rules),
+            );
+            debug_assert_eq!(
+                truth.map(|v| (v.total, v.has_upper_bound_term)),
+                Some((report.volume.total, report.volume.has_upper_bound_term)),
+                "seat {}'s attested volume disagrees with the true state's",
+                seat.0,
+            );
+        }
+
         state = apply_move_unchecked(&state, &mv, rules).map_err(|e| {
             ArenaError::Driver(format!(
                 "apply_move_unchecked rejected a validated move from seat {}: {e}",
@@ -791,7 +836,7 @@ mod tests {
     /// contestants the same stream (both drew 2586029867533633687) and fails
     /// the first assertion below.
     #[test]
-    fn agent_rng_is_keyed_by_slot_not_seat() {
+    fn agent_rng_is_not_keyed_by_seat_alone() {
         // E2's CRN rule, second half, and the trap it exists to exclude: keying
         // the PLAY stream by seat alone makes both games of a pair the same
         // game, so the null cell reads rho = -1.0000 with SE 0.000 -- an
