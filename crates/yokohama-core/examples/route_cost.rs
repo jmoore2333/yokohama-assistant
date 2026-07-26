@@ -2,8 +2,9 @@
 //!
 //! RECORDS, never asserts. Three blocks:
 //!
-//! **A. ORGANIC.** At every Movement decision point reached by uniform-random
-//! self-play under ONE stated policy: the SHIPPED [`enumerate_routes`] (latency,
+//! **A. ORGANIC.** At every Movement decision point reached by self-play under
+//! ONE stated policy (`--policy` selects the rung; the DEFAULT is the legacy
+//! uniform driver, whose figures are the 3.1b baseline every arm compares to): the SHIPPED [`enumerate_routes`] (latency,
 //! allocations, label count) and the frozen [`enumerate_president_routes`] on the
 //! same state. This replaces the 21 / 32 / 38 organic-maxima scatter (three
 //! harnesses, three trajectories, no canonical figure — spec F5) with one
@@ -401,15 +402,9 @@ fn report_organic(points: &[Point], shape: &SweepShape, driver: SweepDriver) {
          A further {} Movement points had the President IN HAND: a routes family is\n\
          dispatched there too, but it is the `PlacePresident` arm and `enumerate_routes`\n\
          walks nothing, so those are counted, not measured. That {:.1}% on-board share is\n\
-         itself a POLICY ARTIFACT, not a fact about Yokohama — uniform-random play draws\n\
-         from a retreat family that returns the President to hand far more often than any\n\
-         competent policy would, so a real player pays the walk enumeration at a much\n\
-         higher rate than uniform's counts suggest. That is ledger L11, and `--policy\n\
-         family-weighted` is the arm that measures it rather than asserting it.\n\n\
-         This SUPERSEDES the 21/32/38 organic-label maxima (three harnesses, three\n\
-         trajectories, no canonical figure) and the 679 ns mean / 3.3 us max latencies\n\
-         (measured out of repo under Prune::Adaptive). Latency repeats: shipped x{},\n\
-         frozen x{}.\n",
+         a property of THIS arm's policy, never a fact about Yokohama (ledger L11).\n\
+         {}\n\
+         Latency repeats: shipped x{}, frozen x{}.\n",
         driver.label(),
         SEEDS.start,
         SEEDS.end,
@@ -422,6 +417,16 @@ fn report_organic(points: &[Point], shape: &SweepShape, driver: SweepDriver) {
         points.len(),
         shape.from_hand_points,
         on_board_share,
+        match driver {
+            SweepDriver::LegacyUniform => "Under the LEGACY UNIFORM arm this share is the 3.1b baseline: uniform play\n\
+         volunteers retreats that return the President to hand far more often than any\n\
+         competent policy would, so the on-board share under-states a real player's walk\n\
+         rate. This arm's figures SUPERSEDE the 21/32/38 organic-label maxima scatter and\n\
+         the out-of-repo Prune::Adaptive latencies.",
+            _ => "Under a NON-DEFAULT arm these figures are that policy's own observations —\n\
+         they supersede NOTHING and must never be quoted as the default arm's baseline\n\
+         (both arms are on the record; neither may be quoted as the other).",
+        },
         ORGANIC_SHIPPED_ITERS,
         ORGANIC_FROZEN_ITERS,
     );
