@@ -37,7 +37,7 @@ use std::process::ExitCode;
 
 use yokohama_core::Rules;
 use yokohama_difftest::artifact::default_artifacts_dir;
-use yokohama_difftest::drive::Policy;
+use yokohama_difftest::drive::{parse_cli_policy, Policy};
 use yokohama_difftest::routes3::run_routes3_game;
 use yokohama_difftest::runner::{run_differential_game, run_scoring_game};
 
@@ -263,7 +263,7 @@ fn main() -> ExitCode {
             args[2].parse::<u64>(),
             args[3].parse::<u8>(),
             args[4].parse::<u64>(),
-            args[5].parse::<Policy>(),
+            parse_cli_policy(&args[5]),
         ) {
             (Ok(g), Ok(p), Ok(s), Ok(pol)) if (2..=4).contains(&p) => {
                 if args[1] == "score" {
@@ -292,7 +292,7 @@ fn main() -> ExitCode {
         args[1].parse::<u64>(),
         args[2].parse::<u8>(),
         args[3].parse::<u64>(),
-        args[4].parse::<Policy>(),
+        parse_cli_policy(&args[4]),
     ) {
         (Ok(g), Ok(p), Ok(s), Ok(pol)) if (2..=4).contains(&p) => (g, p, s, pol),
         _ => {

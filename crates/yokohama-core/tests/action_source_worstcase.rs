@@ -1,21 +1,25 @@
-//! Phase 3.1 worst-case ALLOCATION bounds for the factored action source
-//! (`game/search_actions.rs`) — TWO bounds, with DELIBERATELY DIFFERENT SHAPES.
+//! Worst-case ALLOCATION bounds for the factored action source
+//! (`game/search_actions.rs`) — THREE bounds, with DELIBERATELY DIFFERENT
+//! SHAPES.
 //!
-//! | bound | family | shape | why that shape |
-//! |-------|--------|-------|----------------|
-//! | 1 (3.1a T6) | retreat | SERVE-ONE constant: `< `[`BOUND`] allocations to serve ONE candidate out of 442,368 | the family is HUGE, so it is paged/sampled lazily and NEVER materialized |
-//! | 2 (3.1b T4) | routes | WHOLE-FAMILY `O(labels)`: `<= 2·labels + 32` allocations for the ENTIRE enumeration ([`route_bound`]) | the family is SMALL (max OBSERVED 694 adversarial / 38 organic — spec L9: no label ceiling is known), so it is COMPUTED CHEAPLY per call, not paged |
+//! | bound | scope | shape | why that shape |
+//! |-------|-------|-------|----------------|
+//! | 1 (3.1a T6) | retreat family | SERVE-ONE constant: `< `[`BOUND`] allocations to serve ONE candidate out of 442,368 | the family is HUGE, so it is paged/sampled lazily and NEVER materialized |
+//! | 2 (3.1b T4) | routes family | WHOLE-FAMILY `O(labels)`: `<= 2·labels + 32` allocations for the ENTIRE enumeration ([`route_bound`]) | the family is SMALL (max OBSERVED 694 adversarial / 38 organic — spec L9: no label ceiling is known), so it is COMPUTED CHEAPLY per call, not paged |
+//! | 3 (3.2 T5) | one whole DECISION POINT | ONE-PICK constant: handle construction + one `RolloutPolicy` pick, [`pick_bound_on_board`] / [`PICK_BOUND_IN_HAND`] | a bot pays per DECISION, not per family; this is the executable half of spec §0-R2(b), at BOTH President locations because the L10 counter is blind at one of them |
 //!
-//! The two shapes differ because the two costs differ, and conflating them is
-//! the mis-read spec §0's honest reframing exists to prevent: **the routes
-//! family never needed LAZINESS — it needed a cheap COMPUTATION.** Neither
-//! bound's language transfers to the other family. A serve-one constant is not
-//! even expressible for routes, whose contract is one whole enumeration per call
-//! (spec §3.1, L10 — no cache in 3.1b); an `O(family)` bound would be vacuous
-//! for retreat, whose family has 442,368 members and whose whole point is never
-//! to touch them all. Every doc site that lists family costs states the three
-//! shapes (retreat's closed form, routes' exact-but-one-enumeration, placement's
-//! upper bound) side by side for the same reason.
+//! The shapes differ because the costs differ, and conflating them is the
+//! mis-read spec §0's honest reframing exists to prevent: **the routes family
+//! never needed LAZINESS — it needed a cheap COMPUTATION.** No bound's language
+//! transfers to another. A serve-one constant is not even expressible for
+//! routes, whose contract is one whole enumeration per call (spec §3.1, L10 — no
+//! cache in 3.1b); an `O(family)` bound would be vacuous for retreat, whose
+//! family has 442,368 members and whose whole point is never to touch them all;
+//! and neither of those is a statement about what ONE DECISION costs, which is
+//! the figure §0-R2(b) needed and bound 3 supplies. Every doc site that lists
+//! family costs states the three FAMILY shapes (retreat's closed form, routes'
+//! exact-but-one-enumeration, placement's upper bound) side by side for the same
+//! reason.
 //!
 //! METER (spec `docs/plans/2026-07-25-phase3.1-action-interface-spec.md` §4,
 //! PINNED; shared by BOTH bounds). The shared counting allocator
@@ -125,13 +129,13 @@ use rand_chacha::ChaCha8Rng;
 
 use yokohama_core::{
     enumerate_president_routes, enumerate_routes, families, family_len, fits_fixed_arrays,
-    get_legal_moves, iter_family, retreat_iter, retreat_len, retreat_sample, AchievementCard,
-    AchievementType, AreaConfig, AreaId, AreaType, BoardLayout, ChurchTrack, CustomsTrack,
-    GameConfig, GameState, LabState, MercenarySupply, MoveFamily, PlayerColor, PlayerId,
-    PlayerState, PortState, PresidentLocation, Rules, TurnPhase,
+    get_legal_moves, iter_family, retreat_iter, retreat_len, retreat_sample, AreaId, DecisionHandle,
+    GameState, Move, MoveFamily, PresidentLocation, RolloutPolicy, Rules,
 };
 
-use route_fixtures::{dense_17_area_cell, small_movement_cell};
+use route_fixtures::{
+    dense_17_area_cell, retreat_worst_case_cell, retreat_worst_case_on_board, small_movement_cell,
+};
 
 /// The hard allocation-COUNT ceiling for serving ONE retreat candidate — the
 /// same generous `< 64` the lib-internal probe uses
@@ -139,20 +143,6 @@ use route_fixtures::{dense_17_area_cell, small_movement_cell};
 /// a handful of small allocations (the ≤17-entry radix `Vec` plus one decoded
 /// ≤17-entry `recover` `BTreeMap`), never scaling with the 442,368 product.
 const BOUND: usize = 64;
-
-/// The 4P retreat worst case `on_board`: three areas at count 2 (ids 0,1,2) and
-/// fourteen at count 1 (ids 3..17) — product `3³ · 2¹⁴ = 442,368`, the six-figure
-/// family this factored source exists to serve without materializing.
-fn worst_case_on_board() -> BTreeMap<AreaId, u8> {
-    let mut m = BTreeMap::new();
-    for a in 0..3u8 {
-        m.insert(AreaId::new(a), 2);
-    }
-    for a in 3..17u8 {
-        m.insert(AreaId::new(a), 1);
-    }
-    m
-}
 
 /// A scaled-DOWN retreat `on_board` for the per-edit smoke: twelve count-1 areas
 /// ⇒ product `2¹² = 4096`. Small enough to serve a mid index instantly, large
@@ -169,7 +159,7 @@ fn smoke_on_board() -> BTreeMap<AreaId, u8> {
 /// outstanding bytes are printed (recorded), never asserted.
 #[test]
 fn serving_one_retreat_candidate_is_bounded_allocation_count() {
-    let worst = worst_case_on_board();
+    let worst = retreat_worst_case_on_board();
     // The ceiling avoided, from the closed-form product — no materialization.
     assert_eq!(retreat_len(&worst), 442_368, "worst-case retreat product");
 
@@ -215,100 +205,24 @@ fn serving_one_retreat_candidate_is_bounded_allocation_count() {
     );
 }
 
-/// The full 4P **OnBoard** retreat worst-case `GameState`: 17 placement-allowing
-/// areas (ids 0..17), the current player's president ON BOARD at area 0, own
-/// assistants at the worst-case distribution ⇒ `get_legal_moves` materializes
-/// the 442,368-move retreat block (plus a handful of routes). Type-valid via the
-/// public constructors exactly like `action_source_equivalence.rs`'s
-/// `state_with_areas` / `routes3_worstcase.rs`'s `movement_state` (not
-/// setup-valid; both `get_legal_moves` and the factored source are total over
-/// it). One free edge (0~1) leaves a couple of `MovePresident` routes without an
-/// own-assistant-dense DFS explosion, so the recorded ceiling is dominated by
-/// the retreat product it exists to avoid.
-fn worst_case_state() -> GameState {
-    let colors = [PlayerColor::Red, PlayerColor::Blue, PlayerColor::Yellow, PlayerColor::Green];
-    let mut areas = BTreeMap::new();
-    for i in 0..17u8 {
-        areas.insert(
-            AreaId::new(i),
-            AreaConfig { area_type: AreaType::CopperMine, grid_position: (0, i) },
-        );
-    }
-    let mut adjacency = BTreeMap::new();
-    adjacency.insert(AreaId::new(0), vec![AreaId::new(1)]);
-    adjacency.insert(AreaId::new(1), vec![AreaId::new(0)]);
-
-    let mut s = GameState {
-        config: GameConfig::for_player_count(4),
-        board_layout: BoardLayout {
-            areas,
-            adjacency,
-            canal_crossings: vec![],
-            building_sites: BTreeMap::new(),
-            five_power_tokens: BTreeMap::new(),
-        },
-        players: (0..4)
-            .map(|i| PlayerState::new(PlayerId::new(i), colors[i as usize], i == 0))
-            .collect(),
-        current_player: PlayerId::new(0),
-        turn_phase: TurnPhase::Movement,
-        turn_number: 1,
-        additional_action_state: Default::default(),
-        current_action_power: None,
-        is_mercenary_action: false,
-        mercenary_target_area: None,
-        mercenary_return_phase: None,
-        president_start_area: None,
-        port_state: PortState::new(false),
-        lab_state: LabState::new(false),
-        order_deck: Vec::new(),
-        tech_deck: Vec::new(),
-        orders_removed: Vec::new(),
-        church_track: ChurchTrack::new(),
-        customs_track: CustomsTrack::new(),
-        achievements: [
-            AchievementCard::new(AchievementType::Copper5),
-            AchievementCard::new(AchievementType::Money10),
-            AchievementCard::new(AchievementType::Production4),
-        ],
-        mercenary_supply: MercenarySupply::new(),
-        station_location: None,
-        end_game_triggered: false,
-        trigger_reason: None,
-        final_round: false,
-        trigger_player: None,
-        pending_choices: Vec::new(),
-    };
-    s.players[0].president_location = PresidentLocation::OnBoard(AreaId::new(0));
-    s.players[0].assistants.on_board = worst_case_on_board();
-    s
-}
-
-/// RELEASE (`#[ignore]`d) — pay the exhaustive ceiling ONCE to record the gap.
-/// Build the full 4P OnBoard state and materialize `get_legal_moves` (MEASURED on
-/// this fixture: 442,369 moves = 442,368 retreat + 1 route, ~1.02M allocs, ~57.8
-/// MB peak) — the exact cost the factored serve avoids — then re-prove the
-/// serve-one COUNT bound on the same snapshot. `#[ignore]`d for its
-/// recorded-curve character: the ceiling run is a regression-net MEASUREMENT,
-/// not a per-edit correctness property — an equal-cost 442k materialization
-/// already runs per-edit in `action_source_equivalence`'s retreat fixture, so
-/// The constructor builds an over-count VERBATIM — `apply_return_to_hand` is
-/// the sole validator (T3 review F1: the pin restored at the only tier where
-/// the property is OBSERVABLE). In debug the Task-3 over-count `debug_assert`
-/// intercepts before a return value exists, so no debug test can watch the
-/// constructor decline to validate; this release-tier test can, and it runs
-/// under the documented worstcase gate command (`cargo test --release
-/// -p yokohama-core --test action_source_worstcase -- --ignored`), which is
-/// what keeps it from being a test no gate ever runs. Mutation lineage: a
-/// clamping mutation (`count.min(on_board[area])`) was caught by the
+/// RELEASE (`#[ignore]`d) — the constructor builds an over-count VERBATIM;
+/// `apply_return_to_hand` is the sole validator (T3 review F1: the pin restored
+/// at the only tier where the property is OBSERVABLE). In debug the Task-3
+/// over-count `debug_assert` intercepts before a return value exists, so no
+/// debug test can watch the constructor decline to validate; this release-tier
+/// test can, and it runs under the documented worstcase gate command (`cargo
+/// test --release -p yokohama-core --test action_source_worstcase -- --ignored`),
+/// which is what keeps it from being a test no gate ever runs. Mutation lineage:
+/// a clamping mutation (`count.min(on_board[area])`) was caught by the
 /// pre-Task-3 debug pin and is caught again by this assertion.
 #[cfg(not(debug_assertions))]
 #[test]
 #[ignore = "release tier: the debug over-count tripwire makes the verbatim-build property observable only in release (T3 review F1); runs under the documented worstcase gate command"]
 fn retreat_move_builds_an_over_count_verbatim_in_release() {
     // Imported here, not at the top: in a debug build this whole test is
-    // compiled out and top-level imports would be unused.
-    use yokohama_core::{retreat_move, Move};
+    // compiled out and a top-level import would be unused. (`Move` IS at the
+    // top level — bound 3 below uses it in both profiles.)
+    use yokohama_core::retreat_move;
 
     let on_board: BTreeMap<AreaId, u8> = [(AreaId::new(0), 2u8)].into_iter().collect();
     let over = retreat_move(&on_board, &[(AreaId::new(0), 3)]);
@@ -323,12 +237,25 @@ fn retreat_move_builds_an_over_count_verbatim_in_release() {
     }
 }
 
-/// runtime is not the tiering reason.
+/// RELEASE (`#[ignore]`d) — pay the exhaustive ceiling ONCE to record the gap.
+/// Build the full 4P OnBoard state (`route_fixtures::retreat_worst_case_cell`)
+/// and materialize `get_legal_moves` (MEASURED on this fixture: 442,369 moves =
+/// 442,368 retreat + 1 route, ~1.02M allocs, ~57.8 MB peak) — the exact cost the
+/// factored serve avoids — then re-prove the serve-one COUNT bound on the same
+/// snapshot. `#[ignore]`d for its recorded-curve character: the ceiling run is a
+/// regression-net MEASUREMENT, not a per-edit correctness property — an
+/// equal-cost 442k materialization already runs per-edit in
+/// `action_source_equivalence`'s retreat fixture, so runtime is not the tiering
+/// reason.
+///
+/// (The two doc blocks above were spliced into each other before Phase 3.2
+/// Task 5 — this test's tail sentence had attached itself to the over-count test
+/// and vice versa. Rejoined here; no assertion changed.)
 #[test]
 #[ignore = "release gate (CLAUDE.md two-tier policy): a recorded-curve measurement, not a per-edit correctness property — re-pays the 442k exhaustive ceiling (~1.02M allocs) to record the gap the factored serve avoids (an equal-cost materialization already runs per-edit in action_source_equivalence); run with cargo test --release -p yokohama-core --test action_source_worstcase -- --ignored before merges/phase closes"]
 fn exhaustive_ceiling_recorded_and_serve_one_still_bounded() {
     let rules = Rules::standard();
-    let state = worst_case_state();
+    let state = retreat_worst_case_cell(false);
     let on_board = state.players[0].assistants.on_board.clone();
 
     // The retreat family the factored source serves lazily — closed-form product.
@@ -612,5 +539,220 @@ fn route_reference_ceiling_recorded_and_enumeration_bounded() {
         m_reference.allocs,
         m_reference.peak_bytes,
         m_reference.allocs / m_enum.allocs.max(1),
+    );
+}
+
+// ---------------------------------------------------------------------------
+// BOUND 3 — ONE POLICY PICK at the retreat ceiling (Phase 3.2 Task 5; spec
+// §0-R2(b), §8). A THIRD shape again, and it is the one that makes §0-R2's
+// honest reframing executable.
+//
+// R2 dropped "option-count tails bounded" — no measured shape keeps the tails
+// below six figures and the mechanism explains why — and replaced it with a
+// RECORDED tail plus a BOUNDED per-decision COST. Bounds 1 and 2 above bound
+// the two families in isolation; this one bounds what a bot actually does at a
+// whole decision point: build a handle and make ONE pick, at the largest retreat
+// family a real 4P game can present. If that is bounded, the six-figure tail is
+// a counting observation rather than a cost, which is exactly what R2 claims.
+//
+// TWO CELLS, and the second is not a duplicate (T2 review finding 1 → spec §8):
+//
+//   (a) President ON BOARD — the L10 DFS counter covers this shape, so the pick
+//       bound is a second, independent reading of it.
+//   (b) President IN HAND — the routes family emits `PlacePresident` and walks
+//       NOTHING, so the counter is structurally BLIND here while the SAME
+//       442,368-member retreat family is dispatched. Under uniform play 88.6%
+//       of organic Movement points have this shape, so this cell is not a
+//       corner: it is the common case, and this bound is its only cost cover.
+//
+// The two cells' bound SHAPES differ for the same reason the file's other two
+// do. Cell (a) pays a route walk, whose allocations are linear in the labels it
+// returns, so its bound carries a `2·routes_len` term. Cell (b) has no walk at
+// all, so a constant is the honest statement and a labels term would be
+// theatre.
+// ---------------------------------------------------------------------------
+
+/// Cell (a)'s bound: the route walk's `O(labels)` term (bound 2's shape) plus a
+/// constant for the handle, the family `Vec`, and the drawn move's own map.
+fn pick_bound_on_board(routes_len: usize) -> usize {
+    2 * routes_len + 128
+}
+
+/// Cell (b)'s bound: a CONSTANT. No route walk exists at an in-hand Movement
+/// point — `movement_routes_family`'s from-hand arm emits one `PlacePresident`
+/// per eligible area and never searches — so nothing here scales with anything,
+/// and 128 is the same headroom class as cell (a)'s constant term rather than a
+/// separately-tuned number.
+const PICK_BOUND_IN_HAND: usize = 128;
+
+/// The in-hand cell's routes family, stated from the FIXTURE's construction
+/// rather than read back from the code under test: `retreat_worst_case_cell`
+/// puts an own assistant on every one of the 17 areas, no opponent President is
+/// on the board (they are all in hand, `PlayerState::new`'s default) so no area
+/// is blocked and every fee is 0. The from-hand arm therefore emits exactly one
+/// `PlacePresident` per area, in ascending id order.
+fn expected_in_hand_routes() -> Vec<Move> {
+    (0..17u8).map(|i| Move::PlacePresident { destination: AreaId::new(i) }).collect()
+}
+
+/// The retreat family at `state`, with its closed-form size — the anti-vacuity
+/// half both cells share: a bound on a pick that had no exploding family to
+/// avoid would say nothing at all.
+fn assert_retreat_ceiling(state: &GameState, rules: &Rules, label: &str) -> MoveFamily {
+    let retreat = families(state, rules)
+        .into_iter()
+        .find(|f| matches!(f, MoveFamily::MovementRetreat { .. }))
+        .unwrap_or_else(|| panic!("{label}: Movement must dispatch a retreat family"));
+    assert_eq!(
+        family_len(state, rules, &retreat),
+        442_368,
+        "{label}: the pick must be metered at the 3³·2¹⁴ ceiling, not a smaller family",
+    );
+    retreat
+}
+
+/// PER-EDIT (not ignored) — THE PICK BOUND: constructing a `DecisionHandle` and
+/// making ONE `RolloutPolicy::FamilyWeighted` pick at a decision point whose
+/// retreat family has 442,368 members costs a bounded allocation COUNT, at both
+/// President locations.
+///
+/// Anti-vacuity FIRST at both cells (spec §8's standing discipline): the retreat
+/// family really is 442,368 (closed form, no materialization), and the routes
+/// family really is non-empty — pinned on cell (a) against the FROZEN
+/// `enumerate_president_routes` on the same state, and on cell (b) against the
+/// move list the fixture's own construction dictates.
+///
+/// TWO POLICY SETTINGS per cell, so the exploding branch is metered by
+/// construction rather than by luck: `retreat_ppm = 1_000_000` takes the retreat
+/// family with probability 1, and the shipped
+/// [`RolloutPolicy::FAMILY_WEIGHTED_DEFAULT`] is metered beside it. Both are
+/// bounded; the forced one is the reading the claim rests on.
+///
+/// Bytes and wall clock are RECORDED (printed), never asserted — the standing
+/// meter discipline: allocation COUNT is deterministic, the other two are
+/// machine-variable.
+///
+/// MEASURED at HEAD (debug, this Mac):
+///
+/// | cell | routes family | forced-retreat pick | shipped-default pick | bound |
+/// |------|---------------|---------------------|----------------------|-------|
+/// | (a) President on board | 1 walked label | 16 allocs, 601 B peak | 11 allocs, 545 B | 130 |
+/// | (b) President in hand | 17 `PlacePresident` | 15 allocs, 1,720 B peak | 9 allocs, 1,608 B | 128 |
+///
+/// Both cells sit an order of magnitude under their bounds, which is the
+/// headroom the constants buy — they are not tuned to the measurement.
+///
+/// MUTATION-PROVEN 2026-07-26 by routing the metered pick through the exhaustive
+/// generator instead of the handle — `get_legal_moves(&s, &rules)` then taking
+/// its last element, which is a `ReturnPresidentToHand` on both cells, so the
+/// mutation returns the same KIND of move on the same state and only the
+/// measured COUNT moves:
+///
+/// - cell (a): **1,017,597** allocations against a bound of 130 — **7,827×** —
+///   and the assertion FAILED;
+/// - cell (b): **1,017,589** against 128 — **7,949×** — likewise FAILED (measured
+///   with cell (a) reverted, since (a)'s assertion fires first).
+///
+/// Both reverted by inverse edit (L7). That gap is the whole of §0-R2(b) in one
+/// number: the tail is six figures and the cost of one decision is not.
+#[test]
+fn family_weighted_pick_at_the_retreat_ceiling_is_bounded_allocation_count() {
+    let rules = Rules::standard();
+    let forced = RolloutPolicy::FamilyWeighted { retreat_ppm: 1_000_000, recovery_min_of: 5 };
+
+    // ---- cell (a): President ON BOARD ----
+    let on_board = retreat_worst_case_cell(false);
+    assert_retreat_ceiling(&on_board, &rules, "cell (a) on board");
+    let routes_len = family_len(&on_board, &rules, &MoveFamily::MovementRoutes);
+    assert_eq!(
+        routes_len,
+        reference_label_count(&on_board, &rules, "cell (a) on board"),
+        "cell (a): the routes family must be the frozen reference's enumeration",
+    );
+    assert!(routes_len >= 1, "cell (a): anti-vacuity — the routes family must be non-empty");
+    let bound_a = pick_bound_on_board(routes_len);
+
+    let mut rng = ChaCha8Rng::seed_from_u64(20_260_726);
+    let (forced_a, m_forced_a) = meter::measure(|| {
+        let handle = DecisionHandle::new(&on_board, &rules);
+        forced.pick(&handle, &mut rng)
+    });
+    assert!(
+        matches!(forced_a, Some(Move::ReturnPresidentToHand { .. })),
+        "cell (a): retreat_ppm = 1_000_000 must take the retreat family, got {forced_a:?}",
+    );
+    assert!(
+        m_forced_a.allocs <= bound_a,
+        "cell (a): a forced-retreat pick allocated {} (> {bound_a} = 2·{routes_len} + 128) — a pick \
+         that scales with the 442,368 product",
+        m_forced_a.allocs,
+    );
+
+    let (default_a, m_default_a) = meter::measure(|| {
+        let handle = DecisionHandle::new(&on_board, &rules);
+        RolloutPolicy::FAMILY_WEIGHTED_DEFAULT.pick(&handle, &mut rng)
+    });
+    assert!(default_a.is_some(), "cell (a): a Movement point always yields a move");
+    assert!(
+        m_default_a.allocs <= bound_a,
+        "cell (a): a shipped-default pick allocated {} (> {bound_a})",
+        m_default_a.allocs,
+    );
+
+    // ---- cell (b): President IN HAND (the counter-blind shape) ----
+    let in_hand = retreat_worst_case_cell(true);
+    assert_retreat_ceiling(&in_hand, &rules, "cell (b) in hand");
+    let in_hand_routes: Vec<Move> =
+        iter_family(&in_hand, &rules, &MoveFamily::MovementRoutes).collect();
+    assert_eq!(
+        in_hand_routes,
+        expected_in_hand_routes(),
+        "cell (b): the from-hand arm must emit one PlacePresident per own-assistant area",
+    );
+
+    let (forced_b, m_forced_b) = meter::measure(|| {
+        let handle = DecisionHandle::new(&in_hand, &rules);
+        forced.pick(&handle, &mut rng)
+    });
+    assert!(
+        matches!(forced_b, Some(Move::ReturnPresidentToHand { .. })),
+        "cell (b): retreat_ppm = 1_000_000 must take the retreat family, got {forced_b:?}",
+    );
+    assert!(
+        m_forced_b.allocs <= PICK_BOUND_IN_HAND,
+        "cell (b): a forced-retreat pick allocated {} (> {PICK_BOUND_IN_HAND}) at an in-hand \
+         Movement point, where the L10 counter is blind and this bound is the only cost cover",
+        m_forced_b.allocs,
+    );
+
+    let (default_b, m_default_b) = meter::measure(|| {
+        let handle = DecisionHandle::new(&in_hand, &rules);
+        RolloutPolicy::FAMILY_WEIGHTED_DEFAULT.pick(&handle, &mut rng)
+    });
+    assert!(default_b.is_some(), "cell (b): a Movement point always yields a move");
+    assert!(
+        m_default_b.allocs <= PICK_BOUND_IN_HAND,
+        "cell (b): a shipped-default pick allocated {} (> {PICK_BOUND_IN_HAND})",
+        m_default_b.allocs,
+    );
+
+    println!(
+        "ONE-PICK BOUND at the 442,368-member retreat family (handle construction + one pick):\n  \
+         cell (a) President ON BOARD, {routes_len} route label(s), bound {bound_a} = 2·labels + 128\n    \
+           forced-retreat:  {} allocs, {} peak outstanding bytes\n    \
+           shipped default: {} allocs, {} peak outstanding bytes\n  \
+         cell (b) President IN HAND, {} PlacePresident moves, no route walk, bound {PICK_BOUND_IN_HAND}\n    \
+           forced-retreat:  {} allocs, {} peak outstanding bytes\n    \
+           shipped default: {} allocs, {} peak outstanding bytes\n  \
+         Bytes are RECORDED, never asserted.",
+        m_forced_a.allocs,
+        m_forced_a.peak_bytes,
+        m_default_a.allocs,
+        m_default_a.peak_bytes,
+        in_hand_routes.len(),
+        m_forced_b.allocs,
+        m_forced_b.peak_bytes,
+        m_default_b.allocs,
+        m_default_b.peak_bytes,
     );
 }

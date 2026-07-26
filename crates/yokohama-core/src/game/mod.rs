@@ -26,6 +26,7 @@ mod route_enum;
 mod move_legality;
 mod seeds;
 mod metrics;
+mod policy;
 pub mod actions;
 
 pub use power::*;
@@ -53,3 +54,4 @@ pub use route_enum::*;
 pub use move_legality::*;
 pub use seeds::*;
 pub use metrics::*;
+pub use policy::*;

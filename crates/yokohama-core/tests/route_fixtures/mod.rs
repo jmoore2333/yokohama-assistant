@@ -22,8 +22,14 @@
 //! Every claim ABOUT a fixture — label floors, allocation bounds, ordered
 //! comparisons against the frozen reference — stays in the consuming binary,
 //! because those claims are what each gate owns and they differ per file. The
-//! consumers' own single-use helpers (`state_with_areas`, `worst_case_state`,
-//! `routes_diamond`, …) stay where they are.
+//! consumers' own single-use helpers (`state_with_areas`, `routes_diamond`, …)
+//! stay where they are.
+//!
+//! The retreat worst case below arrived here the moment it acquired a second
+//! consumer: Phase 3.2 Task 5's pick bound meters a policy draw at the same
+//! 442,368-member family `action_source_worstcase.rs`'s serve-one bound already
+//! owned, and it needs BOTH President locations of it (T3 review F2). Until then
+//! it was a single-use helper in that binary and this doc listed it as one.
 //!
 //! The dense cell's SHAPE originates in
 //! `yokohama-difftest/tests/routes3_worstcase.rs` — the harness whose battery
@@ -33,7 +39,14 @@
 //! deliberate and stays; what Task 3 removed is the re-build's re-re-builds
 //! WITHIN this crate.
 //!
-//! ## The two cells and when to reach for which
+//! ## The three cells and when to reach for which
+//!
+//! The first two are ROUTE cells (a rich `MovementRoutes` family, a starved
+//! retreat one); the third is their mirror image — a route-starved board whose
+//! RETREAT family is the six-figure product. A test that wants both families
+//! large at once has no cell here, because no such claim is made anywhere: the
+//! two costs are bounded by two differently-shaped bounds, and the fixtures
+//! follow the bounds.
 //!
 //! - [`dense_17_area_cell`] — the EXPENSIVE one: the real 4P staggered pyramid
 //!   with an interior Canal, 17 own-assistant areas and saturating money. It is
@@ -49,6 +62,12 @@
 //!   bound already uses it; a future per-edit consumer (e.g. a policy or arena
 //!   test wanting a real routes family under the debug profile) should prefer it
 //!   over paying the dense cell's seconds for a floor this cell clears.
+//! - [`retreat_worst_case_cell`] — the RETREAT ceiling: 17 areas, almost no
+//!   adjacency, and an `on_board` distribution whose `∏(count+1)` is 442,368.
+//!   Route-starved BY DESIGN so the exhaustive ceiling it records is dominated
+//!   by the retreat product rather than by a route walk. Cheap to CONSTRUCT in
+//!   either profile; what is expensive is materializing its legal list, which
+//!   is the point.
 //!
 //! Label counts quoted anywhere in this module are OBSERVATIONS under the
 //! harnesses that recorded them, NEVER ceilings (spec F5/L9: the route-label
@@ -302,5 +321,67 @@ pub fn small_movement_cell() -> GameState {
         s.players[i + 1].president_location = PresidentLocation::OnBoard(AreaId::new(opp));
     }
     s.players[0].money = 10;
+    s
+}
+
+// ---------------------------------------------------------------------------
+// The retreat worst case (both President locations)
+// ---------------------------------------------------------------------------
+
+/// The 4P retreat worst-case `on_board` distribution: three areas at count 2
+/// (ids 0,1,2) and fourteen at count 1 (ids 3..17) — product `3³ · 2¹⁴ =
+/// 442,368`, the six-figure family the factored source exists to serve without
+/// materializing.
+///
+/// Exposed beside the two state constructors because the serve-one bound meters
+/// the MAP alone (no `GameState` needed to page a retreat family) while the pick
+/// bound meters a policy draw at a whole decision point — one distribution, two
+/// shapes of consumer, and the 442,368 must be the same 442,368 in both.
+pub fn retreat_worst_case_on_board() -> BTreeMap<AreaId, u8> {
+    let mut m = BTreeMap::new();
+    for a in 0..3u8 {
+        m.insert(AreaId::new(a), 2);
+    }
+    for a in 3..17u8 {
+        m.insert(AreaId::new(a), 1);
+    }
+    m
+}
+
+/// The 4P retreat worst-case Movement `GameState`, in EITHER President location:
+/// 17 placement-allowing areas (ids 0..17), own assistants at
+/// [`retreat_worst_case_on_board`], the three opponents' Presidents in hand
+/// (`PlayerState::new`'s default, so no area is blocked and none charges a fee).
+/// `get_legal_moves` here materializes the 442,368-move retreat block plus a
+/// handful of President moves.
+///
+/// **The `in_hand` flag changes the ROUTES family and nothing else** — the
+/// retreat product is 442,368 either way, which is what makes the pair a
+/// controlled comparison rather than two fixtures:
+///
+/// - `false` — President ON BOARD at area 0. One free edge (0~1) leaves exactly
+///   one walked `MovePresident` route, so the exhaustive ceiling this cell
+///   records is dominated by the retreat product it exists to avoid, not by an
+///   own-assistant-dense route explosion. Measured legal list: 442,369.
+/// - `true` — President IN HAND. The routes family becomes
+///   `movement_routes_family`'s `PlacePresident` arm, which walks NOTHING: every
+///   area holding an own assistant and affording the fee is emitted directly.
+///   This is the cell the L10 DFS counter is structurally blind at (spec §8, T2
+///   review finding 1) — zero route DFSes fire, so only an allocation bound can
+///   cover the exploding retreat family that is still dispatched there, and
+///   under uniform play 88.6% of organic Movement points have this shape.
+///
+/// Type-valid via the public constructors, NOT setup-valid — both
+/// `get_legal_moves` and the factored source are total over it, exactly like
+/// [`dense_17_area_cell`] and the equivalence binary's `state_with_areas`.
+pub fn retreat_worst_case_cell(in_hand: bool) -> GameState {
+    let mut s = base_movement_state(4, 17);
+    connect(&mut s, 0, 1, false);
+    s.players[0].president_location = if in_hand {
+        PresidentLocation::InHand
+    } else {
+        PresidentLocation::OnBoard(AreaId::new(0))
+    };
+    s.players[0].assistants.on_board = retreat_worst_case_on_board();
     s
 }
