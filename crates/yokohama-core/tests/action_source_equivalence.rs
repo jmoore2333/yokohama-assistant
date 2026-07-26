@@ -42,6 +42,16 @@
 //! within-payload reorder in the factored source surfaces as a divergence here
 //! rather than being normalized away.
 //!
+//! TWO ADVANCE ARMS (Phase 3.2 Task 11, spec §10.2). Both tiers run the same
+//! per-decision checks twice over the same seeds, once walking uniformly over
+//! the legal list and once under the shipped `FAMILY_WEIGHTED_DEFAULT` rung
+//! drawn over the factored surface (see [`Advance`]). This is a coverage
+//! extension, not a swap: every figure this file recorded before 3.2 came from
+//! uniform-walked states, and the weighted arm reaches a measurably different
+//! part of the space — a 3,231 largest legal list under uniform play against
+//! 165,936 under weighted play at the release sizes. Neither distribution
+//! subsumes the other, so neither arm is dropped.
+//!
 //! TWO TIERS (CLAUDE.md two-tier policy):
 //! - PER-EDIT (not ignored): the driven-game union+order check at seeds 0..5 ×
 //!   2/3/4P (capped), plus the constructed adversarial fixtures — the retreat
@@ -74,9 +84,10 @@ use rand::Rng;
 use yokohama_core::{
     apply_move_unchecked, can_teleport_to_station_with_tech, enumerate_routes, families, family_len,
     fits_fixed_arrays, get_legal_moves, is_game_over, iter_family, AchievementCard, AchievementType,
-    AreaConfig, AreaId, AreaType, BoardLayout, ChurchTrack, CustomsTrack, GameConfig, GameState,
-    LabState, MercenarySupply, Move, MoveFamily, OrderCardId, PlayerColor, PlayerId, PlayerState,
-    PortState, PresidentLocation, Rules, TechCardId, TechEffect, TurnPhase,
+    AreaConfig, AreaId, AreaType, BoardLayout, ChurchTrack, CustomsTrack, DecisionHandle,
+    GameConfig, GameState, LabState, MercenarySupply, Move, MoveFamily, OrderCardId, PlayerColor,
+    PlayerId, PlayerState, PortState, PresidentLocation, RolloutPolicy, Rules, TechCardId,
+    TechEffect, TurnPhase,
 };
 
 // ---------------------------------------------------------------------------
@@ -162,6 +173,50 @@ fn routes_partition(moves: &[Move]) -> Vec<Move> {
 // Driven-game union sweep (shared by both tiers).
 // ---------------------------------------------------------------------------
 
+/// How a sweep ADVANCES from one decision point to the next. The per-decision
+/// equivalence check is identical either way — what changes is the distribution
+/// of states it gets applied to.
+///
+/// Phase 3.2 §10.2 adds the second arm. Every figure this file has ever recorded
+/// came from states a uniform-random walk reached (the L11 register calls them
+/// "L11's uniform states"), and the shipped arena does not walk that way: the
+/// weighted rung retreats at a Movement point with probability 1/6 and shapes
+/// the recovery vector toward recovering little, which reaches boards with a
+/// different assistant density — and assistant density is what drives both the
+/// retreat product and the route-label count. Both tiers run BOTH arms, because
+/// neither distribution subsumes the other and the uniform arm is the regression
+/// net every earlier phase's figures were measured against.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Advance {
+    /// Uniform over the materialized legal list — the arm this sweep has run
+    /// since 3.1a.
+    UniformList,
+    /// [`RolloutPolicy::FAMILY_WEIGHTED_DEFAULT`] drawn over a
+    /// [`DecisionHandle`] — the shipped arena's own draw, over the factored
+    /// surface rather than the list.
+    WeightedFactored,
+}
+
+impl Advance {
+    fn label(self) -> &'static str {
+        match self {
+            Self::UniformList => "uniform-list",
+            Self::WeightedFactored => "weighted-factored",
+        }
+    }
+
+    /// This arm's materialize tripwire. Per-arm on purpose: the two arms' option
+    /// counts differ by ~51× at the top (see the two constants), and one shared
+    /// number would either keep tripping on the weighted arm or silently stop
+    /// guarding the uniform one.
+    fn materialize_cap(self) -> usize {
+        match self {
+            Self::UniformList => UNION_MATERIALIZE_CAP,
+            Self::WeightedFactored => WEIGHTED_UNION_MATERIALIZE_CAP,
+        }
+    }
+}
+
 /// Outcome of a sweep, for the caller's anti-vacuity assertions.
 struct SweepStats {
     /// Total decision points visited — every one takes the strong
@@ -178,6 +233,11 @@ struct SweepStats {
     /// points, so `routes_points > 0` alone would not prove the compare saw any
     /// move at all.
     routes_moves: usize,
+    /// Largest exhaustive legal list seen. RECORDED, never asserted against —
+    /// it is the evidence behind the arm's materialize cap and the margin left
+    /// under it, printed by the release tier so every gate run re-states the
+    /// observation (spec §0-R2's "tails are RECORDED" discipline).
+    max_legal: usize,
 }
 
 /// Tripwire ceiling on materializing the union for the strong string-multiset
@@ -188,6 +248,31 @@ struct SweepStats {
 /// rather than branching to a weaker check — a state that trips it demands a
 /// deliberate decision, not a silent downgrade.
 const UNION_MATERIALIZE_CAP: usize = 50_000;
+
+/// The same tripwire for the WEIGHTED advance arm, which reaches a different
+/// part of the state space and needs its own number (3.2 Task 11).
+///
+/// MEASURED, and the contrast is the finding: over seeds 0..20 × 2/3/4P at an
+/// 8,000-step cap in release, the uniform arm's largest legal list across
+/// 380,962 decision points was **3,231** — the placement ceiling, never a
+/// retreat product — while the weighted arm's was **165,936** across 70,955
+/// points, with 20 points above 50,000. Both are OBSERVATIONS under those
+/// stated conditions (`FAMILY_WEIGHTED_DEFAULT`, i.e. retreat_ppm 166_667 /
+/// recovery_min_of 5), never ceilings: no bound on option count is claimed or
+/// known (spec §0-R2, ledger L9).
+///
+/// That gap is spec §0-R2's mechanism seen from inside this harness. Uniform
+/// play volunteers retreats constantly, so assistants keep leaving the board and
+/// the retreat product ∏(count+1) never grows; the weighted rung retreats at
+/// p=1/6 and recovers little when it does, so density accumulates. The in-repo
+/// 165,936 independently corroborates E1's held-out 186,634 for the same shape
+/// on a different master — two harnesses, same order of magnitude.
+///
+/// Sized at ~1.34× the larger of those two observations. It stays well under the
+/// 442,384 the research notes record as reachable, so a real density explosion
+/// still trips it; and it is deterministic (fixed seeds), so a trip is never a
+/// flake — it is the deliberate decision the cap exists to demand.
+const WEIGHTED_UNION_MATERIALIZE_CAP: usize = 250_000;
 
 /// Drive uniform-random games (via the shared `common` seeded driver) and, at
 /// every decision point, assert `⋃_family iter_family(state, family)` equals
@@ -203,8 +288,14 @@ const UNION_MATERIALIZE_CAP: usize = 50_000;
 /// `get_legal_moves`' own emission order. The second subsumes the first, but the
 /// first is what names the routes family when it breaks, and it is the only one
 /// whose anti-vacuity counters prove Movement was reached at all.
-fn run_union_sweep(rules: &Rules, seeds: std::ops::Range<u64>, cap: usize) -> SweepStats {
-    let mut stats = SweepStats { decision_points: 0, routes_points: 0, routes_moves: 0 };
+fn run_union_sweep(
+    rules: &Rules,
+    seeds: std::ops::Range<u64>,
+    cap: usize,
+    advance: Advance,
+) -> SweepStats {
+    let mut stats =
+        SweepStats { decision_points: 0, routes_points: 0, routes_moves: 0, max_legal: 0 };
 
     for players in [2u8, 3, 4] {
         for seed in seeds.clone() {
@@ -223,11 +314,14 @@ fn run_union_sweep(rules: &Rules, seeds: std::ops::Range<u64>, cap: usize) -> Sw
                 // Tripwire, not a branch: an organic state past the cap fails
                 // loudly instead of silently downgrading to a weaker check.
                 assert!(
-                    legal.len() <= UNION_MATERIALIZE_CAP,
-                    "exhaustive list {} exceeds the materialize cap at {:?} ({players}p seed {seed}) — investigate before raising the cap",
+                    legal.len() <= advance.materialize_cap(),
+                    "exhaustive list {} exceeds the {} materialize cap {} at {:?} ({players}p seed {seed}) — investigate before raising the cap",
                     legal.len(),
+                    advance.label(),
+                    advance.materialize_cap(),
                     state.turn_phase,
                 );
+                stats.max_legal = stats.max_legal.max(legal.len());
 
                 // Strong check: materialize each family, pin its `family_len`
                 // contract and (for routes) its order, then assert the
@@ -285,7 +379,48 @@ fn run_union_sweep(rules: &Rules, seeds: std::ops::Range<u64>, cap: usize) -> Sw
                 }
 
                 stats.decision_points += 1;
-                let mv = legal[rng.gen_range(0..legal.len())].clone();
+                let mv = match advance {
+                    Advance::UniformList => legal[rng.gen_range(0..legal.len())].clone(),
+                    Advance::WeightedFactored => {
+                        // A second handle over the same state: this one advances
+                        // the walk, the checks above did the comparing. The
+                        // enumerate-once property is per HANDLE, and paying a
+                        // second route DFS here is the cost of driving the sweep
+                        // the way the arena drives a game.
+                        let handle = DecisionHandle::new(&state, rules);
+                        match RolloutPolicy::FAMILY_WEIGHTED_DEFAULT.pick(&handle, &mut rng) {
+                            Some(mv) => {
+                                // The union check above already proves every
+                                // factored move is a legal one; this catches a
+                                // mis-wired ADVANCE — a pick served from a
+                                // handle over the WRONG state — before
+                                // `apply_move_unchecked` runs it anyway. Only
+                                // this arm can have that bug: the uniform arm
+                                // draws from `legal` itself, so the same
+                                // assertion there would be a tautology costing
+                                // O(|legal|) per step. Debug tier.
+                                debug_assert!(
+                                    legal.contains(&mv),
+                                    "the weighted advance drew a move outside get_legal_moves at {:?}: {mv:?}",
+                                    state.turn_phase,
+                                );
+                                mv
+                            }
+                            // Structurally unreachable while `legal` is
+                            // non-empty (checked above) and the union equals it
+                            // (just asserted), so this is a tripwire, not a
+                            // branch: reaching it means the two disagree about
+                            // whether a move exists at all.
+                            None => panic!(
+                                "the weighted pick found no move at {:?} ({players}p seed {seed} \
+                                 turn {}) while get_legal_moves offered {}",
+                                state.turn_phase,
+                                state.turn_number,
+                                legal.len(),
+                            ),
+                        }
+                    }
+                };
                 state = apply_move_unchecked(&state, &mv, rules).expect("apply drawn move");
             }
         }
@@ -298,19 +433,39 @@ fn run_union_sweep(rules: &Rules, seeds: std::ops::Range<u64>, cap: usize) -> Sw
 /// reproduces `get_legal_moves` exactly as a multiset AND in order, and every
 /// `family_len` holds. Organic play never explodes a family past the cap, so
 /// every decision point takes both strong checks.
+///
+/// Run under BOTH advance arms (see [`Advance`]) at the same seeds, so the
+/// property is checked over uniform-walked states AND over the states the
+/// shipped weighted rung reaches. Each arm carries its own floors: a green run
+/// means both distributions were swept, not that their totals added up.
 #[test]
 fn factored_union_equals_get_legal_moves_across_driven_games() {
     let rules = Rules::standard();
-    // Cap tuned for a snappy per-edit gate: 800 steps × 5 seeds × 3 player
-    // counts still reaches every phase and thousands of decision points; the
-    // release sweep below is the deep distributional net.
-    let stats = run_union_sweep(&rules, 0..5, 800);
+    for advance in [Advance::UniformList, Advance::WeightedFactored] {
+        // Cap tuned for a snappy per-edit gate: 800 steps × 5 seeds × 3 player
+        // counts still reaches every phase and thousands of decision points; the
+        // release sweep below is the deep distributional net.
+        let stats = run_union_sweep(&rules, 0..5, 800, advance);
 
-    assert!(stats.decision_points > 500, "expected many decision points, saw {}", stats.decision_points);
-    // Anti-vacuity for the ordered compare: it must have RUN on the routes
-    // family, and that family must have served real moves.
-    assert!(stats.routes_points > 50, "expected many Movement points, saw {}", stats.routes_points);
-    assert!(stats.routes_moves > 100, "routes families served {} moves — too few to order-check", stats.routes_moves);
+        let arm = advance.label();
+        assert!(
+            stats.decision_points > 500,
+            "{arm}: expected many decision points, saw {}",
+            stats.decision_points,
+        );
+        // Anti-vacuity for the ordered compare: it must have RUN on the routes
+        // family, and that family must have served real moves.
+        assert!(
+            stats.routes_points > 50,
+            "{arm}: expected many Movement points, saw {}",
+            stats.routes_points,
+        );
+        assert!(
+            stats.routes_moves > 100,
+            "{arm}: routes families served {} moves — too few to order-check",
+            stats.routes_moves,
+        );
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -876,16 +1031,37 @@ fn an_oversized_board_delegates_and_still_serves_the_partition() {
 #[ignore = "release gate (CLAUDE.md two-tier policy): union+order equivalence sweep at seeds 0..20 x 2/3/4P deep into each game; run with cargo test --release -p yokohama-core --test action_source_equivalence -- --ignored before merges/phase closes"]
 fn release_union_sweep_seeds_0_20() {
     let rules = Rules::standard();
-    let stats = run_union_sweep(&rules, 0..20, 8000);
+    for advance in [Advance::UniformList, Advance::WeightedFactored] {
+        let stats = run_union_sweep(&rules, 0..20, 8000, advance);
 
-    assert!(stats.decision_points > 5000, "expected a large sweep, saw {}", stats.decision_points);
-    assert!(stats.routes_points > 500, "expected many Movement points, saw {}", stats.routes_points);
-    assert!(stats.routes_moves > 1000, "routes families served only {} moves", stats.routes_moves);
-    println!(
-        "release union sweep: {} decision points, all multiset- AND order-checked against \
-         get_legal_moves; {} of them dispatched a MovementRoutes family, serving {} route moves",
-        stats.decision_points, stats.routes_points, stats.routes_moves,
-    );
+        let arm = advance.label();
+        assert!(
+            stats.decision_points > 5000,
+            "{arm}: expected a large sweep, saw {}",
+            stats.decision_points,
+        );
+        assert!(
+            stats.routes_points > 500,
+            "{arm}: expected many Movement points, saw {}",
+            stats.routes_points,
+        );
+        assert!(
+            stats.routes_moves > 1000,
+            "{arm}: routes families served only {} moves",
+            stats.routes_moves,
+        );
+        println!(
+            "release union sweep [{arm} advance]: {} decision points, all multiset- AND \
+             order-checked against get_legal_moves; {} of them dispatched a MovementRoutes family, \
+             serving {} route moves; largest legal list OBSERVED {} (cap {}, an observation and \
+             not a ceiling)",
+            stats.decision_points,
+            stats.routes_points,
+            stats.routes_moves,
+            stats.max_legal,
+            advance.materialize_cap(),
+        );
+    }
 }
 
 // ---------------------------------------------------------------------------

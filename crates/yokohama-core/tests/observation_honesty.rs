@@ -27,8 +27,9 @@ use rand::SeedableRng;
 use rand_chacha::ChaCha8Rng;
 use yokohama_core::{
     apply_move_unchecked, check_invariants, finalize_setup, get_legal_moves, is_game_over, new_game,
-    observe, run_honest_game, view_digest, AgentPathTally, BeliefSampler, GameConfig, GameState,
-    PlayerId, Rules, StartingOrderChoice, TrivialHonestAgent,
+    observe, run_honest_game, view_digest, AgentPathTally, BeliefSampler, DecisionHandle,
+    FamilySize, GameConfig, GameState, Move, MoveFamily, PlayerId, Rules, StartingOrderChoice,
+    TrivialHonestAgent,
 };
 
 // Cross-pin (Task 6 carry-forward): the engine's honest-driver turn cap
@@ -398,6 +399,278 @@ fn trivial_honest_agents_complete_full_games_release_sweep() {
         "these games are all Keep-shaped, where the sampled and true legal lists coincide (F5); \
          a nonzero fallback ({fallback}) means the sampler arm was skipped -- an F5 regression \
          surfacing through the agent path"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// T4, extended to the FACTORED surface (Phase 3.2 Task 11; spec §10.3, §4).
+//
+// The T4 assertions above measure `get_legal_moves` — the exhaustive list. The
+// arena's weighted draw never calls it. What that draw actually reads is the
+// factored surface: which family TAGS `families()` emits, each family's SIZE
+// (the two exact sizes at a Movement point ARE the weights), and the moves each
+// family serves. Spec §4 states the property the draw needs as PER-FAMILY
+// INVARIANCE — identical tags and identical sizes across every world consistent
+// with the seat's view — and says in terms that it is strictly stronger than
+// union-set equality: a factored source that split the same union differently
+// across two consistent worlds would pass every assertion above while making
+// the retreat-vs-routes weight a function of hidden state.
+//
+// `placement_upper_len` is the concrete gap this closes. Nothing in the honesty
+// suites read it before: the union check cannot, because Placement's size is an
+// UPPER BOUND that deliberately over-counts the realized moves wherever a fee
+// gate punches a hole. It is a real input to the volume metric and to any
+// size-weighted draw, so it needs its own invariance evidence.
+//
+// WHY A DEDICATED WALK rather than more assertions inside `run_honesty_sweep`:
+// this check materializes EVERY family at EVERY compared state (~9 surfaces per
+// sampled point), which is a different cost class from the sweep's one
+// `get_legal_moves`. Folding it in would tax both existing tiers for a property
+// that is per-edit by design (spec §12). It reuses the sweep's machinery where
+// the machinery is the point — `keep_game`, `hidden_variants` (all five hidden
+// members, viewer-relative) and `BeliefSampler` determinization — and only the
+// walk is its own.
+// ---------------------------------------------------------------------------
+
+/// 2P and 4P: the two counts that bracket the surface. 4P has the densest
+/// boards (more assistants on board, so the biggest retreat products) and 2P the
+/// largest boxed pile, which is where the hidden set is largest.
+const FACTORED_COUNTS: [u8; 2] = [2, 4];
+const FACTORED_SEEDS: [u64; 2] = [0, 1];
+const FACTORED_MAX_STEPS: usize = 240;
+/// Every 3rd decision point. The walk itself is uniform-random, so the sampled
+/// points are spread across phases without paying nine surfaces at every step.
+const FACTORED_SAMPLE_EVERY: usize = 3;
+/// Tripwire, not a branch (the `action_source_equivalence.rs` precedent): a
+/// state whose factored volume exceeds this fails loudly rather than silently
+/// downgrading to a weaker comparison. Organic play stays far below it.
+const FACTORED_VOLUME_CAP: u64 = 50_000;
+
+/// The factored action surface at one decision point — everything the arena's
+/// draw reads, captured for comparison.
+#[derive(Debug)]
+struct FactoredSurface {
+    /// `families()`' tags in ITS order. The retreat tag carries its `on_board`
+    /// payload, so comparing tags compares that map too.
+    families: Vec<MoveFamily>,
+    /// `DecisionHandle::size` per family — the value AND its exactness, which is
+    /// what makes `placement_upper_len` a compared quantity.
+    sizes: Vec<FamilySize>,
+    /// The moves each family serves, in `iter`'s order.
+    moves: Vec<Vec<Move>>,
+}
+
+fn factored_surface(state: &GameState, rules: &Rules) -> FactoredSurface {
+    let handle = DecisionHandle::new(state, rules);
+    let families: Vec<MoveFamily> = handle.families().to_vec();
+    let sizes: Vec<FamilySize> = families.iter().map(|f| handle.size(f)).collect();
+    let (volume, _) = handle.volume();
+    assert!(
+        volume <= FACTORED_VOLUME_CAP,
+        "factored volume {volume} at {:?} exceeds the materialize cap {FACTORED_VOLUME_CAP} — \
+         investigate before raising it",
+        handle.turn_phase(),
+    );
+    let moves: Vec<Vec<Move>> = families.iter().map(|f| handle.iter(f).collect()).collect();
+    FactoredSurface { families, sizes, moves }
+}
+
+/// Assert two surfaces are the same surface, naming WHICH of the three layers
+/// moved. Move lists are compared element for element, which is strictly
+/// stronger than the multiset equality the property needs — every one of these
+/// generators is a pure function of the state, so a reordering across two
+/// consistent worlds would be a real defect too, and an ordered compare reports
+/// the first differing index instead of a count.
+fn assert_same_surface(got: &FactoredSurface, want: &FactoredSurface, ctx: &str) {
+    assert_eq!(
+        got.families, want.families,
+        "{ctx}: hidden state moved the family TAGS ({:?} vs {:?})",
+        got.families, want.families,
+    );
+    for (i, (g, w)) in got.sizes.iter().zip(&want.sizes).enumerate() {
+        assert_eq!(
+            g, w,
+            "{ctx}: hidden state moved the size of {:?} ({g:?} vs {w:?})",
+            want.families[i],
+        );
+    }
+    for (i, (g, w)) in got.moves.iter().zip(&want.moves).enumerate() {
+        assert_eq!(
+            g.len(),
+            w.len(),
+            "{ctx}: {:?} served {} moves, not {}",
+            want.families[i],
+            g.len(),
+            w.len(),
+        );
+        if let Some(at) = g.iter().zip(w).position(|(a, b)| a != b) {
+            panic!(
+                "{ctx}: {:?} served a different move at index {at} of {}:\n  variant: {:?}\n  truth:   {:?}",
+                want.families[i],
+                g.len(),
+                g[at],
+                w[at],
+            );
+        }
+    }
+}
+
+#[derive(Default)]
+struct FactoredTally {
+    effective: HashMap<&'static str, usize>,
+    points: usize,
+    comparisons: usize,
+    deck_differing: usize,
+    /// Points at which some family reported an `UpperBound` size — i.e. points
+    /// where `placement_upper_len` was one of the compared quantities.
+    upper_bound_points: usize,
+    /// Points with more than one family: the Movement shape, where the two exact
+    /// sizes ARE the weighted draw's weights.
+    multi_family_points: usize,
+    moves_compared: usize,
+}
+
+/// Spec §4's per-family-invariance requirement, executable (§10.3): across every
+/// hidden variant and every sampled world consistent with a seat's view, the
+/// factored surface is IDENTICAL — same family tags, same `FamilySize` values
+/// (exactness included, so `placement_upper_len` is covered), same served moves
+/// in the same order.
+///
+/// This is half the evidence for that requirement; `observation_leakage.rs`'s
+/// `family_weighted_weight_vector_is_invariant_under_hidden_variation` is the
+/// other half, aimed at the two Movement sizes specifically.
+///
+/// MUTATION-PROVEN (run at authoring, reverted by inverse edit). Adding the
+/// hidden deck's TOP CARD to every exact size in `factored_surface` —
+/// `FamilySize::Exact(n + state.order_deck.first().map_or(0, |c| c.0) as u64)` —
+/// fails at the FIRST sampled point:
+///
+/// > hidden variant deck_reshuffle (2P seed 0 step 0): hidden state moved the
+/// > size of AdditionalAction (Exact(18) vs Exact(32))
+///
+/// while `observation_honesty_per_edit` stayed GREEN in the same run — which is
+/// precisely the coverage gap this test closes.
+///
+/// The first attempt at that mutation used the deck's LENGTH and this test
+/// passed, correctly: deck length is PUBLIC (`PlayerView::order_deck_len`), every
+/// variant family preserves it by construction, and the sampler conserves it. A
+/// mutation has to read hidden CONTENT to be a leak at all — worth recording,
+/// because a reviewer re-running the proof with the obvious `.len()` would
+/// otherwise read the green as a vacuous test rather than as the boundary
+/// working.
+#[test]
+fn families_iter_and_len_are_invariant_across_hidden_variants_and_sampled_worlds() {
+    let rules = Rules::standard();
+    let mut tally = FactoredTally {
+        effective: FAMILIES.iter().map(|f| (*f, 0usize)).collect(),
+        ..Default::default()
+    };
+
+    for &players in &FACTORED_COUNTS {
+        for &seed in &FACTORED_SEEDS {
+            let mut state = keep_game(players, seed, &rules);
+            let mut rng = ChaCha8Rng::seed_from_u64(seed ^ 0xF00D);
+            let mut step = 0usize;
+
+            while !is_game_over(&state) && step < FACTORED_MAX_STEPS {
+                let legal = get_legal_moves(&state, &rules);
+                assert!(!legal.is_empty(), "dead end at {players}P seed {seed} step {step}");
+
+                if step.is_multiple_of(FACTORED_SAMPLE_EVERY) {
+                    let seat = state.current_player;
+                    let view = observe(&state, seat).unwrap();
+                    let base = factored_surface(&state, &rules);
+
+                    tally.points += 1;
+                    if base.sizes.iter().any(|s| matches!(s, FamilySize::UpperBound(_))) {
+                        tally.upper_bound_points += 1;
+                    }
+                    if base.families.len() > 1 {
+                        tally.multi_family_points += 1;
+                    }
+                    tally.moves_compared += base.moves.iter().map(Vec::len).sum::<usize>();
+
+                    // Hidden VARIANTS: states the seat could not rule out.
+                    for (family, variant) in hidden_variants(&state, seat, &mut rng) {
+                        if variant != state {
+                            *tally.effective.get_mut(family).unwrap() += 1;
+                        }
+                        assert_same_surface(
+                            &factored_surface(&variant, &rules),
+                            &base,
+                            &format!("hidden variant {family} ({players}P seed {seed} step {step})"),
+                        );
+                        tally.comparisons += 1;
+                    }
+
+                    // Sampled WORLDS: the determinizations the arena's agent
+                    // actually builds its handle over.
+                    let mut sampler =
+                        BeliefSampler::from_view(&view, &rules, 101 + step as u64).unwrap();
+                    for _ in 0..3 {
+                        let world = sampler.sample();
+                        if world.order_deck != state.order_deck {
+                            tally.deck_differing += 1;
+                        }
+                        assert_same_surface(
+                            &factored_surface(&world, &rules),
+                            &base,
+                            &format!("sampled world ({players}P seed {seed} step {step})"),
+                        );
+                        tally.comparisons += 1;
+                    }
+                }
+
+                let pick = legal[rng.gen_range(0..legal.len())].clone();
+                state = apply_move_unchecked(&state, &pick, &rules).unwrap();
+                step += 1;
+            }
+        }
+    }
+
+    eprintln!(
+        "factored per-family invariance: {} decision points, {} comparisons, {} moves compared; \
+         {} points carried an UpperBound size, {} were multi-family; {} samples drew a different deck",
+        tally.points,
+        tally.comparisons,
+        tally.moves_compared,
+        tally.upper_bound_points,
+        tally.multi_family_points,
+        tally.deck_differing,
+    );
+
+    // ANTI-VACUITY, per family (the module header's rule): a run that varied
+    // nothing must not pass.
+    for f in FAMILIES {
+        let n = tally.effective[f];
+        assert!(n >= 50, "family {f} was effective only {n} times (floor 50)");
+    }
+    assert!(
+        tally.deck_differing >= 200,
+        "only {} samples drew a different deck — a truth-copying sampler would pass vacuously",
+        tally.deck_differing,
+    );
+    // ...and per COMPARED QUANTITY: each of the three layers must have been
+    // exercised on something. Without these, a walk that only ever reached
+    // single-family points with exact sizes would report a green
+    // "per-family invariance proven" having never compared an upper bound or a
+    // weight pair.
+    assert!(
+        tally.upper_bound_points >= 50,
+        "only {} sampled points carried an UpperBound size — placement_upper_len is the quantity \
+         this test exists to cover",
+        tally.upper_bound_points,
+    );
+    assert!(
+        tally.multi_family_points >= 20,
+        "only {} sampled points had >1 family — the Movement pair IS the weighted draw's weight \
+         vector, so a run that never reached one proves nothing about it",
+        tally.multi_family_points,
+    );
+    assert!(
+        tally.moves_compared >= 5_000,
+        "only {} moves compared — the iterated-moves layer needs real volume",
+        tally.moves_compared,
     );
 }
 
