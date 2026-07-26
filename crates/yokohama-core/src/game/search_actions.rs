@@ -1080,6 +1080,13 @@ impl<'a> DecisionHandle<'a> {
     /// upper-bounded term entered the sum (i.e. a placement family is present,
     /// so the total OVER-counts the realized moves).
     ///
+    /// CONSUMERS WANT [`crate::game::metrics::decision_volume`] INSTEAD: at a
+    /// state with NO families (Recovery/TurnEnd — automatic phases, not
+    /// decision points) this returns `(0, false)`, which is NOT a measured
+    /// zero, and the metrics wrapper is where that distinction is typed
+    /// (`None` vs `Some`) — the T4 review's finding 3 is this exact trap, one
+    /// call away, signed here so nobody falls into it.
+    ///
     /// Reads the same memoized routes enumeration the policy samples from — the
     /// L10 property in one call. The sum saturates as cheap belt-and-braces
     /// only: a retreat product large enough to overflow the sum would already

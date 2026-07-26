@@ -9,7 +9,10 @@
 //! gate calibrated against itself; the instrument exists first, and the floors
 //! are read off it afterwards.
 //!
-//! ## The definitions (spec §6, quoted)
+//! ## The definitions (spec §6, condensed — the metric-definition bullets
+//! near-verbatim minus the spec's critic-reference asides; §6's L11-discharge
+//! bullet is a recording obligation, not a metric definition, and lives in the
+//! spec alone)
 //!
 //! > **Per-decision-point volume metric** (M3's definition ≡ E1's, term for
 //! > term): Σ over `families()` of the family's size — retreat by `retreat_len`
@@ -132,14 +135,30 @@ pub fn wilson_95(successes: u64, n: u64) -> WilsonInterval {
     // negative and hand every downstream row a NaN that compares false against
     // any bound it is gated on.
     let p_hat = successes.min(n) as f64 / n as f64;
+    // The saturated ends return EXACTLY 0 / EXACTLY 1, not the float residual
+    // the closed form produces there (T4 review finding 1: at 0/n the general
+    // formula lands lo a few e-17 ABOVE zero for most n — inside [0, 1], so no
+    // clamp can see it — which puts the interval's lower bound above the point
+    // estimate, a thing a Wilson interval never does mathematically). Wilson's
+    // true endpoint at p̂ = 0 is 0 and at p̂ = 1 is 1; return them.
+    if successes == 0 {
+        let n = n as f64;
+        let z2 = Z_95 * Z_95;
+        return WilsonInterval { lo: 0.0, hi: (z2 / (n + z2)).clamp(0.0, 1.0) };
+    }
+    if p_hat == 1.0 {
+        let n = n as f64;
+        let z2 = Z_95 * Z_95;
+        return WilsonInterval { lo: (n / (n + z2)).clamp(0.0, 1.0), hi: 1.0 };
+    }
     let n = n as f64;
     let z2 = Z_95 * Z_95;
     let denom = 1.0 + z2 / n;
     let centre = (p_hat + z2 / (2.0 * n)) / denom;
     let half = (Z_95 / denom) * (p_hat * (1.0 - p_hat) / n + z2 / (4.0 * n * n)).sqrt();
     // Wilson's endpoints are algebraically inside [0, 1]; the clamp is against
-    // floating-point overshoot at the saturated ends (0/n and n/n), not against
-    // the mathematics.
+    // floating-point overshoot OUTSIDE that range. (Residuals INSIDE the range
+    // at the saturated ends are handled by the early returns above.)
     WilsonInterval { lo: (centre - half).clamp(0.0, 1.0), hi: (centre + half).clamp(0.0, 1.0) }
 }
 
@@ -181,10 +200,13 @@ pub struct VolumeObs {
 /// zero with points that were never decisions. A `None` is skipped by a
 /// caller's `if let`; a `Some(0)` cannot be distinguished from it once summed.
 ///
-/// A `Some` whose `total` is 0 is therefore a REAL measurement: a decision
-/// point whose families are all structurally empty (a fully-blocked routes step
-/// with no other family). The type separates the two cases; the caller does not
-/// have to.
+/// A `Some` whose `total` is 0 is therefore a type-level distinction, not a
+/// state known to be reachable: `families()`' Movement arm emits routes AND
+/// retreat unconditionally, and `retreat_len` is an empty PRODUCT (1 even over
+/// an empty board), so no organic decision point sums to zero — the T4 review
+/// measured ~175k organic points with a realized minimum of 1. The type
+/// separates measured-zero from not-a-decision-point anyway; the caller does
+/// not have to.
 ///
 /// Pays no enumeration the handle has not already paid: the routes term is
 /// `handle`'s memoized `Vec`, so calling this after the policy has sampled
@@ -213,19 +235,14 @@ pub fn decision_volume(handle: &DecisionHandle) -> Option<VolumeObs> {
 /// replacing the uniform ones).
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct CoverageTally {
-    /// Every move observed — the denominator of every share below.
-    pub applied: u64,
-    /// `ReturnPresidentToHand` moves, whatever they recovered.
-    pub retreat_picks: u64,
-    /// `ReturnPresidentToHand` moves that recovered at least one assistant —
-    /// the interior of the retreat family, which retreat-aversion never
-    /// reaches.
-    pub nonzero_recovery_retreats: u64,
-    /// `ExecuteAreaAction` moves.
-    pub area_actions: u64,
-    /// `BuildShophouse` / `BuildTradingHouse` moves. `SkipBuilding` is not a
-    /// build and is not counted.
-    pub builds: u64,
+    // Private with read accessors (T4 review finding 7's class): `observe` is
+    // the ONLY writer, so a caller cannot invent the denominator a §7 floor
+    // gates on, and the counts cannot desync from each other.
+    applied: u64,
+    retreat_picks: u64,
+    nonzero_recovery_retreats: u64,
+    area_actions: u64,
+    builds: u64,
 }
 
 impl CoverageTally {
@@ -237,6 +254,13 @@ impl CoverageTally {
     /// error, and inventing a row for it silently would be the worse failure.
     pub fn observe(&mut self, mv: &Move) {
         self.applied += 1;
+        // EXHAUSTIVE over `Move`, the repo's convention (`is_move_legal`,
+        // `trigger_name`): a future build-class or retreat-class variant
+        // falling through a `_` arm would silently under-count the exact
+        // shares §7's floors gate on. The "counted nowhere" arms are a
+        // one-token acknowledgment per variant, so a new variant is a compile
+        // error and a deliberate classification, never an accident (T4 review
+        // finding 5).
         match mv {
             Move::ReturnPresidentToHand { recover } => {
                 self.retreat_picks += 1;
@@ -249,7 +273,31 @@ impl CoverageTally {
             }
             Move::ExecuteAreaAction { .. } => self.area_actions += 1,
             Move::BuildShophouse { .. } | Move::BuildTradingHouse => self.builds += 1,
-            _ => {}
+            // Counted nowhere, deliberately — movement/placement volume is the
+            // volume metric's business, and the remaining variants carry no
+            // coverage share the spec names.
+            Move::UseMercenary { .. }
+            | Move::UseUniversity
+            | Move::UseSpinningMill
+            | Move::FulfillAchievement { .. }
+            | Move::FulfillOrder { .. }
+            | Move::EndAdditionalPhase
+            | Move::PlaceThreeAreas { .. }
+            | Move::PlaceTwoSameArea { .. }
+            | Move::MovePresident { .. }
+            | Move::PlacePresident { .. }
+            | Move::Take5PowerToken
+            | Move::Skip5PowerBonus
+            | Move::SkipBuilding
+            | Move::ChooseAnyGood { .. }
+            | Move::ChooseWarehouseTake { .. }
+            | Move::DeclineWarehouseTake
+            | Move::ChooseAssistantMove { .. }
+            | Move::DeclineAssistantMove
+            | Move::ChooseChurchSpace { .. }
+            | Move::ChooseCustomsSpace { .. }
+            | Move::ChooseRecoveryLeave { .. }
+            | Move::ChooseStationPlace { .. } => {}
         }
     }
 
@@ -277,6 +325,34 @@ impl CoverageTally {
 
     fn share(&self, count: u64) -> Option<f64> {
         (self.applied > 0).then(|| count as f64 / self.applied as f64)
+    }
+
+    /// Every move observed — the denominator of every share above.
+    pub fn applied(&self) -> u64 {
+        self.applied
+    }
+
+    /// `ReturnPresidentToHand` moves, whatever they recovered.
+    pub fn retreat_picks(&self) -> u64 {
+        self.retreat_picks
+    }
+
+    /// `ReturnPresidentToHand` moves that recovered at least one assistant —
+    /// the interior of the retreat family, which retreat-aversion never
+    /// reaches.
+    pub fn nonzero_recovery_retreats(&self) -> u64 {
+        self.nonzero_recovery_retreats
+    }
+
+    /// `ExecuteAreaAction` moves.
+    pub fn area_actions(&self) -> u64 {
+        self.area_actions
+    }
+
+    /// `BuildShophouse` / `BuildTradingHouse` moves. `SkipBuilding` is not a
+    /// build and is not counted.
+    pub fn builds(&self) -> u64 {
+        self.builds
     }
 }
 
@@ -314,8 +390,10 @@ pub const fn trigger_name(trigger: &EndGameTrigger) -> &'static str {
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct TriggerTally {
     counts: BTreeMap<&'static str, u64>,
-    /// Games observed — the denominator of every rate.
-    pub games: u64,
+    // Private with a getter (T4 review finding 7): a writable denominator on
+    // the exact type the R1 gate reads lets a caller invent the rate. `observe`
+    // is the only writer.
+    games: u64,
 }
 
 impl TriggerTally {
@@ -339,6 +417,12 @@ impl TriggerTally {
     pub fn rate(&self, name: &str) -> (u64, WilsonInterval) {
         let seen = self.counts.get(name).copied().unwrap_or(0);
         (seen, wilson_95(seen, self.games))
+    }
+
+    /// Games observed — the denominator of every rate. Read-only: `observe`
+    /// is the only writer (T4 review finding 7).
+    pub fn games(&self) -> u64 {
+        self.games
     }
 
     /// Every trigger name seen, with its count, in name order.
@@ -369,10 +453,14 @@ pub struct Quantiles {
 /// An exact quantile sketch: it keeps every observation.
 ///
 /// "Sketch" names the role, not an approximation — there is no sampling or
-/// bucketing here. At a gate cell's scale a run's decision points are `u64`s in
-/// the low millions of bytes, which is cheaper than defending an
-/// approximation's own error bars inside a figure row that already carries an
-/// upper-bound caveat.
+/// bucketing here. Cost, with its conditions (T4 review finding 4): uniform 4P
+/// self-play runs ~9,900 decision points per game (measured, uncapped), so a
+/// 500-game uniform cell holds ~5M `u64`s ≈ 40 MB — and `quantiles()` clones
+/// before sorting, so peak is ~double that. Weighted-policy cells are ~3×
+/// shorter. Tens of megabytes at the largest uniform cells, transient, and
+/// still cheaper than defending an approximation's own error bars inside a
+/// figure row that already carries an upper-bound caveat; revisit only if a
+/// cell's scale grows past that.
 ///
 /// Quantiles are NEAREST-RANK — the observation at rank `⌈p·n⌉`, never an
 /// interpolation between two of them. An interpolated "3.5 moves" is a number
@@ -519,12 +607,21 @@ mod tests {
         // Boundaries: a zero count is a real measurement with a one-sided
         // reach; a saturated count is its mirror; no observation at all is the
         // whole unit interval, which fails a floor gate AND a ceiling gate.
+        // The exact-end equalities hold BY CONSTRUCTION (the saturated-end
+        // early returns), not by accident of n: before the T4-review fix,
+        // 0/3's lo was ~5.6e-17 and 200/200's hi was 0.9999999999999999 —
+        // inside [0, 1], invisible to the clamp, and putting lo above the
+        // point estimate. The small-n cases below are the ones the general
+        // closed form got wrong.
         let none_seen = wilson_95(0, 100);
         assert_eq!(none_seen.lo, 0.0, "0/100 lower bound is exactly zero");
         assert_close(none_seen.hi, 0.0370, "0/100 hi");
         let all_seen = wilson_95(100, 100);
         assert_close(all_seen.lo, 0.9630, "100/100 lo");
         assert_eq!(all_seen.hi, 1.0, "100/100 upper bound is exactly one");
+        assert_eq!(wilson_95(0, 3).lo, 0.0, "0/3 lower bound is exactly zero (was 5.6e-17)");
+        assert_eq!(wilson_95(4, 4).hi, 1.0, "4/4 upper bound is exactly one (was 1-1ulp)");
+        assert_eq!(wilson_95(5000, 5000).hi, 1.0, "5000/5000 upper bound is exactly one");
         assert_eq!(wilson_95(0, 0), WilsonInterval { lo: 0.0, hi: 1.0 }, "no games, no constraint");
     }
 
@@ -657,11 +754,11 @@ mod tests {
             tally.observe(mv);
         }
 
-        assert_eq!(tally.applied, 8, "every observed move counts in the denominator");
-        assert_eq!(tally.retreat_picks, 3, "all three ReturnPresidentToHand moves");
-        assert_eq!(tally.nonzero_recovery_retreats, 1, "only the Σrecover > 0 one");
-        assert_eq!(tally.area_actions, 1);
-        assert_eq!(tally.builds, 2, "shophouse + trading house; SkipBuilding is not a build");
+        assert_eq!(tally.applied(), 8, "every observed move counts in the denominator");
+        assert_eq!(tally.retreat_picks(), 3, "all three ReturnPresidentToHand moves");
+        assert_eq!(tally.nonzero_recovery_retreats(), 1, "only the Σrecover > 0 one");
+        assert_eq!(tally.area_actions(), 1);
+        assert_eq!(tally.builds(), 2, "shophouse + trading house; SkipBuilding is not a build");
 
         assert_close(tally.retreat_pick_share().unwrap(), 3.0 / 8.0, "retreat share");
         assert_close(tally.nonzero_recovery_share().unwrap(), 1.0 / 8.0, "nonzero recovery share");
@@ -683,7 +780,7 @@ mod tests {
         tally.observe(Some(&EndGameTrigger::TradingHousesComplete(PlayerId::new(3))));
         tally.observe(None);
 
-        assert_eq!(tally.games, 4, "a trigger-less completed game is still an observation");
+        assert_eq!(tally.games(), 4, "a trigger-less completed game is still an observation");
         assert_eq!(tally.counts().get("TradingHousesComplete"), Some(&2), "payload dropped");
         assert_eq!(tally.counts().get("ChurchTrackFull"), Some(&1));
         assert_eq!(tally.counts().len(), 2, "only the triggers actually seen get rows");
