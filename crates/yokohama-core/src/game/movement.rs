@@ -509,6 +509,14 @@ pub fn enumerate_president_routes(
     from: AreaId,
     tech_registry: Option<&TechRegistry>,
 ) -> Vec<(AreaId, Vec<AreaId>)> {
+    // The THIRD sanctioned edit to this frozen file (Phase 3.2, spec §8; the
+    // first two were 3.1b's): the L10 enumerate-once DFS counter, cfg-gated so
+    // release binaries are unchanged. `route_enum::walk_routes_costed` bumps
+    // only in its own fixed-array arm — its delegating arm forwards HERE — so
+    // one DFS is counted exactly once whichever entry point ran it.
+    #[cfg(any(test, debug_assertions))]
+    crate::game::route_enum::bump_route_dfs();
+
     let dfs = RouteDfs { state, player, from, tech_registry, money: state.player(player).money };
 
     let mut best: BTreeMap<RouteLabel, Vec<AreaId>> = BTreeMap::new();

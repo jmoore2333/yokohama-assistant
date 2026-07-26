@@ -863,6 +863,178 @@ fn draw_one(mut moves: Vec<Move>, rng: &mut impl Rng) -> Option<Move> {
     Some(moves.swap_remove(i))
 }
 
+// ---------------------------------------------------------------------------
+// The enumerate-once decision handle (Phase 3.2 Task 2, spec
+// `docs/plans/2026-07-25-phase3.2-arena-spec.md` §8)
+// ---------------------------------------------------------------------------
+
+/// How exact a [`family_len`]-shaped count is — the distinction the free
+/// functions could only state in prose.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FamilySize {
+    /// The family yields exactly this many moves.
+    Exact(u64),
+    /// The family yields AT MOST this many moves. Only placement is
+    /// upper-bounded: a per-combination fee gate punches holes that are not
+    /// contiguous in enumeration order, so the count is a strict over-estimate
+    /// wherever a subset is unaffordable.
+    UpperBound(u64),
+}
+
+impl FamilySize {
+    /// The count itself, discarding the exactness. Callers that SUM sizes (the
+    /// per-decision volume metric) want the number plus a separate "did an
+    /// upper-bound term enter" flag — see [`DecisionHandle::volume`].
+    pub const fn value(self) -> u64 {
+        match self {
+            Self::Exact(n) | Self::UpperBound(n) => n,
+        }
+    }
+}
+
+/// One decision point's move families, with the materializing ones enumerated
+/// AT MOST ONCE however many times they are read.
+///
+/// The free functions above are stateless, so "the routes family is enumerated
+/// once per Movement decision point" was call-site discipline: `family_len` and
+/// `iter_family` each pay a full [`movement_routes_family`] call, and 3.2 adds
+/// a SECOND consumer of that same count (the per-decision volume metric) beside
+/// the policy that samples it. A handle makes the guarantee structural, and
+/// `route_enum`'s DFS counter makes it executable
+/// (`tests/l10_enumeration_pin.rs`).
+///
+/// **Which families are memoized is a cost decision, not a uniformity one.**
+/// Routes and the delegated families materialize a `Vec` however they are
+/// served, so the handle keeps it; retreat and placement must NEVER be
+/// materialized — the 442,368-member retreat product is the whole reason the
+/// factored source exists — so they keep paging lazily through
+/// [`iter_family`]/[`sample_family`] on every call, and the handle stores
+/// nothing for them.
+///
+/// [`size`](Self::size) delegates to [`family_len`] so there is ONE arithmetic
+/// authority, with routes as the single exception: it reports the memoized
+/// `Vec`'s length rather than paying a second enumeration. The consequence for
+/// a delegated family is that `size` then `iter` calls `get_legal_moves` twice
+/// — accepted, because delegated families are bounded-small and no exploding
+/// family lives at those phases (spec §0-R2(a)).
+///
+/// PRECONDITION, same as the free functions': a family is only meaningful
+/// against the state it came from. Serving a family this handle did not build
+/// is caller misuse — `debug_assert`ed, and in release it degrades to the
+/// unmemoized free-function path rather than panicking or answering wrongly.
+///
+/// Single-threaded by construction (`OnceCell`, not `OnceLock`): a handle
+/// belongs to the decision it was built for.
+pub struct DecisionHandle<'a> {
+    state: &'a GameState,
+    rules: &'a Rules,
+    families: Vec<MoveFamily>,
+    /// One slot per entry of `families`, filled on first read. Only the
+    /// materializing families ever fill theirs — see [`is_memoized`].
+    memo: Vec<std::cell::OnceCell<Vec<Move>>>,
+}
+
+/// Whether `family` is served from a handle's memo (it materializes a `Vec`
+/// either way) rather than paged lazily on every call.
+fn is_memoized(family: &MoveFamily) -> bool {
+    !matches!(family, MoveFamily::MovementRetreat { .. } | MoveFamily::Placement)
+}
+
+impl<'a> DecisionHandle<'a> {
+    /// Build a handle over `state`. Calls [`families`] once and enumerates
+    /// NOTHING — the first read of a memoized family pays for it.
+    pub fn new(state: &'a GameState, rules: &'a Rules) -> Self {
+        let families = families(state, rules);
+        let memo = families.iter().map(|_| std::cell::OnceCell::new()).collect();
+        Self { state, rules, families, memo }
+    }
+
+    /// The families legal at this decision point, in [`families`]' order.
+    pub fn families(&self) -> &[MoveFamily] {
+        &self.families
+    }
+
+    /// `family`'s memoized moves, or `None` when it is a lazily-paged family or
+    /// one this handle was not built for.
+    fn memoized(&self, family: &MoveFamily) -> Option<&[Move]> {
+        if !is_memoized(family) {
+            return None;
+        }
+        let at = self.families.iter().position(|f| f == family);
+        debug_assert!(
+            at.is_some(),
+            "DecisionHandle served {family:?}, which is not one of its own {:?}",
+            self.families,
+        );
+        let slot = &self.memo[at?];
+        Some(slot.get_or_init(|| match family {
+            MoveFamily::MovementRoutes => movement_routes_family(self.state, self.rules),
+            _ => delegated_family_moves(self.state, self.rules, family),
+        }))
+    }
+
+    /// The size of `family` at this decision point: [`FamilySize::UpperBound`]
+    /// for placement (the affordability holes make it a strict over-estimate),
+    /// [`FamilySize::Exact`] for every other family.
+    ///
+    /// Delegates to [`family_len`] EXCEPT for routes, where it reports the
+    /// memoized enumeration's length — asking `family_len` there would run the
+    /// route search a second time, which is precisely what this type exists to
+    /// prevent.
+    pub fn size(&self, family: &MoveFamily) -> FamilySize {
+        if let (MoveFamily::MovementRoutes, Some(moves)) = (family, self.memoized(family)) {
+            return FamilySize::Exact(moves.len() as u64);
+        }
+        let n = family_len(self.state, self.rules, family) as u64;
+        match family {
+            MoveFamily::Placement => FamilySize::UpperBound(n),
+            _ => FamilySize::Exact(n),
+        }
+    }
+
+    /// `family`'s moves, in the same order and with the same moves as
+    /// [`iter_family`] — served from the memo where there is one, and paged
+    /// lazily where the family must never be materialized.
+    pub fn iter(&self, family: &MoveFamily) -> impl Iterator<Item = Move> + '_ {
+        match self.memoized(family) {
+            Some(moves) => Box::new(moves.iter().cloned()) as Box<dyn Iterator<Item = Move> + '_>,
+            None => iter_family(self.state, self.rules, family),
+        }
+    }
+
+    /// Draw one uniformly-random move from `family`, or `None` when the family
+    /// is empty — [`sample_family`]'s contract, over the memo where there is
+    /// one. Consumes exactly one `gen_range` draw either way, and picks the
+    /// same index `sample_family` would from the same stream.
+    pub fn sample(&self, family: &MoveFamily, rng: &mut impl Rng) -> Option<Move> {
+        let Some(moves) = self.memoized(family) else {
+            return sample_family(self.state, self.rules, family, rng);
+        };
+        if moves.is_empty() {
+            return None;
+        }
+        Some(moves[rng.gen_range(0..moves.len())].clone())
+    }
+
+    /// Σ of every family's size at this decision point, and whether an
+    /// upper-bounded term entered the sum (i.e. a placement family is present,
+    /// so the total OVER-counts the realized moves).
+    ///
+    /// Reads the same memoized routes enumeration the policy samples from — the
+    /// L10 property in one call. Saturating, so a hand-built state with an
+    /// absurd retreat product reports `u64::MAX` rather than overflowing.
+    pub fn volume(&self) -> (u64, bool) {
+        let mut total = 0u64;
+        let mut has_upper_bound_term = false;
+        for family in &self.families {
+            let size = self.size(family);
+            has_upper_bound_term |= matches!(size, FamilySize::UpperBound(_));
+            total = total.saturating_add(size.value());
+        }
+        (total, has_upper_bound_term)
+    }
+}
+
 /// Thread-local counting allocator for the no-materialization bound
 /// ([`tests::serving_one_retreat_candidate_is_o_areas_not_o_product`]). It
 /// forwards every (de)allocation to the process `System` allocator unchanged
@@ -2080,6 +2252,188 @@ mod tests {
             "the fixture's one walkable route must be served",
         );
         assert!(allocs < 128, "serving the routes family allocated {allocs} (>= 128)");
+    }
+
+    // -- DecisionHandle (Phase 3.2 Task 2) ------------------------------------
+
+    /// A Movement decision point with the President ON BOARD and one walkable
+    /// edge, so the routes family is non-empty and a route DFS really runs.
+    fn handle_movement_state() -> GameState {
+        let mut s = at_phase(TurnPhase::Movement);
+        s.board_layout.adjacency.insert(AreaId::new(0), vec![AreaId::new(1)]);
+        s.board_layout.adjacency.insert(AreaId::new(1), vec![AreaId::new(0)]);
+        s.players[0].president_location = PresidentLocation::OnBoard(AreaId::new(0));
+        s.players[0].assistants.on_board.insert(AreaId::new(1), 2);
+        s.players[0].money = 5;
+        s
+    }
+
+    /// The fee-gated placement state of
+    /// [`placement_per_combination_affordability_excludes_costly_subset`]: an
+    /// unaffordable 3-subset punches a hole, so `placement_upper_len` is a
+    /// STRICT over-estimate and the handle must report `UpperBound`.
+    fn handle_fee_gated_placement_state() -> GameState {
+        let a = AreaId::new;
+        let mut s = placement_state(4, 4);
+        s.players[0].assistants.in_hand = 3;
+        s.players[0].money = 2;
+        s.players[1].president_location = PresidentLocation::OnBoard(a(0));
+        s.players[2].president_location = PresidentLocation::OnBoard(a(1));
+        s.players[3].president_location = PresidentLocation::OnBoard(a(2));
+        s
+    }
+
+    /// A queued-choice decision point: the pending `AnyGood` short-circuits the
+    /// phase, so the only family is the delegated `ChoiceResolution`.
+    fn handle_queued_choice_state() -> GameState {
+        let mut s = at_phase(TurnPhase::Placement);
+        s.pending_choices.push(PendingChoice::AnyGood);
+        s
+    }
+
+    /// Moves sorted by their debug rendering — a multiset comparison that
+    /// reports the offending members rather than just a length mismatch. The
+    /// handle is not required to preserve the generator's ORDER across families
+    /// (that is `iter_family`'s own pin, and the equivalence gate's); what it
+    /// must not do is add, drop, or alter a move.
+    fn as_multiset(moves: &[Move]) -> Vec<String> {
+        let mut v: Vec<String> = moves.iter().map(|m| format!("{m:?}")).collect();
+        v.sort();
+        v
+    }
+
+    /// THE handle union pin: `⋃ handle.iter(family)` over `handle.families()`
+    /// is `get_legal_moves` — the same guarantee the free functions carry,
+    /// re-asserted through the memoizing surface a bot actually calls, at the
+    /// three decision-point shapes whose serving paths differ (routes + the
+    /// lazy retreat product; the lazy fee-gated placement family; a delegated
+    /// family).
+    #[test]
+    fn handle_serves_the_same_union_as_get_legal_moves() {
+        let rules = Rules::standard();
+        let cases = [
+            ("movement on board", handle_movement_state()),
+            ("fee-gated placement", handle_fee_gated_placement_state()),
+            ("queued choice", handle_queued_choice_state()),
+        ];
+
+        for (label, state) in cases {
+            let want = get_legal_moves(&state, &rules);
+            assert!(!want.is_empty(), "{label}: fixture must be a real decision point");
+
+            let handle = DecisionHandle::new(&state, &rules);
+            assert!(!handle.families().is_empty(), "{label}: a decision point has families");
+
+            let mut got: Vec<Move> = Vec::new();
+            for family in handle.families() {
+                got.extend(handle.iter(family));
+            }
+            assert_eq!(
+                as_multiset(&got),
+                as_multiset(&want),
+                "{label}: the handle's union must be the legal list",
+            );
+        }
+    }
+
+    /// `size()` reports `Exact` for retreat, routes and the delegated families
+    /// and `UpperBound` for placement, and its VALUE agrees with `family_len`
+    /// everywhere — `family_len` stays the one arithmetic authority (spec §8),
+    /// so a handle that computed its own counts would show up here.
+    #[test]
+    fn handle_size_matches_family_len_shape() {
+        let rules = Rules::standard();
+
+        // Movement: routes (Exact, realized) + retreat (Exact, closed form).
+        let movement = handle_movement_state();
+        let handle = DecisionHandle::new(&movement, &rules);
+        for family in handle.families() {
+            let size = handle.size(family);
+            assert!(
+                matches!(size, FamilySize::Exact(_)),
+                "{}: Movement families are exact, got {size:?}",
+                family_name(family),
+            );
+            assert_eq!(
+                size.value(),
+                family_len(&movement, &rules, family) as u64,
+                "{}: size must agree with family_len",
+                family_name(family),
+            );
+        }
+        // Anti-vacuity: the retreat family is the real product, not a lone
+        // recover-nothing move, and the routes family is non-empty.
+        let retreat = handle
+            .families()
+            .iter()
+            .find(|f| matches!(f, MoveFamily::MovementRetreat { .. }))
+            .expect("Movement dispatches a retreat family");
+        assert_eq!(handle.size(retreat), FamilySize::Exact(3), "on_board {{1: 2}} ⇒ ∏(2+1) = 3");
+        assert!(handle.size(&MoveFamily::MovementRoutes).value() > 0, "routes must be non-empty");
+
+        // Placement: upper-bounded, and STRICTLY above the realized count here.
+        let placement = handle_fee_gated_placement_state();
+        let handle = DecisionHandle::new(&placement, &rules);
+        let size = handle.size(&MoveFamily::Placement);
+        let FamilySize::UpperBound(upper) = size else {
+            panic!("placement must be upper-bounded, got {size:?}");
+        };
+        assert_eq!(
+            upper,
+            placement_upper_len(&placement, &rules) as u64,
+            "the bound must be placement_upper_len itself",
+        );
+        let realized = handle.iter(&MoveFamily::Placement).count() as u64;
+        assert!(upper > realized, "fee gate must make the bound strict: {upper} vs {realized}");
+        assert_eq!(handle.volume(), (upper, true), "an UpperBound term must flag the volume");
+
+        // A delegated family: exact, and no upper-bound term in the volume.
+        let choice = handle_queued_choice_state();
+        let handle = DecisionHandle::new(&choice, &rules);
+        let size = handle.size(&MoveFamily::ChoiceResolution);
+        assert_eq!(size, FamilySize::Exact(4), "the four ChooseAnyGood resolutions");
+        assert_eq!(handle.volume(), (4, false));
+    }
+
+    /// THE L10 pin at unit scale: every one of `size` / `iter` / `sample` /
+    /// `volume` reads the routes family, and together they cost exactly ONE
+    /// route DFS. The counter is the executable half of the guarantee — without
+    /// it "enumerate once" is call-site discipline, and the volume metric
+    /// (Task 4) is a second consumer of the same enumeration.
+    ///
+    /// Anti-vacuity: the fixture's route family is non-empty, so the single
+    /// counted DFS is real work rather than an early return.
+    #[test]
+    fn handle_routes_are_enumerated_at_most_once() {
+        use rand::SeedableRng;
+        let rules = Rules::standard();
+        let state = handle_movement_state();
+        let mut rng = rand_chacha::ChaCha8Rng::seed_from_u64(3);
+
+        crate::game::route_dfs_reset();
+        let handle = DecisionHandle::new(&state, &rules);
+        assert_eq!(
+            crate::game::route_dfs_count(),
+            0,
+            "construction must enumerate nothing (families() only)",
+        );
+
+        let size = handle.size(&MoveFamily::MovementRoutes);
+        let served: Vec<Move> = handle.iter(&MoveFamily::MovementRoutes).collect();
+        let drawn = handle.sample(&MoveFamily::MovementRoutes, &mut rng);
+        let (volume, upper) = handle.volume();
+
+        assert!(!served.is_empty(), "anti-vacuity: the fixture must serve real routes");
+        assert_eq!(size, FamilySize::Exact(served.len() as u64));
+        assert!(served.contains(&drawn.expect("non-empty family samples Some")));
+        assert!(volume > served.len() as u64, "volume must also carry the retreat family");
+        assert!(!upper, "Movement has no upper-bounded family");
+
+        assert_eq!(
+            crate::game::route_dfs_count(),
+            1,
+            "size + iter + sample + volume must share ONE route enumeration",
+        );
     }
 
     /// The ChoiceResolution family delegates to the generator's choice

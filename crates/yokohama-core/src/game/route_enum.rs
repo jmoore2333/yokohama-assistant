@@ -96,6 +96,85 @@ const MAX_WORDS: usize = 2;
 /// is why [`fits_fixed_arrays`] checks it rather than assuming it.
 const MAX_OPPONENTS: usize = 3;
 
+// ---------------------------------------------------------------------------
+// The L10 enumerate-once counter (Phase 3.2, spec
+// `docs/plans/2026-07-25-phase3.2-arena-spec.md` §8)
+// ---------------------------------------------------------------------------
+//
+// One President-route DFS bumps this counter exactly ONCE, whichever entry
+// point reached it. There are two, and the bumps are placed so the pair can
+// never double-count:
+//
+//   - `movement::enumerate_president_routes` — the frozen search, bumped at
+//     its entry (the third sanctioned edit to that file, cfg-gated);
+//   - [`walk_routes_costed`]'s FIXED-ARRAY arm — this module's own search.
+//
+// `walk_routes_costed`'s other arm does not search: it *forwards into*
+// `enumerate_president_routes` and re-prices the returned paths, so the bump
+// it skips is paid by the callee. The bump therefore sits AFTER the delegating
+// early return, never before it.
+//
+// TWO CAVEATS, both load-bearing (spec §8):
+//
+//   1. The accessors below exist UNCONDITIONALLY — returning 0 / doing nothing
+//      outside the cfg — so a `cargo test --release` whole-package build still
+//      compiles. `cfg(test)` is false for the library as linked by an
+//      integration test and `debug_assertions` is false in release, so a
+//      release integration test sees a permanently-zero counter; that is why
+//      `tests/l10_enumeration_pin.rs` carries a file-level
+//      `#![cfg(debug_assertions)]` rather than asserting against 0.
+//   2. The counter catches a stray `get_legal_moves` ONLY at Movement decision
+//      points. At every other phase the delegated families call
+//      `get_legal_moves` underneath BY DESIGN and no route DFS fires there, so
+//      a count of 0 off-Movement says nothing about how many times the legal
+//      list was materialized.
+//
+// The assertions built on it are HARNESS-SCOPED, never armed globally: the CLI
+// bot path legitimately pays 2 in debug (the policy's enumeration plus
+// `Session::apply`'s materializing legality gate, which §9 deliberately keeps).
+
+#[cfg(any(test, debug_assertions))]
+thread_local! {
+    /// Route DFSes run on this thread since the last [`route_dfs_reset`].
+    /// Const-initialized, so reading it never allocates and never re-enters a
+    /// lazy initializer; thread-local, so parallel `cargo test` threads cannot
+    /// see each other's counts.
+    static ROUTE_DFS_COUNT: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+}
+
+/// Record one President-route DFS. Instrumentation, not API — the two bump
+/// sites named above are its only callers.
+#[cfg(any(test, debug_assertions))]
+pub(crate) fn bump_route_dfs() {
+    // `try_with` tolerates access during thread teardown (returns without
+    // counting), matching `search_actions::alloc_probe`'s discipline.
+    let _ = ROUTE_DFS_COUNT.try_with(|c| c.set(c.get().saturating_add(1)));
+}
+
+/// President-route DFSes counted on THIS thread since the last
+/// [`route_dfs_reset`]. Always 0 outside `cfg(any(test, debug_assertions))` —
+/// see caveat 1 above.
+#[cfg(any(test, debug_assertions))]
+pub fn route_dfs_count() -> u64 {
+    ROUTE_DFS_COUNT.try_with(std::cell::Cell::get).unwrap_or(0)
+}
+
+/// Always 0: the counter is compiled out. See caveat 1 above.
+#[cfg(not(any(test, debug_assertions)))]
+pub fn route_dfs_count() -> u64 {
+    0
+}
+
+/// Zero this thread's DFS count, so the next measured region starts clean.
+#[cfg(any(test, debug_assertions))]
+pub fn route_dfs_reset() {
+    let _ = ROUTE_DFS_COUNT.try_with(|c| c.set(0));
+}
+
+/// No-op: the counter is compiled out. See caveat 1 above.
+#[cfg(not(any(test, debug_assertions)))]
+pub fn route_dfs_reset() {}
+
 /// Whether [`RouteGraph::build`] and the search can run over `state` without
 /// exceeding a fixed array. Evaluated over `BoardLayout` + `players` BEFORE any
 /// array is written, so a rejected state never touches the fast path at all.
@@ -532,6 +611,12 @@ fn walk_routes_costed(
             })
             .collect();
     }
+
+    // L10 counter (spec §8): bumped AFTER the delegating early return, because
+    // that arm's `enumerate_president_routes` call bumps on its own entry — so
+    // one DFS is counted exactly once whichever arm ran it.
+    #[cfg(any(test, debug_assertions))]
+    bump_route_dfs();
 
     let graph = RouteGraph::build(state, player, from, reg);
     let mut search = Search {
