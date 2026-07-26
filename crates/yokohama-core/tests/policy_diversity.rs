@@ -16,7 +16,13 @@
 //!   * `weighted_cells_complete_with_invariants` — the fuzz-driver contract:
 //!     full games under the shipped weighted policy complete at 2/3/4P with
 //!     `check_invariants` after every applied move.
-//!   * `four_p_trigger_gate_frozen_floor` — §0-R1's restated trigger gate. The
+//!   * `four_p_trigger_gate_frozen_floor` — §0-R1's restated trigger gate
+//!     (deterministic AS COMMITTED: at the fixed master the 4P cell always
+//!     lands the same 15 hits against a clearing minimum of 8, so this test
+//!     cannot flake — the ≈0.2% failure probability describes a FRESH-ENTROPY
+//!     re-draw at the held-out true rate, and it is rate-sensitive: 0.18% at
+//!     3.70%, 1.68% at this run's 3.00%. A future failure here is a
+//!     regression, not luck — the T9 probe-1 ruling's class). The
 //!     map's original text asked for "ChurchTrackFull > 0%", which does not
 //!     discriminate: uniform itself satisfies it (1/500 at one harness, 7/2000
 //!     at another). The restatement gates the weighted 4P rate's Wilson LOWER
@@ -118,7 +124,13 @@ impl Scale {
     const GATE: Self = Self { games: 500 };
 
     /// Development / per-edit plumbing size (plan Task 10: N=40).
-    const SMOKE: Self = Self { games: 40 };
+    // N=20, revised from the plan's 40 by the T10-review probe-5 ruling: the
+    // smoke's subject is plumbing, not distribution; all three counts stay
+    // (4P is the binding count for two floors and the R1 narrative's subject)
+    // and per-game cost is ~linear in N, so this halves a 19.7s debug tax to
+    // ~9.9s while the RetreatAverse mutation still discriminates at any N >= 1
+    // and the tightest smoke share keeps ~4x headroom.
+    const SMOKE: Self = Self { games: 20 };
 }
 
 /// The applied-move coverage shares §7(c) gates on.
@@ -150,7 +162,7 @@ impl Floors {
     /// shipped weighted defaults — the run these values were read off is the
     /// same one `coverage_floors_hold` reproduces on every gate run.
     const GATE: Self = Self {
-        // Measured 2P 0.0121 · 3P 0.0131 · 4P 0.0143. Min 0.0121 (2P), half
+        // Measured 2P 0.0121 · 3P 0.0131 · 4P 0.0143. Raw min 0.012122 (2P), half of the RAW value 0.006061 (T10 review F6 — never halve the rounded display figure), i.e.
         // 0.00605, rounded down to one significant figure.
         nonzero_recovery: 0.006,
         // Measured 2P 0.1211 · 3P 0.1193 · 4P 0.1169. Min 0.1169 (4P), half
@@ -164,10 +176,11 @@ impl Floors {
         build: 0.002,
     };
 
-    /// The smoke tier's floors: the gate's, halved again (plan Task 10). N=40
-    /// per cell is a small enough sample that a share can wander well below its
-    /// N=500 value without anything being wrong, and the smoke's subject is the
-    /// plumbing, not the distribution.
+    /// The smoke tier's floors: the gate's, halved again (plan Task 10). N=20
+    /// per cell (T10-review probe-5 ruling; was the plan's 40) is a small
+    /// enough sample that a share can wander well below its N=500 value
+    /// without anything being wrong, and the smoke's subject is the plumbing,
+    /// not the distribution.
     const SMOKE: Self = Self {
         nonzero_recovery: Self::GATE.nonzero_recovery / 2.0,
         area_action: Self::GATE.area_action / 2.0,
@@ -291,10 +304,13 @@ fn phase_order(phase: TurnPhase) -> u8 {
 /// Run one cell.
 ///
 /// Each player count starts a FRESH schedule on the same master, so the three
-/// cells draw the same world seeds. That is deliberate and carries no
-/// cross-cell dependence: a world seed feeds `new_game`, whose board, decks and
+/// cells share world seeds AND, per seat index, identical raw-stream seeds
+/// (`mix(SALT_RAW_STREAM, [seed, master, seat])` has no count component). What
+/// matters is narrower than "no cross-cell dependence" (T10 review F7): no
+/// GATED figure is pooled or compared across counts except the floor minimum,
+/// which is halved — and a world seed feeds `new_game`, whose board, decks and
 /// deal differ entirely by player count, so "the same seed" names a
-/// reproducible run and nothing more.
+/// reproducible run, not a shared game.
 fn run_cell(players: u8, scale: Scale, rules: &Rules) -> Cell {
     let mut schedule = SeedSchedule::diagnostic(MASTER);
     let seats = vec![POLICY; players as usize];
@@ -384,11 +400,15 @@ fn cell_at(scale: Scale, players: u8) -> &'static Cell {
 /// The measurement header every printed block carries, so a figure scraped out
 /// of this binary's output cannot lose its measurement policy.
 fn header(scale: Scale) -> String {
+    // The knob VALUES are printed, not "the shipped defaults" (T10 review F3):
+    // that phrase is a moving reference, and a left-behind knob mutation would
+    // print a byte-identical header while measuring a different policy.
+    // `descriptor()` exists for exactly this.
+    let (name, version, params) = POLICY.descriptor();
     format!(
-        "policy={} (retreat_ppm/recovery_min_of at the shipped defaults)  N={}/cell  \
+        "policy={name}@v{version}{params:?}  N={}/cell  \
          counts=2/3/4P  master={MASTER:#018x} (diagnostic)  driver=run_raw_game (raw state, \
          no view/sampler)  invariants={INVARIANTS}  profile={}",
-        POLICY.as_str(),
         scale.games,
         if cfg!(debug_assertions) { "debug" } else { "release" },
     )
@@ -411,6 +431,13 @@ fn header(scale: Scale) -> String {
 #[test]
 #[ignore = "release gate: 1500 weighted games; run with cargo test --release -p yokohama-core --test policy_diversity -- --ignored"]
 fn weighted_cells_complete_with_invariants() {
+    // The four-doc-site claim "a cell that ran no invariant check cannot
+    // pass" is only true if this constant IS true — `applied > 0` proves moves
+    // were applied, not checked (T10 review F1). One line makes the claim
+    // unconditional.
+    const {
+        assert!(INVARIANTS, "the gate's cells must run with per-move invariants ON");
+    }
     let scale = Scale::GATE;
     let mut block = format!("\nweighted cells (completion + invariants)\n  {}\n", header(scale));
     for cell in cells(scale) {
@@ -446,6 +473,31 @@ fn weighted_cells_complete_with_invariants() {
             cell.applied > 0,
             "{}P cell applied no moves, so no invariant check ran",
             cell.players,
+        );
+    }
+
+    // Per-count trigger tallies + the per-phase Movement decision-point share
+    // (T10 review F4/F5): the tallies were computed and thrown away, yet the
+    // 2P weighted cell reaching FOUR distinct end triggers — including
+    // ShophousesComplete, which this commit's own fuzz re-measure shows
+    // uniform reaching ZERO times at any count in 500 games — is the
+    // strongest in-repo evidence for §7's disjoint-halves claim; and §6 names
+    // the per-phase share its FIRST metric row (4P Movement measured 15.54%,
+    // inside E1's held-out 14.9-15.6% band for the low-p shapes).
+    for cell in cells(scale) {
+        let movement_points: u64 = cell
+            .tails
+            .iter()
+            .filter(|t| t.phase == TurnPhase::Movement)
+            .map(|t| t.sketch.len() as u64)
+            .sum();
+        println!(
+            "  {}P triggers: {:?}  |  Movement decision-point share: {}/{} = {:.2}%",
+            cell.players,
+            cell.trigger.counts(),
+            movement_points,
+            cell.decision_points,
+            100.0 * movement_points as f64 / cell.decision_points.max(1) as f64,
         );
     }
 }
