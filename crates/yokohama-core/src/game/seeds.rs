@@ -50,7 +50,10 @@ use rand::RngCore;
 use serde::{Deserialize, Serialize};
 
 /// One game's full-width seed. The arena's public surface takes this, never a
-/// bare `u64`, so a caller cannot pass a hand-typed small seed by accident.
+/// bare `u64` — the guarantee is TYPE CONFUSION (an unrelated u64 cannot be
+/// passed by accident), not derivation: `WorldSeed(0)` constructs freely, and
+/// the derivation discipline lives in `SeedSchedule`'s private state and the
+/// doc rules above (branch review, should-fix 6).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct WorldSeed(pub u64);
 

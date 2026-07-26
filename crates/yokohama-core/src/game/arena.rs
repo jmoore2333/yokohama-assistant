@@ -1421,6 +1421,19 @@ mod tests {
             corpus_refusal(&ordinary, &raw.record).is_some(),
             "a diagnostic record must not be filed under an ordinary corpus cell",
         );
+
+        // The T8-review absolutization (6d48c2e) pinned executably (branch
+        // review, should-fix 4): the NATURAL relative spelling of --emit from
+        // the crate root must refuse too — every other call site here is
+        // absolute by construction, so this is the production spelling's only
+        // coverage.
+        let rel = ordinary
+            .strip_prefix(std::env::current_dir().expect("cwd"))
+            .expect("test cwd is the crate root");
+        assert!(
+            corpus_refusal(rel, &raw.record).is_some(),
+            "the relative --emit spelling into the corpus dir must refuse as the absolute one does",
+        );
         assert!(
             corpus_refusal(&labelled, &raw.record).is_none(),
             "a -diagnostic cell is exactly where a diagnostic record belongs",

@@ -4522,7 +4522,21 @@ mod tests {
     /// A chooser that proposes whatever it was built with -- the seam that lets
     /// a test drive the failure shapes the honest chooser is supposed to make
     /// unreachable.
-    struct FixedChooser(Result<Move, BotError>);
+    /// Variant-PRESERVING (branch review, should-fix 5): the earlier form
+    /// collapsed every error to `DeadEnd`, so `pump_bots_with`'s lockdown
+    /// catch-all was unreachable through this seam and a future test passing
+    /// `BotError::Belief(..)` would silently exercise the WRONG failure path
+    /// while its message assertion still matched.
+    struct FixedChooser(Result<Move, ()>, Option<fn() -> BotError>);
+
+    impl FixedChooser {
+        fn ok(mv: Move) -> Self {
+            Self(Ok(mv), None)
+        }
+        fn err(make: fn() -> BotError) -> Self {
+            Self(Err(()), Some(make))
+        }
+    }
 
     impl BotChooser for FixedChooser {
         fn choose(
@@ -4535,7 +4549,7 @@ mod tests {
         ) -> Result<Move, BotError> {
             match &self.0 {
                 Ok(mv) => Ok(mv.clone()),
-                Err(e) => Err(BotError::DeadEnd(e.to_string())),
+                Err(()) => Err((self.1.expect("err chooser built with a maker"))()),
             }
         }
     }
@@ -4549,7 +4563,7 @@ mod tests {
         let mut r = repl_2p_bots(4, &[0]);
         // Nobody owns the Textile Mill at setup, and the opening phase is not an
         // additional-action phase either: this is refused on both counts.
-        let mut rogue = FixedChooser(Ok(Move::UseSpinningMill));
+        let mut rogue = FixedChooser::ok(Move::UseSpinningMill);
 
         let text = r.pump_bots_with(&mut rogue);
 
@@ -4565,7 +4579,7 @@ mod tests {
     #[test]
     fn bot_dead_end_halts_the_pump_without_locking_down() {
         let mut r = repl_2p_bots(4, &[0]);
-        let mut dead = FixedChooser(Err(BotError::DeadEnd("no move".to_string())));
+        let mut dead = FixedChooser::err(|| BotError::DeadEnd("no move".to_string()));
 
         let text = r.pump_bots_with(&mut dead);
 

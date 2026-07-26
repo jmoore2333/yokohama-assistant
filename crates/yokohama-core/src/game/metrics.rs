@@ -256,10 +256,11 @@ pub struct CoverageTally {
 impl CoverageTally {
     /// Classify one applied move.
     ///
-    /// The match names only the classes §6 reports and falls through for the
-    /// rest — deliberately a `_` arm, unlike `move_legality`'s exhaustive one:
-    /// a new `Move` variant is a move that has no share row, not a compile
-    /// error, and inventing a row for it silently would be the worse failure.
+    /// The match is EXHAUSTIVE over `Move` (the repo convention; T4 review
+    /// finding 5): the classes §6 reports get counters, and every other
+    /// variant is an explicit one-token "counted nowhere" acknowledgment — so
+    /// a new variant is a compile error and a deliberate classification,
+    /// never a silent under-count of a share a §7 floor gates on.
     pub fn observe(&mut self, mv: &Move) {
         self.applied += 1;
         // EXHAUSTIVE over `Move`, the repo's convention (`is_move_legal`,
