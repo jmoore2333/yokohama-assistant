@@ -272,6 +272,16 @@ const UNION_MATERIALIZE_CAP: usize = 50_000;
 /// 442,384 the research notes record as reachable, so a real density explosion
 /// still trips it; and it is deterministic (fixed seeds), so a trip is never a
 /// flake — it is the deliberate decision the cap exists to demand.
+/// CAP RULE (T11 review): a materialization cap is set at ~1.35× the maximum
+/// observed under a stated (policy, seeds, N, profile) — 250,000 ≈ 1.51× the
+/// in-repo 165,936 and 1.34× E1's held-out 186,634 — so the next raise is
+/// principled, not ad hoc. MEASURED, replacing the earlier explanation (T11
+/// review probe 2): the weighted arm visits ~5.4× fewer decision points
+/// because its games END — 60/60 reach game-over (mean final turn 182) while
+/// the uniform arm cap-exhausts 23/60 (14/20 at 4P never finish inside the
+/// 8,000-step cap; mean final turn 1,441) — so this arm contributes END-GAME
+/// states the uniform arm structurally cannot reach, and independently
+/// corroborates §0-R1's premise that uniform play is pathological.
 const WEIGHTED_UNION_MATERIALIZE_CAP: usize = 250_000;
 
 /// Drive uniform-random games (via the shared `common` seeded driver) and, at

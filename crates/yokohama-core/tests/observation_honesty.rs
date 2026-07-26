@@ -558,6 +558,13 @@ struct FactoredTally {
 /// because a reviewer re-running the proof with the obvious `.len()` would
 /// otherwise read the green as a vacuous test rather than as the boundary
 /// working.
+///
+/// WALK POLICY (T11 review F4): this walk advances UNIFORMLY, so its evidence
+/// covers uniform-walked states — the L11 caveat the equivalence sweep's
+/// weighted arm addresses for ITS gate. The property is structural and
+/// state-local, so the conclusion is not expected to move; switching this walk
+/// is deliberately NOT a one-liner (`FACTORED_VOLUME_CAP` = 50,000 would trip
+/// immediately — the weighted arm reaches 165,936-move states).
 #[test]
 fn families_iter_and_len_are_invariant_across_hidden_variants_and_sampled_worlds() {
     let rules = Rules::standard();

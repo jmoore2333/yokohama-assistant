@@ -223,11 +223,18 @@ fn policy_agent_pick(
 /// world (family tags and sizes) plus its own rng. Those are different reads of
 /// the same sample, and only this cell exercises the second.
 ///
-/// NON-VACUITY comes from `a_policy_seeded_from_a_hidden_fingerprint_is_caught`
-/// below, which drives THIS decider — the same `policy_agent_pick`, the same
-/// decision points, the same variants — and observes it move 68 times once its
-/// seed is folded from hidden state. So the green here is a decider that CAN
-/// move declining to, not one that is structurally incapable of moving.
+/// WHAT THIS CELL ACTUALLY PINS (T11 review F1 — the earlier claim here was
+/// false): across every comparison the VIEW is identical (measured 0/450
+/// differing), and `PolicyAgent::choose(view, rules)` makes hidden state
+/// unreachable BY SIGNATURE — so this cell compares f(x) against f(x) and can
+/// fail only on internal nondeterminism (a thread_rng, a clock, an
+/// iteration-order dependence) or a future signature change that re-opens the
+/// channel. BOTH are worth pinning; NEITHER is "a decider that can move
+/// declining to". The canary below moves 68 times by varying the SEED — the
+/// one input this cell holds constant — so it is evidence about a different
+/// channel, not this cell's non-vacuity. The structural guarantee here is the
+/// signature; this cell is the tripwire that notices if that guarantee is
+/// ever traded away.
 #[test]
 fn t2_the_family_weighted_agents_decision_never_moves_under_hidden_variation() {
     let rules = Rules::standard();
@@ -329,6 +336,10 @@ fn a_policy_seeded_from_a_hidden_fingerprint_is_caught() {
     let mut caught_leaky = 0usize;
     let mut caught_honest = 0usize;
 
+    // COUPLED to `run_decision_invariance_sweep`'s constants (2P seed 0, 150
+    // points, variant rng seed 4) — this loop counts where the sweep asserts,
+    // so it re-implements rather than calls it; if the sweep's constants move,
+    // move these with them (T11 review F2).
     for (truth, view, _legal) in decision_points(2, 0, 150, &rules) {
         let truth_fp = removed_pile_fingerprint(&truth);
         let leaky_base = policy_agent_pick(policy, HONEST_AGENT_SEED ^ truth_fp, &view, &rules);
@@ -365,10 +376,16 @@ fn a_policy_seeded_from_a_hidden_fingerprint_is_caught() {
          ({compared} comparisons, fingerprint moved in {fingerprint_moved}) — it cannot be trusted \
          to flag a real one"
     );
+    // STRUCTURALLY zero, not an independent noise control (T11 review F1): the
+    // honest pick's inputs are identical across the comparison by
+    // construction, so this restates the same determinism the t2 cell pins.
+    // The attribution of the 68 catches still holds — the leaky pick differs
+    // from the honest one ONLY in seed provenance — it just holds by
+    // construction rather than by this counter's evidence.
     assert_eq!(
         caught_honest, 0,
-        "the honest agent was flagged {caught_honest} times over the same points, so the catch \
-         above is not attributable to the seed's provenance"
+        "the honest agent was flagged {caught_honest} times over the same points — either the \
+         shipped chain went nondeterministic or the comparison's inputs are no longer identical"
     );
 }
 
@@ -441,6 +458,13 @@ fn weight_vector_at(
 /// > a hidden variant moved the weighted policy's weight vector
 /// > left:  Some(WeightVector { retreat_ppm: 166667, recovery_min_of: 5, routes_len: 19, retreat_len: 8 })
 /// > right: Some(WeightVector { retreat_ppm: 166667, recovery_min_of: 5, routes_len: 12, retreat_len: 8 })
+///
+/// DIVISION OF LABOUR (T11 review F3): `retreat_len` rides in this vector for
+/// completeness but the FamilyWeighted retreat branch weights over the
+/// `on_board` MAP, which is not in this struct — that half is covered by the
+/// honesty extension's `Vec<MoveFamily>` equality, whose `MovementRetreat`
+/// payload IS the map. The two cells jointly discharge spec §4's per-family
+/// invariance; neither alone does.
 #[test]
 fn family_weighted_weight_vector_is_invariant_under_hidden_variation() {
     let rules = Rules::standard();
@@ -453,6 +477,10 @@ fn family_weighted_weight_vector_is_invariant_under_hidden_variation() {
     let mut world_comparisons = 0usize;
     let mut differing_worlds = 0usize;
 
+    // COUPLED to `run_decision_invariance_sweep`'s constants (2P seed 0, 150
+    // points, variant rng seed 4) — this loop counts where the sweep asserts,
+    // so it re-implements rather than calls it; if the sweep's constants move,
+    // move these with them (T11 review F2).
     for (truth, view, _legal) in decision_points(2, 0, 150, &rules) {
         let Some(base) = weight_vector_at(policy, &truth, &rules) else {
             continue;
