@@ -1578,8 +1578,23 @@ mod tests {
 
         // A ghost target id gets the MEMBERSHIP message, not the Canal one, and
         // not the assistant-count message — the placeability gate sits ahead of
-        // the count check (the `choices.rs` two-message precedent).
+        // the count check (the `choices.rs` two-message precedent). The fixture
+        // SEEDS an assistant on the ghost area (an invariant-violating state,
+        // deliberately: without it, generator and predicate would refuse for
+        // the assistant-count reason and these assertions would pass vacuously
+        // — PR #11 review) so the membership branch is the deciding one at ALL
+        // THREE surfaces, making "refused at generator, predicate and apply"
+        // test-pinned rather than code-read-true.
+        m.players[0].assistants.on_board.insert(AreaId(99), 1);
         let ghost = Move::UseMercenary { country: Country::English, target_area: AreaId(99) };
+        assert!(
+            !get_legal_moves(&m, &rules).iter().any(|mv| matches!(
+                mv,
+                Move::UseMercenary { target_area, .. } if *target_area == AreaId(99)
+            )),
+            "the generator omits the off-board target even with an assistant seeded there",
+        );
+        assert!(!legal(&m, &rules, &ghost), "the predicate rejects the off-board target");
         assert_eq!(
             apply_move_unchecked(&m, &ghost, &rules),
             Err(MoveError::RuleViolation("Area does not exist on this board")),
