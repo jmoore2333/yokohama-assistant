@@ -401,6 +401,19 @@ impl Session {
         &self.record
     }
 
+    /// Stamp WHO plays each seat into the record (core's `set_run_seats`,
+    /// spec §5) -- the wizard's one call, made before the `Repl` is built so
+    /// that `Repl::new` can read the table back out of provenance on a fresh
+    /// game exactly as it does on a resumed one.
+    ///
+    /// Replay-inert by construction (core pins it): `run` is not an input to
+    /// `replay`, `state_digest` or `rules_hash`, so stamping it cannot move
+    /// this session's standing "state == replay(record)" invariant, and `undo`
+    /// (which clones the record and pops events) carries it along untouched.
+    pub fn set_run_seats(&mut self, seats: Vec<SeatProvenance>) {
+        self.record.set_run_seats(seats);
+    }
+
     /// The cached plain-words description of `record().events[i]`, computed
     /// against the state as of when that event happened (see the
     /// `event_descriptions` field doc comment) -- `Repl::log_tail` is the

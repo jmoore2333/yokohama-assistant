@@ -52,7 +52,15 @@ pub struct Repl {
     /// `hand` and `players` views (the kept starting order lives in the
     /// hand). Defaults ON in live mode -- the laptop gets passed around a
     /// real table -- and OFF in simulation. `privacy` toggles.
+    ///
+    /// It governs the HUMAN seats only. A bot's hand is masked whatever this
+    /// says (`seat_display`) -- see `bot.rs` for what that mask is and is not.
     pub privacy: bool,
+    /// Who plays each seat (Phase 3.2 Task 12, spec §9). Always read back out
+    /// of the record's run provenance in [`Repl::new`], so a fresh wizard game
+    /// and a resumed save take ONE path; empty (all-human) for every game the
+    /// wizard was not asked about, which makes every bot path below a no-op.
+    pub(crate) bots: crate::bot::BotSeats,
 }
 
 /// One line in the Movement phase's collapsed numbered list
@@ -137,13 +145,57 @@ pub struct StepOutput {
 /// dispatches to (see [`Repl::VIEW_MENU`]).
 type ViewEntry = (&'static str, fn(&mut Repl) -> StepOutput);
 
+/// What one `Session::apply` produced, before any prompt or pump is added --
+/// the shared currency of `Repl::apply_and_describe`'s two callers.
+enum ApplyOutcome {
+    /// Applied; carries `delta_summary`'s lines.
+    Applied(Vec<String>),
+    /// Not applied; carries the text to show (which, for a lockdown, is the
+    /// notice plus the postmortem dump -- `self.locked` is already set).
+    Failed(String),
+}
+
+/// Most bot moves one pump may apply before halting loudly (spec §9). A bot
+/// turn is many decision points -- tens, not hundreds -- so this is a runaway
+/// guard, not a budget: hitting it means a bot is not handing over, and the
+/// honest response is to stop with the game intact rather than spin.
+const PUMP_MOVE_CAP: usize = 200;
+
+/// Most bot moves the pump DESCRIBES on screen; the rest collapse to a pointer
+/// at `log`, which holds them all described against the state of the time.
+const BOT_LINE_CAP: usize = 10;
+
 impl Repl {
     pub fn new(session: crate::session::Session) -> Repl {
         // Restore a persisted lockdown (review §3): a session saved after a
         // desync/invariant fault carries `record.lockdown`, so a reload comes
         // back locked instead of silently playable again.
+        let mut session = session;
         let locked = session.is_locked();
         let privacy = matches!(session.mode, TrackingMode::Live);
+        // WHO plays each seat comes from the record, on every path. A resumed
+        // save and a wizard-built session are then indistinguishable here,
+        // which is what makes `resume_restores_bot_seats_from_provenance` a
+        // property of the construction rather than of the load code. Warnings
+        // ride `load_warnings`, the channel `main.rs` folds into the opening
+        // frame -- a seat this build cannot run must not go unmentioned.
+        let (mut bots, mut warnings) = crate::bot::BotSeats::from_provenance(session.record().run.as_ref());
+        // Bots are SIM ONLY (spec §9), enforced here rather than trusted: this
+        // driver's live tail never offers the question, so a live record naming
+        // a bot seat has been hand-edited -- and running one would put an agent
+        // in front of `observe`, which refuses a live `Unknown` seat, or worse
+        // wait on reveal choreography no bot can answer. Drop them, loudly.
+        if matches!(session.mode, TrackingMode::Live) {
+            let (without, dropped) = bots.without_bots();
+            if !dropped.is_empty() {
+                warnings.push(format!(
+                    "warning: this LIVE save names bot seat(s) {dropped:?}, which live tracking does not \
+                     support -- they resume as HUMAN seats, so you are playing them",
+                ));
+            }
+            bots = without;
+        }
+        session.load_warnings.extend(warnings);
         Repl {
             session,
             page: 0,
@@ -154,7 +206,21 @@ impl Repl {
             composed: true,
             show_panel: true,
             privacy,
+            bots,
         }
+    }
+
+    /// Per-seat panel presentation: a bot's hand is masked whatever `privacy`
+    /// says, a human's obeys the toggle, and bot seats badge.
+    pub(crate) fn seat_display(&self) -> render::SeatDisplay {
+        let seats = self.session.state().players.len();
+        let hide = (0..seats)
+            .map(|i| {
+                let seat = PlayerId::new(i as u8);
+                self.privacy || self.bots.is_bot(seat)
+            })
+            .collect();
+        render::SeatDisplay::new(hide, self.bots.flags())
     }
 
     /// Engage a lockdown: flip the in-memory `locked` flag AND persist the
@@ -349,9 +415,11 @@ impl Repl {
             ["quit"] | ["q"] => StepOutput { text: "bye\n".to_string(), quit: true },
             ["help"] => self.out_view(HELP_TEXT.to_string()),
             ["board"] => self.board_cmd(),
-            ["players"] => {
-                self.out_view(render::players_panel(self.session.state(), self.session.rules(), self.privacy))
-            }
+            ["players"] => self.out_view(render::players_panel(
+                self.session.state(),
+                self.session.rules(),
+                &self.seat_display(),
+            )),
             ["ports"] => self.out_view(render::ports_view(self.session.state(), self.session.rules())),
             ["labs"] => self.out_view(render::labs_view(self.session.state(), self.session.rules())),
             ["tracks"] => self.out_view(render::tracks_view(self.session.state())),
@@ -372,21 +440,7 @@ impl Repl {
                 self.page = 0;
                 self.out(String::new(), false)
             }
-            ["undo"] => match self.session.undo() {
-                Ok(warnings) => {
-                    self.page = 0;
-                    // Warnings ride the same visible channel `apply`'s delta
-                    // lines and the load warnings use -- the frame erases
-                    // anything printed outside this text (I3).
-                    let mut text = String::from("Undid last entry.\n");
-                    for w in warnings {
-                        text.push_str(&w);
-                        text.push('\n');
-                    }
-                    self.out(text, false)
-                }
-                Err(e) => self.out(format!("Cannot undo: {e}\n"), false),
-            },
+            ["undo"] => self.undo_cmd(),
             ["privacy"] => {
                 self.privacy = !self.privacy;
                 let word = if self.privacy { "HIDDEN" } else { "shown" };
@@ -925,7 +979,7 @@ impl Repl {
     const VIEW_MENU: [ViewEntry; 10] = [
         ("Board — tiles, presidents, assistants, buildings", |r| r.board_cmd()),
         ("Players — every player's public holdings in full", |r| {
-            let t = render::players_panel(r.session.state(), r.session.rules(), r.privacy);
+            let t = render::players_panel(r.session.state(), r.session.rules(), &r.seat_display());
             r.out_view(t)
         }),
         ("Port offer — the order cards on display", |r| {
@@ -1487,6 +1541,80 @@ impl Repl {
         self.finish_apply(mv, vec![])
     }
 
+    /// `undo`: pop the last entry, and -- with bots at the table -- keep going
+    /// back through the bots' whole trailing run, so one `undo` returns the
+    /// human to their own last decision instead of dropping them into the
+    /// middle of an opponent's turn (spec §9's MUST item 2).
+    ///
+    /// **The boundary is REPLAY-DERIVED, deliberately, not remembered.**
+    /// `RecordedEvent::Move` carries no seat, so who made an entry is knowable
+    /// only by rebuilding the state before it and reading `current_player` --
+    /// which `Session::undo` already does. Popping one at a time and looking is
+    /// therefore not a workaround: it is the only honest attribution available,
+    /// and it costs nothing in correctness that a remembered stack would gain,
+    /// while surviving save -> quit -> reload by construction (a stack dies
+    /// with the process; this is pinned by `undo_after_resume_still_unwinds`).
+    fn undo_cmd(&mut self) -> StepOutput {
+        let mut warnings = Vec::new();
+        let mut entries = 0usize;
+        // Set when the unwind ran out of log while still inside a bot run --
+        // i.e. nothing of the player's OWN was in it (undoing the opening pump
+        // is the reachable case). Worth distinguishing: the re-pump below puts
+        // the identical position back, so a report claiming to have undone
+        // "your last move" would describe a change the player cannot see.
+        let mut hit_the_bottom = false;
+        loop {
+            match self.session.undo() {
+                Ok(w) => {
+                    entries += 1;
+                    warnings.extend(w);
+                }
+                // Only the FIRST failure is an error: once something has been
+                // undone, running out of log mid-unwind is a boundary, not a
+                // fault.
+                Err(e) if entries == 0 => return self.out(format!("Cannot undo: {e}\n"), false),
+                Err(_) => {
+                    hit_the_bottom = true;
+                    break;
+                }
+            }
+            // The state now standing is the one the popped entry was made
+            // FROM, so its `current_player` names who made it. While that is a
+            // bot, there is more of the bot's run to unwind.
+            if !self.bots.is_bot(self.session.state().current_player) {
+                break;
+            }
+        }
+        self.page = 0;
+        let mut text = if hit_the_bottom {
+            format!(
+                "Nothing of your own to undo yet — this game opens with the bot's turn, and it replays \
+                 unchanged ({entries} entries).\n"
+            )
+        } else if entries == 1 {
+            String::from("Undid last entry.\n")
+        } else {
+            format!("Undid your last move and the bot's reply ({entries} entries).\n")
+        };
+        // Warnings ride the same visible channel `apply`'s delta lines and the
+        // load warnings use -- the frame erases anything printed outside this
+        // text (I3).
+        for w in warnings {
+            text.push_str(&w);
+            text.push('\n');
+        }
+        // Unwinding past every human entry can leave a BOT to move (undoing the
+        // opening pump is the reachable case). Re-pumping puts the game back at
+        // a human decision point, and does it deterministically: the decision
+        // seeds are a function of the event count, which is back where it was,
+        // so the bot replays the same line rather than inventing a new one.
+        let pump = self.pump_bots();
+        if !pump.is_empty() {
+            text.push_str(&pump);
+        }
+        self.out(text, false)
+    }
+
     /// Apply `mv` + `reveals` as one atomic group (`Session::apply`). On
     /// success, reset pagination and report the delta (plus a final-score
     /// table if the game just ended). On failure, an `ApplyError::Invariant`
@@ -1510,17 +1638,46 @@ impl Repl {
     /// false-positive desync lockdown against a board that was never
     /// touched.
     pub(crate) fn finish_apply_ex(&mut self, mv: Move, reveals: Vec<RecordedEvent>) -> (StepOutput, bool) {
-        match self.session.apply(mv, reveals) {
-            Ok(delta) => {
-                self.page = 0;
+        match self.apply_and_describe(mv, reveals) {
+            ApplyOutcome::Applied(delta) => {
                 let mut text = delta.join("\n");
-                if self.session.is_over() {
+                // Bot seats play HERE, inside the human's own step, so one
+                // input produces one screen showing the human's move, every
+                // bot reply to it, and the prompt that follows -- the second
+                // of the two pump call sites (spec §9; `main.rs` is the other).
+                let pump = self.pump_bots();
+                if !pump.is_empty() {
                     if !text.is_empty() {
+                        text.push('\n');
+                    }
+                    text.push_str(&pump);
+                }
+                // AFTER the pump: a bot's reply can be the move that ends the
+                // game, and the final table has to describe the finished game
+                // rather than the position the human handed over.
+                if self.session.is_over() {
+                    if !text.is_empty() && !text.ends_with('\n') {
                         text.push('\n');
                     }
                     text.push_str(&self.final_score_table());
                 }
                 (self.out(text, false), true)
+            }
+            ApplyOutcome::Failed(text) => (self.out(text, false), false),
+        }
+    }
+
+    /// Apply one move+reveals group through `Session::apply` and turn the
+    /// result into screen text, WITHOUT appending a prompt or running the bot
+    /// pump. The shared inner of `finish_apply_ex` (human input) and
+    /// `pump_bots` (bot moves), so both get identical apply semantics and
+    /// identical lockdown handling -- the two paths cannot drift on what an
+    /// invariant violation does.
+    fn apply_and_describe(&mut self, mv: Move, reveals: Vec<RecordedEvent>) -> ApplyOutcome {
+        match self.session.apply(mv, reveals) {
+            Ok(delta) => {
+                self.page = 0;
+                ApplyOutcome::Applied(delta)
             }
             Err(ApplyError::Invariant(msg)) => {
                 let warning = self.engage_lockdown(format!("invariant violation: {msg}"));
@@ -1530,16 +1687,149 @@ impl Repl {
                     text.push_str(&w);
                     text.push('\n');
                 }
-                (self.out(text, false), false)
+                ApplyOutcome::Failed(text)
             }
             // T13 rider (final-review cheap batch): a dedicated arm instead
             // of falling into the catch-all's "Illegal: {e}" phrasing, which
             // rendered ApplyError::GameOver's Display text ("the game is
             // already over") as the confusing "Illegal: the game is already
             // over".
-            Err(ApplyError::GameOver) => (self.out("game over — commands only\n".to_string(), false), false),
-            Err(e) => (self.out(format!("Illegal: {e}\n"), false), false),
+            Err(ApplyError::GameOver) => ApplyOutcome::Failed("game over — commands only\n".to_string()),
+            Err(e) => ApplyOutcome::Failed(format!("Illegal: {e}\n")),
         }
+    }
+
+    /// Play every consecutive bot seat from the current one until a human is to
+    /// move (spec §9's MUST item 1). Returns the text to show; never a prompt
+    /// (`out` owns that) and never a state change at a human decision point.
+    ///
+    /// Called from BOTH sites that can leave a bot to move: `main.rs` before
+    /// the opening prompt -- without which a bot on the start seat would never
+    /// move at all, since nothing else runs until the human types -- and
+    /// `finish_apply_ex`'s success arm.
+    pub fn pump_bots(&mut self) -> String {
+        self.pump_bots_with(&mut crate::bot::HonestChooser)
+    }
+
+    /// [`pump_bots`](Self::pump_bots) over an explicit chooser. The seam the
+    /// failure-shape tests drive: the honest chooser is supposed to make an
+    /// illegal proposal unreachable, and an unreachable path still needs its
+    /// handling pinned.
+    pub(crate) fn pump_bots_with(&mut self, chooser: &mut dyn crate::bot::BotChooser) -> String {
+        // The common case is a human to move, which this makes free -- the
+        // whole body below (a state clone included) would otherwise run on
+        // every applied move of an all-human game.
+        if !self.bots.is_bot(self.session.state().current_player) {
+            return String::new();
+        }
+        // ONE aggregate delta for the whole run (spec §9): a bot turn is many
+        // decision points, and a per-move delta block for each buries the
+        // human's own move under a screen of the opponent's bookkeeping.
+        let before = self.session.state().clone();
+        let mut moves: Vec<String> = Vec::new();
+        let mut halt: Option<String> = None;
+
+        while !self.locked && !self.session.is_over() {
+            let seat = self.session.state().current_player;
+            let Some(policy) = self.bots.policy_at(seat) else { break };
+            if moves.len() >= PUMP_MOVE_CAP {
+                halt = Some(format!(
+                    "BOT HALT — seat {} has applied {PUMP_MOVE_CAP} moves in one turn without handing over. \
+                     Stopping rather than looping; the game is intact, and `log` shows what it did.",
+                    seat.0,
+                ));
+                break;
+            }
+            let decision_seed = self.bots.decision_seed(self.session.record().events.len());
+            let chosen = chooser.choose(self.session.state(), self.session.rules(), seat, policy, decision_seed);
+            let mv = match chosen {
+                Ok(mv) => mv,
+                // A dead end is the policy honestly finding nothing: halt, do
+                // not lock down -- the session is still sound.
+                Err(crate::bot::BotError::DeadEnd(why)) => {
+                    halt = Some(format!("BOT HALT — seat {} has no move to make ({why}).", seat.0));
+                    break;
+                }
+                // A refused view or belief sample means the driver handed the
+                // agent something it cannot honestly play from. The only other
+                // option is privileged play, which is the thing this whole
+                // chain exists to prevent, so it is a fault.
+                Err(e) => {
+                    let reason = format!("bot seat {} could not decide honestly: {e}", seat.0);
+                    let warning = self.engage_lockdown(reason.clone());
+                    let mut text = format!("{}\n", paint(Tone::Warn, &format!("LOCKDOWN -- {reason}")));
+                    text.push_str(&self.lockdown_dump());
+                    if let Some(w) = warning {
+                        text.push_str(&w);
+                        text.push('\n');
+                    }
+                    halt = Some(text);
+                    break;
+                }
+            };
+            // Described against the state the move actually ran against, before
+            // it is applied -- the same rule `Session::apply` follows for the
+            // log cache.
+            let line = format!(
+                "Seat {} ({}) — {}",
+                seat.0,
+                render::color_name(self.session.state().current_player().color),
+                describe::describe_move(&mv, self.session.state(), self.session.rules()),
+            );
+            match self.apply_and_describe(mv, vec![]) {
+                ApplyOutcome::Applied(_) => moves.push(line),
+                ApplyOutcome::Failed(text) => {
+                    // The engine refused a move the bot proposed. `apply_and_
+                    // describe` already locked down if it was an invariant
+                    // violation; anything else (an illegal move above all) is
+                    // just as much a driver/engine fault HERE, because the bot
+                    // draws from the same engine surface the legal list comes
+                    // from -- so it gets the same treatment rather than the
+                    // "you typed something illegal" message a human would see.
+                    let mut out = text;
+                    if !self.locked {
+                        let reason = format!(
+                            "bot seat {} proposed a move the engine refused (the honest chain must \
+                             only ever produce legal moves)",
+                            seat.0,
+                        );
+                        let warning = self.engage_lockdown(reason.clone());
+                        out.push_str(&format!("{}\n", paint(Tone::Warn, &format!("LOCKDOWN -- {reason}"))));
+                        out.push_str(&self.lockdown_dump());
+                        if let Some(w) = warning {
+                            out.push_str(&w);
+                            out.push('\n');
+                        }
+                    }
+                    halt = Some(out);
+                    break;
+                }
+            }
+        }
+
+        let mut text = String::new();
+        // At most BOT_LINE_CAP described moves, then a pointer at `log`, which
+        // carries the full history described against the state of the time.
+        for line in moves.iter().take(BOT_LINE_CAP) {
+            text.push_str(line);
+            text.push('\n');
+        }
+        if moves.len() > BOT_LINE_CAP {
+            text.push_str(&format!("…{} more — type `log`\n", moves.len() - BOT_LINE_CAP));
+        }
+        if !moves.is_empty() {
+            for line in render::delta_summary(&before, self.session.state(), self.session.rules()) {
+                text.push_str(&line);
+                text.push('\n');
+            }
+        }
+        if let Some(h) = halt {
+            text.push_str(&h);
+            if !text.ends_with('\n') {
+                text.push('\n');
+            }
+        }
+        text
     }
 
     /// `reveal <seat> <card>`: make a live-tracked opponent's hidden
@@ -1602,11 +1892,15 @@ impl Repl {
         // Shares render::section, like every other view (item 4), rather than
         // hand-rolling its own dash run.
         let mut out = render::section(&format!("Hand: {:?}", p.color));
-        if self.privacy {
-            let n = p.order_cards_in_hand.len();
+        // Per-seat, like the panel: `hand` shows the CURRENT player's cards,
+        // and with bots at the table that is a human at every prompt -- but
+        // a halted pump can leave a bot to move, and the bot's cards are not
+        // the human's to read.
+        let seats = self.seat_display();
+        if seats.hides_hand(p.id) {
             out.push_str(&format!(
-                "  {n} card{} (hidden — 'privacy' to toggle)\n",
-                if n == 1 { "" } else { "s" }
+                "  {}\n",
+                render::masked_hand(p.order_cards_in_hand.len(), seats.is_bot(p.id))
             ));
         } else if p.order_cards_in_hand.is_empty() {
             out.push_str("  (empty)\n");
@@ -3991,5 +4285,342 @@ mod tests {
         let mut r = repl_2p(4);
         let out = r.step("help");
         assert!(out.text.contains("sub-prompt"), "{}", out.text);
+    }
+
+    // ---- Phase 3.2 Task 12: play vs bot (spec §9) ----
+
+    use crate::bot::{BotChooser, BotError, BotSeats};
+
+    /// A 2P sim `Repl` whose seats in `bot_seats` are played by the shipped
+    /// family-weighted rung. Built the way the wizard builds one -- provenance
+    /// stamped on the session, `Repl::new` reading its bot seats back out of it
+    /// -- so every fixture here exercises the SAME restoration path a resumed
+    /// save does, rather than a test-only constructor that could drift from it.
+    fn repl_2p_bots(seed: u64, bot_seats: &[u8]) -> Repl {
+        let mut seats = vec![None; 2];
+        for s in bot_seats {
+            seats[*s as usize] = Some(RolloutPolicy::FAMILY_WEIGHTED_DEFAULT);
+        }
+        let bots = BotSeats::new(seats, 0x5A17_3B0C_9E44_D218);
+        let mut session = Session::new_sim(
+            GameConfig::for_player_count(2),
+            seed,
+            vec![StartingOrderChoice::Keep(0), StartingOrderChoice::Keep(0)],
+            Rules::standard(),
+        )
+        .unwrap();
+        session.set_run_seats(bots.seat_provenance());
+        Repl::new(session)
+    }
+
+    /// MUST item 1 (spec §9), call site A: a bot on the START seat must have
+    /// played before the human ever sees a prompt -- `main.rs` pumps before
+    /// printing the opening frame. Without it a bot on seat 0 never moves at
+    /// all, because nothing else in the REPL runs until the human types.
+    #[test]
+    fn pump_plays_the_start_seat_before_the_first_prompt() {
+        let mut r = repl_2p_bots(4, &[0]);
+        assert_eq!(r.session.state().current_player.0, 0, "fixture: seat 0 opens");
+
+        let text = r.pump_bots();
+
+        assert!(!r.session.record().events.is_empty(), "the start-seat bot must have moved: {text}");
+        assert_eq!(r.session.state().current_player.0, 1, "the pump must hand over to the human seat");
+        assert!(text.contains("Seat 0"), "each bot move is reported with its seat: {text}");
+        assert!(!r.locked, "an ordinary bot turn must not lock the session down: {text}");
+    }
+
+    /// Walk the current seat's turn forward through the SESSION until exactly
+    /// one decision is left before control passes to the next seat, and hand
+    /// that last move back. A turn is many decision points for ONE player, so
+    /// a fixture that wants to watch a hand-over has to reach the end of a turn
+    /// first; the last move is left for the caller to make through the REPL,
+    /// which is the code path these tests are actually about.
+    fn advance_to_the_handover_move(r: &mut Repl) -> Move {
+        for _ in 0..400 {
+            let legal = r.session.legal();
+            let mv = legal.first().expect("a decision point with at least one move").clone();
+            let after = apply_move_unchecked(r.session.state(), &mv, r.session.rules()).expect("legal applies");
+            if after.current_player != r.session.state().current_player {
+                return mv;
+            }
+            r.session.apply(mv, vec![]).expect("legal applies");
+        }
+        panic!("the turn never handed over within 400 decisions");
+    }
+
+    /// The pump is a no-op at a human decision point, and it never appends a
+    /// prompt of its own -- the prompt belongs to `out`, which its callers run
+    /// after it (double-prompting is exactly what a second prompt source causes).
+    #[test]
+    fn pump_stops_at_a_human_seat_and_appends_no_prompt() {
+        let mut r = repl_2p_bots(4, &[1]);
+        assert!(r.pump_bots().is_empty(), "no bot to play while the human is to move");
+        assert!(r.session.record().events.is_empty(), "nothing may be applied at a human seat");
+
+        // The human finishes their turn; the pump then plays seat 1 inside the
+        // same step (`finish_apply` is the commit path every numbered pick,
+        // grammar and picker confirmation funnels through).
+        let handover = advance_to_the_handover_move(&mut r);
+        let out = r.finish_apply(handover, vec![]);
+
+        assert!(out.text.contains("Seat 1"), "the bot's reply rides the human's step output: {}", out.text);
+        assert_eq!(r.session.state().current_player.0, 0, "control comes back to the human");
+        assert_eq!(
+            out.text.matches("\n> ").count(),
+            1,
+            "exactly one prompt closes the step -- the pump must not add its own: {}",
+            out.text
+        );
+    }
+
+    /// MUST item 2: one `undo` unwinds the whole trailing bot run PLUS the
+    /// human's own last move, so undo means what a player thinks it means. The
+    /// boundary is REPLAY-DERIVED (pop, rebuild, look at `current_player`),
+    /// never a remembered stack -- `RecordedEvent::Move` carries no seat.
+    #[test]
+    fn undo_unwinds_the_bot_run_by_replay_derived_attribution() {
+        let mut r = repl_2p_bots(4, &[1]);
+        let handover = advance_to_the_handover_move(&mut r);
+        let before_human_move = r.session.record().events.len();
+        r.finish_apply(handover, vec![]);
+        let unwound = r.session.record().events.len() - before_human_move;
+        assert!(unwound >= 2, "fixture: the human's move plus at least one bot move, got {unwound}");
+        assert_eq!(r.session.state().current_player.0, 0, "fixture: the bot handed back");
+
+        let out = r.step("undo");
+
+        assert_eq!(
+            r.session.record().events.len(),
+            before_human_move,
+            "the human's own move must come back too, and nothing before it: {}",
+            out.text
+        );
+        assert_eq!(r.session.state().current_player.0, 0, "the human is to move again");
+        assert!(
+            out.text.contains(&format!("Undid your last move and the bot's reply ({unwound} entries).")),
+            "the report must state the honest entry count ({unwound}): {}",
+            out.text
+        );
+    }
+
+    /// The same unwind after save -> quit -> reload. This is the case a
+    /// remembered boundary stack cannot serve (the stack dies with the process),
+    /// which is why attribution is derived from the rebuilt state instead.
+    #[test]
+    fn undo_after_resume_still_unwinds() {
+        let mut r = repl_2p_bots(4, &[1]);
+        let handover = advance_to_the_handover_move(&mut r);
+        let before_human_move = r.session.record().events.len();
+        r.finish_apply(handover, vec![]);
+        let unwound = r.session.record().events.len() - before_human_move;
+        assert!(unwound >= 2, "fixture: the human's move plus a bot reply");
+        let path = std::env::temp_dir().join(format!("yokohama_bot_resume_{}.json", std::process::id()));
+        r.session.save(&path).expect("save");
+
+        let mut resumed = Repl::new(Session::load(&path, Rules::standard()).expect("load"));
+        let out = resumed.step("undo");
+
+        assert_eq!(resumed.session.record().events.len(), before_human_move, "{}", out.text);
+        assert_eq!(resumed.session.state().current_player.0, 0);
+        assert!(
+            out.text.contains(&format!("({unwound} entries)")),
+            "the resumed unwind must report the same count: {}",
+            out.text
+        );
+        std::fs::remove_file(&path).ok();
+    }
+
+    /// `undo` with a bot on the START seat and no human move yet: the unwind
+    /// runs out of log inside the bot's opening turn, the re-pump replays that
+    /// turn from the same decision seeds, and the position is identical. The
+    /// report has to SAY that rather than claim to have taken back a move the
+    /// player never made -- otherwise it describes a change nobody can see.
+    #[test]
+    fn undo_before_the_human_has_moved_reports_nothing_of_theirs_and_replays_the_same_turn() {
+        let mut r = repl_2p_bots(4, &[0]);
+        r.pump_bots();
+        let opening = r.session.record().events.clone();
+        assert!(!opening.is_empty(), "fixture: the start-seat bot opened the game");
+
+        let out = r.step("undo");
+
+        assert!(
+            out.text.contains("Nothing of your own to undo yet"),
+            "the report must not claim a move the player never made: {}",
+            out.text
+        );
+        assert_eq!(
+            r.session.record().events,
+            opening,
+            "the same decision seeds must replay the same opening turn"
+        );
+        assert_eq!(r.session.state().current_player.0, 1, "and the human is still the one to move");
+    }
+
+    /// The `hand:` line of the players view for `seat`.
+    fn panel_hand_line(panel: &str, seat: u8) -> String {
+        let key = format!("(seat {seat}):");
+        let start = panel.find(&key).unwrap_or_else(|| panic!("no seat {seat} in panel:\n{panel}"));
+        panel[start..]
+            .lines()
+            .find(|l| l.trim_start().starts_with("hand:"))
+            .unwrap_or_else(|| panic!("no hand line after seat {seat}:\n{panel}"))
+            .to_string()
+    }
+
+    /// MUST item 3: a bot's hand holds its unfulfilled starting order, and
+    /// `privacy` defaults OFF in sim -- so the flag alone would print the bot's
+    /// private card to the player it is playing against. The mask is PER SEAT:
+    /// bot hands are always hidden, the human's still obeys the toggle.
+    #[test]
+    fn bot_hand_is_masked_regardless_of_privacy() {
+        let mut r = repl_2p_bots(4, &[1]);
+        assert!(!r.privacy, "fixture: sim opens with privacy off");
+
+        let open = r.step("players").text;
+        assert!(panel_hand_line(&open, 0).contains('O'), "the human's own hand shows: {}", panel_hand_line(&open, 0));
+        assert!(
+            panel_hand_line(&open, 1).contains("hidden"),
+            "the bot's hand must be masked even with privacy off: {}",
+            panel_hand_line(&open, 1)
+        );
+
+        // The REASON differs, and it has to: `privacy` does not reveal a bot's
+        // hand, so telling the player it toggles would be a false promise.
+        assert!(
+            panel_hand_line(&open, 1).contains("bot seat"),
+            "a bot's mask must name the bot, not the toggle: {}",
+            panel_hand_line(&open, 1)
+        );
+
+        r.step("privacy");
+        let hidden = r.step("players").text;
+        assert!(
+            panel_hand_line(&hidden, 0).contains("'privacy' to toggle"),
+            "the toggle still governs the human seat"
+        );
+        assert!(panel_hand_line(&hidden, 1).contains("bot seat"), "the bot stays masked, for its own reason");
+    }
+
+    /// A chooser that proposes whatever it was built with -- the seam that lets
+    /// a test drive the failure shapes the honest chooser is supposed to make
+    /// unreachable.
+    struct FixedChooser(Result<Move, BotError>);
+
+    impl BotChooser for FixedChooser {
+        fn choose(
+            &mut self,
+            _state: &GameState,
+            _rules: &Rules,
+            _seat: PlayerId,
+            _policy: RolloutPolicy,
+            _decision_seed: u64,
+        ) -> Result<Move, BotError> {
+            match &self.0 {
+                Ok(mv) => Ok(mv.clone()),
+                Err(e) => Err(BotError::DeadEnd(e.to_string())),
+            }
+        }
+    }
+
+    /// Failure shape 1 (spec §9): a bot move the engine's own legal list refuses
+    /// is a driver/engine fault, not a mis-entry -- it gets the `Invariant`
+    /// treatment (lockdown, with the reason on screen), never a silent skip or a
+    /// fallback to some other move.
+    #[test]
+    fn bot_illegal_pick_locks_down_with_reason() {
+        let mut r = repl_2p_bots(4, &[0]);
+        // Nobody owns the Textile Mill at setup, and the opening phase is not an
+        // additional-action phase either: this is refused on both counts.
+        let mut rogue = FixedChooser(Ok(Move::UseSpinningMill));
+
+        let text = r.pump_bots_with(&mut rogue);
+
+        assert!(r.locked, "an illegal bot proposal must lock the session down: {text}");
+        assert!(text.contains("LOCKDOWN"), "{text}");
+        assert!(text.contains("seat 0"), "the reason must name the seat: {text}");
+        assert!(r.session.is_locked(), "the lockdown must persist into the record");
+        assert!(r.session.record().events.is_empty(), "nothing may be applied");
+    }
+
+    /// Failure shape 2: a dead end (the policy has no move to make) halts the
+    /// pump loudly and leaves the session PLAYABLE -- it is not a corruption.
+    #[test]
+    fn bot_dead_end_halts_the_pump_without_locking_down() {
+        let mut r = repl_2p_bots(4, &[0]);
+        let mut dead = FixedChooser(Err(BotError::DeadEnd("no move".to_string())));
+
+        let text = r.pump_bots_with(&mut dead);
+
+        assert!(!r.locked, "a dead end is a halt, not a fault: {text}");
+        assert!(text.contains("BOT HALT"), "the halt must be visible: {text}");
+        assert!(text.contains("seat 0"), "and must name the seat: {text}");
+        assert!(r.session.record().events.is_empty());
+    }
+
+    /// Resume restores WHO plays each seat from the record's run provenance --
+    /// the same field the arena writes (spec §5), read back through the one
+    /// construction path.
+    #[test]
+    fn resume_restores_bot_seats_from_provenance() {
+        let r = repl_2p_bots(4, &[1]);
+        let path = std::env::temp_dir().join(format!("yokohama_bot_prov_{}.json", std::process::id()));
+        r.session.save(&path).expect("save");
+
+        let resumed = Repl::new(Session::load(&path, Rules::standard()).expect("load"));
+
+        assert!(!resumed.bots.is_bot(PlayerId::new(0)), "seat 0 was the human");
+        assert!(resumed.bots.is_bot(PlayerId::new(1)), "seat 1 must come back a bot");
+        assert_eq!(
+            resumed.bots.seed(),
+            r.bots.seed(),
+            "the bot's stream seed rides the record, so a resumed game plays the same line"
+        );
+        let seats = &resumed.session.record().run.as_ref().expect("provenance").seats;
+        assert_eq!(seats[0].controller, yokohama_core::CONTROLLER_HUMAN);
+        assert_eq!(seats[1].controller, RolloutPolicy::FAMILY_WEIGHTED_DEFAULT.as_str());
+        assert!(seats.iter().all(|s| s.observation == yokohama_core::OBSERVATION_VIEW));
+        std::fs::remove_file(&path).ok();
+    }
+
+    /// Bots are SIM ONLY (spec §9). A live record that names one — which this
+    /// driver cannot write, so it has been edited — resumes with that seat
+    /// HUMAN and a warning on the opening frame, rather than putting an agent
+    /// in front of a view `observe` will refuse.
+    #[test]
+    fn a_live_record_naming_a_bot_seat_resumes_it_as_human_with_a_warning() {
+        let bots = BotSeats::new(vec![None, Some(RolloutPolicy::FAMILY_WEIGHTED_DEFAULT)], 3);
+        let mut session = Session::new_live(
+            GameConfig::for_player_count(2),
+            21,
+            SetupObservations::default(),
+            vec![StartingOrderChoice::Keep(0), StartingOrderChoice::Keep(0)],
+            Rules::standard(),
+        )
+        .unwrap();
+        session.set_run_seats(bots.seat_provenance());
+
+        let r = Repl::new(session);
+
+        assert!(!r.bots.any(), "no seat may be played by a bot in live mode");
+        assert!(
+            r.session.load_warnings.iter().any(|w| w.contains("LIVE") && w.contains("HUMAN")),
+            "the demotion must be visible: {:?}",
+            r.session.load_warnings
+        );
+    }
+
+    /// Same `(bot seed, event count)` in, same move out: the decision seed is a
+    /// pure function of a PUBLIC counter and the recorded seed, which is what
+    /// makes a resumed game replay the bot's own line rather than a fresh one.
+    #[test]
+    fn bot_decisions_are_reproducible_from_the_recorded_seed() {
+        let mut a = repl_2p_bots(11, &[0]);
+        let mut b = repl_2p_bots(11, &[0]);
+        a.pump_bots();
+        b.pump_bots();
+        assert_eq!(a.session.record().events, b.session.record().events);
+        assert!(!a.session.record().events.is_empty(), "fixture: the bot actually moved");
     }
 }

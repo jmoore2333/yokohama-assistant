@@ -15,6 +15,89 @@ use crate::describe;
 use crate::input::tech_name;
 use crate::style::{paint, GoodKind, Tone};
 
+/// Per-seat presentation the panels need from the REPL (Phase 3.2 Task 12):
+/// whose hand CONTENTS may be printed, and which seats a bot plays.
+///
+/// Per SEAT rather than one flag for the table because a mixed game is the
+/// point: with a bot at the table, `privacy` OFF has to keep meaning "show ME
+/// my cards" without also printing the bot's unfulfilled starting order to the
+/// player it is playing against.
+///
+/// **What the hand mask is and is not.** It closes the panel channel, which is
+/// where a bot's private card would otherwise sit in front of a human every
+/// single frame. It is NOT an information barrier: in sim mode the human ran
+/// the setup wizard (and saw every seat's deal preview there) and can `undo`
+/// and `log`. Honest UI hygiene, not a guarantee.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct SeatDisplay {
+    /// Seat index -> hide this seat's hand contents.
+    hide_hand: Vec<bool>,
+    /// Seat index -> a bot plays this seat.
+    bot: Vec<bool>,
+}
+
+impl SeatDisplay {
+    /// Every seat open and human -- what every caller outside the REPL wants,
+    /// and what the pre-bot `players_panel(.., false)` meant.
+    pub fn open(seats: usize) -> Self {
+        Self { hide_hand: vec![false; seats], bot: vec![false; seats] }
+    }
+
+    /// Every seat's hand hidden, every seat human -- the privacy toggle ON with
+    /// no bots at the table.
+    pub fn hidden(seats: usize) -> Self {
+        Self { hide_hand: vec![true; seats], bot: vec![false; seats] }
+    }
+
+    /// `hide_hand[i]` / `bot[i]` per seat, in `PlayerId` order.
+    pub fn new(hide_hand: Vec<bool>, bot: Vec<bool>) -> Self {
+        Self { hide_hand, bot }
+    }
+
+    /// Must this seat's hand contents stay masked? A seat past the end of the
+    /// table reads as HIDDEN -- the safe direction if a caller ever hands over
+    /// a table built for a different game.
+    pub fn hides_hand(&self, seat: PlayerId) -> bool {
+        self.hide_hand.get(usize::from(seat.0)).copied().unwrap_or(true)
+    }
+
+    /// Is a bot playing this seat? An unknown seat is NOT badged -- claiming a
+    /// bot that was never configured is the misleading direction.
+    pub fn is_bot(&self, seat: PlayerId) -> bool {
+        self.bot.get(usize::from(seat.0)).copied().unwrap_or(false)
+    }
+}
+
+/// The panels' bot marker. Deliberately short: appended to the END of a
+/// player's name line it costs 6 columns on a line with 11 columns of slack in
+/// `compact_panel` (23 used of 40) and 9 in `compact_panel_oneline` (99 used of
+/// the 108-column 4P board it stacks under), so a badged frame is exactly as
+/// wide as an unbadged one and guide §2's published widths do not move.
+/// `bot_badge_is_width_neutral_in_every_panel` is that claim's pin.
+const BOT_BADGE: &str = " [bot]";
+
+/// `BOT_BADGE` for a bot seat, nothing for a human one.
+fn bot_badge(seats: &SeatDisplay, seat: PlayerId) -> &'static str {
+    if seats.is_bot(seat) {
+        BOT_BADGE
+    } else {
+        ""
+    }
+}
+
+/// A masked hand: the count, plus WHY it is masked. A bot's hand does not say
+/// "'privacy' to toggle" -- the toggle does not reveal it, and pointing a
+/// player at a control that will not do what the line promises is worse than
+/// saying nothing.
+pub(crate) fn masked_hand(cards: usize, is_bot: bool) -> String {
+    let plural = if cards == 1 { "" } else { "s" };
+    if is_bot {
+        format!("{cards} card{plural} (hidden — bot seat)")
+    } else {
+        format!("{cards} card{plural} (hidden — 'privacy' to toggle)")
+    }
+}
+
 /// Interior text width of one tile box; a full box adds 2 border columns.
 const TILE_W: usize = 16;
 /// Horizontal pitch between adjacent tile boxes in a row (boxes touch, so
@@ -233,7 +316,7 @@ pub fn labs_view(state: &GameState, rules: &Rules) -> String {
 /// passed around a live table regardless of the privacy flag; the full
 /// `players` view carries the detail. Player names paint in their colors
 /// after layout (plain twin is the width authority).
-pub fn compact_panel(state: &GameState, _rules: &Rules) -> String {
+pub fn compact_panel(state: &GameState, _rules: &Rules, seats: &SeatDisplay) -> String {
     let mut lines: Vec<(String, String)> = Vec::new();
     lines.push(("─ Players ".to_string(), "─ Players ".to_string()));
     for p in &state.players {
@@ -245,10 +328,14 @@ pub fn compact_panel(state: &GameState, _rules: &Rules) -> String {
         // 140-column frame budget) is unchanged. Pad from the PLAIN name length
         // -- the painted twin's escapes have zero display width (style.rs).
         let name_pad = " ".repeat(6usize.saturating_sub(name.chars().count()));
+        // The bot badge closes the line rather than sitting mid-row, so a
+        // badged seat cannot shift the yen/VP columns out of line with an
+        // unbadged one.
+        let badge = bot_badge(seats, p.id);
         lines.push((
-            format!("{marker}{} {name}{name_pad} {:>2} yen  {:>2} VP", p.id.0, p.money, p.victory_points),
+            format!("{marker}{} {name}{name_pad} {:>2} yen  {:>2} VP{badge}", p.id.0, p.money, p.victory_points),
             format!(
-                "{marker}{} {}{name_pad} {:>2} yen  {:>2} VP",
+                "{marker}{} {}{name_pad} {:>2} yen  {:>2} VP{badge}",
                 p.id.0,
                 paint(Tone::Player(p.color), name),
                 p.money,
@@ -318,7 +405,7 @@ pub fn compact_panel(state: &GameState, _rules: &Rules) -> String {
 ///
 /// Player names paint in their colors after layout, from the PLAIN name's
 /// length (style.rs's alignment rule), exactly as [`compact_panel`] does.
-pub fn compact_panel_oneline(state: &GameState) -> String {
+pub fn compact_panel_oneline(state: &GameState, seats: &SeatDisplay) -> String {
     let mut lines: Vec<(String, String)> = Vec::new();
     lines.push(("─ Players ".to_string(), "─ Players ".to_string()));
     for p in &state.players {
@@ -333,8 +420,9 @@ pub fn compact_panel_oneline(state: &GameState) -> String {
             PresidentLocation::InHand => "in hand".to_string(),
             PresidentLocation::OnBoard(area) => describe::area_label(state, area),
         };
+        let badge = bot_badge(seats, p.id);
         let tail = format!(
-            " {:>2} yen {:>2} VP  c{} s{} t{} f{} i{}  hand {}  asst h{} b{} w{}{}  built sh {} th {}  President: {}",
+            " {:>2} yen {:>2} VP  c{} s{} t{} f{} i{}  hand {}  asst h{} b{} w{}{}  built sh {} th {}  President: {}{badge}",
             p.money,
             p.victory_points,
             p.copper,
@@ -372,10 +460,11 @@ pub fn compact_panel_oneline(state: &GameState) -> String {
 /// order count, technology names, tokens/mercenaries, assistant/shophouse/
 /// trading-house counts by zone (hand/board/warehouse, built) plus the
 /// trading house's next Employment-Agency take cost, and President location.
-/// With `hide_hands` (the privacy flag, Task 6) hand CONTENTS mask to a
-/// count -- the kept starting order lives in the hand, and a live-table
-/// laptop gets passed around.
-pub fn players_panel(state: &GameState, rules: &Rules, hide_hands: bool) -> String {
+/// Hand CONTENTS mask to a count for any seat `seats` hides (the privacy flag,
+/// Task 6, now per-seat -- a bot's hand is always hidden, Phase 3.2 Task 12):
+/// the kept starting order lives in the hand, and a live-table laptop gets
+/// passed around.
+pub fn players_panel(state: &GameState, rules: &Rules, seats: &SeatDisplay) -> String {
     let mut out = section("Players");
     for p in &state.players {
         // The `(seat N)` label is the `reveal <seat>` key (item 7, third
@@ -383,13 +472,13 @@ pub fn players_panel(state: &GameState, rules: &Rules, hide_hands: bool) -> Stri
         // mapping the reveal command needs was learnable only from the wizard
         // transcript and this panel's ordering.
         out.push_str(&format!(
-            "{} (seat {}): {} yen  {} VP  c{} s{} t{} f{}  imports {}\n",
+            "{} (seat {}): {} yen  {} VP  c{} s{} t{} f{}  imports {}{}\n",
             player_prefix(p.color), p.id.0, p.money, p.victory_points, p.copper, p.silk, p.tea, p.seafood, p.imported_goods,
+            bot_badge(seats, p.id),
         ));
 
-        let hand = if hide_hands {
-            let n = p.order_cards_in_hand.len();
-            format!("{n} card{} (hidden — 'privacy' to toggle)", if n == 1 { "" } else { "s" })
+        let hand = if seats.hides_hand(p.id) {
+            masked_hand(p.order_cards_in_hand.len(), seats.is_bot(p.id))
         } else {
             let codes =
                 p.order_cards_in_hand.iter().map(|id| format!("O{:02}", id.0)).collect::<Vec<_>>().join(", ");
@@ -1435,6 +1524,17 @@ mod tests {
         test_state_np(2)
     }
 
+    /// The pre-bot default for `state`: every hand open, every seat human.
+    fn seats_open(state: &GameState) -> SeatDisplay {
+        SeatDisplay::open(state.players.len())
+    }
+
+    /// Every seat a bot (the badge fixtures' "worst case" for width).
+    fn seats_all_bots(state: &GameState) -> SeatDisplay {
+        let n = state.players.len();
+        SeatDisplay::new(vec![true; n], vec![true; n])
+    }
+
     /// A REAL generated board at `n` players (3P/4P carry a Canal tile; 2P
     /// does not), so topology-sensitive assertions run against the shipped
     /// geometry rather than an injected fixture.
@@ -1751,7 +1851,7 @@ mod tests {
     fn compact_panel_shows_public_info_and_marks_the_current_player() {
         let state = test_state_2p();
         let rules = Rules::standard();
-        let text = compact_panel(&state, &rules);
+        let text = compact_panel(&state, &rules, &seats_open(&state));
         assert!(text.starts_with("─ Players ─"), "{text}");
         assert!(text.contains(">0 Red"), "current player marked, seat 0: {text}");
         assert!(text.contains(" 1 Blue"), "other players unmarked, seat 1: {text}");
@@ -1772,15 +1872,15 @@ mod tests {
         let state = test_state_2p(); // Red = seat 0 (current), Blue = seat 1
         let rules = Rules::standard();
 
-        let full = players_panel(&state, &rules, false);
+        let full = players_panel(&state, &rules, &seats_open(&state));
         assert!(full.contains("(seat 0)"), "players view labels seat 0: {full}");
         assert!(full.contains("(seat 1)"), "players view labels seat 1: {full}");
 
-        let compact = compact_panel(&state, &rules);
+        let compact = compact_panel(&state, &rules, &seats_open(&state));
         assert!(compact.contains(">0 Red"), "compact: current player Red is seat 0: {compact}");
         assert!(compact.contains(" 1 Blue"), "compact: Blue is seat 1: {compact}");
 
-        let oneline = compact_panel_oneline(&state);
+        let oneline = compact_panel_oneline(&state, &seats_open(&state));
         assert!(oneline.contains(">0 Red"), "oneline: seat 0 Red: {oneline}");
         assert!(oneline.contains(" 1 Blue"), "oneline: seat 1 Blue: {oneline}");
     }
@@ -1793,7 +1893,7 @@ mod tests {
         let rules = Rules::standard();
         state.players[0].assistants.on_church = 2;
         state.players[0].assistants.on_achievements = 1;
-        let text = compact_panel(&state, &rules);
+        let text = compact_panel(&state, &rules, &seats_open(&state));
         assert!(text.contains("locked 3"), "{text}");
     }
 
@@ -1806,7 +1906,7 @@ mod tests {
     #[test]
     fn compact_panel_oneline_is_one_row_per_player_with_the_public_fields() {
         let state = test_state_np(4);
-        let text = compact_panel_oneline(&state);
+        let text = compact_panel_oneline(&state, &seats_open(&state));
         assert!(text.starts_with("─ Players ─"), "{text}");
         assert_eq!(
             text.lines().count(),
@@ -1823,7 +1923,10 @@ mod tests {
         let mut locked_state = state.clone();
         locked_state.players[0].assistants.on_church = 2;
         locked_state.players[0].assistants.on_achievements = 1;
-        assert!(compact_panel_oneline(&locked_state).contains("locked 3"), "{text}");
+        assert!(
+            compact_panel_oneline(&locked_state, &seats_open(&locked_state)).contains("locked 3"),
+            "{text}"
+        );
     }
 
     /// The one-line panel paints names after layout, like its taller twin.
@@ -1831,9 +1934,9 @@ mod tests {
     fn colored_compact_panel_oneline_strips_back_to_plain() {
         let state = test_state_np(4);
         crate::style::force(true);
-        let colored = compact_panel_oneline(&state);
+        let colored = compact_panel_oneline(&state, &seats_open(&state));
         crate::style::force(false);
-        let plain = compact_panel_oneline(&state);
+        let plain = compact_panel_oneline(&state, &seats_open(&state));
         assert_ne!(colored, plain, "forced mode must actually paint something");
         assert_eq!(strip_ansi(&colored), plain);
     }
@@ -1844,9 +1947,9 @@ mod tests {
         let state = test_state_2p();
         let rules = Rules::standard();
         crate::style::force(true);
-        let colored = compact_panel(&state, &rules);
+        let colored = compact_panel(&state, &rules, &seats_open(&state));
         crate::style::force(false);
-        let plain = compact_panel(&state, &rules);
+        let plain = compact_panel(&state, &rules, &seats_open(&state));
         assert_ne!(colored, plain, "forced mode must actually paint something");
         assert_eq!(strip_ansi(&colored), plain);
     }
@@ -1855,7 +1958,7 @@ mod tests {
     fn players_panel_lists_each_player_by_color_and_money() {
         let state = test_state_2p();
         let rules = Rules::standard();
-        let v = players_panel(&state, &rules, false);
+        let v = players_panel(&state, &rules, &seats_open(&state));
         assert!(v.contains("Red"), "{v}");
         assert!(v.contains("Blue"), "{v}");
         assert!(v.contains("3 yen"), "{v}");
@@ -1869,11 +1972,69 @@ mod tests {
     fn players_panel_masks_hand_contents_when_hidden() {
         let state = test_state_2p();
         let rules = Rules::standard();
-        let open = players_panel(&state, &rules, false);
+        let open = players_panel(&state, &rules, &seats_open(&state));
         assert!(open.contains("hand: O"), "open mode shows codes: {open}");
-        let masked = players_panel(&state, &rules, true);
+        let masked = players_panel(&state, &rules, &SeatDisplay::hidden(state.players.len()));
         assert!(!masked.contains("hand: O"), "masked mode must hide codes: {masked}");
         assert!(masked.contains("1 card (hidden"), "count survives masking: {masked}");
+    }
+
+    /// T12: the mask is PER SEAT, so one seat's hand can be open while
+    /// another's is not -- the mixed human/bot table the sub-phase exists for.
+    #[test]
+    fn players_panel_masks_one_seat_while_another_stays_open() {
+        let state = test_state_2p();
+        let rules = Rules::standard();
+        let mixed = players_panel(&state, &rules, &SeatDisplay::new(vec![false, true], vec![false, true]));
+        let seat0 = mixed.split("(seat 1)").next().expect("seat 0 section");
+        let seat1 = &mixed[mixed.find("(seat 1)").expect("seat 1 section")..];
+        assert!(seat0.contains("hand: O"), "seat 0 stays open: {seat0}");
+        assert!(seat1.contains("hidden"), "seat 1 is masked: {seat1}");
+        assert!(seat1.contains("[bot]"), "and badged: {seat1}");
+        assert!(!seat0.contains("[bot]"), "the human seat is not badged: {seat0}");
+    }
+
+    /// T12 (SHOULD item): the bot badge is WIDTH-NEUTRAL in both compact
+    /// panels -- it rides the end of a player's name line, which has slack in
+    /// both layouts (23 of 40 columns used in `compact_panel`; 99 of the 4P
+    /// board's 108 in `compact_panel_oneline`). This is what keeps guide §2's
+    /// published frame widths true of a game with bots in it, and keeps
+    /// `guide_sync`'s frame pins -- which measure a bot-free `Repl` -- from
+    /// having to be re-derived every time the badge changes. Measured on the
+    /// widest case (every seat badged) at every player count.
+    #[test]
+    fn bot_badge_is_width_neutral_in_every_panel() {
+        let rules = Rules::standard();
+        for n in [2u8, 3, 4] {
+            let state = test_state_np(n);
+            let widest = |s: &str| s.lines().map(|l| l.chars().count()).max().unwrap_or(0);
+
+            let plain = compact_panel(&state, &rules, &seats_open(&state));
+            let badged = compact_panel(&state, &rules, &seats_all_bots(&state));
+            assert!(badged.contains("[bot]"), "the badge must actually render at {n}P: {badged}");
+            assert_eq!(
+                widest(&plain),
+                widest(&badged),
+                "the badge widened the {n}P compact panel:\n{badged}"
+            );
+
+            // The one-line fold is rendered ONLY under a board wider than 100
+            // columns (`screen::wrap`) -- in practice the 4P board -- so that
+            // is the width it must not push past, whatever count built it.
+            let stacking_board = board_grid(&test_state_np(4))
+                .lines()
+                .next()
+                .map(|l| l.chars().count())
+                .unwrap_or(0);
+            let badged1 = compact_panel_oneline(&state, &seats_all_bots(&state));
+            assert!(badged1.contains("[bot]"), "{badged1}");
+            assert!(
+                widest(&badged1) <= stacking_board,
+                "the badged one-line panel ({}) must not push past the {stacking_board}-column board it \
+                 stacks under ({n}P seats):\n{badged1}",
+                widest(&badged1),
+            );
+        }
     }
 
     /// Owner scope item 10 (sufficiency): the shared mercenary SUPPLY piles
@@ -1929,7 +2090,7 @@ mod tests {
             ("tracks", tracks_view(&state)),
             ("sites", sites_view(&state, &rules)),
             ("goals", achievements_view(&state, &rules)),
-            ("players", players_panel(&state, &rules, false)),
+            ("players", players_panel(&state, &rules, &seats_open(&state))),
         ] {
             assert!(text.starts_with("─ "), "view '{name}' must open with a rule header: {text}");
         }
@@ -1974,7 +2135,7 @@ mod tests {
         state.players[0].trading_houses.in_hand = 1;
         state.players[0].trading_houses.in_warehouse -= 1;
 
-        let text = players_panel(&state, &rules, false);
+        let text = players_panel(&state, &rules, &seats_open(&state));
         assert!(text.contains("assistants: hand"), "{text}");
         assert!(text.contains("shophouses: hand"), "{text}");
         assert!(text.contains("trading:"), "{text}");
@@ -2611,7 +2772,7 @@ mod tests {
         }
         let total = state.players[0].assistants.total();
 
-        let panel = players_panel(&state, &rules, false);
+        let panel = players_panel(&state, &rules, &seats_open(&state));
         let line = panel
             .lines()
             .find(|l| l.contains("assistants:"))
@@ -2672,7 +2833,7 @@ mod tests {
         state.players[0].mercenaries.available.insert(Country::English, 1);
         state.players[0].mercenaries.used.insert(Country::French, 2);
 
-        let panel = players_panel(&state, &rules, false);
+        let panel = players_panel(&state, &rules, &seats_open(&state));
         let line = panel
             .lines()
             .find(|l| l.contains("mercenaries"))
@@ -2785,9 +2946,9 @@ mod tests {
         let state = test_state_2p();
         let rules = Rules::standard();
         crate::style::force(true);
-        let colored = players_panel(&state, &rules, false);
+        let colored = players_panel(&state, &rules, &seats_open(&state));
         crate::style::force(false);
-        let plain = players_panel(&state, &rules, false);
+        let plain = players_panel(&state, &rules, &seats_open(&state));
         assert_ne!(colored, plain, "forced mode must actually paint something");
         assert_eq!(strip_ansi(&colored), plain);
     }

@@ -1,6 +1,7 @@
 //! Phase-2 CLI game driver: Session/REPL/wizard over yokohama-core
 //! (design docs/plans/2026-07-18-phase2-cli-driver-design.md).
 
+pub mod bot;
 pub mod describe;
 pub(crate) mod input;
 pub mod render;

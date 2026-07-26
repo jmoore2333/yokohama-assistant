@@ -43,6 +43,12 @@ fn main() {
         opening.push_str(warning);
         opening.push('\n');
     }
+    // Bot pump, call site A (spec §9): a bot on the START seat has to move
+    // before the human ever sees a prompt -- nothing else in the REPL runs
+    // until the human types, so without this it would never move at all. A
+    // no-op with no bots, and on a resumed save mid-bot-turn it finishes that
+    // turn before handing over.
+    opening.push_str(&repl.pump_bots());
     opening.push_str(&repl.prompt());
     print!("{}", yokohama_cli::screen::wrap(&repl, &opening));
     std::io::stdout().flush().ok();

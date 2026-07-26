@@ -99,9 +99,10 @@ pub fn wrap(repl: &Repl, body: &str) -> String {
     let board = render::board_grid(state);
     let board_width = board.lines().next().map(visible_width).unwrap_or(0);
 
+    let seats = repl.seat_display();
     let mut stage = if repl.show_panel {
         if board_width <= 100 {
-            join_side_by_side(&board, &render::compact_panel(state, repl.session.rules()), 2)
+            join_side_by_side(&board, &render::compact_panel(state, repl.session.rules(), &seats), 2)
         } else {
             // Stacked below the board, VERTICAL space is the scarce
             // resource, not horizontal: the frame is already >= 108 columns
@@ -114,7 +115,7 @@ pub fn wrap(repl: &Repl, body: &str) -> String {
             if !s.is_empty() && !s.ends_with('\n') {
                 s.push('\n');
             }
-            s.push_str(&render::compact_panel_oneline(state));
+            s.push_str(&render::compact_panel_oneline(state, &seats));
             s
         }
     } else {

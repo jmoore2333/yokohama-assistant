@@ -203,6 +203,64 @@ fn ask_save_path(input: &mut dyn Iterator<Item = String>, out: &mut dyn FnMut(&s
     })
 }
 
+/// `Bot seats?` -- sim only (spec §9: `observe` refuses a live `Unknown`
+/// seat, and reveal choreography would deadlock on a card a bot cannot read).
+///
+/// Blank is the default and means "none", so the answer costs an Enter for
+/// anyone who does not want a bot. At least one seat must stay human: a
+/// bot-vs-bot spectator mode is explicitly out of scope for v1, and a wizard
+/// that let you build one would produce a game with no one to prompt.
+///
+/// The bot seed is DRAWN, not asked: it is a full-`u64` stream key, which is
+/// not something to type at a prompt, and it is echoed + recorded in the
+/// record's run provenance so a game stays reproducible from its save alone.
+/// It comes from `SeedSchedule::from_os_entropy`, the constructor that owns
+/// the entropy rule for bot-facing seeds (core's `game/seeds.rs`), rather than
+/// from a second local derivation that could drift from it.
+fn ask_bots(
+    input: &mut dyn Iterator<Item = String>,
+    out: &mut dyn FnMut(&str),
+    players: u8,
+) -> Result<crate::bot::BotSeats, String> {
+    let mut seats: Option<Vec<Option<RolloutPolicy>>> = None;
+    ask(
+        input,
+        out,
+        &format!(
+            "Bot seats? (blank for none, or seat numbers 0-{} e.g. '1' or '0 2' — sim only, one seat must stay human)",
+            players - 1
+        ),
+        &mut |s: &str| -> Result<(), String> {
+            let mut chosen = vec![None; players as usize];
+            for tok in s.split_whitespace() {
+                let seat: u8 = tok.parse().map_err(|_| format!("'{tok}' is not a seat number"))?;
+                if seat >= players {
+                    return Err(format!("seat must be 0-{}", players - 1));
+                }
+                chosen[seat as usize] = Some(RolloutPolicy::FAMILY_WEIGHTED_DEFAULT);
+            }
+            if chosen.iter().all(Option::is_some) {
+                return Err("at least one seat must stay human (bot-vs-bot is not in this version)".to_string());
+            }
+            seats = Some(chosen);
+            Ok(())
+        },
+    )?;
+    let seats = seats.unwrap(); // `ask` returned Ok(()) only after this was set
+    // A seed is drawn only when there is a bot to key with it -- an all-human
+    // table records a full set of human seats and no stream at all. The vector
+    // stays `players` long either way, so provenance always describes every
+    // seat rather than an empty run.
+    let bot_seed = if seats.iter().any(Option::is_some) {
+        let (_schedule, seed) = SeedSchedule::from_os_entropy();
+        out(&format!("bot seed: {seed}\n"));
+        seed
+    } else {
+        0
+    };
+    Ok(crate::bot::BotSeats::new(seats, bot_seed))
+}
+
 /// `Seat <n>: keep card 0 or 1?` -- shared by the sim tail and a live
 /// "known" seat.
 fn ask_keep(input: &mut dyn Iterator<Item = String>, out: &mut dyn FnMut(&str), seat: u8) -> Result<u8, String> {
@@ -596,6 +654,7 @@ struct SimWizardState {
     config: GameConfig,
     pending: PendingSetup,
     choices: Vec<StartingOrderChoice>,
+    bots: crate::bot::BotSeats,
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -623,7 +682,16 @@ fn run_sim_tail(
         choices.push(StartingOrderChoice::Keep(keep));
     }
 
-    let mut ws = SimWizardState { players, colors, start_player, seed, save_path, config, pending, choices };
+    // Asked AFTER the deals, so handing a seat to a bot never changes which
+    // questions the setup asked or what they meant: the operator sets the
+    // table (including each seat's kept card), and the bot takes the seat over
+    // from its first MOVE. That also means the operator has already seen a bot
+    // seat's deal preview -- see `bot.rs` on what the panel's hand mask is and
+    // is not.
+    let bots = ask_bots(input, out, players)?;
+
+    let mut ws =
+        SimWizardState { players, colors, start_player, seed, save_path, config, pending, choices, bots };
 
     loop {
         out(&render_sim_summary(&ws));
@@ -648,6 +716,10 @@ fn run_sim_tail(
 
     let mut session = Session::new_sim(ws.config, ws.seed, ws.choices, rules)?;
     session.save_path = Some(std::path::PathBuf::from(ws.save_path));
+    // Stamp WHO plays each seat BEFORE the Repl is built: `Repl::new` reads
+    // its bot table back out of provenance, so a fresh game and a resumed save
+    // take one path (and every save this session writes carries the labels).
+    session.set_run_seats(ws.bots.seat_provenance());
     Ok(crate::repl::Repl::new(session))
 }
 
@@ -703,7 +775,14 @@ fn perform_sim_edit(
             let keep = ask_sim_deal(input, out, seat, &ws.pending, rules)?;
             ws.choices[seat as usize] = StartingOrderChoice::Keep(keep);
         }
-        _ => return Err(format!("'{section}' is not an editable section (colors/seed/save/deal <seat>)")),
+        // Re-asks the whole question (and re-draws the seed when the new
+        // answer has any bot in it), exactly like every other section here:
+        // "re-collect, don't patch" is the rule that keeps a stale answer from
+        // surviving an edit.
+        Some("bots") => {
+            ws.bots = ask_bots(input, out, ws.players)?;
+        }
+        _ => return Err(format!("'{section}' is not an editable section (colors/seed/save/deal <seat>/bots)")),
     }
     Ok(())
 }
@@ -717,6 +796,20 @@ fn render_sim_summary(ws: &SimWizardState) -> String {
     out.push_str(&format!("start seat: {}\n", ws.start_player.0));
     out.push_str(&format!("seed: {}\n", ws.seed));
     out.push_str(&format!("save path: {}\n", ws.save_path));
+    let bot_seats: Vec<String> = (0..ws.players)
+        .filter(|s| ws.bots.is_bot(PlayerId::new(*s)))
+        .map(|s| s.to_string())
+        .collect();
+    if bot_seats.is_empty() {
+        out.push_str("bots: none\n");
+    } else {
+        out.push_str(&format!(
+            "bots: seat {} playing {} (seed {})\n",
+            bot_seats.join(", "),
+            RolloutPolicy::FAMILY_WEIGHTED_DEFAULT.as_str(),
+            ws.bots.seed(),
+        ));
+    }
     for (seat, choice) in ws.choices.iter().enumerate() {
         if let StartingOrderChoice::Keep(k) = choice {
             out.push_str(&format!("Seat {seat} keep: card {k}\n"));
@@ -1362,6 +1455,7 @@ mod tests {
         let (repl, transcript) = feed(&[
             "sim", "2", "red", "blue", "0", "42", "", // mode players colors start seed savepath(default)
             "0", "1",                                  // keep choices for seats 0 and 1
+            "",                                        // bot seats: none (T12)
             "confirm",                                 // review/edit step (design §5.5 item 3)
         ]);
         let repl = repl.unwrap();
@@ -1384,6 +1478,7 @@ mod tests {
         let (repl, _transcript) = feed(&[
             "sim", "2", "blue", "red", "1", "43", "", // mode players colors(seat0=blue,seat1=red) start=1 seed savepath(default)
             "0", "1",                                  // keep choices for seats 0 and 1
+            "",                                        // bot seats: none (T12)
             "confirm",                                 // review/edit step (design §5.5 item 3)
         ]);
         let repl = repl.unwrap();
@@ -1616,6 +1711,7 @@ mod tests {
             "sim", "2", "red", "blue", "0", "605", "",
             "bogus", "still-bad", "nope", "0", // seat 0: 3 invalid + 1 valid keep answer
             "1",                                // seat 1 keep
+            "",                                 // bot seats: none (T12)
             "confirm",
         ]);
         assert_eq!(transcript.matches("is not 0 or 1").count(), 3, "{transcript}");
@@ -2035,7 +2131,7 @@ mod tests {
     /// nothing for the operator to do and nothing to say.
     #[test]
     fn no_dummy_instruction_in_the_2p_sim_wizard() {
-        let (repl, transcript) = feed(&["sim", "2", "red", "blue", "0", "618", "", "0", "1", "confirm"]);
+        let (repl, transcript) = feed(&["sim", "2", "red", "blue", "0", "618", "", "0", "1", "", "confirm"]);
         repl.unwrap_or_else(|e| panic!("expected Ok, got Err({e}); transcript:\n{transcript}"));
         let said = transcript.to_lowercase();
         assert!(!said.contains("dummy"), "sim has no table to place pawns on\n{transcript}");
@@ -2268,6 +2364,7 @@ mod tests {
         let (repl, transcript) = feed(&[
             "sim", "2", "red", "blue", "0", "700", "",
             "0", "1",       // seat 0/1 keep choices, answered while looking at seed 700's deal
+            "",             // bot seats: none (T12)
             "edit seed",
             "701",          // change the seed -- the seed-700 preview the operator just answered against is now stale
             "0", "1",       // seat 0/1 keep choices must be RE-ASKED against seed 701's (different) deal
@@ -2294,5 +2391,85 @@ mod tests {
         assert_eq!(repl.session.record().seed, 701);
         std::fs::remove_file("yokohama-game-700.json").ok(); // save path was set before the seed edit; not retroactively renamed
         std::fs::remove_file("yokohama-game-701.json").ok(); // in case autosave fired under a different path
+    }
+
+    // ---- Phase 3.2 Task 12: the sim tail's bot-seats question ----
+
+    /// The question is asked, its answer reaches the built session (through
+    /// provenance, the one path a resumed save also takes), and `edit bots`
+    /// re-collects it like every other section -- including back to none.
+    #[test]
+    fn sim_tail_asks_bots_and_edit_bots_round_trips() {
+        let (repl, transcript) = feed(&[
+            "sim", "2", "red", "blue", "0", "801", "",
+            "0", "1",     // keep choices
+            "1",          // bots: seat 1
+            "edit bots",
+            "",           // ...and back to none
+            "confirm",
+        ]);
+        let repl = repl.unwrap_or_else(|e| panic!("expected Ok, got Err({e}); transcript:\n{transcript}"));
+
+        assert!(transcript.contains("Bot seats?"), "the question must be asked: {transcript}");
+        assert!(
+            transcript.contains("bots: seat 1 playing family-weighted"),
+            "the first review must name the bot seat and its policy: {transcript}"
+        );
+        assert!(transcript.contains("bot seed:"), "a drawn seed must be echoed: {transcript}");
+        assert!(
+            transcript.contains("bots: none"),
+            "after `edit bots` with a blank answer the review must say none: {transcript}"
+        );
+        let seats = &repl.session.record().run.as_ref().expect("provenance is always stamped").seats;
+        assert_eq!(seats.len(), 2);
+        assert!(
+            seats.iter().all(|s| s.controller == yokohama_core::CONTROLLER_HUMAN),
+            "the edited answer, not the first one, must reach the session: {seats:?}"
+        );
+        std::fs::remove_file("yokohama-game-801.json").ok();
+    }
+
+    /// A bot answer that survives to `confirm` reaches the session as
+    /// provenance -- name, knobs and stream seed, none of it hand-typed.
+    #[test]
+    fn sim_wizard_bot_answer_reaches_the_record_as_provenance() {
+        let (repl, transcript) = feed(&[
+            "sim", "2", "red", "blue", "0", "802", "",
+            "0", "1",
+            "1",          // bots: seat 1
+            "confirm",
+        ]);
+        let repl = repl.unwrap_or_else(|e| panic!("expected Ok, got Err({e}); transcript:\n{transcript}"));
+        let seats = &repl.session.record().run.as_ref().expect("provenance").seats;
+        assert_eq!(seats[0].controller, yokohama_core::CONTROLLER_HUMAN);
+        assert_eq!(seats[1].controller, RolloutPolicy::FAMILY_WEIGHTED_DEFAULT.as_str());
+        assert_eq!(seats[1].params["recovery_min_of"], 5, "{seats:?}");
+        assert!(seats[1].agent_seed.is_some(), "a bot seat records the stream it played on");
+        assert!(seats.iter().all(|s| s.observation == yokohama_core::OBSERVATION_VIEW));
+        std::fs::remove_file("yokohama-game-802.json").ok();
+    }
+
+    /// Bot-vs-bot is out of scope for v1 (spec §9), so the question refuses an
+    /// all-bot table and re-asks rather than building a game with nobody to
+    /// prompt. An out-of-range seat is refused the same way.
+    #[test]
+    fn bots_question_refuses_an_all_bot_table_and_a_bad_seat() {
+        let (repl, transcript) = feed(&[
+            "sim", "2", "red", "blue", "0", "803", "",
+            "0", "1",
+            "0 1",        // every seat a bot -- refused
+            "5",          // not a seat -- refused
+            "x",          // not a number -- refused
+            "0",          // fine: seat 0 bot, seat 1 human
+            "confirm",
+        ]);
+        let repl = repl.unwrap_or_else(|e| panic!("expected Ok, got Err({e}); transcript:\n{transcript}"));
+        assert!(transcript.contains("at least one seat must stay human"), "{transcript}");
+        assert!(transcript.contains("seat must be 0-1"), "{transcript}");
+        assert!(transcript.contains("is not a seat number"), "{transcript}");
+        let seats = &repl.session.record().run.as_ref().expect("provenance").seats;
+        assert_eq!(seats[0].controller, RolloutPolicy::FAMILY_WEIGHTED_DEFAULT.as_str());
+        assert_eq!(seats[1].controller, yokohama_core::CONTROLLER_HUMAN);
+        std::fs::remove_file("yokohama-game-803.json").ok();
     }
 }
