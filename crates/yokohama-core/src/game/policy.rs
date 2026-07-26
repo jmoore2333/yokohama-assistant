@@ -87,6 +87,7 @@ pub const POLICY_IMPL_VERSION: u32 = 1;
 /// One decision-point move-selection rule. Seat-blind and pure over
 /// `(handle, rng)` — an agent's identity lives in the agent, not here.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
 pub enum RolloutPolicy {
     /// Exactly uniform over the legal union (the fuzzer's policy).
     Uniform,
@@ -202,14 +203,22 @@ impl RolloutPolicy {
 
         // EXACT (the memoized enumeration's length), and reading it here is what
         // pays L10's single route DFS for the whole decision point — every
-        // branch below reads the same memo.
+        // branch below reads the same memo. Read UNCONDITIONALLY: even the
+        // weighted retreat branch pays the enumeration, because the L10 pin
+        // asserts DFS == 1 at on-board Movement points and the volume metric
+        // reads the same count. A 3.3 search wanting it lazy on the retreat
+        // branch owns that trade-off (and the pin's rewrite) itself.
         let routes_len = handle.size(routes).value() as usize;
 
         match *self {
             // Two-stage by EXACT sizes, collapsed into ONE draw: `j` uniform over
             // the union's size picks the family, and where it lands in the routes
             // block it doubles as the uniform index WITHIN it (conditional on
-            // `j < routes_len`, `j` is uniform on `0..routes_len`). So each route
+            // `j < routes_len`, `j` is uniform on `0..routes_len` — valid
+            // PRECISELY because the routes block occupies the contiguous
+            // prefix `[0, routes_len)` of the draw range; a non-contiguous
+            // mapping would need different index arithmetic — T5 review,
+            // probe 1). So each route
             // has probability `1/total` and each recovery vector
             // `(retreat_len/total)·(1/retreat_len) = 1/total` — exactly uniform
             // over the union, which is what the composition pin measures.
@@ -221,7 +230,7 @@ impl RolloutPolicy {
                 }
                 let j = rng.gen_range(0..total);
                 if j < routes_len {
-                    handle.iter(routes).nth(j)
+                    handle.get(routes, j)
                 } else {
                     Some(retreat_sample(on_board, rng))
                 }
@@ -240,7 +249,7 @@ impl RolloutPolicy {
             Self::RetreatAverse => {
                 let i = rng.gen_range(0..routes_len + 1);
                 if i < routes_len {
-                    handle.iter(routes).nth(i)
+                    handle.get(routes, i)
                 } else {
                     Some(retreat_move(on_board, &[]))
                 }
@@ -252,7 +261,19 @@ impl RolloutPolicy {
             // weighted retreat draw simply proceeds (`handle.sample` spends no
             // draw on an empty family — it tests emptiness before drawing).
             Self::FamilyWeighted { retreat_ppm, recovery_min_of } => {
-                if rng.gen_ratio(retreat_ppm, 1_000_000) {
+                // Knob hygiene (T5 review, probe 5): `gen_ratio` PANICS on a
+                // numerator above its denominator — an out-of-scale knob would
+                // otherwise kill an evaluation at its first Movement decision
+                // point while `descriptor()` had already recorded the bad
+                // value into provenance. Loud in debug; in release it clamps
+                // to always-retreat, the monotone reading of "more than
+                // certain". (`recovery_min_of = 0` normalises inside
+                // `weighted_retreat`, pinned by its test.)
+                debug_assert!(
+                    retreat_ppm <= 1_000_000,
+                    "FamilyWeighted.retreat_ppm = {retreat_ppm} exceeds the ppm scale (1_000_000)",
+                );
+                if rng.gen_ratio(retreat_ppm.min(1_000_000), 1_000_000) {
                     return Some(weighted_retreat(on_board, recovery_min_of, rng));
                 }
                 match handle.sample(routes, rng) {
@@ -270,9 +291,12 @@ impl RolloutPolicy {
 /// reachable. That full support is the whole point: retreat-aversion's zero
 /// interior coverage is the defect this rung exists to fix.
 ///
-/// `O(#areas)` draws and two allocations (the `≤17`-entry per-area `Vec` and the
-/// `recover` map [`retreat_move`] builds) whatever the family's `∏(count+1)` is
-/// — the property `action_source_worstcase.rs`'s pick bound meters at 442,368.
+/// `O(#areas)` draws and a HANDFUL of allocations — the pre-sized per-area
+/// `Vec` plus [`retreat_move`]'s `recover` map, whose `BTreeMap` nodes make the
+/// count data-dependent in `|recover|` (the T5 review measured 6–8 at the
+/// 17-area worst case before the pre-sizing below) — and O(1) in the family's
+/// `∏(count+1)`, which is the property `action_source_worstcase.rs`'s pick
+/// bound gates and records at 442,368.
 ///
 /// `min_of = 0` is treated as 1: a minimum over zero draws has no value, and
 /// refusing to build a move for a knob a caller could set is worse than the
@@ -283,21 +307,23 @@ fn weighted_retreat(
     rng: &mut impl Rng,
 ) -> Move {
     let draws = min_of.max(1);
-    let per_area: Vec<(AreaId, u8)> = on_board
-        .iter()
-        .filter(|&(_, &count)| count > 0)
-        .map(|(&area, &count)| {
-            let mut chosen = rng.gen_range(0..=count);
-            for _ in 1..draws {
-                chosen = chosen.min(rng.gen_range(0..=count));
-            }
-            (area, chosen)
-        })
-        .collect();
+    let mut per_area: Vec<(AreaId, u8)> = Vec::with_capacity(on_board.len());
+    for (&area, &count) in on_board.iter().filter(|&(_, &count)| count > 0) {
+        let mut chosen = rng.gen_range(0..=count);
+        for _ in 1..draws {
+            chosen = chosen.min(rng.gen_range(0..=count));
+        }
+        per_area.push((area, chosen));
+    }
     retreat_move(on_board, &per_area)
 }
 
 /// The defended-unreachable arm of [`RolloutPolicy::pick`]: a size-weighted draw
+/// — NOTE: no in-repo test exercises the RELEASE arm (the debug assertion fires
+/// first in every per-edit run); the T5 review exercised it externally over a
+/// doctored three-tag decision point — 108 distinct outcomes across the 108-move
+/// legal list, zero illegal draws — so its degrade-to-legal claim is verified,
+/// not assumed, but by a review harness rather than a gate.
 /// across an arbitrary family list, retrying past a family that turns out empty.
 ///
 /// No state reaches it today — `families()` emits 0, 1, or exactly Movement's
@@ -370,7 +396,11 @@ mod tests {
     const MASTER: u64 = 0xA3E1_2026_0726_0005;
 
     /// Worlds per driven cell. Played at BOTH 2P and 4P, so this is the plan's
-    /// "30 full driven games" — 15 worlds × 2 player counts.
+    /// "30 full driven games" = 15 worlds × {2P, 4P} (the plan's "seeds 0..30,
+    /// 2P+4P" reads ambiguously as 30 or 60 games; N buys REACHABILITY here,
+    /// not confidence — the identity is structural — so 30 games with floored
+    /// partitions is the load-bearing shape; T5 review probe 4 confirmed 120
+    /// independent games change nothing).
     const WORLDS: u32 = 15;
 
     // -- fixtures ----------------------------------------------------------
@@ -748,5 +778,69 @@ mod tests {
         assert_eq!((name.as_str(), version), ("family-weighted", POLICY_IMPL_VERSION));
         assert_eq!(params.get("retreat_ppm"), Some(&166_667));
         assert_eq!(params.get("recovery_min_of"), Some(&5));
+    }
+
+    /// `recovery_min_of = 0` normalises to 1 (a minimum over zero draws has no
+    /// value) — pinned so a refactor cannot silently turn it into a panic or a
+    /// max (T5 review probe 5). With count = 2 and k = 1 the per-area draw is
+    /// uniform over {0, 1, 2}; generous bounds, fixed seed, zero flake.
+    #[test]
+    fn recovery_min_of_zero_is_normalised_to_one() {
+        let on_board: BTreeMap<AreaId, u8> = [(AreaId::new(0), 2u8)].into_iter().collect();
+        let mut rng = ChaCha8Rng::seed_from_u64(0x5EED_2026_0726_0007);
+        let mut counts = [0u32; 3];
+        for _ in 0..30_000 {
+            match weighted_retreat(&on_board, 0, &mut rng) {
+                Move::ReturnPresidentToHand { recover } => {
+                    counts[recover.get(&AreaId::new(0)).copied().unwrap_or(0) as usize] += 1;
+                }
+                other => panic!("weighted_retreat built {other:?}"),
+            }
+        }
+        for (value, &seen) in counts.iter().enumerate() {
+            assert!(
+                (8_500..=11_500).contains(&seen),
+                "k=0 must draw uniformly (k=1): count {value} seen {seen} of 30,000",
+            );
+        }
+    }
+
+    /// An out-of-scale `retreat_ppm` is LOUD in debug (T5 review probe 5: it
+    /// previously panicked inside `rand` at the first Movement decision point,
+    /// after `descriptor()` had already recorded the bad knob). The release
+    /// behavior — clamp to always-retreat — is one visible line in the arm.
+    #[test]
+    #[cfg(debug_assertions)]
+    #[should_panic(expected = "exceeds the ppm scale")]
+    fn retreat_ppm_above_the_ppm_scale_is_loud_in_debug() {
+        let state = handle_movement_state();
+        let rules = Rules::empty_for_tests();
+        let handle = DecisionHandle::new(&state, &rules);
+        let mut rng = ChaCha8Rng::seed_from_u64(0);
+        let bad = RolloutPolicy::FamilyWeighted { retreat_ppm: 2_000_000, recovery_min_of: 5 };
+        let _ = bad.pick(&handle, &mut rng);
+    }
+
+    /// The serde tag of every rung IS its `as_str()` name (T5 review note: a
+    /// T8 implementer reaching for `serde_json::to_string` must emit the same
+    /// names the artifacts, the CLI parser, and provenance's `controller`
+    /// field use — `#[serde(rename_all = "kebab-case")]` is what makes that
+    /// true, and this pin is what keeps it true).
+    #[test]
+    fn serde_names_match_as_str_for_every_rung() {
+        for policy in [
+            RolloutPolicy::Uniform,
+            RolloutPolicy::RetreatAverse,
+            RolloutPolicy::FAMILY_WEIGHTED_DEFAULT,
+        ] {
+            let json = serde_json::to_string(&policy).expect("serializes");
+            assert!(
+                json.contains(policy.as_str()),
+                "serde form {json} must carry the as_str name {:?}",
+                policy.as_str(),
+            );
+            let back: RolloutPolicy = serde_json::from_str(&json).expect("round-trips");
+            assert_eq!(back, policy, "round-trip must be identity");
+        }
     }
 }

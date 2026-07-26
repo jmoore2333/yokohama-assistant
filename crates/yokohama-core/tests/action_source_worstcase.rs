@@ -574,6 +574,10 @@ fn route_reference_ceiling_recorded_and_enumeration_bounded() {
 
 /// Cell (a)'s bound: the route walk's `O(labels)` term (bound 2's shape) plus a
 /// constant for the handle, the family `Vec`, and the drawn move's own map.
+/// Since the T5-review R1 fix the serve itself is an O(1) memo index
+/// (`DecisionHandle::get`), so the labels term really is the WALK's — before
+/// that fix, `iter(..).nth(j)` cloned every skipped route and silently
+/// absorbed roughly half the coefficient at label-rich cells.
 fn pick_bound_on_board(routes_len: usize) -> usize {
     2 * routes_len + 128
 }
@@ -639,8 +643,12 @@ fn assert_retreat_ceiling(state: &GameState, rules: &Rules, label: &str) -> Move
 /// | (a) President on board | 1 walked label | 16 allocs, 601 B peak | 11 allocs, 545 B | 130 |
 /// | (b) President in hand | 17 `PlacePresident` | 15 allocs, 1,720 B peak | 9 allocs, 1,608 B | 128 |
 ///
-/// Both cells sit an order of magnitude under their bounds, which is the
-/// headroom the constants buy — they are not tuned to the measurement.
+/// Both cells sit an order of magnitude under their bounds AT THESE CELLS
+/// (routes_len 1 and 17) — with the indexed serve the headroom is roughly
+/// uniform in label count rather than collapsing at label-rich cells (T5
+/// review R1 measured the pre-fix formula at 1.11× headroom for 458 labels;
+/// post-fix the serve no longer scales with skipped labels). The constants are
+/// not tuned to the measurement.
 ///
 /// MUTATION-PROVEN 2026-07-26 by routing the metered pick through the exhaustive
 /// generator instead of the handle — `get_legal_moves(&s, &rules)` then taking

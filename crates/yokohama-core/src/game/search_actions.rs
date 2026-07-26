@@ -1055,6 +1055,13 @@ impl<'a> DecisionHandle<'a> {
     /// `family`'s moves, in the same order and with the same moves as
     /// [`iter_family`] — served from the memo where there is one, and paged
     /// lazily where the family must never be materialized.
+    ///
+    /// NOTE (T5 review R1): the memoized branch's `nth` is LINEAR — it clones
+    /// every skipped move, because `Cloned<slice::Iter>` carries no `nth`
+    /// specialisation — metered at ~47% of a RetreatAverse pick's allocations
+    /// at the dense 458-label cell. Indexed access wants [`get`](Self::get),
+    /// which is O(1) over a memo. (`retreat_iter`'s own `nth` is constant by
+    /// design; the caveat is about the memoized branch only.)
     pub fn iter(&self, family: &MoveFamily) -> impl Iterator<Item = Move> + '_ {
         match self.memoized(family) {
             Some(moves) => Box::new(moves.iter().cloned()) as Box<dyn Iterator<Item = Move> + '_>,
@@ -1074,6 +1081,19 @@ impl<'a> DecisionHandle<'a> {
             return None;
         }
         Some(moves[rng.gen_range(0..moves.len())].clone())
+    }
+
+    /// The move at `index` within `family` (`None` past the end) — O(1) over a
+    /// memoized family (indexes the memo directly) and delegating to the lazy
+    /// iterators otherwise, whose `nth` is constant for retreat by design.
+    /// Exists because `iter(...).nth(index)` on a memoized family clones every
+    /// skipped move (see `iter`'s note; T5 review R1). Same element as the
+    /// iterator path, and consumes no randomness.
+    pub fn get(&self, family: &MoveFamily, index: usize) -> Option<Move> {
+        match self.memoized(family) {
+            Some(moves) => moves.get(index).cloned(),
+            None => iter_family(self.state, self.rules, family).nth(index),
+        }
     }
 
     /// Σ of every family's size at this decision point, and whether an
