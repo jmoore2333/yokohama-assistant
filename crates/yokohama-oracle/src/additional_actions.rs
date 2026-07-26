@@ -14,7 +14,7 @@ use yokohama_core::{
     Rules, TechEffect,
 };
 
-use crate::common::owns_effect;
+use crate::common::{allows_pawn, owns_effect};
 
 /// §3.1: `EndAdditionalPhase` (always) plus any number of `UseMercenary` /
 /// `FulfillOrder` / `FulfillAchievement` / `UseUniversity` / `UseSpinningMill`,
@@ -173,8 +173,17 @@ pub(crate) fn order_fulfillable(
 /// Areas holding ≥1 own assistant and NOT the player's own President — the
 /// legal `UseMercenary` target areas (§3.1-2) [RB p.8: the specified area may
 /// not contain your own President; opponent presidents are irrelevant].
-/// Ascending `AreaId` (BTreeMap iteration order). Assistants can never stand
-/// in the Canal, so it is structurally excluded.
+/// Ascending `AreaId` (BTreeMap iteration order).
+///
+/// The area must also be one a pawn may OCCUPY [RB p.14; KB
+/// 01-rules-reference §Canal: "No pawns or tokens may be placed; the Canal is
+/// unplaceable and unstoppable (transit-only)"] — a mercenary acts at an area
+/// holding your own assistants, and no assistant ever stands in the Canal. That
+/// is a rule in its own right, checked here, NOT a corollary of the
+/// assistant-count test: the two coincide only while the no-pawns rule is taken
+/// on faith. This surface cannot inherit the walk's shared area predicate, and
+/// the reason is itself a rule — opponent Presidents block a walk [RB p.6] but
+/// never block a mercenary [RB p.8] — so the Canal exclusion is stated here.
 pub(crate) fn mercenary_targets(state: &GameState, player: PlayerId) -> Vec<AreaId> {
     let p = state.player(player);
     p.assistants
@@ -183,6 +192,7 @@ pub(crate) fn mercenary_targets(state: &GameState, player: PlayerId) -> Vec<Area
         .filter(|&(_, &n)| n >= 1)
         .map(|(&a, _)| a)
         .filter(|&a| p.president_location != PresidentLocation::OnBoard(a))
+        .filter(|&a| allows_pawn(state, a))
         .collect()
 }
 
@@ -324,6 +334,44 @@ mod tests {
         s.players[0].assistants.on_board.insert(AreaId::new(2), 3);
         s.players[0].president_location = PresidentLocation::OnBoard(AreaId::new(2));
         assert_eq!(mercenary_targets(&s, p0()), vec![AreaId::new(0)]);
+    }
+
+    #[test]
+    fn canal_is_never_a_mercenary_target_even_with_own_assistants_there() {
+        // [RB p.14; KB 01-rules-reference §Canal: "No pawns or tokens may be
+        // placed; the Canal is unplaceable and unstoppable (transit-only)"; the
+        // DL 2026-07-21 any-to-any re-ruling re-states it]. A mercenary target
+        // is an area holding your own assistant pawns [RB p.8], and the Canal
+        // is never a tile a pawn stands on — so it is never a target. This is
+        // the AREA-TYPE rule enforced in its own right, NOT a corollary of the
+        // own-assistant count: the two only coincide while the no-pawns rule is
+        // taken on faith, which is exactly what a rules oracle must not do.
+        let mut s = merc_ready_state();
+        // small_board: 0 CopperMine, 3 Customs, 4 CANAL. Own assistants at the
+        // Canal(4) and at Customs(3); President is elsewhere, at SilkMill(1).
+        s.players[0].assistants.on_board.insert(AreaId::new(4), 2);
+        s.players[0].assistants.on_board.insert(AreaId::new(3), 1);
+        assert_eq!(
+            mercenary_targets(&s, p0()),
+            vec![AreaId::new(0), AreaId::new(3)],
+            "the Canal is never a mercenary target [RB p.14], while its non-Canal \
+             siblings still are [RB p.8] — the anti-vacuity control"
+        );
+        let moves = additional_action_moves(&s, &Rules::empty_for_tests());
+        assert!(!moves.contains(&Move::UseMercenary {
+            country: Country::English,
+            target_area: AreaId::new(4)
+        }));
+        assert!(moves.contains(&Move::UseMercenary {
+            country: Country::English,
+            target_area: AreaId::new(3)
+        }));
+
+        // An AreaId absent from the layout is no tile at all — no pawn stands
+        // there, so it is no target either, however the count field reads.
+        let mut ghost = merc_ready_state();
+        ghost.players[0].assistants.on_board.insert(AreaId::new(9), 1);
+        assert_eq!(mercenary_targets(&ghost, p0()), vec![AreaId::new(0)]);
     }
 
     // --- §3.1-3 FulfillOrder [RB p.8] ---

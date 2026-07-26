@@ -160,6 +160,7 @@ pub fn is_move_legal(state: &GameState, mv: &Move, rules: &Rules, mode: PathMode
             additional
                 && !state.additional_action_state.mercenary_used
                 && p.mercenaries.available.get(country).copied().unwrap_or(0) > 0
+                && placeable(state, *target_area)
                 && p.assistants.in_area(*target_area) > 0
                 && p.president_location != PresidentLocation::OnBoard(*target_area)
         }
@@ -1495,6 +1496,109 @@ mod tests {
             assert!(!canonical(&w, &rules, m), "the predicate rejects it (Canonical): {m:?}");
             assert!(apply_move_unchecked(&w, m, &rules).is_err(), "and apply rejects it: {m:?}");
         }
+    }
+
+    /// The two NAMED Canal residuals from the rev-4 landing, ABSORBED
+    /// (owner ruling, Jeremy 2026-07-25; `SEMANTICS_REV` 4 -> 5). Both were
+    /// generator/apply-CONSISTENT permissive holes reachable only on
+    /// constructed fixtures — the Station teleport, whose entitlement function
+    /// never inspected `area_type`, and mercenary TARGET SELECTION, which
+    /// iterated `assistants.on_board` bespoke with no area-type filter and had
+    /// no `require_placeable_area` on the apply side either.
+    ///
+    /// This pins the ABSORBED world across all three surfaces the module cares
+    /// about — generator, predicate, apply — with anti-vacuity controls on the
+    /// non-Canal twin of each leg so a fixture that stopped offering the move
+    /// for some unrelated reason cannot pass.
+    #[test]
+    fn the_two_canal_residuals_are_absorbed_station_teleport_and_mercenary_target() {
+        // -- Station teleport --------------------------------------------------
+        // The token sits on area 1, with an own assistant on it: the whole
+        // entitlement (tech owned, token placed, own assistant present). The
+        // tolled crossings are what keep the FREE teleport a distinct label —
+        // the generator suppresses it when a zero-cost walk already reaches the
+        // station area.
+        let (mut s, rules) = station_diamond(&[(0, 1), (1, 3)], 1);
+        let teleport = Move::MovePresident { path: vec![], destination: AreaId(1) };
+        assert!(
+            get_legal_moves(&s, &rules).contains(&teleport),
+            "anti-vacuity: the free teleport onto a normal station area is emitted",
+        );
+        assert!(legal(&s, &rules, &teleport), "anti-vacuity: and the predicate accepts it");
+
+        s.board_layout.areas.get_mut(&AreaId(1)).expect("area 1").area_type = AreaType::Canal;
+        assert!(
+            !get_legal_moves(&s, &rules)
+                .iter()
+                .any(|m| matches!(m, Move::MovePresident { destination, .. } if *destination == AreaId(1))),
+            "meaning-pin: no move of any kind may land the President on a Canal-typed \
+             station area — the gate lives in can_teleport_to_station_with_tech",
+        );
+        assert!(!legal(&s, &rules, &teleport), "the predicate rejects it (RulesLegal)");
+        assert!(!canonical(&s, &rules, &teleport), "the predicate rejects it (Canonical)");
+        assert!(
+            get_legal_moves(&s, &rules).iter().any(
+                |m| matches!(m, Move::MovePresident { destination, .. } if *destination == AreaId(2))
+            ),
+            "anti-vacuity: the rest of the Movement phase is untouched",
+        );
+
+        // -- mercenary target selection ---------------------------------------
+        let rules = Rules::empty_for_tests();
+        let mut m = diamond(2, &[]);
+        m.turn_phase = TurnPhase::AdditionalActionFirst;
+        m.players[0].mercenaries.available.insert(Country::English, 1);
+
+        let onto_1 = Move::UseMercenary { country: Country::English, target_area: AreaId(1) };
+        let onto_2 = Move::UseMercenary { country: Country::English, target_area: AreaId(2) };
+        assert!(
+            get_legal_moves(&m, &rules).contains(&onto_1),
+            "anti-vacuity: a normal target area is offered",
+        );
+        assert!(legal(&m, &rules, &onto_1), "anti-vacuity: and the predicate accepts it");
+        assert!(apply_move_unchecked(&m, &onto_1, &rules).is_ok(), "anti-vacuity: and apply runs");
+
+        m.board_layout.areas.get_mut(&AreaId(1)).expect("area 1").area_type = AreaType::Canal;
+        assert!(
+            !get_legal_moves(&m, &rules).contains(&onto_1),
+            "meaning-pin: the generator no longer targets a mercenary at a Canal-typed area — \
+             a mercenary is an ACTION at an area a pawn stands on, and no pawn stands on the Canal",
+        );
+        assert!(
+            get_legal_moves(&m, &rules).contains(&onto_2),
+            "anti-vacuity: the other target areas are still offered",
+        );
+        assert!(!legal(&m, &rules, &onto_1), "the predicate rejects it (RulesLegal)");
+        assert!(!canonical(&m, &rules, &onto_1), "the predicate rejects it (Canonical)");
+        assert_eq!(
+            apply_move_unchecked(&m, &onto_1, &rules),
+            Err(MoveError::RuleViolation("The Canal is never a placeable area")),
+            "and the raw arm self-defends with the Canal rule by name",
+        );
+
+        // A ghost target id gets the MEMBERSHIP message, not the Canal one, and
+        // not the assistant-count message — the placeability gate sits ahead of
+        // the count check (the `choices.rs` two-message precedent). The fixture
+        // SEEDS an assistant on the ghost area (an invariant-violating state,
+        // deliberately: without it, generator and predicate would refuse for
+        // the assistant-count reason and these assertions would pass vacuously
+        // — PR #11 review) so the membership branch is the deciding one at ALL
+        // THREE surfaces, making "refused at generator, predicate and apply"
+        // test-pinned rather than code-read-true.
+        m.players[0].assistants.on_board.insert(AreaId(99), 1);
+        let ghost = Move::UseMercenary { country: Country::English, target_area: AreaId(99) };
+        assert!(
+            !get_legal_moves(&m, &rules).iter().any(|mv| matches!(
+                mv,
+                Move::UseMercenary { target_area, .. } if *target_area == AreaId(99)
+            )),
+            "the generator omits the off-board target even with an assistant seeded there",
+        );
+        assert!(!legal(&m, &rules, &ghost), "the predicate rejects the off-board target");
+        assert_eq!(
+            apply_move_unchecked(&m, &ghost, &rules),
+            Err(MoveError::RuleViolation("Area does not exist on this board")),
+        );
     }
 
     /// Station's own preconditions, from the predicate side: the token must be

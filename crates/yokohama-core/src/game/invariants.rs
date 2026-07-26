@@ -316,12 +316,20 @@ pub fn check_invariants(state: &GameState, rules: &Rules) -> Result<(), String> 
     // Board membership (design §4.1): every stored AreaId must exist on the
     // board. A record or bot that fabricates areas must fail loudly here.
     let on_board = |a: &crate::types::AreaId| state.board_layout.areas.contains_key(a);
-    // Pawn placeability (rev 4, PR #10 review): the whole rev-4 argument —
-    // "no reachable state seats a pawn on the Canal" — was audited, not gated;
-    // this gates it. Scoped to PAWNS (president + assistants) deliberately:
-    // `station_location` is left out so the check does not silently pre-empt
-    // the two NAMED residuals (Station teleport, mercenary target selection)
-    // the owner has yet to rule on.
+    // Placeability (rev 4, PR #10 review; WIDENED at rev 5): the rev-4
+    // argument — "no reachable state seats a pawn on the Canal" — was audited,
+    // not gated; this gates it. Rev 4 scoped it to PAWNS (president +
+    // assistants) so the check would not silently pre-empt the two NAMED
+    // residuals the owner had yet to rule on. He ruled (2026-07-25): both are
+    // absorbed, so the two fields those residuals named — `station_location`
+    // (a Station teleport lands a PAWN there) and `mercenary_target_area` (a
+    // mercenary ACTS there, at an area holding own assistants) — are now
+    // checked for placeability too, mirroring their new generator/apply gates.
+    //
+    // Still deliberately membership-only: `president_start_area` (a historical
+    // marker, not an occupancy) and the built-structure maps (a shophouse or
+    // trading house is not a pawn, and the Canal carries no building site — a
+    // fact the `BoardLayout` block below already checks directly).
     let pawn_placeable = |a: &crate::types::AreaId| {
         state.board_layout.areas.get(a).is_some_and(|c| c.area_type.allows_placement())
     };
@@ -357,6 +365,9 @@ pub fn check_invariants(state: &GameState, rules: &Rules) -> Result<(), String> 
         if !on_board(&a) {
             return Err(format!("station token on non-board area {:?}", a));
         }
+        if !pawn_placeable(&a) {
+            return Err(format!("station token on non-placeable area {:?}", a));
+        }
     }
     if let Some(a) = state.president_start_area {
         if !on_board(&a) {
@@ -373,6 +384,9 @@ pub fn check_invariants(state: &GameState, rules: &Rules) -> Result<(), String> 
     if let Some(a) = state.mercenary_target_area {
         if !on_board(&a) {
             return Err(format!("mercenary_target_area is non-board area {:?}", a));
+        }
+        if !pawn_placeable(&a) {
+            return Err(format!("mercenary_target_area is non-placeable area {:?}", a));
         }
     }
     for a in state.board_layout.five_power_tokens.keys() {
@@ -694,6 +708,66 @@ mod tests {
         let mut s = state.clone();
         s.board_layout.five_power_tokens.insert(ghost, None);
         assert!(check_invariants(&s, &rules).is_err(), "ghost 5-power token area must fail");
+    }
+
+    /// Placeability, not just membership, for the two token/marker fields that
+    /// name an area a PAWN OR ACTION occupies (rev 5, 2026-07-25 owner ruling
+    /// absorbing the two Canal residuals): `station_location` and
+    /// `mercenary_target_area`. Both were membership-only before, deliberately,
+    /// so the invariant would not pre-empt a ruling that had not been made; it
+    /// has been made, so the gate follows the ruling.
+    ///
+    /// Corruption legs, not organic ones: the station token is placed only via
+    /// the `allows_placement`-filtered `ChooseStationPlace`, and a mercenary
+    /// target now passes `require_placeable_area` on the way in — so this fires
+    /// only on a fabricated or tampered state, which is exactly what
+    /// `check_invariants` exists to catch.
+    #[test]
+    fn canal_typed_station_and_mercenary_target_areas_violate_invariants() {
+        use crate::types::AreaType;
+        let (state, rules) = golden_standard_game();
+        assert!(check_invariants(&state, &rules).is_ok(), "control: the golden game is clean");
+
+        // Re-type an area that holds nothing else, so ONLY the field under test
+        // can be the catch.
+        let quiet = quiet_area(&state);
+
+        let mut s = state.clone();
+        s.station_location = Some(quiet);
+        assert!(check_invariants(&s, &rules).is_ok(), "control: a placeable station area is fine");
+        s.board_layout.areas.get_mut(&quiet).unwrap().area_type = AreaType::Canal;
+        let e = check_invariants(&s, &rules).unwrap_err();
+        assert!(e.contains("station token on non-placeable area"), "{e}");
+
+        let mut s = state.clone();
+        s.mercenary_target_area = Some(quiet);
+        assert!(check_invariants(&s, &rules).is_ok(), "control: a placeable target area is fine");
+        s.board_layout.areas.get_mut(&quiet).unwrap().area_type = AreaType::Canal;
+        let e = check_invariants(&s, &rules).unwrap_err();
+        assert!(e.contains("mercenary_target_area is non-placeable area"), "{e}");
+    }
+
+    /// A real, placeable golden-board area that carries no PAWN and no built
+    /// structure — the clauses that would otherwise fire before the two under
+    /// test. (A building site on the area is harmless here: its Canal clause
+    /// lives in the later `BoardLayout` block, so the field under test is still
+    /// what catches first.)
+    fn quiet_area(state: &GameState) -> AreaId {
+        state
+            .board_layout
+            .areas
+            .iter()
+            .find(|(a, c)| {
+                c.area_type.allows_placement()
+                    && state.players.iter().all(|p| {
+                        p.president_location != crate::types::PresidentLocation::OnBoard(**a)
+                            && !p.assistants.on_board.contains_key(a)
+                            && !p.shophouses.built.contains_key(a)
+                            && !p.trading_houses.built.contains(a)
+                    })
+            })
+            .map(|(a, _)| *a)
+            .expect("golden board has a quiet placeable area")
     }
 
     /// Two distinct real areas that are NOT adjacent. Exists on every board

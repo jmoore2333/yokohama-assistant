@@ -364,12 +364,13 @@ fn validate_telegram_bonus(
 /// the raw arm's contract for those dimensions is legal-list inputs. One
 /// tolerance follows from that contract: an empty-path destination equal
 /// to the engine's own `station_location` is accepted WITHOUT a
-/// board-membership lookup, because the generator's Station teleport is
-/// keyed off `station_location` (engine state, not payload) and never
-/// consults the areas map -- a strict membership check here would reject a
-/// legal-list move on fixture boards whose station area isn't in `areas`
-/// (pinned by legal_moves.rs's
-/// `test_station_teleport_remains_free_even_onto_opponent_occupied_area`).
+/// board-membership lookup. Since rev 5 the tolerance is retained purely in
+/// the SAFE direction: `can_teleport_to_station_with_tech` now gates the
+/// station area on placeability, so generator and predicate are strictly
+/// NARROWER than this arm and nothing reaching it on the legal-list path
+/// can name an off-board or Canal station (comment-only truth pass under
+/// the rev-5 sanction; the old justifying fixture scenario is now
+/// generator-unreachable and its cited test seats a real placeable tile).
 /// Ghost/Canal payloads still die: they match neither the board nor the
 /// engine's station location.
 fn validate_president_path(
@@ -1199,6 +1200,15 @@ fn apply_mercenary(
     if available == 0 {
         return Err(MoveError::RuleViolation("No available mercenary of this country"));
     }
+
+    // Validate: the target is a real area of this board that a pawn may stand
+    // on. A mercenary ACTS at an area holding the player's own assistants, and
+    // no pawn ever stands on the Canal (rulebook p.14; guidingpath 2026-07-21
+    // Canal re-ruling, absorbed 2026-07-25, `SEMANTICS_REV` 5). Stated BEFORE
+    // the assistant-count check so a ghost id gets the board-membership
+    // message rather than "must have your assistant" — the two-message split
+    // every other `AreaId`-carrying arm makes (`choices.rs:171-175`).
+    require_placeable_area(state, target_area)?;
 
     // Validate: target area has player's assistant but NOT president
     let assistant_count = p.assistants.on_board.get(&target_area).copied().unwrap_or(0);
@@ -2054,6 +2064,13 @@ mod tests {
         let mut state = create_minimal_state(2);
         let player = state.current_player;
         let target = AreaId::new(5);
+        // `create_minimal_state`'s board is empty; the target has to be a real
+        // placeable tile on it now that `apply_mercenary` checks the area
+        // (rev 5). Nothing else about the fixture changes.
+        state.board_layout.areas.insert(target, AreaConfig {
+            area_type: AreaType::CopperMine,
+            grid_position: (0, 5),
+        });
 
         // Give player a mercenary and assistant at target area
         {
@@ -2083,6 +2100,11 @@ mod tests {
         let mut state = create_minimal_state(2);
         let player = state.current_player;
         let target = AreaId::new(5);
+        // Real placeable tile on the otherwise-empty fixture board (rev 5).
+        state.board_layout.areas.insert(target, AreaConfig {
+            area_type: AreaType::CopperMine,
+            grid_position: (0, 5),
+        });
 
         {
             let p = state.player_mut(player);
@@ -2104,6 +2126,13 @@ mod tests {
         let player = state.current_player;
         let target1 = AreaId::new(5);
         let target2 = AreaId::new(6);
+        // Real placeable tiles on the otherwise-empty fixture board (rev 5).
+        for (n, t) in [target1, target2].into_iter().enumerate() {
+            state.board_layout.areas.insert(t, AreaConfig {
+                area_type: AreaType::CopperMine,
+                grid_position: (0, 5 + n as u8),
+            });
+        }
 
         // Give player two mercenaries and assistants at both target areas
         {

@@ -269,18 +269,19 @@ pub(crate) fn teleport_labels(state: &GameState, rules: &Rules) -> Vec<RouteLabe
     // Station (owner only): a zero-fee label to the Station area — free,
     // regardless of other President pawns there [RB p.15].
     //
-    // DELIBERATELY NOT area-type-gated, unlike the walk and the from-hand
-    // placement above: whether a Station token could ever sit on the Canal —
-    // and if it did, whether the card's explicit "free, ignores Presidents"
-    // entitlement would still carry the President there — is UNRULED (named as
-    // an open owner call in the DL 2026-07-25 Canal-legality row). The oracle
-    // reports the rules, so it does not invent a ruling here; the case is
-    // fixture-only anyway, since a Station placement never names the Canal.
+    // The destination must still be a tile a pawn may OCCUPY [RB p.14; KB
+    // 01-rules-reference §Canal: "No pawns or tokens may be placed; the Canal
+    // is unplaceable and unstoppable (transit-only)"; re-stated by the DL
+    // 2026-07-21 any-to-any re-ruling]. The card overrides the PATH, the fee
+    // and the opponent-President block; it says nothing about where a pawn may
+    // STAND, so p.14 governs the landing square — the same move owner ruling
+    // §7.1-A1 made about the assistant-at-destination rule below. `allows_pawn`
+    // also answers false for an area absent from the layout, which is no tile.
     if owns_effect(state, rules, mover, TechEffect::Station) {
         if let Some(st) = state.station_location {
             // RULED §7.1-A1 (Jeremy, 2026-07-20 decision-log row): Reading 2 — the station token adds POWER only; RB p.6's assistant-at-destination rule stands, so the teleport requires an own assistant at the station area. The card's explicit clauses stand (free; ignores other President pawns there). Originally landed as a triage interim mirroring the engine; the ruling confirmed it as permanent behavior.
             let own_assistant_at_station = p.assistants.on_board.get(&st).copied().unwrap_or(0) >= 1;
-            if st != start && own_assistant_at_station {
+            if st != start && allows_pawn(state, st) && own_assistant_at_station {
                 labels.push(RouteLabel { destination: st, fees: BTreeMap::new() });
             }
         }
@@ -653,6 +654,49 @@ mod tests {
         s.station_location = Some(AreaId::new(0));
         let labels = route_labels(&s, &rules);
         assert!(labels.iter().all(|l| l.destination != AreaId::new(0)));
+    }
+
+    #[test]
+    fn canal_is_never_a_station_teleport_destination_even_with_an_own_assistant_there() {
+        // [RB p.14; KB 01-rules-reference §Canal: "No pawns or tokens may be
+        // placed; the Canal is unplaceable and unstoppable (transit-only)"; the
+        // DL 2026-07-21 any-to-any re-ruling re-states it while changing only
+        // WHAT the Canal connects]. The Station card [RB p.15] overrides the
+        // PATH, the fee and the opponent-President block — it says nothing
+        // about where a pawn may STAND, so p.14 governs the landing square.
+        // That is the same reading owner ruling §7.1-A1 (2026-07-20) gave the
+        // assistant-at-destination rule [RB p.6], which the card equally does
+        // not override: a teleport still lands the President ON the named tile,
+        // so the tile must be one a pawn may occupy.
+        let rules = Rules::standard();
+        let mut s = assistant_seated_on_canal_state();
+        s.players[0].technologies.push(tech_id(&rules, TechEffect::Station));
+        s.station_location = Some(AreaId::new(1)); // the Canal tile
+        let labels = route_labels(&s, &rules);
+        assert!(
+            labels.iter().all(|l| l.destination != AreaId::new(1)),
+            "the Canal is never stoppable, so it is never a teleport destination [RB p.14]"
+        );
+        assert!(
+            labels.is_empty(),
+            "the walk cannot cross the Canal either, so no route survives at all"
+        );
+
+        // Anti-vacuity on the SAME board with everything but the station tile
+        // held fixed: area 2 lies BEYOND the Canal and is walk-unreachable, so
+        // a label to it can only be the teleport — and it IS emitted (own
+        // assistant there, per §7.1-A1).
+        s.station_location = Some(AreaId::new(2));
+        assert!(
+            route_labels(&s, &rules).contains(&label(2, &[])),
+            "a non-Canal station area still teleports, walk-unreachable or not [RB p.15]"
+        );
+
+        // An AreaId absent from the layout is no tile at all — nothing may
+        // stand there either [RB p.14 governs tiles; a non-tile occupies
+        // nothing], so the teleport is likewise not offered.
+        s.station_location = Some(AreaId::new(9));
+        assert!(route_labels(&s, &rules).is_empty());
     }
 
     // --- §6.2 movement rows: Tram ---

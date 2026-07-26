@@ -42,7 +42,24 @@ fn generate_additional_action_moves(state: &GameState, rules: &Rules) -> Vec<Mov
                         // Must not have our president
                         let has_our_president =
                             p.president_location == PresidentLocation::OnBoard(area);
-                        if !has_our_president {
+                        // ...and must be an area a pawn may stand on. A
+                        // mercenary ACTS at an area holding the player's own
+                        // assistants, and no pawn ever stands on the Canal
+                        // (rulebook p.14; guidingpath 2026-07-21 Canal
+                        // re-ruling, absorbed 2026-07-25, `SEMANTICS_REV` 5).
+                        // This loop reads `assistants.on_board` bespoke rather
+                        // than going through `is_possible_action_area_full`
+                        // (opponent Presidents do not block a mercenary, and
+                        // the two differ elsewhere too), so it is the one
+                        // target-selection surface that has to state the rule
+                        // itself; `apply_mercenary` states the matching
+                        // `require_placeable_area`.
+                        let placeable = state
+                            .board_layout
+                            .areas
+                            .get(&area)
+                            .is_some_and(|c| c.area_type.allows_placement());
+                        if !has_our_president && placeable {
                             moves.push(Move::UseMercenary {
                                 country,
                                 target_area: area,
@@ -1550,6 +1567,14 @@ mod tests {
         let mut state = create_test_state();
         let current_area = AreaId::new(0);
         let station_area = AreaId::new(2);
+        // `create_test_state`'s board carries areas 0 and 1 only; the station
+        // area has to be a real placeable tile on it, because the teleport
+        // entitlement is area-type gated (rev 5). Nothing else about the
+        // fixture changes.
+        state.board_layout.areas.insert(
+            station_area,
+            AreaConfig { area_type: AreaType::SilkMill, grid_position: (0, 2) },
+        );
         state.turn_phase = TurnPhase::Movement;
         state.players[0].president_location = PresidentLocation::OnBoard(current_area);
         state.players[0].assistants.on_board.insert(station_area, 1);
@@ -1963,6 +1988,12 @@ mod tests {
         let mut state = create_test_state();
         let current_area = AreaId::new(0);
         let station_area = AreaId::new(2); // Different area
+        // Must be a real placeable tile on this fixture's 2-area board: the
+        // teleport entitlement is area-type gated (rev 5).
+        state.board_layout.areas.insert(
+            station_area,
+            AreaConfig { area_type: AreaType::SilkMill, grid_position: (0, 2) },
+        );
 
         // Setup: President on board, Station technology, station placed
         state.turn_phase = TurnPhase::Movement;

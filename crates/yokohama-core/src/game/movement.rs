@@ -41,13 +41,12 @@ pub fn is_possible_action_area_with_tech(
 /// `PlacePresident` arm, both route searches' destination filters,
 /// `route_enum::RouteGraph`, and `move_legality`), which is why the Canal
 /// exclusion below needed to be stated only here to reach all of them. The two
-/// TELEPORT arms decide their stops separately: Tram restates
-/// `allows_placement` inline (`legal_moves.rs` Tram arm), and Station
-/// (`can_teleport_to_station_with_tech`) checks neither shared predicate — the
-/// named residual in guidingpath's 2026-07-25 Canal row (generator/apply
-/// CONSISTENT there; unreachable because `StationPlace` resolutions filter
-/// `allows_placement`)
-/// (2026-07-25 alignment, `SEMANTICS_REV` 4).
+/// TELEPORT arms decide their stops separately and each states the rule at its
+/// own single choke point: Tram restates `allows_placement` inline
+/// (`legal_moves.rs` Tram arm), and Station gates it inside
+/// `can_teleport_to_station_with_tech`, the one entitlement function all three
+/// of its consumers call (2026-07-25 alignment `SEMANTICS_REV` 4; Station
+/// residual absorbed at rev 5).
 pub fn is_possible_action_area_full(
     state: &GameState,
     player: PlayerId,
@@ -62,15 +61,13 @@ pub fn is_possible_action_area_full(
     // which is exactly what `require_placeable_area` enforces on the apply
     // side. Stated BEFORE the mercenary early-return below so the
     // `is_mercenary = true` ARGUMENT PATH inherits it — but note honestly
-    // (PR #10 review): no in-repo caller passes `is_mercenary = true`, and
-    // live mercenary TARGET SELECTION does not route through this predicate
-    // at all — `generate_additional_action_moves` iterates
-    // `assistants.on_board` bespoke, with no area-type filter, and
-    // `apply_mercenary` has no `require_placeable_area` either. That pair is
-    // generator/apply CONSISTENT on Canal fixtures (both accept; the
-    // AreaAction generator then yields no actions there) and unreachable by
-    // legal play — the SECOND named residual beside the Station teleport in
-    // guidingpath's 2026-07-25 Canal row, awaiting the same owner ruling.
+    // that no in-repo caller passes `is_mercenary = true`, so that leg is
+    // future-proofing an argument-reachable path. Live mercenary TARGET
+    // SELECTION does not route through this predicate at all (it differs:
+    // opponent Presidents do not block a mercenary but DO block here), so
+    // `generate_additional_action_moves` and `apply_mercenary` state the rule
+    // at their own sites — the second Canal residual, absorbed by owner ruling
+    // 2026-07-25 (`SEMANTICS_REV` 5).
     if !state.board_layout.areas.get(&area).is_some_and(|c| c.area_type.allows_placement()) {
         return false;
     }
@@ -273,6 +270,14 @@ pub fn can_teleport_to_station(
 }
 
 /// Check if player can teleport to Station area with tech awareness.
+///
+/// THE station-teleport entitlement, and the one place its area type is
+/// checked: the generator (`legal_moves.rs`), the lazy route enumerator
+/// (`route_enum::RouteGraph`) and the single-candidate predicate
+/// (`move_legality`) all decide the teleport by calling this and none of them
+/// re-checks the destination, so the placeability gate below reaches all three
+/// by construction — the same shape as the two shared walk predicates above
+/// (2026-07-25 residual absorption, `SEMANTICS_REV` 5).
 pub fn can_teleport_to_station_with_tech(
     state: &GameState,
     player: PlayerId,
@@ -293,6 +298,22 @@ pub fn can_teleport_to_station_with_tech(
 
     // Must have a station placed
     let station_area = state.station_location?;
+
+    // ...on a real area of THIS board that a pawn may stand on. The teleport
+    // is a STOP like any other, and no pawn ever stands on the Canal (rulebook
+    // p.14; guidingpath 2026-07-21 Canal re-ruling, absorbed by owner ruling
+    // 2026-07-25). Station's card text overrides the PATH and the fee and the
+    // opponent-President block — it says nothing about where a pawn may stand,
+    // so the placement rule is untouched, exactly as owner ruling A1 read the
+    // assistant-at-destination rule.
+    if !state
+        .board_layout
+        .areas
+        .get(&station_area)
+        .is_some_and(|c| c.area_type.allows_placement())
+    {
+        return None;
+    }
 
     // Station area must have our assistant — OWNER-RULED (Jeremy,
     // 2026-07-20 decision-log row, closing ruling A1): the station token
@@ -707,6 +728,61 @@ mod tests {
         assert!(
             !is_possible_action_area_full(&state, player, area, None, true),
             "the is_mercenary early-return must not skip the Canal exclusion",
+        );
+    }
+
+    /// The Station teleport is a STOP like any other, so it obeys the same
+    /// rule: no pawn may ever stand on the Canal (rulebook p.14; guidingpath
+    /// 2026-07-21 Canal re-ruling), and a station token on an area that is not
+    /// on THIS board is not a destination either.
+    ///
+    /// `can_teleport_to_station_with_tech` is the single entitlement function
+    /// every consumer calls — the generator (legal_moves.rs Station arm), the lazy
+    /// route enumerator (`route_enum.rs`, by function name) and the single-candidate
+    /// predicate (`move_legality.rs`), none of which re-checks area type —
+    /// so gating it HERE reaches all three by construction, exactly as the two
+    /// shared stop/hop predicates above do for the walk arms.
+    #[test]
+    fn the_station_teleport_refuses_a_non_placeable_station_area() {
+        let mut state = create_test_state_with_board();
+        let player = PlayerId::new(0);
+        let station_area = AreaId::new(2);
+
+        let station_tech = TechCardId(207);
+        let mut rules = Rules::empty_for_tests();
+        rules.techs.insert(
+            TechCard {
+                id: station_tech,
+                name: "Station".to_string(),
+                industry_cost: 4,
+                country: Country::German,
+                effect: TechEffect::Station,
+            },
+            "tech_station",
+        );
+        state.players[0].technologies.push(station_tech);
+        state.players[0].assistants.on_board.insert(station_area, 1);
+        state.station_location = Some(station_area);
+
+        assert_eq!(
+            can_teleport_to_station_with_tech(&state, player, Some(&rules.techs)),
+            Some(station_area),
+            "control: the full entitlement on a normal area still teleports",
+        );
+
+        state.board_layout.areas.get_mut(&station_area).expect("area 2").area_type =
+            AreaType::Canal;
+        assert_eq!(
+            can_teleport_to_station_with_tech(&state, player, Some(&rules.techs)),
+            None,
+            "the Canal is never a stop, so there is no teleport onto it",
+        );
+
+        state.board_layout.areas.remove(&station_area);
+        assert_eq!(
+            can_teleport_to_station_with_tech(&state, player, Some(&rules.techs)),
+            None,
+            "a station token that is not on this board is not a destination either",
         );
     }
 

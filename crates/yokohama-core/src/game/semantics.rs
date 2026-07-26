@@ -85,7 +85,40 @@ use crate::types::GameState;
 /// existing record replays identically, and the bump is the contract letter for
 /// a legality-SET change rather than a report of changed play. Its one
 /// user-visible consequence is the usual one: rev-3 saves stop resuming.
-pub const SEMANTICS_REV: u32 = 4;
+///
+/// Rev 5 (2026-07-25, the two Canal residuals ABSORBED — owner ruling,
+/// Jeremy, in session): rev 4 fixed the two SHARED movement predicates and
+/// NAMED the two surfaces that decide an area for themselves and so kept the
+/// permissive hole. Both are now closed, at their own single choke points:
+///
+/// - STATION TELEPORT — `can_teleport_to_station_with_tech` (the one
+///   entitlement function the generator, the lazy route enumerator and
+///   `move_legality` all call) now returns `None` when `station_location` is
+///   not a placeable area of this board. Station's card text overrides the
+///   PATH, the fee and the opponent-President block; it says nothing about
+///   where a pawn may STAND, so rulebook p.14 governs the landing square.
+/// - MERCENARY TARGET SELECTION — the generator's bespoke
+///   `assistants.on_board` loop gains the area-type filter and
+///   `apply_mercenary` gains the matching `require_placeable_area`, so
+///   generator and apply move together as they did before (they were
+///   consistently PERMISSIVE; they are now consistently correct).
+///
+/// The LEGALITY SET therefore changed again: `get_legal_moves` no longer emits
+/// a free Station teleport onto a Canal-typed (or off-board) station area, nor
+/// a `UseMercenary` aimed at a Canal-typed area.
+///
+/// NO REACHABLE-STATE BEHAVIOUR CHANGES, same argument shape as rev 4. Both
+/// gates need a Canal-typed area to carry either the station token or one of
+/// the mover's own assistants. The station token is written only by the
+/// `ChooseStationPlace` resolution, whose option set is filtered by
+/// `allows_placement`; `assistants.on_board` has exactly the three writers rev
+/// 4 enumerated, all three gated. So the affected states are FIXTURE-ONLY,
+/// every existing record replays identically, and the bump is the contract
+/// letter for a legality-SET change rather than a report of changed play. Its
+/// one user-visible consequence is the usual one: rev-4 saves stop resuming —
+/// and at the time of the bump none exist beyond hours-old dev state (the live
+/// gate game has not been played; no training corpus exists).
+pub const SEMANTICS_REV: u32 = 5;
 
 /// FNV-1a 64 over `bytes`, seeded with the standard offset basis. Hand-rolled
 /// for the same reason `Rules::content_hash` hand-rolls it: `std::hash` is not
