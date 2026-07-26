@@ -23,11 +23,18 @@
 //!
 //! It fires on any President-route DFS, from either entry point (the frozen
 //! `movement::enumerate_president_routes` or `route_enum`'s fixed-array
-//! search), so a stray `get_legal_moves` AT A MOVEMENT POINT takes the count to
-//! 2. It catches a stray `get_legal_moves` **only** at Movement points: at
-//! every other phase the delegated families call `get_legal_moves` underneath
-//! BY DESIGN and no route DFS fires there, so `== 0` off-Movement is a
-//! statement about route enumeration, not about list materialization.
+//! search), so a stray `get_legal_moves` at a Movement point **with the
+//! President ON BOARD** takes the count to 2. That on-board qualifier is the
+//! counter's whole reach (T2 review finding 1): at an IN-HAND Movement point
+//! the routes family emits `PlacePresident` and walks nothing, so a stray
+//! materialization runs zero DFSes and is invisible here — even though those
+//! points dispatch the same exploding `MovementRetreat` family (88.6% of
+//! organic Movement points are in-hand under uniform play). The exploding
+//! family's cost cover at in-hand points is the R2(b) pick allocation bound
+//! (Task 5), not this counter. At every other phase the delegated families
+//! call `get_legal_moves` underneath BY DESIGN and no route DFS fires there,
+//! so `== 0` off-Movement is a statement about route enumeration, not about
+//! list materialization.
 //!
 //! The assertion is **harness-scoped, never armed globally**. The CLI bot path
 //! legitimately pays 2 in debug (the policy's enumeration plus `Session::apply`'s
@@ -61,8 +68,8 @@ use rand_chacha::ChaCha8Rng;
 
 use yokohama_core::game::{
     cell_to_area_id, derive_canal_crossings, enumerate_president_routes, families, family_len,
-    fits_fixed_arrays, is_game_over, route_dfs_count, route_dfs_reset, row_lengths,
-    staggered_adjacency, DecisionHandle, FamilySize, MoveFamily,
+    fits_fixed_arrays, get_legal_moves, is_game_over, route_dfs_count, route_dfs_reset,
+    row_lengths, staggered_adjacency, DecisionHandle, FamilySize, MoveFamily,
 };
 use yokohama_core::{
     apply_move_unchecked, AreaConfig, AreaId, AreaType, BoardLayout, BoardLayoutBuilder,
@@ -414,6 +421,19 @@ fn one_dfs_counts_once_from_either_entry_point() {
         "the delegating arm must not bump on top of the frozen search's own bump",
     );
     assert_eq!(delegated, 1, "anti-vacuity: the delegated walk must serve its one route");
+
+    // §0-R2(a)'s detection mechanism, pinned rather than inferred (T2 review
+    // finding 3): the exhaustive generator itself pays exactly one route DFS at
+    // an on-board Movement point, which is what makes "a stray get_legal_moves
+    // takes a policy-harness count to 2" true rather than assumed.
+    route_dfs_reset();
+    let exhaustive = get_legal_moves(&fixed, &rules);
+    assert_eq!(
+        route_dfs_count(),
+        1,
+        "get_legal_moves at an on-board Movement point costs exactly one route DFS",
+    );
+    assert!(!exhaustive.is_empty(), "anti-vacuity: the exhaustive list must be non-empty");
 }
 
 /// `families()` dispatch is the only tag producer this pin trusts, so the

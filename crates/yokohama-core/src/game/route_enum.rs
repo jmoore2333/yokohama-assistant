@@ -124,10 +124,17 @@ const MAX_OPPONENTS: usize = 3;
 //      `tests/l10_enumeration_pin.rs` carries a file-level
 //      `#![cfg(debug_assertions)]` rather than asserting against 0.
 //   2. The counter catches a stray `get_legal_moves` ONLY at Movement decision
-//      points. At every other phase the delegated families call
-//      `get_legal_moves` underneath BY DESIGN and no route DFS fires there, so
-//      a count of 0 off-Movement says nothing about how many times the legal
-//      list was materialized.
+//      points with the President ON BOARD. At an in-hand Movement point the
+//      routes family emits `PlacePresident` and walks nothing, so
+//      `get_legal_moves` runs zero DFSes there and a stray materialization is
+//      invisible to this counter — even though those points dispatch the SAME
+//      exploding `MovementRetreat` family (measured: 88.6% of organic Movement
+//      points are in-hand under uniform play; T2 review). The exploding
+//      family's cost cover at in-hand points is the R2(b) pick allocation
+//      bound (Task 5), not this counter. At every other phase the delegated
+//      families call `get_legal_moves` underneath BY DESIGN and no route DFS
+//      fires there, so a count of 0 off-Movement says nothing about how many
+//      times the legal list was materialized.
 //
 // The assertions built on it are HARNESS-SCOPED, never armed globally: the CLI
 // bot path legitimately pays 2 in debug (the policy's enumeration plus

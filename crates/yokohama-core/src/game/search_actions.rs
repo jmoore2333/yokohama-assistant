@@ -911,12 +911,14 @@ impl FamilySize {
 /// [`iter_family`]/[`sample_family`] on every call, and the handle stores
 /// nothing for them.
 ///
-/// [`size`](Self::size) delegates to [`family_len`] so there is ONE arithmetic
-/// authority, with routes as the single exception: it reports the memoized
-/// `Vec`'s length rather than paying a second enumeration. The consequence for
-/// a delegated family is that `size` then `iter` calls `get_legal_moves` twice
-/// — accepted, because delegated families are bounded-small and no exploding
-/// family lives at those phases (spec §0-R2(a)).
+/// [`size`](Self::size) answers from the memo wherever one exists (routes AND
+/// the delegated families — the memo's length equals [`family_len`]'s value by
+/// construction, so the arithmetic authority is unchanged) and delegates to
+/// [`family_len`] only for the never-memoized families (retreat's closed form,
+/// placement's upper bound). One handle therefore pays each delegated family's
+/// `get_legal_moves` pass AT MOST ONCE across any mix of
+/// `size`/`iter`/`sample`/`volume` — the T2 review measured the prior shape
+/// paying it twice for a single cold `size()`.
 ///
 /// PRECONDITION, same as the free functions': a family is only meaningful
 /// against the state it came from. Serving a family this handle did not build
@@ -982,9 +984,18 @@ impl<'a> DecisionHandle<'a> {
     /// route search a second time, which is precisely what this type exists to
     /// prevent.
     pub fn size(&self, family: &MoveFamily) -> FamilySize {
-        if let (MoveFamily::MovementRoutes, Some(moves)) = (family, self.memoized(family)) {
+        // Any memoized family (routes AND the delegated small families) answers
+        // from the memo: its length IS `family_len`'s value by construction
+        // (same generator output), so one arithmetic authority survives while
+        // the pass is paid at most once per handle. The prior shape evaluated
+        // the memo inside a tuple pattern BEFORE discriminating and then still
+        // called `family_len` for non-routes — two `get_legal_moves` for one
+        // cold `size()` on a delegated family (T2 review, allocation-metered).
+        if let Some(moves) = self.memoized(family) {
             return FamilySize::Exact(moves.len() as u64);
         }
+        // Never-memoized families (retreat, placement) delegate to the closed
+        // form / upper bound without materializing anything.
         let n = family_len(self.state, self.rules, family) as u64;
         match family {
             MoveFamily::Placement => FamilySize::UpperBound(n),
@@ -1021,8 +1032,11 @@ impl<'a> DecisionHandle<'a> {
     /// so the total OVER-counts the realized moves).
     ///
     /// Reads the same memoized routes enumeration the policy samples from — the
-    /// L10 property in one call. Saturating, so a hand-built state with an
-    /// absurd retreat product reports `u64::MAX` rather than overflowing.
+    /// L10 property in one call. The sum saturates as cheap belt-and-braces
+    /// only: a retreat product large enough to overflow the sum would already
+    /// have overflowed inside [`retreat_len`]'s own `.product()` (a debug
+    /// panic) before any sum formed, so the saturating arm is not a live path
+    /// (T2 review finding 2).
     pub fn volume(&self) -> (u64, bool) {
         let mut total = 0u64;
         let mut has_upper_bound_term = false;
