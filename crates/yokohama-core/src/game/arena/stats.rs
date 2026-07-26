@@ -186,7 +186,9 @@ pub struct CellReport {
     /// because it will move under stronger bots.
     pub ties_to_seat0: u32,
     /// Mean over games of (X's VP total − the mean of the Y seats' totals).
-    /// The screening/triage statistic (1.4–2.1× fewer units for equal power);
+    /// The screening/triage statistic (1.4–2.1× fewer units for equal power —
+    /// a 2P PAIR-UNIT measurement, E2; nothing has measured it for the 3-4P
+    /// block unit);
     /// the WIN RATE above is the gate statistic, per spec §4.
     pub vp_margin_mean: f64,
     /// End-trigger counts over the cell's games — one player count per tally,
@@ -337,6 +339,7 @@ pub fn run_cell_with(
         games,
         x_game_wins,
         top_vp_ties,
+        ties_to_seat0,
         &interval,
     );
 
@@ -414,7 +417,11 @@ pub fn interval_for_units(units: &[f64], b: u32, resample_seed: u64) -> Interval
     }
     if units.iter().all(|&u| u == units[0]) {
         let (one_sided_lower, method) = if units[0] >= 1.0 {
-            (1.0 - 3.0 / n as f64, ALL_UNITS_WON)
+            // Clamped: rule-of-three is meaningful only at n >= 3, and below
+            // that the raw formula is a NEGATIVE probability — the exact class
+            // of dishonest number this refusal exists to never print (T7
+            // review F1; reachable from T9's argv at `units 1`).
+            ((1.0 - 3.0 / n as f64).max(0.0), ALL_UNITS_WON)
         } else if units[0] <= 0.0 {
             (0.0, ALL_UNITS_LOST)
         } else {
@@ -459,7 +466,10 @@ pub fn pairs_needed_for_mme(mme_theta: f64, var_pair: f64) -> u64 {
     if !needed.is_finite() {
         return u64::MAX;
     }
-    needed.ceil().max(0.0) as u64
+    // .max(1.0): a zero variance would size a 0-unit design that only fails
+    // later and further from the mistake (T7 review F6) — one unit is the
+    // smallest runnable design and still fails honestly at tabulation.
+    needed.ceil().max(1.0) as u64
 }
 
 // ---------------------------------------------------------------------------
@@ -548,6 +558,7 @@ fn cross_checks(
     games: u32,
     x_game_wins: u32,
     top_vp_ties: u32,
+    ties_to_seat0: u32,
     interval: &IntervalOutcome,
 ) -> Vec<String> {
     let n = units.len();
@@ -566,7 +577,8 @@ fn cross_checks(
         let half = t * sd / (n as f64).sqrt();
         rows.push(format!(
             "unit-t 95% cross-check: [{:.6}, {:.6}] (n={n} units, sd={sd:.6}, \
-             t(0.975, {})≈{t:.4}) — printed, never primary",
+             t(0.975, {})≈{t:.4}) — printed, never primary; asymptotic expansion, \
+             ~11% narrow at df=1 and unreliable below df≈10 (T7 review F5)",
             theta_hat - half,
             theta_hat + half,
             n - 1,
@@ -588,18 +600,54 @@ fn cross_checks(
     ));
 
     rows.push(format!(
-        "top-VP ties: {top_vp_ties}/{games} games ({:.4}) — `final_result` is a total order and \
-         never reports a tie, so this is how often the clockwise tie-break DECIDED the game; the \
-         seat-0 award is half this rate (spec §4's +0.63pp at the bracket rate of 1.26%)",
+        "top-VP ties: {top_vp_ties}/{games} games ({:.4}), {ties_to_seat0} decided for seat 0 — \
+         `final_result` is a total order and never reports a tie, so this is how often the \
+         clockwise tie-break DECIDED the game{}",
         f64::from(top_vp_ties) / f64::from(games),
+        if players == 2 {
+            "; at 2P seat 0 takes every tie, so its award is half this rate (spec §4's +0.63pp \
+             at the bracket rate of 1.26%)"
+        } else {
+            "; at 3-4P the award depends on which seats tied (the recorded seat-0 count above is \
+             the realized figure — the 2P half-the-rate derivation does not apply)"
+        },
     ));
 
+    // Near-degeneracy diagnostic (T7 review F3): percentile-bootstrap coverage
+    // degrades toward the boundary (independently computed: 0.39 at theta=0.99
+    // N=50; 0.87 at N=200), and the refusal above fires only on EXACT
+    // constancy — so a saturated endpoint or a nearly-constant unit vector
+    // gets its caveat printed rather than silently looking like a clean read.
+    if let IntervalOutcome::Bootstrap { lo, hi, .. } = interval {
+        let distinct = {
+            let mut vals: Vec<u64> = units.iter().map(|u| u.to_bits()).collect();
+            vals.sort_unstable();
+            vals.dedup();
+            vals.len()
+        };
+        if *lo <= 0.0 || *hi >= 1.0 || distinct < 3 {
+            rows.push(format!(
+                "NEAR-BOUNDARY CAVEAT: interval endpoint saturated at 0/1 or unit vector has \
+                 only {distinct} distinct value(s) — percentile-bootstrap coverage degrades \
+                 toward the boundary (measured 0.39-0.87 at theta=0.99 for N=50-200); read this \
+                 interval as directional, not calibrated",
+            ));
+        }
+    }
+
     if let IntervalOutcome::RefusedZeroWidth { method, .. } = interval {
-        rows.push(format!(
-            "zero-width refusal ({method}); complementary rule-of-three bound over n={n} units: \
-             3/n = {:.6}",
-            3.0 / n as f64,
-        ));
+        if n >= 3 {
+            rows.push(format!(
+                "zero-width refusal ({method}); complementary rule-of-three bound over n={n} \
+                 units: 3/n = {:.6}",
+                3.0 / n as f64,
+            ));
+        } else {
+            rows.push(format!(
+                "zero-width refusal ({method}); n={n} is below rule-of-three's n >= 3 floor, so \
+                 no complementary bound is printed (T7 review F1)",
+            ));
+        }
     }
 
     rows
@@ -682,7 +730,7 @@ mod tests {
             let nominal = 2.0 * Z_95 * (theta * (1.0 - theta) / N_UNITS as f64).sqrt();
             let ratio = (width_sum / f64::from(R)) / nominal;
             assert!(
-                (0.85..=1.15).contains(&ratio),
+                (0.92..=1.08).contains(&ratio),
                 "theta {theta}: mean interval width is {ratio:.3}x the theoretical \
                  2z*sqrt(theta(1-theta)/N) = {nominal:.6} — coverage alone cannot catch this",
             );
@@ -990,6 +1038,7 @@ mod tests {
             4,
             16,
             4,
+            0,
             0,
             &IntervalOutcome::Bootstrap { lo: 0.1, hi: 0.4, b: 10, resample_seed: 0 },
         );
