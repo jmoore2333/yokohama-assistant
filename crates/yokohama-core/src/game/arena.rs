@@ -83,6 +83,17 @@
 //! record carries the seed and every choice — i.e. the whole hidden set. Stats
 //! flow to the harness that tabulates them, never back into an agent; that is
 //! the same review-enforced rule `game::agent`'s doc states for records.
+//!
+//! TABULATION LIVES IN [`stats`] — cells, design units, and the interval
+//! discipline that turns these games into a strength claim. It is a submodule
+//! rather than more of this file because the two halves answer different
+//! questions and are reviewed against different sources: this file against the
+//! rules and the honesty boundary, [`stats`] against spec §4's tabulation block
+//! and §0-R3. Everything it exports is re-exported here, so callers see one
+//! `arena` surface.
+
+pub mod stats;
+pub use stats::*;
 
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;

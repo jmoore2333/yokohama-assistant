@@ -98,7 +98,12 @@ use crate::types::{EndGameTrigger, Move, TurnPhase};
 
 /// The z multiplier for a 95% two-sided normal interval, to the precision the
 /// spec's published constants were computed at.
-const Z_95: f64 = 1.959964;
+///
+/// `pub(crate)` so the arena's unit-t cross-check and its MME sizing derive from
+/// THIS constant rather than re-typing 1.959964 in a second module — a
+/// re-typed z is a second authority that can drift from the one every published
+/// Wilson figure was computed with.
+pub(crate) const Z_95: f64 = 1.959964;
 
 /// A 95% Wilson score interval on a binomial rate.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -387,7 +392,14 @@ pub const fn trigger_name(trigger: &EndGameTrigger) -> &'static str {
 /// the rule is stated here and belongs to the caller: pooling 2P and 4P games
 /// into one tally reproduces exactly the blindness described in the module doc,
 /// where a trigger that is healthy at 2P hides its 4P collapse.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+///
+/// `Serialize` (and not `Deserialize` — `&'static str` keys cannot be borrowed
+/// back out of an owned document) so a tally can ride inside a serialized
+/// arena report, which is what the tabulation's byte-identity determinism pin
+/// compares. Serialization is additive: it reads the same private fields
+/// `counts`/`games` already expose through their getters, in `BTreeMap` name
+/// order, so the bytes are deterministic.
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize)]
 pub struct TriggerTally {
     counts: BTreeMap<&'static str, u64>,
     // Private with a getter (T4 review finding 7): a writable denominator on
@@ -528,7 +540,13 @@ impl QuantileSketch {
 /// integral and lands one ULP high pushes the rank a whole observation up, and
 /// a tail row that is silently one observation too optimistic is not a failure
 /// anything downstream would notice.
-fn nearest_rank_index(n: usize, num: u64, den: u64) -> usize {
+///
+/// `pub(crate)` because the arena's percentile bootstrap picks its two endpoints
+/// out of the sorted replicate means with exactly this rule — one nearest-rank
+/// authority for the whole crate, so a quantile printed by a tail row and an
+/// interval endpoint printed by a cell report cannot disagree about what the
+/// 97.5th percentile of a sorted vector is.
+pub(crate) fn nearest_rank_index(n: usize, num: u64, den: u64) -> usize {
     debug_assert!(n > 0 && den > 0 && num <= den, "nearest_rank_index({n}, {num}/{den})");
     let n = n as u64;
     let rank = (n * num).div_ceil(den).max(1);
