@@ -65,19 +65,21 @@ mod meter;
 #[path = "../tests/common/mod.rs"]
 mod common;
 
-use std::collections::BTreeMap;
+// The dense cells' shared construction (Task 3's `tests/route_fixtures`) — the
+// same fixture the gated batteries pin, so the curves recorded here cannot
+// drift from the gated cells (T3 review F3).
+#[path = "../tests/route_fixtures/mod.rs"]
+mod route_fixtures;
+
 use std::hint::black_box;
 use std::time::{Duration, Instant};
 
 use rand::Rng;
 
 use yokohama_core::{
-    apply_move_unchecked, cell_to_area_id, derive_canal_crossings, enumerate_president_routes,
-    enumerate_routes, fits_fixed_arrays, get_legal_moves, is_game_over, row_lengths,
-    staggered_adjacency, AchievementCard, AchievementType, AreaConfig, AreaId, AreaType,
-    BoardLayout, BoardLayoutBuilder, BuildingSite, ChurchTrack, CustomsTrack, FivePowerEffect,
-    GameConfig, GameState, LabState, MercenarySupply, PlayerColor, PlayerId, PlayerState,
-    PortState, PresidentLocation, Rules, TechCardId, TechEffect, TurnPhase,
+    apply_move_unchecked, enumerate_president_routes, enumerate_routes, fits_fixed_arrays,
+    get_legal_moves, is_game_over, AreaId, GameState, PlayerId, PresidentLocation, Rules,
+    TechCardId, TechEffect, TurnPhase,
 };
 
 // ---------------------------------------------------------------------------
@@ -409,113 +411,28 @@ fn count_row(label: &str, s: &Summary) {
 // ---------------------------------------------------------------------------
 // Block B — the dense cells.
 //
-// The board and states below REPRODUCE `tests/action_source_equivalence.rs`'s
-// release battery (which in turn reproduces `yokohama-difftest`'s
-// routes3_worstcase shape). They are rebuilt here rather than imported because
-// an example and a test binary are separate crates that cannot see each other's
-// helpers; the engine's own topology primitives (`staggered_adjacency`,
-// `derive_canal_crossings`) do the construction, so the fixture cannot drift
-// from the board the generator produces.
+// The board and states below come from the SHARED construction in
+// `tests/route_fixtures` — the same fixture the equivalence battery pins
+// pairs-and-order for, the worstcase gate meters, and the l10 pin floors — so
+// the curve figures this example records are measurements of the SAME cells
+// those gates gate, structurally rather than by review discipline. (An earlier
+// header here claimed an example cannot see a test binary's helpers; false —
+// `#[path]` inclusion is exactly how this file already shares the meter and
+// the seeded constructor, and the T3 review's F3 closed the fourth copy that
+// claim had justified.)
 // ---------------------------------------------------------------------------
-
-/// `(row 1, col 3)` = `AreaId(9)`: the fully-interior tile of the 4P pyramid,
-/// so the Canal has all six brick neighbours and the any-to-any derivation
-/// yields a complete K6 with nine tolled crossings.
-const DENSE_CANAL: (u8, u8) = (1, 3);
-
-fn dense_board() -> BoardLayout {
-    let rows = row_lengths(4);
-    let palette = [
-        AreaType::CopperMine,
-        AreaType::SilkMill,
-        AreaType::TeaPlantation,
-        AreaType::FishingGround,
-        AreaType::Bank,
-        AreaType::Chinatown,
-    ];
-    let mut b = BoardLayoutBuilder::new();
-    let mut idx = 0u8;
-    for (r, &len) in rows.iter().enumerate() {
-        for col in 0..len {
-            let id = AreaId::new(idx);
-            let ty = if (r as u8, col) == DENSE_CANAL {
-                AreaType::Canal
-            } else {
-                palette[(idx as usize) % palette.len()]
-            };
-            b.add_area(id, AreaConfig { area_type: ty, grid_position: (r as u8, col) });
-            if ty != AreaType::Canal {
-                b.set_building_site(id, BuildingSite::new([1, 1, 1, 1], 3));
-                b.set_five_power_token(id, FivePowerEffect::Money(1));
-            }
-            idx += 1;
-        }
-    }
-    for (a, z) in staggered_adjacency(&rows) {
-        b.add_adjacency(a, z);
-    }
-    for (a, z) in derive_canal_crossings(DENSE_CANAL, &rows) {
-        b.add_adjacency(a, z);
-        b.add_canal_crossing(a, z);
-    }
-    b.build().expect("dense staggered board validates")
-}
 
 /// The mover's President on `start`, own assistants on all 17 non-Canal areas,
 /// the three opponents on `opponents`, `techs` granted, 1,000 Yen so no
 /// affordability cutoff bites (money is the DFS cost driver — spec F6, and these
 /// cells exist to be expensive).
+/// The equivalence battery's dense cell via `tests/route_fixtures`, plus the
+/// techs-and-`Rules` tail that is this example's own concern — the shared
+/// constructor carries board/positions/money, and granting techs needs a
+/// `Rules` lookup, so the wrapper stays here exactly as
+/// `action_source_equivalence.rs`'s does.
 fn dense_state(start: u8, opponents: [u8; 3], techs: &[TechEffect], rules: &Rules) -> GameState {
-    let rows = row_lengths(4);
-    let canal = cell_to_area_id(DENSE_CANAL.0, DENSE_CANAL.1, &rows);
-    let colors = [PlayerColor::Red, PlayerColor::Blue, PlayerColor::Yellow, PlayerColor::Green];
-
-    let mut s = GameState {
-        config: GameConfig::for_player_count(4),
-        board_layout: dense_board(),
-        players: (0..4)
-            .map(|i| PlayerState::new(PlayerId::new(i), colors[i as usize], i == 0))
-            .collect(),
-        current_player: PlayerId::new(0),
-        turn_phase: TurnPhase::Movement,
-        turn_number: 1,
-        additional_action_state: Default::default(),
-        current_action_power: None,
-        is_mercenary_action: false,
-        mercenary_target_area: None,
-        mercenary_return_phase: None,
-        president_start_area: None,
-        port_state: PortState::new(false),
-        lab_state: LabState::new(false),
-        order_deck: Vec::new(),
-        tech_deck: Vec::new(),
-        orders_removed: Vec::new(),
-        church_track: ChurchTrack::new(),
-        customs_track: CustomsTrack::new(),
-        achievements: [
-            AchievementCard::new(AchievementType::Copper5),
-            AchievementCard::new(AchievementType::Money10),
-            AchievementCard::new(AchievementType::Production4),
-        ],
-        mercenary_supply: MercenarySupply::new(),
-        station_location: None,
-        end_game_triggered: false,
-        trigger_reason: None,
-        final_round: false,
-        trigger_player: None,
-        pending_choices: Vec::new(),
-    };
-
-    s.players[0].president_location = PresidentLocation::OnBoard(AreaId::new(start));
-    let mut on_board = BTreeMap::new();
-    for id in (0..18u8).map(AreaId::new).filter(|&id| id != canal) {
-        on_board.insert(id, 1);
-    }
-    s.players[0].assistants.on_board = on_board;
-    for (i, &opp) in opponents.iter().enumerate() {
-        s.players[i + 1].president_location = PresidentLocation::OnBoard(AreaId::new(opp));
-    }
-    s.players[0].money = 1_000;
+    let mut s = route_fixtures::dense_17_area_cell_at(start, opponents);
     s.players[0].technologies = techs.iter().map(|&e| tech_id(rules, e)).collect();
     s
 }

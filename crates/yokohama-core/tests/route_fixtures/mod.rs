@@ -3,15 +3,18 @@
 //!
 //! Cargo compiles every `tests/*.rs` as its own binary, so a fixture used by
 //! several of them was previously REPLICATED into each — the dense 17-area cell
-//! lived three times over (`action_source_equivalence.rs`,
-//! `action_source_worstcase.rs`, and, from Task 2, `l10_enumeration_pin.rs`).
+//! lived FOUR times over (`action_source_equivalence.rs`,
+//! `action_source_worstcase.rs`, from Task 2 `l10_enumeration_pin.rs`, and
+//! `examples/route_cost.rs`, where the published curve figures come from; the
+//! fourth copy was found by the T3 review and re-pointed here in its fix wave).
 //! Replication made spec §4-2's same-fixture rule a matter of review
 //! discipline: each copy's anti-vacuity check computes the frozen reference on
 //! ITS OWN construction, so a drifted copy stays self-consistent and passes.
-//! This module makes the rule STRUCTURAL — one construction, three consumers,
+//! This module makes the rule STRUCTURAL — one construction, four consumers,
 //! a drift impossible to introduce in only one of them. It is shared exactly
 //! the way `tests/common/mod.rs` and `tests/action_cost_meter/mod.rs` already
-//! are (a subdirectory module each binary declares).
+//! are (a subdirectory module each binary declares; the example reaches it by
+//! `#[path]`, the same way it shares the meter).
 //!
 //! ## What lives here, and what deliberately does not
 //!

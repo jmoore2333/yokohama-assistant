@@ -185,8 +185,12 @@ pub fn families(state: &GameState, _rules: &Rules) -> Vec<MoveFamily> {
 /// caller assembled its counts wrong, and the weighted policy's per-area draw
 /// is this constructor's direct caller. Debug builds panic at the constructor
 /// rather than let the bad move travel a phase before `apply_return_to_hand`
-/// names it; release builds are byte-for-byte the old behaviour, with that arm
-/// still the sole validator.
+/// names it; in release the constructor builds the over-count VERBATIM and that
+/// arm stays the sole validator — a property only a release build can observe
+/// (the debug tripwire fires first), pinned release-tier by
+/// `retreat_move_builds_an_over_count_verbatim_in_release` in
+/// `tests/action_source_worstcase.rs` under the documented worstcase gate
+/// command (T3 review F1).
 pub fn retreat_move(on_board: &BTreeMap<AreaId, u8>, per_area: &[(AreaId, u8)]) -> Move {
     debug_assert!(
         per_area
@@ -965,6 +969,12 @@ pub struct DecisionHandle<'a> {
 
 /// Whether `family` is served from a handle's memo (it materializes a `Vec`
 /// either way) rather than paged lazily on every call.
+///
+/// Excluding `MovementRetreat` here is ALSO what keeps the payload-carrying
+/// variant's `==` out of handle dispatch entirely (`memoized` returns before
+/// its `position` compare) — the premise Task 3's `from_hand` removal leaned on
+/// when it widened that variant's equality. Do not "optimize" the short-circuit
+/// away without re-examining that decision (T3 review, probe 1).
 fn is_memoized(family: &MoveFamily) -> bool {
     !matches!(family, MoveFamily::MovementRetreat { .. } | MoveFamily::Placement)
 }
@@ -1547,9 +1557,15 @@ mod tests {
     /// of handing an illegal move on to be rejected a phase later.
     ///
     /// Debug tier only, and deliberately so: this is a `debug_assert`, not a
-    /// validation. In release the constructor is unchanged — no pre-check, the
-    /// move is built verbatim, and `apply_return_to_hand` stays the sole
-    /// validator (pinned by `retreat_move_builds_move_and_arm_validates`).
+    /// validation. In release the constructor has no pre-check, the move is
+    /// built verbatim, and `apply_return_to_hand` stays the sole validator —
+    /// unobservable from any debug test (this tripwire fires first), so it is
+    /// pinned at the only tier that can watch it:
+    /// `retreat_move_builds_an_over_count_verbatim_in_release` in
+    /// `tests/action_source_worstcase.rs`, release-tier under the documented
+    /// worstcase gate command (T3 review F1).
+    /// (`retreat_move_builds_move_and_arm_validates` pins the OTHER half —
+    /// that the apply arm rejects an over-count move however it was built.)
     #[test]
     #[cfg(debug_assertions)]
     #[should_panic(expected = "per-area recovery count exceeds")]

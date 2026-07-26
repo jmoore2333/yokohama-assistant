@@ -292,6 +292,37 @@ fn worst_case_state() -> GameState {
 /// recorded-curve character: the ceiling run is a regression-net MEASUREMENT,
 /// not a per-edit correctness property — an equal-cost 442k materialization
 /// already runs per-edit in `action_source_equivalence`'s retreat fixture, so
+/// The constructor builds an over-count VERBATIM — `apply_return_to_hand` is
+/// the sole validator (T3 review F1: the pin restored at the only tier where
+/// the property is OBSERVABLE). In debug the Task-3 over-count `debug_assert`
+/// intercepts before a return value exists, so no debug test can watch the
+/// constructor decline to validate; this release-tier test can, and it runs
+/// under the documented worstcase gate command (`cargo test --release
+/// -p yokohama-core --test action_source_worstcase -- --ignored`), which is
+/// what keeps it from being a test no gate ever runs. Mutation lineage: a
+/// clamping mutation (`count.min(on_board[area])`) was caught by the
+/// pre-Task-3 debug pin and is caught again by this assertion.
+#[cfg(not(debug_assertions))]
+#[test]
+#[ignore = "release tier: the debug over-count tripwire makes the verbatim-build property observable only in release (T3 review F1); runs under the documented worstcase gate command"]
+fn retreat_move_builds_an_over_count_verbatim_in_release() {
+    // Imported here, not at the top: in a debug build this whole test is
+    // compiled out and top-level imports would be unused.
+    use yokohama_core::{retreat_move, Move};
+
+    let on_board: BTreeMap<AreaId, u8> = [(AreaId::new(0), 2u8)].into_iter().collect();
+    let over = retreat_move(&on_board, &[(AreaId::new(0), 3)]);
+    match over {
+        Move::ReturnPresidentToHand { recover } => assert_eq!(
+            recover.get(&AreaId::new(0)),
+            Some(&3),
+            "release retreat_move must build the over-count verbatim, leaving \
+             apply_return_to_hand as the sole validator",
+        ),
+        other => panic!("retreat_move built {other:?}, not a ReturnPresidentToHand"),
+    }
+}
+
 /// runtime is not the tiering reason.
 #[test]
 #[ignore = "release gate (CLAUDE.md two-tier policy): a recorded-curve measurement, not a per-edit correctness property — re-pays the 442k exhaustive ceiling (~1.02M allocs) to record the gap the factored serve avoids (an equal-cost materialization already runs per-edit in action_source_equivalence); run with cargo test --release -p yokohama-core --test action_source_worstcase -- --ignored before merges/phase closes"]
