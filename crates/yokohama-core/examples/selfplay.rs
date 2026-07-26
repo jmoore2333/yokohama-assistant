@@ -44,7 +44,8 @@ fn main() {
     let mut metrics = ChoiceMetrics::new();
 
     for i in 0..games {
-        let seed = base_seed + i;
+        // DIAGNOSTIC sweep seeds (consecutive by design; NOT bot-facing evaluation — see game/seeds.rs and the SEED HYGIENE note in game/agent.rs). wrapping_add so a full-entropy base cannot panic in debug.
+        let seed = base_seed.wrapping_add(i);
         // run_random_game_observed (not the plain run_random_game): same
         // play-to-completion driver and GameStats, plus a per-move hook so
         // the choice-metrics block below can be built from this exact game

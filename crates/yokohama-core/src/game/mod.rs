@@ -24,6 +24,7 @@ mod agent;
 mod search_actions;
 mod route_enum;
 mod move_legality;
+mod seeds;
 pub mod actions;
 
 pub use power::*;
@@ -49,3 +50,4 @@ pub use agent::*;
 pub use search_actions::*;
 pub use route_enum::*;
 pub use move_legality::*;
+pub use seeds::*;

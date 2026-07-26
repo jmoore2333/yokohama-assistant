@@ -149,7 +149,8 @@ fn score_sweep(games: u64, players: u8, base_seed: u64, policy: Policy) -> ExitC
     let mut diverged: u64 = 0;
 
     for i in 0..games {
-        let seed = base_seed + i;
+        // DIAGNOSTIC sweep seeds (consecutive by design; NOT bot-facing evaluation — see game/seeds.rs and the SEED HYGIENE note in game/agent.rs). wrapping_add so a full-entropy base cannot panic in debug.
+        let seed = base_seed.wrapping_add(i);
         match run_scoring_game(seed, players, policy, &rules, &artifact_dir) {
             Ok(outcome) => match outcome.divergence {
                 None => {
@@ -205,7 +206,8 @@ fn routes3_sweep(games: u64, players: u8, base_seed: u64, policy: Policy) -> Exi
     let mut max_labels: usize = 0;
 
     for i in 0..games {
-        let seed = base_seed + i;
+        // DIAGNOSTIC sweep seeds (consecutive by design; NOT bot-facing evaluation — see game/seeds.rs and the SEED HYGIENE note in game/agent.rs). wrapping_add so a full-entropy base cannot panic in debug.
+        let seed = base_seed.wrapping_add(i);
         match run_routes3_game(seed, players, policy, &rules, &artifact_dir) {
             Ok(outcome) => {
                 qualifying_total += outcome.qualifying_steps;
@@ -305,7 +307,8 @@ fn main() -> ExitCode {
     let mut diverged: u64 = 0;
 
     for i in 0..games {
-        let seed = base_seed + i;
+        // DIAGNOSTIC sweep seeds (consecutive by design; NOT bot-facing evaluation — see game/seeds.rs and the SEED HYGIENE note in game/agent.rs). wrapping_add so a full-entropy base cannot panic in debug.
+        let seed = base_seed.wrapping_add(i);
         match run_differential_game(seed, players, policy, &rules, &artifact_dir) {
             Ok(outcome) => match outcome.divergence {
                 None => {
