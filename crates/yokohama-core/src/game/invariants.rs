@@ -316,15 +316,30 @@ pub fn check_invariants(state: &GameState, rules: &Rules) -> Result<(), String> 
     // Board membership (design §4.1): every stored AreaId must exist on the
     // board. A record or bot that fabricates areas must fail loudly here.
     let on_board = |a: &crate::types::AreaId| state.board_layout.areas.contains_key(a);
+    // Pawn placeability (rev 4, PR #10 review): the whole rev-4 argument —
+    // "no reachable state seats a pawn on the Canal" — was audited, not gated;
+    // this gates it. Scoped to PAWNS (president + assistants) deliberately:
+    // `station_location` is left out so the check does not silently pre-empt
+    // the two NAMED residuals (Station teleport, mercenary target selection)
+    // the owner has yet to rule on.
+    let pawn_placeable = |a: &crate::types::AreaId| {
+        state.board_layout.areas.get(a).is_some_and(|c| c.area_type.allows_placement())
+    };
     for p in &state.players {
         if let crate::types::PresidentLocation::OnBoard(a) = p.president_location {
             if !on_board(&a) {
                 return Err(format!("player {} president on non-board area {:?}", p.id.0, a));
             }
+            if !pawn_placeable(&a) {
+                return Err(format!("player {} president on non-placeable area {:?}", p.id.0, a));
+            }
         }
         for a in p.assistants.on_board.keys() {
             if !on_board(a) {
                 return Err(format!("player {} assistants on non-board area {:?}", p.id.0, a));
+            }
+            if !pawn_placeable(a) {
+                return Err(format!("player {} assistants on non-placeable area {:?}", p.id.0, a));
             }
         }
         for a in p.shophouses.built.keys() {

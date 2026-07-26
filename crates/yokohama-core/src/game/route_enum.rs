@@ -49,7 +49,7 @@
 //!
 //! **Bridging lemma.** The two selections agree because they range over the
 //! same candidate set. Both hop only where `can_step_onto` allows (own
-//! assistant present, never back onto the start area), both keep paths simple,
+//! assistant present, never the Canal, never back onto the start area), both keep paths simple,
 //! both prune on the same monotone affordability test (`fee sum <= money`; no
 //! edge has negative weight, so an unaffordable prefix has no affordable
 //! extension), and both record a destination only where
@@ -160,9 +160,17 @@ fn has_tech(state: &GameState, player: PlayerId, reg: Option<&TechRegistry>, eff
 /// PRECONDITION: [`fits_fixed_arrays`] holds for `state` (debug-asserted). The
 /// per-area tables are computed by calling the same predicates the frozen
 /// enumerator calls, over every id in `0..MAX_AREAS` rather than over
-/// `BoardLayout::areas` — `can_step_onto` and `is_possible_action_area_with_tech`
-/// read assistants and President locations, not board membership, so a state
-/// whose assistants sit off the declared area map still enumerates identically.
+/// `BoardLayout::areas`. Sweeping the wider id range is still safe, and for a
+/// sharper reason since the 2026-07-25 Canal alignment (`SEMANTICS_REV` 4):
+/// `can_step_onto` and `is_possible_action_area_with_tech` now BOTH begin by
+/// requiring `to` to be a real, non-Canal entry in `BoardLayout::areas`, so an
+/// id outside the declared map tabulates `false` on both axes here exactly as
+/// it is refused inside the frozen enumerator. (Before that change the two
+/// predicates read only assistants and President locations, and this comment
+/// leaned on that to claim off-map assistants enumerated identically; the
+/// tables agree with the reference either way — that is what the ordered
+/// equivalence gate checks — but the reason is now membership-exactness rather
+/// than membership-blindness.)
 ///
 /// `pub(crate)` deliberately: the precondition is only debug-asserted, so a
 /// crate-external caller could construct one on an oversized board and hit an
@@ -173,7 +181,8 @@ pub(crate) struct RouteGraph {
     /// Search root: the area the President walks from.
     from: u8,
     money: u32,
-    /// `is_possible_action_area_with_tech` per area — where a walk may STOP.
+    /// `is_possible_action_area_with_tech` per area — where a walk may STOP
+    /// (never the Canal, never an off-map id: both are false at the predicate).
     is_dest: [bool; MAX_AREAS],
     /// Owner bits of the opponent Presidents standing on each area (empty under
     /// Stagecoach, which waives the whole President-fee term).

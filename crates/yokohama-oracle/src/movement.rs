@@ -9,7 +9,7 @@ use yokohama_core::{
     AreaId, GameState, Move, PlayerId, PresidentLocation, Rules, TechEffect,
 };
 
-use crate::common::{opponent_presidents_in, owns_effect};
+use crate::common::{allows_pawn, opponent_presidents_in, owns_effect};
 use crate::RouteLabel;
 
 /// §1.4 Movement dispatch: the exact part (`PlacePresident` destinations when
@@ -82,6 +82,13 @@ pub(crate) fn place_president_moves(state: &GameState, rules: &Rules) -> Vec<Mov
         if count == 0 {
             continue;
         }
+        // The Canal is never a tile a pawn stands on [RB p.14 "no pawns or
+        // tokens may be placed"; KB §Canal "unplaceable and unstoppable"], so
+        // it is never a President destination — stated in its own right, not
+        // inferred from the own-assistant clause.
+        if !allows_pawn(state, area) {
+            continue;
+        }
         let opponents = opponent_presidents_in(state, player, area).len() as u32;
         let legal = if opponents == 0 {
             true
@@ -132,9 +139,18 @@ impl Walk<'_> {
             // Every stepped-into area (intermediates AND destination) must
             // hold ≥1 of the mover's own assistants [RB p.6, applied per step;
             // the p.6 example rejects the Laboratory-A route for this reason].
-            // Shophouses/Trading Houses never count [RB p.6]. This also
-            // excludes the Canal structurally (no pawns may ever be there).
+            // Shophouses/Trading Houses never count [RB p.6].
             if self.state.player(self.mover).assistants.in_area(next) == 0 {
+                continue;
+            }
+            // The Canal is unplaceable AND unstoppable — transit-only [RB p.14
+            // "no pawns or tokens may be placed"; KB §Canal; DL 2026-07-21
+            // any-to-any re-ruling, which re-states this]. It is a CROSSING
+            // between two other tiles, never a tile the President stops on or
+            // walks over, so it is excluded as both destination and hop. This
+            // was previously left to the unstated "no pawn is ever on the
+            // Canal" invariant; it is a rule, so it is now checked.
+            if !allows_pawn(self.state, next) {
                 continue;
             }
             // Fees charged on ENTERING `next`, stop or pass alike:
@@ -252,6 +268,14 @@ pub(crate) fn teleport_labels(state: &GameState, rules: &Rules) -> Vec<RouteLabe
 
     // Station (owner only): a zero-fee label to the Station area — free,
     // regardless of other President pawns there [RB p.15].
+    //
+    // DELIBERATELY NOT area-type-gated, unlike the walk and the from-hand
+    // placement above: whether a Station token could ever sit on the Canal —
+    // and if it did, whether the card's explicit "free, ignores Presidents"
+    // entitlement would still carry the President there — is UNRULED (named as
+    // an open owner call in the DL 2026-07-25 Canal-legality row). The oracle
+    // reports the rules, so it does not invent a ruling here; the case is
+    // fixture-only anyway, since a Station placement never names the Canal.
     if owns_effect(state, rules, mover, TechEffect::Station) {
         if let Some(st) = state.station_location {
             // RULED §7.1-A1 (Jeremy, 2026-07-20 decision-log row): Reading 2 — the station token adds POWER only; RB p.6's assistant-at-destination rule stands, so the teleport requires an own assistant at the station area. The card's explicit clauses stand (free; ignores other President pawns there). Originally landed as a triage interim mirroring the engine; the ruling confirmed it as permanent behavior.
@@ -502,6 +526,96 @@ mod tests {
         assert!(!labels.iter().any(|l| l.destination == AreaId::new(2)));
         s.players[0].money = 0;
         assert!(route_labels(&s, &rules).is_empty());
+    }
+
+    // --- Canal: unplaceable and unstoppable [RB p.14] ---
+
+    /// Type-valid but never reachable in play: 0 — 1(Canal) — 2, with the
+    /// mover's own assistants seated on BOTH 1 and 2. A real game can never
+    /// seat an assistant on the Canal [RB p.14 "no pawns or tokens may be
+    /// placed" in the Canal], so this fixture isolates the question "does the
+    /// oracle enforce the area-type rule, or merely rely on that invariant?".
+    /// The mover's President starts on 0 and area 2 is reachable ONLY through
+    /// the Canal tile.
+    fn assistant_seated_on_canal_state() -> GameState {
+        let mut s = two_player_state();
+        s.board_layout = board(
+            &[(0, AreaType::CopperMine), (1, AreaType::Canal), (2, AreaType::SilkMill)],
+            &[(0, 1), (1, 2)],
+            &[],
+        );
+        s.turn_phase = TurnPhase::Movement;
+        s.players[0].president_location = PresidentLocation::OnBoard(AreaId::new(0));
+        s.players[0].assistants.on_board.insert(AreaId::new(1), 1);
+        s.players[0].assistants.on_board.insert(AreaId::new(2), 1);
+        s
+    }
+
+    /// The same three-tile line with the middle tile a NORMAL area — the
+    /// anti-vacuity control for both Canal tests below: everything except the
+    /// area type is held fixed, so a green Canal assertion that also passes
+    /// here would prove nothing.
+    fn assistant_seated_on_normal_middle_state() -> GameState {
+        let mut s = assistant_seated_on_canal_state();
+        s.board_layout = board(
+            &[(0, AreaType::CopperMine), (1, AreaType::TeaPlantation), (2, AreaType::SilkMill)],
+            &[(0, 1), (1, 2)],
+            &[],
+        );
+        s
+    }
+
+    #[test]
+    fn canal_is_never_a_walk_hop_or_destination_even_with_an_own_assistant_there() {
+        // [RB p.14; KB 01-rules-reference §Canal: "No pawns or tokens may be
+        // placed; the Canal is unplaceable and unstoppable (transit-only)";
+        // DL 2026-07-21 any-to-any Canal re-ruling, which re-states that the
+        // Canal stays unplaceable/unstoppable]. The Canal contributes CROSSINGS
+        // between two OTHER tiles; it is never a tile a President stands on or
+        // walks over. The per-step own-assistant test [RB p.6] does not say
+        // this — it only coincides with it while the no-pawns invariant holds —
+        // so the area-type rule must be enforced in its own right.
+        let rules = Rules::standard();
+        let labels = route_labels(&assistant_seated_on_canal_state(), &rules);
+        assert!(
+            labels.iter().all(|l| l.destination != AreaId::new(1)),
+            "the Canal is never stoppable [RB p.14]"
+        );
+        assert!(
+            labels.iter().all(|l| l.destination != AreaId::new(2)),
+            "the Canal is never a hop either, so the tile beyond it is unreachable [RB p.14]"
+        );
+        assert!(labels.is_empty(), "no route survives when the only path runs onto the Canal");
+
+        // Anti-vacuity: with the middle tile a normal area, both the stop and
+        // the hop-and-continue ARE legal [RB p.6] — so the area type is the
+        // only thing the assertions above are measuring.
+        let labels = route_labels(&assistant_seated_on_normal_middle_state(), &rules);
+        assert!(labels.contains(&label(1, &[])));
+        assert!(labels.contains(&label(2, &[])));
+    }
+
+    #[test]
+    fn canal_is_never_a_place_president_destination_even_with_an_own_assistant_there() {
+        // [RB p.14; KB 01-rules-reference §Canal] again: a from-hand President
+        // placement names a tile the pawn will STAND on, and the Canal is never
+        // such a tile. The Possible Action Area test [RB p.6] (own assistant +
+        // no opponent President) is necessary, not sufficient.
+        let rules = Rules::standard();
+        let mut s = assistant_seated_on_canal_state();
+        s.players[0].president_location = PresidentLocation::InHand;
+        let exact = place_president_moves(&s, &rules);
+        assert!(
+            !exact.contains(&Move::PlacePresident { destination: AreaId::new(1) }),
+            "the Canal is never placeable [RB p.14]"
+        );
+        // Anti-vacuity, two ways: the non-Canal sibling tile IS offered here,
+        // and the same tile 1 becomes offerable once it is a normal area.
+        assert!(exact.contains(&Move::PlacePresident { destination: AreaId::new(2) }));
+        let mut control = assistant_seated_on_normal_middle_state();
+        control.players[0].president_location = PresidentLocation::InHand;
+        assert!(place_president_moves(&control, &rules)
+            .contains(&Move::PlacePresident { destination: AreaId::new(1) }));
     }
 
     // --- F12 [RB p.15] Station teleport ---

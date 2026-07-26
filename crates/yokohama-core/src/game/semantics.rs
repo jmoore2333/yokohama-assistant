@@ -64,7 +64,28 @@ use crate::types::GameState;
 /// board with the observed faces — a setup-reconciliation change per the bump
 /// contract. Self-play / sim is unaffected (no token observations ⇒ the seeded
 /// relay is retained); older records are strict-rejected as usual.
-pub const SEMANTICS_REV: u32 = 3;
+///
+/// Rev 4 (2026-07-25, Canal legality alignment): the two shared movement
+/// predicates — `is_possible_action_area_full` and `can_step_onto` — now carry
+/// the rule that the Canal is never placeable and never stoppable (rulebook
+/// p.14; guidingpath 2026-07-21 Canal re-ruling), so the LEGALITY SET changed:
+/// `get_legal_moves` no longer emits a President placement onto, or a walk
+/// hopping through / ending on, a Canal-typed area that holds one of the
+/// mover's own assistants. Previously the generator emitted those while every
+/// apply path rejected them.
+///
+/// NO REACHABLE-STATE BEHAVIOUR CHANGES, and this is why: both new gates fire
+/// only when an own assistant sits on a Canal-typed area, and no reachable
+/// state has one. The engine has exactly three writers that ADD to
+/// `assistants.on_board` — `apply_placement` and `apply_placement_same_area`
+/// (both behind `require_placeable_area`) and `ChooseAssistantMove`'s
+/// resolution arm (fed by `assistant_move_options`, which excludes the Canal,
+/// and as of this revision guarded by name as well). Setup seats no player
+/// assistant on the board. So the affected states are FIXTURE-ONLY, every
+/// existing record replays identically, and the bump is the contract letter for
+/// a legality-SET change rather than a report of changed play. Its one
+/// user-visible consequence is the usual one: rev-3 saves stop resuming.
+pub const SEMANTICS_REV: u32 = 4;
 
 /// FNV-1a 64 over `bytes`, seeded with the standard offset basis. Hand-rolled
 /// for the same reason `Rules::content_hash` hand-rolls it: `std::hash` is not

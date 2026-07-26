@@ -25,7 +25,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use yokohama_core::{AreaId, GameState, PlayerId, PresidentLocation, Rules, TechEffect};
 
-use crate::common::{opponent_presidents_in, owns_effect};
+use crate::common::{allows_pawn, opponent_presidents_in, owns_effect};
 use crate::{movement, RouteLabel};
 
 /// Every legal `(destination, fees)` movement label for the current player,
@@ -90,7 +90,8 @@ fn walk_label_candidates(
 ///
 /// 1. every stepped-into area — intermediates AND destination — holds ≥1 of
 ///    the mover's own assistants [RB p.6, applied per step; Shophouses/Trading
-///    Houses never count; this also excludes the Canal structurally];
+///    Houses never count] AND is not the Canal, which is unplaceable and
+///    unstoppable [RB p.14; KB §Canal] — a separate rule, checked separately;
 /// 2. the destination holds no opponent president, OR the mover owns Postal
 ///    System [RB p.6 / p.15] — a prefix ending on an opponent president is
 ///    still EXTENDED (passing is allowed [RB p.6]), just not recorded;
@@ -127,6 +128,13 @@ fn extend_paths(
             continue;
         }
         if state.player(mover).assistants.in_area(next) == 0 {
+            continue;
+        }
+        // The Canal is never a tile a pawn stops on or walks over [RB p.14 "no
+        // pawns or tokens may be placed"; KB §Canal "unplaceable and
+        // unstoppable (transit-only)"] — a rule about the tile, so it holds in
+        // the pruneless reference exactly as in the pruned walk.
+        if !allows_pawn(state, next) {
             continue;
         }
         visited.insert(next);
@@ -387,6 +395,43 @@ mod tests {
         let pruneless = route_labels_pruneless(&s, &rules);
         assert_eq!(pruneless, pruned);
         assert!(pruneless.contains(&label(1, &[])));
+    }
+
+    #[test]
+    fn pruneless_walk_also_refuses_a_canal_step_and_still_agrees_with_the_pruned_oracle() {
+        // The Canal is unplaceable AND unstoppable — transit-only [RB p.14 "no
+        // pawns or tokens may be placed"; KB 01-rules-reference §Canal; DL
+        // 2026-07-21 any-to-any re-ruling, which re-states this]. The rule is
+        // about the TILE, not about affordability or pruning, so the pruneless
+        // reference must reach the same verdict as the pruned walk — otherwise
+        // the three-way check compares two enumerators that disagree on a rule.
+        // Fixture: 0 — 1(Canal) — 2 with the mover's own assistants (illegally,
+        // for the sake of the test) on both 1 and 2, so the own-assistant step
+        // rule [RB p.6] cannot be what suppresses the routes.
+        let rules = Rules::standard();
+        let mut s = canal_only();
+        s.board_layout = board(
+            &[(0, AreaType::CopperMine), (1, AreaType::Canal), (2, AreaType::SilkMill)],
+            &[(0, 1), (1, 2)],
+            &[],
+        );
+        s.players[0].money = 10;
+        let pruneless = route_labels_pruneless(&s, &rules);
+        assert!(pruneless.is_empty(), "no route runs onto or through the Canal [RB p.14]");
+        assert_eq!(pruneless, movement::route_labels(&s, &rules));
+
+        // Anti-vacuity: the identical geometry with a normal middle tile yields
+        // both labels, in BOTH enumerators.
+        let mut control = s.clone();
+        control.board_layout = board(
+            &[(0, AreaType::CopperMine), (1, AreaType::TeaPlantation), (2, AreaType::SilkMill)],
+            &[(0, 1), (1, 2)],
+            &[],
+        );
+        let pruneless = route_labels_pruneless(&control, &rules);
+        assert!(pruneless.contains(&label(1, &[])));
+        assert!(pruneless.contains(&label(2, &[])));
+        assert_eq!(pruneless, movement::route_labels(&control, &rules));
     }
 
     #[test]

@@ -194,21 +194,17 @@ pub fn is_move_legal(state: &GameState, mv: &Move, rules: &Rules, mode: PathMode
             phase == TurnPhase::Movement
                 // The from-hand encoding, and a real board area: both are what
                 // `apply_place_president` itself refuses (`apply_move.rs:569-574`).
-                // THE MODULE'S ONE NARROWING (T5 review, verified by probe): on
-                // a fixture with an own assistant ON the Canal, the generator
-                // EMITS `PlacePresident{Canal}` while both apply paths reject
-                // it — a pre-existing generator/apply inconsistency in frozen
-                // files. Siding with apply is what keeps this module's
-                // accepts⟹apply-Ok property true. Unreachable by legal play:
-                // both placement arms check placeability
-                // (`require_placeable_area`), and the one unguarded
-                // assistant-writer — `ChooseAssistantMove`'s apply arm — is fed
-                // only by `assistant_move_options`, which excludes the Canal.
-                // The walk arm has the identical, already-sanctioned class (a
-                // route ENDING on the Canal mirrors `validate_president_path`'s
-                // rejection), so the two arms are consistent.
+                // ALIGNED 2026-07-25 (`SEMANTICS_REV` 4): this arm used to carry
+                // the module's ONE narrowing — an explicit `placeable(..)`
+                // conjunct siding with apply, because the generator emitted
+                // `PlacePresident{Canal}` on a fixture with an own assistant on
+                // the Canal while every apply path rejected it. The exclusion now
+                // lives in `is_possible_action_area_full` (`movement.rs`), the
+                // shared predicate the generator's arm, both route searches,
+                // `route_enum::RouteGraph` and this line all call — so generator,
+                // predicate and apply agree BY CONSTRUCTION and the conjunct is
+                // redundant. Zero narrowings remain.
                 && p.president_location == PresidentLocation::InHand
-                && placeable(state, *destination)
                 && is_possible_action_area_with_tech(state, player, *destination, techs)
                 && calculate_place_president_fee(state, player, *destination, techs) <= p.money
         }
@@ -1425,24 +1421,31 @@ mod tests {
         assert!(!legal(&s, &rules, &tram(3)), "never onto an opponent President's area");
     }
 
-    /// THE ONE NARROWING, PINNED EXECUTABLE (PR #9 review must-fix): on a
-    /// fixture-only state — own assistant on a Canal-TYPED area, President in
-    /// hand — the frozen generator EMITS `PlacePresident{canal}` while both
-    /// apply paths and this predicate REJECT it: a pre-existing
-    /// generator/apply inconsistency on the frozen surface, recorded as an
-    /// owner-visible carry-forward (PR #9). Until this test existed, the claim
-    /// was proven only by an out-of-repo probe cited in a commit message.
-    /// Three legs:
-    /// (1) the generator emits — the MEANING-PIN: if `legal_moves.rs` is ever
-    ///     fixed, this leg fails LOUDLY and the narrowing comment at this
-    ///     module's `PlacePresident` arm gets retired instead of rotting;
-    /// (2) `is_move_legal` rejects in BOTH modes — siding with apply is what
-    ///     keeps the accepts⟹apply-Ok property true;
-    /// (3) `apply_move_unchecked` rejects — the split is generator-vs-APPLY on
-    ///     the frozen surface, not generator-vs-this-module.
+    /// THE ALIGNED WORLD, PINNED EXECUTABLE (2026-07-25, `SEMANTICS_REV` 4).
+    /// This test used to pin the OPPOSITE: on a fixture-only state — own
+    /// assistant on a Canal-TYPED area — the generator EMITTED
+    /// `PlacePresident{canal}` while every apply path rejected it, and this
+    /// module narrowed to side with apply. Its own doc said "if this leg fails,
+    /// legal_moves.rs was fixed — retire the narrowing comment". It was fixed,
+    /// so it is retired: the Canal exclusion now lives in the two SHARED
+    /// movement predicates (`is_possible_action_area_full` and `can_step_onto`),
+    /// which is why `legal_moves.rs` needed no edit at all — every arm reaches
+    /// the rule through them.
+    ///
+    /// Four legs, over the from-hand arm and the walk arm (the old test only
+    /// ever exercised the former, though the same mechanism reached hops and
+    /// destinations too):
+    /// (1) the generator does NOT emit `PlacePresident{canal}`;
+    /// (2) the predicate still rejects a hand-built candidate in BOTH modes;
+    /// (3) apply still rejects it — all three surfaces agree, which is the
+    ///     property the narrowing used to buy at the cost of a divergence;
+    /// (4) no emitted `MovePresident` ends on, or steps through, the Canal, and
+    ///     hand-built walks that do are rejected by predicate and apply alike.
     #[test]
-    fn the_canal_narrowing_generator_emits_while_apply_and_predicate_reject() {
+    fn the_canal_is_excluded_by_construction_across_generator_predicate_and_apply() {
         let rules = Rules::empty_for_tests();
+
+        // -- from-hand arm ----------------------------------------------------
         let mut s = diamond(2, &[]);
         s.players[0].president_location = PresidentLocation::InHand;
         s.board_layout.areas.get_mut(&AreaId(1)).expect("area 1").area_type = AreaType::Canal;
@@ -1450,17 +1453,48 @@ mod tests {
         let mv = Move::PlacePresident { destination: AreaId(1) };
 
         assert!(
-            get_legal_moves(&s, &rules).contains(&mv),
-            "meaning-pin: the frozen generator emits PlacePresident onto the Canal-typed area \
-             today; if this leg fails, legal_moves.rs was fixed — retire the narrowing comment",
+            !get_legal_moves(&s, &rules).contains(&mv),
+            "meaning-pin: the generator no longer emits PlacePresident onto a Canal-typed area — \
+             the exclusion lives in is_possible_action_area_full",
+        );
+        assert!(
+            get_legal_moves(&s, &rules).contains(&Move::PlacePresident { destination: AreaId(2) }),
+            "anti-vacuity: the non-Canal areas are still offered",
         );
         assert!(!legal(&s, &rules, &mv), "the predicate rejects it (RulesLegal)");
         assert!(!canonical(&s, &rules, &mv), "the predicate rejects it (Canonical)");
+        assert!(apply_move_unchecked(&s, &mv, &rules).is_err(), "and apply rejects it");
+
+        // -- walk arm: hops AND destinations ----------------------------------
+        // The diamond is 0-1-3 / 0-2-3 with the President on 0 and own
+        // assistants on 1, 2 and 3. With 1 typed Canal, area 3 stays reachable
+        // via 2 — so the fixture proves exclusion, not mere emptiness.
+        let mut w = diamond(2, &[]);
+        w.board_layout.areas.get_mut(&AreaId(1)).expect("area 1").area_type = AreaType::Canal;
+
+        let emitted = get_legal_moves(&w, &rules);
+        for m in &emitted {
+            if let Move::MovePresident { path, destination } = m {
+                assert_ne!(*destination, AreaId(1), "no walk may END on the Canal: {m:?}");
+                assert!(!path.contains(&AreaId(1)), "no walk may STEP THROUGH the Canal: {m:?}");
+            }
+        }
         assert!(
-            apply_move_unchecked(&s, &mv, &rules).is_err(),
-            "apply rejects it — the inconsistency is generator-vs-apply, and this predicate \
-             sides with apply",
+            emitted.contains(&Move::MovePresident {
+                path: vec![AreaId(2), AreaId(3)],
+                destination: AreaId(3),
+            }),
+            "anti-vacuity: the route that detours around the Canal is still emitted",
         );
+
+        let onto_canal = Move::MovePresident { path: vec![AreaId(1)], destination: AreaId(1) };
+        let through_canal =
+            Move::MovePresident { path: vec![AreaId(1), AreaId(3)], destination: AreaId(3) };
+        for m in [&onto_canal, &through_canal] {
+            assert!(!legal(&w, &rules, m), "the predicate rejects it (RulesLegal): {m:?}");
+            assert!(!canonical(&w, &rules, m), "the predicate rejects it (Canonical): {m:?}");
+            assert!(apply_move_unchecked(&w, m, &rules).is_err(), "and apply rejects it: {m:?}");
+        }
     }
 
     /// Station's own preconditions, from the predicate side: the token must be

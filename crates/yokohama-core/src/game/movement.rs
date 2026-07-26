@@ -15,7 +15,9 @@ use super::cards::TechRegistry;
 /// paying MORE to deny an opponent a fee is real, enumerable play).
 pub type RouteVector = BTreeMap<Option<PlayerId>, u32>;
 
-/// Check if an area is a valid destination (Possible Action Area).
+/// Check if an area is a valid destination (Possible Action Area) — a real
+/// board area that is not the Canal, holds >=1 of the player's own assistants,
+/// and is not blocked by an opponent President.
 /// Without TechRegistry, assumes no Postal System.
 pub fn is_possible_action_area(state: &GameState, player: PlayerId, area: AreaId) -> bool {
     is_possible_action_area_full(state, player, area, None, false)
@@ -33,6 +35,19 @@ pub fn is_possible_action_area_with_tech(
 
 /// Full version with all options.
 /// - is_mercenary: If true, opponent presidents don't block.
+///
+/// THE stop-legality predicate for WALKS and FROM-HAND PLACEMENT: those
+/// consumers call it rather than restating the test (the from-hand
+/// `PlacePresident` arm, both route searches' destination filters,
+/// `route_enum::RouteGraph`, and `move_legality`), which is why the Canal
+/// exclusion below needed to be stated only here to reach all of them. The two
+/// TELEPORT arms decide their stops separately: Tram restates
+/// `allows_placement` inline (`legal_moves.rs` Tram arm), and Station
+/// (`can_teleport_to_station_with_tech`) checks neither shared predicate — the
+/// named residual in guidingpath's 2026-07-25 Canal row (generator/apply
+/// CONSISTENT there; unreachable because `StationPlace` resolutions filter
+/// `allows_placement`)
+/// (2026-07-25 alignment, `SEMANTICS_REV` 4).
 pub fn is_possible_action_area_full(
     state: &GameState,
     player: PlayerId,
@@ -41,6 +56,24 @@ pub fn is_possible_action_area_full(
     is_mercenary: bool,
 ) -> bool {
     let p = state.player(player);
+
+    // Must be a real board area, and never the Canal: no pawn may ever be
+    // placed there (rulebook p.14; guidingpath 2026-07-21 Canal re-ruling),
+    // which is exactly what `require_placeable_area` enforces on the apply
+    // side. Stated BEFORE the mercenary early-return below so the
+    // `is_mercenary = true` ARGUMENT PATH inherits it — but note honestly
+    // (PR #10 review): no in-repo caller passes `is_mercenary = true`, and
+    // live mercenary TARGET SELECTION does not route through this predicate
+    // at all — `generate_additional_action_moves` iterates
+    // `assistants.on_board` bespoke, with no area-type filter, and
+    // `apply_mercenary` has no `require_placeable_area` either. That pair is
+    // generator/apply CONSISTENT on Canal fixtures (both accept; the
+    // AreaAction generator then yields no actions there) and unreachable by
+    // legal play — the SECOND named residual beside the Station teleport in
+    // guidingpath's 2026-07-25 Canal row, awaiting the same owner ruling.
+    if !state.board_layout.areas.get(&area).is_some_and(|c| c.area_type.allows_placement()) {
+        return false;
+    }
 
     // Must have at least 1 assistant
     if p.assistants.in_area(area) < 1 {
@@ -122,9 +155,13 @@ pub fn find_reachable_areas(
 /// legal-move generation no longer calls this directly -- it uses
 /// `enumerate_president_routes`, which returns every distinct affordable
 /// (destination, fee vector) label, not just the cheapest path per
-/// destination. This function stays as-is for its other callers (mercenary
-/// paths, and any future consumer that genuinely only wants the cheapest
-/// route).
+/// destination. This function has had NO caller outside this module's own
+/// unit tests ever since (2026-07-25 re-check: the "mercenary paths" consumer
+/// this line used to name never existed -- mercenary sub-turns resolve their
+/// acting area from `state.mercenary_target_area`). It is kept as the
+/// cheapest-route view for any future consumer that genuinely wants one, and
+/// stays honest by construction: its hop and destination gates are the same
+/// two shared predicates every other search calls.
 pub fn find_reachable_areas_with_tech(
     state: &GameState,
     player: PlayerId,
@@ -191,8 +228,16 @@ pub fn find_reachable_areas_with_tech(
 }
 
 /// Whether a president-movement step may land on `to`, given the move's
-/// start area `start`: `to` must hold >=1 of the mover's own assistants
-/// (the assistant-chain requirement) and must not be `start` itself.
+/// start area `start`: `to` must be a real board area that is not the Canal,
+/// must hold >=1 of the mover's own assistants (the assistant-chain
+/// requirement), and must not be `start` itself.
+///
+/// The Canal clause (2026-07-25 alignment, `SEMANTICS_REV` 4) is the rule that
+/// no pawn may ever be placed there (rulebook p.14; guidingpath 2026-07-21
+/// Canal re-ruling) — the Canal is transit-only in the sense that its
+/// CROSSINGS join two other areas, never that a pawn stands on the Canal tile
+/// itself. Stating it here mirrors `validate_president_path`'s per-hop
+/// `require_placeable_area` on the apply side.
 ///
 /// That start-exclusion is CANONICALIZATION, not a rules claim. The
 /// 2026-07-20 effective-route ruling (guidingpath decision log) is that
@@ -212,7 +257,9 @@ pub fn find_reachable_areas_with_tech(
 /// (`move_legality`). The class is what the guarantee is stated over; a fifth
 /// consumer joins it by calling this function, not by being listed here.
 pub(crate) fn can_step_onto(state: &GameState, player: PlayerId, start: AreaId, to: AreaId) -> bool {
-    to != start && state.player(player).assistants.in_area(to) > 0
+    to != start
+        && state.board_layout.areas.get(&to).is_some_and(|c| c.area_type.allows_placement())
+        && state.player(player).assistants.in_area(to) > 0
 }
 
 /// Check if player can teleport to Station area (Station technology).
@@ -622,6 +669,45 @@ mod tests {
         // With opponent president -> not valid (no Postal System)
         state.players[1].president_location = PresidentLocation::OnBoard(area);
         assert!(!is_possible_action_area(&state, player, area));
+    }
+
+    /// The Canal is never placeable and never stoppable (rulebook p.14;
+    /// guidingpath 2026-07-21 Canal re-ruling). Both SHARED predicates carry
+    /// that exclusion, so every consumer of theirs — the from-hand
+    /// `PlacePresident` arm, the DFS/Dijkstra hop gates, `RouteGraph`, and
+    /// `move_legality` — inherits it by construction rather than by restating
+    /// it. The mercenary leg is the one that needs pinning on purpose: the
+    /// `is_mercenary` early-return short-circuits everything after it, so the
+    /// area-type gate has to sit BEFORE it or mercenary targets would keep the
+    /// hole. (No in-repo caller passes `is_mercenary = true` today — mercenary
+    /// sub-turns resolve their acting area from `state.mercenary_target_area` —
+    /// so this leg is future-proofing an argument-reachable path, not a fix to
+    /// a live one.)
+    #[test]
+    fn canal_typed_areas_are_never_action_areas_nor_hops() {
+        let mut state = create_test_state_with_board();
+        let player = PlayerId::new(0);
+        let area = AreaId::new(1);
+        state.players[0].assistants.on_board.insert(area, 1);
+
+        assert!(is_possible_action_area(&state, player, area), "control: a normal area");
+        assert!(can_step_onto(&state, player, AreaId::new(0), area), "control: a normal hop");
+        assert!(
+            is_possible_action_area_full(&state, player, area, None, true),
+            "control: a normal mercenary target",
+        );
+
+        state.board_layout.areas.get_mut(&area).expect("area 1").area_type = AreaType::Canal;
+
+        assert!(!is_possible_action_area(&state, player, area), "the Canal is never stoppable");
+        assert!(
+            !can_step_onto(&state, player, AreaId::new(0), area),
+            "the Canal is never a hop — no pawn may ever stand there",
+        );
+        assert!(
+            !is_possible_action_area_full(&state, player, area, None, true),
+            "the is_mercenary early-return must not skip the Canal exclusion",
+        );
     }
 
     #[test]

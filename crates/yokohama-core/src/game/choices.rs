@@ -155,6 +155,30 @@ pub fn push_choice(state: &mut GameState, choice: PendingChoice, rules: &Rules) 
 pub fn resolve_choice_move(state: &mut GameState, mv: &Move, rules: &Rules) -> Result<(), MoveError> {
     let head = state.pending_choices.first().cloned()
         .ok_or(MoveError::RuleViolation("No pending choice to resolve"))?;
+    // Canal alignment, 2026-07-25 (`SEMANTICS_REV` 4) — DEFENSE IN DEPTH for
+    // the AssistantMove arm below, which is the engine's third and last writer
+    // into `assistants.on_board` and the only one with no area-type check of
+    // its own (the other two, `apply_placement` and `apply_placement_same_area`,
+    // go through `require_placeable_area`). The Canal is never a placeable area
+    // (rulebook p.14), so the arm refuses it BY NAME rather than relying on the
+    // membership check below to refuse it by set exclusion. Stated here, ahead
+    // of the pop, for the same reason as the tampered-head guards further down:
+    // an Err must leave the state untouched. It is genuinely a second line —
+    // `assistant_move_options` already filters the Canal out — which is why the
+    // guard is what makes "no assistant can ever stand on the Canal" a checked
+    // property of this file instead of an argued one.
+    if let (PendingChoice::AssistantMove, Move::ChooseAssistantMove { to, .. }) = (&head, mv) {
+        // Two causes, two messages, mirroring `require_placeable_area`
+        // (apply_move.rs) — a ghost id must not be reported as a Canal
+        // violation (PR #10 review).
+        match state.board_layout.areas.get(to) {
+            None => return Err(MoveError::RuleViolation("Area does not exist on this board")),
+            Some(c) if !c.area_type.allows_placement() => {
+                return Err(MoveError::RuleViolation("The Canal is never a placeable area"));
+            }
+            _ => {}
+        }
+    }
     if !generate_choice_resolutions(state, &head, rules).contains(mv) {
         return Err(MoveError::RuleViolation("Move does not resolve the pending choice"));
     }
@@ -544,6 +568,42 @@ mod tests {
         );
         assert!(matches!(result, Err(MoveError::RuleViolation(_))), "{result:?}");
         assert_eq!(state, before, "zero mutation on Err: token stays where it was");
+    }
+
+    /// Canal alignment, 2026-07-25 (`SEMANTICS_REV` 4), defense in depth: the
+    /// Canal is never a placeable area, so a `ChooseAssistantMove` whose `to`
+    /// is a Canal must be REFUSED BY NAME, not merely by set membership.
+    /// `assistant_move_options` already excludes the Canal (pinned by
+    /// `assistant_move_options_cover_hand_and_own_areas_excluding_canal`), so
+    /// this arm was the one assistant-writer in the engine with no area-type
+    /// check of its own — the reason the fixture-only "assistant on the Canal"
+    /// state was reachable in principle at all. The guard is stated once here
+    /// and would survive the option filter regressing.
+    #[test]
+    fn tampered_assistant_move_onto_the_canal_errors_with_the_canal_rule() {
+        let (mut state, rules) = assistant_move_fixture();
+        let before = state.clone();
+
+        let result = resolve_choice_move(
+            &mut state,
+            &Move::ChooseAssistantMove { from: MoveSource::Hand, to: canal_area() },
+            &rules,
+        );
+        assert!(
+            matches!(result, Err(MoveError::RuleViolation("The Canal is never a placeable area"))),
+            "the arm names the rule it is enforcing, not just \"not a resolution\": {result:?}",
+        );
+        assert_eq!(state, before, "zero mutation on Err: no pawn moved, head not popped");
+
+        // Anti-vacuity: the same tampered shape onto a real area still applies.
+        let mut ok = before.clone();
+        resolve_choice_move(
+            &mut ok,
+            &Move::ChooseAssistantMove { from: MoveSource::Hand, to: area_b() },
+            &rules,
+        )
+        .expect("a non-Canal destination is a genuine resolution");
+        assert_eq!(ok.current_player().assistants.on_board[&area_b()], 1);
     }
 
     /// Direct-mechanism analogue of `actions/tracks.rs`'s
