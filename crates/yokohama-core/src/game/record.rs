@@ -53,6 +53,12 @@ pub const OBSERVATION_VIEW: &str = "view";
 /// what `arena::corpus`'s emitter enforces.
 pub const OBSERVATION_FULL_STATE_DIAGNOSTIC: &str = "full-state-diagnostic";
 
+/// The `SeatProvenance::controller` value for a HUMAN seat (spec §5 names it on
+/// the same footing as the policy names, under the same never-hand-typed rule).
+/// T12's CLI is the consumer — the wizard, the panel, and the resume path all
+/// read THIS const, never a scattered literal (T8 review finding 2).
+pub const CONTROLLER_HUMAN: &str = "human";
+
 /// Who played this game — the run-level provenance ONE field serves for both
 /// the arena and the CLI (spec §5).
 ///
@@ -74,6 +80,8 @@ pub const OBSERVATION_FULL_STATE_DIAGNOSTIC: &str = "full-state-diagnostic";
 pub struct RunProvenance {
     /// [`RUN_PROVENANCE_SCHEMA`] at write time.
     #[serde(default)]
+    /// (`0` on a document that carried no key at all — "the writer said
+    /// nothing" — never a valid written value; `RUN_PROVENANCE_SCHEMA` is 1.)
     pub schema: u32,
     /// The seed schedule's master, when the run had one above it. `None` for a
     /// single game played on its own world seed — an honest absence, not a
@@ -246,6 +254,15 @@ impl GameRecord {
     /// no run to contextualize, and inventing one would claim a controller
     /// nobody recorded.
     pub fn set_run_context(&mut self, master_seed: u64, run_id: &str) {
+        // T8 review ruling (probe 3): the None arm stays a no-op — fabricating
+        // a zero-seat RunProvenance to hold the context would be worse — but
+        // it is LOUD in debug, because the only wrong path here is a caller
+        // ordering this before set_run_seats (or forgetting seats entirely),
+        // which would silently produce corpus records with no run-level label.
+        debug_assert!(
+            self.run.is_some(),
+            "set_run_context before set_run_seats: the context has no provenance to land in",
+        );
         if let Some(run) = &mut self.run {
             run.master_seed = Some(master_seed);
             run.run_id = Some(run_id.to_string());

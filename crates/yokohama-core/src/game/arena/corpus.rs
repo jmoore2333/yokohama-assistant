@@ -104,9 +104,20 @@ pub fn corpus_refusal(path: &Path, record: &GameRecord) -> Option<String> {
     if diagnostic_seats.is_empty() {
         return None;
     }
-    if !path.starts_with(default_corpus_dir()) {
+    // ABSOLUTIZED before comparison (T8 review ruling on probe 2): the module's
+    // stated scope is "pointing --emit at the real corpus directory", and the
+    // NATURAL spelling of that mistake is relative (`--emit
+    // crates/yokohama-core/corpus` from the workspace root, since cargo run
+    // keeps the cwd) — a raw component compare against the absolute
+    // `default_corpus_dir()` let exactly that spelling through.
+    // `std::path::absolute` is lexical + cwd and touches no filesystem, so the
+    // refusal still fires before anything is created; symlinked or copied-in
+    // paths remain the documented, undefendable limit.
+    let absolute = std::path::absolute(path).unwrap_or_else(|_| path.to_path_buf());
+    if !absolute.starts_with(default_corpus_dir()) {
         return None;
     }
+    let path = absolute.as_path();
     let cell = path
         .parent()
         .and_then(Path::file_name)
