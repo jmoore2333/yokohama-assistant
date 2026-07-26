@@ -720,7 +720,8 @@ fn check_view(
 ///    brd 1670, shop 862, trad 61, 5pw 110, imp 241, achv 1618, merc 635,
 ///    hnd# 1647]
 /// drift_pairs 1720 · drift_dummy_pairs 240 · terminal_views 9
-/// max |positional score| 2168  (rank step 1e9 clears it 461,255x)
+/// max |positional score| 2168  (rank step 1e9 clears it 461,254x — the
+///   test's own integer division; 1e9/2168 = 461,254.6)
 /// ```
 ///
 /// MUTATION-PROVEN AT AUTHORING (all reverted; the point is that this sweep
@@ -1024,13 +1025,18 @@ fn a_terminal_view_is_ranked_by_the_full_final_score_not_by_running_vp() {
         winner_standing.rank
     );
 
-    // The ladder: dominant, symmetric, and margin-refined.
+    // The ladder at 2P: dominant and margin-refined. (At 2P, and ONLY at 2P,
+    // the two place values happen to be mirror images (+1/−1); at 3–4P the
+    // ladder is deliberately ASYMMETRIC — every non-first place is negative —
+    // and eval.rs documents that a symmetric place ladder would be a bug. The
+    // T2 review caught this comment calling the ladder "symmetric" as if that
+    // were the design; the VALUE assertions below are what pin the design.)
     let weights = WeightTable::PROVISIONAL_V1;
     let win = score(&winner, &rules, &weights);
     let loss = score(&loser, &rules, &weights);
     assert_eq!(win, TERMINAL_RANK_STEP + 2 * TERMINAL_MARGIN_STEP, "2P first place, margin +2");
     assert_eq!(loss, -TERMINAL_RANK_STEP - 2 * TERMINAL_MARGIN_STEP, "2P second place, margin −2");
-    assert!(win > 0 && loss < 0, "the ladder must be symmetric about zero");
+    assert!(win > 0 && loss < 0, "first positive, last negative (2P mirror is incidental)");
 
     // A hostile margin cannot lift second above first: the clamp is what makes
     // that structural rather than a fact about typical scores.
@@ -1220,3 +1226,114 @@ const ALL_ACHIEVEMENTS: [yokohama_core::AchievementType; 12] = {
         Prod2Comm3,
     ]
 };
+
+// ---------------------------------------------------------------------------
+// T2-review fix wave (orchestrator): three pins the review showed were missing
+// ---------------------------------------------------------------------------
+
+/// The clamp inequality that makes the terminal ladder's ORDER structural is
+/// pinned by NOTHING but this test (T2 review: sweeping
+/// `TERMINAL_MARGIN_CLAMP` 400 → 600/1000/10000 left the whole suite green
+/// while at 600 rank 3's best case, −2e9 + 6e8, genuinely outscored rank 2's
+/// worst, −1e9 − 6e8). Two pins, both pure arithmetic over the shipped
+/// constants:
+///   1. the global inequality `2·CLAMP·MARGIN_STEP < RANK_STEP`;
+///   2. the property it exists to buy, stated directly — at every supported
+///      player count, the WORST value a place can take strictly exceeds the
+///      BEST value of the place below it.
+/// At clamp 600 both fail; at the shipped 400 both hold with 2e8 headroom.
+#[test]
+fn the_terminal_ladder_cannot_invert_adjacent_places_by_construction() {
+    assert!(
+        2 * TERMINAL_MARGIN_CLAMP * TERMINAL_MARGIN_STEP < TERMINAL_RANK_STEP,
+        "two clamped margins ({}) must span strictly less than one rank step ({})",
+        2 * TERMINAL_MARGIN_CLAMP * TERMINAL_MARGIN_STEP,
+        TERMINAL_RANK_STEP,
+    );
+    for players in 2u8..=4 {
+        for rank in 1..players {
+            let worst_here = TERMINAL_RANK_STEP * place_signal(rank)
+                - TERMINAL_MARGIN_STEP * TERMINAL_MARGIN_CLAMP;
+            let best_below = TERMINAL_RANK_STEP * place_signal(rank + 1)
+                + TERMINAL_MARGIN_STEP * TERMINAL_MARGIN_CLAMP;
+            assert!(
+                worst_here > best_below,
+                "{players}P: rank {rank}'s worst case ({worst_here}) must strictly exceed rank \
+                 {}'s best case ({best_below}) — the clamp is what buys this",
+                rank + 1,
+            );
+        }
+    }
+}
+
+/// An area holding BOTH a shophouse and a trading house for the same player
+/// counts ONCE in the building-area achievement legs — the engine has a
+/// dedicated unit test for exactly this shape
+/// (`test_count_production_buildings_does_not_double_count_area_with_both`),
+/// and the T2 constructed cell made the overlap structurally unreachable by
+/// segregating building types by area class, so the de-duplication arm in
+/// `building_areas` had no test teeth (T2 review: mutating the
+/// `!contains_key` guard to always-true SURVIVED the whole suite; against
+/// this cell it fails).
+#[test]
+fn an_area_holding_both_building_types_counts_once_in_view_side_progress() {
+    let rules = Rules::standard();
+    let mut state = keep_game(4, 31, &rules);
+
+    let production: Vec<_> = state
+        .board_layout
+        .areas
+        .iter()
+        .filter(|(_, c)| c.area_type.is_production())
+        .map(|(a, _)| *a)
+        .collect();
+    assert!(production.len() >= 3, "need three production areas for the overlap fixture");
+
+    // Player 0 holds a trading house AND a shophouse in production[0], plus a
+    // trading house alone in production[1] and a shophouse alone in
+    // production[2]: three DISTINCT built areas, four buildings. A
+    // double-counting mirror reads four areas.
+    let p = &mut state.players[0];
+    p.trading_houses.built = production[..2].to_vec();
+    p.shophouses.built.insert(production[0], 0);
+    p.shophouses.built.insert(production[2], 1);
+
+    for card in ALL_ACHIEVEMENTS {
+        state.achievements = [
+            yokohama_core::AchievementCard::new(card),
+            yokohama_core::AchievementCard::new(card),
+            yokohama_core::AchievementCard::new(card),
+        ];
+        let view = observe(&state, PlayerId(0)).unwrap();
+        let me = view.players.iter().find(|q| q.id == PlayerId(0)).unwrap();
+        assert_eq!(
+            view_achievement_progress(&view, me, card),
+            achievement_progress(&state, PlayerId(0), card),
+            "overlap area double-counted: {card:?} drifted from the engine",
+        );
+    }
+}
+
+/// §0.3(a)'s allocation bound holds on the TERMINAL branch too (T2 review
+/// note: the shipped pin measured a fresh view only, while a search evaluates
+/// terminal successors at its leaves — the branch with the extra standing
+/// work is exactly the one that was unmeasured).
+#[test]
+fn score_allocates_nothing_on_the_terminal_branch_too() {
+    let rules = Rules::standard();
+    let weights = WeightTable::PROVISIONAL_V1;
+    let mut state = dummy_fixture(&rules);
+    force_terminal(&mut state);
+    let view = observe(&state, PlayerId(0)).unwrap();
+    assert!(view_is_terminal(&view), "the fixture must read terminal from the view");
+
+    let (s, hot) = meter::measure(|| score(&view, &rules, &weights));
+    assert_eq!(
+        hot.allocs, 0,
+        "terminal score must not allocate (measured {} allocations)",
+        hot.allocs
+    );
+    // The value itself is rank-dominated — sanity, not the subject.
+    assert!(s.abs() >= TERMINAL_RANK_STEP - TERMINAL_MARGIN_STEP * TERMINAL_MARGIN_CLAMP);
+    println!("terminal score: {} allocs / {} peak bytes", hot.allocs, hot.peak_bytes);
+}
