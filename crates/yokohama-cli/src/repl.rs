@@ -1571,11 +1571,26 @@ impl Repl {
                 }
                 // Only the FIRST failure is an error: once something has been
                 // undone, running out of log mid-unwind is a boundary, not a
-                // fault.
+                // fault. The boundary is matched BY KIND, not by position (T12
+                // review F2): `Session::undo` also returns Err when a record
+                // prefix fails to REPLAY, and reporting that as "nothing of
+                // your own to undo" would describe N committed-away entries as
+                // a no-op — the silent-failure shape the benign branch exists
+                // to avoid.
                 Err(e) if entries == 0 => return self.out(format!("Cannot undo: {e}\n"), false),
-                Err(_) => {
+                Err(e) if e.contains("nothing to undo") => {
                     hit_the_bottom = true;
                     break;
+                }
+                Err(e) => {
+                    return self.out(
+                        format!(
+                            "Cannot undo: a record prefix failed to replay after {entries} \
+                             entr{} were unwound: {e}\n",
+                            if entries == 1 { "y" } else { "ies" },
+                        ),
+                        false,
+                    )
                 }
             }
             // The state now standing is the one the popped entry was made
@@ -1734,7 +1749,8 @@ impl Repl {
             let Some(policy) = self.bots.policy_at(seat) else { break };
             if moves.len() >= PUMP_MOVE_CAP {
                 halt = Some(format!(
-                    "BOT HALT — seat {} has applied {PUMP_MOVE_CAP} moves in one turn without handing over. \
+                    "BOT HALT — the pump has applied {PUMP_MOVE_CAP} moves across consecutive bot \
+                     seats (currently seat {}) without reaching a human. \
                      Stopping rather than looping; the game is intact, and `log` shows what it did.",
                     seat.0,
                 ));
