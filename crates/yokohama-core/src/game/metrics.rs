@@ -98,6 +98,9 @@ use crate::types::{EndGameTrigger, Move, TurnPhase};
 
 /// The z multiplier for a 95% two-sided normal interval, to the precision the
 /// spec's published constants were computed at.
+/// (Scope: IN-CRATE callers derive from this constant. An integration test
+/// restating 1.959964 as its own theoretical reference is deliberate
+/// independence, not drift — see `tests/arena_gate.rs`'s Z_95.)
 ///
 /// `pub(crate)` so the arena's unit-t cross-check and its MME sizing derive from
 /// THIS constant rather than re-typing 1.959964 in a second module — a

@@ -545,7 +545,14 @@ fn cmd_throughput(args: &[String]) -> Result<(), String> {
     let rules = Rules::standard();
     let base = match master {
         SeedScheduleKind::Diagnostic(m) => m,
-        SeedScheduleKind::OsEntropy => SeedSchedule::from_os_entropy().1,
+        SeedScheduleKind::OsEntropy => {
+            let drawn = SeedSchedule::from_os_entropy().1;
+            // Recorded, per spec §3 and this header's own promise (T9 review
+            // F2): an unrecorded os-entropy master makes every figure below
+            // unreproducible.
+            println!("os-entropy master drawn this run: {drawn:#018x} (re-run via --master)");
+            drawn
+        }
     };
 
     println!(

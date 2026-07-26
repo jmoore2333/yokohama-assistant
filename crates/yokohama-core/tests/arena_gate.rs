@@ -74,10 +74,12 @@ const SYNTHETIC_MASTER: u64 = 0xA3E1_2026_0726_0007;
 
 /// The two-sided 95% normal quantile.
 ///
-/// A local copy of `game::metrics::Z_95`, which is `pub(crate)` and therefore
-/// unreachable from an integration test. If that constant ever moves, this one
-/// must move with it — nothing mechanical couples them, which is why the
-/// duplication is stated here rather than left to be discovered.
+/// A DELIBERATE independent restatement, not a visibility workaround (T9
+/// review, probe-2 ruling): a test importing its theoretical reference from
+/// the module under test has a weaker check, and the estimator this gate
+/// validates uses no z at all (nearest-rank order statistics), so the two
+/// share nothing that can drift. 1.959964 changes only if the project
+/// abandons 95%, in which case this gate SHOULD disagree loudly.
 const Z_95: f64 = 1.959964;
 
 /// The `FamilyWeighted` knob setting E1 measured APART from the shipped default
@@ -459,10 +461,13 @@ fn assert_non_degenerate(report: &CellReport, label: &str) {
 /// rule-of-three bound `1 − 3/n`; the all-lost mirror is pinned synthetically in
 /// `game/arena/stats.rs`, where it costs no games at all.
 ///
-/// THE ASSERTION IS DISJUNCTIVE, ON PURPOSE. Exact 60/60 is the expected
-/// outcome and E2's 4000/4000 makes anything else very unlikely at this master
-/// — but "unlikely" is not "impossible", and an exact-equality knife-edge on a
-/// stochastic outcome is precisely the flake class this branch keeps removing.
+/// THE ASSERTION IS DISJUNCTIVE, ON PURPOSE — but not against flake: at the
+/// committed diagnostic master with a fixed engine this outcome is
+/// DETERMINISTIC (clause (v) asserts exactly that), so this test cannot flake.
+/// What the disjunction buys is tolerance to an INTENTIONAL upstream change —
+/// a new master, a policy tweak, an engine edit — without a brittle re-pin
+/// (T9 review, probe-1 ruling; the per-edit synthetic refusal pin in
+/// `stats.rs` covers all four refusal arms at zero game cost either way).
 /// A single lost pair (59/60) leaves a unit vector with two distinct values,
 /// which is no longer a refusal — so the near-boundary arm accepts it and
 /// requires what SHOULD be true there instead: a saturated/near-constant read
@@ -922,13 +927,18 @@ fn replicates_at(scale: Scale) {
 #[test]
 #[ignore = "release-tier gate: cargo test --release -p yokohama-core --test arena_gate -- --ignored"]
 fn emitted_corpus_replays_strict_clean() {
-    corpus_at(Scale::GATE);
+    corpus_at(Scale::GATE, "gate");
 }
 
-fn corpus_at(scale: Scale) {
+fn corpus_at(scale: Scale, label: &str) {
     let rules = Rules::standard();
+    // The LABEL is part of the directory name (T9 review F1): keyed by pid
+    // alone, the GATE corpus test and the SMOKE plumbing test shared one
+    // directory and clobbered each other under `--include-ignored`'s
+    // concurrent harness — neither documented command hits that, but the
+    // "run everything" invocation should not fail pointing at the emitter.
     let dir = std::env::temp_dir()
-        .join(format!("yokohama_arena_gate_corpus_{}", std::process::id()));
+        .join(format!("yokohama_arena_gate_corpus_{label}_{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
 
     let cells = [
@@ -1053,7 +1063,7 @@ fn the_gate_battery_runs_at_smoke_scale() {
     let scale = Scale::SMOKE;
     synthetic_coverage_smoke(scale);
     counters_at(scale);
-    corpus_at(scale);
+    corpus_at(scale, "smoke");
     determinism_at(scale);
 }
 
