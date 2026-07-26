@@ -91,8 +91,21 @@
 //! rules and the honesty boundary, [`stats`] against spec §4's tabulation block
 //! and §0-R3. Everything it exports is re-exported here, so callers see one
 //! `arena` surface.
+//!
+//! EMISSION LIVES IN [`corpus`], on the same split and for the same reason: the
+//! corpus layout, the compact-JSON writer, and the rule that keeps privileged
+//! play out of training data are reviewed against spec §5. What this file owns
+//! is the STAMP — [`drive`] fills `GameRecord.run` with one
+//! [`SeatProvenance`](crate::game::record::SeatProvenance) per seat, taking each
+//! controller's name from [`RolloutPolicy::as_str`] (never a hand-typed string)
+//! and each seat's `observation` from WHICH DRIVER built it. That last split is
+//! the honesty boundary showing up in the artifact: an agent states what it is,
+//! and the driver — the only party that knows whether it passed a `PlayerView`
+//! or the true state — states what it could see.
 
+pub mod corpus;
 pub mod stats;
+pub use corpus::*;
 pub use stats::*;
 
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -110,7 +123,9 @@ use crate::game::metrics::{decision_volume, CoverageTally, VolumeObs};
 use crate::game::move_legality::{is_move_legal, PathMode};
 use crate::game::observe::observe;
 use crate::game::policy::RolloutPolicy;
-use crate::game::record::GameRecord;
+use crate::game::record::{
+    GameRecord, SeatProvenance, OBSERVATION_FULL_STATE_DIAGNOSTIC, OBSERVATION_VIEW,
+};
 use crate::game::rules::Rules;
 use crate::game::scoring::{final_result, GameResult};
 use crate::game::search_actions::DecisionHandle;
@@ -247,6 +262,53 @@ pub struct DecisionReport {
     pub volume: VolumeObs,
 }
 
+/// What a seat's CONTROLLER says about itself for the record's provenance
+/// (spec §5) — everything a
+/// [`SeatProvenance`](crate::game::record::SeatProvenance) carries EXCEPT the
+/// observation label.
+///
+/// The observation is absent on purpose. It is the one claim in provenance that
+/// must not come from the thing being labelled: only the driver knows whether it
+/// handed this seat a `PlayerView` or the true `GameState`, so only the driver
+/// may say. Splitting the type makes that structural instead of a convention a
+/// future agent could quietly break by filling the field in itself.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ControllerProvenance {
+    /// The controller's stable name — a policy's `as_str()`, or `"human"`.
+    pub name: String,
+    /// Implementation version under that name.
+    pub version: u32,
+    /// Integer knobs in their declared units (ppm for a probability).
+    pub params: std::collections::BTreeMap<String, i64>,
+    /// The seat's own RNG stream seed, when it has one.
+    pub agent_seed: Option<u64>,
+}
+
+impl ControllerProvenance {
+    /// The provenance of a seat played by `policy` on stream `agent_seed`.
+    ///
+    /// THE construction path for a policy-driven seat: the name, the version and
+    /// the knob map all come from [`RolloutPolicy::descriptor`], so no call site
+    /// hand-types a controller name or re-derives a params map that could drift
+    /// from the policy it claims to describe.
+    pub fn from_policy(policy: RolloutPolicy, agent_seed: Option<u64>) -> Self {
+        let (name, version, params) = policy.descriptor();
+        Self { name, version, params, agent_seed }
+    }
+
+    /// Complete this into a `SeatProvenance` under the DRIVER's observation
+    /// label (`OBSERVATION_VIEW` or `OBSERVATION_FULL_STATE_DIAGNOSTIC`).
+    pub fn observed_as(self, observation: &str) -> SeatProvenance {
+        SeatProvenance {
+            controller: self.name,
+            version: self.version,
+            params: self.params,
+            agent_seed: self.agent_seed,
+            observation: observation.to_string(),
+        }
+    }
+}
+
 /// A seat in the arena. Deliberately NOT [`crate::game::agent::HonestAgent`]:
 /// that trait's `choose_move` takes a materialized `&[Move]`, which is the
 /// ceiling this driver exists to avoid.
@@ -276,6 +338,16 @@ pub trait ArenaAgent {
     /// An `Err` is a HARD error at the driver — never a fallback to privileged
     /// play. See [`ArenaError`]'s classification rule for where it lands.
     fn choose(&mut self, view: &PlayerView, rules: &Rules) -> Result<DecisionReport, String>;
+
+    /// What this agent IS, for the record's provenance (spec §5).
+    ///
+    /// Deliberately without a default implementation. A default would let an
+    /// agent nobody thought about play a game into the corpus under a generic
+    /// label — and an unlabelled game in training data is worse than no game,
+    /// because it is indistinguishable from a labelled one until someone tries
+    /// to reproduce it. The compiler asking every implementor to answer is the
+    /// cheapest possible enforcement.
+    fn controller(&self) -> ControllerProvenance;
 }
 
 /// A cloneable handle on one [`PolicyAgent`]'s honest-path counter.
@@ -307,6 +379,10 @@ impl HonestPathTally {
 pub struct PolicyAgent {
     policy: RolloutPolicy,
     rng: ChaCha8Rng,
+    /// Kept alongside the stream it seeded so provenance can RECORD it —
+    /// `ChaCha8Rng` does not hand its seed back, and a corpus record that names
+    /// the policy but not the stream cannot reproduce the seat.
+    agent_seed: u64,
     tally: HonestPathTally,
 }
 
@@ -318,6 +394,7 @@ impl PolicyAgent {
         Self {
             policy,
             rng: ChaCha8Rng::seed_from_u64(agent_seed),
+            agent_seed,
             tally: HonestPathTally::default(),
         }
     }
@@ -392,6 +469,10 @@ impl ArenaAgent for PolicyAgent {
         self.tally.sampled.fetch_add(1, Ordering::Relaxed);
         Ok(DecisionReport { mv, volume })
     }
+
+    fn controller(&self) -> ControllerProvenance {
+        ControllerProvenance::from_policy(self.policy, Some(self.agent_seed))
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -435,6 +516,16 @@ pub fn unit_for(players: u8, seed: WorldSeed) -> UnitSpec {
 
 /// One completed arena game. See the module doc: this carries a `GameRecord`,
 /// so it never travels back to an agent.
+///
+/// **The arena's typed COMPLETED-game shape**, which is why emission filters on
+/// it rather than on a flag: every failure in spec §4's taxonomy — cap reached,
+/// dead end, driver bug — is an [`ArenaError`], so a game that did not complete
+/// has no `ArenaGameStats` in existence to be filed, tabulated, or observed.
+/// "Completed games only" is therefore structural here rather than checked.
+/// (Cross-reference, NOT a change: `metrics::TriggerTally::observe` takes an
+/// `Option<&EndGameTrigger>` and states the same rule in prose, so it could one
+/// day take this type instead and get the rule from the compiler. Out of scope
+/// for 3.2 — noted so the option is not rediscovered from scratch.)
 #[derive(Debug, Clone)]
 pub struct ArenaGameStats {
     pub seed: WorldSeed,
@@ -513,9 +604,10 @@ pub fn run_arena_game_capped(
 /// shape, for screening cells and labelled diagnostics only.
 ///
 /// No `observe`, no sampler: this is privileged play by construction, which is
-/// why spec §4 requires the label to ride the ARTIFACT rather than the prose
-/// (Task 8 stamps every seat `observation: "full-state-diagnostic"` and the
-/// emitter refuses to write such a record into the ordinary corpus). Validation,
+/// why spec §4 requires the label to ride the ARTIFACT rather than the prose:
+/// every seat's provenance says `observation: "full-state-diagnostic"`, and
+/// [`corpus::emit_record`] refuses to file such a record as ordinary training
+/// data (see [`corpus::corpus_refusal`]). Validation,
 /// recording, and the failure taxonomy are identical to the honest driver's —
 /// the two share one loop.
 pub fn run_raw_game(
@@ -546,7 +638,7 @@ pub fn run_raw_game(
             // game, or the §7 cells' distributional figures sit on cross-game
             // common random numbers.
             let stream = mix(SALT_RAW_STREAM, &[seed.0, rng_master, i as u64]);
-            (policy, ChaCha8Rng::seed_from_u64(stream))
+            RawSeat { policy, rng: ChaCha8Rng::seed_from_u64(stream), stream }
         })
         .collect();
 
@@ -568,6 +660,14 @@ trait SeatBench {
         seat: PlayerId,
         rules: &Rules,
     ) -> Result<DecisionReport, ArenaError>;
+
+    /// Per-seat provenance in seat order (spec §5).
+    ///
+    /// The `observation` label is stated HERE and not by the agent, because the
+    /// bench IS the mode: `AgentBench` passes views and `RawBench` passes the
+    /// true state, so each has exactly one honest answer and neither can give
+    /// the other's.
+    fn seat_provenance(&self) -> Vec<SeatProvenance>;
 }
 
 struct AgentBench {
@@ -577,6 +677,10 @@ struct AgentBench {
 impl SeatBench for AgentBench {
     fn starting_order(&mut self, seat: PlayerId, deal: &[OrderCardId; 2]) -> Result<u8, ArenaError> {
         Ok(self.agents[seat.0 as usize].choose_starting_order(seat, deal))
+    }
+
+    fn seat_provenance(&self) -> Vec<SeatProvenance> {
+        self.agents.iter().map(|a| a.controller().observed_as(OBSERVATION_VIEW)).collect()
     }
 
     fn decide(
@@ -597,8 +701,17 @@ impl SeatBench for AgentBench {
     }
 }
 
+/// One seat of the diagnostic driver. `stream` is kept beside the `rng` it
+/// seeded for the same reason [`PolicyAgent`] keeps its own: provenance records
+/// the stream, and a `ChaCha8Rng` will not give it back.
+struct RawSeat {
+    policy: RolloutPolicy,
+    rng: ChaCha8Rng,
+    stream: u64,
+}
+
 struct RawBench {
-    seats: Vec<(RolloutPolicy, ChaCha8Rng)>,
+    seats: Vec<RawSeat>,
 }
 
 impl SeatBench for RawBench {
@@ -607,7 +720,17 @@ impl SeatBench for RawBench {
         seat: PlayerId,
         _deal: &[OrderCardId; 2],
     ) -> Result<u8, ArenaError> {
-        Ok(self.seats[seat.0 as usize].1.gen_range(0..2u8))
+        Ok(self.seats[seat.0 as usize].rng.gen_range(0..2u8))
+    }
+
+    fn seat_provenance(&self) -> Vec<SeatProvenance> {
+        self.seats
+            .iter()
+            .map(|seat| {
+                ControllerProvenance::from_policy(seat.policy, Some(seat.stream))
+                    .observed_as(OBSERVATION_FULL_STATE_DIAGNOSTIC)
+            })
+            .collect()
     }
 
     fn decide(
@@ -616,7 +739,7 @@ impl SeatBench for RawBench {
         seat: PlayerId,
         rules: &Rules,
     ) -> Result<DecisionReport, ArenaError> {
-        let (policy, rng) = &mut self.seats[seat.0 as usize];
+        let RawSeat { policy, rng, .. } = &mut self.seats[seat.0 as usize];
         let handle = DecisionHandle::new(state, rules);
         let volume = decision_volume(&handle).ok_or(ArenaError::DeadEnd { seat })?;
         let mv = policy.pick(&handle, rng).ok_or(ArenaError::DeadEnd { seat })?;
@@ -653,11 +776,13 @@ fn drive(
         choices.push(StartingOrderChoice::Keep(keep));
     }
 
-    // Task 8: provenance — `record.run` is stamped here, `controller` from each
-    // seat's `RolloutPolicy::as_str()` and `observation` from which driver built
-    // the bench ("view" for `run_arena_game`, "full-state-diagnostic" for
-    // `run_raw_game`).
     let mut record = GameRecord::new(seed.0, config, choices.clone(), rules);
+    // Provenance (spec §5): `controller` comes from each seat's own
+    // `RolloutPolicy::descriptor()` and `observation` from the bench that built
+    // it, so neither is hand-typed here. `master_seed`/`run_id` stay empty — one
+    // game has no schedule or cell above it to name; the harness that does calls
+    // `set_run_context` (see `stats::run_cell_emitting`).
+    record.set_run_seats(bench.seat_provenance());
 
     let mut state = finalize_setup(pending, &choices)
         .map_err(|e| ArenaError::Driver(format!("finalize_setup failed: {e}")))?;
@@ -757,10 +882,23 @@ fn drive(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::game::record::{replay, replay_strict};
+    use crate::game::policy::POLICY_IMPL_VERSION;
+    use crate::game::record::{replay, replay_strict, RUN_PROVENANCE_SCHEMA};
     use crate::game::seeds::SeedSchedule;
+    use crate::game::semantics::SEMANTICS_REV;
     use crate::types::TurnPhase;
     use std::sync::Mutex;
+
+    /// The provenance a test agent that is not a policy reports. Its NAME says
+    /// what it is: a fixture, never something a corpus should treat as a rung.
+    fn test_controller(name: &'static str) -> ControllerProvenance {
+        ControllerProvenance {
+            name: name.to_string(),
+            version: 0,
+            params: std::collections::BTreeMap::new(),
+            agent_seed: None,
+        }
+    }
 
     /// This task's committed diagnostic master. The NAME of the constructor is
     /// the waiver (`game::seeds`): an asserting test wants reproducibility.
@@ -937,6 +1075,9 @@ mod tests {
                 };
                 Err(format!("belief sampler refused seat {}'s view: {err}", view.viewer.0))
             }
+            fn controller(&self) -> ControllerProvenance {
+                test_controller("test:doctored-view")
+            }
         }
 
         let rules = Rules::standard();
@@ -977,6 +1118,9 @@ mod tests {
                 // Setup is all this test is about; stop the game here rather
                 // than pay a full one.
                 Err("stop after setup".to_string())
+            }
+            fn controller(&self) -> ControllerProvenance {
+                test_controller("test:deal-recorder")
             }
         }
 
@@ -1063,6 +1207,9 @@ mod tests {
                         has_upper_bound_term: false,
                     },
                 })
+            }
+            fn controller(&self) -> ControllerProvenance {
+                test_controller("test:cheater")
             }
         }
 
@@ -1152,6 +1299,224 @@ mod tests {
                     panic!("{} {players}P raw record failed strict replay: {e}", rung.as_str())
                 });
             }
+        }
+    }
+
+    // -- Task 8: provenance --------------------------------------------------
+
+    /// A record the arena emitted carries WHO PLAYED IT, per seat, and is still
+    /// a record the checked replay boundary accepts. The two halves belong in
+    /// one test because either alone is the failure spec §5 is guarding: a
+    /// strict-clean record with no provenance is an unlabelled corpus entry, and
+    /// a richly-labelled record that will not replay is not a corpus entry at
+    /// all.
+    ///
+    /// The cell is MIXED (uniform at one seat, family-weighted at the other) —
+    /// the per-seat shape is the sub-phase's headline capability, and a
+    /// self-play cell could not tell a per-seat field from a per-run one.
+    ///
+    /// MUTATION-PROVEN (reverted by inverse edit, never `git checkout` — L7):
+    /// labelling `AgentBench`'s seats `full-state-diagnostic` — an honest driver
+    /// claiming privileged access, the mislabel the whole containment rule rests
+    /// on not happening — fails the observation assertion below.
+    #[test]
+    fn arena_records_replay_strict_clean() {
+        let rules = Rules::standard();
+        let seed = world(20);
+        let seating = unit_for(2, seed).seatings[0].clone();
+        let rung_of = |slot: Slot| {
+            if slot == Slot(0) {
+                RolloutPolicy::Uniform
+            } else {
+                RolloutPolicy::FAMILY_WEIGHTED_DEFAULT
+            }
+        };
+
+        let stats = run_arena_game(seed, 2, &rules, &mut |seat, _n| {
+            let slot = seating[seat.0 as usize];
+            Box::new(PolicyAgent::new(rung_of(slot), agent_stream_seed(seed, seat, slot)))
+        }, true)
+        .unwrap_or_else(|e| panic!("arena game failed: {e}"));
+
+        replay_strict(&stats.record, &rules)
+            .unwrap_or_else(|e| panic!("an arena record must replay strict-clean: {e}"));
+
+        let run = stats.record.run.as_ref().expect("an arena record carries provenance");
+        assert_eq!(run.schema, RUN_PROVENANCE_SCHEMA);
+        assert_eq!(run.seats.len(), 2, "one entry per seat, in seat order");
+        // A bare `run_arena_game` has no schedule above it to name.
+        assert_eq!(run.master_seed, None);
+        assert_eq!(run.run_id, None);
+
+        for (i, seat_run) in run.seats.iter().enumerate() {
+            let seat = PlayerId(i as u8);
+            let slot = seating[i];
+            // Literals, not `as_str()`: the code single-sources the name from
+            // the policy, so comparing against the same call would pin nothing.
+            // These strings are the WIRE FORMAT a 3.3 corpus reader will match.
+            let (expected_name, expected_params): (&str, Vec<(&str, i64)>) = match rung_of(slot) {
+                RolloutPolicy::Uniform => ("uniform", vec![]),
+                _ => ("family-weighted", vec![("recovery_min_of", 5), ("retreat_ppm", 166_667)]),
+            };
+            assert_eq!(seat_run.controller, expected_name, "seat {i}'s controller");
+            assert_eq!(seat_run.version, POLICY_IMPL_VERSION, "seat {i}'s policy impl version");
+            assert_eq!(
+                seat_run.params,
+                expected_params.iter().map(|(k, v)| (k.to_string(), *v)).collect(),
+                "seat {i}'s knobs",
+            );
+            assert_eq!(seat_run.observation, "view", "an honest seat sees a view");
+            assert_eq!(
+                seat_run.agent_seed,
+                Some(agent_stream_seed(seed, seat, slot)),
+                "seat {i} must record the stream it actually played on",
+            );
+        }
+    }
+
+    /// The label rides the ARTIFACT, not the prose (spec §4/§5, map §1.1): a
+    /// raw-state game is privileged play by construction, so its record says so
+    /// per seat, and the corpus emitter refuses to file it as ordinary training
+    /// data. Both halves are here because the label is only worth something if
+    /// something reads it.
+    ///
+    /// MUTATION-PROVEN (reverted by inverse edit — L7): inverting
+    /// `corpus_refusal`'s diagnostic-seat test so it admits privileged records
+    /// fails the refusal assertion below.
+    #[test]
+    fn raw_state_records_are_labelled_diagnostic() {
+        let rules = Rules::standard();
+        let seed = world(21);
+        let raw = run_raw_game(
+            seed,
+            2,
+            &rules,
+            &[RolloutPolicy::Uniform, RolloutPolicy::FAMILY_WEIGHTED_DEFAULT],
+            0xD1A6_0000_0000_0008,
+            true,
+        )
+        .unwrap_or_else(|e| panic!("raw game failed: {e}"));
+
+        let run = raw.record.run.as_ref().expect("a raw record carries provenance");
+        assert_eq!(run.seats.len(), 2);
+        for (i, seat_run) in run.seats.iter().enumerate() {
+            assert_eq!(
+                seat_run.observation, "full-state-diagnostic",
+                "seat {i} of a raw-state game must be labelled diagnostic",
+            );
+            assert!(seat_run.agent_seed.is_some(), "seat {i} must record its stream");
+        }
+        assert_eq!(run.seats[0].controller, "uniform");
+        assert_eq!(run.seats[1].controller, "family-weighted");
+        replay_strict(&raw.record, &rules)
+            .unwrap_or_else(|e| panic!("a raw record must still replay strict-clean: {e}"));
+
+        // Containment (spec §5). Checked through the pure predicate so the
+        // assertion costs no I/O and cannot leave a stray file inside the
+        // repo's own corpus directory.
+        let corpus = default_corpus_dir();
+        let ordinary = corpus_path(&corpus, SEMANTICS_REV, 2, "fw-selfplay", seed, 0);
+        let labelled = corpus_path(&corpus, SEMANTICS_REV, 2, "fw-selfplay-diagnostic", seed, 0);
+        assert!(
+            corpus_refusal(&ordinary, &raw.record).is_some(),
+            "a diagnostic record must not be filed under an ordinary corpus cell",
+        );
+        assert!(
+            corpus_refusal(&labelled, &raw.record).is_none(),
+            "a -diagnostic cell is exactly where a diagnostic record belongs",
+        );
+
+        // ...and the refusal is enforced at the writer, before it touches disk.
+        // Compared against the BEFORE state rather than asserted absent: a T9
+        // `--emit` run into the real corpus can legitimately have created this
+        // cell directory, and what this pins is that the refusal changed
+        // nothing, not that the tree was empty to begin with.
+        let cell_dir = ordinary.parent().unwrap().to_path_buf();
+        let existed_before = cell_dir.exists();
+        let err = emit_record(&ordinary, &raw.record)
+            .expect_err("the emitter must refuse a diagnostic record in an ordinary cell");
+        assert_eq!(err.kind(), std::io::ErrorKind::InvalidInput);
+        assert_eq!(
+            cell_dir.exists(),
+            existed_before,
+            "the refusal must precede directory creation, not follow it",
+        );
+        assert!(!ordinary.exists(), "the refusal wrote the record anyway");
+
+        // An honest record is admitted at the same ordinary path — so the
+        // refusal above is about the LABEL and not about the path shape.
+        let honest_seating = unit_for(2, seed).seatings[0].clone();
+        let honest = run_arena_game(seed, 2, &rules, &mut |seat, _n| {
+            let slot = honest_seating[seat.0 as usize];
+            Box::new(PolicyAgent::new(
+                RolloutPolicy::FAMILY_WEIGHTED_DEFAULT,
+                agent_stream_seed(seed, seat, slot),
+            ))
+        }, true)
+        .unwrap_or_else(|e| panic!("arena game failed: {e}"));
+        assert!(corpus_refusal(&ordinary, &honest.record).is_none());
+    }
+
+    /// The kickoff's `StartingOrderChoice` pin (spec §4): the setup decision is
+    /// a real per-seat decision the record carries, so two agents that decide it
+    /// differently produce different records — and both still replay strict.
+    ///
+    /// Without this, `choose_starting_order` could be ignored by the driver (or
+    /// overwritten with a default) and every test above would still pass:
+    /// `PolicyAgent`'s own choice is seat-keyed, so a self-play cell's records
+    /// look identical whether the agent was asked or not.
+    #[test]
+    fn distinguishable_setup_agents_produce_distinguishable_choices() {
+        /// A `PolicyAgent` that plays normally but always keeps a FIXED card.
+        struct FixedSetup {
+            keep: u8,
+            inner: PolicyAgent,
+        }
+        impl ArenaAgent for FixedSetup {
+            fn choose_starting_order(&mut self, _seat: PlayerId, _deal: &[OrderCardId; 2]) -> u8 {
+                self.keep
+            }
+            fn choose(&mut self, view: &PlayerView, rules: &Rules) -> Result<DecisionReport, String> {
+                self.inner.choose(view, rules)
+            }
+            fn controller(&self) -> ControllerProvenance {
+                self.inner.controller()
+            }
+        }
+
+        let rules = Rules::standard();
+        let seed = world(22);
+        let seating = unit_for(2, seed).seatings[0].clone();
+        let play_one = |keeps: [u8; 2]| {
+            run_arena_game(seed, 2, &rules, &mut |seat, _n| {
+                let slot = seating[seat.0 as usize];
+                Box::new(FixedSetup {
+                    keep: keeps[seat.0 as usize],
+                    inner: PolicyAgent::new(
+                        RolloutPolicy::FAMILY_WEIGHTED_DEFAULT,
+                        agent_stream_seed(seed, seat, slot),
+                    ),
+                })
+            }, true)
+            .unwrap_or_else(|e| panic!("arena game failed: {e}"))
+        };
+
+        let left = play_one([0, 1]);
+        let right = play_one([1, 0]);
+        assert_eq!(
+            left.record.choices,
+            vec![StartingOrderChoice::Keep(0), StartingOrderChoice::Keep(1)],
+        );
+        assert_eq!(
+            right.record.choices,
+            vec![StartingOrderChoice::Keep(1), StartingOrderChoice::Keep(0)],
+        );
+        // Distinguishable in the SETUP, and the difference propagates: the two
+        // games have different starting hands, so they are not one game twice.
+        assert_ne!(left.record.choices, right.record.choices);
+        for stats in [&left, &right] {
+            replay_strict(&stats.record, &rules)
+                .unwrap_or_else(|e| panic!("a record with a chosen setup must replay strict: {e}"));
         }
     }
 }

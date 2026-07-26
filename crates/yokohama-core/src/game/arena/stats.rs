@@ -56,7 +56,8 @@ use rand::{Rng, SeedableRng};
 use rand_chacha::ChaCha8Rng;
 
 use super::{
-    agent_stream_seed, mix, run_arena_game, unit_for, ArenaAgent, ArenaError, PolicyAgent, Slot,
+    agent_stream_seed, mix, run_arena_game, unit_for, ArenaAgent, ArenaError, ArenaGameStats,
+    PolicyAgent, Slot,
 };
 use crate::game::metrics::{nearest_rank_index, wilson_95, TriggerTally, Z_95};
 use crate::game::policy::RolloutPolicy;
@@ -220,6 +221,33 @@ pub fn run_cell_with(
     rules: &Rules,
     invariants: bool,
 ) -> Result<CellReport, ArenaError> {
+    run_cell_emitting(spec, rules, invariants, &mut |_stats, _arr| Ok(()))
+}
+
+/// [`run_cell_with`] with a per-game SINK — the emission seam (spec §5).
+///
+/// `sink(stats, arr)` sees every COMPLETED game as it finishes, where `arr` is
+/// the arrangement index within its design unit — the two things
+/// `corpus::corpus_path` needs that a `CellReport` cannot carry. Completed only
+/// is structural rather than checked: a cap hit or a driver error is an `Err`
+/// from the driver and short-circuits this loop, so a failed game has no
+/// [`ArenaGameStats`] to hand anyone (spec §4's failure taxonomy — see that
+/// type's doc).
+///
+/// Streaming rather than returning the records: a 200-unit 4P cell is 800 games
+/// of event log, which is a corpus, not a report.
+///
+/// This is also where the RUN half of provenance is filled in. The driver stamps
+/// each seat's controller but knows nothing above the game; the cell knows the
+/// master its world seeds descend from and its own name, so it says so on every
+/// record — which is what makes a corpus file self-describing rather than
+/// meaningful only next to the invocation that produced it.
+pub fn run_cell_emitting(
+    spec: &CellSpec,
+    rules: &Rules,
+    invariants: bool,
+    sink: &mut dyn FnMut(&ArenaGameStats, u8) -> Result<(), ArenaError>,
+) -> Result<CellReport, ArenaError> {
     // Both guards run BEFORE any game, because both failure modes are silent
     // otherwise: `unit_for(0, ..)` yields an empty seating list, so a zero or
     // one player count would tabulate zero games into a report full of NaNs
@@ -252,7 +280,7 @@ pub fn run_cell_with(
         let unit = unit_for(players, seed);
         let mut unit_x_wins = 0u32;
 
-        for seating in &unit.seatings {
+        for (arr, seating) in unit.seatings.iter().enumerate() {
             // Which seat X is sitting in THIS arrangement. `unit_for` puts every
             // slot at every seat exactly once across the unit, so this is a
             // different seat each time and the seat effect cancels at the unit
@@ -275,7 +303,12 @@ pub fn run_cell_with(
                 let policy = if slot == X_SLOT { x } else { y };
                 Box::new(PolicyAgent::new(policy, agent_stream_seed(seed, seat, slot)))
             };
-            let stats = run_arena_game(seed, players, rules, &mut make_agent, invariants)?;
+            let mut stats = run_arena_game(seed, players, rules, &mut make_agent, invariants)?;
+            // The RUN half of provenance (spec §5): the driver stamped who
+            // played each seat, and this is the only layer that knows which
+            // schedule and which cell they played for.
+            stats.record.set_run_context(master, &spec.name);
+            sink(&stats, arr as u8)?;
 
             games += 1;
             trigger.observe(stats.trigger.as_ref());
@@ -1078,5 +1111,71 @@ mod tests {
                 other => panic!("{players}P should be refused, got {other:?}"),
             }
         }
+    }
+
+    /// Task 8: a cell's games know which RUN produced them.
+    ///
+    /// The per-seat half of provenance is stamped in the driver, which knows the
+    /// policies but not the schedule above it — so `master_seed` and `run_id`
+    /// are the cell's to fill, and a corpus file is self-describing only if it
+    /// does. Pinned through the emission sink because that is the only place a
+    /// cell's records are observable: `CellReport` deliberately does not carry
+    /// them (400 games of event log is not a report).
+    #[test]
+    fn cell_games_carry_the_master_and_the_cell_name() {
+        let rules = Rules::standard();
+        let spec = CellSpec {
+            name: "ra-vs-fw-provenance".to_string(),
+            players: 2,
+            x: RolloutPolicy::RetreatAverse,
+            y: RolloutPolicy::FAMILY_WEIGHTED_DEFAULT,
+            units: 2,
+            master: SeedScheduleKind::Diagnostic(MASTER),
+        };
+
+        /// What the sink saw for one game.
+        struct Seen {
+            master_seed: Option<u64>,
+            run_id: Option<String>,
+            controllers: Vec<String>,
+            arr: u8,
+        }
+
+        let mut seen: Vec<Seen> = Vec::new();
+        let report = run_cell_emitting(&spec, &rules, true, &mut |stats, arr| {
+            let run = stats.record.run.as_ref().expect("a cell's records carry provenance");
+            seen.push(Seen {
+                master_seed: run.master_seed,
+                run_id: run.run_id.clone(),
+                controllers: run.seats.iter().map(|s| s.controller.clone()).collect(),
+                arr,
+            });
+            Ok(())
+        })
+        .unwrap_or_else(|e| panic!("cell failed: {e}"));
+
+        assert_eq!(report.games, 4, "2 pairs is 4 games");
+        assert_eq!(seen.len(), 4, "the sink must see every completed game");
+        for game in &seen {
+            assert_eq!(game.master_seed, Some(MASTER), "a cell game must name its master");
+            assert_eq!(game.run_id.as_deref(), Some("ra-vs-fw-provenance"), "...and its cell");
+        }
+        // Arrangement indices run 0..seatings within each unit, which is what
+        // `corpus_path` files on — two units of two seatings each.
+        assert_eq!(seen.iter().map(|g| g.arr).collect::<Vec<_>>(), vec![0, 1, 0, 1]);
+        // X rotates through the seats, so the per-seat controller vector must
+        // SWAP between the two games of a pair. A run-level field could not say
+        // this, which is why provenance is per seat.
+        assert_eq!(seen[0].controllers, ["retreat-averse", "family-weighted"]);
+        assert_eq!(seen[1].controllers, ["family-weighted", "retreat-averse"]);
+
+        // The sink is a seam, not a semantic change: `run_cell` is this function
+        // with a sink that does nothing.
+        let plain = run_cell(&spec, &rules).unwrap();
+        assert_eq!(
+            serde_json::to_string(&plain).unwrap(),
+            serde_json::to_string(&report).unwrap(),
+            "emitting changed the report",
+        );
     }
 }
