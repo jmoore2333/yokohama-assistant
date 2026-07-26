@@ -24,7 +24,11 @@
 //! adding false comfort -- this sentence exists to be cited against that."
 //! The tests below pin the derivation (SplitMix64 vectors), the stream's
 //! distinctness and bit width across many draws, and reproduction from a
-//! recorded master. None of them judges a single seed's value.
+//! recorded master. None of them judges a single seed's value. The rule of
+//! thumb for telling an ENSEMBLE property (allowed) from a value check
+//! (forbidden): if any one draw could be replaced by an arbitrary u64 and the
+//! test could still pass, it is an ensemble property and the prohibition does
+//! not reach it (T1 review ruling).
 //!
 //! SEED-ORACLE RESIDUAL (map §8 row 8): `new_game` builds `board_layout` from
 //! the setup seed BEFORE the deck operations, so the public board fingerprints
@@ -52,10 +56,19 @@ pub struct WorldSeed(pub u64);
 
 /// A SplitMix64 stream of `WorldSeed`s over one master.
 ///
-/// Paired designs draw ONE `WorldSeed` per pair/block and reuse it across the
-/// seatings of that unit (common random numbers), so the schedule's index
-/// counts UNITS, not games.
-#[derive(Debug, Clone)]
+/// The schedule itself counts `next_world()` CALLS (see `index`). Paired
+/// designs are a CALLER OBLIGATION on top of that: draw ONE `WorldSeed` per
+/// pair/block and reuse it across every seating of that unit, so a call maps
+/// to a UNIT, never a game — the arena's `UnitSpec` (one seed, a Vec of
+/// seatings) is where that discipline is enforced structurally. A consumer
+/// that drew a fresh world per SEATING would silently stop being a paired
+/// design while its intervals still computed cleanly.
+///
+/// Deliberately NOT `Clone`: a cloned schedule would replay the same worlds
+/// from the same index — a silent stream fork. If a future consumer needs a
+/// spare, it should derive one via a distinct diagnostic master, or add
+/// `Clone` here together with a doc line owning the fork semantics.
+#[derive(Debug)]
 pub struct SeedSchedule {
     master: u64,
     state: u64,
@@ -186,10 +199,13 @@ mod tests {
 
     #[test]
     fn from_os_entropy_two_calls_differ() {
-        // Two independent draws from the OS differ. This checks the SOURCE,
-        // not a value -- it says nothing about how large either master is.
-        // Collision probability is 2^-64 for a working OS source; a repeat
-        // means the draw is not actually reaching the OS.
+        // Two independent draws from the OS differ. This rules out a FIXED
+        // master -- it cannot pin the source itself: a monotonic counter
+        // would also pass (T1 review, mutation-proven), and no unit test can
+        // verify OsRng is really underneath short of injection. It says
+        // nothing about how large either master is. Collision probability is
+        // 2^-64 for a working OS source; a repeat means the draw is not
+        // reaching a varying source at all.
         let (first, first_master) = SeedSchedule::from_os_entropy();
         let (second, second_master) = SeedSchedule::from_os_entropy();
 
