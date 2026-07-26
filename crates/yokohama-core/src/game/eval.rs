@@ -549,6 +549,17 @@ pub fn interpolate(early: i64, late: i64, progress: u32) -> i64 {
 /// trigger fires — the nearest clock is the one that dates the position.
 /// Seat-invariant by construction: every input is public board state, so all
 /// seats at one position interpolate identically (pinned in the organic sweep).
+///
+/// MEASURED SHAPE (T1 review, FAMILY_WEIGHTED_DEFAULT full self-play, seed 77,
+/// every step — inputs to T4's proxy-accuracy disposition, recorded here so
+/// they are not re-derived): the proxy SATURATES at [`PROGRESS_FULL_PPM`] and
+/// holds there for the last 7/86 turns at 2P, ~28% of turns at 3P and ~11% at
+/// 4P (a consequence of the deck clock deliberately dropping the trigger's
+/// port-empty-slot conjunct — the LATE vector alone governs that tail); and it
+/// takes only SIX distinct values across an entire 2P run ({0, 250k, 500k,
+/// 750k, 800k, 1M}; 9 at 3P, 11 at 4P), so at 2P — the promotion-cell player
+/// count — the "continuous" interpolation is effectively a six-step staircase.
+/// Both are observations under that harness, not ceilings.
 pub fn progress_ppm(view: &PlayerView, rules: &Rules) -> u32 {
     clock_ppm(view, rules).into_iter().max().unwrap_or(0).min(PROGRESS_FULL_PPM)
 }

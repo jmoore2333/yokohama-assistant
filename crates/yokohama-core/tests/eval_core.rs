@@ -74,20 +74,44 @@ const FORBIDDEN_IDENTIFIERS: [&str; 2] = ["GameState", "PendingSetup"];
 /// module inside `yokohama-core` can name any type in the crate, so the
 /// signature guarantee (`score(&PlayerView, ..)`) is what a caller can rely on,
 /// and THIS is what keeps the implementation from quietly reaching around it.
+/// It is a TRIPWIRE against the ordinary spellings of a reach, not a proof —
+/// the signature plus review discipline are the boundary; this makes the
+/// casual violation loud.
 ///
-/// MUTATION-PROVEN AT AUTHORING (both arms, each reverted, observed lines
-/// quoted verbatim):
-///   - added `use crate::types::GameState;` to `eval.rs` — FAILED:
-///     `eval.rs:63 names the forbidden identifier `GameState` — the evaluator
-///     is a function of a PlayerView (spec §2.1). Line: use
-///     crate::types::GameState;`
-///   - added `use crate::game::scoring::calculate_remainder_bonus;` — FAILED:
-///     ``eval.rs:63` reaches into `crate::game::` outside the allowlist ["use
-///     crate::game::rules::Rules;"]. Line: use
-///     crate::game::scoring::calculate_remainder_bonus;`
+/// The reach needles are scanned over the NON-TEST portion of the file only
+/// (the in-module `mod tests` legitimately writes `use super::*;`), split at
+/// the first `#[cfg(test)]` line, whose presence the test asserts so the split
+/// cannot silently scan nothing. The forbidden IDENTIFIERS are whole-file.
+///
+/// MUTATION-PROVEN AT AUTHORING and re-proven at the T1-review hardening (each
+/// arm reverted, observed messages quoted):
+///   - `use crate::types::GameState;` — FAILED: `eval.rs:63 names the
+///     forbidden identifier `GameState` … Line: use crate::types::GameState;`
+///   - `use crate::game::scoring::calculate_remainder_bonus;` — FAILED:
+///     reaches into `crate::game::` outside the allowlist.
+///   - T1-review bypass (a): `let _sneaky = super::semantics::SEMANTICS_REV;`
+///     inside a non-test fn — previously SILENT (the review demonstrated it
+///     passing all six tests); now FAILED on the `super::` needle.
+///   - T1-review bypass (b): `use crate::game as engine;` + an
+///     `engine::semantics::…` read — previously SILENT; now FAILED on the
+///     `crate::game` needle at the alias declaration.
 #[test]
 fn eval_source_text_names_no_engine_state_and_only_allowlisted_game_imports() {
     let src = include_str!("../src/game/eval.rs");
+
+    // The reach scan stops where the test module starts; assert the marker
+    // exists so a renamed/moved test module re-opens this decision instead of
+    // quietly shrinking the scanned region to everything (fine) or the file
+    // gaining code BELOW the marker (not fine — hence the single-marker pin).
+    let marker = "#[cfg(test)]";
+    let marker_count = src.matches(marker).count();
+    assert_eq!(
+        marker_count, 1,
+        "eval.rs must contain exactly one `#[cfg(test)]` marker (found {marker_count}); \
+         the guard scans reach needles only above it, so a second marker or code below \
+         the test module would escape the scan — restructure deliberately, not incidentally"
+    );
+    let non_test = src.split(marker).next().unwrap();
 
     for (i, line) in src.lines().enumerate() {
         let n = i + 1;
@@ -99,15 +123,33 @@ fn eval_source_text_names_no_engine_state_and_only_allowlisted_game_imports() {
                  function of a PlayerView (spec §2.1). Line: {trimmed}"
             );
         }
-        // Substring, not `starts_with("use ")`: an inline path
-        // (`crate::game::scoring::foo(..)`) is the same reach-around with no
-        // `use` line to catch, so the scan is over OCCURRENCES.
-        if line.contains("crate::game::") {
-            assert!(
-                GAME_IMPORT_ALLOWLIST.contains(&trimmed),
-                "`eval.rs:{n}` reaches into `crate::game::` outside the allowlist \
-                 {GAME_IMPORT_ALLOWLIST:?}. Line: {trimmed}"
-            );
+    }
+
+    // Reach needles, NON-TEST region. Substring over OCCURRENCES, not
+    // `starts_with("use ")`: an inline path (`crate::game::scoring::foo(..)`)
+    // is the same reach-around with no `use` line to catch. The set covers the
+    // spellings the T1 review demonstrated as silent bypasses of the original
+    // `crate::game::`-only needle:
+    //   `super::`     — from `game/eval.rs`, `super::` IS `crate::game`;
+    //   `crate::game` — direct paths AND `use crate::game as engine;` (no
+    //                   trailing `::` required, unlike the original needle);
+    //   `game as`     — the brace-grouped alias `use crate::{game as g}`;
+    //   `game::`      — a bare-path read after `use crate::*;`.
+    // Wording note for eval.rs editors: these are TEXT needles, so even a doc
+    // comment containing one trips the scan — write around them (the guard bit
+    // its own author's module doc at T1, by design).
+    const REACH_NEEDLES: [&str; 4] = ["super::", "crate::game", "game as", "game::"];
+    for (i, line) in non_test.lines().enumerate() {
+        let n = i + 1;
+        let trimmed = line.trim();
+        for needle in REACH_NEEDLES {
+            if line.contains(needle) {
+                assert!(
+                    GAME_IMPORT_ALLOWLIST.contains(&trimmed),
+                    "`eval.rs:{n}` reaches toward the engine (needle `{needle}`) outside the \
+                     allowlist {GAME_IMPORT_ALLOWLIST:?}. Line: {trimmed}"
+                );
+            }
         }
     }
 
@@ -319,9 +361,12 @@ fn sweep_game(
             );
             let p = proxies[0];
             // Monotone over SIM play: the deck only shrinks, tracks and
-            // buildings only fill. (The live-tracking reveal path can hand
-            // boxed cards BACK to the deck via `arrange_orders_on_top`, so
-            // this is a property of self-play, not of the type.)
+            // buildings only fill. (The assertion is SCOPED to self-play only
+            // because live-tracking states are not swept here — not because the
+            // deck can grow on the live path: `arrange_orders_on_top` is a
+            // length-PRESERVING exchange, each boxed card swapping with a deck
+            // donor, so `order_deck.len()` cannot rise there either. T1 review
+            // corrected the earlier claim to the contrary.)
             assert!(
                 p >= last_progress,
                 "progress went backwards at {players}P seed {seed} step {step}: \
