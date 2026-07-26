@@ -364,12 +364,13 @@ fn validate_telegram_bonus(
 /// the raw arm's contract for those dimensions is legal-list inputs. One
 /// tolerance follows from that contract: an empty-path destination equal
 /// to the engine's own `station_location` is accepted WITHOUT a
-/// board-membership lookup, because the generator's Station teleport is
-/// keyed off `station_location` (engine state, not payload) and never
-/// consults the areas map -- a strict membership check here would reject a
-/// legal-list move on fixture boards whose station area isn't in `areas`
-/// (pinned by legal_moves.rs's
-/// `test_station_teleport_remains_free_even_onto_opponent_occupied_area`).
+/// board-membership lookup. Since rev 5 the tolerance is retained purely in
+/// the SAFE direction: `can_teleport_to_station_with_tech` now gates the
+/// station area on placeability, so generator and predicate are strictly
+/// NARROWER than this arm and nothing reaching it on the legal-list path
+/// can name an off-board or Canal station (comment-only truth pass under
+/// the rev-5 sanction; the old justifying fixture scenario is now
+/// generator-unreachable and its cited test seats a real placeable tile).
 /// Ghost/Canal payloads still die: they match neither the board nor the
 /// engine's station location.
 fn validate_president_path(

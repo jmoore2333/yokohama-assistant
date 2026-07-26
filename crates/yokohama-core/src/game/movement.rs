@@ -737,9 +737,9 @@ mod tests {
     /// on THIS board is not a destination either.
     ///
     /// `can_teleport_to_station_with_tech` is the single entitlement function
-    /// every consumer calls — the generator (`legal_moves.rs:316`), the lazy
-    /// route enumerator (`route_enum.rs:624`) and the single-candidate
-    /// predicate (`move_legality.rs:438`), none of which re-checks area type —
+    /// every consumer calls — the generator (legal_moves.rs Station arm), the lazy
+    /// route enumerator (`route_enum.rs`, by function name) and the single-candidate
+    /// predicate (`move_legality.rs`), none of which re-checks area type —
     /// so gating it HERE reaches all three by construction, exactly as the two
     /// shared stop/hop predicates above do for the walk arms.
     #[test]
