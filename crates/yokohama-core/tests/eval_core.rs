@@ -1,6 +1,7 @@
-//! Per-edit tests for evaluator v1's core (Phase 3.3 Task T1) — spec §2.1's
-//! source-text guard, §2.2's relative form, §2.3's stage interpolation, and
-//! §0.3(a)'s two-path `score`/`explain` requirement.
+//! Per-edit tests for evaluator v1's core (Phase 3.3 Tasks T1 and T2) — spec
+//! §2.1's source-text guard, §2.2's relative form and score-structure DRIFT
+//! PIN, §2.3's stage interpolation, §2.6's terminal term, and §0.3(a)'s
+//! two-path `score`/`explain` requirement.
 //!
 //! WHY THIS LIVES IN AN INTEGRATION BINARY AND NOT IN `game/eval.rs`'s own
 //! `#[cfg(test)] mod tests`. The §2.1 guard `include_str!`s `eval.rs` and
@@ -14,11 +15,25 @@
 //! `use crate::game::` lines in the scanned file and force the allowlist open.
 //! Only the pure-arithmetic unit tests stay in the module.
 //!
-//! Tier: per-edit, never `#[ignore]`d. Measured at the T1 close (debug, three
-//! runs): 0.16 / 0.16 / 0.16 s — the organic sweep (three full games plus three
-//! capped ones, ~3,600 applied moves) is nearly the whole cost. It is that
-//! cheap because it does NOT run `check_invariants` per move: the engine is not
-//! this file's subject and four other per-edit suites already carry that net.
+//! Tier: per-edit, never `#[ignore]`d. Re-measured at the T2 close (debug,
+//! three runs): 0.54 / 0.53 / 0.53 s, up from T1's 0.16 s. The added cost was
+//! A/B'd rather than guessed, because the obvious attribution is the wrong one:
+//! deleting `check_drift` from the sweep moves the sweep test only 0.55 → 0.50 s,
+//! so §2.2's drift pin is ~10% of the increase and the rest is `check_view`'s
+//! own `raw_value` calls, which are deliberately the CONVENIENCE accessor —
+//! each derives a whole `ScoreStructure` to answer about one feature, 15
+//! features x (1 + opponents) per view. That is the price of checking `explain`
+//! against an independently-assembled value instead of against the structure it
+//! was built from, and it is worth paying here; `score` itself derives once per
+//! call and is unaffected (0 allocations, below). Still cheap overall because
+//! this file does NOT run `check_invariants` per move: the engine is not its
+//! subject and four other per-edit suites already carry that net.
+//!
+//! §0.3(a)'s allocation figures at the same close, for whoever re-measures
+//! next: `score` 0 allocations / 0 peak bytes, `explain` 1 allocation / 600
+//! peak bytes (fifteen 40-byte terms). The `Explanation` grew an
+//! `Option<TerminalStanding>` at T2 and the Vec figure did not move — the
+//! standing rides in the struct, not in the heap block.
 
 // The shared counting allocator, included the same way
 // `tests/action_source_worstcase.rs` includes it (each includer links its own
@@ -33,13 +48,18 @@ use rand::SeedableRng;
 use rand_chacha::ChaCha8Rng;
 
 use yokohama_core::game::eval::{
-    clock_ppm, explain, initial_order_deck_len, interpolate, order_cards_to_remove, progress_ppm,
-    raw_value, score, track_trigger, Explanation, Feature, WeightTable, PROGRESS_FULL_PPM,
+    achievement_progress as view_achievement_progress, clock_ppm, explain, initial_order_deck_len,
+    interpolate, order_cards_to_remove, place_signal, progress_ppm, raw_value, score,
+    terminal_standing, track_trigger, view_is_terminal, Explanation, Feature, ScoreStructure,
+    WeightTable, PROGRESS_FULL_PPM, TERMINAL_MARGIN_CLAMP, TERMINAL_MARGIN_STEP,
+    TERMINAL_RANK_STEP,
 };
 use yokohama_core::{
-    apply_move_unchecked, finalize_setup, is_game_over, new_game, observe, DecisionHandle,
-    GameConfig, GameState, PlayerId, PlayerView, PortBoard, RolloutPolicy, Rules, ShophouseState,
-    StartingOrderChoice, TradingHouseState, VisiblePlayer,
+    achievement_progress, apply_move_unchecked, final_result, finalize_setup, is_game_over,
+    new_game, observe, ChurchSlot, ChurchTrack, CustomsSlot, CustomsTrack, DecisionHandle,
+    GameConfig, GameState, OrderCardId, PlayerId, PlayerView, PortBoard, RolloutPolicy, Rules,
+    ScoreBreakdown, ShophouseState, StartingOrderChoice, TradingHouseState, TurnPhase,
+    VisiblePlayer,
 };
 
 /// A Keep-shaped game: every seat's deal is recorded, so EVERY seat is
@@ -313,6 +333,21 @@ struct Tally {
     negative_weight_picks: usize,
     /// Decision points at which every seat's view agreed on the proxy.
     seat_agreements: usize,
+    /// Views on which each feature's VIEWER value was nonzero, by
+    /// `Feature::index()`. The five score-structure features are floored off
+    /// this (T2 anti-vacuity): a mirror that is right about zero everywhere is
+    /// not pinned to anything.
+    nonzero_by_feature: [usize; Feature::COUNT],
+    /// `(state, seat)` pairs whose five re-derivations were compared against
+    /// the engine's own breakdown, and the pairs among those where the 2P dummy
+    /// was actually holding a majority place.
+    drift_pairs: usize,
+    drift_dummy_pairs: usize,
+    /// Terminal views scored through the §2.6 path.
+    terminal_views: usize,
+    /// The largest |positional score| the sweep produced — the measured input
+    /// to §2.6's dominance claim (recorded AND asserted against the rank step).
+    max_abs_positional: i64,
 }
 
 /// One organic game: play it with the shipped weighted rung and check every
@@ -352,6 +387,16 @@ fn sweep_game(
                 let p = check_view(&view, rules, weights, tally);
                 proxies.push(p);
             }
+            // §2.2's drift pin, riding the same traversal (one engine
+            // `final_result` per decision point, every seat compared).
+            check_drift(&state, rules, tally);
+            // A running game must NOT take the §2.6 path — the terminal
+            // predicate's negative side, checked as often as its positive one.
+            let view = observe(&state, PlayerId(0)).unwrap();
+            assert!(
+                !view_is_terminal(&view),
+                "the view called a running {players}P game finished at seed {seed} step {step}"
+            );
             // The proxy is a function of PUBLIC state only, so every seat must
             // read the same clock. (A term that leaked a seat-relative
             // quantity into the proxy would show up here.)
@@ -393,6 +438,162 @@ fn sweep_game(
             view.trigger_reason
         );
         tally.full += 1;
+        // The §2.6 path, on the only states that can exercise it organically.
+        check_drift(&state, rules, tally);
+        check_terminal(&state, players, rules, weights, tally);
+    }
+}
+
+/// §2.2's DRIFT PIN: every view-side re-derivation, for every seat, against the
+/// engine's OWN per-player breakdown at the same state.
+///
+/// The comparison target is `final_result`, which is the engine's authority on
+/// all five components at once — no new scoring surface had to be opened for
+/// this pin, so `game/scoring.rs` is untouched by T2 and the differential gates
+/// keep whatever they were already proving about it.
+///
+/// The pin runs at NON-terminal states too, deliberately: `final_result` is a
+/// pure function of the position, the mirrors are read mid-game as `*_now`
+/// features, and a mirror that only agreed at game end would be wrong exactly
+/// where the evaluator actually reads it.
+fn check_drift(state: &GameState, rules: &Rules, tally: &mut Tally) {
+    let engine = final_result(state, rules);
+    let dummy_on_track = state.church_track.slots.iter().flatten().any(|s| s.player.is_dummy())
+        || state.customs_track.slots.iter().flatten().any(|s| s.player.is_dummy());
+
+    for seat in 0..state.config.player_count {
+        let id = PlayerId(seat);
+        let view = observe(state, id).unwrap();
+        let me = view.players.iter().find(|p| p.id == id).expect("viewer is seated");
+        let structure = ScoreStructure::derive(&view, rules);
+        assert_eq!(
+            structure.seats,
+            usize::from(state.config.player_count),
+            "the structure must carry one row per seat"
+        );
+        let breakdown: &ScoreBreakdown = &engine
+            .standings
+            .iter()
+            .find(|s| s.player == id)
+            .expect("every seat has a standing")
+            .breakdown;
+
+        for (feature, expected, label) in [
+            (Feature::CountryBonusNow, breakdown.country, "country"),
+            (Feature::TechBonusNow, breakdown.technology, "technology"),
+            (Feature::ChurchBonusNow, breakdown.church, "church"),
+            (Feature::CustomsBonusNow, breakdown.customs, "customs"),
+        ] {
+            assert_eq!(
+                structure.value_of(me, feature),
+                i64::from(expected),
+                "seat {seat}: view-side {label} bonus drifted from the engine's breakdown \
+                 {breakdown:?}"
+            );
+            // `raw_value` is the probe-facing accessor and must agree with the
+            // structure it is a convenience over.
+            assert_eq!(
+                raw_value(&view, me, feature, rules),
+                structure.value_of(me, feature),
+                "seat {seat}: raw_value disagreed with ScoreStructure for {label}"
+            );
+        }
+
+        // The achievement mirror is pinned per CARD, `(current, needed)` and
+        // all, not just through the summed feature — a sum can agree while two
+        // legs are wrong in opposite directions.
+        let mut expected_sum = 0i64;
+        for card in &view.achievements {
+            let mine = view_achievement_progress(&view, me, card.achievement_type);
+            let theirs = achievement_progress(state, id, card.achievement_type);
+            assert_eq!(
+                mine, theirs,
+                "seat {seat}: {:?} progress drifted from the engine",
+                card.achievement_type
+            );
+            expected_sum += i64::from(mine.0.min(mine.1));
+        }
+        assert_eq!(
+            structure.value_of(me, Feature::AchievementProgressSum),
+            expected_sum,
+            "seat {seat}: the summed achievement feature is not the capped sum of its legs"
+        );
+
+        // The full final total — the quantity §2.6 ranks — against the engine's
+        // own. Every scored component is face-up, so this is an equality and
+        // not an approximation (see `TerminalStanding`'s residual note).
+        assert_eq!(
+            structure.final_total(usize::from(seat)),
+            i64::from(breakdown.total),
+            "seat {seat}: the re-derived final total drifted: {breakdown:?}"
+        );
+
+        tally.drift_pairs += 1;
+        if dummy_on_track {
+            tally.drift_dummy_pairs += 1;
+        }
+    }
+}
+
+/// §2.6 on an organically-finished game: the terminal predicate, the ranking,
+/// and the ladder's magnitude, each against the engine's own answer.
+fn check_terminal(
+    state: &GameState,
+    players: u8,
+    rules: &Rules,
+    weights: &WeightTable,
+    tally: &mut Tally,
+) {
+    let engine = final_result(state, rules);
+    for seat in 0..players {
+        let id = PlayerId(seat);
+        let view = observe(state, id).unwrap();
+        assert!(view_is_terminal(&view), "seat {seat}: a finished game must read terminal");
+
+        let standing = terminal_standing(&view, rules).expect("terminal view has a standing");
+        let engine_row =
+            engine.standings.iter().find(|s| s.player == id).expect("every seat ranks");
+        assert_eq!(
+            standing.rank, engine_row.rank,
+            "seat {seat}: view-side finishing place drifted from the engine's ranking"
+        );
+        assert_eq!(standing.seats, players, "every seat is ranked");
+        assert_eq!(standing.viewer_total, i64::from(engine_row.breakdown.total));
+
+        // The ladder: a winner scores positive, everyone else negative, and the
+        // engine's own winner is the only seat that may read rank 1.
+        let s = score(&view, rules, weights);
+        assert_eq!(s, standing.value, "score must return the standing's value verbatim");
+        let e = explain(&view, rules, weights);
+        assert_eq!(e.total, s, "explain().total != score() on a terminal view");
+        assert_eq!(e.terminal, Some(standing), "explain must carry the standing");
+        assert!(
+            e.terms.iter().all(|t| t.weight == 0 && t.product == 0),
+            "a terminal explanation must report zero positional weights (§2.6)"
+        );
+        assert_eq!(
+            e.terms.iter().map(|t| t.product).sum::<i64>() + standing.value,
+            e.total,
+            "the exact-sum identity must hold with the terminal contribution folded in"
+        );
+        if id == engine.winner {
+            assert_eq!(standing.rank, 1);
+            assert!(s > 0, "the winner's terminal score must be positive: {s}");
+        } else {
+            assert!(standing.rank > 1);
+            assert!(s < 0, "a non-winner's terminal score must be negative: {s}");
+        }
+        // The ladder's arithmetic, spelled out, plus the property the clamp
+        // exists for: the margin refinement can never cross a finishing place.
+        let place = place_signal(standing.rank);
+        let margin = (standing.viewer_total - standing.best_other_total)
+            .clamp(-TERMINAL_MARGIN_CLAMP, TERMINAL_MARGIN_CLAMP);
+        assert_eq!(s, TERMINAL_RANK_STEP * place + TERMINAL_MARGIN_STEP * margin);
+        assert!(
+            (s - TERMINAL_RANK_STEP * place).abs() * 2 < TERMINAL_RANK_STEP,
+            "two margins must not span a rank step: {s} vs place {place}"
+        );
+        tally.terminal_views += 1;
     }
 }
 
@@ -465,17 +666,15 @@ fn check_view(
         if term.product != 0 {
             tally.nonzero_terms += 1;
         }
-
-        // T1 staging (spec §2.2 + this task's brief): the five score-structure
-        // features are declared, weighted 0 in BOTH vectors, and compute 0
-        // until T2 lands the view-side re-derivations.
-        if term.feature.is_score_structure() {
-            assert_eq!((early, late), (0, 0), "{} must be staged at 0", term.feature.name());
-            assert_eq!(term.viewer_value, 0, "{} is staged", term.feature.name());
-            assert_eq!(term.product, 0, "{} is staged", term.feature.name());
+        // T2 anti-vacuity: every feature — the five re-derivations especially —
+        // must actually be nonzero somewhere in the sweep, or its arm is
+        // certified by nothing. Floored in the test below off measured counts.
+        if term.viewer_value != 0 {
+            tally.nonzero_by_feature[term.feature.index()] += 1;
         }
     }
 
+    tally.max_abs_positional = tally.max_abs_positional.max(s.abs());
     tally.views += 1;
     if p == 0 {
         tally.early_zero += 1;
@@ -500,19 +699,32 @@ fn check_view(
 /// ~1,700 moves), so a capped sweep would check `w(0)` a thousand times and
 /// call it coverage.
 ///
-/// MEASURED at the T1 close, and the floors are set at roughly HALF each
+/// SINCE T2 this sweep also carries §2.2's DRIFT PIN and §2.6's terminal path
+/// — see [`check_drift`] and [`check_terminal`], which ride the same traversal
+/// rather than paying for a second one.
+///
+/// MEASURED at the T2 close, and the floors are set at roughly HALF each
 /// measured count (the sweep is fully deterministic — fixed seeds, seeded
 /// ChaCha8 — so the figures are exact, and the halving is headroom for benign
-/// drift rather than protection against flake):
+/// drift rather than protection against flake). Figures moved from T1's
+/// recorded block because the five score-structure features now compute real
+/// values, which changes every score and therefore every `nonzero_terms` and
+/// `negative_weight_picks` count:
 ///
 /// ```text
 /// views 1711 · early_zero 132 · late_half 1134 · full 3
 /// clocks [deck 1462, church 1466, customs 390, building 1216]
-/// nonzero_terms 8648 · negative_weight_picks 1767 · decision points 537
+/// nonzero_terms 13944 · negative_weight_picks 1788 · decision points 537
+/// nonzero_by_feature
+///   [vp 1378, ctry 978, tech 750, chur 774, cust 169, hand 1269, ware 1711,
+///    brd 1670, shop 862, trad 61, 5pw 110, imp 241, achv 1618, merc 635,
+///    hnd# 1647]
+/// drift_pairs 1720 · drift_dummy_pairs 240 · terminal_views 9
+/// max |positional score| 2168  (rank step 1e9 clears it 461,255x)
 /// ```
 ///
-/// MUTATION-PROVEN AT AUTHORING (both reverted; the point is that this sweep
-/// catches the two slips it exists for, not merely that `assert!` works):
+/// MUTATION-PROVEN AT AUTHORING (all reverted; the point is that this sweep
+/// catches the slips it exists for, not merely that `assert!` works):
 ///   - `score` skipping one feature (`if feature == Feature::HandSize
 ///     { continue; }`) — FAILED: `assertion left == right failed:
 ///     explain().total != score(); left: 68, right: 62`. That is the §0.3(a)
@@ -520,6 +732,9 @@ fn check_view(
 ///   - `opponent_extreme` comparing RAW values instead of `weight · value`
 ///     (i.e. dropping the orientation rule) — FAILED: `hand_size: a negative
 ///     weight must take the opponents' minimum; left: 2, right: 1`.
+///   - T2: the church majority awarding its places to the ranking WITHOUT the
+///     dummy contender — see the constructed dummy test below for the recorded
+///     failure; the organic half of the pin catches it too.
 #[test]
 fn explain_reconstructs_score_exactly_over_organic_views() {
     let rules = Rules::standard();
@@ -550,4 +765,458 @@ fn explain_reconstructs_score_exactly_over_organic_views() {
     for (i, name) in ["deck", "church", "customs", "building"].iter().enumerate() {
         assert!(tally.clock_nonzero[i] >= 150, "the {name} clock barely advanced: {tally:?}");
     }
+
+    // T2 — ANTI-VACUITY, per feature. Floors measured first, then set at half
+    // (the same discipline as the counts above). The five score-structure
+    // features are the point: a mirror that reads zero on every swept view is
+    // pinned to nothing, however green the drift comparison looks.
+    for feature in Feature::ALL {
+        let seen = tally.nonzero_by_feature[feature.index()];
+        let floor = FEATURE_NONZERO_FLOORS[feature.index()];
+        assert!(
+            seen >= floor,
+            "{} was nonzero on only {seen} of {} views (floor {floor}) — its arm is \
+             effectively untested: {tally:?}",
+            feature.name(),
+            tally.views
+        );
+    }
+
+    // T2 — the drift pin ran, and ran on states where the 2P dummy was
+    // genuinely competing (the D1 arm has a constructed test of its own, but a
+    // pin whose organic half never met a dummy would be half a pin).
+    assert!(tally.drift_pairs >= 850, "the drift pin barely ran: {tally:?}");
+    assert!(tally.drift_dummy_pairs >= 120, "no organic 2P-dummy coverage: {tally:?}");
+    assert_eq!(
+        tally.terminal_views,
+        2 + 3 + 4,
+        "every seat of all three finished games must have been scored terminally: {tally:?}"
+    );
+
+    // §2.6's DOMINANCE, as a measurement rather than a claim: the largest
+    // positional score anywhere in the sweep, against the rank step a terminal
+    // place is worth. The bound a future weight table must keep: a positional
+    // total under TERMINAL_RANK_STEP/2 (5e8) is what makes a win outscore every
+    // running position. The provisional table clears it by ~4 orders.
+    println!(
+        "max |positional score| {} vs rank step {TERMINAL_RANK_STEP} \
+         (headroom x{})",
+        tally.max_abs_positional,
+        TERMINAL_RANK_STEP / tally.max_abs_positional.max(1)
+    );
+    assert!(tally.max_abs_positional > 0, "no positional score was nonzero: {tally:?}");
+    assert!(
+        tally.max_abs_positional < TERMINAL_RANK_STEP / 2,
+        "a positional score reached {} — at or past half a rank step, so a terminal \
+         win no longer dominates every running position (§2.6)",
+        tally.max_abs_positional
+    );
 }
+
+/// Per-feature nonzero floors for the sweep above, by `Feature::index()`.
+/// MEASURED-THEN-SET at the T2 close (the observed counts are in that test's
+/// doc block), each at half the observed count rounded down — the same
+/// discipline every other floor in this file uses. The two smallest arms
+/// (`trading_houses_built` 61 and `five_power_tokens` 110) are genuinely rare
+/// events, not weak coverage: four trading houses END the game.
+//     [vp,  ctry, tech, chur, cust, hand, ware, brd, shop, trad, 5pw, imp, achv, merc, hnd#]
+const FEATURE_NONZERO_FLOORS: [usize; Feature::COUNT] =
+    [689, 489, 375, 387, 84, 634, 855, 835, 431, 30, 55, 120, 809, 317, 823];
+
+// ---------------------------------------------------------------------------
+// §2.2 — the D1 dummy, constructed
+// ---------------------------------------------------------------------------
+
+/// A finalized 2P game with both real players' church and customs pawns
+/// cleared, leaving only the setup dummy (Church faith-7 / Customs space-4).
+fn dummy_fixture(rules: &Rules) -> GameState {
+    let mut state = keep_game(2, 7, rules);
+    assert!(
+        state.church_track.slots.iter().flatten().any(|s| s.player.is_dummy()),
+        "the 2P setup must place a dummy — finding D1"
+    );
+    state
+        .church_track
+        .slots
+        .iter_mut()
+        .for_each(|slot| *slot = slot.filter(|s| s.player.is_dummy()));
+    state
+        .customs_track
+        .slots
+        .iter_mut()
+        .for_each(|slot| *slot = slot.filter(|s| s.player.is_dummy()));
+    state
+}
+
+/// FINDING D1, view-side: the 2P dummy is a real competitor in both majorities
+/// — it can TAKE a place (awarded to nobody) and it can WIN a count tie on the
+/// rightmost space — and the evaluator's mirrors must price it exactly as the
+/// engine does, in both directions.
+///
+/// The two scenarios are the engine's own D1 reproducers (`game/scoring.rs`'s
+/// `church_majority_2p_dummy_takes_first_place` and
+/// `customs_majority_2p_dummy_wins_tie_via_rightmost`) read back through the
+/// view, plus their controls where the dummy is beaten and changes nothing.
+/// That contrast is the anti-vacuity: the same fixture family produces 3 VP
+/// with the dummy competing and 6 VP without, so a mirror that ignored the
+/// dummy would be caught by a value, not by an absence.
+///
+/// MUTATION-PROVEN AT AUTHORING (reverted): dropping the dummy from
+/// `majority_bonus`'s tally (skipping `is_dummy()` owners outright, the obvious
+/// "the dummy scores nothing so why count it" simplification) — FAILED here on
+/// `denied: view-side church bonus drifted from the engine; left: 3, right: 0`
+/// (P0 wrongly promoted into the place the dummy holds), and independently in
+/// the organic sweep on `seat 1: view-side church bonus drifted from the
+/// engine's breakdown …; left: 6, right: 3`. Both halves of the pin bite it,
+/// which is the point of having both.
+#[test]
+fn the_2p_dummy_competes_in_the_view_side_majorities_exactly_as_the_engine_does() {
+    let rules = Rules::standard();
+    let church7 = ChurchTrack::faith_to_index(7).unwrap();
+    let customs4 = CustomsTrack::space_to_index(4).unwrap();
+
+    // (label, church placements, customs placements, what the dummy does)
+    let mut denied = dummy_fixture(&rules);
+    // Both real pawns LEFT of faith-7: the dummy is rightmost at count 1, takes
+    // 1st (nobody scores it), and P1 gets only 2nd.
+    denied.church_track.slots[ChurchTrack::faith_to_index(4).unwrap()] =
+        Some(ChurchSlot { player: PlayerId::new(0), arrival_order: 1 });
+    denied.church_track.slots[ChurchTrack::faith_to_index(5).unwrap()] =
+        Some(ChurchSlot { player: PlayerId::new(1), arrival_order: 2 });
+    // Customs: P0 on space-3, dummy on space-4 — a COUNT TIE the dummy wins on
+    // rightmost, dropping P0 from 8 VP to 4.
+    denied.customs_track.slots[CustomsTrack::space_to_index(3).unwrap()] =
+        Some(CustomsSlot { player: PlayerId::new(0), arrival_order: 1 });
+    denied.customs_track.slots[CustomsTrack::space_to_index(1).unwrap()] =
+        Some(CustomsSlot { player: PlayerId::new(1), arrival_order: 2 });
+
+    // The control: both real players out-COUNT the lone dummy, so it places
+    // third and changes nothing — 6/3 and 8/4 go to real players.
+    let mut beaten = dummy_fixture(&rules);
+    for (faith, player) in [(4u8, 0u8), (8, 0), (5, 1), (9, 1)] {
+        beaten.church_track.slots[ChurchTrack::faith_to_index(faith).unwrap()] =
+            Some(ChurchSlot { player: PlayerId::new(player), arrival_order: faith });
+    }
+    for (space, player) in [(5u8, 0u8), (6, 0), (1, 1), (2, 1)] {
+        beaten.customs_track.slots[CustomsTrack::space_to_index(space).unwrap()] =
+            Some(CustomsSlot { player: PlayerId::new(player), arrival_order: space });
+    }
+
+    for (label, state) in [("denied", &denied), ("beaten", &beaten)] {
+        assert!(
+            state.church_track.slots[church7].is_some_and(|s| s.player.is_dummy())
+                && state.customs_track.slots[customs4].is_some_and(|s| s.player.is_dummy()),
+            "{label}: the fixture must still hold the dummy on its printed spaces"
+        );
+        let engine = final_result(state, &rules);
+        for seat in 0..2u8 {
+            let id = PlayerId(seat);
+            let view = observe(state, id).unwrap();
+            let me = view.players.iter().find(|p| p.id == id).unwrap();
+            let structure = ScoreStructure::derive(&view, &rules);
+            let breakdown = &engine
+                .standings
+                .iter()
+                .find(|s| s.player == id)
+                .unwrap()
+                .breakdown;
+            assert_eq!(
+                structure.value_of(me, Feature::ChurchBonusNow),
+                i64::from(breakdown.church),
+                "{label}: view-side church bonus drifted from the engine"
+            );
+            assert_eq!(
+                structure.value_of(me, Feature::CustomsBonusNow),
+                i64::from(breakdown.customs),
+                "{label}: view-side customs bonus drifted from the engine"
+            );
+        }
+    }
+
+    // ANTI-VACUITY: the two fixtures must actually DISAGREE about the same
+    // seat's bonus, or the pair proves only that both sides compute the same
+    // constant. The denied case is the D1 effect itself: P1 collects 3 (2nd
+    // behind the dummy) where the control collects 6 (1st outright), and P0
+    // collects 4 in customs where the control collects 8.
+    let value = |state: &GameState, seat: u8, feature: Feature| {
+        let view = observe(state, PlayerId(seat)).unwrap();
+        let me = view.players.iter().find(|p| p.id == PlayerId(seat)).unwrap().clone();
+        ScoreStructure::derive(&view, &rules).value_of(&me, feature)
+    };
+    assert_eq!(value(&denied, 1, Feature::ChurchBonusNow), 3, "P1 is 2nd behind the dummy");
+    assert_eq!(value(&beaten, 1, Feature::ChurchBonusNow), 6, "P1 is 1st with the dummy beaten");
+    assert_eq!(value(&denied, 0, Feature::ChurchBonusNow), 0, "P0 is beaten by both");
+    assert_eq!(value(&denied, 0, Feature::CustomsBonusNow), 4, "the dummy wins the rightmost tie");
+    assert_eq!(value(&beaten, 0, Feature::CustomsBonusNow), 8, "P0 out-counts the dummy");
+}
+
+// ---------------------------------------------------------------------------
+// §2.6 — the terminal term, constructed
+// ---------------------------------------------------------------------------
+
+/// Force `state` into the shape the engine calls finished: end-game triggered,
+/// final round, and the turn resting at the end of the last seat's turn.
+fn force_terminal(state: &mut GameState) {
+    let n = state.config.player_count;
+    state.end_game_triggered = true;
+    state.final_round = true;
+    state.trigger_reason = Some(yokohama_core::EndGameTrigger::ChurchTrackFull);
+    state.trigger_player = Some(state.config.start_player);
+    state.current_player = PlayerId((state.config.start_player.0 + n - 1) % n);
+    state.turn_phase = TurnPhase::TurnEnd;
+    assert!(is_game_over(state), "the fixture must actually be a finished game");
+}
+
+/// §2.6's WHOLE POINT, constructed so that running VP and the true final
+/// standing DISAGREE: P0 leads on victory points and LOSES the game, because
+/// P1's five completed orders are a full country set worth 12 unbanked VP.
+///
+/// A terminal term that scored "VP totals visible in-view" — the reading both
+/// spec review lenses rejected — would rank P0 first here. The bonus-inclusive
+/// re-derivation ranks P1 first, and the engine agrees.
+///
+/// MUTATION-PROVEN AT AUTHORING (reverted): ranking on `base_vp` alone instead
+/// of `final_total` — i.e. exactly the "VP totals visible in-view" reading —
+/// FAILED here on `20 running VP + a 12-VP country set; left: 20, right: 32`
+/// and, independently, in the organic sweep's terminal check on
+/// `standing.viewer_total vs the engine's total; left: 46, right: 87`.
+#[test]
+fn a_terminal_view_is_ranked_by_the_full_final_score_not_by_running_vp() {
+    let rules = Rules::standard();
+    let mut state = dummy_fixture(&rules);
+    force_terminal(&mut state);
+
+    for p in state.players.iter_mut() {
+        // Zero every remainder leg so the fixture's arithmetic is exactly the
+        // two numbers this test is about.
+        p.money = 0;
+        p.copper = 0;
+        p.silk = 0;
+        p.tea = 0;
+        p.seafood = 0;
+        p.imported_goods = 0;
+        p.completed_orders.clear();
+        p.technologies.clear();
+    }
+    state.players[0].victory_points = 30;
+    state.players[1].victory_points = 20;
+    // O01 American, O02 French, O03 English, O04 German, O06 Dutch: five
+    // distinct countries = one full set = 12 VP, which is more than the 10 VP
+    // P0 leads by.
+    state.players[1].completed_orders = [1u8, 2, 3, 4, 6].map(OrderCardId).to_vec();
+
+    let engine = final_result(&state, &rules);
+    assert_eq!(engine.winner, PlayerId(1), "the fixture must make the VP leader lose");
+
+    let loser = observe(&state, PlayerId(0)).unwrap();
+    let winner = observe(&state, PlayerId(1)).unwrap();
+    assert!(view_is_terminal(&loser) && view_is_terminal(&winner));
+
+    let loser_standing = terminal_standing(&loser, &rules).unwrap();
+    let winner_standing = terminal_standing(&winner, &rules).unwrap();
+    assert_eq!(loser_standing.viewer_total, 30);
+    assert_eq!(winner_standing.viewer_total, 32, "20 running VP + a 12-VP country set");
+    assert_eq!(winner_standing.rank, 1, "the bonus winner takes first");
+    assert!(
+        loser_standing.rank > winner_standing.rank,
+        "the loser must not outrank the winner: left: {}, right: {}",
+        loser_standing.rank,
+        winner_standing.rank
+    );
+
+    // The ladder: dominant, symmetric, and margin-refined.
+    let weights = WeightTable::PROVISIONAL_V1;
+    let win = score(&winner, &rules, &weights);
+    let loss = score(&loser, &rules, &weights);
+    assert_eq!(win, TERMINAL_RANK_STEP + 2 * TERMINAL_MARGIN_STEP, "2P first place, margin +2");
+    assert_eq!(loss, -TERMINAL_RANK_STEP - 2 * TERMINAL_MARGIN_STEP, "2P second place, margin −2");
+    assert!(win > 0 && loss < 0, "the ladder must be symmetric about zero");
+
+    // A hostile margin cannot lift second above first: the clamp is what makes
+    // that structural rather than a fact about typical scores.
+    let mut blowout = state.clone();
+    blowout.players[1].victory_points = 100_000;
+    let blown = observe(&blowout, PlayerId(1)).unwrap();
+    let blown_standing = terminal_standing(&blown, &rules).unwrap();
+    assert_eq!(blown_standing.rank, 1);
+    assert_eq!(
+        score(&blown, &rules, &weights),
+        TERMINAL_RANK_STEP + TERMINAL_MARGIN_STEP * TERMINAL_MARGIN_CLAMP,
+        "the margin saturates at the clamp"
+    );
+    let blown_loser = observe(&blowout, PlayerId(0)).unwrap();
+    assert!(
+        score(&blown_loser, &rules, &weights) < score(&blown, &rules, &weights),
+        "no margin may invert the finishing order"
+    );
+}
+
+/// The terminal PREDICATE's four conjuncts, each falsified on its own. The
+/// organic sweep pins the positive side (three finished games) and the negative
+/// side (every sampled running position); this pins the boundary — which is
+/// where a mirror of someone else's predicate actually drifts.
+#[test]
+fn the_view_side_terminal_predicate_mirrors_the_engine_conjunct_by_conjunct() {
+    let rules = Rules::standard();
+    let mut state = keep_game(3, 21, &rules);
+    force_terminal(&mut state);
+    let seat = PlayerId(0);
+    assert!(view_is_terminal(&observe(&state, seat).unwrap()), "the fixture is terminal");
+
+    for (label, mutate) in [
+        ("trigger cleared", (|s: &mut GameState| s.end_game_triggered = false) as fn(&mut GameState)),
+        ("final round cleared", |s: &mut GameState| s.final_round = false),
+        ("trigger player cleared", |s: &mut GameState| s.trigger_player = None),
+        ("phase rewound", |s: &mut GameState| s.turn_phase = TurnPhase::Recovery),
+        ("wrong seat on turn", |s: &mut GameState| s.current_player = s.config.start_player),
+    ] {
+        let mut broken = state.clone();
+        mutate(&mut broken);
+        let view = observe(&broken, seat).unwrap();
+        assert_eq!(
+            view_is_terminal(&view),
+            is_game_over(&broken),
+            "{label}: the view-side predicate disagreed with the engine"
+        );
+        assert!(!view_is_terminal(&view), "{label} must not read as a finished game");
+        // And a non-terminal view scores positionally, with no standing.
+        assert_eq!(terminal_standing(&view, &rules), None);
+    }
+}
+
+/// The achievement mirror across ALL TWELVE card types and both cap boundaries.
+///
+/// WHY THIS EXISTS, recorded because it is the anti-vacuity lesson of this
+/// task: only three achievement cards are in play per game, so the organic
+/// sweep meets at most a handful of types and essentially never meets a leg
+/// ABOVE its own cap. Mutating `Prod3Comm2`'s commercial leg from `.min(2)` to
+/// uncapped SURVIVED the whole rest of this file — the sweep is broad, not
+/// deep, and a broad pin is not a substitute for the boundary. This cell walks
+/// every type against the engine's own progress arithmetic and puts both
+/// Category-C legs strictly over their caps.
+///
+/// MUTATION-PROVEN AT AUTHORING (each reverted):
+///   - `Prod3Comm2`'s commercial leg uncapped — FAILED: `both over cap:
+///     Prod3Comm2 progress drifted from the engine; left: (6, 5),
+///     right: (5, 5)`. This is the mutation that survived every OTHER test in
+///     this file, which is why the cell exists.
+///   - `Tokens5` counting only face-up mercenaries (`unused_count()` in place
+///     of `total()` — the ruling-A2 arm, where face-DOWN mercenaries count
+///     toward "own 5 tokens") — FAILED: `one leg short: Tokens5 progress
+///     drifted from the engine; left: (5, 5), right: (6, 5)`.
+#[test]
+fn the_view_side_achievement_progress_mirrors_the_engine_at_every_card_and_cap() {
+    let rules = Rules::standard();
+    let base = keep_game(4, 31, &rules);
+
+    let production: Vec<_> = base
+        .board_layout
+        .areas
+        .iter()
+        .filter(|(_, c)| c.area_type.is_production())
+        .map(|(a, _)| *a)
+        .collect();
+    let commercial: Vec<_> = base
+        .board_layout
+        .areas
+        .iter()
+        .filter(|(_, c)| c.area_type.is_commercial())
+        .map(|(a, _)| *a)
+        .collect();
+    assert!(
+        production.len() >= 5 && commercial.len() >= 3,
+        "the 4P board must offer enough areas to push both Category-C legs over \
+         their caps: {} production, {} commercial",
+        production.len(),
+        commercial.len()
+    );
+
+    // (label, production areas held, commercial areas held). The first cell is
+    // the engine's own worked counterexample — a RAW total (6) above `needed`
+    // (5) that must still not read as met, because the commercial leg (1) is
+    // under its own threshold (2). The second puts BOTH legs over their caps,
+    // which is what catches an uncapped commercial leg.
+    let mut distinct = ALL_ACHIEVEMENTS.to_vec();
+    distinct.sort_by_key(|a| format!("{a:?}"));
+    distinct.dedup();
+    assert_eq!(distinct.len(), 12, "the card list must name twelve DISTINCT types");
+
+    for (label, prod_n, comm_n) in [("one leg short", 5usize, 1usize), ("both over cap", 5, 3)] {
+        let mut state = base.clone();
+        let p = &mut state.players[0];
+        p.trading_houses.built = production[..prod_n].to_vec();
+        for area in &commercial[..comm_n] {
+            p.shophouses.built.insert(*area, 0);
+        }
+        // Category A and B, each pushed strictly PAST its threshold so the
+        // `min(current, needed)` cap in the summed feature is load-bearing too.
+        p.copper = 9;
+        p.silk = 9;
+        p.tea = 9;
+        p.seafood = 9;
+        p.money = 25;
+        p.five_power_tokens = 4;
+        p.mercenaries.available.insert(yokohama_core::Country::English, 1);
+        p.mercenaries.used.insert(yokohama_core::Country::French, 1);
+        p.completed_orders = [1u8, 2, 3, 4, 6, 8].map(OrderCardId).to_vec();
+        p.technologies = (1..=5u8).map(yokohama_core::TechCardId).collect();
+
+        for card in ALL_ACHIEVEMENTS {
+            state.achievements = [
+                yokohama_core::AchievementCard::new(card),
+                yokohama_core::AchievementCard::new(card),
+                yokohama_core::AchievementCard::new(card),
+            ];
+            let view = observe(&state, PlayerId(0)).unwrap();
+            let me = view.players.iter().find(|q| q.id == PlayerId(0)).unwrap();
+
+            let mine = view_achievement_progress(&view, me, card);
+            let theirs = achievement_progress(&state, PlayerId(0), card);
+            assert_eq!(mine, theirs, "{label}: {card:?} progress drifted from the engine");
+
+            // The summed feature is the CAPPED sum, three identical cards over.
+            assert_eq!(
+                ScoreStructure::derive(&view, &rules)
+                    .value_of(me, Feature::AchievementProgressSum),
+                3 * i64::from(mine.0.min(mine.1)),
+                "{label}: {card:?} — the feature is not the capped sum of its legs"
+            );
+        }
+
+        // The boundary itself, on the engine's own numbers.
+        let view = observe(&state, PlayerId(0)).unwrap();
+        let me = view.players.iter().find(|q| q.id == PlayerId(0)).unwrap();
+        let (current, needed) =
+            view_achievement_progress(&view, me, yokohama_core::AchievementType::Prod3Comm2);
+        assert_eq!(needed, 5, "{label}: 3 production cap + 2 commercial cap");
+        if comm_n == 1 {
+            assert_eq!(current, 4, "{label}: min(5,3) + min(1,2), NOT the raw 6");
+            assert!(current < needed, "{label}: the short leg must keep the claim unmet");
+        } else {
+            assert_eq!(current, 5, "{label}: min(5,3) + min(3,2), NOT the raw 8");
+        }
+    }
+}
+
+/// Every achievement type, so the mirror above cannot quietly stop covering
+/// one. The engine's own enum is matched exhaustively on both sides, so a new
+/// variant is a compile error there; this list is the TEST's half and the
+/// duplicate check in the cell is what stops it degenerating into twelve copies
+/// of one card.
+const ALL_ACHIEVEMENTS: [yokohama_core::AchievementType; 12] = {
+    use yokohama_core::AchievementType::*;
+    [
+        Copper5,
+        Silk6,
+        Tea7,
+        Seafood7,
+        Money10,
+        Tokens5,
+        Orders5,
+        Technologies4,
+        Production4,
+        Commercial4,
+        Prod3Comm2,
+        Prod2Comm3,
+    ]
+};

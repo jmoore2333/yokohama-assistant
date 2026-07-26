@@ -48,18 +48,49 @@
 //! as `explain().total` would discharge it as a tautology and pay an
 //! allocation per search node. Both halves are pinned in `tests/eval_core.rs`.
 //!
-//! # What v1 does NOT do yet
+//! # The score-structure mirrors (§2.2, landed at T2)
 //!
-//! The five score-structure features (§2.2's country/tech/church/customs bonus
-//! re-derivations and `achievement_progress_sum`) are DECLARED here, weighted
-//! zero in both vectors, and compute zero: T2 lands the view-side
-//! re-derivations plus the drift pin against `game/scoring.rs`. Every weight in
-//! [`WeightTable::PROVISIONAL_V1`] is hand-set and PROVISIONAL until T4's
-//! measured freeze. Terminal states are not special-cased here either (§2.6 is
-//! T2's, and it needs the same re-derivations).
+//! Five of the fifteen features re-derive a piece of the rulebook's END
+//! SCORING from the view: the country-set bonus, the technology
+//! industry-value majority, the church and customs pawn majorities (with the
+//! 2-player dummy competitor priced exactly as the rules price it — finding
+//! D1), and progress toward the three Achievement cards. They are DECOMPOSED,
+//! one feature each, never one projected-score scalar — research notes R1-3
+//! measured `country_bonus_now` at AUC 0.6212 early against the whole
+//! projected scalar's 0.5806, so the aggregate is strictly worse than its own
+//! best component.
+//!
+//! They are re-derivations, not calls: this file may not reach into the
+//! engine's scoring code (§2.1's guard), so the arithmetic is written here
+//! from the view plus the card registries and PINNED against the engine's own
+//! per-player breakdown over organic play in `tests/eval_core.rs`. Mirror plus
+//! drift pin is this repo's standard answer to a duplicated rule.
+//!
+//! **Cost shape, stated because it is easy to get wrong.** Four of the five
+//! are properties of the WHOLE table (a majority is a ranking over seats), not
+//! of one seat, so computing them inside a per-`(feature, player)` accessor
+//! would pay each ranking once per feature per player — up to sixteen times a
+//! call at 4P. [`ScoreStructure::derive`] computes every one of them ONCE per
+//! [`score`] call into stack arrays indexed by seat, and the accessors just
+//! index. Nothing here allocates.
+//!
+//! # Terminal views (§2.6)
+//!
+//! A finished game is not scored positionally: [`score`] detects terminality
+//! from the view ([`view_is_terminal`], a mirror of the engine's own
+//! derivation, pinned), re-derives EVERY seat's full final total (running VP
+//! plus all five decomposed bonuses plus the remainder conversions), ranks the
+//! viewer under the official clockwise tie-break, and returns a win/loss
+//! dominant ladder ([`TerminalStanding`]). See that type for the magnitudes
+//! and for the masked-opponent-order residual.
+//!
+//! # What is still provisional
+//!
+//! Every weight in [`WeightTable::PROVISIONAL_V1`] is hand-set and PROVISIONAL
+//! until T4's measured freeze — including the five landed here.
 
 use crate::game::rules::Rules;
-use crate::types::{PlayerView, VisiblePlayer};
+use crate::types::{AchievementType, Country, PlayerId, PlayerView, TurnPhase, VisiblePlayer};
 
 /// Bumped on ANY behavior-affecting change to the evaluator — the feature list,
 /// the relative form, the stage shape, or the weight tables (T4's freeze is a
@@ -91,15 +122,16 @@ pub enum Feature {
     /// late-game separator, and deliberately not an early one.
     VictoryPoints,
     /// The country-set end bonus re-derived from the view. R1-3 measured it as
-    /// the best EARLY separator (0.6212). Staged — see the module doc.
+    /// the best EARLY separator (0.6212). See [`ScoreStructure`].
     CountryBonusNow,
     /// The technology end bonus re-derived from the view (R1-10's cluster
-    /// winner over a raw tech count). Staged.
+    /// winner over a raw tech count): the 10/5 industry-value majority.
     TechBonusNow,
-    /// The church majority bonus re-derived from the view, dummy competitor
-    /// included (finding D1). Staged.
+    /// The church majority bonus re-derived from the view (6/3), dummy
+    /// competitor included (finding D1).
     ChurchBonusNow,
-    /// The customs majority bonus re-derived from the view. Staged.
+    /// The customs majority bonus re-derived from the view (8/4), dummy
+    /// competitor included (finding D1).
     CustomsBonusNow,
     /// Assistants in hand — playable tempo. R1-4: 0.6026 early.
     AssistantsInHand,
@@ -116,7 +148,8 @@ pub enum Feature {
     FivePowerTokens,
     /// Imported goods — the customs track's currency.
     ImportedGoods,
-    /// Progress toward the three Achievement cards. Staged.
+    /// Progress toward the three Achievement cards in play, each leg capped at
+    /// its own threshold. See [`achievement_progress`].
     AchievementProgressSum,
     /// Foreign mercenaries held (used and unused).
     MercenariesTotal,
@@ -196,11 +229,12 @@ impl Feature {
         }
     }
 
-    /// True for the five features that re-derive a piece of the game's own END
-    /// SCORING from the view (§2.2's bonus re-derivations plus achievement
-    /// progress). They are the T2 deliverable and are staged at zero in v1 —
-    /// this predicate is what lets the tests assert the staging instead of
-    /// trusting a comment.
+    /// True for the five features whose value is re-derived END SCORING
+    /// arithmetic rather than a field read (§2.2's four bonus mirrors plus
+    /// achievement progress). Their values come from [`ScoreStructure`], which
+    /// is computed once per [`score`] call — this predicate is what lets the
+    /// tests assert that grouping instead of trusting a comment, and it is the
+    /// set the drift pin holds against the engine's own breakdown.
     pub fn is_score_structure(self) -> bool {
         matches!(
             self,
@@ -254,9 +288,40 @@ impl WeightTable {
     /// - The building weights (12 → 20, 15 → 25) rise late because they carry
     ///   printed VP AND run an end trigger; trading houses are scarcer (4 vs 8)
     ///   and better rewarded, so they price higher.
-    /// - The five score-structure features are ZERO in both vectors while
-    ///   their values are staged at zero, so v1's score is exactly the ten
-    ///   computed terms. T2 lands the view-side re-derivation and its weights.
+    ///
+    /// The five score-structure weights, landed at T2 — one line of grounds
+    /// each, all PROVISIONAL on the same terms as the rest:
+    ///
+    /// - `country_bonus_now` 12 → 30. The largest EARLY weight in the table
+    ///   and deliberately so: R1-3 measured it as the corpus's best early
+    ///   separator (AUC 0.6212, against VP's 0.5625), so a token weight here
+    ///   would throw away the one term that sees the early game. Late 30 sits
+    ///   just under VP's 40 because completed orders and owned techs cannot be
+    ///   taken back — this bonus is the least contingent of the four — but a
+    ///   VP already banked still compounds and a bonus VP does not.
+    /// - `tech_bonus_now` 6 → 20. A 10/5 majority an opponent can still
+    ///   overtake, so it prices well under the banked country set; R1-10 makes
+    ///   it the cluster's single shipped member, so it also carries whatever
+    ///   the raw tech count used to.
+    /// - `church_bonus_now` −4 → 16 is the one SIGN-FLIPPING feature, and it
+    ///   is the reason §2.3 interpolates instead of switching. R1-5 measured
+    ///   early church investment as a LOSING indicator (AUC 0.4280 early →
+    ///   0.5234 late, a genuine flip) — weaker than the warehouse's 0.3932, so
+    ///   the magnitude is smaller than that term's −10. The late weight is
+    ///   positive on VP-structure grounds: the printed 6/3 is real VP once the
+    ///   game stops. TENSION RECORDED, not hidden: R1's critic flagged this
+    ///   exact sign as regime-conditional (measured under family-weighted
+    ///   self-play; ~86% of greedy games end via ChurchTrackFull, where racing
+    ///   the track may pay), and §2.4 names the church sign as one of the three
+    ///   figures T4 re-measures under the greedy corpus before the freeze.
+    /// - `customs_bonus_now` 3 → 20. Positive at both ends: R1-5's early
+    ///   negative is a CHURCH finding and does not transfer (no customs
+    ///   equivalent was measured), and the printed 8/4 outranks the church's
+    ///   6/3, so the late weight sits above it.
+    /// - `achievement_progress_sum` 2 → 4. Positive (R1's recommended set) but
+    ///   small, because its scale is not VP: it is a sum of three capped
+    ///   progress legs in mixed units (goods counts, yen, building counts) that
+    ///   can reach ~19, so a VP-scale weight would let it swamp the table.
     ///
     /// The column header below is a READING AID; [`Feature::ALL`] is the
     /// authority on the order, and the sign test
@@ -265,8 +330,8 @@ impl WeightTable {
     /// the fifteen slots.
     pub const PROVISIONAL_V1: WeightTable = WeightTable {
         //     [vp, ctry, tech, chur, cust, hand, ware, brd, shop, trad, 5pw, imp, achv, merc, hnd#]
-        early: [10,    0,    0,    0,    0,    8,  -10,   7,   12,   15,   8,   5,    0,    3,   -3],
-        late:  [40,    0,    0,    0,    0,    4,   -4,   4,   20,   25,  10,   8,    0,    4,   -6],
+        early: [10,   12,    6,   -4,    3,    8,  -10,   7,   12,   15,   8,   5,    2,    3,   -3],
+        late:  [40,   30,   20,   16,   20,    4,   -4,   4,   20,   25,  10,   8,    4,    4,   -6],
     };
 
     /// The all-zero table: a CONSTANT evaluator. Not a curiosity — spec §3.2's
@@ -314,9 +379,26 @@ pub struct TermContribution {
 
 /// A score, reconstructed term by term. `total` is the same `i64` [`score`]
 /// returns for the same arguments, and the terms are in [`Feature::ALL`] order,
-/// one per feature, always — including the staged and zero-weighted ones, so
-/// a reader can see that a term contributed nothing rather than wonder whether
-/// it was computed.
+/// one per feature, always — including the zero-weighted ones, so a reader can
+/// see that a term contributed nothing rather than wonder whether it was
+/// computed.
+///
+/// THE EXACT-SUM IDENTITY (§0.3(a)), in the one form that is true everywhere:
+///
+/// ```text
+/// total == terms.sum(product) + terminal.map(|t| t.value).unwrap_or(0)
+/// ```
+///
+/// On every position a search actually evaluates positionally that reduces to
+/// the spec's `total == terms.sum(product)` verbatim, because `terminal` is
+/// `None`. On a FINISHED game the positional vector does not govern at all
+/// (§2.6), so `explain` reports every term at `weight == 0` / `product == 0` —
+/// reporting an interpolated weight there would be a lie about what [`score`]
+/// used — while the raw `viewer_value`/`opponent_value` stay populated so a
+/// terminal explanation is still readable. The `terminal` value is then the
+/// whole score, and it is a named additive contribution rather than a
+/// sixteenth `Feature` because it is not a feature: §2.2's list is fifteen
+/// entries and a rank is not one of them.
 ///
 /// `PartialEq`/`Eq` are load-bearing, not conveniences: spec §0.4(ii)'s
 /// determinization cell asserts that a candidate's explanation is EQUAL across
@@ -324,10 +406,15 @@ pub struct TermContribution {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Explanation {
     pub terms: Vec<TermContribution>,
+    /// `Some` exactly when [`view_is_terminal`] holds — the finished game's
+    /// re-derived standing, and then the whole of `total`.
+    pub terminal: Option<TerminalStanding>,
     pub total: i64,
     /// The stage proxy the weights were interpolated at, in ppm. Reported so an
     /// explanation is self-contained: every `weight` above is recomputable from
-    /// this and the table (T10 renders it).
+    /// this and the table (T10 renders it) — except on a terminal view, where
+    /// the reported weights are 0 by the rule above and this field is
+    /// informational only.
     pub progress_ppm: u32,
 }
 
@@ -349,17 +436,27 @@ pub struct Explanation {
 /// unreachable in play — it is there so a hostile weight table cannot panic a
 /// search), and a view whose own viewer seat is missing scores 0 after a
 /// `debug_assert`.
+///
+/// A FINISHED game short-circuits into [`TerminalStanding`] (§2.6) — the
+/// positional vector never runs there.
 pub fn score(view: &PlayerView, rules: &Rules, weights: &WeightTable) -> i64 {
     let Some(me) = seated_viewer(view) else {
         return 0;
     };
+    // ONCE per call, not once per (feature, player): four of the five
+    // score-structure re-derivations are rankings over the whole table, so the
+    // naive shape would pay each of them `players` times over.
+    let structure = ScoreStructure::derive(view, rules);
+    if let Some(terminal) = terminal_standing_of(view, me, &structure) {
+        return terminal.value;
+    }
     let progress = progress_ppm(view, rules);
     let mut total: i64 = 0;
     for feature in Feature::ALL {
         let (early, late) = weights.get(feature);
         let weight = interpolate(early, late, progress);
-        let mine = raw_value(view, me, feature, rules);
-        let theirs = opponent_extreme(view, me, feature, rules, weight);
+        let mine = structure.value_of(me, feature);
+        let theirs = opponent_extreme(view, me, feature, weight, &structure);
         total = total.saturating_add(weight.saturating_mul(mine.saturating_sub(theirs)));
     }
     total
@@ -370,42 +467,39 @@ pub fn score(view: &PlayerView, rules: &Rules, weights: &WeightTable) -> i64 {
 /// A SEPARATE PATH from [`score`] on purpose (§0.3(a)): it re-derives every
 /// component and accumulates its own total, so `explain().total == score()` is
 /// a cross-check between two assemblies rather than a restatement of one. The
-/// two share only the primitives ([`raw_value`], [`interpolate`],
+/// two share only the primitives ([`ScoreStructure`], [`interpolate`],
 /// [`opponent_extreme`]) — that is the sharing the property is meant to police,
 /// not the sharing it is meant to hide.
+///
+/// See [`Explanation`] for the exact-sum identity in the form that covers
+/// terminal views too.
 pub fn explain(view: &PlayerView, rules: &Rules, weights: &WeightTable) -> Explanation {
     let progress = progress_ppm(view, rules);
+    let structure = ScoreStructure::derive(view, rules);
+    // A view without its own seat is degenerate rather than fatal (`observe`
+    // cannot make one; a fixture can). It reports fifteen zero terms and a zero
+    // total — the same answer `score` gives — instead of an empty explanation.
+    let me = seated_viewer(view);
+    let terminal = me.and_then(|m| terminal_standing_of(view, m, &structure));
+
     let mut terms = Vec::with_capacity(Feature::COUNT);
     let mut total: i64 = 0;
-
-    let Some(me) = seated_viewer(view) else {
-        // Same degenerate answer `score` gives, spelled out rather than
-        // returning an empty explanation whose total would still be 0: a caller
-        // rendering this sees fifteen zero terms and a zero total.
-        for feature in Feature::ALL {
-            let (early, late) = weights.get(feature);
-            terms.push(TermContribution {
-                feature,
-                viewer_value: 0,
-                opponent_value: 0,
-                weight: interpolate(early, late, progress),
-                product: 0,
-            });
-        }
-        return Explanation { terms, total, progress_ppm: progress };
-    };
-
     for feature in Feature::ALL {
         let (early, late) = weights.get(feature);
-        let weight = interpolate(early, late, progress);
-        let viewer_value = raw_value(view, me, feature, rules);
-        let opponent_value = opponent_extreme(view, me, feature, rules, weight);
+        let weight =
+            if terminal.is_some() { 0 } else { interpolate(early, late, progress) };
+        let viewer_value = me.map_or(0, |m| structure.value_of(m, feature));
+        let opponent_value =
+            me.map_or(0, |m| opponent_extreme(view, m, feature, weight, &structure));
         let product = weight.saturating_mul(viewer_value.saturating_sub(opponent_value));
         total = total.saturating_add(product);
         terms.push(TermContribution { feature, viewer_value, opponent_value, weight, product });
     }
+    if let Some(t) = terminal {
+        total = total.saturating_add(t.value);
+    }
 
-    Explanation { terms, total, progress_ppm: progress }
+    Explanation { terms, terminal, total, progress_ppm: progress }
 }
 
 /// The viewer's own row, or `None` for a view that does not contain its own
@@ -449,15 +543,15 @@ fn opponent_extreme(
     view: &PlayerView,
     me: &VisiblePlayer,
     feature: Feature,
-    rules: &Rules,
     weight: i64,
+    structure: &ScoreStructure,
 ) -> i64 {
     let mut best: Option<i64> = None;
     for other in &view.players {
         if other.id == me.id || other.id.is_dummy() {
             continue;
         }
-        let value = raw_value(view, other, feature, rules);
+        let value = structure.value_of(other, feature);
         let improves = match best {
             None => true,
             Some(current) => weight.saturating_mul(value) > weight.saturating_mul(current),
@@ -473,55 +567,661 @@ fn opponent_extreme(
 // Feature values
 // ---------------------------------------------------------------------------
 
-/// One player's RAW (absolute, un-weighted) feature value, as both paths and
-/// T4's probe read it.
+/// One player's RAW (absolute, un-weighted) feature value, as T4's probe reads
+/// it.
 ///
 /// Public because the probe needs exactly this: per-feature AUC is a statement
 /// about raw values, and a probe re-deriving them would be a second
 /// implementation of the feature set.
+///
+/// NOT the hot path, and deliberately not what [`score`] calls: it builds a
+/// whole [`ScoreStructure`] to answer about one feature of one seat. A caller
+/// asking about more than one `(feature, player)` pair at the same view should
+/// [`ScoreStructure::derive`] once and use [`ScoreStructure::value_of`], which
+/// is what both evaluation paths do.
 pub fn raw_value(
     view: &PlayerView,
     player: &VisiblePlayer,
     feature: Feature,
     rules: &Rules,
 ) -> i64 {
-    match feature {
-        Feature::VictoryPoints => i64::from(player.victory_points),
+    ScoreStructure::derive(view, rules).value_of(player, feature)
+}
 
-        // The five staged arms. T2 lands the view-side re-derivation at each;
-        // the arguments are already in the signature so that fill is additive.
-        Feature::CountryBonusNow => staged_for_t2(view, player, rules),
-        Feature::TechBonusNow => staged_for_t2(view, player, rules),
-        Feature::ChurchBonusNow => staged_for_t2(view, player, rules),
-        Feature::CustomsBonusNow => staged_for_t2(view, player, rules),
-        Feature::AchievementProgressSum => staged_for_t2(view, player, rules),
+// ---------------------------------------------------------------------------
+// The score-structure re-derivations (§2.2), computed once per score call
+// ---------------------------------------------------------------------------
 
-        Feature::AssistantsInHand => i64::from(player.assistants.in_hand),
-        Feature::AssistantsInWarehouse => i64::from(player.assistants.in_warehouse),
-        // Summed as i64, not through `AssistantState::total`'s u8 arithmetic:
-        // this fold must not depend on the pawn supply staying under 256.
-        Feature::AssistantsOnBoard => {
-            player.assistants.on_board.values().map(|n| i64::from(*n)).sum()
+/// The widest seat vector any real view carries: the printed player counts stop
+/// at four and `PlayerId`'s own validated range is `0..=3`.
+pub const MAX_SEATS: usize = 4;
+
+/// Contender slots in a track majority: the four seats plus the 2-player dummy
+/// (finding D1 — it competes for a place even though it can never be awarded
+/// one).
+const MAX_CONTENDERS: usize = MAX_SEATS + 1;
+/// Where the dummy's tally lives in a [`MAX_CONTENDERS`]-wide array.
+const DUMMY_SLOT: usize = MAX_SEATS;
+
+/// Every quantity that is a property of the WHOLE table rather than of one
+/// seat, re-derived from the view ONCE and indexed by seat number.
+///
+/// # Why this type exists
+///
+/// Three of these (technology, church, customs) are RANKINGS: computing one
+/// seat's value requires ranking every seat, so an accessor that computed them
+/// on demand would pay `O(track + seats)` once per `(feature, player)` pair —
+/// sixteen rankings per 4P `score` call for four features. Deriving them once
+/// into stack arrays makes a `score` call pay each exactly once. The other two
+/// (country, achievement progress) are per-seat but are folded in here anyway,
+/// so that "the score-structure features come from the structure" has no
+/// exceptions to remember.
+///
+/// # What the arrays hold
+///
+/// Everything is indexed by SEAT NUMBER (`PlayerId.0`), not by position in
+/// `view.players`. A seat outside `0..MAX_SEATS`, and the dummy sentinel, are
+/// skipped: neither has a row here, and only a hand-built view can contain one.
+///
+/// # Allocation
+///
+/// Nothing here allocates — fixed arrays, registry lookups, and iteration over
+/// maps the view already owns. §0.3(a)'s pin depends on that.
+///
+/// # Honesty
+///
+/// Every input is a field of the view or of the static card registries. In
+/// particular the country and technology mirrors read `completed_orders` and
+/// `technologies`, which are face-up for every seat; the majorities read the
+/// two management-board tracks, which are on the table. Nothing here can see a
+/// masked hand card, and the signature could not hand it one.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ScoreStructure {
+    /// Seats with a row here — `max(seat number) + 1` over the view's players.
+    pub seats: usize,
+    /// Running victory points (the same field [`Feature::VictoryPoints`]
+    /// reads), carried so [`TerminalStanding`] can total a seat without a
+    /// second pass over the players.
+    pub base_vp: [i64; MAX_SEATS],
+    /// The country-set end bonus.
+    pub country: [i64; MAX_SEATS],
+    /// The technology industry-value majority (10 / 5).
+    pub tech: [i64; MAX_SEATS],
+    /// The church pawn majority (6 / 3), dummy competitor priced.
+    pub church: [i64; MAX_SEATS],
+    /// The customs pawn majority (8 / 4), dummy competitor priced.
+    pub customs: [i64; MAX_SEATS],
+    /// The end-scoring conversions of leftovers: unused mercenaries, imported
+    /// goods, 1 VP per 2 Yen, 1 VP per 3 trade goods. NOT a feature (§2.2
+    /// excludes money and raw goods as uninformative, R1-7) — it exists only
+    /// because §2.6's final total is not a final total without it.
+    pub remainder: [i64; MAX_SEATS],
+    /// Summed progress toward the three Achievement cards in play.
+    pub achievement: [i64; MAX_SEATS],
+}
+
+impl ScoreStructure {
+    /// Re-derive every component from `view` plus the static registries.
+    pub fn derive(view: &PlayerView, rules: &Rules) -> Self {
+        let mut s = Self {
+            seats: 0,
+            base_vp: [0; MAX_SEATS],
+            country: [0; MAX_SEATS],
+            tech: [0; MAX_SEATS],
+            church: [0; MAX_SEATS],
+            customs: [0; MAX_SEATS],
+            remainder: [0; MAX_SEATS],
+            achievement: [0; MAX_SEATS],
+        };
+
+        for player in &view.players {
+            let Some(i) = seat_index(player) else { continue };
+            s.seats = s.seats.max(i + 1);
+            s.base_vp[i] = i64::from(player.victory_points);
+            s.country[i] = country_set_bonus(player, rules);
+            s.remainder[i] = remainder_bonus(player);
+            s.achievement[i] = achievement_progress_sum(view, player);
         }
-        Feature::ShophousesBuilt => player.shophouses.total_built() as i64,
-        Feature::TradingHousesBuilt => player.trading_houses.total_built() as i64,
-        Feature::FivePowerTokens => i64::from(player.five_power_tokens),
-        Feature::ImportedGoods => i64::from(player.imported_goods),
-        Feature::MercenariesTotal => i64::from(player.mercenaries.total()),
-        // Hand SIZE, not hand contents: the size is public for every seat
-        // (`observe` masks a starting order's IDENTITY, never the slot), so
-        // this term reads the same from every seat.
-        Feature::HandSize => player.hand.len() as i64,
+
+        technology_majority(view, rules, &mut s.tech);
+        majority_bonus(
+            view.church_track.slots.iter().map(|slot| slot.map(|occupant| occupant.player)),
+            [6, 3],
+            &mut s.church,
+        );
+        majority_bonus(
+            view.customs_track.slots.iter().map(|slot| slot.map(|occupant| occupant.player)),
+            [8, 4],
+            &mut s.customs,
+        );
+
+        s
+    }
+
+    /// One player's raw feature value. The five score-structure features index
+    /// this table; the other ten read a field of `player` directly.
+    pub fn value_of(&self, player: &VisiblePlayer, feature: Feature) -> i64 {
+        let seat = seat_index(player);
+        let structured = |vector: &[i64; MAX_SEATS]| seat.map_or(0, |i| vector[i]);
+        match feature {
+            Feature::VictoryPoints => i64::from(player.victory_points),
+
+            Feature::CountryBonusNow => structured(&self.country),
+            Feature::TechBonusNow => structured(&self.tech),
+            Feature::ChurchBonusNow => structured(&self.church),
+            Feature::CustomsBonusNow => structured(&self.customs),
+            Feature::AchievementProgressSum => structured(&self.achievement),
+
+            Feature::AssistantsInHand => i64::from(player.assistants.in_hand),
+            Feature::AssistantsInWarehouse => i64::from(player.assistants.in_warehouse),
+            // Summed as i64, not through `AssistantState::total`'s u8
+            // arithmetic: this fold must not depend on the pawn supply staying
+            // under 256.
+            Feature::AssistantsOnBoard => {
+                player.assistants.on_board.values().map(|n| i64::from(*n)).sum()
+            }
+            Feature::ShophousesBuilt => player.shophouses.total_built() as i64,
+            Feature::TradingHousesBuilt => player.trading_houses.total_built() as i64,
+            Feature::FivePowerTokens => i64::from(player.five_power_tokens),
+            Feature::ImportedGoods => i64::from(player.imported_goods),
+            Feature::MercenariesTotal => i64::from(player.mercenaries.total()),
+            // Hand SIZE, not hand contents: the size is public for every seat
+            // (`observe` masks a starting order's IDENTITY, never the slot), so
+            // this term reads the same from every seat.
+            Feature::HandSize => player.hand.len() as i64,
+        }
+    }
+
+    /// One seat's FULL final score: running VP plus every end bonus. This is
+    /// the quantity §2.6 ranks, and the drift pin holds it against the engine's
+    /// own per-player total.
+    pub fn final_total(&self, seat: usize) -> i64 {
+        if seat >= MAX_SEATS {
+            return 0;
+        }
+        self.base_vp[seat]
+            + self.country[seat]
+            + self.tech[seat]
+            + self.church[seat]
+            + self.customs[seat]
+            + self.remainder[seat]
     }
 }
 
-/// The value of a score-structure feature in v1: zero, pending T2.
+/// A player's row index, or `None` for the dummy sentinel and for any seat
+/// number outside the printed range (only a hand-built view has one).
+fn seat_index(player: &VisiblePlayer) -> Option<usize> {
+    if player.id.is_dummy() {
+        return None;
+    }
+    let i = usize::from(player.id.0);
+    (i < MAX_SEATS).then_some(i)
+}
+
+/// A country's slot in the 5-wide count array. An index, not a rule — the
+/// set-matching loop below is symmetric in the countries, so the ORDER here
+/// cannot affect a result.
+fn country_index(country: Country) -> usize {
+    match country {
+        Country::English => 0,
+        Country::American => 1,
+        Country::French => 2,
+        Country::German => 3,
+        Country::Dutch => 4,
+    }
+}
+
+/// The country-set end bonus: 2/3/4/5 DISTINCT countries in one set score
+/// 2/4/8/12 VP, and a player forms as many sets as the icons allow.
 ///
-/// A named stub rather than a bare `0` at five match arms, so the staging is
-/// visible at the point where it applies and T2's edit is "replace this call
-/// with the real re-derivation" — one arm at a time.
-fn staged_for_t2(_view: &PlayerView, _player: &VisiblePlayer, _rules: &Rules) -> i64 {
-    0
+/// Icon sources are the two face-up piles — completed orders and owned
+/// technologies. The matching is the greedy one the rules describe and the
+/// engine implements: repeatedly take one icon of every country still
+/// available, score that set's size, and stop when fewer than two countries
+/// remain. Greedy is not a heuristic here — taking one of each available
+/// country is simultaneously the largest set formable and the one that leaves
+/// the most behind, so the loop is order-independent and the array's country
+/// order cannot matter. Icons do NOT inflate a set: four English icons are one
+/// English country, four times over across four sets.
+///
+/// Termination: every iteration decrements at least two counters.
+fn country_set_bonus(player: &VisiblePlayer, rules: &Rules) -> i64 {
+    let mut icons = [0u8; 5];
+    for id in &player.completed_orders {
+        if let Some(card) = rules.orders.get(*id) {
+            let i = country_index(card.country);
+            icons[i] = icons[i].saturating_add(1);
+        }
+    }
+    for id in &player.technologies {
+        if let Some(card) = rules.techs.get(*id) {
+            let i = country_index(card.country);
+            icons[i] = icons[i].saturating_add(1);
+        }
+    }
+
+    let mut total = 0i64;
+    loop {
+        let distinct = icons.iter().filter(|n| **n > 0).count();
+        let set_vp = match distinct {
+            5 => 12,
+            4 => 8,
+            3 => 4,
+            2 => 2,
+            _ => break,
+        };
+        total += set_vp;
+        for n in icons.iter_mut() {
+            if *n > 0 {
+                *n -= 1;
+            }
+        }
+    }
+    total
+}
+
+/// The technology end bonus: 10 VP to the largest total industry value, 5 to
+/// the second, ties broken CLOCKWISE from the start player (nearest wins) and
+/// a player owning no technology never places (its industry value is 0, so it
+/// sorts below every owner and the award is withheld).
+fn technology_majority(view: &PlayerView, rules: &Rules, out: &mut [i64; MAX_SEATS]) {
+    let seats = i32::from(view.config.player_count);
+    if seats <= 0 {
+        return;
+    }
+    // (seat, industry value, clockwise distance). Distance is unique per seat,
+    // so the ordering below is total and no third key is needed.
+    let mut first: Option<(usize, u32, i32)> = None;
+    let mut second: Option<(usize, u32, i32)> = None;
+    let better = |a: (usize, u32, i32), b: (usize, u32, i32)| a.1 > b.1 || (a.1 == b.1 && a.2 < b.2);
+
+    for player in &view.players {
+        let Some(i) = seat_index(player) else { continue };
+        let industry: u32 = player
+            .technologies
+            .iter()
+            .filter_map(|id| rules.techs.get(*id))
+            .map(|card| u32::from(card.industry_cost))
+            .sum();
+        if industry == 0 {
+            continue;
+        }
+        let candidate = (i, industry, clockwise_distance(view, player.id));
+        match first {
+            Some(f) if !better(candidate, f) => match second {
+                Some(s) if !better(candidate, s) => {}
+                _ => second = Some(candidate),
+            },
+            _ => {
+                second = first;
+                first = Some(candidate);
+            }
+        }
+    }
+
+    if let Some((i, _, _)) = first {
+        out[i] += 10;
+    }
+    if let Some((i, _, _)) = second {
+        out[i] += 5;
+    }
+}
+
+/// A management-board majority: `vps[0]` to the most pawns, `vps[1]` to the
+/// second, count ties broken by the RIGHTMOST occupied space.
+///
+/// FINDING D1, and the reason this takes owners rather than seats: at two
+/// players a dummy pawn of an unused colour sits on the board and COMPETES. It
+/// can out-count or out-position a real player and take a place — and that
+/// place is then awarded to nobody, while still being CONSUMED, so the real
+/// player behind it earns only the place it actually achieved. A seat holding
+/// no pawn is not in the ranking at all, which is why a lone occupant collects
+/// the first place and nobody collects the second.
+///
+/// The count-then-rightmost key is TOTAL: one space holds one pawn, so two
+/// contenders cannot share a rightmost index.
+fn majority_bonus(
+    occupants: impl Iterator<Item = Option<PlayerId>>,
+    vps: [i64; 2],
+    out: &mut [i64; MAX_SEATS],
+) {
+    let mut tally = [(0u8, 0u8); MAX_CONTENDERS];
+    for (index, owner) in occupants.enumerate() {
+        let Some(owner) = owner else { continue };
+        let slot = if owner.is_dummy() {
+            DUMMY_SLOT
+        } else if usize::from(owner.0) < MAX_SEATS {
+            usize::from(owner.0)
+        } else {
+            continue;
+        };
+        tally[slot].0 = tally[slot].0.saturating_add(1);
+        tally[slot].1 = tally[slot].1.max(index as u8);
+    }
+
+    let better = |a: (u8, u8), b: (u8, u8)| a.0 > b.0 || (a.0 == b.0 && a.1 > b.1);
+    let mut first: Option<usize> = None;
+    let mut second: Option<usize> = None;
+    for (slot, entry) in tally.iter().enumerate() {
+        if entry.0 == 0 {
+            continue;
+        }
+        match first {
+            Some(f) if !better(*entry, tally[f]) => match second {
+                Some(s) if !better(*entry, tally[s]) => {}
+                _ => second = Some(slot),
+            },
+            _ => {
+                second = first;
+                first = Some(slot);
+            }
+        }
+    }
+
+    if let Some(i) = first {
+        if i != DUMMY_SLOT {
+            out[i] += vps[0];
+        }
+    }
+    if let Some(i) = second {
+        if i != DUMMY_SLOT {
+            out[i] += vps[1];
+        }
+    }
+}
+
+/// The leftover conversions the rulebook scores after the bonuses: 1 VP per
+/// unused (face-up) mercenary, 1 per imported good, 1 per 2 Yen, 1 per 3 trade
+/// goods. The trade-good division is over the SUM of the four goods, not per
+/// good — four leftovers of 2 score 2, not 0.
+fn remainder_bonus(player: &VisiblePlayer) -> i64 {
+    let goods = i64::from(player.copper)
+        + i64::from(player.silk)
+        + i64::from(player.tea)
+        + i64::from(player.seafood);
+    i64::from(player.mercenaries.unused_count())
+        + i64::from(player.imported_goods)
+        + i64::from(player.money / 2)
+        + goods / 3
+}
+
+/// `achievement_progress_sum`'s value: each of the three cards in play
+/// contributes its progress CAPPED at its own requirement.
+///
+/// Capped because the feature measures nearness to a claim, not hoarding: a
+/// player sitting on 12 copper is no closer to the 5-copper card than one
+/// sitting on 5, and the VP for a card already taken has landed in
+/// `victory_points` (which [`Feature::VictoryPoints`] already prices, so an
+/// uncapped sum would double-count it and keep growing afterwards).
+fn achievement_progress_sum(view: &PlayerView, player: &VisiblePlayer) -> i64 {
+    let mut sum = 0i64;
+    for card in &view.achievements {
+        let (current, needed) = achievement_progress(view, player, card.achievement_type);
+        sum += i64::from(current.min(needed));
+    }
+    sum
+}
+
+/// One player's `(current, needed)` progress toward one achievement, mirroring
+/// the engine's own progress arithmetic (pinned against it per-edit).
+///
+/// The two AND-shaped cards are the only subtle arm and the encoding is the
+/// engine's, deliberately: `needed` is the SUM of the two thresholds and
+/// `current` sums each count CAPPED at its own threshold, so `current >=
+/// needed` holds exactly when BOTH legs individually clear — reproducing the
+/// AND rather than approximating it. An uncapped sum would call five
+/// production areas plus one commercial a 3-production-plus-2-commercial claim.
+///
+/// This is progress ONLY. Whether a card can actually be claimed additionally
+/// needs an assistant in hand and the card unclaimed by this player; neither is
+/// a numeric progress and neither belongs in a feature value.
+pub fn achievement_progress(
+    view: &PlayerView,
+    player: &VisiblePlayer,
+    achievement: AchievementType,
+) -> (u32, u32) {
+    match achievement {
+        // Category A: trade-good holdings.
+        AchievementType::Copper5 => (player.copper, 5),
+        AchievementType::Silk6 => (player.silk, 6),
+        AchievementType::Tea7 => (player.tea, 7),
+        AchievementType::Seafood7 => (player.seafood, 7),
+
+        // Category B: collections.
+        AchievementType::Money10 => (player.money, 10),
+        AchievementType::Tokens5 => (
+            u32::from(player.five_power_tokens) + u32::from(player.mercenaries.total()),
+            5,
+        ),
+        AchievementType::Orders5 => (player.completed_orders.len() as u32, 5),
+        AchievementType::Technologies4 => (player.technologies.len() as u32, 4),
+
+        // Category C: building presence in DISTINCT areas.
+        AchievementType::Production4 => (building_areas(view, player, AreaKind::Production), 4),
+        AchievementType::Commercial4 => (building_areas(view, player, AreaKind::Commercial), 4),
+        AchievementType::Prod3Comm2 => {
+            let prod = building_areas(view, player, AreaKind::Production).min(3);
+            let comm = building_areas(view, player, AreaKind::Commercial).min(2);
+            (prod + comm, 5)
+        }
+        AchievementType::Prod2Comm3 => {
+            let prod = building_areas(view, player, AreaKind::Production).min(2);
+            let comm = building_areas(view, player, AreaKind::Commercial).min(3);
+            (prod + comm, 5)
+        }
+    }
+}
+
+/// Which half of the board an achievement counts.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum AreaKind {
+    Production,
+    Commercial,
+}
+
+/// DISTINCT areas of one kind where `player` has any building. Shophouses and
+/// trading houses both count, and an area holding both counts ONCE — the
+/// achievement is about board presence, not about buildings.
+fn building_areas(view: &PlayerView, player: &VisiblePlayer, kind: AreaKind) -> u32 {
+    let wanted = |area: &crate::types::AreaId| {
+        view.board_layout.areas.get(area).is_some_and(|config| match kind {
+            AreaKind::Production => config.area_type.is_production(),
+            AreaKind::Commercial => config.area_type.is_commercial(),
+        })
+    };
+    let mut count = 0u32;
+    for area in player.shophouses.built.keys() {
+        if wanted(area) {
+            count += 1;
+        }
+    }
+    for area in &player.trading_houses.built {
+        if wanted(area) && !player.shophouses.built.contains_key(area) {
+            count += 1;
+        }
+    }
+    count
+}
+
+// ---------------------------------------------------------------------------
+// Terminal views (§2.6)
+// ---------------------------------------------------------------------------
+
+/// The gap between adjacent finishing places in a [`TerminalStanding`]. Chosen
+/// so that a place can never be outweighed: the margin refinement below is
+/// clamped to under half a step, and the largest positional score the
+/// provisional table produces on organic play is five orders of magnitude
+/// smaller (measured and pinned in `tests/eval_core.rs`, which also states the
+/// bound a future weight table must respect).
+pub const TERMINAL_RANK_STEP: i64 = 1_000_000_000;
+/// What one point of final-score margin is worth inside a place. Large enough
+/// to dominate any positional score, small enough that the clamp below keeps
+/// two margins from spanning a rank step.
+pub const TERMINAL_MARGIN_STEP: i64 = 1_000_000;
+/// The margin is clamped here so the ladder's ORDER is structural rather than
+/// empirical: no final score, however extreme, can lift a second place above a
+/// first. Two clamped margins span `2 · 4e8 = 8e8`, strictly under one rank
+/// step, so even the worst-case pair of adjacent places cannot cross.
+pub const TERMINAL_MARGIN_CLAMP: i64 = 400;
+
+/// A finished game, re-derived from one seat's view (§2.6).
+///
+/// # What is scored
+///
+/// Not running VP — that is exactly the mis-ranking this type exists to
+/// prevent, since the end bonuses are unbanked at the moment the game stops
+/// and can be worth more than the VP already on the tracks. Every seat's total
+/// is re-derived in full — running VP, country, technology, church, customs,
+/// and the leftover conversions — the viewer is ranked under the official
+/// clockwise tie-break, and the value returned is a WIN/LOSS ladder with the
+/// final-score margin as a dominated refinement:
+///
+/// ```text
+/// place  = if rank == 1 { +1 } else { 1 − rank }      // +1, −1, −2, −3
+/// value  = TERMINAL_RANK_STEP · place
+///        + TERMINAL_MARGIN_STEP · clamp(viewer_total − best_other_total)
+/// ```
+///
+/// The asymmetry is the whole design and a symmetric place ladder would be a
+/// BUG: with `seats + 1 − 2·rank`, second of four scores +1 step, so a bot
+/// holding a mediocre running position would END the game to lock a
+/// second place rather than play on for a win. Here every place but first is
+/// negative and every running position scores between the two, so finishing
+/// second is worse than continuing and finishing fourth is worse still.
+///
+/// # Magnitudes
+///
+/// Rank step 1e9, margin step 1e6, margin clamped to ±400 ⇒ |value| ≤ 3.4e9,
+/// nine orders of magnitude below `i64::MAX`, and every arithmetic step
+/// saturates anyway. Two clamped margins span 8e8 < one rank step, so no margin
+/// can reorder two places. The dominance a caller may rely on: a win outscores,
+/// and every loss undercuts, any non-terminal position whose positional total
+/// stays under 6e8 — which the provisional table beats by ~10^4 on organic play
+/// (measured and asserted in `tests/eval_core.rs`).
+///
+/// # The masked-order residual, stated precisely
+///
+/// The spec records that an opponent's unfulfilled starting order is masked and
+/// that the bot therefore under-estimates them. The honest scoping: at a TRUE
+/// terminal the re-derivation is EXACT, because a card still in hand scores
+/// nothing — every component of the final total is face-up, which is why the
+/// drift pin can hold this against the engine's own standings bit for bit. The
+/// residual bites everywhere ELSE: the same five bonus mirrors are read while
+/// the game is still running, as `*_now` features, and there an opponent's
+/// masked order is a country icon and a VP reward the viewer cannot see coming.
+/// The bot under-values opponents on the way to the end, not at it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TerminalStanding {
+    /// The viewer's finishing place, 1 = winner.
+    pub rank: u8,
+    /// How many seats were ranked.
+    pub seats: u8,
+    /// The viewer's re-derived final total.
+    pub viewer_total: i64,
+    /// The best other seat's re-derived final total; equal to `viewer_total`
+    /// when the view has no opponent (only a fixture can produce that).
+    pub best_other_total: i64,
+    /// What [`score`] returns for this view.
+    pub value: i64,
+}
+
+/// Is this view a FINISHED game?
+///
+/// MIRROR of the engine's own derivation — end-game triggered, the final round
+/// running with a recorded trigger player, and the turn resting at the end of
+/// the seat before the start player, i.e. everyone has had their last turn.
+/// Every input is public board state, so the mirror is exact rather than
+/// approximate, and `tests/eval_core.rs` pins it against the engine over
+/// organic play at 2/3/4P.
+///
+/// A `ViewConfig` carries no such method and building the full config to ask
+/// would allocate inside §0.3(a)'s allocation-free path — mirror plus drift pin
+/// is the same answer used for the two player-count constants above.
+pub fn view_is_terminal(view: &PlayerView) -> bool {
+    if !view.end_game_triggered || !view.final_round || view.trigger_player.is_none() {
+        return false;
+    }
+    let seats = i32::from(view.config.player_count);
+    if seats <= 0 {
+        return false;
+    }
+    let last_seat = (i32::from(view.config.start_player.0) + seats - 1).rem_euclid(seats);
+    i32::from(view.current_player.0) == last_seat && view.turn_phase == TurnPhase::TurnEnd
+}
+
+/// The viewer's finishing place and score, or `None` for a game still running.
+///
+/// Derives a whole [`ScoreStructure`]; [`score`] uses the internal form that
+/// takes one already built.
+pub fn terminal_standing(view: &PlayerView, rules: &Rules) -> Option<TerminalStanding> {
+    let me = seated_viewer(view)?;
+    terminal_standing_of(view, me, &ScoreStructure::derive(view, rules))
+}
+
+fn terminal_standing_of(
+    view: &PlayerView,
+    me: &VisiblePlayer,
+    structure: &ScoreStructure,
+) -> Option<TerminalStanding> {
+    if !view_is_terminal(view) {
+        return None;
+    }
+    let mine = seat_index(me)?;
+    let viewer_total = structure.final_total(mine);
+    let my_distance = clockwise_distance(view, me.id);
+
+    let mut rank = 1u8;
+    let mut seats = 0u8;
+    let mut best_other: Option<i64> = None;
+    for player in &view.players {
+        let Some(i) = seat_index(player) else { continue };
+        seats = seats.saturating_add(1);
+        if i == mine {
+            continue;
+        }
+        let total = structure.final_total(i);
+        best_other = Some(best_other.map_or(total, |b: i64| b.max(total)));
+        // The engine's ranking key verbatim: higher total first, then the
+        // shorter clockwise distance from the start player. Distances are
+        // unique per seat, so no pair can tie on the whole key.
+        if total > viewer_total
+            || (total == viewer_total && clockwise_distance(view, player.id) < my_distance)
+        {
+            rank = rank.saturating_add(1);
+        }
+    }
+
+    let best_other_total = best_other.unwrap_or(viewer_total);
+    let margin = viewer_total
+        .saturating_sub(best_other_total)
+        .clamp(-TERMINAL_MARGIN_CLAMP, TERMINAL_MARGIN_CLAMP);
+    let value = TERMINAL_RANK_STEP
+        .saturating_mul(place_signal(rank))
+        .saturating_add(TERMINAL_MARGIN_STEP.saturating_mul(margin));
+
+    Some(TerminalStanding { rank, seats, viewer_total, best_other_total, value })
+}
+
+/// The rank ladder's multiplier: `+1` for a win, `1 − rank` for everything
+/// else. See [`TerminalStanding`] for why it is deliberately NOT symmetric.
+pub fn place_signal(rank: u8) -> i64 {
+    if rank <= 1 {
+        1
+    } else {
+        1 - i64::from(rank)
+    }
+}
+
+/// Seats clockwise from the start player, 0 for the start player itself — the
+/// official tie-break key for both the technology majority and the final
+/// ranking. `rem_euclid` rather than `%` so a hand-built config cannot underflow
+/// the subtraction.
+fn clockwise_distance(view: &PlayerView, player: PlayerId) -> i32 {
+    let seats = i32::from(view.config.player_count);
+    if seats <= 0 {
+        return 0;
+    }
+    (i32::from(player.0) + seats - i32::from(view.config.start_player.0)).rem_euclid(seats)
 }
 
 // ---------------------------------------------------------------------------
@@ -703,7 +1403,7 @@ mod tests {
         let unique = names.len();
         names.dedup();
         assert_eq!(names.len(), unique, "duplicate feature name");
-        // The exact five that T2 fills.
+        // The exact five whose values come from `ScoreStructure`.
         assert_eq!(Feature::ALL.iter().filter(|f| f.is_score_structure()).count(), 5);
     }
 
@@ -773,12 +1473,29 @@ mod tests {
                 Feature::AssistantsInWarehouse | Feature::HandSize => {
                     assert!(early < 0 && late < 0, "{} must be negative", feature.name());
                 }
-                // Staged at zero until T2.
-                f if f.is_score_structure() => {
-                    assert_eq!((early, late), (0, 0), "{} is staged", feature.name());
+                // R1-5: the ONE feature whose measured sign flips across the
+                // game — early church investment predicted losing under the
+                // research corpus, while the printed 6/3 is real VP at the end.
+                // This is the term §2.3's smooth interpolation exists for, and
+                // §2.4 names it as one of the three figures T4 re-measures.
+                Feature::ChurchBonusNow => {
+                    assert!(early < 0, "church must be negative EARLY (R1-5)");
+                    assert!(late > 0, "church must be positive LATE (printed 6/3 VP)");
                 }
                 _ => assert!(early > 0 && late > 0, "{} must be positive", feature.name()),
             }
+        }
+
+        // The score-structure terms are LIVE, not staged: a zeroed pair here
+        // would silently switch one of the five re-derivations off (the T1
+        // staging this replaced was exactly that shape, deliberately).
+        for feature in Feature::ALL.into_iter().filter(|f| f.is_score_structure()) {
+            let (early, late) = w.get(feature);
+            assert!(
+                (early, late) != (0, 0),
+                "{} is a landed re-derivation and must carry a weight",
+                feature.name()
+            );
         }
 
         // VP dominates LATE (and only late — R1-1).
