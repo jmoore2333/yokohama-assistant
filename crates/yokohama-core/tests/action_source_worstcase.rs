@@ -80,11 +80,13 @@
 //! this harness, never ceilings (spec F5/L9).
 //!
 //! SAME FIXTURES AS THE EQUIVALENCE GATE (spec §4-2, the dependency that makes
-//! the bound mean anything): the release cell's board/state construction is
-//! replicated from `action_source_equivalence.rs`'s `dense_board`/`dense_state`,
-//! whose gate pins that same fixture's label LIST — pairs and order — to the
-//! frozen enumerator. Without that, this file would only know the count is
-//! large, not that it is right.
+//! the bound mean anything): both route cells come from `tests/route_fixtures`,
+//! and `action_source_equivalence.rs` pins that same dense construction's label
+//! LIST — pairs and order — to the frozen enumerator. Without that, this file
+//! would only know the count is large, not that it is right. Until Phase 3.2
+//! Task 3 the construction was REPLICATED into each binary and the rule rested
+//! on review discipline (a drifted copy stayed self-consistent and passed); the
+//! shared module made it structural.
 //!
 //! TWO TIERS (CLAUDE.md two-tier policy):
 //!   - PER-EDIT (not ignored): the ≤ 10-area smoke fixture, through both
@@ -114,6 +116,7 @@
 
 #[path = "action_cost_meter/mod.rs"]
 mod meter;
+mod route_fixtures;
 
 use std::collections::BTreeMap;
 
@@ -121,13 +124,14 @@ use rand::SeedableRng;
 use rand_chacha::ChaCha8Rng;
 
 use yokohama_core::{
-    cell_to_area_id, derive_canal_crossings, enumerate_president_routes, enumerate_routes,
-    families, family_len, fits_fixed_arrays, get_legal_moves, iter_family, retreat_iter,
-    retreat_len, retreat_sample, row_lengths, staggered_adjacency, AchievementCard,
-    AchievementType, AreaConfig, AreaId, AreaType, BoardLayout, BoardLayoutBuilder, BuildingSite,
-    ChurchTrack, CustomsTrack, FivePowerEffect, GameConfig, GameState, LabState, MercenarySupply,
-    MoveFamily, PlayerColor, PlayerId, PlayerState, PortState, PresidentLocation, Rules, TurnPhase,
+    enumerate_president_routes, enumerate_routes, families, family_len, fits_fixed_arrays,
+    get_legal_moves, iter_family, retreat_iter, retreat_len, retreat_sample, AchievementCard,
+    AchievementType, AreaConfig, AreaId, AreaType, BoardLayout, ChurchTrack, CustomsTrack,
+    GameConfig, GameState, LabState, MercenarySupply, MoveFamily, PlayerColor, PlayerId,
+    PlayerState, PortState, PresidentLocation, Rules, TurnPhase,
 };
+
+use route_fixtures::{dense_17_area_cell, small_movement_cell};
 
 /// The hard allocation-COUNT ceiling for serving ONE retreat candidate — the
 /// same generous `< 64` the lib-internal probe uses
@@ -359,136 +363,6 @@ fn route_bound(labels: usize) -> usize {
     2 * labels + 32
 }
 
-/// A minimal, type-valid `players`-seat **Movement** state with `n_areas`
-/// placement-allowing (`CopperMine`) areas ids `0..n_areas` and EMPTY adjacency;
-/// callers set the per-fixture knobs afterwards.
-///
-/// REPLICATED (not imported) from `action_source_equivalence.rs`'s
-/// `state_with_areas(players, TurnPhase::Movement, n_areas)`: cargo compiles
-/// every `tests/*.rs` as its own binary; sharing across binaries IS possible
-/// via a `#[path]`-included subdirectory module (exactly how `action_cost_meter`
-/// stays single-sourced between this binary and the example), and a shared
-/// `tests/route_fixtures/` would make spec §4-2's same-fixture rule STRUCTURAL —
-/// carried as a named follow-up (T4 review) rather than reshaping T3's committed
-/// file mid-wave. Until then the replication is deliberate and its guard is
-/// honest but LIMITED: the frozen-reference equality below is computed on THIS
-/// file's construction, so both sides move together under a drift — the floor
-/// catches an EMPTIED enumerator, not a diverged copy (empirically checked at
-/// review: a Postal-drifted copy passes self-consistently). The same-fixture
-/// property rests on review discipline + spec §4-2 until the shared module lands.
-fn route_base_state(players: u8, n_areas: u8) -> GameState {
-    let colors = [PlayerColor::Red, PlayerColor::Blue, PlayerColor::Yellow, PlayerColor::Green];
-    let mut areas = BTreeMap::new();
-    for i in 0..n_areas {
-        areas.insert(
-            AreaId::new(i),
-            AreaConfig { area_type: AreaType::CopperMine, grid_position: (0, i) },
-        );
-    }
-    GameState {
-        config: GameConfig::for_player_count(players),
-        board_layout: BoardLayout {
-            areas,
-            adjacency: BTreeMap::new(),
-            canal_crossings: vec![],
-            building_sites: BTreeMap::new(),
-            five_power_tokens: BTreeMap::new(),
-        },
-        players: (0..players)
-            .map(|i| PlayerState::new(PlayerId::new(i), colors[i as usize], i == 0))
-            .collect(),
-        current_player: PlayerId::new(0),
-        turn_phase: TurnPhase::Movement,
-        turn_number: 1,
-        additional_action_state: Default::default(),
-        current_action_power: None,
-        is_mercenary_action: false,
-        mercenary_target_area: None,
-        mercenary_return_phase: None,
-        president_start_area: None,
-        port_state: PortState::new(false),
-        lab_state: LabState::new(false),
-        order_deck: Vec::new(),
-        tech_deck: Vec::new(),
-        orders_removed: Vec::new(),
-        church_track: ChurchTrack::new(),
-        customs_track: CustomsTrack::new(),
-        achievements: [
-            AchievementCard::new(AchievementType::Copper5),
-            AchievementCard::new(AchievementType::Money10),
-            AchievementCard::new(AchievementType::Production4),
-        ],
-        mercenary_supply: MercenarySupply::new(),
-        station_location: None,
-        end_game_triggered: false,
-        trigger_reason: None,
-        final_round: false,
-        trigger_player: None,
-        pending_choices: Vec::new(),
-    }
-}
-
-/// Add the undirected edge `a`~`b`, tolled 1 Yen to the bank when `tolled`
-/// (`action_source_equivalence.rs`'s `connect`, same reason as above).
-fn connect(state: &mut GameState, a: u8, b: u8, tolled: bool) {
-    let (a, b) = (AreaId::new(a), AreaId::new(b));
-    state.board_layout.adjacency.entry(a).or_default().push(b);
-    state.board_layout.adjacency.entry(b).or_default().push(a);
-    if tolled {
-        state.board_layout.canal_crossings.push((a, b));
-    }
-}
-
-/// The PER-EDIT route fixture: seven areas, deliberately shaped so the label
-/// count is a PRODUCT rather than a destination count, without a board big
-/// enough to make the enumerator's debug-only lex-drift `debug_assert` (which is
-/// `O(prefixes × labels)`) expensive.
-///
-/// ```text
-///        1                            0     = the mover's President
-///      / | \                          1,2,3 = one opponent President each,
-///   0 - 2 -+- 4 - 5                           mutually adjacent (a triangle)
-///      \ | /       \ |                4,5,6 = the destinations, likewise a
-///        3           6                        triangle
-/// ```
-/// Edges: 0~{1,2,3}, the 1-2-3 triangle, {1,2,3}~4, and the 4-5-6 triangle.
-/// `0~1` and `4~5` are CANAL crossings (1 Yen to the bank each); every other
-/// edge is free. The mover's own assistants sit on 1..=6 — a hop may only land
-/// where the mover already has one.
-///
-/// Two structures do the work, and the fixture is worthless without both:
-///  - the three opponents on 1/2/3 make those areas legal to WALK THROUGH (1 Yen
-///    to that owner) but illegal to STOP on (`is_possible_action_area_with_tech`
-///    blocks a destination holding an opponent's President, absent Postal), so
-///    they are pure label MULTIPLIERS — each destination is reached under
-///    several distinct owner masks, which the two canal edges then split again
-///    by toll count;
-///  - the two triangles make many distinct simple PATHS collapse onto ONE label,
-///    which is exactly the gap the bound asserts. That is what the mutation
-///    record measures: the frozen DFS's count follows the paths (270) while the
-///    bound follows the labels (120).
-///
-/// 10 Yen affords every label (the maximum cost here is 3 owners + 2 tolls), so
-/// affordability pruning never truncates the set.
-fn smoke_route_state() -> GameState {
-    let mut s = route_base_state(4, 7);
-    for (a, b, tolled) in
-        [(0, 1, true), (0, 2, false), (0, 3, false), (1, 2, false), (1, 3, false), (2, 3, false),
-         (1, 4, false), (2, 4, false), (3, 4, false), (4, 5, true), (4, 6, false), (5, 6, false)]
-    {
-        connect(&mut s, a, b, tolled);
-    }
-    s.players[0].president_location = PresidentLocation::OnBoard(AreaId::new(0));
-    for a in 1..=6u8 {
-        s.players[0].assistants.on_board.insert(AreaId::new(a), 1);
-    }
-    for (i, opp) in [1u8, 2, 3].into_iter().enumerate() {
-        s.players[i + 1].president_location = PresidentLocation::OnBoard(AreaId::new(opp));
-    }
-    s.players[0].money = 10;
-    s
-}
-
 /// The frozen reference's label count for `state` — the standing 3.1b oracle
 /// (`enumerate_president_routes`), which every route cell's realized count is
 /// pinned to before any bound is claimed.
@@ -547,14 +421,20 @@ const SMOKE_FLOOR: usize = 40;
 /// through the public `iter_family(MovementRoutes)` surface (which additionally
 /// assembles a `Move` per label and boxes its iterator — absorbed by the `+32`).
 ///
+/// The fixture is `route_fixtures::small_movement_cell` — the CHEAP shared cell,
+/// and the one a future per-edit consumer wanting a non-degenerate routes family
+/// should reach for rather than paying the dense cell's seconds in debug.
+///
 /// MEASURED 2026-07-25 (debug profile, this Mac): 44 labels, bound 120;
 /// `enumerate_routes` 50 allocations, `iter_family(MovementRoutes)` 56 — both
 /// under half the bound, against the frozen DFS's 270 on the same state (the
-/// module header's mutation record). The whole test is sub-millisecond.
+/// module header's mutation record). The whole test is sub-millisecond. All
+/// three figures re-measured unchanged 2026-07-26 after Task 3 moved the
+/// construction into `tests/route_fixtures`.
 #[test]
 fn enumerating_a_small_route_family_is_bounded_allocation_count() {
     let rules = Rules::standard();
-    let s = smoke_route_state();
+    let s = small_movement_cell();
     assert!(fits_fixed_arrays(&s), "the smoke fixture must take the fixed-array path");
 
     // Anti-vacuity FIRST: the bound is self-referential in `labels`.
@@ -595,89 +475,6 @@ fn enumerating_a_small_route_family_is_bounded_allocation_count() {
     );
 }
 
-/// The Canal's grid cell for the dense board: `(row 1, col 3)` = `AreaId(9)` on
-/// the staggered 4P pyramid, a fully-interior tile with all SIX brick
-/// neighbours ⇒ NINE tolled crossings and a complete-K6 neighbourhood, the
-/// densest graph a real board can present to the enumerator.
-///
-/// REPLICATED from `action_source_equivalence.rs` (see [`route_base_state`] for
-/// why replication rather than import, and spec §4-2 for why it must be the
-/// same construction).
-const DENSE_CANAL: (u8, u8) = (1, 3);
-
-/// The real 4P STAGGERED pyramid (rows 6/5/4/3, 18 tiles) with the Canal at
-/// [`DENSE_CANAL`], built from the engine's own topology primitives so the
-/// fixture cannot drift from the board the generator produces. REPLICATED
-/// verbatim from `action_source_equivalence.rs`'s `dense_board`.
-fn dense_board() -> BoardLayout {
-    let rows = row_lengths(4);
-    let palette = [
-        AreaType::CopperMine,
-        AreaType::SilkMill,
-        AreaType::TeaPlantation,
-        AreaType::FishingGround,
-        AreaType::Bank,
-        AreaType::Chinatown,
-    ];
-    let mut b = BoardLayoutBuilder::new();
-    let mut idx = 0u8;
-    for (r, &len) in rows.iter().enumerate() {
-        for col in 0..len {
-            let id = AreaId::new(idx);
-            let ty = if (r as u8, col) == DENSE_CANAL {
-                AreaType::Canal
-            } else {
-                palette[(idx as usize) % palette.len()]
-            };
-            b.add_area(id, AreaConfig { area_type: ty, grid_position: (r as u8, col) });
-            if ty != AreaType::Canal {
-                b.set_building_site(id, BuildingSite::new([1, 1, 1, 1], 3));
-                b.set_five_power_token(id, FivePowerEffect::Money(1));
-            }
-            idx += 1;
-        }
-    }
-    for (a, z) in staggered_adjacency(&rows) {
-        b.add_adjacency(a, z);
-    }
-    for (a, z) in derive_canal_crossings(DENSE_CANAL, &rows) {
-        b.add_adjacency(a, z);
-        b.add_canal_crossing(a, z);
-    }
-    b.build().expect("dense staggered board validates")
-}
-
-/// The dense route cell: [`dense_board`], the mover's President on `start`, own
-/// assistants on EVERY non-Canal area (all 17), the three opponents' Presidents
-/// on `opponents`, and 1,000 Yen so no affordability cutoff bites — money is the
-/// enumerator's cost driver (spec F6), and this cell exists to be expensive.
-///
-/// REPLICATED from `action_source_equivalence.rs`'s `dense_state`, minus its
-/// `techs` parameter: this file instantiates only the no-tech `plain` cell
-/// ([`DENSE_FLOOR`]), and `dense_state(_, _, &[], _)` assigns an empty
-/// technology list over the empty one `PlayerState::new` already gives — so
-/// dropping the parameter is construction-identical. (A divergence between the
-/// two copies is NOT mechanically caught — see the module note above; the
-/// [`assert_route_labels`] equality is against the frozen reference on THIS
-/// file's state, so it stays self-consistent under drift.)
-fn dense_state(start: u8, opponents: [u8; 3]) -> GameState {
-    let canal = cell_to_area_id(DENSE_CANAL.0, DENSE_CANAL.1, &row_lengths(4));
-
-    // route_base_state already builds the 4P Movement roster; only the board is
-    // replaced wholesale (its n_areas argument is irrelevant here).
-    let mut s = route_base_state(4, 1);
-    s.board_layout = dense_board();
-    s.players[0].president_location = PresidentLocation::OnBoard(AreaId::new(start));
-    for id in (0..18u8).filter(|&id| AreaId::new(id) != canal) {
-        s.players[0].assistants.on_board.insert(AreaId::new(id), 1);
-    }
-    for (i, &opp) in opponents.iter().enumerate() {
-        s.players[i + 1].president_location = PresidentLocation::OnBoard(AreaId::new(opp));
-    }
-    s.players[0].money = 1_000;
-    s
-}
-
 /// The dense `plain` cell's label count as OBSERVED by
 /// `action_source_equivalence.rs`'s release battery (whose ordered gate pins
 /// this same construction's label LIST) — asserted here only as a `>=` FLOOR,
@@ -710,10 +507,11 @@ const DENSE_FLOOR: usize = 400;
 /// the observed run-to-run spread, which is why no timing here is a threshold.
 ///
 /// All three stable figures reproduce the spec §0 measurements taken OUT OF REPO
-/// (458 labels, 467 vs 1,687,537 allocations, 3,613×) to the digit. That is
-/// evidence the fixture was replicated faithfully from the equivalence binary —
-/// NOT evidence that 458 is any kind of maximum (spec F5/L9: the label space is
-/// unsearched).
+/// (458 labels, 467 vs 1,687,537 allocations, 3,613×) to the digit, and survived
+/// unchanged when 3.2 Task 3 moved the construction into `tests/route_fixtures`
+/// (re-measured there and equal). That is evidence the fixture is the
+/// equivalence binary's — NOT evidence that 458 is any kind of maximum (spec
+/// F5/L9: the label space is unsearched).
 ///
 /// Whole release tier of this binary: 0.20 s for both `#[ignore]`d tests
 /// (0.05–0.07 s before this one was added).
@@ -722,8 +520,9 @@ const DENSE_FLOOR: usize = 400;
 fn route_reference_ceiling_recorded_and_enumeration_bounded() {
     let rules = Rules::standard();
     // The equivalence battery's `plain` cell: start 0, opponents [3,8,17], no
-    // techs — the construction whose label list that gate pins (spec §4-2).
-    let s = dense_state(0, [3, 8, 17]);
+    // techs — literally the same construction whose label list that gate pins,
+    // now that both binaries read it from `tests/route_fixtures` (spec §4-2).
+    let s = dense_17_area_cell();
     assert!(fits_fixed_arrays(&s), "the dense cell must take the fixed-array path");
 
     // The enumerator, metered — the walk-only surface the allocation claim is

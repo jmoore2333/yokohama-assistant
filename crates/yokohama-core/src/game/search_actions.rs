@@ -56,7 +56,8 @@ use crate::types::*;
 /// `TurnPhase::Movement` branch and there is no separate place-President phase,
 /// so they share one family tag. `MovementRetreat` is the
 /// `Move::ReturnPresidentToHand` family, offered from either President location
-/// (`from_hand` records which).
+/// — and the tag deliberately does NOT record which, because the family's
+/// members do not depend on it (see the variant's own doc).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum MoveFamily {
     /// Phase A/C additional actions: end-phase, mercenaries, fulfill
@@ -73,12 +74,20 @@ pub enum MoveFamily {
     /// Movement step, `ReturnPresidentToHand`: the per-area recovery-count
     /// product `∏(count + 1)` — the six-figure family. Carries an owned clone
     /// of the current player's `on_board` counts so it is indexable/sampleable
-    /// without touching `GameState`; `from_hand` is true when the President is
-    /// already in hand (Option B from hand) rather than on the board.
-    MovementRetreat {
-        on_board: BTreeMap<AreaId, u8>,
-        from_hand: bool,
-    },
+    /// without touching `GameState`.
+    ///
+    /// The President's LOCATION is not part of the tag (a `from_hand: bool`
+    /// rode here through 3.1a and was removed in 3.2 — spec §8 parked item 3).
+    /// It never had a reader outside tests: the family's members are the
+    /// mixed-radix product over `on_board` alone, and none of
+    /// [`retreat_move`]/[`retreat_len`]/[`retreat_iter`]/[`retreat_sample`]
+    /// consults the President. Option B is legal from either location, so the
+    /// two cases offer the SAME move set — a flag distinguishing tags that
+    /// serve identical moves is a shape a consumer can mistake for a
+    /// dispatch. The distinction itself is not lost: it is `president_location`
+    /// on the state (and on a seat's `PlayerView`), where a 3.3 consumer that
+    /// wants it should read it.
+    MovementRetreat { on_board: BTreeMap<AreaId, u8> },
     /// Area-action step: the six optional-component areas plus production and
     /// the Bank.
     AreaAction,
@@ -124,14 +133,13 @@ pub fn families(state: &GameState, _rules: &Rules) -> Vec<MoveFamily> {
             // Both President locations emit a routes family (PlacePresident
             // from hand, MovePresident on board) followed by the retreat
             // family — the same order `generate_movement_moves_with_tech`
-            // uses (`legal_moves.rs:254-373`).
+            // uses (`legal_moves.rs:254-373`). The location changes which MOVES
+            // the routes family serves; it changes nothing about the two TAGS,
+            // which is why the retreat tag does not record it.
             let p = state.current_player();
             vec![
                 MoveFamily::MovementRoutes,
-                MoveFamily::MovementRetreat {
-                    on_board: p.assistants.on_board.clone(),
-                    from_hand: matches!(p.president_location, PresidentLocation::InHand),
-                },
+                MoveFamily::MovementRetreat { on_board: p.assistants.on_board.clone() },
             ]
         }
         TurnPhase::AreaAction => vec![MoveFamily::AreaAction],
@@ -162,12 +170,31 @@ pub fn families(state: &GameState, _rules: &Rules) -> Vec<MoveFamily> {
 /// `RuleViolation`, not pre-checked here (the frozen apply boundary owns
 /// legality, per the plan's read-only constraint).
 ///
-/// `on_board` is unused by construction — a `recover` map is fully determined
-/// by the chosen `per_area` counts — and is present only so the retreat
-/// family's four entry points (`retreat_move` / [`retreat_len`] /
-/// [`retreat_iter`] / [`retreat_sample`]) share one shape over the family's
-/// owned `on_board` snapshot.
-pub fn retreat_move(_on_board: &BTreeMap<AreaId, u8>, per_area: &[(AreaId, u8)]) -> Move {
+/// `on_board` is not read to BUILD the move — a `recover` map is fully
+/// determined by the chosen `per_area` counts. It is a parameter for two other
+/// reasons: it gives the retreat family's four entry points (`retreat_move` /
+/// [`retreat_len`] / [`retreat_iter`] / [`retreat_sample`]) one shape over the
+/// family's owned snapshot, and it is what the `debug_assert` below checks
+/// against.
+///
+/// **The over-count `debug_assert` is a caller-bug tripwire, not the validation
+/// the paragraph above rules out** (Phase 3.2 Task 3; spec §8 parked item 2).
+/// Recovering more assistants from an area than stand there cannot arise from
+/// this module's own paging — [`retreat_iter`] decodes digits bounded by the
+/// snapshot and [`retreat_sample`] draws in `0..=count` — so it means the
+/// caller assembled its counts wrong, and the weighted policy's per-area draw
+/// is this constructor's direct caller. Debug builds panic at the constructor
+/// rather than let the bad move travel a phase before `apply_return_to_hand`
+/// names it; release builds are byte-for-byte the old behaviour, with that arm
+/// still the sole validator.
+pub fn retreat_move(on_board: &BTreeMap<AreaId, u8>, per_area: &[(AreaId, u8)]) -> Move {
+    debug_assert!(
+        per_area
+            .iter()
+            .all(|&(area, count)| count <= on_board.get(&area).copied().unwrap_or(0)),
+        "retreat_move: a per-area recovery count exceeds the assistants on board \
+         (per_area {per_area:?} against on_board {on_board:?})",
+    );
     let recover: BTreeMap<AreaId, u8> =
         per_area.iter().copied().filter(|&(_, count)| count > 0).collect();
     Move::ReturnPresidentToHand { recover }
@@ -700,7 +727,7 @@ fn family_kind(mv: &Move) -> std::mem::Discriminant<MoveFamily> {
         Move::MovePresident { .. } | Move::PlacePresident { .. } => d(&MoveFamily::MovementRoutes),
 
         Move::ReturnPresidentToHand { .. } => {
-            d(&MoveFamily::MovementRetreat { on_board: BTreeMap::new(), from_hand: false })
+            d(&MoveFamily::MovementRetreat { on_board: BTreeMap::new() })
         }
 
         Move::ExecuteAreaAction { .. } => d(&MoveFamily::AreaAction),
@@ -1217,37 +1244,68 @@ mod tests {
         assert_eq!(families(&at_phase(TurnPhase::TurnEnd), &rules), vec![]);
     }
 
+    /// Movement dispatches routes-then-retreat from EITHER President location,
+    /// with the same two tags and the same `on_board` snapshot — and the
+    /// location shows up where it belongs, in the MOVES the routes family
+    /// serves (`PlacePresident` from hand, `MovePresident` from the board).
+    ///
+    /// This is the pin that replaced 3.1a's `from_hand` flag check when the flag
+    /// was removed (spec §8 parked item 3): the flag only ever restated the
+    /// state, so the property worth holding is that the state — not a tag field
+    /// — drives what a Movement decision point offers.
     #[test]
-    fn movement_yields_routes_then_retreat_with_snapshot() {
+    fn movement_yields_routes_then_retreat_from_either_president_location() {
         let rules = Rules::empty_for_tests();
 
         let mut on_board = BTreeMap::new();
         on_board.insert(AreaId::new(0), 2);
         on_board.insert(AreaId::new(1), 1);
 
-        // President in hand: routes family (PlacePresident) then retreat with
-        // from_hand=true, carrying an exact clone of on_board.
+        let expected = vec![
+            MoveFamily::MovementRoutes,
+            MoveFamily::MovementRetreat { on_board: on_board.clone() },
+        ];
+
+        // President in hand: the two tags, the exact on_board clone, and a
+        // routes family that PLACES from hand and walks nowhere.
         let mut in_hand = at_phase(TurnPhase::Movement);
         in_hand.players[0].president_location = PresidentLocation::InHand;
         in_hand.players[0].assistants.on_board = on_board.clone();
-        assert_eq!(
-            families(&in_hand, &rules),
-            vec![
-                MoveFamily::MovementRoutes,
-                MoveFamily::MovementRetreat { on_board: on_board.clone(), from_hand: true },
-            ],
+        assert_eq!(families(&in_hand, &rules), expected);
+
+        let from_hand_moves: Vec<Move> =
+            iter_family(&in_hand, &rules, &MoveFamily::MovementRoutes).collect();
+        assert!(
+            !from_hand_moves.is_empty()
+                && from_hand_moves.iter().all(|m| matches!(m, Move::PlacePresident { .. })),
+            "a President in hand reaches the board only by PlacePresident: {from_hand_moves:?}",
         );
 
-        // President on board: same routes-then-retreat order and snapshot, but
-        // from_hand=false.
+        // President on board, same on_board snapshot: the IDENTICAL two tags —
+        // the retreat family does not depend on where the President stands — while
+        // the routes family now WALKS (0~1 joined so a real route exists) and
+        // never places from hand.
         let mut on_board_state = in_hand.clone();
         on_board_state.players[0].president_location = PresidentLocation::OnBoard(AreaId::new(0));
+        let (a0, a1) = (AreaId::new(0), AreaId::new(1));
+        on_board_state.board_layout.adjacency.entry(a0).or_default().push(a1);
+        on_board_state.board_layout.adjacency.entry(a1).or_default().push(a0);
+        assert_eq!(families(&on_board_state, &rules), expected);
+
+        let on_board_moves: Vec<Move> =
+            iter_family(&on_board_state, &rules, &MoveFamily::MovementRoutes).collect();
+        assert!(
+            !on_board_moves.is_empty()
+                && on_board_moves.iter().all(|m| matches!(m, Move::MovePresident { .. })),
+            "a President on the board walks, never places from hand: {on_board_moves:?}",
+        );
+
+        // And the retreat family serves the same moves either way — the fact the
+        // dropped flag would have implied a difference about.
         assert_eq!(
-            families(&on_board_state, &rules),
-            vec![
-                MoveFamily::MovementRoutes,
-                MoveFamily::MovementRetreat { on_board, from_hand: false },
-            ],
+            iter_family(&in_hand, &rules, &expected[1]).collect::<Vec<_>>(),
+            iter_family(&on_board_state, &rules, &expected[1]).collect::<Vec<_>>(),
+            "the retreat family is the on_board product, independent of the President",
         );
     }
 
@@ -1469,13 +1527,47 @@ mod tests {
             Move::ReturnPresidentToHand { recover: BTreeMap::new() },
         );
 
-        // Over-count: constructor builds it verbatim; the arm rejects it.
-        let over = retreat_move(&on_board, &[(a0, 3)]);
-        assert_eq!(over, Move::ReturnPresidentToHand { recover: on_board_of(&[(0, 3)]) });
+        // Over-count: NOT built through the constructor (whose debug guard would
+        // panic on it — see `retreat_move_rejects_a_per_area_count_above_on_board`).
+        // Hand-assembled here so this test keeps pinning what it always pinned:
+        // that legality lives in the apply arm, which rejects the over-count move
+        // whatever built it — the release behaviour of `retreat_move` unchanged.
+        let over = Move::ReturnPresidentToHand { recover: on_board_of(&[(0, 3)]) };
         assert!(matches!(
             apply_move_unchecked(&state, &over, &rules),
             Err(MoveError::RuleViolation(_)),
         ));
+    }
+
+    /// The constructor's CALLER-BUG guard (Phase 3.2 Task 3; spec §8 parked
+    /// item 2): a per-area count above what that area holds can only come from a
+    /// caller that built its counts wrong — the weighted policy's per-area draw
+    /// (Task 5) is `retreat_move`'s direct caller, exactly the error path the
+    /// park's ruling named — so a debug build panics at the constructor instead
+    /// of handing an illegal move on to be rejected a phase later.
+    ///
+    /// Debug tier only, and deliberately so: this is a `debug_assert`, not a
+    /// validation. In release the constructor is unchanged — no pre-check, the
+    /// move is built verbatim, and `apply_return_to_hand` stays the sole
+    /// validator (pinned by `retreat_move_builds_move_and_arm_validates`).
+    #[test]
+    #[cfg(debug_assertions)]
+    #[should_panic(expected = "per-area recovery count exceeds")]
+    fn retreat_move_rejects_a_per_area_count_above_on_board() {
+        let on_board = on_board_of(&[(0, 2), (3, 1)]);
+        let _ = retreat_move(&on_board, &[(AreaId::new(0), 3)]);
+    }
+
+    /// The same guard's other branch: an area absent from the snapshot holds
+    /// ZERO assistants, so any positive count there is an over-count too. Pinned
+    /// separately because it exercises the `unwrap_or(0)` arm rather than the
+    /// count comparison.
+    #[test]
+    #[cfg(debug_assertions)]
+    #[should_panic(expected = "per-area recovery count exceeds")]
+    fn retreat_move_rejects_an_area_absent_from_on_board() {
+        let on_board = on_board_of(&[(0, 2), (3, 1)]);
+        let _ = retreat_move(&on_board, &[(AreaId::new(7), 1)]);
     }
 
     /// Every `retreat_sample` draw is a legal recovery (rejection-free): 10k
@@ -2148,7 +2240,7 @@ mod tests {
         // Retreat: the payload's on_board drives the serve; the state mirrors
         // it, per the MoveFamily precondition (debug-asserted in the arms).
         let on_board = on_board_of(&[(0, 2), (1, 1), (5, 2)]);
-        let retreat = MoveFamily::MovementRetreat { on_board: on_board.clone(), from_hand: true };
+        let retreat = MoveFamily::MovementRetreat { on_board: on_board.clone() };
         let mut s = base_state();
         s.players[0].assistants.on_board = on_board.clone();
         assert_eq!(

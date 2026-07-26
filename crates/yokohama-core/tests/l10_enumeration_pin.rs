@@ -62,99 +62,31 @@
 //! file below is the reverted state.
 
 mod common;
+mod route_fixtures;
 
 use rand::{Rng, SeedableRng};
 use rand_chacha::ChaCha8Rng;
 
 use yokohama_core::game::{
-    cell_to_area_id, derive_canal_crossings, enumerate_president_routes, families, family_len,
-    fits_fixed_arrays, get_legal_moves, is_game_over, route_dfs_count, route_dfs_reset,
-    row_lengths, staggered_adjacency, DecisionHandle, FamilySize, MoveFamily,
+    enumerate_president_routes, families, family_len, fits_fixed_arrays, get_legal_moves,
+    is_game_over, route_dfs_count, route_dfs_reset, DecisionHandle, FamilySize, MoveFamily,
 };
 use yokohama_core::{
-    apply_move_unchecked, AreaConfig, AreaId, AreaType, BoardLayout, BoardLayoutBuilder,
-    BuildingSite, FivePowerEffect, GameState, Move, PlayerId, PresidentLocation, Rules, TurnPhase,
+    apply_move_unchecked, AreaConfig, AreaId, AreaType, BoardLayout, GameState, Move, PlayerId,
+    PresidentLocation, Rules, TurnPhase,
 };
 
+use route_fixtures::dense_17_area_cell;
+
 // ---------------------------------------------------------------------------
-// Anti-vacuity fixture: the dense 17-area cell
+// Anti-vacuity fixture: the dense 17-area cell, from `tests/route_fixtures`
 //
-// Task 3 swaps this for tests/route_fixtures
+// Task 2 built this inline with a `// Task 3 swaps this for tests/route_fixtures`
+// marker; Task 3 swapped it. The construction is now shared with the two metered
+// route binaries, so the label count this file's precondition floors is the SAME
+// count `action_source_equivalence.rs` pins pair-for-pair against the frozen
+// enumerator — structurally, not by review discipline (spec §10.1).
 // ---------------------------------------------------------------------------
-
-/// The Canal's grid cell: `(row 1, col 3)` on the 4P staggered pyramid, the
-/// fully-interior tile whose any-to-any transit makes its neighbourhood a
-/// complete K6 — the densest graph a real board can present to the enumerator.
-/// Same cell `action_source_equivalence.rs`'s dense battery and
-/// `yokohama-difftest`'s `routes3_worstcase.rs` use.
-const DENSE_CANAL: (u8, u8) = (1, 3);
-
-/// The real 4P staggered pyramid (rows 6/5/4/3, 18 tiles) with the Canal at
-/// [`DENSE_CANAL`], built from the engine's own topology primitives so the
-/// fixture cannot drift from the board the generator produces.
-fn dense_board() -> BoardLayout {
-    let rows = row_lengths(4);
-    let palette = [
-        AreaType::CopperMine,
-        AreaType::SilkMill,
-        AreaType::TeaPlantation,
-        AreaType::FishingGround,
-        AreaType::Bank,
-        AreaType::Chinatown,
-    ];
-    let mut b = BoardLayoutBuilder::new();
-    let mut idx = 0u8;
-    for (r, &len) in rows.iter().enumerate() {
-        for col in 0..len {
-            let id = AreaId::new(idx);
-            let ty = if (r as u8, col) == DENSE_CANAL {
-                AreaType::Canal
-            } else {
-                palette[(idx as usize) % palette.len()]
-            };
-            b.add_area(id, AreaConfig { area_type: ty, grid_position: (r as u8, col) });
-            if ty != AreaType::Canal {
-                b.set_building_site(id, BuildingSite::new([1, 1, 1, 1], 3));
-                b.set_five_power_token(id, FivePowerEffect::Money(1));
-            }
-            idx += 1;
-        }
-    }
-    for (a, z) in staggered_adjacency(&rows) {
-        b.add_adjacency(a, z);
-    }
-    for (a, z) in derive_canal_crossings(DENSE_CANAL, &rows) {
-        b.add_adjacency(a, z);
-        b.add_canal_crossing(a, z);
-    }
-    b.build().expect("dense staggered board validates")
-}
-
-/// A dense Movement state on [`dense_board`]: the mover's President on area 0,
-/// own assistants on every non-Canal area (so the whole interior is walkable),
-/// the three opponents' Presidents on 3/8/17, and 1,000 Yen so no affordability
-/// cutoff bites. Money is the enumerator's cost driver, and this cell exists to
-/// be expensive.
-fn dense_state(rules: &Rules) -> GameState {
-    let rows = row_lengths(4);
-    let canal = cell_to_area_id(DENSE_CANAL.0, DENSE_CANAL.1, &rows);
-
-    let (mut s, _rng) = common::new_seeded_game(0, 4, rules);
-    s.pending_choices.clear();
-    s.turn_phase = TurnPhase::Movement;
-    s.board_layout = dense_board();
-    s.players[0].president_location = PresidentLocation::OnBoard(AreaId::new(0));
-    s.players[0].assistants.on_board.clear();
-    for id in (0..18u8).filter(|&id| AreaId::new(id) != canal) {
-        s.players[0].assistants.on_board.insert(AreaId::new(id), 1);
-    }
-    for (i, opp) in [3u8, 8, 17].iter().enumerate() {
-        s.players[i + 1].president_location = PresidentLocation::OnBoard(AreaId::new(*opp));
-    }
-    s.players[0].money = 1_000;
-    s.current_player = PlayerId::new(0);
-    s
-}
 
 /// ANTI-VACUITY, and it runs FIRST inside the pin below: the family the counter
 /// meters is the FROZEN reference's own enumeration, at a label count no
@@ -164,7 +96,7 @@ fn dense_state(rules: &Rules) -> GameState {
 /// of the driven pin it cannot be skipped, and running it twice would double
 /// the file's dominant cost (see the timing note in the pin's doc).
 fn assert_dense_fixture_is_real(rules: &Rules) -> usize {
-    let s = dense_state(rules);
+    let s = dense_17_area_cell();
     assert!(fits_fixed_arrays(&s), "the dense cell must take the fixed-array (non-delegating) path");
 
     let reference =
@@ -173,9 +105,10 @@ fn assert_dense_fixture_is_real(rules: &Rules) -> usize {
     let served = handle.size(&MoveFamily::MovementRoutes);
 
     // FLOOR, never a ceiling (L9: the route-label space is unsearched; this
-    // harness reproduced 458 here, the same figure `action_source_equivalence`'s
-    // `plain` dense cell records). The walked routes are the whole family on
-    // this fixture — no Station, no Tram — so the handle's routes count IS the
+    // harness reproduced 458 here — necessarily the same figure
+    // `action_source_equivalence`'s `plain` dense cell records, since Task 3 made
+    // it the same construction). The walked routes are the whole family on this
+    // fixture — no Station, no Tram — so the handle's routes count IS the
     // reference's length.
     assert!(
         reference.len() >= 400,

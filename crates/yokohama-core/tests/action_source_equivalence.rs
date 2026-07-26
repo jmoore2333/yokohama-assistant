@@ -65,19 +65,18 @@
 //! labels rather than at organic play's tens.
 
 mod common;
+mod route_fixtures;
 
 use std::collections::BTreeMap;
 
 use rand::Rng;
 
 use yokohama_core::{
-    apply_move_unchecked, can_teleport_to_station_with_tech, cell_to_area_id,
-    derive_canal_crossings, enumerate_routes, families, family_len, fits_fixed_arrays,
-    get_legal_moves, is_game_over, iter_family, row_lengths, staggered_adjacency, AchievementCard,
-    AchievementType, AreaConfig, AreaId, AreaType, BoardLayout, BoardLayoutBuilder, BuildingSite,
-    ChurchTrack, CustomsTrack, FivePowerEffect, GameConfig, GameState, LabState, MercenarySupply,
-    Move, MoveFamily, OrderCardId, PlayerColor, PlayerId, PlayerState, PortState,
-    PresidentLocation, Rules, TechCardId, TechEffect, TurnPhase,
+    apply_move_unchecked, can_teleport_to_station_with_tech, enumerate_routes, families, family_len,
+    fits_fixed_arrays, get_legal_moves, is_game_over, iter_family, AchievementCard, AchievementType,
+    AreaConfig, AreaId, AreaType, BoardLayout, ChurchTrack, CustomsTrack, GameConfig, GameState,
+    LabState, MercenarySupply, Move, MoveFamily, OrderCardId, PlayerColor, PlayerId, PlayerState,
+    PortState, PresidentLocation, Rules, TechCardId, TechEffect, TurnPhase,
 };
 
 // ---------------------------------------------------------------------------
@@ -407,8 +406,8 @@ fn retreat_worst_case_442368_union_matches_by_count() {
     state.players[0].president_location = PresidentLocation::OnBoard(AreaId::new(0));
     state.players[0].assistants.on_board = on_board.clone();
 
-    // families() emits the retreat tag with the exact snapshot (president on
-    // board ⇒ from_hand = false), alongside the routes family.
+    // families() emits the retreat tag with the exact snapshot, alongside the
+    // routes family.
     let fams = families(&state, &rules);
     let retreat = fams
         .iter()
@@ -416,7 +415,7 @@ fn retreat_worst_case_442368_union_matches_by_count() {
         .expect("Movement dispatches a retreat family");
     assert_eq!(
         *retreat,
-        MoveFamily::MovementRetreat { on_board: on_board.clone(), from_hand: false },
+        MoveFamily::MovementRetreat { on_board: on_board.clone() },
         "retreat tag must carry the exact 17-area on_board snapshot",
     );
 
@@ -442,6 +441,15 @@ fn retreat_worst_case_442368_union_matches_by_count() {
         retreat_in_legal + routes_in_legal,
         legal.len(),
         "the whole legal list must partition into exactly the two Movement families",
+    );
+    // The President stands ON the board here, and that fact is readable in the
+    // MOVES: the routes family walks and never places from hand. (This is what
+    // the retreat tag's `from_hand: false` used to assert; the tag no longer
+    // carries the President's location, because the retreat family does not
+    // depend on it — see `MoveFamily::MovementRetreat`'s doc.)
+    assert!(
+        !legal.iter().any(|m| matches!(m, Move::PlacePresident { .. })),
+        "a President already on the board is never placed from hand",
     );
 
     // Spot-checks, served lazily (O(1) `nth`, no materialization): first =
@@ -768,8 +776,15 @@ fn tram_offers_the_walk_unreachable_area_through_the_public_surface() {
 
 /// From hand: the routes family is `PlacePresident` over ASCENDING area ids,
 /// gated on the possible-action-area test and on affording the destination fee —
-/// and the family tag `families()` pairs it with records `from_hand: true`, the
+/// and `families()` still dispatches BOTH Movement families there, the
 /// public-surface fact the crate-private assembly cannot show.
+///
+/// Through 3.1a the tag check here read a `from_hand: true` flag on the retreat
+/// family. 3.2 removed that flag (spec §8 parked item 3) and this test keeps the
+/// same guarantee structurally instead: at an in-hand Movement point the
+/// `MovementRetreat` tag is still emitted, still carries the seat's `on_board`
+/// snapshot, and the union still serves the `PlacePresident` arm — the state
+/// drives `families()`, so nothing needed a flag to record it.
 #[test]
 fn place_president_from_hand_through_the_public_surface() {
     let rules = Rules::standard();
@@ -777,13 +792,19 @@ fn place_president_from_hand_through_the_public_surface() {
     s.players[0].president_location = PresidentLocation::InHand;
     s.players[1].president_location = PresidentLocation::OnBoard(AreaId::new(2));
 
-    let fams = families(&s, &rules);
+    // Anti-vacuity first: an empty snapshot would make the tag pin below hold
+    // for a fixture with nothing to retreat.
     assert!(
-        fams.iter().any(|f| matches!(
-            f,
-            MoveFamily::MovementRetreat { from_hand: true, .. }
-        )),
-        "a President in hand must tag the retreat family from_hand: {fams:?}",
+        !s.players[0].assistants.on_board.is_empty(),
+        "the snapshot pin needs assistants on the board to mean anything",
+    );
+    assert_eq!(
+        families(&s, &rules),
+        vec![
+            MoveFamily::MovementRoutes,
+            MoveFamily::MovementRetreat { on_board: s.players[0].assistants.on_board.clone() },
+        ],
+        "an in-hand Movement point dispatches both families, retreat carrying the snapshot",
     );
 
     // No Postal: the opponent's area is not a Possible Action Area.
@@ -884,86 +905,19 @@ fn release_union_sweep_seeds_0_20() {
 // asserted. Nothing in this file may be read as a bound on route-label count.
 // ---------------------------------------------------------------------------
 
-/// The Canal's grid cell for the dense board: `(row 1, col 3)` = `AreaId(9)` on
-/// the staggered 4P pyramid, a fully-interior tile with all SIX brick neighbours.
-/// That is the maximal-neighbour placement, so the any-to-any derivation yields
-/// NINE tolled crossings and the Canal's neighbourhood is a complete K6 — the
-/// densest graph a real board can present to the enumerator.
-const DENSE_CANAL: (u8, u8) = (1, 3);
-
-/// The real 4P STAGGERED pyramid (rows 6/5/4/3, 18 tiles) with the Canal at
-/// [`DENSE_CANAL`], built from the engine's own topology primitives
-/// ([`staggered_adjacency`] + [`derive_canal_crossings`]) so the fixture cannot
-/// drift from the board the generator produces.
+/// One dense cell of the battery: `route_fixtures`' shared dense 17-area
+/// construction (the real staggered pyramid with an interior Canal, own
+/// assistants on all 17 non-Canal areas, the three opponents on `opponents`,
+/// money saturated) with `techs` granted on top.
 ///
-/// The SHAPE is `yokohama-difftest/tests/routes3_worstcase.rs`'s — the harness
-/// whose battery recorded the 458/519 label observations these cells reproduce —
-/// re-built here rather than imported: `yokohama-core` does not depend on the
-/// difftest crate, and a test crate is not a fixture library.
-fn dense_board() -> BoardLayout {
-    let rows = row_lengths(4);
-    // Area types are irrelevant to route enumeration except `allows_placement`
-    // (which gates Tram destinations and the Canal); a rotating palette keeps the
-    // board plausible without claiming setup validity.
-    let palette = [
-        AreaType::CopperMine,
-        AreaType::SilkMill,
-        AreaType::TeaPlantation,
-        AreaType::FishingGround,
-        AreaType::Bank,
-        AreaType::Chinatown,
-    ];
-    let mut b = BoardLayoutBuilder::new();
-    let mut idx = 0u8;
-    for (r, &len) in rows.iter().enumerate() {
-        for col in 0..len {
-            let id = AreaId::new(idx);
-            let ty = if (r as u8, col) == DENSE_CANAL {
-                AreaType::Canal
-            } else {
-                palette[(idx as usize) % palette.len()]
-            };
-            b.add_area(id, AreaConfig { area_type: ty, grid_position: (r as u8, col) });
-            if ty != AreaType::Canal {
-                b.set_building_site(id, BuildingSite::new([1, 1, 1, 1], 3));
-                b.set_five_power_token(id, FivePowerEffect::Money(1));
-            }
-            idx += 1;
-        }
-    }
-    for (a, z) in staggered_adjacency(&rows) {
-        b.add_adjacency(a, z);
-    }
-    // Any-to-any Canal transit: adjacency (a walk may cross without stopping) AND
-    // a crossing (the cross tolls 1 Yen to the bank).
-    for (a, z) in derive_canal_crossings(DENSE_CANAL, &rows) {
-        b.add_adjacency(a, z);
-        b.add_canal_crossing(a, z);
-    }
-    b.build().expect("dense staggered board validates")
-}
-
-/// A dense Movement state: the [`dense_board`], the mover's President on `start`,
-/// own assistants on EVERY non-Canal area (all 17, so the whole interior K6 is
-/// live and the mover can walk the entire pyramid), the three opponents'
-/// Presidents on `opponents`, `techs` granted, and 1,000 Yen so no affordability
-/// cutoff bites — money is the enumerator's cost driver (spec F6), and these
-/// cells exist to be expensive.
+/// The tech grant is the only part that stays here, because it is the only part
+/// that needs `Rules`: [`tech_id`] resolves an effect against the very
+/// `Rules` this binary is testing with, which keeps the shared fixture module
+/// free of a `Rules` parameter it would otherwise carry for one caller. The
+/// GEOMETRY is shared, and that is what spec §4-2's same-fixture rule is about —
+/// `action_source_worstcase.rs` meters the identical construction.
 fn dense_state(start: u8, opponents: [u8; 3], techs: &[TechEffect], rules: &Rules) -> GameState {
-    let canal = cell_to_area_id(DENSE_CANAL.0, DENSE_CANAL.1, &row_lengths(4));
-
-    // state_with_areas already builds the 4P roster; only the board is
-    // replaced wholesale (its n_areas argument is irrelevant here).
-    let mut s = state_with_areas(4, TurnPhase::Movement, 1);
-    s.board_layout = dense_board();
-    s.players[0].president_location = PresidentLocation::OnBoard(AreaId::new(start));
-    for id in (0..18u8).filter(|&id| AreaId::new(id) != canal) {
-        s.players[0].assistants.on_board.insert(AreaId::new(id), 1);
-    }
-    for (i, &opp) in opponents.iter().enumerate() {
-        s.players[i + 1].president_location = PresidentLocation::OnBoard(AreaId::new(opp));
-    }
-    s.players[0].money = 1_000;
+    let mut s = route_fixtures::dense_17_area_cell_at(start, opponents);
     s.players[0].technologies = techs.iter().map(|&e| tech_id(rules, e)).collect();
     s
 }
