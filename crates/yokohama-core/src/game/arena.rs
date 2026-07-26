@@ -1,0 +1,1101 @@
+//! The strength court (Phase 3.2, spec
+//! `docs/plans/2026-07-25-phase3.2-arena-spec.md` §4): honest per-seat play,
+//! typed hard errors, and the design units a strength claim is tabulated over.
+//!
+//! WHAT MAKES THIS DIFFERENT FROM `game::agent`'s driver. `run_honest_game` is
+//! a 3.0 surface and stays untouched, but the arena cannot build on it for two
+//! reasons that are the whole point of this module:
+//!
+//!   1. **It materializes.** `HonestAgent::choose_move` takes `&[Move]`, so
+//!      every decision pays the exhaustive union — the 442,368-member retreat
+//!      product included. The arena drives the FACTORED surface through a
+//!      [`DecisionHandle`], which is what makes a weighted policy affordable.
+//!   2. **It falls back.** `TrivialHonestAgent` silently plays from the TRUE
+//!      legal list when `BeliefSampler::from_view` errors, recording the fact
+//!      only in a tally. That is privileged play, and an arena inheriting it
+//!      would emit privileged games into the corpus 3.3 trains on, invisibly to
+//!      the leakage suite. **Here a sampler refusal is a typed HARD error and
+//!      there is no fallback arm to reach** — not a counter, an absence.
+//!
+//! THE HONEST CHAIN, per decision (spec §4): `observe(true_state, seat)` →
+//! the seat's agent determinizes ONE world from its own view →
+//! [`DecisionHandle`] over that world → [`RolloutPolicy::pick`] →
+//! `move_legality::is_move_legal(true_state, .., PathMode::Canonical)` (false =
+//! [`ArenaError::IllegalPick`], an arena bug, never a retry) → a
+//! `debug_assertions`-only membership cross-check against `get_legal_moves` →
+//! `apply_move_unchecked` → record the event. The volume metric is read from
+//! the SAME handle the policy sampled, so a decision point costs exactly one
+//! route enumeration (L10).
+//!
+//! WHY THE DEBUG CROSS-CHECK EXISTS. `PathMode::Canonical` is deliberately
+//! WIDER than list membership — it does not verify lex-least witness selection
+//! — so a non-canonical `MovePresident` witness would pass validation here and
+//! then be REJECTED by the checked `apply_move` at strict replay. The debug
+//! assert catches that regression per-edit; the release-side closing authority
+//! is the corpus strict-replay check (spec §5), which pushes every emitted move
+//! through the checked boundary.
+//!
+//! NO L10 COUNTER ASSERTIONS LIVE HERE (T2 review, carried). That cross-check
+//! is itself a `get_legal_moves` call, so at an on-board Movement point this
+//! driver legitimately runs TWO route DFSes in debug — the handle's and the
+//! assert's. `tests/l10_enumeration_pin.rs` owns the counter property over its
+//! own harness loop; arming it against this driver would read 2 and be wrong.
+//!
+//! SEED KEYING (spec §4, E2's CRN rule) is the trap this module is shaped
+//! around, and the two streams are keyed DIFFERENTLY on purpose:
+//!
+//!   * **Setup: keyed by (world seed, seat).** Both seatings of a unit must
+//!     reach a bit-identical post-`finalize_setup` state, which is only true if
+//!     the starting-order choice at a seat does not depend on WHICH contestant
+//!     sits there. [`PolicyAgent::choose_starting_order`] therefore draws from
+//!     a stream derived from `(seat, its own deal)` — a deterministic function
+//!     of `(world seed, seat)` that the agent can compute without ever being
+//!     handed the world seed, which IS the whole hidden set.
+//!   * **Play: keyed by (world seed, seat, contestant slot)** —
+//!     [`agent_stream_seed`]. Keying by seat ALONE is E2's measured trap: the
+//!     two games of a pair become the same game, the null cell reads
+//!     ρ = −1.0000 with SE 0.000, and the instrument reports "perfectly
+//!     calibrated" while measuring nothing.
+//!
+//! SUB-SEED DERIVATION: every stream seed is `mix(salt, components)` —
+//! `acc = salt`, then `acc = splitmix64(acc ^ component)` per component in
+//! order (`seeds::splitmix64`, the same primitive `SeedSchedule` streams with,
+//! so there is one mixing authority and not a re-typed copy of its constants).
+//! Each step is a bijection in `acc`, so two component lists OF THE SAME LENGTH
+//! that differ anywhere derive different seeds — collision-freedom by
+//! construction rather than by hope. Distinct salts keep the setup and play
+//! streams in separate domains.
+//!
+//! WHAT THE DERIVATION DOES NOT BUY. It is public arithmetic over the world
+//! seed, so an ADVERSARIAL agent handed its own seed could invert it and
+//! recover the world seed. That grants nothing the public board does not
+//! already grant — `new_game` builds `board_layout` from the setup seed, and
+//! `t8f_red_team_the_public_board_still_recovers_a_small_setup_seed` recovers
+//! it in milliseconds (map §8 row 8's PERMANENT residual). Stated so nobody
+//! mistakes seed derivation for a confidentiality mechanism.
+//!
+//! BOTS NEVER RECEIVE [`ArenaGameStats`]. It carries a `GameRecord`, and a
+//! record carries the seed and every choice — i.e. the whole hidden set. Stats
+//! flow to the harness that tabulates them, never back into an agent; that is
+//! the same review-enforced rule `game::agent`'s doc states for records.
+
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Arc;
+
+use rand::{Rng, SeedableRng};
+use rand_chacha::ChaCha8Rng;
+
+use crate::game::agent::HONEST_MAX_TURNS;
+use crate::game::apply_move::apply_move_unchecked;
+use crate::game::belief::BeliefSampler;
+use crate::game::end_game::is_game_over;
+use crate::game::invariants::check_invariants;
+use crate::game::metrics::{decision_volume, CoverageTally, VolumeObs};
+use crate::game::move_legality::{is_move_legal, PathMode};
+use crate::game::observe::observe;
+use crate::game::policy::RolloutPolicy;
+use crate::game::record::GameRecord;
+use crate::game::rules::Rules;
+use crate::game::scoring::{final_result, GameResult};
+use crate::game::search_actions::DecisionHandle;
+use crate::game::seeds::{splitmix64, WorldSeed};
+use crate::game::setup::{finalize_setup, new_game, PendingSetup, StartingOrderChoice};
+use crate::types::{EndGameTrigger, GameConfig, GameState, Move, OrderCardId, PlayerId, PlayerView};
+
+// ---------------------------------------------------------------------------
+// Sub-seed derivation
+// ---------------------------------------------------------------------------
+
+/// Domain salt for the play stream (world seed, seat, contestant slot).
+const SALT_PLAY_STREAM: u64 = 0xA3E1_5701_0000_0001;
+/// Domain salt for the setup stream (world seed, seat — carried as the deal).
+const SALT_SETUP_STREAM: u64 = 0xA3E1_5E70_0000_0002;
+/// Domain salt for the raw diagnostic driver's per-seat stream.
+const SALT_RAW_STREAM: u64 = 0xA3E1_4157_0000_0003;
+
+/// Fold `components` into one full-width sub-seed under `salt` — the module
+/// doc's derivation. Injective over equal-length component lists.
+fn mix(salt: u64, components: &[u64]) -> u64 {
+    let mut acc = salt;
+    for &component in components {
+        let mut step = acc ^ component;
+        acc = splitmix64(&mut step);
+    }
+    acc
+}
+
+/// The seed for the agent playing `slot` at `seat` in the game `seed`.
+///
+/// All THREE components enter (spec §4). The slot component is what makes E2's
+/// trap structurally unreachable: without it, swapping the seating leaves every
+/// seat's stream unchanged, so both games of a pair replay identically and the
+/// unit's outcome carries no information. The seat component keeps the two
+/// games' streams independent rather than merely permuted — pairing is kept for
+/// bias removal and bit-identical starts and is explicitly NOT claimed as
+/// variance reduction (E2: 0–2.5% at 2P, −13% at 4P), so correlating a
+/// contestant's own randomness across the pair would buy nothing and inflate
+/// the unit variance.
+pub fn agent_stream_seed(seed: WorldSeed, seat: PlayerId, slot: Slot) -> u64 {
+    mix(SALT_PLAY_STREAM, &[seed.0, u64::from(seat.0), u64::from(slot.0)])
+}
+
+/// The seat's setup stream, derived from what the agent legitimately holds at
+/// that moment: its seat and its own two dealt cards.
+///
+/// The deal is a function of `(world seed, seat)`, so this IS spec §4's
+/// seat-keyed setup stream — computed WITHOUT handing the agent the world seed,
+/// which would hand it the hidden set outright. It is not injective in the
+/// world seed (two games dealing a seat the same two cards share the stream),
+/// which is harmless: the only decision it drives is which of exactly those two
+/// cards to keep.
+fn setup_stream_seed(seat: PlayerId, deal: &[OrderCardId; 2]) -> u64 {
+    mix(
+        SALT_SETUP_STREAM,
+        &[u64::from(seat.0), u64::from(deal[0].0), u64::from(deal[1].0)],
+    )
+}
+
+// ---------------------------------------------------------------------------
+// Errors
+// ---------------------------------------------------------------------------
+
+/// Why an arena game did not produce a completed, recorded result.
+///
+/// Every variant is a HARD stop that emits nothing — spec §4's failure
+/// taxonomy. A driver error is a bug and fails the run loudly;
+/// [`CapReached`](Self::CapReached) is a DISTINGUISHED outcome that also fails
+/// an asserting cell but names its seed so the run is reproducible (uniform
+/// tails run to 5,364 of the 10,000 cap in E1's held-out cells).
+///
+/// CLASSIFICATION RULE, stated because it is not inferable: [`ArenaAgent`]'s
+/// error is an untyped `String`, so the driver cannot re-classify what an agent
+/// refused about. **Every agent refusal in [`run_arena_game`] lands in
+/// [`SamplerFailed`](Self::SamplerFailed) with its detail preserved verbatim**,
+/// including [`PolicyAgent`]'s own dead-end string (whose text says so).
+/// [`DeadEnd`](Self::DeadEnd) is raised where the driver IS the picker —
+/// [`run_raw_game`], whose `pick` returning `None` is a dead end it observed
+/// itself rather than one it was told about.
+#[derive(Debug)]
+pub enum ArenaError {
+    /// A seat's agent refused to produce a move. The honest chain's typed hard
+    /// error; the commonest cause is `BeliefSampler::from_view`.
+    SamplerFailed { seat: PlayerId, detail: String },
+    /// A seat proposed a move that is not legal in the TRUE state. An arena
+    /// bug: the move never reaches `apply_move_unchecked`.
+    IllegalPick { seat: PlayerId, mv: Box<Move> },
+    /// The decision point offered nothing to play.
+    DeadEnd { seat: PlayerId },
+    /// The turn cap was hit before the game ended. Carries the seed so the run
+    /// reproduces.
+    CapReached { seed: WorldSeed, turns: u32 },
+    /// Setup, observation, or application failed — always a bug here, since
+    /// every input was engine-produced.
+    Driver(String),
+}
+
+impl std::fmt::Display for ArenaError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::SamplerFailed { seat, detail } => {
+                write!(f, "seat {} produced no move: {detail}", seat.0)
+            }
+            Self::IllegalPick { seat, mv } => {
+                write!(f, "seat {} proposed a move illegal in the true state: {mv:?}", seat.0)
+            }
+            Self::DeadEnd { seat } => write!(f, "seat {} reached a dead end", seat.0),
+            Self::CapReached { seed, turns } => {
+                write!(f, "turn cap reached at turn {turns} (world seed {:#018x})", seed.0)
+            }
+            Self::Driver(message) => write!(f, "arena driver: {message}"),
+        }
+    }
+}
+
+impl std::error::Error for ArenaError {}
+
+// ---------------------------------------------------------------------------
+// The agent seam
+// ---------------------------------------------------------------------------
+
+/// One decision, as an agent reports it: the move plus the volume observation
+/// taken at the SAME handle that produced it.
+///
+/// Bundling them is what holds L10 across the seam. If the driver measured the
+/// volume itself it would need a handle over the true state — a second
+/// enumeration per Movement decision point, and a second thing that can
+/// disagree with the first.
+#[derive(Debug, Clone)]
+pub struct DecisionReport {
+    pub mv: Move,
+    pub volume: VolumeObs,
+}
+
+/// A seat in the arena. Deliberately NOT [`crate::game::agent::HonestAgent`]:
+/// that trait's `choose_move` takes a materialized `&[Move]`, which is the
+/// ceiling this driver exists to avoid.
+///
+/// The signatures are the honesty boundary — neither method can name
+/// `GameState` or `PendingSetup`, so an implementation cannot read the deck
+/// order, the boxed pile, or another seat's hidden starting order. The
+/// construction channel is closed the same way `run_honest_game` closes it: the
+/// driver invokes the factory itself, after `new_game`, passing only
+/// `(seat, player_count)`.
+///
+/// **Spec deviation, recorded (plan Task 6; fold back at close-out).** Spec §4
+/// sketched `choose_move(&mut self, view, handle: &DecisionHandle, rules) ->
+/// Move`. That signature contradicts the same section's flow — the agent
+/// determinizes its OWN world and builds the handle over it, so a driver-passed
+/// handle has no state to be over — and it cannot express the mandated typed
+/// sampler hard error. `choose(view, rules) -> Result<DecisionReport, String>`
+/// implements the section's flow exactly. K>1 stays open: an implementation may
+/// sample several worlds internally, which is 3.3's business. The PR #8
+/// `sample_family -> Option<Move>` precedent applies.
+pub trait ArenaAgent {
+    /// Setup: keep dealt Order card 0 or 1. The agent sees ONLY its own deal.
+    fn choose_starting_order(&mut self, seat: PlayerId, deal: &[OrderCardId; 2]) -> u8;
+
+    /// Play: one move for `view`'s seat, or the reason there is none.
+    ///
+    /// An `Err` is a HARD error at the driver — never a fallback to privileged
+    /// play. See [`ArenaError`]'s classification rule for where it lands.
+    fn choose(&mut self, view: &PlayerView, rules: &Rules) -> Result<DecisionReport, String>;
+}
+
+/// A cloneable handle on one [`PolicyAgent`]'s honest-path counter.
+///
+/// Clone it out BEFORE the agent is moved into the driver: a game's agents are
+/// built by the driver's factory and never handed back, so this is the only way
+/// to read the counter afterwards ([`crate::game::agent::AgentPathTally`] is
+/// the in-tree precedent it mirrors).
+///
+/// There is deliberately no fallback counter to pair with it. `TrivialHonestAgent`
+/// needed one because it HAS a fallback arm; here the honest chain either
+/// produces a move or the run dies, so "fallback == 0" is a structural fact and
+/// counting it would suggest otherwise.
+#[derive(Clone, Default)]
+pub struct HonestPathTally {
+    sampled: Arc<AtomicU64>,
+}
+
+impl HonestPathTally {
+    /// Decisions this agent resolved through the sampler chain — every decision
+    /// it was asked for, since there is no other way through.
+    pub fn sampled_decisions(&self) -> u64 {
+        self.sampled.load(Ordering::Relaxed)
+    }
+}
+
+/// The arena's shipped agent: sample one world from the seat's view, then let a
+/// [`RolloutPolicy`] pick over the factored surface.
+pub struct PolicyAgent {
+    policy: RolloutPolicy,
+    rng: ChaCha8Rng,
+    tally: HonestPathTally,
+}
+
+impl PolicyAgent {
+    /// `agent_seed` is the PLAY stream — key it with [`agent_stream_seed`]. The
+    /// setup decision deliberately does not draw from it (see
+    /// [`choose_starting_order`](ArenaAgent::choose_starting_order)).
+    pub fn new(policy: RolloutPolicy, agent_seed: u64) -> Self {
+        Self {
+            policy,
+            rng: ChaCha8Rng::seed_from_u64(agent_seed),
+            tally: HonestPathTally::default(),
+        }
+    }
+
+    /// This agent's rung — provenance reads it rather than hand-typing a name.
+    pub fn policy(&self) -> RolloutPolicy {
+        self.policy
+    }
+
+    /// Decisions resolved so far through the sampler chain.
+    pub fn sampled_decisions(&self) -> u64 {
+        self.tally.sampled_decisions()
+    }
+
+    /// A cloneable handle on the counter above, readable after the agent has
+    /// been moved into the driver.
+    pub fn tally(&self) -> HonestPathTally {
+        self.tally.clone()
+    }
+}
+
+impl ArenaAgent for PolicyAgent {
+    /// Drawn from a SEAT-keyed stream, not from `self.rng`.
+    ///
+    /// This is spec §4's keying rule made structural rather than documented:
+    /// `self.rng` is keyed by the contestant SLOT, so drawing here would make
+    /// the starting-order choice depend on which contestant sits at the seat,
+    /// and the two seatings of a unit would no longer share a bit-identical
+    /// post-`finalize_setup` state. The stream is derived from `(seat, deal)` —
+    /// see [`setup_stream_seed`].
+    ///
+    /// The rung does not enter: all three rungs are MOVE policies, and 3.2
+    /// ships no starting-order policy to differentiate them with.
+    fn choose_starting_order(&mut self, seat: PlayerId, deal: &[OrderCardId; 2]) -> u8 {
+        let mut setup_rng = ChaCha8Rng::seed_from_u64(setup_stream_seed(seat, deal));
+        setup_rng.gen_range(0..2u8)
+    }
+
+    fn choose(&mut self, view: &PlayerView, rules: &Rules) -> Result<DecisionReport, String> {
+        // The sampler seed comes from THIS AGENT'S OWN stream and nothing else.
+        // Deriving it from any state-flavoured value would correlate the sample
+        // with the truth it must be blind to (`game::agent`'s rule, restated
+        // because this is the second implementation of it).
+        let sampler_seed: u64 = self.rng.gen();
+        let mut sampler = BeliefSampler::from_view(view, rules, sampler_seed).map_err(|e| {
+            format!("belief sampler refused seat {}'s view: {e}", view.viewer.0)
+        })?;
+        let world = sampler.sample();
+        let handle = DecisionHandle::new(&world, rules);
+
+        // ONE enumeration for the whole decision: `decision_volume` forces the
+        // routes memo, and every branch of `pick` below reads that same memo.
+        // Taking the volume FIRST is what lets both `None` arms say something
+        // true — this one is "not a decision point at all", the next is "a
+        // structurally empty family".
+        let volume = decision_volume(&handle).ok_or_else(|| {
+            format!(
+                "seat {} was asked to move at {:?}, which offers no families at all",
+                view.viewer.0,
+                handle.turn_phase(),
+            )
+        })?;
+        let mv = self.policy.pick(&handle, &mut self.rng).ok_or_else(|| {
+            format!(
+                "dead end: policy {} found no move at {:?} for seat {}",
+                self.policy.as_str(),
+                handle.turn_phase(),
+                view.viewer.0,
+            )
+        })?;
+
+        self.tally.sampled.fetch_add(1, Ordering::Relaxed);
+        Ok(DecisionReport { mv, volume })
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Pairing and rotation
+// ---------------------------------------------------------------------------
+
+/// A contestant's slot in a cell, stable across every seating of a unit.
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
+pub struct Slot(pub u8);
+
+/// One design unit: ONE world seed played under every seating in `seatings`.
+///
+/// `seatings[k][seat]` is the slot sitting at `seat` in arrangement `k`. The
+/// unit — not the game — is what intervals are computed over (spec §4): the
+/// pair at 2P, the rotation block at 3–4P.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct UnitSpec {
+    pub seed: WorldSeed,
+    pub players: u8,
+    pub seatings: Vec<Vec<Slot>>,
+}
+
+/// The design unit for `players` contestants at `seed`: every cyclic rotation,
+/// so each slot occupies each seat exactly once.
+///
+/// At 2P that is the pair `[[0,1],[1,0]]`; at 4P the four rotations. Seat swap
+/// is BIAS removal and is mandatory (unswapped arrangement gap measured up to
+/// 3.6pp); 3P is supported but carries E2's caveat that 3P seat symmetry is
+/// UNTESTED.
+pub fn unit_for(players: u8, seed: WorldSeed) -> UnitSpec {
+    let n = players as usize;
+    let seatings = (0..n)
+        .map(|k| (0..n).map(|seat| Slot(((seat + k) % n) as u8)).collect())
+        .collect();
+    UnitSpec { seed, players, seatings }
+}
+
+// ---------------------------------------------------------------------------
+// Drivers
+// ---------------------------------------------------------------------------
+
+/// One completed arena game. See the module doc: this carries a `GameRecord`,
+/// so it never travels back to an agent.
+#[derive(Debug, Clone)]
+pub struct ArenaGameStats {
+    pub seed: WorldSeed,
+    pub players: u8,
+    pub turns: u32,
+    pub moves_applied: u64,
+    pub result: GameResult,
+    pub trigger: Option<EndGameTrigger>,
+    /// One observation per decision point, in play order. Never carries a
+    /// non-decision point: `decision_volume`'s `None` is not a measurement.
+    pub volumes: Vec<VolumeObs>,
+    pub coverage: CoverageTally,
+    pub record: GameRecord,
+}
+
+/// Play one honest game: one [`ArenaAgent`] per seat, each acting on its own
+/// view alone.
+///
+/// `make_agent` is invoked BY THIS FUNCTION, after `new_game`, with only
+/// `(seat, player_count)` — the caller never gets a chance to construct an
+/// agent from privileged setup data. `invariants` runs `check_invariants` after
+/// every applied move (ON in tests and gates; bulk corpus generation may
+/// disable it, since those records are verified by strict replay instead).
+pub fn run_arena_game(
+    seed: WorldSeed,
+    players: u8,
+    rules: &Rules,
+    make_agent: &mut dyn FnMut(PlayerId, u8) -> Box<dyn ArenaAgent>,
+    invariants: bool,
+) -> Result<ArenaGameStats, ArenaError> {
+    run_arena_game_capped(seed, players, rules, make_agent, invariants, HONEST_MAX_TURNS)
+}
+
+/// [`run_arena_game`] with the non-termination guard as a parameter.
+///
+/// The public driver passes [`HONEST_MAX_TURNS`], deliberately the same
+/// constant `game::agent`'s loop and the fuzz driver use — the two loops must
+/// not disagree about what "stuck" means, which is the fold `game::agent`'s
+/// `the_honest_loop_shares_the_fuzz_drivers_termination_guard` said 3.2 would
+/// do. The parameter exists so a test can reach the
+/// [`CapReached`](ArenaError::CapReached) arm in milliseconds instead of
+/// playing 10,000 no-op turns.
+pub fn run_arena_game_capped(
+    seed: WorldSeed,
+    players: u8,
+    rules: &Rules,
+    make_agent: &mut dyn FnMut(PlayerId, u8) -> Box<dyn ArenaAgent>,
+    invariants: bool,
+    max_turns: u32,
+) -> Result<ArenaGameStats, ArenaError> {
+    let pending = new_game(GameConfig::for_player_count(players), rules, seed.0)
+        .map_err(|e| ArenaError::Driver(format!("new_game failed ({players}P): {e}")))?;
+
+    // The factory runs HERE — after `new_game`, before anything else — and
+    // sees only (seat, player_count).
+    let agents: Vec<Box<dyn ArenaAgent>> =
+        (0..players).map(|i| make_agent(PlayerId(i), players)).collect();
+
+    let mut bench = AgentBench { agents };
+    drive(seed, rules, pending, &mut bench, invariants, max_turns)
+}
+
+/// Play one game with each seat's policy reading the TRUE state — the fuzzer's
+/// shape, for screening cells and labelled diagnostics only.
+///
+/// No `observe`, no sampler: this is privileged play by construction, which is
+/// why spec §4 requires the label to ride the ARTIFACT rather than the prose
+/// (Task 8 stamps every seat `observation: "full-state-diagnostic"` and the
+/// emitter refuses to write such a record into the ordinary corpus). Validation,
+/// recording, and the failure taxonomy are identical to the honest driver's —
+/// the two share one loop.
+pub fn run_raw_game(
+    seed: WorldSeed,
+    players: u8,
+    rules: &Rules,
+    seat_policies: &[RolloutPolicy],
+    rng_master: u64,
+    invariants: bool,
+) -> Result<ArenaGameStats, ArenaError> {
+    if seat_policies.len() != players as usize {
+        return Err(ArenaError::Driver(format!(
+            "run_raw_game got {} seat policies for {players} seats",
+            seat_policies.len(),
+        )));
+    }
+    let pending = new_game(GameConfig::for_player_count(players), rules, seed.0)
+        .map_err(|e| ArenaError::Driver(format!("new_game failed ({players}P): {e}")))?;
+
+    let seats = seat_policies
+        .iter()
+        .enumerate()
+        .map(|(i, &policy)| {
+            let stream = mix(SALT_RAW_STREAM, &[rng_master, i as u64]);
+            (policy, ChaCha8Rng::seed_from_u64(stream))
+        })
+        .collect();
+
+    let mut bench = RawBench { seats };
+    drive(seed, rules, pending, &mut bench, invariants, HONEST_MAX_TURNS)
+}
+
+/// The per-seat half of the driver: everything the two modes do DIFFERENTLY.
+///
+/// Every step after `decide` returns — validation, application, recording,
+/// tallying, the failure taxonomy — is shared below, which is the point: the
+/// honest path and the diagnostic path cannot drift in what they consider a
+/// legal, recorded move.
+trait SeatBench {
+    fn starting_order(&mut self, seat: PlayerId, deal: &[OrderCardId; 2]) -> Result<u8, ArenaError>;
+    fn decide(
+        &mut self,
+        state: &GameState,
+        seat: PlayerId,
+        rules: &Rules,
+    ) -> Result<DecisionReport, ArenaError>;
+}
+
+struct AgentBench {
+    agents: Vec<Box<dyn ArenaAgent>>,
+}
+
+impl SeatBench for AgentBench {
+    fn starting_order(&mut self, seat: PlayerId, deal: &[OrderCardId; 2]) -> Result<u8, ArenaError> {
+        Ok(self.agents[seat.0 as usize].choose_starting_order(seat, deal))
+    }
+
+    fn decide(
+        &mut self,
+        state: &GameState,
+        seat: PlayerId,
+        rules: &Rules,
+    ) -> Result<DecisionReport, ArenaError> {
+        let view = observe(state, seat)
+            .map_err(|e| ArenaError::Driver(format!("observe failed for seat {}: {e}", seat.0)))?;
+        // Plumbing pin: an agent must never be handed another seat's view.
+        // Unconditional, like `run_honest_game`'s — one `u8` compare against a
+        // fault that would silently hand a seat someone else's information.
+        assert_eq!(view.viewer, seat, "view/seat mismatch in the arena driver");
+        self.agents[seat.0 as usize]
+            .choose(&view, rules)
+            .map_err(|detail| ArenaError::SamplerFailed { seat, detail })
+    }
+}
+
+struct RawBench {
+    seats: Vec<(RolloutPolicy, ChaCha8Rng)>,
+}
+
+impl SeatBench for RawBench {
+    fn starting_order(
+        &mut self,
+        seat: PlayerId,
+        _deal: &[OrderCardId; 2],
+    ) -> Result<u8, ArenaError> {
+        Ok(self.seats[seat.0 as usize].1.gen_range(0..2u8))
+    }
+
+    fn decide(
+        &mut self,
+        state: &GameState,
+        seat: PlayerId,
+        rules: &Rules,
+    ) -> Result<DecisionReport, ArenaError> {
+        let (policy, rng) = &mut self.seats[seat.0 as usize];
+        let handle = DecisionHandle::new(state, rules);
+        let volume = decision_volume(&handle).ok_or(ArenaError::DeadEnd { seat })?;
+        let mv = policy.pick(&handle, rng).ok_or(ArenaError::DeadEnd { seat })?;
+        Ok(DecisionReport { mv, volume })
+    }
+}
+
+/// The shared loop: setup choices, then validate/apply/record per decision.
+fn drive(
+    seed: WorldSeed,
+    rules: &Rules,
+    pending: PendingSetup,
+    bench: &mut dyn SeatBench,
+    invariants: bool,
+    max_turns: u32,
+) -> Result<ArenaGameStats, ArenaError> {
+    let players = pending.state.players.len() as u8;
+    // From `pending.state`, not the caller's config: `new_game` stamps
+    // `setup_seed` into it, so `record.config.setup_seed == record.seed` holds
+    // by construction rather than by a caller remembering to.
+    let config = pending.state.config.clone();
+
+    let mut choices: Vec<StartingOrderChoice> = Vec::with_capacity(players as usize);
+    for i in 0..players {
+        let seat = PlayerId(i);
+        let deal = pending.deals[i as usize];
+        let keep = bench.starting_order(seat, &deal)?;
+        if keep > 1 {
+            return Err(ArenaError::Driver(format!(
+                "seat {} returned keep index {keep}: must be 0 or 1",
+                seat.0
+            )));
+        }
+        choices.push(StartingOrderChoice::Keep(keep));
+    }
+
+    // Task 8: provenance — `record.run` is stamped here, `controller` from each
+    // seat's `RolloutPolicy::as_str()` and `observation` from which driver built
+    // the bench ("view" for `run_arena_game`, "full-state-diagnostic" for
+    // `run_raw_game`).
+    let mut record = GameRecord::new(seed.0, config, choices.clone(), rules);
+
+    let mut state = finalize_setup(pending, &choices)
+        .map_err(|e| ArenaError::Driver(format!("finalize_setup failed: {e}")))?;
+    // Guard the INCOMING state so setup corruption is not misattributed to the
+    // first move (every driver in the repo does this).
+    if let Err(reason) = check_invariants(&state, rules) {
+        return Err(ArenaError::Driver(format!("corrupt starting state: {reason}")));
+    }
+
+    let mut volumes: Vec<VolumeObs> = Vec::new();
+    let mut coverage = CoverageTally::default();
+    let mut moves_applied: u64 = 0;
+
+    loop {
+        if is_game_over(&state) {
+            record.stamp_terminal_digest(&state);
+            return Ok(ArenaGameStats {
+                seed,
+                players,
+                turns: state.turn_number,
+                moves_applied,
+                result: final_result(&state, rules),
+                trigger: state.trigger_reason,
+                volumes,
+                coverage,
+                record,
+            });
+        }
+        if state.turn_number > max_turns {
+            return Err(ArenaError::CapReached { seed, turns: state.turn_number });
+        }
+
+        let seat = state.current_player;
+        let report = bench.decide(&state, seat, rules)?;
+        let mv = report.mv;
+
+        // The validation boundary. `PathMode::Canonical` is design A doing the
+        // job open decision #3 settled it for; a false here is an arena bug, so
+        // it is a hard error and never a redraw.
+        if !is_move_legal(&state, &mv, rules, PathMode::Canonical) {
+            return Err(ArenaError::IllegalPick { seat, mv: Box::new(mv) });
+        }
+        // Debug-tier membership cross-check (spec §4): `Canonical` is wider
+        // than list membership — it does not verify lex-least witness selection
+        // — so this is what catches a non-canonical witness per-edit, before
+        // strict replay would reject it through the checked `apply_move`.
+        debug_assert!(
+            crate::game::legal_moves::get_legal_moves(&state, rules).contains(&mv),
+            "seat {} played a move that passed PathMode::Canonical but is not in \
+             get_legal_moves — a non-canonical witness: {mv:?}",
+            seat.0,
+        );
+
+        state = apply_move_unchecked(&state, &mv, rules).map_err(|e| {
+            ArenaError::Driver(format!(
+                "apply_move_unchecked rejected a validated move from seat {}: {e}",
+                seat.0
+            ))
+        })?;
+        if invariants {
+            if let Err(reason) = check_invariants(&state, rules) {
+                return Err(ArenaError::Driver(format!(
+                    "invariant violated after seat {}'s move: {reason}",
+                    seat.0
+                )));
+            }
+        }
+
+        volumes.push(report.volume);
+        coverage.observe(&mv);
+        record.push_move(mv);
+        moves_applied += 1;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::game::record::{replay, replay_strict};
+    use crate::game::seeds::SeedSchedule;
+    use crate::types::TurnPhase;
+    use std::sync::Mutex;
+
+    /// This task's committed diagnostic master. The NAME of the constructor is
+    /// the waiver (`game::seeds`): an asserting test wants reproducibility.
+    const MASTER: u64 = 0xA3E1_2026_0726_0006;
+
+    fn world(index: u64) -> WorldSeed {
+        let mut schedule = SeedSchedule::diagnostic(MASTER);
+        (0..=index).map(|_| schedule.next_world()).last().unwrap()
+    }
+
+    /// A factory that seats one policy everywhere, keyed exactly as the pairing
+    /// layer keys it.
+    fn uniform_bench(
+        policy: RolloutPolicy,
+        seed: WorldSeed,
+        seating: Vec<Slot>,
+    ) -> impl FnMut(PlayerId, u8) -> Box<dyn ArenaAgent> {
+        move |seat, _players| {
+            let slot = seating[seat.0 as usize];
+            Box::new(PolicyAgent::new(policy, agent_stream_seed(seed, seat, slot)))
+        }
+    }
+
+    /// MUTATION-PROVEN (reverted by inverse edit, never `git checkout` — L7):
+    /// drawing the setup choice from `self.rng` — the slot-keyed PLAY stream —
+    /// fails the 72-pair assertion below at the first deal (left 1, right 0).
+    #[test]
+    fn paired_seatings_share_a_bit_identical_starting_state() {
+        // E2's CRN rule, first half: the setup stream is keyed by (world seed,
+        // seat), so swapping which contestant sits where cannot move the
+        // starting state. If it could, a pair would not be a paired design at
+        // all -- the two games would differ in the setup as well as the
+        // seating, and the swap would stop removing the seat effect.
+        let rules = Rules::standard();
+        let seed = world(0);
+        let unit = unit_for(2, seed);
+        assert_eq!(unit.seatings, vec![vec![Slot(0), Slot(1)], vec![Slot(1), Slot(0)]]);
+
+        let starts: Vec<GameState> = unit
+            .seatings
+            .iter()
+            .map(|seating| {
+                let mut make = uniform_bench(
+                    RolloutPolicy::FAMILY_WEIGHTED_DEFAULT,
+                    seed,
+                    seating.clone(),
+                );
+                let stats = run_arena_game(seed, 2, &rules, &mut make, true)
+                    .unwrap_or_else(|e| panic!("arena game failed: {e}"));
+                // Rebuild the driver's OWN starting state from the record it
+                // emitted: `new_game` + `finalize_setup` over (seed, config,
+                // choices), which is exactly the preamble the driver ran.
+                let mut setup_only = stats.record.clone();
+                setup_only.events.clear();
+                setup_only.terminal_digest = None;
+                replay(&setup_only, &rules).expect("the record's setup preamble must replay")
+            })
+            .collect();
+
+        assert_eq!(starts[0], starts[1], "the two seatings started from different states");
+
+        // The property the comparison above RESTS on, pinned directly because
+        // two seats' worth of binary choices is weak evidence: a driver that
+        // (wrongly) drew the setup choice from the slot-keyed PLAY stream would
+        // still produce matching states ~25% of the time at 2P. Here two
+        // contestants whose play streams share nothing agree on every one of 72
+        // (seat, deal) pairs, which they can only do by not reading that stream.
+        let mut a = PolicyAgent::new(RolloutPolicy::Uniform, 1);
+        let mut b = PolicyAgent::new(RolloutPolicy::FAMILY_WEIGHTED_DEFAULT, u64::MAX / 3);
+        for seat in 0..4u8 {
+            for card in 1..=18u8 {
+                let deal = [OrderCardId(card), OrderCardId(card + 18)];
+                assert_eq!(
+                    a.choose_starting_order(PlayerId(seat), &deal),
+                    b.choose_starting_order(PlayerId(seat), &deal),
+                    "the setup choice moved with the agent's play stream (seat {seat}, deal {deal:?})",
+                );
+            }
+        }
+    }
+
+    /// MUTATION-PROVEN (reverted by inverse edit): dropping the slot component
+    /// from `agent_stream_seed` — E2's trap verbatim — makes seat 0 hand both
+    /// contestants the same stream (both drew 2586029867533633687) and fails
+    /// the first assertion below.
+    #[test]
+    fn agent_rng_is_keyed_by_slot_not_seat() {
+        // E2's CRN rule, second half, and the trap it exists to exclude: keying
+        // the PLAY stream by seat alone makes both games of a pair the same
+        // game, so the null cell reads rho = -1.0000 with SE 0.000 -- an
+        // instrument that reports "perfectly calibrated" while measuring
+        // nothing.
+        //
+        // DEVIATION NOTE (plan Task 6's parenthetical): the plan glossed this
+        // test as "a slot's first draw identical across seatings", which
+        // describes keying by (world seed, slot) with the seat DROPPED. Spec
+        // §4's rule names all three components and this implementation keys by
+        // all three, so a slot's stream does move with its seat; what the test
+        // asserts instead is the property its NAME states and the trap
+        // requires -- the stream is a function of the SLOT, not of the seat
+        // alone. Dropping the seat would also correlate a contestant's own
+        // randomness across the unit's games, and E2 keeps pairing for bias
+        // removal while explicitly NOT claiming variance reduction from it.
+        let seed = world(1);
+        let unit = unit_for(2, seed);
+        let first_draw = |seat: PlayerId, slot: Slot| -> u64 {
+            ChaCha8Rng::seed_from_u64(agent_stream_seed(seed, seat, slot)).gen()
+        };
+
+        // At a FIXED seat, swapping which contestant sits there changes the
+        // stream. This is the assertion keying by seat alone cannot pass.
+        for seat in [PlayerId(0), PlayerId(1)] {
+            assert_ne!(
+                first_draw(seat, Slot(0)),
+                first_draw(seat, Slot(1)),
+                "seat {} drew the same stream for two different contestants",
+                seat.0,
+            );
+        }
+
+        // ...and the same read through the unit: seat 0 runs a different stream
+        // in the two seatings, so the pair's two games are not one game twice.
+        let seat0_streams: Vec<u64> = unit
+            .seatings
+            .iter()
+            .map(|seating| first_draw(PlayerId(0), seating[0]))
+            .collect();
+        assert_ne!(seat0_streams[0], seat0_streams[1]);
+
+        // The seat component is load-bearing too: one contestant's two seats
+        // are independent streams, not the same one replayed.
+        assert_ne!(first_draw(PlayerId(0), Slot(0)), first_draw(PlayerId(1), Slot(0)));
+
+        // And the whole key moves with the world seed.
+        let other = world(2);
+        assert_ne!(
+            agent_stream_seed(seed, PlayerId(0), Slot(0)),
+            agent_stream_seed(other, PlayerId(0), Slot(0)),
+        );
+    }
+
+    /// MUTATION-PROVEN (reverted by inverse edit): giving `AgentBench::decide`
+    /// the `TrivialHonestAgent`-shaped fallback — on `Err`, play
+    /// `get_legal_moves(true_state)[0]` — does not merely weaken this test, it
+    /// turns the refusal into 10,001 turns of silent privileged play
+    /// (`CapReached`), which is exactly the corpus-poisoning failure spec §4
+    /// names. `the_driver_hands_each_agent_only_its_own_deal` falls with it.
+    #[test]
+    fn sampler_failure_is_a_hard_error_never_a_fallback() {
+        // The `TrivialHonestAgent` precedent falls back to the TRUE legal list
+        // when `from_view` errors -- privileged play, recorded only in a tally.
+        // Here the chain has no second arm: the run dies, nothing is applied,
+        // and no record escapes to be trained on.
+        struct DoctoredView {
+            calls: Arc<AtomicU64>,
+        }
+        impl ArenaAgent for DoctoredView {
+            fn choose_starting_order(&mut self, _seat: PlayerId, _deal: &[OrderCardId; 2]) -> u8 {
+                0
+            }
+            fn choose(
+                &mut self,
+                view: &PlayerView,
+                rules: &Rules,
+            ) -> Result<DecisionReport, String> {
+                self.calls.fetch_add(1, Ordering::Relaxed);
+                // Break the reconciliation identity the sampler validates.
+                let mut doctored = view.clone();
+                doctored.order_deck_len += 1;
+                // `BeliefSampler` is not `Debug`, so this is a `let else`
+                // rather than `expect_err`.
+                let Err(err) = BeliefSampler::from_view(&doctored, rules, 7) else {
+                    panic!("a view whose sinks do not partition the pool must be refused")
+                };
+                Err(format!("belief sampler refused seat {}'s view: {err}", view.viewer.0))
+            }
+        }
+
+        let rules = Rules::standard();
+        let calls = Arc::new(AtomicU64::new(0));
+        let shared = Arc::clone(&calls);
+        let err = run_arena_game(world(3), 2, &rules, &mut |_seat, _n| {
+            Box::new(DoctoredView { calls: Arc::clone(&shared) })
+        }, true)
+        .expect_err("a sampler refusal must fail the run");
+
+        match err {
+            ArenaError::SamplerFailed { seat, detail } => {
+                assert_eq!(seat, PlayerId(0), "the first mover's refusal is the one reported");
+                assert!(detail.contains("belief sampler refused"), "detail lost: {detail}");
+            }
+            other => panic!("expected SamplerFailed, got {other:?}"),
+        }
+        // NO move was applied: the driver asked exactly once and stopped. Had
+        // it fallen back it would have applied that move and asked again.
+        assert_eq!(calls.load(Ordering::Relaxed), 1, "the driver kept playing past a refusal");
+    }
+
+    #[test]
+    fn the_driver_hands_each_agent_only_its_own_deal() {
+        // `PendingSetup` carries every seat's deal AND the seeded deck; the
+        // factory runs inside the driver and sees only (seat, player_count), so
+        // no caller can build an agent from privileged setup data.
+        type DealLog = Arc<Mutex<Vec<(PlayerId, [OrderCardId; 2])>>>;
+        struct Recorder {
+            log: DealLog,
+        }
+        impl ArenaAgent for Recorder {
+            fn choose_starting_order(&mut self, seat: PlayerId, deal: &[OrderCardId; 2]) -> u8 {
+                self.log.lock().unwrap().push((seat, *deal));
+                0
+            }
+            fn choose(&mut self, _v: &PlayerView, _r: &Rules) -> Result<DecisionReport, String> {
+                // Setup is all this test is about; stop the game here rather
+                // than pay a full one.
+                Err("stop after setup".to_string())
+            }
+        }
+
+        let rules = Rules::standard();
+        let deals: DealLog = Arc::new(Mutex::new(Vec::new()));
+        let built: Arc<Mutex<Vec<(PlayerId, u8)>>> = Arc::new(Mutex::new(Vec::new()));
+        let log = Arc::clone(&deals);
+        let seen_args = Arc::clone(&built);
+        let err = run_arena_game(world(4), 2, &rules, &mut |seat, players| {
+            seen_args.lock().unwrap().push((seat, players));
+            Box::new(Recorder { log: Arc::clone(&log) })
+        }, true)
+        .expect_err("the recorder stops the game at its first decision");
+        assert!(matches!(err, ArenaError::SamplerFailed { .. }));
+
+        assert_eq!(
+            *built.lock().unwrap(),
+            vec![(PlayerId(0), 2u8), (PlayerId(1), 2u8)],
+            "the factory saw something other than (seat, player_count) per seat",
+        );
+        let entries = deals.lock().unwrap();
+        assert_eq!(entries.len(), 2, "one setup decision per seat");
+        assert_eq!(entries[0].0, PlayerId(0));
+        assert_eq!(entries[1].0, PlayerId(1));
+        assert_ne!(entries[0].1, entries[1].1, "two seats were handed the same deal");
+    }
+
+    #[test]
+    fn honest_path_tally_counts_every_decision() {
+        // Anti-vacuity for the honest chain: every applied move came out of a
+        // sampled world. A completed game proves nothing on its own -- the
+        // fallback arm this driver refuses to have would also have completed
+        // it (the trap `AgentPathTally` was built for).
+        let rules = Rules::standard();
+        let seed = world(5);
+        let seating = unit_for(2, seed).seatings[0].clone();
+        let tallies: Arc<Mutex<Vec<HonestPathTally>>> = Arc::new(Mutex::new(Vec::new()));
+        let collected = Arc::clone(&tallies);
+
+        let stats = run_arena_game(seed, 2, &rules, &mut |seat, _n| {
+            let slot = seating[seat.0 as usize];
+            let agent = PolicyAgent::new(
+                RolloutPolicy::FAMILY_WEIGHTED_DEFAULT,
+                agent_stream_seed(seed, seat, slot),
+            );
+            collected.lock().unwrap().push(agent.tally());
+            Box::new(agent)
+        }, true)
+        .unwrap_or_else(|e| panic!("arena game failed: {e}"));
+
+        let per_seat: Vec<u64> =
+            tallies.lock().unwrap().iter().map(|t| t.sampled_decisions()).collect();
+        assert_eq!(per_seat.len(), 2);
+        assert!(per_seat.iter().all(|&n| n > 0), "a seat never played: {per_seat:?}");
+        assert_eq!(
+            per_seat.iter().sum::<u64>(),
+            stats.moves_applied,
+            "some move reached the board without a sampled decision behind it",
+        );
+        assert_eq!(
+            stats.volumes.len() as u64,
+            stats.moves_applied,
+            "one volume observation per applied move",
+        );
+    }
+
+    #[test]
+    fn an_illegal_pick_is_a_hard_error() {
+        // Church spaces are faith 4..=11, so `space: u8::MAX` is in no legal
+        // list in any phase of any state -- the premise stays true whatever a
+        // future phase makes broadly legal (`game::agent`'s substitution, same
+        // reasoning).
+        struct Cheater;
+        impl ArenaAgent for Cheater {
+            fn choose_starting_order(&mut self, _s: PlayerId, _d: &[OrderCardId; 2]) -> u8 {
+                0
+            }
+            fn choose(&mut self, _v: &PlayerView, _r: &Rules) -> Result<DecisionReport, String> {
+                Ok(DecisionReport {
+                    mv: Move::ChooseChurchSpace { space: u8::MAX },
+                    volume: VolumeObs {
+                        phase: TurnPhase::Placement,
+                        total: 1,
+                        has_upper_bound_term: false,
+                    },
+                })
+            }
+        }
+
+        let rules = Rules::standard();
+        let err = run_arena_game(world(6), 2, &rules, &mut |_s, _n| Box::new(Cheater), true)
+            .expect_err("an illegal pick must fail the run");
+        match err {
+            ArenaError::IllegalPick { seat, mv } => {
+                assert_eq!(seat, PlayerId(0));
+                assert_eq!(*mv, Move::ChooseChurchSpace { space: u8::MAX });
+            }
+            other => panic!("expected IllegalPick, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn cap_reached_is_distinguished() {
+        // A cap hit is not a driver bug: it fails the cell, emits nothing, and
+        // names its seed so the run reproduces (uniform tails reach 5,364 of
+        // the 10,000 cap in E1's held-out cells). The cap is a parameter only
+        // so this assertion costs milliseconds; `run_arena_game` passes
+        // HONEST_MAX_TURNS.
+        let rules = Rules::standard();
+        let seed = world(7);
+        let seating = unit_for(2, seed).seatings[0].clone();
+        let mut make = uniform_bench(RolloutPolicy::FAMILY_WEIGHTED_DEFAULT, seed, seating);
+        let err = run_arena_game_capped(seed, 2, &rules, &mut make, false, 2)
+            .expect_err("a 2-turn cap cannot contain a full game");
+        match err {
+            ArenaError::CapReached { seed: reported, turns } => {
+                assert_eq!(reported, seed, "the cap error must name its own world seed");
+                assert!(turns > 2, "the cap fires past the limit, got turn {turns}");
+            }
+            other => panic!("expected CapReached, got {other:?}"),
+        }
+        assert_eq!(HONEST_MAX_TURNS, 10_000, "the shared termination guard moved");
+    }
+
+    #[test]
+    fn a_full_2p_and_4p_game_completes_under_each_rung() {
+        // Every rung plays both drivers to a real end trigger with per-move
+        // invariants on, and every emitted record replays STRICT-clean -- which
+        // is the property that says the debug membership cross-check and the
+        // checked `apply_move` boundary agree about every move played.
+        let rules = Rules::standard();
+        let rungs = [
+            RolloutPolicy::Uniform,
+            RolloutPolicy::RetreatAverse,
+            RolloutPolicy::FAMILY_WEIGHTED_DEFAULT,
+        ];
+
+        for (i, rung) in rungs.iter().enumerate() {
+            for (j, players) in [2u8, 4].into_iter().enumerate() {
+                let seed = world(10 + (i * 2 + j) as u64);
+                let seating = unit_for(players, seed).seatings[0].clone();
+                let mut make = uniform_bench(*rung, seed, seating);
+                let stats = run_arena_game(seed, players, &rules, &mut make, true)
+                    .unwrap_or_else(|e| panic!("{} {players}P failed: {e}", rung.as_str()));
+
+                assert_eq!(stats.players, players);
+                assert!(stats.moves_applied > 0);
+                assert!(stats.trigger.is_some(), "a completed game names its end trigger");
+                assert_eq!(stats.result.standings.len(), players as usize);
+                assert_eq!(stats.coverage.applied(), stats.moves_applied);
+                assert_eq!(stats.record.events.len() as u64, stats.moves_applied);
+                assert_eq!(stats.record.seed, seed.0);
+                assert_eq!(
+                    stats.record.config.setup_seed, stats.record.seed,
+                    "the record's config must be the one new_game stamped",
+                );
+                replay_strict(&stats.record, &rules).unwrap_or_else(|e| {
+                    panic!("{} {players}P record failed strict replay: {e}", rung.as_str())
+                });
+
+                // The diagnostic driver, same rung, same shared loop.
+                let raw = run_raw_game(
+                    seed,
+                    players,
+                    &rules,
+                    &vec![*rung; players as usize],
+                    0xD1A6_0000_0000_0006,
+                    true,
+                )
+                .unwrap_or_else(|e| panic!("{} {players}P raw failed: {e}", rung.as_str()));
+                assert!(raw.trigger.is_some());
+                replay_strict(&raw.record, &rules).unwrap_or_else(|e| {
+                    panic!("{} {players}P raw record failed strict replay: {e}", rung.as_str())
+                });
+            }
+        }
+    }
+}

@@ -27,6 +27,7 @@ mod move_legality;
 mod seeds;
 mod metrics;
 mod policy;
+mod arena;
 pub mod actions;
 
 pub use power::*;
@@ -55,3 +56,4 @@ pub use move_legality::*;
 pub use seeds::*;
 pub use metrics::*;
 pub use policy::*;
+pub use arena::*;

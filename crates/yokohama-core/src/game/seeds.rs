@@ -79,7 +79,11 @@ pub struct SeedSchedule {
 const SPLITMIX_GAMMA: u64 = 0x9E37_79B9_7F4A_7C15;
 
 /// One SplitMix64 step: advances `state` and returns the mixed output.
-fn splitmix64(state: &mut u64) -> u64 {
+///
+/// `pub(crate)` so the arena's sub-seed derivation (`game/arena.rs`) mixes with
+/// the SAME primitive this schedule streams with, rather than re-typing its
+/// constants into a second copy that can drift.
+pub(crate) fn splitmix64(state: &mut u64) -> u64 {
     *state = state.wrapping_add(SPLITMIX_GAMMA);
     let mut z = *state;
     z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
