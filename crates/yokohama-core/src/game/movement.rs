@@ -36,11 +36,17 @@ pub fn is_possible_action_area_with_tech(
 /// Full version with all options.
 /// - is_mercenary: If true, opponent presidents don't block.
 ///
-/// THE stop-legality predicate: every consumer that decides whether a President
-/// may STOP somewhere calls it rather than restating the test (the from-hand
+/// THE stop-legality predicate for WALKS and FROM-HAND PLACEMENT: those
+/// consumers call it rather than restating the test (the from-hand
 /// `PlacePresident` arm, both route searches' destination filters,
 /// `route_enum::RouteGraph`, and `move_legality`), which is why the Canal
-/// exclusion below needed to be stated only here to reach all of them
+/// exclusion below needed to be stated only here to reach all of them. The two
+/// TELEPORT arms decide their stops separately: Tram restates
+/// `allows_placement` inline (`legal_moves.rs` Tram arm), and Station
+/// (`can_teleport_to_station_with_tech`) checks neither shared predicate — the
+/// named residual in guidingpath's 2026-07-25 Canal row (generator/apply
+/// CONSISTENT there; unreachable because `StationPlace` resolutions filter
+/// `allows_placement`)
 /// (2026-07-25 alignment, `SEMANTICS_REV` 4).
 pub fn is_possible_action_area_full(
     state: &GameState,
