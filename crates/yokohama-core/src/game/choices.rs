@@ -168,8 +168,15 @@ pub fn resolve_choice_move(state: &mut GameState, mv: &Move, rules: &Rules) -> R
     // guard is what makes "no assistant can ever stand on the Canal" a checked
     // property of this file instead of an argued one.
     if let (PendingChoice::AssistantMove, Move::ChooseAssistantMove { to, .. }) = (&head, mv) {
-        if !state.board_layout.areas.get(to).is_some_and(|c| c.area_type.allows_placement()) {
-            return Err(MoveError::RuleViolation("The Canal is never a placeable area"));
+        // Two causes, two messages, mirroring `require_placeable_area`
+        // (apply_move.rs) — a ghost id must not be reported as a Canal
+        // violation (PR #10 review).
+        match state.board_layout.areas.get(to) {
+            None => return Err(MoveError::RuleViolation("Area does not exist on this board")),
+            Some(c) if !c.area_type.allows_placement() => {
+                return Err(MoveError::RuleViolation("The Canal is never a placeable area"));
+            }
+            _ => {}
         }
     }
     if !generate_choice_resolutions(state, &head, rules).contains(mv) {

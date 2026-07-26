@@ -60,11 +60,17 @@ pub fn is_possible_action_area_full(
     // Must be a real board area, and never the Canal: no pawn may ever be
     // placed there (rulebook p.14; guidingpath 2026-07-21 Canal re-ruling),
     // which is exactly what `require_placeable_area` enforces on the apply
-    // side. Stated BEFORE the mercenary early-return below, so a mercenary
-    // target inherits it too — no in-repo caller passes `is_mercenary = true`
-    // today (mercenary sub-turns read `state.mercenary_target_area` instead),
-    // so that leg is future-proofing an argument-reachable path rather than a
-    // fix to a live one.
+    // side. Stated BEFORE the mercenary early-return below so the
+    // `is_mercenary = true` ARGUMENT PATH inherits it — but note honestly
+    // (PR #10 review): no in-repo caller passes `is_mercenary = true`, and
+    // live mercenary TARGET SELECTION does not route through this predicate
+    // at all — `generate_additional_action_moves` iterates
+    // `assistants.on_board` bespoke, with no area-type filter, and
+    // `apply_mercenary` has no `require_placeable_area` either. That pair is
+    // generator/apply CONSISTENT on Canal fixtures (both accept; the
+    // AreaAction generator then yields no actions there) and unreachable by
+    // legal play — the SECOND named residual beside the Station teleport in
+    // guidingpath's 2026-07-25 Canal row, awaiting the same owner ruling.
     if !state.board_layout.areas.get(&area).is_some_and(|c| c.area_type.allows_placement()) {
         return false;
     }
