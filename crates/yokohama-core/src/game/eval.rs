@@ -50,7 +50,7 @@
 //!
 //! # The score-structure mirrors (§2.2, landed at T2)
 //!
-//! Five of the fifteen features re-derive a piece of the rulebook's END
+//! Five of the sixteen features re-derive a piece of the rulebook's END
 //! SCORING from the view: the country-set bonus, the technology
 //! industry-value majority, the church and customs pawn majorities (with the
 //! 2-player dummy competitor priced exactly as the rules price it — finding
@@ -106,16 +106,34 @@ pub const PROGRESS_FULL_PPM: u32 = 1_000_000;
 /// How many end-game clocks [`clock_ppm`] reports.
 pub const CLOCK_COUNT: usize = 4;
 
+/// Where the in-hand assistant count is SPLIT into
+/// [`Feature::AssistantsInHandCore`] and [`Feature::AssistantsInHandExcess`]:
+/// assistants up to the reserve are the ones a seat needs simply to keep
+/// acting, and are priced ABOVE a board presence; everything past it is spare
+/// tempo, priced BELOW one. The two inequalities together are what makes a
+/// placement and a recovery both payable at one ply — see [`WeightTable`] for
+/// the finding that forced the split.
+///
+/// **RULES-STRUCTURAL, and UNMEASURED per piece.** A church visit, a customs
+/// visit and a placement each want a hand assistant, so a hand at zero is a
+/// seat that cannot act; 2 is the smallest reserve that keeps one action AND
+/// one placement live. Research note R1-4 measured the UNSPLIT
+/// `assistants_in_hand` feature at AUC 0.6026 early — that figure says nothing
+/// about where the knee belongs, because the feature it measured had no knee.
+/// T4's probe measures the two halves separately and may move this.
+pub const HAND_CORE_RESERVE: u8 = 2;
+
 // ---------------------------------------------------------------------------
 // Features
 // ---------------------------------------------------------------------------
 
-/// The fifteen relative features of evaluator v1, in THE canonical order
-/// (spec §2.2's list, read top to bottom). The order is load-bearing: it
-/// indexes both weight vectors, it is the order `explain` reports terms in,
-/// and T4's probe reports per-feature figures against it. Adding a feature
-/// means adding it to [`Feature::ALL`] and to both vectors — the array lengths
-/// make that a compile error rather than a silent zero.
+/// The sixteen relative features of evaluator v1, in THE canonical order
+/// (spec §2.2's list, read top to bottom, AMENDED AT T3 by the in-hand split).
+/// The order is load-bearing: it indexes both weight vectors, it is the order
+/// `explain` reports terms in, and T4's probe reports per-feature figures
+/// against it. Adding a feature means adding it to [`Feature::ALL`] and to both
+/// vectors — the array lengths make that a compile error rather than a silent
+/// zero.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum Feature {
     /// Running victory points. R1-1: AUC 0.5625 early → 0.8612 late — the
@@ -133,8 +151,20 @@ pub enum Feature {
     /// The customs majority bonus re-derived from the view (8/4), dummy
     /// competitor included (finding D1).
     CustomsBonusNow,
-    /// Assistants in hand — playable tempo. R1-4: 0.6026 early.
-    AssistantsInHand,
+    /// Assistants in hand UP TO [`HAND_CORE_RESERVE`] — the reserve that keeps
+    /// a seat able to act. Raw value `min(in_hand, HAND_CORE_RESERVE)`, priced
+    /// ABOVE [`Feature::AssistantsOnBoard`].
+    ///
+    /// This and its Excess twin are the T3 amendment to §2.2's list: R1-4
+    /// measured a SINGLE `assistants_in_hand` feature at 0.6026 early, and a
+    /// single linear in-hand term cannot make a placement and a recovery both
+    /// pay at one ply. [`WeightTable`] states the finding and the arithmetic.
+    AssistantsInHandCore,
+    /// Assistants in hand PAST the reserve — spare tempo, and the stock a
+    /// placement ought to be spending. Raw value
+    /// `in_hand − min(in_hand, HAND_CORE_RESERVE)`, priced BELOW
+    /// [`Feature::AssistantsOnBoard`].
+    AssistantsInHandExcess,
     /// Assistants stranded in the warehouse. R1-4: 0.3932 early and the
     /// largest standardized weight in every multivariate fit — NEGATIVE.
     AssistantsInWarehouse,
@@ -160,13 +190,14 @@ pub enum Feature {
 
 impl Feature {
     /// The canonical order. `ALL[f.index()] == f` for every feature.
-    pub const ALL: [Feature; 15] = [
+    pub const ALL: [Feature; 16] = [
         Feature::VictoryPoints,
         Feature::CountryBonusNow,
         Feature::TechBonusNow,
         Feature::ChurchBonusNow,
         Feature::CustomsBonusNow,
-        Feature::AssistantsInHand,
+        Feature::AssistantsInHandCore,
+        Feature::AssistantsInHandExcess,
         Feature::AssistantsInWarehouse,
         Feature::AssistantsOnBoard,
         Feature::ShophousesBuilt,
@@ -194,16 +225,17 @@ impl Feature {
             Feature::TechBonusNow => 2,
             Feature::ChurchBonusNow => 3,
             Feature::CustomsBonusNow => 4,
-            Feature::AssistantsInHand => 5,
-            Feature::AssistantsInWarehouse => 6,
-            Feature::AssistantsOnBoard => 7,
-            Feature::ShophousesBuilt => 8,
-            Feature::TradingHousesBuilt => 9,
-            Feature::FivePowerTokens => 10,
-            Feature::ImportedGoods => 11,
-            Feature::AchievementProgressSum => 12,
-            Feature::MercenariesTotal => 13,
-            Feature::HandSize => 14,
+            Feature::AssistantsInHandCore => 5,
+            Feature::AssistantsInHandExcess => 6,
+            Feature::AssistantsInWarehouse => 7,
+            Feature::AssistantsOnBoard => 8,
+            Feature::ShophousesBuilt => 9,
+            Feature::TradingHousesBuilt => 10,
+            Feature::FivePowerTokens => 11,
+            Feature::ImportedGoods => 12,
+            Feature::AchievementProgressSum => 13,
+            Feature::MercenariesTotal => 14,
+            Feature::HandSize => 15,
         }
     }
 
@@ -216,7 +248,8 @@ impl Feature {
             Feature::TechBonusNow => "tech_bonus_now",
             Feature::ChurchBonusNow => "church_bonus_now",
             Feature::CustomsBonusNow => "customs_bonus_now",
-            Feature::AssistantsInHand => "assistants_in_hand",
+            Feature::AssistantsInHandCore => "assistants_in_hand_core",
+            Feature::AssistantsInHandExcess => "assistants_in_hand_excess",
             Feature::AssistantsInWarehouse => "assistants_in_warehouse",
             Feature::AssistantsOnBoard => "assistants_on_board",
             Feature::ShophousesBuilt => "shophouses_built",
@@ -277,14 +310,38 @@ impl WeightTable {
     /// - `assistants_in_warehouse` −10 → −4 and `hand_size` −3 → −6 are the
     ///   two NEGATIVE features (R1-4, R1-7), warehouse largest early and hand
     ///   size growing late.
-    /// - `assistants_in_hand` 8 → 4 sits strictly ABOVE `assistants_on_board`
-    ///   7 → 4 early. That gap is deliberate and is §2.5's whole point: under
-    ///   eval-v0's on_board(18) vs in_hand(8) a recovery was a strict loss, so
-    ///   nonzero-recovery retreats were argmax 0 of 48,458 times (notes §4.3) —
-    ///   the pathology `policy_diversity`'s gate exists to catch, arriving from
-    ///   the evaluator side. Pricing in-hand above on-board makes a retreat
-    ///   sometimes worth taking; T4's falsifier measures the resulting share
-    ///   and must not read 0.
+    /// - **THE ASSISTANT TRIPLE, and the T3 finding it resolves.**
+    ///   `assistants_in_hand_core` 30 → 20, `assistants_on_board` 14 → 10 and
+    ///   `assistants_in_hand_excess` 4 → 2 are ONE decision, not three: the
+    ///   ordering `core > board > excess` holds in BOTH vectors (and therefore
+    ///   at every interpolation between them, since the bands `[20,30]`,
+    ///   `[10,14]` and `[2,4]` do not overlap), and those two inequalities are
+    ///   the non-degeneracy conditions the rung needs.
+    ///
+    ///   The finding: at ONE PLY a placement moves `k` assistants from hand to
+    ///   board and does nothing else the positional vector can see — the area
+    ///   action a placement buys happens in a LATER phase, past the one-ply
+    ///   horizon. With a LINEAR in-hand term a placement's sign is therefore
+    ///   exactly `k · (w_on_board − w_in_hand)`, which is the same inequality,
+    ///   negated, that §2.5 wanted the OTHER way so a retreat could ever pay.
+    ///   One linear term cannot have both. The pre-T3 table took the retreat
+    ///   side (in-hand 8 over on-board 7), and the consequence was measured,
+    ///   not feared: every placement scored strictly negative, so 2P greedy
+    ///   self-play placed 0 assistants and ran to the turn cap — R2's absorbing
+    ///   loop arriving from the WEIGHTS instead of from the tie-break.
+    ///
+    ///   The PIECEWISE split has both, because a placement and a recovery spend
+    ///   different parts of the hand. Placing FROM EXCESS pays
+    ///   (`w_board > w_excess`); stripping the last of the reserve does not
+    ///   (`w_core > w_board`); recovering into an EMPTY hand pays (the same
+    ///   `w_core > w_board`, read the other way); over-recovering past the
+    ///   reserve does not (`w_board > w_excess`, likewise). §2.5's falsifier is
+    ///   unchanged and now achievable — T4 MEASURES the nonzero-recovery pick
+    ///   share and it must not read 0, which under eval-v0's on_board(18) vs
+    ///   in_hand(8) it did: argmax 0 of 48,458 times (notes §4.3), the
+    ///   pathology `policy_diversity`'s gate exists to catch, arriving from the
+    ///   evaluator side. Split point and magnitudes alike are PROVISIONAL and
+    ///   unmeasured per piece; see [`HAND_CORE_RESERVE`].
     /// - The building weights (12 → 20, 15 → 25) rise late because they carry
     ///   printed VP AND run an end trigger; trading houses are scarcer (4 vs 8)
     ///   and better rewarded, so they price higher.
@@ -327,11 +384,13 @@ impl WeightTable {
     /// authority on the order, and the sign test
     /// (`provisional_weight_signs_follow_the_research_notes`) is what would
     /// actually catch a mis-indexed literal — it pins the sign of every one of
-    /// the fifteen slots.
+    /// the sixteen slots, with
+    /// `the_hand_split_orders_core_above_board_above_excess_in_both_vectors`
+    /// pinning the two ordering inequalities the assistant triple turns on.
     pub const PROVISIONAL_V1: WeightTable = WeightTable {
-        //     [vp, ctry, tech, chur, cust, hand, ware, brd, shop, trad, 5pw, imp, achv, merc, hnd#]
-        early: [10,   12,    6,   -4,    3,    8,  -10,   7,   12,   15,   8,   5,    2,    3,   -3],
-        late:  [40,   30,   20,   16,   20,    4,   -4,   4,   20,   25,  10,   8,    4,    4,   -6],
+        //     [vp, ctry, tech, chur, cust, hCORE, hEXC, ware, brd, shop, trad, 5pw, imp, achv, merc, hnd#]
+        early: [10,   12,    6,   -4,    3,    30,    4,  -10,  14,   12,   15,   8,   5,    2,    3,   -3],
+        late:  [40,   30,   20,   16,   20,    20,    2,   -4,  10,   20,   25,  10,   8,    4,    4,   -6],
     };
 
     /// The all-zero table: a CONSTANT evaluator. Not a curiosity — spec §3.2's
@@ -397,7 +456,7 @@ pub struct TermContribution {
 /// used — while the raw `viewer_value`/`opponent_value` stay populated so a
 /// terminal explanation is still readable. The `terminal` value is then the
 /// whole score, and it is a named additive contribution rather than a
-/// sixteenth `Feature` because it is not a feature: §2.2's list is fifteen
+/// seventeenth `Feature` because it is not a feature: §2.2's list is sixteen
 /// entries and a rank is not one of them.
 ///
 /// `PartialEq`/`Eq` are load-bearing, not conveniences: spec §0.4(ii)'s
@@ -477,7 +536,7 @@ pub fn explain(view: &PlayerView, rules: &Rules, weights: &WeightTable) -> Expla
     let progress = progress_ppm(view, rules);
     let structure = ScoreStructure::derive(view, rules);
     // A view without its own seat is degenerate rather than fatal (`observe`
-    // cannot make one; a fixture can). It reports fifteen zero terms and a zero
+    // cannot make one; a fixture can). It reports sixteen zero terms and a zero
     // total — the same answer `score` gives — instead of an empty explanation.
     let me = seated_viewer(view);
     let terminal = me.and_then(|m| terminal_standing_of(view, m, &structure));
@@ -712,7 +771,16 @@ impl ScoreStructure {
             Feature::CustomsBonusNow => structured(&self.customs),
             Feature::AchievementProgressSum => structured(&self.achievement),
 
-            Feature::AssistantsInHand => i64::from(player.assistants.in_hand),
+            // The piecewise split, and the only place its shape lives: the two
+            // raw values SUM to `in_hand` at every count, so the pair carries
+            // exactly the information the single feature did and the weights
+            // decide what to do with it.
+            Feature::AssistantsInHandCore => {
+                i64::from(player.assistants.in_hand.min(HAND_CORE_RESERVE))
+            }
+            Feature::AssistantsInHandExcess => i64::from(
+                player.assistants.in_hand - player.assistants.in_hand.min(HAND_CORE_RESERVE),
+            ),
             Feature::AssistantsInWarehouse => i64::from(player.assistants.in_warehouse),
             // Summed as i64, not through `AssistantState::total`'s u8
             // arithmetic: this fold must not depend on the pawn supply staying
@@ -1392,8 +1460,12 @@ mod tests {
     use super::*;
 
     #[test]
-    fn the_feature_list_is_fifteen_features_in_a_canonical_order() {
-        assert_eq!(Feature::COUNT, 15, "spec §2.2's list is fifteen entries");
+    fn the_feature_list_is_sixteen_features_in_a_canonical_order() {
+        assert_eq!(
+            Feature::COUNT,
+            16,
+            "spec §2.2's list is sixteen entries since T3's in-hand split",
+        );
         for (i, feature) in Feature::ALL.into_iter().enumerate() {
             assert_eq!(feature.index(), i, "{} is not at its own index", feature.name());
         }
@@ -1461,8 +1533,12 @@ mod tests {
 
     /// The signs are the part of [`WeightTable::PROVISIONAL_V1`] that comes
     /// from measurement (research notes §1), so they are pinned; the magnitudes
-    /// are hand-set and deliberately NOT pinned beyond the two structural
-    /// relations the doc argues for.
+    /// are hand-set and deliberately NOT pinned here. The two magnitude
+    /// RELATIONS that are load-bearing rather than taste — the assistant
+    /// triple's `core > board > excess` — moved to
+    /// `the_hand_split_orders_core_above_board_above_excess_in_both_vectors` at
+    /// T3, because they are non-degeneracy conditions and deserve their own
+    /// failure message.
     #[test]
     fn provisional_weight_signs_follow_the_research_notes() {
         let w = WeightTable::PROVISIONAL_V1;
@@ -1511,12 +1587,70 @@ mod tests {
             .into_iter()
             .map(|f| w.get(f).0.abs())
             .max()
-            .expect("fifteen features");
+            .expect("sixteen features");
         assert!(vp_early < early_max, "early VP must NOT dominate (R1-1)");
+    }
 
-        // §2.5: in-hand priced above on-board early, so a recovery is not a
-        // strict loss the way it was under eval-v0.
-        assert!(w.get(Feature::AssistantsInHand).0 > w.get(Feature::AssistantsOnBoard).0);
+    /// **THE T3 NON-DEGENERACY PIN.** `core > board > excess`, in BOTH vectors.
+    ///
+    /// These are not two tidy facts about a hand-set table; they ARE the
+    /// conditions that make Greedy-v1 playable, and the T3 finding is what
+    /// happens when a table has only one of them. At one ply a placement's sign
+    /// is `k · (w_board − w_hand)` and a recovery's is its negation, so with a
+    /// SINGLE linear in-hand weight the two are the same inequality and exactly
+    /// one of them can pay. The pre-split table priced in-hand 8 over on-board
+    /// 7, which took the recovery side and made every placement a strict loss:
+    /// 2P self-play placed 0 assistants and ran to the turn cap.
+    ///
+    /// The piecewise split buys both because the two moves spend different
+    /// parts of the hand — `w_board > w_excess` makes placing from excess pay,
+    /// `w_core > w_board` makes recovering into an empty hand pay. Break either
+    /// inequality in either vector and one of the two moves goes back to never
+    /// paying, which is why this is pinned rather than left to the sign test.
+    /// The four one-ply consequences are asserted end-to-end on real successor
+    /// views by `the_hand_split_makes_placement_and_recovery_both_payable_at_one_ply`.
+    ///
+    /// BOTH vectors, and that covers every stage: interpolation is monotone in
+    /// `p`, so bands that do not overlap at the endpoints cannot cross between
+    /// them (measured here: core `[20,30]`, board `[10,14]`, excess `[2,4]`).
+    #[test]
+    fn the_hand_split_orders_core_above_board_above_excess_in_both_vectors() {
+        let w = WeightTable::PROVISIONAL_V1;
+        let (core_early, core_late) = w.get(Feature::AssistantsInHandCore);
+        let (board_early, board_late) = w.get(Feature::AssistantsOnBoard);
+        let (excess_early, excess_late) = w.get(Feature::AssistantsInHandExcess);
+
+        assert!(
+            core_early > board_early,
+            "early: core ({core_early}) must outprice on-board ({board_early}), or recovering \
+             into an empty hand never pays",
+        );
+        assert!(
+            board_early > excess_early,
+            "early: on-board ({board_early}) must outprice excess ({excess_early}), or placing \
+             from a full hand never pays",
+        );
+        assert!(
+            core_late > board_late,
+            "late: core ({core_late}) must outprice on-board ({board_late})",
+        );
+        assert!(
+            board_late > excess_late,
+            "late: on-board ({board_late}) must outprice excess ({excess_late})",
+        );
+
+        // The bands the endpoints define do not overlap, so no interpolated
+        // stage can reorder them. Checked at the crossing point too, since the
+        // claim is about `interpolate`'s output and not about the literals.
+        for p in [0, 1, 250_000, 500_000, 750_000, 999_999, PROGRESS_FULL_PPM] {
+            let core = interpolate(core_early, core_late, p);
+            let board = interpolate(board_early, board_late, p);
+            let excess = interpolate(excess_early, excess_late, p);
+            assert!(
+                core > board && board > excess,
+                "the ordering broke at p={p}: core {core}, board {board}, excess {excess}",
+            );
+        }
     }
 
     #[test]

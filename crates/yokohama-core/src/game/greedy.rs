@@ -25,7 +25,7 @@
 //! |---|---|
 //! | `MovementRoutes` | ALL, straight off the handle's memo (max OBSERVED 17 per set, R2) |
 //! | `MovementRetreat` | NEVER materialized: the zero-recovery anchor + the all-recover anchor + `M` [`retreat_sample`] draws, deduped |
-//! | `Placement` | all REALIZED moves when there are ≤ [`PLACEMENT_CANDIDATE_CAP`], else a uniform `cap`-subset of them |
+//! | `Placement` | the EMPTY placement anchored + all REALIZED moves when there are ≤ [`PLACEMENT_CANDIDATE_CAP`], else a uniform `cap−1`-subset of the rest |
 //! | everything else | full enumeration (bounded-small, delegated families) |
 //!
 //! **The placement cap's operand is the REALIZED count, never
@@ -59,11 +59,20 @@
 //! `a_constant_evaluator_places_assistants_terminates_and_explains_every_move`
 //! is that pin, and its doc records both observed outcomes.
 //!
-//! One draw is spent per decision whatever the tie count (`gen_range(0..1)` for
-//! a lone argmax), so the stream position after a decision is a function of the
-//! world and the candidate scheme — never of the weights. That keeps two weight
-//! tables comparable move-for-move up to the first place they genuinely
+//! **Exactly ONE u64 is drawn per decision, whatever the tie count**
+//! ([`uniform_index`]), so the stream position after a decision is a function
+//! of the world and the candidate scheme — never of the weights. That keeps two
+//! weight tables comparable move-for-move up to the first place they genuinely
 //! disagree, instead of desynchronising the stream at the first tie.
+//!
+//! That property is a T3-review FIX, not a restatement: this paragraph
+//! previously claimed it of `gen_range(0..tied.len())`, which cannot deliver
+//! it. `gen_range` is Lemire rejection sampling — the review measured
+//! acceptance at ~0.5–0.7 and a mean of ~2 words consumed, with the rate a
+//! function of `tied.len()`, i.e. of how many candidates the WEIGHTS tied. Two
+//! tables therefore desynchronised at the first tie of a different width, and
+//! the comparability the paragraph promised was never there. Multiply-shift
+//! draws one word unconditionally instead.
 //!
 //! # Cost, measured — and why the per-DECISION number is not R2's
 //!
@@ -80,18 +89,30 @@
 //! | `ZERO` (debug) | 2,013 | 851.3 | 35.08 | 24.27 |
 //! | `PROVISIONAL_V1` (debug) | 12,000 | 737.4 | 47.25 | 15.61 |
 //!
+//! **THE TABLE ABOVE IS SUPERSEDED IN ITS `PROVISIONAL_V1` ROWS and is kept for
+//! the ZERO rows and the per-candidate cost.** Those rows were taken under the
+//! PRE-SPLIT weight table, which was degenerate: it placed nothing, so every
+//! placement family stayed maximal and the candidate mean was inflated by a bug
+//! rather than by the scheme (T3 review S2 / spec L14). Post-split re-measure,
+//! ONE figure, labelled: 2P Greedy-vs-Greedy self-play under the shipped
+//! `PROVISIONAL_V1` at master `0xA3E1_2026_0726_0009` runs **27.91
+//! candidates/decision** (7,647 over 274 decisions), printed by
+//! `the_shipped_table_plays_a_game_that_places_assistants_and_ends`. The mean is
+//! deterministic in `(master, table)`, so it needs no timing conditions — and it
+//! is still a PROFILE, not a shipped-cost claim, because T4 re-prices the table
+//! and its probe re-measures this alongside the µs figures.
+//!
 //! **The per-CANDIDATE figure is the comparable one and it agrees with R2**:
 //! 1.00–1.99 µs here against R2's isolate composition of 1.359 µs (apply 0.673 +
 //! observe 0.609 + eval 0.077). **The per-DECISION figure is NOT comparable to
 //! R2's 21.4–28.0 µs and the difference is arithmetic, not a regression**: R2
 //! measured 15.31 candidates/decision under eval-v0, and 15.31 × 1.359 + 2.639
-//! fixed = 23.5 µs, exactly its own quoted number. This rung at 35–47
+//! fixed = 23.5 µs, exactly its own quoted number. This rung at 28–35
 //! candidates/decision costs what that arithmetic says it should. The candidate
-//! MEAN is a property of the weight table's play, not of the scheme: `ZERO`
-//! floods the board (947 assistants placed in one game), and `PROVISIONAL_V1`
-//! places nothing, so placement families stay maximal — **a representative
-//! candidate mean has to wait for T4's frozen table**, and this row is a profile
-//! rather than a claim about Greedy-v1's shipped cost. Debug runs 12–14×.
+//! MEAN is a property of the weight table's play, not of the scheme — `ZERO`
+//! floods the board (947 assistants placed in one game) and keeps placement
+//! families large that way — so **a representative candidate mean still has to
+//! wait for T4's frozen table**. Debug runs 12–14×.
 //!
 //! # What is provisional
 //!
@@ -103,7 +124,7 @@ use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
-use rand::{Rng, SeedableRng};
+use rand::{Rng, RngCore, SeedableRng};
 use rand_chacha::ChaCha8Rng;
 
 use crate::game::apply_move::apply_move_unchecked;
@@ -167,10 +188,11 @@ pub struct Candidates {
     /// over a random subset rather than the whole family.
     ///
     /// Reported rather than inferred because the two arms COINCIDE at the
-    /// boundary (a `cap`-reservoir over `n ≤ cap` items yields all of them, in
-    /// order), which is a good property — no behavioural cliff — and is exactly
-    /// what makes the arm invisible in the output. T4's probe counts these
-    /// (spec §2.4's 2P cap-bind figure), and the operand pin below asserts it.
+    /// boundary (the anchored empty placement plus a `cap−1`-reservoir over the
+    /// remaining `n − 1 ≤ cap − 1` items yields all of them, in order), which is
+    /// a good property — no behavioural cliff — and is exactly what makes the
+    /// arm invisible in the output. T4's probe counts these (spec §2.4's 2P
+    /// cap-bind figure), and the operand pin below asserts it.
     pub placement_cap_bound: bool,
 }
 
@@ -203,15 +225,44 @@ pub fn candidates(
                 }
             }
             MoveFamily::Placement => {
-                // ONE lazy pass. The reservoir is the whole realized family when
-                // it fits (positions fill in enumeration order and no
-                // replacement runs), and a uniform cap-subset of it when it does
-                // not — so the operand is the REALIZED count STRUCTURALLY: this
-                // arm has no way to consult `placement_upper_len` even if a
-                // future edit wanted to.
-                let (drawn, realized) =
-                    reservoir(handle.iter(family), PLACEMENT_CANDIDATE_CAP, rng);
+                // ONE lazy pass, with the EMPTY placement ANCHORED (T3 review
+                // S3). `placement_iter` emits it first by contract — it is the
+                // `k = 0` combination, cost 0, hence always affordable and
+                // always the first thing the Option-A cursor yields — so
+                // taking one item off the front is exactly "hold out the null
+                // option", and the `debug_assert` below pins that reading.
+                //
+                // WHY it is held out rather than left in the pool: the
+                // sampling arm keeps `cap` of `n` members, so a pooled null
+                // option survives with probability `cap/n` and the argmax at a
+                // 3,231-member point would be missing "place nothing" ~84% of
+                // the time. Retreat already anchors both of ITS nulls (recover
+                // nothing, recover everything); this gives placement the same
+                // guarantee, and the rule the two arms now share is: the null
+                // option is in the argmax set at EVERY family, always.
+                //
+                // The rest reservoirs at `cap − 1`, so the total stays ≤ cap
+                // and every member is still distinct. When the family fits, the
+                // reservoir is the whole remainder in enumeration order and the
+                // candidate list is the family verbatim — the two arms coincide
+                // at the boundary exactly as before.
+                let mut rest = handle.iter(family);
+                let anchor = rest.next();
+                debug_assert!(
+                    matches!(
+                        anchor,
+                        Some(Move::PlaceThreeAreas { ref placements }) if placements.is_empty()
+                    ),
+                    "placement_iter must emit the empty placement first; got {anchor:?}",
+                );
+                let (drawn, rest_len) = reservoir(rest, PLACEMENT_CANDIDATE_CAP - 1, rng);
+                // The operand is the REALIZED count STRUCTURALLY: this arm has
+                // no way to consult `placement_upper_len` even if a future edit
+                // wanted to, and the anchor is counted into it so the reported
+                // bind is a statement about the WHOLE family.
+                let realized = rest_len + usize::from(anchor.is_some());
                 placement_cap_bound = realized > PLACEMENT_CANDIDATE_CAP;
+                moves.extend(anchor);
                 moves.extend(drawn);
             }
             // Routes off the memo; the delegated families are bounded-small.
@@ -240,7 +291,9 @@ pub fn candidates(
 /// `Ord` nor `Hash`, so a set-based dedupe would need a key type; at this size
 /// that would be machinery around a ten-element scan. The placement arm needs no
 /// dedupe at all — [`reservoir`] samples WITHOUT replacement from an enumeration
-/// whose members are distinct by construction.
+/// whose members are distinct by construction, and the anchored empty placement
+/// is held OUT of that pool rather than added back to it, so it cannot collide
+/// with a draw either.
 fn push_unique(out: &mut Vec<Move>, mv: Move) {
     if !out.contains(&mv) {
         out.push(mv);
@@ -288,6 +341,38 @@ fn reservoir(
         seen += 1;
     }
     (kept, seen)
+}
+
+/// A uniform index into `0..len` from EXACTLY ONE u64 — Lemire's multiply-shift
+/// with the rejection loop deliberately omitted.
+///
+/// **Constant consumption is the point** (T3 review M1). `Rng::gen_range` is
+/// the same multiply-shift wrapped in a rejection loop that redraws whenever
+/// the low word could bias the result: correct, but it consumes a
+/// `len`-dependent number of words (measured acceptance ~0.5–0.7, mean ~2), and
+/// `len` here is the size of the argmax set — a function of the weights. That
+/// made the stream position after a decision weight-dependent, which is exactly
+/// what this module's tie-break doc promises it is not.
+///
+/// **What omitting rejection costs.** The modulo bias is at most
+/// `len / 2^64`: with `len` bounded by the candidate set (hundreds, and
+/// [`PLACEMENT_CANDIDATE_CAP`]-bounded on its largest family), that is under
+/// `2^-55` — no run this project will ever make can distinguish it from
+/// uniform. A bias too small to measure is the right trade for a stream
+/// property two weight tables have to share.
+///
+/// Three pins, one per claim: the constant consumption
+/// (`the_tie_break_draw_consumes_exactly_one_word_whatever_the_tie_count`, with
+/// the replaced `gen_range` measured as `len`-dependent in the same test), the
+/// uniformity band (`the_tie_break_draw_is_uniform_over_the_tied_set`), and the
+/// end-to-end reach through [`GreedyAgent::choose`]
+/// (`the_tie_break_reaches_the_whole_argmax_set`, unchanged by this fix).
+///
+/// `len` must be nonzero; the only caller has already refused an empty
+/// candidate set.
+fn uniform_index(draw: u64, len: usize) -> usize {
+    debug_assert!(len > 0, "a uniform index over an empty set is undefined");
+    ((u128::from(draw) * len as u128) >> 64) as usize
 }
 
 // ---------------------------------------------------------------------------
@@ -626,8 +711,9 @@ impl ArenaAgent for GreedyAgent {
             }
         }
 
-        // Spec §3.2: uniform over the FULL argmax set, one draw either way.
-        let chosen = tied[self.rng.gen_range(0..tied.len())];
+        // Spec §3.2: uniform over the FULL argmax set, off EXACTLY one u64
+        // whatever the tie count (see `uniform_index`).
+        let chosen = tied[uniform_index(self.rng.next_u64(), tied.len())];
         let mv = moves[chosen].clone();
 
         // Spec §0.3(b): the chosen move is explained ALWAYS, and there is no
@@ -963,9 +1049,16 @@ mod tests {
 
     /// **4P FALLBACK COVERAGE (spec §3.3's "at 4P the fallback is the live
     /// arm").** On the shipped `action_cost` 3,231-combination fixture the
-    /// sampling arm really runs, and what it produces is a uniform
-    /// `cap`-SUBSET: exactly 512 moves, all distinct, all legal placements, and
-    /// demonstrably not the enumeration's first 512.
+    /// sampling arm really runs, and what it produces is the anchored empty
+    /// placement plus a uniform `cap−1`-SUBSET of the rest: exactly 512 moves,
+    /// all distinct, all legal placements, and demonstrably not the
+    /// enumeration's first 512.
+    ///
+    /// The ANCHOR is asserted here and not merely at the small-family boundary
+    /// (T3 review S3), because this is the only cell where it can fail: pooled
+    /// with the other 3,230 members the null option would survive with
+    /// probability 512/3,231 ≈ 0.16, so a passing test on a family that FITS
+    /// would say nothing at all about the arm that drops it.
     #[test]
     fn placement_sampling_arm_draws_512_distinct_legal_moves_at_4p() {
         let rules = Rules::standard();
@@ -980,6 +1073,16 @@ mod tests {
         let c = candidates(&handle, DEFAULT_RETREAT_SAMPLES, &mut rng);
         assert!(c.placement_cap_bound, "the cap must bind and be reported");
         assert_eq!(c.moves.len(), PLACEMENT_CANDIDATE_CAP, "the sample is exactly cap-sized");
+
+        // THE ANCHOR: the always-legal null option survives the sampling arm,
+        // and survives it at the FRONT — the same guarantee retreat's zero and
+        // all-recover anchors give at their own family.
+        let empty = Move::PlaceThreeAreas { placements: Vec::new() };
+        assert_eq!(
+            c.moves.first(),
+            Some(&empty),
+            "the empty placement must be anchored, not left to a 512/3231 draw",
+        );
 
         // Distinct, and legal in the state they were drawn from.
         for (i, a) in c.moves.iter().enumerate() {
@@ -1050,6 +1153,82 @@ mod tests {
     }
 
     // -- the tie-break (spec §3.2) -------------------------------------------
+
+    /// **THE CONSTANT-CONSUMPTION PROPERTY (T3 review M1), made executable.**
+    ///
+    /// The stream position after a tie-break must not depend on how many
+    /// candidates tied, because that count is a function of the WEIGHTS — and
+    /// this module's doc has always promised two weight tables walk the same
+    /// stream up to the first place they genuinely disagree. The promise is
+    /// checked by reading the NEXT word off the stream after the draw: it is
+    /// the same word for every tie count exactly when the same number of words
+    /// was spent.
+    ///
+    /// The anti-vacuity half is the review's own measurement, in place: the
+    /// `gen_range` this replaced genuinely IS `len`-dependent (Lemire
+    /// rejection), so if the second assertion ever went quiet the first would be
+    /// pinning nothing.
+    #[test]
+    fn the_tie_break_draw_consumes_exactly_one_word_whatever_the_tie_count() {
+        let next_word_after_shift = |len: usize| -> u64 {
+            let mut rng = seeded_rng(0xB1A5);
+            let i = uniform_index(rng.next_u64(), len);
+            assert!(i < len, "index {i} is out of range for a tie set of {len}");
+            rng.next_u64()
+        };
+        let baseline = next_word_after_shift(1);
+        for len in [2usize, 3, 7, 17, 186, 512, 3_231] {
+            assert_eq!(
+                next_word_after_shift(len),
+                baseline,
+                "a tie set of {len} moved the stream differently than a lone argmax",
+            );
+        }
+
+        // ANTI-VACUITY: the mechanism this replaced does not have the property.
+        let next_word_after_gen_range = |len: usize| -> u64 {
+            let mut rng = seeded_rng(0xB1A5);
+            let _ = rng.gen_range(0..len);
+            rng.next_u64()
+        };
+        assert_ne!(
+            next_word_after_gen_range(3_231),
+            next_word_after_gen_range(1),
+            "anti-vacuity: if gen_range already consumed a constant number of words \
+             there would have been nothing to fix",
+        );
+    }
+
+    /// The draw is uniform over the argmax set — the distributional half of the
+    /// tie-break, at the small `len` where a bias would be visible.
+    ///
+    /// A ±10% band over 60k seeded draws, the same shape
+    /// `retreat_sample_is_uniform_over_the_product_family` uses one module over.
+    /// Multiply-shift's modulo bias here is `len / 2^64 ≈ 3 · 10^-19`, which no
+    /// band this side of the heat death would resolve; what the band actually
+    /// kills is a mis-written index (an off-by-one that starves slot 0 or `len −
+    /// 1`, or a shift that collapses the range), which is the failure mode
+    /// omitting the rejection loop could plausibly introduce.
+    #[test]
+    fn the_tie_break_draw_is_uniform_over_the_tied_set() {
+        const DRAWS: usize = 60_000;
+        const LEN: usize = 6;
+        let mut rng = seeded_rng(20_260_726);
+        let mut counts = [0usize; LEN];
+        for _ in 0..DRAWS {
+            counts[uniform_index(rng.next_u64(), LEN)] += 1;
+        }
+        let expected = DRAWS / LEN;
+        for (i, n) in counts.iter().enumerate() {
+            assert!(
+                (expected * 9 / 10..=expected * 11 / 10).contains(n),
+                "slot {i} drawn {n} times, outside ±10% of {expected} — not uniform: {counts:?}",
+            );
+        }
+        // The endpoints specifically: `0` and `len − 1` are what a shift error
+        // starves, and they are inside the band above only if they were reached.
+        assert!(counts[0] > 0 && counts[LEN - 1] > 0, "an endpoint was never drawn: {counts:?}");
+    }
 
     /// **THE DEGENERACY PIN (spec §3.2).** A CONSTANT evaluator ties every
     /// candidate, so the tie-break is the only thing choosing — and a game under
@@ -1245,88 +1424,188 @@ mod tests {
         out
     }
 
-    // -- the one-ply placement calculus (a RECORDED FINDING for T4) ----------
+    // -- the one-ply placement/recovery calculus (the T3 finding, discharged) --
 
-    /// **RECORDED FINDING, routed to T4's weight freeze (spec §2.4). The rung is
-    /// correct; the PROVISIONAL table it is handed is not playable.**
+    /// **THE T3 DEGENERACY, DISCHARGED.** Both a placement and a recovery pay at
+    /// one ply under [`WeightTable::PROVISIONAL_V1`] — which a linear in-hand
+    /// term made impossible, and which `eval`'s piecewise hand split fixed.
+    ///
+    /// # The finding this replaces (kept as history, spec ledger L14)
     ///
     /// At ONE PLY a placement moves `k` assistants from hand to board and does
     /// nothing else the positional vector can see — the area action a placement
-    /// buys happens in a LATER phase, past this rung's horizon. So a placement's
-    /// sign is exactly `k · (w_on_board − w_in_hand)`, and
-    /// [`WeightTable::PROVISIONAL_V1`]'s early row prices in-hand **8** against
-    /// on-board **7**. Measured at the first organic 2P placement point (master
-    /// `0xA3E1_2026_0726_0009`, seat 0, 186 candidates): the empty placement
-    /// scores 0 and EVERY single-area placement scores −1. Driven to a game that
-    /// is R2's absorbing loop arriving from the WEIGHTS instead of from the
-    /// tie-break — nothing is ever placed, so the routes family is empty at
-    /// every Movement point — and a 2P self-play game returns
-    /// `CapReached { turns: 401 }` having placed 0 assistants.
+    /// buys happens in a LATER phase, past this rung's horizon. With a SINGLE
+    /// linear `assistants_in_hand` weight a placement's sign was therefore
+    /// exactly `k · (w_on_board − w_in_hand)`, and the pre-split table priced
+    /// in-hand **8** against on-board **7** so that a RETREAT could ever be
+    /// worth taking (§2.5). Those are the same inequality. Observed at the time
+    /// (master `0xA3E1_2026_0726_0009`, first organic 2P placement point, seat
+    /// 0, 186 candidates): the empty placement scored 0 and EVERY single-area
+    /// placement scored −1; a driven 2P self-play game returned
+    /// `CapReached { turns: 401 }` having placed 0 assistants — R2's absorbing
+    /// loop arriving from the WEIGHTS rather than from the tie-break. The
+    /// recorded test's second assertion was written to FAIL once the table was
+    /// re-priced; this is that re-pointing.
     ///
-    /// §2.5's in-hand-above-on-board ordering was chosen so a RETREAT could ever
-    /// be worth taking. At one ply that is the SAME inequality as "a placement
-    /// never is", and a linear positional term cannot have both. T3 does not
-    /// invent weights (§2.4 takes exactly ONE measured adjustment pass, at T4),
-    /// so the finding is recorded executably instead.
+    /// # What is asserted now
     ///
-    /// The FIRST assertion is the mechanism and stays true forever. The SECOND
-    /// records the provisional table's current ordering; **T4 re-pricing it is
-    /// what flips that assertion, and flipping it IS the discharge.**
+    /// The four one-ply cells the split exists to make simultaneously true, on
+    /// DOCTORED VIEW PAIRS built from a real observed view (only the viewer's
+    /// `in_hand`/`on_board` move, so every other term — including the opponent
+    /// each feature selects — is identical across a pair and the difference in
+    /// `score` is exactly the assistant arithmetic):
+    ///
+    /// | cell | hand before → after | pays? | inequality |
+    /// |---|---|---|---|
+    /// | place 3 from a hand of 5 | 5 → 2 | YES | `w_board > w_excess` |
+    /// | place 2 from a hand of 2 | 2 → 0 | NO | `w_core > w_board` |
+    /// | recover 2 into an empty hand | 0 → 2 | YES | `w_core > w_board` |
+    /// | recover 2 past the reserve | 2 → 4 | NO | `w_board > w_excess` |
+    ///
+    /// Two inequalities, four cells: rows 2 and 3 are one inequality read in
+    /// each direction, and so are rows 1 and 4. They are spelled out separately
+    /// anyway because the FOUR SCENARIOS are the claim — the split's content is
+    /// that all four hold at once, which no single linear weight can arrange.
+    ///
+    /// The DRIVEN half is the other side of the same discharge: the same 2P
+    /// self-play that returned `CapReached` with 0 assistants placed now
+    /// finishes inside the cap and places assistants.
     #[test]
-    fn the_one_ply_placement_sign_is_the_assistant_weight_gap() {
+    fn the_hand_split_makes_placement_and_recovery_both_payable_at_one_ply() {
         let rules = Rules::standard();
         let (state, seat) = first_placement_point(&rules, MASTER);
         let view = observe(&state, seat).expect("observe");
+        let area = AreaId::new(0);
+
+        // One doctored view, with the viewer's assistants set to (in_hand,
+        // on_board). Nothing else is touched, so any two of these differ ONLY
+        // in the assistant terms.
+        let doctored = |in_hand: u8, on_board: u8| -> PlayerView {
+            let mut v = view.clone();
+            let me = v.players.iter_mut().find(|p| p.id == seat).expect("the viewer's own row");
+            me.assistants.in_hand = in_hand;
+            me.assistants.on_board = BTreeMap::new();
+            if on_board > 0 {
+                me.assistants.on_board.insert(area, on_board);
+            }
+            v
+        };
+        let at = |in_hand: u8, on_board: u8| -> i64 {
+            eval::score(&doctored(in_hand, on_board), &rules, &WeightTable::PROVISIONAL_V1)
+        };
+
+        // Anti-vacuity: the doctoring must actually move the score, or the four
+        // comparisons below are comparisons between two identical numbers.
+        assert_ne!(at(5, 0), at(2, 3), "the doctored pairs must differ at all");
+
+        // (1) Placing 3 from a hand of 5 spends EXCESS and pays.
+        assert!(
+            at(2, 3) > at(5, 0),
+            "placing from excess must pay at one ply ({} -> {})",
+            at(5, 0),
+            at(2, 3),
+        );
+        // (2) Placing 2 from a hand of 2 strips the RESERVE and does not.
+        assert!(
+            at(0, 2) < at(2, 0),
+            "placing the last of the reserve must not pay ({} -> {})",
+            at(2, 0),
+            at(0, 2),
+        );
+        // (3) Recovering 2 into an EMPTY hand regains the reserve and pays.
+        assert!(
+            at(2, 0) > at(0, 2),
+            "recovering into an empty hand must pay ({} -> {})",
+            at(0, 2),
+            at(2, 0),
+        );
+        // (4) Recovering 2 more on top of a full reserve does not.
+        assert!(
+            at(4, 0) < at(2, 2),
+            "over-recovering past the reserve must not pay ({} -> {})",
+            at(2, 2),
+            at(4, 0),
+        );
+
+        // And the same four, END TO END through a real successor: the empty
+        // placement is no longer the one-ply argmax at an organic point.
         let world = BeliefSampler::from_view(&view, &rules, 1).expect("sampler").sample();
         let handle = DecisionHandle::new(&world, &rules);
         let mut rng = seeded_rng(5);
         let moves = candidates(&handle, DEFAULT_RETREAT_SAMPLES, &mut rng).moves;
         let empty = Move::PlaceThreeAreas { placements: Vec::new() };
-        let real = moves
-            .iter()
-            .find(|m| matches!(m, Move::PlaceThreeAreas { placements } if !placements.is_empty()))
-            .expect("anti-vacuity: the point must offer a real placement")
-            .clone();
-
-        let with = |on_board: i64, in_hand: i64, mv: &Move| {
-            let mut w = WeightTable::ZERO;
-            w.set(eval::Feature::AssistantsOnBoard, on_board, on_board);
-            w.set(eval::Feature::AssistantsInHand, in_hand, in_hand);
-            eval::score(&successor_view(&world, mv, seat, &rules).expect("succ"), &rules, &w)
-        };
-
-        // (1) THE MECHANISM. Placement pays exactly when on-board outprices
-        // in-hand, and loses exactly when it does not — nothing else about the
-        // table enters.
-        assert!(
-            with(7, 8, &real) < with(7, 8, &empty),
-            "in-hand above on-board must make a placement a one-ply loss",
-        );
-        assert!(
-            with(8, 7, &real) > with(8, 7, &empty),
-            "on-board above in-hand must make a placement a one-ply gain",
-        );
-
-        // (2) THE FINDING. T4 flips this.
-        let (in_hand_early, _) = WeightTable::PROVISIONAL_V1.get(eval::Feature::AssistantsInHand);
-        let (on_board_early, _) = WeightTable::PROVISIONAL_V1.get(eval::Feature::AssistantsOnBoard);
-        assert!(
-            in_hand_early > on_board_early,
-            "T4 has re-priced the assistant pair (in-hand {in_hand_early}, on-board \
-             {on_board_early}): the provisional-weight degeneracy this test records is \
-             discharged — re-point it at whatever T4 froze",
-        );
-        assert!(
+        assert!(moves.contains(&empty), "the empty placement is anchored into every candidate set");
+        let scored = |mv: &Move| {
             eval::score(
-                &successor_view(&world, &real, seat, &rules).expect("succ"),
+                &successor_view(&world, mv, seat, &rules).expect("succ"),
                 &rules,
                 &WeightTable::PROVISIONAL_V1,
-            ) < eval::score(
-                &successor_view(&world, &empty, seat, &rules).expect("succ"),
-                &rules,
-                &WeightTable::PROVISIONAL_V1,
-            ),
-            "under the provisional table the empty placement is the one-ply argmax",
+            )
+        };
+        let best_real = moves
+            .iter()
+            .filter(|m| !matches!(m, Move::PlaceThreeAreas { placements } if placements.is_empty()))
+            .map(&scored)
+            .max()
+            .expect("anti-vacuity: the point must offer a real placement");
+        assert!(
+            best_real > scored(&empty),
+            "some real placement must outscore doing nothing (best real {best_real}, empty {})",
+            scored(&empty),
+        );
+    }
+
+    /// The DRIVEN half of the T3 discharge: a 2P Greedy-vs-Greedy game under the
+    /// shipped [`WeightTable::PROVISIONAL_V1`] completes inside the cap and puts
+    /// assistants on the board.
+    ///
+    /// **This test's whole content is that its predecessor's observation is no
+    /// longer reproducible.** Before the hand split, this exact call returned
+    /// `CapReached { turns: 401 }` with 0 assistants placed, because every
+    /// placement scored strictly negative and the empty placement was the argmax
+    /// at every Placement point. That is quoted here rather than deleted: it is
+    /// the measurement the split was made against, and a future re-pricing that
+    /// re-broke the ordering would land back on it. Measured after the split, at
+    /// the same master and cap: **turns 42 · moves 274 · assistants placed 58 ·
+    /// 27.91 candidates/decision**. Only `placed > 0` and `turns < CAP` are
+    /// asserted; the rest is printed, because the figures are properties of a
+    /// provisional table T4 will replace.
+    ///
+    /// Distinct from the `ZERO` degeneracy pin, which it deliberately does not
+    /// replace: that one holds the TIE-BREAK (a constant evaluator ties
+    /// everything, so the draw is the only thing choosing), this one holds the
+    /// WEIGHTS (a strict argmax that must not be systematically wrong).
+    #[test]
+    fn the_shipped_table_plays_a_game_that_places_assistants_and_ends() {
+        const CAP: u32 = 1_500;
+        let (stats, tallies) = greedy_selfplay_2p(WeightTable::PROVISIONAL_V1, MASTER, CAP)
+            .expect("the shipped table must play a game that ENDS, not one that caps out");
+
+        let placed = assistants_placed(&stats);
+        // RECORDED, never asserted beyond "> 0": the exact figures are a
+        // property of this master and this provisional table, and T4 re-prices.
+        let scored: u64 = tallies.iter().map(|t| t.candidates_scored()).sum();
+        let decisions: u64 = tallies.iter().map(|t| t.explained()).sum();
+        println!(
+            "shipped-table 2P self-play: turns {} · moves {} · assistants placed {placed} · \
+             candidates/decision {:.2} ({scored}/{decisions})",
+            stats.turns,
+            stats.moves_applied,
+            scored as f64 / decisions.max(1) as f64,
+        );
+        assert!(
+            placed > 0,
+            "the shipped table placed {placed} assistants over {} turns — the one-ply \
+             placement sign has gone negative again (T3's degeneracy, spec L14)",
+            stats.turns,
+        );
+        assert!(stats.turns < CAP, "the game must end inside the cap, took {}", stats.turns);
+
+        // The honest-path identity rides this game too, as it does the ZERO one.
+        let explained: u64 = tallies.iter().map(|t| t.explained()).sum();
+        assert_eq!(
+            explained, stats.moves_applied,
+            "every applied move was chosen by a decision that produced an explanation",
         );
     }
 
@@ -1565,5 +1844,86 @@ mod tests {
     }
 
     // -- the honest chain -----------------------------------------------------
+    //
+    // Spec §3.1's no-fallback rule, exercised at all three of the chain's exits
+    // (T3 review S1: this section shipped with a header and no tests under it).
+    // Every one of them is the SAME shape — a typed `Err` carrying a message
+    // that names the failure, no panic, no second arm, and NOTHING applied —
+    // because a Greedy seat that quietly recovered from a broken chain would
+    // emit privileged or arbitrary play into the training corpus, which is the
+    // failure `arena`'s driver-level pin (`sampler_failure_is_a_hard_error…`)
+    // describes one level up.
 
+    /// (1) The BELIEF SAMPLER's exit. A view whose unseen-order sinks do not
+    /// partition the unseen pool is refused, and the refusal reaches the
+    /// caller — the `TrivialHonestAgent` precedent instead falls back to the
+    /// TRUE legal list, which is exactly the privileged play an arena agent
+    /// must never have.
+    #[test]
+    fn a_view_the_sampler_refuses_is_a_hard_error_with_no_fallback() {
+        let rules = Rules::standard();
+        let (state, seat) = first_placement_point(&rules, MASTER);
+        let mut doctored = observe(&state, seat).expect("observe");
+        // Break the reconciliation identity `BeliefSampler::from_view` checks.
+        doctored.order_deck_len += 1;
+
+        let mut agent = GreedyAgent::new(&rules, 0xBADF00D);
+        let err = agent
+            .choose(&doctored, &rules)
+            .expect_err("a view whose sinks do not partition the pool must be refused");
+        assert!(err.contains("belief sampler refused"), "the refusal must be named: {err}");
+        assert!(
+            agent.last_explanation().is_none() && agent.tally().explained() == 0,
+            "a refused decision must not leave an explanation behind",
+        );
+        // Anti-vacuity: the SAME agent answers the undoctored view, so the
+        // failure is the doctoring and not the fixture.
+        let clean = observe(&state, seat).expect("observe");
+        assert!(agent.choose(&clean, &rules).is_ok(), "the undoctored view must be answerable");
+    }
+
+    /// (2) The NO-FAMILIES exit. `TurnEnd` is not a decision point at all
+    /// (`families()` returns empty there), so `decision_volume` reports `None`
+    /// and the agent says so rather than inventing a move.
+    #[test]
+    fn a_view_at_a_phase_with_no_families_is_a_hard_error() {
+        let rules = Rules::standard();
+        let (state, seat) = first_placement_point(&rules, MASTER);
+        let mut view = observe(&state, seat).expect("observe");
+        view.turn_phase = TurnPhase::TurnEnd;
+        assert!(view.pending_choices.is_empty(), "the queue must be empty, or TurnEnd still asks");
+
+        let mut agent = GreedyAgent::new(&rules, 0x0DD1);
+        let err = agent.choose(&view, &rules).expect_err("TurnEnd offers no families");
+        assert!(err.contains("offers no families"), "the phase must be named: {err}");
+        assert!(err.contains("TurnEnd"), "the message must report WHICH phase: {err}");
+    }
+
+    /// (3) The EMPTY-CANDIDATE exit — the third shape, and a genuinely different
+    /// one: here the decision point HAS a family (so `decision_volume` answers),
+    /// and the family turns out to be structurally empty. An `AreaAction` phase
+    /// with the President in hand is the cheap witness
+    /// (`generate_area_action_moves` returns nothing with nowhere to act), and
+    /// it is worth having on its own rather than folding into case (2) because
+    /// the two errors come from different guards: (2) is "not a decision point",
+    /// (3) is "a decision point whose families served nothing".
+    #[test]
+    fn a_decision_point_whose_families_serve_nothing_is_a_hard_error() {
+        let rules = Rules::standard();
+        let (state, seat) = first_placement_point(&rules, MASTER);
+        let mut view = observe(&state, seat).expect("observe");
+        view.turn_phase = TurnPhase::AreaAction;
+        view.players
+            .iter_mut()
+            .find(|p| p.id == seat)
+            .expect("the viewer's own row")
+            .president_location = PresidentLocation::InHand;
+
+        let mut agent = GreedyAgent::new(&rules, 0x0DD2);
+        let err = agent
+            .choose(&view, &rules)
+            .expect_err("an AreaAction point with the President in hand serves no move");
+        assert!(err.contains("dead end"), "the dead end must be named: {err}");
+        assert!(err.contains(GREEDY_CONTROLLER), "and attributed to this controller: {err}");
+    }
 }

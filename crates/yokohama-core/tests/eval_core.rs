@@ -21,19 +21,22 @@
 //! deleting `check_drift` from the sweep moves the sweep test only 0.55 → 0.50 s,
 //! so §2.2's drift pin is ~10% of the increase and the rest is `check_view`'s
 //! own `raw_value` calls, which are deliberately the CONVENIENCE accessor —
-//! each derives a whole `ScoreStructure` to answer about one feature, 15
-//! features x (1 + opponents) per view. That is the price of checking `explain`
+//! each derives a whole `ScoreStructure` to answer about one feature, 16
+//! features x (1 + opponents) per view (15 before T3's in-hand split). That is
+//! the price of checking `explain`
 //! against an independently-assembled value instead of against the structure it
 //! was built from, and it is worth paying here; `score` itself derives once per
 //! call and is unaffected (0 allocations, below). Still cheap overall because
 //! this file does NOT run `check_invariants` per move: the engine is not its
 //! subject and four other per-edit suites already carry that net.
 //!
-//! §0.3(a)'s allocation figures at the same close, for whoever re-measures
-//! next: `score` 0 allocations / 0 peak bytes, `explain` 1 allocation / 600
-//! peak bytes (fifteen 40-byte terms). The `Explanation` grew an
-//! `Option<TerminalStanding>` at T2 and the Vec figure did not move — the
-//! standing rides in the struct, not in the heap block.
+//! §0.3(a)'s allocation figures, re-measured at T3: `score` 0 allocations / 0
+//! peak bytes, `explain` 1 allocation / 640 peak bytes (SIXTEEN 40-byte terms;
+//! 600 for fifteen before the split — the delta is exactly one term, which is
+//! the check that the split added a feature and not a heap block). The
+//! `Explanation` grew an `Option<TerminalStanding>` at T2 and the allocation
+//! COUNT did not move — the standing rides in the struct, not in the heap
+//! block.
 
 // The shared counting allocator, included the same way
 // `tests/action_source_worstcase.rs` includes it (each includer links its own
@@ -703,26 +706,39 @@ fn check_view(
 /// — see [`check_drift`] and [`check_terminal`], which ride the same traversal
 /// rather than paying for a second one.
 ///
-/// MEASURED at the T2 close, and the floors are set at roughly HALF each
-/// measured count (the sweep is fully deterministic — fixed seeds, seeded
-/// ChaCha8 — so the figures are exact, and the halving is headroom for benign
-/// drift rather than protection against flake). Figures moved from T1's
-/// recorded block because the five score-structure features now compute real
-/// values, which changes every score and therefore every `nonzero_terms` and
-/// `negative_weight_picks` count:
+/// MEASURED at the T2 close and RE-MEASURED at T3's in-hand split, with the
+/// floors set at roughly HALF each measured count (the sweep is fully
+/// deterministic — fixed seeds, seeded ChaCha8 — so the figures are exact, and
+/// the halving is headroom for benign drift rather than protection against
+/// flake). The T3 figures:
 ///
 /// ```text
 /// views 1711 · early_zero 132 · late_half 1134 · full 3
 /// clocks [deck 1462, church 1466, customs 390, building 1216]
-/// nonzero_terms 13944 · negative_weight_picks 1788 · decision points 537
+/// nonzero_terms 14149 · negative_weight_picks 1788 · decision points 537
 /// nonzero_by_feature
-///   [vp 1378, ctry 978, tech 750, chur 774, cust 169, hand 1269, ware 1711,
-///    brd 1670, shop 862, trad 61, 5pw 110, imp 241, achv 1618, merc 635,
-///    hnd# 1647]
+///   [vp 1378, ctry 978, tech 750, chur 774, cust 169, hCORE 1269, hEXC 267,
+///    ware 1711, brd 1670, shop 862, trad 61, 5pw 110, imp 241, achv 1618,
+///    merc 635, hnd# 1647]
 /// drift_pairs 1720 · drift_dummy_pairs 240 · terminal_views 9
-/// max |positional score| 2168  (rank step 1e9 clears it 461,254x — the
-///   test's own integer division; 1e9/2168 = 461,254.6)
+/// max |positional score| 2188  (rank step 1e9 clears it 457,038x — the
+///   test's own integer division; 1e9/2188 = 457,038.4)
 /// ```
+///
+/// WHAT MOVED AND WHY, since a re-measure that does not account for its own
+/// deltas is just a new number. The GAMES are identical — the sweep plays under
+/// `FAMILY_WEIGHTED_DEFAULT`, not under the evaluator — so every trajectory
+/// count (views, bands, clocks, drift pairs, terminal views) is unchanged. Three
+/// figures moved and all three are the split: `nonzero_terms` 13,944 → 14,149
+/// (a sixteenth term per view, nonzero on the 267 views where a hand exceeds
+/// the reserve, minus the ties the re-priced board weight resolves);
+/// `max_abs_positional` 2,168 → 2,188 (new weights, same shape, still ~5 orders
+/// under the rank step); and `assistants_in_hand` 1,269 splitting into
+/// `core` 1,269 / `excess` 267. `negative_weight_picks` is unchanged at 1,788,
+/// as it must be: the split added no negative feature and moved no sign.
+///
+/// T1 → T2's earlier delta stands recorded too: the five score-structure
+/// features began computing real values, which changed every score.
 ///
 /// MUTATION-PROVEN AT AUTHORING (all reverted; the point is that this sweep
 /// catches the slips it exists for, not merely that `assert!` works):
@@ -815,14 +831,23 @@ fn explain_reconstructs_score_exactly_over_organic_views() {
 }
 
 /// Per-feature nonzero floors for the sweep above, by `Feature::index()`.
-/// MEASURED-THEN-SET at the T2 close (the observed counts are in that test's
-/// doc block), each at half the observed count rounded down — the same
-/// discipline every other floor in this file uses. The two smallest arms
-/// (`trading_houses_built` 61 and `five_power_tokens` 110) are genuinely rare
-/// events, not weak coverage: four trading houses END the game.
-//     [vp,  ctry, tech, chur, cust, hand, ware, brd, shop, trad, 5pw, imp, achv, merc, hnd#]
+/// MEASURED-THEN-SET at the T2 close and RE-MEASURED at the T3 in-hand split
+/// (the observed counts are in that test's doc block), each at half the observed
+/// count rounded down — the same discipline every other floor in this file uses.
+/// The two smallest arms (`trading_houses_built` 61 and `five_power_tokens` 110)
+/// are genuinely rare events, not weak coverage: four trading houses END the
+/// game.
+///
+/// The split's two floors were measured the same way and are NOT symmetric, by
+/// construction: `core` is nonzero whenever a seat holds any assistant at all
+/// (1,269 views — the old unsplit feature's count exactly, which is the check
+/// that the split moved nothing else), while `excess` needs a hand above
+/// `HAND_CORE_RESERVE` and fires on 267. The excess arm being ~5x rarer is the
+/// measurement, not a weakness: a hand over the reserve is what a placement
+/// spends, and a seat holding one is the position the split exists to price.
+//     [vp,  ctry, tech, chur, cust, hCORE, hEXC, ware, brd, shop, trad, 5pw, imp, achv, merc, hnd#]
 const FEATURE_NONZERO_FLOORS: [usize; Feature::COUNT] =
-    [689, 489, 375, 387, 84, 634, 855, 835, 431, 30, 55, 120, 809, 317, 823];
+    [689, 489, 375, 387, 84, 634, 133, 855, 835, 431, 30, 55, 120, 809, 317, 823];
 
 // ---------------------------------------------------------------------------
 // §2.2 — the D1 dummy, constructed
