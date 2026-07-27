@@ -4,8 +4,14 @@
 //!
 //! THE UNIT IS NOT THE GAME. Every interval here is computed over the DESIGN
 //! UNIT — the pair at 2P, the rotation block at 3–4P — because the games inside
-//! a unit share a world seed and a bit-identical starting state, so they are
-//! not independent observations. Treating them as independent is not a rounding
+//! a unit share a world seed and (in a Keep-HOMOGENEOUS cell) a bit-identical
+//! starting state, so they are not independent observations. Since Phase 3.3's
+//! mixed-Keep cells (spec §5.5; the report's `setup-identical=no`), a unit's
+//! games may resolve the same deal by two different Keep rules — still
+//! seed-paired at `new_game` and swap-balanced, no longer setup-identical; the
+//! unit bootstrap is valid either way (ledger row 15: pairing is bookkeeping,
+//! the swap is what removes the seat effect — `game/arena.rs`'s module doc
+//! carries the full scoping). Treating them as independent is not a rounding
 //! error: E2 measured 4P within-block correlation ρ = +0.051, which drags a
 //! nominal 95% interval down to ~93.2% true coverage. That is why
 //! Wilson-on-pooled-games is PRINTED as a cross-check and is NEVER the primary
@@ -52,12 +58,20 @@
 //! (spec §3). Gate cells use `Diagnostic` — an OS-entropy gate would flake at
 //! the nominal rate by construction.
 
+use std::collections::BTreeMap;
+
 use rand::{Rng, SeedableRng};
 use rand_chacha::ChaCha8Rng;
 
 use super::{
     agent_stream_seed, mix, run_arena_game, unit_for, ArenaAgent, ArenaError, ArenaGameStats,
-    PolicyAgent, Slot,
+    ControllerProvenance, PolicyAgent, Slot,
+};
+use crate::game::eval::WeightTable;
+use crate::game::greedy::{self, ExplanationTally, GreedyAgent, DEFAULT_RETREAT_SAMPLES};
+use crate::game::lookahead::{
+    self, LookaheadAgent, SearchScheme, SearchTally, DEFAULT_ATOMIC_DEPTH, DEFAULT_BEAM,
+    DEFAULT_WORLDS,
 };
 use crate::game::metrics::{nearest_rank_index, wilson_95, TriggerTally, Z_95};
 use crate::game::policy::RolloutPolicy;
@@ -96,6 +110,226 @@ pub enum SeedScheduleKind {
     OsEntropy,
 }
 
+/// WHO can sit in a cell's seat — the Phase-3.3 widening of the 3.2 arena, which
+/// keyed a cell on a [`RolloutPolicy`] and so could only ever run rungs against
+/// rungs (spec §5.1).
+///
+/// **The Policy arm is behaviour-preserving BY CONSTRUCTION, and that claim is
+/// under test.** [`Contestant::Policy`] builds exactly the [`PolicyAgent`] the
+/// 3.2 factory built, on exactly the [`agent_stream_seed`] keying, so every 3.2
+/// figure recorded in map §11 A2 still describes this code —
+/// `tests/contestant_golden.rs` holds two PRE-WIDENING `CellReport`s (a 2P pair
+/// and a 4P rotation block) against that claim and is the acceptance test for
+/// this type's existence.
+///
+/// **EVERY VARIANT'S KNOBS ARE THE AGENT'S OWN TYPES**, not a widened `u32` set:
+/// `b` is [`DEFAULT_BEAM`]'s `u16`, `k`/`m`/`d` are the `u8`s their constructors
+/// take. A knob set that cannot express something the agent can (or vice versa)
+/// is a silent divergence between what a cell says it ran and what it ran.
+///
+/// The evaluator contestants carry NO weight knob: they run the frozen
+/// [`WeightTable::V1`] the shipped agents run, and a weight change is a version
+/// bump (spec §0.5 / L12), not a cell parameter. `weights=<identity>` still
+/// rides the params map so a corpus reader can tell two tables apart without
+/// consulting a document.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Contestant {
+    /// A 3.2 rollout rung, played by [`PolicyAgent`] exactly as before.
+    Policy(RolloutPolicy),
+    /// Greedy-v1 (spec §3): one-ply argmax of the evaluator. `m` is the retreat
+    /// sample count.
+    GreedyV1 { m: u8 },
+    /// Lookahead-v1 (spec §4.2), the S1 turn-boundary rung: beam `b`, `k`
+    /// sampled worlds, `m` retreat samples.
+    LookaheadV1 { b: u16, k: u8, m: u8 },
+    /// The S2 DIAGNOSTIC arm (spec §4.1): atomic depth `d` in moves, with
+    /// quiescence. Named `-diag` in provenance because it is preserved as a rung
+    /// only if T7 flips.
+    AtomicDiag { d: u8, k: u8, m: u8 },
+}
+
+/// How a contestant resolves its dealt starting-order pair — the property spec
+/// §5.5 scopes the pairing doctrine on.
+///
+/// Two contestants sharing a `KeepKind` make a cell **Keep-homogeneous**, and
+/// only then are a unit's two seatings setup-IDENTICAL. A mixed cell is still
+/// seed-paired and swap-balanced; it just resolves the same deal two ways. See
+/// [`Contestant::keep_kind`] and the arena module doc's pairing paragraph.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum KeepKind {
+    /// [`PolicyAgent`]'s `(seat, deal)`-keyed uniform draw — every rung's, since
+    /// 3.2 ships no starting-order policy to differentiate them with.
+    SeatKeyedUniform,
+    /// `greedy::score_starting_order`'s argmax over the two dealt cards — every
+    /// evaluator contestant's, since [`LookaheadAgent`] shares Greedy's table.
+    EvaluatorScored,
+}
+
+/// A cloneable read-out on ONE built contestant's explanation counter.
+///
+/// The two evaluator tallies are deliberately different types (a search has
+/// nodes and continuation lengths; a one-ply argmax has neither), so this is the
+/// narrow thing the driver actually needs from both: spec §0.3(b)'s count. The
+/// Policy rungs explain nothing and produce no handle at all — `Option::None` is
+/// the honest shape, not a zero counter that would suggest the rung had an
+/// explanation path and simply never took it.
+#[derive(Clone)]
+pub enum ExplainHandle {
+    Greedy(ExplanationTally),
+    Search(SearchTally),
+}
+
+impl ExplainHandle {
+    /// Decisions this contestant explained. Equal to its applied-move count on a
+    /// completed game — neither evaluator agent can return a move without
+    /// explaining it, and a failed `choose` fails the run.
+    pub fn explained(&self) -> u64 {
+        match self {
+            Self::Greedy(t) => t.explained(),
+            Self::Search(t) => t.explained(),
+        }
+    }
+
+    /// Continuations [`MAX_TURN_PLIES`](crate::game::lookahead::MAX_TURN_PLIES)
+    /// stopped — `None` for a contestant with NO SEARCH, on
+    /// [`explained`](Self::explained)'s own `Option` grounds one level down: a
+    /// one-ply argmax has no continuation to truncate, and a `0` would read as
+    /// "searched and never hit the guard".
+    pub fn ply_cap_hits(&self) -> Option<u64> {
+        match self {
+            Self::Greedy(_) => None,
+            Self::Search(t) => Some(t.ply_cap_hits()),
+        }
+    }
+
+    /// Free extensions
+    /// [`MAX_FREE_EXTENSION`](crate::game::lookahead::MAX_FREE_EXTENSION)
+    /// stopped, same `None` rule. `Some(0)` for an S1 contestant is structural
+    /// rather than evidence — the turn-boundary scheme never enters the
+    /// quiescence arm.
+    pub fn free_cap_hits(&self) -> Option<u64> {
+        match self {
+            Self::Greedy(_) => None,
+            Self::Search(t) => Some(t.free_cap_hits()),
+        }
+    }
+}
+
+impl Contestant {
+    /// Greedy-v1 at its shipped knob.
+    pub const GREEDY_V1_DEFAULT: Self = Self::GreedyV1 { m: DEFAULT_RETREAT_SAMPLES };
+    /// Lookahead-v1 (S1) at its shipped knobs.
+    pub const LOOKAHEAD_V1_DEFAULT: Self =
+        Self::LookaheadV1 { b: DEFAULT_BEAM, k: DEFAULT_WORLDS, m: DEFAULT_RETREAT_SAMPLES };
+    /// The S2 diagnostic arm at its shipped knobs.
+    pub const ATOMIC_DIAG_DEFAULT: Self =
+        Self::AtomicDiag { d: DEFAULT_ATOMIC_DEPTH, k: DEFAULT_WORLDS, m: DEFAULT_RETREAT_SAMPLES };
+
+    /// What this contestant CALLS itself, for provenance and the report echo —
+    /// routed to the controller's own descriptor and never composed here.
+    ///
+    /// Spec §5.2 under §0.5's per-controller version rule: `Policy` answers from
+    /// [`RolloutPolicy::descriptor`], the evaluator arms from
+    /// [`greedy::controller_provenance`] / [`lookahead::controller_provenance`],
+    /// each of which reads its own name and version const. No controller name is
+    /// hand-typed at any call site in the arena, this one included.
+    pub fn provenance(&self, agent_seed: Option<u64>) -> ControllerProvenance {
+        match *self {
+            Self::Policy(policy) => ControllerProvenance::from_policy(policy, agent_seed),
+            Self::GreedyV1 { m } => {
+                greedy::controller_provenance(&WeightTable::V1, m, agent_seed)
+            }
+            Self::LookaheadV1 { b, k, m } => lookahead::controller_provenance(
+                SearchScheme::TurnBoundary { beam: b },
+                k,
+                m,
+                &WeightTable::V1,
+                agent_seed,
+            ),
+            Self::AtomicDiag { d, k, m } => lookahead::controller_provenance(
+                SearchScheme::AtomicDiag { depth: d },
+                k,
+                m,
+                &WeightTable::V1,
+                agent_seed,
+            ),
+        }
+    }
+
+    /// `(name, version, params)` — [`provenance`](Self::provenance) without the
+    /// stream seed, in [`RolloutPolicy::descriptor`]'s shape so the echo
+    /// formatter is one function for every contestant.
+    pub fn descriptor(&self) -> (String, u32, BTreeMap<String, i64>) {
+        let p = self.provenance(None);
+        (p.name, p.version, p.params)
+    }
+
+    /// Which starting-order rule this contestant plays (spec §5.5).
+    pub fn keep_kind(&self) -> KeepKind {
+        match self {
+            Self::Policy(_) => KeepKind::SeatKeyedUniform,
+            Self::GreedyV1 { .. } | Self::LookaheadV1 { .. } | Self::AtomicDiag { .. } => {
+                KeepKind::EvaluatorScored
+            }
+        }
+    }
+
+    /// Build the agent this contestant names, on the PLAY stream `agent_seed`,
+    /// plus its explanation read-out if it has one.
+    ///
+    /// **`agent_seed` must come from [`agent_stream_seed`].** The evaluator
+    /// contestants inherit the CRN rule unchanged — their play streams are keyed
+    /// by `(world seed, seat, slot)` exactly as a rung's, because the trap the
+    /// slot component excludes (both games of a pair becoming one game) is a
+    /// property of the KEYING and not of what sits at the seat. Their SETUP
+    /// decisions take no stream at all (`score_starting_order` is a function of
+    /// the deal), which is why they are a different [`KeepKind`] and not a
+    /// different keying.
+    ///
+    /// The handle is cloned out HERE, before the agent is boxed: a game's agents
+    /// are built by the driver's factory and never handed back
+    /// ([`HonestPathTally`](super::HonestPathTally)'s precedent).
+    pub fn build(
+        &self,
+        rules: &Rules,
+        agent_seed: u64,
+    ) -> (Box<dyn ArenaAgent>, Option<ExplainHandle>) {
+        match *self {
+            Self::Policy(policy) => (Box::new(PolicyAgent::new(policy, agent_seed)), None),
+            Self::GreedyV1 { m } => {
+                let agent = GreedyAgent::with_weights(rules, WeightTable::V1, m, agent_seed);
+                let handle = ExplainHandle::Greedy(agent.tally());
+                (Box::new(agent), Some(handle))
+            }
+            Self::LookaheadV1 { b, k, m } => {
+                Self::build_search(rules, SearchScheme::TurnBoundary { beam: b }, k, m, agent_seed)
+            }
+            Self::AtomicDiag { d, k, m } => {
+                Self::build_search(rules, SearchScheme::AtomicDiag { depth: d }, k, m, agent_seed)
+            }
+        }
+    }
+
+    fn build_search(
+        rules: &Rules,
+        scheme: SearchScheme,
+        worlds: u8,
+        retreat_samples: u8,
+        agent_seed: u64,
+    ) -> (Box<dyn ArenaAgent>, Option<ExplainHandle>) {
+        let agent = LookaheadAgent::with_knobs(
+            rules,
+            scheme,
+            worlds,
+            retreat_samples,
+            WeightTable::V1,
+            agent_seed,
+        );
+        let handle = ExplainHandle::Search(agent.tally());
+        (Box::new(agent), Some(handle))
+    }
+}
+
 /// One cell of the arena: contestant X against contestant Y at a player count,
 /// over a fixed number of design units.
 ///
@@ -108,9 +342,9 @@ pub struct CellSpec {
     pub name: String,
     pub players: u8,
     /// The contestant under test — one seat per game.
-    pub x: RolloutPolicy,
+    pub x: Contestant,
     /// The field — `players − 1` seats per game.
-    pub y: RolloutPolicy,
+    pub y: Contestant,
     /// Design units. Size it from [`pairs_needed_for_mme`] BEFORE running.
     pub units: u32,
     pub master: SeedScheduleKind,
@@ -192,6 +426,54 @@ pub struct CellReport {
     /// block unit);
     /// the WIN RATE above is the gate statistic, per spec §4.
     pub vp_margin_mean: f64,
+    /// Applied moves per SEAT over the whole cell, indexed by seat (spec §5.4).
+    ///
+    /// A cell's seats are filled by different contestants in different
+    /// arrangements, so this is a balance read on the DESIGN and not a
+    /// per-contestant figure — the per-contestant one is
+    /// [`x_applied_moves`](Self::x_applied_moves), which follows X through the
+    /// rotation. Under a balanced rotation these should sit close together; a
+    /// drift is the seat effect the rotation exists to remove, showing up in
+    /// move volume rather than in wins.
+    pub applied_by_seat: Vec<u64>,
+    /// Moves applied by the X seat, summed over the cell's games — X's seat
+    /// changes with the arrangement, so this follows the CONTESTANT.
+    ///
+    /// Spec §0.3(b)'s right-hand side: every move the evaluator bot plays must
+    /// be explained, and `x_explanations == x_applied_moves` is that claim made
+    /// countable at cell level.
+    pub x_applied_moves: u64,
+    /// Decisions X EXPLAINED, summed over the cell's games — spec §0.3(b)'s
+    /// left-hand side, read off the tally handles the factory cloned out.
+    ///
+    /// **`None` when X HAS NO EXPLANATION PATH** (a [`Contestant::Policy`] rung),
+    /// which is a different fact from an explaining contestant that explained
+    /// nothing — and a `0` would conflate the two, letting an evaluator that
+    /// silently stopped explaining pass the same check a rung passes by design.
+    /// The gate assertion is therefore the whole equality
+    /// `x_explanations == Some(x_applied_moves)`: total, and non-vacuous without
+    /// a second guard.
+    pub x_explanations: Option<u64>,
+    /// Continuations X's search had stopped by
+    /// [`MAX_TURN_PLIES`](crate::game::lookahead::MAX_TURN_PLIES), summed over
+    /// the cell's games. **Expected 0.**
+    ///
+    /// `None` when X HAS NO SEARCH (a rung or the one-ply argmax), on
+    /// [`x_explanations`](Self::x_explanations)'s rule. Surfaced at the six-lens
+    /// review: the counter was already being cloned out per X seat per game and
+    /// then dropped, so the gate deciding 3.3's promotion checked nothing about
+    /// the guard across its 1,472 games. A cap hit is not a wrong answer, but a
+    /// capped line is valued MID-TURN, so a cell that starts hitting the guard
+    /// is measuring something slightly different from the one that set the
+    /// figures — which is a thing a report should say rather than a thing a
+    /// reader should assume.
+    pub x_ply_cap_hits: Option<u64>,
+    /// Free extensions X's search had stopped by
+    /// [`MAX_FREE_EXTENSION`](crate::game::lookahead::MAX_FREE_EXTENSION), same
+    /// `None` rule and same expectation. `Some(0)` from an S1 contestant is
+    /// structural (it never runs the quiescence arm); the figure has content
+    /// only for the S2 diagnostic.
+    pub x_free_cap_hits: Option<u64>,
     /// End-trigger counts over the cell's games — one player count per tally,
     /// as [`TriggerTally`] requires.
     pub trigger: TriggerTally,
@@ -274,6 +556,16 @@ pub fn run_cell_emitting(
     let mut top_vp_ties = 0u32;
     let mut vp_margin_sum = 0.0f64;
     let mut trigger = TriggerTally::default();
+    let mut applied_by_seat = vec![0u64; players as usize];
+    let mut x_applied_moves = 0u64;
+    // `None` until an X seat hands back an explanation handle — which is how the
+    // report distinguishes "this contestant has no explanation path" from "it
+    // explained nothing" (see `CellReport::x_explanations`). The two cap
+    // counters follow the same rule one level down: `None` until a SEARCHING X
+    // hands one back.
+    let mut x_explanations: Option<u64> = None;
+    let mut x_ply_cap_hits: Option<u64> = None;
+    let mut x_free_cap_hits: Option<u64> = None;
 
     for _ in 0..spec.units {
         let seed = schedule.next_world();
@@ -298,12 +590,26 @@ pub fn run_cell_emitting(
 
             let seating = seating.clone();
             let (x, y) = (spec.x, spec.y);
-            let mut make_agent = move |seat: PlayerId, _players: u8| -> Box<dyn ArenaAgent> {
-                let slot = seating[seat.0 as usize];
-                let policy = if slot == X_SLOT { x } else { y };
-                Box::new(PolicyAgent::new(policy, agent_stream_seed(seed, seat, slot)))
+            // The factory clones each X seat's explanation handle OUT before the
+            // agent is boxed and moved into the driver, which is the only moment
+            // it is reachable (`HonestPathTally`'s precedent). The keying is
+            // untouched by the widening: every contestant, rung or evaluator,
+            // plays on `agent_stream_seed(seed, seat, slot)`.
+            let mut x_handles: Vec<ExplainHandle> = Vec::new();
+            let mut stats = {
+                let handles = &mut x_handles;
+                let mut make_agent = |seat: PlayerId, _players: u8| -> Box<dyn ArenaAgent> {
+                    let slot = seating[seat.0 as usize];
+                    let contestant = if slot == X_SLOT { x } else { y };
+                    let (agent, handle) =
+                        contestant.build(rules, agent_stream_seed(seed, seat, slot));
+                    if slot == X_SLOT {
+                        handles.extend(handle);
+                    }
+                    agent
+                };
+                run_arena_game(seed, players, rules, &mut make_agent, invariants)?
             };
-            let mut stats = run_arena_game(seed, players, rules, &mut make_agent, invariants)?;
             // The RUN half of provenance (spec §5): the driver stamped who
             // played each seat, and this is the only layer that knows which
             // schedule and which cell they played for.
@@ -312,6 +618,25 @@ pub fn run_cell_emitting(
 
             games += 1;
             trigger.observe(stats.trigger.as_ref());
+
+            // Spec §5.4's driver extension, aggregated two ways because they
+            // answer two questions: `applied_by_seat` follows the SEAT (a design
+            // balance read), `x_applied_moves` follows the CONTESTANT through the
+            // rotation (spec §0.3(b)'s right-hand side).
+            for (seat, moves) in stats.moves_by_seat.iter().enumerate() {
+                applied_by_seat[seat] += moves;
+            }
+            x_applied_moves += stats.moves_by_seat[x_seat.0 as usize];
+            for handle in &x_handles {
+                *x_explanations.get_or_insert(0) += handle.explained();
+                if let Some(hits) = handle.ply_cap_hits() {
+                    *x_ply_cap_hits.get_or_insert(0) += hits;
+                }
+                if let Some(hits) = handle.free_cap_hits() {
+                    *x_free_cap_hits.get_or_insert(0) += hits;
+                }
+            }
+
             if stats.result.winner == x_seat {
                 unit_x_wins += 1;
                 x_game_wins += 1;
@@ -386,6 +711,11 @@ pub fn run_cell_emitting(
         seat0_wins,
         ties_to_seat0,
         vp_margin_mean: vp_margin_sum / f64::from(games),
+        applied_by_seat,
+        x_applied_moves,
+        x_explanations,
+        x_ply_cap_hits,
+        x_free_cap_hits,
         trigger,
         master,
     })
@@ -550,8 +880,11 @@ fn student_t_975(df: u64) -> f64 {
             / (92160.0 * v.powi(4))
 }
 
-fn policy_echo(policy: RolloutPolicy) -> String {
-    let (name, version, params) = policy.descriptor();
+/// `name@vN` or `name@vN{k=v,...}` — one formatter for every contestant, fed by
+/// [`Contestant::descriptor`] so a rung's echo is byte-for-byte what it was
+/// before the widening (`tests/contestant_golden.rs` pins the strings).
+fn contestant_echo(contestant: Contestant) -> String {
+    let (name, version, params) = contestant.descriptor();
     if params.is_empty() {
         return format!("{name}@v{version}");
     }
@@ -569,14 +902,30 @@ fn spec_echo(spec: &CellSpec, master: u64, resample_seed: u64) -> String {
         SeedScheduleKind::Diagnostic(_) => "diagnostic",
         SeedScheduleKind::OsEntropy => "os-entropy (drawn)",
     };
+    // Spec §5.5, printed per cell because a unit's meaning depends on it: `yes`
+    // says the two seatings of a unit start from a BIT-IDENTICAL state, `no` says
+    // they are seed-paired and swap-balanced but resolve the same deal by two
+    // different Keep rules. The unit bootstrap is valid either way (ledger row
+    // 15: pairing is bookkeeping, the swap is what removes the seat effect) —
+    // what changes is what a reader may claim about the units.
+    //
+    // SPELLED `key=value`, not the spec's prose `setup-identical: yes|no`,
+    // matching every other token in this echo (`cell=`, `master=`, `fixed-N=`).
+    // The T6 review corrected this comment's original grounds, which were
+    // FALSE: the echo already carries interior-space VALUES (`unit=pair (2
+    // seatings)`), and the golden's token checks are substring `contains` that
+    // a colon spelling would not have disturbed. The `key=value` spelling is
+    // kept for consistency, not necessity. Recorded formatting deviation.
+    let setup_identical = if spec.x.keep_kind() == spec.y.keep_kind() { "yes" } else { "no" };
     format!(
         "cell={} players={} x={} y={} units={} unit={} games={} \
          master={master_kind}:{master:#018x} bootstrap_B={BOOTSTRAP_REPLICATES} \
-         resample_seed={resample_seed:#018x} single-threaded=yes fixed-N=yes",
+         resample_seed={resample_seed:#018x} single-threaded=yes fixed-N=yes \
+         setup-identical={setup_identical}",
         spec.name,
         spec.players,
-        policy_echo(spec.x),
-        policy_echo(spec.y),
+        contestant_echo(spec.x),
+        contestant_echo(spec.y),
         spec.units,
         unit_shape,
         u32::from(spec.players) * spec.units,
@@ -689,6 +1038,9 @@ fn cross_checks(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::game::greedy::{GREEDY_CONTROLLER, GREEDY_IMPL_VERSION};
+    use crate::types::OrderCardId;
+    use crate::game::policy::POLICY_IMPL_VERSION;
     use rand::{Rng, SeedableRng};
     use rand_chacha::ChaCha8Rng;
 
@@ -889,8 +1241,8 @@ mod tests {
         let spec = CellSpec {
             name: "null-ra-vs-ra-smoke".to_string(),
             players: 2,
-            x: RolloutPolicy::RetreatAverse,
-            y: RolloutPolicy::RetreatAverse,
+            x: Contestant::Policy(RolloutPolicy::RetreatAverse),
+            y: Contestant::Policy(RolloutPolicy::RetreatAverse),
             units: 40,
             master: SeedScheduleKind::Diagnostic(MASTER),
         };
@@ -951,8 +1303,8 @@ mod tests {
         let spec = CellSpec {
             name: "determinism".to_string(),
             players: 2,
-            x: RolloutPolicy::RetreatAverse,
-            y: RolloutPolicy::FAMILY_WEIGHTED_DEFAULT,
+            x: Contestant::Policy(RolloutPolicy::RetreatAverse),
+            y: Contestant::Policy(RolloutPolicy::FAMILY_WEIGHTED_DEFAULT),
             units: 4,
             master: SeedScheduleKind::Diagnostic(MASTER),
         };
@@ -976,8 +1328,8 @@ mod tests {
         let spec = CellSpec {
             name: "fw-knob-edge".to_string(),
             players: 4,
-            x: RolloutPolicy::FamilyWeighted { retreat_ppm: 50_000, recovery_min_of: 5 },
-            y: RolloutPolicy::FAMILY_WEIGHTED_DEFAULT,
+            x: Contestant::Policy(RolloutPolicy::FamilyWeighted { retreat_ppm: 50_000, recovery_min_of: 5 }),
+            y: Contestant::Policy(RolloutPolicy::FAMILY_WEIGHTED_DEFAULT),
             units: 100,
             master: SeedScheduleKind::Diagnostic(MASTER),
         };
@@ -996,6 +1348,257 @@ mod tests {
         assert!(echo.contains("retreat_ppm=50000"), "{echo}");
         assert!(echo.contains("retreat_ppm=166667"), "{echo}");
         assert!(echo.contains("recovery_min_of=5"), "{echo}");
+    }
+
+    /// **Spec §0.3(b) at CELL level, plus the §5.4 driver extensions that make
+    /// it expressible at all**, plus the corpus half of §5.2 — one cell, because
+    /// they are three readings of the same two games and the games are what this
+    /// test costs (MEASURED **0.64 s debug** for the whole test — the greedy pair
+    /// plus the rung control — at HEAD; the release-scale cell is T11's).
+    ///
+    /// WHY THE DRIVER NEEDED EXTENDING. Before this task the claim "every move
+    /// the evaluator bot played was explained" was unstatable here: the emission
+    /// sink is per-GAME and `ArenaGameStats` carried only a total
+    /// `moves_applied`, so there was no per-contestant denominator to compare a
+    /// tally against — and a contestant occupies a different SEAT in every
+    /// arrangement, so a per-seat total is not one either. `moves_by_seat`
+    /// (driver) plus `x_applied_moves` (cell, following X through the rotation)
+    /// are the two halves, and the equality below is what they buy.
+    ///
+    /// THE `Option` IS LOAD-BEARING and is asserted from both sides: an
+    /// evaluator X reports `Some(n)`, a rung X reports `None`. A plain `0` would
+    /// let an evaluator that silently stopped explaining pass the identity a rung
+    /// passes by design.
+    ///
+    /// MUTATION-PROVEN (reverted by inverse edit, never `git checkout` — L7):
+    /// attributing each applied move to `(mover + 1) % players` in the driver —
+    /// a plausible off-by-one in exactly the new code — fails the identity at
+    /// `Some(511)` vs `Some(586)`. The two sides genuinely come from independent
+    /// places: the left from the agent's own atomic counter, the right from the
+    /// driver's per-seat tally followed through the rotation.
+    #[test]
+    fn a_greedy_x_cell_counts_and_labels_every_move_it_explained() {
+        let rules = Rules::standard();
+        let spec = CellSpec {
+            name: "t6-greedy-vs-fw-counters".to_string(),
+            players: 2,
+            x: Contestant::GREEDY_V1_DEFAULT,
+            y: Contestant::Policy(RolloutPolicy::FAMILY_WEIGHTED_DEFAULT),
+            units: 1,
+            master: SeedScheduleKind::Diagnostic(MASTER),
+        };
+
+        /// One game's per-seat provenance, as the sink saw it.
+        type SeatLabels = Vec<(String, u32, String)>;
+        let mut per_game: Vec<SeatLabels> = Vec::new();
+        let mut total_moves = 0u64;
+        let report = run_cell_emitting(&spec, &rules, true, &mut |stats, arr| {
+            let run = stats.record.run.as_ref().expect("a cell's records carry provenance");
+            per_game.push(
+                run.seats
+                    .iter()
+                    .map(|s| (s.controller.clone(), s.version, s.observation.clone()))
+                    .collect(),
+            );
+            total_moves += stats.moves_applied;
+            assert_eq!(
+                stats.moves_by_seat.iter().sum::<u64>(),
+                stats.moves_applied,
+                "every applied move has exactly one mover",
+            );
+            // §5.2's corpus half: an evaluator seat runs the HONEST chain, so
+            // its record is ordinary training data and the containment rule must
+            // not refuse it at an ordinary cell path. Checked through the pure
+            // predicate — no I/O, nothing left in the repo's corpus directory.
+            let path = crate::game::arena::corpus::corpus_path(
+                &crate::game::arena::corpus::default_corpus_dir(),
+                crate::game::semantics::SEMANTICS_REV,
+                2,
+                "t6-greedy-vs-fw-counters",
+                stats.seed,
+                arr,
+            );
+            assert!(
+                crate::game::arena::corpus::corpus_refusal(&path, &stats.record).is_none(),
+                "an evaluator seat plays the honest chain, so its record is corpus-admissible",
+            );
+            Ok(())
+        })
+        .unwrap_or_else(|e| panic!("the greedy cell failed: {e}"));
+
+        assert_eq!(report.games, 2, "one 2P unit is the swapped pair");
+
+        // -- §5.4: per-seat applied-move counts, both aggregations --------------
+        assert_eq!(report.applied_by_seat.len(), 2, "one entry per seat");
+        assert_eq!(report.applied_by_seat.iter().sum::<u64>(), total_moves);
+        assert!(
+            report.applied_by_seat.iter().all(|&n| n > 0),
+            "a seat never moved: {:?}",
+            report.applied_by_seat,
+        );
+        // X is ONE seat of two, so its count must be a strict part of the whole
+        // — the check that `x_applied_moves` follows the contestant rather than
+        // quietly being the cell total.
+        assert!(
+            report.x_applied_moves > 0 && report.x_applied_moves < total_moves,
+            "x_applied_moves {} is not a strict part of the cell's {total_moves} moves",
+            report.x_applied_moves,
+        );
+
+        // -- §0.3(b): the identity ---------------------------------------------
+        assert_eq!(
+            report.x_explanations,
+            Some(report.x_applied_moves),
+            "Greedy-v1 played a move it did not explain (or explained one it did not play)",
+        );
+
+        // -- the cap counters: a one-ply argmax has NO search, so `None` -------
+        // The three-way distinction the Options carry: no explanation path
+        // (rung), an explanation path but no search (this cell), and a search
+        // whose guards did not fire (the lookahead cell below).
+        assert_eq!(
+            (report.x_ply_cap_hits, report.x_free_cap_hits),
+            (None, None),
+            "Greedy-v1 has no continuation to truncate, and a Some(0) would claim it searched",
+        );
+
+        // -- §5.2: provenance, from the controllers' own descriptors ------------
+        let greedy_seats: Vec<usize> = per_game
+            .iter()
+            .flat_map(|seats| seats.iter().enumerate())
+            .filter(|(_, (name, _, _))| name == GREEDY_CONTROLLER)
+            .map(|(i, _)| i)
+            .collect();
+        assert_eq!(
+            greedy_seats,
+            vec![0, 1],
+            "X must sit at each seat exactly once across the pair, and be labelled greedy at both",
+        );
+        for seats in &per_game {
+            for (name, version, observation) in seats {
+                assert_eq!(observation, "view", "every arena seat here plays the honest chain");
+                let expected = if name == GREEDY_CONTROLLER {
+                    GREEDY_IMPL_VERSION
+                } else {
+                    assert_eq!(name, "family-weighted", "unexpected controller {name:?}");
+                    crate::game::policy::POLICY_IMPL_VERSION
+                };
+                assert_eq!(*version, expected, "{name} reported the wrong impl version");
+            }
+        }
+
+        // -- §5.5: a mixed-Keep cell says so in its own echo --------------------
+        assert!(report.spec_echo.contains("setup-identical=no"), "{}", report.spec_echo);
+        assert!(
+            report.spec_echo.contains(&format!("x={GREEDY_CONTROLLER}@v{GREEDY_IMPL_VERSION}{{")),
+            "the echo must name X's controller and its knob group: {}",
+            report.spec_echo,
+        );
+
+        // -- the `None` side of the Option, on a rung X -------------------------
+        let rung_x = CellSpec {
+            name: "t6-rung-x-explains-nothing".to_string(),
+            x: Contestant::Policy(RolloutPolicy::RetreatAverse),
+            ..spec.clone()
+        };
+        let rung_report = run_cell(&rung_x, &rules).unwrap_or_else(|e| panic!("rung cell: {e}"));
+        assert_eq!(
+            rung_report.x_explanations, None,
+            "a rollout rung has no explanation path, which is not the same fact as explaining zero",
+        );
+        assert_eq!(
+            (rung_report.x_ply_cap_hits, rung_report.x_free_cap_hits),
+            (None, None),
+            "a rung produces no handle at all, so there is nothing to read a cap counter off",
+        );
+        assert!(rung_report.x_applied_moves > 0, "the rung still played");
+        assert!(rung_report.spec_echo.contains("setup-identical=yes"), "{}", rung_report.spec_echo);
+    }
+
+    /// §5.2 / §0.5: every contestant's name, version and knobs come from THAT
+    /// controller's own descriptor, and the per-controller version consts are
+    /// distinct where the controllers are.
+    ///
+    /// Literals on the right-hand side, not `descriptor()` on both — comparing a
+    /// call against itself would pin nothing. These strings are the WIRE FORMAT a
+    /// corpus reader matches on.
+    #[test]
+    fn every_contestant_reports_its_own_controllers_descriptor() {
+        use crate::game::lookahead::{
+            ATOMIC_DIAG_CONTROLLER, ATOMIC_DIAG_IMPL_VERSION, LOOKAHEAD_CONTROLLER,
+            LOOKAHEAD_IMPL_VERSION,
+        };
+
+        let (name, version, params) =
+            Contestant::Policy(RolloutPolicy::RetreatAverse).descriptor();
+        assert_eq!((name.as_str(), version), ("retreat-averse", POLICY_IMPL_VERSION));
+        assert!(params.is_empty(), "a knobless rung reports no knobs");
+
+        let (name, version, params) = Contestant::GREEDY_V1_DEFAULT.descriptor();
+        assert_eq!((name.as_str(), version), (GREEDY_CONTROLLER, GREEDY_IMPL_VERSION));
+        assert_eq!(params["m"], i64::from(DEFAULT_RETREAT_SAMPLES));
+        assert!(params.contains_key("eval_impl") && params.contains_key("weights"));
+
+        let (name, version, params) = Contestant::LOOKAHEAD_V1_DEFAULT.descriptor();
+        assert_eq!((name.as_str(), version), (LOOKAHEAD_CONTROLLER, LOOKAHEAD_IMPL_VERSION));
+        assert_eq!(params["b"], i64::from(DEFAULT_BEAM));
+        assert_eq!(params["k"], i64::from(DEFAULT_WORLDS));
+        assert!(!params.contains_key("d"), "S1 carries no atomic depth");
+
+        let (name, version, params) = Contestant::ATOMIC_DIAG_DEFAULT.descriptor();
+        assert_eq!((name.as_str(), version), (ATOMIC_DIAG_CONTROLLER, ATOMIC_DIAG_IMPL_VERSION));
+        assert_eq!(params["d"], i64::from(DEFAULT_ATOMIC_DEPTH));
+        assert!(!params.contains_key("b"), "S2 carries no beam");
+
+        // §0.5's whole point: the two search schemes are separately versionable,
+        // and at HEAD they have in fact moved apart.
+        assert_ne!(
+            ATOMIC_DIAG_IMPL_VERSION, LOOKAHEAD_IMPL_VERSION,
+            "the per-controller consts are separate so they CAN differ; if they \
+             ever coincide again, this pin should be re-read, not deleted",
+        );
+
+        // `with_knobs` raises K to 1, so a descriptor that printed the raw 0
+        // would name knobs the seat did not play on.
+        let (_, _, params) = Contestant::LookaheadV1 { b: 2, k: 0, m: 3 }.descriptor();
+        assert_eq!(params["k"], 1, "the descriptor must report the knobs the agent will run");
+
+        // The agent an evaluator contestant BUILDS reports the same descriptor,
+        // with the stream seed filled in — the drift this routing exists to
+        // prevent (a cell echo that says one thing and a record that says
+        // another).
+        let rules = Rules::standard();
+        let (agent, handle) = Contestant::GREEDY_V1_DEFAULT.build(&rules, 0xABCD);
+        let built = agent.controller();
+        let declared = Contestant::GREEDY_V1_DEFAULT.provenance(Some(0xABCD));
+        assert_eq!(built, declared, "a built agent and its contestant disagreed about what it is");
+        assert_eq!(built.agent_seed, Some(0xABCD));
+        assert_eq!(handle.expect("an evaluator hands back a tally").explained(), 0);
+        assert!(
+            Contestant::Policy(RolloutPolicy::Uniform).build(&rules, 1).1.is_none(),
+            "a rung has no explanation path to hand back",
+        );
+    }
+
+    /// §5.5: the echo states whether the cell's two contestants resolve a deal
+    /// the same way, so a reader of a quoted figure knows whether its units were
+    /// setup-identical or merely swapped-balanced.
+    #[test]
+    fn the_spec_echo_states_whether_the_cell_is_setup_identical() {
+        let homogeneous = CellSpec {
+            name: "keep-homogeneous".to_string(),
+            players: 2,
+            x: Contestant::Policy(RolloutPolicy::Uniform),
+            y: Contestant::Policy(RolloutPolicy::FAMILY_WEIGHTED_DEFAULT),
+            units: 4,
+            master: SeedScheduleKind::Diagnostic(MASTER),
+        };
+        let echo = spec_echo(&homogeneous, MASTER, 0);
+        assert!(echo.contains("setup-identical=yes"), "{echo}");
+
+        let mixed = CellSpec { x: Contestant::GREEDY_V1_DEFAULT, ..homogeneous.clone() };
+        let echo = spec_echo(&mixed, MASTER, 0);
+        assert!(echo.contains("setup-identical=no"), "{echo}");
     }
 
     /// The bootstrap endpoints are order statistics under the crate's ONE
@@ -1092,8 +1695,8 @@ mod tests {
         let base = CellSpec {
             name: "empty".to_string(),
             players: 2,
-            x: RolloutPolicy::Uniform,
-            y: RolloutPolicy::Uniform,
+            x: Contestant::Policy(RolloutPolicy::Uniform),
+            y: Contestant::Policy(RolloutPolicy::Uniform),
             units: 0,
             master: SeedScheduleKind::Diagnostic(MASTER),
         };
@@ -1127,8 +1730,8 @@ mod tests {
         let spec = CellSpec {
             name: "ra-vs-fw-provenance".to_string(),
             players: 2,
-            x: RolloutPolicy::RetreatAverse,
-            y: RolloutPolicy::FAMILY_WEIGHTED_DEFAULT,
+            x: Contestant::Policy(RolloutPolicy::RetreatAverse),
+            y: Contestant::Policy(RolloutPolicy::FAMILY_WEIGHTED_DEFAULT),
             units: 2,
             master: SeedScheduleKind::Diagnostic(MASTER),
         };
@@ -1177,5 +1780,77 @@ mod tests {
             serde_json::to_string(&report).unwrap(),
             "emitting changed the report",
         );
+    }
+
+    /// T6-review should-fix 2: the §0.3(b) cell-level identity was tested only
+    /// for the GREEDY arm while spec §0.1's contestant under test is
+    /// Lookahead-v1 — `build_search` and the `ExplainHandle::Search` arm ran
+    /// under no committed test. Same shape as the greedy cell above at
+    /// deliberately SMALL knobs (b=1, m=2: the identity is about the tally
+    /// path, not strength, and a B=4 lookahead game is ~14x dearer in debug).
+    /// Covers S1; S2 shares `build_search` and the same tally type.
+    #[test]
+    fn a_lookahead_x_cell_counts_and_labels_every_move_it_explained() {
+        let rules = Rules::standard();
+        let spec = CellSpec {
+            name: "t6r-lookahead-vs-fw-counters".to_string(),
+            players: 2,
+            x: Contestant::LookaheadV1 { b: 1, k: 1, m: 2 },
+            y: Contestant::Policy(RolloutPolicy::FAMILY_WEIGHTED_DEFAULT),
+            units: 1,
+            master: SeedScheduleKind::Diagnostic(MASTER),
+        };
+        let report = run_cell(&spec, &rules).expect("the lookahead cell runs");
+        assert_eq!(
+            report.x_explanations,
+            Some(report.x_applied_moves),
+            "every move the search rung applied must carry an explanation \
+             (§0.3(b) at cell level, S1 arm)",
+        );
+        assert!(report.x_applied_moves > 0, "the cell must actually have played");
+        // The SEARCHING side of the same Options (six-lens review): a search
+        // contestant reports `Some`, and the guards are expected not to fire.
+        // The free counter is `Some(0)` structurally here — S1 never enters the
+        // quiescence arm — so what this pins is the plumbing, not S2's guard.
+        assert_eq!(
+            report.x_ply_cap_hits,
+            Some(0),
+            "MAX_TURN_PLIES stopped a continuation, so some move was explained mid-turn",
+        );
+        assert_eq!(report.x_free_cap_hits, Some(0), "S1 cannot reach the quiescence guard at all");
+        assert!(
+            report.spec_echo.contains("x=lookahead-v1@v1{"),
+            "the X seat's provenance must be the search rung's descriptor: {}",
+            report.spec_echo,
+        );
+    }
+
+    /// T6-review should-fix 3: `KeepKind::EvaluatorScored` groups all three
+    /// evaluator contestants on the CLAIM that they share one Keep function —
+    /// and `setup-identical=yes` on an evaluator-vs-evaluator cell rests
+    /// entirely on it. The rung side of the same claim is pinned at
+    /// `arena.rs` over 72 (seat x deal) cases; this is the evaluator analog.
+    /// Seeds differ MAXIMALLY so agreement cannot come from a shared stream —
+    /// the Keep must be a function of the deal alone.
+    #[test]
+    fn every_evaluator_contestant_shares_one_keep_function() {
+        let rules = Rules::standard();
+        let (mut greedy, _) = Contestant::GREEDY_V1_DEFAULT.build(&rules, 7);
+        let (mut s1, _) = Contestant::LOOKAHEAD_V1_DEFAULT.build(&rules, u64::MAX / 5);
+        let (mut s2, _) = Contestant::ATOMIC_DIAG_DEFAULT.build(&rules, u64::MAX - 11);
+        for seat in 0..4u8 {
+            for card in 1..=18u8 {
+                let deal = [OrderCardId(card), OrderCardId(card + 18)];
+                let g = greedy.choose_starting_order(PlayerId(seat), &deal);
+                let a = s1.choose_starting_order(PlayerId(seat), &deal);
+                let b = s2.choose_starting_order(PlayerId(seat), &deal);
+                assert!(
+                    g == a && a == b,
+                    "the three evaluator contestants' Keeps diverged at seat {seat}, \
+                     deal {deal:?}: greedy {g}, s1 {a}, s2 {b} — KeepKind::EvaluatorScored \
+                     (and every setup-identical=yes it prints) rests on their agreement",
+                );
+            }
+        }
     }
 }

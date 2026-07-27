@@ -403,7 +403,22 @@ fn player_dummy_is_a_reserved_sentinel_outside_try_new() {
 /// The guard-rail half of the exemption: `state.player(DUMMY)` is a misuse
 /// (the sentinel has no `PlayerState`), and the debug guard names it rather
 /// than surfacing an opaque out-of-bounds index (types §3.4).
+///
+/// DEBUG-ONLY BY CONSTRUCTION, and the name always said so (Phase 3.3 §11(a)
+/// ride-along). The guard it asserts is a `debug_assert!` at `state.rs:271`,
+/// which release compiles out — so in release the very next line indexes
+/// `players[255]` and panics with "index out of bounds: the len is 2 but the
+/// index is 255", failing this test's `expected` substring. That made
+/// `cargo test --release -p yokohama-core --lib` red whole-package for a reason
+/// that is not a defect, which is worse than useless: a real release failure
+/// would have been indistinguishable from the standing one. The `cfg` filters
+/// the test out of the profile whose behavior it does not describe; the debug
+/// tier is unchanged and still runs it. Same shape and same attribute order as
+/// the crate's existing debug-only `should_panic` pins
+/// (`policy.rs`'s `retreat_ppm_above_the_ppm_scale_is_loud_in_debug`,
+/// `search_actions.rs`'s two) — this test was simply missed when they landed.
 #[test]
+#[cfg(debug_assertions)]
 #[should_panic(expected = "reserved sentinel")]
 fn state_player_rejects_the_dummy_sentinel_in_debug() {
     let state = crate::game::create_test_game_state(2);

@@ -870,13 +870,40 @@ fn ask_sim_deal(
     rules: &Rules,
 ) -> Result<u8, String> {
     out(&format!("Seat {seat} dealt:\n"));
-    for &card_id in &pending.deals[seat as usize] {
+    for (i, &card_id) in pending.deals[seat as usize].iter().enumerate() {
         if let Some(card) = rules.orders.get(card_id) {
-            out(&format!("  {}\n", order_prompt_line(card)));
+            // The Keep valuation the BOTS use, shown beside the card the
+            // operator is choosing for (spec §8: the Keep exists and is
+            // explained). It is the same `greedy::score_starting_order` both
+            // evaluator rungs argmax over -- read here rather than restated, so
+            // the wizard cannot describe a Keep the bots do not make.
+            out(&format!(
+                "  [{i}] {}  (bot Keep score {})\n",
+                order_prompt_line(card),
+                greedy::score_starting_order(card, rules),
+            ));
         }
     }
+    // Stated every time rather than once at the top of the wizard: it is the
+    // one line that stops a bare number from reading as an authority.
+    out(KEEP_SCORE_NOTE);
     ask_keep(input, out, seat)
 }
+
+/// What the `bot Keep score` beside each dealt card is, and what it is not.
+///
+/// Spec §8's own terms: `score_starting_order` reads the card's PRINTED
+/// economics (VP, money, goods, movement and warehouse rewards, minus its
+/// requirements, plus a country-scarcity term) and is **hand-set and
+/// unmeasured**, revisited at 3.5. Saying so beside it is the difference
+/// between a factual number and an implied recommendation -- the same rule the
+/// `suggest` screen closes with.
+///
+/// Hand-wrapped to two lines under 80 columns for the same reason every other
+/// width in this driver is a fixed budget: std exposes no terminal size, and
+/// the guide promises a 140-column window clears every layout.
+const KEEP_SCORE_NOTE: &str = "  (the Keep score is what the built-in bot would prefer, from the card's printed\n   \
+     economics alone -- hand-set, unmeasured, and no substitute for your own read)\n";
 
 /// Validate one order-card answer: syntax (via the shared `parse_order_id`),
 /// registry membership, then not-already-entered -- inserting into
@@ -1718,6 +1745,42 @@ mod tests {
         let repl = repl.unwrap_or_else(|e| panic!("expected Ok, got Err({e}); transcript:\n{transcript}"));
         assert!(!repl.session.legal().is_empty());
         std::fs::remove_file("yokohama-game-605.json").ok();
+    }
+
+    /// **Spec §8's Keep, surfaced where the Keep is actually made** (Phase 3.3
+    /// Task 10). Each dealt card is offered with the bot's own
+    /// `score_starting_order` valuation beside it, and with the note that says
+    /// what that number is not — the same honesty rule the `suggest` screen
+    /// closes with, at the one other place this driver prints an evaluator's
+    /// opinion.
+    ///
+    /// Anti-vacuity: the two scores must actually DIFFER on this deal, so a
+    /// stub returning a constant would fail here rather than pass by printing
+    /// two identical numbers.
+    #[test]
+    fn the_sim_deal_question_carries_the_bots_keep_valuation() {
+        let (repl, transcript) =
+            feed(&["sim", "2", "red", "blue", "0", "605", "", "0", "1", "", "confirm"]);
+        repl.unwrap_or_else(|e| panic!("expected Ok, got Err({e}); transcript:\n{transcript}"));
+        std::fs::remove_file("yokohama-game-605.json").ok();
+
+        assert_eq!(
+            transcript.matches("bot Keep score").count(),
+            4,
+            "one valuation per dealt card, both seats: {transcript}"
+        );
+        assert!(transcript.contains("hand-set, unmeasured"), "the note must ride with it: {transcript}");
+
+        let scores: Vec<&str> = transcript
+            .split("bot Keep score ")
+            .skip(1)
+            .map(|tail| tail.split(')').next().unwrap_or(""))
+            .collect();
+        assert_eq!(scores.len(), 4, "{transcript}");
+        assert!(
+            scores[0] != scores[1] || scores[2] != scores[3],
+            "anti-vacuity: a constant valuation would tell an operator nothing ({scores:?})"
+        );
     }
 
     // ---- Third review, finding I1: unambiguous tile-entry order ----

@@ -60,6 +60,36 @@
 //!     ρ = −1.0000 with SE 0.000, and the instrument reports "perfectly
 //!     calibrated" while measuring nothing.
 //!
+//! **PAIRING SCOPE — WHAT SURVIVES A MIXED-KEEP CELL (Phase 3.3, spec §5.5,
+//! ledger row 15).** The setup bullet above says "bit-identical post-setup
+//! state", and from 3.3 that holds only in a **Keep-HOMOGENEOUS** cell — one
+//! whose two contestants share a [`KeepKind`]. The rungs all draw the Keep from
+//! the `(seat, deal)`-keyed stream; the evaluator contestants take
+//! `greedy::score_starting_order`'s argmax instead, because the map mandates an
+//! evaluator-informed Keep and the rejected alternative — every rung adopting
+//! `score_starting_order` — would silently change every 3.2 gate cell's
+//! trajectories and invalidate the recorded figures. So a **mixed-Keep cell's
+//! unit is seed-paired and seat-SWAPPED at `new_game` but NOT setup-identical**:
+//! the two seatings resolve the same deal two ways.
+//!
+//! That is acceptable, and on ledger row 15's own measurement it costs nothing
+//! the design was relying on: **pairing is BOOKKEEPING** (variance reduction
+//! ~0 at 2P, negative at 4P), and it is the SWAP — each contestant at each seat
+//! — that removes the seat effect the unit exists to remove. The unit bootstrap
+//! over units stays valid either way. What is scoped rather than repealed:
+//!
+//!   * `paired_seatings_share_a_bit_identical_starting_state` is KEPT and now
+//!     asserts its own Keep-homogeneity precondition first;
+//!   * `the_deal_at_each_seat_is_seating_invariant_in_a_mixed_keep_cell` holds
+//!     the surviving half in mixed cells — the DEAL at a seat is a function of
+//!     `(world seed, seat)`, so it does not move when the contestants swap, even
+//!     though the KEEPS taken from it may;
+//!   * every `CellReport`'s `spec_echo` prints `setup-identical=yes|no`, so a
+//!     quoted figure carries which kind of unit produced it.
+//!
+//! The §10.2 null cell is Keep-homogeneous by construction, so the standing
+//! self-test keeps its full-strength property.
+//!
 //! SUB-SEED DERIVATION: every stream seed is `mix(salt, components)` —
 //! `acc = salt`, then `acc = splitmix64(acc ^ component)` per component in
 //! order (`seeds::splitmix64`, the same primitive `SeedSchedule` streams with,
@@ -97,11 +127,17 @@
 //! play out of training data are reviewed against spec §5. What this file owns
 //! is the STAMP — [`drive`] fills `GameRecord.run` with one
 //! [`SeatProvenance`](crate::game::record::SeatProvenance) per seat, taking each
-//! controller's name from [`RolloutPolicy::as_str`] (never a hand-typed string)
-//! and each seat's `observation` from WHICH DRIVER built it. That last split is
-//! the honesty boundary showing up in the artifact: an agent states what it is,
-//! and the driver — the only party that knows whether it passed a `PlayerView`
-//! or the true state — states what it could see.
+//! controller's name and version from THAT CONTROLLER'S OWN descriptor (never a
+//! hand-typed string): [`RolloutPolicy::descriptor`] for a rung,
+//! `greedy::controller_provenance` / `lookahead::controller_provenance` for the
+//! evaluator contestants, each reading its own name and impl-version const per
+//! spec §0.5. Each seat's `observation` comes from WHICH DRIVER built it. That
+//! last split is the honesty boundary showing up in the artifact: an agent
+//! states what it is, and the driver — the only party that knows whether it
+//! passed a `PlayerView` or the true state — states what it could see. The
+//! evaluator contestants run the honest chain through [`AgentBench`], so their
+//! seats are labelled `view` and their records file into the corpus like any
+//! other seat's.
 
 pub mod corpus;
 pub mod stats;
@@ -532,6 +568,16 @@ pub struct ArenaGameStats {
     pub players: u8,
     pub turns: u32,
     pub moves_applied: u64,
+    /// Applied moves per SEAT, indexed by seat — spec §5.4's driver extension,
+    /// and the only place the per-seat split exists (the record's event list
+    /// carries moves, not movers).
+    ///
+    /// Sums to [`moves_applied`](Self::moves_applied) by construction: every
+    /// applied move has exactly one mover, and the loop increments both in the
+    /// same step. What it BUYS is spec §0.3(b): "every move the evaluator bot
+    /// played was explained" needs a per-contestant denominator, and a cell's
+    /// contestant occupies a different seat in every arrangement.
+    pub moves_by_seat: Vec<u64>,
     pub result: GameResult,
     pub trigger: Option<EndGameTrigger>,
     /// One observation per decision point, in play order. Never carries a
@@ -795,6 +841,7 @@ fn drive(
     let mut volumes: Vec<VolumeObs> = Vec::new();
     let mut coverage = CoverageTally::default();
     let mut moves_applied: u64 = 0;
+    let mut moves_by_seat: Vec<u64> = vec![0; players as usize];
 
     loop {
         if is_game_over(&state) {
@@ -804,6 +851,7 @@ fn drive(
                 players,
                 turns: state.turn_number,
                 moves_applied,
+                moves_by_seat,
                 result: final_result(&state, rules),
                 trigger: state.trigger_reason,
                 volumes,
@@ -876,6 +924,9 @@ fn drive(
         coverage.observe(&mv);
         record.push_move(mv);
         moves_applied += 1;
+        // `seat` is `state.current_player` read BEFORE the apply, i.e. the mover
+        // — not the seat whose turn it is afterwards.
+        moves_by_seat[seat.0 as usize] += 1;
     }
 }
 
@@ -922,6 +973,18 @@ mod tests {
         }
     }
 
+    /// **SCOPED at Phase 3.3 to KEEP-HOMOGENEOUS cells, and KEPT (spec §5.5,
+    /// ledger row 10).** Bit-identical starts were a whole-arena property in 3.2
+    /// because every contestant was a rung and every rung takes its Keep from
+    /// the same `(seat, deal)`-keyed stream. From 3.3 the evaluator contestants
+    /// take `score_starting_order`'s argmax instead, so a MIXED cell's two
+    /// seatings resolve the same deal two ways and this property is false there
+    /// BY DESIGN — the doctrine is scoped, not repealed. The cell under test
+    /// asserts its own homogeneity precondition below rather than relying on a
+    /// reader noticing that both contestants happen to be rungs, and the
+    /// surviving half in mixed cells has its own pin
+    /// (`the_deal_at_each_seat_is_seating_invariant_in_a_mixed_keep_cell`).
+    ///
     /// MUTATION-PROVEN (reverted by inverse edit, never `git checkout` — L7):
     /// drawing the setup choice from `self.rng` — the slot-keyed PLAY stream —
     /// fails the 72-pair assertion below at the first deal (left 1, right 0).
@@ -936,6 +999,15 @@ mod tests {
         let seed = world(0);
         let unit = unit_for(2, seed);
         assert_eq!(unit.seatings, vec![vec![Slot(0), Slot(1)], vec![Slot(1), Slot(0)]]);
+
+        // THE SCOPE, asserted rather than assumed: this cell is self-play of one
+        // rung, hence Keep-homogeneous, hence entitled to the property below.
+        let contestant = Contestant::Policy(RolloutPolicy::FAMILY_WEIGHTED_DEFAULT);
+        assert_eq!(
+            contestant.keep_kind(),
+            KeepKind::SeatKeyedUniform,
+            "this pin holds only for Keep-homogeneous cells (spec §5.5)",
+        );
 
         let starts: Vec<GameState> = unit
             .seatings
@@ -978,6 +1050,117 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// One seat's setup decision as observed: who was asked, what they were
+    /// dealt, which card they kept.
+    type SetupLog = Vec<(PlayerId, [OrderCardId; 2], u8)>;
+
+    /// A seat's agent that delegates the SETUP decision to a real contestant and
+    /// then stops the game — so a setup property costs one `new_game` instead of
+    /// two full evaluator games.
+    struct SetupSpy {
+        inner: Box<dyn ArenaAgent>,
+        log: Arc<Mutex<SetupLog>>,
+    }
+
+    impl ArenaAgent for SetupSpy {
+        fn choose_starting_order(&mut self, seat: PlayerId, deal: &[OrderCardId; 2]) -> u8 {
+            let keep = self.inner.choose_starting_order(seat, deal);
+            self.log.lock().unwrap().push((seat, *deal, keep));
+            keep
+        }
+        fn choose(&mut self, _v: &PlayerView, _r: &Rules) -> Result<DecisionReport, String> {
+            Err("setup-only probe".to_string())
+        }
+        fn controller(&self) -> ControllerProvenance {
+            self.inner.controller()
+        }
+    }
+
+    /// **The NEW pin spec §5.5 requires: what survives in a MIXED-Keep cell.**
+    ///
+    /// `paired_seatings_share_a_bit_identical_starting_state` is false here by
+    /// design — Greedy-v1 keeps by `score_starting_order`, a rung keeps by its
+    /// `(seat, deal)`-keyed draw, so the same deal resolves two ways depending on
+    /// who is sitting there. What does NOT move is the DEAL itself: it is a
+    /// function of `(world seed, seat)` alone, decided inside `new_game` before
+    /// any agent exists. That is the half the unit's pairing still rests on, and
+    /// it is why a mixed cell is still seed-paired and swap-balanced (ledger
+    /// row 15: pairing is bookkeeping, the swap is the point).
+    ///
+    /// BOTH HALVES ARE ASSERTED, because either alone is vacuous: the invariance
+    /// half would pass on a cell where the keeps also happened to agree, so the
+    /// run also counts the seeds whose keeps DIVERGED and requires at least one
+    /// — i.e. this is demonstrably a mixed cell and not a homogeneous one wearing
+    /// two names.
+    ///
+    /// Setup-only by construction (see [`SetupSpy`]): the property is about
+    /// `new_game`'s deal and the two Keep rules, and playing evaluator games out
+    /// would cost seconds to observe nothing extra.
+    #[test]
+    fn the_deal_at_each_seat_is_seating_invariant_in_a_mixed_keep_cell() {
+        let rules = Rules::standard();
+        let x = Contestant::GREEDY_V1_DEFAULT;
+        let y = Contestant::Policy(RolloutPolicy::FAMILY_WEIGHTED_DEFAULT);
+        assert_ne!(
+            x.keep_kind(),
+            y.keep_kind(),
+            "anti-vacuity: this pin is about a cell whose contestants keep DIFFERENTLY",
+        );
+
+        let deals_of = |log: &SetupLog| -> Vec<(PlayerId, [OrderCardId; 2])> {
+            log.iter().map(|(seat, deal, _)| (*seat, *deal)).collect()
+        };
+        let keeps_of = |log: &SetupLog| -> Vec<u8> { log.iter().map(|(_, _, k)| *k).collect() };
+
+        let mut seeds_whose_keeps_diverged = 0u32;
+        for i in 0..8u64 {
+            let seed = world(30 + i);
+            let unit = unit_for(2, seed);
+
+            let mut per_seating: Vec<SetupLog> = Vec::new();
+            for seating in &unit.seatings {
+                let log: Arc<Mutex<SetupLog>> = Arc::new(Mutex::new(Vec::new()));
+                let collected = Arc::clone(&log);
+                let err = run_arena_game(seed, 2, &rules, &mut |seat, _n| {
+                    let slot = seating[seat.0 as usize];
+                    let contestant = if slot == Slot(0) { x } else { y };
+                    let (inner, _tally) =
+                        contestant.build(&rules, agent_stream_seed(seed, seat, slot));
+                    Box::new(SetupSpy { inner, log: Arc::clone(&collected) })
+                }, true)
+                .expect_err("the setup probe stops the game at its first decision");
+                assert!(matches!(err, ArenaError::SamplerFailed { .. }), "{err}");
+                let seen = log.lock().unwrap().clone();
+                per_seating.push(seen);
+            }
+
+            assert_eq!(per_seating[0].len(), 2, "one setup decision per seat");
+            assert_eq!(
+                deals_of(&per_seating[0]),
+                deals_of(&per_seating[1]),
+                "seed {seed:?}: swapping the contestants moved a SEAT's deal — the half a mixed \
+                 cell's pairing still rests on",
+            );
+            // ...and the deals are not a constant the equality above could hold
+            // over trivially.
+            assert_ne!(
+                per_seating[0][0].1, per_seating[0][1].1,
+                "two seats were handed the same deal",
+            );
+
+            if keeps_of(&per_seating[0]) != keeps_of(&per_seating[1]) {
+                seeds_whose_keeps_diverged += 1;
+            }
+        }
+
+        assert!(
+            seeds_whose_keeps_diverged > 0,
+            "no seed in the probe produced differing KEEPS across the two seatings — either the \
+             two contestants share a Keep rule after all (and this cell is not mixed), or the \
+             driver stopped asking the agents",
+        );
     }
 
     /// MUTATION-PROVEN (reverted by inverse edit): dropping the slot component

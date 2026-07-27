@@ -10,4 +10,5 @@ pub(crate) mod reveal;
 pub mod screen;
 pub mod session;
 pub mod style;
+pub mod suggest;
 pub mod wizard;

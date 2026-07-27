@@ -428,6 +428,7 @@ impl Repl {
             ["hand"] => self.out_view(self.hand_text()),
             ["score"] => self.out_view(self.score_text()),
             ["log"] => self.out_view(self.log_tail()),
+            ["suggest"] => self.suggest_cmd(),
             ["view"] | ["views"] | ["?"] => {
                 self.sub = SubPrompt::ViewMenu;
                 self.out(String::new(), false)
@@ -1848,6 +1849,60 @@ impl Repl {
         text
     }
 
+    /// `suggest`: what Lookahead-v1 would play from YOUR seat's own view, with
+    /// the evaluator's term-by-term arithmetic (spec §7).
+    ///
+    /// **Read-only by construction**, which is the property the whole feature
+    /// rests on: this takes `&self`, so it cannot record an event, move the
+    /// state, or trip an autosave even by accident -- the compiler enforces
+    /// the sandbox rather than a convention. Everything it needs comes off
+    /// `session` by shared reference, the agent is a local built per press from
+    /// a key derived from PUBLIC quantities (`suggest::stream_seed`), and it is
+    /// dropped before this returns. That pairing is exactly what makes a second
+    /// press at an unchanged position return the same answer: same position ⟹
+    /// same event index ⟹ same key ⟹ same agent ⟹ same search.
+    ///
+    /// Four refusals, each for its own reason rather than one catch-all:
+    /// LIVE mode (the standing 3.2 scope -- see `suggest`'s module doc for why
+    /// a live game's sampled worlds are not the position anyone is playing),
+    /// a finished game, a seat a BOT is playing (the pump normally leaves a
+    /// human to move, so this is reachable only after a halt -- and answering
+    /// for a bot's seat would be advising it against you), and the agent's own
+    /// errors, which are surfaced verbatim rather than swallowed.
+    fn suggest_cmd(&self) -> StepOutput {
+        if matches!(self.session.mode, TrackingMode::Live) {
+            // Hand-wrapped, like the render's own notes: this is a view body, so
+            // a 215-column paragraph would size the composed frame to itself
+            // (T10 review M1 -- the same defect, in the refusal).
+            return self.out_view(
+                "`suggest` is simulation-only.\n\
+                 A live-tracked game's hidden cards are a model reconciled from the table, not\n\
+                 the engine's own deck, so the bot would be searching a position nobody is\n\
+                 playing. (Bot seats are sim-only for the same family of reason -- see guide §4.)"
+                    .to_string(),
+            );
+        }
+        if self.session.is_over() {
+            return self.out_view("The game is over -- there is no move to suggest.".to_string());
+        }
+        let seat = self.session.state().current_player;
+        if self.bots.is_bot(seat) {
+            return self.out_view(format!(
+                "Seat {} is played by a bot, and `suggest` answers for YOUR seat only.",
+                seat.0,
+            ));
+        }
+        let seed = crate::suggest::stream_seed(self.session.record(), seat);
+        match crate::suggest::suggest(self.session.state(), self.session.rules(), seat, seed) {
+            Ok(s) => self.out_view(crate::suggest::render_suggestion(
+                &s,
+                self.session.state(),
+                self.session.rules(),
+            )),
+            Err(e) => self.out_view(format!("No suggestion: {e}")),
+        }
+    }
+
     /// `reveal <seat> <card>`: make a live-tracked opponent's hidden
     /// starting order public via `Session::apply_standalone`. Unlike the
     /// bound reveals above, this is a normal top-level command usable any
@@ -2098,6 +2153,7 @@ Commands:
   score           show current VP/money (or the final scores once the game is over)
   log             show the tail of the move/event log
   view            open the numbered game-info menu over all of the views above ('views'/'?' also work)
+  suggest         simulation only: what the built-in bot would play from your seat, with its arithmetic
   privacy         toggle hiding hand contents in views (default: hidden in live mode)
   panel           toggle the players panel inside the composed screen (terminal only)
   screen          toggle the composed screen itself (terminal only; pipes are always plain)
@@ -4639,6 +4695,324 @@ mod tests {
             "the demotion must be visible: {:?}",
             r.session.load_warnings
         );
+    }
+
+    // ---- `suggest` (Phase 3.3 Task 10, spec §7) ---------------------------
+
+    /// Play the game forward one move through the REPL's own dispatch, avoiding
+    /// the two phases whose option `0` is a GROUPED family (which would open a
+    /// sub-prompt instead of applying): Placement takes the `a` grammar's empty
+    /// placement, Movement takes the `r` grammar's bare retreat, and every other
+    /// phase -- and any phase at all while a choice is queued -- lists nothing
+    /// but `Direct` entries, so `0` applies one.
+    fn step_one_move(r: &mut Repl) {
+        let queued = !r.session.state().pending_choices.is_empty();
+        match r.session.state().turn_phase {
+            TurnPhase::Placement if !queued => r.step("a"),
+            TurnPhase::Movement if !queued => r.step("r"),
+            _ => r.step("0"),
+        };
+    }
+
+    /// A 2P simulation driven a few turns in and stopped at the first position
+    /// that is BOTH mid-game (assistants on the board, more than ten events
+    /// recorded) and genuinely BRANCHING -- more than one legal move.
+    ///
+    /// The branching half is load-bearing rather than tidy: a forced decision
+    /// point renders "No runner-up: this decision point offered exactly one
+    /// move", so a fixture that stopped at one would exercise neither the
+    /// runner-up rows nor the widest lines the screen can print, and the frame
+    /// pin below would be measuring a narrower body than a player will see.
+    fn repl_mid_game(seed: u64) -> Repl {
+        repl_mid_game_np(2, seed)
+    }
+
+    /// `repl_mid_game` at any player count (T10 review M1): the width pin has to
+    /// render the 4-player screen, where the composed frame is NARROWEST (108
+    /// columns) while the board is widest -- the case a 2P fixture cannot show.
+    /// Same stopping condition, so the 2P fixture above is unchanged.
+    fn repl_mid_game_np(players: u8, seed: u64) -> Repl {
+        let mut r = repl_np(players, seed);
+        drive_to_movement_with_on_board_assistants(&mut r);
+        for _ in 0..40 {
+            if r.session.is_over() {
+                break;
+            }
+            if r.session.record().events.len() > 10 && r.session.legal().len() > 1 {
+                return r;
+            }
+            step_one_move(&mut r);
+        }
+        panic!("{players}P: no branching mid-game decision point within 40 moves of setup");
+    }
+
+    /// **Spec §7's deterministic-repeatable clause, driven through `step`.** Two
+    /// presses at one position return BYTE-IDENTICAL screens, and neither
+    /// touches the game.
+    ///
+    /// The anti-vacuity halves matter as much as the equality: the screen has to
+    /// carry a real suggestion (a refusal would also compare equal to itself),
+    /// and the state/record/legal-list have to be untouched afterwards (a
+    /// command that applied its own suggestion would still be repeatable in the
+    /// trivial sense of always agreeing with itself at ITS new position).
+    #[test]
+    fn suggest_twice_at_one_position_prints_the_same_screen_and_moves_nothing() {
+        let mut r = repl_mid_game(4);
+        let state_before = r.session.state().clone();
+        let events_before = r.session.record().events.len();
+
+        let first = r.step("suggest");
+        let second = r.step("suggest");
+
+        assert_eq!(first.text, second.text, "a second press must not change the answer");
+        assert!(first.text.contains("Suggested move:"), "a real suggestion, not a refusal:\n{}", first.text);
+        assert!(first.text.contains("TOTAL"), "the term table must be there:\n{}", first.text);
+        assert!(first.text.contains("victory_points"), "{}", first.text);
+        assert!(
+            first.text.contains("Runner-ups ("),
+            "the fixture must be a branching point, so the runner-up rows are exercised too:\n{}",
+            first.text
+        );
+        assert_eq!(*r.session.state(), state_before, "suggest must not move the game on");
+        assert_eq!(r.session.record().events.len(), events_before, "and must record nothing");
+
+        // ...and the answer IS a move the engine offers right now. Read as the
+        // whole answer BLOCK rather than one line: a move description too wide
+        // for the frame is reflowed across lines (T10 review M1), and wrapping
+        // collapses the whitespace it breaks at, so both sides are compared word
+        // by word.
+        let words = |s: &str| s.split_whitespace().collect::<Vec<_>>().join(" ");
+        let suggested = words(
+            &first
+                .text
+                .lines()
+                .skip_while(|l| !l.starts_with("Suggested move:"))
+                .skip(1)
+                .take_while(|l| l.starts_with("  "))
+                .collect::<Vec<_>>()
+                .join(" "),
+        );
+        assert!(!suggested.is_empty(), "the suggested move block:\n{}", first.text);
+        assert!(
+            r.session
+                .legal()
+                .iter()
+                .any(|m| words(&describe::describe_move(m, r.session.state(), r.session.rules()))
+                    == suggested),
+            "the suggested move must be in the engine's own legal list: {suggested:?}"
+        );
+    }
+
+    /// **The determinism clause across save -> quit -> reload**, which is the
+    /// half the same-process pin above cannot reach and the half a natural
+    /// implementation gets wrong: an agent (or an RNG, or a press counter) cached
+    /// on the `Repl` dies with the process, so a resumed game would answer its
+    /// own unchanged position with a DIFFERENT screen while still agreeing with
+    /// itself in any one session. `bot.rs` states the same hazard for the bot's
+    /// decision stream (its module doc: "a save/reload would silently restart
+    /// the" stream) — this is that lesson applied to a read-only surface.
+    ///
+    /// It holds here because every component of `suggest::stream_seed` is a field
+    /// of the SERIALIZED `GameRecord` — the seed, the player count, the start
+    /// seat, each seat's kept starting order, and the event count — so the key is
+    /// re-derived rather than remembered. Compared byte for byte, prompt line
+    /// included, because that is what the player sees.
+    #[test]
+    fn suggest_after_save_and_reload_prints_the_same_screen() {
+        let mut r = repl_mid_game(4);
+        let before = r.step("suggest").text;
+        assert!(
+            before.contains("Suggested move:"),
+            "fixture: a real suggestion, not a refusal:\n{before}"
+        );
+
+        let path = std::env::temp_dir()
+            .join(format!("yokohama_suggest_resume_{}.json", std::process::id()));
+        r.session.save(&path).expect("save");
+        let resumed_session = Session::load(&path, Rules::standard()).expect("load");
+        std::fs::remove_file(&path).ok();
+        let mut resumed = Repl::new(resumed_session);
+        assert_eq!(
+            resumed.session.record().events.len(),
+            r.session.record().events.len(),
+            "fixture: the reload must land on the same position"
+        );
+
+        let after = resumed.step("suggest").text;
+        assert_eq!(before, after, "a resumed game must answer its own position identically");
+    }
+
+    /// Anti-vacuity for the pin above: the stream is keyed by the EVENT INDEX,
+    /// so pressing `suggest` after a move is a different question -- the pin
+    /// would otherwise also pass on a `suggest` that ignored the position
+    /// entirely and printed a constant.
+    #[test]
+    fn the_suggest_stream_moves_with_the_position() {
+        let mut r = repl_mid_game(4);
+        let before = r.step("suggest").text;
+        step_one_move(&mut r);
+        let after = r.step("suggest").text;
+        assert_ne!(before, after, "the key must include the event index");
+    }
+
+    /// **`suggest` is deliberately absent in live mode** (spec §7; 3.2's CLI
+    /// scope stands). It refuses with the reason, applies nothing, and leaves
+    /// the session exactly as it was.
+    #[test]
+    fn suggest_is_refused_in_live_mode() {
+        let (mut r, _) = repl_live_hidden(21);
+        let state_before = r.session.state().clone();
+
+        let out = r.step("suggest");
+
+        assert!(out.text.contains("simulation-only"), "the refusal must say so: {}", out.text);
+        assert!(!out.text.contains("Suggested move:"), "and must not suggest anything: {}", out.text);
+        assert_eq!(*r.session.state(), state_before);
+        assert!(r.session.record().events.is_empty());
+    }
+
+    /// `suggest` answers for YOUR seat. A bot's seat is refused by name -- only
+    /// reachable after a halted pump, but the alternative (advising the bot's
+    /// side against you) is worse than a message.
+    #[test]
+    fn suggest_refuses_a_seat_a_bot_is_playing() {
+        let mut r = repl_2p_bots(4, &[0]);
+        assert!(r.bots.is_bot(r.session.state().current_player), "fixture: a bot is to move");
+
+        let out = r.step("suggest");
+
+        assert!(out.text.contains("played by a bot"), "{}", out.text);
+        assert!(!out.text.contains("Suggested move:"), "{}", out.text);
+    }
+
+    /// **The suggest screen inside the COMPOSED FRAME, at every player count**
+    /// (T10 review M1). `screen::wrap` sizes a frame to its widest line, so a
+    /// body that outran the board would shove the whole game screen sideways for
+    /// one command and back again -- the jitter F3 fixed vertically, in the other
+    /// axis.
+    ///
+    /// What this replaced could not see the failure it was named for. It asserted
+    /// `width(suggest) <= width(plain)` on ONE session, drove `repl_mid_game(4)`
+    /// -- which is 2 players at seed 4, not 4 players -- and its own fixture
+    /// assertion said "the 2P frame" while claiming to have measured a 4P one. The
+    /// 4-player screen, the only one where the frame (108) is narrower than the
+    /// widest thing `suggest` can print (135), was never rendered.
+    ///
+    /// Four assertions per count, each for its own reason:
+    ///
+    /// 1. Every line of the SUGGEST RENDER fits that count's frame width. The
+    ///    render is isolated from the standing prompt block first, because
+    ///    `out_view` appends the prompt to every view command and the prompt is a
+    ///    different surface with a different budget (guide §2's 140 columns, held
+    ///    by `screen`'s own pins) -- measuring them together would assert this
+    ///    render's bound on someone else's line.
+    /// 2. The printed body IS `suggest::render_suggestion`, byte for byte, at the
+    ///    same state and the same stream key. **This is what makes the pin
+    ///    non-vacuous, and it was measured rather than assumed**: an arbitrary
+    ///    branching position's own suggestion usually fits every frame with no
+    ///    help at all, so assertion 1 alone passes even on a render with the bound
+    ///    ripped out. What is checked here is that this command prints the BOUNDED
+    ///    render rather than formatting a screen of its own -- and the over-wide
+    ///    case is driven where it can be controlled, in `suggest`'s own
+    ///    `a_move_too_wide_for_the_frame_is_reflowed_and_rows_are_elided` (which
+    ///    answer a search picks cannot be dictated from here).
+    /// 3. The frame around the suggestion is no wider than the frame around an
+    ///    ordinary prompt: the no-jitter property, which is about the composed
+    ///    screen rather than about one body.
+    /// 4. The mid-game frame is no NARROWER than the width the body was bounded
+    ///    by. `screen::FRAME_WIDTHS` holds OPENING widths and a body is bounded
+    ///    before the frame it lands in exists, so this is the check that the table
+    ///    is a floor at a real position and not just at turn one.
+    #[test]
+    fn the_suggest_screen_fits_the_composed_frame_at_every_player_count() {
+        for players in [2u8, 3, 4] {
+            let mut r = repl_mid_game_np(players, 4);
+            let body = r.step("suggest").text;
+            assert!(body.contains("Suggested move:"), "{players}P fixture: a real suggestion: {body}");
+
+            // The prompt block alone, at the same (untouched) state: what
+            // `out_view` appended to the render above.
+            let tail = r.out_view(String::new()).text;
+            let render = body.strip_suffix(&tail).unwrap_or_else(|| {
+                panic!("a view body is its render plus the standing prompt block:\n{body}")
+            });
+
+            let budget = screen::frame_width(players as usize);
+            for line in render.lines() {
+                let w = screen::visible_width(line);
+                assert!(
+                    w <= budget,
+                    "{players}P: a rendered line is {w} columns against the frame's {budget}: {line:?}",
+                );
+            }
+
+            // The state is untouched by a press, so the same key re-derives the
+            // same answer (the determinism pins above) and this comparison is
+            // exact rather than approximate.
+            let seat = r.session.state().current_player;
+            let key = crate::suggest::stream_seed(r.session.record(), seat);
+            let s = crate::suggest::suggest(r.session.state(), r.session.rules(), seat, key)
+                .expect("the same suggestion the command just printed");
+            assert_eq!(
+                render,
+                crate::suggest::render_suggestion(&s, r.session.state(), r.session.rules()),
+                "{players}P: the command must print the width-bounded render, not its own format",
+            );
+
+            screen::force(true);
+            let plain = screen::wrap(&r, &r.prompt());
+            let suggest = screen::wrap(&r, &body);
+            screen::force(false);
+            let width = |frame: &str| frame.lines().map(screen::visible_width).max().unwrap_or(0);
+            assert!(
+                width(&suggest) <= width(&plain),
+                "{players}P: the suggest body widened the frame from {} to {} columns",
+                width(&plain),
+                width(&suggest),
+            );
+            assert!(
+                width(&plain) >= budget,
+                "{players}P: the mid-game frame is {} columns, under the {budget} the body was \
+                 bounded by -- FRAME_WIDTHS is no longer a floor",
+                width(&plain),
+            );
+        }
+    }
+
+    /// A finished game has nothing to suggest, and the refusal lands BEFORE the
+    /// search rather than after it: a terminal position offers no move, so the
+    /// agent would answer with a dead-end error message where a sentence
+    /// belongs.
+    #[test]
+    fn suggest_refuses_a_finished_game() {
+        let mut state = repl_2p(4).session.state().clone();
+        state.end_game_triggered = true;
+        state.final_round = true;
+        state.trigger_player = Some(PlayerId::new(0));
+        // The seat before the start player, at TurnEnd: everyone has had their
+        // last turn (`GameState::is_game_over`'s own condition).
+        state.current_player = PlayerId::new(1);
+        state.turn_phase = TurnPhase::TurnEnd;
+        let mut r = Repl::new(Session::for_test_from_state(state, Rules::standard()));
+        assert!(r.session.is_over(), "fixture: the game must read as finished");
+
+        let out = r.step("suggest");
+
+        assert!(out.text.contains("game is over"), "{}", out.text);
+        assert!(!out.text.contains("Suggested move:"), "{}", out.text);
+    }
+
+    /// A locked session refuses `suggest` along with everything else that is
+    /// not save/log/quit -- checked because `suggest` is read-only and it would
+    /// be easy to argue it into the allow-list, where it would run a search
+    /// against a state the driver has already declared untrustworthy.
+    #[test]
+    fn a_locked_session_refuses_suggest() {
+        let mut r = repl_2p(4);
+        r.engage_lockdown("test".to_string());
+        let out = r.step("suggest");
+        assert!(out.text.contains("session locked"), "{}", out.text);
+        assert!(!out.text.contains("Suggested move:"), "{}", out.text);
     }
 
     /// Same `(bot seed, event count)` in, same move out: the decision seed is a

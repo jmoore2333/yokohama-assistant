@@ -31,11 +31,22 @@
 //! bot-facing evaluation runs whose figures get quoted (spec §3). The default is
 //! diagnostic, because the common use of this binary is reproducing something.
 //!
+//! CONTESTANTS, not just policies, since Phase 3.3 (spec §5.3): `<x>` and `<y>`
+//! accept the 3.2 rungs AND the evaluator controllers (`greedy-v1`,
+//! `lookahead-v1`, `atomic-diag-v1`), each with its own knob grammar. A cell
+//! mixing the two families is swapped-balanced but NOT setup-identical — they
+//! resolve a dealt Order pair by different Keep rules — and both the header and
+//! the report echo say which kind of cell ran.
+//!
 //! ```text
 //! cargo run --release -p yokohama-core --example arena -- throughput
 //! cargo run --release -p yokohama-core --example arena -- ab
 //! cargo run --release -p yokohama-core --example arena -- cell fw-selfplay 4 \
 //!     family-weighted family-weighted 25 --emit crates/yokohama-core/corpus
+//! cargo run --release -p yokohama-core --example arena -- cell greedy-vs-fw 2 \
+//!     greedy-v1 family-weighted 50
+//! cargo run --release -p yokohama-core --example arena -- cell s1-vs-s2 2 \
+//!     lookahead-v1:b=4 atomic-diag-v1:d=2 20
 //! ```
 
 use std::collections::BTreeMap;
@@ -43,9 +54,9 @@ use std::path::PathBuf;
 use std::time::Instant;
 
 use yokohama_core::{
-    corpus_path, emit_record, run_cell_emitting, run_raw_game, trigger_name, ArenaError, CellReport,
-    CellSpec, IntervalOutcome, RolloutPolicy, Rules, SeedSchedule, SeedScheduleKind, TriggerTally,
-    SEMANTICS_REV,
+    corpus_path, emit_record, greedy, lookahead, run_cell_emitting, run_raw_game, trigger_name,
+    ArenaError, CellReport, CellSpec, Contestant, IntervalOutcome, RolloutPolicy, Rules,
+    SeedSchedule, SeedScheduleKind, TriggerTally, SEMANTICS_REV,
 };
 
 const USAGE: &str = "\
@@ -56,6 +67,9 @@ usage: arena <subcommand> [options]
       Run one matchup. <x> is the contestant under test (ONE seat); <y> fills the
       other players-1 seats. <units> counts DESIGN UNITS, not games: a 2P unit is
       the swapped pair (2 games), a 3-4P unit is the rotation block (players games).
+      A cell mixing a rung with an evaluator contestant is swapped-balanced but NOT
+      setup-identical (the two resolve a deal by different Keep rules); the report's
+      spec echo prints setup-identical=yes|no per cell.
 
   ab [--units-2p <n>] [--blocks-4p <n>] [--drift-games <n>]
      [--master <u64> | --os-entropy]
@@ -67,12 +81,20 @@ usage: arena <subcommand> [options]
       Per-game and per-decision cost of THIS driver, per rung and per gate cell
       shape. Default 3 games per rung/count cell.
 
-policies:
-  uniform | retreat-averse | family-weighted
-  family-weighted:p=<ppm>,k=<n>   e.g. family-weighted:p=50000,k=5
-      p is the retreat probability in PARTS PER MILLION (50000 = 5%), k is the
-      number of iid draws each area's recovery count is the minimum of. Both knobs
-      are optional and default to the shipped FAMILY_WEIGHTED_DEFAULT (166667, 5).
+contestants (<x> and <y>):
+  RUNGS (3.2, sampler-side policies)
+    uniform | retreat-averse | family-weighted
+    family-weighted:p=<ppm>,k=<n>   e.g. family-weighted:p=50000,k=5
+        p is the retreat probability in PARTS PER MILLION (50000 = 5%), k is the
+        number of iid draws each area's recovery count is the minimum of. Both knobs
+        are optional and default to the shipped FAMILY_WEIGHTED_DEFAULT (166667, 5).
+  EVALUATOR CONTESTANTS (3.3)
+    greedy-v1[:m=<n>]                    one-ply argmax of evaluator v1; m = retreat samples (8)
+    lookahead-v1[:b=<n>,k=<n>,m=<n>]     S1 turn-boundary search; b = beam (4), k = worlds (1)
+    atomic-diag-v1[:d=<n>,k=<n>,m=<n>]   S2 DIAGNOSTIC atomic depth-d arm; d = depth in moves (2)
+        (also spelled lookahead-atomic-diag-v1, its provenance controller name)
+      All three run the frozen evaluator weight table; a weight change is a version
+      bump, not a cell knob. Unknown contestant names and unknown knobs are errors.
 ";
 
 /// Spec §0-R1's frozen uniform 4P ChurchTrackFull ceiling: 7/2000, Wilson-95
@@ -163,28 +185,130 @@ fn parse_u64(raw: &str) -> Result<u64, String> {
     parsed.map_err(|e| format!("{raw:?} is not a u64: {e}"))
 }
 
+/// The short alias for the S2 diagnostic arm.
+///
+/// Its provenance name is `lookahead::ATOMIC_DIAG_CONTROLLER`
+/// (`lookahead-atomic-diag-v1`) and BOTH spellings parse — the canonical one so
+/// a cell can be typed from what a corpus record says, this one because the
+/// runner grammar the spec §5.3 brief names is the short form and a name that
+/// has to be looked up is a name that gets mistyped.
+const ATOMIC_DIAG_ALIAS: &str = "atomic-diag-v1";
+
+/// One contestant: a rung (with the 3.2 knob grammar, unchanged) or one of the
+/// 3.3 evaluator controllers.
+///
+/// UNKNOWN IS AN ERROR at every level — an unknown name, an unknown knob, or a
+/// knob on a contestant that has none. Same discipline as `split_args`'s unknown
+/// flag, and for the same reason: a silently-ignored knob would put a cell's
+/// published figure under knobs it did not run.
+///
+/// The evaluator names come from their controller consts, never hand-typed here,
+/// so the grammar cannot drift from what provenance records.
+fn parse_contestant(spec: &str) -> Result<Contestant, String> {
+    let (name, knobs) = match spec.split_once(':') {
+        Some((name, knobs)) => (name, Some(knobs)),
+        None => (spec, None),
+    };
+
+    if name == greedy::GREEDY_CONTROLLER {
+        let mut m = greedy::DEFAULT_RETREAT_SAMPLES;
+        for (key, value) in knob_pairs(knobs)? {
+            match key.as_str() {
+                "m" => m = parse_knob_u8(&key, &value)?,
+                other => return Err(format!("unknown knob {other:?} for {name} (m)")),
+            }
+        }
+        return Ok(Contestant::GreedyV1 { m });
+    }
+
+    if name == lookahead::LOOKAHEAD_CONTROLLER {
+        let (mut b, mut k, mut m) = (
+            lookahead::DEFAULT_BEAM,
+            lookahead::DEFAULT_WORLDS,
+            greedy::DEFAULT_RETREAT_SAMPLES,
+        );
+        for (key, value) in knob_pairs(knobs)? {
+            match key.as_str() {
+                "b" => {
+                    b = value.parse::<u16>().map_err(|e| format!("b must be a beam width: {e}"))?;
+                    if b == 0 {
+                        return Err("b=0 is not a beam".to_string());
+                    }
+                }
+                "k" => k = parse_knob_u8(&key, &value)?,
+                "m" => m = parse_knob_u8(&key, &value)?,
+                other => return Err(format!("unknown knob {other:?} for {name} (b | k | m)")),
+            }
+        }
+        return Ok(Contestant::LookaheadV1 { b, k, m });
+    }
+
+    if name == lookahead::ATOMIC_DIAG_CONTROLLER || name == ATOMIC_DIAG_ALIAS {
+        let (mut d, mut k, mut m) = (
+            lookahead::DEFAULT_ATOMIC_DEPTH,
+            lookahead::DEFAULT_WORLDS,
+            greedy::DEFAULT_RETREAT_SAMPLES,
+        );
+        for (key, value) in knob_pairs(knobs)? {
+            match key.as_str() {
+                "d" => {
+                    d = parse_knob_u8(&key, &value)?;
+                    if d == 0 {
+                        return Err("d=0 searches nothing".to_string());
+                    }
+                }
+                "k" => k = parse_knob_u8(&key, &value)?,
+                "m" => m = parse_knob_u8(&key, &value)?,
+                other => return Err(format!("unknown knob {other:?} for {name} (d | k | m)")),
+            }
+        }
+        return Ok(Contestant::AtomicDiag { d, k, m });
+    }
+
+    parse_policy(name, knobs).map(Contestant::Policy)
+}
+
+/// `key=value` pairs from a `:`-suffix knob group, or an empty list when there
+/// is none. Empty segments (a trailing comma) are skipped; a segment without
+/// `=` is an error.
+fn knob_pairs(knobs: Option<&str>) -> Result<Vec<(String, String)>, String> {
+    let Some(knobs) = knobs else { return Ok(Vec::new()) };
+    knobs
+        .split(',')
+        .filter(|k| !k.is_empty())
+        .map(|knob| {
+            knob.split_once('=')
+                .map(|(k, v)| (k.to_string(), v.to_string()))
+                .ok_or_else(|| format!("knob {knob:?} is not <key>=<value>"))
+        })
+        .collect()
+}
+
+fn parse_knob_u8(key: &str, value: &str) -> Result<u8, String> {
+    value.parse::<u8>().map_err(|e| format!("{key} must be a small count: {e}"))
+}
+
 /// A policy name, optionally with `:p=<ppm>,k=<n>` knobs.
 ///
 /// The knob form exists so the two `FamilyWeighted` settings §0-R3(i)'s
 /// guaranteed edge is built from are reachable from a command line without a
 /// second enum. Knobs on a rung that has none is an error, not a silent ignore.
-fn parse_policy(spec: &str) -> Result<RolloutPolicy, String> {
-    let (name, knobs) = match spec.split_once(':') {
-        Some((name, knobs)) => (name, Some(knobs)),
-        None => (spec, None),
-    };
-    let base = RolloutPolicy::from_str_name(name)
-        .ok_or_else(|| format!("unknown policy {name:?} (uniform | retreat-averse | family-weighted)"))?;
+fn parse_policy(name: &str, knobs: Option<&str>) -> Result<RolloutPolicy, String> {
+    let base = RolloutPolicy::from_str_name(name).ok_or_else(|| {
+        format!(
+            "unknown contestant {name:?} (rungs: uniform | retreat-averse | family-weighted; \
+             evaluator: {} | {} | {ATOMIC_DIAG_ALIAS})",
+            greedy::GREEDY_CONTROLLER,
+            lookahead::LOOKAHEAD_CONTROLLER,
+        )
+    })?;
     let Some(knobs) = knobs else { return Ok(base) };
 
     let RolloutPolicy::FamilyWeighted { mut retreat_ppm, mut recovery_min_of } = base else {
         return Err(format!("policy {name:?} has no knobs, but {knobs:?} was given"));
     };
-    for knob in knobs.split(',').filter(|k| !k.is_empty()) {
-        let (key, value) = knob
-            .split_once('=')
-            .ok_or_else(|| format!("knob {knob:?} is not <key>=<value>"))?;
-        match key {
+    for (key, value) in knob_pairs(Some(knobs))? {
+        match key.as_str() {
             "p" => {
                 retreat_ppm = value
                     .parse::<u32>()
@@ -193,10 +317,7 @@ fn parse_policy(spec: &str) -> Result<RolloutPolicy, String> {
                     return Err(format!("p={retreat_ppm} exceeds 1_000_000 ppm"));
                 }
             }
-            "k" => {
-                recovery_min_of =
-                    value.parse::<u8>().map_err(|e| format!("k must be a small count: {e}"))?;
-            }
+            "k" => recovery_min_of = parse_knob_u8(&key, &value)?,
             other => return Err(format!("unknown knob {other:?} (p | k)")),
         }
     }
@@ -215,8 +336,8 @@ fn profile() -> &'static str {
     }
 }
 
-fn policy_echo(policy: RolloutPolicy) -> String {
-    let (name, version, params) = policy.descriptor();
+fn contestant_echo(contestant: Contestant) -> String {
+    let (name, version, params) = contestant.descriptor();
     if params.is_empty() {
         return format!("{name}@v{version}");
     }
@@ -275,6 +396,51 @@ fn print_report(report: &CellReport) {
     print_triggers("  ", &report.trigger);
 }
 
+/// The realized unit-share distribution and its variance — the 3.3 spec §4.1
+/// obligation that "the cell REPORTS its realized Var_pair".
+///
+/// WHY THIS IS NOT IN [`print_report`], which `ab` also calls: the 3.2 A/B
+/// truth-pass artifact (`docs/plans/2026-07-26-phase3.2-ab-report.md`) is a
+/// VERBATIM capture of that subcommand's output, so a line added to the shared
+/// printer would silently put the committed artifact out of date with its own
+/// reproduce command. The obligation is a `cell` obligation — §4.1's experiment
+/// is a `cell` invocation — so it is discharged here.
+///
+/// BOTH divisors are printed because neither is "the" variance without saying
+/// which: the `n − 1` form is what the unit-t cross-check's `sd` squares to, the
+/// `n` form is the population variance of the units as realized. They differ in
+/// the third-to-fourth decimal at cell sizes; a quoted figure should name its
+/// divisor. The name `Var_pair` is 2P's — at 3–4P the unit is a rotation block
+/// and [`yokohama_core::pairs_needed_for_mme`] does not apply to it — so the
+/// label says `unit` and notes where the pair reading holds.
+fn print_unit_variance(report: &CellReport) {
+    let shares = &report.x_unit_shares;
+    let n = shares.len();
+    if n == 0 {
+        println!("  unit shares: none tabulated");
+        return;
+    }
+    let mut sorted = shares.clone();
+    sorted.sort_by(|a, b| a.partial_cmp(b).expect("unit shares are finite"));
+    let mut histogram: Vec<(f64, u32)> = Vec::new();
+    for share in sorted {
+        match histogram.last_mut() {
+            Some((value, count)) if *value == share => *count += 1,
+            _ => histogram.push((share, 1)),
+        }
+    }
+    let spread: Vec<String> = histogram.iter().map(|(v, c)| format!("{c}×{v:.4}")).collect();
+    let mean = shares.iter().sum::<f64>() / n as f64;
+    let ss: f64 = shares.iter().map(|s| (s - mean) * (s - mean)).sum();
+    println!("  unit shares (n={n}, X's win share per unit): {}", spread.join(" · "));
+    println!(
+        "  realized unit variance = {:.6} (population, /n) · {:.6} (sample, /(n-1)) \
+         — spec §4.1's Var_pair at 2P",
+        ss / n as f64,
+        if n > 1 { ss / (n - 1) as f64 } else { f64::NAN },
+    );
+}
+
 /// End-trigger rates with 95% Wilson intervals, per spec §6 — never pooled
 /// across player counts, which is exactly the pooling that blinded the old fuzz
 /// assertion to the 4P collapse.
@@ -308,8 +474,8 @@ fn cmd_cell(args: &[String]) -> Result<(), String> {
     }
     let name = positional[0].clone();
     let players: u8 = positional[1].parse().map_err(|e| format!("<players>: {e}"))?;
-    let x = parse_policy(&positional[2])?;
-    let y = parse_policy(&positional[3])?;
+    let x = parse_contestant(&positional[2])?;
+    let y = parse_contestant(&positional[3])?;
     let units: u32 = positional[4].parse().map_err(|e| format!("<units>: {e}"))?;
     let master = master_from(&flags)?;
     let emit: Option<PathBuf> = flags.get("emit").map(PathBuf::from);
@@ -329,10 +495,22 @@ fn cmd_cell(args: &[String]) -> Result<(), String> {
         master,
         &[
             ("players", players.to_string()),
-            ("x", policy_echo(x)),
-            ("y", policy_echo(y)),
+            ("x", contestant_echo(x)),
+            ("y", contestant_echo(y)),
             ("units", units.to_string()),
             ("games", (u32::from(players) * units).to_string()),
+            (
+                "setup-identical",
+                // Spec §5.5, stated in the header as well as in the report echo:
+                // a mixed-Keep cell's units are swapped-balanced but not
+                // setup-identical, and that is a fact about the RUN a reader
+                // should meet before the figures.
+                if x.keep_kind() == y.keep_kind() {
+                    "yes (Keep-homogeneous)".to_string()
+                } else {
+                    "no (mixed Keep — swapped-balanced, seed-paired at new_game)".to_string()
+                },
+            ),
             ("per-move invariants", invariants.to_string()),
             (
                 "emit",
@@ -357,6 +535,7 @@ fn cmd_cell(args: &[String]) -> Result<(), String> {
     let elapsed = started.elapsed();
 
     print_report(&report);
+    print_unit_variance(&report);
     println!(
         "  wall {:.2}s for {} games ({:.1} ms/game, {} build)",
         elapsed.as_secs_f64(),
@@ -412,8 +591,8 @@ fn cmd_ab(args: &[String]) -> Result<(), String> {
         let spec = CellSpec {
             name: format!("ab-uniform-vs-ra-{players}p"),
             players,
-            x: RolloutPolicy::Uniform,
-            y: RolloutPolicy::RetreatAverse,
+            x: Contestant::Policy(RolloutPolicy::Uniform),
+            y: Contestant::Policy(RolloutPolicy::RetreatAverse),
             units,
             master,
         };
@@ -630,11 +809,13 @@ fn cmd_throughput(args: &[String]) -> Result<(), String> {
         ("corpus-4p-ra-vs-fw", 4, RolloutPolicy::RetreatAverse, RolloutPolicy::FAMILY_WEIGHTED_DEFAULT, 2),
     ];
     for (name, players, x, y, units) in shapes {
+        // Rung shapes: these are the 3.2 gate cells' costs, so they stay
+        // Policy-vs-Policy. Evaluator cell costs belong to 3.3's own gate binary.
         let spec = CellSpec {
             name: name.to_string(),
             players,
-            x,
-            y,
+            x: Contestant::Policy(x),
+            y: Contestant::Policy(y),
             units,
             master: SeedScheduleKind::Diagnostic(base),
         };

@@ -62,6 +62,49 @@ pub(crate) fn visible_width(s: &str) -> usize {
     strip_ansi(s).chars().count()
 }
 
+/// The composed frame's width at each player count, indexed `players - 2` --
+/// the three numbers guide §2 states, and **the budget a BODY has to fit.**
+///
+/// [`wrap`] sizes its title strip and its closing rule to the widest line it is
+/// given, so a body line past this widens the whole game screen for one command
+/// and snaps back on the next: the horizontal twin of the vertical jitter F3
+/// fixed. Bodies that can outrun a board ask for this rather than inventing a
+/// number (`suggest`, whose widest placement row renders at 135 columns).
+///
+/// **A mirrored table, not a live derivation, and the reason is a real
+/// constraint:** a body is built BEFORE the frame that will hold it exists --
+/// `Repl::step` returns text and `main.rs` wraps it afterwards -- so nothing at
+/// body-build time can measure its own frame. What keeps a mirror honest is the
+/// pin: `the_frame_width_table_matches_the_composed_opening_frame` measures
+/// every entry off [`stage_width`], the same function `wrap` sizes itself with,
+/// and `guide_sync` derives the same three numbers a second time from `wrap`
+/// for guide §2 -- so a layout change that moves a width fails two tests rather
+/// than drifting.
+///
+/// **These are OPENING widths.** The board, legend and info strip are fixed per
+/// count; the players panel is the one part play changes, and it can leave the
+/// frame WIDER later on (a 4P mid-game panel measures 115 against the board's
+/// 108). A body inside these numbers is therefore inside those frames too. The
+/// residual is the other direction -- a panel that rendered NARROWER than at the
+/// opening would drop a frame below this bound. Its content starts at its
+/// minimum (0 VP, no goods, a President in hand rather than a named area), so
+/// that is not expected, and repl.rs's
+/// `the_suggest_screen_fits_the_composed_frame_at_every_player_count` checks a
+/// real mid-game frame against this floor at each count rather than leaving the
+/// claim to argument.
+const FRAME_WIDTHS: [usize; 3] = [114, 132, 108];
+
+/// [`FRAME_WIDTHS`] for a `players`-player game (2..=4).
+///
+/// A count outside that range gets the NARROWEST entry, which is the safe
+/// direction: text that fits the narrowest frame this driver composes fits all
+/// of them. `GameConfig` admits only 2..=4, so the fallback is defence, not a
+/// path -- and it returns rather than panicking, since a width helper is no
+/// place to take a screen down over a rounding question.
+pub(crate) fn frame_width(players: usize) -> usize {
+    FRAME_WIDTHS.get(players.wrapping_sub(2)).copied().unwrap_or(FRAME_WIDTHS[2])
+}
+
 /// The one-time startup banner `main.rs` prints on a real terminal before
 /// the wizard (piped runs never see it -- the wizard transcript is a test
 /// surface). Plain ASCII art, painted bold by the caller-side `paint` calls
@@ -95,6 +138,22 @@ pub fn wrap(repl: &Repl, body: &str) -> String {
     if !frame_active(repl) {
         return body.to_string();
     }
+    let stage = stage(repl);
+    let width = stage_width(&stage);
+    let title = " Y O K O H A M A ";
+    let pad = width.saturating_sub(title.chars().count());
+    let strip = format!("{}{}{}", "═".repeat(pad / 2), title, "═".repeat(pad - pad / 2));
+
+    format!("\u{1b}[2J\u{1b}[H{strip}\n{stage}{}\n{body}", "─".repeat(width))
+}
+
+/// Everything [`wrap`] composes ABOVE the body: the board (with the players
+/// panel beside or below it), the board legend, the discoverability strip.
+///
+/// Split out of `wrap` so [`stage_width`] can be measured on its own -- the
+/// [`FRAME_WIDTHS`] pin needs the width `wrap` sizes itself to, not a width
+/// re-derived by parsing a finished frame back apart.
+fn stage(repl: &Repl) -> String {
     let state = repl.session.state();
     let board = render::board_grid(state);
     let board_width = board.lines().next().map(visible_width).unwrap_or(0);
@@ -132,13 +191,13 @@ pub fn wrap(repl: &Repl, body: &str) -> String {
     stage.push_str(
         "info: type 'view' — board · players · ports · labs · tracks · sites · goals · hand · score · log\n",
     );
+    stage
+}
 
-    let width = stage.lines().map(visible_width).max().unwrap_or(0).max(60);
-    let title = " Y O K O H A M A ";
-    let pad = width.saturating_sub(title.chars().count());
-    let strip = format!("{}{}{}", "═".repeat(pad / 2), title, "═".repeat(pad - pad / 2));
-
-    format!("\u{1b}[2J\u{1b}[H{strip}\n{stage}{}\n{body}", "─".repeat(width))
+/// The width [`wrap`] sizes a frame to: its stage's widest line, floored at 60
+/// so a degenerate board still draws a strip worth looking at.
+fn stage_width(stage: &str) -> usize {
+    stage.lines().map(visible_width).max().unwrap_or(0).max(60)
 }
 
 /// Join two blocks line-by-line, `left` padded to its own max visible width
@@ -242,6 +301,34 @@ mod tests {
             "name and President must share one line in the stacked form:\n{f4}"
         );
         force(false);
+    }
+
+    /// [`FRAME_WIDTHS`] is a mirror, so it gets a pin: every entry is the width
+    /// `wrap` actually sizes an opening frame to at that player count, measured
+    /// through the very function `wrap` uses. A layout change that moves a
+    /// frame's width fails HERE, next to the table, rather than silently
+    /// licensing a `suggest` body that is now too wide for its screen.
+    ///
+    /// The out-of-range fallback is pinned in the same place as the values it
+    /// falls back to: it must be the NARROWEST entry, because the whole point of
+    /// the fallback is that text fitting it fits every frame.
+    #[test]
+    fn the_frame_width_table_matches_the_composed_opening_frame() {
+        for n in [2u8, 3, 4] {
+            let r = repl_np(n);
+            force(true);
+            let measured = stage_width(&stage(&r));
+            force(false);
+            assert_eq!(
+                frame_width(n as usize),
+                measured,
+                "the {n}P frame composes at {measured} columns, so FRAME_WIDTHS must say so -- \
+                 and guide §2 (checked independently by guide_sync) must state the same number"
+            );
+        }
+        let narrowest = FRAME_WIDTHS.iter().copied().min().expect("three entries");
+        assert_eq!(frame_width(9), narrowest, "an out-of-range count must fall back to the narrowest");
+        assert_eq!(frame_width(0), narrowest, "...including a count below the range");
     }
 
     /// F3 (Codex adversarial review of PR #4): the composed screen has to

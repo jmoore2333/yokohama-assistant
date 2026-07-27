@@ -29,6 +29,23 @@ mod metrics;
 mod policy;
 mod arena;
 pub mod actions;
+/// Evaluator v1 (Phase 3.3 T1). NAMESPACED deliberately — the crate glob
+/// re-exports every `pub use x::*` below to the crate root, and `score`/
+/// `explain` are far too generic to live there (`yokohama_core::score` says
+/// nothing about what it scores). Callers write `eval::score(&view, ..)`, the
+/// same shape `actions` above uses; `pub use game::*` in `lib.rs` still makes
+/// the MODULE reachable as `yokohama_core::eval`.
+pub mod eval;
+/// Greedy-v1, the one-ply evaluator rung (Phase 3.3 T3). NAMESPACED for the
+/// same reason [`eval`] is: the crate glob re-exports every `pub use x::*`
+/// below to the crate root, and `candidates` is far too generic to live there.
+/// Callers write `greedy::GreedyAgent` / `greedy::candidates`.
+pub mod greedy;
+/// Lookahead-v1, the shallow-search rung (Phase 3.3 T5). NAMESPACED for the
+/// same reason [`eval`] and [`greedy`] are: `search_world`, `SearchStats` and
+/// `TieSite` are far too generic for the crate root. Callers write
+/// `lookahead::LookaheadAgent` / `lookahead::search_world`.
+pub mod lookahead;
 
 pub use power::*;
 pub use movement::*;
