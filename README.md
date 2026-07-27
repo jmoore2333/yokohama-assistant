@@ -81,11 +81,14 @@ Fastest playable game: answer the wizard `sim`, `2`, `red`, `blue`, `0`, Enter t
 **[HTML](docs/cli-guide.html)** or [Markdown](docs/cli-guide.md).
 
 **Gates.** Per-edit (debug): the four crate suites + `cargo clippy --workspace --all-targets
--- -D warnings`, all zero-warning. Pre-merge: all **twelve** release gates below
-(**152.17s**, re-measured together as one sequence 2026-07-26 at the `phase3.2-arena` close —
-Apple M5 10-core, quiet machine, release binaries pre-built, the arena gate single-threaded
-because its documented command says so). Re-measure the whole table as one run at every close: a
-sum of per-command times from separate sessions is not a measured total. This table is the
+-- -D warnings`, all zero-warning. Pre-merge: all **thirteen** release gates below. The
+**twelve**-gate roster measured **152.17s** together as one sequence 2026-07-26 at the
+`phase3.2-arena` close (Apple M5 10-core, quiet machine, release binaries pre-built, the arena
+gate single-threaded because its documented command says so); the thirteenth, `evaluator_gate`,
+measured **~145s alone** (145.84s / 144.60s across two whole-binary runs) at 3.3 Task 11, so the
+roster is expected near **~298s** against the 3.3 target of ≤360s — that sum is an expectation,
+**not a measured total**, and the whole thirteen run as one sequence at the 3.3 close. Re-measure the whole table as one run at every
+close: a sum of per-command times from separate sessions is not a measured total. This table is the
 binding list — if it and CLAUDE.md's two-tier policy ever disagree, they are both wrong until
 reconciled.
 
@@ -102,6 +105,7 @@ reconciled.
 | Worst-case routes | `cargo test --release -p yokohama-difftest --test routes3_worstcase -- --ignored` | maximal 17-area interior-Canal K6 battery (bound 519 — that harness's RECORDED observation, never a ceiling; ledger L9) + route-label key purity |
 | Arena | `cargo test --release -p yokohama-core --test arena_gate -- --ignored --test-threads=1` | the arena ranks seat policies with HONEST intervals: a same-policy null cell containing its null with nonzero SE, a non-degenerate edge cell plus a guaranteed edge from two shipped knob settings, the zero-width refusal exercised on the real blowout (never a printed ±0.000), byte-identical re-runs at both unit shapes, interval-machinery validation against known truth (R=2,000 synthetic) AND against real clustered games (R=100 replicates), honest-play counters, and freshly emitted records that all `replay_strict`-clean (Phase 3.2) |
 | Policy diversity | `cargo test --release -p yokohama-core --test policy_diversity -- --ignored` | the fuzzer runs the SHIPPED family-weighted policy at 2/3/4P (N=500/count, per-move invariants, raw-state driver): 4P trigger diversity recovers against a frozen held-out uniform ceiling (ChurchTrackFull Wilson95 lower bound 1.83% > 0.72%), applied-move coverage clears floors measured before they were set, and per-phase option-count tails are RECORDED — never bounded, since no bound is known (Phase 3.2) |
+| Evaluator | `cargo test --release -p yokohama-core --test evaluator_gate -- --ignored --test-threads=1` | the evaluator bots beat family-weighted random with honest intervals (Phase 3.3), five 2P cells on one committed diagnostic master: the PROMOTION cell (Lookahead-v1 vs family-weighted, N=200 pair units) is the repo's ONE direction-asserting cell — passing on either a bootstrap interval entirely above 0.5 or the all-won refusal's rule-of-three bound 0.985 > 0.5, both pre-committed before the run (measured: θ̂ 1.000000, 400/400 games, the refusal arm) — with §0.3(b)'s explanation identity riding it (71,707 moves played, 71,707 explained); plus two RECORDED lattice cells (Greedy-v1 vs family-weighted θ̂ 0.6425 [0.5950, 0.6900]; Lookahead-v1 vs Greedy-v1 θ̂ 1.0000 at 100 units), a Keep-homogeneous NULL self-test asserting containment (θ̂ 0.5150 [0.4650, 0.5625], SE 0.0250), and byte-identical determinism at N=12. Arm 2 — the close-time OS-entropy confirmation — is deliberately not in the roster |
 | Piped dogfood | `cargo test --release -p yokohama-cli --test piped_dogfood -- --ignored` | the shipped binary plays a full 2P game over pipes to a winner, zero ESC bytes |
 
 ## Data provenance (cards, boards, tokens)
