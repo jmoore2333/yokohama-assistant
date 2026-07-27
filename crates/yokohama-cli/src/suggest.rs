@@ -40,6 +40,27 @@
 //! from [`LookaheadAgent::last_roots`] for exactly that reason, since a second
 //! independently-keyed search could rank a different move first and there would
 //! then be no fact of the matter about what the bot said.
+//!
+//! **EVERY LINE FITS THE COMPOSED FRAME** (T10 review M1). `screen::wrap` sizes
+//! the game screen to its widest line, so a body wider than the frame shoves the
+//! board sideways for one command and back on the next. The budget is therefore
+//! per PLAYER COUNT, because the frame is — `screen::frame_width`, 114/132/108
+//! at 2/3/4 players — and it is not a formality: a placement naming three areas
+//! and their fee recipients renders at up to **135 columns**, which overflows
+//! all three (the earlier flat `<= 100` pin asserted a property this render did
+//! not have, on 2P fixtures that never reached one of those moves). Two
+//! treatments, chosen per line by what its tail is worth:
+//!
+//! * **The suggested move WRAPS.** It is the answer, and the tail a cut would
+//!   take is the fee clause — the part a reader is deciding on.
+//! * **Context rows ELIDE** (continuation steps, runner-ups). A table that
+//!   keeps its shape is worth more than a complete area name, and those rows
+//!   carry their own tighter editorial budget ([`ROW_TEXT_WIDTH`]) which binds
+//!   first at every player count; the frame budget is what makes the property
+//!   TOTAL rather than true only at the sites someone remembered.
+//!
+//! [`Body`] owns both, so "no line is wider than the frame" is a property of the
+//! one type every line goes through.
 
 use yokohama_core::eval::Explanation;
 use yokohama_core::*;
@@ -55,31 +76,52 @@ const SUGGEST_SALT: u64 = 0x5966_2026_0727_0001;
 /// Runner-ups shown below the suggestion (spec §7's "top-k", k small).
 const RUNNER_UPS_SHOWN: usize = 3;
 
-/// Longest move description a LIST row prints before it is elided. The
-/// suggested move itself is never truncated — it is the answer — but a
-/// continuation step or a runner-up is context, and a frame is composed to its
-/// widest line (`screen::wrap`), so an unbounded row here would push the whole
-/// game screen sideways on a real terminal.
+/// Longest move description a LIST row prints before it is elided — the
+/// EDITORIAL budget, narrower than any frame on purpose so a continuation step
+/// or a runner-up stays a compact row beside its number rather than a paragraph
+/// with a margin in front of it.
+///
+/// It is not the width GUARANTEE: that is the composed frame's own width, held
+/// by [`Body`] over every line. This one binds first for rows at every player
+/// count (80 plus the widest row prefix is 94, inside the narrowest frame's
+/// 108), which is why the rows a reader sees are unchanged by the frame bound.
 const ROW_TEXT_WIDTH: usize = 80;
 
 /// The closing honesty note (spec §7: the explanation text states term
 /// contributions, it does not give play advice). Pre-wrapped as fixed lines
-/// rather than reflowed at render time: std exposes no terminal width, every
-/// other width in this driver is a fixed budget for the same reason, and a
-/// hand-wrapped constant is one fewer thing that can silently exceed one.
+/// rather than reflowed at render time: its longest line is 82 columns, inside
+/// the narrowest frame this driver composes, so re-flowing it per player count
+/// would move a sentence a reader may have been shown before to no purpose. The
+/// long CAVEATS below are the opposite case — they cannot be said in 108 columns
+/// at all, so they are wrapped ([`Body::prose`]).
 const HONESTY_NOTE: [&str; 3] = [
     "This is the bot's arithmetic, not advice: each row is (your value − the best",
     "opponent's) × the weight for this stage, summed. It read ONE guess at the hidden",
     "cards, and its weights are hand-set rather than tuned.",
 ];
 
+/// The line-was-searched-in-a-sampled-world caveat, printed when the fold in
+/// [`describe_line`] stopped matching the real position.
+const DRIFT_NOTE: &str = "(the line was searched inside ONE guess at the hidden cards; the steps \
+                          after the point it stops matching your real position are named against \
+                          the last position that did)";
+
+/// What a nonzero ply-cap counter licenses saying, and **no more** (T10 review
+/// S1). The counter is per-DECISION — see [`Suggestion::search_hit_ply_cap`] —
+/// so the claim is about the search, not about the line printed above it.
+const PLY_CAP_NOTE: &str = "(this search stopped SOME continuation at its ply guard, so a line \
+                            here may have been valued mid-turn instead of at the hand-over; the \
+                            guard's counter is kept per decision and carries no identity, so which \
+                            line it stopped is not recorded)";
+
 /// Why there is no suggestion.
 ///
-/// Split by CAUSE rather than collapsed to one string because the two mean
+/// Split by CAUSE rather than collapsed to one string because the three mean
 /// different things to the person reading them: a refused view is the driver
-/// declining to work from something it cannot honestly read, while a search
-/// error is the bot finding nothing at a position that is still perfectly
-/// playable by hand.
+/// declining to work from something it cannot honestly read, a search error is
+/// the bot finding nothing at a position that is still perfectly playable by
+/// hand, and an inconsistency is a BUG in this program that the reader should
+/// report rather than work around.
 #[derive(Debug)]
 pub enum SuggestError {
     /// `observe` refused the seat's view.
@@ -87,6 +129,12 @@ pub enum SuggestError {
     /// The agent refused or dead-ended (a belief-sampler refusal, or no
     /// candidate at this decision point).
     Search(String),
+    /// The agent's chosen move is not in the TRUE position's legal list
+    /// (T10 review S2). Carries the move's `Debug`, which is what a bug report
+    /// needs; `describe_move` is deliberately not used, since naming a move
+    /// against a state that does not admit it is how a formatter gets to index
+    /// something that is not there.
+    Inconsistent(String),
 }
 
 impl std::fmt::Display for SuggestError {
@@ -94,6 +142,13 @@ impl std::fmt::Display for SuggestError {
         match self {
             Self::View(m) => write!(f, "the seat's own view could not be taken: {m}"),
             Self::Search(m) => write!(f, "{m}"),
+            Self::Inconsistent(mv) => write!(
+                f,
+                "the bot chose a move this position does not offer, so there is nothing safe to\n\
+                 show you. That is an inconsistency between the sampled world and the engine --\n\
+                 a bug worth reporting, not something you did. The game is untouched.\n\
+                 Move: {mv}"
+            ),
         }
     }
 }
@@ -119,10 +174,22 @@ pub struct Suggestion {
     /// The stream this press was keyed by. Printed, so a reader can tell two
     /// presses apart when the position HAS moved.
     pub stream_seed: u64,
-    /// `MAX_TURN_PLIES` stopped the continuation, so the line (and hence the
-    /// explanation) was taken MID-TURN rather than at a hand-off. Expected
-    /// false; reported because nothing in the line itself marks it.
-    pub ply_capped: bool,
+    /// `MAX_TURN_PLIES` stopped SOME continuation in this search — **not,
+    /// necessarily, the one in [`continuation`](Self::continuation)** (T10
+    /// review S1, which found the old name `ply_capped` and its rendered line
+    /// claiming the principal line had been cut short).
+    ///
+    /// `SearchStats::ply_cap_hits` is summed over every world, every beam entry
+    /// and every root candidate one decision expanded, so a nonzero value says
+    /// the guard fired somewhere inside this search and nothing narrower: the
+    /// counter carries no identity, and the trace a continuation is read back
+    /// off does not record why it ended. The stronger claim would need a
+    /// per-line marker the search does not keep, so the render says the weaker
+    /// true thing ([`PLY_CAP_NOTE`]) rather than the stronger convenient one.
+    ///
+    /// Expected false: the guard sits 3.6× above the longest turn ever measured
+    /// and recorded 0 hits across 5,890 research decisions.
+    pub search_hit_ply_cap: bool,
 }
 
 impl Suggestion {
@@ -189,6 +256,9 @@ pub fn stream_seed(record: &GameRecord, seat: PlayerId) -> u64 {
 /// The knobs are the shipped rung's, taken from `LookaheadAgent::new`'s own
 /// defaults rather than restated here: S1 turn-boundary at `B` = 4, `K` = 1,
 /// `M` = 8, `WeightTable::V1`.
+///
+/// **The answer is checked against the TRUE position before it is returned**
+/// ([`ensure_offered_by_the_true_state`], T10 review S2).
 pub fn suggest(
     state: &GameState,
     rules: &Rules,
@@ -198,6 +268,7 @@ pub fn suggest(
     let view = observe(state, seat).map_err(|e| SuggestError::View(e.to_string()))?;
     let mut agent = lookahead::LookaheadAgent::new(rules, stream_seed);
     let report = agent.choose(&view, rules).map_err(SuggestError::Search)?;
+    ensure_offered_by_the_true_state(&report.mv, state, rules)?;
 
     // `choose` cannot return without explaining (spec §0.3(b)), so a missing
     // explanation is a broken contract rather than a state to render around.
@@ -216,8 +287,110 @@ pub fn suggest(
         continuation: agent.last_continuation().to_vec(),
         ranking,
         stream_seed,
-        ply_capped: agent.last_stats().is_some_and(|s| s.ply_cap_hits > 0),
+        search_hit_ply_cap: agent.last_stats().is_some_and(|s| s.ply_cap_hits > 0),
     })
+}
+
+/// Refuse a move the TRUE position does not offer (T10 review S2).
+///
+/// **Why this is not paranoia about a chain that looks closed.** The root
+/// candidates a press ranks are enumerated inside a world the belief sampler
+/// DETERMINIZED — a guess at the deck order and at every opponent's hidden
+/// order card — and only the seat's own view of that world is honest by
+/// construction. A legality question the guess can answer differently from the
+/// table (anything reading deck content) would produce a move that is perfectly
+/// legal where it was found and not offered where it would be played, and the
+/// screen would then name it in the confident voice of an evaluation. Printing
+/// an inapplicable move is worse than printing nothing: a tester would try to
+/// enter it, the REPL would refuse it as illegal, and the tool would look
+/// broken in the one place it is meant to be trustworthy.
+///
+/// The authority is the engine's own list — `get_legal_moves`, which is what
+/// `Session::legal` and `apply_move`'s checked boundary both read — so this
+/// adds no second opinion about legality, only the question. A sweep over 7,920
+/// suggestions found no miss, which makes this the arm that stays quiet and
+/// stays honest rather than the arm that fires.
+fn ensure_offered_by_the_true_state(
+    mv: &Move,
+    state: &GameState,
+    rules: &Rules,
+) -> Result<(), SuggestError> {
+    if get_legal_moves(state, rules).contains(mv) {
+        return Ok(());
+    }
+    Err(SuggestError::Inconsistent(format!("{mv:?}")))
+}
+
+/// The `suggest` screen under assembly, holding the width budget every line it
+/// emits is measured against.
+///
+/// **Why a type rather than `push_str` at each site.** The screen has to fit the
+/// composed frame line by line (module doc), and the widest thing it can print
+/// is 135 columns against a 4-player frame's 108 — so the bound has to hold at
+/// every site, including the ones a later edit adds. Routing every line through
+/// here makes that a property of one type instead of a habit at fourteen call
+/// sites, and it keeps the paint on the OUTSIDE of the measurement, which is
+/// `style`'s alignment rule: escapes carry zero display width, so a cut applied
+/// after painting could land inside one.
+struct Body {
+    out: String,
+    /// Visible columns one line may occupy: `screen::frame_width` for this
+    /// game's player count.
+    width: usize,
+}
+
+impl Body {
+    fn new(width: usize) -> Self {
+        Self { out: String::new(), width }
+    }
+
+    /// A plain line, elided to the budget. **Every other method ends here**, so
+    /// the bound cannot be bypassed by adding a shape.
+    fn line(&mut self, text: &str) {
+        self.out.push_str(&elide(text, self.width));
+        self.out.push('\n');
+    }
+
+    fn blank(&mut self) {
+        self.out.push('\n');
+    }
+
+    /// A line painted whole, with `indent` left OUTSIDE the paint: the plain
+    /// text is elided FIRST, so what the budget measures is what the terminal
+    /// shows, and piped bytes are the indent plus the text with nothing between.
+    fn painted(&mut self, tone: Tone, indent: &str, text: &str) {
+        let room = self.width.saturating_sub(indent.chars().count());
+        self.out.push_str(indent);
+        self.out.push_str(&paint(tone, &elide(text, room)));
+        self.out.push('\n');
+    }
+
+    /// A painted head with a plain tail (the seat line): the tail is elided
+    /// against whatever the head leaves of the budget.
+    fn painted_head(&mut self, tone: Tone, head: &str, tail: &str) {
+        let room = self.width.saturating_sub(head.chars().count());
+        self.out.push_str(&paint(tone, head));
+        self.out.push_str(&elide(tail, room));
+        self.out.push('\n');
+    }
+
+    /// A list row: `prefix` prints verbatim (it is aligned padding, and eliding
+    /// it would shear the column) and `text` is cut to `budget` or to whatever
+    /// the frame leaves after the prefix, whichever is tighter.
+    fn row(&mut self, prefix: &str, text: &str, budget: usize) {
+        let room = self.width.saturating_sub(prefix.chars().count()).min(budget);
+        self.line(&format!("{prefix}{}", elide(text, room)));
+    }
+
+    /// A caveat too long to say in one line of any frame, wrapped at spaces
+    /// under `indent`. Wrapped rather than elided because half a caveat reads as
+    /// a whole one.
+    fn prose(&mut self, indent: &str, text: &str) {
+        let room = self.width.saturating_sub(indent.chars().count());
+        for piece in wrap_words(text, room) {
+            self.line(&format!("{indent}{piece}"));
+        }
+    }
 }
 
 /// The whole `suggest` screen.
@@ -228,8 +401,13 @@ pub fn suggest(
 /// padded (`style`'s alignment rule — pad from the PLAIN text). Piped output is
 /// therefore byte-identical to a terminal's minus the escapes, and `NO_COLOR`
 /// is honoured by `paint` itself.
+///
+/// The width budget comes from the player count in `state` (module doc): the
+/// composed frame this body will be wrapped in is sized per count, and the body
+/// cannot measure a frame that does not exist yet.
 pub fn render_suggestion(s: &Suggestion, state: &GameState, rules: &Rules) -> String {
-    let mut out = render::section("Suggest");
+    let mut body = Body::new(crate::screen::frame_width(state.players.len()));
+    body.line(render::section("Suggest").trim_end_matches('\n'));
 
     let color = state.player(s.seat).color;
     // Every knob printed comes from the const the agent itself reads, so this
@@ -237,60 +415,68 @@ pub fn render_suggestion(s: &Suggestion, state: &GameState, rules: &Rules) -> St
     // `EVAL_IMPL_VERSION` — the evaluator IMPLEMENTATION, which is what a
     // reader needs to know two suggestions are comparable; the weight table's
     // own identity is a 64-bit digest and belongs in provenance, not on screen.
-    out.push_str(&format!(
-        "{} · {} · beam {}, K={}, M={}, eval v{} · stream {:#018x}\n",
-        paint(Tone::Player(color), &format!("Seat {} ({})", s.seat.0, render::color_name(color))),
-        lookahead::LOOKAHEAD_CONTROLLER,
-        lookahead::DEFAULT_BEAM,
-        lookahead::DEFAULT_WORLDS,
-        greedy::DEFAULT_RETREAT_SAMPLES,
-        eval::EVAL_IMPL_VERSION,
-        s.stream_seed,
-    ));
-    out.push_str("Suggested move:\n");
-    out.push_str(&format!(
-        "  {}\n",
-        paint(Tone::Prompt, &describe::describe_move(&s.mv, state, rules))
-    ));
+    body.painted_head(
+        Tone::Player(color),
+        &format!("Seat {} ({})", s.seat.0, render::color_name(color)),
+        &format!(
+            " · {} · beam {}, K={}, M={}, eval v{} · stream {:#018x}",
+            lookahead::LOOKAHEAD_CONTROLLER,
+            lookahead::DEFAULT_BEAM,
+            lookahead::DEFAULT_WORLDS,
+            greedy::DEFAULT_RETREAT_SAMPLES,
+            eval::EVAL_IMPL_VERSION,
+            s.stream_seed,
+        ),
+    );
+    body.line("Suggested move:");
+    // The ANSWER wraps: a placement naming three areas and their fee recipients
+    // runs past every frame, and the tail a cut would take is the fee — which is
+    // the part a reader is deciding on. Continuation lines indent under the
+    // first so the block still reads as one item.
+    let answer = describe::describe_move(&s.mv, state, rules);
+    let room = body.width.saturating_sub(ANSWER_WRAP_INDENT.chars().count());
+    for (i, piece) in wrap_words(&answer, room).into_iter().enumerate() {
+        body.painted(Tone::Prompt, if i == 0 { "  " } else { ANSWER_WRAP_INDENT }, &piece);
+    }
 
     // -- the line the value was read at ------------------------------------
-    let (line, drifted) = describe_line(&s.continuation, state, rules);
-    if line.is_empty() {
-        out.push_str("\nNo line to show: the score below was read at this position itself.\n");
+    let (steps, drifted) = describe_line(&s.continuation, state, rules);
+    body.blank();
+    if steps.is_empty() {
+        body.line("No line to show: the score below was read at this position itself.");
     } else {
-        out.push_str(&format!(
-            "\nThe line it searched, {} (the move above is step 1):\n",
-            if s.ply_capped {
-                "cut short by the search's own ply guard".to_string()
-            } else {
-                format!("{} move(s) to the hand-over", line.len())
-            },
+        // The reach claim is dropped, not restated, when the ply guard fired
+        // anywhere in this search: `search_hit_ply_cap` cannot tell us whether
+        // THIS line reached the hand-over (S1), and the note below says so.
+        let reach = if s.search_hit_ply_cap { "move(s)" } else { "move(s) to the hand-over" };
+        body.line(&format!(
+            "The line it searched, {} {reach} (the move above is step 1):",
+            steps.len(),
         ));
-        for row in &line {
-            out.push_str(row);
-            out.push('\n');
+        for (i, step) in steps.iter().enumerate() {
+            body.row(&format!("  {}. ", i + 1), step, ROW_TEXT_WIDTH);
+        }
+        if s.search_hit_ply_cap {
+            body.prose("  ", PLY_CAP_NOTE);
         }
         if drifted {
-            out.push_str(
-                "  (the line was searched inside ONE guess at the hidden cards; the steps after \
-                 the point it stops matching your real position are named against the last \
-                 position that did)\n",
-            );
+            body.prose("  ", DRIFT_NOTE);
         }
     }
 
     // -- the explanation ----------------------------------------------------
-    out.push_str(&format!(
-        "\nScore at that point: {}   ·   stage {}/1000000 ppm (0 = opening, 1000000 = end trigger)\n",
+    body.blank();
+    body.line(&format!(
+        "Score at that point: {}   ·   stage {}/1000000 ppm (0 = opening, 1000000 = end trigger)",
         s.explanation.total, s.explanation.progress_ppm,
     ));
-    out.push_str(&format!(
-        "  {:<26}{:>8}{:>11}{:>9}{:>12}\n",
+    body.line(&format!(
+        "  {:<26}{:>8}{:>11}{:>9}{:>12}",
         "feature", "you", "best opp", "weight", "product"
     ));
     for term in &s.explanation.terms {
-        out.push_str(&format!(
-            "  {:<26}{:>8}{:>11}{:>9}{:>12}\n",
+        body.line(&format!(
+            "  {:<26}{:>8}{:>11}{:>9}{:>12}",
             term.feature.name(),
             term.viewer_value,
             term.opponent_value,
@@ -301,59 +487,56 @@ pub fn render_suggestion(s: &Suggestion, state: &GameState, rules: &Rules) -> St
     if let Some(t) = &s.explanation.terminal {
         // On a finished game the positional vector does not govern at all
         // (§2.6), so every weight above reads 0 and the standing IS the score.
-        out.push_str(&format!(
-            "  {:<26}{:>8}{:>11}{:>9}{:>12}\n",
+        body.line(&format!(
+            "  {:<26}{:>8}{:>11}{:>9}{:>12}",
             "final standing",
             format!("#{} of {}", t.rank, t.seats),
             t.viewer_total,
             "",
             t.value,
         ));
-        out.push_str(&format!(
-            "  (game over: place {} of {}, your re-derived final {} against the best other {})\n",
+        body.line(&format!(
+            "  (game over: place {} of {}, your re-derived final {} against the best other {})",
             t.rank, t.seats, t.viewer_total, t.best_other_total,
         ));
     }
-    out.push_str(&format!(
-        "  {:<26}{:>8}{:>11}{:>9}{:>12}\n",
-        "TOTAL", "", "", "", s.explanation.total
-    ));
+    body.line(&format!("  {:<26}{:>8}{:>11}{:>9}{:>12}", "TOTAL", "", "", "", s.explanation.total));
 
     // -- runner-ups ---------------------------------------------------------
     let best = s.best_value();
     let others: Vec<&lookahead::RootScore> =
         s.ranking.iter().filter(|r| r.mv != s.mv).take(RUNNER_UPS_SHOWN).collect();
+    body.blank();
     if others.is_empty() {
-        out.push_str("\nNo runner-up: this decision point offered exactly one move.\n");
+        body.line("No runner-up: this decision point offered exactly one move.");
     } else {
-        out.push_str(&format!(
-            "\nRunner-ups (margin against the suggestion, so 0 means tied) — {} candidate(s) ranked:\n",
+        body.line(&format!(
+            "Runner-ups (margin against the suggestion, so 0 means tied) — {} candidate(s) ranked:",
             s.ranking.len(),
         ));
         for r in others {
-            out.push_str(&format!(
-                "  {:>10}  {}\n",
-                r.value - best,
-                elide(&describe::describe_move(&r.mv, state, rules)),
-            ));
+            body.row(
+                &format!("  {:>10}  ", r.value - best),
+                &describe::describe_move(&r.mv, state, rules),
+                ROW_TEXT_WIDTH,
+            );
         }
     }
     let tied = s.tied_at_top();
     if tied > 1 {
-        out.push_str(&format!(
-            "  {tied} candidates tie at the top; which one you see is this position's own\n  \
-             keyed draw, so a second press will not change it.\n",
+        body.line(&format!(
+            "  {tied} candidates tie at the top; which one you see is this position's own"
         ));
+        body.line("  keyed draw, so a second press will not change it.");
     }
 
     // Painted line by line, never as one block: `paint` wraps whatever it is
     // given, so a trailing newline INSIDE the argument would put the reset
     // escape on a line of its own and add a row to the frame.
     for note in HONESTY_NOTE {
-        out.push_str(&paint(Tone::Dim, note));
-        out.push('\n');
+        body.painted(Tone::Dim, "", note);
     }
-    out
+    body.out
 }
 
 /// Name each step of a continuation against the position it would be played
@@ -367,12 +550,16 @@ pub fn render_suggestion(s: &Suggestion, state: &GameState, rules: &Rules) -> St
 /// refuses and the remaining steps are named against the last position that
 /// held. The bool says whether that happened, so the caller can print the
 /// caveat instead of quietly implying the line is playable as written.
+///
+/// Returns the step TEXTS, unnumbered and unelided: numbering and width are the
+/// render's business ([`Body::row`]), and a describer that also formatted rows
+/// would need the frame budget threaded into it for nothing.
 fn describe_line(line: &[Move], state: &GameState, rules: &Rules) -> (Vec<String>, bool) {
     let mut at = state.clone();
     let mut drifted = false;
-    let mut rows = Vec::with_capacity(line.len());
-    for (i, mv) in line.iter().enumerate() {
-        rows.push(format!("  {}. {}", i + 1, elide(&describe::describe_move(mv, &at, rules))));
+    let mut steps = Vec::with_capacity(line.len());
+    for mv in line {
+        steps.push(describe::describe_move(mv, &at, rules));
         if !drifted {
             match apply_move(&at, mv, rules) {
                 Ok(next) => at = next,
@@ -380,18 +567,56 @@ fn describe_line(line: &[Move], state: &GameState, rules: &Rules) -> (Vec<String
             }
         }
     }
-    (rows, drifted)
+    (steps, drifted)
 }
 
-/// Trim a list row's move text to [`ROW_TEXT_WIDTH`] display columns.
+/// Trim `text` to `width` display columns, marking the cut with an ellipsis.
 ///
-/// Counts CHARS, which is the same measurement `screen::visible_width` makes;
-/// the strings passed here are `describe_move` output, which carries no ANSI.
-fn elide(text: &str) -> String {
-    if text.chars().count() <= ROW_TEXT_WIDTH {
+/// Counts CHARS, which is the same measurement `screen::visible_width` makes on
+/// text carrying no ANSI — and everything reaching here is plain, because
+/// [`Body`] elides before it paints and never after.
+fn elide(text: &str, width: usize) -> String {
+    if text.chars().count() <= width {
         return text.to_string();
     }
-    text.chars().take(ROW_TEXT_WIDTH - 1).collect::<String>() + "…"
+    // The marker costs a column, so a budget of 0 has nowhere to put it. Only a
+    // pathological frame reaches this; returning empty beats panicking or
+    // emitting a line one column wider than asked for.
+    if width == 0 {
+        return String::new();
+    }
+    text.chars().take(width - 1).collect::<String>() + "…"
+}
+
+/// Continuation lines of the wrapped answer indent under the first line's text,
+/// so a two-line move still reads as one item rather than two steps.
+const ANSWER_WRAP_INDENT: &str = "     ";
+
+/// Break `text` at spaces into runs of at most `width` display columns.
+///
+/// A single word longer than the budget is left WHOLE and cut later by
+/// [`elide`], on the line it lands on: an area name and its id cannot be broken
+/// anywhere useful, so hyphenating one would only move the loss. That split of
+/// duties is deliberate — wrapping is for readability, eliding is the guarantee,
+/// and only one of them needs to be total.
+///
+/// Always yields at least one piece, so a caller printing an answer always
+/// prints a line.
+fn wrap_words(text: &str, width: usize) -> Vec<String> {
+    let width = width.max(1);
+    let mut pieces: Vec<String> = Vec::new();
+    let mut line = String::new();
+    for word in text.split_whitespace() {
+        if !line.is_empty() && line.chars().count() + 1 + word.chars().count() > width {
+            pieces.push(std::mem::take(&mut line));
+        }
+        if !line.is_empty() {
+            line.push(' ');
+        }
+        line.push_str(word);
+    }
+    pieces.push(line);
+    pieces
 }
 
 #[cfg(test)]
@@ -425,6 +650,53 @@ mod tests {
         let seat = session.state().current_player;
         let seed = stream_seed(session.record(), seat);
         suggest(session.state(), session.rules(), seat, seed).expect("a suggestion")
+    }
+
+    /// A `players`-player simulation driven a real distance in and stopped at
+    /// the first position `stop` accepts — the width pins' fixture, and mid-game
+    /// on purpose: the widest move descriptions a player ever sees are placements
+    /// that name three areas AND their fee recipients, which cannot exist until
+    /// opponents have Presidents on the board.
+    ///
+    /// The walk ROTATES through the legal list rather than always taking `[0]`
+    /// (`screen`'s own game-walk pin does the same, for the same reason): a
+    /// take-the-first line degenerates, never builds anything, and never pays a
+    /// fee, so it would reach none of the positions these pins exist for.
+    fn sim_mid_game(players: u8, seed: u64, mut stop: impl FnMut(&Session) -> bool) -> Session {
+        let mut session = Session::new_sim(
+            GameConfig::for_player_count(players),
+            seed,
+            vec![StartingOrderChoice::Keep(0); players as usize],
+            Rules::standard(),
+        )
+        .expect("a standard sim");
+        for step in 0..400usize {
+            let legal = session.legal();
+            if legal.is_empty() || session.is_over() {
+                break;
+            }
+            if step > 0 && stop(&session) {
+                return session;
+            }
+            let mv = legal[step % legal.len()].clone();
+            session.apply(mv, vec![]).expect("a move from the engine's own list applies");
+        }
+        panic!("{players}P: no position matching the fixture's condition within 400 moves");
+    }
+
+    /// The widest move description the position offers, with its column count —
+    /// what the answer line has to survive. Ties go to the first, which keeps
+    /// the fixture deterministic.
+    fn widest_legal_move(session: &Session) -> (Move, usize) {
+        session
+            .legal()
+            .into_iter()
+            .map(|m| {
+                let w = describe::describe_move(&m, session.state(), session.rules()).chars().count();
+                (m, w)
+            })
+            .max_by_key(|(_, w)| *w)
+            .expect("a legal move")
     }
 
     /// The key is a pure function of `(record identity, seat, event index)`:
@@ -563,22 +835,51 @@ mod tests {
         assert!(!text.contains("Runner-ups ("), "the empty list must not print its header:\n{text}");
     }
 
-    /// A ply-capped line was taken MID-TURN, so the screen must not describe it
-    /// as reaching the hand-over -- the one case where the line's own shape says
-    /// nothing (`LookaheadAgent::last_continuation`'s caveat).
+    /// **The ply-cap note claims the SEARCH, not the line** (T10 review S1).
+    ///
+    /// `SearchStats::ply_cap_hits` is a whole-DECISION counter, merged across
+    /// worlds, beam entries and root candidates, so a nonzero value cannot say
+    /// the printed line was the one cut short — which is exactly what the old
+    /// label ("the line it searched, cut short by the search's own ply guard")
+    /// said. Two things must hold, and the second is the repair: the reach claim
+    /// "to the hand-over" is DROPPED when the counter fired (it is no longer
+    /// derivable), and what replaces it is scoped to the search.
+    ///
+    /// Doctored rather than driven, and it cannot be otherwise: the guard sits
+    /// 3.6× above the longest turn ever measured and recorded 0 hits in 5,890
+    /// research decisions, which the fixture assertion below states as a
+    /// property rather than a hope.
     #[test]
-    fn a_ply_capped_line_is_labelled_as_cut_short() {
+    fn the_ply_cap_note_claims_the_search_and_not_the_printed_line() {
         let session = sim_at_a_branching_point(4);
         let mut s = suggestion_for(&session);
         assert!(!s.continuation.is_empty(), "fixture: there must be a line to label");
-        assert!(!s.ply_capped, "fixture: a real run does not hit the guard");
+        assert!(!s.search_hit_ply_cap, "fixture: a real run does not hit the guard");
         let honest = render_suggestion(&s, session.state(), session.rules());
-        assert!(honest.contains("to the hand-over"), "{honest}");
+        assert!(honest.contains("to the hand-over"), "an uncapped search reached it: {honest}");
+        assert!(!honest.contains("ply guard"), "and says nothing about the guard: {honest}");
 
-        s.ply_capped = true;
+        s.search_hit_ply_cap = true;
         let capped = render_suggestion(&s, session.state(), session.rules());
-        assert!(capped.contains("cut short"), "{capped}");
-        assert!(!capped.contains("to the hand-over"), "{capped}");
+        assert!(
+            !capped.contains("to the hand-over"),
+            "the reach claim is not derivable once the guard fired:\n{capped}",
+        );
+        assert!(capped.contains("ply guard"), "the note must be there:\n{capped}");
+        assert!(
+            capped.contains("SOME continuation"),
+            "and must scope itself to the search, not to the line above it:\n{capped}",
+        );
+        assert!(
+            capped.contains("not recorded"),
+            "...saying outright that which line was stopped is unknown:\n{capped}",
+        );
+        // The line's own step count still prints: it is a fact about the line
+        // either way, and dropping it would leave the rows unlabelled.
+        assert!(
+            capped.contains(&format!("{} move(s)", s.continuation.len())),
+            "the step count survives:\n{capped}",
+        );
     }
 
     /// The rendered shape (spec §7's "ordered term contributions ... + total,
@@ -618,23 +919,150 @@ mod tests {
         );
     }
 
-    /// Piped output is plain: nothing in the render emits an escape while color
-    /// is off (the at-rest default, and what every pipe gets), and no line is
-    /// wide enough to widen a composed frame -- the narrowest of the three is
-    /// 108 columns at 4 players.
+    /// **Piped output is plain, and every line fits the frame — at each player
+    /// count** (T10 review M1).
+    ///
+    /// What this replaced was asserting a property the render did not have. The
+    /// old pin measured against a flat `<= 100`, which is not any frame's width:
+    /// the composed frame is 114/132/108 columns at 2/3/4 players
+    /// (`screen::frame_width`), so 100 was simultaneously too strict for 2P/3P
+    /// and too slack for the case that actually breaks — 4P, where the frame is
+    /// NARROWEST while the board is widest. It also drove `repl_mid_game(4)`-style
+    /// 2P fixtures at every count, so the 4P screen was never rendered at all.
+    ///
+    /// Measured per line with `screen::visible_width` (the escape-stripping
+    /// measure), on a real mid-game position at each count. The plain half of the
+    /// old pin is kept unchanged: a pipe must see no ANSI whatsoever.
+    ///
+    /// **Two renders per count, because the organic one is not enough.** An
+    /// arbitrary branching position's own suggestion usually fits every frame
+    /// without help — measured, this pin passes on a render with the bound ripped
+    /// out if that is all it looks at — so each count also renders the screen
+    /// ANSWERING WITH THE WIDEST MOVE THE POSITION OFFERS, which is the case the
+    /// bound exists for and a move a player could really be handed.
+    ///
+    /// **Where the bound binds is uneven, and that is a fact about the frames,
+    /// not a gap here.** At 2 players the widest move runs to 120 columns against
+    /// a 114-column frame and at 4 players 128 against 108; at 3 players the frame
+    /// is the widest of the three (132, the panel sits beside a 90-column board)
+    /// and the widest move observed at this seed is 122, so nothing there is cut.
+    /// The tally below therefore does not demand that every count bind — it
+    /// demands that SOME count does, which is what stops the whole pin from
+    /// quietly becoming a no-op if move descriptions or frames change.
     #[test]
-    fn the_render_is_plain_and_stays_inside_the_frame_widths() {
-        let session = sim_at_a_branching_point(4);
-        let s = suggestion_for(&session);
-        let text = render_suggestion(&s, session.state(), session.rules());
-        assert!(!text.contains('\u{1b}'), "piped output must carry no ANSI:\n{text}");
-        for line in text.lines() {
+    fn the_render_is_plain_and_fits_the_frame_at_every_player_count() {
+        let mut counts_where_the_bound_binds = Vec::new();
+        for players in [2u8, 3, 4] {
+            let budget = crate::screen::frame_width(players as usize);
+            // Prefer a position that offers an over-wide move to a merely deep
+            // one: the risky position is the one worth pinning.
+            let session = sim_mid_game(players, 4, |s| {
+                s.legal().len() > 1
+                    && (widest_legal_move(s).1 > budget || s.record().events.len() > 25)
+            });
+            let mut s = suggestion_for(&session);
+            // The shipped path's own answer, at every count, is a move the ENGINE
+            // offers here -- S2's quiet arm, swept rather than argued.
             assert!(
-                crate::screen::visible_width(line) <= 100,
-                "line is {} columns, past the 100 the frame budget allows: {line:?}",
-                crate::screen::visible_width(line),
+                session.legal().contains(&s.mv),
+                "{players}P: the suggestion must be in the true position's legal list: {:?}",
+                s.mv,
             );
+
+            let (widest, width) = widest_legal_move(&session);
+            if width > budget {
+                counts_where_the_bound_binds.push((players, width, budget));
+            }
+            for answer in [s.mv.clone(), widest] {
+                s.mv = answer;
+                let text = render_suggestion(&s, session.state(), session.rules());
+                assert!(
+                    !text.contains('\u{1b}'),
+                    "{players}P piped output must carry no ANSI:\n{text}",
+                );
+                for line in text.lines() {
+                    let w = crate::screen::visible_width(line);
+                    assert!(
+                        w <= budget,
+                        "{players}P: a line is {w} columns against the frame's {budget}: {line:?}",
+                    );
+                }
+            }
         }
+        assert!(
+            !counts_where_the_bound_binds.is_empty(),
+            "no player count offered a move wider than its own frame, so this pin proved nothing \
+             -- re-measure the widest move description against screen::FRAME_WIDTHS",
+        );
+    }
+
+    /// **The width bound is load-bearing, not decoration** (T10 review M1(c)).
+    ///
+    /// At 4 players the frame is at its narrowest (108) while the board is at its
+    /// widest, and a real legal list there offers moves whose description alone
+    /// runs past the WHOLE frame — a placement naming three areas plus every fee
+    /// recipient measures up to 135 columns. So the anti-vacuity case is organic:
+    /// the fixture walks until the position offers such a move, and the
+    /// suggestion is doctored to that move — one from the fixture's own legal
+    /// list, not an invented string, so the screen rendered is a screen a player
+    /// could really be shown.
+    ///
+    /// Both treatments are checked where each applies: the ANSWER must reflow
+    /// (and lose no word — a cut answer is the failure this repair exists to
+    /// prevent), while a RUNNER-UP row carrying the same move must be cut with an
+    /// ellipsis (a row that reflowed would break the margin column). A render
+    /// with no bound at all fails the first assertion in the list, at 137
+    /// columns.
+    #[test]
+    fn a_move_too_wide_for_the_frame_is_reflowed_and_rows_are_elided() {
+        let budget = crate::screen::frame_width(4);
+        let session = sim_mid_game(4, 4, |s| s.legal().len() > 1 && widest_legal_move(s).1 > budget);
+        let (widest, width) = widest_legal_move(&session);
+        assert!(
+            width > budget,
+            "fixture: the position must offer a move wider than the 4P frame ({width} vs {budget})",
+        );
+        let widest_text = describe::describe_move(&widest, session.state(), session.rules());
+
+        let mut s = suggestion_for(&session);
+        s.mv = widest.clone();
+        assert!(!s.ranking.is_empty(), "fixture: a runner-up row to elide");
+        // A runner-up that is NOT the suggestion, so the row actually prints.
+        let other = s.ranking.iter_mut().find(|r| r.mv != widest).expect("a second candidate");
+        other.mv = widest.clone();
+        let text = render_suggestion(&s, session.state(), session.rules());
+
+        for line in text.lines() {
+            let w = crate::screen::visible_width(line);
+            assert!(w <= budget, "a line is {w} columns against the frame's {budget}: {line:?}");
+        }
+
+        let answer: Vec<&str> = text
+            .lines()
+            .skip_while(|l| *l != "Suggested move:")
+            .skip(1)
+            .take_while(|l| l.starts_with("  "))
+            .collect();
+        assert!(
+            answer.len() >= 2,
+            "a {width}-column answer must reflow onto more than one line, got {answer:?}",
+        );
+        assert_eq!(
+            answer.iter().map(|l| l.trim()).collect::<Vec<_>>().join(" "),
+            widest_text.split_whitespace().collect::<Vec<_>>().join(" "),
+            "wrapping the answer must not drop or reorder a word",
+        );
+        let rows: Vec<&str> = text
+            .lines()
+            .skip_while(|l| !l.starts_with("Runner-ups ("))
+            .skip(1)
+            .take_while(|l| l.starts_with("  "))
+            .collect();
+        assert!(
+            rows.iter().any(|l| l.ends_with('…')),
+            "the runner-up row carrying the same move must be CUT, not reflowed (a reflowed row \
+             would break the margin column):\n{rows:#?}",
+        );
     }
 
     /// The same render with color FORCED on paints only whole lines, so every
@@ -710,14 +1138,99 @@ mod tests {
         assert!(untied.contains("Runner-ups ("), "and the rows themselves must stay:\n{untied}");
     }
 
-    /// `elide` bounds a row at its budget and leaves a short row alone.
+    /// `elide` bounds text at whatever budget it is given and leaves short text
+    /// alone. The degenerate budgets are pinned too: a width that leaves no room
+    /// for the marker returns nothing rather than a line one column too wide,
+    /// since the whole point of the helper is that its result fits.
     #[test]
-    fn long_rows_are_elided_at_the_budget() {
+    fn elide_cuts_at_the_budget_it_is_given() {
         let short = "Move President to Bank (A04)";
-        assert_eq!(elide(short), short);
+        assert_eq!(elide(short, ROW_TEXT_WIDTH), short);
+        assert_eq!(elide(short, short.chars().count()), short, "exactly at the budget is not a cut");
+
         let long: String = std::iter::repeat_n('x', ROW_TEXT_WIDTH + 20).collect();
-        let cut = elide(&long);
+        let cut = elide(&long, ROW_TEXT_WIDTH);
         assert_eq!(cut.chars().count(), ROW_TEXT_WIDTH);
         assert!(cut.ends_with('…'));
+
+        // The same text against a frame-sized budget: one helper, two budgets.
+        assert_eq!(elide(&long, 108).chars().count(), 100, "a 100-char text fits 108 whole");
+        assert_eq!(elide(&long, 12).chars().count(), 12);
+        assert_eq!(elide(&long, 0), "", "no room for the marker means no line");
+    }
+
+    /// `wrap_words` never emits a line past its budget, keeps every word in
+    /// order, and always emits at least one piece (so a caller printing an
+    /// answer always prints a line).
+    ///
+    /// The over-long single word is the deliberate hole: wrapping leaves it
+    /// whole and `elide` cuts it at the line it lands on, because an area name
+    /// and its id have no useful break point. Pinned so the division of labour is
+    /// a decision rather than an oversight.
+    #[test]
+    fn wrap_words_breaks_at_spaces_and_keeps_every_word() {
+        let text = "Place 1 assistant in each of: Tea Plantation (A04), Fishing Ground (A05), \
+                    Employment Agency (A07) — fee 1 yen (1 to Blue)";
+        let pieces = wrap_words(text, 40);
+        assert!(pieces.len() > 1, "a 120-column sentence must break: {pieces:?}");
+        for p in &pieces {
+            assert!(p.chars().count() <= 40, "{p:?} is {} columns", p.chars().count());
+        }
+        assert_eq!(
+            pieces.join(" ").split_whitespace().collect::<Vec<_>>(),
+            text.split_whitespace().collect::<Vec<_>>(),
+            "every word, in order",
+        );
+
+        assert_eq!(wrap_words("", 40), vec![String::new()], "always at least one piece");
+        let word = "x".repeat(50);
+        assert_eq!(wrap_words(&word, 10), vec![word.clone()], "an unbreakable word is left to elide");
+        assert_eq!(wrap_words("aa bb", 0).len(), 2, "a zero budget degrades to one word per line");
+    }
+
+    /// **The true-state check** (T10 review S2). The root candidates a press
+    /// ranks come from a world the belief sampler determinized, so the shipped
+    /// path asks the ENGINE whether the answer is offered here before it is
+    /// rendered. Both directions are pinned on a real position: every move the
+    /// legal list offers passes (no accidental narrowing — a check that refused
+    /// legal moves would break `suggest` outright), and a move the list does not
+    /// offer is refused as an INCONSISTENCY, not as a search failure.
+    ///
+    /// The refused arm is reached by handing the check a move directly rather
+    /// than by making a real search go wrong: nothing in-tree can force the
+    /// sampler into a divergent world, and scaffolding a fake agent would test
+    /// the scaffold. What is pinned instead is the whole of what the arm does —
+    /// its variant, and a message that names the cause and says the game is
+    /// untouched, since the reader's next question after "the bot did what?" is
+    /// whether their game survived it.
+    #[test]
+    fn a_move_the_true_position_does_not_offer_is_refused_as_an_inconsistency() {
+        let session = sim_at_a_branching_point(4);
+        let (state, rules) = (session.state(), session.rules());
+        let legal = session.legal();
+        assert!(legal.len() > 1, "fixture: a branching point");
+        for mv in &legal {
+            assert!(
+                ensure_offered_by_the_true_state(mv, state, rules).is_ok(),
+                "every legal move must pass: {mv:?}",
+            );
+        }
+
+        // A move this position does not offer. Picked by asking the legal list
+        // rather than by assuming a phase: `EndAdditionalPhase` is illegal
+        // mid-turn, and the assertion below fails loudly if that ever changes
+        // instead of passing vacuously.
+        let absent = Move::EndAdditionalPhase;
+        assert!(!legal.contains(&absent), "fixture: the chosen move must really be absent");
+
+        let err = ensure_offered_by_the_true_state(&absent, state, rules)
+            .expect_err("a move the position does not offer must be refused");
+        assert!(matches!(err, SuggestError::Inconsistent(_)), "{err:?}");
+        let shown = err.to_string();
+        assert!(shown.contains("does not offer"), "{shown}");
+        assert!(shown.contains("inconsistency"), "the cause must be named: {shown}");
+        assert!(shown.contains("bug worth reporting"), "{shown}");
+        assert!(shown.contains("game is untouched"), "and the reader's own game: {shown}");
+        assert!(shown.contains("EndAdditionalPhase"), "with the move itself: {shown}");
     }
 }

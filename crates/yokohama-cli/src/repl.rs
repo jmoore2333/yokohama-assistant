@@ -1871,11 +1871,14 @@ impl Repl {
     /// errors, which are surfaced verbatim rather than swallowed.
     fn suggest_cmd(&self) -> StepOutput {
         if matches!(self.session.mode, TrackingMode::Live) {
+            // Hand-wrapped, like the render's own notes: this is a view body, so
+            // a 215-column paragraph would size the composed frame to itself
+            // (T10 review M1 -- the same defect, in the refusal).
             return self.out_view(
-                "`suggest` is simulation-only.\nA live-tracked game's hidden cards are a model \
-                 reconciled from the table, not the engine's own deck, so the bot would be \
-                 searching a position nobody is playing. (Bot seats are sim-only for the same \
-                 family of reason -- see guide §4.)"
+                "`suggest` is simulation-only.\n\
+                 A live-tracked game's hidden cards are a model reconciled from the table, not\n\
+                 the engine's own deck, so the bot would be searching a position nobody is\n\
+                 playing. (Bot seats are sim-only for the same family of reason -- see guide §4.)"
                     .to_string(),
             );
         }
@@ -4721,7 +4724,15 @@ mod tests {
     /// runner-up rows nor the widest lines the screen can print, and the frame
     /// pin below would be measuring a narrower body than a player will see.
     fn repl_mid_game(seed: u64) -> Repl {
-        let mut r = repl_2p(seed);
+        repl_mid_game_np(2, seed)
+    }
+
+    /// `repl_mid_game` at any player count (T10 review M1): the width pin has to
+    /// render the 4-player screen, where the composed frame is NARROWEST (108
+    /// columns) while the board is widest -- the case a 2P fixture cannot show.
+    /// Same stopping condition, so the 2P fixture above is unchanged.
+    fn repl_mid_game_np(players: u8, seed: u64) -> Repl {
+        let mut r = repl_np(players, seed);
         drive_to_movement_with_on_board_assistants(&mut r);
         for _ in 0..40 {
             if r.session.is_over() {
@@ -4732,7 +4743,7 @@ mod tests {
             }
             step_one_move(&mut r);
         }
-        panic!("no branching mid-game decision point within 40 moves of setup");
+        panic!("{players}P: no branching mid-game decision point within 40 moves of setup");
     }
 
     /// **Spec §7's deterministic-repeatable clause, driven through `step`.** Two
@@ -4765,20 +4776,29 @@ mod tests {
         assert_eq!(*r.session.state(), state_before, "suggest must not move the game on");
         assert_eq!(r.session.record().events.len(), events_before, "and must record nothing");
 
-        // ...and the answer IS a move the engine offers right now.
-        let suggested = first
-            .text
-            .lines()
-            .skip_while(|l| !l.starts_with("Suggested move:"))
-            .nth(1)
-            .expect("the suggested move line")
-            .trim()
-            .to_string();
+        // ...and the answer IS a move the engine offers right now. Read as the
+        // whole answer BLOCK rather than one line: a move description too wide
+        // for the frame is reflowed across lines (T10 review M1), and wrapping
+        // collapses the whitespace it breaks at, so both sides are compared word
+        // by word.
+        let words = |s: &str| s.split_whitespace().collect::<Vec<_>>().join(" ");
+        let suggested = words(
+            &first
+                .text
+                .lines()
+                .skip_while(|l| !l.starts_with("Suggested move:"))
+                .skip(1)
+                .take_while(|l| l.starts_with("  "))
+                .collect::<Vec<_>>()
+                .join(" "),
+        );
+        assert!(!suggested.is_empty(), "the suggested move block:\n{}", first.text);
         assert!(
             r.session
                 .legal()
                 .iter()
-                .any(|m| describe::describe_move(m, r.session.state(), r.session.rules()) == suggested),
+                .any(|m| words(&describe::describe_move(m, r.session.state(), r.session.rules()))
+                    == suggested),
             "the suggested move must be in the engine's own legal list: {suggested:?}"
         );
     }
@@ -4865,32 +4885,98 @@ mod tests {
         assert!(!out.text.contains("Suggested move:"), "{}", out.text);
     }
 
-    /// The suggest screen inside the COMPOSED FRAME. `screen::wrap` sizes a
-    /// frame to its widest line, so a body that outran the board would shove
-    /// the whole game screen sideways for one command and back again -- the
-    /// jitter F3 fixed vertically, in the other axis. Measured against the
-    /// frame the same session composes around its ordinary prompt, so the claim
-    /// is "the suggestion never becomes the widest element", not a literal
-    /// column count that a board change would falsify.
+    /// **The suggest screen inside the COMPOSED FRAME, at every player count**
+    /// (T10 review M1). `screen::wrap` sizes a frame to its widest line, so a
+    /// body that outran the board would shove the whole game screen sideways for
+    /// one command and back again -- the jitter F3 fixed vertically, in the other
+    /// axis.
+    ///
+    /// What this replaced could not see the failure it was named for. It asserted
+    /// `width(suggest) <= width(plain)` on ONE session, drove `repl_mid_game(4)`
+    /// -- which is 2 players at seed 4, not 4 players -- and its own fixture
+    /// assertion said "the 2P frame" while claiming to have measured a 4P one. The
+    /// 4-player screen, the only one where the frame (108) is narrower than the
+    /// widest thing `suggest` can print (135), was never rendered.
+    ///
+    /// Four assertions per count, each for its own reason:
+    ///
+    /// 1. Every line of the SUGGEST RENDER fits that count's frame width. The
+    ///    render is isolated from the standing prompt block first, because
+    ///    `out_view` appends the prompt to every view command and the prompt is a
+    ///    different surface with a different budget (guide §2's 140 columns, held
+    ///    by `screen`'s own pins) -- measuring them together would assert this
+    ///    render's bound on someone else's line.
+    /// 2. The printed body IS `suggest::render_suggestion`, byte for byte, at the
+    ///    same state and the same stream key. **This is what makes the pin
+    ///    non-vacuous, and it was measured rather than assumed**: an arbitrary
+    ///    branching position's own suggestion usually fits every frame with no
+    ///    help at all, so assertion 1 alone passes even on a render with the bound
+    ///    ripped out. What is checked here is that this command prints the BOUNDED
+    ///    render rather than formatting a screen of its own -- and the over-wide
+    ///    case is driven where it can be controlled, in `suggest`'s own
+    ///    `a_move_too_wide_for_the_frame_is_reflowed_and_rows_are_elided` (which
+    ///    answer a search picks cannot be dictated from here).
+    /// 3. The frame around the suggestion is no wider than the frame around an
+    ///    ordinary prompt: the no-jitter property, which is about the composed
+    ///    screen rather than about one body.
+    /// 4. The mid-game frame is no NARROWER than the width the body was bounded
+    ///    by. `screen::FRAME_WIDTHS` holds OPENING widths and a body is bounded
+    ///    before the frame it lands in exists, so this is the check that the table
+    ///    is a floor at a real position and not just at turn one.
     #[test]
-    fn the_suggest_screen_does_not_widen_the_composed_frame() {
-        let mut r = repl_mid_game(4);
-        let body = r.step("suggest").text;
-        assert!(body.contains("Suggested move:"), "fixture: a real suggestion: {body}");
+    fn the_suggest_screen_fits_the_composed_frame_at_every_player_count() {
+        for players in [2u8, 3, 4] {
+            let mut r = repl_mid_game_np(players, 4);
+            let body = r.step("suggest").text;
+            assert!(body.contains("Suggested move:"), "{players}P fixture: a real suggestion: {body}");
 
-        screen::force(true);
-        let plain = screen::wrap(&r, &r.prompt());
-        let suggest = screen::wrap(&r, &body);
-        screen::force(false);
+            // The prompt block alone, at the same (untouched) state: what
+            // `out_view` appended to the render above.
+            let tail = r.out_view(String::new()).text;
+            let render = body.strip_suffix(&tail).unwrap_or_else(|| {
+                panic!("a view body is its render plus the standing prompt block:\n{body}")
+            });
 
-        let width = |frame: &str| frame.lines().map(screen::visible_width).max().unwrap_or(0);
-        assert!(width(&plain) > 100, "fixture: the 2P frame is board-dominated ({})", width(&plain));
-        assert!(
-            width(&suggest) <= width(&plain),
-            "the suggest body widened the frame from {} to {} columns",
-            width(&plain),
-            width(&suggest),
-        );
+            let budget = screen::frame_width(players as usize);
+            for line in render.lines() {
+                let w = screen::visible_width(line);
+                assert!(
+                    w <= budget,
+                    "{players}P: a rendered line is {w} columns against the frame's {budget}: {line:?}",
+                );
+            }
+
+            // The state is untouched by a press, so the same key re-derives the
+            // same answer (the determinism pins above) and this comparison is
+            // exact rather than approximate.
+            let seat = r.session.state().current_player;
+            let key = crate::suggest::stream_seed(r.session.record(), seat);
+            let s = crate::suggest::suggest(r.session.state(), r.session.rules(), seat, key)
+                .expect("the same suggestion the command just printed");
+            assert_eq!(
+                render,
+                crate::suggest::render_suggestion(&s, r.session.state(), r.session.rules()),
+                "{players}P: the command must print the width-bounded render, not its own format",
+            );
+
+            screen::force(true);
+            let plain = screen::wrap(&r, &r.prompt());
+            let suggest = screen::wrap(&r, &body);
+            screen::force(false);
+            let width = |frame: &str| frame.lines().map(screen::visible_width).max().unwrap_or(0);
+            assert!(
+                width(&suggest) <= width(&plain),
+                "{players}P: the suggest body widened the frame from {} to {} columns",
+                width(&plain),
+                width(&suggest),
+            );
+            assert!(
+                width(&plain) >= budget,
+                "{players}P: the mid-game frame is {} columns, under the {budget} the body was \
+                 bounded by -- FRAME_WIDTHS is no longer a floor",
+                width(&plain),
+            );
+        }
     }
 
     /// A finished game has nothing to suggest, and the refusal lands BEFORE the
