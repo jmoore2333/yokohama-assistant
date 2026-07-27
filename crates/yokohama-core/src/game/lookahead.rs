@@ -564,6 +564,49 @@ impl Default for SearchScheme {
     }
 }
 
+/// THE provenance of a Lookahead seat at these knobs — name, version and knob
+/// map in one place, for whichever scheme it runs.
+///
+/// A free function for [`crate::game::greedy::controller_provenance`]'s reason: the arena's
+/// [`Contestant`](crate::game::arena::Contestant) must be able to say what a
+/// controller calls itself without building an agent (a build needs `&Rules` for
+/// the Keep table). Both callers route here, so the two controller names and
+/// their two version consts are read at exactly one site (spec §5.2 / §0.5) —
+/// and the SCHEME picks which pair, which is what makes S1 and the S2 diagnostic
+/// arm separately versionable.
+pub fn controller_provenance(
+    scheme: SearchScheme,
+    worlds: u8,
+    retreat_samples: u8,
+    weights: &WeightTable,
+    agent_seed: Option<u64>,
+) -> ControllerProvenance {
+    let mut params = BTreeMap::from([
+        // `worlds.max(1)` mirrors `with_knobs` exactly: a decision over zero
+        // sampled worlds is not a decision, so the agent raises it — and a
+        // descriptor that printed the raw 0 would name knobs the seat did not
+        // play on.
+        ("k".to_string(), i64::from(worlds.max(1))),
+        ("m".to_string(), i64::from(retreat_samples)),
+        ("eval_impl".to_string(), i64::from(EVAL_IMPL_VERSION)),
+        ("weights".to_string(), weight_table_identity(weights)),
+    ]);
+    match scheme {
+        SearchScheme::TurnBoundary { beam } => {
+            params.insert("b".to_string(), i64::from(beam));
+        }
+        SearchScheme::AtomicDiag { depth } => {
+            params.insert("d".to_string(), i64::from(depth));
+        }
+    }
+    ControllerProvenance {
+        name: scheme.controller().to_string(),
+        version: scheme.version(),
+        params,
+        agent_seed,
+    }
+}
+
 /// What one search cost and what shape it had — the counters the §4.4 pin, the
 /// cost curve and T7's cost comparison all read.
 ///
@@ -1580,27 +1623,16 @@ impl ArenaAgent for LookaheadAgent {
         Ok(DecisionReport { mv, volume })
     }
 
+    /// Delegated to [`controller_provenance`] so the agent and the arena's
+    /// `Contestant` cannot drift about what a Lookahead seat is called.
     fn controller(&self) -> ControllerProvenance {
-        let mut params = BTreeMap::from([
-            ("k".to_string(), i64::from(self.worlds)),
-            ("m".to_string(), i64::from(self.retreat_samples)),
-            ("eval_impl".to_string(), i64::from(EVAL_IMPL_VERSION)),
-            ("weights".to_string(), weight_table_identity(&self.weights)),
-        ]);
-        match self.scheme {
-            SearchScheme::TurnBoundary { beam } => {
-                params.insert("b".to_string(), i64::from(beam));
-            }
-            SearchScheme::AtomicDiag { depth } => {
-                params.insert("d".to_string(), i64::from(depth));
-            }
-        }
-        ControllerProvenance {
-            name: self.scheme.controller().to_string(),
-            version: self.scheme.version(),
-            params,
-            agent_seed: Some(self.agent_seed),
-        }
+        controller_provenance(
+            self.scheme,
+            self.worlds,
+            self.retreat_samples,
+            &self.weights,
+            Some(self.agent_seed),
+        )
     }
 }
 

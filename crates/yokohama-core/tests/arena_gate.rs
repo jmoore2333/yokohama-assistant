@@ -61,8 +61,8 @@ use rand_chacha::ChaCha8Rng;
 use yokohama_core::{
     agent_stream_seed, bootstrap_percentile, corpus_path, emit_record, replay_strict,
     run_arena_game, run_cell, run_cell_emitting, unit_for, ArenaError, CellReport, CellSpec,
-    GameRecord, HonestPathTally, IntervalOutcome, PolicyAgent, RolloutPolicy, Rules, SeedSchedule,
-    SeedScheduleKind, SEMANTICS_REV,
+    Contestant, GameRecord, HonestPathTally, IntervalOutcome, PolicyAgent, RolloutPolicy, Rules,
+    SeedSchedule, SeedScheduleKind, SEMANTICS_REV,
 };
 
 /// This binary's committed diagnostic master (plan Task 9).
@@ -203,12 +203,16 @@ impl Scale {
 // Shared helpers
 // ---------------------------------------------------------------------------
 
+/// Every cell in this binary is a POLICY-vs-POLICY cell — 3.2's instrument
+/// validation, unchanged by 3.3's contestant widening — so the helper still
+/// takes rungs and wraps them at the one site (spec §5.1: the Policy arm behaves
+/// as it did, and `tests/contestant_golden.rs` is the proof).
 fn diagnostic(units: u32, name: &str, players: u8, x: RolloutPolicy, y: RolloutPolicy) -> CellSpec {
     CellSpec {
         name: name.to_string(),
         players,
-        x,
-        y,
+        x: Contestant::Policy(x),
+        y: Contestant::Policy(y),
         units,
         master: SeedScheduleKind::Diagnostic(MASTER),
     }
@@ -835,8 +839,8 @@ fn replicates_at(scale: Scale) {
         let spec = CellSpec {
             name: format!("replicate-{r:02}"),
             players: 2,
-            x: RolloutPolicy::RetreatAverse,
-            y: RolloutPolicy::FAMILY_WEIGHTED_DEFAULT,
+            x: Contestant::Policy(RolloutPolicy::RetreatAverse),
+            y: Contestant::Policy(RolloutPolicy::FAMILY_WEIGHTED_DEFAULT),
             units: scale.replicate_units,
             master: SeedScheduleKind::Diagnostic(master),
         };
@@ -952,8 +956,8 @@ fn corpus_at(scale: Scale, label: &str) {
         let spec = CellSpec {
             name: name.to_string(),
             players,
-            x: RolloutPolicy::RetreatAverse,
-            y: RolloutPolicy::FAMILY_WEIGHTED_DEFAULT,
+            x: Contestant::Policy(RolloutPolicy::RetreatAverse),
+            y: Contestant::Policy(RolloutPolicy::FAMILY_WEIGHTED_DEFAULT),
             units,
             master: SeedScheduleKind::Diagnostic(MASTER),
         };

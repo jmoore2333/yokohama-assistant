@@ -119,7 +119,9 @@ use std::fs;
 use std::path::PathBuf;
 
 use serde_json::Value;
-use yokohama_core::{run_cell, CellSpec, IntervalOutcome, RolloutPolicy, Rules, SeedScheduleKind};
+use yokohama_core::{
+    run_cell, CellSpec, Contestant, IntervalOutcome, RolloutPolicy, Rules, SeedScheduleKind,
+};
 
 /// The 2P cell's committed diagnostic master. See the module doc.
 const MASTER_2P: u64 = 0xA3E1_2026_0726_0033;
@@ -165,8 +167,8 @@ fn golden_spec_2p() -> CellSpec {
     CellSpec {
         name: CELL_NAME_2P.to_string(),
         players: 2,
-        x: RolloutPolicy::RetreatAverse,
-        y: RolloutPolicy::FAMILY_WEIGHTED_DEFAULT,
+        x: Contestant::Policy(RolloutPolicy::RetreatAverse),
+        y: Contestant::Policy(RolloutPolicy::FAMILY_WEIGHTED_DEFAULT),
         units: 4,
         master: SeedScheduleKind::Diagnostic(MASTER_2P),
     }
@@ -176,8 +178,8 @@ fn golden_spec_4p() -> CellSpec {
     CellSpec {
         name: CELL_NAME_4P.to_string(),
         players: 4,
-        x: RolloutPolicy::RetreatAverse,
-        y: RolloutPolicy::FAMILY_WEIGHTED_DEFAULT,
+        x: Contestant::Policy(RolloutPolicy::RetreatAverse),
+        y: Contestant::Policy(RolloutPolicy::FAMILY_WEIGHTED_DEFAULT),
         units: 2,
         master: SeedScheduleKind::Diagnostic(MASTER_4P),
     }

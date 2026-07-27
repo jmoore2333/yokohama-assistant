@@ -542,6 +542,34 @@ fn country_scarcity(country: Country, rules: &Rules) -> i64 {
 /// `EVAL_IMPL_VERSION` rides alongside for the coarser "same evaluator
 /// implementation" question. Folded with `seeds::splitmix64`, the crate's one
 /// mixing primitive, rather than a second hand-rolled constant set.
+/// THE provenance of a Greedy-v1 seat at these knobs — name, version and knob
+/// map in one place.
+///
+/// A free function rather than only a method because the arena's
+/// [`Contestant`](crate::game::arena::Contestant) has to answer "what would this
+/// controller call itself?" WITHOUT building an agent (a build needs `&Rules`
+/// for the Keep table, which a `spec_echo` has no business demanding). Both
+/// callers route here, so [`GREEDY_CONTROLLER`] and [`GREEDY_IMPL_VERSION`] are
+/// read from their consts at exactly one site and no call site hand-types either
+/// (spec §5.2 / §0.5).
+pub fn controller_provenance(
+    weights: &WeightTable,
+    retreat_samples: u8,
+    agent_seed: Option<u64>,
+) -> ControllerProvenance {
+    ControllerProvenance {
+        name: GREEDY_CONTROLLER.to_string(),
+        version: GREEDY_IMPL_VERSION,
+        params: BTreeMap::from([
+            ("m".to_string(), i64::from(retreat_samples)),
+            ("placement_cap".to_string(), PLACEMENT_CANDIDATE_CAP as i64),
+            ("eval_impl".to_string(), i64::from(EVAL_IMPL_VERSION)),
+            ("weights".to_string(), weight_table_identity(weights)),
+        ]),
+        agent_seed,
+    }
+}
+
 pub fn weight_table_identity(weights: &WeightTable) -> i64 {
     let mut acc: u64 = 0x3E1D_2026_0726_0003;
     for w in weights.early.iter().chain(weights.late.iter()) {
@@ -790,18 +818,10 @@ impl ArenaAgent for GreedyAgent {
         Ok(DecisionReport { mv, volume })
     }
 
+    /// Delegated to [`controller_provenance`] so the agent and the arena's
+    /// `Contestant` cannot drift about what a Greedy-v1 seat is called.
     fn controller(&self) -> ControllerProvenance {
-        ControllerProvenance {
-            name: GREEDY_CONTROLLER.to_string(),
-            version: GREEDY_IMPL_VERSION,
-            params: BTreeMap::from([
-                ("m".to_string(), i64::from(self.retreat_samples)),
-                ("placement_cap".to_string(), PLACEMENT_CANDIDATE_CAP as i64),
-                ("eval_impl".to_string(), i64::from(EVAL_IMPL_VERSION)),
-                ("weights".to_string(), weight_table_identity(&self.weights)),
-            ]),
-            agent_seed: Some(self.agent_seed),
-        }
+        controller_provenance(&self.weights, self.retreat_samples, Some(self.agent_seed))
     }
 }
 

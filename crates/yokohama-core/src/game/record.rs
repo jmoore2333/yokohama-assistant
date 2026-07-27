@@ -109,11 +109,20 @@ pub struct SeatProvenance {
     /// is the one authority for its own name, and its serde tag is pinned equal
     /// to it (`policy.rs`'s `serde_names_match_as_str_for_every_rung`).
     pub controller: String,
-    /// The controller IMPLEMENTATION version under that stable name
-    /// (`game::policy::POLICY_IMPL_VERSION`), bumped when a policy's sampling
-    /// SEMANTICS change — i.e. when figures recorded under the same name stop
-    /// being comparable. Distinct from [`RunProvenance::schema`], which is about
-    /// this struct's shape and not about behaviour.
+    /// The controller IMPLEMENTATION version under that stable name, bumped when
+    /// figures recorded under the same name stop being COMPARABLE. Distinct from
+    /// [`RunProvenance::schema`], which is about this struct's shape and not
+    /// about behaviour.
+    ///
+    /// **One const per controller NAME** (spec §0.5 / L12), and comparability is
+    /// the criterion rather than authorship: `game::policy::POLICY_IMPL_VERSION`
+    /// for a rollout rung, `greedy::GREEDY_IMPL_VERSION`,
+    /// `lookahead::LOOKAHEAD_IMPL_VERSION`, `lookahead::ATOMIC_DIAG_IMPL_VERSION`
+    /// for the evaluator controllers. A change to something SHARED — the
+    /// evaluator weights, say — bumps every controller const that embeds it,
+    /// honestly, because every one of their recorded figures stops being
+    /// comparable at once; `eval::EVAL_IMPL_VERSION` additionally rides
+    /// [`params`](Self::params) for finer attribution.
     pub version: u32,
     /// The controller's knobs in their declared integer units — fixed-point
     /// PARTS PER MILLION for a probability, a plain count for a count.
