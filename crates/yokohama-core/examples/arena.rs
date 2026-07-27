@@ -396,6 +396,51 @@ fn print_report(report: &CellReport) {
     print_triggers("  ", &report.trigger);
 }
 
+/// The realized unit-share distribution and its variance — the 3.3 spec §4.1
+/// obligation that "the cell REPORTS its realized Var_pair".
+///
+/// WHY THIS IS NOT IN [`print_report`], which `ab` also calls: the 3.2 A/B
+/// truth-pass artifact (`docs/plans/2026-07-26-phase3.2-ab-report.md`) is a
+/// VERBATIM capture of that subcommand's output, so a line added to the shared
+/// printer would silently put the committed artifact out of date with its own
+/// reproduce command. The obligation is a `cell` obligation — §4.1's experiment
+/// is a `cell` invocation — so it is discharged here.
+///
+/// BOTH divisors are printed because neither is "the" variance without saying
+/// which: the `n − 1` form is what the unit-t cross-check's `sd` squares to, the
+/// `n` form is the population variance of the units as realized. They differ in
+/// the third-to-fourth decimal at cell sizes; a quoted figure should name its
+/// divisor. The name `Var_pair` is 2P's — at 3–4P the unit is a rotation block
+/// and [`yokohama_core::pairs_needed_for_mme`] does not apply to it — so the
+/// label says `unit` and notes where the pair reading holds.
+fn print_unit_variance(report: &CellReport) {
+    let shares = &report.x_unit_shares;
+    let n = shares.len();
+    if n == 0 {
+        println!("  unit shares: none tabulated");
+        return;
+    }
+    let mut sorted = shares.clone();
+    sorted.sort_by(|a, b| a.partial_cmp(b).expect("unit shares are finite"));
+    let mut histogram: Vec<(f64, u32)> = Vec::new();
+    for share in sorted {
+        match histogram.last_mut() {
+            Some((value, count)) if *value == share => *count += 1,
+            _ => histogram.push((share, 1)),
+        }
+    }
+    let spread: Vec<String> = histogram.iter().map(|(v, c)| format!("{c}×{v:.4}")).collect();
+    let mean = shares.iter().sum::<f64>() / n as f64;
+    let ss: f64 = shares.iter().map(|s| (s - mean) * (s - mean)).sum();
+    println!("  unit shares (n={n}, X's win share per unit): {}", spread.join(" · "));
+    println!(
+        "  realized unit variance = {:.6} (population, /n) · {:.6} (sample, /(n-1)) \
+         — spec §4.1's Var_pair at 2P",
+        ss / n as f64,
+        if n > 1 { ss / (n - 1) as f64 } else { f64::NAN },
+    );
+}
+
 /// End-trigger rates with 95% Wilson intervals, per spec §6 — never pooled
 /// across player counts, which is exactly the pooling that blinded the old fuzz
 /// assertion to the 4P collapse.
@@ -490,6 +535,7 @@ fn cmd_cell(args: &[String]) -> Result<(), String> {
     let elapsed = started.elapsed();
 
     print_report(&report);
+    print_unit_variance(&report);
     println!(
         "  wall {:.2}s for {} games ({:.1} ms/game, {} build)",
         elapsed.as_secs_f64(),
