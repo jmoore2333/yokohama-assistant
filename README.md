@@ -26,16 +26,20 @@ recommends, the six-move line it valued the position by, the arithmetic behind t
 is your value minus the best opponent's, times this stage's weight), and the nearest runner-ups
 out of 66 ranked candidates, each with its margin. It applies nothing and records nothing.
 
-**[Full `suggest` walkthrough →](docs/suggest-walkthrough-2026-07-27.html)** — a few minutes of
-live play against a bot seat (2026-07-27, v0.3.3), captured as the raw ANSI stream from a 140×50
-PTY, with an honest read on both sides: **what held up** (the search's projected lines matched
-the played-out game move for move; it found genuine multi-step combinations; determinism and the
-no-side-effect guards are real) and **what it flagged** (two display-layer bugs in
-`describe.rs` — a Laboratory surcharge rendered as a reward, and production previews that ignore
-the acting player's techs — plus the evaluator's structural positional blindness, and the fact
-that the *playable* bot is the 3.2 weighted-random rung, not the 3.3 evaluator). Every finding is
-display-layer; the engine did the right thing in each case. It is an HTML page — open the file in
-a browser rather than reading it on GitHub.
+**[Full `suggest` walkthrough →](https://claude.ai/code/artifact/9dbb3a84-7994-4066-a400-7e83c049a19e)**
+— a few minutes of live play against a bot seat (2026-07-27, v0.3.3), captured as the raw ANSI
+stream from a 140×50 PTY, with an honest read on both sides: **what held up** (the search's
+projected lines matched the played-out game move for move; it found genuine multi-step
+combinations; determinism and the no-side-effect guards are real) and **what it flagged** (two
+display-layer bugs in `describe.rs` — a Laboratory surcharge rendered as a reward, and production
+previews that ignore the acting player's techs — plus the evaluator's structural positional
+blindness, and the fact that the *playable* bot is the 3.2 weighted-random rung, not the 3.3
+evaluator). Every finding is display-layer; the engine did the right thing in each case.
+
+That link is a hosted copy, so it opens and renders in a browser. The source of truth is
+[`docs/suggest-walkthrough-2026-07-27.html`](docs/suggest-walkthrough-2026-07-27.html) in this
+repo — GitHub shows `.html` as source rather than rendering it, so read that one by opening the
+file locally.
 
 ## Status (2026-07-27)
 
@@ -195,7 +199,9 @@ the YAML by `gen-data`; a `rules_hash` stamps every saved game with the data tha
   CLI guide (kept word-identical, enforced by the `guide_sync` test)
 - [`docs/suggest-walkthrough-2026-07-27.html`](docs/suggest-walkthrough-2026-07-27.html) — a
   hands-on review of `suggest` at v0.3.3 in real terminal output: what held up, and the
-  display-layer defects it surfaced (a dated snapshot, not a maintained doc)
+  display-layer defects it surfaced (a dated snapshot, not a maintained doc). Also
+  [hosted, for a link that renders](https://claude.ai/code/artifact/9dbb3a84-7994-4066-a400-7e83c049a19e)
+  — a copy, so edit the file above and re-publish rather than treating the page as the original
 - [`docs/plans/`](docs/plans/) — dated designs, plans, and reports;
   [`2026-07-20-phase-2.9-ruling-list.md`](docs/plans/2026-07-20-phase-2.9-ruling-list.md) is
   the rules-ambiguity register (fully ruled)
