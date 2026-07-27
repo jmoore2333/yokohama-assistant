@@ -23,15 +23,49 @@
 //! out of). Each gets its own cell, and each carries its own catch evidence —
 //! the seed one by flagging a leaky agent and an honest one in the SAME run,
 //! the weight one by a documented mutation proof.
+//!
+//! PHASE 3.3 (Task 8, spec §0.4) adds the evaluator bots, and the ONE thing to
+//! read before reading those cells is that they are not all the same KIND of
+//! test. v1 of the spec proposed the decision-invariance sweep as the
+//! evaluator's leakage evidence and both clean-eyes lenses independently
+//! refuted it as structurally vacuous — the sweep's variants observe back to an
+//! IDENTICAL view, so any decider with a `&PlayerView` signature compares f(x)
+//! against f(x). The repaired reading is three parts, and each cell below says
+//! which part it is:
+//!   (i)   SIGNATURE TRIPWIRES — Greedy-v1 and Lookahead-v1 join the sweep.
+//!         Content: no internal nondeterminism, and the signature guarantee has
+//!         not been traded away. Labelled as tripwires, not measurements.
+//!   (ii)  THE FALSIFIABLE CELL — determinization invariance. Its inputs
+//!         GENUINELY DIFFER (sampled worlds ⇒ differing successor views) and it
+//!         IS spec §4.3's K-revisit trigger: red here means an evaluator term
+//!         has begun reading determinized content, and that K > 1 is live.
+//!   (iii) THE RECORDED MEASUREMENT — Lookahead's cross-world divergence rate,
+//!         printed with its provenance.
+//! Ledger L11 is the one-line version: the sweep cell is a tripwire and is
+//! labelled one; the leakage clause's real content is (ii) plus (iii).
+//!
+//! COST (debug, measured at the T8 close, three runs of the whole binary):
+//! **9.04 / 9.01 / 9.06 s**, against 0.13 s before T8. The tests run
+//! CONCURRENTLY, so that wall is the longest single cell (the divergence
+//! instrument, ~8.5 s) and not the ~17 s of CPU the four new cells spend
+//! between them — per-cell: divergence ~8.5 s, Lookahead tripwire ~6.5 s,
+//! determinization ~1.6 s, Greedy tripwire ~0.5 s. Two of the four are searches,
+//! which is the whole of the cost; the Lookahead knobs are reduced for exactly
+//! this reason and the reduction is pre-declared at [`TRIPWIRE_BEAM`], per spec
+//! §10.1's debug-cost hazard. All four are per-edit and none is `#[ignore]`d, so
+//! no new gate command (and no four-site registration) is owed.
 
 use rand::Rng;
 use rand::SeedableRng;
 use rand_chacha::ChaCha8Rng;
+use yokohama_core::game::eval::{self, Explanation, WeightTable};
+use yokohama_core::game::greedy::{candidates, Candidates, GreedyAgent, DEFAULT_RETREAT_SAMPLES};
+use yokohama_core::game::lookahead::{LookaheadAgent, SearchScheme};
 use yokohama_core::{
     apply_move_unchecked, check_invariants, finalize_setup, get_legal_moves, is_game_over, new_game,
-    observe, ArenaAgent, BeliefError, BeliefSampler, DecisionHandle, GameConfig, GameState,
-    HandCard, Move, MoveFamily, PlayerId, PlayerView, PolicyAgent, RolloutPolicy, Rules,
-    StartingOrderChoice, ViewError,
+    observe, AreaAction, ArenaAgent, BeliefError, BeliefSampler, DecisionHandle, GameConfig,
+    GameState, HandCard, Move, MoveFamily, PlayerId, PlayerView, PolicyAgent, PortState,
+    RolloutPolicy, Rules, StartingOrderChoice, ViewError,
 };
 
 fn keep_game(players: u8, seed: u64, rules: &Rules) -> GameState {
@@ -815,4 +849,660 @@ fn t8g_two_seats_see_disjoint_hidden_slots() {
     assert!(matches!(v1.players[1].hand[0], HandCard::Known(_)));
     assert!(matches!(v1.players[0].hand[0], HandCard::HiddenStartingOrder));
     assert!(matches!(v0.players[0].hand[0], HandCard::Known(_)));
+}
+
+// ---------------------------------------------------------------------------
+// Phase 3.3 Task 8 — spec §0.4's THREE-PART reading of "leakage invariants
+// green against the new bot". The three cells below are deliberately NOT three
+// of a kind, and reading them as one family is the mis-read §0.4 exists to
+// prevent:
+//
+//   (i)  the two SIGNATURE TRIPWIRES (Greedy-v1, Lookahead-v1) join the sweep
+//        above. Like the FamilyWeighted cell they compare f(x) against f(x) —
+//        the variants observe back to an IDENTICAL view and `choose(view,
+//        rules)` cannot reach hidden state BY SIGNATURE. They are tripwires,
+//        not leakage measurements, and they say so.
+//   (ii) the DETERMINIZATION-INVARIANCE cell is the falsifiable one: the
+//        inputs it compares GENUINELY DIFFER (different sampled worlds ⇒
+//        different successor views), and the equality it asserts is a real
+//        constraint on what the evaluator reads. It is spec §4.3's K-revisit
+//        trigger made executable.
+//   (iii) the LOOKAHEAD DIVERGENCE instrument is a MEASUREMENT, reported with
+//        its provenance.
+// ---------------------------------------------------------------------------
+
+/// The knobs the two Lookahead cells run at, and the one reason they are not
+/// the shipped `B = 4` / `M = 8`.
+///
+/// COST, pre-declared rather than discovered (spec §10.1's debug-cost hazard).
+/// Measured in this tree, debug, 40 organic decision points: the shipped
+/// `B = 4, M = 8` costs **48.2 ms/decision**, which over the sweep's 600
+/// decisions is ~29 s in ONE per-edit test; `B = 1, M = 2` costs **10.4 ms**
+/// (K = 1) and **29.9 ms** (K = 3).
+///
+/// WHY THE KNOBS ARE NOT LOAD-BEARING HERE. A tripwire's content is "no
+/// thread-rng, no clock, no iteration-order dependence, and the `&PlayerView`
+/// signature has not been traded away" — none of which is a function of `B` or
+/// `M`. `M = 2` rather than `M = 0` deliberately: the retreat sampler keeps
+/// DRAWING, so a nondeterministic dice source inside the candidate scheme is
+/// still in the tripwire's reach. For the divergence instrument the knobs ARE
+/// a stated scope on the measurement — see that test.
+const TRIPWIRE_BEAM: u16 = 1;
+/// `M` for the Lookahead cells; see [`TRIPWIRE_BEAM`].
+const TRIPWIRE_RETREAT_SAMPLES: u8 = 2;
+
+/// Greedy-v1 as a decider, on the shipped [`WeightTable::V1`] and `M`.
+fn greedy_agent_pick(rules: &Rules, agent_seed: u64, view: &PlayerView) -> Move {
+    let mut agent = GreedyAgent::new(rules, agent_seed);
+    agent.choose(view, rules).expect("Greedy-v1 resolves a move at a real decision point").mv
+}
+
+/// Lookahead-v1 as a decider at [`TRIPWIRE_BEAM`] / [`TRIPWIRE_RETREAT_SAMPLES`].
+fn lookahead_agent_pick(rules: &Rules, agent_seed: u64, worlds: u8, view: &PlayerView) -> Move {
+    let mut agent = LookaheadAgent::with_knobs(
+        rules,
+        SearchScheme::TurnBoundary { beam: TRIPWIRE_BEAM },
+        worlds,
+        TRIPWIRE_RETREAT_SAMPLES,
+        WeightTable::V1,
+        agent_seed,
+    );
+    agent.choose(view, rules).expect("Lookahead-v1 resolves a move at a real decision point").mv
+}
+
+/// **SIGNATURE TRIPWIRE — Greedy-v1** (spec §0.4(i), ledger L11).
+///
+/// THIS CELL IS NOT A LEAKAGE MEASUREMENT, and the spec says so in terms: v1 of
+/// §0.4 proposed exactly this as the evaluator's leakage evidence and both clean
+/// -eyes lenses independently refuted it as structurally vacuous. Across every
+/// comparison the VIEW is identical (the FamilyWeighted cell above measured
+/// 0/450 differing, and `variants()` is unchanged), and
+/// `GreedyAgent::choose(view, rules)` makes hidden state unreachable BY
+/// SIGNATURE — so this compares f(x) against f(x). What it CAN catch is worth
+/// catching and is the whole of its content:
+///
+///  - internal nondeterminism — a `thread_rng`, a clock read, a `HashMap`
+///    iteration-order dependence anywhere down the chain
+///    (`observe` → `BeliefSampler` → `DecisionHandle` → candidates → `score`);
+///  - a future signature change that re-opens the channel (`choose(&GameState,
+///    …)`, a `&Rules` carrying state, a back-door accessor).
+///
+/// The T11 note on the FamilyWeighted cell above is the precedent this doc
+/// follows deliberately, one rung up: the structural guarantee is the SIGNATURE,
+/// and the cell is the tripwire that notices if that guarantee is ever traded
+/// away. §0.4(ii)'s determinization cell below is the falsifiable half; cite
+/// THAT one for "the evaluator does not read what it must not".
+///
+/// **FRESH AGENT PER CALL** (the FamilyWeighted cell's rule, and it bites
+/// harder here). A `GreedyAgent` draws a sampler seed, `M` retreat samples and a
+/// tie-break word from its own stream at every decision, so a LONG-LIVED agent
+/// arrives at each comparison at a different stream offset and the pick moves
+/// for a reason that is not a leak. Written that way first and RUN, so the
+/// distinction is evidence rather than assertion:
+///
+/// > T8 greedy-v1: a decision moved when only hidden state changed
+/// >   left: PlaceThreeAreas { placements: [AreaId(5), AreaId(7), AreaId(8)] }
+/// >  right: PlaceThreeAreas { placements: [AreaId(3), AreaId(4), AreaId(5)] }
+#[test]
+fn t8_greedy_v1s_decision_never_moves_under_hidden_variation() {
+    let rules = Rules::standard();
+    let checked = run_decision_invariance_sweep("T8 greedy-v1", &rules, 4, |view, _legal, rules| {
+        greedy_agent_pick(rules, HONEST_AGENT_SEED, view)
+    });
+    assert!(checked >= 300, "anti-vacuity: only {checked} comparisons");
+}
+
+/// **SIGNATURE TRIPWIRE — Lookahead-v1** (spec §0.4(i), ledger L11).
+///
+/// Everything the Greedy cell's doc says applies verbatim, and the reason to run
+/// BOTH is that the search rung's chain is strictly longer: it samples `K`
+/// worlds, keys a [`TieStream`], keys a candidate stream, and then applies moves
+/// INSIDE the sampled world for a whole turn. That is more surface for a clock
+/// or an iteration-order dependence to hide in, and none of it changes the fact
+/// that `choose(&PlayerView, &Rules)` is the whole input.
+///
+/// Same fresh-agent rule, same recorded red (long-lived agent, run before the
+/// fix):
+///
+/// > T8 lookahead-v1: a decision moved when only hidden state changed
+/// >   left: PlaceThreeAreas { placements: [AreaId(1), AreaId(2), AreaId(5)] }
+/// >  right: PlaceThreeAreas { placements: [AreaId(2), AreaId(4), AreaId(7)] }
+///
+/// [`TieStream`]: yokohama_core::game::lookahead::TieStream
+#[test]
+fn t8_lookahead_v1s_decision_never_moves_under_hidden_variation() {
+    let rules = Rules::standard();
+    let checked =
+        run_decision_invariance_sweep("T8 lookahead-v1", &rules, 4, |view, _legal, rules| {
+            lookahead_agent_pick(rules, HONEST_AGENT_SEED, 1, view)
+        });
+    assert!(checked >= 300, "anti-vacuity: only {checked} comparisons");
+}
+
+/// Worlds drawn from ONE view for the determinization cell. Three, not two, so
+/// a coincidental agreement between a pair does not carry the cell.
+const DETERMINIZATION_WORLDS: usize = 3;
+/// The 2P walks the cell reads its organic decision points from. FOUR games
+/// rather than one, and the reason is the positive control rather than
+/// coverage-for-its-own-sake: a Port take is a ~1-in-37 decision point, so a
+/// single 150-point walk yielded only 4 Port-take CANDIDATES in the whole sweep
+/// (and 8 differing port states, both comparisons of each) — live, but one
+/// unlucky trajectory away from silently degenerating. Four walks measured 19
+/// and 38, cost ~1.6 s in debug, and are what the floors below are set from.
+const DETERMINIZATION_WALKS: [u64; 4] = [0, 1, 2, 3];
+/// Base sampler seed; world `i` draws at `+ i`, so the worlds are independent
+/// determinizations of the SAME view.
+const DETERMINIZATION_SAMPLER_BASE: u64 = 0x0DE7_0000_0000_0001;
+/// The candidate scheme's dice, held WORLD-COMMON (Lookahead's `candidate_rng`
+/// discipline, applied here for the same reason): a per-world stream would make
+/// the candidate LISTS differ for a reason that is not determinization, and the
+/// cell would then be measuring its own harness.
+const DETERMINIZATION_DICE: u64 = 0xD1CE_0000_0000_0001;
+
+/// The order cards face-up in the port, folded. The REFILL channel's output:
+/// public in the successor view, and drawn off the DETERMINIZED deck.
+///
+/// This is the POISON the determinization cell's red step used, kept in the tree
+/// and RUN as a permanent control — the
+/// `t2_mutation_proof_a_cheating_sampler_is_caught` discipline, one rung up. A
+/// hypothetical seventeenth evaluator term that folded this into its value is
+/// exactly the future edit §4.3's K-revisit trigger is watching for, and the
+/// cell asserts that such a term WOULD be caught at every comparison where the
+/// channel actually moved rather than merely quoting a failure from authoring
+/// time.
+fn port_fingerprint(port: &PortState) -> u64 {
+    let fold = |acc: u64, slots: &[Option<yokohama_core::OrderCardId>; 6]| {
+        slots.iter().fold(acc, |a, s| {
+            a.wrapping_mul(31).wrapping_add(u64::from(s.map_or(0, |c| c.0)) + 1)
+        })
+    };
+    let a = fold(0xF0_0000_u64, &port.port_a.slots);
+    port.port_b.as_ref().map_or(a, |b| fold(a, &b.slots))
+}
+
+/// **THE FALSIFIABLE CELL — determinization invariance, and spec §4.3's
+/// K-REVISIT TRIGGER made executable** (spec §0.4(ii), ledger L11).
+///
+/// From ONE view it draws [`DETERMINIZATION_WORLDS`] independent
+/// `BeliefSampler` worlds, applies the SAME candidate in each, `observe`s the
+/// successors, and requires Greedy-v1's whole candidate SCORE VECTOR, its
+/// argmax, and the chosen move's `Explanation` to be EQUAL across worlds.
+///
+/// **THIS ONE CAN GENUINELY FAIL, and that is the entire reason it exists.**
+/// The two tripwires above compare f(x) against f(x) — identical views by
+/// construction. Here the inputs DIFFER: a Port take's refill draws off the
+/// DETERMINIZED deck, so the successor's `port_state` carries content that is a
+/// property of the sampled world and not of the view. The run found a SECOND
+/// channel of the same shape that the spec does not name: a Laboratory take
+/// refills the lab board off the determinized TECH deck (`observe.rs`'s hidden
+/// member 3, "tech_deck order — size only survives"), and at authoring the two
+/// account for the differing successor views exactly (64 = 38 port + 26 lab).
+/// The positive-control counters below assert that both are LIVE in the run —
+/// without them a green here would be indistinguishable from a green on a
+/// vacuous cell, which is precisely the defect §0.4 was rewritten to fix — and
+/// the POISON control goes one further: it RUNS the hypothetical
+/// determinized-content-reading term and asserts it would have been caught at
+/// every comparison where the channel moved.
+///
+/// **RED, RUN BEFORE THE GREEN** (the poison was `score + port_fingerprint`, one
+/// term reading determinized content — i.e. exactly the future edit this cell
+/// exists to catch):
+///
+/// > a determinization moved Greedy-v1's score for
+/// > `ExecuteAreaAction { action: Port { cards_taken: [OrderCardId(8)], second_card_payment: None } }`
+/// >   left: 13959226634306026
+/// >  right: 13959226634306007
+///
+/// **WHAT A RED HERE MEANS, FOR WHOEVER SEES IT NEXT.** It is not (necessarily)
+/// a bug. It means an evaluator term has started reading a quantity that depends
+/// on which world was determinized — and per spec §4.3 that is the signal that
+/// **K > 1 has become live**: at K = 1 such a term makes the bot's decision a
+/// function of one arbitrary draw. Route it to the ledger as the K-decision
+/// re-opening input; do not silence it by dropping the term from the comparison.
+///
+/// SCOPE, stated: the cell is about the ROOT channel (§4.3's structural half).
+/// The TURN-COMPLETION channel — a continuation applying moves inside the
+/// sampled world — is not structural and is not asserted anywhere; it is
+/// MEASURED by the divergence instrument below.
+///
+/// TWO HARNESS CHOICES that keep the cell measuring the evaluator and not
+/// itself. The candidate dice are held world-common (see
+/// [`DETERMINIZATION_DICE`]), and only the INTERSECTION of the three worlds'
+/// candidate sets is scored — so a candidate list that legitimately differs
+/// between worlds cannot masquerade as a score difference. The argmax is
+/// consequently over the COMMON list rather than over each world's full
+/// candidate set: that is deliberately not "the move Greedy-v1 would play in
+/// world w", because comparing those would conflate a differing candidate SET
+/// with a differing SCORE. How often the intersection actually bites is
+/// reported (`candidate sets differed`) rather than assumed, and the answer at
+/// authoring is **0 of 600 points**: at 2P the acting seat's legality is
+/// view-measurable and the dice are world-common, so the three worlds offered
+/// IDENTICAL candidate lists everywhere and the cell in practice compares the
+/// full list. The intersection stays as a correctness property of the harness
+/// (a 3–4P or constructed state need not be so tidy), not as something this
+/// run's green depends on.
+#[test]
+fn t8_greedy_v1s_scores_and_explanations_are_invariant_across_determinizations() {
+    let rules = Rules::standard();
+    let weights = WeightTable::V1;
+
+    let mut checked_points = 0usize;
+    let mut compared = 0usize;
+    let mut explanations_compared = 0usize;
+    let mut port_take_candidates = 0usize;
+    let mut differing_successor_views = 0usize;
+    let mut differing_port_states = 0usize;
+    let mut differing_lab_states = 0usize;
+    let mut poison_caught = 0usize;
+    let mut candidate_sets_differed = 0usize;
+
+    let points: Vec<_> =
+        DETERMINIZATION_WALKS.iter().flat_map(|s| decision_points(2, *s, 150, &rules)).collect();
+    for (_truth, view, _legal) in points {
+        let seat = view.viewer;
+        let worlds: Vec<GameState> = (0..DETERMINIZATION_WORLDS)
+            .map(|i| {
+                let mut s = BeliefSampler::from_view(
+                    &view,
+                    &rules,
+                    DETERMINIZATION_SAMPLER_BASE.wrapping_add(i as u64),
+                )
+                .expect("the sampler accepts an honest view");
+                s.sample()
+            })
+            .collect();
+
+        let per_world: Vec<Vec<Move>> = worlds
+            .iter()
+            .map(|w| {
+                let handle = DecisionHandle::new(w, &rules);
+                let Candidates { moves, .. } = candidates(
+                    &handle,
+                    DEFAULT_RETREAT_SAMPLES,
+                    &mut ChaCha8Rng::seed_from_u64(DETERMINIZATION_DICE),
+                );
+                moves
+            })
+            .collect();
+
+        if per_world[1..].iter().any(|w| *w != per_world[0]) {
+            candidate_sets_differed += 1;
+        }
+        let common: Vec<Move> = per_world[0]
+            .iter()
+            .filter(|m| per_world[1..].iter().all(|w| w.contains(m)))
+            .cloned()
+            .collect();
+        if common.is_empty() {
+            continue;
+        }
+        checked_points += 1;
+
+        let mut successors: Vec<Vec<PlayerView>> = Vec::with_capacity(worlds.len());
+        let mut vectors: Vec<Vec<i64>> = Vec::with_capacity(worlds.len());
+        for w in &worlds {
+            let mut views = Vec::with_capacity(common.len());
+            let mut scores = Vec::with_capacity(common.len());
+            for mv in &common {
+                let next = apply_move_unchecked(w, mv, &rules)
+                    .expect("a candidate common to every world applies in every world");
+                let sview = observe(&next, seat).expect("the acting seat can observe its successor");
+                scores.push(eval::score(&sview, &rules, &weights));
+                views.push(sview);
+            }
+            successors.push(views);
+            vectors.push(scores);
+        }
+
+        for (ci, mv) in common.iter().enumerate() {
+            if matches!(
+                mv,
+                Move::ExecuteAreaAction { action: AreaAction::Port { cards_taken, .. } }
+                    if !cards_taken.is_empty()
+            ) {
+                port_take_candidates += 1;
+            }
+            for w in 1..worlds.len() {
+                if successors[w][ci] != successors[0][ci] {
+                    differing_successor_views += 1;
+                }
+                if successors[w][ci].port_state != successors[0][ci].port_state {
+                    differing_port_states += 1;
+                    // THE POISON, RUN (see `port_fingerprint`): the score a
+                    // hypothetical determinized-content-reading term would
+                    // have produced must MOVE here — otherwise the equality
+                    // asserted above is being checked on a quantity nothing
+                    // could disturb.
+                    let poisoned = |v: &PlayerView| {
+                        eval::score(v, &rules, &weights)
+                            .wrapping_add(port_fingerprint(&v.port_state) as i64)
+                    };
+                    if poisoned(&successors[w][ci]) != poisoned(&successors[0][ci]) {
+                        poison_caught += 1;
+                    }
+                }
+                if successors[w][ci].lab_state != successors[0][ci].lab_state {
+                    differing_lab_states += 1;
+                }
+                assert_eq!(
+                    vectors[w][ci], vectors[0][ci],
+                    "a determinization moved Greedy-v1's score for {mv:?}"
+                );
+                compared += 1;
+            }
+        }
+
+        // The ARGMAX and the chosen move's EXPLANATION, not just the vector:
+        // equal score vectors already imply an equal argmax, so this is a
+        // cross-check on the comparison itself — and the explanation is a
+        // SEPARATE path (§0.3(a)), so it can move where `score` does not.
+        let argmax = |v: &[i64]| {
+            let mut best = 0usize;
+            for (i, s) in v.iter().enumerate() {
+                if *s > v[best] {
+                    best = i;
+                }
+            }
+            best
+        };
+        let base_arg = argmax(&vectors[0]);
+        let base_explanation: Explanation =
+            eval::explain(&successors[0][base_arg], &rules, &weights);
+        for w in 1..worlds.len() {
+            let arg = argmax(&vectors[w]);
+            assert_eq!(
+                arg, base_arg,
+                "a determinization moved Greedy-v1's argmax ({:?} vs {:?})",
+                common[arg], common[base_arg]
+            );
+            assert_eq!(
+                eval::explain(&successors[w][arg], &rules, &weights),
+                base_explanation,
+                "a determinization moved the chosen move's explanation ({:?})",
+                common[arg]
+            );
+            explanations_compared += 1;
+        }
+    }
+
+    eprintln!(
+        "determinization invariance: {checked_points} points, {compared} score comparisons, \
+         {explanations_compared} argmax+explanation comparisons, {port_take_candidates} port-take \
+         candidates, candidate sets differed at {candidate_sets_differed} points; POSITIVE \
+         CONTROLS: {differing_successor_views} successor views differed ({differing_port_states} \
+         by port refill, {differing_lab_states} by lab refill), poison caught {poison_caught}"
+    );
+
+    // Coverage floors, MEASURED FIRST AND THEN SET (§0.2's authoring rule; the
+    // run above prints every figure). Measured at authoring on the four walks:
+    // 600 points, 49,604 score comparisons, 1,200 argmax+explanation
+    // comparisons. Set at ~half, rounded down.
+    assert!(checked_points >= 400, "only {checked_points} decision points");
+    assert!(compared >= 20_000, "only {compared} score comparisons");
+    assert!(explanations_compared >= 800, "only {explanations_compared} explanation comparisons");
+
+    // THE NON-VACUITY ASSERTIONS — what makes this cell §0.4(ii) and not
+    // another §0.4(i). Written as `> 0` rather than at the measured values
+    // (19 / 64 / 38 / 26) deliberately: the claim is "the channel is LIVE in
+    // this run", and a numeric floor here would be a pin on trajectory
+    // arithmetic that says nothing more.
+    assert!(
+        port_take_candidates > 0,
+        "no Port-take candidate was scored, so the refill channel this cell exists to watch was \
+         never exercised"
+    );
+    assert!(
+        differing_successor_views > 0,
+        "every world produced an IDENTICAL successor view, so this cell degenerated into f(x) vs \
+         f(x) — the same vacuity spec §0.4 rejected for the sweep cells"
+    );
+    assert!(
+        differing_port_states > 0,
+        "no successor's port_state differed across worlds: the determinized ORDER-deck refill \
+         channel was not live in this run, so the equality above proves nothing about it"
+    );
+    assert!(
+        differing_lab_states > 0,
+        "no successor's lab_state differed across worlds: the determinized TECH-deck refill \
+         channel was not live in this run"
+    );
+    // THE DETECTOR DETECTS, permanently rather than by a quoted authoring run:
+    // every comparison where the refill channel moved is one a
+    // determinized-content-reading term would have been caught at. Equality
+    // rather than `> 0` because both sides are deterministic here (fixed walks,
+    // fixed sampler seeds) and a shortfall would mean the fingerprint collided
+    // — worth hearing about.
+    assert_eq!(
+        poison_caught, differing_port_states,
+        "the poisoned score failed to move at {} of {differing_port_states} comparisons where the \
+         port refill genuinely differed — the control cannot vouch for the assertion above",
+        differing_port_states - poison_caught
+    );
+}
+
+/// The walks the divergence instrument reads its organic decision points from,
+/// and how many points it takes from each. Two 2P games rather than one so the
+/// rate is not a statement about a single trajectory.
+const DIVERGENCE_WALKS: [u64; 2] = [0, 1];
+/// Points per walk. `2 × 100 = 200`, the floor spec §0.4(iii)'s instrument is
+/// sized at.
+const DIVERGENCE_POINTS_PER_WALK: usize = 100;
+/// `K` for the measured arm. Two would do; three costs one more world search
+/// per point and makes a "worlds 1 and 2 agreed by luck" reading unavailable.
+const DIVERGENCE_WORLDS: u8 = 3;
+/// How many points the stream-perturbation sensitivity control runs on. A
+/// subset, because it costs one more whole search per point and its claim
+/// ("the comparison CAN fail") needs a handful of witnesses, not 200.
+const DIVERGENCE_SENSITIVITY_POINTS: usize = 40;
+
+/// **THE LOOKAHEAD DIVERGENCE INSTRUMENT — spec §0.4(iii) / §4.3, RECORDED.**
+///
+/// WHAT IT MEASURES. At each organic decision point, two FRESH `LookaheadAgent`s
+/// with the SAME agent seed and the SAME knobs decide: one at `K = 1`, one at
+/// `K = DIVERGENCE_WORLDS`. Divergence = the two chose different moves.
+///
+/// WHY THAT IS "aggregate vs world 0" and not two unrelated runs. A fresh agent
+/// spends exactly three play-stream words per decision, drawn BEFORE the world
+/// loop (`game/lookahead.rs:1498-1518`): the sampler seed, the [`TieStream`] key,
+/// and the candidate-stream seed. Both agents therefore draw the same three
+/// words, sample the same FIRST world, and search it with the same tie draws and
+/// the same candidate dice — so the `K = 1` answer IS world 0's argmax inside
+/// the `K = 3` run, and the only thing that can move the `K = 3` answer is the
+/// aggregation over worlds 1 and 2. That keying is T5's fix wave
+/// (`game/lookahead.rs:44-60`, `:1470-1490`): lens 2 measured a NAIVE instrument
+/// reading 7.66% false divergence at `K = 1` from tie draws alone, and the
+/// candidate dice were an open second channel until the same wave closed it.
+/// Residual divergence here is determinization-driven and nothing else.
+///
+/// SCOPE OF THE FIGURE, stated so it is not over-quoted. It is measured at
+/// `B = 1` / `M = 2` (see [`TRIPWIRE_BEAM`]) — reduced knobs, cost-driven, and a
+/// real narrowing: at `B = 1` the continuation is a single greedy line, so there
+/// are fewer states per root candidate for a determinized refill to reach than
+/// at the shipped `B = 4`. The instrument PROPERTY (world-common dice; a
+/// divergence that means determinization) is what the knobs do not touch. The
+/// figure is a statement about this cell, at these knobs, on these two walks.
+///
+/// WHAT IS ASSERTED, and why the zero is a legitimate pin here rather than an
+/// assumption. §4.3 names the turn-completion channel as NOT structural: an S1
+/// continuation applies moves inside the sampled world, so a mid-turn Port take
+/// can put determinized refills into the hand-off state and per-world hand-offs
+/// CAN genuinely differ. Spec §0.4(iii) therefore says record, do not assert
+/// zero — and lens 2's MUST-4 is exactly that instruction. THE MEASUREMENT WAS
+/// TAKEN FIRST AND THE ASSERTION WRITTEN AFTER (measured-then-set):
+///
+/// > 200 points (mean 37.77 root candidates over ALL points), 94 contested,
+/// > **0 diverged = 0.0000**; ply_cap_hits 0; the K worlds drew a different
+/// > deck at 200 points; a perturbed stream moved the pick at 9 of 40 probed
+/// > points
+///
+/// The mechanism is visible once measured: no v1 feature reads a
+/// refill-dependent quantity, so two hand-off states that differ ONLY in
+/// refilled port/lab content score IDENTICALLY, and a determinization has to
+/// change something the sixteen features can see before it can move an argmax.
+/// The zero is therefore pinned as a REGRESSION NET on that reading — NOT as a
+/// structural claim — and the assert's message says what to do if it ever
+/// fires: **do not relax it.** A nonzero rate is §4.3's K-decision re-opening
+/// input, with the divergence RATE (not a win rate) as the acceptance
+/// statistic; investigate the turn-completion channel, record the mechanism,
+/// and route it to the ledger.
+///
+/// TWO CONTROLS, because a zero is the easiest number in the world to produce
+/// vacuously and this file's whole doctrine is that a detector must be shown to
+/// detect. (1) the `K` worlds GENUINELY DIFFER — reproduced from the agent's own
+/// first stream word, 200/200 points drew a different deck; without this a zero
+/// would be arithmetic. (2) the comparison CAN FIRE — a `K = 1` agent on a
+/// perturbed stream picks differently at 9 of 40 probed points, so
+/// `aggregate != world0` is not comparing two quantities that are equal by
+/// construction. The 51.9%-forced figure `game/lookahead.rs`'s module doc
+/// records is corroborated in passing: 106 of the 200 points offered ≤ 1 root
+/// candidate, which is why the contested count is the denominator worth reading.
+///
+/// [`TieStream`]: yokohama_core::game::lookahead::TieStream
+#[test]
+fn t8_lookahead_v1s_cross_world_divergence_is_measured_and_recorded() {
+    let rules = Rules::standard();
+
+    let mut points = 0usize;
+    let mut contested = 0usize;
+    let mut diverged = 0usize;
+    let mut diverged_contested = 0usize;
+    let mut ply_cap_hits = 0u64;
+    let mut root_candidates_total = 0u64;
+    let mut worlds_differed = 0usize;
+    let mut sensitivity_probed = 0usize;
+    let mut sensitivity_moved = 0usize;
+
+    for walk in DIVERGENCE_WALKS {
+        for (_truth, view, _legal) in decision_points(2, walk, DIVERGENCE_POINTS_PER_WALK, &rules)
+        {
+            let mut one = LookaheadAgent::with_knobs(
+                &rules,
+                SearchScheme::TurnBoundary { beam: TRIPWIRE_BEAM },
+                1,
+                TRIPWIRE_RETREAT_SAMPLES,
+                WeightTable::V1,
+                HONEST_AGENT_SEED,
+            );
+            let world0 = one.choose(&view, &rules).expect("Lookahead-v1 resolves a move").mv;
+            let stats = *one.last_stats().expect("a decision records its stats");
+
+            let mut many = LookaheadAgent::with_knobs(
+                &rules,
+                SearchScheme::TurnBoundary { beam: TRIPWIRE_BEAM },
+                DIVERGENCE_WORLDS,
+                TRIPWIRE_RETREAT_SAMPLES,
+                WeightTable::V1,
+                HONEST_AGENT_SEED,
+            );
+            let aggregate = many.choose(&view, &rules).expect("Lookahead-v1 resolves a move").mv;
+
+            // POSITIVE CONTROL, and the instrument is vacuous without it: if
+            // the `K` worlds were the SAME world, a zero divergence rate would
+            // be arithmetic rather than evidence. The agent's own worlds are
+            // REPRODUCED here, not guessed — a fresh agent's FIRST play-stream
+            // draw is its sampler seed (`game/lookahead.rs:1498`), so the same
+            // `ChaCha8Rng` at the same agent seed hands back the same `u64`,
+            // and successive `sample()` calls are the same successive worlds
+            // the K loop searched.
+            let sampler_seed: u64 = ChaCha8Rng::seed_from_u64(HONEST_AGENT_SEED).gen();
+            let mut sampler = BeliefSampler::from_view(&view, &rules, sampler_seed)
+                .expect("the sampler accepts an honest view");
+            let drawn: Vec<GameState> =
+                (0..DIVERGENCE_WORLDS).map(|_| sampler.sample()).collect();
+            if drawn[1..].iter().any(|w| w.order_deck != drawn[0].order_deck) {
+                worlds_differed += 1;
+            }
+
+            // SECOND CONTROL — the comparison operator is not trivially true.
+            // Run on the first [`DIVERGENCE_SENSITIVITY_POINTS`] points only
+            // (it costs a whole extra search each): a `K = 1` agent on a
+            // PERTURBED stream must sometimes pick a different move, or the
+            // `aggregate != world0` test could be reading two things that
+            // cannot differ whatever the worlds do. This is the file's canary
+            // discipline — the detector must be shown to detect.
+            if points < DIVERGENCE_SENSITIVITY_POINTS {
+                let mut other = LookaheadAgent::with_knobs(
+                    &rules,
+                    SearchScheme::TurnBoundary { beam: TRIPWIRE_BEAM },
+                    1,
+                    TRIPWIRE_RETREAT_SAMPLES,
+                    WeightTable::V1,
+                    HONEST_AGENT_SEED ^ 0xA5A5_A5A5_A5A5_A5A5,
+                );
+                let pick = other.choose(&view, &rules).expect("Lookahead-v1 resolves a move").mv;
+                sensitivity_probed += 1;
+                if pick != world0 {
+                    sensitivity_moved += 1;
+                }
+            }
+
+            points += 1;
+            root_candidates_total += stats.root_candidates;
+            ply_cap_hits += stats.ply_cap_hits
+                + many.last_stats().map_or(0, |s| s.ply_cap_hits);
+            let is_contested = stats.root_candidates >= 2;
+            if is_contested {
+                contested += 1;
+            }
+            if aggregate != world0 {
+                diverged += 1;
+                if is_contested {
+                    diverged_contested += 1;
+                }
+            }
+        }
+    }
+
+    let rate = diverged as f64 / points as f64;
+    let contested_rate = diverged_contested as f64 / contested.max(1) as f64;
+    eprintln!(
+        "lookahead divergence (RECORDED, spec §0.4(iii)): K={DIVERGENCE_WORLDS} vs K=1, \
+         scheme=TurnBoundary{{beam:{TRIPWIRE_BEAM}}}, M={TRIPWIRE_RETREAT_SAMPLES}, \
+         weights=V1, agent_seed={HONEST_AGENT_SEED:#018x}, walks={DIVERGENCE_WALKS:?} \
+         (2P, {DIVERGENCE_POINTS_PER_WALK} points each); {points} points (mean {:.2} root \
+         candidates over ALL points), {contested} contested, {diverged} diverged = {:.4} \
+         ({diverged_contested} of the \
+         contested = {contested_rate:.4}); ply_cap_hits {ply_cap_hits}; POSITIVE CONTROL: the K \
+         worlds drew a different deck at {worlds_differed} points; SENSITIVITY: a perturbed \
+         stream moved the pick at {sensitivity_moved} of {sensitivity_probed} probed points",
+        root_candidates_total as f64 / points as f64,
+        rate,
+    );
+
+    // COMPLETENESS is asserted unconditionally: a rate over too few points is
+    // not a measurement.
+    assert!(points >= 200, "instrument incompleteness: only {points} decision points");
+    assert!(
+        contested >= 50,
+        "only {contested} points offered >= 2 root candidates, so divergence was structurally \
+         impossible at the rest and the rate is about the wrong denominator"
+    );
+    assert!(
+        sensitivity_moved > 0,
+        "a perturbed stream never moved the pick over {sensitivity_probed} points, so the \
+         `aggregate != world0` comparison has not been shown capable of firing at all"
+    );
+    assert!(
+        worlds_differed >= 100,
+        "the K worlds drew the same deck at all but {worlds_differed} points — a zero divergence \
+         rate over identical worlds is arithmetic, not evidence"
+    );
+    assert_eq!(
+        ply_cap_hits, 0,
+        "a continuation hit MAX_TURN_PLIES, so some hand-off was read MID-TURN and the \
+         divergence figure is about a different quantity than it claims"
+    );
+    assert_eq!(
+        diverged, 0,
+        "cross-world divergence is NO LONGER ZERO ({diverged}/{points}). DO NOT relax this \
+         assertion. TWO causes, and they are not the same finding — check the SECOND first \
+         because it is a harness regression rather than a result: (a) the world-common keying \
+         broke (a tie draw or a candidate draw stopped being common across the K worlds, T5's \
+         fix wave undone), in which case this is measuring 7.66%-style FALSE divergence and \
+         `the_candidate_dice_are_world_common_within_a_decision` and \
+         `a_tie_draw_is_one_keyed_word_and_is_world_common` should be red too; (b) with those \
+         green, this is spec §4.3's K-decision re-opening input — the turn-completion channel \
+         has started moving a root argmax, the divergence RATE is the acceptance statistic, and \
+         the mechanism belongs in the ledger before K stays at 1"
+    );
 }
