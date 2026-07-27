@@ -12,7 +12,7 @@ A Rust engine, live-game CLI tracker, and verification stack for the board game 
 2) a computer player → 3) computer vision / AR assist (deferred; the original 2025 AR-first
 vision lives in `docs/plans/2025-12-07-yokohama-assistant-design.md`).
 
-## Status (2026-07-25)
+## Status (2026-07-27)
 
 The engine plays complete, rules-correct games at 2–4 players and has been verified
 **differentially**: an independently-authored rules oracle — written from the rulebook and
@@ -25,20 +25,40 @@ payloads, mutation-proved the invariant suite, and closed all four rules ambigui
 surfaced with owner rulings. Full report:
 [`docs/plans/2026-07-20-phase-2.9-final-report.md`](docs/plans/2026-07-20-phase-2.9-final-report.md).
 
-**Next:** live-track a physical game start to finish (the Phase-2 gate), then Phase 3 — the
-computer player, with the differential harness as its standing regression net. Phase 3 is now
-mapped: [`docs/plans/2026-07-25-phase3-map.md`](docs/plans/2026-07-25-phase3-map.md)
-(accepted 2026-07-25) is its governing document — sub-phases, gates, and execution model.
+**The computer player ladder (Phase 3) is four sub-phases in**, governed by the accepted map
+[`docs/plans/2026-07-25-phase3-map.md`](docs/plans/2026-07-25-phase3-map.md) and all merged with
+`SEMANTICS_REV` unmoved at 5:
 
-PR #5 adds the last pre-gate setup corrections and hardening. Its CLI is ready for tester use;
-start with the linked HTML guide and report any table/CLI mismatch.
+- **3.0 — honest observation** (PRs #6–#7): a seat-relative `PlayerView` masking the five-member
+  hidden set, plus a conservation-consistent belief sampler — a bot takes a view, never a raw
+  `GameState`.
+- **3.1a/b — the bot-facing action interface** (PRs #8–#9): factored lazy move families (the
+  442,368-move retreat worst case served one candidate at a time in ~5 allocations), an exact
+  allocation-free route enumerator, and cheap single-candidate legality.
+- **3.2 — the arena** (PR #12): the permanent strength court — paired seat-swapped cells, honest
+  bootstrap intervals with a typed zero-width refusal, the family-weighted rollout policy (also
+  the fuzzer's), and the self-play training corpus with full per-seat provenance.
+- **3.3 — the first purposeful bot** (PR #13, merged 2026-07-27): **evaluator v1** (sixteen
+  view-measurable features, transparent stage-interpolated weights, exact-sum explanations),
+  the **Greedy-v1** and **Lookahead-v1** rungs (turn-boundary depth semantics, settled by a
+  pre-registered experiment), scenario suite v1, and CLI `suggest my move`. **The map's gate was
+  declared met on both binding arms**: Lookahead-v1 swept all 200 paired units against the
+  family-weighted rung on the committed regression master AND on a freshly drawn OS-entropy
+  master (rule-of-three bounds 0.985, VP margins +67/+68). Close report:
+  [`docs/plans/2026-07-27-phase3.3-close-report.md`](docs/plans/2026-07-27-phase3.3-close-report.md).
+
+**Next:** the Phase-2 live gate game (track a physical game start to finish — awaiting
+scheduling; every pre-rev-5 save is unresumable, start fresh) and the Phase-3.4 discriminating
+experiment (shallow-search-scaled vs MCTS at matched budgets — kickoff prompt:
+[`docs/plans/2026-07-27-phase3.4-kickoff-prompt.md`](docs/plans/2026-07-27-phase3.4-kickoff-prompt.md)).
+The CLI is tester-ready; start with the linked HTML guide and report any table/CLI mismatch.
 
 ## Workspace crates
 
 | Crate | What it is |
 |---|---|
-| `yokohama-core` | The engine: serde-serializable `GameState` (history-free, cheap to clone for search), pure `get_legal_moves` / checked `apply_move`, seeded setup, `GameRecord` save/replay stamped with `rules_hash`, `semantics_rev`, and a terminal-state digest verified by `replay_strict` |
-| `yokohama-cli` | The game driver: setup wizard → REPL; simulated games and live-table tracking (reconciliation, desync tripwire), save/load/undo, TTY-colored board, and **human-vs-bot play** in sim mode (any seat mix with ≥1 human; the bot runs the same honest view → belief-sampler → policy path the arena does) |
+| `yokohama-core` | The engine: serde-serializable `GameState` (history-free, cheap to clone for search), pure `get_legal_moves` / checked `apply_move`, seeded setup, `GameRecord` save/replay stamped with `rules_hash`, `semantics_rev`, and a terminal-state digest verified by `replay_strict` — plus the Phase-3 player stack: the honest observation boundary (`PlayerView`/`observe`/`BeliefSampler`), the factored action families (`DecisionHandle`), the arena (contestants, paired cells, corpus emission), evaluator v1 (`game/eval.rs`), and the Greedy/Lookahead search rungs |
+| `yokohama-cli` | The game driver: setup wizard → REPL; simulated games and live-table tracking (reconciliation, desync tripwire), save/load/undo, TTY-colored board, and **human-vs-bot play** in sim mode (any seat mix with ≥1 human; the bot runs the same honest view → belief-sampler → policy path the arena does) plus **`suggest`** — the evaluator bot analyzes YOUR seat's view and explains its recommended move term by term, deterministic on repeat presses even across save/reload |
 | `yokohama-oracle` | The independent referee: legal-move enumeration, final scoring + tie-break, and a prune-free route reference, authored from the rules sources under an audited independence rule (types-only dependency on the engine) |
 | `yokohama-difftest` | The harness comparing engine vs oracle: per-decision-point sweeps under two policies, terminal scoring comparison, three-way route-pruning check, self-contained divergence artifacts + `repro` tool |
 | `gen-data` | YAML → Rust generator for the verified card/site data (never hand-edit `game/data.rs`) |
@@ -77,7 +97,8 @@ cargo run  -p yokohama-cli -- save.json  # resume a save (autosaves every move)
 Fastest playable game: answer the wizard `sim`, `2`, `red`, `blue`, `0`, Enter twice, `0`, `0`,
 `confirm`. At the prompt: type an option number, or use the direct grammars — placement
 `a 3 7 9` / `b 5`, assistant moves `m 4 7`, retreats `r 3:2 5:1`. Views: `board`, `sites`,
-`goals`, `tracks`, `labs`, `log`, `help`; plus `undo`, `save`, `q`. Full tester guide:
+`goals`, `tracks`, `labs`, `log`, `help`; plus `suggest` (the bot's explained recommendation for
+your seat), `undo`, `save`, `q`. Full tester guide:
 **[HTML](docs/cli-guide.html)** or [Markdown](docs/cli-guide.md).
 
 **Gates.** Per-edit (debug): the four crate suites + `cargo clippy --workspace --all-targets
