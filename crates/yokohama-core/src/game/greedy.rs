@@ -85,17 +85,17 @@
 //! | table | decisions | µs/decision | candidates/decision | µs/candidate |
 //! |---|---|---|---|---|
 //! | `ZERO` (release) | 2,013 | 58.5 – 69.8 | 35.08 | 1.67 – 1.99 |
-//! | `PROVISIONAL_V1` (release) | 12,000 | 47.4 – 51.4 | 47.25 | 1.00 – 1.09 |
+//! | the PRE-SPLIT table (release) | 12,000 | 47.4 – 51.4 | 47.25 | 1.00 – 1.09 |
 //! | `ZERO` (debug) | 2,013 | 851.3 | 35.08 | 24.27 |
-//! | `PROVISIONAL_V1` (debug) | 12,000 | 737.4 | 47.25 | 15.61 |
+//! | the PRE-SPLIT table (debug) | 12,000 | 737.4 | 47.25 | 15.61 |
 //!
-//! **THE TABLE ABOVE IS SUPERSEDED IN ITS `PROVISIONAL_V1` ROWS and is kept for
+//! **THE TABLE ABOVE IS SUPERSEDED IN ITS PRE-SPLIT ROWS and is kept for
 //! the ZERO rows and the per-candidate cost.** Those rows were taken under the
 //! PRE-SPLIT weight table, which was degenerate: it placed nothing, so every
 //! placement family stayed maximal and the candidate mean was inflated by a bug
 //! rather than by the scheme (T3 review S2 / spec L14). Post-split re-measure,
 //! ONE figure, labelled: 2P Greedy-vs-Greedy self-play under the shipped
-//! `PROVISIONAL_V1` at master `0xA3E1_2026_0726_0009` runs **27.91
+//! `PRE_FREEZE_2026_07_27` at master `0xA3E1_2026_0726_0009` runs **27.91
 //! candidates/decision** (7,647 over 274 decisions), printed by
 //! `the_shipped_table_plays_a_game_that_places_assistants_and_ends`. The mean is
 //! deterministic in `(master, table)`, so it needs no timing conditions — and it
@@ -114,11 +114,27 @@
 //! families large that way — so **a representative candidate mean still has to
 //! wait for T4's frozen table**. Debug runs 12–14×.
 //!
-//! # What is provisional
+//! **T4 SUPPLIED THAT REPRESENTATIVE MEAN** (`examples/eval_probe`, release,
+//! per-move invariants ON, diagnostic master `0xE7A1_2026_0727_0001`): 2P
+//! Greedy-vs-Greedy under the FROZEN [`WeightTable::V1`] runs **27.50
+//! candidates/decision** over 1,051,752 decisions in 2,000 games — the
+//! single-game 27.91 above was representative after all. At 4P the same
+//! measurement over 50 games reads **64.78** candidates/decision, and the
+//! placement cap BINDS on 12,439 of 135,334 decisions (9.19%): spec §3.3's "at
+//! 4P the fallback is the live arm" was previously a fixture claim (3,231
+//! realized on the `action_cost` state) and is now an organic one. At 2P the cap
+//! bound 0 of 1,051,752 decisions, so R2's 0-of-48,458 holds at 22× the N. All
+//! of these are observations under a named harness, never ceilings.
 //!
-//! [`WeightTable::PROVISIONAL_V1`] until T4's freeze — and every weight in
-//! [`score_starting_order`]'s own vocabulary is hand-set and UNMEASURED, spec
-//! §8's own terms, revisited at 3.5.
+//! # What is frozen, and what is still hand-set
+//!
+//! [`WeightTable::V1`] is FROZEN as of T4 (2026-07-27) — its signs re-measured
+//! and none contradicted, its magnitudes still hand-set;
+//! `docs/plans/2026-07-27-phase3.3-weight-freeze.md` is the record, and
+//! `nonzero_recovery_is_sometimes_the_argmax_under_the_frozen_table` is the
+//! per-edit falsifier the freeze's recovery measurement set the floor for. Every
+//! weight in [`score_starting_order`]'s own vocabulary remains hand-set and
+//! UNMEASURED — spec §8's own terms, revisited at 3.5.
 
 use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -586,11 +602,11 @@ pub struct GreedyAgent {
 }
 
 impl GreedyAgent {
-    /// Greedy-v1 at the shipped knobs: [`WeightTable::PROVISIONAL_V1`] and
+    /// Greedy-v1 at the shipped knobs: [`WeightTable::V1`] and
     /// `M` = [`DEFAULT_RETREAT_SAMPLES`]. `agent_seed` is the PLAY stream — key
     /// it with [`agent_stream_seed`](crate::game::arena::agent_stream_seed).
     pub fn new(rules: &Rules, agent_seed: u64) -> Self {
-        Self::with_weights(rules, WeightTable::PROVISIONAL_V1, DEFAULT_RETREAT_SAMPLES, agent_seed)
+        Self::with_weights(rules, WeightTable::V1, DEFAULT_RETREAT_SAMPLES, agent_seed)
     }
 
     /// Greedy-v1 with an explicit weight table and `M`. The weight parameter is
@@ -760,12 +776,13 @@ impl ArenaAgent for GreedyAgent {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::game::agent::HONEST_MAX_TURNS;
     use crate::game::arena::{agent_stream_seed, run_arena_game_capped, ArenaGameStats, Slot};
     use crate::game::move_legality::{is_move_legal, PathMode};
     use crate::game::record::RecordedEvent;
     use crate::game::search_actions::tests::{handle_fee_gated_placement_state, handle_movement_state};
     use crate::game::search_actions::{placement_upper_len, retreat_len};
-    use crate::game::seeds::WorldSeed;
+    use crate::game::seeds::{SeedSchedule, WorldSeed};
     use crate::types::{
         AchievementCard, AchievementType, AreaConfig, AreaType, BoardLayout, ChurchTrack,
         CustomsTrack, GameConfig, LabState, MercenarySupply, PlayerColor, PlayerState, PortState,
@@ -776,6 +793,24 @@ mod tests {
     /// BY NAME (spec §3's gate-cell exemption): a per-edit pin needs a fixed
     /// master, and these are pins rather than bot-facing evaluation runs.
     const MASTER: u64 = 0xA3E1_2026_0726_0009;
+
+    /// T4's freeze-corpus master, so the §2.5 falsifier's sample is a PREFIX of
+    /// the published corpus rather than an unrelated draw
+    /// (`docs/plans/2026-07-27-phase3.3-weight-freeze.md`; the probe's own
+    /// default, `examples/eval_probe`'s `DEFAULT_MASTER`).
+    const FREEZE_MASTER: u64 = 0xE7A1_2026_0727_0001;
+
+    /// How many games of that corpus the falsifier replays. Eight is the
+    /// smallest prefix carrying more than one nonzero-recovery event at a
+    /// comfortable margin over the floor (3 events, 2.1×) — see the test's doc
+    /// for the sizing and its debug cost.
+    const RECOVERY_SAMPLE_GAMES: u32 = 8;
+
+    /// **MEASURED, THEN HALVED.** Half of T4's frozen-table 2P corpus share
+    /// (739 / 1,051,752 = 0.000703), rounded DOWN to one significant figure —
+    /// `policy_diversity`'s coverage-floor pattern exactly. Never invented, and
+    /// never raised without a fresh corpus measurement to raise it from.
+    const RECOVERY_SHARE_FLOOR_2P: f64 = 0.0003;
 
     // -- fixtures -------------------------------------------------------------
 
@@ -1354,7 +1389,7 @@ mod tests {
     /// is only observable where ties exist — and under a table with a strict
     /// argmax it is not: two agent seeds measurably agree move-for-move over the
     /// first 12 decisions of both worlds under
-    /// [`WeightTable::PROVISIONAL_V1`] (that run is the same-seed half's
+    /// [`WeightTable::V1`] (that run is the same-seed half's
     /// fixture, and its agreement across DIFFERENT seeds was observed while
     /// writing this test — the brief's "constructed tie" alternative, taken).
     /// A constant evaluator ties everything, so every decision is a draw and the
@@ -1375,8 +1410,8 @@ mod tests {
         };
 
         // Same seed, twice, under the shipped table: bit-identical.
-        let a = play(WeightTable::PROVISIONAL_V1, 0xA1);
-        let b = play(WeightTable::PROVISIONAL_V1, 0xA1);
+        let a = play(WeightTable::V1, 0xA1);
+        let b = play(WeightTable::V1, 0xA1);
         assert_eq!(a.len(), 24, "the probe must reach twelve decisions in each world");
         assert_eq!(a, b, "the same agent seed must reproduce move for move");
 
@@ -1427,7 +1462,7 @@ mod tests {
     // -- the one-ply placement/recovery calculus (the T3 finding, discharged) --
 
     /// **THE T3 DEGENERACY, DISCHARGED.** Both a placement and a recovery pay at
-    /// one ply under [`WeightTable::PROVISIONAL_V1`] — which a linear in-hand
+    /// one ply under [`WeightTable::V1`] — which a linear in-hand
     /// term made impossible, and which `eval`'s piecewise hand split fixed.
     ///
     /// # The finding this replaces (kept as history, spec ledger L14)
@@ -1491,7 +1526,7 @@ mod tests {
             v
         };
         let at = |in_hand: u8, on_board: u8| -> i64 {
-            eval::score(&doctored(in_hand, on_board), &rules, &WeightTable::PROVISIONAL_V1)
+            eval::score(&doctored(in_hand, on_board), &rules, &WeightTable::V1)
         };
 
         // Anti-vacuity: the doctoring must actually move the score, or the four
@@ -1539,7 +1574,7 @@ mod tests {
             eval::score(
                 &successor_view(&world, mv, seat, &rules).expect("succ"),
                 &rules,
-                &WeightTable::PROVISIONAL_V1,
+                &WeightTable::V1,
             )
         };
         let best_real = moves
@@ -1556,7 +1591,7 @@ mod tests {
     }
 
     /// The DRIVEN half of the T3 discharge: a 2P Greedy-vs-Greedy game under the
-    /// shipped [`WeightTable::PROVISIONAL_V1`] completes inside the cap and puts
+    /// shipped [`WeightTable::V1`] completes inside the cap and puts
     /// assistants on the board.
     ///
     /// **This test's whole content is that its predecessor's observation is no
@@ -1568,8 +1603,8 @@ mod tests {
     /// re-broke the ordering would land back on it. Measured after the split, at
     /// the same master and cap: **turns 42 · moves 274 · assistants placed 58 ·
     /// 27.91 candidates/decision**. Only `placed > 0` and `turns < CAP` are
-    /// asserted; the rest is printed, because the figures are properties of a
-    /// provisional table T4 will replace.
+    /// asserted; the rest is printed, because the figures are properties of one
+    /// master and one game rather than of the rung.
     ///
     /// Distinct from the `ZERO` degeneracy pin, which it deliberately does not
     /// replace: that one holds the TIE-BREAK (a constant evaluator ties
@@ -1578,12 +1613,15 @@ mod tests {
     #[test]
     fn the_shipped_table_plays_a_game_that_places_assistants_and_ends() {
         const CAP: u32 = 1_500;
-        let (stats, tallies) = greedy_selfplay_2p(WeightTable::PROVISIONAL_V1, MASTER, CAP)
+        let (stats, tallies) = greedy_selfplay_2p(WeightTable::V1, MASTER, CAP)
             .expect("the shipped table must play a game that ENDS, not one that caps out");
 
         let placed = assistants_placed(&stats);
         // RECORDED, never asserted beyond "> 0": the exact figures are a
-        // property of this master and this provisional table, and T4 re-prices.
+        // property of this master and this one game. T4 re-measured the same
+        // shape over 2,000 games and 1,051,752 applied moves and read 27.50
+        // candidates/decision, so the single-game 27.91 below is representative
+        // rather than lucky — but it is still one game.
         let scored: u64 = tallies.iter().map(|t| t.candidates_scored()).sum();
         let decisions: u64 = tallies.iter().map(|t| t.explained()).sum();
         println!(
@@ -1609,7 +1647,107 @@ mod tests {
         );
     }
 
-    /// Play a fresh 2P game under `PROVISIONAL_V1` until the first genuine
+    // -- the §2.5 recovery falsifier (measured-then-set at T4) ---------------
+
+    /// **SPEC §2.5's FALSIFIER, per-edit.** Over a seeded organic 2P sample
+    /// under the FROZEN table, Greedy-v1 must sometimes pick a retreat that
+    /// actually recovers something.
+    ///
+    /// # What it is defending
+    ///
+    /// Research notes §4.3 recorded the convergent eval-v0 defect from the
+    /// behaviour side: under `on_board(18)` vs `in_hand(8)` a nonzero recovery
+    /// is a strict −10 per assistant, so it was argmax **0 of 48,458** movement
+    /// picks — the `RetreatAverse` pathology `policy_diversity`'s own gate
+    /// exists to catch, arriving from the evaluator instead of from the
+    /// sampler. L6 quarantines that as EVAL-V0-CONDITIONAL, and this test is
+    /// what keeps it from hardening back into v1: a table that re-broke
+    /// `w_core > w_on_board` would send the share straight back to zero, and
+    /// the retreat family's `M` knob and both its anchors would be paying for
+    /// candidates that can never win.
+    ///
+    /// # The floor is MEASURED, then halved (the house pattern)
+    ///
+    /// T4's frozen-table corpus — 2,000 games, 1,051,752 applied moves,
+    /// `cargo run --release -p yokohama-core --example eval_probe -- run 2 2000
+    /// --master 0xE7A1202607270001` — read **739 nonzero-recovery picks, share
+    /// 0.000703**. [`RECOVERY_SHARE_FLOOR_2P`] is half of that, rounded down to
+    /// one significant figure, exactly as `policy_diversity`'s coverage floors
+    /// are set. The sample here is the FIRST EIGHT GAMES OF THAT SAME CORPUS
+    /// (same master, same schedule, same agent keying; only the per-move
+    /// invariant check is off, which does not touch play), so its share is a
+    /// prefix of the published figure rather than a second measurement:
+    /// **3 picks in 4,703 applied moves, share 0.000638 — 2.1× the floor.**
+    ///
+    /// Three events is a thin sample and this doc says so rather than dressing
+    /// it up. The CORPUS is the measurement; this is the per-edit tripwire that
+    /// the behaviour still exists, sized by what a debug build can afford
+    /// (~3 s). A red here means "re-run the probe", not "the number moved".
+    ///
+    /// # SCOPED TO 2P, deliberately
+    ///
+    /// The share is player-count-dependent and 4P sits BELOW this floor: T4
+    /// measured 35 picks in 135,334 applied moves at 4P, share 0.000259. Widening
+    /// this test to 4P without re-measuring its own floor would fail for a reason
+    /// that is not a defect — the same "this is a 2P statement ONLY" discipline
+    /// `PLACEMENT_CANDIDATE_CAP`'s doc carries.
+    ///
+    /// # MUTATION-PROVEN (reverted by inverse edit, never `git checkout` — L7)
+    ///
+    /// Re-pricing `WeightTable::V1`'s `assistants_in_hand_core` from `(30, 20)`
+    /// to `(9, 9)` — below `assistants_on_board`'s `(14, 10)`, i.e. breaking the
+    /// L14 ordering in the one direction that makes recovering into an empty
+    /// hand a strict loss — drives the sample to zero and fails this test:
+    ///
+    /// ```text
+    /// §2.5 falsifier, 8 seeded 2P games (722 turns, 4738 applied moves): 0
+    /// nonzero-recovery picks, share 0.000000 against floor 0.000300
+    /// ...
+    /// nonzero-recovery picks 0 of 4738 applied moves (share 0.000000) over 8
+    /// seeded 2P games is at or below the floor 0.000300 -- spec §2.5's
+    /// falsifier has gone red: a retreat that recovers something is no longer
+    /// ever the argmax, which is exactly the eval-v0 pathology L6 quarantines
+    /// ```
+    ///
+    /// Note what that mutant did NOT do: it still played eight games that
+    /// ENDED (722 turns against the healthy 736), so nothing else in the suite
+    /// would have noticed. Zero recoveries is invisible to every other pin
+    /// here, which is why this one exists.
+    #[test]
+    fn nonzero_recovery_is_sometimes_the_argmax_under_the_frozen_table() {
+        let mut schedule = SeedSchedule::diagnostic(FREEZE_MASTER);
+        let mut applied = 0u64;
+        let mut nonzero = 0u64;
+        let mut turns = 0u32;
+        for _ in 0..RECOVERY_SAMPLE_GAMES {
+            let seed = schedule.next_world();
+            let (stats, _) = greedy_selfplay_2p(WeightTable::V1, seed.0, HONEST_MAX_TURNS)
+                .expect("the frozen table must play games that END");
+            applied += stats.coverage.applied();
+            nonzero += stats.coverage.nonzero_recovery_retreats();
+            turns += stats.turns;
+        }
+
+        let share = nonzero as f64 / applied.max(1) as f64;
+        println!(
+            "§2.5 falsifier, {RECOVERY_SAMPLE_GAMES} seeded 2P games ({turns} turns, {applied} \
+             applied moves): {nonzero} nonzero-recovery picks, share {share:.6} against floor \
+             {RECOVERY_SHARE_FLOOR_2P:.6}",
+        );
+        assert!(
+            share > RECOVERY_SHARE_FLOOR_2P,
+            "nonzero-recovery picks {nonzero} of {applied} applied moves (share {share:.6}) over \
+             {RECOVERY_SAMPLE_GAMES} seeded 2P games is at or below the floor \
+             {RECOVERY_SHARE_FLOOR_2P:.6} -- spec §2.5's falsifier has gone red: a retreat that \
+             recovers something is no longer ever the argmax, which is exactly the eval-v0 \
+             pathology L6 quarantines",
+        );
+        // The spec's own clause, stated separately from the measured floor so a
+        // future re-measure that lowers the floor cannot quietly admit zero.
+        assert!(nonzero > 0, "spec §2.5 reads '> 0' literally, and 0 is not > 0");
+    }
+
+    /// Play a fresh 2P game under `WeightTable::V1` until the first genuine
     /// `Placement` decision point, and return the true state plus the seat to
     /// move. Callers `observe` it (to ask an agent) or sample a world from that
     /// view (to score candidates the way the agent would).
@@ -1813,7 +1951,7 @@ mod tests {
         assert_eq!(p.params["placement_cap"], PLACEMENT_CANDIDATE_CAP as i64);
         assert_eq!(
             p.params["weights"],
-            weight_table_identity(&WeightTable::PROVISIONAL_V1),
+            weight_table_identity(&WeightTable::V1),
             "the params map identifies the weight table it actually evaluates with",
         );
 
@@ -1822,14 +1960,14 @@ mod tests {
         let zeroed = GreedyAgent::with_weights(&rules, WeightTable::ZERO, 8, 1);
         assert_ne!(zeroed.controller().params["weights"], p.params["weights"]);
         assert_eq!(
-            weight_table_identity(&WeightTable::PROVISIONAL_V1),
-            weight_table_identity(&WeightTable::PROVISIONAL_V1),
+            weight_table_identity(&WeightTable::V1),
+            weight_table_identity(&WeightTable::V1),
         );
-        let mut nudged = WeightTable::PROVISIONAL_V1;
+        let mut nudged = WeightTable::V1;
         nudged.set(eval::Feature::VictoryPoints, 11, 40);
         assert_ne!(
             weight_table_identity(&nudged),
-            weight_table_identity(&WeightTable::PROVISIONAL_V1),
+            weight_table_identity(&WeightTable::V1),
             "one changed weight must change the identity",
         );
     }
@@ -1839,7 +1977,7 @@ mod tests {
     #[test]
     fn the_m_knob_is_recorded() {
         let rules = Rules::standard();
-        let agent = GreedyAgent::with_weights(&rules, WeightTable::PROVISIONAL_V1, 32, 9);
+        let agent = GreedyAgent::with_weights(&rules, WeightTable::V1, 32, 9);
         assert_eq!(agent.controller().params["m"], 32);
     }
 

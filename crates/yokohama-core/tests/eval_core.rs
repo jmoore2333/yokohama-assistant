@@ -15,6 +15,17 @@
 //! `use crate::game::` lines in the scanned file and force the allowlist open.
 //! Only the pure-arithmetic unit tests stay in the module.
 //!
+//! POINTER, because it is easy to miss: the T4 corpus instrument
+//! (`examples/eval_probe.rs`) carries its OWN unit tests over its statistics —
+//! the AUC estimator, the cluster-bootstrap multiplicity, the stage terciles,
+//! §2.4's materiality rule — and `cargo test -p yokohama-core` does NOT run an
+//! example's test harness. They run under
+//! `cargo test -p yokohama-core --example eval_probe` (or `--all-targets`), and
+//! that command is named in the probe's module doc and in
+//! `docs/plans/2026-07-27-phase3.3-weight-freeze.md` §2. A test no documented
+//! command runs is a test that never runs, so it is written down in three
+//! places on purpose.
+//!
 //! Tier: per-edit, never `#[ignore]`d. Re-measured at the T2 close (debug,
 //! three runs): 0.54 / 0.53 / 0.53 s, up from T1's 0.16 s. The added cost was
 //! A/B'd rather than guessed, because the obvious attribution is the wrong one:
@@ -271,7 +282,7 @@ fn an_empty_order_registry_makes_the_deck_clock_unavailable_not_wrong() {
     assert_eq!(initial_order_deck_len(&view, &empty), None);
     assert_eq!(progress_ppm(&view, &empty), 0);
     // And a score is still produced (no panic, no divide by zero).
-    let _ = score(&view, &empty, &WeightTable::PROVISIONAL_V1);
+    let _ = score(&view, &empty, &WeightTable::V1);
 }
 
 // ---------------------------------------------------------------------------
@@ -293,7 +304,7 @@ fn an_empty_order_registry_makes_the_deck_clock_unavailable_not_wrong() {
 #[test]
 fn score_allocates_nothing_and_explain_allocates() {
     let rules = Rules::standard();
-    let weights = WeightTable::PROVISIONAL_V1;
+    let weights = WeightTable::V1;
     // 4P: the widest player loop and the largest board — if any arm allocates,
     // it allocates here.
     let view = observe(&keep_game(4, 3, &rules), PlayerId(1)).unwrap();
@@ -755,7 +766,7 @@ fn check_view(
 #[test]
 fn explain_reconstructs_score_exactly_over_organic_views() {
     let rules = Rules::standard();
-    let weights = WeightTable::PROVISIONAL_V1;
+    let weights = WeightTable::V1;
     let mut tally = Tally::default();
 
     for (players, seed) in [(2u8, 0u64), (3, 1), (4, 2)] {
@@ -1056,7 +1067,7 @@ fn a_terminal_view_is_ranked_by_the_full_final_score_not_by_running_vp() {
     // and eval.rs documents that a symmetric place ladder would be a bug. The
     // T2 review caught this comment calling the ladder "symmetric" as if that
     // were the design; the VALUE assertions below are what pin the design.)
-    let weights = WeightTable::PROVISIONAL_V1;
+    let weights = WeightTable::V1;
     let win = score(&winner, &rules, &weights);
     let loss = score(&loser, &rules, &weights);
     assert_eq!(win, TERMINAL_RANK_STEP + 2 * TERMINAL_MARGIN_STEP, "2P first place, margin +2");
@@ -1347,7 +1358,7 @@ fn an_area_holding_both_building_types_counts_once_in_view_side_progress() {
 #[test]
 fn score_allocates_nothing_on_the_terminal_branch_too() {
     let rules = Rules::standard();
-    let weights = WeightTable::PROVISIONAL_V1;
+    let weights = WeightTable::V1;
     let mut state = dummy_fixture(&rules);
     force_terminal(&mut state);
     let view = observe(&state, PlayerId(0)).unwrap();

@@ -84,10 +84,15 @@
 //! dominant ladder ([`TerminalStanding`]). See that type for the magnitudes
 //! and for the masked-opponent-order residual.
 //!
-//! # What is still provisional
+//! # What is frozen, and what is still hand-set
 //!
-//! Every weight in [`WeightTable::PROVISIONAL_V1`] is hand-set and PROVISIONAL
-//! until T4's measured freeze — including the five landed here.
+//! [`WeightTable::V1`] is FROZEN as of T4 (2026-07-27): its sixteen SIGNS were
+//! re-measured on 2,000 Greedy-v1 self-play games with game-clustered intervals
+//! and none was contradicted, so §2.4's single adjustment pass moved nothing.
+//! The MAGNITUDES are still hand-set — a confirmed sign is not a measured
+//! weight — and 3.5's tuning is where that changes. The full adjudication, the
+//! two recorded magnitude tensions, and every command that reproduces the run
+//! are in `docs/plans/2026-07-27-phase3.3-weight-freeze.md`.
 
 use crate::game::rules::Rules;
 use crate::types::{AchievementType, Country, PlayerId, PlayerView, TurnPhase, VisiblePlayer};
@@ -98,7 +103,18 @@ use crate::types::{AchievementType, Country, PlayerId, PlayerView, TurnPhase, Vi
 /// EVERY controller that embeds this evaluator non-comparable, which is what
 /// `SeatProvenance::version` means; this const rides the params map so the
 /// attribution is finer than the controller name alone.
-pub const EVAL_IMPL_VERSION: u32 = 1;
+///
+/// **2 = the T4 FREEZE** (`docs/plans/2026-07-27-phase3.3-weight-freeze.md`),
+/// and the honest reading of this particular bump: the measured adjustment pass
+/// moved ZERO weights, so `1` and `2` name the same thirty numbers and are
+/// behaviourally comparable. What changed is STATUS — provisional-until-measured
+/// became frozen-and-measured. The bump is taken anyway because this const's own
+/// rule pre-committed to it, and because a status change is exactly the thing a
+/// corpus reader wants a version for; the finer key that says whether two
+/// records were produced by the same thirty numbers is the weight-table identity
+/// digest the greedy rung stamps beside this const in provenance, and that key
+/// did NOT move (`0xe1fedd5efc49d0f6` on both sides of the freeze).
+pub const EVAL_IMPL_VERSION: u32 = 2;
 
 /// Full progress, in the ppm units [`progress_ppm`] reports.
 pub const PROGRESS_FULL_PPM: u32 = 1_000_000;
@@ -120,7 +136,26 @@ pub const CLOCK_COUNT: usize = 4;
 /// one placement live. Research note R1-4 measured the UNSPLIT
 /// `assistants_in_hand` feature at AUC 0.6026 early — that figure says nothing
 /// about where the knee belongs, because the feature it measured had no knee.
-/// T4's probe measures the two halves separately and may move this.
+///
+/// **T4 measured the two halves separately and did NOT move the reserve**
+/// (`docs/plans/2026-07-27-phase3.3-weight-freeze.md`; 2,000 Greedy-v1 2P
+/// self-play games, game-clustered 95%). What it found is worth carrying here,
+/// because it looks like a contradiction until the scale row is read:
+///
+/// | half | relative AUC early / mid / late | mean raw value |
+/// |---|---|---|
+/// | core `min(in_hand, 2)` | 0.5278 / 0.5173 / 0.4877 | **1.994 at every stage** |
+/// | excess `in_hand − core` | 0.6874 / 0.7200 / 0.6944 | 1.68 / 1.39 / 1.57 |
+///
+/// The core half separates winners from losers barely at all — because it is
+/// very nearly the CONSTANT 2, and a constant separates nothing whatever weight
+/// it carries. All of the unsplit feature's measured signal (0.6878 early) is in
+/// the excess half. That is the reverse of the weight ORDERING
+/// `core > board > excess`, and the ordering is held anyway: it is L14's
+/// non-degeneracy condition on the one-ply argmax, not a claim about predictive
+/// power, and pricing a near-constant highly costs a ranking nothing. The
+/// tension is recorded in the freeze artifact and routed to 3.5, where weights
+/// are tuned rather than hand-set.
 pub const HAND_CORE_RESERVE: u8 = 2;
 
 // ---------------------------------------------------------------------------
@@ -295,21 +330,64 @@ pub struct WeightTable {
 }
 
 impl WeightTable {
-    /// **PROVISIONAL until the T4 weight-freeze** (spec §2.4). The SIGNS come
-    /// from the research notes §1; the MAGNITUDES are hand-set on this
-    /// reasoning and are the "hand-set first cut" §2.4 names — T4 regenerates
-    /// the corpus under Greedy-v1 with exactly these numbers, re-measures, and
-    /// takes exactly ONE adjustment pass. Nothing here is a measured claim.
+    /// **FROZEN at T4** (spec §2.4; artifact
+    /// `docs/plans/2026-07-27-phase3.3-weight-freeze.md`). The SIGNS come from
+    /// the research notes §1 and are now RE-MEASURED under the bot's own play;
+    /// the MAGNITUDES remain hand-set on the reasoning below, and the freeze did
+    /// not measure them.
+    ///
+    /// # What the freeze did, precisely
+    ///
+    /// §2.4's protocol: regenerate the corpus with Greedy-v1 playing these exact
+    /// numbers, re-measure, take EXACTLY ONE adjustment pass, and move a weight
+    /// only where the operationalized materiality rule fires — *a measured
+    /// sign whose game-clustered 95% CI EXCLUDES the shipped direction.*
+    ///
+    /// Corpus: 2,000 Greedy-v1 2P self-play games, 326,972 view snapshots,
+    /// 12,000 (game × seat × tercile) cells, diagnostic master
+    /// `0xE7A1_2026_0727_0001`, bootstrap B = 2,000 clustered on games.
+    ///
+    /// **Result: the rule fired on ZERO of the sixteen features, so the pass
+    /// moved zero weights and this table IS the first cut.** Twenty-NINE of the
+    /// thirty-two (feature × endpoint) signs came back CONFIRMED — interval
+    /// wholly on the shipped side of 0.5 — and the other three were
+    /// no-signal, not contradictions: `assistants_in_hand_core` late
+    /// (0.4877 [0.4734, 0.5017], a near-constant feature — see
+    /// [`HAND_CORE_RESERVE`]), `hand_size` early (0.5049 [0.4797, 0.5301]), and
+    /// `trading_houses_built` early, which is identically zero in the first
+    /// tercile and so has no separation to have. **An empty pass is a result,
+    /// not a skipped step**, and the per-feature adjudication table is in the
+    /// artifact so the emptiness is auditable rather than asserted.
+    ///
+    /// **What the freeze did NOT establish.** Magnitudes. A confirmed sign says
+    /// a term points the right way, not that 12 is better than 20; every
+    /// magnitude below is still the hand-set reasoning it always was, and 3.5's
+    /// tuning is where they stop being. Two places where the measurement and the
+    /// hand-set magnitude visibly disagree are recorded rather than acted on:
+    /// the warehouse term's separation does NOT decay late (relative AUC
+    /// 0.3106 → 0.2742 while the weight decays −10 → −4), and the assistant
+    /// triple's measured separation ordering is the REVERSE of its weight
+    /// ordering (see [`HAND_CORE_RESERVE`] for why that is consistent rather
+    /// than contradictory).
     ///
     /// - `victory_points` 10 → 40 dominates LATE and deliberately not early:
     ///   R1-1 measured 45.2% of eventual winners BEHIND on relative VP in the
     ///   first tercile, so an early VP-dominant vector would price the game
     ///   backwards. (The brief for this task said "vp dominant"; the research
     ///   it also cites says early VP is near-uninformative. Resolved toward the
-    ///   measurement — dominant late — and recorded as a tension.)
+    ///   measurement — dominant late — and recorded as a tension.) **T4
+    ///   re-measure, one of §2.4's three named figures: early VP AUC
+    ///   0.5604 [0.5367, 0.5859] under greedy self-play, against R1's 0.5625
+    ///   under family-weighted — the shape survives the regime change intact,
+    ///   and the late figure 0.8571 reproduces R1's 0.8612.**
     /// - `assistants_in_warehouse` −10 → −4 and `hand_size` −3 → −6 are the
     ///   two NEGATIVE features (R1-4, R1-7), warehouse largest early and hand
-    ///   size growing late.
+    ///   size growing late. **T4 re-measure, §2.4's third named figure: the
+    ///   warehouse magnitude GREW under greedy play — relative AUC
+    ///   0.3106 [0.2875, 0.3341] early against R1's 0.3932, i.e. |AUC − 0.5| up
+    ///   from 0.107 to 0.189 — and it does not decay late (0.2742), which the
+    ///   −10 → −4 weight decay does. Sign confirmed, magnitude shape unsupported
+    ///   and left alone by the one-pass rule; recorded for 3.5.**
     /// - **THE ASSISTANT TRIPLE, and the T3 finding it resolves.**
     ///   `assistants_in_hand_core` 30 → 20, `assistants_on_board` 14 → 10 and
     ///   `assistants_in_hand_excess` 4 → 2 are ONE decision, not three: the
@@ -340,14 +418,19 @@ impl WeightTable {
     ///   share and it must not read 0, which under eval-v0's on_board(18) vs
     ///   in_hand(8) it did: argmax 0 of 48,458 times (notes §4.3), the
     ///   pathology `policy_diversity`'s gate exists to catch, arriving from the
-    ///   evaluator side. Split point and magnitudes alike are PROVISIONAL and
-    ///   unmeasured per piece; see [`HAND_CORE_RESERVE`].
+    ///   evaluator side. **T4 measured it: 739 nonzero-recovery picks in
+    ///   1,051,752 applied moves at 2P, share 0.000703 — not zero, so the
+    ///   falsifier passes, and the per-edit floor is set at half that
+    ///   (`greedy.rs`'s `RECOVERY_SHARE_FLOOR_2P`).** Split point and magnitudes
+    ///   alike remain hand-set and unmeasured per piece; see
+    ///   [`HAND_CORE_RESERVE`] for what T4 DID measure about the two halves and
+    ///   why the ordering is held against it.
     /// - The building weights (12 → 20, 15 → 25) rise late because they carry
     ///   printed VP AND run an end trigger; trading houses are scarcer (4 vs 8)
     ///   and better rewarded, so they price higher.
     ///
     /// The five score-structure weights, landed at T2 — one line of grounds
-    /// each, all PROVISIONAL on the same terms as the rest:
+    /// each, all hand-set on the same terms as the rest:
     ///
     /// - `country_bonus_now` 12 → 30. The largest EARLY weight in the table
     ///   and deliberately so: R1-3 measured it as the corpus's best early
@@ -371,6 +454,13 @@ impl WeightTable {
     ///   self-play; ~86% of greedy games end via ChurchTrackFull, where racing
     ///   the track may pay), and §2.4 names the church sign as one of the three
     ///   figures T4 re-measures under the greedy corpus before the freeze.
+    ///   **T4 SETTLED IT, and the sign SURVIVES: under 2,000 Greedy-v1 2P
+    ///   self-play games — 99.95% of which end via ChurchTrackFull, the regime
+    ///   the critic worried about — `church_bonus_now` measures
+    ///   0.4411 [0.4174, 0.4653] early and 0.5754 [0.5505, 0.6012] late. Both
+    ///   intervals exclude 0.5 on the shipped side, so the flip is confirmed in
+    ///   the very regime that was supposed to overturn it, and the tension above
+    ///   is DISCHARGED rather than carried.**
     /// - `customs_bonus_now` 3 → 20. Positive at both ends: R1-5's early
     ///   negative is a CHURCH finding and does not transfer (no customs
     ///   equivalent was measured), and the printed 8/4 outranks the church's
@@ -382,12 +472,41 @@ impl WeightTable {
     ///
     /// The column header below is a READING AID; [`Feature::ALL`] is the
     /// authority on the order, and the sign test
-    /// (`provisional_weight_signs_follow_the_research_notes`) is what would
+    /// (`frozen_v1_weight_signs_follow_the_research_notes`) is what would
     /// actually catch a mis-indexed literal — it pins the sign of every one of
     /// the sixteen slots, with
     /// `the_hand_split_orders_core_above_board_above_excess_in_both_vectors`
     /// pinning the two ordering inequalities the assistant triple turns on.
-    pub const PROVISIONAL_V1: WeightTable = WeightTable {
+    pub const V1: WeightTable = WeightTable {
+        //     [vp, ctry, tech, chur, cust, hCORE, hEXC, ware, brd, shop, trad, 5pw, imp, achv, merc, hnd#]
+        early: [10,   12,    6,   -4,    3,    30,    4,  -10,  14,   12,   15,   8,   5,    2,    3,   -3],
+        late:  [40,   30,   20,   16,   20,    20,    2,   -4,  10,   20,   25,  10,   8,    4,    4,   -6],
+    };
+
+    /// The hand-set first cut that GENERATED the T4 freeze corpus — the
+    /// historical input to the measurement, shipped by no constructor.
+    ///
+    /// **It currently holds the same thirty numbers as [`WeightTable::V1`], and
+    /// that is the freeze's RESULT rather than a duplication**: §2.4's one
+    /// adjustment pass found no measured sign contradicting a shipped direction,
+    /// so it moved nothing and the first cut became the frozen table unchanged
+    /// (see `V1`'s doc for the adjudication).
+    ///
+    /// It exists as its own constant because the two have different JOBS. `V1`
+    /// is what the bot plays and what a future task may re-price; this is a
+    /// fixed record of what the corpus behind
+    /// `docs/plans/2026-07-27-phase3.3-weight-freeze.md` was generated by, so
+    /// every command in that artifact — each of which names `--weights
+    /// pre-freeze` — still reproduces its output after `V1` moves. A measurement
+    /// whose inputs cannot be re-run is a claim, not a record. The literal
+    /// arrays are pinned by
+    /// `the_pre_freeze_table_is_the_corpus_generator_and_v1_matches_it_today`,
+    /// which also states what to do when `V1` legitimately moves away.
+    ///
+    /// Nothing else may read it. `GreedyAgent::new` takes `V1`, the sign and
+    /// ordering pins hold `V1`, and the only other in-tree reader is
+    /// `examples/eval_probe`'s reproduction flag.
+    pub const PRE_FREEZE_2026_07_27: WeightTable = WeightTable {
         //     [vp, ctry, tech, chur, cust, hCORE, hEXC, ware, brd, shop, trad, 5pw, imp, achv, merc, hnd#]
         early: [10,   12,    6,   -4,    3,    30,    4,  -10,  14,   12,   15,   8,   5,    2,    3,   -3],
         late:  [40,   30,   20,   16,   20,    20,    2,   -4,  10,   20,   25,  10,   8,    4,    4,   -6],
@@ -1328,6 +1447,28 @@ pub fn interpolate(early: i64, late: i64, progress: u32) -> i64 {
 /// 750k, 800k, 1M}; 9 at 3P, 11 at 4P), so at 2P — the promotion-cell player
 /// count — the "continuous" interpolation is effectively a six-step staircase.
 /// Both are observations under that harness, not ceilings.
+///
+/// T4'S PROXY VALIDATION (spec §2.4, artifact
+/// `docs/plans/2026-07-27-phase3.3-weight-freeze.md`) extends those figures to a
+/// corpus, under Greedy-v1 rather than a policy rung, and the extension moves
+/// both of them — which is why the single-run figures above are labelled as
+/// observations:
+///
+/// | | 2P (2,000 games, 163,486 turn starts) | 3P (200 games, 36,921) | 4P (200 games, 87,356) |
+/// |---|---|---|---|
+/// | distinct values | 16 | 18 | 12 |
+/// | saturated share | 0.0311 | 0.0220 | 0.0129 |
+/// | accuracy vs post-hoc terciles, fixed 1/3 cuts | 0.6773 | 0.6922 | 0.5574 |
+/// | same, best IN-SAMPLE cuts (optimistic) | 0.6786 | 0.6985 | 0.7161 |
+///
+/// Base rate is 0.3373 / 0.3333 / 0.3341, so the proxy is well clear of chance
+/// everywhere. THE DISPOSITION IT FEEDS: a HARD three-way stage switch would
+/// mis-assign 32% of positions at 2P even with hindsight-fitted cuts (44% at
+/// 4P, where the proxy runs ahead — 21,963 of 29,117 genuinely-MID turn starts
+/// read as LATE). §2.3's smooth interpolation is therefore kept, and R1's
+/// critic's "~35% mis-assignment" reproduces under the bot's own play instead of
+/// under the research policy. Observations under a named harness, never
+/// ceilings.
 pub fn progress_ppm(view: &PlayerView, rules: &Rules) -> u32 {
     clock_ppm(view, rules).into_iter().max().unwrap_or(0).min(PROGRESS_FULL_PPM)
 }
@@ -1531,17 +1672,18 @@ mod tests {
         assert_eq!(fraction_ppm(1, 3), 333_333, "toward zero, like the weights");
     }
 
-    /// The signs are the part of [`WeightTable::PROVISIONAL_V1`] that comes
-    /// from measurement (research notes §1), so they are pinned; the magnitudes
-    /// are hand-set and deliberately NOT pinned here. The two magnitude
-    /// RELATIONS that are load-bearing rather than taste — the assistant
-    /// triple's `core > board > excess` — moved to
+    /// The signs are the part of [`WeightTable::V1`] that comes from
+    /// measurement — research notes §1, RE-MEASURED and confirmed under the
+    /// bot's own play at T4 — so they are pinned; the magnitudes are hand-set
+    /// and deliberately NOT pinned here. The two magnitude RELATIONS that are
+    /// load-bearing rather than taste — the assistant triple's
+    /// `core > board > excess` — moved to
     /// `the_hand_split_orders_core_above_board_above_excess_in_both_vectors` at
     /// T3, because they are non-degeneracy conditions and deserve their own
     /// failure message.
     #[test]
-    fn provisional_weight_signs_follow_the_research_notes() {
-        let w = WeightTable::PROVISIONAL_V1;
+    fn frozen_v1_weight_signs_follow_the_research_notes() {
+        let w = WeightTable::V1;
         for feature in Feature::ALL {
             let (early, late) = w.get(feature);
             match feature {
@@ -1615,7 +1757,7 @@ mod tests {
     /// them (measured here: core `[20,30]`, board `[10,14]`, excess `[2,4]`).
     #[test]
     fn the_hand_split_orders_core_above_board_above_excess_in_both_vectors() {
-        let w = WeightTable::PROVISIONAL_V1;
+        let w = WeightTable::V1;
         let (core_early, core_late) = w.get(Feature::AssistantsInHandCore);
         let (board_early, board_late) = w.get(Feature::AssistantsOnBoard);
         let (excess_early, excess_late) = w.get(Feature::AssistantsInHandExcess);
@@ -1653,9 +1795,44 @@ mod tests {
         }
     }
 
+    /// [`WeightTable::PRE_FREEZE_2026_07_27`] is a HISTORICAL RECORD: it is the
+    /// table Greedy-v1 played while generating the T4 freeze corpus, and every
+    /// command in `docs/plans/2026-07-27-phase3.3-weight-freeze.md` names it, so
+    /// its literals may never move. They are written out here rather than
+    /// compared to `V1`, because comparing to `V1` is exactly what would let
+    /// them drift together.
+    ///
+    /// The second half asserts `V1 == PRE_FREEZE` today, which is the FREEZE'S
+    /// OUTCOME and not an invariant: §2.4's single adjustment pass found no
+    /// contradicted sign and therefore moved no weight. **If you are here
+    /// because you deliberately re-priced `V1`, delete the second assertion and
+    /// keep the first** — the historical arrays stay, the equality was only ever
+    /// a statement about 2026-07-27.
+    #[test]
+    fn the_pre_freeze_table_is_the_corpus_generator_and_v1_matches_it_today() {
+        let pre = WeightTable::PRE_FREEZE_2026_07_27;
+        assert_eq!(
+            pre.early,
+            [10, 12, 6, -4, 3, 30, 4, -10, 14, 12, 15, 8, 5, 2, 3, -3],
+            "the freeze corpus's EARLY vector is a historical fact and cannot be re-priced",
+        );
+        assert_eq!(
+            pre.late,
+            [40, 30, 20, 16, 20, 20, 2, -4, 10, 20, 25, 10, 8, 4, 4, -6],
+            "the freeze corpus's LATE vector is a historical fact and cannot be re-priced",
+        );
+        assert_eq!(
+            WeightTable::V1,
+            pre,
+            "V1 has moved off the pre-freeze table. That is allowed — see this test's doc — \
+             but the freeze artifact's figures then describe PRE_FREEZE_2026_07_27 only, and \
+             this assertion should be deleted in the same commit that moves V1.",
+        );
+    }
+
     #[test]
     fn weights_can_be_read_and_mutated_by_feature() {
-        let mut w = WeightTable::PROVISIONAL_V1;
+        let mut w = WeightTable::V1;
         assert_eq!(w.get(Feature::VictoryPoints), (10, 40));
         w.set(Feature::AssistantsInWarehouse, 0, 0);
         assert_eq!(w.get(Feature::AssistantsInWarehouse), (0, 0), "the §0.2 mutation shape");
