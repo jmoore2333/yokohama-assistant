@@ -2172,6 +2172,12 @@ mod tests {
     /// A tie draw costs exactly one KEYED word and ZERO play-stream words,
     /// whatever the tie count — `greedy`'s constant-consumption property, one
     /// rung up, where it is also what keys the K worlds in common.
+        /// SCOPE (T8 review): this pin drives the search internals, NOT
+    /// `LookaheadAgent::choose`'s K-world loop — the T8 review measured both
+    /// canonical world-loop keying regressions passing this pin. The world
+    /// loop's detector is `tests/observation_leakage.rs`'s divergence cell
+    /// (`lookahead_cross_world_divergence_is_zero_and_the_dice_are_common`-
+    /// class), whose triage message says so.
     #[test]
     fn a_tie_draw_is_one_keyed_word_and_is_world_common() {
         let ties = TieStream::new(0xFEED);
@@ -2518,6 +2524,12 @@ mod tests {
     /// which is the property T8's instrument rests on. Note what is NOT claimed:
     /// two DIFFERENT worlds still get different candidate LISTS — common dice,
     /// different states — and that difference is the signal, not noise.
+        /// SCOPE (T8 review): this pin drives the search internals, NOT
+    /// `LookaheadAgent::choose`'s K-world loop — the T8 review measured both
+    /// canonical world-loop keying regressions passing this pin. The world
+    /// loop's detector is `tests/observation_leakage.rs`'s divergence cell
+    /// (`lookahead_cross_world_divergence_is_zero_and_the_dice_are_common`-
+    /// class), whose triage message says so.
     #[test]
     fn the_candidate_dice_are_world_common_within_a_decision() {
         const DICE: u64 = 0xD1CE_D1CE;

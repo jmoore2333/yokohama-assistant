@@ -1010,6 +1010,22 @@ const DETERMINIZATION_DICE: u64 = 0xD1CE_0000_0000_0001;
 /// cell asserts that such a term WOULD be caught at every comparison where the
 /// channel actually moved rather than merely quoting a failure from authoring
 /// time.
+/// The lab analog of [`port_fingerprint`] — the T8 review's should-fix: the
+/// LAB channel (26 of the 64 genuinely-differing comparisons; refills off the
+/// determinized TECH deck, the hidden member the spec's §0.4(ii) prose did not
+/// name) was asserted live but had no permanent control vouching that a
+/// tech-reading term would be caught. Now it has the same poison discipline as
+/// the port.
+fn lab_fingerprint(lab: &yokohama_core::LabState) -> u64 {
+    let fold = |acc: u64, slots: &[Option<yokohama_core::TechCardId>; 6]| {
+        slots.iter().fold(acc, |a, s| {
+            a.wrapping_mul(31).wrapping_add(u64::from(s.map_or(0, |c| c.0)) + 1)
+        })
+    };
+    let a = fold(0x1AB_0000_u64, &lab.lab_a.slots);
+    lab.lab_b.as_ref().map_or(a, |b| fold(a, &b.slots))
+}
+
 fn port_fingerprint(port: &PortState) -> u64 {
     let fold = |acc: u64, slots: &[Option<yokohama_core::OrderCardId>; 6]| {
         slots.iter().fold(acc, |a, s| {
@@ -1020,6 +1036,13 @@ fn port_fingerprint(port: &PortState) -> u64 {
     port.port_b.as_ref().map_or(a, |b| fold(a, &b.slots))
 }
 
+/// CONFIG PIN (T8 review): this cell's pipeline deliberately consumes greedy's
+/// OWN constants — `DEFAULT_RETREAT_SAMPLES` and `WeightTable::V1`, the same
+/// ones `GreedyAgent::new` consumes — so the re-implementation cannot drift on
+/// its knobs. What it re-states by hand is the pipeline SHAPE (handle →
+/// candidates → apply → observe → score, verified against `GreedyAgent::choose`
+/// at the T8 review); if the agent's chain ever changes shape, move this cell
+/// with it.
 /// **THE FALSIFIABLE CELL — determinization invariance, and spec §4.3's
 /// K-REVISIT TRIGGER made executable** (spec §0.4(ii), ledger L11).
 ///
@@ -1094,6 +1117,7 @@ fn t8_greedy_v1s_scores_and_explanations_are_invariant_across_determinizations()
     let mut differing_port_states = 0usize;
     let mut differing_lab_states = 0usize;
     let mut poison_caught = 0usize;
+    let mut poison_lab_caught = 0usize;
     let mut candidate_sets_differed = 0usize;
 
     let points: Vec<_> =
@@ -1183,6 +1207,15 @@ fn t8_greedy_v1s_scores_and_explanations_are_invariant_across_determinizations()
                 }
                 if successors[w][ci].lab_state != successors[0][ci].lab_state {
                     differing_lab_states += 1;
+                    // The lab channel's own poison (T8 review): a tech-reading
+                    // term must move wherever the tech-deck refill differed.
+                    let poisoned = |v: &PlayerView| {
+                        eval::score(v, &rules, &weights)
+                            .wrapping_add(lab_fingerprint(&v.lab_state) as i64)
+                    };
+                    if poisoned(&successors[w][ci]) != poisoned(&successors[0][ci]) {
+                        poison_lab_caught += 1;
+                    }
                 }
                 assert_eq!(
                     vectors[w][ci], vectors[0][ci],
@@ -1242,27 +1275,30 @@ fn t8_greedy_v1s_scores_and_explanations_are_invariant_across_determinizations()
     assert!(explanations_compared >= 800, "only {explanations_compared} explanation comparisons");
 
     // THE NON-VACUITY ASSERTIONS — what makes this cell §0.4(ii) and not
-    // another §0.4(i). Written as `> 0` rather than at the measured values
-    // (19 / 64 / 38 / 26) deliberately: the claim is "the channel is LIVE in
-    // this run", and a numeric floor here would be a pin on trajectory
-    // arithmetic that says nothing more.
+    // another §0.4(i). Floors MEASURED THEN SET at ~half the authoring run's
+    // values (19 / 64 / 38 / 26 → 9 / 32 / 19 / 13) — the T8 review corrected
+    // the first draft's `> 0` here, which had numeric floors on the mostly-
+    // vacuous counters while the load-bearing ones got the weakest possible
+    // check; the four-walk deviation exists precisely because one walk nearly
+    // degenerated (4 Port takes), and half-of-measured is the guard against
+    // that silent degeneration, same as the counters above.
     assert!(
-        port_take_candidates > 0,
+        port_take_candidates >= 9,
         "no Port-take candidate was scored, so the refill channel this cell exists to watch was \
          never exercised"
     );
     assert!(
-        differing_successor_views > 0,
+        differing_successor_views >= 32,
         "every world produced an IDENTICAL successor view, so this cell degenerated into f(x) vs \
          f(x) — the same vacuity spec §0.4 rejected for the sweep cells"
     );
     assert!(
-        differing_port_states > 0,
+        differing_port_states >= 19,
         "no successor's port_state differed across worlds: the determinized ORDER-deck refill \
          channel was not live in this run, so the equality above proves nothing about it"
     );
     assert!(
-        differing_lab_states > 0,
+        differing_lab_states >= 13,
         "no successor's lab_state differed across worlds: the determinized TECH-deck refill \
          channel was not live in this run"
     );
@@ -1277,6 +1313,13 @@ fn t8_greedy_v1s_scores_and_explanations_are_invariant_across_determinizations()
         "the poisoned score failed to move at {} of {differing_port_states} comparisons where the \
          port refill genuinely differed — the control cannot vouch for the assertion above",
         differing_port_states - poison_caught
+    );
+    assert_eq!(
+        poison_lab_caught, differing_lab_states,
+        "the lab-poisoned score failed to move at {} of {differing_lab_states} comparisons where \
+         the tech-deck refill genuinely differed (T8-review control: the lab channel needs its \
+         own vouching, not the port's)",
+        differing_lab_states - poison_lab_caught
     );
 }
 
@@ -1495,14 +1538,18 @@ fn t8_lookahead_v1s_cross_world_divergence_is_measured_and_recorded() {
     assert_eq!(
         diverged, 0,
         "cross-world divergence is NO LONGER ZERO ({diverged}/{points}). DO NOT relax this \
-         assertion. TWO causes, and they are not the same finding — check the SECOND first \
-         because it is a harness regression rather than a result: (a) the world-common keying \
-         broke (a tie draw or a candidate draw stopped being common across the K worlds, T5's \
-         fix wave undone), in which case this is measuring 7.66%-style FALSE divergence and \
+         assertion. TWO causes, and they are not the same finding. (a) A world-common keying \
+         regression in `LookaheadAgent::choose`'s WORLD LOOP (a tie draw or candidate draw \
+         re-keyed per world — T5's fix wave undone): CHECK THIS FIRST, and know that THIS CELL \
+         IS THE SOLE DETECTOR of it — the T8 review measured both canonical regressions and \
          `the_candidate_dice_are_world_common_within_a_decision` and \
-         `a_tie_draw_is_one_keyed_word_and_is_world_common` should be red too; (b) with those \
-         green, this is spec §4.3's K-decision re-opening input — the turn-completion channel \
-         has started moving a root argmax, the divergence RATE is the acceptance statistic, and \
-         the mechanism belongs in the ledger before K stays at 1"
+         `a_tie_draw_is_one_keyed_word_and_is_world_common` STAY GREEN under both (they drive \
+         the search internals, not the agent's world loop; per-world tie re-keying read \
+         31/200 here with every other test in the crate green, per-world candidate re-keying \
+         7/200 — the lens-2 shape). Rule (a) out by inspecting the world loop's seed \
+         derivations directly. (b) With the keying verified intact, this is spec §4.3's \
+         K-decision re-opening input — the turn-completion channel has started moving a root \
+         argmax, the divergence RATE is the acceptance statistic, and the mechanism belongs \
+         in the ledger before K stays at 1"
     );
 }
