@@ -1137,13 +1137,18 @@ impl<'a> DecisionHandle<'a> {
 /// link the crate without it. Task 6 adds the release-tier byte/latency meter;
 /// this is the per-edit COUNT bound.
 #[cfg(test)]
-mod alloc_probe {
+pub(crate) mod alloc_probe {
     use std::alloc::{GlobalAlloc, Layout, System};
     use std::cell::Cell;
 
     thread_local! {
         static ARMED: Cell<bool> = const { Cell::new(false) };
         static ALLOCS: Cell<usize> = const { Cell::new(0) };
+        /// REQUESTED bytes, summed over the same events [`ALLOCS`] counts. A
+        /// recorded figure only — never asserted anywhere, because it is not
+        /// peak-outstanding and it is allocator-shape-sensitive (T5; the
+        /// meter/record split `action_source_worstcase` states).
+        static BYTES: Cell<usize> = const { Cell::new(0) };
     }
 
     struct Counting;
@@ -1153,27 +1158,31 @@ mod alloc_probe {
     // the only added work is a non-allocating thread-local counter bump.
     unsafe impl GlobalAlloc for Counting {
         unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
-            bump();
+            bump(layout.size());
             System.alloc(layout)
         }
         unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
             System.dealloc(ptr, layout)
         }
         unsafe fn alloc_zeroed(&self, layout: Layout) -> *mut u8 {
-            bump();
+            bump(layout.size());
             System.alloc_zeroed(layout)
         }
         unsafe fn realloc(&self, ptr: *mut u8, layout: Layout, new_size: usize) -> *mut u8 {
-            bump();
+            bump(new_size);
             System.realloc(ptr, layout, new_size)
         }
     }
 
-    /// Count this allocation if the current thread armed the probe. `try_with`
-    /// tolerates access during thread teardown (returns without counting).
-    fn bump() {
+    /// Count this allocation (and its requested size) if the current thread
+    /// armed the probe. `try_with` tolerates access during thread teardown
+    /// (returns without counting). Neither `Cell` operation allocates, so the
+    /// COUNT this reports is exactly what it reported before the byte sum was
+    /// added beside it (T5).
+    fn bump(size: usize) {
         if ARMED.try_with(Cell::get).unwrap_or(false) {
             let _ = ALLOCS.try_with(|n| n.set(n.get() + 1));
+            let _ = BYTES.try_with(|n| n.set(n.get().saturating_add(size)));
         }
     }
 
@@ -1186,14 +1195,27 @@ mod alloc_probe {
     /// disarm the outer region's remainder — a silent under-count whose only
     /// failure mode on a `< BOUND` assertion is a false pass.
     pub fn count_allocs<R>(f: impl FnOnce() -> R) -> (R, usize) {
+        let (r, allocs, _bytes) = count_allocs_bytes(f);
+        (r, allocs)
+    }
+
+    /// [`count_allocs`] plus the REQUESTED bytes those allocations asked for.
+    ///
+    /// The byte figure is for RECORDING only (T5's allocation-sanity cell):
+    /// it is a sum of requested sizes, not peak outstanding bytes, and it moves
+    /// with allocator and `Vec` growth shapes — the same record-never-assert
+    /// discipline `action_source_worstcase`'s meter states. The COUNT is the
+    /// gated figure because it is deterministic.
+    pub fn count_allocs_bytes<R>(f: impl FnOnce() -> R) -> (R, usize, usize) {
         ARMED.with(|a| {
             assert!(!a.get(), "alloc_probe::count_allocs is not re-entrant (nested call would corrupt the outer count)");
         });
         ALLOCS.with(|n| n.set(0));
+        BYTES.with(|n| n.set(0));
         ARMED.with(|a| a.set(true));
         let r = f();
         ARMED.with(|a| a.set(false));
-        (r, ALLOCS.with(Cell::get))
+        (r, ALLOCS.with(Cell::get), BYTES.with(Cell::get))
     }
 }
 

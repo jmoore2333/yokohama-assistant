@@ -386,7 +386,15 @@ fn reservoir(
 ///
 /// `len` must be nonzero; the only caller has already refused an empty
 /// candidate set.
-fn uniform_index(draw: u64, len: usize) -> usize {
+///
+/// **`pub(crate)` at T5 (spec §4.2's "the §3.2 tie-break at EVERY tie point").**
+/// The search rung has three tie points to this rung's one — root argmax,
+/// in-continuation greedy step, beam-frontier truncation — and all four must be
+/// the SAME primitive or the constant-consumption property above is a claim
+/// about one call site rather than about the tie-break. `game::lookahead` feeds
+/// it a KEYED word instead of a stream draw (its own reason, documented there);
+/// the index arithmetic, its bias bound and its three pins are shared.
+pub(crate) fn uniform_index(draw: u64, len: usize) -> usize {
     debug_assert!(len > 0, "a uniform index over an empty set is undefined");
     ((u128::from(draw) * len as u128) >> 64) as usize
 }
@@ -414,6 +422,30 @@ fn successor_view(
     observe(&next, seat).map_err(|e| {
         format!("{GREEDY_CONTROLLER}: cannot observe seat {} after {mv:?}: {e}", seat.0)
     })
+}
+
+/// `state` as `seat` sees it, or a typed error naming the `controller` that
+/// asked — the OBSERVE half of the chain above, without the apply half.
+///
+/// **Extracted `pub(crate)` at T5**, and the split is not cosmetic: a SEARCH
+/// node OWNS the state it evaluates (it must, to expand it), so the rung one
+/// floor up needs "observe this state" where this rung needs "apply, then
+/// observe, then throw the state away". Sharing the error SHAPE across both is
+/// the point — spec §3.1's no-fallback rule reads the same from either rung,
+/// and a search that quietly skipped an unobservable node would be scoring a
+/// subset of its own candidates without saying so.
+///
+/// [`successor_view`] deliberately keeps its own `map_err` rather than calling
+/// through here: its message also names the CANDIDATE that produced the state,
+/// which this signature has no way to know. The shared thing is the shape and
+/// the no-fallback rule, not the string.
+pub(crate) fn observed_view(
+    state: &GameState,
+    seat: PlayerId,
+    controller: &str,
+) -> Result<PlayerView, String> {
+    observe(state, seat)
+        .map_err(|e| format!("{controller}: cannot observe seat {}: {e}", seat.0))
 }
 
 // ---------------------------------------------------------------------------

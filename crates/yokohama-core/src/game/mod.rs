@@ -41,6 +41,11 @@ pub mod eval;
 /// below to the crate root, and `candidates` is far too generic to live there.
 /// Callers write `greedy::GreedyAgent` / `greedy::candidates`.
 pub mod greedy;
+/// Lookahead-v1, the shallow-search rung (Phase 3.3 T5). NAMESPACED for the
+/// same reason [`eval`] and [`greedy`] are: `search_world`, `SearchStats` and
+/// `TieSite` are far too generic for the crate root. Callers write
+/// `lookahead::LookaheadAgent` / `lookahead::search_world`.
+pub mod lookahead;
 
 pub use power::*;
 pub use movement::*;
