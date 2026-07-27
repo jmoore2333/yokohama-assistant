@@ -52,8 +52,12 @@
 //! 1. **The counterfactual SHIPS.** Each scenario evaluates its property twice
 //!    — once under the shipped evaluator and once under its own targeted
 //!    mutation — and [`admit`] fails the test if the mutation does NOT break
-//!    it. A recorded-only mutation rots the day someone widens a fixture; a
-//!    shipped one cannot.
+//!    it, or breaks a clause OTHER than the one the scenario names. A
+//!    recorded-only mutation rots the day someone widens a fixture; a shipped
+//!    one cannot. The clause check is the second half of "targeted": most
+//!    scenarios assert several things (a fixture guard, a control, a second
+//!    inequality), and a mutation that tripped one of those instead would
+//!    satisfy a bare "the mutated run failed" while proving nothing.
 //! 2. **The observed failing line is quoted verbatim in the doc AND printed at
 //!    run time.** `cargo test -p yokohama-core --test scenario_suite --
 //!    --nocapture` prints every counterfactual's failure line, so the quoted
@@ -62,6 +66,19 @@
 //!    circuits the weight vector entirely, so no table can reach it), the doc
 //!    names the source edit and quotes the line it produced at authoring, and
 //!    the shipped counterfactual is the same rejected reading computed locally.
+//!
+//! # What this suite does NOT cover (T9 review S3)
+//!
+//! Spec §6's category (3), end-trigger timing, names TWO clocks: the church
+//! track filling, and the order deck running near-empty so that unbanked cards
+//! have to be converted. The delivered scenario discharges the category through
+//! the CHURCH clock alone, per T4's routing of the church sign-flip question to
+//! this suite. **Nothing here exercises the deck half.** Scenario 5 sets
+//! `order_deck_len` and scenario 9 leaves a shortened deck behind, but both use
+//! it purely as STAGE-SETTING — a stage proxy the position is dated by, never a
+//! decision about banking before the deck runs out. Recorded here so suite
+//! growth has a named target, and so no reader takes "end-trigger timing:
+//! covered" for more than the one clock it is.
 //!
 //! # Cost, and why most scenarios drive no game
 //!
@@ -97,16 +114,18 @@
 //! **Per-edit, never `#[ignore]`d** (spec §0.2/§10.1). Measured at the T9 close,
 //! DEBUG, binary run directly, three runs on a quiet Apple M5:
 //! **0.05 / 0.05 / 0.05 s** for the whole binary (10 tests: nine scenarios plus
-//! the registry pin).
+//! the registry pin). RE-MEASURED unchanged at the T9 review close, with the
+//! fixture invariant audits that wave added inside the figure.
 //!
 //! The split is the interesting figure and it is why the shapes were chosen
 //! this way: the eight eval-ordering scenarios plus the registry pin run in
 //! **0.00 s** (below the timer's resolution — one shared [`rules`] build, nine
-//! setup-and-`observe` fixtures, and about forty `score` calls), and the
-//! null-placement scenario's two 40-decision Greedy-v1 segments are **0.05 s**,
-//! i.e. effectively the whole binary. Order-seconds was the budget; the suite
-//! came in two orders under it, and the room that buys is for the driven
-//! scenarios a later revision will want.
+//! setup-and-`observe` fixtures, fourteen [`check_invariants`] fixture audits,
+//! and about forty `score` calls), and the null-placement scenario's two
+//! 40-decision Greedy-v1 segments are **0.05 s**, i.e. effectively the whole
+//! binary. Order-seconds was the budget; the suite came in two orders under it,
+//! and the room that buys is for the driven scenarios a later revision will
+//! want.
 
 use std::collections::BTreeMap;
 use std::sync::OnceLock;
@@ -119,10 +138,10 @@ use yokohama_core::game::eval::{
 };
 use yokohama_core::game::greedy::{GreedyAgent, DEFAULT_RETREAT_SAMPLES};
 use yokohama_core::{
-    apply_move_unchecked, final_result, finalize_setup, is_game_over, new_game, observe,
-    AchievementCard, AchievementType, ArenaAgent, ChurchSlot, ChurchTrack, Country, CustomsSlot,
-    CustomsTrack, EndGameTrigger, GameConfig, GameState, HandCard, Move, OrderCardId, PlayerId,
-    PlayerView, Rules, StartingOrderChoice, TurnPhase, VisiblePlayer,
+    apply_move_unchecked, check_invariants, final_result, finalize_setup, is_game_over, new_game,
+    observe, AchievementCard, AchievementType, ArenaAgent, ChurchSlot, ChurchTrack, Country,
+    CustomsSlot, CustomsTrack, EndGameTrigger, GameConfig, GameState, HandCard, Move, OrderCardId,
+    PlayerId, PlayerView, Rules, StartingOrderChoice, TurnPhase, VisiblePlayer,
 };
 
 // ---------------------------------------------------------------------------
@@ -174,8 +193,19 @@ fn the_registry_holds_nine_uniquely_named_scenarios() {
 // §0.2's admission helper
 // ---------------------------------------------------------------------------
 
-/// Admit a scenario: the property must HOLD as shipped and must FAIL under the
-/// named targeted mutation.
+/// Admit a scenario: the property must HOLD as shipped, and must FAIL under the
+/// named targeted mutation **on the clause the scenario is about**.
+///
+/// `expected` is a distinctive fragment of the failure line each scenario's
+/// **COUNTERFACTUAL** block quotes, and matching it is what makes §0.2's
+/// admission a statement about the TARGET rather than about any breakage at
+/// all (T9 review S2). Most scenarios check more than one clause — a fixture
+/// guard, a control, a second inequality — and a mutation that tripped one of
+/// those instead would have satisfied a bare "the mutated run returned Err"
+/// while proving nothing about the term the doc names. It would also let the
+/// quoted line silently rot: the fragment is lifted from that quote, so a
+/// mutation whose failure text moved fails here rather than leaving the doc
+/// describing a run that no longer happens.
 ///
 /// The counterfactual's failure line is printed rather than swallowed, so the
 /// text quoted in each scenario's doc comment can be re-checked with
@@ -184,6 +214,7 @@ fn the_registry_holds_nine_uniquely_named_scenarios() {
 fn admit(
     name: &str,
     counterfactual: &str,
+    expected: &str,
     shipped: Result<(), String>,
     mutated: Result<(), String>,
 ) -> Result<(), String> {
@@ -195,6 +226,11 @@ fn admit(
              failing counterpart under a mutation of the term the scenario NAMES — \
              either the fixture stopped exercising that term, or the property is \
              about something else now."
+        )),
+        Err(line) if !line.contains(expected) => Err(format!(
+            "[{name}] MIS-TARGETED: the mutation ({counterfactual}) did break something, but \
+             not the clause this scenario names — the failure was expected to contain \
+             `{expected}` and read: {line}"
         )),
         Err(line) => {
             println!("[{name}] counterfactual ({counterfactual}) failed as required: {line}");
@@ -244,7 +280,72 @@ fn keep_game(players: u8, seed: u64, rules: &Rules) -> GameState {
     let pending = new_game(GameConfig::for_player_count(players), rules, seed)
         .expect("setup must succeed at a printed player count");
     let choices: Vec<_> = (0..players).map(|_| StartingOrderChoice::Keep(0)).collect();
-    finalize_setup(pending, &choices).expect("finalize")
+    let state = finalize_setup(pending, &choices).expect("finalize");
+    check_invariants(&state, rules).expect("a finalized setup is a state the engine accepts");
+    state
+}
+
+/// Every constructed `GameState` in this file goes through the engine's own
+/// invariant net before anything reads it (T9 review M2).
+///
+/// The doctored states are hand-built OUTSIDE `new_game`, which is exactly the
+/// construction `check_invariants` was widened to audit — its I9 and I11
+/// clauses say so in as many words ("Phase 3 constructs states outside
+/// `new_game`, so this moves the guarantee into the ... net"). A fixture that
+/// files cards into one pile without taking them out of another, or that
+/// vacates a track dummy, is not a state the engine would ever hand an
+/// evaluator, so an ordering measured on it says nothing about the rung. The
+/// terminal fixtures below did precisely that at authoring: five country cards
+/// written into a completed pile while still sitting in the deck and the boxed
+/// pile, for a 41-card 36-card game.
+///
+/// Doctored VIEWS are deliberately NOT covered by this and cannot be — a
+/// `PlayerView` is the evaluator's whole input, so specifying one directly is a
+/// complete specification of an evaluation (this file's header states the
+/// reasoning, and [`recovery_discipline_stops_at_the_reserve`] states the one
+/// place a view's arithmetic departs from a reachable state's). A `GameState`
+/// is the engine's own object and has to obey the engine's own rules.
+fn engine_valid(state: &GameState, rules: &Rules, label: &str) -> Result<(), String> {
+    check_invariants(state, rules)
+        .map_err(|e| format!("fixture '{label}' is not a state the engine would accept: {e}"))
+}
+
+/// Take one Order card out of whichever pile the setup deal left it in, so a
+/// fixture may file it under a `completed_orders` pile without minting a 37th
+/// card.
+///
+/// At the seed the terminal scenario uses, three of its five country cards sit
+/// in the order deck and two in the boxed `orders_removed` pile; the port arm
+/// covers the third place a card can legitimately be. The two error arms are
+/// the point of writing this as a function rather than a `retain`: a deal that
+/// moved onto the country set is a fixture repair, and raiding a HAND to make
+/// room would strand that seat's `starting_order` (invariant I11) or make the
+/// seat unobservable.
+fn take_order_out_of_play(state: &mut GameState, id: OrderCardId) -> Result<(), String> {
+    if let Some(i) = state.order_deck.iter().position(|c| *c == id) {
+        state.order_deck.remove(i);
+        return Ok(());
+    }
+    if let Some(i) = state.orders_removed.iter().position(|c| *c == id) {
+        state.orders_removed.remove(i);
+        return Ok(());
+    }
+    let ports =
+        std::iter::once(&mut state.port_state.port_a).chain(state.port_state.port_b.as_mut());
+    for slot in ports.flat_map(|port| port.slots.iter_mut()) {
+        if *slot == Some(id) {
+            *slot = None;
+            return Ok(());
+        }
+    }
+    if let Some(p) = state.players.iter().find(|p| p.order_cards_in_hand.contains(&id)) {
+        return Err(format!(
+            "fixture: order {} was DEALT to seat {} — the setup deal moved onto this \
+             scenario's country set, so re-pick the set rather than raiding a hand",
+            id.0, p.id.0,
+        ));
+    }
+    Err(format!("fixture: order {} sits in no pile — conservation was broken before this", id.0))
 }
 
 /// Seat 0's view of a fresh game — the base every doctored fixture starts from.
@@ -378,6 +479,7 @@ fn country_set_completion(rules: &Rules) -> Result<(), String> {
     admit(
         SCENARIOS[0].0,
         "country_bonus_now zeroed",
+        "the five-country set must outscore the four-country set",
         check(&WeightTable::V1),
         check(&zeroed(Feature::CountryBonusNow)),
     )
@@ -507,6 +609,7 @@ fn order_economics_fulfill_now_vs_hold(rules: &Rules) -> Result<(), String> {
     admit(
         SCENARIOS[1].0,
         "victory_points zeroed",
+        "must beat holding it",
         check(&WeightTable::V1),
         check(&zeroed(Feature::VictoryPoints)),
     )
@@ -642,6 +745,7 @@ fn end_trigger_timing_church_clock(rules: &Rules) -> Result<(), String> {
     admit(
         SCENARIOS[2].0,
         "church_bonus_now zeroed",
+        "a church lead must be priced NEGATIVE",
         check(&WeightTable::V1),
         check(&zeroed(Feature::ChurchBonusNow)),
     )
@@ -704,14 +808,16 @@ fn customs_majority_with_the_d1_dummy(rules: &Rules) -> Result<(), String> {
     state.customs_track.slots.iter_mut().for_each(|slot| {
         *slot = slot.filter(|s| s.player.is_dummy());
     });
+    engine_valid(&state, rules, "2P customs track cleared back to the dummy alone")?;
 
-    let placed = |space: u8| -> GameState {
+    let placed = |space: u8| -> Result<GameState, String> {
         let mut s = state.clone();
         s.customs_track.slots[CustomsTrack::space_to_index(space).expect("1..=7")] =
             Some(CustomsSlot { player: PlayerId(0), arrival_order: 1 });
-        s
+        engine_valid(&s, rules, &format!("seat 0 on customs space {space}"))?;
+        Ok(s)
     };
-    let (right, left) = (placed(5), placed(3));
+    let (right, left) = (placed(5)?, placed(3)?);
 
     // The engine's own breakdown is what "8 VP" and "4 VP" mean here.
     let engine_customs = |s: &GameState| -> i64 {
@@ -771,6 +877,7 @@ fn customs_majority_with_the_d1_dummy(rules: &Rules) -> Result<(), String> {
     admit(
         SCENARIOS[3].0,
         "customs_bonus_now zeroed",
+        "landing right of the D1 dummy",
         check(&WeightTable::V1),
         check(&zeroed(Feature::CustomsBonusNow)),
     )
@@ -807,6 +914,22 @@ fn scenario_04_church_customs_majority_d1_dummy() {
 /// that priced them equally would build whichever token was cheapest to reach
 /// and would never run the four-token race — the faster of the two end
 /// triggers, and the one a leading position wants to reach.
+///
+/// **WHAT IT ACTUALLY REDUCES TO — this is the suite's WEAKEST property, and
+/// it is recorded rather than dressed up (T9 review S1).** The two fixtures are
+/// identical apart from which token stands in the same area, so the review
+/// verified that only the two building terms differ between them and the
+/// inequality collapses to `w_trading(p) > w_shophouse(p)` at one stage. NO
+/// rules arithmetic is exercised: nothing here computes a take cost, a printed
+/// reward, or a distance to either trigger. The scarcity and price rationale in
+/// the RULES line above lives entirely in the WEIGHTS, and under the frozen
+/// table the ordering holds at EVERY `p` — 15 against 12 early and 25 against
+/// 20 late, linearly interpolated, so no crossing exists to find. What this
+/// scenario therefore pins is the weight ORDERING, and a re-pricing that
+/// inverted it would have to come through here to do it. Kept under the
+/// never-delete rule and flagged for strengthening at v2, where the property
+/// worth having is behavioural — does the rung actually RUN the four-token
+/// race? — and needs the lookahead 3.4 adds to be worth asserting.
 ///
 /// **COUNTERFACTUAL — `trading_houses_built` zeroed (§0.2's targeted
 /// mutation).** Observed failing line, verbatim:
@@ -856,6 +979,7 @@ fn building_race_trading_house_over_shophouse(rules: &Rules) -> Result<(), Strin
     admit(
         SCENARIOS[4].0,
         "trading_houses_built zeroed",
+        "a Trading House must outprice a Shophouse in the same area",
         check(&WeightTable::V1),
         check(&zeroed(Feature::TradingHousesBuilt)),
     )
@@ -880,6 +1004,19 @@ fn scenario_05_building_race() {
 /// **SEAT.** 0, in a 2-player game, holding 4 Assistants on one area and an
 /// empty hand.
 ///
+/// **FIXTURE HONESTY — the assistant TOTAL (T9 review S4).** These three views
+/// are the only fixtures in the file that change the seat's assistant total.
+/// The 2P deal is 8 in hand + 12 in the warehouse = the engine's 20; the
+/// fixtures below overwrite the hand and board legs with 4 tokens between them
+/// and leave the warehouse at 12, so each view carries **16**, not 20. That is
+/// deliberate and harmless to the property — all three carry the SAME 16, the
+/// warehouse leg is byte-identical across them, and the claim is an ordering
+/// over the hand/board split alone — but these are doctored views and not
+/// reachable states, which is what the header's doctoring declaration covers
+/// and what keeps `check_invariants` (whose `total() != 20` clause these would
+/// fail) off the view side. Said out loud rather than left for a reader to
+/// notice.
+///
 /// **PROPERTY.** The recovery optimum is INTERIOR:
 /// `score(recover 2)` > `score(recover 0)` and `score(recover 2)` >
 /// `score(recover 4)`. Recovering back to the hand reserve beats leaving the
@@ -897,14 +1034,23 @@ fn scenario_05_building_race() {
 /// from the evaluator side, which `policy_diversity`'s own gate exists to catch.
 ///
 /// **NOTE ON THE MUTATION NAMED IN THE SPEC.** §0.2's illustrative list says
-/// "the recovery scenario fails under warehouse-weight-zeroed". The warehouse
-/// is not on the retreat path at all — a recovery moves board → HAND, and the
-/// engine's only writer of `assistants.in_warehouse` is the Employment Agency
-/// (`apply_move.rs`) — so zeroing it cannot break a recovery property, and a
-/// mutation that cannot break the property is not a targeted one. The term this
-/// scenario actually names is the hand split L14 identifies as the recovery
-/// calculus's pivot, and that is what is mutated below. Deviation recorded here
-/// rather than papered over.
+/// "the recovery scenario fails under warehouse-weight-zeroed". It does not,
+/// and the reason is the PATH rather than any scarcity of warehouse writers.
+/// A recovery moves board → HAND. The engine has THREE production writers of
+/// `assistants.in_warehouse` — the Employment Agency take
+/// (`game/apply_move.rs:887`), the University additional action
+/// (`game/tech_effects.rs:175`) and the `WarehouseTake` choice resolution
+/// (`game/choices.rs:230`) — and not one of them sits on the retreat path:
+/// all three are warehouse → hand DRAINS at other decision points. The
+/// warehouse leg is consequently identical across all three fixtures below, so
+/// zeroing its weight cannot change a retreat-vs-not ordering, and a mutation
+/// that cannot break the property is not a targeted one. The term this scenario
+/// actually names is the hand split L14 identifies as the recovery calculus's
+/// pivot, and that is what is mutated below. Deviation recorded here rather
+/// than papered over. (T9 review M1 corrected the writer count: this note
+/// previously called the Employment Agency the engine's ONLY warehouse writer,
+/// which is false. The deviation itself was re-verified and stands — what makes
+/// it sound is that no writer is on the retreat path, not how many there are.)
 ///
 /// **COUNTERFACTUAL — `assistants_in_hand_core` zeroed (§0.2's targeted
 /// mutation).** With the reserve priced at nothing the board term dominates and
@@ -921,7 +1067,9 @@ fn recovery_discipline_stops_at_the_reserve(rules: &Rules) -> Result<(), String>
     let area = *base.board_layout.areas.keys().next().ok_or("fixture: an empty board")?;
 
     // The four assistants are the SAME four in all three fixtures; only where
-    // they sit moves, so every other term contributes identically.
+    // they sit moves, so every other term contributes identically. The seat's
+    // TOTAL is 16 in all three, not the engine's 20 — the untouched 12-token
+    // warehouse plus these 4. See the doc's fixture-honesty note.
     let after_recovering = |n: u8| -> PlayerView {
         let mut v = base.clone();
         let me = viewer_mut(&mut v);
@@ -964,6 +1112,7 @@ fn recovery_discipline_stops_at_the_reserve(rules: &Rules) -> Result<(), String>
     admit(
         SCENARIOS[5].0,
         "assistants_in_hand_core zeroed",
+        "must beat recovering nothing",
         check(&WeightTable::V1),
         check(&zeroed(Feature::AssistantsInHandCore)),
     )
@@ -1063,6 +1212,7 @@ fn faith_arithmetic_buys_the_rightmost_church_space(rules: &Rules) -> Result<(),
     admit(
         SCENARIOS[6].0,
         "church_bonus_now zeroed",
+        "a power-5 church visit paying 3 distinct types",
         check(&WeightTable::V1),
         check(&zeroed(Feature::ChurchBonusNow)),
     )
@@ -1151,6 +1301,7 @@ fn the_null_placement_trap(rules: &Rules) -> Result<(), String> {
     admit(
         SCENARIOS[7].0,
         "assistants_on_board zeroed",
+        "must escape the null-placement trap",
         check(&WeightTable::V1),
         check(&zeroed(Feature::AssistantsOnBoard)),
     )
@@ -1274,12 +1425,15 @@ fn terminal_scoring_prefers_the_bonus_win(rules: &Rules) -> Result<(), String> {
 
     // `bonus_holder` is the seat given the five-country set; the other leads on
     // running VP and loses.
-    let finished = |bonus_holder: u8| -> GameState {
+    let finished = |bonus_holder: u8| -> Result<GameState, String> {
         let mut state = keep_game(2, 18, rules);
         force_terminal(&mut state);
         for p in state.players.iter_mut() {
             // Zero every remainder leg so the two totals are exactly the two
-            // numbers this scenario is about.
+            // numbers this scenario is about. Both card piles are empty at a
+            // fresh setup, so the two `clear()`s are no-ops — and if that ever
+            // stopped being true they would destroy cards, which is exactly
+            // what the conservation guard at the end of this closure catches.
             p.money = 0;
             p.copper = 0;
             p.silk = 0;
@@ -1290,10 +1444,20 @@ fn terminal_scoring_prefers_the_bonus_win(rules: &Rules) -> Result<(), String> {
             p.technologies.clear();
             p.victory_points = if p.id.0 == bonus_holder { 20 } else { 30 };
         }
+        // CONSERVATION (T9 review M2). Filing five country cards under a
+        // completed pile without taking them out of the piles the deal left
+        // them in MINTS five cards: at this seed three sit in the order deck
+        // and two in the boxed pile, and the state that reached the evaluator
+        // carried 41 of a 36-card game. `check_invariants` rejects it, and
+        // before this loop existed nothing here asked.
+        for id in set {
+            take_order_out_of_play(&mut state, id)?;
+        }
         state.players[usize::from(bonus_holder)].completed_orders = set.to_vec();
-        state
+        engine_valid(&state, rules, &format!("terminal game, seat {bonus_holder} holds the set"))?;
+        Ok(state)
     };
-    let (won, lost) = (finished(0), finished(1));
+    let (won, lost) = (finished(0)?, finished(1)?);
 
     for (label, state, winner) in [("won", &won, 0u8), ("lost", &lost, 1)] {
         let result = final_result(state, rules);
@@ -1374,7 +1538,13 @@ fn terminal_scoring_prefers_the_bonus_win(rules: &Rules) -> Result<(), String> {
         require(a > b, format!("ranked on running VP alone: won {a}, lost {b}"))
     };
 
-    admit(SCENARIOS[8].0, "terminal ranking on running VP alone", shipped, mutated)
+    admit(
+        SCENARIOS[8].0,
+        "terminal ranking on running VP alone",
+        "ranked on running VP alone",
+        shipped,
+        mutated,
+    )
 }
 
 /// Force `state` into the shape the engine calls finished — end-game
