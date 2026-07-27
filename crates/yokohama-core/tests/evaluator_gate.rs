@@ -440,6 +440,13 @@ fn promotion_cell_at(scale: Scale) -> CellReport {
 fn lookahead_v1_beats_family_weighted_with_an_honest_interval() {
     let report = promotion_cell_at(Scale::GATE);
     let n = report.x_unit_shares.len();
+    // The spec's N is a DESIGN INPUT (§0.1: 200 units, the 3.2 promotion-cell
+    // policy), pinned here as a LITERAL beside the direction assert (T11
+    // review): the refusal arm's surviving guards are self-referential in n
+    // (`1 − 3/n`) and satisfied for any n ≥ 7, so a silent edit of
+    // `Scale::GATE.promotion_units` would otherwise move the cell's N with the
+    // bound and nothing would say so.
+    assert_eq!(n, 200, "the promotion gate runs at the spec's pre-sized N, exactly");
 
     match report.interval {
         IntervalOutcome::Bootstrap { lo, hi, .. } => {
