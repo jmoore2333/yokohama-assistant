@@ -950,6 +950,13 @@ fn disposition(auc: &AucRow, weight: Option<i64>) -> &'static str {
 /// endpoints is telling us a straight line between two weights cannot represent
 /// it — useful input to a later non-linear stage shape, and nothing v1 acts on.
 fn shape(early: &AucRow, mid: &AucRow, late: &AucRow) -> String {
+    // A CONSTANT column's point is the 0.5 the estimator itself refuses to
+    // interval — a shape verdict resting on it would apply the refusal rule
+    // inconsistently two columns apart (T4 review), so the shape is
+    // undetermined whenever any endpoint is constant.
+    if early.constant || mid.constant || late.constant {
+        return "undetermined(const)".to_string();
+    }
     let (Some(e), Some(m), Some(l)) = (early.point, mid.point, late.point) else {
         return "-".to_string();
     };
