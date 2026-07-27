@@ -85,9 +85,45 @@ jobs:
           path: dist/*.tar.gz
           if-no-files-found: error
 
+  windows:
+    name: Windows x86_64
+    runs-on: windows-2022
+    steps:
+      # The runner's git ships autocrlf-enabled; a CRLF checkout would break
+      # the byte-identical golden comparisons (guide_sync, piped-plain) that
+      # the CLI test suite pins. Force LF before checkout.
+      - name: Force LF checkout
+        shell: bash
+        run: git config --global core.autocrlf false
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-msvc
+      - name: Test the CLI
+        run: cargo test --locked -p yokohama-cli --target x86_64-pc-windows-msvc
+      - name: Build for Windows x86_64
+        run: cargo build --locked --release -p yokohama-cli --target x86_64-pc-windows-msvc
+      - name: Package the Windows release
+        shell: pwsh
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          $ErrorActionPreference = "Stop"
+          $package = "yokohama-cli-$env:RELEASE_TAG-windows-x86_64"
+          New-Item -ItemType Directory -Force -Path "dist/$package" | Out-Null
+          Copy-Item target/x86_64-pc-windows-msvc/release/yokohama-cli.exe "dist/$package/yokohama-cli.exe"
+          Copy-Item README.md "dist/$package/README.md"
+          Copy-Item docs/cli-guide.html "dist/$package/CLI-GUIDE.html"
+          Compress-Archive -Path "dist/$package" -DestinationPath "dist/$package.zip"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows-release
+          path: dist/*.zip
+          if-no-files-found: error
+
   publish:
     name: Publish GitHub release
-    needs: [ubuntu, macos]
+    needs: [ubuntu, macos, windows]
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
@@ -100,10 +136,10 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          test "$(find dist -maxdepth 1 -name '*.tar.gz' | wc -l)" -eq 2
+          test "$(find dist -maxdepth 1 \( -name '*.tar.gz' -o -name '*.zip' \) | wc -l)" -eq 3
           install -m 0644 docs/cli-guide.html dist/yokohama-cli-guide.html
           cd dist
-          sha256sum ./*.tar.gz ./yokohama-cli-guide.html > SHA256SUMS
+          sha256sum ./*.tar.gz ./*.zip ./yokohama-cli-guide.html > SHA256SUMS
       - name: Create or update the release
         shell: bash
         env:

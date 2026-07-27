@@ -16,7 +16,7 @@ checksum = "877a4ace8713b0bcf2a4e7eec82529c029f1d0619886d18145fea96c3ffe5c0f"
 
 [[package]]
 name = "gen-data"
-version = "0.1.0"
+version = "0.3.3"
 dependencies = [
  "serde",
  "serde_yaml",
@@ -217,7 +217,7 @@ checksum = "ccf3ec651a847eb01de73ccad15eb7d99f80485de043efb2f370cd654f4ea44b"
 
 [[package]]
 name = "yokohama-cli"
-version = "0.1.0"
+version = "0.3.3"
 dependencies = [
  "rand",
  "rand_chacha",
@@ -228,7 +228,7 @@ dependencies = [
 
 [[package]]
 name = "yokohama-core"
-version = "0.1.0"
+version = "0.3.3"
 dependencies = [
  "rand",
  "rand_chacha",
@@ -238,7 +238,7 @@ dependencies = [
 
 [[package]]
 name = "yokohama-difftest"
-version = "0.1.0"
+version = "0.3.3"
 dependencies = [
  "rand",
  "rand_chacha",
@@ -250,7 +250,7 @@ dependencies = [
 
 [[package]]
 name = "yokohama-oracle"
-version = "0.1.0"
+version = "0.3.3"
 dependencies = [
  "serde",
  "serde_json",
