@@ -2,10 +2,12 @@
 //! Phase-3 MANDATORY handover item (a), 2026-07-20; anchored at the Phase 2.9
 //! differential-oracle close).
 //!
-//! WHY THIS EXISTS. A `GameRecord` already carries two compatibility stamps
+//! WHY THIS EXISTS. A `GameRecord` already carries two other stamps
 //! (`engine_version`, `rules_hash`), but NEITHER identifies the engine's
-//! executable semantics: `engine_version` is the workspace `0.1.0` that has
-//! never been bumped, and `rules_hash` fingerprints only the static
+//! executable semantics: `engine_version` is the workspace crate version,
+//! which moves only at a release cut and never with behaviour (provenance
+//! only since the 2026-07-27 decoupling -- `replay_strict` does not gate
+//! on it), and `rules_hash` fingerprints only the static
 //! card/site/token/board DATA -- not the code in `get_legal_moves` /
 //! `apply_move` / scoring / setup that turns that data into behaviour. So a
 //! change that, say, re-rules a scoring edge case moves neither stamp, and

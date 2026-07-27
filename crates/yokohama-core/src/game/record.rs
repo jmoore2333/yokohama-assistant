@@ -148,11 +148,14 @@ pub struct SeatProvenance {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct GameRecord {
     /// `env!("CARGO_PKG_VERSION")` of the engine build that produced this
-    /// record. `replay` compares this to the running engine's version and
-    /// warns on mismatch, but does not refuse to replay (see `replay`'s doc
-    /// comment). `replay_strict` (same module) IS that tightening: it
-    /// rejects a mismatch outright at event_index 0, and is the path a
-    /// training pipeline should use.
+    /// record. PROVENANCE ONLY, deliberately not a compatibility key
+    /// (2026-07-27 decoupling): the workspace version moves at a release cut
+    /// while executable semantics do not -- `semantics_rev` (with
+    /// `rules_hash` and the terminal digest) is what gates `replay_strict`,
+    /// and rev, never version, is the corpus layout's compatibility key
+    /// (`arena/corpus.rs`). Lenient `replay`
+    /// and the CLI's `Session::load` surface a drift as a warning so a
+    /// human sees which build wrote the file; nothing refuses on it.
     pub engine_version: String,
     /// `Rules::content_hash()` of the `Rules` the record was created against.
     /// `replay_strict` rejects a mismatch at event_index 0; lenient `replay`
@@ -401,12 +404,13 @@ fn rebuild_initial_state(record: &GameRecord, rules: &Rules) -> Result<GameState
 /// (`new_game` -> optional `reconcile_setup` -> `finalize_setup`), then
 /// `replay_from` folds `record.events` over the resulting state in order.
 ///
-/// Does not refuse to replay a record written by a different engine
-/// version -- v1 only warns (to stderr) on a mismatch. A future engine
-/// version could change data layout or apply a rules correction in a way
-/// that makes an old record replay to a different state than the one that
-/// produced it; `replay_strict` (Task 3) is the hard-rejecting alternative
-/// training pipelines should use instead.
+/// Warns (to stderr) on any provenance drift -- engine_version, rules_hash,
+/// semantics_rev -- and replays anyway. `replay_strict` (Task 3) is the
+/// hard-rejecting alternative training pipelines should use instead; it
+/// rejects on the SEMANTIC keys (rules_hash, semantics_rev, terminal
+/// digest) but treats `engine_version` as provenance like this function
+/// does (2026-07-27 decoupling -- a release cut must not split a
+/// rev-keyed corpus).
 ///
 /// Returns the first error encountered as a `ReplayError` naming the failed
 /// event's index (see its doc comment) -- a `new_game`/`reconcile_setup`/
@@ -444,8 +448,15 @@ pub fn replay(record: &GameRecord, rules: &Rules) -> Result<GameState, ReplayErr
 }
 
 /// Strict replay for training pipelines (design §4.1): reject, don't warn.
-/// - engine_version / rules_hash mismatch, or `semantics_rev` mismatch OR
-///   missing (`None` -- unknown provenance, fail-closed) => Err at event_index 0
+/// - `rules_hash` mismatch, or `semantics_rev` mismatch OR missing (`None`
+///   -- unknown provenance, fail-closed) => Err at event_index 0.
+///   `engine_version` is deliberately NOT a gate (2026-07-27 decoupling,
+///   spec `docs/plans/2026-07-27-replay-strict-engine-version-decouple.md`):
+///   the workspace version moves at a release cut while executable semantics
+///   do not, and the corpus layout (`arena/corpus.rs`) promises rev-keyed
+///   records strict-replay against their own `SEMANTICS_REV`; the guards
+///   below protect a forgotten rev bump at per-record granularity, which a
+///   release-cut version string cannot.
 /// - every Move event goes through the checked `apply_move` (membership)
 /// - `check_invariants` runs after EVERY event
 /// - if the record carries a `terminal_digest`, the replayed terminal state
@@ -456,18 +467,8 @@ pub fn replay(record: &GameRecord, rules: &Rules) -> Result<GameState, ReplayErr
 /// Shares `rebuild_initial_state`/`fold_one_event` with `replay`/`replay_from`
 /// (Task 3) -- there is exactly one setup preamble and one event fold in
 /// this module; strict vs. lenient is purely what each caller does with the
-/// version check and around each folded step.
+/// provenance checks and around each folded step.
 pub fn replay_strict(record: &GameRecord, rules: &Rules) -> Result<GameState, ReplayError> {
-    let running = env!("CARGO_PKG_VERSION");
-    if record.engine_version != running {
-        return Err(ReplayError {
-            event_index: 0,
-            message: format!(
-                "engine_version mismatch: record \"{}\" vs running \"{running}\" (strict mode rejects)",
-                record.engine_version
-            ),
-        });
-    }
     let expected = rules.content_hash();
     if record.rules_hash != expected {
         return Err(ReplayError { event_index: 0, message: format!(
