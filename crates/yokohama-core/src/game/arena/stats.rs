@@ -4,8 +4,14 @@
 //!
 //! THE UNIT IS NOT THE GAME. Every interval here is computed over the DESIGN
 //! UNIT — the pair at 2P, the rotation block at 3–4P — because the games inside
-//! a unit share a world seed and a bit-identical starting state, so they are
-//! not independent observations. Treating them as independent is not a rounding
+//! a unit share a world seed and (in a Keep-HOMOGENEOUS cell) a bit-identical
+//! starting state, so they are not independent observations. Since Phase 3.3's
+//! mixed-Keep cells (spec §5.5; the report's `setup-identical=no`), a unit's
+//! games may resolve the same deal by two different Keep rules — still
+//! seed-paired at `new_game` and swap-balanced, no longer setup-identical; the
+//! unit bootstrap is valid either way (ledger row 15: pairing is bookkeeping,
+//! the swap is what removes the seat effect — `game/arena.rs`'s module doc
+//! carries the full scoping). Treating them as independent is not a rounding
 //! error: E2 measured 4P within-block correlation ρ = +0.051, which drags a
 //! nominal 95% interval down to ~93.2% true coverage. That is why
 //! Wilson-on-pooled-games is PRINTED as a cross-check and is NEVER the primary
@@ -847,10 +853,13 @@ fn spec_echo(spec: &CellSpec, master: u64, resample_seed: u64) -> String {
     // 15: pairing is bookkeeping, the swap is what removes the seat effect) —
     // what changes is what a reader may claim about the units.
     //
-    // SPELLED `key=value`, not the spec's prose `setup-identical: yes|no`: this
-    // echo is one space-delimited token list and a token carrying an interior
-    // space would break every reader of it, the golden's own delimited-token
-    // check included. Recorded as a deliberate formatting deviation.
+    // SPELLED `key=value`, not the spec's prose `setup-identical: yes|no`,
+    // matching every other token in this echo (`cell=`, `master=`, `fixed-N=`).
+    // The T6 review corrected this comment's original grounds, which were
+    // FALSE: the echo already carries interior-space VALUES (`unit=pair (2
+    // seatings)`), and the golden's token checks are substring `contains` that
+    // a colon spelling would not have disturbed. The `key=value` spelling is
+    // kept for consistency, not necessity. Recorded formatting deviation.
     let setup_identical = if spec.x.keep_kind() == spec.y.keep_kind() { "yes" } else { "no" };
     format!(
         "cell={} players={} x={} y={} units={} unit={} games={} \
@@ -974,6 +983,7 @@ fn cross_checks(
 mod tests {
     use super::*;
     use crate::game::greedy::{GREEDY_CONTROLLER, GREEDY_IMPL_VERSION};
+    use crate::types::OrderCardId;
     use crate::game::policy::POLICY_IMPL_VERSION;
     use rand::{Rng, SeedableRng};
     use rand_chacha::ChaCha8Rng;
@@ -1699,5 +1709,67 @@ mod tests {
             serde_json::to_string(&report).unwrap(),
             "emitting changed the report",
         );
+    }
+
+    /// T6-review should-fix 2: the §0.3(b) cell-level identity was tested only
+    /// for the GREEDY arm while spec §0.1's contestant under test is
+    /// Lookahead-v1 — `build_search` and the `ExplainHandle::Search` arm ran
+    /// under no committed test. Same shape as the greedy cell above at
+    /// deliberately SMALL knobs (b=1, m=2: the identity is about the tally
+    /// path, not strength, and a B=4 lookahead game is ~14x dearer in debug).
+    /// Covers S1; S2 shares `build_search` and the same tally type.
+    #[test]
+    fn a_lookahead_x_cell_counts_and_labels_every_move_it_explained() {
+        let rules = Rules::standard();
+        let spec = CellSpec {
+            name: "t6r-lookahead-vs-fw-counters".to_string(),
+            players: 2,
+            x: Contestant::LookaheadV1 { b: 1, k: 1, m: 2 },
+            y: Contestant::Policy(RolloutPolicy::FAMILY_WEIGHTED_DEFAULT),
+            units: 1,
+            master: SeedScheduleKind::Diagnostic(MASTER),
+        };
+        let report = run_cell(&spec, &rules).expect("the lookahead cell runs");
+        assert_eq!(
+            report.x_explanations,
+            Some(report.x_applied_moves),
+            "every move the search rung applied must carry an explanation \
+             (§0.3(b) at cell level, S1 arm)",
+        );
+        assert!(report.x_applied_moves > 0, "the cell must actually have played");
+        assert!(
+            report.spec_echo.contains("x=lookahead-v1@v1{"),
+            "the X seat's provenance must be the search rung's descriptor: {}",
+            report.spec_echo,
+        );
+    }
+
+    /// T6-review should-fix 3: `KeepKind::EvaluatorScored` groups all three
+    /// evaluator contestants on the CLAIM that they share one Keep function —
+    /// and `setup-identical=yes` on an evaluator-vs-evaluator cell rests
+    /// entirely on it. The rung side of the same claim is pinned at
+    /// `arena.rs` over 72 (seat x deal) cases; this is the evaluator analog.
+    /// Seeds differ MAXIMALLY so agreement cannot come from a shared stream —
+    /// the Keep must be a function of the deal alone.
+    #[test]
+    fn every_evaluator_contestant_shares_one_keep_function() {
+        let rules = Rules::standard();
+        let (mut greedy, _) = Contestant::GREEDY_V1_DEFAULT.build(&rules, 7);
+        let (mut s1, _) = Contestant::LOOKAHEAD_V1_DEFAULT.build(&rules, u64::MAX / 5);
+        let (mut s2, _) = Contestant::ATOMIC_DIAG_DEFAULT.build(&rules, u64::MAX - 11);
+        for seat in 0..4u8 {
+            for card in 1..=18u8 {
+                let deal = [OrderCardId(card), OrderCardId(card + 18)];
+                let g = greedy.choose_starting_order(PlayerId(seat), &deal);
+                let a = s1.choose_starting_order(PlayerId(seat), &deal);
+                let b = s2.choose_starting_order(PlayerId(seat), &deal);
+                assert!(
+                    g == a && a == b,
+                    "the three evaluator contestants' Keeps diverged at seat {seat}, \
+                     deal {deal:?}: greedy {g}, s1 {a}, s2 {b} — KeepKind::EvaluatorScored \
+                     (and every setup-identical=yes it prints) rests on their agreement",
+                );
+            }
+        }
     }
 }

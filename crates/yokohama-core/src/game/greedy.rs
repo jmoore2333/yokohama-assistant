@@ -533,15 +533,6 @@ fn country_scarcity(country: Country, rules: &Rules) -> i64 {
 // Provenance identity
 // ---------------------------------------------------------------------------
 
-/// A 64-bit digest of both weight vectors, cast to `i64` for the provenance
-/// params map (which is `i64`-valued).
-///
-/// It IDENTIFIES a table; it does not order or describe one. Two records
-/// carrying the same `weights` value were produced by the same thirty numbers,
-/// which is what a corpus reader needs to know before pooling them —
-/// `EVAL_IMPL_VERSION` rides alongside for the coarser "same evaluator
-/// implementation" question. Folded with `seeds::splitmix64`, the crate's one
-/// mixing primitive, rather than a second hand-rolled constant set.
 /// THE provenance of a Greedy-v1 seat at these knobs — name, version and knob
 /// map in one place.
 ///
@@ -570,6 +561,15 @@ pub fn controller_provenance(
     }
 }
 
+/// A 64-bit digest of both weight vectors, cast to `i64` for the provenance
+/// params map (which is `i64`-valued).
+///
+/// It IDENTIFIES a table; it does not order or describe one. Two records
+/// carrying the same `weights` value were produced by the same thirty numbers,
+/// which is what a corpus reader needs to know before pooling them —
+/// `EVAL_IMPL_VERSION` rides alongside for the coarser "same evaluator
+/// implementation" question. Folded with `seeds::splitmix64`, the crate's one
+/// mixing primitive, rather than a second hand-rolled constant set.
 pub fn weight_table_identity(weights: &WeightTable) -> i64 {
     let mut acc: u64 = 0x3E1D_2026_0726_0003;
     for w in weights.early.iter().chain(weights.late.iter()) {
