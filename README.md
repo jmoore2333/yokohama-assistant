@@ -5,8 +5,10 @@ A Rust engine, live-game CLI tracker, and verification stack for the board game 
 
 > [!IMPORTANT]
 > **Testing the CLI? Start with the [HTML CLI guide](docs/cli-guide.html).** Ready-to-run
-> Ubuntu and Apple Silicon macOS builds are on the [Releases page](https://github.com/jmoore2333/yokohama-assistant/releases);
-> each download also includes an offline copy of the guide.
+> builds for Apple Silicon macOS, Ubuntu x86_64, and (new in v0.3.3) Windows x86_64 are on the
+> [Releases page](https://github.com/jmoore2333/yokohama-assistant/releases) — current release
+> **v0.3.3**, the first full (non-pre) release; each download also includes an offline copy of
+> the guide.
 
 **Priority order:** 1) engine-validated move-by-move tracking of live games via CLI →
 2) a computer player → 3) computer vision / AR assist (deferred; the original 2025 AR-first
@@ -53,6 +55,11 @@ experiment (shallow-search-scaled vs MCTS at matched budgets — kickoff prompt:
 [`docs/plans/2026-07-27-phase3.4-kickoff-prompt.md`](docs/plans/2026-07-27-phase3.4-kickoff-prompt.md)).
 The CLI is tester-ready; start with the linked HTML guide and report any table/CLI mismatch.
 
+Releases now track completed phases (**v0.3.3** ↔ Phase 3.3; the first version bump in the
+repo's history, and the first with a Windows build). Saves and self-play records are
+compatibility-keyed to the game-semantics revision (`SEMANTICS_REV`), not the release version
+(PR #14), so they survive release cuts.
+
 ## Workspace crates
 
 | Crate | What it is |
@@ -66,10 +73,12 @@ The CLI is tester-ready; start with the linked HTML guide and report any table/C
 ## Download and run
 
 Download the archive for your system from
-[GitHub Releases](https://github.com/jmoore2333/yokohama-assistant/releases):
+[GitHub Releases](https://github.com/jmoore2333/yokohama-assistant/releases) — current release
+**v0.3.3**:
 
-- `ubuntu-x86_64` is a static binary for 64-bit Ubuntu Linux.
 - `macos-apple-silicon` is optimized for Apple Silicon Macs (M1 or newer).
+- `ubuntu-x86_64` is a static binary for 64-bit Ubuntu Linux.
+- `windows-x86_64` is a 64-bit Windows build (new in v0.3.3).
 
 Extract the archive, open a terminal in the extracted directory, and run:
 
@@ -77,9 +86,17 @@ Extract the archive, open a terminal in the extracted directory, and run:
 ./yokohama-cli
 ```
 
+or on Windows (PowerShell):
+
+```powershell
+.\yokohama-cli.exe
+```
+
 The macOS build is ad-hoc signed rather than notarized. If macOS quarantines it, approve it in
 **System Settings → Privacy & Security**, or run
-`xattr -d com.apple.quarantine ./yokohama-cli` before launching it.
+`xattr -d com.apple.quarantine ./yokohama-cli` before launching it. On Windows, use
+**Windows Terminal** for color output — classic conhost may show raw escape codes — or set
+`NO_COLOR=1` to force plain text on any platform.
 
 For the full walkthrough, setup instructions, commands, and troubleshooting, use the
 **[HTML CLI guide](docs/cli-guide.html)**. The same guide is included as `CLI-GUIDE.html` in each
