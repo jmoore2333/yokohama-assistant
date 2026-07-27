@@ -86,15 +86,31 @@ fn strict_replay_matches_normal_replay_on_a_clean_record() {
     assert_eq!(replay_strict(&record, &rules).unwrap(), final_state);
 }
 
+/// THE RELEASE-CUT SCENARIO (2026-07-27 decoupling, spec
+/// `docs/plans/2026-07-27-replay-strict-engine-version-decouple.md`):
+/// `engine_version` is PROVENANCE, not a compatibility key. The workspace
+/// version moves at a release cut while `SEMANTICS_REV` stays put, and the
+/// corpus layout (`arena/corpus.rs`) files records by rev alone -- so a
+/// record that is same-rev, same-rules and digest-stamped must strict-replay
+/// clean across an engine_version drift, or every release cut splits a rev-N
+/// corpus in half. (Replaces
+/// `strict_replay_rejects_engine_version_mismatch_instead_of_warning`, the
+/// 2026-07-19 engine-authority pin written one day before `SEMANTICS_REV`
+/// existed; the semantic guards -- rules_hash, semantics_rev, checked
+/// per-event apply + invariants, terminal digest -- all still run here.
+/// The digest is REACHED, not enforced, by this test: the stamp makes the
+/// `Some` arm execute on the accept side, while rejection stays pinned by
+/// `strict_replay_rejects_a_wrong_terminal_digest`.)
 #[test]
-fn strict_replay_rejects_engine_version_mismatch_instead_of_warning() {
+fn strict_replay_accepts_engine_version_drift_at_same_semantics_rev() {
     let rules = Rules::standard();
-    let (_, mut record) = common::run_recorded_game(7, 2, &rules);
-    record.engine_version = "0.0.0-tampered".into();
-    let err = replay_strict(&record, &rules).unwrap_err();
-    assert_eq!(err.event_index, 0);
-    assert!(err.message.contains("engine_version"));
-    // and the lenient path still replays (warn-and-continue preserved):
+    let (final_state, mut record) = common::run_recorded_game(7, 2, &rules);
+    record.stamp_terminal_digest(&final_state);
+    record.engine_version = "0.0.0-other-release".into();
+    let replayed = replay_strict(&record, &rules)
+        .expect("same semantics_rev + same rules_hash must strict-replay across a version drift");
+    assert_eq!(replayed, final_state, "and reproduce the exact recorded terminal state");
+    // Lenient replay keeps its warn-and-continue diagnostics (unchanged).
     assert!(replay(&record, &rules).is_ok());
 }
 
@@ -181,9 +197,10 @@ fn strict_replay_rejects_a_broken_state_though_every_event_applied() {
 }
 
 // --- Phase 2.9 close-out: semantics-revision stamp + terminal-state digest ---
-// guidingpath Phase-3 MANDATORY handover item (a): today's `engine_version`
-// (never-bumped workspace 0.1.0) and `rules_hash` (static DATA only) don't
-// identify executable semantics, so a legality/apply/scoring/setup change
+// guidingpath Phase-3 MANDATORY handover item (a): `engine_version` (the
+// workspace crate version -- moves only at a release cut, never with
+// behaviour) and `rules_hash` (static DATA only) don't identify executable
+// semantics, so a legality/apply/scoring/setup change
 // moves neither stamp and `replay_strict` would silently reinterpret an old
 // record. `SEMANTICS_REV` closes that gap; the terminal digest is the
 // defense-in-depth backstop on top of the per-event invariant checks.
@@ -199,7 +216,9 @@ fn records_stamp_the_running_semantics_rev() {
 /// Strict replay rejects a record whose `semantics_rev` differs from this
 /// engine's -- the whole point of the stamp: a behaviour change bumps the
 /// rev, and an old record must not be silently reinterpreted. Lenient replay
-/// still warns-and-continues, mirroring the engine_version/rules_hash split.
+/// still warns-and-continues, mirroring the `rules_hash` split (since the
+/// 2026-07-27 decoupling, `engine_version` has no such split -- it warns in
+/// BOTH modes and gates neither).
 #[test]
 fn strict_replay_rejects_semantics_rev_mismatch_but_lenient_continues() {
     let rules = Rules::standard();

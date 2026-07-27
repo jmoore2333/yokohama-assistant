@@ -57,9 +57,10 @@ fn main() {
 
     // Strict gate (guidingpath I5): before trusting any metric off a
     // submitted save, hold it to the bar a training pipeline would. Strict
-    // replay rejects an engine_version / rules_hash / semantics_rev mismatch,
-    // runs check_invariants after every event, and (if the record was
-    // stamped) verifies the terminal-state digest -- so a corpus produced
+    // replay rejects a rules_hash / semantics_rev mismatch (engine_version
+    // is provenance, not a gate -- 2026-07-27 decoupling), runs
+    // check_invariants after every event, and (if the record was stamped)
+    // verifies the terminal-state digest -- so a corpus produced
     // under different executable semantics fails loudly here instead of being
     // silently reinterpreted and folded into the stats.
     let final_state = replay_strict(&record, &rules).unwrap_or_else(|e| {
