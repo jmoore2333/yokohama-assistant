@@ -58,7 +58,7 @@ Questions are asked one at a time. An invalid answer re-asks the SAME question a
 | Seed | any integer, or **blank** for a time-derived one (it echoes `seed: N` — write it down; it is the game's identity) |
 | Save path | a path, or **blank** for `yokohama-game-<seed>.json` in the current directory |
 
-**Sim tail:** for each seat the two dealt order cards are shown (`O07 [Britain]  needs …  ->  …`); answer `keep 0/1` with `0` or `1`.
+**Sim tail:** for each seat the two dealt order cards are shown, numbered `[0]`/`[1]` and each carrying a `(bot Keep score N)` — what the built-in bot (§4) would prefer, read off the card's printed economics alone. It is hand-set and unmeasured, and a note under the pair says so; the choice is yours. Answer `keep 0/1` with `0` or `1`.
 
 **Bot seats (sim only):** the sim tail's last question is `Bot seats?`. **Blank** — just Enter — means none, and the game is exactly the all-human one described everywhere else. Otherwise type the seat numbers a bot should play, space-separated: `1`, or `0 2`. At least one seat must stay human (an all-bot table is refused and the question re-asks), and there is no live-mode equivalent — a bot cannot read a face-down card off your table. Every bot plays the engine's `family-weighted` policy; the wizard draws a full-width stream key for them and echoes it as `bot seed: N`, so write that down beside the game seed if you want the bot's line to be reproducible. The setup review names them (`bots: seat 1 playing family-weighted (seed N)`), `edit bots` re-asks the question, and the answer travels in the save file — a resumed game comes back with the same seats botted.
 
@@ -195,6 +195,56 @@ Turn 3 | Red | Additional actions (before) | 3 yen 0 VP | c1 s1 t1 f1 i0 | hand 
 
 The first two lines are your own move's summary; the four `Seat 1` lines are the bot's turn; the two `Blue:` lines are that turn's single summary, and the `Turn … -> Turn …` line between them is the hand-over marker the summary brackets. Read the summary as a NET change — an assistant a bot places and then recovers in the same turn nets out of it, which is why the per-move lines above it, and `log`, are the record of what actually happened. The bot decides from the same masked view of the game a seated player gets — its own hand, the public board, and a guess at everything hidden — and never from the engine's private state; that is a property the test suite pins rather than a claim about how well it plays. It is a rollout policy, not a strong opponent: it is here so a whole game can be driven end to end without a second person, and playing to win is a later phase's job.
 
+**Asking the bot for a move (simulation only).** `suggest` runs the built-in evaluator bot on **your own seat's view** and prints what it would play, the arithmetic behind it, and what it nearly played instead. It applies nothing, records nothing, and does not autosave — press it as often as you like, at any decision point, and the game is exactly where you left it. Pressing it twice at one position gives byte-identical output: the bot's randomness is keyed by the game's identity, your seat, and how many moves have been played, so "same position" and "same answer" are the same condition — play a move (or `undo` one) and the answer is free to change. It is deliberately **absent in live mode**, where it prints a refusal instead: a live game's hidden cards are a model reconciled from the physical table rather than the engine's own deck, so the search would be reading a position nobody is playing. A captured suggestion, mid-simulation:
+
+```
+─ Suggest ──────────────────────────────
+Seat 0 (Red) · lookahead-v1 · beam 4, K=1, M=8, eval v2 · stream 0x9e9a6a9c009baa79
+Suggested move:
+  Place 2 assistants in Laboratory A (A01)
+
+The line it searched, 7 move(s) to the hand-over (the move above is step 1):
+  1. Place 2 assistants in Laboratory A (A01)
+  2. Place President from hand in Laboratory A (A01)
+  3. Laboratory: acquire University, +2 yen
+  4. Skip the 5-Power token
+  5. Build a Shophouse (space 1: 1vp)
+  6. Use University: pay 1 yen, take an assistant from the warehouse
+  7. End additional-action phase
+
+Score at that point: 100   ·   stage 125000/1000000 ppm (0 = opening, 1000000 = end trigger)
+  feature                        you   best opp   weight     product
+  victory_points                   1          0       13          13
+  country_bonus_now                0          0       14           0
+  tech_bonus_now                  10          0        7          70
+  church_bonus_now                 0          0       -2           0
+  customs_bonus_now                0          0        5           0
+  assistants_in_hand_core          2          2       29           0
+  assistants_in_hand_excess        4          2        4           8
+  assistants_in_warehouse         11         12      -10          10
+  assistants_on_board              3          4       14         -14
+  shophouses_built                 1          0       13          13
+  trading_houses_built             0          0       16           0
+  five_power_tokens                0          0        8           0
+  imported_goods                   0          0        5           0
+  achievement_progress_sum         1          1        2           0
+  mercenaries_total                0          0        3           0
+  hand_size                        1          1       -3           0
+  TOTAL                                                          100
+
+Runner-ups (margin against the suggestion, so 0 means tied) — 186 candidate(s) ranked:
+         -20  Place 1 assistant in each of: Port A (A00), Tea Plantation (A02), Fishing Groun…
+         -20  Place 1 assistant in each of: Port A (A00), Tea Plantation (A02), Silk Mill (A0…
+         -20  Place 1 assistant in each of: Port A (A00), Tea Plantation (A02), Bank (A06)
+This is the bot's arithmetic, not advice: each row is (your value − the best
+opponent's) × the weight for this stage, summed. It read ONE guess at the hidden
+cards, and its weights are hand-set rather than tuned.
+```
+
+**Reading it.** The header names the search that ran — `lookahead-v1`, a 4-wide beam over ONE sampled guess at the hidden cards, evaluator version `v2` — and the stream key that press used, so two presses that differ can be told apart at a glance. **The line it searched** is the sequence the bot valued the move by: it plays *its own* turn out to the hand-over and scores the position **there**, which is why the score belongs to the end of that line and not to the first move alone. That line lives inside the sampled world, and if a step stops matching your real position the tool says so under the list. **The table** is that score, term by term: your value for a feature, the best opponent's value, the weight that feature carries at this stage (weights slide from an early-game set to a late-game one, and `stage` is how far along the tool thinks the game is), and their product; the products sum to `TOTAL`. **Runner-ups** are the next-best candidates with their margin against the suggestion — a `0` margin is a genuine tie, and a line under them says how many candidates tie at the top. It is the tallest screen this tool prints (roughly 45 rows under the board): on a short terminal the board scrolls off above it, which costs nothing — the suggestion itself stays on screen and the board redraws on your next input — and `panel` or `screen` (§2) buys those rows back.
+
+**It is arithmetic, not advice.** The weights are hand-set rather than tuned, the search is one turn deep in one sampled world, the opponents' hidden cards are guessed, and nothing here has been measured against a human player. What it gives you is a window on what the bot thinks — which is exactly what makes it useful for this testing round: a suggestion that is obviously wrong at the table is worth reporting (§9).
+
 ## 5. Commands
 
 ```
@@ -216,6 +266,7 @@ hand            show the current player's order-card hand
 score           show current VP/money (or the final scores once the game is over)
 log             show the tail of the move/event log
 view            open the numbered game-info menu over all of the views above ('views'/'?' also work)
+suggest         simulation only: what the built-in bot would play from your seat, with its arithmetic
 privacy         toggle hiding hand contents in views (default: hidden in live mode)
 panel           toggle the players panel inside the composed screen (terminal only)
 screen          toggle the composed screen itself (terminal only; pipes are always plain)

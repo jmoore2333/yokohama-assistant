@@ -680,6 +680,24 @@ pub struct RootValue {
     pub leaf: u32,
 }
 
+/// One root candidate's value AFTER the K worlds are folded together — what
+/// [`LookaheadAgent::last_roots`] reports.
+///
+/// A separate type from [`RootValue`] on purpose: that one is a per-WORLD
+/// result and carries a `leaf` index into that world's own [`Trace`], which is
+/// meaningless once K worlds have been aggregated. This one carries only what
+/// survives the fold — the move and its K-mean.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RootScore {
+    /// The candidate move.
+    pub mv: Move,
+    /// Its K-mean value (integer division, rounding toward zero — at the
+    /// shipped `K = 1` the searched value itself). The agent's pick is one of
+    /// the maximisers of this number, so a caller can read the MARGIN of any
+    /// other candidate as `value − max`.
+    pub value: i64,
+}
+
 /// One world's search: every root candidate valued, plus the decision-point
 /// volume observation and the cost counters.
 #[derive(Debug, Clone)]
@@ -1356,6 +1374,7 @@ pub struct LookaheadAgent {
     counters: SearchTally,
     last_explanation: Option<Explanation>,
     last_continuation: Vec<Move>,
+    last_roots: Vec<RootScore>,
     last_stats: Option<SearchStats>,
 }
 
@@ -1411,6 +1430,7 @@ impl LookaheadAgent {
             counters: SearchTally::default(),
             last_explanation: None,
             last_continuation: Vec::new(),
+            last_roots: Vec::new(),
             last_stats: None,
         }
     }
@@ -1456,6 +1476,29 @@ impl LookaheadAgent {
     /// asserts it stayed at 0.
     pub fn last_continuation(&self) -> &[Move] {
         &self.last_continuation
+    }
+
+    /// EVERY root candidate of the last decision with its folded value, in the
+    /// order the candidate scheme offered them (never re-sorted here — a caller
+    /// that wants a ranking owns that presentation choice).
+    ///
+    /// Stored for the same reason [`last_continuation`](Self::last_continuation)
+    /// is: T10's `suggest` has to render the MARGINS between the chosen move and
+    /// its runner-ups, and spec §0.3 is explicit that a surface renders the
+    /// search's own output rather than re-deriving it — a second, independently
+    /// keyed search in the CLI could rank a different move first and there would
+    /// be no fact of the matter about which answer the bot gave.
+    ///
+    /// It costs one `Vec` per decision and no `Move` clones: the aggregate the
+    /// argmax already built is MOVED here rather than copied, so nothing on
+    /// §4.4's budget grows by more than an allocation the decision was going to
+    /// make anyway.
+    ///
+    /// The chosen move is always among these at the maximum value; which
+    /// maximiser it is comes from the §3.2 keyed tie draw, so the runner-up list
+    /// alone does not determine the pick.
+    pub fn last_roots(&self) -> &[RootScore] {
+        &self.last_roots
     }
 
     /// The last decision's cost counters.
@@ -1579,16 +1622,23 @@ impl ArenaAgent for LookaheadAgent {
                 tied.push(i);
             }
         }
-        let chosen = &agg[tied[ctx.ties.pick(TieSite::Root, tied.len())]];
-        let mv = chosen.mv.clone();
+        // Read out of the aggregate what the rest of this method needs, then
+        // MOVE the aggregate into `last_roots` below — the borrow ends here so
+        // the runner-up list costs an allocation rather than a `Move` clone per
+        // candidate.
+        let chosen_index = tied[ctx.ties.pick(TieSite::Root, tied.len())];
+        let (mv, chosen_line, chosen_world) = {
+            let chosen = &agg[chosen_index];
+            (chosen.mv.clone(), chosen.line.clone(), chosen.world)
+        };
 
         // Spec §0.3(b): the chosen move is explained ALWAYS, and the
         // explanation is taken at the state the search VALUED — replay the
         // principal continuation in the world it was searched in. Replaying
         // (≤ ~17 moves) is cheaper than carrying a `PlayerView` per root
         // candidate through the search, and it cross-checks the value for free.
-        let mut at = worlds[chosen.world].clone();
-        for step in &chosen.line {
+        let mut at = worlds[chosen_world].clone();
+        for step in &chosen_line {
             at = apply_move_unchecked(&at, step, rules).map_err(|e| {
                 format!(
                     "{}: principal continuation {step:?} failed to replay: {e}",
@@ -1607,8 +1657,10 @@ impl ArenaAgent for LookaheadAgent {
             explanation.total,
         );
 
-        self.last_continuation = chosen.line.clone();
+        self.last_continuation = chosen_line;
         self.last_explanation = Some(explanation);
+        self.last_roots =
+            agg.into_iter().map(|a| RootScore { mv: a.mv, value: a.sum / a.count }).collect();
         self.last_stats = Some(stats);
         let counters = &self.counters.counters;
         counters.explained.fetch_add(1, Ordering::Relaxed);
@@ -2094,6 +2146,57 @@ mod tests {
             stats.nodes,
             stats.scored,
         );
+    }
+
+    /// T10's rendering hook (spec §7): after a decision the agent reports EVERY
+    /// root candidate with the value it folded to, and the move it actually
+    /// returned is one of the maximisers — which is what makes
+    /// `value − max` a MARGIN the CLI can print rather than a number of unclear
+    /// sign.
+    ///
+    /// Anti-vacuity is load-bearing twice over: the fixture must offer more than
+    /// one root (otherwise "the chosen move is a maximiser" is trivial), and at
+    /// least two DISTINCT values must appear (otherwise a constant-valued
+    /// reporter would pass — the shipped `WeightTable::V1` is what separates
+    /// them, and `WeightTable::ZERO` is what would not).
+    #[test]
+    fn last_roots_reports_every_root_candidate_with_its_folded_value() {
+        let rules = Rules::standard();
+        let (world, seat) = placement_point(&rules);
+        let view = observe(&world, seat).expect("observe");
+        let mut agent = LookaheadAgent::new(&rules, 0x7100_0000_0000_0001);
+        let report = agent.choose(&view, &rules).expect("the honest chain produces a move");
+        let roots = agent.last_roots();
+        let stats = *agent.last_stats().expect("stats");
+
+        assert!(roots.len() > 1, "anti-vacuity: a one-candidate point cannot test a ranking");
+        // Never MORE than the root candidates the search counted: the aggregate
+        // folds equal moves across worlds (a no-op at K = 1) and the candidate
+        // scheme already de-duplicates within a family, so at K = 1 this is an
+        // equality in practice — asserted as `<=` because the fold, not the
+        // count, is the property being pinned.
+        assert!(
+            roots.len() as u64 <= stats.root_candidates,
+            "{} reported roots against {} root candidates searched",
+            roots.len(),
+            stats.root_candidates,
+        );
+        for (i, r) in roots.iter().enumerate() {
+            assert!(
+                !roots[..i].iter().any(|earlier| earlier.mv == r.mv),
+                "a move appears twice in the ranking: {:?}",
+                r.mv,
+            );
+        }
+
+        let best = roots.iter().map(|r| r.value).max().expect("non-empty");
+        let worst = roots.iter().map(|r| r.value).min().expect("non-empty");
+        assert!(best > worst, "anti-vacuity: the evaluator must separate these candidates");
+        let chosen = roots
+            .iter()
+            .find(|r| r.mv == report.mv)
+            .expect("the returned move must be one of the reported roots");
+        assert_eq!(chosen.value, best, "the agent picks a maximiser; the ranking must say so");
     }
 
     // -- the tie discipline (spec §3.2 at every tie point) --------------------
