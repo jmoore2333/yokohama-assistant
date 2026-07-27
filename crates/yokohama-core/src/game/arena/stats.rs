@@ -189,6 +189,30 @@ impl ExplainHandle {
             Self::Search(t) => t.explained(),
         }
     }
+
+    /// Continuations [`MAX_TURN_PLIES`](crate::game::lookahead::MAX_TURN_PLIES)
+    /// stopped — `None` for a contestant with NO SEARCH, on
+    /// [`explained`](Self::explained)'s own `Option` grounds one level down: a
+    /// one-ply argmax has no continuation to truncate, and a `0` would read as
+    /// "searched and never hit the guard".
+    pub fn ply_cap_hits(&self) -> Option<u64> {
+        match self {
+            Self::Greedy(_) => None,
+            Self::Search(t) => Some(t.ply_cap_hits()),
+        }
+    }
+
+    /// Free extensions
+    /// [`MAX_FREE_EXTENSION`](crate::game::lookahead::MAX_FREE_EXTENSION)
+    /// stopped, same `None` rule. `Some(0)` for an S1 contestant is structural
+    /// rather than evidence — the turn-boundary scheme never enters the
+    /// quiescence arm.
+    pub fn free_cap_hits(&self) -> Option<u64> {
+        match self {
+            Self::Greedy(_) => None,
+            Self::Search(t) => Some(t.free_cap_hits()),
+        }
+    }
 }
 
 impl Contestant {
@@ -430,6 +454,26 @@ pub struct CellReport {
     /// `x_explanations == Some(x_applied_moves)`: total, and non-vacuous without
     /// a second guard.
     pub x_explanations: Option<u64>,
+    /// Continuations X's search had stopped by
+    /// [`MAX_TURN_PLIES`](crate::game::lookahead::MAX_TURN_PLIES), summed over
+    /// the cell's games. **Expected 0.**
+    ///
+    /// `None` when X HAS NO SEARCH (a rung or the one-ply argmax), on
+    /// [`x_explanations`](Self::x_explanations)'s rule. Surfaced at the six-lens
+    /// review: the counter was already being cloned out per X seat per game and
+    /// then dropped, so the gate deciding 3.3's promotion checked nothing about
+    /// the guard across its 1,472 games. A cap hit is not a wrong answer, but a
+    /// capped line is valued MID-TURN, so a cell that starts hitting the guard
+    /// is measuring something slightly different from the one that set the
+    /// figures — which is a thing a report should say rather than a thing a
+    /// reader should assume.
+    pub x_ply_cap_hits: Option<u64>,
+    /// Free extensions X's search had stopped by
+    /// [`MAX_FREE_EXTENSION`](crate::game::lookahead::MAX_FREE_EXTENSION), same
+    /// `None` rule and same expectation. `Some(0)` from an S1 contestant is
+    /// structural (it never runs the quiescence arm); the figure has content
+    /// only for the S2 diagnostic.
+    pub x_free_cap_hits: Option<u64>,
     /// End-trigger counts over the cell's games — one player count per tally,
     /// as [`TriggerTally`] requires.
     pub trigger: TriggerTally,
@@ -516,8 +560,12 @@ pub fn run_cell_emitting(
     let mut x_applied_moves = 0u64;
     // `None` until an X seat hands back an explanation handle — which is how the
     // report distinguishes "this contestant has no explanation path" from "it
-    // explained nothing" (see `CellReport::x_explanations`).
+    // explained nothing" (see `CellReport::x_explanations`). The two cap
+    // counters follow the same rule one level down: `None` until a SEARCHING X
+    // hands one back.
     let mut x_explanations: Option<u64> = None;
+    let mut x_ply_cap_hits: Option<u64> = None;
+    let mut x_free_cap_hits: Option<u64> = None;
 
     for _ in 0..spec.units {
         let seed = schedule.next_world();
@@ -581,6 +629,12 @@ pub fn run_cell_emitting(
             x_applied_moves += stats.moves_by_seat[x_seat.0 as usize];
             for handle in &x_handles {
                 *x_explanations.get_or_insert(0) += handle.explained();
+                if let Some(hits) = handle.ply_cap_hits() {
+                    *x_ply_cap_hits.get_or_insert(0) += hits;
+                }
+                if let Some(hits) = handle.free_cap_hits() {
+                    *x_free_cap_hits.get_or_insert(0) += hits;
+                }
             }
 
             if stats.result.winner == x_seat {
@@ -660,6 +714,8 @@ pub fn run_cell_emitting(
         applied_by_seat,
         x_applied_moves,
         x_explanations,
+        x_ply_cap_hits,
+        x_free_cap_hits,
         trigger,
         master,
     })
@@ -1396,6 +1452,16 @@ mod tests {
             "Greedy-v1 played a move it did not explain (or explained one it did not play)",
         );
 
+        // -- the cap counters: a one-ply argmax has NO search, so `None` -------
+        // The three-way distinction the Options carry: no explanation path
+        // (rung), an explanation path but no search (this cell), and a search
+        // whose guards did not fire (the lookahead cell below).
+        assert_eq!(
+            (report.x_ply_cap_hits, report.x_free_cap_hits),
+            (None, None),
+            "Greedy-v1 has no continuation to truncate, and a Some(0) would claim it searched",
+        );
+
         // -- §5.2: provenance, from the controllers' own descriptors ------------
         let greedy_seats: Vec<usize> = per_game
             .iter()
@@ -1439,6 +1505,11 @@ mod tests {
         assert_eq!(
             rung_report.x_explanations, None,
             "a rollout rung has no explanation path, which is not the same fact as explaining zero",
+        );
+        assert_eq!(
+            (rung_report.x_ply_cap_hits, rung_report.x_free_cap_hits),
+            (None, None),
+            "a rung produces no handle at all, so there is nothing to read a cap counter off",
         );
         assert!(rung_report.x_applied_moves > 0, "the rung still played");
         assert!(rung_report.spec_echo.contains("setup-identical=yes"), "{}", rung_report.spec_echo);
@@ -1737,6 +1808,16 @@ mod tests {
              (§0.3(b) at cell level, S1 arm)",
         );
         assert!(report.x_applied_moves > 0, "the cell must actually have played");
+        // The SEARCHING side of the same Options (six-lens review): a search
+        // contestant reports `Some`, and the guards are expected not to fire.
+        // The free counter is `Some(0)` structurally here — S1 never enters the
+        // quiescence arm — so what this pins is the plumbing, not S2's guard.
+        assert_eq!(
+            report.x_ply_cap_hits,
+            Some(0),
+            "MAX_TURN_PLIES stopped a continuation, so some move was explained mid-turn",
+        );
+        assert_eq!(report.x_free_cap_hits, Some(0), "S1 cannot reach the quiescence guard at all");
         assert!(
             report.spec_echo.contains("x=lookahead-v1@v1{"),
             "the X seat's provenance must be the search rung's descriptor: {}",

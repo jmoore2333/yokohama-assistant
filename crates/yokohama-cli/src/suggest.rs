@@ -76,6 +76,30 @@ const SUGGEST_SALT: u64 = 0x5966_2026_0727_0001;
 /// Runner-ups shown below the suggestion (spec §7's "top-k", k small).
 const RUNNER_UPS_SHOWN: usize = 3;
 
+/// The runner-up block's heading, without its trailing candidate count.
+///
+/// `pub` because the guide pair quotes a captured `suggest` screen verbatim and
+/// `guide_sync` holds the quote to THIS string rather than to a copy of it —
+/// the same rule `HELP_TEXT` follows (authority lives in code; the guides
+/// follow). Same for [`TABLE_HEADINGS`] and [`TOTAL_LABEL`].
+pub const RUNNER_UPS_LABEL: &str = "Runner-ups (margin against the suggestion, so 0 means tied)";
+
+/// The explanation table's column headings, in render order.
+pub const TABLE_HEADINGS: [&str; 5] = ["feature", "you", "best opp", "weight", "product"];
+
+/// The explanation table's summing row.
+pub const TOTAL_LABEL: &str = "TOTAL";
+
+/// One explanation-table row at the table's column widths.
+///
+/// Every row goes through here — headings, feature terms, the terminal standing
+/// and the total — so the columns are stated once instead of at four format
+/// sites that have to be kept identical by inspection. Cells arrive as strings
+/// because the rows are not all numbers (the standing prints `#2 of 4`).
+pub fn table_row(cells: [&str; 5]) -> String {
+    format!("  {:<26}{:>8}{:>11}{:>9}{:>12}", cells[0], cells[1], cells[2], cells[3], cells[4])
+}
+
 /// Longest move description a LIST row prints before it is elided — the
 /// EDITORIAL budget, narrower than any frame on purpose so a continuation step
 /// or a runner-up stays a compact row beside its number rather than a paragraph
@@ -152,6 +176,12 @@ impl std::fmt::Display for SuggestError {
         }
     }
 }
+
+/// The repo's standing treatment for a public error type (`MoveError`,
+/// `ViewError`, `BeliefError`, `ArenaError`, `ApplyError` and four more): a
+/// caller boxing this into `Box<dyn Error>` or wrapping it with `?` should not
+/// have to special-case the one error type that is only `Display`.
+impl std::error::Error for SuggestError {}
 
 /// One press's answer: everything the render needs, and nothing the session
 /// keeps.
@@ -434,9 +464,9 @@ pub fn render_suggestion(s: &Suggestion, state: &GameState, rules: &Rules) -> St
     // the part a reader is deciding on. Continuation lines indent under the
     // first so the block still reads as one item.
     let answer = describe::describe_move(&s.mv, state, rules);
-    let room = body.width.saturating_sub(ANSWER_WRAP_INDENT.chars().count());
-    for (i, piece) in wrap_words(&answer, room).into_iter().enumerate() {
-        body.painted(Tone::Prompt, if i == 0 { "  " } else { ANSWER_WRAP_INDENT }, &piece);
+    let indents = [ANSWER_FIRST_INDENT, ANSWER_WRAP_INDENT];
+    for (i, piece) in wrap_answer(&answer, body.width).into_iter().enumerate() {
+        body.painted(Tone::Prompt, indents[usize::from(i > 0)], &piece);
     }
 
     // -- the line the value was read at ------------------------------------
@@ -470,37 +500,32 @@ pub fn render_suggestion(s: &Suggestion, state: &GameState, rules: &Rules) -> St
         "Score at that point: {}   ·   stage {}/1000000 ppm (0 = opening, 1000000 = end trigger)",
         s.explanation.total, s.explanation.progress_ppm,
     ));
-    body.line(&format!(
-        "  {:<26}{:>8}{:>11}{:>9}{:>12}",
-        "feature", "you", "best opp", "weight", "product"
-    ));
+    body.line(&table_row(TABLE_HEADINGS));
     for term in &s.explanation.terms {
-        body.line(&format!(
-            "  {:<26}{:>8}{:>11}{:>9}{:>12}",
+        body.line(&table_row([
             term.feature.name(),
-            term.viewer_value,
-            term.opponent_value,
-            term.weight,
-            term.product,
-        ));
+            &term.viewer_value.to_string(),
+            &term.opponent_value.to_string(),
+            &term.weight.to_string(),
+            &term.product.to_string(),
+        ]));
     }
     if let Some(t) = &s.explanation.terminal {
         // On a finished game the positional vector does not govern at all
         // (§2.6), so every weight above reads 0 and the standing IS the score.
-        body.line(&format!(
-            "  {:<26}{:>8}{:>11}{:>9}{:>12}",
+        body.line(&table_row([
             "final standing",
-            format!("#{} of {}", t.rank, t.seats),
-            t.viewer_total,
+            &format!("#{} of {}", t.rank, t.seats),
+            &t.viewer_total.to_string(),
             "",
-            t.value,
-        ));
+            &t.value.to_string(),
+        ]));
         body.line(&format!(
             "  (game over: place {} of {}, your re-derived final {} against the best other {})",
             t.rank, t.seats, t.viewer_total, t.best_other_total,
         ));
     }
-    body.line(&format!("  {:<26}{:>8}{:>11}{:>9}{:>12}", "TOTAL", "", "", "", s.explanation.total));
+    body.line(&table_row([TOTAL_LABEL, "", "", "", &s.explanation.total.to_string()]));
 
     // -- runner-ups ---------------------------------------------------------
     let best = s.best_value();
@@ -510,10 +535,7 @@ pub fn render_suggestion(s: &Suggestion, state: &GameState, rules: &Rules) -> St
     if others.is_empty() {
         body.line("No runner-up: this decision point offered exactly one move.");
     } else {
-        body.line(&format!(
-            "Runner-ups (margin against the suggestion, so 0 means tied) — {} candidate(s) ranked:",
-            s.ranking.len(),
-        ));
+        body.line(&format!("{RUNNER_UPS_LABEL} — {} candidate(s) ranked:", s.ranking.len()));
         for r in others {
             body.row(
                 &format!("  {:>10}  ", r.value - best),
@@ -588,9 +610,33 @@ fn elide(text: &str, width: usize) -> String {
     text.chars().take(width - 1).collect::<String>() + "…"
 }
 
+/// The wrapped answer's FIRST line sits at the body's ordinary two-space
+/// margin; [`ANSWER_WRAP_INDENT`] carries the rest.
+const ANSWER_FIRST_INDENT: &str = "  ";
+
 /// Continuation lines of the wrapped answer indent under the first line's text,
 /// so a two-line move still reads as one item rather than two steps.
 const ANSWER_WRAP_INDENT: &str = "     ";
+
+/// Wrap the answer with each line sized against the indent it will actually be
+/// printed at — two passes, because the first line is three columns wider than
+/// the rest.
+///
+/// One pass at the wider indent's budget is what this replaces, and it
+/// under-filled line 1 by up to three columns (six-lens review, cosmetic: no
+/// width guarantee was at risk, since [`Body::painted`] elides against the
+/// indent it is handed).
+fn wrap_answer(answer: &str, width: usize) -> Vec<String> {
+    let room_for = |indent: &str| width.saturating_sub(indent.chars().count());
+    let mut pieces = wrap_words(answer, room_for(ANSWER_FIRST_INDENT));
+    if pieces.len() > 1 {
+        // `wrap_words` splits on whitespace and joins with single spaces, so
+        // re-joining what it produced loses nothing a second pass could use.
+        let rest = pieces.split_off(1).join(" ");
+        pieces.extend(wrap_words(&rest, room_for(ANSWER_WRAP_INDENT)));
+    }
+    pieces
+}
 
 /// Break `text` at spaces into runs of at most `width` display columns.
 ///
@@ -1186,6 +1232,43 @@ mod tests {
         let word = "x".repeat(50);
         assert_eq!(wrap_words(&word, 10), vec![word.clone()], "an unbreakable word is left to elide");
         assert_eq!(wrap_words("aa bb", 0).len(), 2, "a zero budget degrades to one word per line");
+    }
+
+    /// Each answer line is sized against the indent it is PRINTED at: the first
+    /// at two columns, the rest at five (six-lens review — one budget for both
+    /// under-filled line 1 by the three-column difference).
+    ///
+    /// Every word survives in order, and no line plus its own indent exceeds the
+    /// frame — which is the property the two budgets exist to buy.
+    #[test]
+    fn the_answer_wraps_against_the_indent_each_line_actually_uses() {
+        const WIDTH: usize = 40;
+        let text = "Place 1 assistant in each of: Tea Plantation (A04), Fishing Ground (A05), \
+                    Employment Agency (A07) — fee 1 yen (1 to Blue)";
+        let pieces = wrap_answer(text, WIDTH);
+        assert!(pieces.len() > 2, "the fixture must exercise more than one continuation line");
+        for (i, piece) in pieces.iter().enumerate() {
+            let indent = if i == 0 { ANSWER_FIRST_INDENT } else { ANSWER_WRAP_INDENT };
+            assert!(
+                piece.chars().count() + indent.chars().count() <= WIDTH,
+                "line {i} ({piece:?}) plus its indent exceeds the frame",
+            );
+        }
+        assert_eq!(
+            pieces.join(" ").split_whitespace().collect::<Vec<_>>(),
+            text.split_whitespace().collect::<Vec<_>>(),
+            "every word, in order",
+        );
+
+        // The first line really does use its extra room: a word that fits at
+        // the 2-space indent but not at the 5-space one lands on line 1.
+        let fitted = "aaaa bbbb cc dd";
+        assert_eq!(wrap_answer(fitted, 14), vec!["aaaa bbbb cc".to_string(), "dd".to_string()]);
+        assert_eq!(
+            wrap_words(fitted, 14 - ANSWER_WRAP_INDENT.chars().count()),
+            vec!["aaaa bbbb".to_string(), "cc dd".to_string()],
+            "anti-vacuity: the one-budget wrap this replaced breaks a word earlier",
+        );
     }
 
     /// **The true-state check** (T10 review S2). The root candidates a press

@@ -166,9 +166,21 @@ pub const HAND_CORE_RESERVE: u8 = 2;
 /// (spec §2.2's list, read top to bottom, AMENDED AT T3 by the in-hand split).
 /// The order is load-bearing: it indexes both weight vectors, it is the order
 /// `explain` reports terms in, and T4's probe reports per-feature figures
-/// against it. Adding a feature means adding it to [`Feature::ALL`] and to both
-/// vectors — the array lengths make that a compile error rather than a silent
-/// zero.
+/// against it.
+///
+/// **What adding a feature costs, stated exactly** (six-lens review — the
+/// previous wording claimed more than the types deliver). A new variant is a
+/// COMPILE ERROR at [`index`](Self::index), [`name`](Self::name) and every other
+/// exhaustive match over `Feature`, so those arms cannot be forgotten. And
+/// [`COUNT`](Self::COUNT) is `ALL.len()`, which sizes both weight vectors, so a
+/// variant added to [`ALL`](Self::ALL) without a weight beside it in each vector
+/// is a compile error too — the array lengths really do move together. **The one
+/// silent path is omission from `ALL` itself**: `ALL` is a hand-maintained
+/// literal with no compiler-checked relation to the variant set, so a variant
+/// given its match arms but left out of `ALL` compiles clean, keeps `COUNT` at
+/// 16, and never appears in `score`/`explain`'s `for feature in Feature::ALL`
+/// loops — scoring zero, silently. Adding a feature therefore means `ALL` FIRST,
+/// then both vectors; the compiler covers the rest.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum Feature {
     /// Running victory points. R1-1: AUC 0.5625 early → 0.8612 late — the

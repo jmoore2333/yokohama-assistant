@@ -290,6 +290,14 @@ fn print_report(label: &str, report: &CellReport) {
         "  applied_by_seat={:?}  x_applied_moves={}  x_explanations={:?}",
         report.applied_by_seat, report.x_applied_moves, report.x_explanations,
     );
+    // The search guards, printed beside the counters they qualify: a cell that
+    // hit either one valued some line where the guard stopped it rather than at
+    // a quiet point, so the figures above would be about a slightly different
+    // quantity than they claim. `None` on both is a non-searching X.
+    println!(
+        "  x_ply_cap_hits={:?}  x_free_cap_hits={:?}",
+        report.x_ply_cap_hits, report.x_free_cap_hits,
+    );
     for row in &report.cross_checks {
         println!("    - {row}");
     }
@@ -325,6 +333,13 @@ fn describe_interval(interval: &IntervalOutcome) -> String {
 /// distinction: a `Contestant::Policy` X reports `None` (no explanation path at
 /// all), and an evaluator X that silently stopped explaining would report
 /// `Some(0)`. Both are caught by the whole equality.
+///
+/// The SEARCH GUARDS ride here for the same reason (six-lens review): the
+/// counter was cloned out per X seat per game and then dropped, so the gate that
+/// decides 3.3's promotion checked nothing about `MAX_TURN_PLIES` over its 1,472
+/// games. A hit is not a wrong answer, but a capped line is valued mid-turn, so
+/// a cell that starts hitting the guard is no longer measuring quite what the
+/// published figures measured.
 fn assert_cell_plumbing(report: &CellReport, spec: &CellSpec, x_explains: bool) {
     assert_eq!(report.games, 2 * spec.units, "a 2P unit is two games");
     assert_eq!(
@@ -354,6 +369,43 @@ fn assert_cell_plumbing(report: &CellReport, spec: &CellSpec, x_explains: bool) 
             report.x_explanations, None,
             "a rollout rung has no explanation path, which is not the same fact as explaining zero",
         );
+    }
+
+    if x_searches(&spec.x) {
+        assert_eq!(
+            report.x_ply_cap_hits,
+            Some(0),
+            "MAX_TURN_PLIES stopped {:?} continuation(s) in cell {:?}: some move X played was \
+             explained at the cap instead of at the hand-off it was searched to",
+            report.x_ply_cap_hits,
+            spec.name,
+        );
+        // Structural at every cell in this binary (all of them run S1, which
+        // never enters the quiescence arm), so this pins the plumbing, not the
+        // S2 guard — an S2 cell would give the figure content.
+        assert_eq!(
+            report.x_free_cap_hits,
+            Some(0),
+            "MAX_FREE_EXTENSION recorded a hit under a scheme that cannot reach it",
+        );
+    } else {
+        assert_eq!(
+            (report.x_ply_cap_hits, report.x_free_cap_hits),
+            (None, None),
+            "X does not search, so a cap counter would be reporting on a search that never ran",
+        );
+    }
+}
+
+/// Does this contestant run a SEARCH, and therefore carry cap counters?
+///
+/// An exhaustive match rather than `matches!` so a contestant added later has to
+/// answer the question instead of defaulting to "no search" and silently
+/// dropping out of the guard assertion above.
+fn x_searches(x: &Contestant) -> bool {
+    match x {
+        Contestant::Policy(_) | Contestant::GreedyV1 { .. } => false,
+        Contestant::LookaheadV1 { .. } | Contestant::AtomicDiag { .. } => true,
     }
 }
 

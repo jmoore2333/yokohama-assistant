@@ -200,32 +200,38 @@ fn weights_from(flags: &BTreeMap<String, String>) -> Result<(WeightTable, &'stat
 }
 
 /// Who plays the corpus.
+///
+/// Named `Probe…` rather than `Contestant` because `game::arena::Contestant` is
+/// a public type with a DIFFERENT shape (four variants, knobs on three of them),
+/// and its greedy arm is not this one: two incompatible answers to
+/// `grep 'enum Contestant'` in one crate is a trap, not an abbreviation
+/// (six-lens review).
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
-enum Contestant {
+enum ProbeContestant {
     /// Greedy-v1 at every seat, through the HONEST driver.
     Greedy,
     /// One policy rung at every seat, through the RAW-STATE driver.
     Policy(RolloutPolicy),
 }
 
-impl Contestant {
+impl ProbeContestant {
     fn parse(spec: &str) -> Result<Self, String> {
         if spec == GREEDY_CONTROLLER {
-            return Ok(Contestant::Greedy);
+            return Ok(ProbeContestant::Greedy);
         }
-        RolloutPolicy::from_str_name(spec).map(Contestant::Policy).ok_or_else(|| {
+        RolloutPolicy::from_str_name(spec).map(ProbeContestant::Policy).ok_or_else(|| {
             format!("unknown contestant {spec:?} (greedy-v1 | uniform | retreat-averse | family-weighted)")
         })
     }
 
     fn echo(self, weights: &WeightTable, label: &str) -> String {
         match self {
-            Contestant::Greedy => format!(
+            ProbeContestant::Greedy => format!(
                 "{GREEDY_CONTROLLER}{{m={DEFAULT_RETREAT_SAMPLES},weights={label}:{:#018x}}} \
                  [honest driver: observe -> sampler K=1 -> handle]",
                 weight_table_identity(weights) as u64,
             ),
-            Contestant::Policy(p) => {
+            ProbeContestant::Policy(p) => {
                 let (name, version, params) = p.descriptor();
                 let knobs: Vec<String> =
                     params.iter().map(|(k, v)| format!("{k}={v}")).collect();
@@ -319,6 +325,18 @@ fn row_values(
     // ONCE per view — see the module doc. Everything below indexes it.
     let structure = ScoreStructure::derive(view, rules);
     let Some(me) = view.players.iter().find(|p| p.id == view.viewer) else {
+        // `eval::seated_viewer`'s assert, for the same reason and at the same
+        // strength: the caller allocates `out_rel`/`out_abs` OUTSIDE its
+        // (turn × seat) loop and folds them unconditionally, so an early return
+        // that leaves them untouched double-counts the previous seat's row into
+        // this one. `observe` cannot produce a viewer-less view; a hand-built
+        // one can, and this is a probe, so it must fail loudly rather than
+        // report a corpus statistic that is quietly one seat wrong.
+        debug_assert!(
+            false,
+            "probe got a view whose own viewer seat {:?} is not among its players",
+            view.viewer,
+        );
         return;
     };
     let total = score(view, rules, weights) as f64;
@@ -613,7 +631,7 @@ struct Corpus {
 fn generate(
     players: u8,
     games: u32,
-    contestant: Contestant,
+    contestant: ProbeContestant,
     weights: &WeightTable,
     rules: &Rules,
     master: SeedScheduleKind,
@@ -678,14 +696,14 @@ fn generate(
 fn play_one(
     seed: WorldSeed,
     players: u8,
-    contestant: Contestant,
+    contestant: ProbeContestant,
     weights: &WeightTable,
     rules: &Rules,
     master: u64,
     invariants: bool,
 ) -> Result<(ArenaGameStats, Vec<ExplanationTally>), String> {
     match contestant {
-        Contestant::Greedy => {
+        ProbeContestant::Greedy => {
             // Cloned out BEFORE the agents move into the driver — the
             // `HonestPathTally` precedent, and the only way to read the
             // counters afterwards.
@@ -708,7 +726,7 @@ fn play_one(
             let tallies = handles.lock().expect("tally sink").clone();
             Ok((stats, tallies))
         }
-        Contestant::Policy(policy) => {
+        ProbeContestant::Policy(policy) => {
             let seats = vec![policy; players as usize];
             let stats = run_raw_game(seed, players, rules, &seats, master, invariants)
                 .map_err(|e| format!("game at seed {:#018x}: {e}", seed.0))?;
@@ -818,7 +836,7 @@ fn cmd_run(args: &[String]) -> Result<(), String> {
     if games == 0 {
         return Err("run needs at least one game".to_string());
     }
-    let contestant = Contestant::parse(
+    let contestant = ProbeContestant::parse(
         flags.get("contestant").map(String::as_str).unwrap_or(GREEDY_CONTROLLER),
     )?;
     let (weights, weights_label) = weights_from(&flags)?;
@@ -1216,7 +1234,7 @@ fn share(num: u64, den: u64) -> String {
     format!("{:.6}", num as f64 / den as f64)
 }
 
-fn report_counters(corpus: &Corpus, contestant: Contestant) {
+fn report_counters(corpus: &Corpus, contestant: ProbeContestant) {
     println!();
     println!("--- (d) behavioural counters over the corpus ---");
     println!("  applied moves               {}", corpus.applied);
@@ -1241,7 +1259,7 @@ fn report_counters(corpus: &Corpus, contestant: Contestant) {
         share(corpus.builds, corpus.applied),
     );
     match contestant {
-        Contestant::Greedy => {
+        ProbeContestant::Greedy => {
             println!(
                 "  placement cap binds         {:>10}  of {} decisions  (spec §3.3)",
                 corpus.cap_binds, corpus.decisions,
@@ -1253,7 +1271,7 @@ fn report_counters(corpus: &Corpus, contestant: Contestant) {
                 corpus.decisions,
             );
         }
-        Contestant::Policy(_) => {
+        ProbeContestant::Policy(_) => {
             println!("  placement cap binds         (n/a: a policy rung has no candidate cap)");
         }
     }

@@ -89,6 +89,10 @@ impl std::fmt::Display for BotError {
     }
 }
 
+/// The repo's standing treatment for a public error type -- see
+/// `suggest::SuggestError`, which this rides along with.
+impl std::error::Error for BotError {}
+
 /// Who plays each seat, and the bots' shared stream seed.
 ///
 /// One entry per seat in `PlayerId` order, so a seat can never be looked up in

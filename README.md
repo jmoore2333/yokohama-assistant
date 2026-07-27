@@ -82,12 +82,15 @@ Fastest playable game: answer the wizard `sim`, `2`, `red`, `blue`, `0`, Enter t
 
 **Gates.** Per-edit (debug): the four crate suites + `cargo clippy --workspace --all-targets
 -- -D warnings`, all zero-warning. Pre-merge: all **thirteen** release gates below. The
-**twelve**-gate roster measured **152.17s** together as one sequence 2026-07-26 at the
-`phase3.2-arena` close (Apple M5 10-core, quiet machine, release binaries pre-built, the arena
-gate single-threaded because its documented command says so); the thirteenth, `evaluator_gate`,
-measured **~145s alone** (145.84s / 144.60s across two whole-binary runs) at 3.3 Task 11, so the
-roster is expected near **~298s** against the 3.3 target of ≤360s — that sum is an expectation,
-**not a measured total**, and the whole thirteen run as one sequence at the 3.3 close. Re-measure the whole table as one run at every
+**thirteen**-gate roster measured **313.40s** together as one sequence 2026-07-27 at the
+`phase3.3-evaluator` close (Apple M5, quiet machine, release binaries pre-built, the arena gate
+single-threaded because its documented command says so): fuzz 47.88 · census 0.75 · observation
+2.93 · equivalence 27.76 · action-source worst case 0.51 · arena gate 20.79 · policy diversity
+7.53 · **evaluator gate 144.59** · piped dogfood 19.70 · differential 32.48 · routes3 2.29 ·
+scoring 2.30 · routes3 worst case 3.80 — all rc=0, and **under** the 3.3 target of ≤360s. The
+twelve pre-3.3 gates sum to ~168.8s inside that run against 152.17s at the 3.2 close, the largest
+mover being the differential gate (22.77 → 32.48, +43%) and the dogfood second (+28%); per-gate
+shapes are unchanged, so that is load variance. Re-measure the whole table as one run at every
 close: a sum of per-command times from separate sessions is not a measured total. This table is the
 binding list — if it and CLAUDE.md's two-tier policy ever disagree, they are both wrong until
 reconciled.

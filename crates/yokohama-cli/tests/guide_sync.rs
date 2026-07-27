@@ -20,8 +20,9 @@
 
 use yokohama_cli::repl::{Repl, HELP_TEXT};
 use yokohama_cli::session::Session;
-use yokohama_cli::{render, screen};
-use yokohama_core::{GameConfig, Rules, StartingOrderChoice};
+use yokohama_cli::suggest::{RUNNER_UPS_LABEL, TABLE_HEADINGS, TOTAL_LABEL};
+use yokohama_cli::{render, screen, suggest};
+use yokohama_core::{eval, greedy, lookahead, GameConfig, Rules, StartingOrderChoice};
 
 const GUIDE_MD: &str = include_str!("../../../docs/cli-guide.md");
 const GUIDE_HTML: &str = include_str!("../../../docs/cli-guide.html");
@@ -282,6 +283,96 @@ fn section5_command_block_is_identical_across_formats() {
         "cli-guide.md and cli-guide.html §5 command blocks diverged. They must stay byte-identical \
          (modulo the HTML <pre><code> wrapper + entity escaping); reconcile BOTH against HELP_TEXT \
          (crates/yokohama-cli/src/repl.rs)."
+    );
+}
+
+/// The captured screen block whose FIRST line is `opening`, from each format.
+///
+/// Located by content rather than by a section header: §7 prints several
+/// captured screens under one header and the suggest capture is not the first,
+/// so `md_code_block_after` would return the wrong one. Both formats are
+/// searched the same way, which is what lets the two be compared byte for byte.
+fn captured_block_starting_with(opening: &str) -> (String, String) {
+    let md = GUIDE_MD
+        .split("```")
+        .map(|part| part.trim_matches('\n'))
+        .find(|part| part.starts_with(opening))
+        .unwrap_or_else(|| panic!("cli-guide.md has no captured block opening with {opening:?}"))
+        .to_string();
+
+    let mut html_blocks = GUIDE_HTML.match_indices("<pre><code>").filter_map(|(at, tag)| {
+        let open = at + tag.len();
+        let close = GUIDE_HTML[open..].find("</code></pre>")? + open;
+        let block = unescape_html(&GUIDE_HTML[open..close]).trim_matches('\n').to_string();
+        block.starts_with(opening).then_some(block)
+    });
+    let html = html_blocks
+        .next()
+        .unwrap_or_else(|| panic!("cli-guide.html has no <pre><code> opening with {opening:?}"));
+
+    (md, html)
+}
+
+/// The opening line of the captured `suggest` screen — `render::section`'s rule
+/// over the screen title, which is what makes the block findable.
+const SUGGEST_BLOCK_OPENING: &str = "─ Suggest ";
+
+/// (h) The captured `suggest` screen quotes strings the renderer OWNS, so those
+/// strings are held to the code rather than to a reviewer's memory: the header's
+/// knob line (every value from the const the agent itself reads), the
+/// explanation table's headings AT THEIR COLUMN SPACING, its total row, and the
+/// runner-up heading.
+///
+/// T10 shipped ~50 lines of captured screen into both guides without extending
+/// this file (six-lens review) — exactly the verbatim-quoting surface this
+/// module exists to pin, and the widest one the guides carry.
+#[test]
+fn the_captured_suggest_screen_matches_the_renderers_own_strings() {
+    let (md, html) = captured_block_starting_with(SUGGEST_BLOCK_OPENING);
+
+    // The knob line, DERIVED from the same consts `render_suggestion` reads, so
+    // a rung/version/default change forces the capture to be retaken.
+    let knobs = format!(
+        " · {} · beam {}, K={}, M={}, eval v{} · stream ",
+        lookahead::LOOKAHEAD_CONTROLLER,
+        lookahead::DEFAULT_BEAM,
+        lookahead::DEFAULT_WORLDS,
+        greedy::DEFAULT_RETREAT_SAMPLES,
+        eval::EVAL_IMPL_VERSION,
+    );
+    // The table header row at its real column widths: this is the one line in
+    // the capture where a column-width edit is otherwise invisible.
+    let headings = suggest::table_row(TABLE_HEADINGS);
+    let total = suggest::table_row([TOTAL_LABEL, "", "", "", ""]);
+    let total = total.trim_end();
+
+    for (file, block) in [("cli-guide.md", &md), ("cli-guide.html", &html)] {
+        for (what, needle) in [
+            ("the search's knob line", knobs.as_str()),
+            ("the explanation table's headings", headings.as_str()),
+            ("the explanation table's total row", total),
+            ("the runner-up heading", RUNNER_UPS_LABEL),
+        ] {
+            assert!(
+                block.contains(needle),
+                "{file}'s captured suggest screen no longer shows {what} as the CLI renders it \
+                 ({needle:?}). Authority: crates/yokohama-cli/src/suggest.rs \
+                 (render_suggestion + its pub consts). Re-capture the screen in BOTH formats."
+            );
+        }
+    }
+}
+
+/// (i) The captured `suggest` screen is text-identical between the two formats —
+/// §5's parity pin applied to the other block a tester reads line by line.
+#[test]
+fn the_suggest_block_is_identical_across_formats() {
+    let (md, html) = captured_block_starting_with(SUGGEST_BLOCK_OPENING);
+    assert_eq!(
+        md, html,
+        "cli-guide.md and cli-guide.html captured suggest screens diverged. They must stay \
+         byte-identical (modulo the HTML <pre><code> wrapper + entity escaping); re-capture BOTH \
+         from one run of `suggest`."
     );
 }
 

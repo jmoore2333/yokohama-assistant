@@ -1541,12 +1541,19 @@ fn t8_lookahead_v1s_cross_world_divergence_is_measured_and_recorded() {
          assertion. TWO causes, and they are not the same finding. (a) A world-common keying \
          regression in `LookaheadAgent::choose`'s WORLD LOOP (a tie draw or candidate draw \
          re-keyed per world — T5's fix wave undone): CHECK THIS FIRST, and know that THIS CELL \
-         IS THE SOLE DETECTOR of it — the T8 review measured both canonical regressions and \
+         IS THE SOLE DETECTOR RELATIVE TO THE TWO PINS NAMED NEXT — the T8 review measured \
+         both canonical regressions and \
          `the_candidate_dice_are_world_common_within_a_decision` and \
          `a_tie_draw_is_one_keyed_word_and_is_world_common` STAY GREEN under both (they drive \
-         the search internals, not the agent's world loop; per-world tie re-keying read \
-         31/200 here with every other test in the crate green, per-world candidate re-keying \
-         7/200 — the lens-2 shape). Rule (a) out by inspecting the world loop's seed \
+         the search internals, not the agent's world loop). THAT half is what the claim rests \
+         on and it reproduces; the SCOPE is deliberately narrower than 'sole detector in the \
+         crate' (six-lens review: a later reconstruction of the mutation also tripped \
+         `the_agents_play_stream_advances_exactly_three_words_per_decision`). The rates the T8 \
+         review recorded — per-world tie re-keying 31/200, per-world candidate re-keying 7/200 \
+         — came from an out-of-tree mutation whose exact shape is NOT committed, and a \
+         reconstruction read 40-41/200 and 8/200 instead: read them as 'a detectable fraction \
+         of points, not all of them', never as reproducible constants. Rule (a) out by \
+         inspecting the world loop's seed \
          derivations directly. (b) With the keying verified intact, this is spec §4.3's \
          K-decision re-opening input — the turn-completion channel has started moving a root \
          argmax, the divergence RATE is the acceptance statistic, and the mechanism belongs \

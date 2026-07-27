@@ -392,6 +392,15 @@ pub const MAX_TURN_PLIES: u32 = 64;
 /// T7's cell will meet the tail, whereas inventing a total-work budget here would
 /// be inventing a search semantic the spec does not price. What it does mean is
 /// that T7 must be provisioned off the TAIL, not off a mean.
+///
+/// **Metered from the six-lens fix wave forward** ([`SearchStats::free_cap_hits`]
+/// → [`SearchTally::free_cap_hits`]), on [`MAX_TURN_PLIES`]'s own grounds. Until
+/// then this guard had no counter at all while the S1 cap had one, and
+/// `free_extension_steps` cannot substitute: it counts steps TAKEN summed over
+/// every branch (hence a recorded 5,368 in one decision against a per-line bound
+/// of 64), so a line stopped at the guard is invisible in it. The counter was
+/// added AFTER the depth-decision experiment ran, so no figure published before
+/// this commit measured this cap — the artifact says so where it reports caps.
 pub const MAX_FREE_EXTENSION: u32 = 64;
 
 /// Domain salt for the keyed tie stream, in this crate's `mix` shape.
@@ -517,6 +526,18 @@ fn candidate_rng(candidate_seed: u64) -> ChaCha8Rng {
 /// The fold is a function of the INDEX PATH and nothing else, so the coordinate
 /// stays world-independent in exactly the sense §4.3 needs: two worlds offering
 /// the same candidate at the same index down the same path key the same word.
+///
+/// **Known limitation, recorded rather than fixed (six-lens review, accepted as
+/// a doc note):** the fold is 32 bits, so two DIFFERENT index paths can collide
+/// on one `branch` value. A collision is scoped by the rest of the key —
+/// [`TieSite::Extension`] is `(root, free_used, branch)`, so both lines must
+/// also share a root candidate and a free-extension depth — and its effect is
+/// that two unrelated lines draw a CORRELATED tie word. Each site's marginal
+/// pick stays uniform. It is deliberately NOT the defect this function was
+/// added for, which was every sibling at one `(root, depth)` sharing one word.
+/// Widening the coordinate would move S2's tie draws and hence the published
+/// depth-decision figures, so it is handed to 3.4 — where S2 is raw material
+/// and an [`ATOMIC_DIAG_IMPL_VERSION`] bump is already in scope.
 fn descend_branch(branch: u32, index: usize) -> u32 {
     // FNV-1a's 32-bit prime. Wrapping because a coordinate is a key, not a count.
     branch.wrapping_mul(0x0100_0193).wrapping_add(index as u32).wrapping_add(1)
@@ -556,6 +577,22 @@ impl SearchScheme {
             Self::AtomicDiag { .. } => ATOMIC_DIAG_IMPL_VERSION,
         }
     }
+
+    /// This scheme with its sizing knob RAISED TO 1 — the single site that
+    /// answers a zero knob, so the floor is a stated fact about the knob rather
+    /// than an inline `.max(1)` at whichever use site happened to need it.
+    ///
+    /// Called by [`LookaheadAgent::with_knobs`] (so an agent's
+    /// [`scheme`](LookaheadAgent::scheme) reports the search it will actually
+    /// run) AND by [`search_world`], which is public and reachable without an
+    /// agent: a beam of 0 truncates every frontier away, and `Run::truncate`
+    /// would index `children[beam - 1]`.
+    pub fn normalized(self) -> Self {
+        match self {
+            Self::TurnBoundary { beam } => Self::TurnBoundary { beam: beam.max(1) },
+            Self::AtomicDiag { depth } => Self::AtomicDiag { depth: depth.max(1) },
+        }
+    }
 }
 
 impl Default for SearchScheme {
@@ -591,7 +628,10 @@ pub fn controller_provenance(
         ("eval_impl".to_string(), i64::from(EVAL_IMPL_VERSION)),
         ("weights".to_string(), weight_table_identity(weights)),
     ]);
-    match scheme {
+    // `normalized()` for the same reason `worlds.max(1)` is applied above, now
+    // that the sizing knob has one floor: a descriptor printing a raw `b=0` or
+    // `d=0` would name a search no seat ran.
+    match scheme.normalized() {
         SearchScheme::TurnBoundary { beam } => {
             params.insert("b".to_string(), i64::from(beam));
         }
@@ -643,6 +683,13 @@ pub struct SearchStats {
     pub ply_cap_hits: u64,
     /// S2 quiescence steps taken free of depth charge.
     pub free_extension_steps: u64,
+    /// Times [`MAX_FREE_EXTENSION`] stopped a free extension. Expected 0.
+    ///
+    /// A DIFFERENT event from [`free_extension_steps`](Self::free_extension_steps),
+    /// which counts steps TAKEN: that sum is decision-wide and a 64-deep line is
+    /// invisible in it, which is exactly why the guard needed a counter of its
+    /// own rather than a threshold read off the sum.
+    pub free_cap_hits: u64,
 }
 
 impl SearchStats {
@@ -660,6 +707,7 @@ impl SearchStats {
         self.max_line = self.max_line.max(other.max_line);
         self.ply_cap_hits += other.ply_cap_hits;
         self.free_extension_steps += other.free_extension_steps;
+        self.free_cap_hits += other.free_cap_hits;
     }
 }
 
@@ -1133,6 +1181,14 @@ impl<R: Rng> Run<'_, R> {
             && state.pending_choices.is_empty()
             && (state.turn_phase != prev_phase || free_used >= MAX_FREE_EXTENSION)
         {
+            // A cap HIT is the guard being the reason the line stopped, which is
+            // not the same event as this arm firing: a line that reached a real
+            // phase boundary is quiet by design however much free extension
+            // preceded it. Inside this arm an unturned phase implies the guard
+            // tripped, by the disjunction above.
+            if state.turn_phase == prev_phase {
+                self.stats.free_cap_hits += 1;
+            }
             return Ok((self.value_at(&state)?, trace));
         }
 
@@ -1188,6 +1244,7 @@ impl<R: Rng> Run<'_, R> {
         let charge = u8::from(!free);
         let free_used = free_used + u32::from(free);
         if free && free_used >= MAX_FREE_EXTENSION {
+            self.stats.free_cap_hits += 1;
             return Ok((node.eval, node.trace));
         }
 
@@ -1258,9 +1315,12 @@ pub fn search_world<R: Rng>(
         let next = run.apply(world, mv)?;
         let trace = run.trace.push(NO_PARENT, mv.clone());
         run.stats.scored += 1;
-        let (value, leaf) = match ctx.scheme {
+        // `normalized` is the knob floor (its doc says why it is applied here
+        // too); nothing below re-clamps, so the search a caller reads off the
+        // scheme is the search that runs.
+        let (value, leaf) = match ctx.scheme.normalized() {
             SearchScheme::TurnBoundary { beam } => {
-                run.complete_turn(i as u32, next, trace, usize::from(beam).max(1))?
+                run.complete_turn(i as u32, next, trace, usize::from(beam))?
             }
             SearchScheme::AtomicDiag { depth } => {
                 let phase = world.turn_phase;
@@ -1289,6 +1349,7 @@ struct LookaheadCounters {
     placement_cap_binds: AtomicU64,
     continuation_moves: AtomicU64,
     ply_cap_hits: AtomicU64,
+    free_cap_hits: AtomicU64,
 }
 
 /// A cloneable handle on one [`LookaheadAgent`]'s counters — [`crate::game::greedy`]'s
@@ -1352,6 +1413,20 @@ impl SearchTally {
     pub fn ply_cap_hits(&self) -> u64 {
         self.counters.ply_cap_hits.load(Ordering::Relaxed)
     }
+
+    /// Free extensions [`MAX_FREE_EXTENSION`] stopped, summed over every
+    /// decision — S2's counterpart to [`ply_cap_hits`](Self::ply_cap_hits), and
+    /// **0 by construction for an S1 agent**, which never enters the quiescence
+    /// arm at all.
+    ///
+    /// Expected 0 on both schemes, and readable for the reason the ply counter
+    /// is: a stopped free extension is valued where the guard stopped it rather
+    /// than at a quiet point, and `free_extension_steps` cannot report that —
+    /// it is a decision-wide sum over every branch, in which one 64-deep line
+    /// is indistinguishable from sixty-four one-step ones.
+    pub fn free_cap_hits(&self) -> u64 {
+        self.counters.free_cap_hits.load(Ordering::Relaxed)
+    }
 }
 
 /// Lookahead-v1: spec §4.2's turn-boundary rung (and, under
@@ -1407,8 +1482,19 @@ impl LookaheadAgent {
         )
     }
 
-    /// Every knob explicit. `worlds` (`K`) below 1 is raised to 1: a decision
-    /// taken over zero sampled worlds is not a decision.
+    /// Every knob explicit, and all three of the sizing knobs are RAISED TO 1
+    /// here rather than defended at their use sites — one normalization point,
+    /// so [`scheme`](Self::scheme) reports the search that will actually run.
+    ///
+    /// `worlds` (`K`) below 1 is raised to 1: a decision taken over zero sampled
+    /// worlds is not a decision. `beam` below 1 is raised to 1: a beam of zero
+    /// truncates every frontier away, so the search would complete no turn.
+    /// `depth` below 1 is raised to 1: `atomic` charges `depth − 1` at the root,
+    /// so 0 and 1 already searched identically and the clamp makes that
+    /// equality a stated fact instead of an accident of `saturating_sub`. The
+    /// runner refuses `b=0`/`d=0` as user errors before it ever gets here
+    /// (`examples/arena.rs`); this is the library-side floor under callers that
+    /// compute a knob rather than type one.
     pub fn with_knobs(
         rules: &Rules,
         scheme: SearchScheme,
@@ -1417,6 +1503,7 @@ impl LookaheadAgent {
         weights: WeightTable,
         agent_seed: u64,
     ) -> Self {
+        let scheme = scheme.normalized();
         let keep_scores =
             rules.orders.iter().map(|card| (card.id, score_starting_order(card, rules))).collect();
         Self {
@@ -1668,6 +1755,7 @@ impl ArenaAgent for LookaheadAgent {
         counters.scored.fetch_add(stats.scored, Ordering::Relaxed);
         counters.placement_cap_binds.fetch_add(stats.placement_cap_binds, Ordering::Relaxed);
         counters.ply_cap_hits.fetch_add(stats.ply_cap_hits, Ordering::Relaxed);
+        counters.free_cap_hits.fetch_add(stats.free_cap_hits, Ordering::Relaxed);
         counters
             .continuation_moves
             .fetch_add(self.last_continuation.len() as u64, Ordering::Relaxed);
@@ -2757,6 +2845,51 @@ mod tests {
         assert_ne!(wide.params["weights"], s1.params["weights"]);
     }
 
+    /// All THREE sizing knobs floor at 1, and the agent REPORTS the floored
+    /// value — six-lens review: `worlds` was clamped and documented while
+    /// `beam` was clamped only inside `search_world` (undocumented, so not a
+    /// knob fact) and `depth` was never clamped at all, leaving `d = 0` and
+    /// `d = 1` accidentally equal through `saturating_sub`. The runner refuses
+    /// all three zeros as user errors; this is the library floor beneath a
+    /// caller that computes a knob.
+    ///
+    /// Both halves matter: the SCHEME must report what will run (a caller
+    /// reading `scheme()` back is entitled to the real search), and the
+    /// PROVENANCE must not stamp a corpus record with knobs no seat played on.
+    #[test]
+    fn every_sizing_knob_floors_at_one_and_says_so() {
+        let rules = Rules::standard();
+
+        let b0 = LookaheadAgent::with_knobs(
+            &rules,
+            SearchScheme::TurnBoundary { beam: 0 },
+            0,
+            8,
+            WeightTable::V1,
+            7,
+        );
+        assert_eq!(
+            b0.scheme(),
+            SearchScheme::TurnBoundary { beam: 1 },
+            "a beam of 0 truncates every frontier away; it must be raised, and reported raised",
+        );
+        assert_eq!(b0.controller().params["b"], 1, "provenance prints the floored beam");
+        assert_eq!(b0.controller().params["k"], 1, "and the long-standing worlds floor");
+
+        let d0 = LookaheadAgent::atomic_diag(&rules, 0, 7);
+        assert_eq!(
+            d0.scheme(),
+            SearchScheme::AtomicDiag { depth: 1 },
+            "d=0 and d=1 already searched identically; the floor states it rather than hiding it",
+        );
+        assert_eq!(d0.controller().params["d"], 1, "provenance prints the floored depth");
+
+        // Anti-vacuity: the floor is not clamping knobs that were already legal.
+        let d3 = LookaheadAgent::atomic_diag(&rules, 3, 7);
+        assert_eq!(d3.scheme(), SearchScheme::AtomicDiag { depth: 3 });
+        assert_eq!(d3.controller().params["d"], 3);
+    }
+
     // -- the agent (spec §0.3(b), §4.3) ---------------------------------------
 
     /// **SPEC §0.3(b) FOR THIS RUNG.** Every chosen move is explained, and the
@@ -2908,6 +3041,7 @@ mod tests {
         let continuation: u64 = handles.iter().map(|t| t.continuation_moves()).sum();
         let nodes: u64 = handles.iter().map(|t| t.nodes()).sum();
         let cap_hits: u64 = handles.iter().map(|t| t.ply_cap_hits()).sum();
+        let free_hits: u64 = handles.iter().map(|t| t.free_cap_hits()).sum();
         println!(
             "arena-driven 2P Lookahead self-play: turns {} · moves {} · nodes/decision {:.1} · \
              mean continuation {:.2}",
@@ -2930,6 +3064,15 @@ mod tests {
             cap_hits, 0,
             "MAX_TURN_PLIES stopped {cap_hits} continuation(s) — every one of them was \
              explained mid-turn",
+        );
+        // The S2 guard's counterpart, and read here for completeness rather than
+        // as evidence about S2: this pin drives the S1 rung, which never enters
+        // the quiescence arm, so a nonzero here would mean the counter is being
+        // incremented from a path S1 should not have.
+        assert_eq!(
+            free_hits, 0,
+            "MAX_FREE_EXTENSION recorded {free_hits} hit(s) under the TURN-BOUNDARY scheme, \
+             which never runs the quiescence arm at all",
         );
 
         let run = stats.record.run.as_ref().expect("a driven game stamps provenance");
