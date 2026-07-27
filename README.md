@@ -14,6 +14,29 @@ A Rust engine, live-game CLI tracker, and verification stack for the board game 
 2) a computer player → 3) computer vision / AR assist (deferred; the original 2025 AR-first
 vision lives in `docs/plans/2025-12-07-yokohama-assistant-design.md`).
 
+## See it running
+
+![The Yokohama CLI mid-game at 2 players: the staggered pyramid board, the players panel, and the
+`suggest` output — recommended move, the line it searched, the term-by-term score table, and the
+ranked runner-ups](docs/images/cli-suggest.png)
+
+Turn 7 of a 2P game, real terminal output. Above the rule is the everyday screen; below it is
+**`suggest`** — the Phase-3.3 evaluator reading *your own seat's view*, printing the move it
+recommends, the six-move line it valued the position by, the arithmetic behind the 330 (each row
+is your value minus the best opponent's, times this stage's weight), and the nearest runner-ups
+out of 66 ranked candidates, each with its margin. It applies nothing and records nothing.
+
+**[Full `suggest` walkthrough →](docs/suggest-walkthrough-2026-07-27.html)** — a few minutes of
+live play against a bot seat (2026-07-27, v0.3.3), captured as the raw ANSI stream from a 140×50
+PTY, with an honest read on both sides: **what held up** (the search's projected lines matched
+the played-out game move for move; it found genuine multi-step combinations; determinism and the
+no-side-effect guards are real) and **what it flagged** (two display-layer bugs in
+`describe.rs` — a Laboratory surcharge rendered as a reward, and production previews that ignore
+the acting player's techs — plus the evaluator's structural positional blindness, and the fact
+that the *playable* bot is the 3.2 weighted-random rung, not the 3.3 evaluator). Every finding is
+display-layer; the engine did the right thing in each case. It is an HTML page — open the file in
+a browser rather than reading it on GitHub.
+
 ## Status (2026-07-27)
 
 The engine plays complete, rules-correct games at 2–4 players and has been verified
@@ -170,6 +193,9 @@ the YAML by `gen-data`; a `rules_hash` stamps every saved game with the data tha
   the `SEMANTICS_REV` bump contract)
 - [`docs/cli-guide.md`](docs/cli-guide.md) / [`.html`](docs/cli-guide.html) — tester-facing
   CLI guide (kept word-identical, enforced by the `guide_sync` test)
+- [`docs/suggest-walkthrough-2026-07-27.html`](docs/suggest-walkthrough-2026-07-27.html) — a
+  hands-on review of `suggest` at v0.3.3 in real terminal output: what held up, and the
+  display-layer defects it surfaced (a dated snapshot, not a maintained doc)
 - [`docs/plans/`](docs/plans/) — dated designs, plans, and reports;
   [`2026-07-20-phase-2.9-ruling-list.md`](docs/plans/2026-07-20-phase-2.9-ruling-list.md) is
   the rules-ambiguity register (fully ruled)

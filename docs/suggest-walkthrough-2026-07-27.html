@@ -1,0 +1,355 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Yokohama CLI v0.3.3 — suggest walkthrough</title>
+<style>
+  :root {
+    --bg:#0e1116; --panel:#161b22; --edge:#262d38;
+    --ink:#d5dae2; --dim:#8b95a5; --accent:#e5c07b; --good:#98c379; --warn:#e06c75;
+  }
+  * { box-sizing:border-box; }
+  body {
+    margin:0; background:var(--bg); color:var(--ink);
+    font:16px/1.65 ui-sans-serif,-apple-system,"Segoe UI",Roboto,sans-serif;
+  }
+  .wrap { max-width:1180px; margin:0 auto; padding:48px 24px 90px; }
+  header { border-bottom:1px solid var(--edge); padding-bottom:26px; margin-bottom:38px; }
+  h1 { font-size:30px; margin:0 0 8px; letter-spacing:-.02em; }
+  .sub { color:var(--dim); font-size:15px; margin:0; }
+  .meta { display:flex; flex-wrap:wrap; gap:8px; margin-top:18px; }
+  .meta span {
+    background:var(--panel); border:1px solid var(--edge); border-radius:999px;
+    padding:4px 12px; font-size:12.5px; color:var(--dim);
+    font-family:ui-monospace,SFMono-Regular,Menlo,monospace;
+  }
+  h2 { font-size:20px; margin:52px 0 14px; letter-spacing:-.01em; }
+  h3 { font-size:16.5px; margin:0 0 6px; color:#fff; font-weight:650; }
+  p { margin:0 0 12px; }
+  code {
+    font-family:ui-monospace,SFMono-Regular,Menlo,monospace; font-size:.9em;
+    background:#1d2430; border:1px solid var(--edge); border-radius:4px; padding:1px 5px;
+  }
+  .shot { margin:0 0 44px; }
+  .shot figcaption { margin-bottom:14px; }
+  .shot figcaption p { color:var(--dim); font-size:14.5px; margin:0; max-width:78ch; }
+  .term {
+    background:#000; border:1px solid var(--edge); border-radius:10px;
+    padding:16px 18px; overflow-x:auto;
+  }
+  .term pre {
+    margin:0; color:#c8ccd4; white-space:pre;
+    font-family:ui-monospace,SFMono-Regular,Menlo,"DejaVu Sans Mono",monospace;
+    font-size:11.5px; line-height:1.34;
+  }
+  ul { margin:0 0 14px; padding-left:22px; }
+  li { margin-bottom:9px; }
+  .card {
+    background:var(--panel); border:1px solid var(--edge); border-left:3px solid var(--accent);
+    border-radius:8px; padding:16px 20px; margin-bottom:14px;
+  }
+  .card.ok { border-left-color:var(--good); }
+  .card.flag { border-left-color:var(--warn); }
+  .card h4 { margin:0 0 6px; font-size:15px; color:#fff; }
+  .card p { margin:0; font-size:14.5px; color:var(--dim); }
+  .card p + p { margin-top:8px; }
+  footer {
+    margin-top:60px; padding-top:22px; border-top:1px solid var(--edge);
+    color:var(--dim); font-size:13px;
+  }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header>
+  <h1>Yokohama CLI v0.3.3 — <code>suggest</code> walkthrough</h1>
+  <p class="sub">A few minutes of live play against a bot seat, to see whether the AI suggestion works and
+  whether its answers make sense.</p>
+  <div class="meta">
+    <span>v0.3.3-1-g5640716</span><span>release build</span><span>2P sim · seed 42</span>
+    <span>seat 0 human · seat 1 bot</span><span>2026-07-27</span>
+  </div>
+</header>
+
+<p>Frames below are the <strong>real terminal output</strong>, captured as the raw ANSI stream from a 140×50 PTY
+and re-rendered here with the escape codes intact — the colours and layout are the CLI's own, not a restyling.</p>
+
+
+    <figure class="shot">
+      <figcaption><h3>The everyday screen</h3><p>Turn 7, Red to place. The staggered pyramid (rows 4/3/2/1 at 2P), the players panel on the right, the 5-power token legend, then the numbered options. <code>R1</code>/<code>B1</code> are assistants, <code>P:</code> is the President row. Placement is collapsed to three entries — the raw rules offer 66 legal combinations here.</p></figcaption>
+      <div class="term"><pre>════════════════════════════════════════════════ Y O K O H A M A ═════════════════════════════════════════════════
+┌────────────────┐┌────────────────┐┌────────────────┐┌────────────────┐  ─ Players ──────────────────────────────
+│A00 <span style="color:#d19a66">Copper Mn</span> <span style="color:#d19a66">c</span> ││A01 <span style="color:#56b6c2">Fishing</span> <span style="color:#d7a3e8">i</span>   ││A02 <span style="color:#d7a3e8">Lab A</span> <span style="color:#d19a66">c</span>     ││A03 <span style="color:#61afef">Customs</span> <span style="color:#d7a3e8">i</span>   │  &gt;0 <span style="color:#e06c75">Red</span>     2 yen   8 VP
+│P: -            ││P: <span style="color:#61afef">B</span>            ││P: -            ││P: -            │     c0 s0 t0 f0 i0   hand 0
+│<span style="color:#61afef">B2</span>              ││<span style="color:#e06c75">R1</span>              ││-               ││<span style="color:#e06c75">R1</span>              │     asst: hand 2 board 5 wh 12 locked 1
+│sh ···· | th ·  ││sh ···· | th ·  ││sh ···· | th ·  ││sh ···· | th ·  │     built: sh 0 th 0   next TH take 4 yen
+└────────────────┘└────────────────┘└────────────────┘└────────────────┘     President: Church (A06)
+         ┌────────────────┐┌────────────────┐┌────────────────┐            1 <span style="color:#61afef">Blue</span>    4 yen   3 VP [bot]
+         │A04 <span style="color:#7cc0ff">Port A</span> <span style="color:#e5c07b">y</span>    ││A05 <span style="color:#e5c07b">Bank</span> <span style="color:#56b6c2">f</span>      ││A06 <span style="color:#ffffff">Church</span> <span style="color:#c8ccd4">s</span>    │              c0 s1 t0 f3 i0   hand 1
+         │P: -            ││P: -            ││P: <span style="color:#e06c75">R</span>            │              asst: hand 2 board 5 wh 12 locked 1
+         │-               ││-               ││<span style="color:#61afef">B1</span>              │              built: sh 0 th 0   next TH take 4 yen
+         │sh ···· | th ·  ││sh ···· | th ·  ││sh ···· | th ·  │              President: Fishing Ground (A01)
+         └────────────────┘└────────────────┘└────────────────┘
+                  ┌────────────────┐┌────────────────┐
+                  │A07 <span style="color:#98c379">Tea Plant</span> <span style="color:#56b6c2">f</span> ││A08 <span style="color:#c8ccd4">Silk Mill</span> <span style="color:#e5c07b">y</span> │
+                  │P: -            ││P: -            │
+                  │<span style="color:#e06c75">R1</span> <span style="color:#61afef">B1</span>           ││<span style="color:#e06c75">R1</span>              │
+                  │sh ···· | th ·  ││sh ···· | th ·  │
+                  └────────────────┘└────────────────┘
+                           ┌────────────────┐
+                           │A09 <span style="color:#7f848e">Employ Ag</span> <span style="color:#d7a3e8">i</span> │
+                           │P: -            │
+                           │<span style="color:#e06c75">R1</span> <span style="color:#61afef">B1</span>           │
+                           │sh ···· | th ·  │
+                           └────────────────┘
+5-Power tokens (face-up): i=import  c=copper  s=silk  t=tea  f=seafood  y=yen   [St]=Station  ·=empty slot
+info: type &#x27;view&#x27; — board · players · ports · labs · tracks · sites · goals · hand · score · log
+──────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+Phase: Additional actions (before) -&gt; Placement
+Turn 7 | <span style="color:#e06c75">Red</span> | <span style="font-weight:700">Placement</span> | <span style="color:#e5c07b">2 yen</span> <span style="font-weight:700;color:#ffffff">8 VP</span> | <span style="color:#d19a66">c0</span> <span style="color:#c8ccd4">s0</span> <span style="color:#98c379">t0</span> <span style="color:#56b6c2">f0</span> <span style="color:#d7a3e8">i0</span> | hand 0
+[0] Option A — place 1 assistant each in up to 2 areas (pick areas; &#x27;a&#x27; grammar works too)
+[1] Option B — place 2 assistants in one area (10 eligible; &#x27;b&#x27; grammar works too)
+[2] Place no assistants
+&gt; enter a number, &#x27;a&#x27;/&#x27;b&#x27; for placement, or a command (&#x27;view&#x27; for game info, &#x27;help&#x27; for the list)
+0</pre></div>
+    </figure>
+    <figure class="shot">
+      <figcaption><h3>The Option-A picker</h3><p>Toggling areas by id, with <code>(fee)</code> marking every area where an opponent President stands. The line under the selection previews the exact move it currently assembles. Note <code>suggest</code> is <em>not</em> reachable from inside the picker — it is a modal sub-prompt, so you <code>cancel</code> out first.</p></figcaption>
+      <div class="term"><pre>════════════════════════════════════════════════ Y O K O H A M A ═════════════════════════════════════════════════
+┌────────────────┐┌────────────────┐┌────────────────┐┌────────────────┐  ─ Players ──────────────────────────────
+│A00 <span style="color:#d19a66">Copper Mn</span> <span style="color:#d19a66">c</span> ││A01 <span style="color:#56b6c2">Fishing</span> <span style="color:#d7a3e8">i</span>   ││A02 <span style="color:#d7a3e8">Lab A</span> <span style="color:#d19a66">c</span>     ││A03 <span style="color:#61afef">Customs</span> <span style="color:#d7a3e8">i</span>   │  &gt;0 <span style="color:#e06c75">Red</span>     2 yen   8 VP
+│P: -            ││P: <span style="color:#61afef">B</span>            ││P: -            ││P: -            │     c0 s0 t0 f0 i0   hand 0
+│<span style="color:#61afef">B2</span>              ││<span style="color:#e06c75">R1</span>              ││-               ││<span style="color:#e06c75">R1</span>              │     asst: hand 2 board 5 wh 12 locked 1
+│sh ···· | th ·  ││sh ···· | th ·  ││sh ···· | th ·  ││sh ···· | th ·  │     built: sh 0 th 0   next TH take 4 yen
+└────────────────┘└────────────────┘└────────────────┘└────────────────┘     President: Church (A06)
+         ┌────────────────┐┌────────────────┐┌────────────────┐            1 <span style="color:#61afef">Blue</span>    4 yen   3 VP [bot]
+         │A04 <span style="color:#7cc0ff">Port A</span> <span style="color:#e5c07b">y</span>    ││A05 <span style="color:#e5c07b">Bank</span> <span style="color:#56b6c2">f</span>      ││A06 <span style="color:#ffffff">Church</span> <span style="color:#c8ccd4">s</span>    │              c0 s1 t0 f3 i0   hand 1
+         │P: -            ││P: -            ││P: <span style="color:#e06c75">R</span>            │              asst: hand 2 board 5 wh 12 locked 1
+         │-               ││-               ││<span style="color:#61afef">B1</span>              │              built: sh 0 th 0   next TH take 4 yen
+         │sh ···· | th ·  ││sh ···· | th ·  ││sh ···· | th ·  │              President: Fishing Ground (A01)
+         └────────────────┘└────────────────┘└────────────────┘
+                  ┌────────────────┐┌────────────────┐
+                  │A07 <span style="color:#98c379">Tea Plant</span> <span style="color:#56b6c2">f</span> ││A08 <span style="color:#c8ccd4">Silk Mill</span> <span style="color:#e5c07b">y</span> │
+                  │P: -            ││P: -            │
+                  │<span style="color:#e06c75">R1</span> <span style="color:#61afef">B1</span>           ││<span style="color:#e06c75">R1</span>              │
+                  │sh ···· | th ·  ││sh ···· | th ·  │
+                  └────────────────┘└────────────────┘
+                           ┌────────────────┐
+                           │A09 <span style="color:#7f848e">Employ Ag</span> <span style="color:#d7a3e8">i</span> │
+                           │P: -            │
+                           │<span style="color:#e06c75">R1</span> <span style="color:#61afef">B1</span>           │
+                           │sh ···· | th ·  │
+                           └────────────────┘
+5-Power tokens (face-up): i=import  c=copper  s=silk  t=tea  f=seafood  y=yen   [St]=Station  ·=empty slot
+info: type &#x27;view&#x27; — board · players · ports · labs · tracks · sites · goals · hand · score · log
+──────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+Option A — toggle areas by id off the board, then &#x27;confirm&#x27;.
+Option A — place 1 assistant each in up to 2 areas (toggle by id):
+  A00 Copper Mine             A01 Fishing Ground (fee)    A02 Laboratory A
+  A03 Customs                 A04 Port A                  A05 Bank
+  A06 Church                  A07 Tea Plantation          A08 Silk Mill
+  A09 Employment Agency
+Selected: (none — confirm places no assistants)
+  -&gt; legal — Place no assistants
+&gt; type an area id to toggle, &#x27;confirm&#x27; to place, or &#x27;cancel&#x27;
+cancel</pre></div>
+    </figure>
+    <figure class="shot">
+      <figcaption><h3>A bot seat playing itself</h3><p>Seat 1 is a bot (<code>family-weighted</code> policy). Its whole turn narrates move by move, including the placement fee it paid and who received it. This is the 3.2 rung — a weighted random policy, not the 3.3 evaluator.</p></figcaption>
+      <div class="term"><pre>════════════════════════════════════════════════ Y O K O H A M A ═════════════════════════════════════════════════
+┌────────────────┐┌────────────────┐┌────────────────┐┌────────────────┐  ─ Players ──────────────────────────────
+│A00 <span style="color:#d19a66">Copper Mn</span> <span style="color:#d19a66">c</span> ││A01 <span style="color:#56b6c2">Fishing</span> <span style="color:#d7a3e8">i</span>   ││A02 <span style="color:#d7a3e8">Lab A</span> <span style="color:#d19a66">c</span>     ││A03 <span style="color:#61afef">Customs</span> <span style="color:#d7a3e8">i</span>   │  &gt;0 <span style="color:#e06c75">Red</span>     2 yen   8 VP
+│P: -            ││P: <span style="color:#61afef">B</span>            ││P: -            ││P: -            │     c0 s0 t0 f0 i0   hand 0
+│<span style="color:#61afef">B2</span>              ││<span style="color:#e06c75">R1</span>              ││-               ││<span style="color:#e06c75">R1</span>              │     asst: hand 2 board 5 wh 12 locked 1
+│sh ···· | th ·  ││sh ···· | th ·  ││sh ···· | th ·  ││sh ···· | th ·  │     built: sh 0 th 0   next TH take 4 yen
+└────────────────┘└────────────────┘└────────────────┘└────────────────┘     President: Church (A06)
+         ┌────────────────┐┌────────────────┐┌────────────────┐            1 <span style="color:#61afef">Blue</span>    4 yen   3 VP [bot]
+         │A04 <span style="color:#7cc0ff">Port A</span> <span style="color:#e5c07b">y</span>    ││A05 <span style="color:#e5c07b">Bank</span> <span style="color:#56b6c2">f</span>      ││A06 <span style="color:#ffffff">Church</span> <span style="color:#c8ccd4">s</span>    │              c0 s1 t0 f3 i0   hand 1
+         │P: -            ││P: -            ││P: <span style="color:#e06c75">R</span>            │              asst: hand 2 board 5 wh 12 locked 1
+         │-               ││-               ││<span style="color:#61afef">B1</span>              │              built: sh 0 th 0   next TH take 4 yen
+         │sh ···· | th ·  ││sh ···· | th ·  ││sh ···· | th ·  │              President: Fishing Ground (A01)
+         └────────────────┘└────────────────┘└────────────────┘
+                  ┌────────────────┐┌────────────────┐
+                  │A07 <span style="color:#98c379">Tea Plant</span> <span style="color:#56b6c2">f</span> ││A08 <span style="color:#c8ccd4">Silk Mill</span> <span style="color:#e5c07b">y</span> │
+                  │P: -            ││P: -            │
+                  │<span style="color:#e06c75">R1</span> <span style="color:#61afef">B1</span>           ││<span style="color:#e06c75">R1</span>              │
+                  │sh ···· | th ·  ││sh ···· | th ·  │
+                  └────────────────┘└────────────────┘
+                           ┌────────────────┐
+                           │A09 <span style="color:#7f848e">Employ Ag</span> <span style="color:#d7a3e8">i</span> │
+                           │P: -            │
+                           │<span style="color:#e06c75">R1</span> <span style="color:#61afef">B1</span>           │
+                           │sh ···· | th ·  │
+                           └────────────────┘
+5-Power tokens (face-up): i=import  c=copper  s=silk  t=tea  f=seafood  y=yen   [St]=Station  ·=empty slot
+info: type &#x27;view&#x27; — board · players · ports · labs · tracks · sites · goals · hand · score · log
+──────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+Phase: Additional actions (after) -&gt; Additional actions (before)
+Turn 5 Red -&gt; Turn 6 Blue
+Seat 1 (Blue) — End additional-action phase
+Seat 1 (Blue) — Place 1 assistant in each of: Fishing Ground (A01), Church (A06), Employment Agency (A09) — fee 1 yen (1 to Red)
+Seat 1 (Blue) — Move President to Fishing Ground (A01) — free
+Seat 1 (Blue) — Produce seafood (power 2 -&gt; +2 fish, next +3 at power 3)
+Seat 1 (Blue) — Skip the 5-Power token
+Seat 1 (Blue) — Skip building
+Seat 1 (Blue) — End additional-action phase
+<span style="color:#e06c75">Red</span>: +1 yen
+<span style="color:#61afef">Blue</span>: -1 yen, +2 seafood
+<span style="color:#61afef">Blue</span>: assistant moved from hand to Church (A06)
+<span style="color:#61afef">Blue</span>: assistant moved from hand to Employment Agency (A09)
+<span style="color:#61afef">Blue</span>: President Bank (A05) -&gt; Fishing Ground (A01)
+Turn 6 Blue -&gt; Turn 7 Red
+Turn 7 | <span style="color:#e06c75">Red</span> | <span style="font-weight:700">Additional actions (before)</span> | <span style="color:#e5c07b">2 yen</span> <span style="font-weight:700;color:#ffffff">8 VP</span> | <span style="color:#d19a66">c0</span> <span style="color:#c8ccd4">s0</span> <span style="color:#98c379">t0</span> <span style="color:#56b6c2">f0</span> <span style="color:#d7a3e8">i0</span> | hand 0
+[0] End additional-action phase
+(only option — press Enter to apply)
+&gt; enter a number, or a command (&#x27;view&#x27; for game info, &#x27;help&#x27; for the list)
+0</pre></div>
+    </figure>
+    <figure class="shot">
+      <figcaption><h3><code>suggest</code> — the thing under review</h3><p>Red is out of assistants in hand, and the search has found the Employment Agency line to refill. The header names the search and the stream key; the middle block is the position it valued and the term-by-term arithmetic that produced 330; the runner-ups carry real margins (−1, −10).</p></figcaption>
+      <div class="term"><pre>════════════════════════════════════════════════ Y O K O H A M A ═════════════════════════════════════════════════
+┌────────────────┐┌────────────────┐┌────────────────┐┌────────────────┐  ─ Players ──────────────────────────────
+│A00 <span style="color:#d19a66">Copper Mn</span> <span style="color:#d19a66">c</span> ││A01 <span style="color:#56b6c2">Fishing</span> <span style="color:#d7a3e8">i</span>   ││A02 <span style="color:#d7a3e8">Lab A</span> <span style="color:#d19a66">c</span>     ││A03 <span style="color:#61afef">Customs</span> <span style="color:#d7a3e8">i</span>   │  &gt;0 <span style="color:#e06c75">Red</span>     2 yen   8 VP
+│P: -            ││P: <span style="color:#61afef">B</span>            ││P: -            ││P: -            │     c0 s0 t0 f0 i0   hand 0
+│<span style="color:#61afef">B2</span>              ││<span style="color:#e06c75">R1</span>              ││-               ││<span style="color:#e06c75">R1</span>              │     asst: hand 2 board 5 wh 12 locked 1
+│sh ···· | th ·  ││sh ···· | th ·  ││sh ···· | th ·  ││sh ···· | th ·  │     built: sh 0 th 0   next TH take 4 yen
+└────────────────┘└────────────────┘└────────────────┘└────────────────┘     President: Church (A06)
+         ┌────────────────┐┌────────────────┐┌────────────────┐            1 <span style="color:#61afef">Blue</span>    4 yen   3 VP [bot]
+         │A04 <span style="color:#7cc0ff">Port A</span> <span style="color:#e5c07b">y</span>    ││A05 <span style="color:#e5c07b">Bank</span> <span style="color:#56b6c2">f</span>      ││A06 <span style="color:#ffffff">Church</span> <span style="color:#c8ccd4">s</span>    │              c0 s1 t0 f3 i0   hand 1
+         │P: -            ││P: -            ││P: <span style="color:#e06c75">R</span>            │              asst: hand 2 board 5 wh 12 locked 1
+         │-               ││-               ││<span style="color:#61afef">B1</span>              │              built: sh 0 th 0   next TH take 4 yen
+         │sh ···· | th ·  ││sh ···· | th ·  ││sh ···· | th ·  │              President: Fishing Ground (A01)
+         └────────────────┘└────────────────┘└────────────────┘
+                  ┌────────────────┐┌────────────────┐
+                  │A07 <span style="color:#98c379">Tea Plant</span> <span style="color:#56b6c2">f</span> ││A08 <span style="color:#c8ccd4">Silk Mill</span> <span style="color:#e5c07b">y</span> │
+                  │P: -            ││P: -            │
+                  │<span style="color:#e06c75">R1</span> <span style="color:#61afef">B1</span>           ││<span style="color:#e06c75">R1</span>              │
+                  │sh ···· | th ·  ││sh ···· | th ·  │
+                  └────────────────┘└────────────────┘
+                           ┌────────────────┐
+                           │A09 <span style="color:#7f848e">Employ Ag</span> <span style="color:#d7a3e8">i</span> │
+                           │P: -            │
+                           │<span style="color:#e06c75">R1</span> <span style="color:#61afef">B1</span>           │
+                           │sh ···· | th ·  │
+                           └────────────────┘
+5-Power tokens (face-up): i=import  c=copper  s=silk  t=tea  f=seafood  y=yen   [St]=Station  ·=empty slot
+info: type &#x27;view&#x27; — board · players · ports · labs · tracks · sites · goals · hand · score · log
+──────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+─ Suggest ──────────────────────────────
+<span style="color:#e06c75">Seat 0 (Red)</span> · lookahead-v1 · beam 4, K=1, M=8, eval v2 · stream 0x5d9318a718947100
+Suggested move:
+  <span style="font-weight:700">Place 1 assistant in each of: Silk Mill (A08), Employment Agency (A09)</span>
+
+The line it searched, 6 move(s) to the hand-over (the move above is step 1):
+  1. Place 1 assistant in each of: Silk Mill (A08), Employment Agency (A09)
+  2. Move President to Employment Agency (A09) — free
+  3. Employment Agency: take 2 assistants (free)
+  4. Skip the 5-Power token
+  5. Skip building
+  6. End additional-action phase
+
+Score at that point: 330   ·   stage 500000/1000000 ppm (0 = opening, 1000000 = end trigger)
+  feature                        you   best opp   weight     product
+  victory_points                   8          3       25         125
+  country_bonus_now                2          0       21          42
+  tech_bonus_now                  10          0       13         130
+  church_bonus_now                 3          0        6          18
+  customs_bonus_now                0          0       11           0
+  assistants_in_hand_core          2          2       25           0
+  assistants_in_hand_excess        2          0        3           6
+  assistants_in_warehouse         10         12       -7          14
+  assistants_on_board              5          5       12           0
+  shophouses_built                 0          0       16           0
+  trading_houses_built             0          0       20           0
+  five_power_tokens                0          0        9           0
+  imported_goods                   0          0        6           0
+  achievement_progress_sum         0          3        3          -9
+  mercenaries_total                0          0        3           0
+  hand_size                        0          1       -4           4
+  TOTAL                                                          330
+
+Runner-ups (margin against the suggestion, so 0 means tied) — 66 candidate(s) ranked:
+          -1  Place 1 assistant in each of: Customs (A03), Silk Mill (A08)
+         -10  Place 1 assistant in each of: Port A (A04)
+         -10  Place 1 assistant in each of: Tea Plantation (A07)
+<span style="opacity:.62">This is the bot&#x27;s arithmetic, not advice: each row is (your value − the best</span>
+<span style="opacity:.62">opponent&#x27;s) × the weight for this stage, summed. It read ONE guess at the hidden</span>
+<span style="opacity:.62">cards, and its weights are hand-set rather than tuned.</span>
+&gt; enter a number, &#x27;a&#x27;/&#x27;b&#x27; for placement, or a command (&#x27;view&#x27; for game info, &#x27;help&#x27; for the list)
+quit
+bye</pre></div>
+    </figure>
+
+<h2>What held up</h2>
+
+<div class="card ok">
+  <h4>The search's projections matched reality, every time</h4>
+  <p>The line <code>suggest</code> prints is the sequence it valued the position by. Three times I played its
+  line out move for move and the game landed exactly where the table said it would — the end-of-turn assistant
+  counts (board 2, hand 6), the +4 VP order fulfilment, the 8 VP church total. Nothing drifted.</p>
+</div>
+
+<div class="card ok">
+  <h4>It finds genuine multi-step combinations</h4>
+  <p>On turn 3 it proposed: place 2 in the Copper Mine → move the President there free → produce copper →
+  <em>fulfil the Britain order for 4 VP</em> → spend both movement rewards. That combo needed the production to
+  land the exact goods the order wanted, and the next best candidate was 36 points behind. On turn 7 it noticed
+  Red had an empty hand and routed to the Employment Agency to refill.</p>
+</div>
+
+<div class="card ok">
+  <h4>Determinism and the honesty guards are real</h4>
+  <p>Two presses at one position gave a byte-identical screen and the same stream key; a different position gave
+  a different key. It applied nothing, recorded nothing, and did not autosave. The arithmetic in the table sums
+  to the printed total on every screen I checked, and the stage weights visibly slide (VP weight 10 → 17 → 25
+  across the opening).</p>
+</div>
+
+<h2>What I'd flag</h2>
+
+<div class="card flag">
+  <h4>The Laboratory surcharge reads as a reward</h4>
+  <p>The option renders <code>Laboratory: acquire Mining Technology, +2 yen</code> — and then yen went 3 → 1.
+  <code>extra_yen</code> is the board-slot surcharge (slots 3–6 = +1,+1,+2,+2), i.e. a cost, but <code>+2 yen</code>
+  reads as a gain. The arm directly below it in the same function already phrases its cost correctly as
+  <code>5th+ tech fee: 2 yen</code>.</p>
+  <p><code>crates/yokohama-cli/src/describe.rs:316</code> · same for <code>extra_imported</code> · inherited by
+  the <code>suggest</code> line display.</p>
+</div>
+
+<div class="card flag">
+  <h4>Production previews are tech-blind</h4>
+  <p><code>Produce copper (power 3 -&gt; +1 copper, next +2 at power 4)</code> — the log then said
+  <code>Red: +2 copper</code>. Red owned Mining Technology ("whenever you gain one or more Copper: gain 1
+  additional Copper"). <code>production_preview</code> calls the base reward ladder and never consults the acting
+  player's techs, so the preview under-reports for anyone holding a production tech.</p>
+  <p><code>crates/yokohama-cli/src/describe.rs:216</code> · the engine is correct; only the preview is.</p>
+</div>
+
+<div class="card">
+  <h4>The evaluator is positionally blind</h4>
+  <p>At the opening placement, <strong>36 of 186 candidates tied at the top</strong>; at a movement-reward choice,
+  10 of 29 did. That is structural rather than a bug: the features are aggregate counts
+  (<code>assistants_on_board</code> is a number, not a map), so any placement that does not change this turn's
+  action is invisible to the score. Where the choice actually changes the outcome the margins are decisive
+  (−36, −153, −166) — but the bot has no sense of territory, adjacency, or denying an area to an opponent.</p>
+</div>
+
+<div class="card">
+  <h4>The playable bot is not the good bot</h4>
+  <p>A bot <em>seat</em> plays <code>family-weighted</code> — the 3.2 weighted-random rung. The 3.3 evaluator that
+  produces these suggestions is only reachable through <code>suggest</code> on your own seat. So the strongest
+  thing in the build is currently advisory only; you cannot yet play against it.</p>
+</div>
+
+<footer>
+  Captured with the Forge MCP (PTY session, dashboard at <code>127.0.0.1:3141</code>) plus a scripted 140×50 PTY
+  replay of the same autosave. Findings above are display-layer only — the engine did the right thing in every
+  case, and nothing here contradicts the release gates.
+</footer>
+
+</div>
+</body>
+</html>
