@@ -31,7 +31,7 @@
 //! |---|---|---|
 //! | root argmax | [`TieSite::Root`] | R2/R3's 0.59–0.67 θ̂ swing — the null placement wins every tie |
 //! | beam-frontier truncation | [`TieSite::Beam`] | the research critic's unfixed residue: a stable sort keeps the enumeration's first `B` of a tied tail |
-//! | S2's quiescence extension | [`TieSite::Extension`] | the same, one line at a time |
+//! | S2's quiescence extension | [`TieSite::Extension`] | the same, one line at a time — and, until the T5 review, the same index at every SIBLING line too (the site now carries a [`descend_branch`] coordinate) |
 //!
 //! All four call sites (three here, one in [`crate::game::greedy`]) share ONE
 //! primitive, [`uniform_index`] — Lemire multiply-shift, exactly one word per
@@ -43,7 +43,21 @@
 //! measured a naive instrument reading **7.66% false divergence at K = 1 from
 //! tie-draws alone**. Keying per `(decision, candidate index, depth, slot)` off
 //! ONE word drawn per decision makes the draw at a site identical in every
-//! world, so residual divergence is determinization-driven and nothing else.
+//! world.
+//!
+//! **Tie draws are only HALF of what has to be world-common, and the other half
+//! was open until the T5 review (M2).** The candidate scheme draws too — `M`
+//! retreat samples at every Movement node, a reservoir pass at every Placement
+//! node — and those draws used to come off the agent's CONTINUING play stream
+//! inside the world loop, so world `k` started at a shifted position and two
+//! worlds disagreed even where their states were identical (measured: 20/20
+//! organic Movement points where searching the SAME world twice under one
+//! continuing stream produced different candidate lists, values and lines). Both
+//! halves are now keyed the same way — the tie key by [`TieStream`], the
+//! candidate dice by [`candidate_rng`] off a second per-decision word — so
+//! residual cross-world divergence is determinization-driven and nothing else,
+//! and T8's instrument measures determinization alone
+//! (`the_candidate_dice_are_world_common_within_a_decision`).
 //!
 //! # The node and cache shape (spec §4.4, verbatim)
 //!
@@ -121,6 +135,58 @@
 //! | ply-cap hits ([`MAX_TURN_PLIES`]) | **0** | **0** | **0** |
 //! | free-extension steps (quiescence) | n/a | n/a | 3.6/decision, max 5,368 in one |
 //!
+//! **EVERY FIGURE ABOVE IS ONE HARNESS RUN, AND THE SAMPLE SPREAD IS LARGE
+//! ENOUGH TO CHANGE HOW YOU READ THEM** (T5 review S4/S5). Three independent
+//! replicates of the S1 nodes/decision row now exist — this table, the T5
+//! reviewer's run on the SAME master with different agent seeds, and the fix
+//! wave's own re-run (10 games, world seed `MASTER + i` per game, seat seeds via
+//! `arena::agent_stream_seed`) — and they read **315.8 / 260.1 / 269.1** at
+//! `B = 4` and **70.3 / 65.8 / 64.7** at `B = 1`. That is ~15–18% of spread at
+//! N = 10 games, which is the honest error bar on every cell here.
+//!
+//! Two readings the spread governs, both previously stated too strongly. The
+//! `B = 1` pair against R3's model (70.3 vs 56.53, 24% apart) already read as a
+//! disagreement; the `B = 4` pair (315.8 vs 315.01) agreed to three significant
+//! figures **by coincidence**, not because the harness is that repeatable — and
+//! the way to see that is that the SAME harness perturbed only by the M2
+//! candidate-seed fix moved 272.0 → 269.1 (about 1%), i.e. within-harness noise
+//! is an order of magnitude smaller than the 15% between harnesses. Read all of
+//! these as observations under a named harness, never as constants.
+//!
+//! **The S2 column is worse than "spread", and the reason is structural: its
+//! per-decision cost is so heavy-tailed that a mean over 4 games is not a
+//! statistic.** Re-measured over 10 games (2,716 decisions) POST-REORDER, the
+//! distribution is median **40.1 µs** · p90 2,798.5 · p99 40,268 · **max
+//! 2,583,353 µs — 2.58 SECONDS in a single decision** (471,632 nodes, 464,686
+//! free-extension steps), and dropping that one decision moves the mean from
+//! 4,687.7 to 3,737.9. S1 `B = 4` over the same 10 games is median 50.2 · p90
+//! 4,181 · p99 14,701 · max 63,917 µs, i.e. its worst decision is **40× smaller
+//! than S2's**. The 5,368-free-step worst case this table records is the same
+//! pathology at 1/86th the size. T7's cell will meet this tail; sizing it from a
+//! mean would under-provision by two orders of magnitude on the worst decision.
+//!
+//! **The S2 reorder's own cost effect, measured the only way that isolates it**
+//! (T5 review S2 — self-play means cannot, because the reorder changes S2's
+//! values and therefore its whole game trajectory: mean turns moved 51.0 → 33.5
+//! on the 4-game cell). 150 FIXED organic decision points from one Greedy-v1 walk,
+//! searched pre and post with everything else held byte-identical:
+//!
+//! | S2 `d = 2` at 150 fixed points | pre-reorder | post-reorder |
+//! |---|---|---|
+//! | nodes/point | 1,527.5 | **356.9** (−76.6%) |
+//! | successors scored/point | 2,177.7 | **1,085.1** (−50.2%) |
+//! | µs/point | 2,748.7 | **1,467.7** (−46.6%) |
+//! | median nodes | 13 | 3 |
+//! | max nodes | 18,980 | 6,433 |
+//!
+//! S1 `B = 4` over the same points is the CONTROL and comes out byte-identical
+//! either side (54,527 nodes · 273,455 scored · 363.5 nodes/point · median 13 ·
+//! max 4,167), which is the evidence that nothing outside `Run::atomic` moved.
+//! The line that matters for T7: S2 used to pay **4.2×** S1's nodes at the same
+//! points (1,527.5 vs 363.5) and now pays **near parity** (356.9 vs 363.5). §4.1
+//! adjudicates on deterministic counts over a no-edge interval, so a 4.2× gap
+//! that lived entirely in unread bookkeeping could have decided the experiment.
+//!
 //! **Hand-off length** — the quantity that sizes turn-boundary cost, measured
 //! two ways because they are two different things. The ACTUAL player turn
 //! (moves between `current_player` transitions in the played game) is mean
@@ -141,10 +207,11 @@
 //! decisions and **84% of the wall clock**: the phase offers ~149 root
 //! candidates and each one is charged a whole turn completion, which is the
 //! rung's definition rather than a defect. The 1,268.6 µs sits ~20% above spec
-//! §4.4's corrected ~1.0–1.1 ms budget and the shape AGREES with R3's model
-//! rather than diverging from it — R3 measured 315.01 handles/decision at
-//! `B = 4` and 56.53 at `B = 1`; this implementation reads 315.8 and 70.3 on the
-//! same definitions.
+//! §4.4's corrected ~1.0–1.1 ms budget (the two later replicates, 1,125.1 and
+//! 1,134.8 µs, sit INSIDE it — another reading the spread governs), and the shape
+//! AGREES with R3's model rather than diverging from it: R3 measured 315.01
+//! handles/decision at `B = 4` and 56.53 at `B = 1`, and the three replicates
+//! here bracket both on the same definitions.
 //!
 //! **Sizing for T11, with the SELF-PLAY/MIXED distinction spelled out because
 //! it is a factor of two and §10.2's table turns on it.** These games are
@@ -158,12 +225,22 @@
 //! at doctrine N, which is ~2× that and is exactly why §10.2's null self-test
 //! is Greedy-vs-Greedy.
 //!
-//! **Debug costs ~14× release**, the ratio `crate::game::greedy` records for
-//! itself (12–14×): the in-tree driven pin plays a 312-move 2P game through the
-//! arena driver — per-move invariants ON, plus that driver's `is_move_legal`
-//! boundary and its two debug-tier asserts — in **5.5 s** debug, i.e. ~17.8 ms
-//! per decision against release's 1.27 ms. §10.1's pre-declared debug-cost
-//! hazard is real and this is its size.
+//! **Debug costs ~15× release** — the band `crate::game::greedy` records for
+//! itself (12–14×), one notch wider. ONE measured set, taken together at the T5
+//! fix wave (2026-07-27, Apple M5, quiet machine), because two doc sites used to
+//! carry two different numbers for the same thing:
+//!
+//! | | debug | release |
+//! |---|---|---|
+//! | the driven whole-game pin ALONE (310 moves) | **5.49 s** (5.58 s wall) | — |
+//! | all 21 tests in this module, `--test-threads=1` | **11.04 s** | **0.78 s** |
+//! | all 21, default parallelism | — | 0.48 s |
+//!
+//! The driven pin plays its 310-move 2P game through the arena driver — per-move
+//! invariants ON, plus that driver's `is_move_legal` boundary and its two
+//! debug-tier asserts — so 5.49 s is ~17.7 ms per decision against release's
+//! 1.13 ms, a ratio of 15.6×. §10.1's pre-declared debug-cost hazard is real and
+//! this is its size: HALF this module's debug time is that one pin.
 //!
 //! **The 4P cap-bound placement node, measured** (the T3-review note: a
 //! cap-bound node costs ~512 scorings, and at `B = 4` the beam multiplies it).
@@ -178,16 +255,29 @@
 //! cap binding on 9.19% of organic 4P decisions, and 3–4P strength cells are OUT
 //! of 3.3 (spec §1).
 //!
-//! # What this rung does NOT claim
+//! # What this rung does and does NOT claim about its streams
 //!
-//! [`crate::game::greedy`]'s "two weight tables walk the same stream" property does **not**
-//! survive into search, and no doc here says it does: which nodes exist depends
-//! on which nodes the beam kept, which depends on the weights, so the candidate
-//! scheme's own draws (M retreat samples per Movement node; reservoir draws only
-//! when the placement cap binds) fall at weight-dependent stream positions. What
-//! IS constant per decision is the stream consumption the AGENT makes: `K`
-//! sampler seeds plus exactly one tie key, whatever the search does inside
-//! (`the_agents_stream_consumption_per_decision_is_constant`).
+//! **What it claims, and this is stronger than it was before the T5 review
+//! (M2).** A decision spends EXACTLY THREE words of the agent's own play stream,
+//! in this order: the sampler seed, the tie key, the candidate seed. Three, flat
+//! — independent of `K` (one sampler seed serves all K worlds; `BeliefSampler`
+//! draws its determinizations off its own stream), independent of the weight
+//! table, and independent of everything the search does inside, because all three
+//! words are drawn BEFORE the first world is sampled. So the agent's stream
+//! POSITION after `n` decisions is `3n`, and that is pinned two ways: by
+//! reconstruction (`the_agents_stream_consumption_per_decision_is_reconstructible`)
+//! and by addressing decision `n` at mirror words `3n+1..3n+3` at both `K = 1`
+//! and `K = 2` (`the_agents_play_stream_advances_exactly_three_words_per_decision`).
+//! Before the fix the count was `2 +` however many draws the search happened to
+//! make, so it was neither constant nor weight-independent.
+//!
+//! **What it still does NOT claim.** [`crate::game::greedy`]'s "two weight tables
+//! walk the same stream" property does not survive into search in the form that
+//! matters for candidate SETS: which nodes exist depends on which nodes the beam
+//! kept, which depends on the weights, so two weight tables reach different nodes
+//! and therefore draw different candidates there. The keyed candidate seed makes
+//! the DICE common across worlds within one decision; it cannot make the node set
+//! common across weight tables, and nothing here says it does.
 
 use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -239,8 +329,12 @@ pub const LOOKAHEAD_CONTROLLER: &str = "lookahead-v1";
 ///
 /// It is a separate const because it is a separate controller NAME, and the two
 /// can move independently: a change to the quiescence rule makes S2's figures
-/// non-comparable without touching S1 at all.
-pub const ATOMIC_DIAG_IMPL_VERSION: u32 = 1;
+/// non-comparable without touching S1 at all — which is exactly what happened
+/// at **2 (T5 review S2)**: the evaluate-only leaf now returns before a node is
+/// built, and a depth-spent FORCED phase boundary is valued where it used to
+/// extend free (see [`Run::atomic`]). S1 did not move, so
+/// [`LOOKAHEAD_IMPL_VERSION`] did not either.
+pub const ATOMIC_DIAG_IMPL_VERSION: u32 = 2;
 
 /// The S2 DIAGNOSTIC arm's controller name.
 ///
@@ -268,8 +362,15 @@ pub const DEFAULT_ATOMIC_DEPTH: u8 = 2;
 /// **Not a semantic bound — a guard.** The measured player turn is mean 7.66 /
 /// **max observed 18** moves (module doc), and this sits 3.6× above that
 /// maximum; the scratch harness recorded **0** hits in 5,890 decisions across
-/// both beam widths, and [`SearchStats::ply_cap_hits`] counts them so a run that
-/// starts hitting it says so rather than silently truncating.
+/// both beam widths.
+///
+/// A hit is not a wrong answer but it IS a quietly different one — the line is
+/// valued where the guard stopped it, not where the seat handed off, so the
+/// explanation and the principal continuation are taken mid-turn. That is why
+/// [`SearchStats::ply_cap_hits`] is aggregated onto
+/// [`SearchTally::ply_cap_hits`] and asserted at 0 by the driven whole-game pin
+/// (T5 review S1): until that handle existed the counter was written and never
+/// read, which made a cap regression exactly as silent as no counter at all.
 pub const MAX_TURN_PLIES: u32 = 64;
 
 /// Totality guard on S2's quiescence: how many FREE (depth-uncharged) plies one
@@ -280,10 +381,17 @@ pub const MAX_TURN_PLIES: u32 = 64;
 /// it. **The guard is PER LINE** — `free_used` is threaded down one recursion
 /// path, not summed across branches — so it bounds free DEPTH and not free
 /// WIDTH. Measured over 2,376 S2 decisions: 3.6 free steps per decision summed
-/// over all branches, with one decision reaching 5,368 (and 31,271 nodes). That
-/// worst case is recorded rather than designed against: S2 is a diagnostic arm
-/// and T7's cell will see it, whereas inventing a total-work budget here would
-/// be inventing a search semantic the spec does not price.
+/// over all branches, with one decision reaching 5,368 (and 31,271 nodes).
+///
+/// **That worst case is recorded rather than designed against, and the T5 review
+/// found a much larger instance of it: 464,686 free steps and 471,632 nodes in a
+/// SINGLE decision, 2.58 s of release wall clock** (10-game S2 self-play,
+/// post-reorder — module doc's tail table). Nothing about the guard changed; free
+/// WIDTH is what grows, and this is 86× the previously recorded instance rather
+/// than a new failure mode. It stays recorded because S2 is a diagnostic arm and
+/// T7's cell will meet the tail, whereas inventing a total-work budget here would
+/// be inventing a search semantic the spec does not price. What it does mean is
+/// that T7 must be provisioned off the TAIL, not off a mean.
 pub const MAX_FREE_EXTENSION: u32 = 64;
 
 /// Domain salt for the keyed tie stream, in this crate's `mix` shape.
@@ -296,10 +404,15 @@ const SALT_TIE_STREAM: u64 = 0x1EA4_7123_0000_0001;
 /// WHERE a tie was broken, as a key T8 can hold common across sampled worlds.
 ///
 /// The coordinates are deliberately WORLD-INDEPENDENT: a root candidate's
-/// INDEX, a continuation depth, and a slot within a tied block. Two worlds that
-/// offer the same candidate at the same index break its ties the same way, so
-/// any divergence T8 then measures is determinization, not dice (spec §4.3;
-/// lens 2 measured 7.66% false divergence from unkeyed draws).
+/// INDEX, a continuation depth, a slot within a tied block, and (for S2) the
+/// index PATH that reached the site. Two worlds that offer the same candidate at
+/// the same index break its ties the same way (spec §4.3; lens 2 measured 7.66%
+/// false divergence from unkeyed draws).
+///
+/// That makes the TIE dice world-common. It is not on its own enough to make
+/// T8's residual divergence determinization — the candidate dice have to be
+/// world-common too, which is [`candidate_rng`]'s job and was an open channel
+/// until the T5 review (M2). Cite the pair, never this half alone.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TieSite {
     /// The root argmax over hand-off-evaluated root candidates.
@@ -307,8 +420,13 @@ pub enum TieSite {
     /// The beam's truncation cut inside root candidate `root`, at continuation
     /// `depth`, filling tied slot `slot`.
     Beam { root: u32, depth: u32, slot: u32 },
-    /// S2's quiescence extension step inside root candidate `root` at `depth`.
-    Extension { root: u32, depth: u32 },
+    /// S2's quiescence extension step inside root candidate `root` at `depth`,
+    /// on the line whose index path folds to `branch`.
+    ///
+    /// `branch` is [`descend_branch`]'s coordinate and it is load-bearing:
+    /// without it two SIBLING lines extending at the same depth draw the same
+    /// index (T5 review S3).
+    Extension { root: u32, depth: u32, branch: u32 },
 }
 
 impl TieSite {
@@ -320,7 +438,9 @@ impl TieSite {
             Self::Beam { root, depth, slot } => {
                 [1, u64::from(root), u64::from(depth), u64::from(slot)]
             }
-            Self::Extension { root, depth } => [2, u64::from(root), u64::from(depth), 0],
+            Self::Extension { root, depth, branch } => {
+                [2, u64::from(root), u64::from(depth), u64::from(branch)]
+            }
         }
     }
 }
@@ -363,6 +483,43 @@ impl TieStream {
     pub fn pick(&self, site: TieSite, len: usize) -> usize {
         uniform_index(self.word(site), len)
     }
+}
+
+/// The candidate-scheme dice ONE world's search gets, keyed by this decision's
+/// candidate-stream seed.
+///
+/// **World-COMMON by construction, and that is the point** (spec §4.3; T5 review
+/// M2). The candidate scheme DRAWS — `M` retreat samples at every Movement node,
+/// a reservoir pass at every Placement node — so handing the agent's CONTINUING
+/// play stream to each of the K per-world searches would start world `k` at a
+/// shifted stream position and two worlds would then draw different candidates
+/// even where their states are IDENTICAL. One word drawn once per decision and
+/// re-keyed per world makes the dice common; the candidate LISTS still differ
+/// wherever the worlds' states differ, which is exactly the divergence T8's
+/// instrument is trying to measure.
+///
+/// This is [`TieStream`]'s construction in the other half of the same argument,
+/// and the two together are why the module doc can say cross-world divergence is
+/// determinization-driven and nothing else.
+fn candidate_rng(candidate_seed: u64) -> ChaCha8Rng {
+    ChaCha8Rng::seed_from_u64(candidate_seed)
+}
+
+/// Extend a branch coordinate by the candidate INDEX taken at this node.
+///
+/// S2's extension tie site has to tell SIBLINGS apart: two branches that reach a
+/// free-extension step at the same `(root, free_used)` would otherwise key the
+/// same word and pick the same index — perfectly correlated, which is the
+/// first-wins residue one step sideways rather than one level down (T5 review
+/// S3). S1's [`TieSite::Beam`] needs no equivalent: its `slot` already separates
+/// the picks within one cut, and a cut happens once per `(root, depth)`.
+///
+/// The fold is a function of the INDEX PATH and nothing else, so the coordinate
+/// stays world-independent in exactly the sense §4.3 needs: two worlds offering
+/// the same candidate at the same index down the same path key the same word.
+fn descend_branch(branch: u32, index: usize) -> u32 {
+    // FNV-1a's 32-bit prime. Wrapping because a coordinate is a key, not a count.
+    branch.wrapping_mul(0x0100_0193).wrapping_add(index as u32).wrapping_add(1)
 }
 
 // ---------------------------------------------------------------------------
@@ -609,15 +766,21 @@ struct Node {
 ///
 /// **The distinction is where S1's cost lives.** Ranking the beam needs an
 /// EVALUATION; only the survivors of the cut need an ENUMERATION. Promoting
-/// every child would build a handle for every one of them: measured during T5
-/// on one 186-candidate Placement decision, promote-then-cut cost **11,604**
-/// handles against cut-then-promote's **3,122** on byte-identical play (the
-/// 12,600 scorings are the same either way). It is also the shape R3's cost
-/// model was measured on — 315.01 handles/decision at `B = 4`, against this
-/// implementation's measured 315.8 — and that model is where spec §4.4's
-/// ~1.0–1.1 ms budget comes from. `Node` still owns its candidates and still
-/// builds exactly one handle; node CREATION just happens after the cut rather
-/// than before it.
+/// every child would build a handle for every one of them: on one 186-candidate
+/// Placement decision, promote-then-cut costs **11,614** handles against
+/// cut-then-promote's **3,122** on byte-identical play — the same move chosen,
+/// and the same 12,610 scorings either way (re-measured at the T5 review fix
+/// wave; the authoring run read 11,604 / 3,122 / 12,600 before the M2 candidate
+/// seed moved the dice). It is also the shape R3's cost model was measured on —
+/// 315.01 handles/decision at `B = 4`, which the three replicates in the module
+/// doc bracket — and that model is where spec §4.4's ~1.0–1.1 ms budget comes
+/// from. `Node` still owns its candidates and still builds exactly one handle;
+/// node CREATION just happens after the cut rather than before it.
+///
+/// This claim is what `one_pick_allocates_within_a_measured_sanity_bound`'s
+/// `nodes × 2 < scored` assertion makes executable — and the T5 review's finding
+/// was that until that assertion existed, NOTHING did (the allocation ceiling
+/// passes under promote-then-cut).
 struct Successor {
     state: GameState,
     eval: i64,
@@ -858,11 +1021,42 @@ impl<R: Rng> Run<'_, R> {
     /// or a phase boundary reached with the budget spent. A budget spent
     /// mid-phase extends greedily (one line, no branching, tie-broken by keyed
     /// draw) until the phase turns over — bounded by [`MAX_FREE_EXTENSION`].
+    ///
+    /// # The evaluate-only leaf is decided BEFORE a handle is built
+    ///
+    /// **T5 review S2, and it is a behaviour change with a version bump behind
+    /// it, not a pure reorder — read this before comparing S2 figures across the
+    /// bump.** The arm used to build the node FIRST and test quietness second,
+    /// so every line that ended at a spent-budget phase boundary paid a full
+    /// enumeration it never read. S1 has no analogue (a hand-off leaf is valued
+    /// and never expanded), and §4.1 adjudicates T7 on DETERMINISTIC COUNTS over
+    /// a no-edge interval, so a cost asymmetry that exists only in the
+    /// bookkeeping could decide the experiment.
+    ///
+    /// The test could not simply move: `free` is `candidates.len() <= 1 ||
+    /// pending choices`, and its first disjunct IS the enumeration, so "quiet
+    /// AND non-free" is not answerable before `make_node`. What moved is the
+    /// answerable part — depth spent, an EMPTY choice queue, and the phase
+    /// turned over (or the free guard tripped) — all three readable off the
+    /// state, with [`eval::score`] needing no handle. The one behavioural
+    /// consequence, stated exactly: a point that is depth-spent, queue-empty, at
+    /// a phase boundary AND FORCED (≤ 1 candidate) is now VALUED where it used
+    /// to extend free through its forced move. A pending-choice chain still
+    /// extends free — a queued choice is bookkeeping and reads its freeness off
+    /// the queue, not off an enumeration — and the mid-phase greedy extension
+    /// below is untouched. [`ATOMIC_DIAG_IMPL_VERSION`] is bumped accordingly.
+    // Eight: `state`/`trace` are the point, and `root`/`branch`/`depth_left`/
+    // `prev_phase`/`free_used` are five INDEPENDENT descent coordinates threaded
+    // down one recursion path. Bundling them into a struct would be a rewrite of
+    // a hot recursive function whose costs were just measured, for no gain in
+    // what any of them means.
+    #[allow(clippy::too_many_arguments)]
     fn atomic(
         &mut self,
         state: GameState,
         trace: u32,
         root: u32,
+        branch: u32,
         depth_left: u8,
         prev_phase: TurnPhase,
         free_used: u32,
@@ -872,17 +1066,28 @@ impl<R: Rng> Run<'_, R> {
             self.note_leaf(trace);
             return Ok((v, trace));
         }
+
+        // EVALUATE-ONLY, decided off the STATE with no handle built (see above).
+        if depth_left == 0
+            && state.pending_choices.is_empty()
+            && (state.turn_phase != prev_phase || free_used >= MAX_FREE_EXTENSION)
+        {
+            return Ok((self.value_at(&state)?, trace));
+        }
+
         let node = self.make_node(state, trace)?;
         let free = node.candidates.len() <= 1 || !node.state.pending_choices.is_empty();
 
         if depth_left == 0 && !free {
-            if node.state.turn_phase != prev_phase || free_used >= MAX_FREE_EXTENSION {
-                // Quiet: a phase boundary (or the guard). Value it here.
-                return Ok((node.eval, node.trace));
-            }
-            // NOT quiet — the budget ran out mid-phase. Extend ONE greedy step
-            // for free, no branching, so the evaluation lands on a phase
-            // boundary rather than inside a half-made decision.
+            // `!free` implies an empty queue, and the boundary case returned
+            // above, so what is left here is exactly "the budget ran out
+            // MID-PHASE". Extend ONE greedy step for free, no branching, so the
+            // evaluation lands on a phase boundary rather than inside a
+            // half-made decision.
+            debug_assert!(
+                node.state.turn_phase == prev_phase && free_used < MAX_FREE_EXTENSION,
+                "the quiet-boundary case must have returned before the node was built",
+            );
             self.stats.free_extension_steps += 1;
             let mut best: Option<(i64, usize)> = None;
             let mut tied: Vec<usize> = Vec::new();
@@ -904,11 +1109,19 @@ impl<R: Rng> Run<'_, R> {
                     }
                 }
             }
-            let site = TieSite::Extension { root, depth: free_used };
+            let site = TieSite::Extension { root, depth: free_used, branch };
             let chosen = tied[self.ctx.ties.pick(site, tied.len())];
             let (_, next, t) = evals.swap_remove(chosen);
             let phase = node.state.turn_phase;
-            return self.atomic(next, t, root, 0, phase, free_used + 1);
+            return self.atomic(
+                next,
+                t,
+                root,
+                descend_branch(branch, chosen),
+                0,
+                phase,
+                free_used + 1,
+            );
         }
 
         let charge = u8::from(!free);
@@ -919,11 +1132,19 @@ impl<R: Rng> Run<'_, R> {
 
         let phase = node.state.turn_phase;
         let mut best: Option<(i64, u32)> = None;
-        for mv in &node.candidates {
+        for (i, mv) in node.candidates.iter().enumerate() {
             let next = self.apply(&node.state, mv)?;
             let t = self.trace.push(node.trace, mv.clone());
             self.stats.scored += 1;
-            let (v, at) = self.atomic(next, t, root, depth_left - charge, phase, free_used)?;
+            let (v, at) = self.atomic(
+                next,
+                t,
+                root,
+                descend_branch(branch, i),
+                depth_left - charge,
+                phase,
+                free_used,
+            )?;
             // First-wins among equals: a VALUE aggregation, not a decision tie
             // point (see `complete_turn`'s note).
             if best.is_none_or(|(b, _)| v > b) {
@@ -982,7 +1203,10 @@ pub fn search_world<R: Rng>(
             }
             SearchScheme::AtomicDiag { depth } => {
                 let phase = world.turn_phase;
-                run.atomic(next, trace, i as u32, depth.saturating_sub(1), phase, 0)?
+                // The branch coordinate starts at 0 for every root: the root
+                // INDEX is already a coordinate of its own, so two roots never
+                // share a site whatever their sub-branches fold to.
+                run.atomic(next, trace, i as u32, 0, depth.saturating_sub(1), phase, 0)?
             }
         };
         roots.push(RootValue { mv: mv.clone(), value, leaf });
@@ -1003,6 +1227,7 @@ struct LookaheadCounters {
     scored: AtomicU64,
     placement_cap_binds: AtomicU64,
     continuation_moves: AtomicU64,
+    ply_cap_hits: AtomicU64,
 }
 
 /// A cloneable handle on one [`LookaheadAgent`]'s counters — [`crate::game::greedy`]'s
@@ -1051,6 +1276,20 @@ impl SearchTally {
     /// searched to.
     pub fn continuation_moves(&self) -> u64 {
         self.counters.continuation_moves.load(Ordering::Relaxed)
+    }
+
+    /// Continuations [`MAX_TURN_PLIES`] stopped, summed over every decision.
+    ///
+    /// **Expected 0, and readable so that a run can SAY so** (T5 review S1). A
+    /// cap hit is not a wrong answer, but it is a quietly different one: the
+    /// line it values ends where the GUARD stopped it and not where the seat
+    /// handed off, so the explanation and the principal continuation are taken
+    /// mid-turn (see [`LookaheadAgent::last_continuation`]). The counter existed
+    /// on [`SearchStats`] from the start; until this handle it was written and
+    /// never read, which made a silent cap regression exactly as silent as
+    /// having no counter at all.
+    pub fn ply_cap_hits(&self) -> u64 {
+        self.counters.ply_cap_hits.load(Ordering::Relaxed)
     }
 }
 
@@ -1152,7 +1391,9 @@ impl LookaheadAgent {
     /// The explanation of the LAST move this agent chose, taken at the
     /// **hand-off state the search actually valued it at** — not at its
     /// one-ply successor, which is a different state and a different number
-    /// (spec §0.3(b); T10 renders it).
+    /// (spec §0.3(b); T10 renders it). A ply-capped line is the one case where
+    /// "hand-off" means the cap point instead — see
+    /// [`last_continuation`](Self::last_continuation).
     pub fn last_explanation(&self) -> Option<&Explanation> {
         self.last_explanation.as_ref()
     }
@@ -1161,6 +1402,15 @@ impl LookaheadAgent {
     /// the chosen root candidate to the hand-off its value was read at, root
     /// move first. Stored for T10's rendering — an explanation of a searched
     /// move is incomplete without the line it was searched down.
+    ///
+    /// **One honest caveat, and [`SearchTally::ply_cap_hits`] is how a run says
+    /// whether it applies** (T5 review S1): if [`MAX_TURN_PLIES`] stopped the
+    /// continuation, the line ends at the CAP and not at a seat transition, so
+    /// both this sequence and [`last_explanation`](Self::last_explanation) were
+    /// taken MID-TURN. Nothing marks that in the line itself — a truncated line
+    /// and a completed one are the same `Vec<Move>` — which is why the counter
+    /// is read rather than merely written, and why the driven whole-game pin
+    /// asserts it stayed at 0.
     pub fn last_continuation(&self) -> &[Move] {
         &self.last_continuation
     }
@@ -1216,6 +1466,14 @@ impl ArenaAgent for LookaheadAgent {
             ties: TieStream::new(self.rng.next_u64()),
         };
 
+        // ONE candidate-stream seed, drawn in the same place and for the same
+        // reason as the tie key: every world's search is handed a FRESH
+        // `candidate_rng` from this word, so the candidate DICE are world-common
+        // too (spec §4.3; T5 review M2). Drawing it here — once, whatever K is —
+        // is also what fixes the agent's per-decision play-stream consumption at
+        // exactly three words.
+        let candidate_seed = self.rng.next_u64();
+
         let k = usize::from(self.worlds);
         let mut agg: Vec<Aggregate> = Vec::new();
         let mut worlds: Vec<GameState> = Vec::with_capacity(k);
@@ -1227,7 +1485,7 @@ impl ArenaAgent for LookaheadAgent {
         // node's continuation is a property of the world it lives in.
         for w in 0..k {
             let world = sampler.sample();
-            let searched = search_world(&world, seat, &ctx, &mut self.rng)?;
+            let searched = search_world(&world, seat, &ctx, &mut candidate_rng(candidate_seed))?;
             // The volume is world 0's root handle's: an observation about THIS
             // decision point's size, and at the shipped K = 1 the only one.
             if volume.is_none() {
@@ -1314,6 +1572,7 @@ impl ArenaAgent for LookaheadAgent {
         counters.nodes.fetch_add(stats.nodes, Ordering::Relaxed);
         counters.scored.fetch_add(stats.scored, Ordering::Relaxed);
         counters.placement_cap_binds.fetch_add(stats.placement_cap_binds, Ordering::Relaxed);
+        counters.ply_cap_hits.fetch_add(stats.ply_cap_hits, Ordering::Relaxed);
         counters
             .continuation_moves
             .fetch_add(self.last_continuation.len() as u64, Ordering::Relaxed);
@@ -1720,24 +1979,55 @@ mod tests {
     /// peak-outstanding, the same record-never-assert split
     /// `action_source_worstcase`'s meter states.
     ///
-    /// MEASURED FIRST, at this fixture and seed (debug, 2026-07-27):
-    /// **624,087 allocations · 102,122,969 requested bytes** for one `B = 4`
-    /// decision over 3,122 nodes and 12,600 scored successors — i.e. ~50
-    /// allocations per successor, which is what one `apply_move_unchecked`
-    /// (a whole `GameState` clone, four board `BTreeMap`s included) plus one
-    /// `observe` costs. The fixture is deliberately the EXPENSIVE shape: a
-    /// 186-candidate organic Placement root, the phase the cost table shows
-    /// carrying 84% of the wall clock.
+    /// MEASURED FIRST, at this fixture and seed (debug, re-measured 2026-07-27
+    /// after the M2 candidate-seed fix moved the dice): **624,503 allocations ·
+    /// 102,173,989 requested bytes** for one `B = 4` decision over 3,122 nodes
+    /// and 12,610 scored successors — i.e. ~50 allocations per successor, which
+    /// is what one `apply_move_unchecked` (a whole `GameState` clone, four board
+    /// `BTreeMap`s included) plus one `observe` costs. The fixture is
+    /// deliberately the EXPENSIVE shape: a 186-candidate organic Placement root,
+    /// the phase the cost table shows carrying 84% of the wall clock.
     ///
     /// The ceiling is 1.5× the measurement rounded up — a SANITY ceiling, not a
-    /// tight bound. It exists to catch an order-of-magnitude regression (a
-    /// per-node `PlayerView` kept alive, a line cloned down every branch, a
-    /// retreat family materialized, or the cut-then-promote shape silently
-    /// becoming promote-then-cut again), not to freeze a figure that
-    /// legitimately moves with the weight table's play.
+    /// tight bound. It catches an order-of-magnitude regression: a per-node
+    /// `PlayerView` kept alive, a line cloned down every branch, a retreat family
+    /// materialized. **It does NOT catch the promote-then-cut shape, and it used
+    /// to claim it did** (T5 review M1). Measured, both ways round, on this same
+    /// fixture:
+    ///
+    /// | | shipped, cut-then-promote | mutated, promote-then-cut |
+    /// |---|---|---|
+    /// | allocations | 624,503 | 669,380 (+7.2%, ceiling 950,000 — PASSES) |
+    /// | nodes | 3,122 | **11,614** |
+    /// | successors scored | 12,610 | 12,610 |
+    /// | move chosen | `PlaceThreeAreas [1, 6, 9]` | the same move |
+    ///
+    /// The reason is structural rather than a matter of ceiling tightness: an
+    /// allocation total is dominated by the `apply` + `observe` charged per
+    /// SCORED successor, and that count is identical under both shapes. Only the
+    /// promotion count moves, and it moves by 3.7× while the allocation total
+    /// moves by 7%. No ceiling drawn around 624,503 separates them.
+    ///
+    /// Hence the second assertion, which is the discriminator: **`nodes × 2 <
+    /// scored`**. Measured-then-set from the pair above — shipped reads
+    /// 6,244 < 12,610 (~2.0× of headroom), promote-then-cut reads 23,228 < 12,610
+    /// and fails. It is the executable form of [`Successor`]'s claim that ranking
+    /// needs an EVALUATION and only survivors need an ENUMERATION, and it is a
+    /// ratio rather than a count, so it does not freeze a figure the weights
+    /// legitimately move. **MUTATION-PROVEN** (2026-07-27, debug — promote every
+    /// child at creation, then cut the promoted `Node`s on the same keyed draws,
+    /// reverted by inverse edit; the same run drove the driven whole-game pin
+    /// from 343.5 to 715.7 nodes/decision and that pin still passed, which is a
+    /// second witness that no other pin nets this shape):
+    ///
+    /// ```text
+    /// promote-then-cut must FAIL here: 11614 nodes against 12610 scored is
+    /// a handle for all but a fraction of the children
+    /// ```
     #[test]
     fn one_pick_allocates_within_a_measured_sanity_bound() {
-        /// 1.5× the measured 624,087, rounded up. See the doc for its job.
+        /// 1.5× the measured 624,503, rounded up. See the doc for its job — and
+        /// for what it is NOT the net for.
         const CEILING: usize = 950_000;
 
         let rules = Rules::standard();
@@ -1762,6 +2052,15 @@ mod tests {
         assert!(
             allocs < CEILING,
             "one pick allocated {allocs} times, over the {CEILING} sanity ceiling",
+        );
+        // THE DISCRIMINATOR the allocation ceiling is not (see the doc). Cut
+        // first, promote after: most scored children must never buy a handle.
+        assert!(
+            stats.nodes * 2 < stats.scored,
+            "promote-then-cut must FAIL here: {} nodes against {} scored is a handle for all \
+             but a fraction of the children",
+            stats.nodes,
+            stats.scored,
         );
     }
 
@@ -1853,7 +2152,7 @@ mod tests {
         // even where the coordinates coincide.
         assert_ne!(
             ties.word(TieSite::Beam { root: 1, depth: 0, slot: 0 }),
-            ties.word(TieSite::Extension { root: 1, depth: 0 }),
+            ties.word(TieSite::Extension { root: 1, depth: 0, branch: 0 }),
         );
         assert_ne!(
             ties.word(TieSite::Beam { root: 1, depth: 0, slot: 0 }),
@@ -1861,6 +2160,23 @@ mod tests {
         );
         // A different key is a different decision.
         assert_ne!(ties.word(TieSite::Root), TieStream::new(0xFEEE).word(TieSite::Root));
+
+        // **T5 review S3: SIBLING extension steps must not share a word.** Two
+        // lines that reach a free extension at the same `(root, depth)` differ
+        // only in the index path that got them there, so `branch` is the whole
+        // separation — without it the two picks are perfectly correlated.
+        assert_ne!(
+            ties.word(TieSite::Extension { root: 2, depth: 1, branch: descend_branch(0, 0) }),
+            ties.word(TieSite::Extension { root: 2, depth: 1, branch: descend_branch(0, 1) }),
+            "sibling extension steps must key different words",
+        );
+        // And the fold really does separate index PATHS, not just the last step:
+        // (0 then 1) and (1 then 0) are different lines at the same depth.
+        assert_ne!(
+            descend_branch(descend_branch(0, 0), 1),
+            descend_branch(descend_branch(0, 1), 0),
+            "the branch fold must be path-sensitive, not order-blind",
+        );
     }
 
     // -- determinism (spec §7's repeatability, and the gate's byte-identity) --
@@ -1899,21 +2215,32 @@ mod tests {
     /// **THE STREAM-CONSUMPTION PATTERN, made executable end to end.**
     ///
     /// A decision spends, from the agent's own play stream and in this order:
-    /// `K` sampler seeds (one per world) and exactly ONE tie key — and then the
-    /// search takes the stream over for its candidate scheme. The tie machinery
-    /// itself spends NOTHING: [`TieStream::pick`] takes `&self` and no `Rng`, so
-    /// a tie cannot move the stream at all, however many the beam breaks.
+    /// **word 1 = the sampler seed, word 2 = the tie key, word 3 = the candidate
+    /// seed** — three words, and then nothing at all, whatever `K` is and
+    /// whatever the search does inside. One sampler seed serves all K worlds
+    /// (`BeliefSampler` is built once and sampled K times off its OWN stream);
+    /// the tie machinery spends nothing at all ([`TieStream::pick`] takes `&self`
+    /// and no `Rng`); and since the T5-review M2 fix the candidate scheme spends
+    /// nothing either — each world's search runs on a fresh
+    /// [`candidate_rng`] keyed by word 3, which is what made the count constant
+    /// rather than merely bounded.
     ///
-    /// The pin RECONSTRUCTS a decision from a mirrored stream: take word 1 as
-    /// the sampler seed, word 2 as the tie key, hand the rest to `search_world`,
-    /// re-run the agent's own root argmax, and require the same move. That
-    /// fails if the agent draws a different NUMBER of words, draws them in a
-    /// different ORDER, or keys the root draw off anything but word 2.
+    /// The pin RECONSTRUCTS a decision from a mirrored stream: take the three
+    /// words in that order, re-run the agent's own root argmax, and require the
+    /// same move. That fails if the agent draws a different NUMBER of words,
+    /// draws them in a different ORDER, keys the root draw off anything but word
+    /// 2, or keys the candidate dice off anything but word 3. The exact COUNT is
+    /// pinned separately by
+    /// `the_agents_play_stream_advances_exactly_three_words_per_decision`, which
+    /// is the half that catches a search reaching back into the play stream.
     ///
     /// What it does NOT claim (and `greedy`'s doc does): that two WEIGHT TABLES
-    /// walk the same stream. They cannot here — the candidate scheme draws at
-    /// every node, and which nodes exist depends on which ones the beam kept,
-    /// which depends on the weights.
+    /// produce the same candidate SETS. They cannot here — the candidate scheme
+    /// draws at every node, and which nodes exist depends on which ones the beam
+    /// kept, which depends on the weights. What the fix did buy is one rung
+    /// weaker and worth naming: the agent's own stream POSITION after a decision
+    /// is now weight-independent, because all three words are drawn before the
+    /// first world is searched.
     #[test]
     fn the_agents_stream_consumption_per_decision_is_reconstructible() {
         const SEED: u64 = 0xC0DE_5EED;
@@ -1931,15 +2258,22 @@ mod tests {
         );
         let played = agent.choose(&view, &rules).expect("a decision").mv;
 
-        // The mirror: word 1 = sampler seed, word 2 = tie key, remainder = the
-        // search's own stream.
+        // The mirror: word 1 = sampler seed, word 2 = tie key, word 3 = the
+        // candidate seed every world's search is keyed from.
         let mut mirror = ChaCha8Rng::seed_from_u64(SEED);
         let sampler_seed: u64 = mirror.gen();
         let tie_key = mirror.next_u64();
+        let candidate_seed = mirror.next_u64();
         let mirrored_world =
             BeliefSampler::from_view(&view, &rules, sampler_seed).expect("sampler").sample();
         let c = ctx(&rules, &WeightTable::V1, SearchScheme::TurnBoundary { beam: 3 }, tie_key);
-        let searched = search_world(&mirrored_world, seat, &c, &mut mirror).expect("search");
+        let searched = search_world(
+            &mirrored_world,
+            seat,
+            &c,
+            &mut candidate_rng(candidate_seed),
+        )
+        .expect("search");
 
         // The agent's own root argmax, re-run over the reconstruction.
         let best = searched.roots.iter().map(|r| r.value).max().expect("candidates");
@@ -1952,15 +2286,23 @@ mod tests {
 
         // ANTI-VACUITY: the reconstruction is sensitive to the consumption
         // pattern it claims. Reading the tie key FIRST — the same two words in
-        // the other order — must not reproduce the move, or the pin would pass
-        // whatever the agent did with its stream.
+        // the other order, word 3 left exactly where it was — must not reproduce
+        // the move, or the pin would pass whatever the agent did with its stream.
         let mut swapped = ChaCha8Rng::seed_from_u64(SEED);
         let wrong_tie = swapped.next_u64();
         let wrong_seed: u64 = swapped.gen();
+        let same_candidate_seed = swapped.next_u64();
+        assert_eq!(same_candidate_seed, candidate_seed, "only the first two words are swapped");
         let wrong_world =
             BeliefSampler::from_view(&view, &rules, wrong_seed).expect("sampler").sample();
         let c2 = ctx(&rules, &WeightTable::V1, SearchScheme::TurnBoundary { beam: 3 }, wrong_tie);
-        let other = search_world(&wrong_world, seat, &c2, &mut swapped).expect("search");
+        let other = search_world(
+            &wrong_world,
+            seat,
+            &c2,
+            &mut candidate_rng(same_candidate_seed),
+        )
+        .expect("search");
         let best2 = other.roots.iter().map(|r| r.value).max().expect("candidates");
         let tied2: Vec<&RootValue> = other.roots.iter().filter(|r| r.value == best2).collect();
         let chosen2 = &tied2[TieStream::new(wrong_tie).pick(TieSite::Root, tied2.len())].mv;
@@ -1968,6 +2310,229 @@ mod tests {
             &played, chosen2,
             "anti-vacuity: swapping the two words must change the answer, or the order \
              this pin claims is not being tested",
+        );
+    }
+
+    /// Re-run ONE decision from a mirrored play stream, spelling out
+    /// [`LookaheadAgent::choose`]'s own shape: `skip` decisions' worth of words
+    /// consumed first (three each), then word 1 = the sampler seed for all `k`
+    /// worlds, word 2 = the tie key, word 3 = the candidate seed every world's
+    /// search is keyed from, then the argmax over the K-mean with the
+    /// [`TieSite::Root`] draw.
+    // A mirror has to match the agent's construction knob for knob, so every one
+    // of them is spelled out here on purpose rather than defaulted.
+    #[allow(clippy::too_many_arguments)]
+    fn reconstruct_decision(
+        rules: &Rules,
+        view: &PlayerView,
+        seat: PlayerId,
+        scheme: SearchScheme,
+        weights: WeightTable,
+        k: u8,
+        agent_seed: u64,
+        skip: usize,
+    ) -> Move {
+        let mut mirror = ChaCha8Rng::seed_from_u64(agent_seed);
+        for _ in 0..skip * 3 {
+            let _ = mirror.next_u64();
+        }
+        let sampler_seed: u64 = mirror.gen();
+        let tie_key = mirror.next_u64();
+        let candidate_seed = mirror.next_u64();
+
+        let mut sampler = BeliefSampler::from_view(view, rules, sampler_seed).expect("sampler");
+        let c = ctx(rules, &weights, scheme, tie_key);
+        // (move, value sum, count) — `Aggregate`'s arithmetic, no more.
+        let mut agg: Vec<(Move, i64, i64)> = Vec::new();
+        for _ in 0..k {
+            let world = sampler.sample();
+            let searched = search_world(&world, seat, &c, &mut candidate_rng(candidate_seed))
+                .expect("search");
+            for r in &searched.roots {
+                match agg.iter_mut().find(|(m, _, _)| *m == r.mv) {
+                    Some(a) => {
+                        a.1 = a.1.saturating_add(r.value);
+                        a.2 += 1;
+                    }
+                    None => agg.push((r.mv.clone(), r.value, 1)),
+                }
+            }
+        }
+        let best = agg.iter().map(|(_, s, n)| s / n).max().expect("candidates");
+        let tied: Vec<&(Move, i64, i64)> =
+            agg.iter().filter(|(_, s, n)| s / n == best).collect();
+        tied[TieStream::new(tie_key).pick(TieSite::Root, tied.len())].0.clone()
+    }
+
+    /// **EXACTLY THREE WORDS PER DECISION, AND THE SEARCH TOUCHES NONE OF THEM**
+    /// (T5 review M2). The count used to be variable: the search was handed the
+    /// agent's own `&mut self.rng`, so a decision's consumption was `2 + (however
+    /// many retreat samples and reservoir draws the search happened to make)` —
+    /// and at `K = 2` the second world therefore started at a SHIFTED position.
+    /// With each world keyed from word 3 instead, a decision spends 3 words flat.
+    ///
+    /// The pin addresses decision `n` by consuming `3n` mirror words first, so it
+    /// fails on any drift in the count — which is what makes it, and not the
+    /// reconstruction pin above, the half that catches a search reaching back
+    /// into the play stream. Run at `K = 1` AND `K = 2`, because the K loop is
+    /// where the old shape's drift was largest.
+    ///
+    /// Under [`WeightTable::ZERO`] every root candidate ties, so the answer is
+    /// the keyed [`TieSite::Root`] draw and nothing else — which both maximizes
+    /// sensitivity to word 2's POSITION and gives the anti-vacuity below its
+    /// teeth (three consecutive decisions reach more than one distinct move).
+    #[test]
+    fn the_agents_play_stream_advances_exactly_three_words_per_decision() {
+        const SEED: u64 = 0x3_0000_0003;
+        const DECISIONS: usize = 3;
+        let rules = Rules::standard();
+        let (world, seat) = on_board_movement_point(&rules);
+        let view = observe(&world, seat).expect("observe");
+        let scheme = SearchScheme::TurnBoundary { beam: 2 };
+
+        for k in [1u8, 2] {
+            let mut agent = LookaheadAgent::with_knobs(
+                &rules,
+                scheme,
+                k,
+                DEFAULT_RETREAT_SAMPLES,
+                WeightTable::ZERO,
+                SEED,
+            );
+            let played: Vec<Move> = (0..DECISIONS)
+                .map(|_| agent.choose(&view, &rules).expect("a decision").mv)
+                .collect();
+            let mirrored: Vec<Move> = (0..DECISIONS)
+                .map(|n| {
+                    reconstruct_decision(
+                        &rules,
+                        &view,
+                        seat,
+                        scheme,
+                        WeightTable::ZERO,
+                        k,
+                        SEED,
+                        n,
+                    )
+                })
+                .collect();
+            assert_eq!(
+                played, mirrored,
+                "at K={k} decision n must reconstruct from mirror words 3n+1..3n+3",
+            );
+            // ANTI-VACUITY: the OFFSETS have to matter. If three consecutive
+            // decisions all answered the same, the pin would pass for any
+            // consumption count at all.
+            let distinct: std::collections::BTreeSet<String> =
+                played.iter().map(|m| format!("{m:?}")).collect();
+            assert!(
+                distinct.len() > 1,
+                "anti-vacuity at K={k}: {DECISIONS} keyed draws reached only {} distinct move(s)",
+                distinct.len(),
+            );
+        }
+    }
+
+    /// The first `n` on-board Movement decision points one Greedy-v1 2P game
+    /// reaches, each as a SAMPLED world plus the seat to move.
+    ///
+    /// [`point_where`]'s shape, harvested from ONE walk: the M2 repro needs a
+    /// POPULATION of organic points rather than a single fixture, and Movement
+    /// points are the cheap shape that still draws (the retreat family samples
+    /// `M` times at the root, so the candidate dice are live there).
+    fn movement_points(rules: &Rules, seed: u64, n: usize) -> Vec<(GameState, PlayerId)> {
+        let pending = new_game(GameConfig::for_player_count(2), rules, seed).expect("2P setup");
+        let mut state =
+            finalize_setup(pending, &[StartingOrderChoice::Keep(0), StartingOrderChoice::Keep(0)])
+                .expect("finalize");
+        let mut agent = GreedyAgent::new(rules, 0x77);
+        let mut out = Vec::new();
+        for _ in 0..600 {
+            if out.len() == n {
+                break;
+            }
+            let seat = state.current_player;
+            let view = observe(&state, seat).expect("observe");
+            if state.turn_phase == TurnPhase::Movement
+                && state.pending_choices.is_empty()
+                && matches!(state.current_player().president_location, PresidentLocation::OnBoard(_))
+            {
+                let world =
+                    BeliefSampler::from_view(&view, rules, 1).expect("sampler").sample();
+                out.push((world, seat));
+            }
+            let r = agent.choose(&view, rules).expect("move");
+            state = apply_move_unchecked(&state, &r.mv, rules).expect("apply");
+        }
+        out
+    }
+
+    /// **THE M2 REPRO, both directions** (T5 review M2). The module claimed
+    /// residual cross-world divergence was "determinization-driven and nothing
+    /// else"; that was true of the tie draws ([`TieStream`] is built before the
+    /// world loop) and FALSE of the candidate scheme, which walked the agent's
+    /// CONTINUING stream inside the `for w in 0..k` loop — so world `k` drew its
+    /// retreat samples and reservoirs from a shifted position and two worlds
+    /// disagreed even where their states were identical.
+    ///
+    /// The two halves are the same experiment run both ways over the same
+    /// organic points, and the second is the anti-vacuity the first needs:
+    /// searching ONE world twice must agree exactly under the dice the agent now
+    /// hands every world, and must DISAGREE under one continuing stream. The
+    /// reviewer measured 60/60 divergent at the old seam; this cell reproduces
+    /// that direction and pins the new one at 0.
+    ///
+    /// Cross-world divergence at K > 1 is now determinization and nothing else,
+    /// which is the property T8's instrument rests on. Note what is NOT claimed:
+    /// two DIFFERENT worlds still get different candidate LISTS — common dice,
+    /// different states — and that difference is the signal, not noise.
+    #[test]
+    fn the_candidate_dice_are_world_common_within_a_decision() {
+        const DICE: u64 = 0xD1CE_D1CE;
+        const N: usize = 20;
+        let rules = Rules::standard();
+        let points = movement_points(&rules, MASTER, N);
+        assert_eq!(points.len(), N, "the walk must reach {N} on-board Movement points");
+
+        // Roots, values AND lines: the whole searched answer, not just the move.
+        let fingerprint = |s: &WorldSearch| -> Vec<String> {
+            s.roots
+                .iter()
+                .map(|r| format!("{:?}|{}|{:?}", r.mv, r.value, s.line(r.leaf)))
+                .collect()
+        };
+        let mut common_diverged = 0usize;
+        let mut continuing_diverged = 0usize;
+        for (world, seat) in &points {
+            let c = ctx(&rules, &WeightTable::V1, SearchScheme::default(), 0xB1A5);
+            // What every world is handed since the fix: a fresh stream off ONE
+            // per-decision seed.
+            let a = search_world(world, *seat, &c, &mut candidate_rng(DICE)).expect("search");
+            let b = search_world(world, *seat, &c, &mut candidate_rng(DICE)).expect("search");
+            if fingerprint(&a) != fingerprint(&b) {
+                common_diverged += 1;
+            }
+            // The pre-fix shape: ONE continuing stream across both worlds.
+            let mut continuing = ChaCha8Rng::seed_from_u64(DICE);
+            let a2 = search_world(world, *seat, &c, &mut continuing).expect("search");
+            let b2 = search_world(world, *seat, &c, &mut continuing).expect("search");
+            if fingerprint(&a2) != fingerprint(&b2) {
+                continuing_diverged += 1;
+            }
+        }
+        println!(
+            "same-world double search over {N} organic Movement points: \
+             world-common dice {common_diverged}/{N} divergent · \
+             continuing stream {continuing_diverged}/{N} divergent",
+        );
+        assert_eq!(
+            common_diverged, 0,
+            "two searches of the SAME world under the per-decision candidate seed must agree",
+        );
+        assert_eq!(
+            continuing_diverged, N,
+            "anti-vacuity: a continuing stream must diverge, or this fixture cannot see the \
+             channel the fix closed",
         );
     }
 
@@ -2166,10 +2731,12 @@ mod tests {
     /// `crate::game::greedy`'s: every applied move was chosen by a decision
     /// that produced an explanation.
     ///
-    /// **Cost, stated because §10.1 pre-declares this hazard:** ~3 s debug for
-    /// one 2P game (~300 decisions at ~10 ms), against ~0.4 s release. ONE game
-    /// at ONE master, capped well below `HONEST_MAX_TURNS` so a
-    /// non-terminating search fails in seconds; the strength cells are T11's.
+    /// **Cost, stated because §10.1 pre-declares this hazard, and re-measured at
+    /// the T5 review (S5) because this site and the module doc used to disagree:**
+    /// **5.49 s debug** for one 310-move 2P game (~17.7 ms per decision), which is
+    /// HALF the whole module's 11.04 s debug run, against 0.78 s for all 21 tests
+    /// in release. ONE game at ONE master, capped well below `HONEST_MAX_TURNS` so
+    /// a non-terminating search fails in seconds; the strength cells are T11's.
     #[test]
     fn the_rung_plays_a_whole_game_through_the_arena_driver() {
         use crate::game::arena::{agent_stream_seed, run_arena_game_capped, Slot};
@@ -2193,6 +2760,7 @@ mod tests {
         let explained: u64 = handles.iter().map(|t| t.explained()).sum();
         let continuation: u64 = handles.iter().map(|t| t.continuation_moves()).sum();
         let nodes: u64 = handles.iter().map(|t| t.nodes()).sum();
+        let cap_hits: u64 = handles.iter().map(|t| t.ply_cap_hits()).sum();
         println!(
             "arena-driven 2P Lookahead self-play: turns {} · moves {} · nodes/decision {:.1} · \
              mean continuation {:.2}",
@@ -2206,6 +2774,15 @@ mod tests {
         assert_eq!(
             explained, stats.moves_applied,
             "every applied move was chosen by a decision that produced an explanation",
+        );
+        // T5 review S1: a ply-capped continuation is valued at the CAP and not at
+        // a seat transition, so a run that starts hitting the guard has to say so
+        // rather than quietly explaining a mid-turn state. Zero over a whole game
+        // is the module doc's claim, made a failure condition.
+        assert_eq!(
+            cap_hits, 0,
+            "MAX_TURN_PLIES stopped {cap_hits} continuation(s) — every one of them was \
+             explained mid-turn",
         );
 
         let run = stats.record.run.as_ref().expect("a driven game stamps provenance");
