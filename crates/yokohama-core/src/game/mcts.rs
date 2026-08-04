@@ -21,6 +21,65 @@
 //! rather than absent; answering a K it cannot honestly aggregate would be
 //! worse than saying so.
 //!
+//! # THE HONESTY CONTRACT — the five things that break it (spec §7, R3 §5)
+//!
+//! Everything this module computes is a function of `(view, sampler seed, agent
+//! stream position)` and of nothing else. The tree applies moves, refills ports
+//! and completes turns INSIDE the sampled world, and every one of those states
+//! is the bot's imagination: the world is a determinization of what the seat can
+//! see, so reading it as deeply as the search likes is not a leak. That argument
+//! survives exactly five edits, and they are named here so a future change is
+//! checked against a list rather than against a feeling:
+//!
+//! 1. **A true-state read.** Any path that reaches a `&GameState` the sampler
+//!    did not produce — a `choose(&GameState, …)` signature, a `&Rules` carrying
+//!    state, a back-door accessor. The current signature is the guarantee; the
+//!    tripwire that notices it being traded away is
+//!    `t6_mcts_v1s_decision_never_moves_under_hidden_variation`.
+//! 2. **A cache keyed by true-state identity.** A transposition table, a memo,
+//!    or any reuse across decisions keyed by something that identifies the REAL
+//!    game rather than this decision's world. (Spec §12 keeps a TT arm out of
+//!    this cycle; if one ever lands, its key is the honesty question.)
+//! 3. **An OS-entropy or wall-clock budget.** [`ScoredBudget`] is a deterministic
+//!    count of scored successors precisely so a decision is reproducible from
+//!    its master; a time-sliced or entropy-seeded budget makes the search a
+//!    function of the machine, which no record can carry and no cell can
+//!    reproduce.
+//! 4. **`K > 1` aggregation.** Refused at [`MctsAgent::choose`] and NOT an
+//!    oversight: aggregating one tree across sampled worlds is information-set
+//!    search (spec §0.4's candidate (c)), which is a different honesty argument
+//!    from this one and is kept out on measured grounds.
+//! 5. **Any sampler fallback.** A [`BeliefSampler`] refusal is a hard error here.
+//!    An arena seat that fell back to the true legal list would emit
+//!    privileged-play games into the corpus, and nothing downstream could tell
+//!    them from honest ones.
+//!
+//! ## Leakage is NOT world-sensitivity (spec §7, ledger L24)
+//!
+//! The two get confused because both compare decisions across varied inputs.
+//! They are opposite properties, and this module is expected to sit on opposite
+//! sides of them:
+//!
+//! | | **LEAKAGE** | **WORLD-SENSITIVITY** |
+//! |---|---|---|
+//! | the question | does the decision read what the seat cannot see? | does the decision depend on WHICH world was sampled? |
+//! | what varies | the TRUE hidden fields (deck orders, boxed pile, opponent starting order, setup seed) | the sampler seed |
+//! | what is held | the view, the sampler seed, the agent stream position | the view, the tie key, the candidate dice |
+//! | the honest value | **ZERO**, for every contestant | **NONZERO is expected** for an eval-leaf tree |
+//! | status | ASSERTED | RECORDED, never asserted zero |
+//! | a nonzero reading means | a defect: the search is reading privileged state | the search is using the world it was handed |
+//! | where it lives | `tests/observation_leakage.rs`, `t6_mcts_v1s_decision_is_invariant_under_the_true_hidden_fields` | same file, `t6_mcts_v1s_world_sensitivity_is_measured_and_recorded` |
+//!
+//! The leakage row's honest scope note (critic R3-3): the invariance holds AT
+//! THE SAME AGENT STREAM POSITION. That is weaker than "under any circumstances"
+//! and it is sufficient — a stream position is a count of the agent's own
+//! decisions, which is not privileged information.
+//!
+//! The world-sensitivity row is spec §0.4's ARMED entry instrument for candidate
+//! (c), and its SCALE is not calibrated (critic R3-2: part of any divergence is
+//! tree-shape dice divergence on unshared prefixes, so the measured rate is an
+//! upper bound). No numeric threshold is pre-registered on it.
+//!
 //! # The node, and why the handle is a scoped temporary (spec §2.5, ledger L10)
 //!
 //! A [`DecisionHandle`] borrows `&GameState`, so a node cannot own one. A node
@@ -86,8 +145,10 @@
 //! tree that descends past the hand-off reads determinized opponent options as
 //! well as determinized refills, so a nonzero measured cross-world divergence is
 //! the design working, not a leak. Leakage — which stays asserted at zero — is a
-//! different property (spec §7 / ledger L24); §7's contract comment lands with
-//! that task.
+//! different property (spec §7 / ledger L24) — the honesty-contract section
+//! above carries the table that separates them, and T6 measured this arm at
+//! **0.0857 (3 of 35 non-forced points)** against 0/35 for both rungs, in the
+//! regime that cell's doc states.
 //!
 //! At 3–4P the `1 − v` flip reads as "every non-root seat plays against the
 //! root", the paranoid reading. 3–4P strength cells are out of scope (spec §1);

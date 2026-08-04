@@ -44,23 +44,42 @@
 //! Ledger L11 is the one-line version: the sweep cell is a tripwire and is
 //! labelled one; the leakage clause's real content is (ii) plus (iii).
 //!
-//! COST (debug, measured at the T8 close, three runs of the whole binary):
-//! **9.04 / 9.01 / 9.06 s**, against 0.13 s before T8. The tests run
-//! CONCURRENTLY, so that wall is the longest single cell (the divergence
-//! instrument, ~8.5 s) and not the ~17 s of CPU the four new cells spend
-//! between them — per-cell: divergence ~8.5 s, Lookahead tripwire ~6.5 s,
-//! determinization ~1.6 s, Greedy tripwire ~0.5 s. Two of the four are searches,
-//! which is the whole of the cost; the Lookahead knobs are reduced for exactly
-//! this reason and the reduction is pre-declared at [`TRIPWIRE_BEAM`], per spec
-//! §10.1's debug-cost hazard. All four are per-edit and none is `#[ignore]`d, so
-//! no new gate command (and no four-site registration) is owed.
+//! PHASE 3.4 (T6, spec §7) adds MCTS-v1, and the SAME three-part reading
+//! applies — the block above §7's cells restates it per cell. What is new is a
+//! contestant that is expected to sit on OPPOSITE sides of the two properties:
+//! its leakage is asserted at zero like everyone else's, and its
+//! WORLD-SENSITIVITY is expected to be NONZERO and is therefore RECORDED, never
+//! asserted (ledger L24). The instrument that records it is validated against
+//! the two contestants whose zero is already known — Greedy-v1 and Lookahead-v1
+//! run the same function and ARE asserted at zero, which is what stops a
+//! recorded number from being an unfalsifiable one.
+//!
+//! COST (debug, measured as three runs of the whole binary): **9.04 / 9.01 /
+//! 9.06 s** at the T8 close, and **9.61 / 9.65 / 9.74 s** after T6, against
+//! 0.13 s before T8. The tests run CONCURRENTLY, so the wall is the longest
+//! single cell and not the sum of what the binary spends — which is why T6's
+//! four cells cost ~0.6 s of WALL between them while spending ~10 s of CPU.
+//! Per-cell at T6, each run alone: divergence ~8.5 s, Lookahead tripwire
+//! ~6.5 s, **MCTS world-sensitivity 4.74 s**, **MCTS instrument validation
+//! 2.85 s**, **MCTS tripwire 1.81 s**, determinization ~1.6 s, **MCTS leakage
+//! invariance 0.79 s**, Greedy tripwire ~0.5 s. Every one of the
+//! expensive cells is a search, which is the whole of the cost; the reduced
+//! knobs are pre-declared at [`TRIPWIRE_BEAM`] and [`MCTS_SIMULATIONS`] (and the
+//! ONE cell that deliberately does NOT take the reduction, because the
+//! reduction would destroy what it measures, says so at
+//! [`MCTS_SENSITIVITY_SIMULATIONS`]), per spec §10.1's debug-cost hazard. All of
+//! them are per-edit and none is `#[ignore]`d, so no new gate command (and no
+//! four-site registration) is owed.
 
 use rand::Rng;
 use rand::SeedableRng;
 use rand_chacha::ChaCha8Rng;
 use yokohama_core::game::eval::{self, Explanation, WeightTable};
 use yokohama_core::game::greedy::{candidates, Candidates, GreedyAgent, DEFAULT_RETREAT_SAMPLES};
-use yokohama_core::game::lookahead::{LookaheadAgent, SearchScheme};
+use yokohama_core::game::lookahead::{
+    self, LookaheadAgent, SearchCtx, SearchScheme, TieSite, TieStream,
+};
+use yokohama_core::game::mcts::{self, LeafRule, McCtx, McKnobs, McStream, MctsAgent};
 use yokohama_core::{
     apply_move_unchecked, check_invariants, finalize_setup, get_legal_moves, is_game_over, new_game,
     observe, AreaAction, ArenaAgent, BeliefError, BeliefSampler, DecisionHandle, GameConfig,
@@ -1559,4 +1578,841 @@ fn t8_lookahead_v1s_cross_world_divergence_is_measured_and_recorded() {
          argmax, the divergence RATE is the acceptance statistic, and the mechanism belongs \
          in the ledger before K stays at 1"
     );
+}
+
+// ---------------------------------------------------------------------------
+// PHASE 3.4 (T6, spec §7): MCTS-v1's honesty cells. THREE kinds again, and the
+// 3.3 block above is the precedent each one follows:
+//   (i)   the SIGNATURE TRIPWIRE — MCTS-v1 joins `run_decision_invariance_sweep`
+//         exactly as Greedy-v1 and Lookahead-v1 did, and is labelled a tripwire
+//         for exactly their reason (the variants observe back to an identical
+//         view, so `choose(&PlayerView, &Rules)` compares f(x) against f(x)).
+//   (ii)  the LEAKAGE-INVARIANCE cell — R3's control brought in-repo, ASSERTED,
+//         and strictly WIDER than the sweep: it perturbs the one hidden member
+//         `variants()` deliberately leaves alone (an opponent's starting order),
+//         and it asserts the byte-identity of the OBSERVATION as an explicit
+//         premise rather than inheriting it.
+//   (iii) the WORLD-SENSITIVITY instrument — RECORDED for MCTS-v1, never
+//         asserted zero, and validated against the two contestants whose zero is
+//         already known (L15): Greedy-v1 and Lookahead-v1 run the SAME
+//         instrument and ARE asserted at zero.
+// Ledger L24 is the one-line version, and the mcts module's own honesty-contract
+// comment carries the table: leakage is asserted zero for every honest
+// contestant; world-sensitivity is a MEASURED property of an eval-leaf tree that
+// a zero would make surprising.
+// ---------------------------------------------------------------------------
+
+/// The simulation count cells (i) and (ii) run at, and — [`TRIPWIRE_BEAM`]'s
+/// rule, one rung over — the reason it is not the shipped
+/// `DEFAULT_SIMULATIONS = 64`.
+///
+/// COST, pre-declared rather than discovered (spec §10.1's debug-cost hazard).
+/// Debug, measured in this tree at authoring by running the sweep cell below at
+/// both knob sets (600 decisions each, same walk): the SHIPPED
+/// `simulations = 64` / `M = 8` / `HandOff` costs **19.91 s ≈ 33 ms/decision**,
+/// and `simulations = 8` / `M = 2` costs **1.80 s ≈ 3.0 ms/decision**.
+///
+/// WHY THE REDUCTION IS NOT LOAD-BEARING FOR (i) AND (ii). A tripwire's content
+/// is "no thread-rng, no clock, no iteration-order dependence, and the
+/// `&PlayerView` signature has not been traded away", and the leakage cell's is
+/// "the decision is a function of the view at a fixed stream position" — neither
+/// is a function of the simulation count. What the reduction DOES cost is tree
+/// DEPTH, which is precisely the channel (iii) measures, so **(iii) does NOT use
+/// this constant** — it runs at [`MCTS_SENSITIVITY_SIMULATIONS`] and pays for
+/// it.
+///
+/// The **leaf rule stays the SHIPPED [`LeafRule::HandOff`]** at every cell here,
+/// deliberately: the completion leaf is where the search draws its keyed
+/// completion words and where it reads determinized content a whole turn deep,
+/// so cheapening it would shrink exactly the surface these cells are aimed at.
+const MCTS_SIMULATIONS: u32 = 8;
+/// `M` for every MCTS cell here, (iii) included; see [`MCTS_SIMULATIONS`].
+const MCTS_RETREAT_SAMPLES: u8 = 2;
+
+/// The simulation count the WORLD-SENSITIVITY instrument runs at — the SHIPPED
+/// `mcts::DEFAULT_SIMULATIONS`, restated rather than imported so this file
+/// records the number it measured at even if that default later moves.
+///
+/// **A DELIBERATE DEPARTURE FROM [`MCTS_SIMULATIONS`], and the cell is worthless
+/// without it.** The channel (iii) measures is descent BELOW the hand-off, so
+/// the reading is a function of how deep the tree gets — and at a shallow count
+/// the read-out is essentially the root pass's one-ply ranking, which is
+/// world-invariant for the same reason greedy-v1's is. Measured at authoring, on
+/// this cell's own walks and worlds (2P, `M = 2`, `HandOff`, W = 3, 35
+/// non-forced points, shipped `c`/`scale` — a LADDER, not a curve, and every
+/// numerator is single-digit over 35, so read the SHAPE and not the values):
+///
+/// | simulations | diverged / non-forced | rate |
+/// |---|---|---|
+/// | 8 | 0 / 35 | 0.0000 |
+/// | 32 | 1 / 35 | 0.0286 |
+/// | **64 (this constant)** | **3 / 35** | **0.0857** |
+/// | 200 | 2 / 35 | 0.0571 |
+///
+/// The zero at 8 is the point: it is a statement about a tree too shallow to
+/// have the property, and recording it as MCTS-v1's world-sensitivity would have
+/// been the instrument lying quietly. Cost of the choice, debug, the recorded
+/// cell run alone: **4.74 s at 64 against 0.58 s at 8**.
+const MCTS_SENSITIVITY_SIMULATIONS: u32 = 64;
+
+/// The MCTS knobs every cell in this block builds from — one value, so a cell
+/// cannot quietly run a different search from its neighbour. `simulations` is
+/// the ONE knob a cell chooses, and the two constants above say why.
+fn mcts_knobs(simulations: u32) -> McKnobs {
+    McKnobs {
+        cap: None,
+        exploration_ppm: McKnobs::DEFAULT.exploration_ppm,
+        squash_scale: McKnobs::DEFAULT.squash_scale,
+        retreat_samples: MCTS_RETREAT_SAMPLES,
+        leaf: LeafRule::HandOff,
+        simulations,
+        worlds: 1,
+    }
+}
+
+/// MCTS-v1 as a decider, at [`mcts_knobs`].
+fn mcts_agent_pick(rules: &Rules, agent_seed: u64, view: &PlayerView, simulations: u32) -> Move {
+    let mut agent = MctsAgent::with_knobs(rules, agent_seed, mcts_knobs(simulations));
+    agent.choose(view, rules).expect("MCTS-v1 resolves a move at a real decision point").mv
+}
+
+/// **SIGNATURE TRIPWIRE — MCTS-v1** (spec §7, ledger L11/L24).
+///
+/// THIS CELL IS NOT A LEAKAGE MEASUREMENT, on the Greedy/Lookahead cells' own
+/// grounds and with their labelling: across every comparison the VIEW is
+/// identical (the FamilyWeighted cell measured 0/450 differing and `variants()`
+/// is unchanged), and `MctsAgent::choose(view, rules)` makes hidden state
+/// unreachable BY SIGNATURE, so this compares f(x) against f(x). Its content is
+/// the same two things, and the tree makes the first of them worth more than it
+/// was at either rung below:
+///
+///  - internal nondeterminism — the chain here is the longest in the crate
+///    (`observe` → `BeliefSampler` → tree, with a [`DecisionHandle`] per node, a
+///    keyed draw at the module's FIVE selecting points, and a greedy turn
+///    COMPLETION at every leaf), which is that much more surface for a clock, a
+///    `thread_rng` or a `HashMap` iteration order to hide in;
+///  - a future signature change that re-opens the channel.
+///
+/// The ASSERTED leakage content is the next cell, which perturbs more hidden
+/// members than `variants()` does and states its premise instead of inheriting
+/// it; cite THAT one for "MCTS-v1 does not read what it must not".
+///
+/// **FRESH AGENT PER CALL**, the rule both 3.3 cells recorded a red for: an
+/// `MctsAgent` spends exactly three play-stream words per decision (sampler
+/// seed, tie key, candidate seed), so a long-lived agent arrives at each
+/// comparison at a different stream offset and its pick moves for a reason that
+/// is not a leak.
+#[test]
+fn t6_mcts_v1s_decision_never_moves_under_hidden_variation() {
+    let rules = Rules::standard();
+    let checked = run_decision_invariance_sweep("T6 mcts-v1", &rules, 4, |view, _legal, rules| {
+        mcts_agent_pick(rules, HONEST_AGENT_SEED, view, MCTS_SIMULATIONS)
+    });
+    assert!(checked >= 300, "anti-vacuity: only {checked} comparisons");
+}
+
+/// The agent seed the two MCTS cells below run on. A literal for
+/// [`HONEST_AGENT_SEED`]'s reason — what is pinned is that the seed's
+/// PROVENANCE is a constant rather than a function of state — and a DIFFERENT
+/// literal so a coincidence at one seed cannot carry both cells.
+const MCTS_LEAK_AGENT_SEED: u64 = 0x3C7A_0F15_EA7E_D004;
+
+/// Points the leakage-invariance cell reads, per walk, and the walks it reads
+/// them from. Two walks rather than one so the invariance is not a statement
+/// about a single trajectory; the count is what keeps the cell (points × 1 base
+/// + 6 variants MCTS decisions) inside the per-edit tier.
+const LEAK_WALKS: [u64; 2] = [0, 1];
+/// Points taken from each of [`LEAK_WALKS`].
+const LEAK_POINTS_PER_WALK: usize = 25;
+
+/// An ORDER-SENSITIVE fold of every hidden member the leakage cell perturbs —
+/// the setup seed, the deck ORDERS, the boxed pile, and every seat's starting
+/// order. All five of `observe`'s hidden members are in it, which is what lets
+/// the cell assert its non-vacuity as an EQUALITY (every comparison perturbed
+/// something) rather than as a floor.
+///
+/// Order-sensitive is the whole point and [`hidden_fingerprint`] above is not a
+/// substitute: that one SUMS card ids, so the R3 control's own variant (a
+/// REVERSED hidden deck) leaves it unchanged and a non-vacuity check built on it
+/// would certify a perturbation that never happened.
+fn true_hidden_fingerprint(s: &GameState) -> u64 {
+    let fold = |acc: u64, id: u64| acc.wrapping_mul(1_000_003).wrapping_add(id.wrapping_add(1));
+    let mut acc = fold(0x5A1D_0000_0000_0001_u64, s.config.setup_seed);
+    for c in &s.order_deck {
+        acc = fold(acc, u64::from(c.0));
+    }
+    for c in &s.tech_deck {
+        acc = fold(acc, u64::from(c.0));
+    }
+    for c in &s.orders_removed {
+        acc = fold(acc, u64::from(c.0));
+    }
+    for p in &s.players {
+        acc = fold(acc, p.starting_order.map_or(0, |c| u64::from(c.0) + 1));
+    }
+    acc
+}
+
+/// Counterfactual TRUE states for the leakage cell: every one differs from
+/// `state` only in hidden members, and every one must observe back to a
+/// BYTE-IDENTICAL view from `viewer` (asserted at the call site, not assumed
+/// here).
+///
+/// STRICTLY WIDER than [`variants`] above, in the two ways that matter:
+///
+///  - the R3 control's own shape is included by name (`deck reversed` — the
+///    prototype's leakage control read 60/60 identical decisions with the hidden
+///    decks reversed, and this is that variant in-repo);
+///  - **an OPPONENT'S STARTING ORDER is perturbed**, which `variants()`
+///    deliberately does not do. That hidden member needs seat-relative targeting
+///    (perturbing the VIEWER's own deal would move something it legitimately
+///    sees), so it is done here, where the viewer is a parameter. The swap is
+///    conservation-exact: the opponent's kept card and a card from the BOXED
+///    pile trade places, and the kept card is replaced IN ITS OWN HAND POSITION
+///    so the masked slot lands at the same index — which is what makes the
+///    observation byte-identical rather than merely similar. It applies only
+///    while the order is UNFULFILLED, because that is exactly the condition
+///    `observe` masks under (`observe.rs`: `Some(c) if
+///    order_cards_in_hand.contains(c)`); once fulfilled the card is face-up in
+///    `completed_orders` and swapping it would move a PUBLIC field.
+///
+/// Returns `(label, state)` pairs so a failure names the perturbation.
+fn hidden_field_variants(
+    state: &GameState,
+    viewer: PlayerId,
+    rng: &mut ChaCha8Rng,
+) -> Vec<(&'static str, GameState)> {
+    use rand::seq::SliceRandom;
+    let mut out: Vec<(&'static str, GameState)> = Vec::new();
+
+    // R3's own control.
+    let mut reversed = state.clone();
+    reversed.order_deck.reverse();
+    out.push(("order deck reversed", reversed));
+
+    let mut shuffled = state.clone();
+    shuffled.order_deck.shuffle(rng);
+    out.push(("order deck shuffled", shuffled));
+
+    let mut techs = state.clone();
+    techs.tech_deck.shuffle(rng);
+    out.push(("tech deck shuffled", techs));
+
+    let mut repartitioned = state.clone();
+    {
+        let mut pool: Vec<_> = repartitioned
+            .order_deck
+            .iter()
+            .chain(repartitioned.orders_removed.iter())
+            .copied()
+            .collect();
+        pool.shuffle(rng);
+        let d = repartitioned.order_deck.len();
+        repartitioned.order_deck = pool[..d].to_vec();
+        repartitioned.orders_removed = pool[d..].to_vec();
+    }
+    out.push(("deck/box partition redrawn", repartitioned));
+
+    let mut seeded = state.clone();
+    seeded.config.setup_seed = seeded.config.setup_seed.wrapping_add(12345);
+    out.push(("setup seed bumped", seeded));
+
+    // The seat-relative member. `j` walks the boxed pile by a uniform draw
+    // ([`keyed_index`], the crate's own primitive rather than a biased modulo)
+    // rather than taking index 0, so the swap is not the same card at every
+    // point.
+    let mut swapped = state.clone();
+    let mut did_swap = false;
+    if !swapped.orders_removed.is_empty() {
+        let j = keyed_index(rng.gen::<u64>(), swapped.orders_removed.len());
+        for i in 0..swapped.players.len() {
+            if swapped.players[i].id == viewer {
+                continue;
+            }
+            let Some(kept) = swapped.players[i].starting_order else { continue };
+            let Some(slot) =
+                swapped.players[i].order_cards_in_hand.iter().position(|c| *c == kept)
+            else {
+                continue; // fulfilled: the mask has lifted, and so has the license to swap
+            };
+            let boxed = swapped.orders_removed[j];
+            swapped.orders_removed[j] = kept;
+            swapped.players[i].starting_order = Some(boxed);
+            swapped.players[i].order_cards_in_hand[slot] = boxed;
+            did_swap = true;
+            break;
+        }
+    }
+    if did_swap {
+        out.push(("opponent starting order swapped", swapped));
+    }
+    out
+}
+
+/// **THE LEAKAGE-INVARIANCE CELL — ASSERTED** (spec §7, R3 §5.4's control
+/// brought in-repo, ledger L24).
+///
+/// WITH THE VIEW, THE SAMPLER SEED AND THE AGENT STREAM POSITION HELD FIXED,
+/// varying the TRUE hidden fields produces the IDENTICAL decision. All three are
+/// held by construction: the view is asserted byte-identical as the cell's
+/// PREMISE before any decision is compared; the sampler seed and the stream
+/// position are held because every decision runs a FRESH [`MctsAgent`] at
+/// [`MCTS_LEAK_AGENT_SEED`], so each starts at stream offset 0 and draws the
+/// same three words (sampler seed, tie key, candidate seed).
+///
+/// **THE HONEST SCOPE NOTE (critic R3-3, adopted):** the invariance holds AT THE
+/// SAME AGENT STREAM POSITION. That is the weaker statement and it is the true
+/// one — an agent mid-game arrives at a position with a stream offset that is a
+/// function of how many decisions it has taken, and two runs compared at
+/// DIFFERENT offsets can legitimately differ. It is also sufficient, because a
+/// stream offset is **not privileged information**: it is a count of the agent's
+/// own decisions, available to the seat, and derivable from nothing the seat
+/// cannot see. What the cell forbids is the decision depending on the hidden
+/// TRUTH; what it does not pretend is that a search is offset-invariant.
+///
+/// WHAT IT ADDS OVER THE SWEEP ABOVE, since both compare a `&PlayerView`
+/// decider and the honest answer is "not a different KIND of guarantee":
+///
+///  - it perturbs an **opponent's starting order**, hidden member 5, which
+///    `variants()` deliberately never touches (see [`hidden_field_variants`]);
+///  - it perturbs the **tech deck**, hidden member 3, likewise untouched there;
+///  - it asserts the view equality **as a premise** rather than inheriting it
+///    from a helper's doc comment — so if a future `observe` change made any of
+///    these members visible, this cell fails at the premise (naming the
+///    perturbation) instead of passing on a comparison that stopped meaning
+///    what it says;
+///  - it asserts a **non-vacuity floor on the perturbation itself**
+///    ([`true_hidden_fingerprint`], order-sensitive so a reversed deck counts as
+///    the change it is).
+///
+/// RED, RUN BEFORE THE GREEN (the premise fired, exactly as designed): dropping
+/// the `order_cards_in_hand[slot]` half of the starting-order swap — i.e.
+/// moving the card in `starting_order` without moving it in the hand it is
+/// masked out of — makes the opponent's hand render a `Known` card where a
+/// `HiddenStartingOrder` slot belongs, and the cell stops at
+///
+/// > T6 leakage premise: `opponent starting order swapped` changed the OBSERVATION
+///
+/// rather than reporting a decision difference it would have had no business
+/// calling a leak.
+#[test]
+fn t6_mcts_v1s_decision_is_invariant_under_the_true_hidden_fields() {
+    let rules = Rules::standard();
+    let mut rng = ChaCha8Rng::seed_from_u64(0x1EA7_0000_0000_0006);
+
+    let mut points = 0usize;
+    let mut compared = 0usize;
+    let mut perturbed = 0usize;
+    let mut starting_order_swaps = 0usize;
+
+    for walk in LEAK_WALKS {
+        for (truth, view, _legal) in decision_points(2, walk, LEAK_POINTS_PER_WALK, &rules) {
+            let seat = view.viewer;
+            let base = mcts_agent_pick(&rules, MCTS_LEAK_AGENT_SEED, &view, MCTS_SIMULATIONS);
+            let base_fp = true_hidden_fingerprint(&truth);
+            points += 1;
+
+            for (label, variant) in hidden_field_variants(&truth, seat, &mut rng) {
+                // THE PREMISE. Asserted first and separately: everything below
+                // is a statement about a decider fed the SAME observation, and
+                // an unchecked premise would turn a real leak into a green.
+                let vview = observe(&variant, seat).expect("the acting seat observes its variant");
+                assert_eq!(
+                    vview, view,
+                    "T6 leakage premise: `{label}` changed the OBSERVATION, so the comparison \
+                     below would not be about leakage at all"
+                );
+                if true_hidden_fingerprint(&variant) != base_fp {
+                    perturbed += 1;
+                }
+                if label == "opponent starting order swapped" {
+                    starting_order_swaps += 1;
+                }
+                assert_eq!(
+                    mcts_agent_pick(&rules, MCTS_LEAK_AGENT_SEED, &vview, MCTS_SIMULATIONS),
+                    base,
+                    "T6 leakage: MCTS-v1's decision moved under `{label}` — the view, the sampler \
+                     seed and the stream position were all fixed, so the only thing that changed \
+                     is what the seat cannot see"
+                );
+                compared += 1;
+            }
+        }
+    }
+
+    eprintln!(
+        "T6 leakage invariance (ASSERTED, spec §7): knobs sims={MCTS_SIMULATIONS} \
+         M={MCTS_RETREAT_SAMPLES} leaf=hand-off, agent_seed={MCTS_LEAK_AGENT_SEED:#018x}, \
+         walks={LEAK_WALKS:?} (2P, {LEAK_POINTS_PER_WALK} points each); {points} points, \
+         {compared} comparisons, hidden state genuinely differed at {perturbed}, \
+         {starting_order_swaps} of them an opponent starting-order swap"
+    );
+
+    // Coverage floors, MEASURED FIRST AND THEN SET at ~half the authoring run
+    // (50 points / 300 comparisons / 300 perturbed / 50 swaps) — this file's
+    // authoring rule, and the reason a `> 0` would not do: the starting-order
+    // swap is CONDITIONAL (it needs an unfulfilled opponent order and a nonempty
+    // box), so it is the counter that can silently degenerate.
+    assert!(points >= 25, "only {points} decision points");
+    assert!(compared >= 150, "only {compared} comparisons");
+    assert_eq!(
+        perturbed, compared,
+        "{} comparisons left the true hidden state UNCHANGED, so they certified nothing",
+        compared - perturbed
+    );
+    assert!(
+        starting_order_swaps >= 25,
+        "only {starting_order_swaps} comparisons perturbed an opponent's starting order — the one \
+         hidden member the sweep's `variants()` cannot reach, and the reason this cell is wider \
+         than a tripwire"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// (iii) THE WORLD-SENSITIVITY INSTRUMENT (spec §7, §0.4's ARMED entry
+// instrument for candidate (c), ledger L24).
+// ---------------------------------------------------------------------------
+
+/// The walks the instrument reads its organic decision points from, and how many
+/// it takes from each. Two 2P games rather than one so the rate is not a
+/// statement about a single trajectory ([`DIVERGENCE_WALKS`]' rule).
+const SENSITIVITY_WALKS: [u64; 2] = [0, 1];
+/// Points per walk; `2 × 40 = 80` points, each searched `W` times per arm.
+const SENSITIVITY_POINTS_PER_WALK: usize = 40;
+/// `W`, the worlds drawn from ONE view. Three rather than two so "worlds 0 and 1
+/// agreed by luck" is not an available reading.
+const SENSITIVITY_WORLDS: usize = 3;
+/// Base sampler seed; world `i` draws at `+ i`. THE ONE THING THAT VARIES.
+const SENSITIVITY_SAMPLER_BASE: u64 = 0x0DE7_0000_0000_3400;
+/// The tie key every world of every point is searched under — held FIXED across
+/// worlds for [`DETERMINIZATION_DICE`]'s reason, one rung up: a per-world tie key
+/// would make the picks differ for a reason that is not determinization and the
+/// instrument would be measuring its own harness.
+const SENSITIVITY_TIE_KEY: u64 = 0x71E5_0000_0000_3401;
+/// The candidate-dice seed, held fixed across worlds for the same reason (the
+/// channel lookahead's T5 fix wave closed, honoured here by construction).
+const SENSITIVITY_CANDIDATE_SEED: u64 = 0xC0FF_EE00_0000_3402;
+/// How many points the AGENT-FIDELITY control runs on — a handful, because its
+/// claim is "the instrument drives the shipped search", which a witness proves
+/// and a census does not.
+const SENSITIVITY_FIDELITY_POINTS: usize = 8;
+
+/// Which contestant the instrument is driving. ONE function decides for all
+/// three ([`decide_in_world`]), which is what makes "the SAME instrument" a
+/// property of the code rather than a claim in a doc comment.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SensitivityArm {
+    /// The simulation count is carried rather than read off a constant: it is the
+    /// knob the instrument's own reading depends on ([`MCTS_SENSITIVITY_SIMULATIONS`]).
+    Mcts(u32),
+    Greedy,
+    Lookahead,
+}
+
+impl SensitivityArm {
+    fn label(self) -> &'static str {
+        match self {
+            Self::Mcts(_) => "mcts-v1",
+            Self::Greedy => "greedy-v1",
+            Self::Lookahead => "lookahead-v1",
+        }
+    }
+}
+
+/// [`crate::game::greedy`]'s `uniform_index`, which is `pub(crate)` and so out
+/// of an integration test's reach — the Lemire multiply-shift, restated.
+///
+/// Its exact arithmetic is NOT load-bearing here and that is worth stating: the
+/// instrument applies the SAME rule to every world, so the index it lands on
+/// only has to be a deterministic function of the tied-set size. What would
+/// break the instrument is a tie rule that varied per world (it would
+/// manufacture divergence), and that is exactly what a constant keyed word
+/// cannot do.
+fn keyed_index(draw: u64, len: usize) -> usize {
+    assert!(len > 0, "a uniform index over an empty set is undefined");
+    ((u128::from(draw) * len as u128) >> 64) as usize
+}
+
+/// One contestant's decision INSIDE a given world, at an explicitly supplied tie
+/// key and candidate seed.
+///
+/// **Why the instrument drives the searches rather than the AGENTS.** Each of
+/// the three agents draws `(sampler seed, tie key, candidate seed)` from ONE
+/// play stream, so varying the world by varying the agent seed would vary the
+/// tie and candidate dice with it — the naive instrument lens 2 measured at
+/// 7.66% false divergence for lookahead. The world has to be the ONLY thing that
+/// moves, and that is inexpressible through `choose(&PlayerView, &Rules)`. The
+/// AGENT-FIDELITY control in the recorded cell below closes the gap the other
+/// way: handed an agent's own three words, this function reproduces that agent's
+/// decision exactly.
+///
+/// Returns the move and the ROOT CANDIDATE COUNT (the forced-point filter's
+/// input, and a cross-world coverage counter in its own right).
+fn decide_in_world(
+    arm: SensitivityArm,
+    world: &GameState,
+    seat: PlayerId,
+    rules: &Rules,
+    tie_key: u64,
+    candidate_seed: u64,
+) -> (Move, usize) {
+    let weights = WeightTable::V1;
+    match arm {
+        SensitivityArm::Mcts(simulations) => {
+            let knobs = mcts_knobs(simulations);
+            let ctx = McCtx {
+                rules,
+                weights: &weights,
+                retreat_samples: knobs.retreat_samples,
+                simulations: knobs.simulations,
+                exploration_ppm: knobs.exploration_ppm,
+                squash_scale: knobs.squash_scale,
+                leaf: knobs.leaf,
+                stream: McStream::new(tie_key),
+                candidate_seed,
+            };
+            let searched =
+                mcts::search_world(world, seat, &ctx).expect("MCTS-v1 searches a live world");
+            (searched.roots[searched.chosen].mv.clone(), searched.roots.len())
+        }
+        SensitivityArm::Greedy => {
+            // Greedy-v1's in-world half, restated on ITS OWN constants
+            // (`DEFAULT_RETREAT_SAMPLES`, `WeightTable::V1`) — the
+            // determinization cell's CONFIG PIN, and the same caveat: what is
+            // re-stated by hand is the pipeline SHAPE (handle → candidates →
+            // apply → observe → score → keyed argmax), verified against
+            // `GreedyAgent::choose`.
+            let handle = DecisionHandle::new(world, rules);
+            let Candidates { moves, .. } = candidates(
+                &handle,
+                DEFAULT_RETREAT_SAMPLES,
+                &mut ChaCha8Rng::seed_from_u64(candidate_seed),
+            );
+            assert!(!moves.is_empty(), "greedy-v1 found no candidate at a live decision point");
+            let mut best = i64::MIN;
+            let mut tied: Vec<usize> = Vec::new();
+            for (i, mv) in moves.iter().enumerate() {
+                let next = apply_move_unchecked(world, mv, rules).expect("a candidate applies");
+                let value =
+                    eval::score(&observe(&next, seat).expect("the seat observes"), rules, &weights);
+                if value > best {
+                    best = value;
+                    tied.clear();
+                    tied.push(i);
+                } else if value == best {
+                    tied.push(i);
+                }
+            }
+            (moves[tied[keyed_index(tie_key, tied.len())]].clone(), moves.len())
+        }
+        SensitivityArm::Lookahead => {
+            let ctx = SearchCtx {
+                rules,
+                weights: &weights,
+                scheme: SearchScheme::TurnBoundary { beam: TRIPWIRE_BEAM },
+                retreat_samples: TRIPWIRE_RETREAT_SAMPLES,
+                ties: TieStream::new(tie_key),
+            };
+            let searched = lookahead::search_world(
+                world,
+                seat,
+                &ctx,
+                &mut ChaCha8Rng::seed_from_u64(candidate_seed),
+            )
+            .expect("Lookahead-v1 searches a live world");
+            // `LookaheadAgent::choose`'s uncapped readout: argmax over the root
+            // values, then ONE keyed draw over the FULL tied set at
+            // `TieSite::Root` — the agent's own primitive, not a re-derivation.
+            let mut best = i64::MIN;
+            let mut tied: Vec<usize> = Vec::new();
+            for (i, r) in searched.roots.iter().enumerate() {
+                if r.value > best {
+                    best = r.value;
+                    tied.clear();
+                    tied.push(i);
+                } else if r.value == best {
+                    tied.push(i);
+                }
+            }
+            let chosen = tied[ctx.ties.pick(TieSite::Root, tied.len())];
+            (searched.roots[chosen].mv.clone(), searched.roots.len())
+        }
+    }
+}
+
+/// What one arm's instrument run produced. Every field is REPORTED; which of
+/// them are asserted is the CALLER's business, and that split is the whole point
+/// of the cell pair below.
+#[derive(Debug, Default)]
+struct SensitivityReport {
+    points: usize,
+    forced: usize,
+    non_forced: usize,
+    diverged: usize,
+    worlds_differed: usize,
+    candidate_counts_differed: usize,
+}
+
+impl SensitivityReport {
+    fn rate(&self) -> f64 {
+        self.diverged as f64 / self.non_forced.max(1) as f64
+    }
+}
+
+/// THE INSTRUMENT. At each organic 2P decision point it draws
+/// [`SENSITIVITY_WORLDS`] independent [`BeliefSampler`] worlds from ONE view —
+/// **the sampler seed is the only thing that varies** — and asks `arm` to decide
+/// in each, at a fixed tie key and a fixed candidate seed. Divergence = some
+/// world's decision differs from world 0's.
+///
+/// FORCED POINTS ARE EXCLUDED (spec §7): a point offering ≤ 1 root candidate
+/// cannot diverge whatever the worlds do, and counting it would put the rate on
+/// a denominator that is mostly arithmetic — R4 measured 59.9% of 2P decision
+/// points forced, so this is the majority of them.
+fn world_sensitivity(arm: SensitivityArm, rules: &Rules) -> SensitivityReport {
+    let mut report = SensitivityReport::default();
+    for walk in SENSITIVITY_WALKS {
+        for (_truth, view, _legal) in
+            decision_points(2, walk, SENSITIVITY_POINTS_PER_WALK, rules)
+        {
+            let seat = view.viewer;
+            let worlds: Vec<GameState> = (0..SENSITIVITY_WORLDS)
+                .map(|i| {
+                    BeliefSampler::from_view(
+                        &view,
+                        rules,
+                        SENSITIVITY_SAMPLER_BASE.wrapping_add(i as u64),
+                    )
+                    .expect("the sampler accepts an honest view")
+                    .sample()
+                })
+                .collect();
+            report.points += 1;
+            // POSITIVE CONTROL, and the instrument is vacuous without it: a zero
+            // over IDENTICAL worlds is arithmetic, not evidence.
+            if worlds[1..].iter().any(|w| w.order_deck != worlds[0].order_deck) {
+                report.worlds_differed += 1;
+            }
+
+            let decisions: Vec<(Move, usize)> = worlds
+                .iter()
+                .map(|w| {
+                    decide_in_world(
+                        arm,
+                        w,
+                        seat,
+                        rules,
+                        SENSITIVITY_TIE_KEY,
+                        SENSITIVITY_CANDIDATE_SEED,
+                    )
+                })
+                .collect();
+            if decisions[1..].iter().any(|(_, n)| *n != decisions[0].1) {
+                report.candidate_counts_differed += 1;
+            }
+            if decisions[0].1 <= 1 {
+                report.forced += 1;
+                continue;
+            }
+            report.non_forced += 1;
+            if decisions[1..].iter().any(|(mv, _)| *mv != decisions[0].0) {
+                report.diverged += 1;
+            }
+        }
+    }
+    report
+}
+
+/// **THE WORLD-SENSITIVITY MEASUREMENT — RECORDED, NEVER ASSERTED ZERO**
+/// (spec §7; §0.4's ARMED entry instrument for candidate (c); ledger L24).
+///
+/// WHY A ZERO WOULD BE SURPRISING HERE, where it is the pinned answer for the
+/// two rungs below. MCTS-v1's leaf is a whole-turn greedy COMPLETION inside the
+/// sampled world, so a mid-turn Port or Laboratory take puts determinized
+/// refills into the state a leaf value is read at — the channel spec §4.3 named
+/// as NOT structural. And the tree goes further than any rung has: §3.2's
+/// opponent model DESCENDS PAST THE HAND-OFF, so it reads the opponent's
+/// determinized options too — a channel `lookahead-v1` structurally never uses,
+/// because a hand-off child is a leaf there. R3 measured 7.5% for an eval-leaf
+/// UCT prototype and 48.8% for a playout one, against 0/80 and 0/80 for the two
+/// rungs; a zero on this arm would say the tree is not reading the world it was
+/// handed.
+///
+/// **THE INSTRUMENT CAVEAT (critic R3-2, adopted — read it before quoting the
+/// number).** This figure is an **UPPER BOUND on world-sensitivity proper**, not
+/// an estimate of it. The tie key and the candidate seed are world-common by
+/// construction, so a shared PREFIX of the tree draws identically in every
+/// world; but once two worlds' trees take different shapes the nodes below the
+/// divergence are not the same nodes, their path keys differ, and their
+/// candidate dice differ with them. Part of any nonzero reading is therefore
+/// tree-shape dice divergence rather than the value channel. Separating the two
+/// needs a POSITIVE CONTROL that calibrates the instrument's SCALE, which spec
+/// §11(b) names as a follow-up and does NOT take this cycle — which is exactly
+/// why §0.4 pre-registers no numeric threshold on this rate.
+///
+/// **MEASURED AT AUTHORING: 3 of 35 non-forced points = 0.0857**, in the regime
+/// below. Every part of that regime is part of the figure (L22's rule):
+/// 2P · [`MCTS_SENSITIVITY_SIMULATIONS`] = 64 simulations · `M = 2` ·
+/// `LeafRule::HandOff` · `c` and `scale` at the shipped defaults ·
+/// `W = SENSITIVITY_WORLDS` = 3 · world-common tie key and candidate seed ·
+/// the two walks of [`SENSITIVITY_WALKS`] · 80 points of which 45 were forced
+/// and excluded. **N = 35, so the numerator is single-digit**: this is an
+/// ORDER-OF-MAGNITUDE reading ("percent, not zero and not half"), never a
+/// calibrated rate, and [`MCTS_SENSITIVITY_SIMULATIONS`]' ladder shows it moving
+/// non-monotonically with the simulation count at this N. A deeper search has
+/// more descent below the hand-off and therefore more exposure, so nothing here
+/// transfers to the experiment's own `mcts-v1@750`; that cell's figure is the
+/// ADR's to record.
+///
+/// WHAT IS ASSERTED: completeness, the positive control, and the AGENT-FIDELITY
+/// control — never the rate.
+#[test]
+fn t6_mcts_v1s_world_sensitivity_is_measured_and_recorded() {
+    let rules = Rules::standard();
+    let arm = SensitivityArm::Mcts(MCTS_SENSITIVITY_SIMULATIONS);
+    let report = world_sensitivity(arm, &rules);
+
+    // AGENT-FIDELITY CONTROL. The instrument calls `mcts::search_world`, not
+    // `MctsAgent::choose`; without this, a divergence rate measured here would
+    // be a statement about a harness that nothing ships. A fresh agent's three
+    // play-stream words are (sampler seed, tie key, candidate seed) in that
+    // order (`game/mcts.rs`'s `choose`), so they can be reproduced exactly —
+    // and fed back in, the instrument must reproduce the agent's own move.
+    let mut fidelity = 0usize;
+    for (_truth, view, _legal) in decision_points(2, 0, SENSITIVITY_FIDELITY_POINTS, &rules) {
+        let mut words = ChaCha8Rng::seed_from_u64(MCTS_LEAK_AGENT_SEED);
+        let sampler_seed: u64 = words.gen();
+        let tie_key: u64 = words.gen();
+        let candidate_seed: u64 = words.gen();
+        let world = BeliefSampler::from_view(&view, &rules, sampler_seed)
+            .expect("the sampler accepts an honest view")
+            .sample();
+        let (mv, _) =
+            decide_in_world(arm, &world, view.viewer, &rules, tie_key, candidate_seed);
+        assert_eq!(
+            mv,
+            mcts_agent_pick(&rules, MCTS_LEAK_AGENT_SEED, &view, MCTS_SENSITIVITY_SIMULATIONS),
+            "the instrument's search disagreed with `MctsAgent::choose` at the agent's OWN three \
+             words, so the rate below would be about a harness rather than about the contestant"
+        );
+        fidelity += 1;
+    }
+
+    eprintln!(
+        "T6 world sensitivity (RECORDED, spec §7 / §0.4): arm={} W={SENSITIVITY_WORLDS}, \
+         knobs sims={MCTS_SENSITIVITY_SIMULATIONS} M={MCTS_RETREAT_SAMPLES} leaf=hand-off \
+         c/scale=shipped, \
+         sampler_base={SENSITIVITY_SAMPLER_BASE:#018x} tie={SENSITIVITY_TIE_KEY:#018x} \
+         cand={SENSITIVITY_CANDIDATE_SEED:#018x}, walks={SENSITIVITY_WALKS:?} (2P, \
+         {SENSITIVITY_POINTS_PER_WALK} points each); {} points ({} forced, EXCLUDED), \
+         {} non-forced, {} diverged = {:.4} (an UPPER BOUND — see the doc's R3-2 caveat); \
+         POSITIVE CONTROL: the W worlds drew a different deck at {} points; candidate counts \
+         differed across worlds at {} points; agent-fidelity control {fidelity} points",
+        arm.label(),
+        report.points,
+        report.forced,
+        report.non_forced,
+        report.diverged,
+        report.rate(),
+        report.worlds_differed,
+        report.candidate_counts_differed,
+    );
+
+    // COMPLETENESS: a rate over too few points is not a measurement. Floors
+    // measured first and then set at ~half the authoring run.
+    assert!(report.points >= 60, "instrument incompleteness: only {} points", report.points);
+    assert!(
+        report.non_forced >= 20,
+        "only {} points offered >= 2 root candidates, so divergence was structurally impossible \
+         at the rest and the rate is about the wrong denominator",
+        report.non_forced
+    );
+    assert!(
+        report.worlds_differed >= 30,
+        "the W worlds drew the same deck at all but {} points — any rate over identical worlds is \
+         arithmetic, not evidence",
+        report.worlds_differed
+    );
+    assert_eq!(
+        fidelity, SENSITIVITY_FIDELITY_POINTS,
+        "the agent-fidelity control ran {fidelity} points"
+    );
+}
+
+/// **THE INSTRUMENT'S VALIDATION AGAINST THE TWO KNOWN ZEROS — ASSERTED**
+/// (spec §7; R3's own validation, in-repo).
+///
+/// The recorded cell above asserts no rate, so on its own it cannot be told
+/// apart from an instrument that reads a nonzero number because it is broken.
+/// This one is the other half: the SAME [`world_sensitivity`] function, the same
+/// worlds, the same fixed dice, driving the two contestants whose answer is
+/// already known — R3 measured `greedy-v1` 0/80 and `lookahead-v1:b=4` 0/80, and
+/// L15 is the in-repo result the 3.3 divergence cell pinned at 0/200.
+///
+/// **THE ZERO IS ASSERTED FOR THESE TWO AND FOR NEITHER OTHER REASON.** Greedy-v1
+/// values a successor ONE PLY deep and no v1 feature reads a refill-dependent
+/// quantity, so two successors differing only in determinized content score
+/// identically; Lookahead-v1 continues inside the world, but a hand-off child is
+/// a LEAF there, so it never reads a determinized opponent option. MCTS-v1 has
+/// both channels open (see the cell above) and is deliberately excluded — an
+/// assertion here would be a claim spec §7 forbids.
+///
+/// **MUTATION-PROVEN, both canonical harness regressions, each reverted by
+/// inverse edit** (this file's canary discipline: an asserted zero must be shown
+/// capable of firing). Making the tie key per-world
+/// (`SENSITIVITY_TIE_KEY ^ world`) drives the Lookahead arm to **17 of 35 =
+/// 0.4857** and FAILS; making the candidate seed per-world drives it to **1 of
+/// 35 = 0.0286** and FAILS, while also moving the printed
+/// `candidate counts differed` counter off zero (6 and 13 points), which is the
+/// diagnostic that names the cause. **The Greedy arm moved under NEITHER**, and
+/// that is stated rather than hidden: its one-ply argmax is robust to a
+/// differing candidate list and its tie sets are mostly singletons, so the
+/// mutation evidence for this cell rests on the LOOKAHEAD arm. Greedy stays
+/// because it is the cheaper of the two known zeros and covers the root channel
+/// alone; it is not what makes the cell falsifiable.
+///
+/// A RED HERE IS ABOUT THE INSTRUMENT FIRST: it means the harness has begun
+/// manufacturing divergence (a per-world tie key or candidate seed is the
+/// canonical way), and the recorded MCTS figure is not trustworthy until that is
+/// ruled out. Only with the keying verified intact is a red here spec §4.3's
+/// K-decision re-opening input for the rung it fired on.
+#[test]
+fn t6_the_world_sensitivity_instrument_reads_zero_for_the_two_known_zeros() {
+    let rules = Rules::standard();
+    for arm in [SensitivityArm::Greedy, SensitivityArm::Lookahead] {
+        let report = world_sensitivity(arm, &rules);
+        eprintln!(
+            "T6 world sensitivity (VALIDATION, spec §7): arm={} W={SENSITIVITY_WORLDS}; {} points \
+             ({} forced, EXCLUDED), {} non-forced, {} diverged = {:.4}; POSITIVE CONTROL: the W \
+             worlds drew a different deck at {} points; candidate counts differed at {} points",
+            arm.label(),
+            report.points,
+            report.forced,
+            report.non_forced,
+            report.diverged,
+            report.rate(),
+            report.worlds_differed,
+            report.candidate_counts_differed,
+        );
+        assert!(report.non_forced >= 20, "{}: only {} non-forced points", arm.label(), report.non_forced);
+        assert!(
+            report.worlds_differed >= 30,
+            "{}: the W worlds drew the same deck at all but {} points, so a zero here would be \
+             arithmetic",
+            arm.label(),
+            report.worlds_differed
+        );
+        assert_eq!(
+            report.diverged,
+            0,
+            "{}: the instrument read {} divergences over {} non-forced points for a contestant \
+             whose cross-world divergence is KNOWN to be zero (L15; R3's 0/80). CHECK THE \
+             INSTRUMENT FIRST — a tie key or candidate seed that has become per-world manufactures \
+             exactly this — and treat the recorded MCTS-v1 figure as untrustworthy until it is \
+             ruled out",
+            arm.label(),
+            report.diverged,
+            report.non_forced,
+        );
+    }
 }
