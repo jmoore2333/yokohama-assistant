@@ -82,8 +82,13 @@ fn the_architecture_battery_runs_at_smoke_scale() {
     let rules = Rules::standard();
 
     // -- arm 1: MCTS-v1, both seats, under B* ------------------------------
+    // `simulations` at a CEILING with the cap doing the bounding — the
+    // CONTESTANT shape (spec §5), and deliberately not a simulation count with a
+    // cap beside it: the sterile-simulation hang lived exactly in this shape, and
+    // a smoke that never ran it would never smoke-test the guard. It stays cheap
+    // because the cap is what bounds the work.
     let mut agent = MctsAgent::new(&rules, agent_stream_seed(WorldSeed(MASTER), PlayerId(0), Slot(0)))
-        .with_simulations(64)
+        .with_simulations(u32::MAX)
         .with_cap(Some(B_STAR));
     let tally = agent.tally();
     let pending = new_game(GameConfig::for_player_count(2), &rules, MASTER).expect("2P setup");

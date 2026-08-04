@@ -266,11 +266,19 @@
 //! spreading one-per-child — the two properties
 //! `expansion_is_eval_ordered_and_the_visits_concentrate` pins.
 //!
-//! **The residual is the exploration constant, and it is now REACHABLE, which is
-//! the structural part of the fix.** Same probe, same regime, sweeping `c` at
-//! sims = 64: `c = 0` → 7/46 (15%, Placement 6/19) · `0.1` → 22/46 · `0.2` →
-//! 26/46 · `0.5` → 31/46 · `√2` (shipped) → 38/46. At sims = 750, `c = 0` → 0/46
-//! (0%). Under T2's scheme NO value of `c` could have moved any of this — while
+//! **The residual is exploration dominance AND prior degeneracy, and the first
+//! of the two is now REACHABLE, which is the structural part of the fix.** The
+//! second is a property of the ROOTS, not of the scheme: at the star-tree
+//! fixture the 186 candidates carry only 4 distinct one-ply values (120 of them
+//! share the top one), so even a perfectly exploiting descent would hand the
+//! argmax a genuine tie there — which is why
+//! `expansion_is_eval_ordered_and_the_visits_concentrate` asserts that the
+//! priors take ≥ 2 distinct values (anti-vacuity) and deliberately does NOT
+//! assert strict floor > ceiling separation. Same probe, same regime, sweeping
+//! `c` at sims = 64: `c = 0` → 7/46 (15%, Placement 6/19) · `0.1` → 22/46 ·
+//! `0.2` → 26/46 · `0.5` → 31/46 · `√2` (shipped) → 38/46. At sims = 750,
+//! `c = 0` → 0/46 (0%).
+//! Under T2's scheme NO value of `c` could have moved any of this — while
 //! any candidate was unexpanded the descent expanded it, uniformly, whatever `c`
 //! was. The shipped pair is exploration-dominated exactly as
 //! [`DEFAULT_SQUASH_SCALE`] predicted in arithmetic; resolving it is spec §4's
@@ -952,8 +960,17 @@ pub struct RootStat {
     pub one_ply: Option<i64>,
     /// The same value on the tree's `[0, 1]` axis — this candidate's PRIOR, as
     /// [`ordered_select`] reads it. Terminal successors are valued by
-    /// [`rank_value`] here rather than squashed, so a prior and the child value
-    /// it will be replaced by are the same quantity.
+    /// [`rank_value`] here rather than squashed, so the prior is on the axis the
+    /// backed-up child values live on, terminals included.
+    ///
+    /// **It is the ONE-PLY rule's value, not the leaf rule's**, and the two
+    /// coincide only under [`LeafRule::MidTurnDiag`]: a prior evaluates the
+    /// successor where it stands, while the shipped [`LeafRule::HandOff`] child
+    /// is valued at the end of its turn. Measured at the T3 review over the same
+    /// 120-point walk the star-tree table uses: under `MidTurnDiag` the prior
+    /// and the first backed-up child value differ at 6.4% of points (median
+    /// delta +0.0000), under `HandOff` at 27.5% (median −0.0081). So the prior
+    /// is a comparable estimate of the child value, never a promise to equal it.
     pub prior: Option<f64>,
 }
 
@@ -1291,12 +1308,13 @@ impl Search<'_> {
         let mut key = completion_branch(branch);
 
         let (mut carried, mut ply) = (self.complete_ply(start, start_candidates, key, 0, maximize, &mut best)?, 1u32);
-        while let Some((state, slot)) = carried {
+        while let Some((state, slot, raw)) = carried {
             if ply >= MAX_TURN_PLIES {
                 // Totality guard (lookahead's, and its measured 0 hits). Value
-                // the frontier where it stands rather than looping.
+                // the frontier where it stands rather than looping — on the raw
+                // score the cut ALREADY computed and charged for this very
+                // state, so the guard adds no evaluation the meter cannot see.
                 self.stats.completion_cap_hits += 1;
-                let raw = self.raw_value(&state)?;
                 let stopped = self.unit_value(&state, raw);
                 best = Some(match best {
                     Some(b) if !better(stopped, b, maximize) => b,
@@ -1321,7 +1339,9 @@ impl Search<'_> {
 
     /// One ply of the completion: score every candidate, fold the hand-offs into
     /// `best`, and hand back the single continuing successor the greedy cut
-    /// keeps (with the candidate index it came from, for the key line).
+    /// keeps — with the candidate index it came from (for the key line) and its
+    /// RAW score, which the caller's ply guard reuses instead of re-evaluating a
+    /// state this ply already paid for.
     ///
     /// Two comparison spaces, deliberately: hand-offs are compared on the
     /// `[0, 1]` axis because a terminal can only be expressed there, while the
@@ -1336,7 +1356,7 @@ impl Search<'_> {
         ply: u32,
         maximize: bool,
         best: &mut Option<f64>,
-    ) -> Result<Option<(GameState, usize)>, String> {
+    ) -> Result<Option<(GameState, usize, i64)>, String> {
         let actor = state.current_player;
         let mut cut_value: Option<i64> = None;
         let mut cut: Vec<(GameState, usize)> = Vec::new();
@@ -1370,15 +1390,27 @@ impl Search<'_> {
         if cut.is_empty() {
             return Ok(None);
         }
+        // Every survivor of the cut shares `cut_value` by construction — that IS
+        // what put them in the same tie set.
+        let raw = cut_value.expect("a non-empty cut has a cut value");
         // The cut IS a selecting point (row 18): a first-listed keep would hand
         // the whole completion to whatever the generator emitted first.
         let word = self.ctx.stream.word(McSite::Completion { branch: key, ply });
-        Ok(Some(cut.swap_remove(uniform_index(word, cut.len()))))
+        let (kept, i) = cut.swap_remove(uniform_index(word, cut.len()));
+        Ok(Some((kept, i, raw)))
     }
 
     /// Charge ONE scored successor to both the cost counter and the decision's
     /// meter. **The single site that increments `scored`**, so the meter cannot
     /// drift from the counter the reports call the realized total.
+    ///
+    /// **The meter is TOTAL over evaluations**: every
+    /// [`raw_value`](Search::raw_value) this module performs belongs to a
+    /// successor that was charged here. The one place that came close to an
+    /// exception — the completion's [`MAX_TURN_PLIES`] guard, which used to
+    /// re-evaluate the frontier state the cut had already scored — now reuses
+    /// the raw score [`complete_ply`](Search::complete_ply) hands back, so a
+    /// reader can price a decision from `scored` alone.
     fn charge(&mut self) {
         self.stats.scored += 1;
         self.budget.charge();
@@ -1664,6 +1696,13 @@ pub fn search_world_budgeted(
         // The knob floor, stated once: a decision over zero simulations is not a
         // search. (`squash` floors its own scale for the same reason.)
         let want = ctx.simulations.max(1);
+        // "The ROOT PASS alone spent the cap" reads the meter, so it is a
+        // statement about THIS decision only while the meter starts this
+        // decision at zero. At the shipped `K = 1` it does, because `choose`
+        // builds one budget per decision; a K > 1 that threaded one partially
+        // spent meter across worlds would attribute a previous world's spend to
+        // this world's pass. Unreachable rather than guarded: `choose` REFUSES
+        // K > 1 outright (spec §0.4).
         starved = !search.budget.may_start();
         let (mut ran, mut sterile) = (0u32, 0u32);
         while ran < want && sterile < MAX_STERILE_SIMULATIONS {
@@ -2682,59 +2721,86 @@ mod tests {
     /// one-ply ranking, while the tie RATE at 64 simulations does not move,
     /// because that pair is exploration-dominated. This cell pins the mechanism,
     /// not the knob.
+    ///
+    /// BOTH leaf rules, at the T3 review's finding: the priors are the one-ply
+    /// rule's either way, but WHICH children get re-visited is the leaf's, so a
+    /// cell run only at the diagnostic leaf would leave the star-tree property
+    /// unpinned exactly where it ships.
     #[test]
     fn expansion_is_eval_ordered_and_the_visits_concentrate() {
         let rules = Rules::standard();
         let (world, seat) = placement_point(&rules);
-        let c = ctx(&rules, &WeightTable::V1, 64, 0xB1A5);
-        let searched = search_world(&world, seat, &c).expect("search");
-        assert!(
-            searched.roots.len() > 64,
-            "the fixture must offer more candidates than simulations ({})",
-            searched.roots.len(),
-        );
+        for leaf in [LeafRule::MidTurnDiag, LeafRule::HandOff] {
+            let c = ctx_leaf(&rules, &WeightTable::V1, 64, 0xB1A5, leaf);
+            let searched = search_world(&world, seat, &c).expect("search");
+            assert!(
+                searched.roots.len() > 64,
+                "{leaf:?}: the fixture must offer more candidates than simulations ({})",
+                searched.roots.len(),
+            );
 
-        let prior = |r: &RootStat| r.prior.expect("the mandatory pass gives every root a prior");
-        let visited_floor = searched
-            .roots
-            .iter()
-            .filter(|r| r.visits > 0)
-            .map(prior)
-            .fold(f64::INFINITY, f64::min);
-        let unvisited_ceiling = searched
-            .roots
-            .iter()
-            .filter(|r| r.visits == 0)
-            .map(prior)
-            .fold(f64::NEG_INFINITY, f64::max);
-        assert!(
-            visited_floor >= unvisited_ceiling,
-            "expansion must be a prefix of the prior order: worst expanded {visited_floor} < \
-             best unexpanded {unvisited_ceiling}",
-        );
+            let prior =
+                |r: &RootStat| r.prior.expect("the mandatory pass gives every root a prior");
+            // ANTI-VACUITY for property 1, and deliberately NOT a strict
+            // floor > ceiling separation: at this fixture the 186 candidates
+            // carry only 4 distinct one-ply values (120 share the top one), so
+            // the prefix property holds here BY EQUALITY and demanding strict
+            // separation would assert something the position falsifies. What
+            // must not be vacuous is the ORDER: a constant prior vector would
+            // make property 1 true of any expansion at all.
+            let distinct = searched
+                .roots
+                .iter()
+                .map(|r| prior(r).to_bits())
+                .collect::<std::collections::BTreeSet<_>>();
+            assert!(
+                distinct.len() >= 2,
+                "{leaf:?}: anti-vacuity — the priors must order the family, saw {} distinct \
+                 value(s)",
+                distinct.len(),
+            );
 
-        let max_visits = searched.roots.iter().map(|r| r.visits).max().expect("roots");
-        assert!(
-            max_visits > 1,
-            "values must reach the visit distribution: every expanded child was visited once, \
-             which is the star tree",
-        );
-        assert!(
-            searched.roots.iter().any(|r| r.visits == 0),
-            "anti-vacuity: the budget must NOT have covered the whole family, or property 1 \
-             would be trivially true",
-        );
+            let visited_floor = searched
+                .roots
+                .iter()
+                .filter(|r| r.visits > 0)
+                .map(prior)
+                .fold(f64::INFINITY, f64::min);
+            let unvisited_ceiling = searched
+                .roots
+                .iter()
+                .filter(|r| r.visits == 0)
+                .map(prior)
+                .fold(f64::NEG_INFINITY, f64::max);
+            assert!(
+                visited_floor >= unvisited_ceiling,
+                "{leaf:?}: expansion must be a prefix of the prior order: worst expanded \
+                 {visited_floor} < best unexpanded {unvisited_ceiling}",
+            );
 
-        // The decision is informed: the move returned is at the top of the
-        // one-ply ranking rather than a lottery over the middle of it.
-        let chosen = searched.roots[searched.chosen].one_ply.expect("a one-ply value");
-        let rank = 1 + searched.roots.iter().filter(|r| r.one_ply > Some(chosen)).count();
-        assert!(
-            rank <= searched.roots.len() / 10,
-            "the chosen move ranked {rank} of {} by one-ply value — the T2 lottery's median was \
-             66 of 186",
-            searched.roots.len(),
-        );
+            let max_visits = searched.roots.iter().map(|r| r.visits).max().expect("roots");
+            assert!(
+                max_visits > 1,
+                "{leaf:?}: values must reach the visit distribution: every expanded child was \
+                 visited once, which is the star tree",
+            );
+            assert!(
+                searched.roots.iter().any(|r| r.visits == 0),
+                "{leaf:?}: anti-vacuity — the budget must NOT have covered the whole family, or \
+                 property 1 would be trivially true",
+            );
+
+            // The decision is informed: the move returned is at the top of the
+            // one-ply ranking rather than a lottery over the middle of it.
+            let chosen = searched.roots[searched.chosen].one_ply.expect("a one-ply value");
+            let rank = 1 + searched.roots.iter().filter(|r| r.one_ply > Some(chosen)).count();
+            assert!(
+                rank <= searched.roots.len() / 10,
+                "{leaf:?}: the chosen move ranked {rank} of {} by one-ply value — the T2 lottery's \
+                 median was 66 of 186",
+                searched.roots.len(),
+            );
+        }
     }
 
     // -- every selecting point draws over its FULL tied set (row 18) ----------
@@ -2821,47 +2887,84 @@ mod tests {
 
         let rules = Rules::standard();
         let weights = WeightTable::V1;
-        let (world, seat) = placement_point(&rules);
+        // TWO fixtures, at the T3 review's finding: at a Placement root the
+        // ORDERING term of the four-contributor identity is always ZERO (no node
+        // below it exceeds the threshold), so that summand was being checked
+        // only against 0. The on-board Movement fixture pays real internal
+        // ordering passes, which is what makes the identity's third term
+        // non-vacuous.
+        let fixtures = [
+            ("placement root", placement_point(&rules), false),
+            ("on-board movement root", on_board_movement_point(&rules), true),
+        ];
         // BOTH leaf rules, because the two identities below differ between them
         // by exactly the completion terms — and a single-leaf cell would let a
         // completion stop being charged, or start being charged twice, with
         // nothing to notice.
-        for leaf in [LeafRule::MidTurnDiag, LeafRule::HandOff] {
-            let c = ctx_leaf(&rules, &weights, 64, 0xB1A5, leaf);
-            let s = search_world(&world, seat, &c).expect("search").stats;
-            assert!(s.nodes > 1, "anti-vacuity ({leaf:?}): the search must have expanded");
-            assert_eq!(
-                s.handles,
-                s.nodes - s.terminal_nodes + s.completion_points,
-                "{leaf:?}: one handle per expandable node plus one per completion ply beyond \
-                 the first — a terminal node enumerates nothing, and a completion's first ply \
-                 re-uses its node's cache",
-            );
-            assert_eq!(s.simulations, 64, "{leaf:?}: the search ran the simulations it was asked");
-            assert_eq!(
-                s.scored,
-                s.root_scored + s.ordering_scored + s.completion_scored + (s.nodes - 1),
-                "{leaf:?}: the meter's four contributors — mandatory root pass, ordering passes, \
-                 completions, and one expansion per created node with the root excepted (it was \
-                 never applied)",
-            );
-            assert!(
-                s.nodes - 1 <= s.simulations,
-                "{leaf:?}: a simulation creates at most one node (none when it ends at a terminal)",
-            );
-            assert_eq!(
-                s.root_scored, s.root_candidates,
-                "{leaf:?}: the root pass is MANDATORY — every candidate, exactly once",
-            );
-            match leaf {
-                LeafRule::HandOff => {
-                    assert!(s.completion_scored > 0, "the shipped leaf must complete turns");
-                    assert!(s.completion_points > 0, "and pay for the plies it enumerates");
-                    assert_eq!(s.completion_cap_hits, 0, "and never hit the ply guard");
+        for (label, (world, seat), orders_internally) in &fixtures {
+            for leaf in [LeafRule::MidTurnDiag, LeafRule::HandOff] {
+                let c = ctx_leaf(&rules, &weights, 64, 0xB1A5, leaf);
+                let s = search_world(world, *seat, &c).expect("search").stats;
+                assert!(
+                    s.nodes > 1,
+                    "anti-vacuity ({label}, {leaf:?}): the search must have expanded",
+                );
+                assert_eq!(
+                    s.handles,
+                    s.nodes - s.terminal_nodes + s.completion_points,
+                    "{label}, {leaf:?}: one handle per expandable node plus one per completion ply \
+                     beyond the first — a terminal node enumerates nothing, and a completion's \
+                     first ply re-uses its node's cache",
+                );
+                assert_eq!(
+                    s.simulations, 64,
+                    "{label}, {leaf:?}: the search ran the simulations it was asked",
+                );
+                assert_eq!(
+                    s.scored,
+                    s.root_scored + s.ordering_scored + s.completion_scored + (s.nodes - 1),
+                    "{label}, {leaf:?}: the meter's four contributors — mandatory root pass, \
+                     ordering passes, completions, and one expansion per created node with the \
+                     root excepted (it was never applied)",
+                );
+                if *orders_internally {
+                    assert!(
+                        s.ordering_passes > 0 && s.ordering_scored > 0,
+                        "anti-vacuity ({label}, {leaf:?}): the identity's ordering term must not \
+                         be checked against zero ({} passes, {} scored)",
+                        s.ordering_passes,
+                        s.ordering_scored,
+                    );
                 }
-                _ => {
-                    assert_eq!(s.completion_scored, 0, "{leaf:?} completes nothing");
-                    assert_eq!(s.completion_points, 0);
+                assert!(
+                    s.nodes - 1 <= s.simulations,
+                    "{label}, {leaf:?}: a simulation creates at most one node (none when it ends \
+                     at a terminal)",
+                );
+                assert_eq!(
+                    s.root_scored, s.root_candidates,
+                    "{label}, {leaf:?}: the root pass is MANDATORY — every candidate, exactly once",
+                );
+                match leaf {
+                    LeafRule::HandOff => {
+                        assert!(
+                            s.completion_scored > 0,
+                            "{label}: the shipped leaf must complete turns",
+                        );
+                        assert!(
+                            s.completion_points > 0,
+                            "{label}: and pay for the plies it enumerates",
+                        );
+                        assert_eq!(
+                            s.completion_cap_hits,
+                            0,
+                            "{label}: and never hit the ply guard",
+                        );
+                    }
+                    _ => {
+                        assert_eq!(s.completion_scored, 0, "{label}, {leaf:?} completes nothing");
+                        assert_eq!(s.completion_points, 0);
+                    }
                 }
             }
         }
@@ -3111,7 +3214,7 @@ mod tests {
         let mut carried =
             mirror.complete_ply(&state, &moves, key, 0, true, &mut best).expect("ply 0");
         let mut plies = 1;
-        while let Some((next, slot)) = carried {
+        while let Some((next, slot, _)) = carried {
             key = descend_branch(key, slot);
             let (cands, _) = mirror.expand_point(&next, key, false).expect("a ply's candidates");
             carried =
@@ -3134,6 +3237,13 @@ mod tests {
     /// it — [`selection_value`]'s convention, which the leaf inherits rather
     /// than modelling a second opponent. Both extremes are recomputed here from
     /// `apply` + `observe` + [`eval::score`].
+    ///
+    /// **And the DERIVATION of that direction is pinned too** (T3 review): the
+    /// half above passes `maximize` in, so it says nothing about where
+    /// [`hand_off_value`](Search::hand_off_value) gets it from — `maximize =
+    /// true` there passes every other test in the module. So the whole leaf is
+    /// driven at BOTH root seats and checked against the two directions' lines,
+    /// computed ply by ply here.
     #[test]
     fn the_completions_greedy_cut_serves_the_acting_seat() {
         let rules = Rules::standard();
@@ -3176,6 +3286,47 @@ mod tests {
                 raws[kept.1], want,
                 "seat {} at a node acted by seat {}: the cut must keep the ACTING seat's extreme",
                 root_seat.0, actor.0,
+            );
+
+            // The WHOLE leaf now, with the direction DERIVED rather than passed:
+            // drive both directions' lines from the same key line and check
+            // `hand_off_value` against the one the acting seat implies.
+            const KEY: u64 = 0x99;
+            let fold = |maximize: bool| -> f64 {
+                let mut b = ScoredBudget::unlimited();
+                let mut m = search_over(&c, root_seat, &mut b);
+                let mut best: Option<f64> = None;
+                let mut key = completion_branch(KEY);
+                let mut carried =
+                    m.complete_ply(&state, &moves, key, 0, maximize, &mut best).expect("ply 0");
+                let mut ply = 1u32;
+                while let Some((next, slot, _)) = carried {
+                    key = descend_branch(key, slot);
+                    let (cands, _) = m.expand_point(&next, key, false).expect("a ply's candidates");
+                    carried = m
+                        .complete_ply(&next, &cands, key, ply, maximize, &mut best)
+                        .expect("a ply");
+                    ply += 1;
+                }
+                best.expect("a completion reaches a hand-off")
+            };
+            let (maximizing, minimizing) = (fold(true), fold(false));
+            assert_ne!(
+                maximizing, minimizing,
+                "anti-vacuity: the two directions must value this fixture differently, or the \
+                 derivation below would be unobservable",
+            );
+
+            let mut whole_budget = ScoredBudget::unlimited();
+            let mut whole = search_over(&c, root_seat, &mut whole_budget);
+            let got = whole.hand_off_value(&state, &moves, KEY).expect("a completion leaf");
+            assert_eq!(
+                got,
+                if maximize { maximizing } else { minimizing },
+                "root seat {} at a node acted by seat {}: the leaf must derive its direction from \
+                 the ACTING seat (maximizing {maximizing}, minimizing {minimizing})",
+                root_seat.0,
+                actor.0,
             );
         }
     }
@@ -3232,52 +3383,89 @@ mod tests {
     ///
     /// The uncapped arm beside it is the anti-vacuity AND the no-op claim: an
     /// absent cap runs every simulation asked for and binds nothing.
+    ///
+    /// **BOTH leaf rules, at the T3 review's finding.** The shipped leaf spends
+    /// the overwhelming majority of a decision inside its COMPLETIONS, and this
+    /// is the only cell in the module that reads that spend against the BUDGET.
+    /// The counter identity elsewhere pins `scored` against its four
+    /// contributors, so a completion that stopped counting is caught there — but
+    /// a completion that counted and did not CHARGE (`stats.scored += 1` in
+    /// place of `charge()`) left the whole module green before this arm existed,
+    /// and the cap it silently stopped binding is the experiment's own budget.
+    /// Mutation-proven at the T3 fix wave, in exactly that shape.
     #[test]
     fn a_capped_search_starts_a_simulation_only_while_the_budget_admits_one() {
         const CAP: u32 = 400;
         const SIMS: u32 = 64;
         let rules = Rules::standard();
         let (world, seat) = on_board_movement_point(&rules);
-        let c = ctx(&rules, &WeightTable::V1, SIMS, 0xB1A5);
+        for leaf in [LeafRule::MidTurnDiag, LeafRule::HandOff] {
+            let c = ctx_leaf(&rules, &WeightTable::V1, SIMS, 0xB1A5, leaf);
 
-        let mut budget = ScoredBudget::capped(CAP);
-        let s = search_world_budgeted(&world, seat, &c, &mut budget).expect("search");
-        assert_eq!(s.stats.scored, budget.realized(), "the counter IS the meter");
-        assert!(
-            s.stats.root_scored < u64::from(CAP),
-            "premise: the fixture's root pass ({}) must fit the cap",
-            s.stats.root_scored,
-        );
-        assert!(
-            s.stats.simulations < u64::from(SIMS),
-            "the cap must have stopped the search short ({} simulations)",
-            s.stats.simulations,
-        );
-        assert!(s.stats.simulations > 0, "but not before it started");
-        assert_eq!(s.stats.budget_binds, 1, "and the bind is recorded");
-        assert_eq!(s.stats.budget_starved, 0, "a fitting root pass is not starvation");
-        assert!(
-            budget.realized() >= u64::from(CAP),
-            "a started simulation completes, so the total lands at or past the cap: {}",
-            budget.realized(),
-        );
+            let mut budget = ScoredBudget::capped(CAP);
+            let s = search_world_budgeted(&world, seat, &c, &mut budget).expect("search");
+            if leaf == LeafRule::HandOff {
+                // ANTI-VACUITY, and it comes FIRST: the equality below is a
+                // statement about the completion's spend only while there IS
+                // one.
+                assert!(
+                    s.stats.completion_scored > 0,
+                    "the shipped leaf must have completed turns inside this cap",
+                );
+            }
+            assert_eq!(s.stats.scored, budget.realized(), "{leaf:?}: the counter IS the meter");
+            assert!(
+                s.stats.root_scored < u64::from(CAP),
+                "premise ({leaf:?}): the fixture's root pass ({}) must fit the cap",
+                s.stats.root_scored,
+            );
+            assert!(
+                s.stats.simulations < u64::from(SIMS),
+                "{leaf:?}: the cap must have stopped the search short ({} simulations)",
+                s.stats.simulations,
+            );
+            assert!(s.stats.simulations > 0, "{leaf:?}: but not before it started");
+            assert_eq!(s.stats.budget_binds, 1, "{leaf:?}: and the bind is recorded");
+            assert_eq!(
+                s.stats.budget_starved, 0,
+                "{leaf:?}: a fitting root pass is not starvation",
+            );
+            assert!(
+                budget.realized() >= u64::from(CAP),
+                "{leaf:?}: a started simulation completes, so the total lands at or past the cap: \
+                 {}",
+                budget.realized(),
+            );
 
-        let mut again = ScoredBudget::capped(CAP);
-        let s2 = search_world_budgeted(&world, seat, &c, &mut again).expect("search");
-        assert_eq!(s.stats, s2.stats, "the same master must truncate identically");
-        assert_eq!(again, budget, "down to the meter");
-        assert_eq!(
-            format!("{:?}", s.roots[s.chosen].mv),
-            format!("{:?}", s2.roots[s2.chosen].mv),
-            "and decide identically",
-        );
+            let mut again = ScoredBudget::capped(CAP);
+            let s2 = search_world_budgeted(&world, seat, &c, &mut again).expect("search");
+            assert_eq!(s.stats, s2.stats, "{leaf:?}: the same master must truncate identically");
+            assert_eq!(again, budget, "{leaf:?}: down to the meter");
+            assert_eq!(
+                format!("{:?}", s.roots[s.chosen].mv),
+                format!("{:?}", s2.roots[s2.chosen].mv),
+                "{leaf:?}: and decide identically",
+            );
 
-        let mut uncapped = ScoredBudget::unlimited();
-        let u = search_world_budgeted(&world, seat, &c, &mut uncapped).expect("search");
-        assert_eq!(u.stats.simulations, u64::from(SIMS), "an absent cap runs the full count");
-        assert_eq!(u.stats.budget_binds, 0, "and can never bind");
-        assert_eq!(uncapped.overshoot(), 0, "nor overshoot");
-        assert!(u.stats.scored > s.stats.scored, "anti-vacuity: the cap must have cost something");
+            let mut uncapped = ScoredBudget::unlimited();
+            let u = search_world_budgeted(&world, seat, &c, &mut uncapped).expect("search");
+            assert_eq!(
+                u.stats.simulations,
+                u64::from(SIMS),
+                "{leaf:?}: an absent cap runs the full count",
+            );
+            assert_eq!(u.stats.budget_binds, 0, "{leaf:?}: and can never bind");
+            assert_eq!(uncapped.overshoot(), 0, "{leaf:?}: nor overshoot");
+            assert_eq!(
+                u.stats.scored,
+                uncapped.realized(),
+                "{leaf:?}: the counter IS the meter uncapped too",
+            );
+            assert!(
+                u.stats.scored > s.stats.scored,
+                "{leaf:?}: anti-vacuity — the cap must have cost something",
+            );
+        }
     }
 
     /// **THE STERILE-SIMULATION GUARD.** The experiment's own shape is a scored
@@ -3318,6 +3506,28 @@ mod tests {
         assert!(
             s.roots.iter().any(|r| r.visits > 0),
             "the decision is still taken on the tree that was built",
+        );
+
+        // THE SHIPPED LEAF at the same fixture (T3 review). Two properties the
+        // diagnostic arm above cannot reach: a completion running THROUGH the end
+        // of the game must be recognised as a hand-off — dropping
+        // `|| next.is_game_over()` from `complete_ply`'s test leaves a finished
+        // state in the cut, and the next ply asks a finished game for candidates,
+        // which `expand_point` hard-errors on rather than answering; and the
+        // completion must still terminate here, where the game itself is about to.
+        // Simulations bounded ONLY by the budget here too — the contestant shape.
+        let hc = ctx_leaf(&rules, &WeightTable::V1, u32::MAX, 0xE7D, LeafRule::HandOff);
+        let mut hb = ScoredBudget::capped(10_000);
+        let h = search_world_budgeted(&world, seat, &hc, &mut hb)
+            .expect("the shipped leaf must complete turns that run into the end of the game");
+        assert!(
+            h.stats.completion_scored > 0,
+            "anti-vacuity: the shipped leaf must actually have completed turns here",
+        );
+        assert!(h.stats.terminal_nodes > 0, "premise: the tree must reach finished games");
+        assert!(
+            h.roots.iter().any(|r| r.visits > 0),
+            "and the decision is still taken on the tree that was built",
         );
     }
 
