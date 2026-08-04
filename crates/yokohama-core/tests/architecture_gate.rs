@@ -12,10 +12,10 @@
 //! rots invisibly between the day it is written and the day the gate first runs.
 //!
 //! **Why this smoke drives AGENTS rather than arena cells.** Every other gate
-//! binary in the repo runs `run_cell` over [`Contestant`]s. MCTS-v1 is not a
-//! contestant yet — the arena seam (`Contestant::MctsV1`, the `cap` knob on
-//! `LookaheadV1`, the `y_*` report meters) is T5's, deliberately after the
-//! explanation surface so the goldens churn once. So the two arms below drive
+//! binary in the repo runs `run_cell` over [`Contestant`]s. MCTS-v1 became a
+//! contestant at T5 (`e0ebe58`); this smoke still drives the AGENTS directly
+//! because a plumbing smoke should not depend on the cell layer T7 will
+//! exercise. So the two arms below drive
 //! what exists: the MCTS agent through its own honest chain, and the capped S1
 //! arm through the public `run_arena_game_capped` driver it already reaches. T7
 //! replaces this file's contents with cells; it does not replace this test.

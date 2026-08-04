@@ -1955,7 +1955,7 @@ mod tests {
     /// rather than only in a golden diff that says "the arm moved".
     #[test]
     fn the_mcts_contestant_reports_its_descriptor_and_an_absent_cap_emits_no_token() {
-        use crate::game::mcts::{MCTS_CONTROLLER, MCTS_IMPL_VERSION, SIMULATION_CEILING};
+        use crate::game::mcts::{MCTS_CONTROLLER, MCTS_IMPL_VERSION};
 
         // -- the shipped S1 rung is UNCAPPED, and says nothing about a cap -----
         let (_, _, params) = Contestant::LOOKAHEAD_V1_DEFAULT.descriptor();
@@ -2001,7 +2001,7 @@ mod tests {
         };
         let (_, _, params) = sized.descriptor();
         assert_eq!(params["cap"], 750);
-        assert_eq!(params["sims"], i64::from(SIMULATION_CEILING));
+        assert!(!params.contains_key("sims"), "a capped seat emits no sims token (T5 review S1)");
 
         // The agent it BUILDS reports the same thing, stream seed filled in —
         // the drift this routing exists to prevent.
@@ -2041,7 +2041,6 @@ mod tests {
         assert!(echo.contains("setup-identical=yes"), "{echo}");
         assert!(echo.contains(&format!("x={MCTS_CONTROLLER}@v{MCTS_IMPL_VERSION}{{")), "{echo}");
     }
-
 
     /// §5.5: the echo states whether the cell's two contestants resolve a deal
     /// the same way, so a reader of a quoted figure knows whether its units were
@@ -2378,6 +2377,20 @@ mod tests {
         // The two sides are INDEPENDENT quantities, not one number written
         // twice — the exact defect a mirrored-field seam can ship silently.
         assert_ne!((x_scored, x_root), (y_scored, y_root), "the two sides read identically");
+
+        // Structural companion (T5 review N2): meter PROVENANCE, not magnitude.
+        // A Greedy X has no root/deeper split BY CONSTRUCTION while an MCTS Y
+        // meters its own, so no coincidence of values can satisfy this the way
+        // it theoretically could the assert_ne above.
+        let greedy_x = CellSpec {
+            name: "t5-greedy-x-mcts-y-provenance".to_string(),
+            x: Contestant::GREEDY_V1_DEFAULT,
+            y: spec.x,
+            ..spec.clone()
+        };
+        let g = run_cell(&greedy_x, &rules).unwrap_or_else(|e| panic!("greedy-X cell: {e}"));
+        assert!(g.x_root_scored.is_none(), "a one-ply argmax has no root/deeper split to meter");
+        assert!(g.y_root_scored.is_some(), "while the MCTS field meters its own");
 
         // -- the `None` side of the new Options, on a rung Y --------------------
         let rung_y = CellSpec {

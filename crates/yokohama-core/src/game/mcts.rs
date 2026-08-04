@@ -693,7 +693,6 @@ pub fn controller_provenance(
         ("scale".to_string(), knobs.squash_scale),
         ("m".to_string(), i64::from(knobs.retreat_samples)),
         ("leaf".to_string(), knobs.leaf.code()),
-        ("sims".to_string(), i64::from(knobs.simulations)),
         // `worlds.max(1)` mirrors the search's own floor, exactly as lookahead's
         // descriptor does: a descriptor printing a raw 0 would name a decision
         // over zero sampled worlds, which is not a decision.
@@ -703,6 +702,14 @@ pub fn controller_provenance(
     ]);
     if let Some(cap) = knobs.cap {
         params.insert("cap".to_string(), i64::from(cap));
+    }
+    // The absent-optional-knob rule, applied to the DERIVED knob too (T5 review
+    // S1): a capped seat's `simulations` is [`SIMULATION_CEILING`] — a loop
+    // bound the budget always pre-empts, not a count any run realizes — and a
+    // published number must describe what ran. The token is emitted only when
+    // it is a real bound.
+    if knobs.simulations != SIMULATION_CEILING {
+        params.insert("sims".to_string(), i64::from(knobs.simulations));
     }
     ControllerProvenance {
         name: MCTS_CONTROLLER.to_string(),
@@ -4685,7 +4692,10 @@ mod tests {
             None,
         );
         assert_eq!(capped.params["cap"], 750);
-        assert_eq!(capped.params["sims"], i64::from(SIMULATION_CEILING));
+        assert!(
+            !capped.params.contains_key("sims"),
+            "a ceiling-derived sims is a loop bound the budget pre-empts, not a realized knob"
+        );
         // Anti-vacuity: the two descriptors differ ONLY where the cap does.
         let mut without_cap = capped.params.clone();
         without_cap.remove("cap");

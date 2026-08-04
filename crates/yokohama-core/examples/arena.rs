@@ -1006,6 +1006,8 @@ fn cmd_throughput(args: &[String]) -> Result<(), String> {
 /// one cell, and a per-contestant selfplay row cannot produce it.
 fn throughput_architecture_shapes(rules: &Rules, base: u64) -> Result<(), String> {
     /// The experiment's budget unit B\* (spec §5) — the shape whose cost matters.
+    /// Release only, like the whole subcommand: the C2 shape at this cap is
+    /// order-minutes in a debug build (a cap=24 cell measured 364 ms/game debug).
     const B_STAR: u32 = 750;
 
     println!("\n-- architecture contestant shapes (3.4, run_cell, invariants ON, 1 unit each) --");
