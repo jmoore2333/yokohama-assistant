@@ -27,6 +27,7 @@ mod move_legality;
 mod seeds;
 mod metrics;
 mod policy;
+mod budget;
 mod arena;
 pub mod actions;
 /// Evaluator v1 (Phase 3.3 T1). NAMESPACED deliberately — the crate glob
@@ -73,4 +74,5 @@ pub use move_legality::*;
 pub use seeds::*;
 pub use metrics::*;
 pub use policy::*;
+pub use budget::*;
 pub use arena::*;

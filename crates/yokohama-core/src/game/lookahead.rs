@@ -23,17 +23,48 @@
 //! truncation IS the greedy step), which is why the beam's cut is a tie point
 //! and not a sort.
 //!
+//! # The scored-successor cap (Phase 3.4 spec §3.4) — OFF by default
+//!
+//! [`LookaheadAgent::with_cap`] gives the S1 path a budget in the currency the
+//! architecture experiment adjudicates on: **total scored successors per
+//! decision, root included** ([`ScoredBudget`], shared with 3.4's MCTS arm so
+//! the two are matched on one meter rather than on two definitions).
+//!
+//! **`None` is the shipped rung and is byte-identical to it** — an unlimited
+//! budget gates nothing, aborts nothing and emits no provenance token, so the
+//! whole knob is invisible to the goldens. With a cap the arm takes a different
+//! SHAPE, not merely a smaller one:
+//!
+//! 1. a **mandatory root pass** values every root candidate one ply deep, so no
+//!    candidate is ever valueless (and a root family bigger than the cap
+//!    OVERSHOOTS it — reported, not refused);
+//! 2. continuations are allocated in **descending one-ply-value order**
+//!    ([`allocation_order`], ties at [`TieSite::Continuation`]), started only
+//!    while the budget admits them;
+//! 3. each continuation is **atomic** — one the budget dies inside is discarded
+//!    whole and its candidate keeps its one-ply value;
+//! 4. the decision is the argmax over **best-available** values, through the
+//!    total fallback chain (`budget::best_available_pick`).
+//!
+//! The counters are [`SearchTally::candidates_scored`] (realized total),
+//! [`SearchTally::root_scored`] (root share), [`SearchTally::budget_binds`],
+//! [`SearchTally::budget_starved_decisions`] and
+//! [`SearchTally::overshoot`]. **A measured middle cap band where 2P self-play
+//! does not terminate is recorded at [`LookaheadAgent::with_cap`]** — read it
+//! before choosing a cap.
+//!
 //! # Every tie point draws, and the draws are KEYED, not consumed
 //!
-//! Spec §3.2 at every tie point (§4.2), which here means three:
+//! Spec §3.2 at every tie point (§4.2), which here means four since Phase 3.4:
 //!
 //! | tie point | site | what a first-wins version would do |
 //! |---|---|---|
 //! | root argmax | [`TieSite::Root`] | R2/R3's 0.59–0.67 θ̂ swing — the null placement wins every tie |
 //! | beam-frontier truncation | [`TieSite::Beam`] | the research critic's unfixed residue: a stable sort keeps the enumeration's first `B` of a tied tail |
 //! | S2's quiescence extension | [`TieSite::Extension`] | the same, one line at a time — and, until the T5 review, the same index at every SIBLING line too (the site now carries a [`descend_branch`] coordinate) |
+//! | the capped arm's continuation ORDER | [`TieSite::Continuation`] | 3.4 spec §3.4 / row 18 extended: under a budget the tail of the order may get nothing, so an unkeyed order spends the cap on whatever was enumerated first |
 //!
-//! All four call sites (three here, one in [`crate::game::greedy`]) share ONE
+//! All five call sites (four here, one in [`crate::game::greedy`]) share ONE
 //! primitive, [`uniform_index`] — Lemire multiply-shift, exactly one word per
 //! draw whatever the tie count.
 //!
@@ -289,6 +320,9 @@ use rand_chacha::ChaCha8Rng;
 use crate::game::apply_move::apply_move_unchecked;
 use crate::game::arena::{ArenaAgent, ControllerProvenance, DecisionReport};
 use crate::game::belief::BeliefSampler;
+use crate::game::budget::{
+    best_available_pick, summarize_overshoot, OvershootSummary, ScoredBudget,
+};
 use crate::game::eval::{self, Explanation, WeightTable, EVAL_IMPL_VERSION};
 use crate::game::greedy::{
     candidates, observed_view, score_starting_order, uniform_index, weight_table_identity,
@@ -436,6 +470,24 @@ pub enum TieSite {
     /// without it two SIBLING lines extending at the same depth draw the same
     /// index (T5 review S3).
     Extension { root: u32, depth: u32, branch: u32 },
+    /// **Phase 3.4's new selecting point** (spec §3.4, row 18 extended to it):
+    /// the capped arm's continuation-ALLOCATION order, filling slot `slot` of
+    /// the descending one-ply-value ordering from the tied block that straddles
+    /// it.
+    ///
+    /// It exists because a budget makes allocation order a decision. The
+    /// uncapped rung continues every root candidate, so the order it does them
+    /// in is invisible; under a cap the last candidates may get no continuation
+    /// at all, and taking them in ENUMERATION order would starve exactly the
+    /// late ones — with the empty placement emitted first, that is ledger row
+    /// 18's null-placement degeneracy re-created through the budget rather than
+    /// through a tie-break.
+    ///
+    /// The coordinate is the SLOT and not a candidate index, deliberately: two
+    /// worlds filling the same slot from the same tied block must draw the same
+    /// word (§4.3), and a slot is world-independent in a way a tied block's
+    /// membership is not.
+    Continuation { slot: u32 },
 }
 
 impl TieSite {
@@ -450,6 +502,7 @@ impl TieSite {
             Self::Extension { root, depth, branch } => {
                 [2, u64::from(root), u64::from(depth), u64::from(branch)]
             }
+            Self::Continuation { slot } => [3, u64::from(slot), 0, 0],
         }
     }
 }
@@ -618,6 +671,27 @@ pub fn controller_provenance(
     weights: &WeightTable,
     agent_seed: Option<u64>,
 ) -> ControllerProvenance {
+    controller_provenance_capped(scheme, worlds, retreat_samples, None, weights, agent_seed)
+}
+
+/// [`controller_provenance`] for a seat that may carry Phase 3.4's
+/// scored-successor cap.
+///
+/// **An ABSENT cap emits NO token** (spec §3.6): the shipped rung's descriptor,
+/// its provenance record and every golden echo are unchanged by the knob's
+/// existence, which is what lets `cap = None` be a no-op in the report layer as
+/// well as in the search. The arena's own contestant routes here once it carries
+/// the knob (T5); until then its uncapped call above is the only other caller,
+/// and both still read the two controller names and their version consts at
+/// exactly one site.
+pub fn controller_provenance_capped(
+    scheme: SearchScheme,
+    worlds: u8,
+    retreat_samples: u8,
+    cap: Option<u32>,
+    weights: &WeightTable,
+    agent_seed: Option<u64>,
+) -> ControllerProvenance {
     let mut params = BTreeMap::from([
         // `worlds.max(1)` mirrors `with_knobs` exactly: a decision over zero
         // sampled worlds is not a decision, so the agent raises it — and a
@@ -638,6 +712,9 @@ pub fn controller_provenance(
         SearchScheme::AtomicDiag { depth } => {
             params.insert("d".to_string(), i64::from(depth));
         }
+    }
+    if let Some(cap) = cap {
+        params.insert("cap".to_string(), i64::from(cap));
     }
     ControllerProvenance {
         name: scheme.controller().to_string(),
@@ -673,8 +750,35 @@ pub struct SearchStats {
     pub forced_nodes: u64,
     /// Hand-off leaves evaluated (never expanded, never handled).
     pub leaves: u64,
-    /// Successors applied + observed + scored, leaves included. The cost driver.
+    /// Successors applied + observed + scored, leaves included. The cost driver,
+    /// and — since Phase 3.4 — the currency [`ScoredBudget`] meters (spec §0.3:
+    /// TOTAL per decision, root included).
     pub scored: u64,
+    /// The ROOT SHARE of [`scored`](Self::scored): successors scored by the root
+    /// pass itself, before any deeper work.
+    ///
+    /// Equal to [`root_candidates`](Self::root_candidates) on both arms by
+    /// construction (each root candidate is applied and scored exactly once);
+    /// counted separately anyway because spec §3.4 reports the root share as a
+    /// budget line, and a report that infers one counter from another cannot see
+    /// the two come apart.
+    pub root_scored: u64,
+    /// Searches in which the cap DENIED work: at least one root candidate got no
+    /// completed continuation, either because none could be started
+    /// (`realized >= cap`) or because the budget died inside the one that was.
+    ///
+    /// At most 1 per world search; the K searches of one decision sum, as every
+    /// counter here does.
+    pub budget_binds: u64,
+    /// Searches whose MANDATORY root pass alone spent the cap, so that no
+    /// continuation could start at all and every root candidate was decided on
+    /// its one-ply value (spec §3.4's `budget_starved_decisions`).
+    ///
+    /// A strict sub-case of [`budget_binds`](Self::budget_binds): starvation
+    /// implies the bind. Zero when the search wanted no continuation in the
+    /// first place — a decision all of whose root candidates hand off is
+    /// COMPLETE at its root pass, not starved by it.
+    pub budget_starved: u64,
     /// Nodes whose placement family exceeded the candidate cap.
     pub placement_cap_binds: u64,
     /// The longest root→hand-off line this search completed, in moves.
@@ -703,6 +807,9 @@ impl SearchStats {
         self.forced_nodes += other.forced_nodes;
         self.leaves += other.leaves;
         self.scored += other.scored;
+        self.root_scored += other.root_scored;
+        self.budget_binds += other.budget_binds;
+        self.budget_starved += other.budget_starved;
         self.placement_cap_binds += other.placement_cap_binds;
         self.max_line = self.max_line.max(other.max_line);
         self.ply_cap_hits += other.ply_cap_hits;
@@ -910,9 +1017,21 @@ struct Run<'a, R: Rng> {
     rng: &'a mut R,
     trace: Trace,
     stats: SearchStats,
+    /// The DECISION's meter, borrowed rather than owned: spec §0.3 prices a
+    /// budget per decision and a decision may search K worlds, so the K
+    /// searches share one meter (see [`search_world_budgeted`]).
+    budget: &'a mut ScoredBudget,
 }
 
 impl<R: Rng> Run<'_, R> {
+    /// Charge ONE scored successor to both the cost counter and the decision's
+    /// meter. **The single site that increments `scored`**, so the meter cannot
+    /// drift from the counter the reports call realized-total.
+    fn charge(&mut self) {
+        self.stats.scored += 1;
+        self.budget.charge();
+    }
+
     /// Whether `state` has handed off — the root seat is no longer to move, or
     /// the game is over.
     ///
@@ -971,7 +1090,28 @@ impl<R: Rng> Run<'_, R> {
     /// Create an expandable node at `state` — its one handle, its cached
     /// candidates, its evaluation.
     fn make_node(&mut self, state: GameState, trace: u32) -> Result<Node, String> {
-        let eval = self.value_at(&state)?;
+        self.make_node_with(state, trace, None)
+    }
+
+    /// [`make_node`](Self::make_node) with the node's evaluation already in
+    /// hand.
+    ///
+    /// The capped arm's mandatory root pass evaluates every root successor
+    /// BEFORE deciding which ones get continuations, so re-deriving that same
+    /// number when a continuation starts would pay a whole extra
+    /// `observe`+`score` per continued root — invisible in the `scored` counter
+    /// (nothing was applied) and therefore invisible in a matched-budget cell,
+    /// while still costing wall clock in the cell that matches on wall clock.
+    fn make_node_with(
+        &mut self,
+        state: GameState,
+        trace: u32,
+        known_eval: Option<i64>,
+    ) -> Result<Node, String> {
+        let eval = match known_eval {
+            Some(v) => v,
+            None => self.value_at(&state)?,
+        };
         self.promote(Successor { state, eval, trace })
     }
 
@@ -1006,27 +1146,43 @@ impl<R: Rng> Run<'_, R> {
     // -- S1: turn-boundary with a beam ------------------------------------
 
     /// Complete the root seat's turn from `start` under a beam of `beam`, and
-    /// return `(best hand-off value, its trace index)`.
+    /// return `Some((best hand-off value, its trace index))`.
     ///
     /// `root` is the root candidate's INDEX, and it enters every tie site so
     /// that two worlds break the same candidate's ties identically (§4.3).
+    /// `known_eval` is `start`'s evaluation where the caller already has it.
+    ///
+    /// **`None` means the decision's budget died INSIDE this continuation**, and
+    /// spec §3.4 makes a continuation atomic: whatever it had reached is
+    /// discarded whole, and the root candidate keeps the one-ply value its
+    /// mandatory root pass gave it. A partial continuation would be a value read
+    /// at a beam frontier the search never finished cutting — a different
+    /// quantity from the hand-off values every other root carries, and one whose
+    /// size depends on exactly where the budget ran out. **An uncapped search
+    /// never returns `None`**: [`ScoredBudget::exhausted`] is constantly false
+    /// without a cap, which is what makes `cap = None` byte-identical to the
+    /// shipped rung.
     fn complete_turn(
         &mut self,
         root: u32,
         start: GameState,
         start_trace: u32,
         beam: usize,
-    ) -> Result<(i64, u32), String> {
+        known_eval: Option<i64>,
+    ) -> Result<Option<(i64, u32)>, String> {
         // The root candidate's own successor may already BE the hand-off — a
         // turn's last move usually is.
         if self.is_hand_off(&start) {
-            let v = self.value_at(&start)?;
+            let v = match known_eval {
+                Some(v) => v,
+                None => self.value_at(&start)?,
+            };
             self.note_leaf(start_trace);
-            return Ok((v, start_trace));
+            return Ok(Some((v, start_trace)));
         }
 
         let mut best: Option<(i64, u32)> = None;
-        let mut frontier = vec![self.make_node(start, start_trace)?];
+        let mut frontier = vec![self.make_node_with(start, start_trace, known_eval)?];
         let mut depth: u32 = 0;
 
         while !frontier.is_empty() {
@@ -1046,9 +1202,14 @@ impl<R: Rng> Run<'_, R> {
             let mut children: Vec<Successor> = Vec::new();
             for node in std::mem::take(&mut frontier) {
                 for mv in &node.candidates {
+                    // Spec §3.4: the budget dying inside a continuation discards
+                    // it whole. Constantly false when uncapped.
+                    if self.budget.exhausted() {
+                        return Ok(None);
+                    }
                     let next = self.apply(&node.state, mv)?;
                     let trace = self.trace.push(node.trace, mv.clone());
-                    self.stats.scored += 1;
+                    self.charge();
                     let value = self.value_at(&next)?;
                     if self.is_hand_off(&next) {
                         // A hand-off is a LEAF: valued, never expanded, so it
@@ -1077,7 +1238,7 @@ impl<R: Rng> Run<'_, R> {
             depth += 1;
         }
 
-        best.ok_or_else(|| {
+        best.map(Some).ok_or_else(|| {
             format!(
                 "{}: seat {}'s turn never handed off within {MAX_TURN_PLIES} plies",
                 self.ctx.scheme.controller(),
@@ -1212,7 +1373,7 @@ impl<R: Rng> Run<'_, R> {
             for mv in &node.candidates {
                 let next = self.apply(&node.state, mv)?;
                 let t = self.trace.push(node.trace, mv.clone());
-                self.stats.scored += 1;
+                self.charge();
                 let v = self.value_at(&next)?;
                 let at = evals.len();
                 evals.push((v, next, t));
@@ -1253,7 +1414,7 @@ impl<R: Rng> Run<'_, R> {
         for (i, mv) in node.candidates.iter().enumerate() {
             let next = self.apply(&node.state, mv)?;
             let t = self.trace.push(node.trace, mv.clone());
-            self.stats.scored += 1;
+            self.charge();
             let (v, at) = self.atomic(
                 next,
                 t,
@@ -1275,16 +1436,55 @@ impl<R: Rng> Run<'_, R> {
     }
 }
 
-/// Search ONE world: value every root candidate under `ctx.scheme`.
+/// Search ONE world under NO budget: value every root candidate under
+/// `ctx.scheme`.
 ///
 /// `seat` must be the world's player to move — the agent is only ever asked at
 /// its own decision point, and a search rooted anywhere else would be
 /// completing somebody else's turn.
+///
+/// The shipped rung's entry point, and byte-identical to what it always was:
+/// [`ScoredBudget::unlimited`] never gates and never aborts, so nothing below
+/// this call can tell that a meter is threaded through it.
 pub fn search_world<R: Rng>(
     world: &GameState,
     seat: PlayerId,
     ctx: &SearchCtx<'_>,
     rng: &mut R,
+) -> Result<WorldSearch, String> {
+    search_world_budgeted(world, seat, ctx, rng, &mut ScoredBudget::unlimited())
+}
+
+/// [`search_world`] against a DECISION's scored-successor meter (spec §3.4).
+///
+/// `budget` is borrowed rather than owned because §0.3's currency is total
+/// scored successors **per decision**, and a decision may search `K` worlds: the
+/// caller threads ONE meter through all of them. At the shipped `K = 1` the
+/// per-world and per-decision totals coincide; at `K > 1` the later worlds see a
+/// budget the earlier ones have already spent, which is what "total per
+/// decision" means and is stated here rather than quietly reinterpreted as a
+/// per-world cap.
+///
+/// **A cap changes the S1 arm's SHAPE, not just its size.** Uncapped, every root
+/// candidate is continued in enumeration order and the order is invisible.
+/// Capped, the search runs spec §3.4's structure: a MANDATORY root pass values
+/// every root candidate one ply deep before any deeper work, then continuations
+/// are allocated in descending one-ply-value order ([`allocation_order`]) while
+/// the budget admits them, each atomic. So a root candidate's reported value is
+/// its continued value where a continuation completed, and its one-ply value
+/// otherwise — never undefined, which is the property that lets the decision be
+/// a plain argmax over best-available values.
+///
+/// The cap is an S1 knob: the S2 diagnostic arm has no root-pass/continuation
+/// structure to allocate under, and silently metering it while gating nothing
+/// would report a matched budget that was never enforced, so the combination is
+/// REFUSED.
+pub fn search_world_budgeted<R: Rng>(
+    world: &GameState,
+    seat: PlayerId,
+    ctx: &SearchCtx<'_>,
+    rng: &mut R,
+    budget: &mut ScoredBudget,
 ) -> Result<WorldSearch, String> {
     if world.current_player != seat {
         return Err(format!(
@@ -1294,7 +1494,19 @@ pub fn search_world<R: Rng>(
             world.current_player.0,
         ));
     }
-    let mut run = Run { ctx, seat, rng, trace: Trace::default(), stats: SearchStats::default() };
+    // `normalized` is the knob floor (its doc says why it is applied here too);
+    // nothing below re-clamps, so the search a caller reads off the scheme is
+    // the search that runs.
+    let scheme = ctx.scheme.normalized();
+    if budget.cap().is_some() && matches!(scheme, SearchScheme::AtomicDiag { .. }) {
+        return Err(format!(
+            "{}: the scored-successor cap is a turn-boundary knob — the atomic arm has no \
+             mandatory root pass to allocate continuations under",
+            scheme.controller(),
+        ));
+    }
+    let mut run =
+        Run { ctx, seat, rng, trace: Trace::default(), stats: SearchStats::default(), budget };
 
     // The ROOT node's one handle: volume and candidates off the same memo.
     let root = run.expand_point(world, true)?;
@@ -1310,30 +1522,177 @@ pub fn search_world<R: Rng>(
         run.stats.forced_nodes += 1;
     }
 
-    let mut roots = Vec::with_capacity(root.candidates.len());
-    for (i, mv) in root.candidates.iter().enumerate() {
-        let next = run.apply(world, mv)?;
-        let trace = run.trace.push(NO_PARENT, mv.clone());
-        run.stats.scored += 1;
-        // `normalized` is the knob floor (its doc says why it is applied here
-        // too); nothing below re-clamps, so the search a caller reads off the
-        // scheme is the search that runs.
-        let (value, leaf) = match ctx.scheme.normalized() {
-            SearchScheme::TurnBoundary { beam } => {
-                run.complete_turn(i as u32, next, trace, usize::from(beam))?
+    let roots = match (scheme, run.budget.cap()) {
+        (SearchScheme::TurnBoundary { beam }, Some(_)) => {
+            capped_roots(&mut run, world, &root.candidates, usize::from(beam))?
+        }
+        _ => {
+            let mut roots = Vec::with_capacity(root.candidates.len());
+            for (i, mv) in root.candidates.iter().enumerate() {
+                let next = run.apply(world, mv)?;
+                let trace = run.trace.push(NO_PARENT, mv.clone());
+                run.charge();
+                run.stats.root_scored += 1;
+                let (value, leaf) = match scheme {
+                    SearchScheme::TurnBoundary { beam } => run
+                        .complete_turn(i as u32, next, trace, usize::from(beam), None)?
+                        .ok_or_else(|| {
+                            format!(
+                                "{}: an uncapped continuation reported a budget abort",
+                                scheme.controller(),
+                            )
+                        })?,
+                    SearchScheme::AtomicDiag { depth } => {
+                        let phase = world.turn_phase;
+                        // The branch coordinate starts at 0 for every root: the
+                        // root INDEX is already a coordinate of its own, so two
+                        // roots never share a site whatever their sub-branches
+                        // fold to.
+                        run.atomic(next, trace, i as u32, 0, depth.saturating_sub(1), phase, 0)?
+                    }
+                };
+                roots.push(RootValue { mv: mv.clone(), value, leaf });
             }
-            SearchScheme::AtomicDiag { depth } => {
-                let phase = world.turn_phase;
-                // The branch coordinate starts at 0 for every root: the root
-                // INDEX is already a coordinate of its own, so two roots never
-                // share a site whatever their sub-branches fold to.
-                run.atomic(next, trace, i as u32, 0, depth.saturating_sub(1), phase, 0)?
-            }
-        };
-        roots.push(RootValue { mv: mv.clone(), value, leaf });
-    }
+            roots
+        }
+    };
 
     Ok(WorldSearch { roots, volume, stats: run.stats, trace: run.trace })
+}
+
+/// One root candidate as the MANDATORY root pass left it (spec §3.4).
+struct RootPass {
+    mv: Move,
+    /// The successor state, kept only while it still WANTS a continuation: a
+    /// root candidate that already handed off is finished at its one-ply value,
+    /// and `None` here is how the allocation pass knows not to queue it.
+    wants: Option<GameState>,
+    trace: u32,
+    one_ply: i64,
+}
+
+/// The capped S1 root loop: mandatory root pass, then value-ordered atomic
+/// continuations while the budget admits them (spec §3.4).
+fn capped_roots<R: Rng>(
+    run: &mut Run<'_, R>,
+    world: &GameState,
+    candidates: &[Move],
+    beam: usize,
+) -> Result<Vec<RootValue>, String> {
+    // MANDATORY ROOT PASS. It is not budget-gated: gating it would leave some
+    // candidates with no value at all, and "no candidate's value is ever
+    // undefined" is precisely what stops the allocation order from becoming a
+    // decision about which candidates are eligible at all. A root family bigger
+    // than the cap therefore OVERSHOOTS, and the overshoot is reported.
+    let mut pass: Vec<RootPass> = Vec::with_capacity(candidates.len());
+    for mv in candidates {
+        let next = run.apply(world, mv)?;
+        let trace = run.trace.push(NO_PARENT, mv.clone());
+        run.charge();
+        run.stats.root_scored += 1;
+        let one_ply = run.value_at(&next)?;
+        let wants = if run.is_hand_off(&next) {
+            run.note_leaf(trace);
+            None
+        } else {
+            Some(next)
+        };
+        pass.push(RootPass { mv: mv.clone(), wants, trace, one_ply });
+    }
+
+    let eligible: Vec<Option<i64>> =
+        pass.iter().map(|e| e.wants.is_some().then_some(e.one_ply)).collect();
+    let order = allocation_order(&eligible, &run.ctx.ties);
+
+    // Starvation is measured BEFORE the loop, because "the root pass alone spent
+    // the cap" and "the budget died in the last continuation" are different
+    // findings and only the first invalidates a matched-budget reading of the
+    // whole decision.
+    let starved = !order.is_empty() && !run.budget.may_start();
+    let mut denied = starved;
+
+    let mut continued: Vec<Option<i64>> = vec![None; pass.len()];
+    let mut leaves: Vec<u32> = pass.iter().map(|e| e.trace).collect();
+    for &i in &order {
+        if !run.budget.may_start() {
+            denied = true;
+            break;
+        }
+        let state = pass[i].wants.take().ok_or_else(|| {
+            format!(
+                "{}: the allocation order queued a root candidate that wanted no continuation",
+                run.ctx.scheme.controller(),
+            )
+        })?;
+        match run.complete_turn(i as u32, state, pass[i].trace, beam, Some(pass[i].one_ply))? {
+            Some((value, leaf)) => {
+                continued[i] = Some(value);
+                leaves[i] = leaf;
+            }
+            None => {
+                // Atomic: the budget died inside, so this continuation is
+                // discarded whole and the candidate keeps its one-ply value.
+                denied = true;
+                break;
+            }
+        }
+    }
+    if denied {
+        run.stats.budget_binds += 1;
+    }
+    if starved {
+        run.stats.budget_starved += 1;
+    }
+
+    Ok(pass
+        .into_iter()
+        .enumerate()
+        .map(|(i, e)| RootValue {
+            mv: e.mv,
+            value: continued[i].unwrap_or(e.one_ply),
+            leaf: leaves[i],
+        })
+        .collect())
+}
+
+/// The order the capped arm hands out continuations in: root candidates that
+/// WANT one (a `Some` entry), by DESCENDING one-ply value, ties drawn uniformly
+/// at [`TieSite::Continuation`].
+///
+/// Descending value because under a cap the tail of the order may get nothing,
+/// so the order is an allocation of the budget and enumeration order would spend
+/// it on whatever the generator happened to emit first — with the empty
+/// placement emitted first, that is ledger row 18's degeneracy arriving through
+/// the budget instead of through a tie-break.
+///
+/// The tie discipline is the whole tied block, not just the slot that straddles
+/// a cut: every slot of a tied block draws uniformly over the candidates still
+/// unallocated in it (a keyed partial Fisher–Yates, one word per slot), so the
+/// block is a uniform permutation and the FIRST continuation of an all-tied root
+/// family is uniform over the whole family.
+fn allocation_order(eligible: &[Option<i64>], ties: &TieStream) -> Vec<usize> {
+    let mut order: Vec<usize> =
+        eligible.iter().enumerate().filter_map(|(i, v)| v.map(|_| i)).collect();
+    let value = |i: usize| eligible[i].expect("only eligible candidates are ordered");
+    // Stable so that the ONLY thing separating equal values is the keyed draw
+    // below — an unstable sort would leak a second, unkeyed ordering into the
+    // tied blocks.
+    order.sort_by(|&a, &b| value(b).cmp(&value(a)));
+
+    let mut lo = 0;
+    while lo < order.len() {
+        let mut hi = lo + 1;
+        while hi < order.len() && value(order[hi]) == value(order[lo]) {
+            hi += 1;
+        }
+        for slot in lo..hi.saturating_sub(1) {
+            let remaining = hi - slot;
+            let pick = slot + ties.pick(TieSite::Continuation { slot: slot as u32 }, remaining);
+            order.swap(slot, pick);
+        }
+        lo = hi;
+    }
+    order
 }
 
 // ---------------------------------------------------------------------------
@@ -1346,10 +1705,19 @@ struct LookaheadCounters {
     explained: AtomicU64,
     nodes: AtomicU64,
     scored: AtomicU64,
+    root_scored: AtomicU64,
     placement_cap_binds: AtomicU64,
     continuation_moves: AtomicU64,
     ply_cap_hits: AtomicU64,
     free_cap_hits: AtomicU64,
+    budget_binds: AtomicU64,
+    budget_starved: AtomicU64,
+    /// Per-DECISION overshoot samples, and the one counter here that is not a
+    /// running total: spec §3.4 reports the overshoot as a p50/p90/max
+    /// distribution, and a distribution cannot be recovered from a sum. One
+    /// `u64` per capped decision (~300 per game); an UNCAPPED agent pushes
+    /// nothing, so the shipped rung pays neither the allocation nor the lock.
+    overshoot: std::sync::Mutex<Vec<u64>>,
 }
 
 /// A cloneable handle on one [`LookaheadAgent`]'s counters — [`crate::game::greedy`]'s
@@ -1382,8 +1750,60 @@ impl SearchTally {
     }
 
     /// Successors applied, observed and scored across every decision.
+    ///
+    /// **This is the budget currency** (spec §0.3): the scored-successor cap
+    /// gates exactly this number, root included, so a cell's realized total is
+    /// this counter divided by [`explained`](Self::explained) and no separate
+    /// meter has to be trusted to agree with it.
     pub fn candidates_scored(&self) -> u64 {
         self.counters.scored.load(Ordering::Relaxed)
+    }
+
+    /// The ROOT SHARE of [`candidates_scored`](Self::candidates_scored):
+    /// successors scored by the mandatory root pass, before any deeper work.
+    pub fn root_scored(&self) -> u64 {
+        self.counters.root_scored.load(Ordering::Relaxed)
+    }
+
+    /// Decisions in which the cap DENIED work — at least one root candidate got
+    /// no completed continuation (spec §3.4's cap-bind count).
+    ///
+    /// **0 for an uncapped agent by construction**, which is also the shape of
+    /// the validity condition the experiment reports: a cap that never binds is
+    /// not a matched budget. Counted per world search, so it is a count of
+    /// DECISIONS at the shipped `K = 1` and an over-count above it — the same
+    /// caveat [`budget_starved_decisions`](Self::budget_starved_decisions)
+    /// carries.
+    pub fn budget_binds(&self) -> u64 {
+        self.counters.budget_binds.load(Ordering::Relaxed)
+    }
+
+    /// Decisions whose mandatory root pass alone spent the cap, so no
+    /// continuation could start (spec §3.4's `budget_starved_decisions`).
+    ///
+    /// A sub-case of [`budget_binds`](Self::budget_binds). It is the counter
+    /// spec §0.1's S2 surface routes on: a cell with nonzero starvation is never
+    /// read as a clean matched-budget adjudication.
+    ///
+    /// **"Decisions" is exact at the shipped `K = 1` and an over-count above
+    /// it**, because [`SearchStats::merge`] sums the K per-world searches and a
+    /// decision's later worlds inherit a budget the earlier ones already spent
+    /// (see [`search_world_budgeted`]). Named for the shipped shape, said
+    /// plainly rather than left for a reader to discover from a ratio.
+    pub fn budget_starved_decisions(&self) -> u64 {
+        self.counters.budget_starved.load(Ordering::Relaxed)
+    }
+
+    /// The per-decision overshoot distribution (p50/p90/max over `realized −
+    /// cap`), or `None` if this agent never took a capped decision.
+    ///
+    /// `None` rather than zeros: an uncapped run has no overshoot distribution,
+    /// and printing one would claim a measurement nobody took. The overshoot is
+    /// nonzero exactly where the MANDATORY root pass is bigger than the cap —
+    /// the one place spec §3.4 lets the meter run past its gate.
+    pub fn overshoot(&self) -> Option<OvershootSummary> {
+        let samples = self.counters.overshoot.lock().expect("overshoot samples");
+        summarize_overshoot(&samples)
     }
 
     /// Decisions whose placement family exceeded the candidate cap, summed over
@@ -1435,6 +1855,11 @@ pub struct LookaheadAgent {
     scheme: SearchScheme,
     worlds: u8,
     retreat_samples: u8,
+    /// Phase 3.4's scored-successor cap (spec §3.4). **`None` is the shipped
+    /// rung**, byte-identical to the pre-3.4 agent: an absent cap threads an
+    /// unlimited [`ScoredBudget`], which gates nothing, aborts nothing, records
+    /// no overshoot sample and emits no provenance token.
+    cap: Option<u32>,
     weights: WeightTable,
     rng: ChaCha8Rng,
     /// Kept beside the stream it seeded because `ChaCha8Rng` will not hand its
@@ -1510,6 +1935,7 @@ impl LookaheadAgent {
             scheme,
             worlds: worlds.max(1),
             retreat_samples,
+            cap: None,
             weights,
             rng: ChaCha8Rng::seed_from_u64(agent_seed),
             agent_seed,
@@ -1525,6 +1951,59 @@ impl LookaheadAgent {
     /// The search shape this agent runs.
     pub fn scheme(&self) -> SearchScheme {
         self.scheme
+    }
+
+    /// Cap this agent's decisions at `cap` TOTAL scored successors each, root
+    /// included (spec §3.4). A BUILDER rather than a `with_knobs` parameter:
+    /// `None` is the default and the shipped rung, so a caller that never
+    /// mentions the cap gets the pre-3.4 agent by construction rather than by
+    /// remembering to pass a `None` through five call sites.
+    ///
+    /// The cap is a TURN-BOUNDARY knob. Setting it on the S2 diagnostic arm is
+    /// accepted here and REFUSED at the search (`search_world_budgeted`), where
+    /// the scheme and the budget meet: refusing in the builder would make the
+    /// knob's legality depend on the order two setters were called in.
+    ///
+    /// # A MEASURED middle band where 2P self-play does not complete
+    ///
+    /// **Read this before choosing a cap.** A capped arm is a hybrid: the cap
+    /// buys full continuations at small-family decision points (Movement ~10–14
+    /// root candidates) while starving big ones (Placement 66–512) back to their
+    /// one-ply values, and spec §3.4's decision rule then compares a HAND-OFF
+    /// value against MID-TURN ones. At both ends of the knob that heterogeneity
+    /// disappears — a tiny cap starves everything to one ply, a large one
+    /// continues everything — and in the middle it does not.
+    ///
+    /// Measured, 2P `lookahead-v1:b=4` self-play at BOTH seats, five masters
+    /// `0x1EA4_2026_0727_0001 ^ (m·0x11)` for `m = 0..5`, release, invariants
+    /// off, `run_arena_game_capped` at a **20,000-turn** budget (an out-of-gate
+    /// harness run at authoring; nothing below is asserted anywhere):
+    ///
+    /// ```text
+    /// cap  1 ..  24 : 5/5 masters complete (56–260 turns)
+    /// cap 32, 40    : 2/5 and 3/5 complete — the rest reach 20,001 turns
+    /// cap 64, 96    : 1/5 and 0/5 complete
+    /// cap 128 .. 512: complete again (turns 316 / 80 / 58 at master m = 0)
+    /// ```
+    ///
+    /// A 20,000-turn game is not a slow game, it is a game whose end trigger
+    /// never fires: the arm settles into a president-in-hand / null-retreat cycle
+    /// that makes no progress. That is a property of the DESIGN at those budgets,
+    /// not of an implementation choice here — spec §3.4 prescribes the
+    /// mixed-value argmax, and spec §0.1's S2 surface already routes a cell whose
+    /// games return `ArenaError::CapReached` UP the ladder rather than scoring
+    /// it. The experiment's B\* = 750 sits above the band and C0 certifies it
+    /// against the uncapped rung; a screening or calibration run that wanders
+    /// into 32–128 should expect completion failures and read them as the
+    /// surface, not as noise.
+    pub fn with_cap(mut self, cap: Option<u32>) -> Self {
+        self.cap = cap;
+        self
+    }
+
+    /// This agent's scored-successor cap, if any.
+    pub fn cap(&self) -> Option<u32> {
+        self.cap
     }
 
     /// The weights this agent evaluates with.
@@ -1652,13 +2131,23 @@ impl ArenaAgent for LookaheadAgent {
         let mut worlds: Vec<GameState> = Vec::with_capacity(k);
         let mut volume: Option<VolumeObs> = None;
         let mut stats = SearchStats::default();
+        // ONE meter for the whole DECISION, spent across the K worlds — spec
+        // §0.3's currency is total scored successors per decision, not per
+        // search. Unlimited (and therefore inert) unless the cap knob is set.
+        let mut budget = ScoredBudget::from_cap(self.cap);
 
         // THE K LOOP (spec §4.3): each world gets its OWN whole search and the
         // results meet at the ROOT. No per-world trees, no interleaving — a
         // node's continuation is a property of the world it lives in.
         for w in 0..k {
             let world = sampler.sample();
-            let searched = search_world(&world, seat, &ctx, &mut candidate_rng(candidate_seed))?;
+            let searched = search_world_budgeted(
+                &world,
+                seat,
+                &ctx,
+                &mut candidate_rng(candidate_seed),
+                &mut budget,
+            )?;
             // The volume is world 0's root handle's: an observation about THIS
             // decision point's size, and at the shipped K = 1 the only one.
             if volume.is_none() {
@@ -1713,7 +2202,22 @@ impl ArenaAgent for LookaheadAgent {
         // MOVE the aggregate into `last_roots` below — the borrow ends here so
         // the runner-up list costs an allocation rather than a `Move` clone per
         // candidate.
-        let chosen_index = tied[ctx.ties.pick(TieSite::Root, tied.len())];
+        //
+        // A CAPPED decision routes the same argmax through spec §3.4's fallback
+        // chain instead of taking it inline. The two agree wherever every value
+        // is present — which the mandatory root pass guarantees on this arm, so
+        // this is not a behaviour split — and the reason to route it anyway is
+        // that the capped arm is the one whose values CAN be absent by the
+        // budget's construction: "best-evaluated-so-far, else a keyed uniform
+        // draw over the family, never first-listed" then lives in shared code
+        // that the meter's other consumer inherits, rather than in an argument
+        // about why this arm cannot reach the last rung.
+        let chosen_index = if self.cap.is_some() {
+            let means: Vec<Option<i64>> = agg.iter().map(|a| Some(a.sum / a.count)).collect();
+            best_available_pick(&means, ctx.ties.word(TieSite::Root))
+        } else {
+            tied[ctx.ties.pick(TieSite::Root, tied.len())]
+        };
         let (mv, chosen_line, chosen_world) = {
             let chosen = &agg[chosen_index];
             (chosen.mv.clone(), chosen.line.clone(), chosen.world)
@@ -1753,9 +2257,17 @@ impl ArenaAgent for LookaheadAgent {
         counters.explained.fetch_add(1, Ordering::Relaxed);
         counters.nodes.fetch_add(stats.nodes, Ordering::Relaxed);
         counters.scored.fetch_add(stats.scored, Ordering::Relaxed);
+        counters.root_scored.fetch_add(stats.root_scored, Ordering::Relaxed);
         counters.placement_cap_binds.fetch_add(stats.placement_cap_binds, Ordering::Relaxed);
         counters.ply_cap_hits.fetch_add(stats.ply_cap_hits, Ordering::Relaxed);
         counters.free_cap_hits.fetch_add(stats.free_cap_hits, Ordering::Relaxed);
+        counters.budget_binds.fetch_add(stats.budget_binds, Ordering::Relaxed);
+        counters.budget_starved.fetch_add(stats.budget_starved, Ordering::Relaxed);
+        if self.cap.is_some() {
+            // Recorded off the METER rather than off `stats.scored`, so the
+            // sample says what the budget actually saw across the K worlds.
+            counters.overshoot.lock().expect("overshoot samples").push(budget.overshoot());
+        }
         counters
             .continuation_moves
             .fetch_add(self.last_continuation.len() as u64, Ordering::Relaxed);
@@ -1766,10 +2278,11 @@ impl ArenaAgent for LookaheadAgent {
     /// Delegated to [`controller_provenance`] so the agent and the arena's
     /// `Contestant` cannot drift about what a Lookahead seat is called.
     fn controller(&self) -> ControllerProvenance {
-        controller_provenance(
+        controller_provenance_capped(
             self.scheme,
             self.worlds,
             self.retreat_samples,
+            self.cap,
             &self.weights,
             Some(self.agent_seed),
         )
@@ -1951,12 +2464,14 @@ mod tests {
         );
         let mut rng = ChaCha8Rng::seed_from_u64(1);
         let c = ctx(&rules, &WeightTable::V1, SearchScheme::default(), 1);
+        let mut budget = ScoredBudget::unlimited();
         let run = Run {
             ctx: &c,
             seat: last,
             rng: &mut rng,
             trace: Trace::default(),
             stats: SearchStats::default(),
+            budget: &mut budget,
         };
 
         let mut live = world.clone();
@@ -3118,6 +3633,419 @@ mod tests {
         assert!(err.contains("TurnEnd"), "the message must report WHICH phase: {err}");
     }
 
+    // -- the scored-successor cap (Phase 3.4 spec §3.4) -----------------------
+
+    /// Assistants a game actually put on the board, counted off the record's
+    /// applied moves — `crate::game::greedy`'s helper, same shape and same
+    /// reason (a final state may have recovered them).
+    fn assistants_placed(stats: &crate::game::arena::ArenaGameStats) -> usize {
+        stats
+            .record
+            .events
+            .iter()
+            .map(|e| match e {
+                crate::game::record::RecordedEvent::Move(Move::PlaceThreeAreas { placements }) => {
+                    placements.len()
+                }
+                crate::game::record::RecordedEvent::Move(Move::PlaceTwoSameArea {
+                    adjacent_bonus,
+                    ..
+                }) => 2 + usize::from(adjacent_bonus.is_some()),
+                _ => 0,
+            })
+            .sum()
+    }
+
+    /// Drive one 2P game with a capped S1 seat at BOTH seats, capped well below
+    /// `HONEST_MAX_TURNS` so a non-terminating budget arm fails in seconds.
+    fn capped_selfplay_2p(
+        cap: u32,
+        seed: u64,
+        max_turns: u32,
+    ) -> Result<(crate::game::arena::ArenaGameStats, Vec<SearchTally>), String> {
+        use crate::game::arena::{agent_stream_seed, run_arena_game_capped, Slot};
+        let rules = Rules::standard();
+        let world = crate::game::seeds::WorldSeed(seed);
+        let tallies: Arc<std::sync::Mutex<Vec<SearchTally>>> = Arc::default();
+        let sink = Arc::clone(&tallies);
+        let mut make = |seat: PlayerId, _n: u8| -> Box<dyn ArenaAgent> {
+            let agent = LookaheadAgent::new(&rules, agent_stream_seed(world, seat, Slot(seat.0)))
+                .with_cap(Some(cap));
+            sink.lock().unwrap().push(agent.tally());
+            Box::new(agent)
+        };
+        let stats = run_arena_game_capped(world, 2, &rules, &mut make, true, max_turns)
+            .map_err(|e| e.to_string())?;
+        let handles = tallies.lock().unwrap().clone();
+        Ok((stats, handles))
+    }
+
+    /// **THE BYTE-IDENTITY PIN (spec §3.4: "default OFF ⇒ byte-identical to
+    /// shipped, golden-pinned").** An absent cap must be the shipped rung — not
+    /// approximately, and not only in the move it returns: the same principal
+    /// continuation, the same root ranking, and the same cost counters, at a
+    /// fixture decision AND over a driven game.
+    ///
+    /// The T0 goldens are the outer net (they run this rung through the arena's
+    /// whole report layer); this is the inner one, and its job is to fail with a
+    /// diff a reader can act on rather than with a changed hash.
+    ///
+    /// **Anti-vacuity is load-bearing here** — a knob that did nothing at all
+    /// would pass every assertion above — so the same fixture is re-run under a
+    /// TINY cap and must spend strictly less, bind, and reach a different
+    /// decision list over the same driven game.
+    #[test]
+    fn a_none_cap_is_the_shipped_search_at_a_fixture_and_over_a_driven_game() {
+        const SEED: u64 = 0xCA9_0000_0000_0001;
+        const TINY: u32 = 8;
+        let rules = Rules::standard();
+        let (world, seat) = placement_point(&rules);
+        let view = observe(&world, seat).expect("observe");
+
+        let mut shipped = LookaheadAgent::new(&rules, SEED);
+        let mut none = LookaheadAgent::new(&rules, SEED).with_cap(None);
+        assert_eq!(shipped.cap(), None, "the cap knob is OFF by default");
+        let a = shipped.choose(&view, &rules).expect("move");
+        let b = none.choose(&view, &rules).expect("move");
+        assert_eq!(a.mv, b.mv, "an absent cap must choose the shipped move");
+        assert_eq!(shipped.last_stats(), none.last_stats(), "and cost exactly the same counters");
+        assert_eq!(shipped.last_roots(), none.last_roots(), "and rank the roots identically");
+        assert_eq!(
+            shipped.last_continuation(),
+            none.last_continuation(),
+            "and search the same principal continuation",
+        );
+        let shipped_stats = *shipped.last_stats().expect("stats");
+        assert!(shipped_stats.root_candidates > 1, "anti-vacuity: the fixture must offer a choice");
+        // The meter's currency, on the UNCAPPED arm too: the root pass is part
+        // of the total, which is what spec §0.3 means by "root included".
+        assert_eq!(
+            shipped_stats.root_scored, shipped_stats.root_candidates,
+            "every root candidate is applied and scored exactly once",
+        );
+        assert!(shipped_stats.scored > shipped_stats.root_scored, "and the search went deeper");
+        assert_eq!(none.tally().budget_binds(), 0, "an absent cap can never bind");
+        assert_eq!(none.tally().overshoot(), None, "and records no overshoot distribution");
+
+        let mut shipped_game = LookaheadAgent::new(&rules, SEED);
+        let mut none_game = LookaheadAgent::new(&rules, SEED).with_cap(None);
+        let shipped_moves = first_decisions(&mut shipped_game, MASTER, 12, &rules);
+        assert_eq!(
+            shipped_moves,
+            first_decisions(&mut none_game, MASTER, 12, &rules),
+            "an absent cap must play the shipped game move for move",
+        );
+
+        // ANTI-VACUITY: the knob is live.
+        let mut tiny = LookaheadAgent::new(&rules, SEED).with_cap(Some(TINY));
+        tiny.choose(&view, &rules).expect("a capped decision still answers");
+        let tiny_stats = *tiny.last_stats().expect("stats");
+        assert!(
+            tiny_stats.scored < shipped_stats.scored,
+            "a cap of {TINY} must spend strictly less than the uncapped {} scored",
+            shipped_stats.scored,
+        );
+        assert_eq!(tiny.tally().budget_binds(), 1, "and must have denied work");
+        let mut tiny_game = LookaheadAgent::new(&rules, SEED).with_cap(Some(TINY));
+        assert_ne!(
+            shipped_moves,
+            first_decisions(&mut tiny_game, MASTER, 12, &rules),
+            "a cap that changed no decision would make the identity pin above vacuous",
+        );
+    }
+
+    /// **THE TRUNCATION PIN.** A capped search is a DETERMINISTIC function of
+    /// its master: the same seed twice must reach the same move, the same
+    /// counters and the same overshoot distribution — the property spec §5's
+    /// reproducibility cells rest on, checked here at the one place a budget can
+    /// introduce non-determinism (which candidates got continuations).
+    ///
+    /// It also pins the truncation itself: with the root pass inside the cap,
+    /// the realized total stops AT the cap rather than past it, so a capped cell
+    /// is matched by construction and not by averaging.
+    #[test]
+    fn a_capped_decision_truncates_deterministically_at_the_same_master() {
+        const SEED: u64 = 0xCA9_0000_0000_0002;
+        const CAP: u32 = 400;
+        let rules = Rules::standard();
+        let (world, seat) = placement_point(&rules);
+        let view = observe(&world, seat).expect("observe");
+
+        let decide = || {
+            let mut agent = LookaheadAgent::new(&rules, SEED).with_cap(Some(CAP));
+            let mv = agent.choose(&view, &rules).expect("move").mv;
+            let stats = *agent.last_stats().expect("stats");
+            let t = agent.tally();
+            (mv, stats, agent.last_roots().to_vec(), t.budget_binds(), t.overshoot())
+        };
+        let first = decide();
+        assert_eq!(first, decide(), "the same master must truncate to the same decision");
+
+        let (_, stats, _, binds, overshoot) = first;
+        assert!(stats.root_scored <= u64::from(CAP), "the fixture's root pass must fit the cap");
+        assert_eq!(
+            stats.scored,
+            u64::from(CAP),
+            "the cap must bind exactly: a continuation is aborted the moment the meter dies",
+        );
+        assert_eq!(binds, 1, "anti-vacuity: this fixture must be one where the cap binds");
+        assert_eq!(
+            overshoot.map(|o| o.max),
+            Some(0),
+            "a root pass inside the cap cannot overshoot it",
+        );
+        assert!(stats.nodes > 1, "and some continuation must have run");
+
+        let mut driven = LookaheadAgent::new(&rules, SEED).with_cap(Some(CAP));
+        let a = first_decisions(&mut driven, MASTER, 12, &rules);
+        let mut again = LookaheadAgent::new(&rules, SEED).with_cap(Some(CAP));
+        assert_eq!(a, first_decisions(&mut again, MASTER, 12, &rules), "and so must a whole game");
+    }
+
+    /// **THE BUDGET-STARVED FIXTURE (spec §3.4).** A cap smaller than the
+    /// MANDATORY root pass leaves nothing for continuations — so the pass runs
+    /// anyway, overshoots, records the starvation, and the decision falls back
+    /// to the one-ply values the pass produced.
+    ///
+    /// That fallback is the chain's second rung and the reason the first rung is
+    /// mandatory: no candidate is ever valueless, so a starved decision is a
+    /// one-ply argmax over the WHOLE family rather than a ranking of whichever
+    /// prefix the budget happened to reach.
+    #[test]
+    fn a_starved_root_pass_falls_back_to_the_mandatory_one_ply_values() {
+        const CAP: u32 = 8;
+        let rules = Rules::standard();
+        let (world, seat) = placement_point(&rules);
+        let view = observe(&world, seat).expect("observe");
+
+        let mut agent = LookaheadAgent::new(&rules, 0xCA9_0000_0000_0003).with_cap(Some(CAP));
+        let report = agent.choose(&view, &rules).expect("a starved decision still answers");
+        let stats = *agent.last_stats().expect("stats");
+        let tally = agent.tally();
+        println!(
+            "starved at cap {CAP}: {} root candidates · {} scored · overshoot {:?}",
+            stats.root_candidates,
+            stats.scored,
+            tally.overshoot(),
+        );
+
+        assert!(
+            stats.root_candidates > u64::from(CAP),
+            "anti-vacuity: the fixture's root family ({}) must exceed the cap",
+            stats.root_candidates,
+        );
+        assert_eq!(tally.budget_starved_decisions(), 1, "the root pass alone spent the cap");
+        assert_eq!(tally.budget_binds(), 1, "starvation is a bind");
+        assert_eq!(stats.scored, stats.root_scored, "no deeper work may be paid for");
+        assert_eq!(
+            stats.root_scored, stats.root_candidates,
+            "and the root pass is MANDATORY: every candidate is scored, cap or no cap",
+        );
+        assert_eq!(stats.nodes, 1, "only the root node exists — no continuation started");
+        assert_eq!(
+            tally.overshoot().map(|o| (o.decisions, o.max)),
+            Some((1, stats.scored - u64::from(CAP))),
+            "the mandatory pass's overrun is reported, not hidden",
+        );
+
+        // The fallback ranked the WHOLE family, and the move returned is one of
+        // its maximisers.
+        let roots = agent.last_roots();
+        assert_eq!(roots.len() as u64, stats.root_candidates, "every candidate carries a value");
+        let best = roots.iter().map(|r| r.value).max().expect("non-empty");
+        let worst = roots.iter().map(|r| r.value).min().expect("non-empty");
+        assert!(best > worst, "anti-vacuity: the one-ply values must separate the candidates");
+        let chosen = roots
+            .iter()
+            .find(|r| r.mv == report.mv)
+            .expect("the returned move must be one of the reported roots");
+        assert_eq!(chosen.value, best, "a starved decision is the one-ply argmax");
+    }
+
+    /// **THE NEW SELECTING POINT (spec §3.4 / §2.6, row 18 extended).**
+    /// Continuations are allocated by DESCENDING one-ply value, and the ties in
+    /// that order draw uniformly over the FULL tied block — not over its head,
+    /// and never in enumeration order.
+    ///
+    /// The consequence a first-listed allocation would have is the spec's own
+    /// grounds for the rule (lens 1 M8), quoted rather than re-measured here:
+    /// `placement_iter` emits the empty placement FIRST, so an
+    /// enumeration-ordered allocation under a tight budget spends it on "place
+    /// nothing" at every Placement root — ledger row 18's degeneracy arriving
+    /// through the cap instead of through a tie-break. **This test is what
+    /// detects that**, and the degeneracy pin below is NOT: measured at
+    /// authoring, replacing the value sort with enumeration order fails only
+    /// here, because at the pin's starvation cap almost nothing is continued and
+    /// the order barely matters.
+    ///
+    /// **MUTATION-PROVEN AT AUTHORING** (2026-08-04, debug) by replacing the
+    /// keyed partial Fisher–Yates with the stable sort's own order and reverting
+    /// by inverse edit: the tied-block cell then reached ONE first-slot
+    /// candidate out of six over 120 keys instead of all six.
+    #[test]
+    fn the_continuation_allocation_orders_by_value_and_draws_over_the_full_tied_set() {
+        // Ineligible candidates (already handed off — no continuation wanted)
+        // never enter the order; the rest descend by one-ply value.
+        let ties = TieStream::new(0xA11_0CA7E);
+        let mixed = [Some(3), None, Some(9), Some(-4), None, Some(0)];
+        let order = allocation_order(&mixed, &ties);
+        assert_eq!(order, vec![2, 0, 5, 3], "descending by value, ineligibles excluded");
+
+        // A fully tied family: every slot must be reachable at the head, and
+        // every produced order must still be a permutation of the eligible set.
+        const KEYS: u64 = 120;
+        let tied = [Some(5i64); 6];
+        let mut heads = std::collections::BTreeSet::new();
+        let mut orders = std::collections::BTreeSet::new();
+        for k in 0..KEYS {
+            let o = allocation_order(&tied, &TieStream::new(0xBEEF ^ k));
+            let mut sorted = o.clone();
+            sorted.sort_unstable();
+            assert_eq!(sorted, (0..6).collect::<Vec<_>>(), "the order must be a permutation");
+            heads.insert(o[0]);
+            orders.insert(o);
+        }
+        assert_eq!(heads.len(), 6, "the first continuation must reach every tied candidate");
+        assert!(
+            orders.len() > (KEYS / 4) as usize,
+            "the whole block is drawn, not just its head: only {} distinct orders over {KEYS} keys",
+            orders.len(),
+        );
+
+        // Ties are broken WITHIN a block, never across one: the block boundary
+        // is a value boundary and no draw may cross it.
+        let blocks = [Some(9), Some(9), Some(1), Some(1), Some(1)];
+        for k in 0..40u64 {
+            let o = allocation_order(&blocks, &TieStream::new(k));
+            assert!(o[0] < 2 && o[1] < 2, "the 9s must come first, got {o:?}");
+            assert!(o[2..].iter().all(|&i| i >= 2), "the 1s must come last, got {o:?}");
+        }
+    }
+
+    /// **THE CAPPED-ARM DEGENERACY PIN (spec §3.4's starvation net).** A TINY
+    /// cap starves every large decision back to the one-ply values its mandatory
+    /// root pass produced — and a game played that way must still put assistants
+    /// on the board and END.
+    ///
+    /// This is the tripwire for the plan's named risk: the budget's allocation
+    /// is where a capped arm can quietly become "place nothing every turn", and
+    /// a non-terminating game is what that looks like from outside (the greedy
+    /// rung's ZERO-weights pin measured exactly that failure at 1,501 turns when
+    /// its tie-break was made first-listed).
+    ///
+    /// **The cap is 8 because that is the STARVATION regime the pin is named
+    /// for, and it is deliberately not a bigger one.** [`LookaheadAgent::with_cap`]
+    /// records a measured middle band (≈32–128) where 2P self-play does not
+    /// complete at all: putting this pin there would not be pinning the
+    /// starvation fallback, it would be asserting away a design property spec
+    /// §0.1's completion-failure surface already routes. At 8 the arm is starved
+    /// at every Placement point and continues freely at the small ones, which is
+    /// exactly the fallback chain under load; 5/5 masters complete in 56–260
+    /// turns.
+    ///
+    /// Cost: one whole 2P game, but a cheap one (~0.5 s debug) — the cap holds
+    /// each decision to ~`CAP` scorings plus its root pass against the uncapped
+    /// rung's measured 856.7, which is why this pin can afford to be per-edit
+    /// while the shipped rung's driven pin is the module's most expensive test.
+    #[test]
+    fn a_tiny_cap_still_places_assistants_and_finishes_a_game() {
+        const CAP: u32 = 8;
+        const TURNS: u32 = 1_500;
+        let (stats, tallies) = capped_selfplay_2p(CAP, MASTER, TURNS)
+            .expect("a capped game must complete, not hit the turn cap");
+
+        let placed = assistants_placed(&stats);
+        let explained: u64 = tallies.iter().map(|t| t.explained()).sum();
+        let starved: u64 = tallies.iter().map(|t| t.budget_starved_decisions()).sum();
+        let binds: u64 = tallies.iter().map(|t| t.budget_binds()).sum();
+        println!(
+            "capped self-play at {CAP} scored/decision: turns {} · moves {} · placed {placed} · \
+             binds {binds} · starved {starved} · overshoot {:?}",
+            stats.turns,
+            stats.moves_applied,
+            tallies[0].overshoot(),
+        );
+
+        assert!(stats.turns < TURNS, "the game must end inside the cap, took {}", stats.turns);
+        assert!(
+            placed > 0,
+            "a starved capped arm must still place assistants (placed {placed} over {} turns)",
+            stats.turns,
+        );
+        assert!(binds > 0, "anti-vacuity: at {CAP} the budget must actually have bound");
+        assert!(starved > 0, "anti-vacuity: at {CAP} some root pass must have spent the cap");
+        assert_eq!(
+            explained, stats.moves_applied,
+            "every applied move was chosen by a decision that produced an explanation",
+        );
+        // The counters the experiment reads are wired end to end, not just
+        // written: a capped seat's realized root share is a real fraction of a
+        // real total.
+        let scored: u64 = tallies.iter().map(|t| t.candidates_scored()).sum();
+        let root: u64 = tallies.iter().map(|t| t.root_scored()).sum();
+        assert!(root > 0 && root < scored, "root share {root} of {scored} must be a real fraction");
+    }
+
+    /// The cap is a TURN-BOUNDARY knob, and the S2 diagnostic arm says so rather
+    /// than metering a budget it never enforces — a silently-ignored cap would
+    /// report a matched-budget cell that was never matched.
+    #[test]
+    fn a_cap_on_the_atomic_diagnostic_arm_is_refused() {
+        let rules = Rules::standard();
+        let (world, seat) = placement_point(&rules);
+        let view = observe(&world, seat).expect("observe");
+        let mut agent = LookaheadAgent::atomic_diag(&rules, 2, 0xCA9_0000_0000_0004)
+            .with_cap(Some(500));
+        let err = agent.choose(&view, &rules).expect_err("the S2 arm must refuse a cap");
+        assert!(err.contains("turn-boundary knob"), "the refusal must name the knob: {err}");
+        assert!(err.contains(ATOMIC_DIAG_CONTROLLER), "and the arm: {err}");
+        // Uncapped, the same arm answers.
+        let mut fine = LookaheadAgent::atomic_diag(&rules, 2, 0xCA9_0000_0000_0004);
+        assert!(fine.choose(&view, &rules).is_ok(), "the S2 arm without a cap is unchanged");
+    }
+
+    /// **An ABSENT knob emits NO token** (spec §3.6): the cap's existence must
+    /// leave the shipped rung's descriptor — and therefore every golden echo and
+    /// every recorded provenance — byte-unchanged.
+    #[test]
+    fn an_absent_cap_emits_no_provenance_token() {
+        let uncapped = controller_provenance(
+            SearchScheme::default(),
+            DEFAULT_WORLDS,
+            DEFAULT_RETREAT_SAMPLES,
+            &WeightTable::V1,
+            None,
+        );
+        assert!(
+            !uncapped.params.contains_key("cap"),
+            "the shipped echo must not gain a token: {:?}",
+            uncapped.params,
+        );
+
+        let capped = controller_provenance_capped(
+            SearchScheme::default(),
+            DEFAULT_WORLDS,
+            DEFAULT_RETREAT_SAMPLES,
+            Some(750),
+            &WeightTable::V1,
+            None,
+        );
+        assert_eq!(capped.params.get("cap"), Some(&750), "a present cap IS reported");
+        assert_eq!(capped.name, uncapped.name, "the controller name is unchanged by the knob");
+        assert_eq!(capped.version, uncapped.version, "and so is its version");
+        for (key, value) in &uncapped.params {
+            assert_eq!(capped.params.get(key), Some(value), "knob {key} must not move");
+        }
+        assert_eq!(capped.params.len(), uncapped.params.len() + 1, "exactly one token is added");
+
+        // And through the agent, which is where a record's provenance comes from.
+        let rules = Rules::standard();
+        let plain = LookaheadAgent::new(&rules, 7).controller();
+        assert!(!plain.params.contains_key("cap"), "an uncapped agent stamps no cap");
+        let with = LookaheadAgent::new(&rules, 7).with_cap(Some(750)).controller();
+        assert_eq!(with.params.get("cap"), Some(&750), "a capped agent stamps its cap");
+    }
+
     /// A search rooted at somebody else's decision point is refused rather than
     /// silently completing the wrong seat's turn.
     #[test]
@@ -3131,3 +4059,4 @@ mod tests {
         assert!(err.contains("is to play"), "the refusal must name the mismatch: {err}");
     }
 }
+
