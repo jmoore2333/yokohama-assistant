@@ -415,7 +415,10 @@ fn assert_cell_plumbing(report: &CellReport, spec: &CellSpec) {
 ///   the thing this gate is about.
 /// - `starved <= binds` — starvation is a SUB-CASE of binding (spec §0.1's S2
 ///   surface routes on it), so the containment is a shape claim about the two
-///   counters and holds whatever the rates are.
+///   counters and holds whatever the rates are — and at B\* in the release
+///   cells the rate IS zero on both sides, so there the containment is vacuous;
+///   its content lives in the per-edit smoke's starved cells (107<=269, 207<=338
+///   at cap 8 — T7 review N1).
 fn assert_capped_side(
     side: &str,
     scored: Option<u64>,
@@ -460,9 +463,14 @@ fn assert_capped_side(
 /// pattern and the reasoning are `evaluator_gate`'s, verbatim. Spec §8's "run
 /// twice" sizes the ASSERTED pair; this third run is declared as an addition.
 ///
-/// MUTATION-PROVEN (run at authoring, reverted by inverse edit — L7): pointing the
-/// control run at [`GATE_MASTER`] itself instead of the flipped value FAILS the
-/// anti-vacuity check ("the report did not depend on the master at all").
+/// MUTATION-PROVEN twice (each reverted by inverse edit — L7). Pointing the
+/// control run at [`GATE_MASTER`] itself FAILS the whole-string `assert_ne!` —
+/// the WEAK assert. The mutation of record for the play-derived line is the T7
+/// review's stronger probe: freezing the play (`SeedSchedule::diagnostic` of a
+/// constant inside the driver) while `spec_echo` still carries the requested
+/// master PASSES the string compare and FAILS the play-derived check alone
+/// ("a flipped master left the PLAY-derived figures identical") — proving the
+/// second assertion is the load-bearing one.
 ///
 /// **THE MEASURED OUTCOME OF THIS CELL IS NOT THE EXPERIMENT'S ANSWER, and the
 /// distinction matters enough to state here rather than only in the ADR.** At
@@ -478,8 +486,9 @@ fn assert_capped_side(
 /// the interval REFUSED, the bootstrap RESAMPLE draw is not inside this cell's
 /// byte-identity claim (the resample SEED still is — `spec_echo` carries it). The
 /// resampler's own determinism is pinned where it produces real intervals:
-/// `arena_gate::reports_are_deterministic` at both unit shapes, and the null cell
-/// below, which does report a `Bootstrap`.
+/// `arena_gate::reports_are_deterministic` at both unit shapes — the only site
+/// that pins it. The null cell below EXERCISES the resampler (it does report a
+/// `Bootstrap`) but never re-runs, so it is not a second pin (T7 review).
 ///
 /// MEASURED AT HEAD: 24 games per run, **2,336 bytes** identical across the two
 /// asserted runs; the flipped-master control moves `vp_margin_mean`
