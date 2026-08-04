@@ -167,7 +167,7 @@ single-threaded because their documented commands say so): fuzz 46.57 · census 
 6.35 · **evaluator gate 144.53** · **architecture gate 32.88** · piped dogfood 12.60 ·
 differential 23.03 · routes3 1.83 · scoring 2.10 · routes3 worst case 3.44 — all rc=0, and
 **under** the restated ≤420s target. The thirteen pre-3.4 gates sum to 293.37s inside that run
-against 313.40s at the 3.3 close, so the roster gained a binary and still got faster; the two
+against 313.40s at the 3.3 close, so the thirteen carried-over gates got FASTER inside this run (293.37 s vs 313.40 s at the 3.3 close) while the roster TOTAL rose to 326.70 s on the added binary (+13.30 s); the two
 largest movers are both downward (differential 32.48 → 23.03, dogfood 19.70 → 12.60) and are the
 same two rows that were up at the 3.3 close, while the evaluator gate reproduced to within 0.06s —
 per-gate shapes are unchanged, so that is load variance. Re-measure the whole table as one run at every
