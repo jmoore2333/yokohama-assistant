@@ -187,8 +187,33 @@
 //! the second is the experiment's ([`McSearchStats::scored`]). That is exactly
 //! why the cap gates STARTS rather than promising a total.
 //!
-//! The explanation surface (spec §3.5), the arena seam and the provenance
-//! version const (spec §3.6) land with their own tasks.
+//! # The explanation, and the two margins that are not the same currency
+//!
+//! [`McExplanation`] (spec §3.5) is the decision as the search left it: one row
+//! per root candidate — visits, mean normalized value, one-ply value, prior —
+//! plus the chosen row and its margin over the runner-up. It is a pure
+//! projection of an [`McSearch`], so explaining costs no apply, no evaluation
+//! and nothing on the meter.
+//!
+//! **The margin is stated in the currency that DECIDED, and the two are not
+//! interchangeable.** A searched decision is read out as the argmax over VISITS,
+//! so its margin is a visit lead with the mean-value lead carried beside it; a
+//! STARVED decision (spec §3.4) never ran a simulation, so every visit count is
+//! 0 and its margin is the lead in the mandatory root pass's one-ply values —
+//! reporting visits there would describe a search that did not happen. A forced
+//! point has no runner-up at all and says so.
+//!
+//! **A lead nobody measured is `None`, never zero.** [`RootStat::mean`] already
+//! refuses to invent a mean for an unvisited candidate, and at a 186-candidate
+//! Placement root under a small budget the runner-up frequently IS unvisited —
+//! so the value lead against it is refused while the visit lead (defined for
+//! every candidate) is still reported.
+//!
+//! The count rides [`McTally::explained`] — the SAME handle as the budget
+//! meters, one per seat, which that type's doc argues for.
+//!
+//! The arena seam and the provenance version const (spec §3.6) land with their
+//! own task.
 //!
 //! # It completes games, and how it completes them is itself a datum
 //!
@@ -997,6 +1022,16 @@ pub struct McSearch {
     pub stats: McSearchStats,
 }
 
+impl McSearch {
+    /// Spec §3.5's root table, taking the roots rather than copying them: the
+    /// agent stores the explanation and serves
+    /// [`last_roots`](MctsAgent::last_roots) out of it, so an explained decision
+    /// costs no allocation the search had not already paid.
+    pub fn into_explanation(self) -> McExplanation {
+        McExplanation::new(self.roots, self.chosen, self.stats)
+    }
+}
+
 /// Everything one search reads that is not the world itself.
 #[derive(Debug, Clone, Copy)]
 pub struct McCtx<'a> {
@@ -1761,6 +1796,253 @@ pub fn search_world_budgeted(
 }
 
 // ---------------------------------------------------------------------------
+// The explanation (spec §3.5)
+// ---------------------------------------------------------------------------
+
+/// The quantity a decision was READ OUT on — which is not always the visits,
+/// and an explanation that said "visits" at a starved decision would be
+/// describing a search that never ran.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum McReadout {
+    /// A FORCED decision point: one candidate, no tree, nothing ranked.
+    Forced,
+    /// The search's read-out: the argmax over VISITS, ties drawn from
+    /// [`McSite::RootArgmax`].
+    Visits,
+    /// The STARVED fallback (spec §3.4): the argmax over the mandatory root
+    /// pass's one-ply values, ties drawn from [`McSite::RootFallback`]. Every
+    /// visit count is 0 here, so a visit margin would be a statement about
+    /// nothing.
+    OnePly,
+}
+
+impl McReadout {
+    /// The word the rendering prints — stable, because a report's bytes are
+    /// pinned.
+    fn label(self) -> &'static str {
+        match self {
+            Self::Forced => "forced",
+            Self::Visits => "visits",
+            Self::OnePly => "one-ply (starved)",
+        }
+    }
+}
+
+/// How far ahead the chosen candidate finished, in the currency that DECIDED —
+/// and, where the deciding currency is not the value, the value lead beside it.
+///
+/// **The rule for a lead nobody can compute is `None`, never zero** (the reason
+/// [`RootStat::mean`] is itself an `Option`): a candidate no simulation reached
+/// has no mean, and reporting `0.0` — or the axis mid-point — against it would
+/// claim a comparison that was never made. The VISIT lead is always defined,
+/// because visits are counted for every candidate whether or not any landed.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum McMargin {
+    /// A forced point: one candidate, no runner-up to be ahead of.
+    Forced,
+    /// The visit read-out. `visits` is the deciding lead; `value` is the same
+    /// lead in mean normalized value, `None` when either side has no mean.
+    Visits { runner_up: usize, visits: u32, value: Option<f64> },
+    /// The starved read-out. The lead is in RAW [`eval::score`] units — the
+    /// currency the fallback ranked on — and `None` if either side carries no
+    /// one-ply value (unreachable from a starved search, whose pass is
+    /// mandatory; expressible because [`McExplanation::new`] is public).
+    OnePly { runner_up: usize, one_ply: Option<i64> },
+}
+
+/// How many rows [`McExplanation::render`] prints before summarizing the rest.
+///
+/// A REPORTING cap and nothing else — [`McExplanation::rows`] always carries
+/// every candidate, and a 186-candidate Placement root is a table no reader
+/// wants in full beside a decision.
+pub const RENDERED_ROWS: usize = 8;
+
+/// Spec §3.5's ROOT TABLE: the decision as the search left it, per candidate,
+/// plus which candidate was taken and by how much.
+///
+/// It is a pure PROJECTION of one [`McSearch`] — no re-search, no re-evaluation,
+/// no second enumeration — so producing it cannot change what was played and
+/// cannot cost the budget anything. [`MctsAgent`] keeps exactly one (the last
+/// decision's) and reads [`last_roots`](MctsAgent::last_roots) out of it, which
+/// is why nothing here is cloned per decision.
+#[derive(Debug, Clone, PartialEq)]
+pub struct McExplanation {
+    /// Every root candidate, in the order the candidate scheme offered them —
+    /// the SAME order the search's `roots` carry, so a row index is a candidate
+    /// index everywhere in this module.
+    pub rows: Vec<RootStat>,
+    /// The index in [`rows`](Self::rows) the decision landed on.
+    pub chosen: usize,
+    pub readout: McReadout,
+    pub margin: McMargin,
+    /// What the decision cost — carried so a table is self-contained: a reader
+    /// must be able to see that a one-row-per-candidate report came out of 12
+    /// simulations rather than 750.
+    pub stats: McSearchStats,
+}
+
+impl McExplanation {
+    /// Build the table from a decision's roots.
+    ///
+    /// The read-out is DERIVED from the data rather than passed in: a one-row
+    /// table is forced, a table whose search starved reads out on one-ply
+    /// values, everything else reads out on visits — the same three cases
+    /// [`search_world_budgeted`] decides by, so the two cannot disagree about
+    /// which rule took the decision.
+    pub fn new(rows: Vec<RootStat>, chosen: usize, stats: McSearchStats) -> Self {
+        debug_assert!(
+            chosen < rows.len(),
+            "a decision must land on one of its own candidates ({chosen} of {})",
+            rows.len(),
+        );
+        let readout = if rows.len() <= 1 {
+            McReadout::Forced
+        } else if stats.budget_starved > 0 {
+            McReadout::OnePly
+        } else {
+            McReadout::Visits
+        };
+        let margin = match (readout, runner_up_of(&rows, chosen, readout)) {
+            (McReadout::Forced, _) | (_, None) => McMargin::Forced,
+            (McReadout::Visits, Some(r)) => McMargin::Visits {
+                runner_up: r,
+                // Saturating rather than plain: under this read-out the chosen
+                // candidate IS the visit argmax, so the difference is
+                // non-negative — but `new` is public and takes constructed rows.
+                visits: rows[chosen].visits.saturating_sub(rows[r].visits),
+                value: match (rows[chosen].mean(), rows[r].mean()) {
+                    (Some(a), Some(b)) => Some(a - b),
+                    _ => None,
+                },
+            },
+            (McReadout::OnePly, Some(r)) => McMargin::OnePly {
+                runner_up: r,
+                one_ply: match (rows[chosen].one_ply, rows[r].one_ply) {
+                    (Some(a), Some(b)) => Some(a.saturating_sub(b)),
+                    _ => None,
+                },
+            },
+        };
+        Self { rows, chosen, readout, margin, stats }
+    }
+
+    /// The REPORTING order: the chosen row first, then the rest by the deciding
+    /// currency descending, ties by candidate order.
+    ///
+    /// **Not a selecting point.** It runs after the decision, consumes no
+    /// randomness, and no move depends on it — which is why its tie rule is
+    /// "lowest candidate index" and not a keyed draw (row 18's discipline
+    /// governs picks that move play, and this one cannot). The chosen row leads
+    /// unconditionally so a truncated rendering can never omit the row it exists
+    /// to explain: under the visit read-out the chosen candidate is an argmax,
+    /// but the keyed draw may have settled a 64-wide tie on a late candidate.
+    ///
+    /// `ranked()[1]` is the runner-up [`margin`](Self::margin) names, by
+    /// construction — both read the same key.
+    pub fn ranked(&self) -> Vec<usize> {
+        let mut order: Vec<usize> = (0..self.rows.len()).collect();
+        order.sort_by(|&a, &b| {
+            (b == self.chosen)
+                .cmp(&(a == self.chosen))
+                .then_with(|| match self.readout {
+                    // `Option<i64>`'s own order puts `None` LAST under this
+                    // reversal, which is where a candidate with no value belongs.
+                    McReadout::OnePly => self.rows[b].one_ply.cmp(&self.rows[a].one_ply),
+                    _ => self.rows[b].visits.cmp(&self.rows[a].visits),
+                })
+                .then(a.cmp(&b))
+        });
+        order
+    }
+
+    /// The table as text: one line per candidate in [`ranked`](Self::ranked)
+    /// order, capped at [`RENDERED_ROWS`], then the margin.
+    ///
+    /// **Byte-identical for the same search** — every number is formatted at a
+    /// fixed precision and the move is its `Debug` form (the same rendering this
+    /// module's determinism pins compare on). Absent values print `-`; nothing
+    /// here substitutes a zero for a measurement that was not taken.
+    pub fn render(&self) -> String {
+        use std::fmt::Write as _;
+
+        let cell_f = |v: Option<f64>| v.map_or_else(|| "-".to_string(), |x| format!("{x:.4}"));
+        let cell_i = |v: Option<i64>| v.map_or_else(|| "-".to_string(), |x| x.to_string());
+
+        let mut out = String::new();
+        let _ = writeln!(
+            out,
+            "{MCTS_CONTROLLER} root table: {} candidates, {} simulations, {} scored ({} root), \
+             read-out {}",
+            self.rows.len(),
+            self.stats.simulations,
+            self.stats.scored,
+            self.stats.root_scored,
+            self.readout.label(),
+        );
+        let _ = writeln!(
+            out,
+            "  {:>5} {:>7} {:>9} {:>9} {:>8}  move",
+            "#", "visits", "mean", "one-ply", "prior",
+        );
+        let order = self.ranked();
+        for &i in order.iter().take(RENDERED_ROWS) {
+            let r = &self.rows[i];
+            let _ = writeln!(
+                out,
+                "{} {:>5} {:>7} {:>9} {:>9} {:>8}  {:?}",
+                if i == self.chosen { ">" } else { " " },
+                i,
+                r.visits,
+                cell_f(r.mean()),
+                cell_i(r.one_ply),
+                cell_f(r.prior),
+                r.mv,
+            );
+        }
+        if let Some(rest) = order.len().checked_sub(RENDERED_ROWS).filter(|n| *n > 0) {
+            let _ = writeln!(out, "  ... and {rest} more candidates");
+        }
+        let _ = match self.margin {
+            McMargin::Forced => writeln!(out, "  forced decision point: one candidate, no margin"),
+            McMargin::Visits { runner_up, visits, value } => writeln!(
+                out,
+                "  margin over runner-up (candidate {runner_up}): +{visits} visits, {} value",
+                value.map_or_else(|| "unmeasured".to_string(), |v| format!("{v:+.4}")),
+            ),
+            McMargin::OnePly { runner_up, one_ply } => writeln!(
+                out,
+                "  margin over runner-up (candidate {runner_up}): {} one-ply",
+                one_ply.map_or_else(|| "unmeasured".to_string(), |v| format!("{v:+}")),
+            ),
+        };
+        out
+    }
+}
+
+/// The best candidate OTHER than `chosen` under `readout`'s currency, ties to
+/// the lowest candidate index — a linear scan rather than
+/// [`McExplanation::ranked`]'s sort, because this one runs on every decision
+/// and the sort runs only when somebody reads the table.
+fn runner_up_of(rows: &[RootStat], chosen: usize, readout: McReadout) -> Option<usize> {
+    let mut best: Option<usize> = None;
+    for (i, row) in rows.iter().enumerate() {
+        if i == chosen {
+            continue;
+        }
+        // Strict `>`, so an equal candidate never displaces an earlier one —
+        // the tie rule `ranked` sorts by.
+        let ahead = best.is_none_or(|b| match readout {
+            McReadout::OnePly => row.one_ply > rows[b].one_ply,
+            _ => row.visits > rows[b].visits,
+        });
+        if ahead {
+            best = Some(i);
+        }
+    }
+    best
+}
+
+// ---------------------------------------------------------------------------
 // The agent
 // ---------------------------------------------------------------------------
 
@@ -1768,6 +2050,7 @@ pub fn search_world_budgeted(
 #[derive(Debug, Default)]
 struct McCounters {
     decisions: AtomicU64,
+    explained: AtomicU64,
     scored: AtomicU64,
     root_scored: AtomicU64,
     budget_binds: AtomicU64,
@@ -1791,6 +2074,16 @@ struct McCounters {
 /// own grounds: the counter SETS differ (a tree has no continuation length and
 /// no beam-ply guard; a beam has no simulations), and a shared type would carry
 /// fields one of its owners never writes.
+///
+/// **It is ALSO the explanation tally, deliberately — one handle, not two**
+/// (spec §3.5). `greedy`'s `ExplanationTally` and `lookahead`'s `SearchTally`
+/// each carry their own explanation count for the same reason, and the criterion
+/// those two types state for splitting is a differing counter SET: there is no
+/// second set here, because an MCTS explanation is a pure projection of the
+/// search result [`MctsAgent::choose`] already holds (no extra apply, no extra
+/// evaluation, no counters of its own). A second type would give the arena two
+/// handles to clone per seat where one carries everything T5 surfaces —
+/// [`explained`](Self::explained) beside the budget meters.
 #[derive(Clone, Default)]
 pub struct McTally {
     counters: Arc<McCounters>,
@@ -1800,6 +2093,23 @@ impl McTally {
     /// Decisions this agent took.
     pub fn decisions(&self) -> u64 {
         self.counters.decisions.load(Ordering::Relaxed)
+    }
+
+    /// Decisions this agent EXPLAINED — spec §3.5's counter, and the one the
+    /// gate reads as `x_explanations == Some(x_applied_moves)`.
+    ///
+    /// **Equal to [`decisions`](Self::decisions) by construction at the shipped
+    /// [`choose`](MctsAgent::choose)**, which has no path to a `DecisionReport`
+    /// that skips the table — pinned rather than merely stated, because the two
+    /// answer different questions (a decision TAKEN and a decision EXPLAINED)
+    /// and the pin is what makes a future path that returns one without the
+    /// other fail loudly instead of quietly halving the gate's clause.
+    ///
+    /// A FAILING `choose` increments neither: both are written only on the
+    /// success path, so the counters are immune to the staleness
+    /// [`MctsAgent::last_explanation`] documents.
+    pub fn explained(&self) -> u64 {
+        self.counters.explained.load(Ordering::Relaxed)
     }
 
     /// Successors applied, observed and scored across every decision — **the
@@ -1850,6 +2160,15 @@ impl McTally {
         summarize_overshoot(&samples)
     }
 
+    /// Note that one decision was explained. Separate from
+    /// [`record`](Self::record) because it is a statement about the explanation
+    /// surface rather than about what the search paid — and because a merged
+    /// call could not tell "the search finished" from "the decision was
+    /// explained", which is the whole content of the identity above.
+    fn explain_one(&self) {
+        self.counters.explained.fetch_add(1, Ordering::Relaxed);
+    }
+
     /// Fold one decision's search into the running counters.
     fn record(&self, stats: &McSearchStats, budget: &ScoredBudget) {
         self.counters.decisions.fetch_add(1, Ordering::Relaxed);
@@ -1893,8 +2212,12 @@ pub struct MctsAgent {
     /// Keep-homogeneous (spec §3.6's `KeepKind::EvaluatorScored`).
     keep_scores: Vec<(OrderCardId, i64)>,
     counters: McTally,
-    last_stats: Option<McSearchStats>,
-    last_roots: Vec<RootStat>,
+    /// The last decision's table — and the agent's ONLY per-decision storage:
+    /// [`last_stats`](Self::last_stats) and [`last_roots`](Self::last_roots) are
+    /// served out of it rather than kept beside it, so the three cannot describe
+    /// different decisions and an explained decision costs no second copy of a
+    /// root family that can run to 186 candidates.
+    last_explanation: Option<McExplanation>,
 }
 
 impl MctsAgent {
@@ -1918,8 +2241,7 @@ impl MctsAgent {
                 .map(|card| (card.id, score_starting_order(card, rules)))
                 .collect(),
             counters: McTally::default(),
-            last_stats: None,
-            last_roots: Vec::new(),
+            last_explanation: None,
         }
     }
 
@@ -2033,16 +2355,41 @@ impl MctsAgent {
         &self.weights
     }
 
-    /// The last decision's counters.
+    /// The last EXPLAINED decision's counters.
+    ///
+    /// **Stale after a failing `choose`, deliberately** — see
+    /// [`last_explanation`](Self::last_explanation) for the rule and its reason.
     pub fn last_stats(&self) -> Option<&McSearchStats> {
-        self.last_stats.as_ref()
+        self.last_explanation.as_ref().map(|e| &e.stats)
     }
 
-    /// EVERY root candidate of the last decision with its visits and backed-up
-    /// value, in the order the candidate scheme offered them. The explanation
-    /// surface (spec §3.5) renders from here rather than re-deriving.
+    /// EVERY root candidate of the last explained decision with its visits and
+    /// backed-up value, in the order the candidate scheme offered them — the
+    /// explanation's own rows, served rather than duplicated.
+    ///
+    /// **Stale after a failing `choose`**, on
+    /// [`last_explanation`](Self::last_explanation)'s rule.
     pub fn last_roots(&self) -> &[RootStat] {
-        &self.last_roots
+        self.last_explanation.as_ref().map_or(&[], |e| e.rows.as_slice())
+    }
+
+    /// Spec §3.5's ROOT TABLE for the last decision this agent explained.
+    ///
+    /// **A FAILING [`choose`](Self::choose) leaves the PREVIOUS decision's table
+    /// in place rather than clearing it** — `lookahead`'s precedent (T2 review
+    /// NOTE 9), and the honest reading is that this accessor answers "the last
+    /// decision that succeeded", not "the last call". A caller pairing a table
+    /// with a move must therefore read it after an `Ok`, which every in-tree
+    /// caller does because a failed decision has no move to pair it with. The
+    /// COUNTERS are immune: [`McTally::explained`] is written only on the
+    /// success path, so nothing downstream has to reason about staleness to
+    /// trust the identity the gate asserts.
+    ///
+    /// Not on the clone-out [`tally`](Self::tally): a table owns a `Vec` of
+    /// every root candidate, and the caller that cannot hold the agent (the
+    /// arena driver) wants the COUNT.
+    pub fn last_explanation(&self) -> Option<&McExplanation> {
+        self.last_explanation.as_ref()
     }
 
     /// Argmax of [`score_starting_order`] over the two dealt cards, ties to
@@ -2103,10 +2450,15 @@ impl MctsAgent {
         let searched = search_world_budgeted(&world, seat, &ctx, &mut budget)?;
         self.counters.record(&searched.stats, &budget);
 
+        // Spec §3.5: the decision is EXPLAINED always, and there is no path to a
+        // `DecisionReport` that skips the table (greedy's §0.3(b) rule, and the
+        // cheaper half of it — the table is a projection of the search that just
+        // ran, so it costs no apply, no evaluation and no budget).
         let mv = searched.roots[searched.chosen].mv.clone();
-        self.last_stats = Some(searched.stats);
-        self.last_roots = searched.roots;
-        Ok(DecisionReport { mv, volume: searched.volume })
+        let volume = searched.volume;
+        self.last_explanation = Some(searched.into_explanation());
+        self.counters.explain_one();
+        Ok(DecisionReport { mv, volume })
     }
 }
 
@@ -3674,6 +4026,297 @@ mod tests {
             searched.stats.nodes,
             searched.stats.max_depth,
         );
+    }
+
+    // -- the explanation surface (spec §3.5) ----------------------------------
+
+    /// Two constructed rows, for the cells that pin the MARGIN RULE rather than
+    /// the search: the search cannot be made to produce an unvisited runner-up
+    /// or a chosen-late tie on demand, and a rule stated in a doc comment and
+    /// pinned only where the search happens to exercise it is a rule nobody can
+    /// check.
+    fn constructed_rows(mv: &Move, visits: &[u32], means: &[f64], one_ply: &[i64]) -> Vec<RootStat> {
+        (0..visits.len())
+            .map(|i| RootStat {
+                mv: mv.clone(),
+                visits: visits[i],
+                value_sum: means[i] * f64::from(visits[i]),
+                one_ply: Some(one_ply[i]),
+                prior: Some(squash(one_ply[i], DEFAULT_SQUASH_SCALE)),
+            })
+            .collect()
+    }
+
+    /// **THE ROOT TABLE (spec §3.5).** Every root candidate gets a row carrying
+    /// its visits, its mean normalized value, its one-ply value and its prior —
+    /// and the mean is `None` for a candidate no simulation reached, which at a
+    /// 100+-candidate Placement root under a small budget is most of them.
+    ///
+    /// The visit read-out's margin is the LEAD IN THE DECIDING CURRENCY (visits),
+    /// with the value lead carried beside it and REFUSED where either side has
+    /// no mean.
+    #[test]
+    fn the_root_table_reports_every_candidate_and_refuses_a_mean_it_never_measured() {
+        let rules = Rules::standard();
+        let (world, seat) = placement_point(&rules);
+        // Few simulations against a big family, deliberately: the honest-`None`
+        // claim is only checkable where candidates go unvisited.
+        let c = ctx(&rules, &WeightTable::V1, 8, 0xE1);
+        let searched = search_world(&world, seat, &c).expect("search");
+        let (n, chosen_mv) =
+            (searched.roots.len(), format!("{:?}", searched.roots[searched.chosen].mv));
+        let e = searched.into_explanation();
+
+        assert!(n > RENDERED_ROWS, "premise: the fixture must offer a big root family ({n})");
+        assert_eq!(e.rows.len(), n, "every root candidate gets a row");
+        assert_eq!(e.readout, McReadout::Visits, "a searched decision reads out on visits");
+        assert_eq!(format!("{:?}", e.rows[e.chosen].mv), chosen_mv, "and the chosen row is the move");
+        for (i, r) in e.rows.iter().enumerate() {
+            assert_eq!(
+                r.mean().is_some(),
+                r.visits > 0,
+                "row {i}: a mean exists exactly where a simulation measured one",
+            );
+            assert!(
+                r.one_ply.is_some() && r.prior.is_some(),
+                "row {i}: the MANDATORY root pass values every candidate",
+            );
+        }
+        assert!(
+            e.rows.iter().any(|r| r.visits == 0),
+            "anti-vacuity: at 8 simulations most of this family must go unvisited",
+        );
+
+        let McMargin::Visits { runner_up, visits, value } = e.margin else {
+            panic!("a searched decision must report a visit margin, got {:?}", e.margin);
+        };
+        assert_ne!(runner_up, e.chosen, "the runner-up is somebody else");
+        assert_eq!(
+            visits,
+            e.rows[e.chosen].visits - e.rows[runner_up].visits,
+            "the margin is the lead in the deciding currency",
+        );
+        let order = e.ranked();
+        assert_eq!(order[0], e.chosen, "the report leads with the chosen row");
+        assert_eq!(order[1], runner_up, "and the runner-up is the second row, by the same key");
+        match (e.rows[e.chosen].mean(), e.rows[runner_up].mean()) {
+            (Some(a), Some(b)) => assert_eq!(value, Some(a - b), "both measured: the lead is real"),
+            _ => assert_eq!(value, None, "and a lead over an unmeasured mean is refused"),
+        }
+    }
+
+    /// **THE MARGIN RULE against an UNVISITED runner-up**, in closed form: the
+    /// visit lead is defined (visits are counted for every candidate), the VALUE
+    /// lead is not, and `None` is the answer — never 0.0, and never the squash's
+    /// mid-point, either of which would report a comparison nobody made.
+    #[test]
+    fn the_value_margin_is_refused_against_a_runner_up_no_simulation_reached() {
+        let rules = Rules::standard();
+        let (world, seat) = placement_point(&rules);
+        let mv = search_world(&world, seat, &ctx(&rules, &WeightTable::V1, 4, 0x1))
+            .expect("search")
+            .roots
+            .swap_remove(0)
+            .mv;
+
+        let unvisited = constructed_rows(&mv, &[3, 0], &[0.75, 0.0], &[10, 4]);
+        let e = McExplanation::new(unvisited, 0, McSearchStats::default());
+        assert_eq!(e.readout, McReadout::Visits);
+        assert_eq!(
+            e.margin,
+            McMargin::Visits { runner_up: 1, visits: 3, value: None },
+            "an unvisited runner-up has no mean, so it has no value margin",
+        );
+
+        let both = constructed_rows(&mv, &[3, 2], &[0.75, 0.5], &[10, 4]);
+        let e = McExplanation::new(both, 0, McSearchStats::default());
+        assert_eq!(
+            e.margin,
+            McMargin::Visits { runner_up: 1, visits: 1, value: Some(0.25) },
+            "two measured means DO subtract",
+        );
+    }
+
+    /// The REPORTING order leads with the chosen row even when the decision was
+    /// a tie the keyed draw settled on a late candidate — otherwise a truncated
+    /// table could omit the very row it exists to explain.
+    ///
+    /// It is a REPORTING order and nothing else: it consumes no randomness, it
+    /// runs after the decision, and no move depends on it.
+    #[test]
+    fn the_report_leads_with_the_chosen_row_even_when_the_decision_was_a_tie() {
+        let rules = Rules::standard();
+        let (world, seat) = placement_point(&rules);
+        let mv = search_world(&world, seat, &ctx(&rules, &WeightTable::V1, 4, 0x1))
+            .expect("search")
+            .roots
+            .swap_remove(0)
+            .mv;
+
+        let tied = constructed_rows(&mv, &[5, 5, 5], &[0.5, 0.5, 0.5], &[1, 2, 3]);
+        let e = McExplanation::new(tied, 2, McSearchStats::default());
+        assert_eq!(e.ranked(), vec![2, 0, 1], "the chosen row leads its own tie block");
+        assert_eq!(
+            e.margin,
+            McMargin::Visits { runner_up: 0, visits: 0, value: Some(0.0) },
+            "a tie is a zero lead, reported as one",
+        );
+    }
+
+    /// A STARVED decision explains on the currency it actually decided on: the
+    /// mandatory root pass's one-ply values, not on visits that are all zero.
+    #[test]
+    fn a_starved_decision_explains_on_the_one_ply_values_it_decided_on() {
+        const CAP: u32 = 8;
+        let rules = Rules::standard();
+        let (world, seat) = placement_point(&rules);
+        let c = ctx(&rules, &WeightTable::V1, 64, 0xB1A5);
+        let mut budget = ScoredBudget::capped(CAP);
+        let s = search_world_budgeted(&world, seat, &c, &mut budget).expect("search");
+        assert_eq!(s.stats.budget_starved, 1, "premise: the fixture must starve");
+        let e = s.into_explanation();
+
+        assert_eq!(e.readout, McReadout::OnePly, "the read-out names the currency");
+        assert!(e.rows.iter().all(|r| r.visits == 0 && r.mean().is_none()), "nothing was searched");
+        let runner_best = e
+            .rows
+            .iter()
+            .enumerate()
+            .filter(|(i, _)| *i != e.chosen)
+            .filter_map(|(_, r)| r.one_ply)
+            .max()
+            .expect("a starved decision values every candidate");
+        let McMargin::OnePly { runner_up, one_ply } = e.margin else {
+            panic!("a starved decision must report a one-ply margin, got {:?}", e.margin);
+        };
+        assert_eq!(e.rows[runner_up].one_ply, Some(runner_best), "the runner-up is the next best");
+        assert_eq!(
+            one_ply,
+            Some(e.rows[e.chosen].one_ply.expect("the chosen was valued") - runner_best),
+            "and the margin is the lead in that currency",
+        );
+        assert!(one_ply.expect("a lead") >= 0, "the chosen candidate is the argmax");
+        assert_eq!(e.ranked()[0], e.chosen, "the report still leads with the chosen row");
+    }
+
+    /// A FORCED decision point explains a table of one, with no runner-up to be
+    /// ahead of — and says so rather than reporting a zero margin over itself.
+    #[test]
+    fn a_forced_decision_point_explains_a_table_of_one_with_no_margin() {
+        let rules = Rules::standard();
+        let is_forced = |s: &GameState| {
+            let handle = DecisionHandle::new(s, &rules);
+            !handle.families().is_empty()
+                && candidates(&handle, DEFAULT_RETREAT_SAMPLES, &mut ChaCha8Rng::seed_from_u64(1))
+                    .moves
+                    .len()
+                    == 1
+        };
+        let (world, seat) = point_where(&rules, MASTER, is_forced);
+        let s = search_world(&world, seat, &ctx(&rules, &WeightTable::V1, 64, 0xFEED))
+            .expect("search");
+        let e = s.into_explanation();
+        assert_eq!(e.rows.len(), 1, "premise: a forced point");
+        assert_eq!(e.readout, McReadout::Forced);
+        assert_eq!(e.margin, McMargin::Forced);
+        assert_eq!(e.ranked(), vec![0]);
+        assert!(
+            e.render().contains("forced decision point"),
+            "and the rendering says so: {}",
+            e.render(),
+        );
+    }
+
+    /// **THE IDENTITY (spec §3.5, the gate's `x_explanations` clause).** Every
+    /// SUCCESSFUL `choose` produces exactly one explanation — and a FAILING one
+    /// produces none, while leaving the previous decision's table STALE rather
+    /// than clearing it (T2 review NOTE 9's rule, which `last_stats` and
+    /// `last_roots` already follow; the tally is immune to it because it is only
+    /// ever incremented on the success path).
+    #[test]
+    fn every_successful_choose_explains_exactly_once_and_a_refusal_neither_counts_nor_clears() {
+        const DECISIONS: usize = 7;
+        let rules = Rules::standard();
+        let mut agent = MctsAgent::new(&rules, 0xE7_0000_0001).with_simulations(6);
+        assert_eq!(agent.tally().explained(), 0, "a fresh agent has explained nothing");
+        assert!(agent.last_explanation().is_none(), "and holds no table");
+
+        let (moves, _) = first_decisions(&mut agent, MASTER, DECISIONS, &rules);
+        let t = agent.tally();
+        assert_eq!(t.explained(), DECISIONS as u64, "one explanation per decision taken");
+        assert_eq!(
+            t.explained(),
+            t.decisions(),
+            "the two counters answer different questions and must not come apart",
+        );
+        let last = agent.last_explanation().expect("the last decision's table").clone();
+        assert_eq!(
+            format!("{:?}", last.rows[last.chosen].mv),
+            moves[DECISIONS - 1],
+            "the table explains the move that was actually returned",
+        );
+
+        let (world, seat) = placement_point(&rules);
+        let mut doctored = observe(&world, seat).expect("observe");
+        doctored.order_deck_len += 1;
+        agent.choose(&doctored, &rules).expect_err("the sampler must refuse");
+        assert_eq!(
+            agent.tally().explained(),
+            DECISIONS as u64,
+            "a failing choose explains nothing",
+        );
+        assert_eq!(
+            agent.last_explanation(),
+            Some(&last),
+            "and leaves the previous decision's table STALE, not cleared",
+        );
+    }
+
+    /// **THE RENDERING IS BYTE-IDENTICAL AT THE SAME MASTER** — the same
+    /// property the decision itself carries, extended to what a reader is shown,
+    /// so a T5 report can print a table without becoming a source of churn.
+    #[test]
+    fn the_rendered_root_table_is_byte_identical_at_the_same_master() {
+        let rules = Rules::standard();
+        let (world, seat) = placement_point(&rules);
+        let c = ctx(&rules, &WeightTable::V1, 12, 0x4AB1E);
+        let a = search_world(&world, seat, &c).expect("search").into_explanation();
+        let b = search_world(&world, seat, &c).expect("search").into_explanation();
+        let rendered = a.render();
+        assert_eq!(rendered, b.render(), "the same master must render the same bytes");
+        println!("{rendered}");
+
+        assert!(
+            rendered.starts_with("mcts-v1 root table: "),
+            "the table names its author: {rendered}",
+        );
+        assert!(rendered.contains("read-out visits"), "and the deciding currency: {rendered}");
+        assert!(
+            rendered.contains(&format!("{:?}", a.rows[a.chosen].mv)),
+            "the chosen move is on the table: {rendered}",
+        );
+        assert!(rendered.contains("margin over runner-up"), "with its lead: {rendered}");
+        assert!(
+            a.rows.len() > RENDERED_ROWS,
+            "premise: the fixture must overflow the reporting cap ({})",
+            a.rows.len(),
+        );
+        assert!(
+            rendered.contains(&format!("... and {} more candidates", a.rows.len() - RENDERED_ROWS)),
+            "a truncated table SAYS how much it left out: {rendered}",
+        );
+        assert_eq!(
+            rendered.lines().count(),
+            RENDERED_ROWS + 4,
+            "header, column titles, the capped rows, the truncation line, the margin: {rendered}",
+        );
+
+        // Anti-vacuity: the rendering is a function of the SEARCH, not a fixed
+        // shape — a different tie key moves it.
+        let other = search_world(&world, seat, &ctx(&rules, &WeightTable::V1, 12, 0x5EED))
+            .expect("search")
+            .into_explanation();
+        assert_ne!(other.render(), rendered, "a different master must render differently");
     }
 }
 
