@@ -212,8 +212,19 @@
 //! The count rides [`McTally::explained`] — the SAME handle as the budget
 //! meters, one per seat, which that type's doc argues for.
 //!
-//! The arena seam and the provenance version const (spec §3.6) land with their
-//! own task.
+//! # The arena seam (spec §3.6)
+//!
+//! [`MctsAgent`] is an [`ArenaAgent`], so `Contestant::MctsV1` seats it in a
+//! cell; [`controller_provenance`] over [`McKnobs`] is the ONE descriptor both
+//! the built agent and the contestant's echo read, and an ABSENT `cap` emits no
+//! token at all so nothing that existed before the knob is disturbed by it.
+//!
+//! **A CAPPED SEAT IS SIZED BY ITS BUDGET AND BY NOTHING ELSE**
+//! ([`simulations_for_cap`]): naming a cap raises the simulation count to
+//! [`SIMULATION_CEILING`], because a cap beside a simulation count would make
+//! whichever bound bit first the real knob and no report would say which. Spec
+//! §5's cells are named `mcts-v1@750` — a budget, not a count — and this is
+//! what makes that name true.
 //!
 //! # It completes games, and how it completes them is itself a datum
 //!
@@ -321,6 +332,7 @@
 //! (377 median at the same cap) — the mechanism-versus-simulation-count trade
 //! spec §2.1 says the screening must weigh JOINTLY, arriving here as a number.
 
+use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
@@ -328,13 +340,13 @@ use rand::{Rng, RngCore, SeedableRng};
 use rand_chacha::ChaCha8Rng;
 
 use crate::game::apply_move::apply_move_unchecked;
-use crate::game::arena::DecisionReport;
+use crate::game::arena::{ArenaAgent, ControllerProvenance, DecisionReport};
 use crate::game::belief::BeliefSampler;
 use crate::game::budget::{best_available_pick, summarize_overshoot, OvershootSummary, ScoredBudget};
-use crate::game::eval::{self, WeightTable};
+use crate::game::eval::{self, WeightTable, EVAL_IMPL_VERSION};
 use crate::game::greedy::{
-    candidates, observed_view, score_starting_order, uniform_index, Candidates,
-    DEFAULT_RETREAT_SAMPLES,
+    candidates, observed_view, score_starting_order, uniform_index, weight_table_identity,
+    Candidates, DEFAULT_RETREAT_SAMPLES,
 };
 use crate::game::lookahead::MAX_TURN_PLIES;
 use crate::game::metrics::{decision_volume, VolumeObs};
@@ -350,16 +362,52 @@ use crate::types::{
 // Identity and knobs
 // ---------------------------------------------------------------------------
 
-/// The stable controller name — error messages, and (with its own version
-/// const, which lands with the arena seam) provenance and the runner grammar.
+/// The stable controller name — error messages, provenance, and the runner
+/// grammar.
 pub const MCTS_CONTROLLER: &str = "mcts-v1";
+
+/// THIS controller's impl version (spec §0.5's per-controller rule, as
+/// [`LOOKAHEAD_IMPL_VERSION`](crate::game::lookahead::LOOKAHEAD_IMPL_VERSION)
+/// and `GREEDY_IMPL_VERSION` carry it).
+///
+/// Bump it when a change moves what an `mcts-v1` seat PLAYS at fixed knobs; a
+/// weight-table change is NOT such a change (it rides `weights=<identity>` in
+/// the params map — spec §0.5 / L12), and neither is a change confined to
+/// counters or explanations. A bump stops figure comparability across the
+/// boundary, which is exactly what it is for.
+pub const MCTS_IMPL_VERSION: u32 = 1;
 
 /// Simulations per decision. **A placeholder default with no strength claim
 /// behind it**: the experiment sizes the search from the shared
-/// [`ScoredBudget`](crate::game::budget::ScoredBudget) cap (spec §3.4), which
-/// arrives with the leaf/budget task. This value exists so the knob is total and
-/// so a caller that never mentions it gets a search that terminates.
+/// [`ScoredBudget`](crate::game::budget::ScoredBudget) cap (spec §3.4). This
+/// value exists so the knob is total and so a caller that never mentions it
+/// gets a search that terminates.
 pub const DEFAULT_SIMULATIONS: u32 = 64;
+
+/// The simulation count a BUDGET-SIZED seat runs — `u32::MAX`, i.e. "let the
+/// cap decide".
+///
+/// A capped contestant is sized by its [`ScoredBudget`] and by nothing else
+/// (spec §5's cells are named `mcts-v1@750`, a cap and not a simulation count),
+/// so pairing a cap with a simulation count would silently make whichever bound
+/// bit first the real knob. Termination under this ceiling rests on TWO guards
+/// and neither is optional: the cap stops the loop STARTING simulations, and
+/// [`MAX_STERILE_SIMULATIONS`] stops it spinning on simulations that charge the
+/// meter nothing.
+pub const SIMULATION_CEILING: u32 = u32::MAX;
+
+/// The simulation count a seat at `cap` runs — the ONE site that answers it, so
+/// the provenance descriptor and the agent the arena builds cannot disagree
+/// about the search a cell ran.
+///
+/// Uncapped seats keep [`DEFAULT_SIMULATIONS`]: without a budget there is no
+/// second bound, and a ceiling there would not terminate.
+pub fn simulations_for_cap(cap: Option<u32>) -> u32 {
+    match cap {
+        Some(_) => SIMULATION_CEILING,
+        None => DEFAULT_SIMULATIONS,
+    }
+}
 
 /// UCB1's exploration constant `c`, in PARTS PER MILLION (1,414,214 ≈ √2 — the
 /// textbook value, and the one R3's prototype ran UNTUNED; spec §4 sweeps it as
@@ -516,6 +564,152 @@ pub enum LeafRule {
     /// grid never selects it, and the provenance grammar (T5) carries it as a
     /// diagnostic name.
     ConstantDiag,
+}
+
+impl LeafRule {
+    /// The runner grammar's spelling (`leaf=<mode>`), and the ONLY place these
+    /// names exist — `examples/arena.rs` parses through
+    /// [`from_str_name`](Self::from_str_name) rather than matching literals, so
+    /// the command line cannot drift from what provenance records.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::HandOff => "hand-off",
+            Self::MidTurnDiag => "midturn-diag",
+            Self::ConstantDiag => "constant-diag",
+        }
+    }
+
+    /// Parse [`as_str`](Self::as_str); `None` on anything else (the runner turns
+    /// that into an error rather than a silent default — an unknown knob VALUE
+    /// is as dangerous as an unknown knob NAME).
+    pub fn from_str_name(name: &str) -> Option<Self> {
+        [Self::HandOff, Self::MidTurnDiag, Self::ConstantDiag]
+            .into_iter()
+            .find(|rule| rule.as_str() == name)
+    }
+
+    /// This rule's WIRE VALUE in the provenance params map, which is
+    /// `i64`-valued and cannot carry a name.
+    ///
+    /// **Stable**: a corpus record's `leaf=` is read back against these numbers,
+    /// so they may be extended but never renumbered — the same contract
+    /// `weight_table_identity` carries for its digest.
+    pub fn code(self) -> i64 {
+        match self {
+            Self::HandOff => 0,
+            Self::MidTurnDiag => 1,
+            Self::ConstantDiag => 2,
+        }
+    }
+}
+
+/// The knob set ONE MCTS-v1 seat runs — the arena contestant's payload, the
+/// agent's constructor input and the provenance descriptor's input in one type.
+///
+/// One type rather than three parameter lists because the failure it prevents is
+/// specific: a descriptor built from the cell's knobs and an agent built from
+/// the same knobs by a different code path are exactly how a report comes to
+/// name a search nobody ran. [`MctsAgent::knobs`] reads them back off a built
+/// agent, so the round trip is checkable rather than assumed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct McKnobs {
+    /// Spec §3.4's TOTAL scored-successor cap, root pass included. `None` is
+    /// uncapped — and an ABSENT cap emits NO params token (spec §3.6).
+    pub cap: Option<u32>,
+    /// UCB1's `c`, in ppm.
+    pub exploration_ppm: u32,
+    /// The squash scale, in [`eval::score`] units.
+    pub squash_scale: i64,
+    /// `M`, the shipped candidate scheme's retreat sample count.
+    pub retreat_samples: u8,
+    /// How an unexpanded node is valued.
+    pub leaf: LeafRule,
+    /// Simulations per decision. Derived from `cap` by [`simulations_for_cap`]
+    /// at every constructor here; carried explicitly so an agent built by hand
+    /// at some other count still DESCRIBES itself truthfully.
+    pub simulations: u32,
+    /// `K`, sampled worlds per decision. 1 ships; above it `choose` refuses.
+    pub worlds: u8,
+}
+
+impl McKnobs {
+    /// The shipped knobs, uncapped.
+    pub const DEFAULT: Self = Self {
+        cap: None,
+        exploration_ppm: DEFAULT_EXPLORATION_PPM,
+        squash_scale: DEFAULT_SQUASH_SCALE,
+        retreat_samples: DEFAULT_RETREAT_SAMPLES,
+        leaf: LeafRule::HandOff,
+        simulations: DEFAULT_SIMULATIONS,
+        worlds: DEFAULT_WORLDS,
+    };
+
+    /// The five knobs a cell names, with the simulation count DERIVED from the
+    /// cap (spec §5's `mcts-v1@<cap>` shape — see [`simulations_for_cap`]).
+    pub fn sized_by_cap(
+        cap: Option<u32>,
+        exploration_ppm: u32,
+        squash_scale: i64,
+        retreat_samples: u8,
+        leaf: LeafRule,
+    ) -> Self {
+        Self {
+            cap,
+            exploration_ppm,
+            squash_scale,
+            retreat_samples,
+            leaf,
+            simulations: simulations_for_cap(cap),
+            worlds: DEFAULT_WORLDS,
+        }
+    }
+}
+
+impl Default for McKnobs {
+    fn default() -> Self {
+        Self::DEFAULT
+    }
+}
+
+/// THE provenance of an MCTS-v1 seat at these knobs — name, version and knob map
+/// in one place (spec §3.6).
+///
+/// A free function for [`crate::game::lookahead::controller_provenance`]'s
+/// reason: the arena's [`Contestant`](crate::game::arena::Contestant) must be
+/// able to say what a controller calls itself WITHOUT building an agent (a build
+/// needs `&Rules` for the Keep table). Both callers route here, so
+/// [`MCTS_CONTROLLER`] and [`MCTS_IMPL_VERSION`] are read at exactly one site.
+///
+/// **An ABSENT cap emits NO token** (spec §3.6, and lookahead's
+/// `controller_provenance_capped` verbatim): an uncapped seat's descriptor is
+/// the descriptor it would have had if the knob had never been added.
+pub fn controller_provenance(
+    knobs: McKnobs,
+    weights: &WeightTable,
+    agent_seed: Option<u64>,
+) -> ControllerProvenance {
+    let mut params = BTreeMap::from([
+        ("c".to_string(), i64::from(knobs.exploration_ppm)),
+        ("scale".to_string(), knobs.squash_scale),
+        ("m".to_string(), i64::from(knobs.retreat_samples)),
+        ("leaf".to_string(), knobs.leaf.code()),
+        ("sims".to_string(), i64::from(knobs.simulations)),
+        // `worlds.max(1)` mirrors the search's own floor, exactly as lookahead's
+        // descriptor does: a descriptor printing a raw 0 would name a decision
+        // over zero sampled worlds, which is not a decision.
+        ("k".to_string(), i64::from(knobs.worlds.max(1))),
+        ("eval_impl".to_string(), i64::from(EVAL_IMPL_VERSION)),
+        ("weights".to_string(), weight_table_identity(weights)),
+    ]);
+    if let Some(cap) = knobs.cap {
+        params.insert("cap".to_string(), i64::from(cap));
+    }
+    ControllerProvenance {
+        name: MCTS_CONTROLLER.to_string(),
+        version: MCTS_IMPL_VERSION,
+        params,
+        agent_seed,
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -2065,6 +2259,7 @@ struct McCounters {
     budget_binds: AtomicU64,
     budget_starved: AtomicU64,
     placement_cap_binds: AtomicU64,
+    completion_cap_hits: AtomicU64,
     /// Per-DECISION overshoot samples — the one counter here that is not a
     /// running total, because spec §3.4 reports the overshoot as a p50/p90/max
     /// distribution and a distribution cannot be recovered from a sum. An
@@ -2156,6 +2351,23 @@ impl McTally {
         self.counters.placement_cap_binds.load(Ordering::Relaxed)
     }
 
+    /// Hand-off completions [`MAX_TURN_PLIES`] stopped, summed over every
+    /// decision — **this module's analogue of
+    /// [`SearchTally::ply_cap_hits`](crate::game::lookahead::SearchTally::ply_cap_hits),
+    /// the same guard and the same constant**, and the counter the arena's
+    /// `x_ply_cap_hits` reads for an MCTS seat.
+    ///
+    /// **Expected 0, and readable so a run can SAY so.** A hit is not a wrong
+    /// answer but it is a quietly different one: the leaf is valued where the
+    /// guard stopped it, MID-TURN, which is the one thing
+    /// [`LeafRule::HandOff`] exists to avoid — so a cell that starts hitting it
+    /// is measuring a slightly different leaf rule than the one the figures were
+    /// set with. 0 by construction under every other leaf rule, which runs no
+    /// completion at all.
+    pub fn completion_cap_hits(&self) -> u64 {
+        self.counters.completion_cap_hits.load(Ordering::Relaxed)
+    }
+
     /// The per-decision overshoot distribution (p50/p90/max over
     /// `realized − cap`), or `None` if this agent never took a capped decision.
     ///
@@ -2186,6 +2398,7 @@ impl McTally {
         self.counters.budget_binds.fetch_add(stats.budget_binds, Ordering::Relaxed);
         self.counters.budget_starved.fetch_add(stats.budget_starved, Ordering::Relaxed);
         self.counters.placement_cap_binds.fetch_add(stats.placement_cap_binds, Ordering::Relaxed);
+        self.counters.completion_cap_hits.fetch_add(stats.completion_cap_hits, Ordering::Relaxed);
         if budget.cap().is_some() {
             self.counters.overshoot.lock().expect("overshoot samples").push(budget.overshoot());
         }
@@ -2194,11 +2407,10 @@ impl McTally {
 
 /// MCTS-v1 as a seat: the honest chain, then the tree.
 ///
-/// The arena's [`ArenaAgent`](crate::game::arena::ArenaAgent) impl, the
-/// controller version const and the provenance descriptor land with the seam
-/// task; [`choose`](Self::choose) and
-/// [`choose_starting_order`](Self::choose_starting_order) already have the
-/// signatures that impl will delegate to.
+/// The arena's [`ArenaAgent`] impl at the bottom of this section DELEGATES to
+/// the inherent [`choose`](Self::choose) /
+/// [`choose_starting_order`](Self::choose_starting_order) below — they are the
+/// implementation, the trait is the seam, and neither can drift from the other.
 pub struct MctsAgent {
     worlds: u8,
     retreat_samples: u8,
@@ -2251,6 +2463,34 @@ impl MctsAgent {
                 .collect(),
             counters: McTally::default(),
             last_explanation: None,
+        }
+    }
+
+    /// MCTS-v1 at an explicit knob set — the arena contestant's constructor
+    /// ([`LookaheadAgent::with_knobs`](crate::game::lookahead::LookaheadAgent::with_knobs)'s
+    /// shape), so a cell builds its seat and its descriptor from ONE value.
+    pub fn with_knobs(rules: &Rules, agent_seed: u64, knobs: McKnobs) -> Self {
+        Self::new(rules, agent_seed)
+            .with_cap(knobs.cap)
+            .with_exploration_ppm(knobs.exploration_ppm)
+            .with_squash_scale(knobs.squash_scale)
+            .with_retreat_samples(knobs.retreat_samples)
+            .with_leaf(knobs.leaf)
+            .with_simulations(knobs.simulations)
+            .with_worlds(knobs.worlds)
+    }
+
+    /// The knob set this agent will actually run — the round trip that makes
+    /// "the descriptor names the search" checkable rather than asserted.
+    pub fn knobs(&self) -> McKnobs {
+        McKnobs {
+            cap: self.cap,
+            exploration_ppm: self.exploration_ppm,
+            squash_scale: self.squash_scale,
+            retreat_samples: self.retreat_samples,
+            leaf: self.leaf,
+            simulations: self.simulations,
+            worlds: self.worlds,
         }
     }
 
@@ -2468,6 +2708,29 @@ impl MctsAgent {
         self.last_explanation = Some(searched.into_explanation());
         self.counters.explain_one();
         Ok(DecisionReport { mv, volume })
+    }
+}
+
+/// The arena seam (spec §3.6). Both play methods DELEGATE to the inherent ones
+/// above rather than restating them — the T2/T4 doc's stated plan, and the
+/// reason the tree's own tests can drive the agent directly without going
+/// through a trait object.
+impl ArenaAgent for MctsAgent {
+    fn choose_starting_order(&mut self, seat: PlayerId, deal: &[OrderCardId; 2]) -> u8 {
+        MctsAgent::choose_starting_order(self, seat, deal)
+    }
+
+    fn choose(&mut self, view: &PlayerView, rules: &Rules) -> Result<DecisionReport, String> {
+        MctsAgent::choose(self, view, rules)
+    }
+
+    /// Delegated to [`controller_provenance`] so the agent and the arena's
+    /// contestant read [`MCTS_CONTROLLER`] and [`MCTS_IMPL_VERSION`] at one
+    /// site, and so a hand-built agent describes ITS OWN knobs (the
+    /// [`knobs`](Self::knobs) round trip) rather than the ones a cell would have
+    /// derived.
+    fn controller(&self) -> ControllerProvenance {
+        controller_provenance(self.knobs(), &self.weights, Some(self.agent_seed))
     }
 }
 
@@ -4331,6 +4594,127 @@ mod tests {
             .into_explanation();
         assert_ne!(other.render(), rendered, "a different master must render differently");
     }
+
+    // -----------------------------------------------------------------------
+    // The arena seam (spec §3.6) — T5
+    // -----------------------------------------------------------------------
+
+    /// The `leaf=<mode>` vocabulary is a CLOSED round trip, and its wire codes
+    /// are distinct.
+    ///
+    /// Three separate claims, because three separate defects hide in them: a
+    /// name that does not parse back makes a runner knob unreachable; an unknown
+    /// name that parses to a DEFAULT puts a published cell under a mechanism it
+    /// did not run (which is why the runner errors on it); and two rules sharing
+    /// a code makes every corpus record that carries `leaf=` ambiguous forever.
+    #[test]
+    fn the_leaf_rule_grammar_round_trips_and_its_wire_codes_are_distinct() {
+        let all = [LeafRule::HandOff, LeafRule::MidTurnDiag, LeafRule::ConstantDiag];
+        for rule in all {
+            assert_eq!(
+                LeafRule::from_str_name(rule.as_str()),
+                Some(rule),
+                "{:?} does not parse back from its own name",
+                rule,
+            );
+        }
+        let mut codes: Vec<i64> = all.iter().map(|r| r.code()).collect();
+        codes.sort_unstable();
+        codes.dedup();
+        assert_eq!(codes.len(), all.len(), "two leaf rules share a wire code");
+        // The literals, not `as_str()` on both sides — these strings are the
+        // command-line and the doc, and comparing a call against itself pins
+        // nothing.
+        assert_eq!(LeafRule::HandOff.as_str(), "hand-off");
+        assert_eq!(LeafRule::MidTurnDiag.as_str(), "midturn-diag");
+        assert_eq!(LeafRule::ConstantDiag.as_str(), "constant-diag");
+        assert_eq!(LeafRule::default(), LeafRule::HandOff, "the shipped leaf rule is the default");
+        assert_eq!(LeafRule::from_str_name("handoff"), None, "an unknown mode must not default");
+        assert_eq!(LeafRule::from_str_name(""), None);
+    }
+
+    /// The knob set survives the trip through the agent, and the agent's
+    /// descriptor is the free function's — so a cell that builds a seat and a
+    /// cell that only ECHOES one cannot describe different searches.
+    ///
+    /// Includes the SIZING RULE, which is the one derived knob: a capped seat
+    /// runs [`SIMULATION_CEILING`] and lets the budget bound it, an uncapped one
+    /// runs [`DEFAULT_SIMULATIONS`]. Pairing a cap with a simulation count would
+    /// make whichever bound bit first the real knob, and no report would say
+    /// which.
+    #[test]
+    fn the_knob_set_round_trips_through_the_agent_and_its_descriptor() {
+        let rules = Rules::standard();
+        let knobs = McKnobs::sized_by_cap(Some(750), 900_000, 250, 3, LeafRule::MidTurnDiag);
+        assert_eq!(knobs.simulations, SIMULATION_CEILING, "a capped seat is sized by its cap");
+        assert_eq!(
+            McKnobs::sized_by_cap(None, 1, 1, 1, LeafRule::HandOff).simulations,
+            DEFAULT_SIMULATIONS,
+            "an uncapped seat has no second bound, so the ceiling would not terminate",
+        );
+        assert_eq!(McKnobs::DEFAULT.cap, None, "the shipped knob set is uncapped");
+
+        let agent = MctsAgent::with_knobs(&rules, 0xABCD, knobs);
+        assert_eq!(agent.knobs(), knobs, "the agent will run a different search than it was given");
+        assert_eq!(
+            ArenaAgent::controller(&agent),
+            controller_provenance(knobs, &WeightTable::V1, Some(0xABCD)),
+            "the agent and the free descriptor disagree about what it is",
+        );
+    }
+
+    /// Spec §3.6's ABSENT-KNOB rule, on this controller: a `None` cap emits NO
+    /// `cap=` token, so an uncapped seat's descriptor is the descriptor it would
+    /// have had if the knob had never been added. Everything else it names is
+    /// present.
+    #[test]
+    fn an_absent_cap_emits_no_token_and_a_present_one_does() {
+        let uncapped = controller_provenance(McKnobs::DEFAULT, &WeightTable::V1, None);
+        assert_eq!(uncapped.name, MCTS_CONTROLLER);
+        assert_eq!(uncapped.version, MCTS_IMPL_VERSION);
+        assert!(!uncapped.params.contains_key("cap"), "an absent cap must emit no token");
+        for key in ["c", "scale", "m", "leaf", "sims", "k", "eval_impl", "weights"] {
+            assert!(uncapped.params.contains_key(key), "the descriptor lost {key}");
+        }
+        assert_eq!(uncapped.params["leaf"], LeafRule::HandOff.code());
+        assert_eq!(uncapped.params["sims"], i64::from(DEFAULT_SIMULATIONS));
+
+        let capped = controller_provenance(
+            McKnobs::sized_by_cap(Some(750), DEFAULT_EXPLORATION_PPM, DEFAULT_SQUASH_SCALE, 8, LeafRule::HandOff),
+            &WeightTable::V1,
+            None,
+        );
+        assert_eq!(capped.params["cap"], 750);
+        assert_eq!(capped.params["sims"], i64::from(SIMULATION_CEILING));
+        // Anti-vacuity: the two descriptors differ ONLY where the cap does.
+        let mut without_cap = capped.params.clone();
+        without_cap.remove("cap");
+        without_cap.insert("sims".to_string(), i64::from(DEFAULT_SIMULATIONS));
+        assert_eq!(without_cap, uncapped.params, "the cap knob moved something it should not have");
+    }
+
+    /// The seam's own counter: hand-off completions stopped by
+    /// [`MAX_TURN_PLIES`] are readable off the CLONED tally, which is the only
+    /// handle the arena driver ever holds. Expected 0 — what is pinned is that
+    /// the number is wired, since a counter written and never read is exactly as
+    /// useful as no counter (the 3.3 six-lens finding, restated here rather than
+    /// re-learned).
+    #[test]
+    fn the_tally_carries_the_completion_cap_counter() {
+        let rules = Rules::standard();
+        let (world, seat) = placement_point(&rules);
+        let view = observe(&world, seat).expect("observe");
+        let mut agent = MctsAgent::new(&rules, 0xC0DE_0001).with_simulations(8);
+        let tally = agent.tally();
+        assert_eq!(tally.completion_cap_hits(), 0, "nothing has run yet");
+        agent.choose(&view, &rules).expect("a decision");
+        let stats = *agent.last_stats().expect("stats");
+        assert_eq!(
+            tally.completion_cap_hits(),
+            stats.completion_cap_hits,
+            "the tally must sum the search's own counter",
+        );
+        assert_eq!(tally.completion_cap_hits(), 0, "the guard is not expected to fire here");
+        assert!(stats.completion_scored > 0, "premise: the shipped leaf ran completions at all");
+    }
 }
-
-

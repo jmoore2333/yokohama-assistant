@@ -406,6 +406,17 @@ fn x_searches(x: &Contestant) -> bool {
     match x {
         Contestant::Policy(_) | Contestant::GreedyV1 { .. } => false,
         Contestant::LookaheadV1 { .. } | Contestant::AtomicDiag { .. } => true,
+        // Phase 3.4's contestant is not a Phase-3.3 one, and NEITHER branch
+        // describes it: it searches, but its FREE counter is `None` by
+        // construction (a tree has no quiescence arm to enter). Answering
+        // `true` here would make the guard above assert `Some(0)` on a
+        // counter that does not exist; answering `false` would drop it out of
+        // the guard silently. An mcts cell belongs to `tests/architecture_gate.rs`
+        // (spec §8), so reaching this arm is a mis-routed cell.
+        Contestant::MctsV1 { .. } => panic!(
+            "an mcts-v1 X reached the Phase-3.3 evaluator gate; its cap-counter shape is \
+             (Some, None) and this binary asserts (Some, Some) — route it to architecture_gate",
+        ),
     }
 }
 
