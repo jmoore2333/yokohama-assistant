@@ -67,7 +67,7 @@
 //! | what is held | the view, the sampler seed, the agent stream position | the view, the tie key, the candidate dice |
 //! | the honest value | **ZERO**, for every contestant | **NONZERO is expected** for an eval-leaf tree |
 //! | status | ASSERTED | RECORDED, never asserted zero |
-//! | a nonzero reading means | a defect: the search is reading privileged state | the search is using the world it was handed |
+//! | a nonzero reading means | a defect: the search is reading privileged state, or `observe` stopped masking a member — the shape the cell's premise catches | the search is using the world it was handed |
 //! | where it lives | `tests/observation_leakage.rs`, `t6_mcts_v1s_decision_is_invariant_under_the_true_hidden_fields` | same file, `t6_mcts_v1s_world_sensitivity_is_measured_and_recorded` |
 //!
 //! The leakage row's honest scope note (critic R3-3): the invariance holds AT

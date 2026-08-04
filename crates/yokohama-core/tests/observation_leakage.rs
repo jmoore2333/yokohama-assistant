@@ -2210,6 +2210,10 @@ fn world_sensitivity(arm: SensitivityArm, rules: &Rules) -> SensitivityReport {
             if decisions[1..].iter().any(|(_, n)| *n != decisions[0].1) {
                 report.candidate_counts_differed += 1;
             }
+            // World-0-anchored, deliberately cheap: a point forced in world 0
+            // but not elsewhere would slip the filter — the printed
+            // `candidate counts differed` counter is that case's watch (0 at
+            // HEAD for all three arms; T6 review N4).
             if decisions[0].1 <= 1 {
                 report.forced += 1;
                 continue;
@@ -2349,6 +2353,13 @@ fn t6_mcts_v1s_world_sensitivity_is_measured_and_recorded() {
 /// already known — R3 measured `greedy-v1` 0/80 and `lookahead-v1:b=4` 0/80, and
 /// L15 is the in-repo result the 3.3 divergence cell pinned at 0/200.
 ///
+/// The in-repo arms run at `greedy-v1:M=8` and `lookahead-v1:b=1,M=2`
+/// ([`TRIPWIRE_BEAM`]/[`TRIPWIRE_RETREAT_SAMPLES`]) — a NARROWER beam than the
+/// cited R3 figure's b=4, so this arm reads strictly less determinized content
+/// than the figure it cites (T6 review S2). The zero's grounds below are
+/// beam-independent, and the per-world-tie-key mutation drove THIS b=1 arm to
+/// 17/35, so the narrower arm still carries the cell's falsifiability.
+///
 /// **THE ZERO IS ASSERTED FOR THESE TWO AND FOR NEITHER OTHER REASON.** Greedy-v1
 /// values a successor ONE PLY deep and no v1 feature reads a refill-dependent
 /// quantity, so two successors differing only in determinized content score
@@ -2382,7 +2393,12 @@ fn t6_the_world_sensitivity_instrument_reads_zero_for_the_two_known_zeros() {
     for arm in [SensitivityArm::Greedy, SensitivityArm::Lookahead] {
         let report = world_sensitivity(arm, &rules);
         eprintln!(
-            "T6 world sensitivity (VALIDATION, spec §7): arm={} W={SENSITIVITY_WORLDS}; {} points \
+            "T6 world sensitivity (VALIDATION, spec §7): arm={} W={SENSITIVITY_WORLDS}, \
+             arm knobs: greedy-v1 M={TRIPWIRE_RETREAT_SAMPLES} / lookahead-v1 \
+             b={TRIPWIRE_BEAM} M={TRIPWIRE_RETREAT_SAMPLES}, weights=V1, \
+             sampler_base={SENSITIVITY_SAMPLER_BASE:#018x} tie={SENSITIVITY_TIE_KEY:#018x} \
+             cand={SENSITIVITY_CANDIDATE_SEED:#018x}, walks={SENSITIVITY_WALKS:?} (2P, \
+             {SENSITIVITY_POINTS_PER_WALK} points each); {} points \
              ({} forced, EXCLUDED), {} non-forced, {} diverged = {:.4}; POSITIVE CONTROL: the W \
              worlds drew a different deck at {} points; candidate counts differed at {} points",
             arm.label(),
