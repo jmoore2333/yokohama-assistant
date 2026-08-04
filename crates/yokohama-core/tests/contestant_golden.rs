@@ -333,7 +333,12 @@ fn echo_tokens_34(
         format!("master=diagnostic:{master:#x} "),
         "bootstrap_B=10000 ".to_string(),
         "single-threaded=yes ".to_string(),
-        format!("fixed-N=yes setup-identical={setup_identical}"),
+        "fixed-N=yes ".to_string(),
+        // The echo's final token: end-of-line anchored by the echo's own shape,
+        // so no trailing delimiter exists to pin; the value domain is closed
+        // (yes|no). Kept as its own entry so a token inserted between fixed-N
+        // and setup-identical cannot silently break an adjacency-glued pair.
+        format!("setup-identical={setup_identical}"),
     ]
 }
 
@@ -534,6 +539,23 @@ fn assert_cell_matches_golden(
             panic!(
                 "the committed fixture is INCOMPLETE: missing captured key {key:?} \
                  (a partial fixture would make the subset compare vacuous). {wrote}",
+            );
+        }
+        // A key hollowed to `{}` passes every subset walk vacuously — the nested
+        // analogue of the whole-fixture placeholder rejected above. Reject it
+        // wherever the produced value actually carries fields to pin (an empty
+        // produced object stays legal: there is nothing to capture).
+        if golden_obj.get(*key).and_then(Value::as_object).is_some_and(|c| c.is_empty())
+            && produced_v.get(*key).and_then(Value::as_object).is_some_and(|p| !p.is_empty())
+        {
+            let path = actual_path(stem);
+            let wrote = fs::write(&path, format!("{produced}\n"))
+                .map(|()| format!("produced JSON written to {}", path.display()))
+                .unwrap_or_else(|e| format!("could not write {}: {e}", path.display()));
+            panic!(
+                "the committed fixture is HOLLOW at captured key {key:?}: an empty object \
+                 where the produced value has fields (an empty-object value passes the \
+                 subset compare vacuously). {wrote}",
             );
         }
     }
