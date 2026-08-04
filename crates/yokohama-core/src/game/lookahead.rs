@@ -1465,8 +1465,15 @@ pub fn search_world<R: Rng>(
 /// decision" means and is stated here rather than quietly reinterpreted as a
 /// per-world cap.
 ///
-/// **A cap changes the S1 arm's SHAPE, not just its size.** Uncapped, every root
-/// candidate is continued in enumeration order and the order is invisible.
+/// **A cap changes the S1 arm's SHAPE, not just its size.** Uncapped, root
+/// candidates are continued in enumeration order; that order is invisible in
+/// the ROOT VALUES but not in the search — `Run.rng` is a consumed candidate
+/// stream, so the capped arm's value-ordered allocation reorders the dice and
+/// plays differently from the shipped rung even at a cap that never binds
+/// (measured at the T1 review: 22 of 310 decision points diverged at master
+/// `0x1EA4_2026_0727_0001` with identical root move lists — the dice-reordering
+/// signature, not a value defect). `cap = None` is the only byte-identity
+/// claim, and it is exact.
 /// Capped, the search runs spec §3.4's structure: a MANDATORY root pass values
 /// every root candidate one ply deep before any deeper work, then continuations
 /// are allocated in descending one-ply-value order ([`allocation_order`]) while
@@ -1981,8 +1988,8 @@ impl LookaheadAgent {
     ///
     /// ```text
     /// cap  1 ..  24 : 5/5 masters complete (56–260 turns)
-    /// cap 32, 40    : 2/5 and 3/5 complete — the rest reach 20,001 turns
-    /// cap 64, 96    : 1/5 and 0/5 complete
+    /// cap 32, 40    : 3/5 and 2/5 complete — the rest reach 20,001 turns
+    /// cap 64, 96    : 0/5 and 0/5 complete (cap 64 also 0/7 widened to m = 0..7)
     /// cap 128 .. 512: complete again (turns 316 / 80 / 58 at master m = 0)
     /// ```
     ///
@@ -1993,9 +2000,12 @@ impl LookaheadAgent {
     /// mixed-value argmax, and spec §0.1's S2 surface already routes a cell whose
     /// games return `ArenaError::CapReached` UP the ladder rather than scoring
     /// it. The experiment's B\* = 750 sits above the band and C0 certifies it
-    /// against the uncapped rung; a screening or calibration run that wanders
-    /// into 32–128 should expect completion failures and read them as the
-    /// surface, not as noise.
+    /// against the uncapped rung — a certification of the capped arm as a
+    /// PACKAGE (budget + value-ordered allocation + the dice reordering that
+    /// allocation induces even at a non-binding cap; see
+    /// [`search_world_budgeted`]'s doc), never of the budget alone. A screening
+    /// or calibration run that wanders into 32–128 should expect completion
+    /// failures and read them as the surface, not as noise.
     pub fn with_cap(mut self, cap: Option<u32>) -> Self {
         self.cap = cap;
         self
@@ -4059,4 +4069,3 @@ mod tests {
         assert!(err.contains("is to play"), "the refusal must name the mismatch: {err}");
     }
 }
-
