@@ -1,0 +1,40 @@
+{
+  "spec_echo": "cell=t0-pre34-golden-lookahead-vs-greedy players=2 x=lookahead-v1@v1{b=4,eval_impl=2,k=1,m=8,weights=-2162047371061899018} y=greedy-v1@v1{eval_impl=2,m=8,placement_cap=512,weights=-2162047371061899018} units=2 unit=pair (2 seatings) games=4 master=diagnostic:0xa3e1202608040003 bootstrap_B=10000 resample_seed=0xf5f56be650fcbe0c single-threaded=yes fixed-N=yes setup-identical=yes",
+  "games": 4,
+  "x_unit_shares": [
+    1.0,
+    1.0
+  ],
+  "theta_hat": 1.0,
+  "interval": {
+    "RefusedZeroWidth": {
+      "one_sided_lower": 0.0,
+      "method": "rule-of-three one-sided 95% lower bound (every unit won; no variation to resample)"
+    }
+  },
+  "cross_checks": [
+    "null reference for this cell: 1/2 = 0.500000 (ONE X against 1 Y seats — the single-champion shape; 0.5 is the null only at 2P)",
+    "unit-t 95% cross-check: refused (sd=0.000000 over n=2 units) — see the interval's zero-width refusal",
+    "Wilson-on-pooled-games 95% cross-check: [0.510109, 1.000000] (4/4 games) — CROSS-CHECK ONLY and NEVER primary at 3-4P: games within a unit are clustered (E2 measured 4P rho=+0.051, dragging a nominal 95% interval to ~93.2% true coverage), so this row understates the width the unit bootstrap reports",
+    "top-VP ties: 0/4 games (0.0000), 0 decided for seat 0 — `final_result` is a total order and never reports a tie, so this is how often the clockwise tie-break DECIDED the game; at 2P seat 0 takes every tie, so its award is half this rate (spec §4's +0.63pp at the bracket rate of 1.26%)",
+    "zero-width refusal (rule-of-three one-sided 95% lower bound (every unit won; no variation to resample)); n=2 is below rule-of-three's n >= 3 floor, so no complementary bound is printed (T7 review F1)"
+  ],
+  "seat0_wins": 2,
+  "ties_to_seat0": 0,
+  "vp_margin_mean": 76.25,
+  "applied_by_seat": [
+    708,
+    745
+  ],
+  "x_applied_moves": 801,
+  "x_explanations": 801,
+  "x_ply_cap_hits": 0,
+  "x_free_cap_hits": 0,
+  "trigger": {
+    "counts": {
+      "ChurchTrackFull": 4
+    },
+    "games": 4
+  },
+  "master": 11808755045657477123
+}
