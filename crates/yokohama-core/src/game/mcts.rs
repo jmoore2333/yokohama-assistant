@@ -1840,9 +1840,13 @@ impl McReadout {
 pub enum McMargin {
     /// A forced point: one candidate, no runner-up to be ahead of.
     Forced,
-    /// The visit read-out. `visits` is the deciding lead; `value` is the same
-    /// lead in mean normalized value, `None` when either side has no mean.
-    Visits { runner_up: usize, visits: u32, value: Option<f64> },
+    /// The visit read-out. `visits` is the deciding lead — SIGNED: under the
+    /// shipped chain the chosen row IS the visit argmax so it is non-negative,
+    /// but [`McExplanation::new`] is public and takes constructed rows, and a
+    /// clamped `+0` beside a negative value column would assert a tie rule this
+    /// module does not have (T4 review S1). `value` is the same lead in mean
+    /// normalized value, `None` when either side has no mean.
+    Visits { runner_up: usize, visits: i64, value: Option<f64> },
     /// The starved read-out. The lead is in RAW [`eval::score`] units — the
     /// currency the fallback ranked on — and `None` if either side carries no
     /// one-ply value (unreachable from a starved search, whose pass is
@@ -1895,6 +1899,10 @@ impl McExplanation {
             "a decision must land on one of its own candidates ({chosen} of {})",
             rows.len(),
         );
+        // Release totality for a public constructor (T4 review N5): an
+        // out-of-range `chosen` clamps into the table rather than indexing past
+        // it two branches later; the empty table clamps to 0 and reads Forced.
+        let chosen = chosen.min(rows.len().saturating_sub(1));
         let readout = if rows.len() <= 1 {
             McReadout::Forced
         } else if stats.budget_starved > 0 {
@@ -1906,10 +1914,11 @@ impl McExplanation {
             (McReadout::Forced, _) | (_, None) => McMargin::Forced,
             (McReadout::Visits, Some(r)) => McMargin::Visits {
                 runner_up: r,
-                // Saturating rather than plain: under this read-out the chosen
-                // candidate IS the visit argmax, so the difference is
-                // non-negative — but `new` is public and takes constructed rows.
-                visits: rows[chosen].visits.saturating_sub(rows[r].visits),
+                // Signed, not saturating: under this read-out the chosen
+                // candidate IS the visit argmax so this is non-negative on the
+                // shipped chain — but `new` is public, and a constructed
+                // trailing chosen must report its deficit honestly.
+                visits: i64::from(rows[chosen].visits) - i64::from(rows[r].visits),
                 value: match (rows[chosen].mean(), rows[r].mean()) {
                     (Some(a), Some(b)) => Some(a - b),
                     _ => None,
@@ -2003,10 +2012,10 @@ impl McExplanation {
             let _ = writeln!(out, "  ... and {rest} more candidates");
         }
         let _ = match self.margin {
-            McMargin::Forced => writeln!(out, "  forced decision point: one candidate, no margin"),
+            McMargin::Forced => writeln!(out, "  forced decision point: no runner-up, no margin"),
             McMargin::Visits { runner_up, visits, value } => writeln!(
                 out,
-                "  margin over runner-up (candidate {runner_up}): +{visits} visits, {} value",
+                "  margin over runner-up (candidate {runner_up}): {visits:+} visits, {} value",
                 value.map_or_else(|| "unmeasured".to_string(), |v| format!("{v:+.4}")),
             ),
             McMargin::OnePly { runner_up, one_ply } => writeln!(
@@ -4093,7 +4102,7 @@ mod tests {
         assert_ne!(runner_up, e.chosen, "the runner-up is somebody else");
         assert_eq!(
             visits,
-            e.rows[e.chosen].visits - e.rows[runner_up].visits,
+            i64::from(e.rows[e.chosen].visits) - i64::from(e.rows[runner_up].visits),
             "the margin is the lead in the deciding currency",
         );
         let order = e.ranked();
@@ -4241,8 +4250,12 @@ mod tests {
         assert_eq!(agent.tally().explained(), 0, "a fresh agent has explained nothing");
         assert!(agent.last_explanation().is_none(), "and holds no table");
 
-        let (moves, _) = first_decisions(&mut agent, MASTER, DECISIONS, &rules);
+        // Cloned BEFORE the decisions, deliberately: the arena factory clones
+        // the handle out at agent construction (`ExplainHandle` precedent), so
+        // the property under test is the clone's LIVENESS — a `tally()`
+        // returning a dead snapshot must fail here (T4 review S2's mutation).
         let t = agent.tally();
+        let (moves, _) = first_decisions(&mut agent, MASTER, DECISIONS, &rules);
         assert_eq!(t.explained(), DECISIONS as u64, "one explanation per decision taken");
         assert_eq!(
             t.explained(),
