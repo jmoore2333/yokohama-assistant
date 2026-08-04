@@ -93,6 +93,35 @@
 //! root", the paranoid reading. 3–4P strength cells are out of scope (spec §1);
 //! the convention is stated so a later reader is not left inferring it.
 //!
+//! # Priors and ordered expansion (spec §2.3, §3.4)
+//!
+//! **The MANDATORY ROOT PASS runs before any simulation**: every root candidate
+//! is applied, observed and evaluated one ply deep, charged to the meter, and
+//! kept as that candidate's PRIOR. Internal nodes with more than
+//! [`ORDERING_THRESHOLD`] candidates pay the same pass, lazily, the first time
+//! they are descended into; smaller nodes keep T2's uniform keyed expansion pick
+//! (the pass would cost more than ordering can buy at a family the search covers
+//! anyway — [`ORDERING_THRESHOLD`] states the arithmetic).
+//!
+//! At an ordered node **selection and expansion are ONE selecting point**: an
+//! unexpanded candidate competes as a virtual single-visit child carrying its
+//! prior, so expansion happens in descending prior order and a child whose
+//! backed-up value beats the best remaining prior is re-visited instead
+//! ([`ordered_select`] declares the arithmetic; the alternative — an unvisited
+//! child at `+∞` — is T2's, and it is what the measurement at the bottom of this
+//! doc is about).
+//!
+//! Successor states from a pass are NOT retained, so an expansion re-applies and
+//! re-charges one successor; [`Search::score_candidates`] states the memory
+//! trade that buys.
+//!
+//! **The budget** ([`ScoredBudget`], spec §3.4) is GATED here, not merely
+//! metered: the root pass is the one spend the cap cannot refuse, a simulation
+//! STARTS only while `realized < cap` and a started one completes, and a root
+//! pass that alone spends the cap starves the decision back to
+//! [`best_available_pick`] over its one-ply values — never to a first-listed
+//! candidate. [`search_world_budgeted`] is where all three live.
+//!
 //! **The root is IN the backprop path**, so `root.visits == simulations`
 //! exactly. That is a pin (`the_root_is_in_the_backprop_path`) rather than an
 //! implementation detail because R5 found the opposite in a shipped library: a
@@ -112,8 +141,10 @@
 //! | selecting point | site | coordinate |
 //! |---|---|---|
 //! | root argmax over visits | [`McSite::RootArgmax`] | — |
-//! | UCB selection ties | [`McSite::Ucb`] | the node's path key, its own visit count |
-//! | expansion pick | [`McSite::Expansion`] | the node's path key, how many children it has already |
+//! | UCB ties — and, at an ORDERED node, the expansion pick with them | [`McSite::Ucb`] | the node's path key, its own visit count |
+//! | expansion pick at a UNIFORM-plan node | [`McSite::Expansion`] | the node's path key, how many children it has already |
+//! | the starved root's fallback over the one-ply values | [`McSite::RootFallback`] | — |
+//! | a hand-off completion's greedy cut | [`McSite::Completion`] | the leaf's key line, the completion ply |
 //!
 //! The **path key** ([`descend_branch`]) is the fold of the edge indices from
 //! the root, so a node's draws are a function of WHERE it is and not of when it
@@ -144,54 +175,121 @@
 //! in the experiment needs one — every cell is a single-machine run whose
 //! master is recorded.
 //!
-//! **The leaf rule shipped here is the DIAGNOSTIC one.** [`LeafRule`] values an
-//! unexpanded node by the raw evaluation of the state it stands at, which for
-//! ~40% of nodes is MID-TURN — states `WeightTable::V1` was never calibrated on
-//! and which `lookahead-v1` by construction never evaluates (R3-4, the measured
-//! mechanism behind the prototype's loss). Spec §2.1 makes the hand-off
-//! completion leaf the DEFAULT; it arrives with the next task and swaps in at
-//! [`Search::leaf_value`]'s single `match`, which is why the rule is an enum
-//! rather than an inlined expression.
+//! **The completion leaf is a GREEDY line, not a search.** [`LeafRule::HandOff`]
+//! completes one turn at beam-1 semantics; the value it returns is the best
+//! hand-off the greedy line reaches, and nothing here claims that is the best
+//! hand-off REACHABLE. A wider completion is a different (and much more
+//! expensive) leaf rule, and it is not what spec §2.1 prices.
 //!
-//! The per-decision scored-successor budget ([`crate::game::budget`]) is
-//! METERED here ([`McSearchStats::scored`]) and not yet GATED; the explanation
-//! surface (spec §3.5), the arena seam and the provenance version const (spec
-//! §3.6) land with their own tasks.
+//! **The completion cost is not bounded by the simulation count.** A simulation
+//! under the default leaf rule pays a whole turn's worth of scored successors,
+//! so `simulations` and "scored successors" are different currencies and only
+//! the second is the experiment's ([`McSearchStats::scored`]). That is exactly
+//! why the cap gates STARTS rather than promising a total.
+//!
+//! The explanation surface (spec §3.5), the arena seam and the provenance
+//! version const (spec §3.6) land with their own tasks.
 //!
 //! # It completes games, and how it completes them is itself a datum
 //!
 //! Non-termination is a live hazard class this cycle — the capped S1 arm has a
 //! MEASURED middle cap band where 2P self-play never ends
-//! (`LookaheadAgent::with_cap`) — so the arm was probed before it was handed on.
-//! Authoring probe (release, out-of-gate scratch harness, nothing asserted
-//! anywhere; 2P MCTS-vs-MCTS self-play at the shipped knobs, masters
-//! `0x1EA4_2026_0727_0001 ^ (m · 0x11)` for `m = 0..3`, 20,000-move budget):
-//! **3/3 complete**. The turn-count RANGE first recorded here (100–108) is
-//! WITHDRAWN (T2 review): the probe's block omitted its agent-stream seeding,
-//! Keep resolution and invariants setting — and the quantity is dominated by
-//! them. The review reproduced 3/3 completion under three plausible seedings
-//! but measured **50–304 turns** across them (N = 3 masters each, contended
-//! walls 26–140 ms/game), so what stands is completion under every seeding
-//! tried, and the qualitative note that MCTS self-play turns run well above
-//! lookahead self-play's under all of them — the slow-development shape R3
-//! measured for a naive UCT-eval arm, arriving again here. Recorded, not
-//! defended: the leaf rule and the budget wiring the next task brings are the
-//! two things expected to move it, and the executable version of this probe is
-//! that task's degeneracy pin.
+//! (`LookaheadAgent::with_cap`) — so the arm is probed rather than assumed. **T3
+//! found one here, and it was the probe that found it**: at the experiment's own
+//! configuration (a scored cap with `simulations` at a ceiling) a search whose
+//! tree runs out of unfinished game loops forever, because the simulations that
+//! spin cost nothing and the meter bounds only spending. See
+//! [`MAX_STERILE_SIMULATIONS`], and
+//! `a_search_whose_tree_runs_out_of_game_still_terminates` for the executable
+//! version.
 //!
-//! Review measurement (T2 review, release, out-of-tree probe, nothing asserted:
-//! `Rules::standard()`, frozen V1, 2P, master `0x1EA4_2026_0727_0001`,
-//! Greedy-v1 walk, first 120 decision points): at `DEFAULT_SIMULATIONS = 64`,
-//! **38 of 46 non-forced points (83%) are settled by the root tie draw** —
-//! Placement 19/19, tie-sets of 64 of 186 candidates, `max_depth` 1.0: a STAR
-//! TREE in which no value reaches the decision. At sims = 750 (the experiment's
-//! B\*) Movement recovers (1/19 tie-decided) but **Placement is still 19/19**
-//! (tie-set 6–24). Cause: the expansion pick is a uniform keyed draw over
-//! unexpanded slots and the read-out is the mandated argmax over visits, with
-//! no priors — spec §2.3's ordering/priors are the NEXT task's job, this
-//! measurement is the defect they must visibly fix (re-measure the Placement
-//! tie-set after), and spec §4's screening must not read these figures as a
-//! statement about UCT-with-priors.
+//! **Completion at the SHIPPED T3 configuration** (authoring probe, release,
+//! out-of-gate scratch harness, nothing asserted anywhere; regime: 2P
+//! MCTS-vs-MCTS self-play, `Rules::standard()`, frozen V1, setup
+//! `Keep(0)/Keep(0)`, NO per-move invariants (a direct agent driver, not
+//! `run_arena_game`), one agent PER SEAT keyed by `agent_stream_seed`, leaf
+//! `HandOff`, `c = √2`, scale 100, `M = 8`, `cap = 750` with `simulations` left
+//! at a ceiling, 20,000-move budget; masters `0x1EA4_2026_0727_0001 ^ (m · 0x11)`
+//! for `m = 0..3`): **3/3 complete**, at **611 / 895 / 1,490 moves and 104 / 162
+//! / 268 turns**, 0.30–0.70 s/game, **331–354 scored successors per decision**
+//! (root share 8–9%, cap-bound in ~41% of decisions, 0 starved, overshoot p90
+//! ≈115 max ≈359). MCTS self-play turns still run well above lookahead
+//! self-play's — the slow-development shape R3 measured for a naive UCT-eval arm
+//! — and the mean spend sits well under the cap because most decision points are
+//! small or forced. Recorded, not defended.
+//!
+//! The T2 authoring probe's turn-count RANGE (100–108) was WITHDRAWN at the T2
+//! review for omitting exactly the seeding/Keep/invariants block above; the
+//! review's own re-run measured 50–304 turns across three plausible seedings.
+//! The figures here supersede neither — they are a different configuration (a
+//! different leaf rule and a budget) and say so.
+//!
+//! # The star-tree measurement, re-taken (T2 review's finding, T3's answer)
+//!
+//! **The T2 finding, as it stood:** at `DEFAULT_SIMULATIONS = 64`, 38 of 46
+//! non-forced points (83%) were settled by the root tie draw — Placement 19/19,
+//! tie-sets of 64 of 186 candidates, `max_depth` 1.0: a STAR TREE in which no
+//! value reached the decision, because expansion was a uniform keyed draw over
+//! unexpanded slots with no priors and the read-out is the mandated argmax over
+//! visits.
+//!
+//! **REGIME for every figure below** (the T2 block's withdrawn range is the
+//! cautionary tale — state the seeding or state nothing): release, out-of-tree
+//! probe, nothing asserted anywhere; `Rules::standard()`, frozen
+//! `WeightTable::V1`, 2P; master `0x1EA4_2026_0727_0001`; setup
+//! `Keep(0)/Keep(0)`; NO per-move invariants (there is no driver — each point is
+//! searched, then the walk advances by the GREEDY-v1 walker's own move, agent
+//! seed `0x77`); belief-sampler seed 1 at every point; tie key `0x1`; candidate
+//! seed `0xC0FFEE`; `M = 8`; N = the first 120 decision points, of which 46 are
+//! non-forced (19 Placement · 19 Movement · 5 AreaAction · 3 other). The BEFORE
+//! column was re-run on the pre-change tree with the SAME probe binary, which
+//! computes the one-ply ranking itself rather than reading it off the search, so
+//! both columns are the same quantity. Leaf `MidTurnDiag` in both columns —
+//! T2's default, so the comparison isolates the priors.
+//!
+//! | statistic, at sims = 64 | T2 (before) | T3 (after) |
+//! |---|---|---|
+//! | non-forced points settled by the root tie draw | 38/46 (83%) | 38/46 (83%) |
+//! | tie-set size, median over contested points | 16 (max 64) | 16 (max 25) |
+//! | Placement: chosen move's ONE-PLY RANK, median | **66 of 186** | **1 of 186** |
+//! | Placement: max visits on any root child, median | 1 | 2 |
+//!
+//! At sims = 750 (the experiment's B\*, as a simulation count): 20/46 → 19/46
+//! tie-decided, and the Placement rank median was already 1 before.
+//!
+//! **Read that honestly. What the priors fixed is WHICH candidates the search
+//! spends itself on and what the tie draw is drawn over; they did NOT move the
+//! tie RATE at the shipped `(c, scale)`, and nothing here claims they did.** The
+//! decision at a 186-candidate Placement root moved from a lottery over a
+//! uniformly-drawn 64 of the family (median rank 66) to a draw over the TOP of
+//! the one-ply ranking (median rank 1), and visits now concentrate rather than
+//! spreading one-per-child — the two properties
+//! `expansion_is_eval_ordered_and_the_visits_concentrate` pins.
+//!
+//! **The residual is the exploration constant, and it is now REACHABLE, which is
+//! the structural part of the fix.** Same probe, same regime, sweeping `c` at
+//! sims = 64: `c = 0` → 7/46 (15%, Placement 6/19) · `0.1` → 22/46 · `0.2` →
+//! 26/46 · `0.5` → 31/46 · `√2` (shipped) → 38/46. At sims = 750, `c = 0` → 0/46
+//! (0%). Under T2's scheme NO value of `c` could have moved any of this — while
+//! any candidate was unexpanded the descent expanded it, uniformly, whatever `c`
+//! was. The shipped pair is exploration-dominated exactly as
+//! [`DEFAULT_SQUASH_SCALE`] predicted in arithmetic; resolving it is spec §4's
+//! screening grid (leaf × c × scale), and **this task deliberately did not
+//! pre-empt that by moving the default**.
+//!
+//! **At the shipped default leaf** (`HandOff`, same regime): sims = 64 → 36/46
+//! (78%), Placement rank median 1; sims = 750 → 19/46 (41%), Placement 17/19
+//! tie-decided and rank median **12** — a deeper search departing from the
+//! one-ply ranking, which is what a search is for. At the experiment's actual
+//! operating point (cap = 750 TOTAL scored successors, simulations bounded only
+//! by it): 41/46 tie-decided, median 30 simulations at a Placement root (760
+//! scored: 186 root pass + 547 completion), rank median 1 at every phase. A
+//! completion leaf buys tens of simulations where a mid-turn leaf buys hundreds
+//! (377 median at the same cap) — the mechanism-versus-simulation-count trade
+//! spec §2.1 says the screening must weigh JOINTLY, arriving here as a number.
+
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
 
 use rand::{Rng, RngCore, SeedableRng};
 use rand_chacha::ChaCha8Rng;
@@ -199,11 +297,13 @@ use rand_chacha::ChaCha8Rng;
 use crate::game::apply_move::apply_move_unchecked;
 use crate::game::arena::DecisionReport;
 use crate::game::belief::BeliefSampler;
+use crate::game::budget::{best_available_pick, summarize_overshoot, OvershootSummary, ScoredBudget};
 use crate::game::eval::{self, WeightTable};
 use crate::game::greedy::{
     candidates, observed_view, score_starting_order, uniform_index, Candidates,
     DEFAULT_RETREAT_SAMPLES,
 };
+use crate::game::lookahead::MAX_TURN_PLIES;
 use crate::game::metrics::{decision_volume, VolumeObs};
 use crate::game::rules::Rules;
 use crate::game::scoring::final_result;
@@ -278,6 +378,26 @@ pub const DEFAULT_SQUASH_SCALE: i64 = 100;
 /// see the module doc and spec §0.4.
 pub const DEFAULT_WORLDS: u8 = 1;
 
+/// Above how many candidates a node pays an ORDERING PASS (spec §2.3): every
+/// candidate applied, observed and evaluated one ply deep, charged to the meter,
+/// and kept as that node's value priors.
+///
+/// **The root is exempt in the other direction** — its pass is MANDATORY at any
+/// size (spec §3.4), because the root is where the budget is allocated and where
+/// the decision is read off.
+///
+/// The threshold exists because the pass is not free and what it buys shrinks
+/// with the family: a node with `n ≤ 16` candidates is FULLY expanded by its
+/// 16th visit, so ordering changes only the sequence inside a set the search
+/// will cover anyway, while the pass costs `n` scored successors up front — at a
+/// node most simulations visit once or twice, that is the whole simulation
+/// budget spent on ordering. Above the threshold the opposite holds: a
+/// 186-candidate Placement node under any budget this experiment prices expands
+/// a small PREFIX, so which prefix it is decides the search. 16 is a declared
+/// design constant, not a measured optimum, and it is not a screening axis
+/// (spec §4's grid is leaf × c × scale).
+pub const ORDERING_THRESHOLD: usize = 16;
+
 /// Domain salt for the keyed tie stream, in this crate's `mix` shape.
 const SALT_MCTS_STREAM: u64 = 0x3C15_2026_0804_0001;
 /// Domain salt for the per-node candidate seed — a DIFFERENT domain from the
@@ -286,24 +406,83 @@ const SALT_MCTS_STREAM: u64 = 0x3C15_2026_0804_0001;
 const SALT_MCTS_CANDIDATES: u64 = 0x3C15_2026_0804_0002;
 /// Domain salt for the path-key fold.
 const SALT_MCTS_BRANCH: u64 = 0x3C15_2026_0804_0003;
+/// Domain salt for a hand-off completion's own key line — a THIRD domain, so a
+/// completion's greedy cut draws can never coincide with the tree draws of the
+/// node it hangs off.
+const SALT_MCTS_COMPLETION: u64 = 0x3C15_2026_0804_0004;
 
 /// The root's index in the node arena. Named because "node 0 is the root" is an
 /// invariant the descent leans on at every simulation.
 const ROOT: usize = 0;
 
+/// **Totality guard on the simulation loop**: how many STERILE simulations one
+/// decision may run before the search stops.
+///
+/// A simulation is sterile when it charges NOTHING — its descent ended at an
+/// already-created terminal node, so it expanded nothing, valued nothing and
+/// moved the meter not at all. It still backs a value up, so it is a legal
+/// simulation; what it is not is progress the BUDGET can see, and that is the
+/// hazard: [`search_world_budgeted`] stops starting simulations when the meter
+/// dies, and a sterile one never moves the meter.
+///
+/// **Measured, not imagined** (authoring, release, out-of-gate probe): at a
+/// late-game 2P state (turn 268, Movement, 18 root candidates) a search of 5,000
+/// simulations created 156 nodes and spent 499 scored successors — and then
+/// nothing further, ever, because every leaf below the root was terminal. Under
+/// the experiment's own shape (a scored cap with `simulations` left at a
+/// ceiling, which is exactly how a `cap`-sized contestant is configured) that is
+/// an infinite loop; it was found by driving a full self-play game, which is why
+/// the module's completion probe is a real one and not a formality. The second
+/// way it repeats is `c = 0`: a terminal child with the best mean is selected
+/// forever whatever remains unexpanded, and a screening grid may legitimately
+/// try a small `c`.
+///
+/// The guard counts sterile simulations in TOTAL rather than consecutively, so
+/// the worst-case wasted work is one bounded batch of descents per decision
+/// rather than one per productive simulation. When it fires, the decision is
+/// taken on the tree as it stands and [`McSearchStats::sterile_simulations`]
+/// says so; nothing is discarded, and no value is invented.
+pub const MAX_STERILE_SIMULATIONS: u32 = 1_024;
+
 /// How an unexpanded node is valued (spec §2.1).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum LeafRule {
+    /// **THE DEFAULT** (spec §2.1): complete the node's CURRENT TURN greedily —
+    /// beam-1 semantics — and evaluate `WeightTable::V1` at the
+    /// `current_player` transition; a finished game is valued by
+    /// [`final_result`] instead. See [`Search::hand_off_value`] for the exact
+    /// rule, including whose interest the greedy cut serves at an opponent node.
+    ///
+    /// The grounds are measured (spec §2.1): ~40% of a naive per-move UCT's leaf
+    /// values are read MID-TURN — states V1 was never calibrated on, and states
+    /// `lookahead-v1` by construction never evaluates. Completing the turn puts
+    /// every leaf value on the axis the evaluator was fitted for.
+    #[default]
+    HandOff,
     /// **The DIAGNOSTIC rule**: evaluate the node's own state where it stands,
     /// mid-turn included. Spec §2.1 keeps it as a screening knob precisely
-    /// because ~40% of a naive UCT's leaf values are read at states the
-    /// evaluator was never calibrated on — measuring that arm is the point of
-    /// keeping it.
-    ///
-    /// The hand-off completion rule (spec §2.1's DEFAULT) swaps in at
-    /// [`Search::leaf_value`]'s `match` with the next task.
-    #[default]
+    /// because measuring that arm — jointly with the simulation count the shared
+    /// cap buys each mode — is how §4 tells the mechanism from its price.
     MidTurnDiag,
+    /// **A TEST INSTRUMENT, and never a screening arm**: EVERY value this
+    /// search reads is constant — leaf, prior and terminal alike, at 0.5, with
+    /// every one-ply value 0 and [`eval::score`] never called — so no value
+    /// reaches any decision and the search is driven by its keyed draws alone.
+    ///
+    /// It is the whole value axis and not just the leaf deliberately: a
+    /// constant-leaf arm that kept REAL priors would still rank the root by one
+    /// ply, so the pin below would be pinning the one-ply argmax rather than a
+    /// value-blind tree — the exact substitution that makes a degeneracy pin
+    /// pass while the degeneracy it names is live.
+    ///
+    /// It exists for the degeneracy pin (T2 review NOTE 7, the capped-S1 arm's
+    /// sibling): a search whose values all coincide must STILL place assistants
+    /// and finish a game. That is ledger row 18's null-placement degeneracy
+    /// asked of a tree — if a value-blind MCTS quietly settles on "place
+    /// nothing", the game never ends and the pin says so in seconds. Spec §4's
+    /// grid never selects it, and the provenance grammar (T5) carries it as a
+    /// diagnostic name.
+    ConstantDiag,
 }
 
 // ---------------------------------------------------------------------------
@@ -316,11 +495,25 @@ pub enum McSite {
     /// The root's argmax over visit counts — the decision itself.
     RootArgmax,
     /// A UCB selection tie at the node whose path key is `branch`, on that
-    /// node's `visit`-th descent through it.
+    /// node's `visit`-th descent through it. At an ORDERED node this is also the
+    /// expansion site: selection and expansion are ONE selecting point there
+    /// (an unexpanded candidate competes as a virtual single-visit child
+    /// carrying its prior), so [`Expansion`](Self::Expansion) is a
+    /// uniform-plan-only site.
     Ucb { branch: u64, visit: u32 },
-    /// The expansion pick at the node whose path key is `branch`, filling its
-    /// `filled`-th child slot.
+    /// The expansion pick at the UNIFORM-plan node whose path key is `branch`,
+    /// filling its `filled`-th child slot.
     Expansion { branch: u64, filled: u32 },
+    /// The STARVED root's fallback pick over the mandatory root pass's one-ply
+    /// values (spec §3.4's fallback chain). A different site from
+    /// [`RootArgmax`](Self::RootArgmax) because it is a different rule over a
+    /// different quantity — the visit counts it would otherwise draw over are
+    /// all zero, which is exactly the degenerate whole-family draw the chain
+    /// exists to replace.
+    RootFallback,
+    /// The greedy cut inside a hand-off completion: the leaf whose node key is
+    /// `branch`, at completion ply `ply`.
+    Completion { branch: u64, ply: u32 },
 }
 
 impl McSite {
@@ -331,6 +524,8 @@ impl McSite {
             Self::RootArgmax => [0, 0, 0],
             Self::Ucb { branch, visit } => [1, branch, u64::from(visit)],
             Self::Expansion { branch, filled } => [2, branch, u64::from(filled)],
+            Self::RootFallback => [3, 0, 0],
+            Self::Completion { branch, ply } => [4, branch, u64::from(ply)],
         }
     }
 }
@@ -401,6 +596,18 @@ fn descend_branch(branch: u64, index: usize) -> u64 {
 /// pin be a statement about the decision rather than about an expansion order.
 fn node_candidate_seed(candidate_seed: u64, branch: u64) -> u64 {
     let mut x = candidate_seed ^ SALT_MCTS_CANDIDATES ^ branch;
+    splitmix64(&mut x)
+}
+
+/// The key line a hand-off completion runs on, rooted at the leaf node's own
+/// path key and then extended per ply by [`descend_branch`].
+///
+/// A completion is LEAF-VALUE work, not tree edges (spec §2.1), so its states
+/// are never nodes and its keys must not be able to coincide with the keys of
+/// the tree nodes that would sit at the same places: its own salt puts the whole
+/// line in a disjoint domain.
+fn completion_branch(branch: u64) -> u64 {
+    let mut x = branch ^ SALT_MCTS_COMPLETION;
     splitmix64(&mut x)
 }
 
@@ -533,6 +740,84 @@ fn ucb_select(
     tied[uniform_index(word, tied.len().max(1))]
 }
 
+/// One candidate as an ORDERED node's selection reads it.
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum Slot {
+    /// No child yet: the candidate stands on the PRIOR its ordering pass paid
+    /// for (spec §3.2's "used as VALUE and not merely ordering").
+    Unexpanded { prior: f64 },
+    /// A real child, on its backed-up mean.
+    Child(ChildStat),
+}
+
+/// **THE PRIOR SEMANTICS, declared** (spec §3.2 / §2.3; the T2 review's
+/// star-tree finding is what this function exists to answer).
+///
+/// At an ordered node every candidate — expanded or not — competes in ONE UCB1
+/// comparison:
+///
+/// ```text
+/// exploit = prior            if the candidate has no child yet
+///         = backed-up mean   once it has one
+/// explore = c · sqrt(ln(parent_visits) / max(child_visits, 1))
+/// ```
+///
+/// **An unexpanded candidate is scored as a VIRTUAL SINGLE-VISIT child carrying
+/// its prior** (first-play urgency = prior). Two consequences, both deliberate:
+///
+/// 1. a prior and a backed-up mean enter at the SAME exploration weight, so the
+///    root pass's work is usable as value rather than only as an order — lens 1
+///    M7's equal-usability repair, made arithmetic;
+/// 2. expansion therefore happens in DESCENDING prior order (ties by the keyed
+///    draw), interleaved with re-visits of children whose backed-up value beats
+///    the best remaining prior — which is spec §2.3's eval-ordered expansion
+///    without a second, separately-tunable schedule beside UCB1.
+///
+/// The alternative — T2's — is `+∞` for an unvisited child, which orders nothing
+/// and expands everything before any value can be read: the measured star tree.
+///
+/// The perspective flip is [`selection_value`]'s and applies to priors exactly
+/// as it does to means (a prior is stored in the ROOT seat's perspective, like
+/// every other value in the tree).
+fn ordered_select(
+    slots: &[Slot],
+    parent_visits: u32,
+    parent_seat: PlayerId,
+    root_seat: PlayerId,
+    c: f64,
+    word: u64,
+) -> usize {
+    debug_assert!(!slots.is_empty(), "a selection over an empty candidate set is undefined");
+    let mut best = f64::NEG_INFINITY;
+    let mut tied: Vec<usize> = Vec::new();
+    for (i, slot) in slots.iter().enumerate() {
+        let (mean, visits) = match slot {
+            Slot::Unexpanded { prior } => (*prior, 1),
+            Slot::Child(child) => (child.mean(), child.visits.max(1)),
+        };
+        let u = ucb1(selection_value(parent_seat, root_seat, mean), visits, parent_visits, c);
+        if u > best {
+            best = u;
+            tied.clear();
+            tied.push(i);
+        } else if u == best {
+            tied.push(i);
+        }
+    }
+    tied[uniform_index(word, tied.len().max(1))]
+}
+
+/// `a` beats `b` for a seat maximizing the ROOT value — or minimizing it, which
+/// is what every non-root seat does (spec §3.2's convention, in the one shape a
+/// completion needs it).
+fn better<T: PartialOrd>(a: T, b: T, maximize: bool) -> bool {
+    if maximize {
+        a > b
+    } else {
+        a < b
+    }
+}
+
 /// The expansion pick: a uniform keyed draw over the candidates that have no
 /// child yet.
 fn expansion_pick(unexpanded: &[usize], word: u64) -> usize {
@@ -567,6 +852,13 @@ pub struct McSearchStats {
     pub root_candidates: u64,
     /// Simulations run. 0 at a forced decision point.
     pub simulations: u64,
+    /// Of those, how many were STERILE — a descent that ended at an existing
+    /// terminal node and therefore charged nothing (see
+    /// [`MAX_STERILE_SIMULATIONS`], which is what stops a budget-bounded loop
+    /// from spinning on them). Expected 0 away from the end of a game; recorded
+    /// rather than asserted, because how often a tree runs out of unfinished
+    /// game to search is a property of the position, not of this module.
+    pub sterile_simulations: u64,
     /// The ROOT node's own visit count after the search — 0 at a forced point,
     /// otherwise equal to `simulations` BY CONSTRUCTION (the root is on every
     /// backprop path). Surfaced because a backprop that skips the root is
@@ -594,10 +886,49 @@ pub struct McSearchStats {
     /// rather than asserted in prose.
     pub opponent_nodes: u64,
     /// Successors applied and valued — the currency spec §0.3 prices and
-    /// [`crate::game::budget::ScoredBudget`] meters (one apply + observe + eval,
-    /// or + [`final_result`] at a terminal). Metered here, GATED with the budget
-    /// task.
+    /// [`ScoredBudget`] meters (one apply + observe + eval, or + [`final_result`]
+    /// at a terminal), and the number the cap gates.
+    ///
+    /// **The identity every other scored counter is checked against**:
+    /// `scored == root_scored + ordering_scored + completion_scored + (nodes −
+    /// 1)`, the last term being one expansion per created node with the root
+    /// excepted (it was never applied). Pinned, because four contributors summed
+    /// into one meter is exactly the shape in which one of them quietly stops
+    /// being charged.
     pub scored: u64,
+    /// The MANDATORY ROOT PASS's share of [`scored`](Self::scored) — spec
+    /// §0.3's "realized root share", and 0 at a forced decision point, which
+    /// allocates nothing and therefore ranks nothing.
+    pub root_scored: u64,
+    /// INTERNAL nodes that paid an ordering pass ([`ORDERING_THRESHOLD`]). The
+    /// root's mandatory pass is not counted here — it is unconditional and has
+    /// its own counter.
+    pub ordering_passes: u64,
+    /// Successors scored by those internal ordering passes.
+    pub ordering_scored: u64,
+    /// Successors scored inside hand-off completions ([`LeafRule::HandOff`]).
+    /// **0 under every other leaf rule**, which is what makes the leaf's price
+    /// readable rather than inferred from a total.
+    pub completion_scored: u64,
+    /// Enumerations paid INSIDE completions — one per completion ply beyond the
+    /// first (the first re-uses the leaf node's own candidate cache). Counted
+    /// because [`handles`](Self::handles) is otherwise no longer equal to
+    /// `nodes − terminal_nodes` under the default leaf rule, and an identity
+    /// that stops holding without a named term is an identity nobody can check.
+    pub completion_points: u64,
+    /// Completions [`MAX_TURN_PLIES`] stopped — expected 0 (`lookahead`'s guard,
+    /// its constant, and its measured 0 hits). A hit is not a wrong answer but
+    /// it is a quietly different one: the leaf is valued where the guard stopped
+    /// it, mid-turn, which is the very thing this leaf rule exists to avoid.
+    pub completion_cap_hits: u64,
+    /// 1 if the cap DENIED work this decision (a simulation could not start, or
+    /// the root pass alone spent the budget), else 0. **0 by construction
+    /// uncapped.**
+    pub budget_binds: u64,
+    /// 1 if the MANDATORY root pass alone spent the cap, so no simulation could
+    /// start and the decision fell back to the root priors (spec §3.4). A
+    /// sub-case of [`budget_binds`](Self::budget_binds).
+    pub budget_starved: u64,
     /// Nodes whose placement family exceeded the candidate cap.
     pub placement_cap_binds: u64,
     /// The deepest simulation path, in edges from the root.
@@ -611,6 +942,19 @@ pub struct RootStat {
     pub visits: u32,
     /// Summed backed-up values, in the ROOT seat's perspective.
     pub value_sum: f64,
+    /// The MANDATORY root pass's one-ply value, RAW ([`eval::score`] at the
+    /// successor, root-seat perspective) — the quantity the starved fallback
+    /// ranks on.
+    ///
+    /// `None` only at a FORCED decision point, where no pass runs because there
+    /// is nothing to allocate and nothing to rank (spec §3.4's pass is "before
+    /// any deeper work"; a forced point has none).
+    pub one_ply: Option<i64>,
+    /// The same value on the tree's `[0, 1]` axis — this candidate's PRIOR, as
+    /// [`ordered_select`] reads it. Terminal successors are valued by
+    /// [`rank_value`] here rather than squashed, so a prior and the child value
+    /// it will be replaced by are the same quantity.
+    pub prior: Option<f64>,
 }
 
 impl RootStat {
@@ -661,6 +1005,23 @@ impl McCtx<'_> {
     }
 }
 
+/// How a node hands out its next simulation — computed AT MOST ONCE per node,
+/// and lazily: a node created as a leaf may never be descended into again, and
+/// paying its ordering pass at creation would charge the budget for an ordering
+/// nothing ever reads.
+#[derive(Debug)]
+enum Plan {
+    /// Not asked yet.
+    Deferred,
+    /// `≤ ORDERING_THRESHOLD` candidates (and never the root): unexpanded slots
+    /// first, by uniform keyed draw, then UCB1 over the children. T2's scheme,
+    /// kept where the ordering pass cannot pay for itself.
+    Uniform,
+    /// Priors in the ROOT seat's perspective, one per candidate —
+    /// [`ordered_select`]'s input.
+    Ordered { priors: Vec<f64> },
+}
+
 /// One tree node: spec §2.5's shape `(GameState, Vec<Move>, stats)`.
 struct Node {
     state: GameState,
@@ -684,6 +1045,8 @@ struct Node {
     /// terminal value. Read only when the node is the end of a simulation.
     value: f64,
     terminal: bool,
+    /// How this node expands (lazily computed).
+    plan: Plan,
 }
 
 /// The mutable half of one search.
@@ -693,6 +1056,11 @@ struct Search<'a> {
     seat: PlayerId,
     nodes: Vec<Node>,
     stats: McSearchStats,
+    /// The DECISION's meter, borrowed rather than owned: spec §0.3 prices a
+    /// budget per decision, and `K > 1` (refused here, but the shape is stated)
+    /// would share one meter across worlds — `lookahead::Run`'s arrangement, for
+    /// the same reason.
+    budget: &'a mut ScoredBudget,
 }
 
 /// Whether a node at `state` will pay one President-route DFS.
@@ -784,6 +1152,7 @@ impl Search<'_> {
             value_sum: 0.0,
             value,
             terminal: false,
+            plan: Plan::Deferred,
         });
         self.nodes.len() - 1
     }
@@ -793,7 +1162,11 @@ impl Search<'_> {
     /// cached candidates, its leaf value).
     fn push_child(&mut self, state: GameState, branch: u64) -> Result<usize, String> {
         if state.is_game_over() {
-            let value = terminal_value(&state, self.ctx.rules, self.seat);
+            // `unit_value` rather than `terminal_value` directly, so the
+            // value-blind diagnostic arm is blind HERE too (see
+            // [`LeafRule::ConstantDiag`]); the raw argument is unread at a
+            // finished game.
+            let value = self.unit_value(&state, 0);
             self.stats.nodes += 1;
             self.stats.terminal_nodes += 1;
             let seat = state.current_player;
@@ -811,27 +1184,299 @@ impl Search<'_> {
                 value_sum: 0.0,
                 value,
                 terminal: true,
+                plan: Plan::Deferred,
             });
             return Ok(self.nodes.len() - 1);
         }
-        let value = self.leaf_value(&state)?;
+        // The ENUMERATION comes first, so the hand-off completion's first ply
+        // can run off this node's own candidate cache instead of building a
+        // second handle for the very same state (L10, and the reason
+        // `completion_points` counts plies BEYOND the first).
         let (candidates, _) = self.expand_point(&state, branch, false)?;
+        let value = self.leaf_value(&state, &candidates, branch)?;
         Ok(self.push_expandable(state, branch, candidates, value))
     }
 
-    /// The value of an unexpanded node, per [`LeafRule`].
-    ///
-    /// **The seam the next task swaps.** Spec §2.1's default — complete the turn
-    /// greedily and evaluate at the hand-off — arrives as a second arm here; the
-    /// rest of the module reads a `f64` in `[0, 1]` and never learns which rule
-    /// produced it.
-    fn leaf_value(&self, state: &GameState) -> Result<f64, String> {
+    /// The value of an unexpanded node, per [`LeafRule`] — the one place a leaf
+    /// value comes from, so the rest of the module reads an `f64` in `[0, 1]`
+    /// and never learns which rule produced it.
+    fn leaf_value(
+        &mut self,
+        state: &GameState,
+        candidates: &[Move],
+        branch: u64,
+    ) -> Result<f64, String> {
         match self.ctx.leaf {
-            LeafRule::MidTurnDiag => {
-                let view = observed_view(state, self.seat, MCTS_CONTROLLER)?;
-                let raw = eval::score(&view, self.ctx.rules, self.ctx.weights);
-                Ok(squash(raw, self.ctx.squash_scale))
+            LeafRule::HandOff => self.hand_off_value(state, candidates, branch),
+            LeafRule::MidTurnDiag => Ok(squash(self.raw_value(state)?, self.ctx.squash_scale)),
+            LeafRule::ConstantDiag => Ok(0.5),
+        }
+    }
+
+    /// [`eval::score`] at `state`, RAW, from the ROOT seat's view — the module's
+    /// only evaluation site, so "every value in this tree is in the root seat's
+    /// perspective" is structural rather than a convention to remember.
+    fn raw_value(&self, state: &GameState) -> Result<i64, String> {
+        if self.ctx.leaf == LeafRule::ConstantDiag {
+            return Ok(0);
+        }
+        let view = observed_view(state, self.seat, MCTS_CONTROLLER)?;
+        Ok(eval::score(&view, self.ctx.rules, self.ctx.weights))
+    }
+
+    /// A successor's value on the tree's `[0, 1]` axis: [`rank_value`] when the
+    /// game is over, the squash of [`raw_value`](Self::raw_value) otherwise.
+    ///
+    /// The split is the module doc's: a terminal is valued by the official
+    /// ranking and never passes through the squash, so a prior and the child
+    /// value that will replace it are the same quantity even at a terminal.
+    fn unit_value(&self, state: &GameState, raw: i64) -> f64 {
+        if self.ctx.leaf == LeafRule::ConstantDiag {
+            return 0.5;
+        }
+        if state.is_game_over() {
+            terminal_value(state, self.ctx.rules, self.seat)
+        } else {
+            squash(raw, self.ctx.squash_scale)
+        }
+    }
+
+    /// **THE HAND-OFF COMPLETION LEAF** (spec §2.1, [`LeafRule::HandOff`]).
+    ///
+    /// Complete the turn that is IN PROGRESS at `start` — beam-1 semantics, one
+    /// frontier state per ply, every candidate of it applied+observed+evaluated
+    /// and charged — and return the value at the `current_player` transition. A
+    /// completion that ends the game is valued by [`final_result`] instead.
+    ///
+    /// # Four things this rule fixes in writing, because each is a place it
+    /// could silently be a different rule
+    ///
+    /// 1. **Whose turn.** The turn completed is the one the NODE stands in
+    ///    (`start.current_player`), not the root seat's. The tree descends past
+    ///    the hand-off (spec §3.2), so mid-OPPONENT-turn nodes exist and valuing
+    ///    them raw would reintroduce the very miscalibration this leaf exists to
+    ///    remove.
+    /// 2. **Whose interest the greedy cut serves.** The acting seat's: at a root
+    ///    node the cut maximizes the root value, at an opponent node it
+    ///    MINIMIZES it — [`selection_value`]'s convention, applied to the same
+    ///    numbers, so the leaf agrees with the descent it hangs off rather than
+    ///    modelling a second opponent.
+    /// 3. **Where the value comes from.** Every state is evaluated from the ROOT
+    ///    seat's view ([`raw_value`](Self::raw_value)), so what is returned needs
+    ///    no perspective conversion and no zero-sum assumption beyond the one
+    ///    §3.2 already states.
+    /// 4. **What it is not.** It is NOT
+    ///    [`crate::game::lookahead::search_world`] at `beam = 1`. That entry
+    ///    point continues EVERY root candidate (its root loop is the beam's
+    ///    first ply, uncut), which costs `candidates × turn` per leaf instead of
+    ///    `turn`, re-enumerates a state this node has already enumerated, and
+    ///    values on the evaluator's raw axis rather than this module's declared
+    ///    `[0, 1]` one. `complete_turn` itself is private to that module. What IS
+    ///    shared is the guard and its constant ([`MAX_TURN_PLIES`]), the
+    ///    candidate scheme, and the evaluator.
+    ///
+    /// Completion states are LEAF-VALUE work and never tree edges: they are not
+    /// nodes, they are not backed up, and nothing selects among them a second
+    /// time.
+    fn hand_off_value(
+        &mut self,
+        start: &GameState,
+        start_candidates: &[Move],
+        branch: u64,
+    ) -> Result<f64, String> {
+        let actor = start.current_player;
+        // The root seat maximizes; any other seat minimizes the root's value.
+        let maximize = actor == self.seat;
+        let mut best: Option<f64> = None;
+        let mut key = completion_branch(branch);
+
+        let (mut carried, mut ply) = (self.complete_ply(start, start_candidates, key, 0, maximize, &mut best)?, 1u32);
+        while let Some((state, slot)) = carried {
+            if ply >= MAX_TURN_PLIES {
+                // Totality guard (lookahead's, and its measured 0 hits). Value
+                // the frontier where it stands rather than looping.
+                self.stats.completion_cap_hits += 1;
+                let raw = self.raw_value(&state)?;
+                let stopped = self.unit_value(&state, raw);
+                best = Some(match best {
+                    Some(b) if !better(stopped, b, maximize) => b,
+                    _ => stopped,
+                });
+                break;
             }
+            key = descend_branch(key, slot);
+            let (candidates, _) = self.expand_point(&state, key, false)?;
+            self.stats.completion_points += 1;
+            carried = self.complete_ply(&state, &candidates, key, ply, maximize, &mut best)?;
+            ply += 1;
+        }
+
+        best.ok_or_else(|| {
+            format!(
+                "{MCTS_CONTROLLER}: seat {}'s turn produced no hand-off from a completion leaf",
+                actor.0,
+            )
+        })
+    }
+
+    /// One ply of the completion: score every candidate, fold the hand-offs into
+    /// `best`, and hand back the single continuing successor the greedy cut
+    /// keeps (with the candidate index it came from, for the key line).
+    ///
+    /// Two comparison spaces, deliberately: hand-offs are compared on the
+    /// `[0, 1]` axis because a terminal can only be expressed there, while the
+    /// CUT compares RAW [`eval::score`] — a continuing successor is never
+    /// terminal, and the squash can round two distinct raw scores onto one
+    /// `f64`, which would invent a tie the cut then has to draw over.
+    fn complete_ply(
+        &mut self,
+        state: &GameState,
+        candidates: &[Move],
+        key: u64,
+        ply: u32,
+        maximize: bool,
+        best: &mut Option<f64>,
+    ) -> Result<Option<(GameState, usize)>, String> {
+        let actor = state.current_player;
+        let mut cut_value: Option<i64> = None;
+        let mut cut: Vec<(GameState, usize)> = Vec::new();
+        // `candidates` and `state` are the CALLER's borrows, not this search's,
+        // so the loop can hold them across the `&mut self` calls inside — which
+        // is why the completion pays no per-candidate `Move` clone (the tree's
+        // own expansion, indexing into `self.nodes`, has no such option).
+        for (i, mv) in candidates.iter().enumerate() {
+            let next = self.apply(state, mv)?;
+            self.charge();
+            self.stats.completion_scored += 1;
+            let raw = self.raw_value(&next)?;
+            if next.current_player != actor || next.is_game_over() {
+                let value = self.unit_value(&next, raw);
+                *best = Some(match *best {
+                    // STRICTLY better only, so an exact tie leaves the first
+                    // one standing — `complete_turn`'s rule, and this is not a
+                    // decision tie point: the value is identical either way and
+                    // no move is ever played from it.
+                    Some(b) if !better(value, b, maximize) => b,
+                    _ => value,
+                });
+            } else if cut_value.is_none_or(|v| better(raw, v, maximize)) {
+                cut_value = Some(raw);
+                cut.clear();
+                cut.push((next, i));
+            } else if cut_value == Some(raw) {
+                cut.push((next, i));
+            }
+        }
+        if cut.is_empty() {
+            return Ok(None);
+        }
+        // The cut IS a selecting point (row 18): a first-listed keep would hand
+        // the whole completion to whatever the generator emitted first.
+        let word = self.ctx.stream.word(McSite::Completion { branch: key, ply });
+        Ok(Some(cut.swap_remove(uniform_index(word, cut.len()))))
+    }
+
+    /// Charge ONE scored successor to both the cost counter and the decision's
+    /// meter. **The single site that increments `scored`**, so the meter cannot
+    /// drift from the counter the reports call the realized total.
+    fn charge(&mut self) {
+        self.stats.scored += 1;
+        self.budget.charge();
+    }
+
+    /// Apply, charge and one-ply-value every candidate of `at` — the ORDERING
+    /// PASS (spec §2.3), and at the root the MANDATORY one (spec §3.4).
+    ///
+    /// Returns `(raw one-ply values, priors on the [0,1] axis)`.
+    ///
+    /// **The successor states are deliberately NOT retained.** Keeping them
+    /// would save the later re-apply at expansion (`lookahead`'s capped root
+    /// pass does exactly that, in `RootPass.wants`), but that arm pays it at ONE
+    /// level; here every ordered node in the tree would hold a whole family of
+    /// `GameState`s — spec §2.8 prices a node at ≈3.3–3.5 KB, and a
+    /// 186-candidate Placement node would hold ≈0.6 MB of them for as long as
+    /// the tree lives. The price of dropping them is exactly ONE re-scored
+    /// successor per expansion (bounded by the simulation count, and a small
+    /// fraction of a completion leaf), charged honestly because the work is
+    /// genuinely done twice.
+    fn score_candidates(&mut self, at: usize) -> Result<(Vec<i64>, Vec<f64>), String> {
+        let n = self.nodes[at].candidates.len();
+        let mut raws = Vec::with_capacity(n);
+        let mut priors = Vec::with_capacity(n);
+        for i in 0..n {
+            let mv = self.nodes[at].candidates[i].clone();
+            let next = self.apply(&self.nodes[at].state, &mv)?;
+            self.charge();
+            let raw = self.raw_value(&next)?;
+            raws.push(raw);
+            priors.push(self.unit_value(&next, raw));
+        }
+        Ok((raws, priors))
+    }
+
+    /// Decide — ONCE per node — how it hands out simulations (see [`Plan`]).
+    fn ensure_plan(&mut self, at: usize) -> Result<(), String> {
+        if !matches!(self.nodes[at].plan, Plan::Deferred) {
+            return Ok(());
+        }
+        let plan = if self.nodes[at].candidates.len() > ORDERING_THRESHOLD {
+            let before = self.stats.scored;
+            let (_, priors) = self.score_candidates(at)?;
+            self.stats.ordering_passes += 1;
+            self.stats.ordering_scored += self.stats.scored - before;
+            Plan::Ordered { priors }
+        } else {
+            Plan::Uniform
+        };
+        self.nodes[at].plan = plan;
+        Ok(())
+    }
+
+    /// The candidate index this node hands its next simulation to — expanded or
+    /// not. The caller expands it if it has no child yet, and descends into it
+    /// otherwise.
+    fn choose_slot(&self, at: usize) -> usize {
+        let node = &self.nodes[at];
+        match &node.plan {
+            Plan::Ordered { priors } => {
+                let slots: Vec<Slot> = node
+                    .children
+                    .iter()
+                    .zip(priors)
+                    .map(|(child, prior)| match child {
+                        Some(c) => Slot::Child(ChildStat {
+                            visits: self.nodes[*c].visits,
+                            value_sum: self.nodes[*c].value_sum,
+                        }),
+                        None => Slot::Unexpanded { prior: *prior },
+                    })
+                    .collect();
+                ordered_select(
+                    &slots,
+                    node.visits,
+                    node.seat,
+                    self.seat,
+                    self.ctx.exploration(),
+                    self.ctx.stream.word(McSite::Ucb { branch: node.branch, visit: node.visits }),
+                )
+            }
+            Plan::Uniform => {
+                let unexpanded: Vec<usize> = node
+                    .children
+                    .iter()
+                    .enumerate()
+                    .filter_map(|(i, c)| c.is_none().then_some(i))
+                    .collect();
+                if !unexpanded.is_empty() {
+                    let word = self.ctx.stream.word(McSite::Expansion {
+                        branch: node.branch,
+                        filled: node.expanded,
+                    });
+                    return expansion_pick(&unexpanded, word);
+                }
+                self.select(at)
+            }
+            Plan::Deferred => unreachable!("every descent calls ensure_plan before choose_slot"),
         }
     }
 
@@ -866,18 +1511,23 @@ impl Search<'_> {
     /// ONE simulation: descend to an expandable node, expand one edge, value the
     /// new node, back the value up the path.
     ///
-    /// **Termination needs no guard.** The descent only continues through
-    /// FULLY-expanded nodes and every simulation creates exactly one node, so a
-    /// path is bounded by the tree's size, which is bounded by the simulation
-    /// count. (That is why a determinized world that cycles — the measured
-    /// non-terminating band on the capped S1 arm — cannot hang this loop.)
+    /// **Termination needs no guard.** Every step of the descent moves to a
+    /// CHILD of the node it is at — the tree is acyclic by construction — and
+    /// every simulation creates exactly one node, so a path is bounded by the
+    /// tree's size, which is bounded by the simulation count. (That is why a
+    /// determinized world that cycles — the measured non-terminating band on the
+    /// capped S1 arm — cannot hang this loop.) Note that an ORDERED node is
+    /// descended through while still partially expanded, which T2's
+    /// expand-everything-first descent never did; the bound above does not
+    /// depend on that difference.
     ///
-    /// Both per-step `Vec`s below (the unexpanded slots, and [`select`]'s child
-    /// stats) are `O(candidates)` and deliberately unoptimized: the step they
-    /// sit beside pays a full candidate ENUMERATION, which the research base
-    /// prices two orders of magnitude above a slot scan, and splitting either
-    /// into an allocation-free variant would leave the tested pure function
-    /// ([`expansion_pick`]) beside a second, untested one.
+    /// The per-step `Vec`s in [`choose_slot`](Self::choose_slot) are
+    /// `O(candidates)` and deliberately unoptimized: the step they sit beside
+    /// pays a full candidate ENUMERATION (and, under the default leaf rule, a
+    /// whole turn's completion), which the research base prices orders of
+    /// magnitude above a slot scan, and splitting them into allocation-free
+    /// variants would leave the tested pure functions ([`expansion_pick`],
+    /// [`ordered_select`]) beside second, untested ones.
     fn simulate(&mut self) -> Result<(), String> {
         let mut path: Vec<usize> = vec![ROOT];
         let mut at = ROOT;
@@ -886,19 +1536,13 @@ impl Search<'_> {
             if self.nodes[at].terminal {
                 break self.nodes[at].value;
             }
-            let unexpanded: Vec<usize> = self.nodes[at]
-                .children
-                .iter()
-                .enumerate()
-                .filter_map(|(i, c)| c.is_none().then_some(i))
-                .collect();
-            if !unexpanded.is_empty() {
-                let (branch, filled) = (self.nodes[at].branch, self.nodes[at].expanded);
-                let word = self.ctx.stream.word(McSite::Expansion { branch, filled });
-                let slot = expansion_pick(&unexpanded, word);
+            self.ensure_plan(at)?;
+            let slot = self.choose_slot(at);
+            if self.nodes[at].children[slot].is_none() {
+                let branch = self.nodes[at].branch;
                 let mv = self.nodes[at].candidates[slot].clone();
                 let next = self.apply(&self.nodes[at].state, &mv)?;
-                self.stats.scored += 1;
+                self.charge();
                 let child = self.push_child(next, descend_branch(branch, slot))?;
                 self.nodes[at].children[slot] = Some(child);
                 self.nodes[at].expanded += 1;
@@ -906,8 +1550,7 @@ impl Search<'_> {
                 depth += 1;
                 break self.nodes[child].value;
             }
-            let slot = self.select(at);
-            at = self.nodes[at].children[slot].expect("a fully-expanded node has every child");
+            at = self.nodes[at].children[slot].expect("the slot was checked to have a child");
             path.push(at);
             depth += 1;
         };
@@ -928,14 +1571,56 @@ impl Search<'_> {
 /// somebody else's decision.
 ///
 /// **The forced fast path is at the top**: a decision point offering ≤ 1
-/// candidate is answered by the root's single enumeration and NO simulation
-/// runs. The root node is still materialized, so the counter identities hold
-/// uniformly (`handles == nodes − terminal_nodes` whether or not a tree grew);
-/// what the fast path skips is the tree, which is the cost.
+/// candidate is answered by the root's single enumeration, and NO root pass and
+/// NO simulation run. The root node is still materialized, so the counter
+/// identities hold uniformly (`handles == nodes − terminal_nodes +
+/// completion_points` whether or not a tree grew); what the fast path skips is
+/// the tree and the pass, which are the cost.
 pub fn search_world(
     world: &GameState,
     seat: PlayerId,
     ctx: &McCtx<'_>,
+) -> Result<McSearch, String> {
+    search_world_budgeted(world, seat, ctx, &mut ScoredBudget::unlimited())
+}
+
+/// [`search_world`] against a DECISION's scored-successor meter (spec §3.4).
+///
+/// The structure the cap imposes, in the order it happens:
+///
+/// 1. **The MANDATORY ROOT PASS is the one spend the cap cannot refuse.** Every
+///    root candidate is applied, observed and evaluated before any simulation
+///    starts, and the pass is NOT gated — gating it would leave candidates with
+///    no value at all, which is what makes the fallback below expressible. A
+///    root family bigger than the cap therefore OVERSHOOTS, and the overshoot is
+///    reported rather than hidden ([`ScoredBudget::overshoot`]).
+/// 2. **A simulation starts only while `realized < cap`, and a started one
+///    completes.** No caller can price a simulation before running it (the
+///    default leaf rule alone can spend a turn's worth of successors), so the
+///    start gate is the only honest question — and aborting one mid-flight would
+///    back up a value read at a state the search never meant to stop at. The
+///    overshoot distribution is the validity line that makes the difference
+///    visible.
+/// 3. **A root pass that alone spends the cap STARVES the decision**:
+///    `budget_starved` is recorded and the decision falls back to
+///    [`best_available_pick`] over the pass's one-ply values — the argmax over
+///    the WHOLE family with a keyed draw over its ties, **never first-listed**
+///    (ledger row 18: at a Placement root the first-listed candidate is the
+///    empty placement, so a first-wins fallback is the null-placement degeneracy
+///    arriving through the budget).
+///
+/// A forced decision point (≤ 1 candidate) pays none of this: it has nothing to
+/// allocate and nothing to rank, so the root pass would be work whose result is
+/// never read — spec §3.4's pass is "before any deeper work", and there is none.
+///
+/// `budget` is borrowed rather than owned because §0.3's currency is total
+/// scored successors **per decision**; at the shipped `K = 1` the per-world and
+/// per-decision totals coincide.
+pub fn search_world_budgeted(
+    world: &GameState,
+    seat: PlayerId,
+    ctx: &McCtx<'_>,
+    budget: &mut ScoredBudget,
 ) -> Result<McSearch, String> {
     if world.current_player != seat {
         return Err(format!(
@@ -949,7 +1634,8 @@ pub fn search_world(
             seat.0,
         ));
     }
-    let mut search = Search { ctx, seat, nodes: Vec::new(), stats: McSearchStats::default() };
+    let mut search =
+        Search { ctx, seat, nodes: Vec::new(), stats: McSearchStats::default(), budget };
 
     // The ROOT's one handle: volume and candidates off the same memo.
     let (candidates, volume) = search.expand_point(world, 0, true)?;
@@ -964,13 +1650,42 @@ pub fn search_world(
     let root = search.push_expandable(world.clone(), 0, candidates, 0.0);
     debug_assert_eq!(root, ROOT, "the root must be node 0");
 
+    let mut one_ply: Vec<Option<i64>> = vec![None; search.nodes[ROOT].candidates.len()];
+    let mut priors: Vec<Option<f64>> = vec![None; one_ply.len()];
+    let mut starved = false;
     if !forced {
+        // THE MANDATORY ROOT PASS (spec §3.4), ungated by construction.
+        let (raws, unit) = search.score_candidates(ROOT)?;
+        search.stats.root_scored = raws.len() as u64;
+        one_ply = raws.into_iter().map(Some).collect();
+        priors = unit.iter().copied().map(Some).collect();
+        search.nodes[ROOT].plan = Plan::Ordered { priors: unit };
+
         // The knob floor, stated once: a decision over zero simulations is not a
         // search. (`squash` floors its own scale for the same reason.)
-        for _ in 0..ctx.simulations.max(1) {
+        let want = ctx.simulations.max(1);
+        starved = !search.budget.may_start();
+        let (mut ran, mut sterile) = (0u32, 0u32);
+        while ran < want && sterile < MAX_STERILE_SIMULATIONS {
+            if !search.budget.may_start() {
+                search.stats.budget_binds = 1;
+                break;
+            }
+            let before = search.budget.realized();
             search.simulate()?;
+            ran += 1;
+            // Sterile: the descent ended at an existing terminal node, charging
+            // nothing. See MAX_STERILE_SIMULATIONS — without this the budget
+            // cannot bound the loop, because there is nothing for it to bound.
+            if search.budget.realized() == before {
+                sterile += 1;
+            }
         }
-        search.stats.simulations = u64::from(ctx.simulations.max(1));
+        search.stats.simulations = u64::from(ran);
+        search.stats.sterile_simulations = u64::from(sterile);
+        if starved {
+            search.stats.budget_starved = 1;
+        }
     }
 
     search.stats.root_visits = search.nodes[ROOT].visits;
@@ -984,17 +1699,131 @@ pub fn search_world(
                 Some(c) => (search.nodes[c].visits, search.nodes[c].value_sum),
                 None => (0, 0.0),
             };
-            RootStat { mv: mv.clone(), visits, value_sum }
+            RootStat { mv: mv.clone(), visits, value_sum, one_ply: one_ply[i], prior: priors[i] }
         })
         .collect();
-    let visits: Vec<u32> = roots.iter().map(|r| r.visits).collect();
-    let chosen = root_argmax(&visits, ctx.stream.word(McSite::RootArgmax));
+    // `roots` is NON-EMPTY at both picks below, and the guarantee is structural
+    // rather than incidental (T1 review NOTE 4, discharged at this call site
+    // rather than by widening `best_available_pick`'s signature for its other
+    // caller): `expand_point` REFUSES a decision point whose candidate scheme
+    // returns nothing, so a search that reaches this line has at least one root
+    // candidate.
+    let chosen = if starved {
+        // Rung 2 of spec §3.4's chain: the visit counts are all zero here, so an
+        // argmax over them would be a uniform draw over the whole family — the
+        // one-ply values the mandatory pass already paid for are strictly more
+        // information, and they are what the fallback ranks.
+        best_available_pick(&one_ply, ctx.stream.word(McSite::RootFallback))
+    } else {
+        let visits: Vec<u32> = roots.iter().map(|r| r.visits).collect();
+        root_argmax(&visits, ctx.stream.word(McSite::RootArgmax))
+    };
     Ok(McSearch { roots, chosen, volume, stats: search.stats })
 }
 
 // ---------------------------------------------------------------------------
 // The agent
 // ---------------------------------------------------------------------------
+
+/// The per-decision counters one [`MctsAgent`] keeps, behind one `Arc`.
+#[derive(Debug, Default)]
+struct McCounters {
+    decisions: AtomicU64,
+    scored: AtomicU64,
+    root_scored: AtomicU64,
+    budget_binds: AtomicU64,
+    budget_starved: AtomicU64,
+    placement_cap_binds: AtomicU64,
+    /// Per-DECISION overshoot samples — the one counter here that is not a
+    /// running total, because spec §3.4 reports the overshoot as a p50/p90/max
+    /// distribution and a distribution cannot be recovered from a sum. An
+    /// UNCAPPED agent pushes nothing, so it pays neither the allocation nor the
+    /// lock.
+    overshoot: Mutex<Vec<u64>>,
+}
+
+/// A cloneable handle on one [`MctsAgent`]'s counters —
+/// [`crate::game::lookahead::SearchTally`]'s pattern and its reason: a game's
+/// agents are built by the driver's factory and never handed back, so cloning
+/// the handle BEFORE the agent moves into the driver is the only way to read
+/// them afterwards.
+///
+/// A separate TYPE from `SearchTally` rather than a shared one, on that type's
+/// own grounds: the counter SETS differ (a tree has no continuation length and
+/// no beam-ply guard; a beam has no simulations), and a shared type would carry
+/// fields one of its owners never writes.
+#[derive(Clone, Default)]
+pub struct McTally {
+    counters: Arc<McCounters>,
+}
+
+impl McTally {
+    /// Decisions this agent took.
+    pub fn decisions(&self) -> u64 {
+        self.counters.decisions.load(Ordering::Relaxed)
+    }
+
+    /// Successors applied, observed and scored across every decision — **the
+    /// budget currency** (spec §0.3), root pass included, so a cell's realized
+    /// total is this counter over [`decisions`](Self::decisions).
+    pub fn candidates_scored(&self) -> u64 {
+        self.counters.scored.load(Ordering::Relaxed)
+    }
+
+    /// The ROOT SHARE of [`candidates_scored`](Self::candidates_scored):
+    /// successors scored by the mandatory root pass, before any simulation.
+    pub fn root_scored(&self) -> u64 {
+        self.counters.root_scored.load(Ordering::Relaxed)
+    }
+
+    /// Decisions in which the cap DENIED work — at least one simulation could
+    /// not start. **0 for an uncapped agent by construction**, which is also the
+    /// shape of the experiment's validity condition: a cap that never binds is
+    /// not a matched budget.
+    pub fn budget_binds(&self) -> u64 {
+        self.counters.budget_binds.load(Ordering::Relaxed)
+    }
+
+    /// Decisions whose mandatory root pass alone spent the cap, so no simulation
+    /// could start and the decision fell back to the root priors (spec §3.4). A
+    /// sub-case of [`budget_binds`](Self::budget_binds), and the counter spec
+    /// §0.1's S2 surface routes on.
+    pub fn budget_starved_decisions(&self) -> u64 {
+        self.counters.budget_starved.load(Ordering::Relaxed)
+    }
+
+    /// Decisions whose placement family exceeded the candidate cap, summed over
+    /// nodes (a tree can bind it several times in one decision).
+    pub fn placement_cap_binds(&self) -> u64 {
+        self.counters.placement_cap_binds.load(Ordering::Relaxed)
+    }
+
+    /// The per-decision overshoot distribution (p50/p90/max over
+    /// `realized − cap`), or `None` if this agent never took a capped decision.
+    ///
+    /// `None` rather than zeros: an uncapped run has no overshoot distribution
+    /// and printing one would claim a measurement nobody took. It is nonzero
+    /// exactly where the MANDATORY root pass exceeded the cap, or where the last
+    /// started simulation ran past it — the two places spec §3.4 lets the meter
+    /// run past its gate.
+    pub fn overshoot(&self) -> Option<OvershootSummary> {
+        let samples = self.counters.overshoot.lock().expect("overshoot samples");
+        summarize_overshoot(&samples)
+    }
+
+    /// Fold one decision's search into the running counters.
+    fn record(&self, stats: &McSearchStats, budget: &ScoredBudget) {
+        self.counters.decisions.fetch_add(1, Ordering::Relaxed);
+        self.counters.scored.fetch_add(stats.scored, Ordering::Relaxed);
+        self.counters.root_scored.fetch_add(stats.root_scored, Ordering::Relaxed);
+        self.counters.budget_binds.fetch_add(stats.budget_binds, Ordering::Relaxed);
+        self.counters.budget_starved.fetch_add(stats.budget_starved, Ordering::Relaxed);
+        self.counters.placement_cap_binds.fetch_add(stats.placement_cap_binds, Ordering::Relaxed);
+        if budget.cap().is_some() {
+            self.counters.overshoot.lock().expect("overshoot samples").push(budget.overshoot());
+        }
+    }
+}
 
 /// MCTS-v1 as a seat: the honest chain, then the tree.
 ///
@@ -1010,6 +1839,10 @@ pub struct MctsAgent {
     exploration_ppm: u32,
     squash_scale: i64,
     leaf: LeafRule,
+    /// Spec §3.4's scored-successor cap. **`None` is the uncapped shape**: an
+    /// absent cap threads an unlimited [`ScoredBudget`], which gates nothing,
+    /// starves nothing and records no overshoot sample.
+    cap: Option<u32>,
     weights: WeightTable,
     rng: ChaCha8Rng,
     /// Kept beside the stream it seeded because `ChaCha8Rng` will not hand its
@@ -1020,6 +1853,7 @@ pub struct MctsAgent {
     /// re-invented, which is what makes a cell against one of them
     /// Keep-homogeneous (spec §3.6's `KeepKind::EvaluatorScored`).
     keep_scores: Vec<(OrderCardId, i64)>,
+    counters: McTally,
     last_stats: Option<McSearchStats>,
     last_roots: Vec<RootStat>,
 }
@@ -1035,6 +1869,7 @@ impl MctsAgent {
             exploration_ppm: DEFAULT_EXPLORATION_PPM,
             squash_scale: DEFAULT_SQUASH_SCALE,
             leaf: LeafRule::default(),
+            cap: None,
             weights: WeightTable::V1,
             rng: ChaCha8Rng::seed_from_u64(agent_seed),
             agent_seed,
@@ -1043,9 +1878,28 @@ impl MctsAgent {
                 .iter()
                 .map(|card| (card.id, score_starting_order(card, rules)))
                 .collect(),
+            counters: McTally::default(),
             last_stats: None,
             last_roots: Vec::new(),
         }
+    }
+
+    /// Spec §3.4's TOTAL scored-successor cap for one decision, root pass
+    /// included. `None` is uncapped.
+    pub fn with_cap(mut self, cap: Option<u32>) -> Self {
+        self.cap = cap;
+        self
+    }
+
+    /// This agent's scored-successor cap, if it has one.
+    pub fn cap(&self) -> Option<u32> {
+        self.cap
+    }
+
+    /// A handle on this agent's running counters — clone it BEFORE the agent
+    /// moves into a driver.
+    pub fn tally(&self) -> McTally {
+        self.counters.clone()
     }
 
     /// Simulations per decision (floored at 1 by the search).
@@ -1206,7 +2060,9 @@ impl MctsAgent {
             candidate_seed,
         };
         let world = sampler.sample();
-        let searched = search_world(&world, seat, &ctx)?;
+        let mut budget = ScoredBudget::from_cap(self.cap);
+        let searched = search_world_budgeted(&world, seat, &ctx, &mut budget)?;
+        self.counters.record(&searched.stats, &budget);
 
         let mv = searched.roots[searched.chosen].mv.clone();
         self.last_stats = Some(searched.stats);
@@ -1230,11 +2086,33 @@ mod tests {
     /// fixed master, and these are pins rather than bot-facing evaluation runs.
     const MASTER: u64 = 0x1EA4_2026_0727_0001;
 
+    /// The fixture context, on the **`MidTurnDiag`** leaf — a DELIBERATE choice
+    /// carried over from T2 rather than an oversight (T3 moved the DEFAULT to
+    /// [`LeafRule::HandOff`]).
+    ///
+    /// The tree pins below are about the tree — handles per node, keyed draws,
+    /// counter identities, the descent — and the diagnostic leaf costs one
+    /// evaluation where the shipped one costs a whole turn's completion, so this
+    /// keeps them at the price T2 measured them at and keeps what they pin
+    /// undiluted. The SHIPPED leaf rule is pinned where it belongs: exactly at
+    /// [`hand_off_value`](Search::hand_off_value)'s own tests, on the counter
+    /// identities, and end to end through the agent (whose default is untouched
+    /// by this helper) in the determinism and stream-word pins.
     fn ctx<'a>(
         rules: &'a Rules,
         weights: &'a WeightTable,
         simulations: u32,
         key: u64,
+    ) -> McCtx<'a> {
+        ctx_leaf(rules, weights, simulations, key, LeafRule::MidTurnDiag)
+    }
+
+    fn ctx_leaf<'a>(
+        rules: &'a Rules,
+        weights: &'a WeightTable,
+        simulations: u32,
+        key: u64,
+        leaf: LeafRule,
     ) -> McCtx<'a> {
         McCtx {
             rules,
@@ -1243,10 +2121,21 @@ mod tests {
             simulations,
             exploration_ppm: DEFAULT_EXPLORATION_PPM,
             squash_scale: DEFAULT_SQUASH_SCALE,
-            leaf: LeafRule::MidTurnDiag,
+            leaf,
             stream: McStream::new(key),
             candidate_seed: 0xC0FFEE,
         }
+    }
+
+    /// A [`Search`] over an empty tree, for the white-box cells that test one
+    /// piece of the machinery (the leaf rule, the ordering pass) without a
+    /// decision around it.
+    fn search_over<'a>(
+        ctx: &'a McCtx<'a>,
+        seat: PlayerId,
+        budget: &'a mut ScoredBudget,
+    ) -> Search<'a> {
+        Search { ctx, seat, nodes: Vec::new(), stats: McSearchStats::default(), budget }
     }
 
     /// T2-review MUST-1: the root absorbs every simulation's backprop. A backprop
@@ -1374,7 +2263,11 @@ mod tests {
         let v2 = observe(&w2, s2).expect("view 2");
 
         let seed = 0xFAB1E;
+        // The agent's DEFAULT leaf rule throughout, mirrored below — a mirror on
+        // a different leaf would reproduce the move by luck at any point whose
+        // two rules agree, and would then pin nothing.
         let mut agent = MctsAgent::new(&rules, seed).with_simulations(16);
+        assert_eq!(agent.leaf(), LeafRule::default(), "the mirror must run the shipped rule");
         let _ = agent.choose(&v1, &rules).expect("decision 1");
         let second = agent.choose(&v2, &rules).expect("decision 2");
 
@@ -1395,7 +2288,7 @@ mod tests {
             simulations: 16,
             exploration_ppm: DEFAULT_EXPLORATION_PPM,
             squash_scale: DEFAULT_SQUASH_SCALE,
-            leaf: LeafRule::MidTurnDiag,
+            leaf: LeafRule::default(),
             stream: McStream::new(tie_key),
             candidate_seed,
         };
@@ -1431,6 +2324,33 @@ mod tests {
         assert!(want(&state), "the walk never reached the wanted decision point");
         let seat = state.current_player;
         let view = observe(&state, seat).expect("observe");
+        let world = BeliefSampler::from_view(&view, rules, 1).expect("sampler").sample();
+        (world, seat)
+    }
+
+    /// The decision point `back` moves before the `MASTER` walk's game ENDS —
+    /// the one shape a "the tree ran out of game" fixture can be stated as, and
+    /// robust in a way a state predicate is not (the game ends by a particular
+    /// action, so no state-level test says "this is nearly over").
+    fn point_before_the_end(rules: &Rules, back: usize) -> (GameState, PlayerId) {
+        let pending = new_game(GameConfig::for_player_count(2), rules, MASTER).expect("2P setup");
+        let mut state =
+            finalize_setup(pending, &[StartingOrderChoice::Keep(0), StartingOrderChoice::Keep(0)])
+                .expect("finalize");
+        let mut agent = GreedyAgent::new(rules, 0x77);
+        let mut seen: Vec<GameState> = Vec::new();
+        while !state.is_game_over() && seen.len() < 2_000 {
+            seen.push(state.clone());
+            let seat = state.current_player;
+            let view = observe(&state, seat).expect("observe");
+            let r = agent.choose(&view, rules).expect("move");
+            state = apply_move_unchecked(&state, &r.mv, rules).expect("apply");
+        }
+        assert!(state.is_game_over(), "the walk must reach the end of the game");
+        assert!(seen.len() > back, "the game must be longer than {back} decisions");
+        let at = seen.swap_remove(seen.len() - back);
+        let seat = at.current_player;
+        let view = observe(&at, seat).expect("observe");
         let world = BeliefSampler::from_view(&view, rules, 1).expect("sampler").sample();
         (world, seat)
     }
@@ -1486,6 +2406,42 @@ mod tests {
             state = apply_move_unchecked(&state, &report.mv, rules).expect("a chosen move applies");
         }
         (moves, stats)
+    }
+
+    /// Play a whole 2P game with `agent` on BOTH seats, returning
+    /// `(moves applied, assistants placed)`.
+    ///
+    /// The assistant count comes off the APPLIED MOVES rather than the final
+    /// state — `crate::game::greedy`'s helper and its reason: a final state may
+    /// have recovered every assistant it ever placed, so reading the board would
+    /// report zero for a game that placed hundreds.
+    fn drive_to_the_end(
+        agent: &mut MctsAgent,
+        world_seed: u64,
+        rules: &Rules,
+        move_cap: u32,
+    ) -> (u32, usize) {
+        let pending =
+            new_game(GameConfig::for_player_count(2), rules, world_seed).expect("2P setup");
+        let mut state =
+            finalize_setup(pending, &[StartingOrderChoice::Keep(0), StartingOrderChoice::Keep(0)])
+                .expect("finalize");
+        let (mut moves, mut placed) = (0u32, 0usize);
+        while !state.is_game_over() && moves < move_cap {
+            let seat = state.current_player;
+            let view = observe(&state, seat).expect("observe");
+            let report = agent.choose(&view, rules).expect("the honest chain produces a move");
+            match &report.mv {
+                Move::PlaceThreeAreas { placements } => placed += placements.len(),
+                Move::PlaceTwoSameArea { adjacent_bonus, .. } => {
+                    placed += 2 + usize::from(adjacent_bonus.is_some());
+                }
+                _ => {}
+            }
+            state = apply_move_unchecked(&state, &report.mv, rules).expect("a chosen move applies");
+            moves += 1;
+        }
+        (moves, placed)
     }
 
     // -- values: the declared normalization (spec §2.4) -----------------------
@@ -1590,6 +2546,197 @@ mod tests {
         assert_eq!(selection_value(opponent, root, 0.9), 1.0 - 0.9);
     }
 
+    // -- priors and ordered expansion (spec §2.3, §3.2) -----------------------
+
+    /// **THE PRIOR SEMANTICS, on constructed slots** — no tree, no game.
+    ///
+    /// An unexpanded candidate competes as a virtual single-visit child carrying
+    /// its prior, so a prior and a backed-up mean are comparable AT THE SAME
+    /// exploration weight. The second cell is the one T2's scheme could not
+    /// express at all: an unvisited child was `+∞` there, so a good child could
+    /// never be re-visited while any candidate remained unexpanded — the star
+    /// tree, in one assertion.
+    #[test]
+    fn an_unexpanded_candidate_competes_on_its_prior_at_the_same_exploration_weight() {
+        let root = PlayerId(0);
+        let opponent = PlayerId(1);
+        let c = std::f64::consts::SQRT_2;
+
+        let slots = [
+            Slot::Child(ChildStat { visits: 1, value_sum: 0.30 }),
+            Slot::Unexpanded { prior: 0.80 },
+            Slot::Unexpanded { prior: 0.10 },
+        ];
+        assert_eq!(
+            ordered_select(&slots, 4, root, root, c, 0),
+            1,
+            "a strong prior must outrank a weak backed-up mean",
+        );
+
+        let slots = [
+            Slot::Child(ChildStat { visits: 1, value_sum: 0.90 }),
+            Slot::Unexpanded { prior: 0.40 },
+        ];
+        assert_eq!(
+            ordered_select(&slots, 4, root, root, c, 0),
+            0,
+            "and a strong mean must be RE-VISITED rather than a weaker candidate expanded — \
+             the concentration T2's `+∞` unvisited child made impossible",
+        );
+        assert_eq!(
+            ordered_select(&slots, 4, opponent, root, c, 0),
+            1,
+            "the opponent flips priors and means alike",
+        );
+
+        // Exploration still discounts a heavily-visited child: the prior wins on
+        // the bonus even though the mean is higher.
+        let slots =
+            [Slot::Child(ChildStat { visits: 50, value_sum: 30.0 }), Slot::Unexpanded { prior: 0.55 }];
+        assert_eq!(
+            ordered_select(&slots, 100, root, root, c, 0),
+            1,
+            "UCB1 is still UCB1 — a 50-visit child at 0.60 loses its bonus to an unexplored 0.55",
+        );
+
+        // And the tie draw reaches the FULL tied set, priors and children mixed.
+        let tied = [
+            Slot::Unexpanded { prior: 0.5 },
+            Slot::Child(ChildStat { visits: 1, value_sum: 0.5 }),
+            Slot::Unexpanded { prior: 0.5 },
+            Slot::Child(ChildStat { visits: 1, value_sum: 0.5 }),
+        ];
+        let stream = McStream::new(0xC0DE);
+        let mut seen = std::collections::BTreeSet::new();
+        for visit in 0..400u32 {
+            let word = stream.word(McSite::Ucb { branch: 0x51DE, visit });
+            seen.insert(ordered_select(&tied, 8, root, root, c, word));
+        }
+        assert_eq!(seen.len(), 4, "every tied slot must be reachable, saw {seen:?}");
+    }
+
+    /// The ordering pass fires ABOVE [`ORDERING_THRESHOLD`] and never below it,
+    /// costs exactly one scored successor per candidate, and is computed AT MOST
+    /// ONCE per node.
+    #[test]
+    fn the_ordering_pass_fires_only_above_the_threshold_and_only_once() {
+        let rules = Rules::standard();
+        let weights = WeightTable::V1;
+        let (state, seat) = placement_point(&rules);
+        let handle = DecisionHandle::new(&state, &rules);
+        let all = candidates(&handle, DEFAULT_RETREAT_SAMPLES, &mut ChaCha8Rng::seed_from_u64(3))
+            .moves;
+        assert!(all.len() > ORDERING_THRESHOLD + 1, "the fixture must exceed the threshold");
+
+        for n in [ORDERING_THRESHOLD, ORDERING_THRESHOLD + 1] {
+            let c = ctx(&rules, &weights, 1, 0x1);
+            let mut budget = ScoredBudget::unlimited();
+            let mut search = search_over(&c, seat, &mut budget);
+            let at = search.push_expandable(state.clone(), 0, all[..n].to_vec(), 0.0);
+            search.ensure_plan(at).expect("a plan");
+            match &search.nodes[at].plan {
+                Plan::Ordered { priors } => {
+                    assert!(n > ORDERING_THRESHOLD, "{n} candidates must not have been ordered");
+                    assert_eq!(priors.len(), n, "one prior per candidate");
+                    assert!(
+                        priors.iter().all(|p| (0.0..=1.0).contains(p)),
+                        "priors must sit on the declared axis: {priors:?}",
+                    );
+                    assert!(
+                        priors.iter().any(|p| *p != priors[0]),
+                        "anti-vacuity: the priors must separate the candidates",
+                    );
+                    assert_eq!(search.stats.ordering_passes, 1);
+                    assert_eq!(search.stats.ordering_scored, n as u64);
+                    assert_eq!(search.stats.scored, n as u64, "and the meter saw all of it");
+                }
+                Plan::Uniform => {
+                    assert!(n <= ORDERING_THRESHOLD, "{n} candidates must have been ordered");
+                    assert_eq!(search.stats.scored, 0, "a small node pays nothing to plan");
+                    assert_eq!(search.stats.ordering_passes, 0);
+                }
+                Plan::Deferred => panic!("ensure_plan must leave no node deferred"),
+            }
+            let spent = search.stats.scored;
+            search.ensure_plan(at).expect("a plan");
+            assert_eq!(search.stats.scored, spent, "a node's plan is computed AT MOST ONCE");
+        }
+    }
+
+    /// **THE STAR-TREE FIX, made executable** (the T2 review's finding: at a
+    /// 186-candidate Placement root every non-forced point was settled by the
+    /// root tie draw over a uniformly-drawn 64 of the family, because expansion
+    /// was a uniform draw with no priors).
+    ///
+    /// Two properties, and neither can hold under T2's scheme:
+    ///
+    /// 1. **Expansion is EVAL-ORDERED**: the expanded set is a PREFIX of the
+    ///    descending prior order — every visited candidate's prior is ≥ every
+    ///    unvisited one's. (Uniform expansion breaks this on the first draw.)
+    /// 2. **Values CONCENTRATE**: some child is visited more than once while
+    ///    candidates remain unexpanded. (T2 expanded every slot before any
+    ///    re-visit, so its max was exactly 1 here.)
+    ///
+    /// The module doc records what these two do and do not buy at the SHIPPED
+    /// `(c, scale)`: the tie-set shrinks and the decision becomes the top of the
+    /// one-ply ranking, while the tie RATE at 64 simulations does not move,
+    /// because that pair is exploration-dominated. This cell pins the mechanism,
+    /// not the knob.
+    #[test]
+    fn expansion_is_eval_ordered_and_the_visits_concentrate() {
+        let rules = Rules::standard();
+        let (world, seat) = placement_point(&rules);
+        let c = ctx(&rules, &WeightTable::V1, 64, 0xB1A5);
+        let searched = search_world(&world, seat, &c).expect("search");
+        assert!(
+            searched.roots.len() > 64,
+            "the fixture must offer more candidates than simulations ({})",
+            searched.roots.len(),
+        );
+
+        let prior = |r: &RootStat| r.prior.expect("the mandatory pass gives every root a prior");
+        let visited_floor = searched
+            .roots
+            .iter()
+            .filter(|r| r.visits > 0)
+            .map(prior)
+            .fold(f64::INFINITY, f64::min);
+        let unvisited_ceiling = searched
+            .roots
+            .iter()
+            .filter(|r| r.visits == 0)
+            .map(prior)
+            .fold(f64::NEG_INFINITY, f64::max);
+        assert!(
+            visited_floor >= unvisited_ceiling,
+            "expansion must be a prefix of the prior order: worst expanded {visited_floor} < \
+             best unexpanded {unvisited_ceiling}",
+        );
+
+        let max_visits = searched.roots.iter().map(|r| r.visits).max().expect("roots");
+        assert!(
+            max_visits > 1,
+            "values must reach the visit distribution: every expanded child was visited once, \
+             which is the star tree",
+        );
+        assert!(
+            searched.roots.iter().any(|r| r.visits == 0),
+            "anti-vacuity: the budget must NOT have covered the whole family, or property 1 \
+             would be trivially true",
+        );
+
+        // The decision is informed: the move returned is at the top of the
+        // one-ply ranking rather than a lottery over the middle of it.
+        let chosen = searched.roots[searched.chosen].one_ply.expect("a one-ply value");
+        let rank = 1 + searched.roots.iter().filter(|r| r.one_ply > Some(chosen)).count();
+        assert!(
+            rank <= searched.roots.len() / 10,
+            "the chosen move ranked {rank} of {} by one-ply value — the T2 lottery's median was \
+             66 of 186",
+            searched.roots.len(),
+        );
+    }
+
     // -- every selecting point draws over its FULL tied set (row 18) ----------
 
     /// The UCB tie draw reaches every tied child — a first-listed fallback would
@@ -1673,26 +2820,51 @@ mod tests {
         );
 
         let rules = Rules::standard();
+        let weights = WeightTable::V1;
         let (world, seat) = placement_point(&rules);
-        let c = ctx(&rules, &WeightTable::V1, 64, 0xB1A5);
-        let s = search_world(&world, seat, &c).expect("search").stats;
-        assert!(s.nodes > 1, "anti-vacuity: the search must have expanded ({} nodes)", s.nodes);
-        assert_eq!(
-            s.handles,
-            s.nodes - s.terminal_nodes,
-            "one handle per expandable node, no more — a terminal node enumerates nothing",
-        );
-        assert_eq!(s.simulations, 64, "the search ran the simulations it was asked for");
-        assert_eq!(
-            s.scored,
-            s.nodes - 1,
-            "exactly one scored successor per created node, the root excepted (it was not \
-             applied) — the identity the budget meter will be gated on",
-        );
-        assert!(
-            s.nodes - 1 <= s.simulations,
-            "a simulation creates at most one node (none when it ends at a terminal)",
-        );
+        // BOTH leaf rules, because the two identities below differ between them
+        // by exactly the completion terms — and a single-leaf cell would let a
+        // completion stop being charged, or start being charged twice, with
+        // nothing to notice.
+        for leaf in [LeafRule::MidTurnDiag, LeafRule::HandOff] {
+            let c = ctx_leaf(&rules, &weights, 64, 0xB1A5, leaf);
+            let s = search_world(&world, seat, &c).expect("search").stats;
+            assert!(s.nodes > 1, "anti-vacuity ({leaf:?}): the search must have expanded");
+            assert_eq!(
+                s.handles,
+                s.nodes - s.terminal_nodes + s.completion_points,
+                "{leaf:?}: one handle per expandable node plus one per completion ply beyond \
+                 the first — a terminal node enumerates nothing, and a completion's first ply \
+                 re-uses its node's cache",
+            );
+            assert_eq!(s.simulations, 64, "{leaf:?}: the search ran the simulations it was asked");
+            assert_eq!(
+                s.scored,
+                s.root_scored + s.ordering_scored + s.completion_scored + (s.nodes - 1),
+                "{leaf:?}: the meter's four contributors — mandatory root pass, ordering passes, \
+                 completions, and one expansion per created node with the root excepted (it was \
+                 never applied)",
+            );
+            assert!(
+                s.nodes - 1 <= s.simulations,
+                "{leaf:?}: a simulation creates at most one node (none when it ends at a terminal)",
+            );
+            assert_eq!(
+                s.root_scored, s.root_candidates,
+                "{leaf:?}: the root pass is MANDATORY — every candidate, exactly once",
+            );
+            match leaf {
+                LeafRule::HandOff => {
+                    assert!(s.completion_scored > 0, "the shipped leaf must complete turns");
+                    assert!(s.completion_points > 0, "and pay for the plies it enumerates");
+                    assert_eq!(s.completion_cap_hits, 0, "and never hit the ply guard");
+                }
+                _ => {
+                    assert_eq!(s.completion_scored, 0, "{leaf:?} completes nothing");
+                    assert_eq!(s.completion_points, 0);
+                }
+            }
+        }
     }
 
     /// **THE ROUTE-DFS COUNTER PIN, harness-scoped.**
@@ -1897,6 +3069,383 @@ mod tests {
         let c = ctx(&rules, &WeightTable::V1, 8, 0x1);
         let err = search_world(&world, other, &c).expect_err("the wrong seat must be refused");
         assert!(err.contains("is to play"), "the refusal must name the mismatch: {err}");
+    }
+
+    // -- the leaf rules (spec §2.1) -------------------------------------------
+
+    /// **THE COMPLETION IS THE GREEDY LINE TO THE HAND-OFF — a MIRROR pin**, the
+    /// shape `a_decision_is_a_function_of_its_three_stream_words` uses: the loop
+    /// is re-driven here out of [`complete_ply`](Search::complete_ply) (whose
+    /// one-ply behaviour the closed-form cell below pins independently) plus the
+    /// documented key line, so what this checks is the COMPOSITION — the plies,
+    /// their keys, the termination, and that the value returned is the folded
+    /// HAND-OFF extremum rather than a reading of wherever the line stopped.
+    ///
+    /// A closed-form cell over the whole rule is not available at any fixture in
+    /// this game: it would need a state whose candidates ALL hand off, and a
+    /// scan of the entire 523-move `MASTER` walk found no state with even two
+    /// (a turn's last move is the forced tail of a phase, and the tails that
+    /// exist do not move the evaluation at all — which is also why a "one move
+    /// from the transition" cell could not tell this rule from the mid-turn
+    /// one). Recorded rather than worked around.
+    #[test]
+    fn a_completion_is_the_greedy_line_to_the_hand_off_ply_by_ply() {
+        const KEY: u64 = 0x99;
+        let rules = Rules::standard();
+        let weights = WeightTable::V1;
+        let (state, seat) = placement_point(&rules);
+        let handle = DecisionHandle::new(&state, &rules);
+        let moves = candidates(&handle, DEFAULT_RETREAT_SAMPLES, &mut ChaCha8Rng::seed_from_u64(9))
+            .moves;
+
+        let c = ctx_leaf(&rules, &weights, 1, 0x5EA, LeafRule::HandOff);
+        let mut budget = ScoredBudget::unlimited();
+        let mut search = search_over(&c, seat, &mut budget);
+        let got = search.hand_off_value(&state, &moves, KEY).expect("a completion leaf");
+        let stats = search.stats;
+
+        let mut mirror_budget = ScoredBudget::unlimited();
+        let mut mirror = search_over(&c, seat, &mut mirror_budget);
+        let mut best: Option<f64> = None;
+        let mut key = completion_branch(KEY);
+        let mut carried =
+            mirror.complete_ply(&state, &moves, key, 0, true, &mut best).expect("ply 0");
+        let mut plies = 1;
+        while let Some((next, slot)) = carried {
+            key = descend_branch(key, slot);
+            let (cands, _) = mirror.expand_point(&next, key, false).expect("a ply's candidates");
+            carried =
+                mirror.complete_ply(&next, &cands, key, plies, true, &mut best).expect("a ply");
+            plies += 1;
+        }
+
+        assert!(plies > 1, "anti-vacuity: the fixture must take more than one ply to hand off");
+        assert_eq!(Some(got), best, "the leaf's value is the folded hand-off extremum");
+        assert_eq!(
+            (stats.completion_scored, stats.completion_points),
+            (mirror.stats.completion_scored, u64::from(plies - 1)),
+            "and it pays exactly the plies the line took",
+        );
+    }
+
+    /// **THE COMPLETION'S DIRECTION, in closed form.** The greedy cut serves the
+    /// ACTING seat: at a root-seat node it continues the successor that
+    /// MAXIMIZES the root value, and at an opponent node the one that MINIMIZES
+    /// it — [`selection_value`]'s convention, which the leaf inherits rather
+    /// than modelling a second opponent. Both extremes are recomputed here from
+    /// `apply` + `observe` + [`eval::score`].
+    #[test]
+    fn the_completions_greedy_cut_serves_the_acting_seat() {
+        let rules = Rules::standard();
+        let weights = WeightTable::V1;
+        let (state, actor) = placement_point(&rules);
+        let handle = DecisionHandle::new(&state, &rules);
+        let moves = candidates(&handle, DEFAULT_RETREAT_SAMPLES, &mut ChaCha8Rng::seed_from_u64(9))
+            .moves;
+        assert!(moves.len() > 1, "the fixture must offer a choice");
+
+        for root_seat in [actor, PlayerId(1 - actor.0)] {
+            let maximize = root_seat == actor;
+            let raws: Vec<i64> = moves
+                .iter()
+                .map(|mv| {
+                    let next = apply_move_unchecked(&state, mv, &rules).expect("apply");
+                    assert_eq!(next.current_player, actor, "no candidate here may hand off");
+                    eval::score(&observe(&next, root_seat).expect("observe"), &rules, &weights)
+                })
+                .collect();
+            let want = raws.iter().copied().fold(
+                if maximize { i64::MIN } else { i64::MAX },
+                |acc, v| if maximize { acc.max(v) } else { acc.min(v) },
+            );
+            assert!(
+                raws.iter().any(|v| *v != want),
+                "anti-vacuity: the successors must not all score the same",
+            );
+
+            let c = ctx_leaf(&rules, &weights, 1, 0x5EA, LeafRule::HandOff);
+            let mut budget = ScoredBudget::unlimited();
+            let mut search = search_over(&c, root_seat, &mut budget);
+            let mut best: Option<f64> = None;
+            let kept = search
+                .complete_ply(&state, &moves, 0, 0, maximize, &mut best)
+                .expect("one completion ply")
+                .expect("a mid-turn ply must continue");
+            assert_eq!(best, None, "no candidate handed off, so nothing may be folded as a leaf");
+            assert_eq!(
+                raws[kept.1], want,
+                "seat {} at a node acted by seat {}: the cut must keep the ACTING seat's extreme",
+                root_seat.0, actor.0,
+            );
+        }
+    }
+
+    /// A MULTI-ply completion pays for the plies it enumerates, and the three
+    /// leaf rules are three different values at the same node — the anti-vacuity
+    /// the closed-form cell above cannot give (its fixture is one ply deep).
+    #[test]
+    fn the_leaf_rules_are_three_distinct_values_and_the_default_is_the_completion() {
+        assert_eq!(LeafRule::default(), LeafRule::HandOff, "spec §2.1's DEFAULT");
+        let rules = Rules::standard();
+        assert_eq!(MctsAgent::new(&rules, 1).leaf(), LeafRule::HandOff, "and the agent's");
+
+        let weights = WeightTable::V1;
+        let (state, seat) = placement_point(&rules);
+        let handle = DecisionHandle::new(&state, &rules);
+        let moves = candidates(&handle, DEFAULT_RETREAT_SAMPLES, &mut ChaCha8Rng::seed_from_u64(9))
+            .moves;
+        let value_of = |leaf: LeafRule| -> (f64, McSearchStats) {
+            let c = ctx_leaf(&rules, &weights, 1, 0x5EA, leaf);
+            let mut budget = ScoredBudget::unlimited();
+            let mut search = search_over(&c, seat, &mut budget);
+            let v = search.leaf_value(&state, &moves, 0).expect("a leaf value");
+            (v, search.stats)
+        };
+        let (hand_off, s) = value_of(LeafRule::HandOff);
+        let (mid_turn, m) = value_of(LeafRule::MidTurnDiag);
+        let (constant, k) = value_of(LeafRule::ConstantDiag);
+
+        assert!(s.completion_points > 0, "a Placement node is several plies from its hand-off");
+        assert!(
+            s.completion_scored > moves.len() as u64,
+            "and scores more than the first ply's candidates ({} for {} candidates)",
+            s.completion_scored,
+            moves.len(),
+        );
+        assert_eq!(s.handles, s.completion_points, "one handle per ply beyond the first");
+        assert_eq!((m.completion_scored, m.handles), (0, 0), "the diagnostic leaf completes none");
+        assert_eq!((k.completion_scored, k.handles), (0, 0), "nor does the constant one");
+        assert_eq!(constant, 0.5, "the constant leaf is the mid-point of the axis");
+        assert_ne!(
+            hand_off, mid_turn,
+            "anti-vacuity: completing the turn must move the value away from the mid-turn read",
+        );
+        assert!((0.0..=1.0).contains(&hand_off), "and stay on the declared axis: {hand_off}");
+    }
+
+    // -- the scored-successor budget (spec §3.4) ------------------------------
+
+    /// **THE CAP'S SEMANTICS.** A simulation is STARTED only while
+    /// `realized < cap`; a started one completes (so the realized total lands at
+    /// or past the cap, never short of it while simulations remain); the bind is
+    /// recorded; and the whole thing is a deterministic function of the master.
+    ///
+    /// The uncapped arm beside it is the anti-vacuity AND the no-op claim: an
+    /// absent cap runs every simulation asked for and binds nothing.
+    #[test]
+    fn a_capped_search_starts_a_simulation_only_while_the_budget_admits_one() {
+        const CAP: u32 = 400;
+        const SIMS: u32 = 64;
+        let rules = Rules::standard();
+        let (world, seat) = on_board_movement_point(&rules);
+        let c = ctx(&rules, &WeightTable::V1, SIMS, 0xB1A5);
+
+        let mut budget = ScoredBudget::capped(CAP);
+        let s = search_world_budgeted(&world, seat, &c, &mut budget).expect("search");
+        assert_eq!(s.stats.scored, budget.realized(), "the counter IS the meter");
+        assert!(
+            s.stats.root_scored < u64::from(CAP),
+            "premise: the fixture's root pass ({}) must fit the cap",
+            s.stats.root_scored,
+        );
+        assert!(
+            s.stats.simulations < u64::from(SIMS),
+            "the cap must have stopped the search short ({} simulations)",
+            s.stats.simulations,
+        );
+        assert!(s.stats.simulations > 0, "but not before it started");
+        assert_eq!(s.stats.budget_binds, 1, "and the bind is recorded");
+        assert_eq!(s.stats.budget_starved, 0, "a fitting root pass is not starvation");
+        assert!(
+            budget.realized() >= u64::from(CAP),
+            "a started simulation completes, so the total lands at or past the cap: {}",
+            budget.realized(),
+        );
+
+        let mut again = ScoredBudget::capped(CAP);
+        let s2 = search_world_budgeted(&world, seat, &c, &mut again).expect("search");
+        assert_eq!(s.stats, s2.stats, "the same master must truncate identically");
+        assert_eq!(again, budget, "down to the meter");
+        assert_eq!(
+            format!("{:?}", s.roots[s.chosen].mv),
+            format!("{:?}", s2.roots[s2.chosen].mv),
+            "and decide identically",
+        );
+
+        let mut uncapped = ScoredBudget::unlimited();
+        let u = search_world_budgeted(&world, seat, &c, &mut uncapped).expect("search");
+        assert_eq!(u.stats.simulations, u64::from(SIMS), "an absent cap runs the full count");
+        assert_eq!(u.stats.budget_binds, 0, "and can never bind");
+        assert_eq!(uncapped.overshoot(), 0, "nor overshoot");
+        assert!(u.stats.scored > s.stats.scored, "anti-vacuity: the cap must have cost something");
+    }
+
+    /// **THE STERILE-SIMULATION GUARD.** The experiment's own shape is a scored
+    /// CAP with `simulations` left at a ceiling — and a simulation that ends at
+    /// an already-created terminal node charges nothing, so the cap cannot bound
+    /// that loop at all. Found by driving a full self-play game, where it was an
+    /// infinite loop (see [`MAX_STERILE_SIMULATIONS`] for the measurement); this
+    /// is the executable version.
+    ///
+    /// The fixture is a decision point from which the game can END — the last
+    /// few of the `MASTER` walk, where the tree runs out of unfinished game to
+    /// search. (A state whose EVERY candidate ends the game would be a tidier
+    /// fixture and does not exist in this walk: the game ends by a particular
+    /// action while its siblings play on.)
+    #[test]
+    fn a_search_whose_tree_runs_out_of_game_still_terminates() {
+        let rules = Rules::standard();
+        let (world, seat) = point_before_the_end(&rules, 2);
+
+        // Simulations bounded ONLY by the budget — the contestant shape.
+        let mut c = ctx(&rules, &WeightTable::V1, u32::MAX, 0xE7D);
+        c.simulations = u32::MAX;
+        let mut budget = ScoredBudget::capped(10_000);
+        let s = search_world_budgeted(&world, seat, &c, &mut budget).expect("search");
+
+        assert!(s.stats.terminal_nodes > 0, "premise: the tree must reach finished games");
+        assert_eq!(
+            s.stats.sterile_simulations,
+            u64::from(MAX_STERILE_SIMULATIONS),
+            "the guard is what stopped it: every simulation past the exhausted tree is sterile",
+        );
+        assert!(
+            budget.realized() < 10_000,
+            "and it stopped WITHOUT spending the budget — which is the whole point: the meter \
+             could not bound this loop",
+        );
+        assert_eq!(s.stats.budget_binds, 0, "nothing was denied by the cap here");
+        assert!(
+            s.roots.iter().any(|r| r.visits > 0),
+            "the decision is still taken on the tree that was built",
+        );
+    }
+
+    /// **THE STARVED FIXTURE (spec §3.4's fallback chain).** A cap smaller than
+    /// the MANDATORY root pass leaves nothing for simulations — so the pass runs
+    /// anyway, overshoots, records the starvation, and the decision falls back
+    /// to the one-ply values the pass produced.
+    ///
+    /// That fallback is why the pass is mandatory: no candidate is ever
+    /// valueless, so a starved decision is a one-ply argmax over the WHOLE
+    /// family rather than a draw over whichever prefix the budget reached — and
+    /// never a first-listed pick, which at a Placement root is the empty
+    /// placement (ledger row 18 through the budget).
+    #[test]
+    fn a_starved_root_pass_falls_back_to_the_mandatory_one_ply_values() {
+        const CAP: u32 = 8;
+        let rules = Rules::standard();
+        let (world, seat) = placement_point(&rules);
+        let c = ctx(&rules, &WeightTable::V1, 64, 0xB1A5);
+
+        let mut budget = ScoredBudget::capped(CAP);
+        let s = search_world_budgeted(&world, seat, &c, &mut budget).expect("search");
+        assert!(
+            s.stats.root_candidates > u64::from(CAP),
+            "anti-vacuity: the fixture's root family ({}) must exceed the cap",
+            s.stats.root_candidates,
+        );
+        assert_eq!(
+            s.stats.root_scored, s.stats.root_candidates,
+            "the root pass is MANDATORY: every candidate scored, cap or no cap",
+        );
+        assert_eq!(s.stats.scored, s.stats.root_scored, "and no deeper work may be paid for");
+        assert_eq!(s.stats.simulations, 0, "no simulation could start");
+        assert_eq!(s.stats.nodes, 1, "so only the root node exists");
+        assert_eq!(s.stats.budget_starved, 1);
+        assert_eq!(s.stats.budget_binds, 1, "starvation is a bind");
+        assert_eq!(
+            budget.overshoot(),
+            s.stats.scored - u64::from(CAP),
+            "the mandatory pass's overrun is reported, not hidden",
+        );
+
+        let best = s.roots.iter().filter_map(|r| r.one_ply).max().expect("one-ply values");
+        let worst = s.roots.iter().filter_map(|r| r.one_ply).min().expect("one-ply values");
+        assert!(best > worst, "anti-vacuity: the one-ply values must separate the candidates");
+        assert_eq!(
+            s.roots[s.chosen].one_ply,
+            Some(best),
+            "a starved decision is the one-ply argmax over the whole family",
+        );
+        assert!(
+            s.roots.iter().all(|r| r.visits == 0),
+            "premise: nothing was searched, so the visit argmax would have been a whole-family \
+             draw — which is exactly what the fallback replaces",
+        );
+    }
+
+    /// The agent's tally is the experiment's read-out, so it is wired end to end
+    /// rather than merely written: an uncapped seat binds nothing and records no
+    /// overshoot DISTRIBUTION at all, a capped one records both.
+    #[test]
+    fn the_tally_carries_the_budget_meters_and_an_absent_cap_records_no_distribution() {
+        const SEED: u64 = 0xB0DE_0000_0001;
+        let rules = Rules::standard();
+        let (world, seat) = placement_point(&rules);
+        let view = observe(&world, seat).expect("observe");
+
+        let mut uncapped = MctsAgent::new(&rules, SEED).with_simulations(8);
+        assert_eq!(uncapped.cap(), None, "the cap knob is OFF by default");
+        uncapped.choose(&view, &rules).expect("a decision");
+        let stats = *uncapped.last_stats().expect("stats");
+        let t = uncapped.tally();
+        assert_eq!(t.decisions(), 1);
+        assert_eq!(t.candidates_scored(), stats.scored, "the tally sums what the search paid");
+        assert_eq!(t.root_scored(), stats.root_scored);
+        assert!(t.root_scored() > 0 && t.root_scored() < t.candidates_scored(), "a real share");
+        assert_eq!(t.budget_binds(), 0, "an absent cap can never bind");
+        assert_eq!(t.budget_starved_decisions(), 0);
+        assert_eq!(t.overshoot(), None, "and records no overshoot distribution");
+
+        let mut capped = MctsAgent::new(&rules, SEED).with_simulations(8).with_cap(Some(8));
+        assert_eq!(capped.cap(), Some(8));
+        capped.choose(&view, &rules).expect("a starved decision still answers");
+        let t = capped.tally();
+        assert_eq!(t.budget_starved_decisions(), 1, "the root pass alone spent the cap");
+        assert_eq!(t.budget_binds(), 1, "starvation is a bind");
+        assert_eq!(
+            t.overshoot().map(|o| o.decisions),
+            Some(1),
+            "and a capped decision always contributes an overshoot sample, zero or not",
+        );
+        assert!(t.overshoot().expect("a distribution").max > 0, "this one overran");
+    }
+
+    /// **THE DEGENERACY PIN (T2 review NOTE 7; the capped-S1 arm's sibling).** A
+    /// search in which NO value reaches any decision — every leaf, prior and
+    /// terminal constant, every choice a keyed draw — must still put assistants
+    /// on the board and END.
+    ///
+    /// It is the tripwire for the failure this architecture can produce quietly:
+    /// a tree that settles on "place nothing" every turn looks, from outside,
+    /// exactly like a game that never finishes (the greedy rung's ZERO-weights
+    /// pin measured that at 1,501 turns when its tie-break was made
+    /// first-listed). Nothing here asserts anything about STRENGTH — a
+    /// value-blind search is not supposed to play well, only to play.
+    #[test]
+    fn a_value_blind_search_still_places_assistants_and_finishes_a_game() {
+        const MOVES: u32 = 20_000;
+        let rules = Rules::standard();
+        let mut agent = MctsAgent::new(&rules, 0xB111_0000_0001)
+            .with_simulations(4)
+            .with_leaf(LeafRule::ConstantDiag);
+        let (moves, placed) = drive_to_the_end(&mut agent, MASTER, &rules, MOVES);
+        println!("value-blind self-play: {moves} moves · {placed} assistants placed");
+        assert!(moves < MOVES, "the game must END, not run out the move budget");
+        assert!(placed > 0, "a value-blind search must still place assistants");
+        assert_eq!(agent.tally().decisions(), u64::from(moves), "one decision per applied move");
+
+        // Anti-vacuity: the arm really was blind — the priors it ranked on are
+        // constant, so nothing but the keyed draws could have decided anything.
+        let (world, seat) = placement_point(&rules);
+        let c = ctx_leaf(&rules, &WeightTable::V1, 4, 0x1, LeafRule::ConstantDiag);
+        let s = search_world(&world, seat, &c).expect("search");
+        assert!(s.roots.len() > 1, "premise: a contested point");
+        assert!(
+            s.roots.iter().all(|r| r.prior == Some(0.5) && r.one_ply == Some(0)),
+            "every value must be constant under the blind rule",
+        );
     }
 
     /// The tree descends past the hand-off, which is the channel spec §3.2
