@@ -41,7 +41,7 @@ That link is a hosted copy, so it opens and renders in a browser. The source of 
 repo — GitHub shows `.html` as source rather than rendering it, so read that one by opening the
 file locally.
 
-## Status (2026-07-27)
+## Status (2026-08-05)
 
 The engine plays complete, rules-correct games at 2–4 players and has been verified
 **differentially**: an independently-authored rules oracle — written from the rulebook and
@@ -54,9 +54,9 @@ payloads, mutation-proved the invariant suite, and closed all four rules ambigui
 surfaced with owner rulings. Full report:
 [`docs/plans/2026-07-20-phase-2.9-final-report.md`](docs/plans/2026-07-20-phase-2.9-final-report.md).
 
-**The computer player ladder (Phase 3) is four sub-phases in**, governed by the accepted map
-[`docs/plans/2026-07-25-phase3-map.md`](docs/plans/2026-07-25-phase3-map.md) and all merged with
-`SEMANTICS_REV` unmoved at 5:
+**The computer player ladder (Phase 3) is five sub-phases in**, governed by the accepted map
+[`docs/plans/2026-07-25-phase3-map.md`](docs/plans/2026-07-25-phase3-map.md), every one of them
+with `SEMANTICS_REV` unmoved at 5 (3.0–3.3 merged; 3.4 sits on its branch as this is written):
 
 - **3.0 — honest observation** (PRs #6–#7): a seat-relative `PlayerView` masking the five-member
   hidden set, plus a conservation-consistent belief sampler — a bot takes a view, never a raw
@@ -75,11 +75,22 @@ surfaced with owner rulings. Full report:
   family-weighted rung on the committed regression master AND on a freshly drawn OS-entropy
   master (rule-of-three bounds 0.985, VP margins +67/+68). Close report:
   [`docs/plans/2026-07-27-phase3.3-close-report.md`](docs/plans/2026-07-27-phase3.3-close-report.md).
+- **3.4 — the discriminating experiment** (branch `phase3.4-search-arch`, 2026-08-05): a UCT
+  contestant (`mcts-v1`) and a shared **scored-successor budget** that caps either architecture on
+  one currency, then a **pre-registered** matched-budget experiment — the decision rule committed
+  before any cell ran. Seven cells, 2,400 games, one attempt: **MCTS-v1 is NOT adopted; the 3.3
+  turn-boundary shallow search is retained, on the merits.** Both node-matched arms landed entirely
+  below the null (θ̂ 0.045 and 0.050, the second on a freshly drawn master) and so did the
+  wall-matched cell against the shipped rung (θ̂ 0.070 at a 1.033 wall ratio) — the map's
+  "strength-per-node and strength-per-wallclock can rank differently" was tested and here they
+  agreed. MCTS-v1 stays as a labelled diagnostic under release gate #14. Decision record:
+  [`docs/plans/2026-08-04-phase3.4-architecture-decision.md`](docs/plans/2026-08-04-phase3.4-architecture-decision.md);
+  close report:
+  [`docs/plans/2026-08-05-phase3.4-close-report.md`](docs/plans/2026-08-05-phase3.4-close-report.md).
 
 **Next:** the Phase-2 live gate game (track a physical game start to finish — awaiting
-scheduling; every pre-rev-5 save is unresumable, start fresh) and the Phase-3.4 discriminating
-experiment (shallow-search-scaled vs MCTS at matched budgets — kickoff prompt:
-[`docs/plans/2026-07-27-phase3.4-kickoff-prompt.md`](docs/plans/2026-07-27-phase3.4-kickoff-prompt.md)).
+scheduling; every pre-rev-5 save is unresumable, start fresh) and Phase 3.5 — the bar (the
+retained architecture productionized, evaluator v2, and the acceptance play).
 The CLI is tester-ready; start with the linked HTML guide and report any table/CLI mismatch.
 
 Releases now track completed phases (**v0.3.3** ↔ Phase 3.3; the first version bump in the
@@ -147,17 +158,19 @@ your seat), `undo`, `save`, `q`. Full tester guide:
 
 **Gates.** Per-edit (debug): the four crate suites + `cargo clippy --workspace --all-targets
 -- -D warnings`, all zero-warning. Pre-merge: all **fourteen** release gates below — the fourteenth is Phase 3.4's
-architecture gate, added 2026-08-04 (~32.5s measured alone), which also restates the roster target
-**≤360s → ≤420s** on the grounds of one added binary; the whole fourteen are re-measured as one
-sequence at the 3.4 close. The **thirteen**-gate roster measured **313.40s** together as one sequence 2026-07-27 at the
-`phase3.3-evaluator` close (Apple M5, quiet machine, release binaries pre-built, the arena gate
-single-threaded because its documented command says so): fuzz 47.88 · census 0.75 · observation
-2.93 · equivalence 27.76 · action-source worst case 0.51 · arena gate 20.79 · policy diversity
-7.53 · **evaluator gate 144.59** · piped dogfood 19.70 · differential 32.48 · routes3 2.29 ·
-scoring 2.30 · routes3 worst case 3.80 — all rc=0, and **under** the 3.3 target of ≤360s. The
-twelve pre-3.3 gates sum to ~168.8s inside that run against 152.17s at the 3.2 close, the largest
-mover being the differential gate (22.77 → 32.48, +43%) and the dogfood second (+28%); per-gate
-shapes are unchanged, so that is load variance. Re-measure the whole table as one run at every
+architecture gate, added 2026-08-04, which also restates the roster target
+**≤360s → ≤420s** on the grounds of one added binary. The **fourteen**-gate roster measured
+**326.70s** together as one uninterrupted sequence 2026-08-05 at the `phase3.4-search-arch` close
+(Apple M5, quiet machine, release binaries pre-built first, the arena/evaluator/architecture gates
+single-threaded because their documented commands say so): fuzz 46.57 · census 0.78 · observation
+2.95 · equivalence 27.69 · action-source worst case 0.45 · arena gate 21.05 · policy diversity
+6.35 · **evaluator gate 144.53** · **architecture gate 32.88** · piped dogfood 12.60 ·
+differential 23.03 · routes3 1.83 · scoring 2.10 · routes3 worst case 3.44 — all rc=0, and
+**under** the restated ≤420s target. The thirteen pre-3.4 gates sum to 293.37s inside that run
+against 313.40s at the 3.3 close, so the roster gained a binary and still got faster; the two
+largest movers are both downward (differential 32.48 → 23.03, dogfood 19.70 → 12.60) and are the
+same two rows that were up at the 3.3 close, while the evaluator gate reproduced to within 0.06s —
+per-gate shapes are unchanged, so that is load variance. Re-measure the whole table as one run at every
 close: a sum of per-command times from separate sessions is not a measured total. This table is the
 binding list — if it and CLAUDE.md's two-tier policy ever disagree, they are both wrong until
 reconciled.
