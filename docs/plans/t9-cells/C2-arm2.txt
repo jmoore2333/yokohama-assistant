@@ -1,0 +1,29 @@
+=== cell c2-arm2 ===
+  build=release semantics_rev=5 master=os-entropy (drawn per run, printed below) single-threaded=yes
+  players=2
+  x=mcts-v1@v1{c=100000,cap=750,eval_impl=2,k=1,leaf=0,m=8,scale=100,weights=-2162047371061899018}
+  y=lookahead-v1@v1{b=4,cap=750,eval_impl=2,k=1,m=8,weights=-2162047371061899018}
+  units=200
+  games=400
+  setup-identical=yes (Keep-homogeneous)
+  per-move invariants=true
+  emit=off
+  cell=c2-arm2 players=2 x=mcts-v1@v1{c=100000,cap=750,eval_impl=2,k=1,leaf=0,m=8,scale=100,weights=-2162047371061899018} y=lookahead-v1@v1{b=4,cap=750,eval_impl=2,k=1,m=8,weights=-2162047371061899018} units=200 unit=pair (2 seatings) games=400 master=os-entropy (drawn):0xb2e970112d220736 bootstrap_B=10000 resample_seed=0xab4415a39688bae9 single-threaded=yes fixed-N=yes setup-identical=yes
+  theta_hat = 0.050000   [null for this cell is printed in the cross-checks]
+  interval  = bootstrap 95% [0.030000, 0.072500] (B=10000, resample_seed=0xab4415a39688bae9)
+  seat0 wins 206/400 · top-VP ties decided for seat 0: 0 · mean VP margin -65.64
+    - null reference for this cell: 1/2 = 0.500000 (ONE X against 1 Y seats — the single-champion shape; 0.5 is the null only at 2P)
+    - unit-t 95% cross-check: [0.027898, 0.072102] (n=200 units, sd=0.158511, t(0.975, 199)≈1.9720) — printed, never primary; asymptotic expansion, ~11% narrow at df=1 and unreliable below df≈10 (T7 review F5)
+    - Wilson-on-pooled-games 95% cross-check: [0.032597, 0.075964] (20/400 games) — CROSS-CHECK ONLY and NEVER primary at 3-4P: games within a unit are clustered (E2 measured 4P rho=+0.051, dragging a nominal 95% interval to ~93.2% true coverage), so this row understates the width the unit bootstrap reports
+    - top-VP ties: 0/400 games (0.0000), 0 decided for seat 0 — `final_result` is a total order and never reports a tie, so this is how often the clockwise tie-break DECIDED the game; at 2P seat 0 takes every tie, so its award is half this rate (spec §4's +0.63pp at the bracket rate of 1.26%)
+    end-trigger rates over 400 games (95% Wilson):
+      ChurchTrackFull          385/400   = 0.9625  [0.9391, 0.9771]
+      CustomsTrackFull           1/400   = 0.0025  [0.0004, 0.0140]
+      OrderDeckEmpty            14/400   = 0.0350  [0.0210, 0.0579]
+  unit shares (n=200, X's win share per unit): 181×0.0000 · 18×0.5000 · 1×1.0000
+  realized unit variance = 0.025000 (population, /n) · 0.025126 (sample, /(n-1)) — spec §4.1's Var_pair at 2P
+  budget axes (spec §0.3) — scored successors are the currency, root pass included:
+    X: 69975 decisions · scored 24666302 (352.5 /dec, root share 0.082) · cap binds 30782 · starved 0 · wall 465.6 us/dec
+    Y: 93770 decisions · scored 16687492 (178.0 /dec, root share 0.126) · cap binds 14399 · starved 0 · wall 265.0 us/dec
+    read: the SCORED figures are deterministic in the master and reproduce; the WALL figures are load-sensitive, are not on the CellReport, and are never asserted. Y sums the players-1 field seats. A cap that never binds is not a matched budget.
+  wall 57.80s for 400 games (144.5 ms/game, release build)
