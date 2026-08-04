@@ -123,8 +123,12 @@
 //! continuing stream through an incrementally grown tree would make a node's
 //! candidate list depend on the order its siblings happened to be expanded in.
 //! The SCHEME is [`crate::game::greedy::candidates`] verbatim (spec §3.3); only
-//! its seeding is per-node, and that is the MCTS analogue of the per-decision
-//! keying lookahead adopted at its T5 review for the identical reason.
+//! its seeding is per-node — scheme-level identity, not draw-level: at a given
+//! `candidate_seed` the DRAWN retreat samples and placement reservoirs differ
+//! from greedy's own draws, deliberately, and the fidelity tests compare
+//! dice-free decision points — and that is the MCTS analogue of the
+//! per-decision keying lookahead adopted at its T5 review for the identical
+//! reason.
 //!
 //! lookahead's own `descend_branch` folds into 32 bits and records the
 //! resulting collision hazard as a known limitation; this one folds into 64
@@ -159,19 +163,35 @@
 //! Non-termination is a live hazard class this cycle — the capped S1 arm has a
 //! MEASURED middle cap band where 2P self-play never ends
 //! (`LookaheadAgent::with_cap`) — so the arm was probed before it was handed on.
-//! Authoring measurement (release, out-of-gate scratch harness, nothing asserted
+//! Authoring probe (release, out-of-gate scratch harness, nothing asserted
 //! anywhere; 2P MCTS-vs-MCTS self-play at the shipped knobs, masters
 //! `0x1EA4_2026_0727_0001 ^ (m · 0x11)` for `m = 0..3`, 20,000-move budget):
-//! **3/3 complete**, 523–607 moves, **100–108 turns**, 94–98 non-empty placements
-//! per game, 47–69 ms/game.
+//! **3/3 complete**. The turn-count RANGE first recorded here (100–108) is
+//! WITHDRAWN (T2 review): the probe's block omitted its agent-stream seeding,
+//! Keep resolution and invariants setting — and the quantity is dominated by
+//! them. The review reproduced 3/3 completion under three plausible seedings
+//! but measured **50–304 turns** across them (N = 3 masters each, contended
+//! walls 26–140 ms/game), so what stands is completion under every seeding
+//! tried, and the qualitative note that MCTS self-play turns run well above
+//! lookahead self-play's under all of them — the slow-development shape R3
+//! measured for a naive UCT-eval arm, arriving again here. Recorded, not
+//! defended: the leaf rule and the budget wiring the next task brings are the
+//! two things expected to move it, and the executable version of this probe is
+//! that task's degeneracy pin.
 //!
-//! Read the TURN count, not just the completion: `lookahead-v1:b=4` self-play
-//! runs 40.2 turns on the same engine. A game that takes 2.6× as many turns to
-//! trigger an end condition is a game whose players are developing slowly — the
-//! shape R3 measured for a naive UCT-eval arm, arriving again here. It is
-//! recorded, not defended: the leaf rule and the budget wiring that the next
-//! task brings are exactly the two things expected to move it, and the executable
-//! version of this probe is that task's degeneracy pin.
+//! Review measurement (T2 review, release, out-of-tree probe, nothing asserted:
+//! `Rules::standard()`, frozen V1, 2P, master `0x1EA4_2026_0727_0001`,
+//! Greedy-v1 walk, first 120 decision points): at `DEFAULT_SIMULATIONS = 64`,
+//! **38 of 46 non-forced points (83%) are settled by the root tie draw** —
+//! Placement 19/19, tie-sets of 64 of 186 candidates, `max_depth` 1.0: a STAR
+//! TREE in which no value reaches the decision. At sims = 750 (the experiment's
+//! B\*) Movement recovers (1/19 tie-decided) but **Placement is still 19/19**
+//! (tie-set 6–24). Cause: the expansion pick is a uniform keyed draw over
+//! unexpanded slots and the read-out is the mandated argmax over visits, with
+//! no priors — spec §2.3's ordering/priors are the NEXT task's job, this
+//! measurement is the defect they must visibly fix (re-measure the Placement
+//! tie-set after), and spec §4's screening must not read these figures as a
+//! statement about UCT-with-priors.
 
 use rand::{Rng, RngCore, SeedableRng};
 use rand_chacha::ChaCha8Rng;
@@ -350,7 +370,6 @@ impl McStream {
         }
         acc
     }
-
 }
 
 // There is deliberately no `pick(site, len)` convenience here, unlike
@@ -548,6 +567,13 @@ pub struct McSearchStats {
     pub root_candidates: u64,
     /// Simulations run. 0 at a forced decision point.
     pub simulations: u64,
+    /// The ROOT node's own visit count after the search — 0 at a forced point,
+    /// otherwise equal to `simulations` BY CONSTRUCTION (the root is on every
+    /// backprop path). Surfaced because a backprop that skips the root is
+    /// treant's D1 verbatim: [`ucb1`] floors `parent_visits` at 1, `ln 1 = 0`,
+    /// and the exploration term goes silently inert while every test that does
+    /// not read this field stays green (T2 review MUST-1's mutation).
+    pub root_visits: u32,
     /// Nodes created, root included.
     pub nodes: u64,
     /// [`DecisionHandle`]s built. **Equal to `nodes − terminal_nodes`** by
@@ -947,6 +973,7 @@ pub fn search_world(
         search.stats.simulations = u64::from(ctx.simulations.max(1));
     }
 
+    search.stats.root_visits = search.nodes[ROOT].visits;
     let root_node = &search.nodes[ROOT];
     let roots: Vec<RootStat> = root_node
         .candidates
@@ -1220,6 +1247,163 @@ mod tests {
             stream: McStream::new(key),
             candidate_seed: 0xC0FFEE,
         }
+    }
+
+    /// T2-review MUST-1: the root absorbs every simulation's backprop. A backprop
+    /// that skips the root is treant's D1 verbatim — root visits freeze at 0,
+    /// `ln 1 = 0`, and `c` goes silently inert while every other test stays
+    /// green. Mutation-proven at the fix wave: `path.iter().skip(1)` in the
+    /// backprop loop fails exactly this assertion.
+    #[test]
+    fn the_root_absorbs_every_simulations_backprop() {
+        let rules = Rules::standard();
+        let weights = WeightTable::V1;
+        let (world, seat) = placement_point(&rules);
+        let s = search_world(&world, seat, &ctx(&rules, &weights, 64, 7)).expect("search");
+        assert!(s.stats.simulations > 0, "the fixture must actually simulate");
+        assert_eq!(
+            u64::from(s.stats.root_visits),
+            s.stats.simulations,
+            "every simulation must pass through the root exactly once"
+        );
+    }
+
+    /// T2-review MUST-2, half one: every backed-up root mean sits on the
+    /// DECLARED unit axis. Backing up raw eval scores instead of the squash —
+    /// the R5 foot-gun, spec §2.4's subject — sails through every other test
+    /// and fails here (means in the hundreds).
+    #[test]
+    fn the_backed_up_values_sit_on_the_declared_unit_axis() {
+        let rules = Rules::standard();
+        let weights = WeightTable::V1;
+        let (world, seat) = placement_point(&rules);
+        let s = search_world(&world, seat, &ctx(&rules, &weights, 64, 11)).expect("search");
+        let mut visited = 0;
+        for r in &s.roots {
+            if let Some(m) = r.mean() {
+                visited += 1;
+                assert!(
+                    (0.0..=1.0).contains(&m),
+                    "a backed-up mean left the declared unit axis: {m}"
+                );
+            }
+        }
+        assert!(visited > 0, "the fixture must back up at least one value");
+    }
+
+    /// T2-review MUST-2, half two: the exploration constant genuinely moves the
+    /// visit distribution. Catches BOTH review mutations — a root frozen at 0
+    /// visits and a raw-scale value axis each make `c` inert, and an inert `c`
+    /// cannot move the visits.
+    #[test]
+    fn the_exploration_constant_moves_the_visit_distribution() {
+        let rules = Rules::standard();
+        let weights = WeightTable::V1;
+        // A SMALL-family point, deliberately: while unexpanded slots remain the
+        // simulate loop only expansion-picks (uniform, c-blind), so a root with
+        // more candidates than simulations could never let UCB engage and this
+        // test would be vacuous at any c.
+        let (world, seat) = on_board_movement_point(&rules);
+        let greedy_c = {
+            let mut c = ctx(&rules, &weights, 64, 13);
+            c.exploration_ppm = 0;
+            search_world(&world, seat, &c).expect("c=0 search")
+        };
+        assert!(
+            greedy_c.stats.root_candidates > 1 && greedy_c.stats.root_candidates < 64,
+            "premise: the fixture must offer 2..63 root candidates so UCB engages \
+             (got {})",
+            greedy_c.stats.root_candidates
+        );
+        let explore_c = {
+            let mut c = ctx(&rules, &weights, 64, 13);
+            c.exploration_ppm = 5_000_000;
+            search_world(&world, seat, &c).expect("c=5 search")
+        };
+        let v0: Vec<u32> = greedy_c.roots.iter().map(|r| r.visits).collect();
+        let v5: Vec<u32> = explore_c.roots.iter().map(|r| r.visits).collect();
+        assert_ne!(v0, v5, "c moved from 0 to 5.0 and the visit distribution did not move");
+    }
+
+    /// T2-review SHOULD-3: a site's word is keyed by its OWN coordinates —
+    /// distinct visits, slots, branches and site families draw distinct words.
+    /// Collapsing the coordinate arms to a shared word sequence (the defect the
+    /// module-doc table promises against) cannot reproduce these inequalities.
+    #[test]
+    fn a_sites_word_is_keyed_by_its_own_coordinates() {
+        let s = McStream::new(0xD00D);
+        assert_ne!(
+            s.word(McSite::Ucb { branch: 9, visit: 2 }),
+            s.word(McSite::Ucb { branch: 9, visit: 3 }),
+            "the visit coordinate must move the word"
+        );
+        assert_ne!(
+            s.word(McSite::Ucb { branch: 9, visit: 2 }),
+            s.word(McSite::Ucb { branch: 8, visit: 2 }),
+            "the branch coordinate must move the word"
+        );
+        assert_ne!(
+            s.word(McSite::Expansion { branch: 9, filled: 0 }),
+            s.word(McSite::Expansion { branch: 9, filled: 1 }),
+            "the filled coordinate must move the word"
+        );
+        assert_ne!(
+            s.word(McSite::Expansion { branch: 9, filled: 2 }),
+            s.word(McSite::Ucb { branch: 9, visit: 2 }),
+            "the site families must stay disjoint at coinciding coordinates"
+        );
+        assert_ne!(
+            s.word(McSite::RootArgmax),
+            s.word(McSite::Ucb { branch: 0, visit: 0 }),
+            "the root argmax must not share the zero-coordinate UCB word"
+        );
+    }
+
+    /// T2-review SHOULD-4: a decision consumes EXACTLY three play-stream words —
+    /// sampler seed, tie key, candidate seed, in that order — so decision n is a
+    /// pure function of words 3n+1..3n+3. The mirror reconstructs the agent's
+    /// SECOND decision from words 4..6 alone; a fourth word anywhere in `choose`
+    /// desynchronizes it.
+    #[test]
+    fn a_decision_is_a_function_of_its_three_stream_words() {
+        let rules = Rules::standard();
+        let weights = WeightTable::V1;
+        let (w1, s1) = placement_point(&rules);
+        let (w2, s2) = on_board_movement_point(&rules);
+        let v1 = observe(&w1, s1).expect("view 1");
+        let v2 = observe(&w2, s2).expect("view 2");
+
+        let seed = 0xFAB1E;
+        let mut agent = MctsAgent::new(&rules, seed).with_simulations(16);
+        let _ = agent.choose(&v1, &rules).expect("decision 1");
+        let second = agent.choose(&v2, &rules).expect("decision 2");
+
+        let mut mirror = ChaCha8Rng::seed_from_u64(seed);
+        for _ in 0..3 {
+            mirror.next_u64();
+        }
+        let sampler_seed = mirror.next_u64();
+        let tie_key = mirror.next_u64();
+        let candidate_seed = mirror.next_u64();
+        let mut sampler =
+            BeliefSampler::from_view(&v2, &rules, sampler_seed).expect("mirror sampler");
+        let world = sampler.sample();
+        let mc = McCtx {
+            rules: &rules,
+            weights: &weights,
+            retreat_samples: DEFAULT_RETREAT_SAMPLES,
+            simulations: 16,
+            exploration_ppm: DEFAULT_EXPLORATION_PPM,
+            squash_scale: DEFAULT_SQUASH_SCALE,
+            leaf: LeafRule::MidTurnDiag,
+            stream: McStream::new(tie_key),
+            candidate_seed,
+        };
+        let mirrored = search_world(&world, s2, &mc).expect("mirror search");
+        assert_eq!(
+            mirrored.roots[mirrored.chosen].mv, second.mv,
+            "decision 2 must be a pure function of stream words 4..6"
+        );
     }
 
     /// Play a fresh 2P game under Greedy-v1 until `want` holds, then hand back a
