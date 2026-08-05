@@ -59,13 +59,16 @@
 //! the nominal rate by construction.
 
 use std::collections::BTreeMap;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Arc;
+use std::time::Instant;
 
 use rand::{Rng, SeedableRng};
 use rand_chacha::ChaCha8Rng;
 
 use super::{
     agent_stream_seed, mix, run_arena_game, unit_for, ArenaAgent, ArenaError, ArenaGameStats,
-    ControllerProvenance, PolicyAgent, Slot,
+    ControllerProvenance, DecisionReport, PolicyAgent, Slot,
 };
 use crate::game::eval::WeightTable;
 use crate::game::greedy::{self, ExplanationTally, GreedyAgent, DEFAULT_RETREAT_SAMPLES};
@@ -73,11 +76,14 @@ use crate::game::lookahead::{
     self, LookaheadAgent, SearchScheme, SearchTally, DEFAULT_ATOMIC_DEPTH, DEFAULT_BEAM,
     DEFAULT_WORLDS,
 };
+use crate::game::mcts::{
+    self, LeafRule, McKnobs, McTally, MctsAgent, DEFAULT_EXPLORATION_PPM, DEFAULT_SQUASH_SCALE,
+};
 use crate::game::metrics::{nearest_rank_index, wilson_95, TriggerTally, Z_95};
 use crate::game::policy::RolloutPolicy;
 use crate::game::rules::Rules;
 use crate::game::seeds::SeedSchedule;
-use crate::types::PlayerId;
+use crate::types::{OrderCardId, PlayerId, PlayerView};
 
 /// Domain salt for the bootstrap resample stream.
 const SALT_BOOTSTRAP: u64 = 0xA3E1_B007_0000_0004;
@@ -141,11 +147,32 @@ pub enum Contestant {
     GreedyV1 { m: u8 },
     /// Lookahead-v1 (spec §4.2), the S1 turn-boundary rung: beam `b`, `k`
     /// sampled worlds, `m` retreat samples.
-    LookaheadV1 { b: u16, k: u8, m: u8 },
+    ///
+    /// **`cap` is Phase 3.4's shared scored-successor budget (spec §3.4),
+    /// `None` by default and `None` in [`LOOKAHEAD_V1_DEFAULT`](Self::LOOKAHEAD_V1_DEFAULT).**
+    /// An absent cap is byte-identical to the pre-3.4 rung all the way out to
+    /// the echo: the descriptor emits NO `cap=` token for it, which is what
+    /// keeps every recorded 3.3 figure and every committed golden describing
+    /// this code.
+    LookaheadV1 { b: u16, k: u8, m: u8, cap: Option<u32> },
     /// The S2 DIAGNOSTIC arm (spec §4.1): atomic depth `d` in moves, with
     /// quiescence. Named `-diag` in provenance because it is preserved as a rung
     /// only if T7 flips.
     AtomicDiag { d: u8, k: u8, m: u8 },
+    /// **MCTS-v1** (spec §3), Phase 3.4's candidate architecture: a UCT tree over
+    /// one sampled world, sized by the SAME scored-successor budget the capped
+    /// S1 arm is sized by — which is what makes a node-matched cell possible.
+    ///
+    /// `cap` is that budget (`None` = uncapped, and then the agent runs
+    /// [`DEFAULT_SIMULATIONS`](crate::game::mcts::DEFAULT_SIMULATIONS); a capped
+    /// seat runs [`SIMULATION_CEILING`](crate::game::mcts::SIMULATION_CEILING)
+    /// and lets the cap decide — [`mcts::simulations_for_cap`] is the one site
+    /// that says so). `c_ppm` is UCB1's exploration constant in ppm, `scale` the
+    /// value squash's scale in `eval::score` units, `m` the retreat sample
+    /// count, `leaf` the leaf rule — spec §4's screening grid is `leaf × c ×
+    /// scale`, so all three are cell parameters. There is deliberately no weight
+    /// knob (spec §0.5).
+    MctsV1 { cap: Option<u32>, c_ppm: u32, scale: i64, m: u8, leaf: LeafRule },
 }
 
 /// How a contestant resolves its dealt starting-order pair — the property spec
@@ -165,28 +192,41 @@ pub enum KeepKind {
     EvaluatorScored,
 }
 
-/// A cloneable read-out on ONE built contestant's explanation counter.
+/// A cloneable read-out on ONE built contestant's explanation and budget
+/// counters.
 ///
-/// The two evaluator tallies are deliberately different types (a search has
-/// nodes and continuation lengths; a one-ply argmax has neither), so this is the
-/// narrow thing the driver actually needs from both: spec §0.3(b)'s count. The
-/// Policy rungs explain nothing and produce no handle at all — `Option::None` is
-/// the honest shape, not a zero counter that would suggest the rung had an
-/// explanation path and simply never took it.
+/// The three evaluator tallies are deliberately different types (a beam has
+/// continuation lengths, a tree has simulations, a one-ply argmax has neither),
+/// so this is the narrow thing the driver actually needs from all of them: spec
+/// §0.3(b)'s count and spec §6's budget meters. The Policy rungs explain nothing
+/// and produce no handle at all — `Option::None` is the honest shape, not a zero
+/// counter that would suggest the rung had an explanation path and simply never
+/// took it.
+///
+/// **Every accessor below returns `Option`, and `None` always means "this
+/// contestant has no such quantity", never "zero".** The distinction is what
+/// lets a gate assert an identity on a contestant that has the counter without
+/// the assertion passing vacuously on one that does not.
 #[derive(Clone)]
 pub enum ExplainHandle {
     Greedy(ExplanationTally),
     Search(SearchTally),
+    /// MCTS-v1's ONE handle: [`McTally`] carries the explanation count beside
+    /// the budget meters (that type's doc argues for the merge — an MCTS
+    /// explanation is a projection of the search that just ran, so there is no
+    /// second counter set to split off).
+    Mcts(McTally),
 }
 
 impl ExplainHandle {
     /// Decisions this contestant explained. Equal to its applied-move count on a
-    /// completed game — neither evaluator agent can return a move without
-    /// explaining it, and a failed `choose` fails the run.
+    /// completed game — no evaluator agent can return a move without explaining
+    /// it, and a failed `choose` fails the run.
     pub fn explained(&self) -> u64 {
         match self {
             Self::Greedy(t) => t.explained(),
             Self::Search(t) => t.explained(),
+            Self::Mcts(t) => t.explained(),
         }
     }
 
@@ -195,10 +235,15 @@ impl ExplainHandle {
     /// [`explained`](Self::explained)'s own `Option` grounds one level down: a
     /// one-ply argmax has no continuation to truncate, and a `0` would read as
     /// "searched and never hit the guard".
+    ///
+    /// **The MCTS arm answers with its hand-off completions' hits** — the SAME
+    /// guard and the same constant (`McTally::completion_cap_hits`), and the
+    /// same meaning: a line stopped there is valued mid-turn.
     pub fn ply_cap_hits(&self) -> Option<u64> {
         match self {
             Self::Greedy(_) => None,
             Self::Search(t) => Some(t.ply_cap_hits()),
+            Self::Mcts(t) => Some(t.completion_cap_hits()),
         }
     }
 
@@ -206,11 +251,94 @@ impl ExplainHandle {
     /// [`MAX_FREE_EXTENSION`](crate::game::lookahead::MAX_FREE_EXTENSION)
     /// stopped, same `None` rule. `Some(0)` for an S1 contestant is structural
     /// rather than evidence — the turn-boundary scheme never enters the
-    /// quiescence arm.
+    /// quiescence arm. `None` for MCTS-v1, which has no quiescence arm to enter
+    /// at all.
     pub fn free_cap_hits(&self) -> Option<u64> {
         match self {
             Self::Greedy(_) => None,
             Self::Search(t) => Some(t.free_cap_hits()),
+            Self::Mcts(_) => None,
+        }
+    }
+
+    /// Successors applied, observed and scored — **spec §0.3's budget
+    /// currency**, and `Some` on every explaining contestant: all three pay it
+    /// and all three count it.
+    pub fn candidates_scored(&self) -> Option<u64> {
+        match self {
+            Self::Greedy(t) => Some(t.candidates_scored()),
+            Self::Search(t) => Some(t.candidates_scored()),
+            Self::Mcts(t) => Some(t.candidates_scored()),
+        }
+    }
+
+    /// The MANDATORY ROOT PASS's share of
+    /// [`candidates_scored`](Self::candidates_scored) — spec §0.3's realized
+    /// root share.
+    ///
+    /// `None` for the one-ply argmax, which has no root/deeper SPLIT to take a
+    /// share of: its whole pass is one ply, so a share would be 1 by
+    /// construction and would carry no information a reader could act on.
+    pub fn root_scored(&self) -> Option<u64> {
+        match self {
+            Self::Greedy(_) => None,
+            Self::Search(t) => Some(t.root_scored()),
+            Self::Mcts(t) => Some(t.root_scored()),
+        }
+    }
+
+    /// Decisions in which the cap DENIED work (spec §3.4). `None` for a
+    /// contestant with no budget at all — and `Some(0)` for a capable-but-
+    /// UNCAPPED one, which is the reading the experiment's validity condition
+    /// needs (a cap that never binds is not a matched budget).
+    pub fn budget_binds(&self) -> Option<u64> {
+        match self {
+            Self::Greedy(_) => None,
+            Self::Search(t) => Some(t.budget_binds()),
+            Self::Mcts(t) => Some(t.budget_binds()),
+        }
+    }
+
+    /// Decisions whose MANDATORY ROOT PASS alone spent the cap, so no deeper
+    /// work could start — a sub-case of [`budget_binds`](Self::budget_binds),
+    /// and the counter spec §0.1's S2 completion-failure surface routes on. Same
+    /// `None` rule.
+    pub fn budget_starved_decisions(&self) -> Option<u64> {
+        match self {
+            Self::Greedy(_) => None,
+            Self::Search(t) => Some(t.budget_starved_decisions()),
+            Self::Mcts(t) => Some(t.budget_starved_decisions()),
+        }
+    }
+}
+
+/// One SIDE's deterministic budget meters, summed over a cell's seats and games
+/// — spec §6's `x_*`/`y_*` additions in the shape the driver folds them.
+///
+/// Every field is `Option` on [`ExplainHandle`]'s rule, and the fold is
+/// `get_or_insert(0) +=`: a side made of contestants that HAVE a counter
+/// reports the sum, a side made of ones that do not reports `None`.
+#[derive(Debug, Clone, Copy, Default)]
+struct BudgetMeters {
+    candidates_scored: Option<u64>,
+    root_scored: Option<u64>,
+    binds: Option<u64>,
+    starved: Option<u64>,
+}
+
+impl BudgetMeters {
+    fn fold(&mut self, handle: &ExplainHandle) {
+        if let Some(v) = handle.candidates_scored() {
+            *self.candidates_scored.get_or_insert(0) += v;
+        }
+        if let Some(v) = handle.root_scored() {
+            *self.root_scored.get_or_insert(0) += v;
+        }
+        if let Some(v) = handle.budget_binds() {
+            *self.binds.get_or_insert(0) += v;
+        }
+        if let Some(v) = handle.budget_starved_decisions() {
+            *self.starved.get_or_insert(0) += v;
         }
     }
 }
@@ -218,12 +346,24 @@ impl ExplainHandle {
 impl Contestant {
     /// Greedy-v1 at its shipped knob.
     pub const GREEDY_V1_DEFAULT: Self = Self::GreedyV1 { m: DEFAULT_RETREAT_SAMPLES };
-    /// Lookahead-v1 (S1) at its shipped knobs.
+    /// Lookahead-v1 (S1) at its shipped knobs — UNCAPPED, which is what makes it
+    /// byte-identical to the pre-3.4 rung the goldens pin.
     pub const LOOKAHEAD_V1_DEFAULT: Self =
-        Self::LookaheadV1 { b: DEFAULT_BEAM, k: DEFAULT_WORLDS, m: DEFAULT_RETREAT_SAMPLES };
+        Self::LookaheadV1 { b: DEFAULT_BEAM, k: DEFAULT_WORLDS, m: DEFAULT_RETREAT_SAMPLES, cap: None };
     /// The S2 diagnostic arm at its shipped knobs.
     pub const ATOMIC_DIAG_DEFAULT: Self =
         Self::AtomicDiag { d: DEFAULT_ATOMIC_DEPTH, k: DEFAULT_WORLDS, m: DEFAULT_RETREAT_SAMPLES };
+    /// MCTS-v1 at its shipped knobs, UNCAPPED — so it runs
+    /// [`DEFAULT_SIMULATIONS`](crate::game::mcts::DEFAULT_SIMULATIONS) and
+    /// terminates. Every registered cell in spec §5 names a cap instead; this
+    /// const is the knobless spelling the grammar and the fixtures start from.
+    pub const MCTS_V1_DEFAULT: Self = Self::MctsV1 {
+        cap: None,
+        c_ppm: DEFAULT_EXPLORATION_PPM,
+        scale: DEFAULT_SQUASH_SCALE,
+        m: DEFAULT_RETREAT_SAMPLES,
+        leaf: LeafRule::HandOff,
+    };
 
     /// What this contestant CALLS itself, for provenance and the report echo —
     /// routed to the controller's own descriptor and never composed here.
@@ -239,10 +379,14 @@ impl Contestant {
             Self::GreedyV1 { m } => {
                 greedy::controller_provenance(&WeightTable::V1, m, agent_seed)
             }
-            Self::LookaheadV1 { b, k, m } => lookahead::controller_provenance(
+            // The CAPPED form for S1, on the same function: an absent cap emits
+            // no token there, so the uncapped rung's descriptor is what it
+            // always was and the 3.3 goldens keep meaning what they meant.
+            Self::LookaheadV1 { b, k, m, cap } => lookahead::controller_provenance_capped(
                 SearchScheme::TurnBoundary { beam: b },
                 k,
                 m,
+                cap,
                 &WeightTable::V1,
                 agent_seed,
             ),
@@ -250,6 +394,11 @@ impl Contestant {
                 SearchScheme::AtomicDiag { depth: d },
                 k,
                 m,
+                &WeightTable::V1,
+                agent_seed,
+            ),
+            Self::MctsV1 { cap, c_ppm, scale, m, leaf } => mcts::controller_provenance(
+                McKnobs::sized_by_cap(cap, c_ppm, scale, m, leaf),
                 &WeightTable::V1,
                 agent_seed,
             ),
@@ -268,9 +417,14 @@ impl Contestant {
     pub fn keep_kind(&self) -> KeepKind {
         match self {
             Self::Policy(_) => KeepKind::SeatKeyedUniform,
-            Self::GreedyV1 { .. } | Self::LookaheadV1 { .. } | Self::AtomicDiag { .. } => {
-                KeepKind::EvaluatorScored
-            }
+            // MCTS-v1 joins the evaluator group because it shares
+            // `greedy::score_starting_order` VERBATIM (spec §3.6 / map row 20),
+            // which is what makes an mcts-vs-lookahead cell setup-identical —
+            // and every §5 cell depends on that.
+            Self::GreedyV1 { .. }
+            | Self::LookaheadV1 { .. }
+            | Self::AtomicDiag { .. }
+            | Self::MctsV1 { .. } => KeepKind::EvaluatorScored,
         }
     }
 
@@ -301,11 +455,32 @@ impl Contestant {
                 let handle = ExplainHandle::Greedy(agent.tally());
                 (Box::new(agent), Some(handle))
             }
-            Self::LookaheadV1 { b, k, m } => {
-                Self::build_search(rules, SearchScheme::TurnBoundary { beam: b }, k, m, agent_seed)
-            }
-            Self::AtomicDiag { d, k, m } => {
-                Self::build_search(rules, SearchScheme::AtomicDiag { depth: d }, k, m, agent_seed)
+            Self::LookaheadV1 { b, k, m, cap } => Self::build_search(
+                rules,
+                SearchScheme::TurnBoundary { beam: b },
+                k,
+                m,
+                cap,
+                agent_seed,
+            ),
+            Self::AtomicDiag { d, k, m } => Self::build_search(
+                rules,
+                SearchScheme::AtomicDiag { depth: d },
+                k,
+                m,
+                None,
+                agent_seed,
+            ),
+            Self::MctsV1 { cap, c_ppm, scale, m, leaf } => {
+                // ONE knob value builds the agent and (in `provenance` above)
+                // the descriptor, so a cell cannot echo a search it did not run
+                // — including the simulation count, which is DERIVED from the
+                // cap rather than named separately (`mcts::simulations_for_cap`).
+                let knobs = McKnobs::sized_by_cap(cap, c_ppm, scale, m, leaf);
+                let agent = MctsAgent::with_knobs(rules, agent_seed, knobs)
+                    .with_weights(WeightTable::V1);
+                let handle = ExplainHandle::Mcts(agent.tally());
+                (Box::new(agent), Some(handle))
             }
         }
     }
@@ -315,6 +490,7 @@ impl Contestant {
         scheme: SearchScheme,
         worlds: u8,
         retreat_samples: u8,
+        cap: Option<u32>,
         agent_seed: u64,
     ) -> (Box<dyn ArenaAgent>, Option<ExplainHandle>) {
         let agent = LookaheadAgent::with_knobs(
@@ -324,7 +500,8 @@ impl Contestant {
             retreat_samples,
             WeightTable::V1,
             agent_seed,
-        );
+        )
+        .with_cap(cap);
         let handle = ExplainHandle::Search(agent.tally());
         (Box::new(agent), Some(handle))
     }
@@ -474,6 +651,43 @@ pub struct CellReport {
     /// structural (it never runs the quiescence arm); the figure has content
     /// only for the S2 diagnostic.
     pub x_free_cap_hits: Option<u64>,
+    /// **Spec §6's deterministic budget meters, X side** — successors X applied,
+    /// observed and scored over the whole cell (spec §0.3's currency).
+    ///
+    /// `None` when X has no such counter (a [`Contestant::Policy`] rung), on
+    /// [`x_explanations`](Self::x_explanations)'s rule. Deterministic, hence on
+    /// the report at all: the byte-identity pins hold over it. The WALL half of
+    /// §0.3's two-axis table is not here and cannot be — see [`CellWall`].
+    pub x_candidates_scored: Option<u64>,
+    /// The MANDATORY ROOT PASS's share of
+    /// [`x_candidates_scored`](Self::x_candidates_scored) — spec §0.3's realized
+    /// root share, `None` for a contestant with no root/deeper split.
+    pub x_root_scored: Option<u64>,
+    /// Decisions in which X's cap DENIED work. `Some(0)` from a capable but
+    /// UNCAPPED contestant is the experiment's validity read (a cap that never
+    /// binds is not a matched budget); `None` means the contestant has no budget.
+    pub x_budget_binds: Option<u64>,
+    /// Decisions whose mandatory root pass alone spent X's cap — spec §0.1's S2
+    /// surface routes on this counter, so a cell carries it rather than leaving
+    /// an adjudicator to re-derive it.
+    pub x_budget_starved_decisions: Option<u64>,
+    /// **The Y-SIDE MIRRORS** (lens 1 M11 / lens 2 M2). §0.3 requires the
+    /// two-axis table to report realized budget for BOTH sides, and every
+    /// pre-3.4 per-contestant counter on this report is X-side — so a
+    /// node-matched cell could not state its own matched-ness through the seam
+    /// it ran on.
+    ///
+    /// Summed over the `players − 1` Y seats per game and over every game, so at
+    /// 2P it is one opponent's total and at 3–4P it is the FIELD's. Divide by
+    /// the Y applied-move count (`applied_by_seat` sum minus
+    /// [`x_applied_moves`](Self::x_applied_moves)) for a per-decision figure.
+    pub y_candidates_scored: Option<u64>,
+    /// Y's realized root share, same summation and same `None` rule.
+    pub y_root_scored: Option<u64>,
+    /// Y's cap-bind count, same summation and same `None` rule.
+    pub y_budget_binds: Option<u64>,
+    /// Y's starved-decision count, same summation and same `None` rule.
+    pub y_budget_starved_decisions: Option<u64>,
     /// End-trigger counts over the cell's games — one player count per tally,
     /// as [`TriggerTally`] requires.
     pub trigger: TriggerTally,
@@ -481,6 +695,103 @@ pub struct CellReport {
     /// [`SeedScheduleKind::Diagnostic`], the DRAWN one for
     /// [`SeedScheduleKind::OsEntropy`].
     pub master: u64,
+}
+
+/// One side's in-cell WALL — nanoseconds spent inside `choose`, and the
+/// decisions that spent them.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct SideWall {
+    pub nanos: u64,
+    pub decisions: u64,
+}
+
+impl SideWall {
+    /// µs per decision, or `NaN` when the side took none (a side that never
+    /// decided has no rate, and 0 would read as "instant").
+    pub fn micros_per_decision(&self) -> f64 {
+        if self.decisions == 0 {
+            return f64::NAN;
+        }
+        self.nanos as f64 / 1_000.0 / self.decisions as f64
+    }
+}
+
+/// **Per-side in-cell wall clock, and deliberately NOT a [`CellReport`] field**
+/// (spec §0.3's deliverability repair / §6).
+///
+/// §0.3 requires the ADR's two-axis table to report realized µs/decision for
+/// both sides, and the per-unit cost is NOT arm-symmetric — a node-matched cell
+/// hands the tree arm a wall advantage BY CONSTRUCTION, which is why the wall
+/// cell C3 exists. So the number has to be produced.
+///
+/// It cannot live on the report: `CellReport` is byte-identity-pinned across
+/// runs on a diagnostic master (`same_master_reproduces_the_report_byte_identically`,
+/// the goldens, T7's determinism cell), and a wall figure is load-sensitive by
+/// construction. Putting it there would either break those pins or force them to
+/// be weakened, which is the worse trade. It is therefore accumulated by the
+/// driver, handed back BESIDE the report, and printed by the runner — the
+/// T7-wall-line convention: recorded, never asserted, and always carrying its
+/// conditions.
+///
+/// It measures time inside [`ArenaAgent::choose`] ONLY — not setup, not
+/// `apply_move`, not the invariant checks — because µs/DECISION is what §0.3's
+/// table compares, and mixing driver overhead into it would make two arms'
+/// figures differ by how much game each happened to play.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct CellWall {
+    pub x: SideWall,
+    pub y: SideWall,
+}
+
+/// The per-decision clock, shared by every agent on one SIDE of a cell.
+///
+/// `Arc<AtomicU64>` rather than a borrow because `Box<dyn ArenaAgent>` is
+/// `'static`: the driver's factory hands the agent away and the cell must still
+/// be able to read the counter afterwards — the clone-out rule every tally in
+/// this module already follows.
+#[derive(Clone, Default)]
+struct WallClock {
+    nanos: Arc<AtomicU64>,
+    decisions: Arc<AtomicU64>,
+}
+
+impl WallClock {
+    fn read(&self) -> SideWall {
+        SideWall {
+            nanos: self.nanos.load(Ordering::Relaxed),
+            decisions: self.decisions.load(Ordering::Relaxed),
+        }
+    }
+}
+
+/// An agent wearing a stopwatch. PURE DELEGATION in every other respect —
+/// provenance, the setup decision and the move itself all pass straight through,
+/// so wrapping cannot move a cell's play (which the committed goldens then
+/// verify rather than take on trust).
+struct TimedAgent {
+    inner: Box<dyn ArenaAgent>,
+    clock: WallClock,
+}
+
+impl ArenaAgent for TimedAgent {
+    fn choose_starting_order(&mut self, seat: PlayerId, deal: &[OrderCardId; 2]) -> u8 {
+        self.inner.choose_starting_order(seat, deal)
+    }
+
+    fn choose(&mut self, view: &PlayerView, rules: &Rules) -> Result<DecisionReport, String> {
+        let started = Instant::now();
+        let out = self.inner.choose(view, rules);
+        // Charged whether or not the decision succeeded: a failing `choose` is a
+        // hard error that ends the run, and time it spent is still time this
+        // side spent.
+        self.clock.nanos.fetch_add(started.elapsed().as_nanos() as u64, Ordering::Relaxed);
+        self.clock.decisions.fetch_add(1, Ordering::Relaxed);
+        out
+    }
+
+    fn controller(&self) -> ControllerProvenance {
+        self.inner.controller()
+    }
 }
 
 /// Run one cell with per-move invariant checking ON — the default every driver
@@ -530,6 +841,24 @@ pub fn run_cell_emitting(
     invariants: bool,
     sink: &mut dyn FnMut(&ArenaGameStats, u8) -> Result<(), ArenaError>,
 ) -> Result<CellReport, ArenaError> {
+    run_cell_emitting_timed(spec, rules, invariants, sink).map(|(report, _wall)| report)
+}
+
+/// [`run_cell_emitting`] handing back the per-side [`CellWall`] beside the
+/// report — spec §0.3's both-sides wall axis, at the ONE layer that can produce
+/// it.
+///
+/// Separate from the four entry points above rather than folded into them
+/// because the wall is a DIFFERENT KIND of number: every other output of this
+/// module is deterministic in the master and is pinned as such, and a load-
+/// sensitive figure travelling in the same value would eventually be quoted as
+/// if it were. The runner prints it; nothing asserts it.
+pub fn run_cell_emitting_timed(
+    spec: &CellSpec,
+    rules: &Rules,
+    invariants: bool,
+    sink: &mut dyn FnMut(&ArenaGameStats, u8) -> Result<(), ArenaError>,
+) -> Result<(CellReport, CellWall), ArenaError> {
     // Both guards run BEFORE any game, because both failure modes are silent
     // otherwise: `unit_for(0, ..)` yields an empty seating list, so a zero or
     // one player count would tabulate zero games into a report full of NaNs
@@ -566,6 +895,15 @@ pub fn run_cell_emitting(
     let mut x_explanations: Option<u64> = None;
     let mut x_ply_cap_hits: Option<u64> = None;
     let mut x_free_cap_hits: Option<u64> = None;
+    // Spec §6's `x_*`/`y_*` budget meters. The Y side is folded over the
+    // `players − 1` Y seats of every game — a FIELD total at 3–4P, which the
+    // field's doc says rather than leaving a reader to divide by the wrong
+    // denominator.
+    let mut x_meters = BudgetMeters::default();
+    let mut y_meters = BudgetMeters::default();
+    // Spec §0.3's wall axis — one clock per SIDE, shared by every agent that
+    // side builds across every game of the cell.
+    let (x_clock, y_clock) = (WallClock::default(), WallClock::default());
 
     for _ in 0..spec.units {
         let seed = schedule.next_world();
@@ -596,17 +934,27 @@ pub fn run_cell_emitting(
             // untouched by the widening: every contestant, rung or evaluator,
             // plays on `agent_stream_seed(seed, seat, slot)`.
             let mut x_handles: Vec<ExplainHandle> = Vec::new();
+            let mut y_handles: Vec<ExplainHandle> = Vec::new();
             let mut stats = {
-                let handles = &mut x_handles;
+                let (xh, yh) = (&mut x_handles, &mut y_handles);
+                let (xc, yc) = (&x_clock, &y_clock);
                 let mut make_agent = |seat: PlayerId, _players: u8| -> Box<dyn ArenaAgent> {
                     let slot = seating[seat.0 as usize];
-                    let contestant = if slot == X_SLOT { x } else { y };
+                    let is_x = slot == X_SLOT;
+                    let contestant = if is_x { x } else { y };
                     let (agent, handle) =
                         contestant.build(rules, agent_stream_seed(seed, seat, slot));
-                    if slot == X_SLOT {
-                        handles.extend(handle);
+                    if is_x {
+                        xh.extend(handle);
+                    } else {
+                        yh.extend(handle);
                     }
-                    agent
+                    // The stopwatch goes on LAST and delegates everything else,
+                    // so the seat plays exactly what the contestant built.
+                    Box::new(TimedAgent {
+                        inner: agent,
+                        clock: if is_x { xc.clone() } else { yc.clone() },
+                    })
                 };
                 run_arena_game(seed, players, rules, &mut make_agent, invariants)?
             };
@@ -635,6 +983,10 @@ pub fn run_cell_emitting(
                 if let Some(hits) = handle.free_cap_hits() {
                     *x_free_cap_hits.get_or_insert(0) += hits;
                 }
+                x_meters.fold(handle);
+            }
+            for handle in &y_handles {
+                y_meters.fold(handle);
             }
 
             if stats.result.winner == x_seat {
@@ -701,24 +1053,35 @@ pub fn run_cell_emitting(
         &interval,
     );
 
-    Ok(CellReport {
-        spec_echo: spec_echo(spec, master, resample_seed),
-        games,
-        x_unit_shares,
-        theta_hat,
-        interval,
-        cross_checks,
-        seat0_wins,
-        ties_to_seat0,
-        vp_margin_mean: vp_margin_sum / f64::from(games),
-        applied_by_seat,
-        x_applied_moves,
-        x_explanations,
-        x_ply_cap_hits,
-        x_free_cap_hits,
-        trigger,
-        master,
-    })
+    Ok((
+        CellReport {
+            spec_echo: spec_echo(spec, master, resample_seed),
+            games,
+            x_unit_shares,
+            theta_hat,
+            interval,
+            cross_checks,
+            seat0_wins,
+            ties_to_seat0,
+            vp_margin_mean: vp_margin_sum / f64::from(games),
+            applied_by_seat,
+            x_applied_moves,
+            x_explanations,
+            x_ply_cap_hits,
+            x_free_cap_hits,
+            x_candidates_scored: x_meters.candidates_scored,
+            x_root_scored: x_meters.root_scored,
+            x_budget_binds: x_meters.binds,
+            x_budget_starved_decisions: x_meters.starved,
+            y_candidates_scored: y_meters.candidates_scored,
+            y_root_scored: y_meters.root_scored,
+            y_budget_binds: y_meters.binds,
+            y_budget_starved_decisions: y_meters.starved,
+            trigger,
+            master,
+        },
+        CellWall { x: x_clock.read(), y: y_clock.read() },
+    ))
 }
 
 /// The 95% percentile bootstrap over `units`: resample `units` with replacement
@@ -1560,7 +1923,7 @@ mod tests {
 
         // `with_knobs` raises K to 1, so a descriptor that printed the raw 0
         // would name knobs the seat did not play on.
-        let (_, _, params) = Contestant::LookaheadV1 { b: 2, k: 0, m: 3 }.descriptor();
+        let (_, _, params) = Contestant::LookaheadV1 { b: 2, k: 0, m: 3, cap: None }.descriptor();
         assert_eq!(params["k"], 1, "the descriptor must report the knobs the agent will run");
 
         // The agent an evaluator contestant BUILDS reports the same descriptor,
@@ -1578,6 +1941,105 @@ mod tests {
             Contestant::Policy(RolloutPolicy::Uniform).build(&rules, 1).1.is_none(),
             "a rung has no explanation path to hand back",
         );
+    }
+
+    /// **Spec §3.6 at the SEAM**: the 3.4 contestants' descriptors, and the
+    /// absent-optional-knob rule that keeps the shipped S1 rung's echo unchanged
+    /// by the cap knob's existence.
+    ///
+    /// The absent-cap clause is what the committed goldens rest on: they were
+    /// captured on a tree where `Contestant::LookaheadV1` had no `cap` field at
+    /// all, and they stay green only because `LOOKAHEAD_V1_DEFAULT` is `None`
+    /// AND `None` emits no token. Both halves are asserted here, so a future
+    /// edit that defaults the knob to `Some(..)` fails HERE — naming the cause —
+    /// rather than only in a golden diff that says "the arm moved".
+    #[test]
+    fn the_mcts_contestant_reports_its_descriptor_and_an_absent_cap_emits_no_token() {
+        use crate::game::mcts::{MCTS_CONTROLLER, MCTS_IMPL_VERSION};
+
+        // -- the shipped S1 rung is UNCAPPED, and says nothing about a cap -----
+        let (_, _, params) = Contestant::LOOKAHEAD_V1_DEFAULT.descriptor();
+        assert!(
+            !params.contains_key("cap"),
+            "the shipped rung's echo gained a cap token — every 3.3 figure and every \
+             committed golden describes the descriptor WITHOUT one",
+        );
+        let (_, _, capped) = Contestant::LookaheadV1 {
+            b: DEFAULT_BEAM,
+            k: DEFAULT_WORLDS,
+            m: DEFAULT_RETREAT_SAMPLES,
+            cap: Some(750),
+        }
+        .descriptor();
+        assert_eq!(capped["cap"], 750, "a capped S1 seat must say so");
+        assert_eq!(
+            capped.len(),
+            params.len() + 1,
+            "the cap knob moved something other than the cap token",
+        );
+
+        // -- MCTS-v1's own descriptor -----------------------------------------
+        let (name, version, params) = Contestant::MCTS_V1_DEFAULT.descriptor();
+        assert_eq!((name.as_str(), version), (MCTS_CONTROLLER, MCTS_IMPL_VERSION));
+        assert_eq!(params["c"], i64::from(DEFAULT_EXPLORATION_PPM));
+        assert_eq!(params["scale"], DEFAULT_SQUASH_SCALE);
+        assert_eq!(params["m"], i64::from(DEFAULT_RETREAT_SAMPLES));
+        assert_eq!(params["leaf"], LeafRule::HandOff.code());
+        assert_eq!(params["sims"], i64::from(mcts::DEFAULT_SIMULATIONS));
+        assert!(!params.contains_key("cap"), "the knobless spelling is uncapped");
+        assert!(!params.contains_key("b") && !params.contains_key("d"), "a tree has no beam");
+
+        // The SIZING RULE at the seam (spec §5's `mcts-v1@<cap>` cells): naming a
+        // cap raises the simulation count to the ceiling, so the budget is the
+        // only bound and no report has to say which of two bounds bit first.
+        let sized = Contestant::MctsV1 {
+            cap: Some(750),
+            c_ppm: DEFAULT_EXPLORATION_PPM,
+            scale: DEFAULT_SQUASH_SCALE,
+            m: DEFAULT_RETREAT_SAMPLES,
+            leaf: LeafRule::HandOff,
+        };
+        let (_, _, params) = sized.descriptor();
+        assert_eq!(params["cap"], 750);
+        assert!(!params.contains_key("sims"), "a capped seat emits no sims token (T5 review S1)");
+
+        // The agent it BUILDS reports the same thing, stream seed filled in —
+        // the drift this routing exists to prevent.
+        let rules = Rules::standard();
+        let (agent, handle) = sized.build(&rules, 0x5EED);
+        assert_eq!(
+            agent.controller(),
+            sized.provenance(Some(0x5EED)),
+            "a built mcts agent and its contestant disagreed about what it is",
+        );
+        let handle = handle.expect("an mcts contestant hands back a tally");
+        assert_eq!(handle.explained(), 0, "nothing has been decided yet");
+        // The `Option` SHAPE of the new meters on an unrun handle: present where
+        // the contestant has the quantity, `None` where it does not.
+        assert_eq!(handle.candidates_scored(), Some(0));
+        assert_eq!(handle.root_scored(), Some(0));
+        assert_eq!(handle.budget_binds(), Some(0));
+        assert_eq!(handle.budget_starved_decisions(), Some(0));
+        assert_eq!(handle.ply_cap_hits(), Some(0), "the completion guard is the ply analogue");
+        assert_eq!(handle.free_cap_hits(), None, "a tree has no quiescence arm to guard");
+
+        // And MCTS-v1 is Keep-homogeneous with the evaluator arms, which is what
+        // makes every §5 cell setup-identical.
+        assert_eq!(Contestant::MCTS_V1_DEFAULT.keep_kind(), KeepKind::EvaluatorScored);
+        let echo = spec_echo(
+            &CellSpec {
+                name: "keep".to_string(),
+                players: 2,
+                x: Contestant::MCTS_V1_DEFAULT,
+                y: Contestant::LOOKAHEAD_V1_DEFAULT,
+                units: 1,
+                master: SeedScheduleKind::Diagnostic(MASTER),
+            },
+            MASTER,
+            0,
+        );
+        assert!(echo.contains("setup-identical=yes"), "{echo}");
+        assert!(echo.contains(&format!("x={MCTS_CONTROLLER}@v{MCTS_IMPL_VERSION}{{")), "{echo}");
     }
 
     /// §5.5: the echo states whether the cell's two contestants resolve a deal
@@ -1795,7 +2257,7 @@ mod tests {
         let spec = CellSpec {
             name: "t6r-lookahead-vs-fw-counters".to_string(),
             players: 2,
-            x: Contestant::LookaheadV1 { b: 1, k: 1, m: 2 },
+            x: Contestant::LookaheadV1 { b: 1, k: 1, m: 2, cap: None },
             y: Contestant::Policy(RolloutPolicy::FAMILY_WEIGHTED_DEFAULT),
             units: 1,
             master: SeedScheduleKind::Diagnostic(MASTER),
@@ -1825,6 +2287,193 @@ mod tests {
         );
     }
 
+    /// **The T5 cell pin: spec §0.3(b)'s identity for an MCTS X, and spec §6's
+    /// `x_*`/`y_*` budget meters on BOTH sides of one cell.**
+    ///
+    /// One cell, because the two claims are two readings of the same two games
+    /// and the games are what the test costs (MEASURED **~1.3 s debug** at HEAD
+    /// for the pair).
+    ///
+    /// KNOBS, AND WHY THESE. Both sides are capped small so a per-edit pin can
+    /// afford a whole 2P pair, and the meters still have content at that size:
+    /// a small cap makes the root pass a large share, so `root_scored` is a
+    /// strict positive fraction of `candidates_scored` on both sides rather than
+    /// a degenerate 0 or 1. Y's cap is **16 and deliberately not 32–128**: spec
+    /// §5 records a MEASURED non-terminating 2P band there for the capped S1
+    /// arm, and a per-edit test sitting in it would hang for a reason the
+    /// experiment's completion-failure surface already owns. `b=1`/`m=2` are the
+    /// lookahead cell's own reasoning above — the identity is about the tally
+    /// path, not about strength.
+    ///
+    /// WHAT IS NOT ASSERTED: any direction, any rate, and the WALL. The wall is
+    /// not on the report at all (see [`CellWall`]) and is load-sensitive; this
+    /// test reads it only to check the driver actually clocked BOTH sides, which
+    /// is a wiring fact and not a figure.
+    #[test]
+    fn an_mcts_x_cell_counts_every_move_it_explained_and_meters_both_sides() {
+        let rules = Rules::standard();
+        let spec = CellSpec {
+            name: "t5-mcts-vs-capped-s1-counters".to_string(),
+            players: 2,
+            x: Contestant::MctsV1 {
+                cap: Some(24),
+                c_ppm: DEFAULT_EXPLORATION_PPM,
+                scale: DEFAULT_SQUASH_SCALE,
+                m: 2,
+                leaf: LeafRule::HandOff,
+            },
+            y: Contestant::LookaheadV1 { b: 1, k: 1, m: 2, cap: Some(16) },
+            units: 1,
+            master: SeedScheduleKind::Diagnostic(MASTER),
+        };
+        let (report, wall) = run_cell_emitting_timed(&spec, &rules, true, &mut |_s, _a| Ok(()))
+            .unwrap_or_else(|e| panic!("the mcts cell failed: {e}"));
+
+        // -- §0.3(b): the identity, on the new contestant ----------------------
+        assert!(report.x_applied_moves > 0, "the cell must actually have played");
+        assert_eq!(
+            report.x_explanations,
+            Some(report.x_applied_moves),
+            "MCTS-v1 played a move it did not explain (or explained one it did not play)",
+        );
+        // The cap counters' three-way distinction, on the arm that answers
+        // (Some, None): the tree HAS a ply guard (its completions') and has no
+        // quiescence arm at all.
+        assert_eq!(report.x_ply_cap_hits, Some(0), "a stopped completion is valued mid-turn");
+        assert_eq!(report.x_free_cap_hits, None, "a tree cannot reach a quiescence guard");
+
+        // -- §6: the budget meters, X side -------------------------------------
+        let x_scored = report.x_candidates_scored.expect("an mcts X meters its spend");
+        let x_root = report.x_root_scored.expect("and its root share");
+        assert!(x_scored > 0, "the currency meter counted nothing");
+        assert!(
+            x_root > 0 && x_root < x_scored,
+            "the mandatory root pass must be a real fraction of a real total ({x_root}/{x_scored})",
+        );
+        assert!(
+            report.x_budget_binds.expect("a capped X binds") > 0,
+            "anti-vacuity: at cap 24 the budget must have denied work somewhere",
+        );
+        // Starvation is a SUB-CASE of binding, and the S2 surface reads it.
+        let x_starved = report.x_budget_starved_decisions.expect("a capped X reports starvation");
+        assert!(x_starved <= report.x_budget_binds.unwrap(), "starvation is a bind");
+
+        // -- §6: the Y-SIDE MIRRORS (lens 1 M11 / lens 2 M2) -------------------
+        // Without these the cell could not state its own matched-ness through
+        // the seam it ran on — every pre-3.4 per-contestant counter is X-side.
+        let y_decisions = report.applied_by_seat.iter().sum::<u64>() - report.x_applied_moves;
+        assert!(y_decisions > 0, "the field must have played too");
+        let y_scored = report.y_candidates_scored.expect("a capped S1 Y meters its spend");
+        let y_root = report.y_root_scored.expect("and its root share");
+        assert!(
+            y_root > 0 && y_root < y_scored,
+            "Y's root pass must be a real fraction of a real total ({y_root}/{y_scored})",
+        );
+        assert!(report.y_budget_binds.expect("a capped Y binds") > 0);
+        assert!(
+            report.y_budget_starved_decisions.expect("a capped Y reports starvation")
+                <= report.y_budget_binds.unwrap(),
+        );
+        // The two sides are INDEPENDENT quantities, not one number written
+        // twice — the exact defect a mirrored-field seam can ship silently.
+        assert_ne!((x_scored, x_root), (y_scored, y_root), "the two sides read identically");
+
+        // Structural companion (T5 review N2): meter PROVENANCE, not magnitude.
+        // A Greedy X has no root/deeper split BY CONSTRUCTION while an MCTS Y
+        // meters its own, so no coincidence of values can satisfy this the way
+        // it theoretically could the assert_ne above.
+        let greedy_x = CellSpec {
+            name: "t5-greedy-x-mcts-y-provenance".to_string(),
+            x: Contestant::GREEDY_V1_DEFAULT,
+            y: spec.x,
+            ..spec.clone()
+        };
+        let g = run_cell(&greedy_x, &rules).unwrap_or_else(|e| panic!("greedy-X cell: {e}"));
+        assert!(g.x_root_scored.is_none(), "a one-ply argmax has no root/deeper split to meter");
+        assert!(g.y_root_scored.is_some(), "while the MCTS field meters its own");
+
+        // -- the `None` side of the new Options, on a rung Y --------------------
+        let rung_y = CellSpec {
+            name: "t5-mcts-vs-rung-meters".to_string(),
+            y: Contestant::Policy(RolloutPolicy::FAMILY_WEIGHTED_DEFAULT),
+            ..spec.clone()
+        };
+        let rung_report = run_cell(&rung_y, &rules).unwrap_or_else(|e| panic!("rung-Y cell: {e}"));
+        assert_eq!(
+            (
+                rung_report.y_candidates_scored,
+                rung_report.y_root_scored,
+                rung_report.y_budget_binds,
+                rung_report.y_budget_starved_decisions,
+            ),
+            (None, None, None, None),
+            "a rollout rung has no budget at all, which is not the same fact as spending zero",
+        );
+        assert!(
+            rung_report.x_candidates_scored.is_some(),
+            "the X side must still meter when Y does not",
+        );
+
+        // -- the wall axis is WIRED for both sides (never a figure here) --------
+        assert_eq!(wall.x.decisions, report.x_applied_moves, "X's clock missed decisions");
+        assert_eq!(wall.y.decisions, y_decisions, "Y's clock missed decisions");
+        assert!(wall.x.nanos > 0 && wall.y.nanos > 0, "a side was never clocked at all");
+        println!(
+            "t5 mcts cell: X {x_scored} scored ({x_root} root) over {} decisions at {:.1} us/dec · \
+             Y {y_scored} ({y_root} root) over {y_decisions} at {:.1} us/dec — RECORDED, \
+             load-sensitive, never asserted",
+            report.x_applied_moves,
+            wall.x.micros_per_decision(),
+            wall.y.micros_per_decision(),
+        );
+    }
+
+    /// The determinism pin, extended to the new contestant: an MCTS cell on a
+    /// diagnostic master reproduces BYTE-IDENTICALLY, with the flipped-master
+    /// anti-vacuity control the Policy pin above carries.
+    ///
+    /// It is a separate cell from that one because MCTS-v1 adds two whole new
+    /// randomness surfaces to the report's dependency set — a per-decision keyed
+    /// tie stream and a per-node candidate seed — and a keying defect in either
+    /// would leave every Policy determinism test green.
+    ///
+    /// Y is a RUNG here rather than the capped S1 arm: this cell runs three
+    /// times, and the claim under test is about X's reproducibility, so the
+    /// cheaper opponent buys the same evidence.
+    #[test]
+    fn same_master_reproduces_an_mcts_cell_byte_identically() {
+        let rules = Rules::standard();
+        let spec = CellSpec {
+            name: "t5-mcts-determinism".to_string(),
+            players: 2,
+            x: Contestant::MctsV1 {
+                cap: Some(24),
+                c_ppm: DEFAULT_EXPLORATION_PPM,
+                scale: DEFAULT_SQUASH_SCALE,
+                m: 2,
+                leaf: LeafRule::HandOff,
+            },
+            y: Contestant::Policy(RolloutPolicy::FAMILY_WEIGHTED_DEFAULT),
+            units: 1,
+            master: SeedScheduleKind::Diagnostic(MASTER),
+        };
+
+        let first = serde_json::to_string(&run_cell(&spec, &rules).unwrap()).unwrap();
+        let second = serde_json::to_string(&run_cell(&spec, &rules).unwrap()).unwrap();
+        assert_eq!(first, second, "the same master produced two different mcts reports");
+        assert!(
+            first.contains("\"x_candidates_scored\":"),
+            "the byte-identity claim must cover the new meters: {first}",
+        );
+
+        // ANTI-VACUITY: byte-identity is worthless if the report does not depend
+        // on the master at all.
+        let mut other = spec.clone();
+        other.master = SeedScheduleKind::Diagnostic(MASTER ^ 0xFFFF_FFFF);
+        let third = serde_json::to_string(&run_cell(&other, &rules).unwrap()).unwrap();
+        assert_ne!(first, third, "the mcts report did not depend on the master");
+    }
+
     /// T6-review should-fix 3: `KeepKind::EvaluatorScored` groups all three
     /// evaluator contestants on the CLAIM that they share one Keep function —
     /// and `setup-identical=yes` on an evaluator-vs-evaluator cell rests
@@ -1838,17 +2487,23 @@ mod tests {
         let (mut greedy, _) = Contestant::GREEDY_V1_DEFAULT.build(&rules, 7);
         let (mut s1, _) = Contestant::LOOKAHEAD_V1_DEFAULT.build(&rules, u64::MAX / 5);
         let (mut s2, _) = Contestant::ATOMIC_DIAG_DEFAULT.build(&rules, u64::MAX - 11);
+        // The FOURTH EvaluatorScored contestant (3.4): every §5 experiment
+        // cell's `setup-identical=yes` rests on this agreement holding for it
+        // too — structurally unguarded until the six-lens review added it.
+        let (mut mcts, _) = Contestant::MCTS_V1_DEFAULT.build(&rules, u64::MAX / 3);
         for seat in 0..4u8 {
             for card in 1..=18u8 {
                 let deal = [OrderCardId(card), OrderCardId(card + 18)];
                 let g = greedy.choose_starting_order(PlayerId(seat), &deal);
                 let a = s1.choose_starting_order(PlayerId(seat), &deal);
                 let b = s2.choose_starting_order(PlayerId(seat), &deal);
+                let m = mcts.choose_starting_order(PlayerId(seat), &deal);
                 assert!(
-                    g == a && a == b,
-                    "the three evaluator contestants' Keeps diverged at seat {seat}, \
-                     deal {deal:?}: greedy {g}, s1 {a}, s2 {b} — KeepKind::EvaluatorScored \
-                     (and every setup-identical=yes it prints) rests on their agreement",
+                    g == a && a == b && b == m,
+                    "the four evaluator contestants' Keeps diverged at seat {seat}, \
+                     deal {deal:?}: greedy {g}, s1 {a}, s2 {b}, mcts {m} — \
+                     KeepKind::EvaluatorScored (and every setup-identical=yes it \
+                     prints) rests on their agreement",
                 );
             }
         }

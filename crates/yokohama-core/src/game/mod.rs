@@ -27,6 +27,7 @@ mod move_legality;
 mod seeds;
 mod metrics;
 mod policy;
+mod budget;
 mod arena;
 pub mod actions;
 /// Evaluator v1 (Phase 3.3 T1). NAMESPACED deliberately — the crate glob
@@ -46,6 +47,12 @@ pub mod greedy;
 /// `TieSite` are far too generic for the crate root. Callers write
 /// `lookahead::LookaheadAgent` / `lookahead::search_world`.
 pub mod lookahead;
+/// MCTS-v1, the UCT contestant of the Phase 3.4 architecture experiment.
+/// NAMESPACED for the same reason [`eval`], [`greedy`] and [`lookahead`] are —
+/// and here it is load-bearing rather than merely tidy: this module's
+/// `search_world` and `squash` would COLLIDE with `lookahead::search_world` at
+/// the crate root. Callers write `mcts::MctsAgent` / `mcts::search_world`.
+pub mod mcts;
 
 pub use power::*;
 pub use movement::*;
@@ -73,4 +80,5 @@ pub use move_legality::*;
 pub use seeds::*;
 pub use metrics::*;
 pub use policy::*;
+pub use budget::*;
 pub use arena::*;

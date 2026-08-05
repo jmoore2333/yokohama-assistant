@@ -1,0 +1,29 @@
+=== cell c3-wall ===
+  build=release semantics_rev=5 master=diagnostic:0xa3e1202608040007 single-threaded=yes
+  players=2
+  x=mcts-v1@v1{c=100000,cap=2100,eval_impl=2,k=1,leaf=0,m=8,scale=100,weights=-2162047371061899018}
+  y=lookahead-v1@v1{b=4,eval_impl=2,k=1,m=8,weights=-2162047371061899018}
+  units=100
+  games=200
+  setup-identical=yes (Keep-homogeneous)
+  per-move invariants=true
+  emit=off
+  cell=c3-wall players=2 x=mcts-v1@v1{c=100000,cap=2100,eval_impl=2,k=1,leaf=0,m=8,scale=100,weights=-2162047371061899018} y=lookahead-v1@v1{b=4,eval_impl=2,k=1,m=8,weights=-2162047371061899018} units=100 unit=pair (2 seatings) games=200 master=diagnostic:0xa3e1202608040007 bootstrap_B=10000 resample_seed=0x75cfa5aab7d1f9b0 single-threaded=yes fixed-N=yes setup-identical=yes
+  theta_hat = 0.070000   [null for this cell is printed in the cross-checks]
+  interval  = bootstrap 95% [0.035000, 0.105000] (B=10000, resample_seed=0x75cfa5aab7d1f9b0)
+  seat0 wins 100/200 · top-VP ties decided for seat 0: 1 · mean VP margin -51.33
+    - null reference for this cell: 1/2 = 0.500000 (ONE X against 1 Y seats — the single-champion shape; 0.5 is the null only at 2P)
+    - unit-t 95% cross-check: [0.035402, 0.104598] (n=100 units, sd=0.174368, t(0.975, 99)≈1.9842) — printed, never primary; asymptotic expansion, ~11% narrow at df=1 and unreliable below df≈10 (T7 review F5)
+    - Wilson-on-pooled-games 95% cross-check: [0.042152, 0.114055] (14/200 games) — CROSS-CHECK ONLY and NEVER primary at 3-4P: games within a unit are clustered (E2 measured 4P rho=+0.051, dragging a nominal 95% interval to ~93.2% true coverage), so this row understates the width the unit bootstrap reports
+    - top-VP ties: 1/200 games (0.0050), 1 decided for seat 0 — `final_result` is a total order and never reports a tie, so this is how often the clockwise tie-break DECIDED the game; at 2P seat 0 takes every tie, so its award is half this rate (spec §4's +0.63pp at the bracket rate of 1.26%)
+    - NEAR-BOUNDARY CAVEAT: interval endpoint saturated at 0/1 or unit vector has only 2 distinct value(s) — percentile-bootstrap coverage degrades toward the boundary (measured 0.39-0.87 at theta=0.99 for N=50-200); read this interval as directional, not calibrated
+    end-trigger rates over 200 games (95% Wilson):
+      ChurchTrackFull          198/200   = 0.9900  [0.9643, 0.9973]
+      OrderDeckEmpty             2/200   = 0.0100  [0.0027, 0.0357]
+  unit shares (n=100, X's win share per unit): 86×0.0000 · 14×0.5000
+  realized unit variance = 0.030100 (population, /n) · 0.030404 (sample, /(n-1)) — spec §4.1's Var_pair at 2P
+  budget axes (spec §0.3) — scored successors are the currency, root pass included:
+    X: 26899 decisions · scored 24929384 (926.8 /dec, root share 0.026) · cap binds 11622 · starved 0 · wall 1235.2 us/dec
+    Y: 33534 decisions · scored 27318077 (814.6 /dec, root share 0.028) · cap binds 0 · starved 0 · wall 1195.9 us/dec
+    read: the SCORED figures are deterministic in the master and reproduce; the WALL figures are load-sensitive, are not on the CellReport, and are never asserted. Y sums the players-1 field seats. A cap that never binds is not a matched budget.
+  wall 73.48s for 200 games (367.4 ms/game, release build)

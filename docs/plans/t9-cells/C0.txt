@@ -1,0 +1,27 @@
+=== cell c0-validation ===
+  build=release semantics_rev=5 master=diagnostic:0xa3e1202608040005 single-threaded=yes
+  players=2
+  x=lookahead-v1@v1{b=4,cap=750,eval_impl=2,k=1,m=8,weights=-2162047371061899018}
+  y=lookahead-v1@v1{b=4,eval_impl=2,k=1,m=8,weights=-2162047371061899018}
+  units=200
+  games=400
+  setup-identical=yes (Keep-homogeneous)
+  per-move invariants=true
+  emit=off
+  cell=c0-validation players=2 x=lookahead-v1@v1{b=4,cap=750,eval_impl=2,k=1,m=8,weights=-2162047371061899018} y=lookahead-v1@v1{b=4,eval_impl=2,k=1,m=8,weights=-2162047371061899018} units=200 unit=pair (2 seatings) games=400 master=diagnostic:0xa3e1202608040005 bootstrap_B=10000 resample_seed=0xf457bda6c2d3d954 single-threaded=yes fixed-N=yes setup-identical=yes
+  theta_hat = 0.230000   [null for this cell is printed in the cross-checks]
+  interval  = bootstrap 95% [0.190000, 0.272500] (B=10000, resample_seed=0xf457bda6c2d3d954)
+  seat0 wins 204/400 · top-VP ties decided for seat 0: 5 · mean VP margin -19.94
+    - null reference for this cell: 1/2 = 0.500000 (ONE X against 1 Y seats — the single-champion shape; 0.5 is the null only at 2P)
+    - unit-t 95% cross-check: [0.188745, 0.271255] (n=200 units, sd=0.295868, t(0.975, 199)≈1.9720) — printed, never primary; asymptotic expansion, ~11% narrow at df=1 and unreliable below df≈10 (T7 review F5)
+    - Wilson-on-pooled-games 95% cross-check: [0.191444, 0.273693] (92/400 games) — CROSS-CHECK ONLY and NEVER primary at 3-4P: games within a unit are clustered (E2 measured 4P rho=+0.051, dragging a nominal 95% interval to ~93.2% true coverage), so this row understates the width the unit bootstrap reports
+    - top-VP ties: 5/400 games (0.0125), 5 decided for seat 0 — `final_result` is a total order and never reports a tie, so this is how often the clockwise tie-break DECIDED the game; at 2P seat 0 takes every tie, so its award is half this rate (spec §4's +0.63pp at the bracket rate of 1.26%)
+    end-trigger rates over 400 games (95% Wilson):
+      ChurchTrackFull          400/400   = 1.0000  [0.9905, 1.0000]
+  unit shares (n=200, X's win share per unit): 118×0.0000 · 72×0.5000 · 10×1.0000
+  realized unit variance = 0.087100 (population, /n) · 0.087538 (sample, /(n-1)) — spec §4.1's Var_pair at 2P
+  budget axes (spec §0.3) — scored successors are the currency, root pass included:
+    X: 58717 decisions · scored 10399143 (177.1 /dec, root share 0.127) · cap binds 9081 · starved 0 · wall 268.8 us/dec
+    Y: 61678 decisions · scored 49001019 (794.5 /dec, root share 0.028) · cap binds 0 · starved 0 · wall 1180.1 us/dec
+    read: the SCORED figures are deterministic in the master and reproduce; the WALL figures are load-sensitive, are not on the CellReport, and are never asserted. Y sums the players-1 field seats. A cap that never binds is not a matched budget.
+  wall 88.86s for 400 games (222.2 ms/game, release build)

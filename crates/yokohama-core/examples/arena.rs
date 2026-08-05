@@ -33,10 +33,19 @@
 //!
 //! CONTESTANTS, not just policies, since Phase 3.3 (spec §5.3): `<x>` and `<y>`
 //! accept the 3.2 rungs AND the evaluator controllers (`greedy-v1`,
-//! `lookahead-v1`, `atomic-diag-v1`), each with its own knob grammar. A cell
-//! mixing the two families is swapped-balanced but NOT setup-identical — they
-//! resolve a dealt Order pair by different Keep rules — and both the header and
-//! the report echo say which kind of cell ran.
+//! `lookahead-v1`, `atomic-diag-v1`), each with its own knob grammar — and since
+//! Phase 3.4 the architecture contestant `mcts-v1`, plus a `cap=` knob on
+//! `lookahead-v1` (the shared scored-successor budget). A cell mixing the rung
+//! family with an evaluator/architecture one is swapped-balanced but NOT
+//! setup-identical — they resolve a dealt Order pair by different Keep rules —
+//! and both the header and the report echo say which kind of cell ran.
+//!
+//! THE TWO AXES (3.4 spec §0.3). Every `cell` invocation now prints, per SIDE:
+//! the realized scored-successor spend with its root share and cap counters
+//! (deterministic, off the `CellReport`), and the realized in-cell µs/decision
+//! (load-sensitive, off the driver's clock and deliberately NOT on the report —
+//! see `CellWall`). A node-matched cell hands the tree arm a wall advantage by
+//! construction, so both axes have to be visible or the matching cannot be read.
 //!
 //! ```text
 //! cargo run --release -p yokohama-core --example arena -- throughput
@@ -47,6 +56,8 @@
 //!     greedy-v1 family-weighted 50
 //! cargo run --release -p yokohama-core --example arena -- cell s1-vs-s2 2 \
 //!     lookahead-v1:b=4 atomic-diag-v1:d=2 20
+//! cargo run --release -p yokohama-core --example arena -- cell c2-node-matched 2 \
+//!     mcts-v1:cap=750 lookahead-v1:b=4,cap=750 200 --os-entropy
 //! ```
 
 use std::collections::BTreeMap;
@@ -54,9 +65,9 @@ use std::path::PathBuf;
 use std::time::Instant;
 
 use yokohama_core::{
-    corpus_path, emit_record, greedy, lookahead, run_cell_emitting, run_raw_game, trigger_name,
-    ArenaError, CellReport, CellSpec, Contestant, IntervalOutcome, RolloutPolicy, Rules,
-    SeedSchedule, SeedScheduleKind, TriggerTally, SEMANTICS_REV,
+    corpus_path, emit_record, greedy, lookahead, mcts, run_cell_emitting_timed, run_raw_game,
+    trigger_name, ArenaError, CellReport, CellSpec, CellWall, Contestant, IntervalOutcome,
+    RolloutPolicy, Rules, SeedSchedule, SeedScheduleKind, TriggerTally, SEMANTICS_REV,
 };
 
 const USAGE: &str = "\
@@ -90,11 +101,25 @@ contestants (<x> and <y>):
         are optional and default to the shipped FAMILY_WEIGHTED_DEFAULT (166667, 5).
   EVALUATOR CONTESTANTS (3.3)
     greedy-v1[:m=<n>]                    one-ply argmax of evaluator v1; m = retreat samples (8)
-    lookahead-v1[:b=<n>,k=<n>,m=<n>]     S1 turn-boundary search; b = beam (4), k = worlds (1)
+    lookahead-v1[:b=<n>,k=<n>,m=<n>,cap=<n>]
+                                         S1 turn-boundary search; b = beam (4), k = worlds (1)
+        cap is Phase 3.4's TOTAL scored-successor budget per decision, root pass
+        included. OMIT IT for the shipped rung: an absent cap is byte-identical to
+        the 3.3 arm and emits no provenance token at all.
     atomic-diag-v1[:d=<n>,k=<n>,m=<n>]   S2 DIAGNOSTIC atomic depth-d arm; d = depth in moves (2)
         (also spelled lookahead-atomic-diag-v1, its provenance controller name)
-      All three run the frozen evaluator weight table; a weight change is a version
-      bump, not a cell knob. Unknown contestant names and unknown knobs are errors.
+  ARCHITECTURE CONTESTANT (3.4)
+    mcts-v1[:cap=<n>,c=<ppm>,scale=<n>,m=<n>,leaf=<mode>]
+        A UCT tree over one sampled world. cap is the SAME budget knob as above and
+        is how a cell is sized (spec §5's cells are named mcts-v1@<cap>): a capped
+        seat runs simulations at a ceiling and lets the budget decide, an uncapped
+        one runs the default simulation count. c is UCB1's exploration constant in
+        PARTS PER MILLION (1414214 ~ sqrt 2), scale the value squash's scale in
+        evaluator-score units (100), m the retreat samples (8), and leaf one of
+        hand-off (default) | midturn-diag | constant-diag.
+      All four run the frozen evaluator weight table; a weight change is a version
+      bump, not a cell knob. Unknown contestant names, unknown knobs and unknown
+      knob VALUES are errors.
 ";
 
 /// Spec §0-R1's frozen uniform 4P ChurchTrackFull ceiling: 7/2000, Wilson-95
@@ -227,6 +252,9 @@ fn parse_contestant(spec: &str) -> Result<Contestant, String> {
             lookahead::DEFAULT_WORLDS,
             greedy::DEFAULT_RETREAT_SAMPLES,
         );
+        // `None` unless typed: the shipped rung is the UNCAPPED one, and the
+        // default must stay the thing every 3.3 figure was measured on.
+        let mut cap: Option<u32> = None;
         for (key, value) in knob_pairs(knobs)? {
             match key.as_str() {
                 "b" => {
@@ -237,10 +265,60 @@ fn parse_contestant(spec: &str) -> Result<Contestant, String> {
                 }
                 "k" => k = parse_knob_u8(&key, &value)?,
                 "m" => m = parse_knob_u8(&key, &value)?,
-                other => return Err(format!("unknown knob {other:?} for {name} (b | k | m)")),
+                "cap" => cap = Some(parse_knob_cap(&value)?),
+                other => {
+                    return Err(format!("unknown knob {other:?} for {name} (b | k | m | cap)"))
+                }
             }
         }
-        return Ok(Contestant::LookaheadV1 { b, k, m });
+        return Ok(Contestant::LookaheadV1 { b, k, m, cap });
+    }
+
+    if name == mcts::MCTS_CONTROLLER {
+        let (mut c_ppm, mut scale, mut m, mut leaf) = (
+            mcts::DEFAULT_EXPLORATION_PPM,
+            mcts::DEFAULT_SQUASH_SCALE,
+            greedy::DEFAULT_RETREAT_SAMPLES,
+            mcts::LeafRule::default(),
+        );
+        let mut cap: Option<u32> = None;
+        for (key, value) in knob_pairs(knobs)? {
+            match key.as_str() {
+                "cap" => cap = Some(parse_knob_cap(&value)?),
+                "c" => {
+                    c_ppm = value
+                        .parse::<u32>()
+                        .map_err(|e| format!("c must be parts per million: {e}"))?;
+                }
+                "scale" => {
+                    scale =
+                        value.parse::<i64>().map_err(|e| format!("scale must be an integer: {e}"))?;
+                    if scale <= 0 {
+                        return Err(format!("scale={scale} is not a squash scale"));
+                    }
+                }
+                "m" => m = parse_knob_u8(&key, &value)?,
+                // An unknown knob VALUE is an error on the same grounds as an
+                // unknown knob NAME: a silently-defaulted leaf rule would put a
+                // published cell under a mechanism it did not run.
+                "leaf" => {
+                    leaf = mcts::LeafRule::from_str_name(&value).ok_or_else(|| {
+                        format!(
+                            "unknown leaf mode {value:?} ({} | {} | {})",
+                            mcts::LeafRule::HandOff.as_str(),
+                            mcts::LeafRule::MidTurnDiag.as_str(),
+                            mcts::LeafRule::ConstantDiag.as_str(),
+                        )
+                    })?;
+                }
+                other => {
+                    return Err(format!(
+                        "unknown knob {other:?} for {name} (cap | c | scale | m | leaf)"
+                    ))
+                }
+            }
+        }
+        return Ok(Contestant::MctsV1 { cap, c_ppm, scale, m, leaf });
     }
 
     if name == lookahead::ATOMIC_DIAG_CONTROLLER || name == ATOMIC_DIAG_ALIAS {
@@ -288,6 +366,19 @@ fn parse_knob_u8(key: &str, value: &str) -> Result<u8, String> {
     value.parse::<u8>().map_err(|e| format!("{key} must be a small count: {e}"))
 }
 
+/// The shared scored-successor budget (spec §3.4). `cap=0` is refused rather
+/// than silently meaning "uncapped": OMITTING the knob is how a caller says
+/// uncapped, and a budget of zero would starve the mandatory root pass at every
+/// decision — a configuration nothing in the experiment wants and everything
+/// downstream would have to caveat.
+fn parse_knob_cap(value: &str) -> Result<u32, String> {
+    let cap = value.parse::<u32>().map_err(|e| format!("cap must be a scored-successor budget: {e}"))?;
+    if cap == 0 {
+        return Err("cap=0 starves every decision; omit the knob for an uncapped seat".to_string());
+    }
+    Ok(cap)
+}
+
 /// A policy name, optionally with `:p=<ppm>,k=<n>` knobs.
 ///
 /// The knob form exists so the two `FamilyWeighted` settings §0-R3(i)'s
@@ -297,9 +388,10 @@ fn parse_policy(name: &str, knobs: Option<&str>) -> Result<RolloutPolicy, String
     let base = RolloutPolicy::from_str_name(name).ok_or_else(|| {
         format!(
             "unknown contestant {name:?} (rungs: uniform | retreat-averse | family-weighted; \
-             evaluator: {} | {} | {ATOMIC_DIAG_ALIAS})",
+             evaluator: {} | {} | {ATOMIC_DIAG_ALIAS}; architecture: {})",
             greedy::GREEDY_CONTROLLER,
             lookahead::LOOKAHEAD_CONTROLLER,
+            mcts::MCTS_CONTROLLER,
         )
     })?;
     let Some(knobs) = knobs else { return Ok(base) };
@@ -441,6 +533,67 @@ fn print_unit_variance(report: &CellReport) {
     );
 }
 
+/// Spec §0.3's TWO AXES for one cell: the deterministic budget meters off the
+/// report, and the load-sensitive per-side wall off the driver's clock.
+///
+/// The wall lives HERE and only here (the T7-wall-line convention): it is not a
+/// `CellReport` field, because that report is byte-identity-pinned and a wall
+/// figure is not reproducible by construction. Both rows print their `None`s
+/// rather than skipping them — a contestant with no budget meter is a fact about
+/// the cell, and a blank line reads as a zero.
+fn print_budget_axes(report: &CellReport, wall: &CellWall) {
+    let y_decisions = report.applied_by_seat.iter().sum::<u64>() - report.x_applied_moves;
+    let per_decision = |total: Option<u64>, decisions: u64| -> String {
+        match total {
+            None => "n/a".to_string(),
+            Some(_) if decisions == 0 => "n/a".to_string(),
+            Some(t) => format!("{:.1}", t as f64 / decisions as f64),
+        }
+    };
+    let opt = |v: Option<u64>| v.map_or_else(|| "n/a".to_string(), |n| n.to_string());
+
+    println!("  budget axes (spec §0.3) — scored successors are the currency, root pass included:");
+    for (side, decisions, scored, root, binds, starved, side_wall) in [
+        (
+            "X",
+            report.x_applied_moves,
+            report.x_candidates_scored,
+            report.x_root_scored,
+            report.x_budget_binds,
+            report.x_budget_starved_decisions,
+            wall.x,
+        ),
+        (
+            "Y",
+            y_decisions,
+            report.y_candidates_scored,
+            report.y_root_scored,
+            report.y_budget_binds,
+            report.y_budget_starved_decisions,
+            wall.y,
+        ),
+    ] {
+        println!(
+            "    {side}: {decisions} decisions · scored {} ({} /dec, root share {}) · \
+             cap binds {} · starved {} · wall {:.1} us/dec",
+            opt(scored),
+            per_decision(scored, decisions),
+            match (root, scored) {
+                (Some(r), Some(s)) if s > 0 => format!("{:.3}", r as f64 / s as f64),
+                _ => "n/a".to_string(),
+            },
+            opt(binds),
+            opt(starved),
+            side_wall.micros_per_decision(),
+        );
+    }
+    println!(
+        "    read: the SCORED figures are deterministic in the master and reproduce; the WALL \
+         figures are load-sensitive, are not on the CellReport, and are never asserted. Y sums \
+         the players-1 field seats. A cap that never binds is not a matched budget."
+    );
+}
+
 /// End-trigger rates with 95% Wilson intervals, per spec §6 — never pooled
 /// across player counts, which is exactly the pooling that blinded the old fuzz
 /// assertion to the 4P collapse.
@@ -523,7 +676,7 @@ fn cmd_cell(args: &[String]) -> Result<(), String> {
     let spec = CellSpec { name: name.clone(), players, x, y, units, master };
     let started = Instant::now();
     let mut written = 0u32;
-    let report = run_cell_emitting(&spec, &rules, invariants, &mut |stats, arr| {
+    let (report, wall) = run_cell_emitting_timed(&spec, &rules, invariants, &mut |stats, arr| {
         let Some(dir) = &emit else { return Ok(()) };
         let path = corpus_path(dir, SEMANTICS_REV, players, &name, stats.seed, arr);
         emit_record(&path, &stats.record)
@@ -536,6 +689,7 @@ fn cmd_cell(args: &[String]) -> Result<(), String> {
 
     print_report(&report);
     print_unit_variance(&report);
+    print_budget_axes(&report, &wall);
     println!(
         "  wall {:.2}s for {} games ({:.1} ms/game, {} build)",
         elapsed.as_secs_f64(),
@@ -833,6 +987,85 @@ fn cmd_throughput(args: &[String]) -> Result<(), String> {
     println!(
         "\nread: ms/game on a cell shape is what sizes a gate cell — it includes the tabulation \
          and the seating loop, which a per-rung selfplay row does not."
+    );
+
+    throughput_architecture_shapes(&rules, base)?;
+    Ok(())
+}
+
+/// The 3.4 shapes: the node-matched C2 cell and its C0 control, measured through
+/// the same `run_cell` path at ONE unit each.
+///
+/// Sized at one unit deliberately — this block exists so the experiment can be
+/// SIZED (spec §5 budgets ~1,300 registered units), and a tree seat at B\* is
+/// three orders costlier per decision than a rung, so a throughput block that
+/// ran these at the rung block's scale would dominate the whole subcommand.
+///
+/// This is also the only place the per-side WALL is exercised outside `cell`,
+/// which is the point: §0.3's µs/decision comparison is between X and Y INSIDE
+/// one cell, and a per-contestant selfplay row cannot produce it.
+fn throughput_architecture_shapes(rules: &Rules, base: u64) -> Result<(), String> {
+    /// The experiment's budget unit B\* (spec §5) — the shape whose cost matters.
+    /// Release only, like the whole subcommand: the C2 shape at this cap is
+    /// order-minutes in a debug build (a cap=24 cell measured 364 ms/game debug).
+    const B_STAR: u32 = 750;
+
+    println!("\n-- architecture contestant shapes (3.4, run_cell, invariants ON, 1 unit each) --");
+    println!(
+        "{:<34} {:>6} {:>10} {:>13} {:>13}",
+        "cell", "games", "ms/game", "X us/dec", "Y us/dec",
+    );
+    let shapes: [(&str, Contestant, Contestant); 2] = [
+        (
+            "c2-shape-mcts-vs-capped-s1",
+            Contestant::MctsV1 {
+                cap: Some(B_STAR),
+                c_ppm: mcts::DEFAULT_EXPLORATION_PPM,
+                scale: mcts::DEFAULT_SQUASH_SCALE,
+                m: greedy::DEFAULT_RETREAT_SAMPLES,
+                leaf: mcts::LeafRule::default(),
+            },
+            Contestant::LookaheadV1 {
+                b: lookahead::DEFAULT_BEAM,
+                k: lookahead::DEFAULT_WORLDS,
+                m: greedy::DEFAULT_RETREAT_SAMPLES,
+                cap: Some(B_STAR),
+            },
+        ),
+        ("c0-shape-capped-s1-vs-shipped-s1", {
+            Contestant::LookaheadV1 {
+                b: lookahead::DEFAULT_BEAM,
+                k: lookahead::DEFAULT_WORLDS,
+                m: greedy::DEFAULT_RETREAT_SAMPLES,
+                cap: Some(B_STAR),
+            }
+        }, Contestant::LOOKAHEAD_V1_DEFAULT),
+    ];
+    for (name, x, y) in shapes {
+        let spec = CellSpec {
+            name: name.to_string(),
+            players: 2,
+            x,
+            y,
+            units: 1,
+            master: SeedScheduleKind::Diagnostic(base),
+        };
+        let started = Instant::now();
+        let (report, wall) = run_cell_emitting_timed(&spec, rules, true, &mut |_s, _a| Ok(()))
+            .map_err(|e| format!("shape {name} failed: {e}"))?;
+        let elapsed = started.elapsed().as_secs_f64();
+        println!(
+            "{name:<34} {:>6} {:>10.1} {:>13.1} {:>13.1}",
+            report.games,
+            elapsed * 1000.0 / f64::from(report.games),
+            wall.x.micros_per_decision(),
+            wall.y.micros_per_decision(),
+        );
+    }
+    println!(
+        "read: the two us/dec columns are §0.3's WALL axis for one cell, and the asymmetry is the \
+         point — a NODE-matched cell hands the tree arm a wall advantage by construction, which \
+         is what the wall cell C3 exists to re-match. Load-sensitive; never asserted."
     );
     Ok(())
 }
