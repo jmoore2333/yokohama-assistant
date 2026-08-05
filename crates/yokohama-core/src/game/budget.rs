@@ -184,7 +184,13 @@ pub(crate) fn summarize_overshoot(samples: &[u64]) -> Option<OvershootSummary> {
 /// `values` must be non-empty; a decision with no candidates is a caller bug and
 /// is refused where the candidates are enumerated.
 pub(crate) fn best_available_pick(values: &[Option<i64>], word: u64) -> usize {
-    debug_assert!(!values.is_empty(), "a root decision over an empty family is undefined");
+    // Release-checked, not debug-only (six-lens N4): both shipped consumers are
+    // RELEASE-ONLY paths (`architecture_gate`, `examples/arena`), where a
+    // stripped debug_assert would let an empty slice return index 0 and panic
+    // out-of-range two frames later at the caller. A named assert here beats
+    // that; callers structurally guarantee non-empty (expand_point refuses an
+    // empty candidate list), so this costs one branch on a cold path.
+    assert!(!values.is_empty(), "a root decision over an empty family is undefined");
     let best = values.iter().flatten().copied().max();
     let Some(best) = best else {
         // Rung 3: nothing evaluated. The draw is over the WHOLE family.
