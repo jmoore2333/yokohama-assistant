@@ -86,7 +86,9 @@
 //! `x_explanations`, `x_ply_cap_hits` or `x_free_cap_hits` would pass every
 //! 3.3 golden silently. So T0 captures THREE fresh goldens on the pre-3.4 tree
 //! (commit `524c126`, `SEMANTICS_REV` 5) with [`CAPTURED_KEYS_CURRENT`]
-//! widened to every field `CellReport` carries today (all sixteen):
+//! widened to every field `CellReport` carried at CAPTURE time (all sixteen,
+//! pre-seam; the T5 additions are produced-only keys these fixtures tolerate
+//! by design — six-lens N5):
 //!
 //! - **2P Policy pair cell**: `retreat-averse` vs `family-weighted` default,
 //!   4 pair units = 8 games — same matchup as 3.3 (one knobless + one knobbed
@@ -261,7 +263,11 @@ const CAPTURED_KEYS_33: [&str; 11] = [
     "master",
 ];
 
-/// EVERY field `CellReport` carries today (spec 2026-08-04 §6 / lens 2 S10) —
+/// all sixteen fields `CellReport` carried at CAPTURE time (2026-08-04, commit
+/// 524c126, pre-seam) — the T5 seam additions (the x_/y_ budget meters) are
+/// produced-only keys these fixtures cannot carry, tolerated BY DESIGN (six-lens
+/// review N5: the earlier "every field today" wording was false at any post-seam
+/// HEAD and is retired).
 /// the 3.3 list plus the five fields 3.3's own tasks added after its T0
 /// (`applied_by_seat`, `x_applied_moves`, `x_explanations`, `x_ply_cap_hits`,
 /// `x_free_cap_hits`). The 3.4 fixtures are held to this list, so a fixture

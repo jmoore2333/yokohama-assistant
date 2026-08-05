@@ -2487,17 +2487,23 @@ mod tests {
         let (mut greedy, _) = Contestant::GREEDY_V1_DEFAULT.build(&rules, 7);
         let (mut s1, _) = Contestant::LOOKAHEAD_V1_DEFAULT.build(&rules, u64::MAX / 5);
         let (mut s2, _) = Contestant::ATOMIC_DIAG_DEFAULT.build(&rules, u64::MAX - 11);
+        // The FOURTH EvaluatorScored contestant (3.4): every §5 experiment
+        // cell's `setup-identical=yes` rests on this agreement holding for it
+        // too — structurally unguarded until the six-lens review added it.
+        let (mut mcts, _) = Contestant::MCTS_V1_DEFAULT.build(&rules, u64::MAX / 3);
         for seat in 0..4u8 {
             for card in 1..=18u8 {
                 let deal = [OrderCardId(card), OrderCardId(card + 18)];
                 let g = greedy.choose_starting_order(PlayerId(seat), &deal);
                 let a = s1.choose_starting_order(PlayerId(seat), &deal);
                 let b = s2.choose_starting_order(PlayerId(seat), &deal);
+                let m = mcts.choose_starting_order(PlayerId(seat), &deal);
                 assert!(
-                    g == a && a == b,
-                    "the three evaluator contestants' Keeps diverged at seat {seat}, \
-                     deal {deal:?}: greedy {g}, s1 {a}, s2 {b} — KeepKind::EvaluatorScored \
-                     (and every setup-identical=yes it prints) rests on their agreement",
+                    g == a && a == b && b == m,
+                    "the four evaluator contestants' Keeps diverged at seat {seat}, \
+                     deal {deal:?}: greedy {g}, s1 {a}, s2 {b}, mcts {m} — \
+                     KeepKind::EvaluatorScored (and every setup-identical=yes it \
+                     prints) rests on their agreement",
                 );
             }
         }
