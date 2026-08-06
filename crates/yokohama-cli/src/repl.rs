@@ -2225,16 +2225,15 @@ mod tests {
     /// S3 (pre-gate view batch): the FIRST `board` render of a session, on a
     /// board wider than 100 columns, prints a one-time width note -- there is
     /// no terminal-size detection (std has none; no new deps), so the note is
-    /// keyed purely on the board's own rendered width. A 4-player board is
-    /// 108 columns; the note names that width and points at guide §2, and a
-    /// second render does NOT repeat it. (On the staggered pyramid the 3-player
-    /// board is only 90 columns, so 4 players is the wide case now.)
+    /// keyed purely on the board's own rendered width. The note names that
+    /// width and points at guide §2, and a second render does NOT repeat it.
     ///
-    /// The note keys on the GRID width, not the composed frame's — the frame is
-    /// wider still (114/132/108 at 2/3/4 players, since the players panel sits
-    /// beside the board at 2-3p), so it never fires at 2 players despite the
-    /// frame exceeding 100 there. Guide §2 states the frame widths; making the
-    /// note frame-aware is on the carry-forward list.
+    /// **Every count is the wide case since T2's V3 board** — 120/150/180
+    /// columns at 2/3/4 players, all past the note's 100-column trigger, where
+    /// the pre-redesign boards were 72/90/108 and only 4 players fired it. The
+    /// note keys on the GRID width, not the composed frame's, which is wider
+    /// still (198/163/180 since T3). Guide §2 states the frame widths; making
+    /// the note frame-aware is on the carry-forward list.
     #[test]
     fn board_command_prints_a_one_time_width_note_on_a_wide_board() {
         let mut r = repl_np(4, 7);
@@ -2332,19 +2331,35 @@ mod tests {
     }
 
     /// I5's height pin, mirroring `screen.rs`'s opening-frame one: the
-    /// composed frame around the `view` menu's board entry -- the FIRST row
-    /// of the discoverability menu, and the path a tester hits before any
-    /// other -- must fit the 50 rows the guide tells them to open.
+    /// composed frame around the `view` menu's board entry -- the FIRST row of
+    /// the discoverability menu, and the path a tester hits before any other --
+    /// must not be TALLER than the opening frame at the same count.
+    ///
+    /// **The bound was a flat 50 rows until T3 and is now relative**, for the
+    /// reason `screen::FRAME_HEIGHTS` records in full: T3 stacks the whole
+    /// designed dashboard below the board at 3 and 4 players, which puts those
+    /// two opening frames at 75 and 84 rows until T10 re-lays them into the 4P
+    /// mock's four columns. What this test was ever really checking is that
+    /// this PATH costs no more rows than the screen the player was already
+    /// looking at -- I5's finding was a menu entry that re-printed a board the
+    /// frame above it had already drawn -- and stated that way it keeps its
+    /// grip at every count instead of being disabled at two of them. The
+    /// absolute floor stays asserted where it still holds, in `screen.rs`.
     #[test]
-    fn view_menu_board_entry_fits_fifty_rows_at_every_player_count() {
+    fn view_menu_board_entry_is_no_taller_than_the_opening_frame() {
         for n in [2u8, 3, 4] {
             let mut r = repl_np(n, 7);
             screen::force(true);
+            let opening = screen::wrap(&r, &r.prompt()).lines().count();
             r.step("view");
             let out = r.step("0"); // Board
             let rows = screen::wrap(&r, &out.text).lines().count();
             screen::force(false);
-            assert!(rows <= 50, "the {n}P view->board frame is {rows} rows; 50 is the documented height");
+            assert!(
+                rows <= opening,
+                "the {n}P view->board frame is {rows} rows against an opening frame of \
+                 {opening}: the menu entry must not add a second board"
+            );
         }
     }
 

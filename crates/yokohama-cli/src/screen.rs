@@ -9,21 +9,24 @@
 //! color only); the in-app `screen` command does.
 //!
 //! Frame anatomy (top to bottom): title strip, the staggered board joined
-//! with the players panel (BESIDE it while the board and the designed
-//! dashboard both fit `FLOOR_W`, which is 2 players on the V3 board; BELOW it
-//! at 3 and 4 -- std exposes no terminal size, so what the frame itself
-//! measures is the only honest signal), the board legend, a rule, then the
-//! body (the step's delta/error lines plus the normal prompt block, unchanged
-//! from piped mode -- nothing exists only in the frame).
+//! with the dashboard (BESIDE it while the board and the designed dashboard
+//! both fit `FLOOR_W`, which is 2 players on the V3 board; BELOW it at 3 and 4
+//! -- std exposes no terminal size, so what the frame itself measures is the
+//! only honest signal), the board legend, a rule, then the body (the step's
+//! delta/error lines plus the normal prompt block, unchanged from piped mode --
+//! nothing exists only in the frame).
 //!
-//! **Transitional between Phase-3.5a T2 and T4.** The board region is the
-//! redesigned V3 one; the players panel and the decision zone below it are
-//! still the pre-redesign surfaces, and T3 and T4 replace them in turn.
+//! **Transitional between Phase-3.5a T3 and T4.** The board region and the
+//! dashboard are the redesigned ones; the decision zone below them is still
+//! the pre-redesign surface, and T4 replaces it.
 
 use std::sync::atomic::{AtomicBool, Ordering};
 
+use crate::panel_render;
 use crate::render;
 use crate::repl::Repl;
+use crate::screen_model::{TitleMode, TitleModel};
+use crate::session::TrackingMode;
 use crate::style::strip_ansi;
 
 static ENABLED: AtomicBool = AtomicBool::new(false);
@@ -90,19 +93,17 @@ pub(crate) const FLOOR_W: usize = 200;
 /// a value chosen here.
 const PANEL_GAP: usize = 4;
 
-/// The DESIGNED dashboard width — the approved mocks' `DASH_W`, which T3 cuts
-/// the panels over to.
+/// The DESIGNED dashboard width — the approved mocks' `DASH_W`, now the width
+/// the panels actually render at ([`panel_render::DASH_W`], where the number
+/// lives beside the panels that fill it).
 ///
-/// The arrangement is decided against this number rather than against whatever
-/// the panel beside the board happens to measure TODAY, and that is deliberate
-/// rather than premature. The frame is transitional between T2 and T4: the V3
-/// board has landed and the old 40-column compact panel has not yet been
-/// replaced. Measuring the live panel would put the 3-player board beside it
-/// at 192 columns now and stack it below the moment T3 widens the panel to its
-/// design — an arrangement that flips under a task that never touched layout.
-/// Sizing on the design instead gives spec §0.1's ruling immediately (2P
-/// beside, 3P and 4P below) and gives the same answer after T3.
-const DASH_W: usize = 74;
+/// The arrangement is decided against the DESIGN rather than against whatever
+/// the panel happens to measure today, and T3 is why that mattered: a dashboard
+/// is ragged-right, so a turn-1 frame whose longest panel line is 68 columns
+/// would arrange one way and the same game five turns later, at 74, another.
+/// Sizing on the design gives spec §0.1's ruling at every position in the game
+/// (2P beside, 3P and 4P below) instead of only at the ones measured.
+const DASH_W: usize = panel_render::DASH_W;
 
 /// The composed frame's width at each player count, indexed `players - 2` --
 /// the three numbers guide §2 states, and **the budget a BODY has to fit.**
@@ -123,32 +124,73 @@ const DASH_W: usize = 74;
 /// for guide §2 -- so a layout change that moves a width fails two tests rather
 /// than drifting.
 ///
-/// **These are OPENING widths.** The board, legend and info strip are fixed per
-/// count; the players panel is the one part play changes, and it can leave the
-/// frame WIDER later on. A body inside these numbers is therefore inside those
-/// frames too. The residual is the other direction -- a panel that rendered
-/// NARROWER than at the opening would drop a frame below this bound. Its
-/// content starts at its minimum (0 VP, no goods, a President in hand rather
-/// than a named area), so that is not expected, and repl.rs's
-/// `the_suggest_screen_fits_the_composed_frame_at_every_player_count` checks a
-/// real mid-game frame against this floor at each count rather than leaving the
-/// claim to argument.
+/// **These are OPENING widths, and since T3 they are also CEILINGS.** The
+/// board, legend and info strip are fixed per count; the dashboard is the one
+/// part play changes. It cannot widen a frame past these numbers, because every
+/// panel line is clipped at [`DASH_W`] ([`panel_render`]'s own rule) and the 2P
+/// entry already budgets the full [`DASH_W`] beside the board — which is the
+/// property T3 bought and the 40-column panel did not have. What play can do is
+/// leave a frame NARROWER: a dashboard is ragged-right, so a turn-1 position
+/// whose longest panel line falls short of 74 composes a slightly narrower
+/// frame. That direction is safe for a body sized against these numbers, and
+/// repl.rs's `the_suggest_screen_fits_the_composed_frame_at_every_player_count`
+/// checks a real mid-game frame against the bound at each count rather than
+/// leaving the claim to argument.
 ///
-/// **T2 moved all three**, and the cause is the V3 board's 30-column tiles:
-/// the board alone went 72/90/108 to 120/150/180 columns. A DIFFERENT element
-/// is the widest one at each count now, which is why the three numbers no
-/// longer track the board: at 4 players it is the 180-column board itself; at 3
-/// it is the site-slot LEGEND, at 163 columns the one row that keys the V3
-/// tiles' compact tokens and the same length at every count; at 2 it is the
-/// board with the panel joined beside it, at 120 + [`PANEL_GAP`] + the panel's
-/// own 40 = 164, one column past that legend. The pre-redesign numbers were
-/// 114/132/108.
+/// **T2 moved all three and T3 moved the first**, and a DIFFERENT element is
+/// the widest one at each count, which is why the three numbers do not track
+/// the board: at 4 players it is the 180-column board itself; at 3 it is the
+/// site-slot LEGEND, at 163 columns the one row that keys the V3 tiles'
+/// compact tokens and the same length at every count; at 2 it is the board with
+/// the dashboard joined beside it, at 120 + [`PANEL_GAP`] + [`DASH_W`] = 198.
 ///
-/// The 2P entry moved again in the T2 review fix wave, 163 to 164, when
-/// [`PANEL_GAP`] took the approved mocks' four-column gutter in place of the
-/// two it had been carrying: that join was 162 at a gap of 2, a column short of
-/// the legend, and two more columns put it a column past.
-const FRAME_WIDTHS: [usize; 3] = [164, 163, 180];
+/// The history in one line, because two tasks moved these in three weeks: the
+/// pre-redesign numbers were 114/132/108; T2's V3 board took them to
+/// 163/163/180 and then 164/163/180 when [`PANEL_GAP`] widened to the mocks'
+/// four-column gutter; T3 replaced the 40-column compact panel with the
+/// designed 74-column dashboard, which put the 2P join at 198.
+///
+/// **198 is 2 columns under [`FLOOR_W`], and that is the design working, not a
+/// near miss.** Spec §0.1 designs the 2P frame at 200 and the mocks are drawn
+/// at exactly that; 120 + 4 + 74 is what "the board and the dashboard side by
+/// side inside 200" costs.
+const FRAME_WIDTHS: [usize; 3] = [198, 163, 180];
+
+/// The composed frame's HEIGHT at each player count, indexed `players - 2` --
+/// the three numbers guide §2 states, measured the same way [`FRAME_WIDTHS`] is
+/// and pinned by `the_opening_frame_is_the_recorded_size_at_every_count`.
+///
+/// **Two of these three are past the design floor's 50 rows, and it is
+/// deliberate, transitional and scheduled.** Spec §0.1 designs the frame at
+/// 200x50. At 2 players the dashboard joins BESIDE the board and the frame
+/// opens at 46 rows, inside it. At 3 and 4 the board is too wide to leave room
+/// beside it, so the same panel block stacks BELOW, and a block that costs 8
+/// rows per seat plus its three other panels runs the frame to 76 and 85 rows:
+/// on a 50-row terminal the title strip and the top board rows have scrolled
+/// off before the player can read them, which is F3 exactly, returning by a
+/// different door.
+///
+/// **T10 is the fix and it is a layout change, not a trim.** The approved 4P
+/// mock (`frame-4p.ans`) draws the players panel in FOUR COLUMNS across the
+/// board's own 180-column footprint and folds tracks and achievements onto one
+/// line each — 43 rows all in. This task was scoped to cut the panels over at
+/// every count and leave the higher-count ARRANGEMENT to T10, so what ships
+/// here is the honest intermediate: the right content, in the wrong shape, with
+/// the number written down instead of a bound quietly relaxed to cover it.
+/// `panel` is the control that buys the rows back in the meantime.
+///
+/// `cfg(test)`, unlike [`FRAME_WIDTHS`]: a width is a BUDGET the running driver
+/// spends (`suggest` sizes its body against `frame_width`), while a height is
+/// only ever a measurement and a pin. Nothing at runtime asks how tall its own
+/// frame is, so a production constant here would be dead code claiming to be
+/// used.
+#[cfg(test)]
+const FRAME_HEIGHTS: [usize; 3] = [46, 76, 85];
+
+/// The design floor's height (spec §0.1's 200x50), which [`FRAME_HEIGHTS`]
+/// meets at 2 players and not at 3 or 4. `cfg(test)` for the same reason.
+#[cfg(test)]
+const FLOOR_H: usize = 50;
 
 /// [`FRAME_WIDTHS`] for a `players`-player game (2..=4).
 ///
@@ -205,19 +247,48 @@ pub fn wrap(repl: &Repl, body: &str) -> String {
     }
     let stage = stage(repl);
     let width = stage_width(&stage);
-    let title = " Y O K O H A M A ";
-    let pad = width.saturating_sub(title.chars().count());
-    let strip = format!("{}{}{}", "═".repeat(pad / 2), title, "═".repeat(pad - pad / 2));
+    let strip = panel_render::title_strip(&title_model(repl), width);
 
-    format!("\u{1b}[2J\u{1b}[H{strip}\n{stage}{}\n{body}", "─".repeat(width))
+    // The blank line under the strip is the approved mocks' own spacing: it is
+    // what stops the title reading as a caption on the top row of tiles.
+    format!(
+        "\u{1b}[2J\u{1b}[H{strip}\n\n{stage}{}\n{body}",
+        String::from(crate::style::glyph::RULE).repeat(width),
+    )
 }
 
-/// Everything [`wrap`] composes ABOVE the body: the board (with the players
-/// panel beside or below it), the board legend, the discoverability strip.
+/// The session facts the title strip states, mapped out of the `Session` HERE
+/// rather than inside the model.
+///
+/// [`TitleMode`] is a local mirror of [`TrackingMode`] precisely so
+/// `screen_model`'s dependency list stays `yokohama_core` alone (T0-review SF2),
+/// which makes this three-line map the CALLER's job by design — this is that
+/// caller.
+fn title_model(repl: &Repl) -> TitleModel {
+    TitleModel {
+        mode: match repl.session.mode {
+            TrackingMode::Simulation => TitleMode::Sim,
+            TrackingMode::Live => TitleMode::Live,
+        },
+        seed: repl.session.state().config.setup_seed,
+        autosaved: repl.session.save_path.is_some(),
+    }
+}
+
+/// Everything [`wrap`] composes ABOVE the body: the board (with the dashboard
+/// beside or below it), the board legend, the discoverability strip.
 ///
 /// Split out of `wrap` so [`stage_width`] can be measured on its own -- the
 /// [`FRAME_WIDTHS`] pin needs the width `wrap` sizes itself to, not a width
 /// re-derived by parsing a finished frame back apart.
+///
+/// **The stacked arrangement is TRANSITIONAL and it costs rows.** At 2 players
+/// the dashboard joins beside the board and the frame stays inside the design
+/// floor. At 3 and 4 the same panel block stacks BELOW a board too wide to sit
+/// beside, and the frame runs well past 50 rows — see [`FRAME_HEIGHTS`], which
+/// records what each count actually opens at. T10 is the task that fixes it,
+/// by re-laying the players panel into the four columns the 4P mock draws;
+/// until then `panel` is the control that buys those rows back.
 fn stage(repl: &Repl) -> String {
     let state = repl.session.state();
     let rules = repl.session.rules();
@@ -226,18 +297,15 @@ fn stage(repl: &Repl) -> String {
 
     let seats = repl.seat_display();
     let mut stage = if repl.show_panel {
+        let dashboard = render::dashboard(state, rules, &seats, state.current_player);
         if board_width + PANEL_GAP + DASH_W <= FLOOR_W {
-            join_side_by_side(&board, &render::compact_panel(state, rules, &seats), PANEL_GAP)
+            join_side_by_side(&board, &dashboard, PANEL_GAP)
         } else {
-            // Stacked below the board, VERTICAL space is the scarce
-            // resource, not horizontal: the panel folds to one line per
-            // player (F3, Codex review of PR #4 -- the 5-line block cost 16
-            // rows and pushed the 4P opening frame off the screen).
             let mut s = board.clone();
             if !s.is_empty() && !s.ends_with('\n') {
                 s.push('\n');
             }
-            s.push_str(&render::compact_panel_oneline(state, &seats));
+            s.push_str(&dashboard);
             s
         }
     } else {
@@ -369,7 +437,10 @@ mod tests {
         assert!(f.starts_with("\u{1b}[2J\u{1b}[H"), "clear+home must lead the frame");
         assert!(f.contains("Y O K O H A M A"), "{f}");
         assert!(f.contains("┌"), "board expected in frame: {f}");
-        assert!(f.contains("Players"), "panel expected in frame: {f}");
+        assert!(f.contains("PLAYERS"), "players panel expected in frame: {f}");
+        assert!(f.contains("TRACKS"), "tracks panel expected in frame: {f}");
+        assert!(f.contains("ACHIEVEMENTS"), "achievements panel expected in frame: {f}");
+        assert!(f.contains("YOUR HAND"), "hand panel expected in frame: {f}");
         assert!(f.contains("site slots"), "legend expected: {f}");
         assert!(
             f.contains("info: type 'view'"),
@@ -379,11 +450,18 @@ mod tests {
     }
 
     /// Spec §0.1's arrangement ruling, reproduced from the geometry rather
-    /// than hard-wired: at 2 players the 120-column V3 board plus the panel
-    /// fits [`FLOOR_W`], so the dashboard joins SIDE BY SIDE -- some line
-    /// carries both a board border and panel text. At 3 and 4 players the
+    /// than hard-wired: at 2 players the 120-column V3 board plus the designed
+    /// dashboard fits [`FLOOR_W`], so the dashboard joins SIDE BY SIDE -- some
+    /// line carries both a board border and panel text. At 3 and 4 players the
     /// board alone is 150 and 180 columns, so it stacks BELOW and no line
     /// carries both.
+    ///
+    /// The join is detected on `Mercenaries `, which the T3 dashboard emits
+    /// once per seat and no tile ever does. It used to key on `President:` --
+    /// a string the redesigned panel no longer writes (it says `President ` and
+    /// then either `in hand` or an area name) and one that would have gone on
+    /// matching the panel it was written for right up until T2 removed the
+    /// tile line that shared it.
     #[test]
     fn the_dashboard_sits_beside_the_board_only_while_both_fit_the_floor() {
         force(true);
@@ -393,39 +471,63 @@ mod tests {
         // readily as on its interior.
         let joined = |frame: &str| {
             frame.lines().any(|l| {
-                l.contains("President:") && ['┌', '┐', '└', '┘', '│'].iter().any(|c| l.contains(*c))
+                l.contains("Mercenaries ")
+                    && ['┌', '┐', '└', '┘', '│'].iter().any(|c| l.contains(*c))
             })
         };
 
         let r2 = repl_np(2);
         let f2 = wrap(&r2, "");
-        assert!(joined(&f2), "2P panel must sit beside the board:\n{f2}");
+        assert!(joined(&f2), "2P dashboard must sit beside the board:\n{f2}");
 
         for n in [3u8, 4] {
             let r = repl_np(n);
             let f = wrap(&r, "");
             assert!(
                 !joined(&f),
-                "the {n}P panel must stack below a board wider than the floor allows beside it:\n{f}"
+                "the {n}P dashboard must stack below a board wider than the floor allows \
+                 beside it:\n{f}"
             );
-            assert!(f.contains("Players"), "{n}P panel still present, just below:\n{f}");
+            assert!(f.contains("PLAYERS"), "{n}P dashboard still present, just below:\n{f}");
         }
 
+        // Whichever way it is arranged, the dashboard carries every seat: the
+        // stacked branch used to fold to one line per player and drop fields to
+        // do it, and T3's cutover renders the SAME block at every count.
         let r4 = repl_np(4);
         let f4 = wrap(&r4, "");
-        // ...and stacked, it is the ONE-LINE-per-player fold (F3), so the
-        // panel costs 4 rows here, not 20: every player's President line is
-        // the same line as their name.
         assert_eq!(
-            f4.lines().filter(|l| l.contains("President:")).count(),
+            f4.lines().filter(|l| l.contains("Mercenaries ")).count(),
             4,
-            "the stacked panel must be one line per player:\n{f4}"
+            "the stacked dashboard must carry all four seats:\n{f4}"
         );
-        assert!(
-            f4.lines().any(|l| l.contains("Red") && l.contains("President:")),
-            "name and President must share one line in the stacked form:\n{f4}"
-        );
+        for name in ["RED", "BLUE", "YELLOW", "GREEN"] {
+            assert!(f4.contains(name), "the stacked dashboard must name {name}:\n{f4}");
+        }
         force(false);
+    }
+
+    /// The title strip states the session facts [`TitleModel`] carries, and it
+    /// carries no rule character at all -- the approved mocks' own shape, and
+    /// the discharge of style.rs's DEFERRED CONVERSIONS row for `═`.
+    #[test]
+    fn the_title_strip_states_the_session_facts_and_draws_no_double_rule() {
+        let r = repl_np(2);
+        force(true);
+        let f = wrap(&r, "");
+        force(false);
+        let strip = f
+            .lines()
+            .next()
+            .expect("a first line")
+            .trim_start_matches(['\u{1b}', '[', '2', 'J', 'H']);
+        assert!(strip.contains("Y O K O H A M A"), "{strip}");
+        assert!(strip.contains("simulation"), "a sim session says so: {strip}");
+        assert!(strip.contains("seed 7"), "the game's identity seed: {strip}");
+        assert!(
+            !f.contains('\u{2550}'),
+            "the redesigned strip draws no ═ anywhere in the frame:\n{f}",
+        );
     }
 
     /// [`FRAME_WIDTHS`] is a mirror, so it gets a pin: every entry is the width
@@ -456,24 +558,46 @@ mod tests {
         assert_eq!(frame_width(0), narrowest, "...including a count below the range");
     }
 
-    /// F3 (Codex adversarial review of PR #4): the composed screen has to
-    /// FIT the terminal the guide tells a tester to open. The opening frame
-    /// is exactly `wrap(repl, repl.prompt())` (`main.rs`), so measure that.
-    /// At 4 players the board is 108 columns and the panel stacks BELOW it;
-    /// with the 5-line-per-player block that stack ran the frame past 50
-    /// rows, and in a real 140x50 PTY the title strip and the whole top
-    /// board row had already scrolled off before the player could read
-    /// them. Every player count must open inside 50 rows.
+    /// F3 (Codex adversarial review of PR #4): the composed screen has to FIT
+    /// the terminal the guide tells a tester to open. The opening frame is
+    /// exactly `wrap(repl, repl.prompt())` (`main.rs`), so measure that.
+    ///
+    /// **This was a flat `rows <= 50` until T3, and it is now a RECORDED table
+    /// plus that bound where the bound still holds.** Weakening an F3 pin needs
+    /// a reason on the record rather than a bigger constant, so here it is: T3
+    /// replaced the stacked one-line-per-player fold -- which existed precisely
+    /// to hold this bound -- with the full designed dashboard at every count
+    /// (the task's own scope), and at 3 and 4 players that block stacks below
+    /// the board and runs the frame to 76 and 85 rows. T10 re-lays it into the
+    /// 4P mock's four columns; see [`FRAME_HEIGHTS`] for the whole disposition.
+    ///
+    /// An EQUALITY table is a stronger pin than the inequality it replaces, not
+    /// a weaker one: it fails on a frame that grows by one row and on a frame
+    /// that shrinks by one, so the transitional numbers cannot drift while
+    /// nobody is looking, and `guide_sync` independently requires guide §2 to
+    /// state these same three. What is genuinely lost is the FLOOR at 3 and 4,
+    /// which is why it is still asserted at 2 rather than dropped for all three.
     #[test]
-    fn opening_frame_fits_fifty_rows_at_every_player_count() {
+    fn the_opening_frame_is_the_recorded_size_at_every_count() {
         for n in [2u8, 3, 4] {
             let r = repl_np(n);
             force(true);
             let frame = wrap(&r, &r.prompt());
             force(false);
             let rows = frame.lines().count();
-            assert!(rows <= 50, "the {n}P opening frame is {rows} rows; 50 is the documented height");
+            assert_eq!(
+                FRAME_HEIGHTS[usize::from(n) - 2],
+                rows,
+                "the {n}P frame opens at {rows} rows, so FRAME_HEIGHTS must say so -- \
+                 and guide §2 (checked independently by guide_sync) must state the same number"
+            );
         }
+        assert!(
+            FRAME_HEIGHTS[0] <= FLOOR_H,
+            "the 2P frame joins the dashboard beside the board and must stay inside the \
+             {FLOOR_H}-row design floor; it is {} rows",
+            FRAME_HEIGHTS[0],
+        );
     }
 
     /// A frame over a deliberately WIDE game position: turn 99, 3-digit
@@ -551,38 +675,40 @@ mod tests {
     /// How far past its OPENING width ([`frame_width`]) a composed frame may
     /// grow in play before the two width pins below call it a defect.
     ///
-    /// **MEASURED, then set — and it came back SMALLER than the review that
-    /// ordered it expected, so this is one column rather than the double
-    /// figures a growing panel would have wanted.** [`FRAME_WIDTHS`] warns that
-    /// a mid-game players panel can leave a frame wider than its opening width,
-    /// and covering that is what this margin is for. Instrumented over both
-    /// pins below — every constructed worst case (turn 99, 199 money and VP, 15
-    /// of every good on every seat, all seven pending-choice banners, a
-    /// lockdown) and a real 250-move game walk, at each count — the overshoot
-    /// is nowhere above zero:
+    /// **MEASURED, then set — and RE-MEASURED at T3, which is the condition the
+    /// previous revision of this doc attached to the constant.** That revision
+    /// said: "if T3's dashboard makes the panel the widest element at a count
+    /// play can then widen, this constant gets RE-MEASURED — not raised to
+    /// whatever silences it." T3 did make the dashboard the widest element at 2
+    /// players. The instrumentation was re-run over both pins below — every
+    /// constructed worst case (turn 99, 199 money and VP, 15 of every good on
+    /// every seat, all seven pending-choice banners, a lockdown) and a real
+    /// 250-move game walk, at each count — and the overshoot came back at zero
+    /// again, so the constant stays at one and the table states the new
+    /// openings:
     ///
     /// | count | opening | widest measured | overshoot |
     /// |---|---|---|---|
-    /// | 2 | 164 | 164 | 0 |
+    /// | 2 | 198 | 198 | 0 |
     /// | 3 | 163 | 163 | 0 |
     /// | 4 | 180 | 180 | 0 |
     ///
-    /// A frame reaches its opening width and stops, because at no count is the
-    /// widest element one that play can grow: at 4 the 180-column board is
-    /// wider than anything stacked under it, at 3 the fixed site-slot legend
-    /// is, and at 2 the panel joined beside the board does set the width — but
-    /// the panel's own widest line is a fixed-width goods row that three-digit
-    /// money and VP still fit inside. Hence one column, just above the worst
-    /// measured overshoot.
+    /// A frame reaches its opening width and stops, and after T3 the reason at
+    /// 2 players is STRUCTURAL rather than incidental. At 4 the 180-column
+    /// board is wider than anything stacked under it and at 3 the fixed
+    /// site-slot legend is — both unchanged. At 2 the dashboard joined beside
+    /// the board sets the width, and every one of its lines is clipped at
+    /// [`DASH_W`] by [`panel_render`], with the section rules sitting at exactly
+    /// that width from turn 1: the widest line is already at its ceiling before
+    /// a single move is applied, so there is nothing left for play to grow. The
+    /// old panel had no such rule and reached 164 by measuring its own content.
     ///
     /// It is a MARGIN, not a second floor: what it has to stay is a bound a
-    /// growing line can actually break. [`FLOOR_W`] alone leaves 20 to 37
+    /// growing line can actually break. [`FLOOR_W`] alone leaves 2 to 37
     /// columns of slack depending on the count, which is more room than the two
     /// lines the original pin caught (the 142-column Movement hint and the
     /// 150-column choice status line) ever needed to hide in; at one column of
-    /// allowance that class of growth fails again. If T3's dashboard makes the
-    /// panel the widest element at a count play can then widen, this constant
-    /// gets RE-MEASURED — not raised to whatever silences it.
+    /// allowance that class of growth fails again.
     const FRAME_MARGIN: usize = 1;
 
     /// Both width bounds on one composed frame, reported rather than asserted.
@@ -756,9 +882,10 @@ mod tests {
         let out = r.step("panel");
         assert!(out.text.contains("panel"), "{}", out.text);
         let f = wrap(&r, "");
-        assert!(!f.contains("Players"), "panel must be hidden after toggle:\n{f}");
+        assert!(!f.contains("PLAYERS"), "dashboard must be hidden after toggle:\n{f}");
+        assert!(!f.contains("YOUR HAND"), "...the whole dashboard, not only its first panel:\n{f}");
         r.step("panel");
-        assert!(wrap(&r, "").contains("Players"), "panel must return on second toggle");
+        assert!(wrap(&r, "").contains("PLAYERS"), "dashboard must return on second toggle");
 
         let out = r.step("screen");
         assert!(out.text.contains("screen"), "{}", out.text);
@@ -825,5 +952,64 @@ mod tests {
         crate::style::force(false);
         assert_ne!(painted, "ab", "forced color must actually paint");
         test_support::assert_exact_width(&[painted], 2);
+    }
+}
+
+#[cfg(test)]
+mod capture {
+    use super::*;
+    use crate::repl::Repl;
+    use crate::session::Session;
+    use yokohama_core::*;
+
+    /// The committed FULL-FRAME capture the orchestrator and the owner `cat`
+    /// against the approved mock — held as a CHECKED golden rather than dumped
+    /// once, so it cannot quietly stop being what the code renders.
+    ///
+    /// **Whole frame, not a region.** T2's `t2-board-2p.txt` captured the board
+    /// alone because that was all T2 had cut over. T3 finishes the top half of
+    /// the frame, so the golden is now the thing the mock actually is: title
+    /// strip, board, dashboard beside it, legend, info strip, rule and body.
+    /// The DECISION ZONE inside that body is still the pre-redesign one — T4
+    /// replaces it — so the last four lines of this file are expected to look
+    /// nothing like `main-frame.ans`'s, and that is the transitional state
+    /// rather than a defect in the capture.
+    ///
+    /// Plain text, because a capture full of escapes is a capture nobody can
+    /// read in a diff. Regenerate with `UPDATE_T3_CAPTURE=1 cargo test -p
+    /// yokohama-cli --lib the_committed_frame_capture` after a deliberate
+    /// change, and LOOK AT THE DIFF before committing it.
+    #[test]
+    fn the_committed_frame_capture_is_what_the_screen_renders() {
+        let path = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../docs/plans/2026-08-05-phase3.5a-mocks/captures/t3-frame-2p.txt",
+        );
+        let repl = Repl::new(
+            Session::new_sim(
+                GameConfig::for_player_count(2),
+                7,
+                vec![StartingOrderChoice::Keep(0); 2],
+                Rules::standard(),
+            )
+            .expect("a 2P session"),
+        );
+        force(true);
+        let frame = wrap(&repl, &repl.prompt());
+        force(false);
+        // The clear-screen + cursor-home prefix is a control sequence, not
+        // content: it would render as mojibake in a file meant to be read.
+        let rendered = format!("{}\n", frame.trim_start_matches("\u{1b}[2J\u{1b}[H"));
+
+        if std::env::var_os("UPDATE_T3_CAPTURE").is_some() {
+            std::fs::create_dir_all(std::path::Path::new(path).parent().expect("a parent"))
+                .expect("the captures directory");
+            std::fs::write(path, &rendered).expect("write the capture");
+        }
+        let committed = std::fs::read_to_string(path).expect("the committed capture");
+        assert_eq!(
+            committed, rendered,
+            "the committed 2P frame capture is stale; regenerate it with UPDATE_T3_CAPTURE=1",
+        );
     }
 }

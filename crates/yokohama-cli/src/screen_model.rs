@@ -857,6 +857,38 @@ fn option_fee(state: &GameState, rules: &Rules, mv: &Move) -> Option<FeeModel> {
     }
 }
 
+/// The dashboard's panels in DISPLAY ORDER — players, tracks, achievements,
+/// then the viewing seat's own hand.
+///
+/// The order is decided HERE and nowhere else, which is the point of the
+/// function existing rather than the list being written out at each call site.
+/// It has two callers with different needs — [`build_frame`], which wants a
+/// whole frame, and the renderer's adapter, which wants the dashboard alone
+/// because the composed screen still draws its decision zone the pre-redesign
+/// way until T4 — and two inline copies of this list would be two places for
+/// the frame's shape to drift apart.
+///
+/// The hand panel is absent, not empty, for a `seat` the state does not hold:
+/// [`build_hand`] returns `None` there, and a panel captioned "YOUR HAND" over
+/// nobody's hand is worse than no panel.
+pub fn build_dashboard(
+    state: &GameState,
+    rules: &Rules,
+    seats: &[SeatFacts],
+    seat: PlayerId,
+) -> Vec<Panel> {
+    let mut panels = vec![
+        Panel::Players(build_players(state, rules, seats)),
+        Panel::Tracks(build_tracks(state)),
+        Panel::Achievements(build_achievements(state)),
+    ];
+    if let Some(hand) = build_hand(state, rules, seat, SeatFacts::for_seat(seats, seat).hand_hidden)
+    {
+        panels.push(Panel::Hand(hand));
+    }
+    panels
+}
+
 /// A whole frame: the board, the dashboard in display order, and the decision
 /// zone. `seat` is the seat whose own hand the dashboard shows.
 pub fn build_frame(
@@ -870,19 +902,7 @@ pub fn build_frame(
     FrameModel {
         title,
         board: build_board(state, rules),
-        dashboard: {
-            let mut panels = vec![
-                Panel::Players(build_players(state, rules, seats)),
-                Panel::Tracks(build_tracks(state)),
-                Panel::Achievements(build_achievements(state)),
-            ];
-            if let Some(hand) =
-                build_hand(state, rules, seat, SeatFacts::for_seat(seats, seat).hand_hidden)
-            {
-                panels.push(Panel::Hand(hand));
-            }
-            panels
-        },
+        dashboard: build_dashboard(state, rules, seats, seat),
         decision: build_decision(state, rules, legal),
     }
 }

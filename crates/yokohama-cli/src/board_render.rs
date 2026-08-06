@@ -75,15 +75,23 @@ const STATION: &str = "[St]";
 /// (style.rs's module doc). Accumulating both at once is how that rule stops
 /// being a thing every emitter has to remember: [`Twin::width`] is always the
 /// plain width, and [`exact`] is handed both.
+///
+/// `pub(crate)` since T3: it is the crate's fixed-width line primitive, not the
+/// board's private one, and [`crate::panel_render`] builds dashboard rows under
+/// the same rule. Shared rather than copied — a second Twin would be a second
+/// place for the plain/painted pair to drift apart, which is the one thing this
+/// type exists to prevent. It stays declared HERE, with the surface that first
+/// needed it, rather than being moved into `style`: `style` owns which escapes
+/// exist, and this owns how a line is measured while it is being built.
 #[derive(Default)]
-struct Twin {
-    plain: String,
-    painted: String,
+pub(crate) struct Twin {
+    pub(crate) plain: String,
+    pub(crate) painted: String,
 }
 
 impl Twin {
     /// Append text that takes no color (structure, separators, labels).
-    fn raw(&mut self, s: &str) -> &mut Self {
+    pub(crate) fn raw(&mut self, s: &str) -> &mut Self {
         self.plain.push_str(s);
         self.painted.push_str(s);
         self
@@ -92,7 +100,7 @@ impl Twin {
     /// Append text in a tone. `paint` is the identity while color is off, so
     /// the two twins stay equal in that state — which is what makes the piped
     /// protocol byte-plain without this module doing anything.
-    fn tinted(&mut self, tone: Tone, s: &str) -> &mut Self {
+    pub(crate) fn tinted(&mut self, tone: Tone, s: &str) -> &mut Self {
         self.plain.push_str(s);
         self.painted.push_str(&paint(tone, s));
         self
@@ -101,15 +109,23 @@ impl Twin {
     /// Append a token in `seat`'s color, or uncolored when the caller's
     /// table does not name that seat — an unknown seat loses its tint and
     /// keeps its mark, never the other way round.
-    fn owned(&mut self, colors: &[PlayerColor], seat: PlayerId, s: &str) -> &mut Self {
+    pub(crate) fn owned(&mut self, colors: &[PlayerColor], seat: PlayerId, s: &str) -> &mut Self {
         match color_of(colors, seat) {
             Some(c) => self.tinted(Tone::Player(c), s),
             None => self.raw(s),
         }
     }
 
-    fn width(&self) -> usize {
+    pub(crate) fn width(&self) -> usize {
         self.plain.chars().count()
+    }
+
+    /// Pad with spaces until the PLAIN text reaches `column`, always advancing
+    /// by at least one space so two fields can never run together when the
+    /// first one overruns its budget.
+    pub(crate) fn pad_to(&mut self, column: usize) -> &mut Self {
+        let pad = column.saturating_sub(self.width()).max(1);
+        self.raw(&" ".repeat(pad))
     }
 }
 
@@ -117,7 +133,7 @@ impl Twin {
 /// The table is the caller's `player_colors` in seat order; a model can carry
 /// a [`PlayerId`] this renderer has no color for (a fixture, a stale record),
 /// and inventing one would attribute a pawn to the wrong player.
-fn color_of(colors: &[PlayerColor], seat: PlayerId) -> Option<PlayerColor> {
+pub(crate) fn color_of(colors: &[PlayerColor], seat: PlayerId) -> Option<PlayerColor> {
     colors.get(usize::from(seat.0)).copied()
 }
 
@@ -128,7 +144,10 @@ fn color_of(colors: &[PlayerColor], seat: PlayerId) -> Option<PlayerColor> {
 /// leave the terminal in the tone), and a clipped word is a smaller lie than a
 /// sheared frame. This is the only width decision in the module, so every line
 /// inherits the guarantee whether or not its builder thought about it.
-fn exact(t: &Twin, width: usize) -> String {
+///
+/// `pub(crate)` for the same reason as [`Twin`]: the dashboard's boxed rows
+/// (its section rules and its hand card) hold the identical guarantee.
+pub(crate) fn exact(t: &Twin, width: usize) -> String {
     let measured = t.width();
     if measured == width {
         return t.painted.clone();
@@ -495,7 +514,12 @@ pub fn board_legend(has_canal: bool) -> String {
     let mut slots = Twin::default();
     slots
         .tinted(Tone::Chrome, "site slots: ")
-        .raw(&glyph::BUILT.to_string())
+        // White, not bare: the approved mock paints this sample `⌂` in the
+        // site-slot token table's own white (T3's carried-over T2 flag). It is
+        // a SAMPLE of a mark the strip draws in its builder's color, so it
+        // takes the neutral tone the rest of that table takes rather than
+        // claiming an owner it does not have.
+        .tinted(Tone::ActionIcon, &glyph::BUILT.to_string())
         .tinted(Tone::Chrome, " built (owner color)")
         .tinted(Tone::Chrome, &sep)
         .tinted(Tone::Vp, &format!("{}n", glyph::VP))

@@ -148,7 +148,7 @@ fn enabled() -> bool {
 /// by the class column and the review that checks it, not by an assert.
 ///
 /// **DEFERRED CONVERSIONS -- non-vocabulary glyphs the live frame still
-/// draws.** Four non-ASCII characters are spelled inline by emitters today
+/// draws.** Three non-ASCII characters are spelled inline by emitters today
 /// and are deliberately NOT vocabulary: none of them appears in an approved
 /// mock, and admitting a glyph no mock uses would widen the one set whose
 /// whole value is being closed. Each is registered here against the task that
@@ -157,22 +157,24 @@ fn enabled() -> bool {
 ///
 /// | glyph | code point | live site | owing task |
 /// |---|---|---|---|
-/// | `═` | U+2550 | `screen.rs`, the title strip | T3 |
+/// | `═` | U+2550 | ~~`screen.rs`, the title strip~~ | **DONE (T3)** |
 /// | `§` | U+00A7 | `repl.rs:554`, `repl.rs:1881` (guide cross-references) | T4 / T11 |
 /// | `−` | U+2212 | `suggest.rs:122`, the honesty note's minus | T11 |
 /// | `×` | U+00D7 | `suggest.rs:123`, the honesty note's times | T11 |
 ///
-/// The owing task either replaces the character -- the title strip's `═` has
-/// a vocabulary twin in [`RULE`](glyph::RULE) -- or admits it here with a row
+/// The owing task either replaces the character or admits it here with a row
 /// and a class. What it must not do is leave one spelled inline inside a
 /// surface the redesign has already claimed.
 ///
-/// **The `═` row was re-routed from T2 to T3.** T2 cut over the BOARD region,
-/// and the title strip is not in it: the mocks' strip carries the session
-/// facts a [`crate::screen_model::TitleModel`] holds (mode, seed, autosave)
-/// and is centred over the whole frame, so it lands with the surface that
-/// plumbs that model rather than with the board underneath it. The row is
-/// moved rather than left pointing at a task that has closed.
+/// **The `═` row is discharged, and by a third answer neither option
+/// anticipated: the character is GONE rather than converted.** It was re-routed
+/// from T2 to T3 because the title strip carries the session facts a
+/// [`crate::screen_model::TitleModel`] holds and so lands with the surface that
+/// plumbs that model. T3 then found that the approved mocks' strip is centred
+/// text on an otherwise empty line — it draws no rule at all — so
+/// [`crate::panel_render::title_strip`] draws none, and U+2550 is no longer
+/// spelled anywhere in the crate. The row is kept, struck through, because
+/// "which task discharged this and how" is the question a reader arrives with.
 pub mod glyph {
     /// Declares the vocabulary ONCE. One source line per glyph carries its
     /// doc comment, its constant name, its character, the code point recorded
@@ -375,12 +377,13 @@ pub enum Tone {
     /// mark and the tile it tints (§0.7). Its own meaning, never a
     /// player's: the CLI computes no legality, it colors what it is told.
     ///
-    /// Ships at `32`, which is also `Player(Green)` and the Tea Plantation
-    /// tile: invisible at 2P (no green seat), a real collision at 3P/4P. The
-    /// value is the approved mock's and stays; the palette refresh below
-    /// moves the player colors to their bright twins (`92` for green), so the
-    /// task that lands that row -- T2/T4 mark the tiles, T10 the higher
-    /// counts -- is where this stops overlapping on screen.
+    /// Ships at `32`, the approved mock's value. That used to collide with
+    /// `Player(Green)` -- invisible at 2P, where there is no green seat, and a
+    /// real overlap at 3P/4P. **T3's palette refresh settled it**: the player
+    /// colors moved to their bright twins and green is `92`, so a green seat's
+    /// marks and a Movement destination no longer paint the same. The Tea
+    /// Plantation tile is still `32`; that one is harmless while `Tile(_)` has
+    /// no call sites at all (see [`sgr`]'s UNCONSUMED note).
     Reachable,
     /// A printed building-site space that pays an ACTION rather than goods or
     /// points: the assistants icon (`a`) and the shophouse-build icon (`⌂`),
@@ -538,24 +541,28 @@ fn every_tone_is_accounted_for(tone: Tone) {
 /// either (Dutch orange `38;5;208`, French blue `38;5;69`); reachable green
 /// 32; highlight reverse-video 7; strong bold 1; chrome gray 90.
 ///
-/// **PALETTE REFRESH -- ONE ROW LEFT.** The mocks also re-color tones that
-/// already existed, and this table records what is still owed:
+/// **PALETTE REFRESH -- COMPLETE.** The mocks also re-colored tones that
+/// already existed, and this is the record of that now-empty table.
 ///
-/// | tone | shipped | approved mock |
-/// |---|---|---|
-/// | `Player(_)` | `31/34/32/33` | `91/94/92/93` (bright) |
-///
-/// Applying a row RECOLORS a live surface, so each belongs to the task that
-/// cuts its consumers over, and that task moves its own row and deletes it
-/// from this table. **T2 took the six it owed** -- `Good(Copper)` 33 ->
+/// Applying a row RECOLORS a live surface, so each belonged to the task that
+/// cut its consumers over. **T2 took the six it owed** -- `Good(Copper)` 33 ->
 /// `38;5;172`, `Good(Silk)` 37 -> `97`, `Good(Seafood)` 36 -> `96`,
 /// `Good(Imports)` 95 -> `93`, `Good(Yen)` 93 -> `38;5;220`, `Vp` 1;97 ->
 /// `38;5;75` -- because the V3 board's 5-Power tokens and site-slot strips
 /// are their densest consumer, and a board painted from one palette beside a
-/// panel painted from another is worse than either. The remaining row waits
-/// for T3's dashboard.
+/// panel painted from another is worse than either.
 ///
-/// That refresh also closed a collision this table used to warn about:
+/// **T3 took the last one: `Player(_)` 31/34/32/33 -> `91/94/92/93`,** the
+/// mocks' bright twins, with the dashboard's owner-tinted names, pawn runs and
+/// track markers as the consumer that made it due. It settles the collision
+/// `Tone::Reachable` has carried since T1: that tone ships at `32`, which WAS
+/// `Player(Green)` and the Tea Plantation tile, so a green seat's marks and the
+/// `◈` a Movement destination is tinted with painted identically at 3 and 4
+/// players. Green is now `92` and the two read apart. `Tile(TeaPlantation)`
+/// still sits at `32` and still matches `Reachable`, which is harmless for the
+/// reason `Tile(_)` is noted as UNCONSUMED below: nothing draws it.
+///
+/// The T2 refresh also closed a collision this table used to warn about:
 /// `Good(Any)` and `Good(Imports)` both shipped at `95` and painted
 /// identically, which the site strip would have shown on a single tile (a
 /// `*n` any-good space beside a `1 Import` token). Imports has moved to `93`
@@ -575,10 +582,10 @@ fn every_tone_is_accounted_for(tone: Tone) {
 /// inferring it from a grep that returns nothing.
 fn sgr(tone: Tone) -> &'static str {
     match tone {
-        Tone::Player(PlayerColor::Red) => "31",
-        Tone::Player(PlayerColor::Blue) => "34",
-        Tone::Player(PlayerColor::Green) => "32",
-        Tone::Player(PlayerColor::Yellow) => "33",
+        Tone::Player(PlayerColor::Red) => "91",
+        Tone::Player(PlayerColor::Blue) => "94",
+        Tone::Player(PlayerColor::Green) => "92",
+        Tone::Player(PlayerColor::Yellow) => "93",
         Tone::Good(GoodKind::Copper) => "38;5;172",
         Tone::Good(GoodKind::Silk) => "97",
         Tone::Good(GoodKind::Tea) => "32",

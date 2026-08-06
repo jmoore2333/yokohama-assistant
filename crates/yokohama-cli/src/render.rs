@@ -14,6 +14,7 @@ use yokohama_core::*;
 use crate::board_render;
 use crate::describe;
 use crate::input::tech_name;
+use crate::panel_render;
 use crate::screen_model;
 use crate::style::{paint, GoodKind, Tone};
 
@@ -70,12 +71,13 @@ impl SeatDisplay {
     }
 }
 
-/// The panels' bot marker. Deliberately short: appended to the END of a
-/// player's name line it costs 6 columns on a line with 11 columns of slack in
-/// `compact_panel` (23 used of 40) and 9 in `compact_panel_oneline` (99 used of
-/// the 108-column 4P board it stacks under), so a badged frame is exactly as
-/// wide as an unbadged one and guide §2's published widths do not move.
-/// `bot_badge_is_width_neutral_in_every_panel` is that claim's pin.
+/// The panels' bot marker. Deliberately short: it rides the END of a player's
+/// name label, which the dashboard pads to a fixed column wide enough to hold
+/// the longest badged header there is — so a badged frame is exactly as wide as
+/// an unbadged one and guide §2's published widths do not move.
+/// `bot_badge_is_width_neutral_in_the_dashboard` is that claim's pin, and it
+/// measures the two widths rather than asserting a column budget (the budgets
+/// this doc used to quote were those of the panels T3 retired).
 const BOT_BADGE: &str = " [bot]";
 
 /// `BOT_BADGE` for a bot seat, nothing for a human one.
@@ -157,6 +159,36 @@ pub(crate) fn section(title: &str) -> String {
 pub fn board_grid(state: &GameState, rules: &Rules) -> String {
     let colors: Vec<PlayerColor> = state.players.iter().map(|p| p.color).collect();
     board_render::board_view(&screen_model::build_board(state, rules), &colors)
+}
+
+/// The composed frame's DASHBOARD (Phase-3.5a T3): the players, tracks,
+/// achievements and hand panels. [`board_grid`]'s twin, and the same ADAPTER
+/// shape — it is the one place that reads `&GameState` on the dashboard's
+/// behalf, builds the screen models, and hands them to
+/// [`crate::panel_render`], which draws them without ever seeing a `GameState`
+/// (the R9 seam; read that module's import list).
+///
+/// It replaces `compact_panel` and `compact_panel_oneline`, which built their
+/// text straight out of `PlayerState` — the weld R9 exists to remove. `seat` is
+/// the seat whose own hand the panel shows; `seats` carries the per-seat
+/// privacy and bot policy, already folded by the REPL.
+pub fn dashboard(state: &GameState, rules: &Rules, seats: &SeatDisplay, seat: PlayerId) -> String {
+    let colors: Vec<PlayerColor> = state.players.iter().map(|p| p.color).collect();
+    // `SeatDisplay` and `SeatFacts` hold the same two facts in two modules on
+    // purpose (screen_model may not depend on the renderer), so the adapter is
+    // where they meet.
+    let facts: Vec<screen_model::SeatFacts> = state
+        .players
+        .iter()
+        .map(|p| screen_model::SeatFacts {
+            is_bot: seats.is_bot(p.id),
+            hand_hidden: seats.hides_hand(p.id),
+        })
+        .collect();
+
+    let board = screen_model::build_board(state, rules);
+    let panels = screen_model::build_dashboard(state, rules, &facts, seat);
+    panel_render::dashboard(&panels, &board, &colors)
 }
 
 /// Interior text width of one numbered skeleton cell; a full cell adds 2
@@ -245,155 +277,6 @@ pub fn labs_view(state: &GameState, rules: &Rules) -> String {
         render_lab_board(describe::area_type_name(AreaType::LaboratoryB), lab_b, rules, &mut out);
     }
     out.push_str(&format!("tech deck: {}\n", state.tech_deck.len()));
-    out
-}
-
-/// The composed frame's compact players box (Task 6, design note §2): the
-/// at-a-glance PUBLIC picture -- current-player marker (`>`), yen/VP, goods,
-/// assistant zones (with a `locked N` tally when any pawns sit on goals or
-/// tracks, so the visible numbers still reconcile), built counts + the next
-/// TH take cost, and the President's location. Hand CONTENTS never appear
-/// here (only the count), so the panel is safe to show while the laptop is
-/// passed around a live table regardless of the privacy flag; the full
-/// `players` view carries the detail. Player names paint in their colors
-/// after layout (plain twin is the width authority).
-pub fn compact_panel(state: &GameState, _rules: &Rules, seats: &SeatDisplay) -> String {
-    let mut lines: Vec<(String, String)> = Vec::new();
-    lines.push(("─ Players ".to_string(), "─ Players ".to_string()));
-    for p in &state.players {
-        let marker = if p.id == state.current_player { ">" } else { " " };
-        let name = color_name(p.color);
-        // The digit after the marker is the player's SEAT number -- the
-        // `reveal <seat>` key (item 7, third review). Width-neutral: the name
-        // field drops from 7 to 6 to make room, so the panel width (and the
-        // 140-column frame budget) is unchanged. Pad from the PLAIN name length
-        // -- the painted twin's escapes have zero display width (style.rs).
-        let name_pad = " ".repeat(6usize.saturating_sub(name.chars().count()));
-        // The bot badge closes the line rather than sitting mid-row, so a
-        // badged seat cannot shift the yen/VP columns out of line with an
-        // unbadged one.
-        let badge = bot_badge(seats, p.id);
-        lines.push((
-            format!("{marker}{} {name}{name_pad} {:>2} yen  {:>2} VP{badge}", p.id.0, p.money, p.victory_points),
-            format!(
-                "{marker}{} {}{name_pad} {:>2} yen  {:>2} VP{badge}",
-                p.id.0,
-                paint(Tone::Player(p.color), name),
-                p.money,
-                p.victory_points
-            ),
-        ));
-        let goods = format!(
-            "   c{} s{} t{} f{} i{}   hand {}",
-            p.copper, p.silk, p.tea, p.seafood, p.imported_goods,
-            p.order_cards_in_hand.len()
-        );
-        lines.push((goods.clone(), goods));
-        let assistants_on_board: u32 = p.assistants.on_board.values().map(|&c| c as u32).sum();
-        let locked =
-            p.assistants.on_achievements + p.assistants.on_church + p.assistants.on_customs;
-        let mut asst = format!(
-            "   asst: hand {} board {} wh {}",
-            p.assistants.in_hand, assistants_on_board, p.assistants.in_warehouse
-        );
-        if locked > 0 {
-            asst.push_str(&format!(" locked {locked}"));
-        }
-        lines.push((asst.clone(), asst));
-        let build = format!(
-            "   built: sh {} th {}   next TH take {} yen",
-            p.shophouses.built.len(),
-            p.trading_houses.built.len(),
-            p.trading_houses.next_cost()
-        );
-        lines.push((build.clone(), build));
-        let pres = match p.president_location {
-            PresidentLocation::InHand => "in hand".to_string(),
-            PresidentLocation::OnBoard(area) => describe::area_label(state, area),
-        };
-        let pres_line = format!("   President: {pres}");
-        lines.push((pres_line.clone(), pres_line));
-    }
-    let width = lines.iter().map(|(plain, _)| plain.chars().count()).max().unwrap_or(0);
-    let mut out = String::new();
-    for (i, (plain, painted)) in lines.iter().enumerate() {
-        if i == 0 {
-            out.push_str(painted);
-            out.push_str(&"─".repeat(width.saturating_sub(plain.chars().count())));
-        } else {
-            out.push_str(painted);
-        }
-        out.push('\n');
-    }
-    out
-}
-
-/// The compact panel folded to ONE LINE PER PLAYER, for the frame layout
-/// that stacks the panel BELOW the board instead of beside it (F3, Codex
-/// adversarial review of PR #4).
-///
-/// Same public fields as [`compact_panel`] -- current-player marker, money,
-/// VP, goods, hand COUNT (never contents), assistant zones with the `locked`
-/// tally, built counts, President location -- just laid out horizontally.
-/// The stacking branch only runs on the 4P board, which is already 108
-/// columns wide, so a wide line costs nothing there, while the 5 lines per
-/// player it replaces cost 16 rows: enough to push the opening frame past
-/// 50 rows, scrolling the title and the top board row off a 140x50
-/// terminal before the player could read them. The one field dropped
-/// against the multi-line form is the next trading-house take price (the
-/// `players` view carries it, and it is the only per-player number that is
-/// not a state reading).
-///
-/// Player names paint in their colors after layout, from the PLAIN name's
-/// length (style.rs's alignment rule), exactly as [`compact_panel`] does.
-pub fn compact_panel_oneline(state: &GameState, seats: &SeatDisplay) -> String {
-    let mut lines: Vec<(String, String)> = Vec::new();
-    lines.push(("─ Players ".to_string(), "─ Players ".to_string()));
-    for p in &state.players {
-        let marker = if p.id == state.current_player { ">" } else { " " };
-        let name = color_name(p.color);
-        // Seat digit after the marker (item 7); width-neutral name field 7->6.
-        let name_pad = " ".repeat(6usize.saturating_sub(name.chars().count()));
-        let assistants_on_board: u32 = p.assistants.on_board.values().map(|&c| c as u32).sum();
-        let locked = p.assistants.on_achievements + p.assistants.on_church + p.assistants.on_customs;
-        let locked_text = if locked > 0 { format!(" locked {locked}") } else { String::new() };
-        let pres = match p.president_location {
-            PresidentLocation::InHand => "in hand".to_string(),
-            PresidentLocation::OnBoard(area) => describe::area_label(state, area),
-        };
-        let badge = bot_badge(seats, p.id);
-        let tail = format!(
-            " {:>2} yen {:>2} VP  c{} s{} t{} f{} i{}  hand {}  asst h{} b{} w{}{}  built sh {} th {}  President: {}{badge}",
-            p.money,
-            p.victory_points,
-            p.copper,
-            p.silk,
-            p.tea,
-            p.seafood,
-            p.imported_goods,
-            p.order_cards_in_hand.len(),
-            p.assistants.in_hand,
-            assistants_on_board,
-            p.assistants.in_warehouse,
-            locked_text,
-            p.shophouses.built.len(),
-            p.trading_houses.built.len(),
-            pres,
-        );
-        lines.push((
-            format!("{marker}{} {name}{name_pad}{tail}", p.id.0),
-            format!("{marker}{} {}{name_pad}{tail}", p.id.0, paint(Tone::Player(p.color), name)),
-        ));
-    }
-    let width = lines.iter().map(|(plain, _)| plain.chars().count()).max().unwrap_or(0);
-    let mut out = String::new();
-    for (i, (plain, painted)) in lines.iter().enumerate() {
-        out.push_str(painted);
-        if i == 0 {
-            out.push_str(&"─".repeat(width.saturating_sub(plain.chars().count())));
-        }
-        out.push('\n');
-    }
     out
 }
 
@@ -1683,30 +1566,16 @@ mod tests {
         assert!(worst.0 <= 140, "a labs line is {} columns wide (140 max): {}", worst.0, worst.1);
     }
 
-    /// Task 6 (composed frame): the compact panel shows each player's
-    /// public at-a-glance line set -- current marker, yen/VP, goods, hand
-    /// COUNT (never contents -- the panel is privacy-safe by construction),
-    /// assistant zones, built counts + next TH take, President location.
-    #[test]
-    fn compact_panel_shows_public_info_and_marks_the_current_player() {
-        let state = test_state_2p();
-        let rules = Rules::standard();
-        let text = compact_panel(&state, &rules, &seats_open(&state));
-        assert!(text.starts_with("─ Players ─"), "{text}");
-        assert!(text.contains(">0 Red"), "current player marked, seat 0: {text}");
-        assert!(text.contains(" 1 Blue"), "other players unmarked, seat 1: {text}");
-        assert!(text.contains("yen"), "{text}");
-        assert!(text.contains("hand 1"), "hand renders as a COUNT: {text}");
-        assert!(!text.contains("O0") && !text.contains("O1"), "hand contents never appear: {text}");
-        assert!(text.contains("next TH take 4 yen"), "{text}");
-        assert!(text.contains("President: in hand"), "{text}");
-    }
-
-    /// Item 7 (third review): every panel labels each player with its SEAT
-    /// number -- the `reveal <seat>` key, which used to appear nowhere on the
-    /// game screen (learnable only from the wizard transcript and the players
-    /// ordering). The full `players` view spells it out; the compact frame
-    /// panels carry the digit right after the current-player marker.
+    /// Item 7 (third review), carried over the T3 cutover: every panel labels
+    /// each player with its SEAT number -- the `reveal <seat>` key, which used
+    /// to appear nowhere on the game screen (learnable only from the wizard
+    /// transcript and the players ordering). The full `players` view spells it
+    /// out; the dashboard carries it as a chrome annotation at the right of the
+    /// player's header line.
+    ///
+    /// The compact/one-line halves of this test moved with the panels they
+    /// measured: `compact_panel` and `compact_panel_oneline` are gone, and the
+    /// property they pinned is pinned here against [`dashboard`] instead.
     #[test]
     fn panels_show_the_seat_number_for_the_reveal_key() {
         let state = test_state_2p(); // Red = seat 0 (current), Blue = seat 1
@@ -1716,80 +1585,58 @@ mod tests {
         assert!(full.contains("(seat 0)"), "players view labels seat 0: {full}");
         assert!(full.contains("(seat 1)"), "players view labels seat 1: {full}");
 
-        let compact = compact_panel(&state, &rules, &seats_open(&state));
-        assert!(compact.contains(">0 Red"), "compact: current player Red is seat 0: {compact}");
-        assert!(compact.contains(" 1 Blue"), "compact: Blue is seat 1: {compact}");
-
-        let oneline = compact_panel_oneline(&state, &seats_open(&state));
-        assert!(oneline.contains(">0 Red"), "oneline: seat 0 Red: {oneline}");
-        assert!(oneline.contains(" 1 Blue"), "oneline: seat 1 Blue: {oneline}");
+        let dash = dashboard(&state, &rules, &seats_open(&state), PlayerId::new(0));
+        let red = dash.lines().find(|l| l.contains("RED")).expect("a RED line");
+        let blue = dash.lines().find(|l| l.contains("BLUE")).expect("a BLUE line");
+        assert!(red.contains("seat 0"), "dashboard: current player RED is seat 0: {red}");
+        assert!(blue.contains("seat 1"), "dashboard: BLUE is seat 1: {blue}");
     }
 
-    /// Locked pawns (goals/church/customs) surface as a `locked N` tally so
-    /// the compact numbers still reconcile to the 20-pawn total.
+    /// Locked pawns (goals/church/customs) surface as a `locked N` tally so the
+    /// panel's numbers still reconcile to the 20-pawn total. Re-pointed from
+    /// `compact_panel` to its replacement; the assertion is unchanged.
     #[test]
-    fn compact_panel_tallies_locked_assistants() {
+    fn the_dashboard_tallies_locked_assistants() {
         let mut state = test_state_2p();
         let rules = Rules::standard();
         state.players[0].assistants.on_church = 2;
         state.players[0].assistants.on_achievements = 1;
-        let text = compact_panel(&state, &rules, &seats_open(&state));
-        assert!(text.contains("locked 3"), "{text}");
+        let text = dashboard(&state, &rules, &seats_open(&state), PlayerId::new(0));
+        assert!(text.contains("3 locked"), "{text}");
     }
 
-    /// F3 (Codex adversarial review of PR #4): the stacked-below layout's
-    /// panel is ONE LINE PER PLAYER -- that fold is what brings the 4P
-    /// composed screen back inside a 50-row terminal. It must stay
-    /// genuinely useful (every public at-a-glance field of the multi-line
-    /// form except the next TH take) and just as privacy-safe: hand is a
-    /// COUNT, never contents.
+    /// The dashboard is privacy-safe BY CONSTRUCTION at every seat but the
+    /// viewing one: a player's hand appears as a COUNT on their President line
+    /// and card identities live only in the hand panel, which empties itself
+    /// when masked. Re-pointed from `compact_panel`'s equivalent assertions.
     #[test]
-    fn compact_panel_oneline_is_one_row_per_player_with_the_public_fields() {
-        let state = test_state_np(4);
-        let text = compact_panel_oneline(&state, &seats_open(&state));
-        assert!(text.starts_with("─ Players ─"), "{text}");
-        assert_eq!(
-            text.lines().count(),
-            state.players.len() + 1,
-            "one header + exactly one line per player:\n{text}"
-        );
-        let red = text.lines().find(|l| l.contains("Red")).expect("a Red line");
-        assert!(red.starts_with(">0 Red"), "current player marked, seat 0: {red}");
-        for field in ["yen", "VP", "c1", "hand 1", "asst h", "built sh", "President: in hand"] {
-            assert!(red.contains(field), "want {field:?} in the one-line form: {red}");
-        }
-        assert!(!text.contains("O0") && !text.contains("O1"), "hand contents never appear: {text}");
-        // Locked pawns still reconcile the visible assistant numbers.
-        let mut locked_state = state.clone();
-        locked_state.players[0].assistants.on_church = 2;
-        locked_state.players[0].assistants.on_achievements = 1;
+    fn the_dashboard_never_prints_another_seats_cards() {
+        let state = test_state_2p();
+        let rules = Rules::standard();
+        let seats = SeatDisplay::new(vec![false, true], vec![false, false]);
+        let text = dashboard(&state, &rules, &seats, PlayerId::new(0));
+        assert!(text.contains("1 order in hand"), "the count still shows: {text}");
+        assert!(text.contains("(hidden)"), "a masked seat says so: {text}");
+        // Seat 1's kept starting order must not appear anywhere on the panel.
+        let hidden_card = state.players[1].order_cards_in_hand[0];
+        let printed = rules.orders.get(hidden_card).expect("a known card");
         assert!(
-            compact_panel_oneline(&locked_state, &seats_open(&locked_state)).contains("locked 3"),
-            "{text}"
+            !text.contains(&describe::country_name(printed.country).to_uppercase()),
+            "seat 1's card country leaked into the dashboard: {text}",
         );
     }
 
-    /// The one-line panel paints names after layout, like its taller twin.
+    /// The dashboard paints after layout (strip-equality pin). Re-pointed from
+    /// the two `colored_compact_panel*` tests, which measured the same property
+    /// on the two retired panels.
     #[test]
-    fn colored_compact_panel_oneline_strips_back_to_plain() {
-        let state = test_state_np(4);
-        crate::style::force(true);
-        let colored = compact_panel_oneline(&state, &seats_open(&state));
-        crate::style::force(false);
-        let plain = compact_panel_oneline(&state, &seats_open(&state));
-        assert_ne!(colored, plain, "forced mode must actually paint something");
-        assert_eq!(strip_ansi(&colored), plain);
-    }
-
-    /// The panel paints player names after layout (strip-equality pin).
-    #[test]
-    fn colored_compact_panel_strips_back_to_plain() {
+    fn a_painted_dashboard_strips_back_to_plain() {
         let state = test_state_2p();
         let rules = Rules::standard();
         crate::style::force(true);
-        let colored = compact_panel(&state, &rules, &seats_open(&state));
+        let colored = dashboard(&state, &rules, &seats_open(&state), PlayerId::new(0));
         crate::style::force(false);
-        let plain = compact_panel(&state, &rules, &seats_open(&state));
+        let plain = dashboard(&state, &rules, &seats_open(&state), PlayerId::new(0));
         assert_ne!(colored, plain, "forced mode must actually paint something");
         assert_eq!(strip_ansi(&colored), plain);
     }
@@ -1834,45 +1681,33 @@ mod tests {
         assert!(!seat0.contains("[bot]"), "the human seat is not badged: {seat0}");
     }
 
-    /// T12 (SHOULD item): the bot badge is WIDTH-NEUTRAL in both compact
-    /// panels -- it rides the end of a player's name line, which has slack in
-    /// both layouts (23 of 40 columns used in `compact_panel`; 99 of the 4P
-    /// board's 108 in `compact_panel_oneline`). This is what keeps guide §2's
-    /// published frame widths true of a game with bots in it, and keeps
-    /// `guide_sync`'s frame pins -- which measure a bot-free `Repl` -- from
-    /// having to be re-derived every time the badge changes. Measured on the
-    /// widest case (every seat badged) at every player count.
+    /// T12 (SHOULD item), re-pointed at the T3 cutover: the bot badge is
+    /// WIDTH-NEUTRAL in the dashboard -- it rides the end of a player's name
+    /// label, which is padded to a fixed column ([`panel_render`]'s `NAME_COL`,
+    /// sized off the longest badged header the line can carry). This is what
+    /// keeps guide §2's published frame widths true of a game with bots in it,
+    /// and keeps `guide_sync`'s frame pins -- which measure a bot-free `Repl` --
+    /// from having to be re-derived every time the badge changes.
+    ///
+    /// It used to measure the two retired panels, whose slack it stated in
+    /// columns (23 of 40; 99 of a 108-column 4P board -- a figure T2's V3 board
+    /// had already made stale at 180). Measured rather than stated now: the
+    /// widest badged panel line must equal the widest unbadged one, at every
+    /// player count, with every seat badged.
     #[test]
-    fn bot_badge_is_width_neutral_in_every_panel() {
+    fn bot_badge_is_width_neutral_in_the_dashboard() {
         let rules = Rules::standard();
         for n in [2u8, 3, 4] {
             let state = test_state_np(n);
             let widest = |s: &str| s.lines().map(|l| l.chars().count()).max().unwrap_or(0);
 
-            let plain = compact_panel(&state, &rules, &seats_open(&state));
-            let badged = compact_panel(&state, &rules, &seats_all_bots(&state));
+            let plain = dashboard(&state, &rules, &seats_open(&state), PlayerId::new(0));
+            let badged = dashboard(&state, &rules, &seats_all_bots(&state), PlayerId::new(0));
             assert!(badged.contains("[bot]"), "the badge must actually render at {n}P: {badged}");
             assert_eq!(
                 widest(&plain),
                 widest(&badged),
-                "the badge widened the {n}P compact panel:\n{badged}"
-            );
-
-            // The one-line fold is rendered ONLY under a board wider than 100
-            // columns (`screen::wrap`) -- in practice the 4P board -- so that
-            // is the width it must not push past, whatever count built it.
-            let stacking_board = board_grid(&test_state_np(4), &Rules::standard())
-                .lines()
-                .next()
-                .map(|l| l.chars().count())
-                .unwrap_or(0);
-            let badged1 = compact_panel_oneline(&state, &seats_all_bots(&state));
-            assert!(badged1.contains("[bot]"), "{badged1}");
-            assert!(
-                widest(&badged1) <= stacking_board,
-                "the badged one-line panel ({}) must not push past the {stacking_board}-column board it \
-                 stacks under ({n}P seats):\n{badged1}",
-                widest(&badged1),
+                "the badge widened the {n}P dashboard:\n{badged}"
             );
         }
     }

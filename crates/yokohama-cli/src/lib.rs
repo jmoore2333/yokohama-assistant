@@ -5,6 +5,7 @@ pub mod board_render;
 pub mod bot;
 pub mod describe;
 pub(crate) mod input;
+pub mod panel_render;
 pub mod render;
 pub mod repl;
 pub(crate) mod reveal;

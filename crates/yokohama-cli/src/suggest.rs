@@ -44,8 +44,9 @@
 //! **EVERY LINE FITS THE COMPOSED FRAME** (T10 review M1). `screen::wrap` sizes
 //! the game screen to its widest line, so a body wider than the frame shoves the
 //! board sideways for one command and back on the next. The budget is therefore
-//! per PLAYER COUNT, because the frame is — `screen::frame_width`, **164/163/180
-//! at 2/3/4 players**.
+//! per PLAYER COUNT, because the frame is — `screen::frame_width`, **198/163/180
+//! at 2/3/4 players** (the 2P entry moved at T3, when the designed dashboard
+//! joined beside the board).
 //!
 //! **That budget no longer BINDS organically, and saying so is the point** (T2
 //! review M1). The widest thing real play hands this screen is a placement
@@ -53,8 +54,8 @@
 //! the pre-redesign frames (114/132/108) that overflowed two counts outright,
 //! and it is why the machinery below exists at all — the flat `<= 100` pin it
 //! replaced asserted a property this render did not have. T2's V3 board then
-//! widened every frame past 135, so no organic position reaches the bound any
-//! more. What the machinery is still for is stated rather than assumed: the
+//! widened every frame past 135 and T3 widened the 2P one further, so no
+//! organic position reaches the bound any more. What the machinery is still for is stated rather than assumed: the
 //! explicit-budget seam ([`render_suggestion_within`], which is what the two
 //! pins that prove reflow and elision work now drive), and the guard if a frame
 //! ever narrows again — a body that measured itself against a frame it happens
@@ -118,7 +119,8 @@ pub fn table_row(cells: [&str; 5]) -> String {
 /// It is not the width GUARANTEE: that is the composed frame's own width, held
 /// by [`Body`] over every line. This one binds first for rows at every player
 /// count (80 plus the widest row prefix is 94, inside the narrowest frame's
-/// 163), which is why the rows a reader sees are unchanged by the frame bound.
+/// 163 — still the 3P one after T3), which is why the rows a reader sees are
+/// unchanged by the frame bound.
 const ROW_TEXT_WIDTH: usize = 80;
 
 /// The closing honesty note (spec §7: the explanation text states term
@@ -1004,7 +1006,7 @@ mod tests {
     /// What this replaced was asserting a property the render did not have. The
     /// old pin measured against a flat `<= 100`, which was not any frame's width:
     /// the composed frame was 114/132/108 columns at 2/3/4 players then (it is
-    /// 164/163/180 since T2 — `screen::frame_width` is the authority either
+    /// 198/163/180 since T3 — `screen::frame_width` is the authority either
     /// way), so 100 was simultaneously too strict for 2P/3P and too slack for
     /// the case that actually broke — 4P, where the frame was NARROWEST while
     /// the board was widest. It also drove `repl_mid_game(4)`-style 2P fixtures
