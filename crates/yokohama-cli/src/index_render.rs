@@ -136,6 +136,16 @@ fn id_note(kind: IndexKind) -> &'static str {
 /// The recording-context header: what this screen is being opened to answer.
 /// Without a target it says what the screen IS, which is the honest form for a
 /// standing view — and the reason such a view shows no selection numbers.
+///
+/// **The no-target branch is scoped to THIS SCREEN, and since T6's review it has
+/// to be** (M1). There are now two ways to reach it: nothing is being collected
+/// anywhere, or a capture IS live and is asking about a different registry —
+/// `techs` typed mid-Port-reveal, which `Repl::index_model` filters to a target
+/// of `None` precisely so this screen stops claiming to collect something it
+/// cannot. A line reading "nothing is being recorded" would be false in the
+/// second case, which is the sentence M1 named. "This screen is recording
+/// nothing" is true in both, and the refusal a pick gets is where the live
+/// capture's own registry is named.
 fn context_line(index: &IndexModel) -> String {
     let text = match index.target {
         Some(target) => format!(
@@ -145,7 +155,7 @@ fn context_line(index: &IndexModel) -> String {
             filter_help(index.kind),
         ),
         None => format!(
-            "Open as a view {} nothing is being recorded. {}",
+            "Open as a view {} this screen is recording nothing. {}",
             glyph::SECTION_DASH,
             filter_help(index.kind),
         ),
@@ -185,10 +195,17 @@ fn filter_help(kind: IndexKind) -> String {
 /// screen `cancel` closes an OVERLAY; at the reveal prompt underneath, the same
 /// word DISCARDS the group being collected. A player who has just learned the
 /// second meaning needs to be told this one is not it.
+///
+/// **`back` is named for the same reason, and it is the word that differs
+/// between the two overlays** (T6 review S1). Here it closes, because it belongs
+/// to the card-entry grammar every prompt under this screen shares
+/// ([`crate::card_prompt::resolve`]); on a full-screen VIEW it re-dispatches
+/// instead and undoes the last applied entry. One word, two surfaces, so the
+/// surface that closes on it says so rather than leaving it to be discovered.
 fn exit_line() -> String {
     paint(
         Tone::Chrome,
-        "Enter, '?' or 'cancel' closes this index and puts you back at the prompt underneath, \
+        "Enter, '?', 'cancel' or 'back' closes this index and puts you back at the prompt underneath, \
          exactly as you left it — nothing is entered and nothing there is cancelled.",
     )
 }
@@ -700,7 +717,9 @@ mod tests {
 
         let standing = strip_ansi(&view(None, None));
         assert!(!standing.contains("[1] "), "a view offers no selection: {standing:.400}");
-        assert!(standing.contains("nothing is being recorded"));
+        // Scoped to the screen, because a live capture asking about a DIFFERENT
+        // registry reaches this same branch (T6 review M1 — see `context_line`).
+        assert!(standing.contains("this screen is recording nothing"), "{standing:.400}");
     }
 
     /// The whole point of the dim treatment: an already-recorded card says

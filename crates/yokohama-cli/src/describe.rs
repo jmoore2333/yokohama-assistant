@@ -130,6 +130,22 @@ pub fn recording_target(target: crate::screen_model::RecordingTarget) -> String 
     }
 }
 
+/// A registry as a sentence names it — "order cards", "technologies".
+///
+/// Worded here rather than at the call site for the reason every other word in
+/// this crate is: one registry, one name, wherever it is said. Its first caller
+/// is the refusal a cross-registry index pick gets, which has to say which
+/// registry the live capture is actually asking about (T6 review M1).
+pub fn registry_name(kind: crate::screen_model::IndexKind) -> &'static str {
+    use crate::screen_model::IndexKind;
+    match kind {
+        IndexKind::Orders => "order cards",
+        IndexKind::Techs => "technologies",
+        IndexKind::Achievements => "achievement cards",
+        IndexKind::Sites => "building-site cards",
+    }
+}
+
 /// A 0-based model position as the screen prints it.
 ///
 /// Named rather than written `+ 1` at each site so the conversion is countable:

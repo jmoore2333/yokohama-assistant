@@ -45,15 +45,69 @@ use crate::style::{glyph, paint, Tone};
 const SPACE_W: usize = 23;
 
 /// A building-site card's width in the `sites` view. Two columns wider than the
-/// mock's 44: the mock's reward column is 16 and the widest printed reward in
-/// full words is `2 warehouse takes` at 17, so the mock's own geometry would
-/// have clipped one of the twenty-four cards. Same lesson the round-3.1 tile
-/// overflow taught, found the same way — by measuring the registry rather than
-/// the example.
+/// mock's 44.
+///
+/// **The ground is the GUTTER, not a clip** — the earlier revision of this doc
+/// said the mock's own geometry "would have clipped one of the twenty-four
+/// cards", and that overstates what the measurement showed (T6 review S2).
+///
+/// The widest printed reward in full words is `2 warehouse takes` / `2 assistant
+/// moves`, both 17 columns. At 46 the reward field runs from column 11 to 31 of
+/// the interior — 20 columns — so the longest reward is followed by three spaces
+/// before the builder mark. The same layout at the mock's 44 leaves 18, i.e. the
+/// longest reward and a ONE-space gutter: tight against the mark beside it, and
+/// legible rather than clipped. So the two extra columns bought breathing room,
+/// not correctness.
+///
+/// What survives from the old wording is the method, which is the part worth
+/// keeping: the number was measured against the whole registry rather than
+/// against the example card the mock happened to draw
+/// (`the_widest_printed_reward_fits_a_site_card`), the same way the round-3.1
+/// tile overflow was found.
 const SITE_VIEW_W: usize = 46;
 
 /// Columns between cards on a row.
 const GAP: usize = 1;
+
+/// The `tracks` view's height in rows, and it does not vary with the player
+/// count: the Church has the same eight faith spaces and the Customs board the
+/// same seven at every count, so both card rows are one row tall in cards
+/// whoever is playing.
+///
+/// **MEASURED, then set** — the T2/T3 discipline ([`crate::screen`]'s frame
+/// tables), applied here at the T6 review (S2). The test this feeds used to
+/// assert a bare `<= 50`, which passes at 21 rows and at 49 alike and therefore
+/// could not tell growth from headroom.
+///
+/// `cfg(test)` for the reason `FRAME_HEIGHTS` is: nothing at runtime asks how
+/// tall its own view is, so a production constant would be dead code claiming
+/// to be used.
+#[cfg(test)]
+const TRACKS_VIEW_ROWS: usize = 22;
+
+/// The `sites` view's height in rows at each player count, indexed
+/// `players - 2` — MEASURED and set on the same terms as [`TRACKS_VIEW_ROWS`].
+///
+/// This one DOES vary, and by the only thing that can vary: the number of areas
+/// holding a building site. The staggered pyramid deals ten, fourteen and
+/// eighteen tiles at 2/3/4 players, one of which is the Canal (3P and 4P only)
+/// and holds no site — so the grid runs ten, thirteen and seventeen cards at
+/// four to a row, i.e. three, four and five rows of eight-row cards.
+///
+/// **The 4-player figure is two rows under the floor**, which is the tightest
+/// this surface gets and the reason the number is written down rather than
+/// bounded: the next card row would put it past 50.
+#[cfg(test)]
+const SITES_VIEW_ROWS: [usize; 3] = [32, 40, 48];
+
+/// Allowance either side of the two tables above, and one row is all it is.
+///
+/// Both views are built from a fixed registry on a seeded board, so there is no
+/// run-to-run noise for a margin to absorb — one row is "just above nothing"
+/// rather than an allowance for anything in particular, and it keeps these
+/// numbers something a growing surface can actually break.
+#[cfg(test)]
+const VIEW_ROW_MARGIN: usize = 1;
 
 // ---------------------------------------------------------------------------
 // The tracks view
@@ -126,6 +180,12 @@ fn church_rule(tracks: &TracksPanel) -> String {
     ));
     t.tinted(
         Tone::Chrome,
+        // `6 / 3` is the church majority award, spelled here as a literal
+        // because core exposes no constant for it: the two figures live inside
+        // `game/scoring.rs`'s `award_top_two(&rankings, [6, 3])` call, not on
+        // any public item this renderer could read. Its customs twin is in
+        // [`customs_rule`], and the two are the only hardcoded scoring numbers
+        // on this surface (T6 review S4).
         &format!(
             "{} of {} REAL assistants placed {} majority 6 / 3 VP{}",
             tracks.church_filled,
@@ -147,6 +207,9 @@ fn customs_rule(tracks: &TracksPanel) -> String {
     ));
     t.tinted(
         Tone::Chrome,
+        // The customs majority award, from `game/scoring.rs`'s
+        // `award_top_two(&rankings, [8, 4])` — a literal for the same reason
+        // [`church_rule`]'s `6 / 3` is one: core exposes no constant.
         &format!(
             "{} of {} REAL assistants placed {} majority 8 / 4 VP{}",
             tracks.customs_filled,
@@ -503,11 +566,35 @@ fn card_row(cards: &[Vec<String>]) -> Vec<String> {
 /// How to leave, on every view — the clause T5's review made standing for the
 /// index (M2) and which every full-screen surface owes for the same reason: it
 /// has replaced the prompt the player was in the middle of.
+///
+/// **Two lines, because the contract has two halves and the second one moves
+/// the game** (T6 review M2c). The old single line ended "Any other command
+/// closes it and runs", which is true and reads as being about commands like
+/// `score`. The input it does not bring to mind is a NUMBER: with options up
+/// underneath, a digit typed here closes the view and APPLIES that option — the
+/// one outcome a player who opened a read-only screen is not expecting. So the
+/// rule is stated over LINES rather than commands, the number is named, and
+/// `back` — the one word whose meaning differs from the index's, where it
+/// closes — says what it does here.
+///
+/// The two halves would not fit one line inside [`crate::screen::FLOOR_W`]; the
+/// row they cost is recorded in `both_views_fit_the_fifty_row_design_floor`'s
+/// measured table rather than absorbed.
 fn exit_line() -> String {
-    paint(
-        Tone::Chrome,
-        "Enter or 'cancel' closes this view and puts you back at the prompt underneath, exactly as you left it — \
-         nothing is entered and nothing there is cancelled. Any other command closes it and runs.",
+    // Painted per line rather than as one string with a newline in it, so
+    // neither line carries a tint across the row break.
+    format!(
+        "{}\n{}",
+        paint(
+            Tone::Chrome,
+            "Enter or 'cancel' closes this view and puts you back at the prompt underneath, exactly as you left it — \
+             nothing is entered and nothing there is cancelled.",
+        ),
+        paint(
+            Tone::Chrome,
+            "Any other line closes the view and then RUNS at that prompt — a NUMBER applies that option, \
+             and 'back' undoes your last move.",
+        ),
     )
 }
 
@@ -672,11 +759,17 @@ pub(crate) mod tests {
                 text.contains(&format!("SITE {}", site.index.expect("a dealt registry card"))),
                 "and its site card number: {text}",
             );
-            for (i, slot) in site.slots.iter().enumerate() {
+            for slot in &site.slots {
+                // The WORDS, and only the words. This clause used to be
+                // `contains(space_name) || contains(words)`, and the left half
+                // is true of every card on the screen — every site card prints
+                // all four space names whatever their rewards say — so the
+                // disjunction passed whether or not a single reward was
+                // rendered (T6 review S3).
                 let words = crate::card_render::space_reward_words(&slot.reward);
                 assert!(
-                    text.contains(&format!("{}  ", describe::site_space_name(i))) || text.contains(&words),
-                    "space {i}'s printed reward must be in full words: {words:?}\n{text}",
+                    text.contains(&words),
+                    "the printed reward must be on screen in full words: {words:?}\n{text}",
                 );
             }
             assert!(
@@ -826,22 +919,97 @@ pub(crate) mod tests {
     }
 
     /// Both views fit the 50-row design floor at every player count — the height
-    /// half of the discipline the width test states. The 4-player `sites` view
-    /// is the tall one (seventeen cards at four to a row), so the number is
-    /// recorded here rather than assumed.
+    /// half of the discipline the width test states.
+    ///
+    /// **Stated as the MEASURED table rather than as a bare bound** (T6 review
+    /// S2, restating this to T2's discipline). `rows <= 50` passes at 21 rows
+    /// and at 49 alike, so it could not tell growth from headroom: the 4-player
+    /// `sites` view could have doubled and this would have stayed green until
+    /// the day it went red, with no recorded history to compare against. What is
+    /// asserted now is [`TRACKS_VIEW_ROWS`] and [`SITES_VIEW_ROWS`], both ways —
+    /// a surface that SHRANK past the margin has left a recorded number stale,
+    /// which is the same defect from the other side — and the floor is checked
+    /// against the RECORDED figure, so raising an entry cannot quietly raise the
+    /// ceiling with it.
     #[test]
     fn both_views_fit_the_fifty_row_design_floor() {
         for players in [2u8, 3, 4] {
             let (tracks, board, colors) = view_models(players);
-            for (what, text) in
-                [("tracks", tracks_view(&tracks, &colors)), ("sites", sites_view(&board, &colors))]
-            {
+            for (what, text, recorded) in [
+                ("tracks", tracks_view(&tracks, &colors), TRACKS_VIEW_ROWS),
+                ("sites", sites_view(&board, &colors), SITES_VIEW_ROWS[usize::from(players - 2)]),
+            ] {
                 let rows = text.lines().count();
                 assert!(
-                    rows <= 50,
-                    "{what} at {players}P is {rows} rows, past the 50-row floor",
+                    rows <= recorded + VIEW_ROW_MARGIN,
+                    "{what} at {players}P draws {rows} rows against a recorded {recorded} \
+                     (+{VIEW_ROW_MARGIN}) — re-measure the table deliberately rather than raising \
+                     this entry until the run goes quiet",
+                );
+                assert!(
+                    rows + VIEW_ROW_MARGIN >= recorded,
+                    "{what} at {players}P draws {rows} rows against a recorded {recorded} — the \
+                     surface shrank and the recorded figure is now stale",
+                );
+                assert!(
+                    recorded + VIEW_ROW_MARGIN <= 50,
+                    "{what} at {players}P: the recorded height plus its margin must itself fit \
+                     the 50-row design floor",
                 );
             }
+        }
+    }
+
+    /// **The exit line states the whole contract, including the half that MOVES
+    /// THE GAME** (T6 review M2c).
+    ///
+    /// It used to end "Any other command closes it and runs" — true, and read by
+    /// a player as being about commands like `score`. The input it does not
+    /// bring to mind is a NUMBER: at a prompt with options up, a digit typed
+    /// while looking at a view closes it and APPLIES that option, which is the
+    /// one outcome a player opening a read-only screen is not expecting. So the
+    /// line says it, in the words `a_number_typed_at_a_view_closes_it_and_
+    /// applies_that_option` pins the behavior with.
+    #[test]
+    fn the_exit_line_says_a_number_applies_the_option_underneath() {
+        let plain = strip_ansi(&exit_line());
+        assert!(plain.contains("Enter") && plain.contains("'cancel'"), "{plain}");
+        assert!(
+            plain.contains("Any other line") && plain.contains("RUNS"),
+            "the re-dispatch rule is stated as a rule about LINES, not commands: {plain}",
+        );
+        assert!(
+            plain.contains("NUMBER applies that option"),
+            "and the consequence a player would not expect is named: {plain}",
+        );
+        // `back` is the one word whose meaning differs from the index's, so the
+        // view says what it does here rather than leaving it to be discovered.
+        assert!(plain.contains("'back'"), "{plain}");
+
+        // Each row is tinted on its own, so neither carries a colour across the
+        // break — the reason `exit_line` paints twice instead of painting one
+        // string with a newline in it.
+        crate::style::force(true);
+        let painted = exit_line();
+        crate::style::force(false);
+        let rows: Vec<&str> = painted.lines().collect();
+        assert_eq!(rows.len(), 2, "two lines: {painted:?}");
+        for row in &rows {
+            assert!(row.starts_with('\u{1b}'), "each row opens its own tint: {row:?}");
+            assert!(row.ends_with('m'), "and closes it: {row:?}");
+        }
+
+        // It is on both views, above the caret, where a player looks for the
+        // way out — the placement the index's own exit line holds.
+        let (tracks, board, colors) = view_models(2);
+        for (what, text) in
+            [("tracks", tracks_view(&tracks, &colors)), ("sites", sites_view(&board, &colors))]
+        {
+            let text = strip_ansi(&text);
+            let lines: Vec<&str> = text.lines().collect();
+            let caret = lines.iter().position(|l| l.trim() == ">").expect("the caret");
+            let last = plain.lines().next_back().expect("a last line");
+            assert_eq!(lines[caret - 1], last, "{what}: the way out sits above the prompt");
         }
     }
 

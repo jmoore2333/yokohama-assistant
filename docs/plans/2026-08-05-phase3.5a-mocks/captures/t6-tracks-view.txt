@@ -17,5 +17,6 @@ CUSTOMS — pay the printed cost in imported goods (power caps it), take the rew
 
 A Customs payment must EXACTLY match a space's printed cost; with both spaces of a cost filled, that payment is unplaceable.
 Station: not placed   ·   Mercenary supply: GB 3  US 2  FR 2  DE 2  NL 1
-Enter or 'cancel' closes this view and puts you back at the prompt underneath, exactly as you left it — nothing is entered and nothing there is cancelled. Any other command closes it and runs.
+Enter or 'cancel' closes this view and puts you back at the prompt underneath, exactly as you left it — nothing is entered and nothing there is cancelled.
+Any other line closes the view and then RUNS at that prompt — a NUMBER applies that option, and 'back' undoes your last move.
 > 

@@ -1367,7 +1367,15 @@ impl Repl {
             _ => None,
         };
         let placed = self.index_placements();
-        let target = self.index_target();
+        // **The target is the live capture's ONLY when the capture is asking
+        // about the registry on screen** (T6 review M1). A capture records ONE
+        // registry, so `techs` typed mid-Port-reveal used to draw a
+        // `Recording: Port A slot …` header over twenty numbered technology
+        // cards whose numbers could not answer that question — a screen
+        // claiming to be collecting something it cannot collect. Filtered, that
+        // screen becomes what it actually is: a read-only view, with no
+        // selection numbers on it (F3 from the other side).
+        let target = self.index_target().filter(|t| target_kind(*t) == kind);
         let rules = self.session.rules();
         match kind {
             IndexKind::Orders => crate::screen_model::build_order_index(
@@ -1457,6 +1465,14 @@ impl Repl {
     /// single-option prompt applies that option (the ceremony rule), so a blank
     /// line re-dispatched from a view would apply a move the player pressed
     /// Enter to stop looking at a screen.
+    ///
+    /// **`back` is deliberately NOT one of the close words here, and that is an
+    /// asymmetry with the index rather than an oversight** (T6 review S1). At
+    /// the index `back` is part of the card-entry grammar and closes the
+    /// overlay; here it re-dispatches like any other line, which means it does
+    /// what the standing hint under every decision says `back` does — takes the
+    /// last applied entry back. Making it a second spelling of `cancel` on this
+    /// screen made that hint false at exactly the moment a player is reading it.
     fn step_view(&mut self, words: &[&str], surface: ViewSurface) -> StepOutput {
         self.overlay = None;
         // A reveal capture's prompt is a complete self-describing message its
@@ -1471,7 +1487,7 @@ impl Repl {
                 let text = back(self);
                 self.out(text, false)
             }
-            ["cancel"] | ["back"] => {
+            ["cancel"] => {
                 let text = back(self);
                 self.out(text, false)
             }
@@ -1552,15 +1568,25 @@ impl Repl {
                 StepOutput { text: out.text, quit: out.quit }
             }
             // Either nothing is being recorded, or the pick is from a registry
-            // the prompt underneath is not asking about. Both are inspections;
-            // saying so beats appearing to do something.
-            _ => self.out(
-                format!(
-                    "{} — nothing is being recorded right now. Enter or 'cancel' closes the index.",
-                    card_prompt::card_tag(card),
-                ),
-                false,
-            ),
+            // the prompt underneath is not asking about. Both are inspections
+            // rather than answers — but they are DIFFERENT inspections, and one
+            // message for both told the second player something false: a
+            // collection was live, so "nothing is being recorded" was simply
+            // untrue, and it left them with no way to know their pick was
+            // merely aimed at the wrong registry (T6 review M1).
+            _ => {
+                let tag = card_prompt::card_tag(card);
+                let message = match self.index_target() {
+                    None => format!(
+                        "{tag} — nothing is being recorded right now. Enter or 'cancel' closes the index.",
+                    ),
+                    Some(target) => format!(
+                        "{tag} — this capture is asking about {}. 'cancel' closes the index.",
+                        describe::registry_name(target_kind(target)),
+                    ),
+                };
+                self.out(message, false)
+            }
         }
     }
 
@@ -6204,6 +6230,223 @@ mod tests {
             assert!(out.text.contains(&name.to_uppercase()), "{name} is on screen");
         }
         assert!(out.text.contains("Laboratory A slot"), "and says where it is: {}", out.text);
+    }
+
+    /// **An index opened over a capture that is asking about a DIFFERENT
+    /// registry is a read-only view, and a pick off it names the registry the
+    /// capture actually wants** (T6 review M1).
+    ///
+    /// The defect was two lies on one screen. `techs` typed mid-Port-reveal drew
+    /// a `Recording: Port A slot …` header over twenty numbered TECHNOLOGY cards
+    /// whose numbers could not answer that question, and picking one was refused
+    /// with "nothing is being recorded" while a collection was live. The target
+    /// is now filtered to the registry ON SCREEN, so a mismatched index carries
+    /// no recording header and no selection numbers at all — and the refusal
+    /// says which registry the capture is asking about.
+    ///
+    /// **Pinned in BOTH directions**, because the routing is per-registry: a fix
+    /// that only worked one way would look identical from the side it worked on.
+    #[test]
+    fn a_cross_registry_index_over_a_capture_is_a_view_and_names_the_registry_asked() {
+        // Direction 1: an ORDER reveal is live, and the player opens the
+        // TECHNOLOGY index.
+        let (mut r, _) = live_repl_at_a_two_card_port_take();
+        let out = r.step("techs");
+        assert!(out.text.contains("TECHNOLOGY INDEX"), "{}", out.text);
+        assert!(
+            !out.text.contains("Recording:"),
+            "no recording header over a registry this capture cannot take: {}",
+            out.text,
+        );
+        assert!(
+            r.index_model(IndexKind::Techs).cards().all(|c| c.selection.is_none()),
+            "and no selection numbers — a number here could answer nothing",
+        );
+        let refusal = r.step(&format!("T{:02}", an_unplaced_tech(&r).0));
+        assert!(
+            refusal.text.contains("order cards"),
+            "the refusal names the registry the capture IS asking about: {}",
+            refusal.text,
+        );
+        assert!(
+            !refusal.text.contains("nothing is being recorded"),
+            "a collection is live, so that sentence is false: {}",
+            refusal.text,
+        );
+        assert!(r.overlay.is_some(), "the index stays up");
+        assert!(matches!(r.pending, Pending::OrderReveals { .. }), "the capture is untouched");
+
+        // Direction 2: a TECH reveal is live, and the player opens the ORDER
+        // index. Same fixture shape as the routing test above, for the same
+        // reason: driving a live Laboratory action to its reveal question would
+        // pin the route rather than the routing.
+        let (mut r, _) = repl_live_hidden(21);
+        r.pending = Pending::TechReveal { mv: Move::UseUniversity, board_b: false };
+        let out = r.step("orders");
+        assert!(out.text.contains("ORDER CARD INDEX"), "{}", out.text);
+        assert!(!out.text.contains("Recording:"), "{}", out.text);
+        assert!(
+            r.index_model(IndexKind::Orders).cards().all(|c| c.selection.is_none()),
+            "no selection numbers on this side either",
+        );
+        let refusal = r.step(&format!("O{:02}", an_unplaced_order(&r).0));
+        assert!(
+            refusal.text.contains("technologies"),
+            "the refusal names the registry the capture IS asking about: {}",
+            refusal.text,
+        );
+        assert!(!refusal.text.contains("nothing is being recorded"), "{}", refusal.text);
+        assert!(matches!(r.pending, Pending::TechReveal { .. }), "the capture is untouched");
+
+        // And with NOTHING being collected, the message is the other one: the
+        // two states are genuinely different and the screen says which it is in.
+        let mut r = repl_2p(4);
+        r.step("?");
+        let refusal = r.step(&format!("O{:02}", an_unplaced_order(&r).0));
+        assert!(
+            refusal.text.contains("nothing is being recorded right now"),
+            "{}",
+            refusal.text,
+        );
+    }
+
+    /// A technology no face-up location on screen already claims, so a pick of
+    /// it is refused for the reason under test rather than as a duplicate.
+    fn an_unplaced_tech(r: &Repl) -> TechCardId {
+        let placed = r.index_placements();
+        r.session
+            .rules()
+            .techs
+            .iter()
+            .map(|c| c.id)
+            .find(|id| !placed.iter().any(|(card, _)| *card == CardRef::Tech(*id)))
+            .expect("the registry is larger than the face-up cards")
+    }
+
+    /// The order-card twin of [`an_unplaced_tech`].
+    fn an_unplaced_order(r: &Repl) -> OrderCardId {
+        let placed = r.index_placements();
+        r.session
+            .rules()
+            .orders
+            .iter()
+            .map(|c| c.id)
+            .find(|id| !placed.iter().any(|(card, _)| *card == CardRef::Order(*id)))
+            .expect("the registry is larger than the face-up cards")
+    }
+
+    /// **A NUMBER typed at an open view closes it and APPLIES that option**
+    /// (T6 review M2a) — the load-bearing half of the re-dispatch rule, and the
+    /// half nothing pinned: the existing tests covered Enter (which must not
+    /// apply) and a read-only command (`score`), so the one input that moves the
+    /// game from a screen the player opened to LOOK at something was untested.
+    #[test]
+    fn a_number_typed_at_a_view_closes_it_and_applies_that_option() {
+        let mut r = repl_2p(4);
+        assert_eq!(r.display_options().len(), 1, "fixture: a single-option prompt");
+        r.step("tracks");
+        assert!(r.overlay.is_some(), "the view is up");
+        let before = r.session.record().events.len();
+
+        let out = r.step("1");
+        assert!(r.overlay.is_none(), "the number closed the view");
+        assert_eq!(
+            r.session.record().events.len(),
+            before + 1,
+            "and applied option 1: {}",
+            out.text,
+        );
+        assert_eq!(r.session.state().turn_phase, TurnPhase::Placement, "the game moved");
+        assert!(
+            !out.text.contains("TRACKS — full view"),
+            "the view is gone from the frame: {}",
+            out.text,
+        );
+        assert!(
+            out.text.contains("Placement"),
+            "and the frame that comes back shows the delta: {}",
+            out.text,
+        );
+    }
+
+    /// **The two overlays diverge on unrecognized input, deliberately** (T6
+    /// review M2b), and this test names the divergence so a refactor can neither
+    /// unify them nor invert them silently.
+    ///
+    /// A VIEW selects nothing, so a line typed at one is a line the player wants
+    /// RUN: it closes and re-dispatches, and junk reaches the main prompt's own
+    /// `Unrecognized input`. An INDEX is an input surface whose numbers select,
+    /// so a mistyped line has to be REFUSED in the index's own grammar with the
+    /// screen still up — re-dispatching there would answer a question the player
+    /// can no longer see.
+    #[test]
+    fn a_view_re_dispatches_the_junk_an_index_refuses() {
+        let mut r = repl_2p(4);
+        r.step("tracks");
+        let out = r.step("zzz");
+        assert!(r.overlay.is_none(), "the view closed");
+        assert!(
+            out.text.contains("Unrecognized input"),
+            "and the line ran at the prompt underneath: {}",
+            out.text,
+        );
+
+        let mut r = repl_2p(4);
+        r.step("?");
+        let out = r.step("zzz");
+        assert!(r.overlay.is_some(), "the index RETAINS the screen");
+        assert!(
+            !out.text.contains("Unrecognized input"),
+            "nothing was re-dispatched: {}",
+            out.text,
+        );
+        assert!(out.text.contains("is not a card"), "it is refused in the index's grammar: {}", out.text);
+        assert!(out.text.contains("ORDER CARD INDEX"), "with the screen still drawn: {}", out.text);
+    }
+
+    /// **`back` is asymmetric across the two overlays, and that is the ruling**
+    /// (T6 review S1).
+    ///
+    /// In a VIEW it is not a close word: it re-dispatches like any other line,
+    /// so it does what the standing hint says `back` does — it takes the last
+    /// applied entry back. Treating it as a second spelling of `cancel` there
+    /// made the hint false on the one screen a player is most likely to be
+    /// reading it from.
+    ///
+    /// In the INDEX it stays a close word, because that surface's numbers SELECT
+    /// and `back` is part of its own card-entry grammar; the exit line names it
+    /// rather than leaving a player to find out which of the two it is.
+    #[test]
+    fn back_undoes_from_a_view_and_closes_the_index() {
+        let mut r = repl_2p(4);
+        r.step("1");
+        assert_eq!(r.session.record().events.len(), 1, "fixture: one entry to take back");
+        r.step("tracks");
+        let out = r.step("back");
+        assert!(r.overlay.is_none(), "the view closed");
+        assert_eq!(
+            r.session.record().events.len(),
+            0,
+            "and 'back' genuinely undid the entry: {}",
+            out.text,
+        );
+
+        let mut r = repl_2p(4);
+        r.step("1");
+        r.step("?");
+        let out = r.step("back");
+        assert!(r.overlay.is_none(), "the index closed");
+        assert_eq!(
+            r.session.record().events.len(),
+            1,
+            "and nothing was undone: {}",
+            out.text,
+        );
+        assert!(
+            r.index_text(IndexKind::Orders).contains("'back'"),
+            "and the index's exit line names it: {}",
+            r.index_text(IndexKind::Orders),
+        );
     }
 
     /// **The two views are one action away and return with the prompt intact**

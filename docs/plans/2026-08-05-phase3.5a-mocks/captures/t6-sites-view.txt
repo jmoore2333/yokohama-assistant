@@ -27,5 +27,6 @@ BUILDING SITES — full view   every area's site card: each space's printed rewa
 
 A Shophouse built on a space takes that space's printed reward once; a Trading House builds FREE from hand and scores its VP.
 Which tiles touch which is on the board itself; the tolled canal crossings are not, so each card names its own.
-Enter or 'cancel' closes this view and puts you back at the prompt underneath, exactly as you left it — nothing is entered and nothing there is cancelled. Any other command closes it and runs.
+Enter or 'cancel' closes this view and puts you back at the prompt underneath, exactly as you left it — nothing is entered and nothing there is cancelled.
+Any other line closes the view and then RUNS at that prompt — a NUMBER applies that option, and 'back' undoes your last move.
 > 
