@@ -4703,6 +4703,28 @@ mod tests {
     /// column of headroom at the widest cell this data produces. That is a
     /// figure to MEASURE, not to restate: it is what a longer area name or a
     /// two-digit count would spend.
+    ///
+    /// **The sweep CONSTRUCTS its worst case; it used to roll dice for it** (T8
+    /// review). The exhaustion order came from `remaining.iter().find(..)` over a
+    /// `HashMap`, and Rust seeds `RandomState` per PROCESS — so which tile type
+    /// was retired next varied run to run, and some orders never printed the
+    /// widest cell in a third-of-a-row position at all. `widest` then came back
+    /// 79 against an expected 80 and the last assertion failed, at about 7% of
+    /// runs, on a test whose subject does not depend on order in the slightest.
+    /// Both SAFETY assertions held in every one of those runs; it was only the
+    /// claim that the worst case had actually been drawn that flaked.
+    ///
+    /// So the order is now the ROSTER's, which is a deterministic `Vec` and the
+    /// one order that makes the worst case reachable ON PURPOSE. Retiring types
+    /// in roster order hides a PREFIX of the menu, and `tile_menu` numbers from
+    /// the roster position rather than the print position, so a type's cell text
+    /// never changes while its print position walks down by one per step: a cell
+    /// at roster index `j` is printed at every position from `j` to `0`, and
+    /// therefore lands on a third-of-row position (`j % 3 == 2` counting from the
+    /// row start) for some prefix whenever `j >= 2`. That is asserted below as
+    /// `widest_third == widest_cell` rather than assumed — if a future roster put
+    /// the widest cell in the first two positions, this fails and says to
+    /// construct the state deliberately instead of widening the claim.
     #[test]
     fn numbered_offer_fits_three_cells_in_eighty_columns() {
         const CELL_W: usize = 26;
@@ -4712,6 +4734,9 @@ mod tests {
         let rules = Rules::standard();
         let mut widest = 0usize;
         let mut widest_cell = 0usize;
+        // The widest cell ever drawn in a THIRD-of-a-full-row position — the only
+        // place a cell pays its real width instead of its padded one.
+        let mut widest_third = 0usize;
         for players in 2..=4u8 {
             // The real per-count tile multiset, derived the way `run_live_tail`
             // derives it — a throwaway seeded board — so this sweeps the menus
@@ -4723,25 +4748,37 @@ mod tests {
                 *legal.entry(area.area_type).or_insert(0) += 1;
             }
             let roster = tile_roster(&legal);
-            // Every state the offer passes through: full, then one type at a
-            // time exhausted, so the two-digit numbers are exercised too.
+            // Every state the offer passes through: full, then one type at a time
+            // exhausted IN ROSTER ORDER. `remaining` stays a map because
+            // `tile_offer` reads it by key — what is gone is iterating it, which
+            // is where the order came from.
             let mut remaining = legal.clone();
-            loop {
-                let offer = tile_offer(&roster, &remaining);
-                measure(&tile_menu(&offer, players), &mut widest, &mut widest_cell);
-                match remaining.iter().find(|(_, k)| **k > 0).map(|(a, _)| *a) {
-                    Some(area) => {
-                        remaining.insert(area, 0);
-                    }
-                    None => break,
-                }
+            let mut sweep = |remaining: &HashMap<AreaType, u32>| {
+                let offer = tile_offer(&roster, remaining);
+                measure(
+                    &tile_menu(&offer, players),
+                    &mut widest,
+                    &mut widest_cell,
+                    &mut widest_third,
+                );
+            };
+            sweep(&remaining);
+            for area in &roster {
+                remaining.insert(*area, 0);
+                sweep(&remaining);
             }
         }
-        // The token menu's own, over the whole pool as it empties.
+        // The token menu's own, over the whole pool as it empties. Already
+        // deterministic — a `Vec` popped from the end.
         let roster = token_roster(&rules.five_power_tokens);
         let mut pool = rules.five_power_tokens.clone();
         while !pool.is_empty() {
-            measure(&token_menu(&token_offer(&roster, &pool)), &mut widest, &mut widest_cell);
+            measure(
+                &token_menu(&token_offer(&roster, &pool)),
+                &mut widest,
+                &mut widest_cell,
+                &mut widest_third,
+            );
             pool.pop();
         }
 
@@ -4754,6 +4791,18 @@ mod tests {
             "a full row is {} columns, past the {TERMINAL_W} the layout claims",
             INDENT + 2 * CELL_W + widest_cell,
         );
+        // The worst case was CONSTRUCTED, not stumbled into: the widest cell in
+        // the data is a cell this sweep actually printed third, where its full
+        // width is what the row pays. Without this the assertion below is a
+        // statement about whichever menus happened to be drawn.
+        assert_eq!(
+            widest_third, widest_cell,
+            "the widest cell ({widest_cell} columns) was never drawn as the THIRD cell of a full \
+             row (widest third cell: {widest_third}), so the row bound was never actually \
+             exercised. Roster-order exhaustion places a cell third whenever its roster index is \
+             at least 2 -- if that no longer holds, build the state deliberately rather than \
+             relaxing this claim.",
+        );
         assert_eq!(
             widest,
             INDENT + 2 * CELL_W + widest_cell,
@@ -4763,15 +4812,29 @@ mod tests {
         assert!(widest > 2 * CELL_W, "only {widest} columns were ever drawn");
     }
 
-    /// The widest trimmed row and the widest cell of one menu.
-    fn measure(menu: &str, widest: &mut usize, widest_cell: &mut usize) {
+    /// The widest trimmed row, the widest cell, and the widest cell drawn in a
+    /// THIRD-of-a-full-row position, over one menu.
+    ///
+    /// The third column is the one that matters to the 80-column bound: the first
+    /// two cells of a row are padded to `CELL_W` whatever they contain, so only a
+    /// third cell spends its real width. A line carrying three cells is always a
+    /// full row -- `numbered_offer` breaks the line exactly there.
+    fn measure(menu: &str, widest: &mut usize, widest_cell: &mut usize, widest_third: &mut usize) {
         for line in menu.lines().skip(1) {
             let line = line.trim_end();
             *widest = (*widest).max(line.chars().count());
             // Cells are `[n] text` padded to a fixed column, so the raw cells
             // are the row split back on the marker that starts each one.
-            for cell in line.split('[').skip(1) {
-                *widest_cell = (*widest_cell).max(format!("[{}", cell.trim_end()).chars().count());
+            let cells: Vec<usize> = line
+                .split('[')
+                .skip(1)
+                .map(|cell| format!("[{}", cell.trim_end()).chars().count())
+                .collect();
+            for width in &cells {
+                *widest_cell = (*widest_cell).max(*width);
+            }
+            if let [_, _, third] = cells[..] {
+                *widest_third = (*widest_third).max(third);
             }
         }
     }
