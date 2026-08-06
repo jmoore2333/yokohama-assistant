@@ -218,7 +218,13 @@ impl Repl {
     /// `the_location_check_can_never_pre_empt_a_truthful_reveal` sweeps both
     /// halves rather than leaving either as an argument.
     fn read_card(&self, kind: IndexKind, placed: &[(CardRef, crate::screen_model::CardLocation)], line: &str) -> Answer {
-        let prompt = CardPrompt { kind, candidates: None, placed, numbering: Numbering::Ids };
+        let prompt = CardPrompt {
+            kind,
+            candidates: None,
+            placed,
+            numbering: Numbering::Ids,
+            colors: &self.seat_colors(),
+        };
         match card_prompt::resolve(&prompt, line, self.session.rules()) {
             CardEntry::Card(card) => Answer::Card(card),
             CardEntry::OpenIndex => Answer::OpenIndex(None),
@@ -241,7 +247,7 @@ impl Repl {
             Answer::OpenIndex(filter) => self.open_index_filtered(kind, filter),
             Answer::Refused(message) => self.reask(message),
             Answer::Nothing => self.reask(format!(
-                "this reveal is waiting for an answer -- {}, or 'cancel' to drop the move",
+                "this reveal is waiting for an answer — {}, or 'cancel' to drop the move",
                 card_prompt::entry_hint(kind, false),
             )),
             // A card from a registry this capture is not asking about.
@@ -256,7 +262,7 @@ impl Repl {
             // acceptance of the wrong card — the failure the T6 review found
             // when the same collision was reachable through the index.
             Answer::Card(card) => self.reask(format!(
-                "{} is not one of this reveal's {} -- it is asking about {}.",
+                "{} is not one of this reveal's {} — it is asking about {}.",
                 card_prompt::card_tag(card),
                 crate::describe::registry_name(card.kind()),
                 crate::describe::registry_name(kind),
@@ -378,7 +384,7 @@ fn lockdown_text(prior: &str, status: &str, persist_warning: Option<String>) -> 
 /// Shared by both desync guards -- one banner, painted `Warn` as a unit so
 /// the whole sentence lands in bold red on a color terminal.
 const DESYNC_BANNER: &str =
-    "CRITICAL: desync detected -- the revealed card(s) do not match the board after applying the move. Session locked.";
+    "CRITICAL: desync detected — the revealed card(s) do not match the board after applying the move. Session locked.";
 
 /// Which Port board changed, and which of ITS slots now hold a card that
 /// wasn't in `before.order_deck` a moment ago -- an identity-independent
@@ -980,6 +986,7 @@ mod tests {
     /// the `.html` twin against the `.md`; this test says the `.md` is the
     /// driver's own output.
     #[test]
+
     fn the_guide_reveal_captures_are_what_the_fixtures_render() {
         const GUIDE_MD: &str = include_str!("../../../docs/cli-guide.md");
         let blocks: Vec<&str> =

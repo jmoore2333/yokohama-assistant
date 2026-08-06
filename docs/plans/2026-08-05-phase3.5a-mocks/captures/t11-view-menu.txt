@@ -1,0 +1,8 @@
+GAME INFO — full view   the 'view' pattern: every panel on the frame is a summary, and each row here is its full surface
+
+  [1]  Port offer — the cards on display
+  [2]  Log — the trail
+
+Every row here is also a word you can type at the prompt, and the two run the same code — so this menu is a reminder, never a second way to be wrong.
+Pick a number to open a surface, or 'cancel' to go back to the prompt underneath with nothing entered.
+> 

@@ -134,7 +134,6 @@ use std::io::BufRead;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use rustyline::error::ReadlineError;
-use yokohama_core::*;
 
 /// The prompt string handed to the line editor: EMPTY, deliberately. See the
 /// module doc — the frame has already drawn `> ` and left the cursor at column
@@ -209,7 +208,16 @@ fn editor_gate(stdin_is_terminal: bool, stdout_is_terminal: bool, term: Option<&
 ///
 /// Its own function so the fence can be ASSERTED rather than inferred — see
 /// [`INTERACTIVE`].
-fn may_edit() -> bool {
+/// Whether this process is talking to a real terminal through the line editor
+/// — which is what makes ↑ recall, ←/→ editing and Ctrl-C's abandon-the-line
+/// behaviour real rather than escape sequences typed into a pipe.
+///
+/// `pub(crate)` since T11 so the decision zone's standing hint can name the
+/// recall key on the surfaces where it works and stay silent on the ones where
+/// it does not. The zone does not READ it — a renderer that queried the
+/// environment would be a renderer off the R9 seam — the REPL reads it and puts
+/// the answer in `ZoneContext`.
+pub(crate) fn may_edit() -> bool {
     INTERACTIVE.load(Ordering::Relaxed)
 }
 
@@ -396,18 +404,11 @@ fn new_editor() -> Option<rustyline::DefaultEditor> {
     rustyline::DefaultEditor::with_config(config).ok()
 }
 
-/// Tech card's display name, or a `T<id>` fallback for an id absent from
-/// the registry (keeps display code panic-free against corrupt/foreign
-/// records) -- the one-liner that used to be triplicated across
-/// render.rs and describe.rs.
-pub(crate) fn tech_name(id: TechCardId, techs: &TechRegistry) -> String {
-    techs.get(id).map(|c| c.name.clone()).unwrap_or_else(|| format!("T{:02}", id.0))
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use rustyline::history::History;
+    use yokohama_core::{GameConfig, Rules, StartingOrderChoice};
     use std::io::Cursor;
 
     fn plain_over(bytes: &'static [u8]) -> Vec<String> {
@@ -754,10 +755,4 @@ mod tests {
         );
     }
 
-    #[test]
-    fn tech_name_looks_up_the_registry_and_falls_back_for_unknown_ids() {
-        let rules = Rules::standard();
-        assert_eq!(tech_name(TechCardId(11), &rules.techs), "Ball");
-        assert_eq!(tech_name(TechCardId(255), &rules.techs), "T255");
-    }
 }

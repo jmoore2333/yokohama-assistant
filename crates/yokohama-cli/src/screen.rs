@@ -851,7 +851,7 @@ mod tests {
             assert_eq!(
                 frame_width(n as usize),
                 measured,
-                "the {n}P frame composes at {measured} columns, so FRAME_WIDTHS must say so -- \
+                "the {n}P frame composes at {measured} columns, so FRAME_WIDTHS must say so — \
                  and guide §2 (checked independently by guide_sync) must state the same number"
             );
         }
@@ -893,7 +893,7 @@ mod tests {
             assert_eq!(
                 FRAME_HEIGHTS[usize::from(n) - 2],
                 rows,
-                "the {n}P frame opens at {rows} rows, so FRAME_HEIGHTS must say so -- \
+                "the {n}P frame opens at {rows} rows, so FRAME_HEIGHTS must say so — \
                  and guide §2 (checked independently by guide_sync) must state the same number"
             );
         }

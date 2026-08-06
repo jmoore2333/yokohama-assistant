@@ -16,7 +16,7 @@ use std::cell::Cell;
 use std::collections::HashMap;
 
 use crate::card_prompt::{self, entry_hint, CardEntry, CardPrompt, Numbering};
-use crate::input::tech_name;
+use crate::describe::tech_name;
 use crate::screen_model::{
     achievement_registry, build_index, menu_index, menu_number, menu_range, CardLocation, CardRef,
     IndexFilter, IndexKind, IndexModel, RecordingTarget,
@@ -221,6 +221,9 @@ fn ask_card(
                 } else {
                     Numbering::Ids
                 },
+                // Setup-side: nothing is owned by anybody yet, so the one
+                // refusal that reads this table cannot fire here.
+                colors: &[],
             };
             match card_prompt::resolve(&prompt, line, ctx.rules) {
                 CardEntry::Card(card) => match validate(card) {
@@ -249,7 +252,7 @@ fn ask_card(
                 // one way out has always been `abort`. Saying so beats an empty
                 // line silently re-asking with no explanation.
                 CardEntry::Cancel => Ask::Refused(format!(
-                    "this question needs an answer -- {}, or 'abort' to leave setup",
+                    "this question needs an answer — {}, or 'abort' to leave setup",
                     entry_hint(kind, showing.get()),
                 )),
                 CardEntry::Refused(message) => Ask::Refused(message),
@@ -371,7 +374,7 @@ fn already_recorded_line(kind: IndexKind, ctx: &CardCtx<'_>) -> String {
         crate::describe::registry_name(kind)
     };
     format!(
-        "  already recorded -- {total} {registry}: {}{more}  ('?' shows each one and where)\n",
+        "  already recorded — {total} {registry}: {}{more}  ('?' shows each one and where)\n",
         tags.join(TAG_SEPARATOR),
     )
 }
@@ -800,12 +803,12 @@ fn run_live_tail(
                 if ask_board_check(input, out, &candidate)? {
                     break candidate;
                 }
-                out("  Board not confirmed -- back to the setup review. 'edit tiles' re-enters the\n");
+                out("  Board not confirmed — back to the setup review. 'edit tiles' re-enters the\n");
                 out("  board, and the building-site cards with it (they sit on the tiles).\n");
             }
             Err(e) => {
                 out(&format!("  ! these answers do not make a playable setup: {e}\n"));
-                out("  Back to the setup review -- correct the section it names, then confirm again.\n");
+                out("  Back to the setup review — correct the section it names, then confirm again.\n");
             }
         }
     };
@@ -1569,7 +1572,7 @@ fn parse_tile_entry(
             // only for a board with no tile types at all — which no `GameConfig`
             // produces and only a hand-built fixture could.
             None => Err(match menu_range(offer.len()) {
-                Some((lo, hi)) => format!("'{typed}' is not on the list -- pick {lo}-{hi}"),
+                Some((lo, hi)) => format!("'{typed}' is not on the list — pick {lo}-{hi}"),
                 None => "no tiles are left to place".to_string(),
             }),
         };
@@ -1580,7 +1583,7 @@ fn parse_tile_entry(
         // In the game but not on THIS board: `canal` at 2 players, the finding
         // by name.
         (None, _) => Err(format!(
-            "{} is not part of a {players}-player board -- that tile stays in the box",
+            "{} is not part of a {players}-player board — that tile stays in the box",
             crate::describe::area_type_name(area),
         )),
         (Some(_), false) => Err(exhausted_message(area, legal_counts, players)),
@@ -1596,13 +1599,13 @@ fn exhausted_message(
 ) -> String {
     match legal_counts.get(&area) {
         Some(total) => format!(
-            "no more {} tiles for this board -- the {players}-player set has {total}",
+            "no more {} tiles for this board — the {players}-player set has {total}",
             crate::describe::area_type_name(area),
         ),
         // Not on this board at all: only reachable through a roster built from
         // a different `legal_counts` than the one being checked against.
         None => format!(
-            "{} is not part of a {players}-player board -- that tile stays in the box",
+            "{} is not part of a {players}-player board — that tile stays in the box",
             crate::describe::area_type_name(area),
         ),
     }
@@ -1637,7 +1640,7 @@ fn match_tile_name(
         .collect();
     if hits.is_empty() {
         return Err(format!(
-            "'{typed}' is not a tile -- type a number from the list, a name, or a short code"
+            "'{typed}' is not a tile — type a number from the list, a name, or a short code"
         ));
     }
     let on_this_board: Vec<AreaType> =
@@ -1653,7 +1656,7 @@ fn match_tile_name(
             let candidates = if some.is_empty() { all } else { some };
             let names: Vec<&str> =
                 candidates.iter().map(|a| crate::describe::area_type_name(*a)).collect();
-            Err(format!("'{typed}' could be {} -- type more of the name", names.join(", ")))
+            Err(format!("'{typed}' could be {} — type more of the name", names.join(", ")))
         }
     }
 }
@@ -1683,7 +1686,7 @@ fn ask_sites(
     out("\n--- Building-site cards ---\n");
     out("Same cells in the same order as the tiles: the widest row first, left to right.\n");
     out("Each question names the tile you entered there. Canal cells carry no site and\n");
-    out("are skipped. The cards print no number, so '?' draws all 24 with their spaces --\n");
+    out("are skipped. The cards print no number, so '?' draws all 24 with their spaces —\n");
     out("the index number and the S<n> the wizard records are the same number.\n");
 
     let mut sites: Vec<Option<u8>> = Vec::with_capacity(n);
@@ -1707,7 +1710,7 @@ fn ask_sites(
             out,
             &ctx,
             &format!(
-                "Cell {i}/{n} ({}) {} -- building-site card?",
+                "Cell {i}/{n} ({}) {} — building-site card?",
                 cell_coords(i, &rows),
                 crate::describe::area_type_name(*tile)
             ),
@@ -1783,7 +1786,7 @@ fn ask_tokens(
             input,
             out,
             &format!(
-                "{}Cell {i}/{n} ({}) {} -- 5-Power token? (a number or its letter)",
+                "{}Cell {i}/{n} ({}) {} — 5-Power token? (a number or its letter)",
                 token_menu(&offer),
                 cell_coords(i, &rows),
                 crate::describe::area_type_name(*tile)
@@ -1893,7 +1896,7 @@ fn parse_token_entry(
             // The roster is every face the box holds, so it is empty only for a
             // pool with no faces at all — which no `Rules` produces.
             None => Err(match menu_range(offer.len()) {
-                Some((lo, hi)) => format!("'{typed}' is not on the list -- pick {lo}-{hi}"),
+                Some((lo, hi)) => format!("'{typed}' is not on the list — pick {lo}-{hi}"),
                 None => "no tokens are left to place".to_string(),
             }),
         };
@@ -2012,7 +2015,7 @@ fn dummy_placement_notice(state: &GameState) -> String {
     // -- so it is exactly the ordinal an operator counts to at the table. Its
     // three values (4/5/6) all take "th".
     format!(
-        "\n{}-player setup -- place the neutral dummy assistants before the first move:\n\
+        "\n{}-player setup — place the neutral dummy assistants before the first move:\n\
          * One goes on {}.\n\
          \x20 Use pawns of an unused player color. They are NOT printed board art: nothing\n\
          \x20 you entered above describes them, and the engine has both either way, so only\n\
@@ -2056,7 +2059,7 @@ fn ask_achievements(
     colors: &[PlayerColor],
 ) -> Result<[AchievementType; 3], String> {
     out("\n--- Achievement cards ---\n");
-    out("Three cards are in play, ONE FROM EACH CATEGORY -- so the wizard asks for them\n");
+    out("Three cards are in play, ONE FROM EACH CATEGORY — so the wizard asks for them\n");
     out("one category at a time. Type the number beside a card, its name, or '?' for the\n");
     out("full index of all twelve with their scoring.\n");
 
@@ -2087,7 +2090,7 @@ fn ask_achievements(
                 &mut |card| match card {
                     CardRef::Achievement(ty) if ty.category() == category => Ok(()),
                     CardRef::Achievement(ty) => Err(format!(
-                        "{ty:?} is a category {} card -- this question is asking for the category {letter} one",
+                        "{ty:?} is a category {} card — this question is asking for the category {letter} one",
                         crate::describe::category_letter(ty.category()),
                     )),
                     other => Err(format!(
@@ -2109,7 +2112,7 @@ fn ask_achievements(
 /// One category's four cards, numbered as the full index numbers them.
 fn category_menu(index: &IndexModel, category: AchievementCategory) -> String {
     let mut out = format!(
-        "  Category {} -- one of these four:\n",
+        "  Category {} — one of these four:\n",
         crate::describe::category_letter(category)
     );
     for card in index.cards() {
@@ -2492,7 +2495,7 @@ mod tests {
         lines.push("yes".into()); // board check (third review I1)
         let (repl, transcript) = feed_owned(lines);
         assert!(
-            transcript.contains("no more Copper Mine tiles for this board -- the 2-player set has 1"),
+            transcript.contains("no more Copper Mine tiles for this board — the 2-player set has 1"),
             "{transcript}"
         );
         assert!(repl.is_ok(), "{transcript}");
@@ -2688,7 +2691,7 @@ mod tests {
         // The token pass ran, with a header and per-cell prompts naming the tile.
         assert!(transcript.contains("--- 5-Power tokens ---"), "{transcript}");
         assert!(
-            transcript.contains("Cell 0/10 (row 1 of 4, tile 1 of 4) Copper Mine -- 5-Power token?"),
+            transcript.contains("Cell 0/10 (row 1 of 4, tile 1 of 4) Copper Mine — 5-Power token?"),
             "token prompts must name the cell AND the tile entered there\n{transcript}"
         );
         // Each observed face reached the built session, on its own cell.
@@ -2834,11 +2837,11 @@ mod tests {
         lines.push("yes".into());
         let (_repl, transcript) = feed_owned(lines);
         assert!(
-            transcript.contains("Cell 0/10 (row 1 of 4, tile 1 of 4) Copper Mine -- building-site"),
+            transcript.contains("Cell 0/10 (row 1 of 4, tile 1 of 4) Copper Mine — building-site"),
             "site prompts must name the cell AND the tile entered there\n{transcript}"
         );
         assert!(
-            transcript.contains("Cell 9/10 (row 4 of 4, tile 1 of 1) Customs -- building-site"),
+            transcript.contains("Cell 9/10 (row 4 of 4, tile 1 of 1) Customs — building-site"),
             "{transcript}"
         );
     }
@@ -3012,7 +3015,7 @@ mod tests {
         repl.unwrap_or_else(|e| panic!("expected Ok, got Err({e}); transcript:\n{transcript}"));
         assert!(transcript.contains("--- Board check ---"), "the board check still runs at 3P\n{transcript}");
         let said = transcript.to_lowercase();
-        assert!(!said.contains("dummy"), "3 players have no dummy -- no instruction\n{transcript}");
+        assert!(!said.contains("dummy"), "3 players have no dummy — no instruction\n{transcript}");
         std::fs::remove_file("yokohama-game-617.json").ok();
     }
 
@@ -3397,7 +3400,7 @@ mod tests {
 
         assert!(
             transcript.contains(
-                "Money10 is a category B card -- this question is asking for the category A one"
+                "Money10 is a category B card — this question is asking for the category A one"
             ),
             "the refusal must name the card's category AND the question's\n{transcript}"
         );
@@ -3567,7 +3570,7 @@ mod tests {
         repl.unwrap_or_else(|e| panic!("expected Ok, got Err({e}); transcript:\n{transcript}"));
 
         assert!(
-            transcript.contains("Canal is not part of a 2-player board -- that tile stays in the box"),
+            transcript.contains("Canal is not part of a 2-player board — that tile stays in the box"),
             "the refusal must say where the tile is\n{transcript}"
         );
         let menu_lines: Vec<&str> =
@@ -3644,7 +3647,7 @@ mod tests {
         // Canal also start with `c` and are in the box at 2 players, so listing
         // them would offer the operator tiles they cannot be holding.
         assert!(
-            transcript.contains("'c' could be Copper Mine, Church, Customs -- type more of the name"),
+            transcript.contains("'c' could be Copper Mine, Church, Customs — type more of the name"),
             "an ambiguous prefix is refused naming what it could mean HERE\n{transcript}"
         );
         let areas = &repl.session.state().board_layout.areas;
@@ -3782,7 +3785,7 @@ mod tests {
             "the refusal must name the seat's deal (F6)\n{transcript}"
         );
         assert!(
-            transcript.contains("already recorded -- 2 order cards: O02 · O04"),
+            transcript.contains("already recorded — 2 order cards: O02 · O04"),
             "the running already-recorded line must ride the card questions\n{transcript}"
         );
         assert_eq!(repl.session.state().port_state.port_a.slots[0], Some(OrderCardId(1)));
@@ -4106,7 +4109,7 @@ mod tests {
 
         assert!(
             transcript.contains(
-                "no more Copper Mine tiles for this board -- the 2-player set has 1"
+                "no more Copper Mine tiles for this board — the 2-player set has 1"
             ),
             "the refusal names the tile the number still means\n{transcript}"
         );
@@ -4146,19 +4149,19 @@ mod tests {
         std::fs::remove_file("yokohama-game-648.json").ok();
 
         assert_eq!(
-            transcript.matches("Category A -- one of these four:").count(),
+            transcript.matches("Category A — one of these four:").count(),
             3,
             "category A was asked three times, so its four cards were drawn three times\n{transcript}"
         );
         // ...and each printing really is above its own question, not batched.
-        for block in transcript.split("Category A -- one of these four:").skip(1) {
+        for block in transcript.split("Category A — one of these four:").skip(1) {
             assert!(
                 block.lines().take(6).any(|l| l.contains("Which category A card is in play?")),
                 "the menu sits directly above the question it answers:\n{block:.400}"
             );
         }
         assert_eq!(
-            transcript.matches("Category B -- one of these four:").count(),
+            transcript.matches("Category B — one of these four:").count(),
             1,
             "a question answered first time is asked — and drawn — once\n{transcript}"
         );
@@ -4584,7 +4587,7 @@ mod tests {
         std::fs::remove_file("yokohama-game-650.json").ok();
 
         let want = format!(
-            "  ! this question needs an answer -- {}, or 'abort' to leave setup\n",
+            "  ! this question needs an answer — {}, or 'abort' to leave setup\n",
             entry_hint(IndexKind::Orders, false),
         );
         assert_eq!(
@@ -4855,7 +4858,7 @@ mod tests {
             (AchievementCategory::C, "C"),
         ] {
             assert_eq!(
-                crate::describe::card_location(CardLocation::AchievementSlot { category }),
+                crate::describe::card_location(CardLocation::AchievementSlot { category }, &[]),
                 format!("category {letter} in play"),
             );
         }

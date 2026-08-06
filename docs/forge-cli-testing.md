@@ -6,7 +6,8 @@ running the CLI through ordinary shell tools is blind to the render layer it is 
 **Forge MCP** (github.com/ferodrigop/forge) fixes that: it spawns real PTY sessions the agent
 can type into and read back — colors on, layout exact, wizard scriptable.
 
-Everything below was live-verified 2026-07-21 against Forge v0.9.0 on this machine.
+Everything below was live-verified 2026-07-21 against Forge v0.9.0 on this machine; the
+recipe and the sizing were re-verified against the shipped binary 2026-08-06 (Phase-3.5a T11).
 
 ## Setup facts (this machine)
 
@@ -47,11 +48,12 @@ good for asserting "the width warning printed" without re-reading everything.
 ## Verified session recipe
 
 ```
-create_terminal  {command: "/bin/zsh", cwd: <repo root>, cols: 140, rows: 50,
+create_terminal  {command: "/bin/zsh", cwd: <repo root>, cols: 200, rows: 50,
                   name: "yokohama-cli", tags: ["yokohama"]}
 write_terminal   {id, input: "cargo run -p yokohama-cli"}     # prebuild first — see notes
 wait_for         {id, pattern: "Mode\\? \\(sim/live\\)"}
-write_terminal   {id, input: "sim\n2\nred\nblue\n0\n42\n<scratchpad>/game.json\n0\n0\n"}
+write_terminal   {id, input: "sim\n2\nred\nblue\n0\n42\n<scratchpad>/game.json\n1\n1\n\n"}
+                  # keep answers are 1 or 2 (T5's 1-based ruling), one per seat;
                   # the trailing blank answers the "Bot seats?" question (3.2) — blank = none
 wait_for         {id, pattern: "confirm / edit"}
 write_terminal   {id, input: "confirm"}
@@ -63,20 +65,34 @@ close_terminal   {id}
 
 - **The whole setup wizard scripts in one multi-line write** (answers queue in the PTY line
   buffer; the wizard consumes them one question at a time). Sim 2P answer order: mode, players,
-  color×seats, start seat, seed, save path, keep×seats. 4P: same with 4 colors / 4 keeps.
-  Batching REPL moves (`"0\n0\n0"`) works the same way — but only batch moves whose prompts you
-  can predict; when unsure, one write per read.
+  color×seats, start seat, seed, save path, keep×seats, bot seats. 4P: same with 4 colors / 4
+  keeps. Batching REPL moves (`"1\n1\n1"`) works the same way — but only batch moves whose
+  prompts you can predict; when unsure, one write per read.
+- **Every numbered list starts at `[1]`** (T5's ruling, `screen_model::NUMBER_BASE`), so a
+  scripted answer of `0` is now out of range everywhere except the guided retreat's `[0-n]`,
+  which asks for a QUANTITY and where `0` legitimately means "recover none".
+- **Tile, token and achievement rosters carry STABLE numbers** (T7): a type's number is its
+  place in the whole set, fixed for the pass, and it does NOT close up as the list shrinks. A
+  script that repeated the same number to walk down a menu was reading the pre-T7 behaviour —
+  repeating `1` now re-picks the same type until its copies run out, and is then refused by
+  name. Script the numbers you actually want, or type names.
 - **Point the save path at the session scratchpad**, never the repo root (autosave writes after
   every move; a blank answer would drop `yokohama-game-<seed>.json` into the repo).
 - **`cargo build -p yokohama-cli` (plain Bash) before the session** so `cargo run` inside the
   PTY starts in ~0.1s instead of compiling; every `wait_for` above then returns instantly.
-- Sizing (measured on the staggered renderer, 2026-07-21, and pinned by `guide_sync`'s
+- Sizing (re-measured 2026-08-06 against the redesigned frame, and pinned by `guide_sync`'s
   `section2_frame_widths_match_the_composed_screen` / `..._heights_...`): the COMPOSED FRAME —
-  not the board alone — is 114 cols × 32 rows at 2 players, 132 × 33 at 3, and 108 × 38 at 4
-  (the board grids themselves are 72 / 90 / 108 cols). So **140×50 fits every player count with
-  room to spare**, and 140×40 is the true floor for seeing a whole opening screen. Rows are the
-  scarce axis, not columns: everything below the board (option list, 20 per page; message zone)
-  pushes the title and top board row off the top.
+  not the board alone — is **198 cols × 48 rows at 2 players, 175 × 49 at 3, and 200 × 48 at 4**
+  (the board grids themselves are 120 / 150 / 180 cols). So **create terminals at 200×50**,
+  which is the design floor the whole redesign is drawn to; the 140×50 earlier revisions of this
+  file recommended shears every count. In play the 3- and 4-player frames hold at 60 rows by
+  construction, while the 2-player one is ragged and keeps growing (67 rows on the deepest walk
+  the tests run) — `panel` and `screen` buy those rows back.
+- **The full-screen surfaces replace the frame rather than sitting under it**, so `read_screen`
+  after `ports` / `labs` / `tracks` / `sites` / `goals` / `hand` / `log` / `?` shows that
+  surface alone on a cleared screen. Press Enter (or `cancel`) to come back to the prompt
+  underneath — and note that any OTHER line closes the view and then RUNS, so a stray digit
+  applies an option.
 
 ## Standing PTY checks (properties no `cargo test` can reach)
 

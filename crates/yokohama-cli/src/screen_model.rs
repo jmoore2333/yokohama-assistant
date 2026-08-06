@@ -418,6 +418,126 @@ pub struct HandPanel {
 }
 
 // ---------------------------------------------------------------------------
+// The offer panels — Ports and Laboratories (T11)
+// ---------------------------------------------------------------------------
+
+/// One Port slot: where it sits, what it costs in POWER to reach, and the
+/// order card on it.
+///
+/// **The power gate is the decision this surface answers**, which is why it is
+/// a modelled field rather than a sentence the renderer writes. A Port take is
+/// gated by the acting player's power — power 2 reaches the LOW zone, 3 adds
+/// MID, 4 adds HIGH — so a card in the HIGH zone is not an offer at all to a
+/// player who cannot get there, and a screen that drew all six alike would be
+/// showing six offers where the table shows two.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PortSlotModel {
+    /// 0-based index into the board's own six slots. The DISPLAY number is
+    /// [`menu_number`]'s job, at the renderer.
+    pub slot: usize,
+    pub zone: PortZone,
+    /// The lowest action power that reaches [`Self::zone`] — **derived from the
+    /// engine's own `port_accessible_zones`** (see [`build_ports`]), never a
+    /// literal, so a rules change to the gate moves this number with it.
+    pub min_power: u8,
+    pub card: Option<OrderCardId>,
+    /// The printed card, or `None` for an empty slot or an id the registry does
+    /// not know — see [`TechModel::printed`].
+    pub printed: Option<OrderCard>,
+}
+
+/// One Port board and its six slots.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PortBoardModel {
+    /// Port B rather than Port A. The renderer words it; this is the identity.
+    pub board_b: bool,
+    pub slots: Vec<PortSlotModel>,
+}
+
+/// Both Port boards as an offer, plus the shared deck they refill from.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PortsPanel {
+    /// Port A, then Port B when the count has one.
+    pub boards: Vec<PortBoardModel>,
+    /// Cards left in the shared order deck.
+    ///
+    /// **A public count of a hidden pile, and legitimately so**: the physical
+    /// deck's HEIGHT is on the table for everyone to see, and it is the only
+    /// thing this carries — the identities stay in `GameState` and reach no
+    /// model. A live-tracked game's count is the reconciled model's, which is
+    /// the same number the table shows once setup is entered truthfully.
+    pub deck_remaining: usize,
+}
+
+/// One Laboratory slot: its position surcharge and the technology on it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LabSlotModel {
+    /// 0-based index into the board's own six slots.
+    pub slot: usize,
+    /// The printed position surcharge (`+0`/`+1`/`+2`), from the engine's
+    /// `LabBoard::position_modifier`.
+    pub surcharge: u8,
+    pub card: Option<TechCardId>,
+    /// The printed card, or `None` for an empty slot or an unknown id.
+    pub printed: Option<TechCard>,
+}
+
+/// One Laboratory board and its six slots.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LabBoardModel {
+    /// Laboratory B rather than Laboratory A.
+    pub board_b: bool,
+    pub slots: Vec<LabSlotModel>,
+}
+
+/// Both Laboratory boards as an offer, plus the shared tech deck.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LabsPanel {
+    pub boards: Vec<LabBoardModel>,
+    /// Cards left in the shared tech deck — see [`PortsPanel::deck_remaining`].
+    pub deck_remaining: usize,
+}
+
+// ---------------------------------------------------------------------------
+// The log panel (T11)
+// ---------------------------------------------------------------------------
+
+/// One logged event: its global index into the record, and the description
+/// CACHED when it applied.
+///
+/// **The text is SUPPLIED, never derived here**, which is the whole point of
+/// modelling it. `Session` describes an event against the state it applied in
+/// and caches the result; re-describing it now would re-price a trading-house
+/// take at today's progression and re-address a movement fee to today's
+/// President owners. This model carries the cached string through and does not
+/// know how to make one — the same discipline [`IndexCard::location`] holds for
+/// the same reason.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LogEntryModel {
+    /// The event's index in `GameRecord.events`, which is what `undo` counts in
+    /// and what a bug report quotes.
+    pub index: usize,
+    pub text: String,
+}
+
+/// The move/event trail, as a surface shows it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LogPanel {
+    /// Events in the record, INCLUDING the ones this panel does not carry.
+    pub total: usize,
+    /// The tail, oldest first.
+    pub entries: Vec<LogEntryModel>,
+}
+
+impl LogPanel {
+    /// How many earlier events the tail leaves out — the figure a surface owes
+    /// a reader who is looking for one that is not there.
+    pub fn omitted(&self) -> usize {
+        self.total.saturating_sub(self.entries.len())
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Panels
 // ---------------------------------------------------------------------------
 
@@ -1892,6 +2012,90 @@ pub fn build_hand(
     })
 }
 
+/// The lowest action power that reaches `zone`, asked of the ENGINE rather than
+/// written down: `port_accessible_zones` is the same function `legal_moves`
+/// gates a Port take with, so this number cannot drift from the rule it
+/// describes.
+///
+/// The sweep runs the whole `u8` power range the engine accepts rather than a
+/// hand-picked 0..=5, and returns the first power whose accessible set contains
+/// `zone`. A zone no power reaches would have no honest number to print, so it
+/// gets `None` and the renderer says so — which is unreachable today and is
+/// exactly the kind of thing that should not become a silent `0`.
+pub fn port_zone_min_power(zone: PortZone) -> Option<u8> {
+    (0..=u8::MAX)
+        .find(|&power| yokohama_core::actions::port_accessible_zones(power).contains(&zone))
+}
+
+/// Both Port boards as an OFFER — every slot with its zone, its power gate and
+/// the printed card on it.
+pub fn build_ports(state: &GameState, rules: &Rules) -> PortsPanel {
+    let build = |board: &PortBoard, board_b: bool| PortBoardModel {
+        board_b,
+        slots: board
+            .slots
+            .iter()
+            .enumerate()
+            .map(|(slot, card)| {
+                let zone = PortBoard::zone_of(slot);
+                PortSlotModel {
+                    slot,
+                    zone,
+                    // `unwrap_or(0)` cannot fire on the shipped rule (every zone
+                    // is reachable at power 4); a zone that became unreachable
+                    // would print `power 0+`, which is why the `None` case is
+                    // named in `port_zone_min_power` rather than swallowed here.
+                    min_power: port_zone_min_power(zone).unwrap_or(0),
+                    card: *card,
+                    printed: card.and_then(|id| rules.orders.get(id).cloned()),
+                }
+            })
+            .collect(),
+    };
+    let mut boards = vec![build(&state.port_state.port_a, false)];
+    if let Some(port_b) = &state.port_state.port_b {
+        boards.push(build(port_b, true));
+    }
+    PortsPanel { boards, deck_remaining: state.order_deck.len() }
+}
+
+/// Both Laboratory boards as an OFFER — every slot with its printed position
+/// surcharge and the technology on it.
+pub fn build_labs(state: &GameState, rules: &Rules) -> LabsPanel {
+    let build = |board: &LabBoard, board_b: bool| LabBoardModel {
+        board_b,
+        slots: board
+            .slots
+            .iter()
+            .enumerate()
+            .map(|(slot, card)| LabSlotModel {
+                slot,
+                surcharge: LabBoard::position_modifier(slot),
+                card: *card,
+                printed: card.and_then(|id| rules.techs.get(id).cloned()),
+            })
+            .collect(),
+    };
+    let mut boards = vec![build(&state.lab_state.lab_a, false)];
+    if let Some(lab_b) = &state.lab_state.lab_b {
+        boards.push(build(lab_b, true));
+    }
+    LabsPanel { boards, deck_remaining: state.tech_deck.len() }
+}
+
+/// The move/event trail from descriptions the CALLER already holds.
+///
+/// `described` is `(index, text)` oldest-first, and the text is the one cached
+/// when the event applied — see [`LogEntryModel`] for why this builder cannot
+/// make one itself. `total` is the record's whole length, so a tail knows what
+/// it is a tail OF.
+pub fn build_log(total: usize, described: Vec<(usize, String)>) -> LogPanel {
+    LogPanel {
+        total,
+        entries: described.into_iter().map(|(index, text)| LogEntryModel { index, text }).collect(),
+    }
+}
+
 /// The decision zone over the legal list the caller already holds. `legal` is
 /// the ENGINE's list verbatim — this builder never generates or filters moves.
 pub fn build_decision(state: &GameState, rules: &Rules, legal: &[Move]) -> DecisionModel {
@@ -2458,7 +2662,7 @@ mod tests {
         let unmarked = build_board(&state, &rules, &[]);
         assert!(
             unmarked.tiles.iter().all(|t| !t.reachable),
-            "no list, no marks -- an unmarked board is the truthful model of 'nothing offered'",
+            "no list, no marks — an unmarked board is the truthful model of 'nothing offered'",
         );
     }
 

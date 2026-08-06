@@ -1027,13 +1027,35 @@ mod tests {
                 locations.push(CardLocation::PortSlot { board_b, slot });
             }
         }
+        // T11: `OwnedBy` is worded with the seat's COLOUR where the caller has
+        // a table and with its number where it does not, so BOTH forms are
+        // swept — the widest colour name (`Yellow`) is not obviously shorter
+        // than `Seat 3`, and only measuring says which the card has to fit.
+        //
+        // `LabSlot` is deliberately NOT here, and measuring is how that became
+        // deliberate: `Laboratory A slot 1` is 19 columns against this face's
+        // 18. It never lands on one — a lab slot is where a TECHNOLOGY is, and
+        // a technology draws on the 49-column `TECH_W` card — so asserting it
+        // here would be asserting about a card that is never drawn, and the
+        // honest thing is to say so rather than to widen a budget for it.
+        for seat in 0..4u8 {
+            locations.push(CardLocation::OwnedBy { seat: PlayerId::new(seat) });
+        }
+        let every_colour = [
+            yokohama_core::PlayerColor::Red,
+            yokohama_core::PlayerColor::Blue,
+            yokohama_core::PlayerColor::Yellow,
+            yokohama_core::PlayerColor::Green,
+        ];
         for at in locations {
-            let text = describe::card_location(at);
-            assert!(
-                text.chars().count() <= room,
-                "{text:?} is {} columns; a card face has room for {room}",
-                text.chars().count(),
-            );
+            for colors in [&[][..], &every_colour[..]] {
+                let text = describe::card_location(at, colors);
+                assert!(
+                    text.chars().count() <= room,
+                    "{text:?} is {} columns; a card face has room for {room}",
+                    text.chars().count(),
+                );
+            }
         }
     }
 

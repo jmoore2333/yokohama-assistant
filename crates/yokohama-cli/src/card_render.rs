@@ -233,11 +233,11 @@ pub fn index_card(card: &IndexCard, colors: &[PlayerColor], context: CardContext
         CardFaceModel::Order { id, printed } => order_card(
             &CardFace::new(*id, printed.as_ref())
                 .selection(card.selection)
-                .note(card.location.map(|at| format!("= {}", describe::card_location(at))))
+                .note(card.location.map(|at| format!("= {}", describe::card_location(at, colors))))
                 .dim(card.location.is_some()),
         ),
         CardFaceModel::Tech { copies, printed, placed } => {
-            tech_card(copies, printed, placed, card.selection, card.location.is_some())
+            tech_card(copies, printed, placed, card.selection, card.location.is_some(), colors)
         }
         CardFaceModel::Achievement(a) => {
             achievement_card(a, card.selection, card.location.is_some(), colors, context)
@@ -265,6 +265,7 @@ fn tech_card(
     placed: &[(yokohama_core::TechCardId, CardLocation)],
     selection: Option<usize>,
     dim: bool,
+    colors: &[PlayerColor],
 ) -> Vec<String> {
     let tone = |t: Tone| if dim { Tone::Dim } else { t };
     let ids: Vec<String> = copies.iter().map(|id| format!("T{:02}", id.0)).collect();
@@ -299,7 +300,7 @@ fn tech_card(
         rows.push(interior(&t, TECH_W));
     }
     let mut tail = Twin::default();
-    tail.tinted(if dim { Tone::Dim } else { Tone::Chrome }, &copy_note(copies, placed));
+    tail.tinted(if dim { Tone::Dim } else { Tone::Chrome }, &copy_note(copies, placed, colors));
     rows.push(interior(&tail, TECH_W));
     rows.push(bottom(TECH_W));
     rows
@@ -316,6 +317,7 @@ fn tech_card(
 fn copy_note(
     copies: &[yokohama_core::TechCardId],
     placed: &[(yokohama_core::TechCardId, CardLocation)],
+    colors: &[PlayerColor],
 ) -> String {
     let total = copies.len();
     match placed.len() {
@@ -328,10 +330,10 @@ fn copy_note(
         }
         seen if seen < total => format!(
             "{seen} of {total} seen: {}",
-            describe::card_location(placed[0].1),
+            describe::card_location(placed[0].1, colors),
         ),
         _ => {
-            let first = describe::card_location(placed[0].1);
+            let first = describe::card_location(placed[0].1, colors);
             if placed.len() > 1 {
                 format!("= {first} +{} more", placed.len() - 1)
             } else {
@@ -476,7 +478,7 @@ fn site_index_card(
     house.raw("trading house  ");
     house.tinted(tone(Tone::Vp), &format!("{}{} VP", glyph::VP, site.trading_house_reward));
     if let Some(at) = location {
-        house.raw("  ").tinted(Tone::Dim, &format!("= {}", describe::card_location(at)));
+        house.raw("  ").tinted(Tone::Dim, &format!("= {}", describe::card_location(at, &[])));
     }
     rows.push(interior(&house, SITE_W));
     rows.push(bottom(SITE_W));

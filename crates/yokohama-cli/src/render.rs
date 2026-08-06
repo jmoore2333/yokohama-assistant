@@ -14,7 +14,7 @@ use yokohama_core::*;
 use crate::board_render;
 use crate::decision_render;
 use crate::describe;
-use crate::input::tech_name;
+use crate::describe::tech_name;
 use crate::panel_render;
 use crate::screen_model;
 use crate::style::{paint, GoodKind, Tone};
@@ -247,7 +247,8 @@ pub fn decision_pages(
 ) -> usize {
     let board = screen_model::build_board(state, rules, legal);
     let fees = price_rows(state, rules, rows);
-    decision_render::page_count(&zone_rows(rows, &fees), &board)
+    let colors: Vec<PlayerColor> = state.players.iter().map(|p| p.color).collect();
+    decision_render::page_count(&zone_rows(rows, &fees), &board, &colors)
 }
 
 /// Every row's fee, priced ONCE by the model: `screen_model` owns the
@@ -351,29 +352,21 @@ pub fn board_legend(state: &GameState, _rules: &Rules) -> String {
     board_render::board_legend(has_canal)
 }
 
-/// Per Port board: slot number, zone, and the order card there via
-/// `order_compact_line` (or `-` when empty), then the shared order-deck size.
-pub fn ports_view(state: &GameState, rules: &Rules) -> String {
-    let mut out = section("Ports");
-    render_port_board(describe::area_type_name(AreaType::PortA), &state.port_state.port_a, rules, &mut out);
-    if let Some(port_b) = &state.port_state.port_b {
-        render_port_board(describe::area_type_name(AreaType::PortB), port_b, rules, &mut out);
-    }
-    out.push_str(&format!("order deck: {}\n", state.order_deck.len()));
-    out
-}
-
-/// Per Laboratory board: slot number, position surcharge, and the tech card
-/// there (name + industry cost), or `-`, then the shared tech-deck size.
-pub fn labs_view(state: &GameState, rules: &Rules) -> String {
-    let mut out = section("Laboratories");
-    render_lab_board(describe::area_type_name(AreaType::LaboratoryA), &state.lab_state.lab_a, rules, &mut out);
-    if let Some(lab_b) = &state.lab_state.lab_b {
-        render_lab_board(describe::area_type_name(AreaType::LaboratoryB), lab_b, rules, &mut out);
-    }
-    out.push_str(&format!("tech deck: {}\n", state.tech_deck.len()));
-    out
-}
+// The `ports` and `labs` views RETIRED at T11 and moved to `view_render` as
+// full-screen card surfaces, the way `tracks`/`sites`/`goals` moved at T6 —
+// spec §0.5's whole roster now renders card-like, from typed models, over the
+// same `card_render` emitter every other card on the screen is drawn by.
+//
+// The four properties their tests held travelled with them and are named at
+// their new sites rather than left implied: the six slots and the deck count
+// (`the_port_zone_labels_state_the_engines_own_power_gate` and
+// `both_offers_state_their_shared_deck`), the per-slot surcharge
+// (`a_lab_card_prices_the_slot_surcharge_into_its_industry_figure`), the
+// country and one-line effect per card (`a_lab_card_shows_its_country_and_its
+// _whole_effect_text`), and F2's width sweep over EVERY registry card — which
+// is now a HEIGHT equality, since a card that is `exact()`-bounded cannot
+// exceed its width and the thing a longer effect text costs is a wrapped line
+// (`every_lab_card_is_the_same_height_across_the_whole_registry`).
 
 /// Per player: color, money, VP, goods, imports, hand order codes, completed
 /// order count, technology names, tokens/mercenaries, assistant/shophouse/
@@ -467,23 +460,32 @@ pub fn players_panel(state: &GameState, rules: &Rules, seats: &SeatDisplay) -> S
     out
 }
 
-/// A Church faith space's printed reward: VP plus its movement rider, in
-/// `sites_view`'s reward vocabulary (`3vp 1move`). Single-sourced from the
-/// `ChurchTrack` tables -- the same `vp_reward` `delta_summary` prints after a
-/// placement, plus the `movement_rider` the engine queues as assistant-move
-/// choices. Every faith 4-11 carries a movement rider, so it is always shown.
-/// `pub(crate)`: the Church space-choice option text (`describe::describe_move`)
-/// reuses this so the choice shows the SAME VP+rider as the `tracks` view.
+/// A Church faith space's printed reward in the COMPACT option vocabulary
+/// (`3vp 1move`). Single-sourced from the `ChurchTrack` tables -- the same
+/// `vp_reward` `delta_summary` prints after a placement, plus the
+/// `movement_rider` the engine queues as assistant-move choices. Every faith
+/// 4-11 carries a movement rider, so it is always shown.
+///
+/// `pub(crate)`: the Church space-choice option text
+/// (`describe::describe_move`) reuses it, so the two option surfaces agree.
+///
+/// **It is NOT the `tracks` view's wording, and this doc used to claim it
+/// was** (T11). The full-screen view has drawn `★3 VP` and `+1 assistant
+/// moves` in full words since T6; a decision ROW is a different budget from a
+/// card, so the two are deliberately different renderings of the same two
+/// engine numbers. What they share is the SOURCE — `ChurchTrack` — which is
+/// the parity that actually matters and the one a reader should check.
 pub(crate) fn church_reward_text(faith: u8) -> String {
     format!("{}vp {}move", ChurchTrack::vp_reward(faith), ChurchTrack::movement_rider(faith))
 }
 
-/// A Customs space's printed reward: VP plus its rider, in `sites_view`'s
-/// vocabulary. `CustomsTrack::rider` returns `(warehouse_takes, yen)` --
-/// rendered `Nwh`/`Nyen` -- and spaces 5-7 carry no rider, so those lines show
-/// VP alone. Single-sourced from the `CustomsTrack` tables.
-/// `pub(crate)`: the Customs space-choice option text (`describe::describe_move`)
-/// reuses this so the choice shows the SAME VP+rider as the `tracks` view.
+/// A Customs space's printed reward in the same compact option vocabulary.
+/// `CustomsTrack::rider` returns `(warehouse_takes, yen)` -- rendered
+/// `Nwh`/`Nyen` -- and spaces 5-7 carry no rider, so those lines show VP
+/// alone. Single-sourced from the `CustomsTrack` tables.
+///
+/// `pub(crate)` and NOT the `tracks` view's wording, for the reasons
+/// [`church_reward_text`] states.
 pub(crate) fn customs_reward_text(space: u8) -> String {
     let mut s = format!("{}vp", CustomsTrack::vp_reward(space));
     let (warehouse_takes, yen) = CustomsTrack::rider(space);
@@ -886,7 +888,7 @@ fn achievement_lines(lines: &mut Vec<String>, before: &GameState, after: &GameSt
         let before_claims = before.achievements.get(i).map(|c| c.claimed_by.len()).unwrap_or(0);
         for &claimant in after_card.claimed_by.iter().skip(before_claims) {
             lines.push(format!(
-                "{}: claimed achievement G{} ({}) -- 1 assistant locked onto the card",
+                "{}: claimed achievement G{} ({}) — 1 assistant locked onto the card",
                 player_prefix(after.player(claimant).color),
                 i,
                 describe::achievement_desc(after_card.achievement_type),
@@ -918,50 +920,6 @@ fn building_lines(lines: &mut Vec<String>, before: &GameState, after: &GameState
                 ));
             }
         }
-    }
-}
-
-fn render_port_board(label: &str, board: &PortBoard, rules: &Rules, out: &mut String) {
-    out.push_str(label);
-    out.push('\n');
-    for i in 0..6 {
-        let zone = match PortBoard::zone_of(i) {
-            PortZone::Low => "Low",
-            PortZone::Mid => "Mid",
-            PortZone::High => "High",
-        };
-        let line = match board.slots[i] {
-            Some(card_id) => {
-                rules.orders.get(card_id).map(order_compact_line).unwrap_or_else(|| format!("O{:02}", card_id.0))
-            }
-            None => "-".to_string(),
-        };
-        out.push_str(&format!("{}. {}  {}\n", i + 1, zone, line));
-    }
-}
-
-fn render_lab_board(label: &str, board: &LabBoard, rules: &Rules, out: &mut String) {
-    out.push_str(label);
-    out.push('\n');
-    for i in 0..6 {
-        let surcharge = LabBoard::position_modifier(i);
-        let line = match board.slots[i] {
-            Some(tech_id) => match rules.techs.get(tech_id) {
-                // Country + one-line effect (item 5): single-sourced from the
-                // card's own `country`/`effect` via `describe`, so a player
-                // weighs a tech without cross-referencing a table.
-                Some(card) => format!(
-                    "{} [{}] (cost {}) — {}",
-                    card.name,
-                    describe::country_name(card.country),
-                    card.industry_cost,
-                    describe::tech_effect_text(card.effect),
-                ),
-                None => format!("T{:02}", tech_id.0),
-            },
-            None => "-".to_string(),
-        };
-        out.push_str(&format!("{}. +{}  {}\n", i + 1, surcharge, line));
     }
 }
 
@@ -1261,77 +1219,9 @@ mod tests {
         assert!(claimed.contains("5-Power: taken"), "a claimed token says so: {claimed}");
     }
 
-    #[test]
-    fn ports_view_lists_six_slots_and_deck_count() {
-        let state = test_state_2p();
-        let rules = Rules::standard();
-        let v = ports_view(&state, &rules);
-        assert!(v.contains("Port A"), "{v}");
-        for zone in ["Low", "Mid", "High"] {
-            assert!(v.contains(zone), "{v}");
-        }
-        assert!(v.contains(&format!("order deck: {}", state.order_deck.len())), "{v}");
-    }
 
-    #[test]
-    fn labs_view_lists_surcharges_and_deck_count() {
-        let state = test_state_2p();
-        let rules = Rules::standard();
-        let v = labs_view(&state, &rules);
-        assert!(v.contains("Laboratory A"), "{v}");
-        assert!(v.contains("+0"), "{v}");
-        assert!(v.contains("+1"), "{v}");
-        assert!(v.contains("+2"), "{v}");
-        assert!(v.contains(&format!("tech deck: {}", state.tech_deck.len())), "{v}");
-    }
 
-    /// Labs country + effect (pre-gate view batch item 5): each populated lab
-    /// slot line shows the tech's country (`[Country]`) and its one-line
-    /// effect (`describe::tech_effect_text`), single-sourced from the card
-    /// data -- so a player can weigh a tech without cross-referencing a table.
-    #[test]
-    fn labs_view_shows_country_and_effect_per_card() {
-        let state = test_state_2p();
-        let rules = Rules::standard();
-        let text = labs_view(&state, &rules);
-        let mut checked = 0;
-        for slot in state.lab_state.lab_a.slots.iter().flatten() {
-            let card = rules.techs.get(*slot).expect("a lab card is in the registry");
-            assert!(
-                text.contains(&format!("[{}]", describe::country_name(card.country))),
-                "want country of {} in\n{text}",
-                card.name
-            );
-            assert!(text.contains(describe::tech_effect_text(card.effect)), "want effect of {} in\n{text}", card.name);
-            checked += 1;
-        }
-        assert!(checked > 0, "fixture must populate at least one lab slot:\n{text}");
-    }
 
-    /// F2 (Codex adversarial review of PR #4) lengthened five tech effect
-    /// one-liners to carry the qualifiers that change a purchase decision,
-    /// which lengthens the `labs` lines that print them. §2 of the guide
-    /// promises a 140-column terminal clears every screen, so no lab line
-    /// may exceed that. Measured over EVERY card in the registry (each
-    /// slotted into a real lab board and run through the real `labs_view`,
-    /// never a copy of its format string), so a future wording edit that
-    /// would wrap on a tester's terminal fails here.
-    #[test]
-    fn labs_view_lines_fit_the_documented_terminal_width() {
-        let mut state = test_state_2p();
-        let rules = Rules::standard();
-        let mut worst = (0usize, String::new());
-        for card in rules.techs.iter() {
-            state.lab_state.lab_a.slots[0] = Some(card.id);
-            for line in labs_view(&state, &rules).lines() {
-                let w = crate::screen::visible_width(line);
-                if w > worst.0 {
-                    worst = (w, line.to_string());
-                }
-            }
-        }
-        assert!(worst.0 <= 140, "a labs line is {} columns wide (140 max): {}", worst.0, worst.1);
-    }
 
     /// Item 7 (third review), carried over the T3 cutover: every panel labels
     /// each player with its SEAT number -- the `reveal <seat>` key, which used
@@ -1526,24 +1416,29 @@ mod tests {
     /// every `VIEW_MENU` row plus `final_score` (item 4, third review -- this
     /// test alone structurally could not see those four).
     ///
-    /// **THREE of the six left this file at T6** and did not lose a property by
-    /// going: `tracks` and `sites` became full-screen CARD surfaces in
-    /// `view_render` and `goals` became the achievement index in
-    /// `index_render`, none of which opens with a rule header because none of
-    /// them sits under a frame -- they replace it (spec §0.5/§0.6). Their own
-    /// modules hold the width and content pins; what this row of the design
-    /// language now covers is the views that still print INTO a frame.
+    /// **FIVE of the six left this file across T6 and T11** and none lost a
+    /// property by going: `tracks`, `sites`, `ports` and `labs` became
+    /// full-screen CARD surfaces in `view_render` and `goals` became the
+    /// achievement index in `index_render`, none of which opens with a rule
+    /// header because none of them sits under a frame -- they replace it
+    /// (spec §0.5/§0.6). Their own modules hold the width, height and content
+    /// pins; what this row of the design language still covers is the views
+    /// that print INTO a frame, which after T11 is `players` and `score`.
+    ///
+    /// One entry is not a vacuous sweep: `players` is the widest surface still
+    /// drawn under a frame, and the cross-surface half of this property is
+    /// `repl::tests::all_state_views_share_the_rule_header_style`, which drives
+    /// every `VIEW_MENU` row and asserts each opens in exactly ONE of the three
+    /// recognized families.
     #[test]
     fn views_share_the_rule_header_style() {
         let state = test_state_2p();
         let rules = Rules::standard();
-        for (name, text) in [
-            ("ports", ports_view(&state, &rules)),
-            ("labs", labs_view(&state, &rules)),
-            ("players", players_panel(&state, &rules, &seats_open(&state))),
-        ] {
-            assert!(text.starts_with("─ "), "view '{name}' must open with a rule header: {text}");
-        }
+        let players = players_panel(&state, &rules, &seats_open(&state));
+        assert!(
+            players.starts_with("─ "),
+            "the 'players' view must open with a rule header: {players}",
+        );
     }
 
     /// Task 11 (T2.1): the panel must show assistant/shophouse/trading-house

@@ -1274,6 +1274,27 @@ fn president_row(
 /// margin, at the count with the narrowest columns — so a word added to any of
 /// these three facts costs one of the others, and the pin is what turns that
 /// into a failing test rather than a silently truncated next-take price.
+///
+/// **`next take ¥N` was re-examined at T11 and KEPT, which is a verdict rather
+/// than an omission** (the T10 review flagged it: reword it if you can do
+/// better in the columns available, else keep it and say why).
+///
+/// The complaint is real — on a row reading `1 order · 3 locked · next take
+/// ¥4` nothing says WHAT is being taken, and "take" is also what an assistant
+/// and a shophouse leave the warehouse by. What settles it is the measurement
+/// above: the widest legal row is 47 against a 48-column column, and the pin
+/// asserts `< content_w`, so the budget for a disambiguating word is ZERO
+/// columns, not one. Every candidate costs more than that (`next trade house
+/// ¥4` is +7; `next house ¥4` is +1 AND ambiguous between the two building
+/// kinds), and the abbreviations that would fit are exactly what the owner's
+/// full-words ruling excludes.
+///
+/// So the words stay, and the two places that CAN carry the context do:
+/// [`trading_houses_line`] prints `(next take ¥4)` on the Trade houses line
+/// itself, where the noun is one row up in the beside arrangement, and the
+/// guide says what the tail row's copy of it counts. `next take` is the
+/// Employment Agency's own vocabulary for the printed 4/5/6/7 progression, not
+/// an abbreviation of longer words.
 fn seat_tail_row(p: &PlayerModel, w: usize) -> String {
     let mut t = indented();
     t.raw(&plural(p.orders_in_hand, "order"));

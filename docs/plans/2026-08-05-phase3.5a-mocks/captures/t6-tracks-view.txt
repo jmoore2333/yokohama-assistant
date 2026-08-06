@@ -1,4 +1,4 @@
-TRACKS — full view   the 'view' pattern: every frame panel is a summary; this is its full surface
+TRACKS — full view   every Church and Customs space as a card: what it pays, and who is standing on it
 
 CHURCH — pay faith, place an assistant on a space, take its printed reward.  0 of 4 REAL assistants placed · majority 6 / 3 VP · the dummy COMPETES but is not counted
 ┌ faith 4 ────────────┐ ┌ faith 5 ────────────┐ ┌ faith 6 ────────────┐ ┌ faith 7 ────────────┐ ┌ faith 8 ────────────┐ ┌ faith 9 ────────────┐ ┌ faith 10 ───────────┐ ┌ faith 11 ───────────┐

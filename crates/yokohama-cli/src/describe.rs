@@ -8,6 +8,7 @@ use yokohama_core::game::actions::{
 };
 
 use crate::render;
+use crate::style::glyph;
 
 pub fn area_type_name(t: AreaType) -> &'static str {
     match t {
@@ -63,7 +64,19 @@ pub fn card_good_name(g: crate::screen_model::CardGood) -> &'static str {
 /// ON the card, two columns in behind a `= `. `card_locations_fit_a_card_face`
 /// is the pin, and it is why these read `Seat 0's deal` (the approved mock's
 /// own wording) rather than the longer phrasings that would clip.
-pub fn card_location(at: crate::screen_model::CardLocation) -> String {
+///
+/// **`colors` is the seat table, and the two seat-shaped arms use it
+/// differently on purpose** (T11's seat-naming rule). `OwnedBy` is a fact about
+/// a PLAYER — who holds this technology — so it is worded with the colour that
+/// is on the table, matching the panel, the board and every fee clause. `Deal`
+/// is a fact about a SEAT: it names a setup slot the wizard is collecting for,
+/// before anybody has played, and the approved mock words it `Seat 0's deal`.
+/// A caller with no table (`&[]`) gets the seat number in both, which is the
+/// honest fallback rather than an invented colour.
+pub fn card_location(
+    at: crate::screen_model::CardLocation,
+    colors: &[PlayerColor],
+) -> String {
     use crate::screen_model::CardLocation;
     match at {
         CardLocation::Deal { seat } => format!("Seat {}'s deal", seat.0),
@@ -75,12 +88,30 @@ pub fn card_location(at: crate::screen_model::CardLocation) -> String {
         CardLocation::LabSlot { board_b, slot } => {
             format!("{} slot {}", lab_board_name(board_b), slot + 1)
         }
-        CardLocation::OwnedBy { seat } => format!("owned by Seat {}", seat.0),
+        CardLocation::OwnedBy { seat } => match crate::board_render::color_of(colors, seat) {
+            Some(c) => format!("owned by {}", render::color_name(c)),
+            None => format!("owned by Seat {}", seat.0),
+        },
         CardLocation::OnArea { area } => format!("on area A{:02}", area.0),
         CardLocation::AchievementSlot { category } => {
             format!("category {} in play", category_letter(category))
         }
     }
+}
+
+/// A Technology card's display NAME, or a `T<id>` fallback for an id the
+/// registry does not know — which keeps every display path panic-free against a
+/// corrupt or foreign record.
+///
+/// **Moved here at T11, from `input`.** It had lived beside the line reader
+/// since it was first de-duplicated out of `render` and `describe`, which put a
+/// display-name lookup in the module that owns rustyline and the stdin
+/// protocol — nothing to do with each other, and the reason a reader looking for
+/// where card words come from would not find it. This module is where words for
+/// engine values live ([`area_type_name`], [`country_name`], [`phase_name`]);
+/// this is one of those, so it lives with them.
+pub fn tech_name(id: TechCardId, techs: &TechRegistry) -> String {
+    techs.get(id).map(|c| c.name.clone()).unwrap_or_else(|| format!("T{:02}", id.0))
 }
 
 /// `A` / `B` / `C` — an achievement category as the printed cards group them.
@@ -581,7 +612,7 @@ fn describe_area_action(action: &AreaAction, state: &GameState, rules: &Rules) -
             s
         }
         AreaAction::Laboratory { card_id, extra_yen, extra_imported, fifth_tech_payment } => {
-            let name = crate::input::tech_name(*card_id, &rules.techs);
+            let name = tech_name(*card_id, &rules.techs);
             let mut s = format!("Laboratory: acquire {name}");
             if *extra_yen > 0 {
                 s.push_str(&format!(", +{extra_yen} yen"));
@@ -744,7 +775,11 @@ pub fn describe_move(mv: &Move, state: &GameState, rules: &Rules) -> String {
             s
         }
         Move::MovePresident { path, destination } if path.is_empty() => {
-            format!("Move President directly to {} (free teleport)", area_label(state, *destination))
+            format!(
+                "Move President directly to {} {} free teleport",
+                area_label(state, *destination),
+                glyph::SECTION_DASH,
+            )
         }
         Move::MovePresident { path, destination } => {
             // `path` already carries the destination as its last element --
@@ -789,7 +824,10 @@ pub fn describe_move(mv: &Move, state: &GameState, rules: &Rules) -> String {
                     .map(|(a, c)| format!("A{:02} x{}", a.0, c))
                     .collect::<Vec<_>>()
                     .join(", ");
-                format!("Return President to hand, recovering {total} assistant(s) ({parts})")
+                format!(
+                    "Return President to hand, recovering {total} {} ({parts})",
+                    if total == 1 { "assistant" } else { "assistants" },
+                )
             }
         }
         Move::PlacePresident { destination } => {
@@ -821,11 +859,11 @@ pub fn describe_move(mv: &Move, state: &GameState, rules: &Rules) -> String {
         Move::BuildTradingHouse => {
             let reward = acting_area(state).and_then(|a| state.board_layout.building_sites.get(&a));
             match reward {
-                Some(site) => format!("Build a Trading House ({}vp)", site.trading_house_reward),
+                Some(site) => format!("Build a Trading House ({} VP)", site.trading_house_reward),
                 None => "Build a Trading House".to_string(),
             }
         }
-        Move::SkipBuilding => "Skip building".to_string(),
+        Move::SkipBuilding => "Skip the building".to_string(),
         Move::ChooseAnyGood { good } => format!("Take 1 {} (any-good reward)", trade_good_name(*good)),
         Move::ChooseWarehouseTake { item } => {
             let cost = warehouse_item_cost(state.current_player(), *item);
@@ -850,7 +888,7 @@ pub fn describe_move(mv: &Move, state: &GameState, rules: &Rules) -> String {
         // space 2 = 2yen), and each space's placement queues that rider next
         // (rulebook p.13/p.14).
         Move::ChooseChurchSpace { space } => {
-            format!("Place on Church faith-{space} space ({})", render::church_reward_text(*space))
+            format!("Place on Church faith {space} ({})", render::church_reward_text(*space))
         }
         Move::ChooseCustomsSpace { space } => {
             format!("Place on Customs space {space} ({})", render::customs_reward_text(*space))
@@ -944,9 +982,13 @@ pub fn describe_pending_choice(head: &PendingChoice, state: &GameState, _rules: 
                     let label = match item {
                         WarehouseItem::Assistant => "assistant",
                         WarehouseItem::Shophouse => "shophouse",
-                        WarehouseItem::TradingHouse => "TH",
+                        WarehouseItem::TradingHouse => "trading house",
                     };
-                    if cost == 0 { format!("{label} free") } else { format!("{label} {cost}¥") }
+                    if cost == 0 {
+                        format!("{label} free")
+                    } else {
+                        format!("{label} {}{cost}", glyph::YEN)
+                    }
                 })
                 .collect();
             format!("warehouse take ({})", parts.join(" / "))
@@ -1039,11 +1081,34 @@ mod tests {
     #[test]
     fn the_this_reveal_location_says_in_this_reveal() {
         use crate::screen_model::CardLocation as L;
-        assert_eq!(card_location(L::ThisReveal), "in this reveal");
+        assert_eq!(card_location(L::ThisReveal, &[]), "in this reveal");
         // The neighbours it must not be confusable with — the two other places
         // an order card the operator can see already sits.
-        assert_eq!(card_location(L::OwnHand), "in your hand");
-        assert_eq!(card_location(L::PortSlot { board_b: false, slot: 0 }), "Port A slot 1");
+        assert_eq!(card_location(L::OwnHand, &[]), "in your hand");
+        assert_eq!(card_location(L::PortSlot { board_b: false, slot: 0 }, &[]), "Port A slot 1");
+        // The seat-naming rule, both ways: a PLAYER takes their colour where
+        // the caller has a table, and their seat number where it does not.
+        assert_eq!(
+            card_location(L::OwnedBy { seat: PlayerId::new(1) }, &[PlayerColor::Red, PlayerColor::Blue]),
+            "owned by Blue",
+        );
+        assert_eq!(card_location(L::OwnedBy { seat: PlayerId::new(1) }, &[]), "owned by Seat 1");
+        // A DEAL is a setup slot, not a player, and keeps its seat number
+        // whatever table it is handed.
+        assert_eq!(
+            card_location(L::Deal { seat: PlayerId::new(0) }, &[PlayerColor::Red, PlayerColor::Blue]),
+            "Seat 0's deal",
+        );
+    }
+
+    /// [`tech_name`] looks the registry up and falls back to the id — moved
+    /// here with the function at T11, from `input`, where a display-name lookup
+    /// had been living beside the line editor.
+    #[test]
+    fn tech_name_looks_up_the_registry_and_falls_back_for_unknown_ids() {
+        let rules = Rules::standard();
+        assert_eq!(tech_name(TechCardId(11), &rules.techs), "Ball");
+        assert_eq!(tech_name(TechCardId(255), &rules.techs), "T255");
     }
 
     /// **Every target says what just happened in plain words** (T8, requirement
@@ -1319,11 +1384,11 @@ mod tests {
         let rules = Rules::standard();
         assert_eq!(
             describe_move(&Move::ChooseChurchSpace { space: 6 }, &state, &rules),
-            format!("Place on Church faith-6 space ({})", render::church_reward_text(6))
+            format!("Place on Church faith 6 ({})", render::church_reward_text(6))
         );
         assert_eq!(
             describe_move(&Move::ChooseChurchSpace { space: 6 }, &state, &rules),
-            "Place on Church faith-6 space (5vp 2move)"
+            "Place on Church faith 6 (5vp 2move)"
         );
         // The rider varies across the offered spaces, so it must appear.
         assert!(describe_move(&Move::ChooseChurchSpace { space: 4 }, &state, &rules).contains("1move"));
@@ -1371,7 +1436,7 @@ mod tests {
         recover.insert(AreaId::new(0), 2);
         recover.insert(AreaId::new(3), 1);
         let some = describe_move(&Move::ReturnPresidentToHand { recover }, &state, &rules);
-        assert_eq!(some, "Return President to hand, recovering 3 assistant(s) (A00 x2, A03 x1)");
+        assert_eq!(some, "Return President to hand, recovering 3 assistants (A00 x2, A03 x1)");
     }
 
     #[test]
@@ -1414,8 +1479,11 @@ mod tests {
 
         let warehouse = describe_pending_choice(&PendingChoice::WarehouseTake, &state, &rules);
         assert!(warehouse.contains("assistant free"), "{warehouse}");
-        assert!(warehouse.contains("shophouse 2¥"), "{warehouse}");
-        assert!(warehouse.contains("TH 4¥"), "{warehouse}");
+        // Full words and a leading ¥, as every other priced surface writes
+        // them (T11's editorial pass over the option arms).
+        assert!(warehouse.contains("shophouse ¥2"), "{warehouse}");
+        assert!(warehouse.contains("trading house ¥4"), "{warehouse}");
+        assert!(!warehouse.contains("TH"), "no abbreviations: {warehouse}");
 
         let assistant_move = describe_pending_choice(&PendingChoice::AssistantMove, &state, &rules);
         assert!(assistant_move.contains("assistant move"), "{assistant_move}");
@@ -1536,7 +1604,7 @@ mod tests {
         state.players[cp.0 as usize].president_location = PresidentLocation::OnBoard(area);
 
         let text = describe_move(&Move::BuildTradingHouse, &state, &rules);
-        assert!(text.contains(&format!("{}vp", site.trading_house_reward)), "{text}");
+        assert!(text.contains(&format!("{} VP", site.trading_house_reward)), "{text}");
     }
 
     /// Task 12 (T2.2a): production-area action options must preview the

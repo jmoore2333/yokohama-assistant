@@ -478,15 +478,23 @@ fn render_suggestion_within(
 
     let color = state.player(s.seat).color;
     // Every knob printed comes from the const the agent itself reads, so this
-    // line cannot describe a rung the press did not run. `eval v{}` is
-    // `EVAL_IMPL_VERSION` — the evaluator IMPLEMENTATION, which is what a
-    // reader needs to know two suggestions are comparable; the weight table's
-    // own identity is a 64-bit digest and belongs in provenance, not on screen.
+    // line cannot describe a rung the press did not run.
+    //
+    // **`evaluator impl {}` is `EVAL_IMPL_VERSION`, and it used to read
+    // `eval v{}`, which was the wrong words for the right number** (T11). The
+    // rung on the same line is `lookahead-v1` and the weights it runs are the
+    // frozen `WeightTable::V1`, so a header reading `lookahead-v1 … eval v2`
+    // invited exactly one reading — that some newer evaluator had replaced the
+    // v1 everything else names — and that reading is false. `2` is the
+    // evaluator MODULE's implementation revision (the T4 freeze bumped it
+    // without moving a single weight), which is what a reader needs to know two
+    // suggestions are comparable. Saying "impl" says so; the weight table's own
+    // identity is a 64-bit digest and belongs in provenance, not on screen.
     body.painted_head(
         Tone::Player(color),
         &format!("Seat {} ({})", s.seat.0, render::color_name(color)),
         &format!(
-            " · {} · beam {}, K={}, M={}, eval v{} · stream {:#018x}",
+            " · {} · beam {}, K={}, M={}, evaluator impl {} · stream {:#018x}",
             lookahead::LOOKAHEAD_CONTROLLER,
             lookahead::DEFAULT_BEAM,
             lookahead::DEFAULT_WORLDS,
@@ -704,6 +712,83 @@ fn wrap_words(text: &str, width: usize) -> Vec<String> {
 
 #[cfg(test)]
 mod tests {
+    /// The 2-player simulation the guide's captured `suggest` screen is taken
+    /// from: a fresh game at a fixed seed, walked to its first Placement
+    /// decision, where `suggest` has a real list to rank.
+    ///
+    /// **A named fixture rather than a remembered set of keystrokes**, so the
+    /// guide's block can be REGENERATED from one run instead of edited by hand
+    /// — the discipline `repl`'s Movement captures and `reveal`'s reveal
+    /// captures already hold, extended at T11 to the third block a tester reads
+    /// line by line. Until now the suggest capture had no regeneration pin at
+    /// all: `guide_sync` checked four strings inside it and nothing checked the
+    /// other forty lines.
+    pub(crate) fn guide_capture_fixture() -> crate::repl::Repl {
+        let session = crate::session::Session::new_sim(
+            yokohama_core::GameConfig::for_player_count(2),
+            4,
+            vec![yokohama_core::StartingOrderChoice::Keep(0); 2],
+            yokohama_core::Rules::standard(),
+        )
+        .expect("a standard 2-player simulation");
+        let mut r = crate::repl::Repl::new(session);
+        // The opening ceremony: bare Enter applies each forced single option
+        // until a real decision arrives.
+        while !r.prompt().contains("PLACEMENT") {
+            r.step("");
+        }
+        r
+    }
+
+    /// The screen that fixture's `suggest` draws, plain — what the guide block
+    /// must be, byte for byte.
+    ///
+    /// The SCREEN, not the step's whole output: `out_view` appends the standing
+    /// input hint under every view, and the hint is documented in §4 on its own
+    /// rather than reprinted under a capture of something else.
+    pub(crate) fn guide_capture(r: &crate::repl::Repl) -> String {
+        crate::style::force(false);
+        let seat = r.session.state().current_player;
+        let seed = super::stream_seed(r.session.record(), seat);
+        let s = super::suggest(r.session.state(), r.session.rules(), seat, seed)
+            .expect("the fixture sits at a decision with a legal list");
+        super::render_suggestion(&s, r.session.state(), r.session.rules())
+            .trim_end_matches('\n')
+            .to_string()
+    }
+
+    /// **The guide's captured `suggest` screen IS what the fixture renders**
+    /// (T11), the third block held to this discipline after `repl`'s Movement
+    /// captures and `reveal`'s reveal captures.
+    ///
+    /// It closes the gap those two were written for: before this, a reviewer's
+    /// memory was the only thing standing between the guide and a hand-edited
+    /// forty-line screen, and `guide_sync`'s four string checks would have
+    /// passed a block whose every number was invented. That is the exact defect
+    /// the T4 review found in the Movement transcript.
+    ///
+    /// Re-capture by running `guide_capture(&guide_capture_fixture())` and
+    /// pasting the whole block into BOTH formats — never by editing it, and
+    /// never by splicing two runs together.
+    #[test]
+    fn the_guide_suggest_capture_is_what_the_fixture_renders() {
+        const GUIDE_MD: &str = include_str!("../../../docs/cli-guide.md");
+        let rendered = guide_capture(&guide_capture_fixture());
+        let opening = rendered.lines().next().expect("the screen's rule header");
+        let block = GUIDE_MD
+            .split("```")
+            .map(|part| part.trim_matches('\n'))
+            .find(|part| part.starts_with(opening))
+            .unwrap_or_else(|| panic!("cli-guide.md carries no captured suggest screen"));
+        assert_eq!(
+            block, rendered,
+            "docs/cli-guide.md's captured suggest screen no longer matches what \
+             `guide_capture_fixture()` renders. Re-capture it in BOTH formats from ONE run of \
+             that fixture — never by editing the block by hand. The rendered screen is above; \
+             `guide_sync` pins the .html twin against the .md.",
+        );
+    }
+
     use super::*;
     use crate::session::Session;
     use yokohama_core::eval::TerminalStanding;
@@ -820,7 +905,7 @@ mod tests {
         assert_ne!(
             stream_seed(&base, seat),
             stream_seed(&advanced, seat),
-            "the event index keys it -- otherwise every press of a whole game shares one draw",
+            "the event index keys it — otherwise every press of a whole game shares one draw",
         );
     }
 
@@ -1382,3 +1467,4 @@ mod tests {
         assert!(shown.contains("EndAdditionalPhase"), "with the move itself: {shown}");
     }
 }
+

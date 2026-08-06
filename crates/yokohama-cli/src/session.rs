@@ -214,7 +214,7 @@ impl Session {
             }
             None => {
                 return Err(format!(
-                    "this save carries no semantics provenance (no semantics_rev -- a \
+                    "this save carries no semantics provenance (no semantics_rev — a \
                      pre-Phase-2.9 record), so there is no way to tell whether it was recorded \
                      under this build's game semantics (revision {}), and the rules and board \
                      semantics have changed since such records were written. Start a new game; \
@@ -247,14 +247,14 @@ impl Session {
         let running_version = env!("CARGO_PKG_VERSION");
         if record.engine_version != running_version {
             load_warnings.push(format!(
-                "warning: GameRecord.engine_version=\"{}\" does not match running engine version \"{running_version}\" -- replaying anyway (v1 does not refuse on a version mismatch)",
+                "warning: GameRecord.engine_version=\"{}\" does not match running engine version \"{running_version}\" — replaying anyway (v1 does not refuse on a version mismatch)",
                 record.engine_version,
             ));
         }
         let running_rules_hash = rules.content_hash();
         if record.rules_hash != running_rules_hash {
             load_warnings.push(format!(
-                "warning: GameRecord.rules_hash=\"{}\" does not match running rules content hash \"{running_rules_hash}\" -- replaying anyway (v1 does not refuse on a rules_hash mismatch)",
+                "warning: GameRecord.rules_hash=\"{}\" does not match running rules content hash \"{running_rules_hash}\" — replaying anyway (v1 does not refuse on a rules_hash mismatch)",
                 record.rules_hash,
             ));
         }
@@ -874,7 +874,7 @@ mod tests {
 
         assert_eq!(
             s.state().pending_choices, vec![PendingChoice::ChurchSpace { total_faith: 6 }],
-            "setup recipe drifted -- re-derive against the current engine before trusting this fixture"
+            "setup recipe drifted — re-derive against the current engine before trusting this fixture"
         );
         s
     }
@@ -1534,7 +1534,7 @@ mod tests {
         }
         assert!(
             saw_move_president,
-            "fixture must exercise at least one MovePresident event -- re-derive the step count/seed if the engine's move ordering drifted"
+            "fixture must exercise at least one MovePresident event — re-derive the step count/seed if the engine's move ordering drifted"
         );
 
         let path = std::env::temp_dir().join(format!("yokohama_test_descs_{}.json", std::process::id()));

@@ -1,6 +1,15 @@
-//! The full-screen VIEWS — `tracks` and `sites` (Phase-3.5a spec §0.5, plan T6;
-//! design authority is the approved mock pair
-//! `2026-08-05-phase3.5a-mocks/tracks-view.ans` and `sites-view.ans`).
+//! The full-screen VIEWS — spec §0.5's whole roster (plans T6 and T11; design
+//! authority for the first two is the approved mock pair
+//! `2026-08-05-phase3.5a-mocks/tracks-view.ans` and `sites-view.ans`, and the
+//! rest are drawn to their pattern).
+//!
+//! **Six surfaces plus the menu over them.** T6 built `tracks` and `sites`;
+//! T11 added `ports`, `labs`, `hand` and `log`, promoted the `view` menu to a
+//! full-screen surface of its own, and made all seven share one title shape
+//! ([`view_title`]) and one exit clause ([`exit_line`]). The seventh member of
+//! §0.5's list, `goals`, is the achievement INDEX rather than a view here —
+//! T6's supersession ruling, since the index draws the same three cards with
+//! claim state and per-seat progress.
 //!
 //! **What the view pattern IS, since it is easy to mistake for a bigger panel.**
 //! Every dashboard panel on the composed frame is a SUMMARY — the tracks panel
@@ -29,14 +38,17 @@
 //! T5's precedent, and the reason the site grid holds four cards to a row at
 //! every player count instead of re-flowing per count.
 
-use yokohama_core::{AreaId, PlayerColor, PlayerId};
+use yokohama_core::{AreaId, PlayerColor, PlayerId, PortZone};
 
 use crate::board_render::{color_of, exact, Twin};
-use crate::card_render::{bottom, interior};
+use crate::card_render;
+use crate::card_render::{bottom, interior, wrap_words, CARD_W};
 use crate::describe;
 use crate::screen::FLOOR_W;
 use crate::screen_model::{
-    BoardModel, ChurchSpaceModel, CustomsSpaceModel, TileModel, TracksPanel,
+    menu_number, BoardModel, ChurchSpaceModel, CustomsSpaceModel, HandPanel, LabBoardModel,
+    LabSlotModel, LabsPanel, LogPanel, PortBoardModel, PortSlotModel, PortsPanel, TileModel,
+    TracksPanel,
 };
 use crate::style::{glyph, paint, Tone};
 
@@ -129,14 +141,10 @@ const VIEW_ROW_MARGIN: usize = 1;
 /// count the game is played on.
 pub fn tracks_view(tracks: &TracksPanel, colors: &[PlayerColor]) -> String {
     let mut out = String::new();
-    out.push_str(&paint(Tone::Strong, "TRACKS — full view"));
-    out.push_str("   ");
-    out.push_str(&paint(
-        Tone::Chrome,
-        "the 'view' pattern: every frame panel is a summary; this is its full surface",
+    out.push_str(&view_title(
+        "TRACKS",
+        "every Church and Customs space as a card: what it pays, and who is standing on it",
     ));
-    out.push('\n');
-    out.push('\n');
 
     out.push_str(&church_rule(tracks));
     out.push('\n');
@@ -373,14 +381,10 @@ fn board_state_line(tracks: &TracksPanel) -> String {
 /// a color letter, which is the mock's own instruction.
 pub fn sites_view(board: &BoardModel, colors: &[PlayerColor]) -> String {
     let mut out = String::new();
-    out.push_str(&paint(Tone::Strong, "BUILDING SITES — full view"));
-    out.push_str("   ");
-    out.push_str(&paint(
-        Tone::Chrome,
+    out.push_str(&view_title(
+        "BUILDING SITES",
         "every area's site card: each space's printed reward, what is built, and by whom",
     ));
-    out.push('\n');
-    out.push('\n');
 
     // In `AreaId` order, which is the order the board draws and the order every
     // id-typed grammar in the driver reads.
@@ -517,8 +521,608 @@ fn identity_line(tile: &TileModel) -> Twin {
 }
 
 // ---------------------------------------------------------------------------
+// The ports view (T11)
+// ---------------------------------------------------------------------------
+
+/// A Laboratory offer card's width. Three to a row, exactly filling the floor at
+/// a one-column gutter — [`crate::card_render::GOAL_W`]'s arithmetic at a
+/// different card count, and for the same reason it is wide: the purchase text
+/// is a SENTENCE (the longest of the twenty runs 103 characters) and a tech
+/// nobody can read the effect of is not an offer.
+const LAB_VIEW_W: usize = 66;
+
+/// The `ports` view's height in rows at each player count, indexed
+/// `players - 2` — MEASURED then set, on [`TRACKS_VIEW_ROWS`]'s terms.
+///
+/// It varies with the only thing that can vary it: Port B exists at 3 and 4
+/// players and not at 2, so the taller two counts draw a second board.
+#[cfg(test)]
+const PORTS_VIEW_ROWS: [usize; 3] = [16, 25, 25];
+
+/// The `labs` view's height in rows at each player count. Laboratory B is a
+/// FOUR-player board only, so 2P and 3P draw one.
+#[cfg(test)]
+const LABS_VIEW_ROWS: [usize; 3] = [22, 22, 36];
+
+/// The `hand` view's height in rows. It does NOT vary with the player count —
+/// a hand is one seat's cards and every seat starts with one — but it does vary
+/// with the hand, and the recorded figure is the OPENING one the golden
+/// captures, on a row of cards that has not yet grown past eight.
+#[cfg(test)]
+const HAND_VIEW_ROWS: usize = 14;
+
+/// The `log` view's height at a FULL tail — [`crate::repl::LOG_VIEW_TAIL`]
+/// entries, which is the tallest this surface ever draws, and the figure that
+/// sizes that constant.
+#[cfg(test)]
+const LOG_VIEW_ROWS: usize = 48;
+
+/// Both Port boards, every slot as the order card that is on it.
+///
+/// **The power gate is what makes this a decision surface rather than a list.**
+/// A Port take reaches the LOW zone at power 2, MID at 3 and HIGH at 4, so the
+/// question a player brings here is not "which cards are out" but "which of them
+/// can I reach this turn" — and the answer is printed on the slot label, from
+/// the engine's own gate ([`crate::screen_model::port_zone_min_power`]) rather
+/// than from a table in this file.
+pub fn ports_view(ports: &PortsPanel) -> String {
+    let mut out = String::new();
+    out.push_str(&view_title(
+        "PORT OFFER",
+        "the order cards on display, the zone each sits in, and the action power that zone takes",
+    ));
+
+    for board in &ports.boards {
+        out.push_str(&port_rule(board));
+        out.push('\n');
+        let per_row = ((FLOOR_W + GAP) / (CARD_W + GAP)).max(1);
+        for chunk in board.slots.chunks(per_row) {
+            for line in slot_label_row(chunk.iter().map(port_slot_label).collect()) {
+                out.push_str(&line);
+                out.push('\n');
+            }
+            // An EMPTY slot draws an empty box rather than a card, so the row
+            // keeps its shape and the hole reads as "nothing here" instead of
+            // shunting the cards to its right one column left.
+            let drawn: Vec<Vec<String>> = chunk
+                .iter()
+                .map(|s| match s.card {
+                    Some(id) => card_render::order_card(&card_render::CardFace::new(
+                        id,
+                        s.printed.as_ref(),
+                    )),
+                    None => empty_card(CARD_W),
+                })
+                .collect();
+            for line in card_row(&drawn) {
+                out.push_str(&line);
+                out.push('\n');
+            }
+        }
+        out.push('\n');
+    }
+
+    out.push_str(&paint(
+        Tone::Chrome,
+        "A take slides the remaining cards LEFT to close the gap, then refills from the RIGHT — so slot 1 always holds the card that has been out longest.",
+    ));
+    out.push('\n');
+    out.push_str(&deck_line("Order deck", ports.deck_remaining));
+    out.push('\n');
+    out.push_str(&exit_line());
+    out.push('\n');
+    out.push_str(&paint(Tone::Prompt, "> "));
+    out.push('\n');
+    out
+}
+
+/// `PORT A — take ONE card; LOW needs power 2, MID 3, HIGH 4.  4 of 6 slots filled`
+///
+/// **The power gate is stated ONCE per board rather than once per slot**, which
+/// is where it went at the T11 visual pass. Printed on every label it filled the
+/// card's whole 24 columns — correct, asserted, and flush against its
+/// neighbour — and it was the same sentence six times over, which is chrome a
+/// reader stops seeing. Said once it is a rule; the label then carries the zone,
+/// which is the part that differs per slot.
+///
+/// Each zone's number is [`crate::screen_model::PortSlotModel::min_power`], i.e.
+/// still the ENGINE's own `port_accessible_zones` — one statement of a derived
+/// fact, not a literal that happens to be typed once.
+fn port_rule(board: &PortBoardModel) -> String {
+    let filled = board.slots.iter().filter(|s| s.card.is_some()).count();
+    let mut t = Twin::default();
+    t.tinted(Tone::Strong, &describe::port_board_name(board.board_b).to_uppercase());
+    t.raw(&format!(" {} take ONE card; ", glyph::SECTION_DASH));
+    t.raw(&zone_gate_clause(board));
+    t.raw(".  ");
+    t.tinted(Tone::Chrome, &format!("{filled} of {} slots filled", board.slots.len()));
+    t.painted
+}
+
+/// `LOW needs power 2, MID 3, HIGH 4` — every zone this board actually has, in
+/// slot order, each with the gate its own slots carry.
+///
+/// Built from the board's slots rather than from a list of zones, so a board
+/// that stopped having a HIGH zone would stop claiming one.
+fn zone_gate_clause(board: &PortBoardModel) -> String {
+    let mut seen: Vec<(PortZone, u8)> = Vec::new();
+    for slot in &board.slots {
+        if !seen.iter().any(|(zone, _)| *zone == slot.zone) {
+            seen.push((slot.zone, slot.min_power));
+        }
+    }
+    seen.iter()
+        .enumerate()
+        .map(|(i, (zone, power))| {
+            // The first clause carries the noun and the rest inherit it —
+            // "LOW needs power 2, MID 3, HIGH 4" rather than the same five words
+            // three times.
+            if i == 0 {
+                format!("{} needs power {power}", port_zone_name(*zone))
+            } else {
+                format!("{} {power}", port_zone_name(*zone))
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+/// `slot 1 · LOW` — the label row above a card, at exactly [`CARD_W`] columns
+/// so it lines up with the card underneath it.
+fn port_slot_label(slot: &PortSlotModel) -> Twin {
+    let mut t = Twin::default();
+    t.tinted(Tone::Chrome, &format!("slot {}", menu_number(slot.slot)));
+    t.raw(&format!(" {} ", glyph::SEPARATOR));
+    t.tinted(Tone::Strong, port_zone_name(slot.zone));
+    t
+}
+
+/// The three Port zones as the board prints them.
+fn port_zone_name(zone: PortZone) -> &'static str {
+    match zone {
+        PortZone::Low => "LOW",
+        PortZone::Mid => "MID",
+        PortZone::High => "HIGH",
+    }
+}
+
+// ---------------------------------------------------------------------------
+// The labs view (T11)
+// ---------------------------------------------------------------------------
+
+/// Both Laboratory boards, every slot as the technology on offer there.
+///
+/// **This is the OFFER, and the technology index is the IDENTIFICATION
+/// surface** (T6's two-surfaces ruling). The index answers "which card is
+/// this?" over all twenty titles; this one answers "what can I buy right now,
+/// and what does it cost" over the at-most-twelve on the table — which is why
+/// the price is here and the copy accounting is not.
+pub fn labs_view(labs: &LabsPanel) -> String {
+    let mut out = String::new();
+    out.push_str(&view_title(
+        "LABORATORY OFFER",
+        "the technologies on display, what each one does, and the industry it costs in its slot",
+    ));
+
+    for board in &labs.boards {
+        out.push_str(&lab_rule(board));
+        out.push('\n');
+        let per_row = ((FLOOR_W + GAP) / (LAB_VIEW_W + GAP)).max(1);
+        for chunk in board.slots.chunks(per_row) {
+            let drawn: Vec<Vec<String>> = chunk.iter().map(lab_card).collect();
+            for line in card_row(&drawn) {
+                out.push_str(&line);
+                out.push('\n');
+            }
+        }
+        out.push('\n');
+    }
+
+    out.push_str(&paint(
+        Tone::Chrome,
+        "Industry comes from your action power, plus 2 yen or 1 imported good per point — so a card one point out of reach costs 2 yen more, not a turn.",
+    ));
+    out.push('\n');
+    out.push_str(&paint(
+        Tone::Chrome,
+        "You may own only ONE technology of a given name; ten of the twenty titles are in the box twice, so two players can each hold one.",
+    ));
+    out.push('\n');
+    out.push_str(&deck_line("Technology deck", labs.deck_remaining));
+    out.push('\n');
+    out.push_str(&exit_line());
+    out.push('\n');
+    out.push_str(&paint(Tone::Prompt, "> "));
+    out.push('\n');
+    out
+}
+
+/// `LABORATORY A — pay the industry printed below …  5 of 6 slots filled`
+fn lab_rule(board: &LabBoardModel) -> String {
+    let filled = board.slots.iter().filter(|s| s.card.is_some()).count();
+    let mut t = Twin::default();
+    t.tinted(Tone::Strong, &describe::lab_board_name(board.board_b).to_uppercase());
+    t.raw(&format!(
+        " {} acquire ONE card by paying its industry; the slot's own surcharge is already in the figure.  ",
+        glyph::SECTION_DASH,
+    ));
+    t.tinted(Tone::Chrome, &format!("{filled} of {} slots filled", board.slots.len()));
+    t.painted
+}
+
+/// One Laboratory slot as a card, every line exactly [`LAB_VIEW_W`] columns.
+fn lab_card(slot: &LabSlotModel) -> Vec<String> {
+    let mut top = Twin::default();
+    top.raw(&format!("{} ", glyph::BOX_TL));
+    top.tinted(Tone::Strong, &format!("slot {}", menu_number(slot.slot)));
+    top.raw(&format!(" {} ", glyph::SEPARATOR));
+    top.tinted(Tone::Chrome, &format!("surcharge +{}", slot.surcharge));
+    top.raw(" ");
+    let fill = (LAB_VIEW_W - 1).saturating_sub(top.width());
+    top.raw(&String::from(glyph::RULE).repeat(fill));
+    top.raw(&glyph::BOX_TR.to_string());
+
+    let mut rows = vec![exact(&top, LAB_VIEW_W)];
+    match slot.printed.as_ref() {
+        None => {
+            let mut empty = Twin::default();
+            empty.tinted(
+                Tone::Dim,
+                if slot.card.is_some() { "not in the registry" } else { "empty" },
+            );
+            rows.push(interior(&empty, LAB_VIEW_W));
+            while rows.len() < LAB_CARD_H - 1 {
+                rows.push(interior(&Twin::default(), LAB_VIEW_W));
+            }
+        }
+        Some(printed) => {
+            let mut name = Twin::default();
+            name.tinted(Tone::Strong, &printed.name.to_uppercase());
+            name.pad_to(32);
+            name.tinted(Tone::Flag(printed.country), describe::country_name(printed.country));
+            rows.push(interior(&name, LAB_VIEW_W));
+
+            let mut cost = Twin::default();
+            cost.tinted(
+                Tone::Reachable,
+                &format!("industry {}", printed.industry_cost + slot.surcharge),
+            );
+            cost.pad_to(14);
+            cost.tinted(
+                Tone::Chrome,
+                &format!(
+                    "card {} + slot {} {} pay the rest in yen or imports",
+                    printed.industry_cost, slot.surcharge, glyph::SEPARATOR,
+                ),
+            );
+            rows.push(interior(&cost, LAB_VIEW_W));
+
+            for piece in wrap_words(describe::tech_effect_text(printed.effect), LAB_VIEW_W - 4) {
+                let mut t = Twin::default();
+                t.tinted(Tone::Chrome, &piece);
+                rows.push(interior(&t, LAB_VIEW_W));
+            }
+            while rows.len() < LAB_CARD_H - 1 {
+                rows.push(interior(&Twin::default(), LAB_VIEW_W));
+            }
+        }
+    }
+    rows.push(bottom(LAB_VIEW_W));
+    rows
+}
+
+/// Lines per Laboratory offer card, so a one-line effect and the longest one
+/// still square a row off.
+///
+/// MEASURED then set, over the whole registry rather than the six a board
+/// dealt: two rows of chrome (the title and the bottom), the name row, the cost
+/// row, and the widest wrap of any of the twenty effect texts — which at this
+/// interior is two lines, where the same text costs three on the narrower
+/// [`crate::card_render::TECH_W`] index card. Pinned as an EQUALITY by
+/// `every_lab_card_is_the_same_height_across_the_whole_registry`, so headroom
+/// nobody measured cannot creep in here.
+const LAB_CARD_H: usize = 6;
+
+// ---------------------------------------------------------------------------
+// The hand view (T11)
+// ---------------------------------------------------------------------------
+
+/// One seat's own order cards, drawn at full size.
+///
+/// **This is the surface the dashboard's hand row promises** (T10): below the
+/// board at 3 and 4 players the hand is a NAMED row rather than a drawn card,
+/// and the name is only worth printing if the word `hand` opens the cards.
+///
+/// **The mask is the MODEL's** ([`HandPanel::cards`] is empty whenever
+/// `hidden`), so this renderer cannot leak a hidden hand even if it tried to
+/// draw one — the leak fence T5 made structural, holding on one more surface.
+pub fn hand_view(hand: &HandPanel, color: Option<PlayerColor>, is_bot: bool) -> String {
+    let mut out = String::new();
+    let who = match color {
+        Some(c) => crate::render::color_name(c).to_uppercase(),
+        None => format!("SEAT {}", hand.seat.0),
+    };
+    out.push_str(&view_title(
+        &format!("{who}'S HAND"),
+        "your order cards at full size: the goods each one needs, and what it pays when you fulfil it",
+    ));
+
+    out.push_str(&hand_rule(hand, is_bot));
+    out.push('\n');
+
+    if !hand.cards.is_empty() {
+        let per_row = ((FLOOR_W + GAP) / (CARD_W + GAP)).max(1);
+        for chunk in hand.cards.chunks(per_row) {
+            let drawn: Vec<Vec<String>> = chunk
+                .iter()
+                .map(|c| {
+                    card_render::order_card(
+                        &card_render::CardFace::new(c.id, c.printed.as_ref()).note(
+                            c.is_starting_order.then(|| "= starting order".to_string()),
+                        ),
+                    )
+                })
+                .collect();
+            for line in card_row(&drawn) {
+                out.push_str(&line);
+                out.push('\n');
+            }
+        }
+    }
+    out.push('\n');
+
+    out.push_str(&paint(
+        Tone::Chrome,
+        "An order is fulfilled as an additional action: hand over the goods it needs, take what it pays, and the card goes to your completed pile.",
+    ));
+    out.push('\n');
+    out.push_str(&exit_line());
+    out.push('\n');
+    out.push_str(&paint(Tone::Prompt, "> "));
+    out.push('\n');
+    out
+}
+
+/// The hand's own section rule: how many cards, and — when there is nothing to
+/// draw — WHY, which is three different facts and never a blank screen.
+fn hand_rule(hand: &HandPanel, is_bot: bool) -> String {
+    let mut t = Twin::default();
+    t.tinted(Tone::Strong, "ORDER CARDS");
+    t.raw(&format!(" {} ", glyph::SECTION_DASH));
+    if hand.hidden {
+        t.tinted(
+            Tone::Chrome,
+            &format!(
+                "{} {} contents hidden {} ",
+                card_render::plural(hand.card_count, "card"),
+                glyph::SEPARATOR,
+                glyph::SECTION_DASH,
+            ),
+        );
+        t.tinted(
+            Tone::Dim,
+            if is_bot {
+                "a bot seat's hand stays masked whatever 'privacy' says"
+            } else {
+                "'privacy' shows them"
+            },
+        );
+    } else if hand.card_count == 0 {
+        t.tinted(Tone::Dim, "no cards in hand");
+    } else {
+        t.tinted(Tone::Chrome, &card_render::plural(hand.card_count, "card"));
+    }
+    t.painted
+}
+
+// ---------------------------------------------------------------------------
+// The log view (T11)
+// ---------------------------------------------------------------------------
+
+/// The move/event trail, each entry described against the state it applied in.
+///
+/// **Nothing here re-describes anything** — [`LogEntryModel::text`] is the
+/// string `Session` cached at the moment the event applied, so a trading-house
+/// take still quotes the price it actually paid and a movement fee still names
+/// the President owner who actually received it. This renderer arranges; the
+/// history is already written.
+pub fn log_view(log: &LogPanel) -> String {
+    let mut out = String::new();
+    out.push_str(&view_title(
+        "LOG",
+        "what has happened so far, each line worded as it read at the moment it applied",
+    ));
+
+    out.push_str(&log_rule(log));
+    out.push('\n');
+
+    if log.entries.is_empty() {
+        out.push_str(&paint(Tone::Dim, "  nothing has been applied yet"));
+        out.push('\n');
+    }
+    for entry in &log.entries {
+        let mut t = Twin::default();
+        t.raw("  ");
+        t.tinted(Tone::Chrome, &format!("{:>4}", entry.index));
+        t.raw("  ");
+        t.raw(&entry.text);
+        // Clipped to the floor rather than wrapped: a log is read down its
+        // index column, and a wrapped entry breaks that column for every entry
+        // under it. The whole text stays reachable — `save` writes the record.
+        out.push_str(&clipped(&t, FLOOR_W));
+        out.push('\n');
+    }
+    out.push('\n');
+
+    out.push_str(&paint(
+        Tone::Chrome,
+        "Each line reads as it did when it applied, so an old entry still quotes the price it paid and the player it paid. 'back' takes the last one off.",
+    ));
+    out.push('\n');
+    out.push_str(&exit_line());
+    out.push('\n');
+    out.push_str(&paint(Tone::Prompt, "> "));
+    out.push('\n');
+    out
+}
+
+/// `EVENTS — 10 of 47 shown · the 37 before them are in the save file`
+fn log_rule(log: &LogPanel) -> String {
+    let mut t = Twin::default();
+    t.tinted(Tone::Strong, "EVENTS");
+    t.raw(&format!(" {} ", glyph::SECTION_DASH));
+    let omitted = log.omitted();
+    if omitted == 0 {
+        t.tinted(
+            Tone::Chrome,
+            &format!(
+                "all {} {} so far",
+                log.total,
+                if log.total == 1 { "entry" } else { "entries" },
+            ),
+        );
+    } else {
+        t.tinted(
+            Tone::Chrome,
+            &format!(
+                "{} of {} shown  {}  the {} before them are in the save file",
+                log.entries.len(),
+                log.total,
+                glyph::SEPARATOR,
+                omitted,
+            ),
+        );
+    }
+    t.painted
+}
+
+// ---------------------------------------------------------------------------
+// The view menu (T11)
+// ---------------------------------------------------------------------------
+
+/// The numbered menu over every surface in this module and every card index —
+/// spec §0.2's "every decision reachable by numbered menu", applied to looking
+/// things up.
+///
+/// **Labels arrive as strings and the numbering is this renderer's**, which is
+/// the same split the option zone holds: the REPL owns which surfaces exist and
+/// what each row DOES; nothing about a row's number or tint reaches back there.
+/// A caller passing labels rather than a menu type is deliberate — the
+/// `(label, fn)` pairing that keeps text and behaviour together lives in
+/// `Repl::VIEW_MENU`, and a renderer that could see the functions would be a
+/// renderer holding a `&mut Repl`.
+pub fn view_menu(labels: &[&str]) -> String {
+    let mut out = String::new();
+    out.push_str(&view_title(
+        "GAME INFO",
+        "the 'view' pattern: every panel on the frame is a summary, and each row here is its full surface",
+    ));
+    for (i, label) in labels.iter().enumerate() {
+        let mut t = Twin::default();
+        t.raw("  ");
+        t.tinted(Tone::Strong, &format!("[{}]", menu_number(i)));
+        t.pad_to(7);
+        t.raw(label);
+        out.push_str(&clipped(&t, FLOOR_W));
+        out.push('\n');
+    }
+    out.push('\n');
+    out.push_str(&paint(
+        Tone::Chrome,
+        "Every row here is also a word you can type at the prompt, and the two run the same code — so this menu is a reminder, never a second way to be wrong.",
+    ));
+    out.push('\n');
+    out.push_str(&paint(
+        Tone::Chrome,
+        "Pick a number to open a surface, or 'cancel' to go back to the prompt underneath with nothing entered.",
+    ));
+    out.push('\n');
+    out.push_str(&paint(Tone::Prompt, "> "));
+    out.push('\n');
+    out
+}
+
+// ---------------------------------------------------------------------------
 // Shared
 // ---------------------------------------------------------------------------
+
+/// The two opening lines every full-screen surface leads with: its NAME in the
+/// standing `… — full view` form, and one sentence saying what is on it.
+///
+/// **One function rather than six copies, and a per-surface gloss rather than
+/// one repeated sentence.** T6 shipped the two views it wrote with different
+/// title shapes — `tracks` spent its line teaching what a "view" IS, `sites`
+/// spent its describing the cards — and at six surfaces neither generalizes: a
+/// sentence repeated six times is chrome a reader learns to skip, and a shape
+/// that differs per surface is six surfaces rather than one system. So the
+/// SHAPE is shared (which is what makes them read as one) and the SENTENCE is
+/// each surface's own (which is what makes it worth reading). The pattern
+/// itself is taught where the roster is — the `view` menu's own gloss.
+fn view_title(name: &str, gloss: &str) -> String {
+    format!(
+        "{}   {}\n\n",
+        paint(Tone::Strong, &format!("{name} {} full view", glyph::SECTION_DASH)),
+        paint(Tone::Chrome, gloss),
+    )
+}
+
+/// [`exact`] without the PADDING half: clip a line that overruns `width`, and
+/// leave a short one short.
+///
+/// The two are different jobs and only one of them belongs on a full-width row.
+/// Inside a card, padding is what squares the box off. On a line that is its own
+/// row, it is 150 columns of trailing space on every entry — invisible on a
+/// terminal, and noise in every golden diff and every piped capture.
+fn clipped(t: &Twin, width: usize) -> String {
+    let padded = exact(t, width);
+    padded.trim_end().to_string()
+}
+
+/// `Order deck: 17 cards left.`, or the honest sentence for an empty one.
+fn deck_line(what: &str, remaining: usize) -> String {
+    let mut t = Twin::default();
+    t.tinted(Tone::Chrome, &format!("{what}: "));
+    if remaining == 0 {
+        t.tinted(Tone::Dim, "empty — nothing refills from here again");
+    } else {
+        t.raw(&format!("{} left", card_render::plural(remaining, "card")));
+    }
+    t.painted
+}
+
+/// A row of card-width labels above a row of cards, each padded to [`CARD_W`]
+/// so a label sits over its own card.
+fn slot_label_row(labels: Vec<Twin>) -> Vec<String> {
+    let mut line = String::new();
+    for (i, label) in labels.iter().enumerate() {
+        if i > 0 {
+            line.push_str(&" ".repeat(GAP));
+        }
+        line.push_str(&exact(label, CARD_W));
+    }
+    while line.ends_with(' ') {
+        line.pop();
+    }
+    vec![line]
+}
+
+/// A blank box at `width`, for a slot with nothing on it: the row keeps its
+/// shape and the hole reads as a hole.
+fn empty_card(width: usize) -> Vec<String> {
+    let mut top = Twin::default();
+    top.raw(&format!("{} ", glyph::BOX_TL));
+    top.tinted(Tone::Dim, "empty");
+    top.raw(" ");
+    let fill = (width - 1).saturating_sub(top.width());
+    top.raw(&String::from(glyph::RULE).repeat(fill));
+    top.raw(&glyph::BOX_TR.to_string());
+    let mut rows = vec![exact(&top, width)];
+    while rows.len() < card_render::CARD_H - 1 {
+        rows.push(interior(&Twin::default(), width));
+    }
+    rows.push(bottom(width));
+    rows
+}
 
 /// A seat's display name, or its number when the caller's table does not cover
 /// it — the same fallback [`Twin::owned`] makes for the tint.
@@ -622,6 +1226,600 @@ pub(crate) mod tests {
             crate::screen_model::build_board(&state, &rules, &[]),
             colors,
         )
+    }
+
+    /// A real generated game at `players`, for the surfaces that read more of
+    /// the state than the two T6 views do.
+    pub(crate) fn game(players: u8) -> (yokohama_core::GameState, Rules) {
+        let rules = Rules::standard();
+        let pending = new_game(GameConfig::for_player_count(players), &rules, 1)
+            .expect("a standard board");
+        let state =
+            finalize_setup(pending, &vec![StartingOrderChoice::Keep(0); players as usize])
+                .expect("setup finalizes");
+        (state, rules)
+    }
+
+    /// Every T11 surface at `players`, in one call: the four new views plus the
+    /// menu, each labelled, so a sweep over "every view" cannot silently drop
+    /// one when a sixth is added.
+    fn t11_views(players: u8) -> Vec<(&'static str, String)> {
+        let (state, rules) = game(players);
+        let seat = state.current_player;
+        let hand = crate::screen_model::build_hand(&state, &rules, seat, false).expect("a seat");
+        let color = state.players.iter().find(|p| p.id == seat).map(|p| p.color);
+        vec![
+            ("ports", ports_view(&crate::screen_model::build_ports(&state, &rules))),
+            ("labs", labs_view(&crate::screen_model::build_labs(&state, &rules))),
+            ("hand", hand_view(&hand, color, false)),
+            (
+                "log",
+                log_view(&crate::screen_model::build_log(
+                    3,
+                    vec![
+                        (0, "Red: Place 1 assistant in Copper Mine (A00)".to_string()),
+                        (1, "Red: Move President to Bank (A06) — pay 1 yen (1 to Blue)".to_string()),
+                        (2, "Blue: End additional-action phase".to_string()),
+                    ],
+                )),
+            ),
+            ("view menu", view_menu(&["Port offer — the cards on display", "Log — the trail"])),
+        ]
+    }
+
+    /// **Every line of every T11 surface fits the design floor, at every player
+    /// count** — the property that lets them be drawn full-screen with nothing
+    /// above, held for the four new views on the same terms as the two T6 ones.
+    #[test]
+    fn every_t11_view_line_fits_the_design_floor() {
+        for players in [2u8, 3, 4] {
+            for (what, text) in t11_views(players) {
+                for line in text.lines() {
+                    assert!(
+                        visible_width(line) <= FLOOR_W,
+                        "{what} at {players}P: {} columns is past the floor: {:?}",
+                        visible_width(line),
+                        strip_ansi(line),
+                    );
+                }
+            }
+        }
+    }
+
+    /// **Every card line measures exactly its card's width** — the round-3.1
+    /// lesson on the two card shapes T11 adds (the Laboratory offer card, and
+    /// the empty box a vacant Port slot draws). A card that clipped would shear
+    /// the whole row it sits in, and it would do it silently.
+    #[test]
+    fn every_t11_card_line_measures_exactly_its_card_width() {
+        let (state, rules) = game(4);
+        for board in &crate::screen_model::build_labs(&state, &rules).boards {
+            for slot in &board.slots {
+                for line in lab_card(slot) {
+                    assert_eq!(visible_width(&line), LAB_VIEW_W, "{:?}", strip_ansi(&line));
+                }
+            }
+        }
+        for line in empty_card(CARD_W) {
+            assert_eq!(visible_width(&line), CARD_W, "{:?}", strip_ansi(&line));
+        }
+        // The slot label above a Port card is the row's other member and has to
+        // measure the same, or the labels walk off their own cards.
+        for board in &crate::screen_model::build_ports(&state, &rules).boards {
+            for slot in &board.slots {
+                assert_eq!(visible_width(&exact(&port_slot_label(slot), CARD_W)), CARD_W);
+            }
+        }
+    }
+
+    /// **Every Laboratory offer card is the same height**, whatever its effect
+    /// text runs to — the property [`LAB_CARD_H`] exists for. Without it a row
+    /// of three cards would be ragged along its bottom edge, and the card
+    /// underneath the short one would start a line early.
+    ///
+    /// Swept over the whole registry rather than the six a board happened to
+    /// deal, because the tallest one is what matters and which slot carries it
+    /// is an accident of the shuffle.
+    #[test]
+    fn every_lab_card_is_the_same_height_across_the_whole_registry() {
+        let rules = Rules::standard();
+        let mut widest = 0usize;
+        for (slot, card) in rules.techs.iter_sorted_by_id().into_iter().enumerate() {
+            let model = LabSlotModel {
+                slot: slot % 6,
+                surcharge: yokohama_core::LabBoard::position_modifier(slot % 6),
+                card: Some(card.id),
+                printed: Some(card.clone()),
+            };
+            let drawn = lab_card(&model);
+            assert_eq!(
+                drawn.len(),
+                LAB_CARD_H,
+                "{} draws {} rows against LAB_CARD_H {LAB_CARD_H}",
+                card.name,
+                drawn.len(),
+            );
+            widest = widest.max(
+                crate::card_render::wrap_words(
+                    describe::tech_effect_text(card.effect),
+                    LAB_VIEW_W - 4,
+                )
+                .len(),
+            );
+        }
+        // Anti-vacuity: the constant has to be exactly what the tallest card
+        // NEEDS, or it is headroom nothing measured. Two rows of chrome (title,
+        // bottom) plus the name and cost rows, plus the wrapped effect.
+        assert_eq!(
+            LAB_CARD_H,
+            2 + 2 + widest,
+            "the tallest effect text wraps to {widest} lines; LAB_CARD_H must be exactly that \
+             plus the title, the bottom, the name row and the cost row",
+        );
+        // An empty slot squares off to the same height, so a half-filled board
+        // still draws a rectangle.
+        assert_eq!(
+            lab_card(&LabSlotModel { slot: 0, surcharge: 0, card: None, printed: None }).len(),
+            LAB_CARD_H,
+        );
+    }
+
+    /// **The Port power gate on screen is the ENGINE's**, pinned against
+    /// `port_accessible_zones` directly rather than against the three numbers
+    /// this renderer happens to print. A zone whose gate moved would move the
+    /// label with it — which is the whole reason the model asks the engine.
+    #[test]
+    fn the_port_zone_labels_state_the_engines_own_power_gate() {
+        let (state, rules) = game(4);
+        let ports = crate::screen_model::build_ports(&state, &rules);
+        let text = strip_ansi(&ports_view(&ports));
+        for board in &ports.boards {
+            for slot in &board.slots {
+                let gate = slot.min_power;
+                assert!(
+                    yokohama_core::actions::port_accessible_zones(gate).contains(&slot.zone),
+                    "power {gate} must reach {:?}",
+                    slot.zone,
+                );
+                assert!(
+                    gate == 0
+                        || !yokohama_core::actions::port_accessible_zones(gate - 1)
+                            .contains(&slot.zone),
+                    "power {} must NOT reach {:?} — the label claims {gate} is the lowest",
+                    gate - 1,
+                    slot.zone,
+                );
+                assert!(
+                    text.contains(&format!(
+                        "slot {} · {}",
+                        crate::screen_model::menu_number(slot.slot),
+                        port_zone_name(slot.zone),
+                    )),
+                    "every slot names its zone: {text}",
+                );
+            }
+        }
+        // The gate is stated once per board, over every zone that board has —
+        // and the sweep above proved each of those three numbers is the lowest
+        // power the ENGINE lets through, so this line is derived, not typed.
+        assert!(text.contains("LOW needs power 2, MID 3, HIGH 4"), "{text}");
+        // Anti-vacuity on the fixture: a board with every slot in one zone
+        // would pass the sweep above while proving nothing about the gate.
+        let zones: std::collections::BTreeSet<&str> =
+            ports.boards[0].slots.iter().map(|s| port_zone_name(s.zone)).collect();
+        assert_eq!(zones.len(), 3, "fixture: a board carries all three zones");
+    }
+
+    /// **A vacant Port slot draws a hole, not a shifted row.** The engine
+    /// refills right-to-left after compaction, so a mid-game board legitimately
+    /// has empty slots on the right — and a row that closed the gap would put
+    /// every label over the wrong card.
+    #[test]
+    fn an_empty_port_slot_keeps_its_place_in_the_row() {
+        let (state, rules) = game(2);
+        let mut ports = crate::screen_model::build_ports(&state, &rules);
+        assert!(ports.boards[0].slots.iter().all(|s| s.card.is_some()), "fixture: a full board");
+        let taken = ports.boards[0].slots[3].card.expect("a dealt card");
+        ports.boards[0].slots[3].card = None;
+        ports.boards[0].slots[3].printed = None;
+
+        let text = strip_ansi(&ports_view(&ports));
+        assert!(text.contains("empty"), "the hole says so: {text}");
+        assert!(
+            !text.contains(&format!("O{:02}", taken.0)),
+            "and the card that left is gone from the screen: {text}",
+        );
+        assert!(text.contains("5 of 6 slots filled"), "the section rule counts it: {text}");
+        // The label row still names all six slots in order, which is the
+        // property a closed gap would break.
+        for slot in 1..=6 {
+            assert!(text.contains(&format!("slot {slot} · ")), "slot {slot} kept its place: {text}");
+        }
+    }
+
+    /// **The Laboratory card prices the slot, not just the card** — the one
+    /// arithmetic this surface exists to do. `total = industry_cost +
+    /// position_modifier` is the engine's own `total_required`
+    /// (`actions/cards.rs`), and a screen showing the printed card cost alone
+    /// would under-price every slot past the second.
+    #[test]
+    fn a_lab_card_prices_the_slot_surcharge_into_its_industry_figure() {
+        let (state, rules) = game(4);
+        let labs = crate::screen_model::build_labs(&state, &rules);
+        let text = strip_ansi(&labs_view(&labs));
+        let mut surcharged = 0usize;
+        for board in &labs.boards {
+            for slot in &board.slots {
+                let Some(printed) = slot.printed.as_ref() else { continue };
+                assert_eq!(
+                    slot.surcharge,
+                    yokohama_core::LabBoard::position_modifier(slot.slot),
+                    "the surcharge is the engine's",
+                );
+                assert!(
+                    text.contains(&format!(
+                        "industry {}",
+                        printed.industry_cost + slot.surcharge
+                    )),
+                    "{} in slot {} must price at {} + {}: {text}",
+                    printed.name,
+                    slot.slot,
+                    printed.industry_cost,
+                    slot.surcharge,
+                );
+                if slot.surcharge > 0 {
+                    surcharged += 1;
+                }
+            }
+        }
+        assert!(surcharged >= 4, "fixture: the board deals surcharged slots ({surcharged})");
+        // The components stay on screen beside the total, so a player can see
+        // WHY a slot costs what it does.
+        assert!(text.contains("card ") && text.contains(" + slot "), "{text}");
+    }
+
+    /// **Every Laboratory card names its country and prints its WHOLE effect
+    /// text** — the property F2 put there and the retired `render::labs_view`
+    /// held: five effect one-liners carry qualifiers that change a purchase
+    /// decision (the cost a card still charges, the restriction it does not
+    /// lift), so a card that clipped one would be teaching the defect that
+    /// review removed.
+    ///
+    /// Swept over the WHOLE registry rather than the six a board dealt, each
+    /// slotted through the real renderer — never against a copy of its format
+    /// string — which is the shape the retired test used and the reason it
+    /// would catch a wording edit.
+    #[test]
+    fn a_lab_card_shows_its_country_and_its_whole_effect_text() {
+        let rules = Rules::standard();
+        for card in rules.techs.iter_sorted_by_id() {
+            let model = LabSlotModel {
+                slot: 4,
+                surcharge: yokohama_core::LabBoard::position_modifier(4),
+                card: Some(card.id),
+                printed: Some(card.clone()),
+            };
+            let drawn = strip_ansi(&lab_card(&model).join("\n"));
+            assert!(
+                drawn.contains(describe::country_name(card.country)),
+                "{} must name its country: {drawn}",
+                card.name,
+            );
+            // The effect WRAPS rather than clipping, so the whole sentence has
+            // to be recoverable by putting the wrapped rows back together.
+            let flat = drawn
+                .lines()
+                .map(|l| l.trim_matches(|c| c == '│' || c == ' '))
+                .collect::<Vec<_>>()
+                .join(" ");
+            let effect = describe::tech_effect_text(card.effect);
+            assert!(
+                flat.contains(effect),
+                "{} must print its whole effect, unclipped: want {effect:?} in {flat:?}",
+                card.name,
+            );
+            assert!(!drawn.contains('…'), "{} clipped something: {drawn}", card.name);
+        }
+    }
+
+    /// **Both offer views state the deck they refill from** — the retired
+    /// views' `order deck: N` / `tech deck: N` lines, which are a public fact
+    /// about the table (the physical pile's height) and the thing that tells a
+    /// player whether an offer will be replaced at all.
+    #[test]
+    fn both_offers_state_their_shared_deck() {
+        let (state, rules) = game(4);
+        let ports = crate::screen_model::build_ports(&state, &rules);
+        let labs = crate::screen_model::build_labs(&state, &rules);
+        assert_eq!(ports.deck_remaining, state.order_deck.len());
+        assert_eq!(labs.deck_remaining, state.tech_deck.len());
+        assert!(
+            strip_ansi(&ports_view(&ports))
+                .contains(&format!("Order deck: {} cards left", state.order_deck.len())),
+        );
+        assert!(
+            strip_ansi(&labs_view(&labs))
+                .contains(&format!("Technology deck: {} cards left", state.tech_deck.len())),
+        );
+        // Both boards are named, and the second one only where it exists: a 2P
+        // table has no Port B and no Laboratory B, and a screen claiming one
+        // would send an operator looking for a board that is in the box.
+        let four = strip_ansi(&ports_view(&ports));
+        assert!(four.contains("PORT A") && four.contains("PORT B"), "{four}");
+        let (two, two_rules) = game(2);
+        let small = strip_ansi(&ports_view(&crate::screen_model::build_ports(&two, &two_rules)));
+        assert!(small.contains("PORT A") && !small.contains("PORT B"), "{small}");
+        let small_labs = strip_ansi(&labs_view(&crate::screen_model::build_labs(&two, &two_rules)));
+        assert!(
+            small_labs.contains("LABORATORY A") && !small_labs.contains("LABORATORY B"),
+            "{small_labs}",
+        );
+        // An exhausted deck says so rather than printing a bare zero.
+        let mut drained = ports.clone();
+        drained.deck_remaining = 0;
+        assert!(strip_ansi(&ports_view(&drained)).contains("nothing refills from here again"));
+    }
+
+    /// **A hidden hand renders as a count and nothing else** — the leak fence
+    /// (spec §0.12) on the surface that would leak most, checked the way T5
+    /// checked it: the MODEL is empty, so the renderer has nothing to leak even
+    /// if it tried.
+    #[test]
+    fn a_hidden_hand_view_carries_no_card_identity_at_all() {
+        let (state, rules) = game(2);
+        let seat = state.current_player;
+        let held: Vec<_> = state
+            .players
+            .iter()
+            .find(|p| p.id == seat)
+            .expect("a seat")
+            .order_cards_in_hand
+            .clone();
+        assert!(!held.is_empty(), "fixture: the seat holds cards to hide");
+
+        let hidden = crate::screen_model::build_hand(&state, &rules, seat, true).expect("a seat");
+        assert!(hidden.cards.is_empty(), "the MODEL masks, not the renderer");
+        let text = strip_ansi(&hand_view(&hidden, Some(PlayerColor::Red), false));
+        for id in &held {
+            assert!(
+                !text.contains(&format!("O{:02}", id.0)),
+                "a hidden hand must not name O{:02}: {text}",
+                id.0,
+            );
+        }
+        assert!(text.contains("contents hidden"), "and it says why: {text}");
+        assert!(text.contains(&format!("{} card", held.len())), "the count is public: {text}");
+
+        // A BOT's hand says the different true thing: 'privacy' will not open
+        // it, so telling the player to press it would be a dead instruction.
+        let bot = strip_ansi(&hand_view(&hidden, Some(PlayerColor::Red), true));
+        assert!(bot.contains("bot seat"), "{bot}");
+        assert!(!bot.contains("'privacy' shows them"), "{bot}");
+    }
+
+    /// **The hand view names the starting order and draws every other card
+    /// plain** — the one card in a hand that is not like the others, and the
+    /// reason the dashboard's own hand card marks it too.
+    #[test]
+    fn the_hand_view_marks_the_kept_starting_order() {
+        let (state, rules) = game(2);
+        let seat = state.current_player;
+        let hand = crate::screen_model::build_hand(&state, &rules, seat, false).expect("a seat");
+        let starting: Vec<_> = hand.cards.iter().filter(|c| c.is_starting_order).collect();
+        assert_eq!(starting.len(), 1, "fixture: exactly one kept starting order");
+
+        let text = strip_ansi(&hand_view(&hand, Some(PlayerColor::Red), false));
+        assert!(text.contains("= starting order"), "{text}");
+        assert_eq!(
+            text.matches("= starting order").count(),
+            1,
+            "and only on the one card it belongs to: {text}",
+        );
+        for card in &hand.cards {
+            assert!(text.contains(&format!("O{:02}", card.id.0)), "every card is drawn: {text}");
+        }
+    }
+
+    /// **The log view arranges; it never re-describes.** The entry text is the
+    /// string the caller supplies, verbatim — the fold cache's own output,
+    /// which is what keeps an old entry quoting the price it actually paid.
+    #[test]
+    fn the_log_view_prints_supplied_descriptions_verbatim_with_their_global_index() {
+        let entries = vec![
+            (7, "Red: Employment Agency — take a trading house for 4 yen".to_string()),
+            (8, "Blue: Move President to Bank (A06) — pay 1 yen (1 to Red)".to_string()),
+        ];
+        let text = strip_ansi(&log_view(&crate::screen_model::build_log(41, entries.clone())));
+        for (index, description) in &entries {
+            assert!(text.contains(description), "verbatim: {text}");
+            assert!(
+                text.contains(&format!("{index:>4}  {description}")),
+                "with its global index, which is what a bug report quotes: {text}",
+            );
+        }
+        // The omitted count is stated rather than left to be inferred from a
+        // trail that just starts partway through.
+        assert!(text.contains("2 of 41 shown"), "{text}");
+        assert!(text.contains("the 39 before them"), "{text}");
+
+        // A short game says the honest other thing.
+        let all = strip_ansi(&log_view(&crate::screen_model::build_log(2, vec![
+            (0, "Red: End additional-action phase".to_string()),
+            (1, "Red: Place no assistants".to_string()),
+        ])));
+        assert!(all.contains("all 2 entries so far"), "{all}");
+        assert!(!all.contains("shown"), "{all}");
+
+        // And an empty one does not draw a blank screen.
+        let empty = strip_ansi(&log_view(&crate::screen_model::build_log(0, Vec::new())));
+        assert!(empty.contains("nothing has been applied yet"), "{empty}");
+    }
+
+    /// **The view menu numbers from [`NUMBER_BASE`]** — T5's ruling, on the
+    /// surface it was first written for.
+    #[test]
+    fn the_view_menu_numbers_its_rows_from_the_numbering_base() {
+        let labels = ["First surface", "Second surface", "Third surface"];
+        let text = strip_ansi(&view_menu(&labels));
+        for (i, label) in labels.iter().enumerate() {
+            assert!(
+                text.contains(&format!("[{}]  {label}", crate::screen_model::menu_number(i))),
+                "row {i}: {text}",
+            );
+        }
+        assert!(!text.contains("[0]"), "1-based: {text}");
+        assert!(text.contains("'cancel'"), "and it says how to leave: {text}");
+    }
+
+    /// **Every T11 surface stays byte-plain with color off and paints with it
+    /// on** — spec §0.12's honesty net, on the four new views and the menu.
+    /// Color is FORCED ON in the same test, so it cannot pass by the renderer
+    /// painting nothing at all.
+    #[test]
+    fn the_t11_views_are_escape_free_with_color_off_and_painted_with_it_on() {
+        for (what, plain) in t11_views(2) {
+            crate::style::force(true);
+            let painted = t11_views(2)
+                .into_iter()
+                .find(|(name, _)| *name == what)
+                .map(|(_, text)| text)
+                .expect("the same surface");
+            crate::style::force(false);
+            assert!(!plain.contains('\u{1b}'), "{what}: piped output must carry no escapes");
+            assert!(painted.contains('\u{1b}'), "{what}: a real terminal gets color");
+            assert_eq!(strip_ansi(&painted), plain, "{what}: the two differ only by escapes");
+        }
+    }
+
+    /// The four new views fit the 50-row design floor at every player count —
+    /// stated as the MEASURED table rather than as a bare bound, exactly as
+    /// `both_views_fit_the_fifty_row_design_floor` states the T6 pair's.
+    ///
+    /// The `log` figure is the one that could grow without a layout change, so
+    /// it is measured at a FULL tail ([`crate::repl::LOG_VIEW_TAIL`] entries),
+    /// which is the tallest that surface ever draws.
+    #[test]
+    fn the_t11_views_fit_the_fifty_row_design_floor() {
+        for players in [2u8, 3, 4] {
+            let (state, rules) = game(players);
+            let seat = state.current_player;
+            let hand =
+                crate::screen_model::build_hand(&state, &rules, seat, false).expect("a seat");
+            for (what, text, recorded) in [
+                (
+                    "ports",
+                    ports_view(&crate::screen_model::build_ports(&state, &rules)),
+                    PORTS_VIEW_ROWS[usize::from(players - 2)],
+                ),
+                (
+                    "labs",
+                    labs_view(&crate::screen_model::build_labs(&state, &rules)),
+                    LABS_VIEW_ROWS[usize::from(players - 2)],
+                ),
+                ("hand", hand_view(&hand, Some(PlayerColor::Red), false), HAND_VIEW_ROWS),
+                (
+                    "log",
+                    log_view(&crate::screen_model::build_log(
+                        1_000,
+                        (0..crate::repl::LOG_VIEW_TAIL)
+                            .map(|i| (i, format!("Red: a described event {i}")))
+                            .collect(),
+                    )),
+                    LOG_VIEW_ROWS,
+                ),
+            ] {
+                let rows = text.lines().count();
+                assert!(
+                    rows <= recorded + VIEW_ROW_MARGIN,
+                    "{what} at {players}P draws {rows} rows against a recorded {recorded} \
+                     (+{VIEW_ROW_MARGIN}) — re-measure the table deliberately rather than raising \
+                     this entry until the run goes quiet",
+                );
+                assert!(
+                    rows + VIEW_ROW_MARGIN >= recorded,
+                    "{what} at {players}P draws {rows} rows against a recorded {recorded} — the \
+                     surface shrank and the recorded figure is now stale",
+                );
+                assert!(
+                    recorded + VIEW_ROW_MARGIN <= 50,
+                    "{what} at {players}P: the recorded height plus its margin must itself fit \
+                     the 50-row design floor",
+                );
+            }
+        }
+    }
+
+    /// **Every view leads with the same two lines**, so the pattern is taught
+    /// once rather than in six wordings — the reason [`view_title`] is a
+    /// function. Swept over all six surfaces plus the menu.
+    #[test]
+    fn every_full_screen_surface_opens_with_the_standing_title_shape() {
+        let (tracks, board, colors) = view_models(2);
+        let mut surfaces = vec![
+            ("tracks", tracks_view(&tracks, &colors)),
+            ("sites", sites_view(&board, &colors)),
+        ];
+        surfaces.extend(t11_views(2));
+        let mut glosses: Vec<String> = Vec::new();
+        for (what, text) in &surfaces {
+            let lines: Vec<&str> = text.lines().collect();
+            let title = strip_ansi(lines[0]);
+            let (name, gloss) = title
+                .split_once(" — full view   ")
+                .unwrap_or_else(|| panic!("{what}: the title is `NAME — full view   <gloss>`: {title:?}"));
+            assert!(
+                name.chars().all(|c| !c.is_lowercase()),
+                "{what}: the surface's name leads, in caps: {name:?}",
+            );
+            assert!(gloss.len() > 40, "{what}: and says what is on it: {gloss:?}");
+            assert_eq!(lines[1], "", "{what}: a blank row under the title");
+            glosses.push(gloss.to_string());
+        }
+        // The SHAPE is shared and the SENTENCE is not: six identical glosses
+        // would be the chrome `view_title`'s doc says a reader learns to skip.
+        let unique: std::collections::BTreeSet<&String> = glosses.iter().collect();
+        assert_eq!(unique.len(), glosses.len(), "every surface glosses itself: {glosses:?}");
+        // The pattern itself is taught exactly once, where the roster is.
+        let teaching: Vec<&(&str, String)> = surfaces
+            .iter()
+            .filter(|(_, text)| text.contains("every panel on the frame is a summary"))
+            .collect();
+        assert_eq!(teaching.len(), 1, "the pattern is taught once");
+        assert_eq!(teaching[0].0, "view menu");
+    }
+
+    /// **Every view except the menu says how to leave in the standing words**,
+    /// and says them directly above the caret — T6 review M2c's contract, held
+    /// on the four surfaces T11 adds.
+    ///
+    /// The MENU is deliberately excluded and says a different true thing: it is
+    /// a one-shot pick, so a number there opens a surface rather than applying
+    /// an option, and re-dispatch is not what it does.
+    #[test]
+    fn every_t11_view_carries_the_standing_exit_clause_above_its_caret() {
+        let last = strip_ansi(&exit_line());
+        let last = last.lines().next_back().expect("a last line").to_string();
+        for (what, text) in t11_views(2) {
+            let text = strip_ansi(&text);
+            let lines: Vec<&str> = text.lines().collect();
+            let caret = lines.iter().position(|l| l.trim() == ">").expect("the caret");
+            if what == "view menu" {
+                assert!(text.contains("'cancel' to go back"), "{what}: {text}");
+                assert!(!text.contains("RUNS"), "the menu does not re-dispatch: {text}");
+            } else {
+                assert_eq!(lines[caret - 1], last, "{what}: the way out sits above the prompt");
+            }
+        }
+    }
+
+    /// The four new views as the owner sees them, committed beside the mocks —
+    /// CHECKED goldens rather than one-off dumps, the T2/T3/T5/T6 pattern.
+    /// Regenerate with `UPDATE_T6_CAPTURE=1` and LOOK AT THE DIFF.
+    #[test]
+    fn the_committed_t11_captures_are_what_the_renderers_draw() {
+        for (what, text) in t11_views(2) {
+            assert_capture(&format!("t11-{}.txt", what.replace(' ', "-")), &strip_ansi(&text));
+        }
     }
 
     /// Every line of both views fits the design floor, at every player count —

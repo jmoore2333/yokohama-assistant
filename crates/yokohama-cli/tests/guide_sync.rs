@@ -338,7 +338,7 @@ fn the_captured_suggest_screen_matches_the_renderers_own_strings() {
     // The knob line, DERIVED from the same consts `render_suggestion` reads, so
     // a rung/version/default change forces the capture to be retaken.
     let knobs = format!(
-        " · {} · beam {}, K={}, M={}, eval v{} · stream ",
+        " · {} · beam {}, K={}, M={}, evaluator impl {} · stream ",
         lookahead::LOOKAHEAD_CONTROLLER,
         lookahead::DEFAULT_BEAM,
         lookahead::DEFAULT_WORLDS,

@@ -87,6 +87,16 @@ pub(crate) struct CardPrompt<'a> {
     pub placed: &'a [(CardRef, CardLocation)],
     /// How a bare number reads right now.
     pub numbering: Numbering<'a>,
+    /// The seat colour table, for the one refusal that names a PLAYER: a
+    /// technology already owned by somebody (T11's seat-naming rule).
+    ///
+    /// `&[]` is legitimate and is what every SETUP-side prompt passes — at
+    /// setup no technology is owned by anybody, so the arm that reads this
+    /// cannot fire there, and inventing a table to satisfy a field would be
+    /// worse than saying there is none. The refusal falls back to the seat
+    /// number, which is what `describe::card_location` does with an empty
+    /// table anywhere else.
+    pub colors: &'a [yokohama_core::PlayerColor],
 }
 
 impl<'a> CardPrompt<'a> {
@@ -96,7 +106,7 @@ impl<'a> CardPrompt<'a> {
         placed: &'a [(CardRef, CardLocation)],
         numbering: Numbering<'a>,
     ) -> CardPrompt<'a> {
-        CardPrompt { kind: IndexKind::Orders, candidates: None, placed, numbering }
+        CardPrompt { kind: IndexKind::Orders, candidates: None, placed, numbering, colors: &[] }
     }
 }
 
@@ -355,7 +365,7 @@ fn named(prompt: &CardPrompt<'_>, card: CardRef) -> CardEntry {
         return CardEntry::Refused(format!(
             "{} is {} — a card cannot be in two places.",
             card_tag(card),
-            describe::card_location(*at),
+            describe::card_location(*at, prompt.colors),
         ));
     }
     if let CardRef::Order(id) = card {
@@ -646,7 +656,7 @@ mod tests {
         placed: &'a [(CardRef, CardLocation)],
         numbering: Numbering<'a>,
     ) -> CardPrompt<'a> {
-        CardPrompt { kind: IndexKind::Techs, candidates: None, placed, numbering }
+        CardPrompt { kind: IndexKind::Techs, candidates: None, placed, numbering, colors: &[] }
     }
 
     /// The order card an entry names.
@@ -757,6 +767,7 @@ mod tests {
             candidates: Some(&[OrderCardId(7)]),
             placed: &[],
             numbering: Numbering::Ids,
+            colors: &[],
         };
         assert!(
             matches!(
@@ -990,6 +1001,7 @@ mod tests {
             candidates: None,
             placed: &[],
             numbering: Numbering::Ids,
+            colors: &[],
         };
         use yokohama_core::AchievementType;
         for (typed, want) in [
@@ -1100,13 +1112,25 @@ mod tests {
             resolve(&tech_prompt(&[], Numbering::Ids), "7", &rules),
             CardEntry::Card(CardRef::Tech(TechCardId(7))),
         );
-        let site = CardPrompt { kind: IndexKind::Sites, candidates: None, placed: &[], numbering: Numbering::Ids };
+        let site = CardPrompt {
+            kind: IndexKind::Sites,
+            candidates: None,
+            placed: &[],
+            numbering: Numbering::Ids,
+            colors: &[],
+        };
         assert_eq!(resolve(&site, "7", &rules), CardEntry::Card(CardRef::Site(7)));
         assert_eq!(resolve(&site, "S07", &rules), CardEntry::Card(CardRef::Site(7)));
 
         // Cross-registry spellings name nothing rather than the wrong card.
         for (kind, wrong) in [(IndexKind::Orders, "T07"), (IndexKind::Techs, "O07"), (IndexKind::Sites, "O07")] {
-            let p = CardPrompt { kind, candidates: None, placed: &[], numbering: Numbering::Ids };
+            let p = CardPrompt {
+                kind,
+                candidates: None,
+                placed: &[],
+                numbering: Numbering::Ids,
+                colors: &[],
+            };
             assert!(
                 matches!(resolve(&p, wrong, &rules), CardEntry::Refused(_)),
                 "{wrong:?} must not resolve at a {kind:?} prompt",
@@ -1120,6 +1144,7 @@ mod tests {
             candidates: None,
             placed: &[],
             numbering: Numbering::Ids,
+            colors: &[],
         };
         assert!(
             matches!(resolve(&goals, "3", &rules), CardEntry::Refused(m) if m.contains("no number")),
@@ -1219,6 +1244,7 @@ mod tests {
             candidates: None,
             placed: &[],
             numbering: Numbering::Selection(&category_b),
+            colors: &[],
         };
 
         // `1` is a real number the still-visible category menu prints, for a

@@ -122,6 +122,14 @@ pub struct ZoneContext<'a> {
     pub expert: &'a str,
     /// The game is over: no options, no hint, just the notice.
     pub game_over: bool,
+    /// The line editor is live, so ↑ really does recall what was typed.
+    ///
+    /// **A CALLER-SET flag, not a query.** The fact lives in `input`
+    /// (`may_edit`), and a renderer that reached for it would be a renderer
+    /// reading the environment — the seam R9 exists to keep clean. So the REPL
+    /// asks and this carries the answer, exactly as `expert` carries which
+    /// grammar the current decision accepts.
+    pub recall: bool,
 }
 
 // ---------------------------------------------------------------------------
@@ -153,7 +161,7 @@ pub fn decision_zone(
         out.push_str(&paint(Tone::Chrome, "(no legal options right now — commands only)"));
         out.push('\n');
     } else {
-        let (texts, widths) = option_texts(rows, board);
+        let (texts, widths) = option_texts(rows, board, colors);
         let budget = column_budget(board);
         let page = Page::of(&widths, budget, ctx.page);
         out.push_str(&option_block(&texts, &widths, &page, budget));
@@ -472,17 +480,26 @@ fn page_bounds(widths: &[usize], budget: usize) -> Vec<(usize, usize)> {
 /// Rendered once and measured once: the pager needs the widths to decide where
 /// a page ends, and the renderer needs the same rows to draw it, so computing
 /// them apart would be two chances to disagree about where page two starts.
-fn option_texts(rows: &[Row<'_>], board: &BoardModel) -> (Vec<OptionRow>, Vec<usize>) {
+fn option_texts(
+    rows: &[Row<'_>],
+    board: &BoardModel,
+    colors: &[PlayerColor],
+) -> (Vec<OptionRow>, Vec<usize>) {
     let texts: Vec<OptionRow> =
-        rows.iter().enumerate().map(|(i, row)| option_text(i, row, board)).collect();
+        rows.iter().enumerate().map(|(i, row)| option_text(i, row, board, colors)).collect();
     let widths = texts.iter().map(OptionRow::width).collect();
     (texts, widths)
 }
 
 /// How many pages a row list makes — the pager's wraparound, walked by exactly
 /// the same function the footer's "page N of M" reads.
-pub fn page_count(rows: &[Row<'_>], board: &BoardModel) -> usize {
-    page_bounds(&option_texts(rows, board).1, column_budget(board)).len()
+pub fn page_count(rows: &[Row<'_>], board: &BoardModel, colors: &[PlayerColor]) -> usize {
+    // The colour table is a WIDTH input, not decoration: a fee recipient reads
+    // `2 to Yellow` where it used to read `2 to seat 3`, so a pager measuring
+    // rows without it would be measuring a different list from the one the
+    // renderer draws — which is exactly the disagreement about where page two
+    // starts that this entry point exists to prevent.
+    page_bounds(&option_texts(rows, board, colors).1, column_budget(board)).len()
 }
 
 /// The numbered options of one page, packed into as many columns as fit — or,
@@ -731,15 +748,21 @@ fn wrap_cells(cells: &[Cell], first_room: usize, rest_room: usize) -> Vec<&[Cell
 
 /// One numbered option, worded from the model where this module re-words and
 /// from `describe`'s own line where it does not (module header).
-fn option_text(index: usize, row: &Row<'_>, board: &BoardModel) -> OptionRow {
+fn option_text(
+    index: usize,
+    row: &Row<'_>,
+    board: &BoardModel,
+    colors: &[PlayerColor],
+) -> OptionRow {
     let mut body: Vec<Cell> = Vec::new();
     let mut plain = |s: &str| body.extend(s.chars().map(|c| (None, c)));
     match row {
         Row::Family { words } => plain(words),
-        Row::Move { mv, fee, words } => match move_row(mv, *fee, board) {
+        Row::Move { mv, fee, words } => match move_row(mv, *fee, board, colors) {
             Some(worded) => {
-                plain(&worded.plain_prefix);
-                body.extend(worded.marked.chars().map(|c| (Some(Tone::Reachable), c)));
+                for (tone, text) in &worded.segments {
+                    body.extend(text.chars().map(|c| (*tone, c)));
+                }
             }
             None => plain(words),
         },
@@ -747,22 +770,26 @@ fn option_text(index: usize, row: &Row<'_>, board: &BoardModel) -> OptionRow {
     OptionRow { number: format!("[{}]", menu_number(index)), body }
 }
 
-/// A re-worded move row: the part that takes no tint, and the `◈` destination
-/// mark (with what follows it), which takes [`Tone::Reachable`].
+/// A re-worded move row as TINTED SEGMENTS, in reading order.
+///
+/// **Segments rather than the old prefix/marked pair, because T11 is the
+/// deliberate palette pass the T4 review deferred** ([`WordedMove::with_tail`]
+/// records the deferral). Two fields could express "everything before the mark
+/// is plain, everything from the mark on is green", which is not what the
+/// approved `main-frame-mid.ans` draws: it BOLDS the area name, tints the `◈`
+/// alone, and leaves the ` — 1 step · free` tail plain. Three treatments need
+/// three segments.
 struct WordedMove {
-    plain_prefix: String,
-    marked: String,
+    segments: Vec<(Option<Tone>, String)>,
 }
 
 impl WordedMove {
     /// A row with no destination mark — everything it says takes no tint.
     ///
     /// Most re-worded rows are this shape (the retreat and the two placements),
-    /// which is why it is a constructor: they used to carry an empty `marked`
-    /// and a `tone` that painted it, i.e. two fields of plumbing that could
-    /// only ever paint nothing.
+    /// which is why it is a constructor.
     fn plain(text: String) -> WordedMove {
-        WordedMove { plain_prefix: text, marked: String::new() }
+        WordedMove { segments: vec![(None, text)] }
     }
 }
 
@@ -770,7 +797,12 @@ impl WordedMove {
 /// name from the board, `◈` from its reachable mark, step count from the
 /// path, fee from the priced [`FeeModel`]. `None` for every other kind, which
 /// leaves [`option_text`] printing `describe`'s own words (module header).
-fn move_row(mv: &Move, fee: Option<&FeeModel>, board: &BoardModel) -> Option<WordedMove> {
+fn move_row(
+    mv: &Move,
+    fee: Option<&FeeModel>,
+    board: &BoardModel,
+    colors: &[PlayerColor],
+) -> Option<WordedMove> {
     match mv {
         Move::MovePresident { path, destination } => {
             // A TELEPORT states its price in the word and stops: an empty path
@@ -781,7 +813,7 @@ fn move_row(mv: &Move, fee: Option<&FeeModel>, board: &BoardModel) -> Option<Wor
             // what it costs, once.
             let tail = match (path.is_empty(), fee) {
                 (true, Some(f)) if f.total > 0 => {
-                    format!("teleport {} {}", glyph::SEPARATOR, fee_words(fee))
+                    format!("teleport {} {}", glyph::SEPARATOR, fee_words(fee, colors))
                 }
                 (true, _) => "free teleport".to_string(),
                 (false, _) => format!(
@@ -789,7 +821,7 @@ fn move_row(mv: &Move, fee: Option<&FeeModel>, board: &BoardModel) -> Option<Wor
                     path.len(),
                     if path.len() == 1 { "" } else { "s" },
                     glyph::SEPARATOR,
-                    fee_words(fee),
+                    fee_words(fee, colors),
                 ),
             };
             Some(destination_row("Move to", *destination, board, &tail))
@@ -798,7 +830,7 @@ fn move_row(mv: &Move, fee: Option<&FeeModel>, board: &BoardModel) -> Option<Wor
             "Place your President in",
             *destination,
             board,
-            &fee_words(fee),
+            &fee_words(fee, colors),
         )),
         Move::ReturnPresidentToHand { recover } => {
             let recovered: u32 = recover.values().map(|&c| u32::from(c)).sum();
@@ -822,7 +854,7 @@ fn move_row(mv: &Move, fee: Option<&FeeModel>, board: &BoardModel) -> Option<Wor
             Some(WordedMove::plain(format!(
                 "Place 1 assistant in {}{}",
                 areas.join(", "),
-                fee_tail(fee),
+                fee_tail(fee, colors),
             )))
         }
         Move::PlaceTwoSameArea { area, adjacent_bonus } => {
@@ -833,7 +865,7 @@ fn move_row(mv: &Move, fee: Option<&FeeModel>, board: &BoardModel) -> Option<Wor
             Some(WordedMove::plain(format!(
                 "Place 2 assistants in {}{bonus}{}",
                 area_name_with_id(board, *area),
-                fee_tail(fee),
+                fee_tail(fee, colors),
             )))
         }
         _ => None,
@@ -848,50 +880,52 @@ fn move_row(mv: &Move, fee: Option<&FeeModel>, board: &BoardModel) -> Option<Wor
 /// engine offered: one boolean, one source.
 fn destination_row(verb: &str, area: AreaId, board: &BoardModel, tail: &str) -> WordedMove {
     let marked = board.tiles.iter().any(|t| t.area == area && t.reachable);
-    WordedMove {
-        plain_prefix: format!("{verb} {} ", area_name(board, area)),
-        marked: if marked { format!("{} ", glyph::REACHABLE) } else { String::new() },
+    let mut segments = vec![
+        (None, format!("{verb} ")),
+        // The area NAME is what a player scans the list for, so it is the one
+        // thing on the row that is bold — the approved `main-frame-mid.ans`'s
+        // own treatment, adopted at T11's palette pass.
+        (Some(Tone::Strong), area_name(board, area).to_string()),
+        (None, " ".to_string()),
+    ];
+    if marked {
+        segments.push((Some(Tone::Reachable), format!("{} ", glyph::REACHABLE)));
     }
-    .with_tail(tail)
-}
-
-impl WordedMove {
-    /// Append the `— <tail>` clause after the marked segment.
-    ///
-    /// **On an UNMARKED row the tail takes no tint; on a marked one it is
-    /// currently tinted along with the `◈`, which the approved mock is not** —
-    /// `main-frame-mid.ans` closes its green run after the mark and leaves
-    /// ` — 1 step · free` plain. Recorded rather than changed here: the T4
-    /// review ruled the wording of this row (the teleport clause above), not
-    /// its color, and the same mock line also bolds the area NAME, which this
-    /// module does not do either. Both belong to one deliberate pass over the
-    /// row's palette rather than to a fix wave.
-    fn with_tail(mut self, tail: &str) -> WordedMove {
-        // The mark already carries its trailing space when present; without it
-        // the prefix's own space closes the gap.
-        let dash = format!("{} {tail}", glyph::SECTION_DASH);
-        if self.marked.is_empty() {
-            self.plain_prefix.push_str(&dash);
-        } else {
-            self.marked.push_str(&dash);
-        }
-        self
-    }
+    segments.push((None, format!("{} {tail}", glyph::SECTION_DASH)));
+    WordedMove { segments }
 }
 
 /// `free` / `pay ¥2 (2 to Blue)` / `pay ¥3 (2 to Blue, 1 canal toll)`.
 ///
 /// Player recipients first in seat order, the bank's canal toll last — the
 /// order `describe` prints and the order the money actually moves in.
-/// [`FeeModel`] carries no color table, so recipients are named by SEAT here;
-/// the callers that have colors say so in their own words.
-fn fee_words(fee: Option<&FeeModel>) -> String {
+///
+/// **Recipients are named by COLOUR since T11, and they used to be named by
+/// seat.** `describe::placement_fee_note` — the other surface that prints this
+/// exact fact — has always read `2 to Blue`, so a player comparing a Movement
+/// row against a Placement preview was reading one fee in two vocabularies. The
+/// rule the driver now holds everywhere: a PLAYER is named by their colour (it
+/// is what is on the table); a SEAT number is used only where the thing being
+/// named is a seat rather than a player — the `reveal <seat>` grammar, its
+/// menu, the panel annotation that is that grammar's key, and the wizard's
+/// per-seat setup questions. A fee recipient is a player.
+///
+/// [`FeeModel`] still carries no colour table, deliberately — it is a MODEL —
+/// so the table arrives as a parameter and a seat the caller cannot colour
+/// falls back to its number rather than losing its identity.
+fn fee_words(fee: Option<&FeeModel>, colors: &[PlayerColor]) -> String {
     let Some(fee) = fee else { return "free".to_string() };
     if fee.total == 0 {
         return "free".to_string();
     }
-    let mut parts: Vec<String> =
-        fee.to_players.iter().map(|(id, amount)| format!("{amount} to seat {}", id.0)).collect();
+    let mut parts: Vec<String> = fee
+        .to_players
+        .iter()
+        .map(|(id, amount)| match color_of(colors, *id) {
+            Some(c) => format!("{amount} to {}", color_word(c)),
+            None => format!("{amount} to seat {}", id.0),
+        })
+        .collect();
     if fee.canal_tolls > 0 {
         parts.push(format!(
             "{} canal toll{}",
@@ -907,9 +941,11 @@ fn fee_words(fee: Option<&FeeModel>) -> String {
 /// (`free` included, because a player choosing between routes is comparing
 /// prices), a placement into empty areas has no price to compare and the words
 /// would be noise on every row of the commonest decision in the game.
-fn fee_tail(fee: Option<&FeeModel>) -> String {
+fn fee_tail(fee: Option<&FeeModel>, colors: &[PlayerColor]) -> String {
     match fee {
-        Some(fee) if fee.total > 0 => format!(" {} {}", glyph::SECTION_DASH, fee_words(Some(fee))),
+        Some(fee) if fee.total > 0 => {
+            format!(" {} {}", glyph::SECTION_DASH, fee_words(Some(fee), colors))
+        }
         _ => String::new(),
     }
 }
@@ -918,13 +954,16 @@ fn fee_tail(fee: Option<&FeeModel>) -> String {
 // The standing hint
 // ---------------------------------------------------------------------------
 
-/// The mocks' standing hint, minus the one clause that is not true yet.
+/// The mocks' standing hint.
 ///
-/// **One deviation from the approved mock, because the mock describes a
-/// finished 3.5a and this is the middle of one.** The mock's hint names
-/// `↑ recalls what you typed` — the line editor is T9's, and until it ships an
-/// arrow key produces an escape sequence, so claiming recall would be a lie
-/// printed on every screen. It comes back with the surface that makes it true.
+/// **The recall clause is CONDITIONAL, and that is the whole of what is left of
+/// the old deviation.** The mock's hint names `↑ recalls what you typed`; until
+/// T9 shipped the line editor an arrow key produced an escape sequence, so the
+/// clause was suppressed rather than printed and false. T9 made it true on a
+/// terminal and left it false everywhere else — a piped run has no editor and
+/// no ↑ — so it is printed exactly where it holds ([`ZoneContext::recall`]),
+/// which keeps the piped protocol byte-identical to what it was and stops a
+/// real terminal under-promising a key the guide sells.
 ///
 /// **The mock's OTHER clause is now true and printed.** T4 shipped this line
 /// reading `'view' or '?' any surface`, because `?` was then an alias for the
@@ -981,6 +1020,9 @@ fn hint_with_lead(lead: Vec<String>, ctx: &ZoneContext<'_>, players: u8) -> Stri
     // an entry back, that nothing commits until it is applied (carried by the
     // lead when there is a single option, and by `back`'s wording otherwise),
     // and how to reach the other surfaces.
+    if ctx.recall {
+        parts.push(format!("{} recalls what you typed", glyph::HISTORY_KEY));
+    }
     parts.push("'back' undoes the last applied entry".to_string());
     parts.push("'view' any surface".to_string());
     parts.push("'?' the card index".to_string());
@@ -1075,7 +1117,21 @@ fn reveal_hint(model: &crate::screen_model::RevealModel, players: u8) -> String 
     let parts = vec![
         crate::card_prompt::entry_hint(model.kind(), false).to_string(),
         cancel.to_string(),
-        "'sites' or 'tracks' to look around".to_string(),
+        // **The whole roster, not two of it** (T11). This clause named
+        // `'sites' or 'tracks'` because those were the only two full-screen
+        // views when it was written; `ports`, `labs`, `hand` and `log` became
+        // views too and are reachable from here by exactly the same mechanism —
+        // a whole-line match on a surface's own name, intercepted ahead of the
+        // capture — so the hint was under-selling four screens.
+        //
+        // **It names the WORDS and not `view`, deliberately.** `view` opens a
+        // sub-prompt, and `Repl::step` routes every line to the reveal
+        // collector before it reaches the sub-prompt branch, so the menu is the
+        // one navigation surface that genuinely does NOT work here. Advertising
+        // it would have been the shorter clause and a false one — which is what
+        // `the_reveal_zone_words_every_live_target_and_fits_the_frame` asserts
+        // against, and it caught exactly that on the first attempt.
+        "'tracks', 'sites', 'ports', 'labs', 'hand' or 'log' to look around".to_string(),
     ];
     wrap_hint(&parts, crate::screen::frame_width(usize::from(players)))
 }
@@ -1147,7 +1203,7 @@ mod tests {
     }
 
     fn ctx() -> ZoneContext<'static> {
-        ZoneContext { page: 0, expert: "", game_over: false }
+        ZoneContext { page: 0, expert: "", game_over: false, recall: false }
     }
 
     /// **The reveal zone, at every target a live capture can reach** (T8): the
@@ -1315,14 +1371,14 @@ mod tests {
         let mv = Move::MovePresident { path: vec![dest], destination: dest };
         let mut board = screen_model::build_board(&state, &rules, &[]);
         let unmarked =
-            option_text(0, &Row::Move { mv: &mv, fee: None, words: "fallback" }, &board).painted();
+            option_text(0, &Row::Move { mv: &mv, fee: None, words: "fallback" }, &board, &colors_np(&state)).painted();
         assert!(!unmarked.contains(glyph::REACHABLE), "{unmarked}");
 
         for tile in &mut board.tiles {
             tile.reachable = tile.area == dest;
         }
         let marked =
-            option_text(0, &Row::Move { mv: &mv, fee: None, words: "fallback" }, &board).painted();
+            option_text(0, &Row::Move { mv: &mv, fee: None, words: "fallback" }, &board, &colors_np(&state)).painted();
         assert!(marked.contains(glyph::REACHABLE), "{marked}");
         assert!(marked.contains("1 step"), "the step count comes off the path: {marked}");
         assert!(marked.contains("free"), "an unpriced move is free: {marked}");
@@ -1337,11 +1393,11 @@ mod tests {
             to_players: vec![(PlayerId::new(1), 2)],
             canal_tolls: 1,
         };
-        let words = fee_words(Some(&paid));
+        let words = fee_words(Some(&paid), &[]);
         assert_eq!(words, "pay ¥3 (2 to seat 1, 1 canal toll)", "{words}");
-        assert_eq!(fee_words(None), "free");
+        assert_eq!(fee_words(None, &[]), "free");
         assert_eq!(
-            fee_words(Some(&FeeModel { total: 0, to_players: Vec::new(), canal_tolls: 0 })),
+            fee_words(Some(&FeeModel { total: 0, to_players: Vec::new(), canal_tolls: 0 }), &[]),
             "free",
         );
     }
@@ -1355,7 +1411,7 @@ mod tests {
         let board = screen_model::build_board(&state, &rules, &[]);
         let mv = Move::ExecuteAreaAction { action: AreaAction::ProduceCopper };
         let words = describe::describe_move(&mv, &state, &rules);
-        let row = option_text(4, &Row::Move { mv: &mv, fee: None, words: &words }, &board).painted();
+        let row = option_text(4, &Row::Move { mv: &mv, fee: None, words: &words }, &board, &colors_np(&state)).painted();
         assert_eq!(row, format!("[5] {words}"), "{row}");
     }
 
@@ -1428,7 +1484,20 @@ mod tests {
         let d = screen_model::build_decision(&state, &rules, &[]);
         let zone =
             decision_zone(&d, &[Row::Family { words: "x" }], &board, &colors_np(&state), &ctx());
-        assert!(!zone.contains(glyph::HISTORY_KEY), "no recall claim before T9: {zone}");
+        // The recall clause is printed only where the line editor is live: a
+        // piped run has no ↑, and this fixture is one.
+        assert!(!zone.contains(glyph::HISTORY_KEY), "no recall claim without an editor: {zone}");
+        let editing = decision_zone(
+            &d,
+            &[Row::Family { words: "x" }],
+            &board,
+            &colors_np(&state),
+            &ZoneContext { page: 0, expert: "", game_over: false, recall: true },
+        );
+        assert!(
+            editing.contains(&format!("{} recalls what you typed", glyph::HISTORY_KEY)),
+            "and it IS printed where the editor is live — the guide sells that key: {editing}",
+        );
         assert!(zone.contains("'back' undoes"), "{zone}");
         // Since T5 the mock's two navigation clauses are both true and both
         // printed, and they name two DIFFERENT screens -- a hint that still
@@ -1743,14 +1812,14 @@ mod tests {
         let dest = AreaId::new(3);
 
         let hop = Move::MovePresident { path: vec![], destination: dest };
-        let row = option_text(0, &Row::Move { mv: &hop, fee: None, words: "fallback" }, &board)
+        let row = option_text(0, &Row::Move { mv: &hop, fee: None, words: "fallback" }, &board, &colors_np(&state))
             .painted();
         assert!(row.contains("free teleport"), "{row}");
         assert_eq!(row.matches("free").count(), 1, "the price is stated once: {row}");
 
         // A walk still prices itself, teleport wording nowhere near it.
         let walk = Move::MovePresident { path: vec![dest], destination: dest };
-        let walked = option_text(0, &Row::Move { mv: &walk, fee: None, words: "fallback" }, &board)
+        let walked = option_text(0, &Row::Move { mv: &walk, fee: None, words: "fallback" }, &board, &colors_np(&state))
             .painted();
         assert!(walked.contains("1 step · free"), "{walked}");
         assert!(!walked.contains("teleport"), "{walked}");
@@ -1759,10 +1828,76 @@ mod tests {
         // that keeps "free teleport" from being an assumption about fees.
         let paid = FeeModel { total: 2, to_players: vec![(PlayerId::new(1), 2)], canal_tolls: 0 };
         let priced =
-            option_text(0, &Row::Move { mv: &hop, fee: Some(&paid), words: "fallback" }, &board)
+            option_text(0, &Row::Move { mv: &hop, fee: Some(&paid), words: "fallback" }, &board, &colors_np(&state))
                 .painted();
-        assert!(priced.contains("teleport · pay ¥2 (2 to seat 1)"), "{priced}");
+        // The recipient is named by COLOUR (T11's rule), which is the same
+        // vocabulary `describe::placement_fee_note` has always used.
+        assert!(priced.contains("teleport · pay ¥2 (2 to Blue)"), "{priced}");
+        assert!(!priced.contains("seat 1"), "a player is not a seat here: {priced}");
         assert!(!priced.contains("free"), "{priced}");
+    }
+
+    /// **The option row's palette, as the approved mock draws it** (T11's
+    /// deliberate pass, deferred by the T4 review).
+    ///
+    /// Three treatments, and the reason each is what it is: the AREA NAME is
+    /// bold because it is what a player scans the list for; the `◈` is the one
+    /// green thing because it is the engine's own reachability mark and the
+    /// board tints the same tile the same way; the TAIL — steps, price,
+    /// recipients — is plain, on every row, whether or not the row is marked.
+    ///
+    /// That last clause is the one that changed. The tail used to inherit the
+    /// mark's green on marked rows and stay plain on unmarked ones, so the same
+    /// price read in two colours depending on a fact about the destination —
+    /// which is the "option tails get the same tint treatment everywhere"
+    /// ruling this test now pins.
+    #[test]
+    fn an_option_rows_tail_is_plain_whether_or_not_the_row_is_marked() {
+        let (state, rules) = state_np(2);
+        let dest = AreaId::new(3);
+        let walk = Move::MovePresident { path: vec![dest], destination: dest };
+        let colors = colors_np(&state);
+
+        // Two boards over the SAME move: one that marks the destination
+        // reachable and one that does not.
+        let mut marked = screen_model::build_board(&state, &rules, &[]);
+        let mut plain = marked.clone();
+        for tile in marked.tiles.iter_mut() {
+            tile.reachable = tile.area == dest;
+        }
+        for tile in plain.tiles.iter_mut() {
+            tile.reachable = false;
+        }
+
+        crate::style::force(true);
+        let with_mark =
+            option_text(0, &Row::Move { mv: &walk, fee: None, words: "fallback" }, &marked, &colors)
+                .painted();
+        let without =
+            option_text(0, &Row::Move { mv: &walk, fee: None, words: "fallback" }, &plain, &colors)
+                .painted();
+        crate::style::force(false);
+
+        assert!(with_mark.contains(glyph::REACHABLE), "the marked row draws its mark");
+        assert!(!without.contains(glyph::REACHABLE), "the unmarked one does not");
+
+        // The tail is the same BYTES on both rows, escapes included — which is
+        // the whole content of "the same tint treatment everywhere".
+        let tail_of = |row: &str| {
+            let at = row.rfind("1 step").expect("the tail");
+            row[at..].to_string()
+        };
+        assert_eq!(tail_of(&with_mark), tail_of(&without), "the tail is tinted identically");
+        assert!(
+            !tail_of(&with_mark).contains('\u{1b}'),
+            "and it is plain: {:?}",
+            tail_of(&with_mark),
+        );
+
+        // The area name is bold on both, which is the other half of the pass.
+        let bold = crate::style::paint(Tone::Strong, "COPPER MINE");
+        assert!(with_mark.contains(&bold), "the area name leads in bold: {with_mark:?}");
+        assert!(without.contains(&bold), "on both rows: {without:?}");
     }
 
     /// Painting never moves a visible character — the crate's standing
