@@ -21,18 +21,26 @@
 //! by construction.
 //!
 //! **Width.** The index is a FULL-SCREEN surface: `screen::wrap` draws no board
-//! above it, so the thing it has to fit is the design floor
-//! ([`crate::screen::FLOOR_W`], 200 columns) rather than any one count's frame
-//! width. That is what buys the mock's eight cards to a row — at the 2-player
-//! frame's 198 it would be seven, and the grid would break mid-group for a
-//! reason that has nothing to do with the cards.
+//! above it, so the thing it has to fit is the whole terminal rather than any
+//! one count's frame width. At the design floor
+//! ([`crate::screen::FLOOR_W`], 200 columns) that buys the mock's eight cards to
+//! a row — at the 2-player frame's 198 it would be seven, and the grid would
+//! break mid-group for a reason that has nothing to do with the cards.
+//!
+//! **The floor is the DESIGN, not a measurement, and this surface is the one
+//! place that distinction had teeth** (T7 review SHOULD-6). Laying the grid out
+//! at 200 columns on a 120-column terminal does not shrink the screen; it makes
+//! the terminal wrap every row mid-card, turning the identification surface into
+//! the least readable thing on it. `index_view` therefore takes the width it is
+//! drawing into — [`crate::screen::index_width`] measures the real terminal
+//! where that is knowable and falls back to the floor where it is not — and the
+//! wizard says so once when the two differ.
 
 use yokohama_core::{AchievementCategory, PlayerColor};
 
 use crate::board_render::Twin;
 use crate::card_render;
 use crate::describe;
-use crate::screen::FLOOR_W;
 use crate::screen_model::{IndexCard, IndexFilter, IndexGroupKey, IndexKind, IndexModel};
 use crate::style::{glyph, paint, Tone};
 
@@ -40,12 +48,20 @@ use crate::style::{glyph, paint, Tone};
 /// gutter, which is what makes eight 24-column cards fit 200.
 const CARD_GAP: usize = 1;
 
-/// Cards drawn side by side at `width`, computed from the floor rather than
-/// stated: the last card on a row needs no gutter after it, so `n` cards cost
-/// `n * width + (n - 1) * CARD_GAP`. Never zero — a card wider than the floor
+/// Cards drawn side by side at `card` columns each, inside `screen` columns:
+/// the last card on a row needs no gutter after it, so `n` cards cost
+/// `n * card + (n - 1) * CARD_GAP`. Never zero — a card wider than the screen
 /// still gets a row of its own rather than an empty screen.
-fn cards_per_row(width: usize) -> usize {
-    ((FLOOR_W + CARD_GAP) / (width + CARD_GAP)).max(1)
+///
+/// **`screen` is a PARAMETER since T7's review (SHOULD-6), and it used to be
+/// [`FLOOR_W`].** The floor is a design decision about what the frame is drawn
+/// FOR; using it here made it a claim about the terminal, so every index below
+/// 200 columns laid out eight cards to a row and the terminal wrapped each row
+/// mid-card — at the exact moment a player was reading cards to identify one.
+/// Nothing said so, because nothing had measured. The floor is now the FALLBACK
+/// ([`crate::screen::index_width`]), which is what it can honestly be.
+fn cards_per_row(card: usize, screen: usize) -> usize {
+    ((screen + CARD_GAP) / (card + CARD_GAP)).max(1)
 }
 
 /// Where this screen is being drawn, which decides ONE line: how to leave it.
@@ -73,12 +89,21 @@ pub enum IndexContext {
     Inline,
 }
 
-/// The whole index screen: title, context, the groups, footer, caret.
+/// The whole index screen: title, context, the groups, footer, and — on an
+/// overlay — the caret.
 ///
 /// `colors` is the seat color table — needed only by the achievement cards,
 /// which name claimants and per-seat progress. `context` decides the exit line
-/// only — see [`IndexContext`].
-pub fn index_view(index: &IndexModel, colors: &[PlayerColor], context: IndexContext) -> String {
+/// and whether a caret is drawn at all — see [`IndexContext`]. `screen_width` is
+/// the columns to lay the grid out in; callers pass
+/// [`crate::screen::index_width`] and tests pass the width they are asserting
+/// about.
+pub fn index_view(
+    index: &IndexModel,
+    colors: &[PlayerColor],
+    context: IndexContext,
+    screen_width: usize,
+) -> String {
     let mut out = String::new();
     out.push_str(&title_line(index));
     out.push('\n');
@@ -91,7 +116,7 @@ pub fn index_view(index: &IndexModel, colors: &[PlayerColor], context: IndexCont
         out.push('\n');
         out.push('\n');
     }
-    let per_row = cards_per_row(card_render::card_width(index.kind));
+    let per_row = cards_per_row(card_render::card_width(index.kind), screen_width);
     for group in &index.groups {
         // A single ungrouped run needs no heading — see `IndexGroupKey::All`.
         if let Some(heading) = group_heading(group.key, group.cards.len()) {
@@ -111,8 +136,18 @@ pub fn index_view(index: &IndexModel, colors: &[PlayerColor], context: IndexCont
     out.push('\n');
     out.push_str(&exit_line(context));
     out.push('\n');
-    out.push_str(&paint(Tone::Prompt, "> "));
-    out.push('\n');
+    // **The caret belongs to the OVERLAY, and only there** (T7 review M3, the
+    // real-terminal addendum). On an overlay it is the screen's own prompt —
+    // the line the player answers, which is why the way out sits directly above
+    // it. Printed INLINE it is a dead prompt: `ask_screened` writes this screen
+    // into the transcript and then prints the question, with its own caret,
+    // underneath — so the wizard was leaving three stray `>` lines per setup
+    // run, each one an input line that reads nothing. Suppressing it is what
+    // makes this a wizard MODE rather than a reworded overlay.
+    if context == IndexContext::Overlay {
+        out.push_str(&paint(Tone::Prompt, "> "));
+        out.push('\n');
+    }
     out
 }
 
@@ -365,7 +400,7 @@ fn filter_text(filter: IndexFilter) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::screen::visible_width;
+    use crate::screen::{visible_width, FLOOR_W};
     use crate::screen_model::{build_order_index, CardGood, CardLocation, RecordingTarget};
     use yokohama_core::Country;
     use crate::style::strip_ansi;
@@ -373,7 +408,7 @@ mod tests {
 
     fn view(target: Option<RecordingTarget>, filter: Option<IndexFilter>) -> String {
         let rules = Rules::standard();
-        index_view(&build_order_index(&rules, &[], target, filter), &[], IndexContext::Overlay)
+        index_view(&build_order_index(&rules, &[], target, filter), &[], IndexContext::Overlay, FLOOR_W)
     }
 
     const A_TARGET: RecordingTarget =
@@ -407,7 +442,7 @@ mod tests {
         IndexKind::ALL
             .into_iter()
             .map(|kind| {
-                (kind, index_view(&one_index(kind, target), &colors, IndexContext::Overlay))
+                (kind, index_view(&one_index(kind, target), &colors, IndexContext::Overlay, FLOOR_W))
             })
             .collect()
     }
@@ -460,7 +495,7 @@ mod tests {
         let rules = Rules::standard();
         let model = crate::screen_model::build_tech_index(&rules, &[], Some(TECH_TARGET), None);
         assert_eq!(model.total, 20, "twenty titles from thirty physical cards");
-        let text = strip_ansi(&index_view(&model, &[], IndexContext::Overlay));
+        let text = strip_ansi(&index_view(&model, &[], IndexContext::Overlay, FLOOR_W));
 
         let mut seen = std::collections::BTreeSet::new();
         for card in rules.techs.iter() {
@@ -521,7 +556,7 @@ mod tests {
             "and a selection resolves to the copy nobody has claimed",
         );
         assert!(
-            strip_ansi(&index_view(&half, &[], IndexContext::Overlay)).contains("1 of 2 seen: Laboratory A slot 3"),
+            strip_ansi(&index_view(&half, &[], IndexContext::Overlay, FLOOR_W)).contains("1 of 2 seen: Laboratory A slot 3"),
             "the screen says which copy went where",
         );
 
@@ -540,7 +575,7 @@ mod tests {
             .expect("Telegram is on screen");
         assert!(card.location.is_some(), "both copies accounted for, so the card dims");
         assert!(
-            strip_ansi(&index_view(&both, &[], IndexContext::Overlay)).contains("= Laboratory A slot 3 +1 more"),
+            strip_ansi(&index_view(&both, &[], IndexContext::Overlay, FLOOR_W)).contains("= Laboratory A slot 3 +1 more"),
             "and it says both are spoken for",
         );
     }
@@ -557,7 +592,7 @@ mod tests {
             state.players.iter().map(|p| p.color).collect();
         let panel = crate::screen_model::build_achievements(&state);
         let text =
-            strip_ansi(&index_view(&crate::screen_model::build_achievement_index(&panel.cards, &[], None, None), &colors, IndexContext::Overlay));
+            strip_ansi(&index_view(&crate::screen_model::build_achievement_index(&panel.cards, &[], None, None), &colors, IndexContext::Overlay, FLOOR_W));
 
         assert_eq!(panel.cards.len(), 3, "one card per category is in play");
         for card in &panel.cards {
@@ -595,7 +630,7 @@ mod tests {
             state.players.iter().map(|p| p.color).collect();
         let panel = crate::screen_model::build_achievements(&state);
         let text =
-            strip_ansi(&index_view(&crate::screen_model::build_achievement_index(&panel.cards, &[], None, None), &colors, IndexContext::Overlay));
+            strip_ansi(&index_view(&crate::screen_model::build_achievement_index(&panel.cards, &[], None, None), &colors, IndexContext::Overlay, FLOOR_W));
         assert!(text.contains("claimed by Blue"), "{text}");
     }
 
@@ -613,7 +648,7 @@ mod tests {
         for group in &model.groups {
             assert_eq!(group.cards.len(), 4, "four types per category");
         }
-        let text = strip_ansi(&index_view(&model, &[], IndexContext::Overlay));
+        let text = strip_ansi(&index_view(&model, &[], IndexContext::Overlay, FLOOR_W));
         assert!(text.contains("[1] "), "a recording screen numbers its cards");
         assert!(text.contains("[12] "), "through to the last one: {text:.300}");
         assert!(
@@ -631,7 +666,7 @@ mod tests {
         let model = crate::screen_model::build_site_index(&rules, &[], Some(A_TARGET), None);
         assert_eq!(model.total, 24, "twenty-four printed site cards");
         assert_eq!(model.groups.len(), 1, "one ungrouped run");
-        let text = strip_ansi(&index_view(&model, &[], IndexContext::Overlay));
+        let text = strip_ansi(&index_view(&model, &[], IndexContext::Overlay, FLOOR_W));
         for (i, site) in rules.building_sites.iter().enumerate() {
             assert!(text.contains(&format!("SITE {i}")), "card {i} is on screen: {text:.300}");
             assert!(
@@ -658,6 +693,7 @@ mod tests {
             &crate::screen_model::build_tech_index(&rules, &[], None, None),
             &[],
             IndexContext::Overlay,
+            FLOOR_W,
         ));
         crate::view_render::tests::assert_capture("t6-tech-index.txt", &rendered);
     }
@@ -703,8 +739,8 @@ mod tests {
         for target in [None, Some(A_TARGET)] {
             for (kind, _) in every_index(target) {
                 let model = one_index(kind, target);
-                let overlay = strip_ansi(&index_view(&model, &[], IndexContext::Overlay));
-                let inline = strip_ansi(&index_view(&model, &[], IndexContext::Inline));
+                let overlay = strip_ansi(&index_view(&model, &[], IndexContext::Overlay, FLOOR_W));
+                let inline = strip_ansi(&index_view(&model, &[], IndexContext::Inline, FLOOR_W));
 
                 assert!(
                     overlay.contains("closes this index and puts you back at the prompt underneath"),
@@ -734,8 +770,91 @@ mod tests {
                     .filter(|(a, b)| a != b)
                     .count();
                 assert_eq!(differing, 1, "{kind:?}: only the way-out line differs");
+
+                // **And the inline form draws no caret** (the real-terminal
+                // addendum to M3). An overlay's `> ` is the line the player
+                // answers; printed inline it is a dead prompt above the real
+                // question, and the wizard was leaving one per index — three in
+                // a live setup run. Checked as a LINE rather than a substring,
+                // since a card face can legitimately hold a `>`.
+                assert!(
+                    !inline.lines().any(|l| l.trim() == ">"),
+                    "{kind:?} inline must draw no caret of its own:\n{inline}",
+                );
+                assert_eq!(
+                    overlay.lines().count(),
+                    inline.lines().count() + 1,
+                    "{kind:?}: the caret is the only line the overlay has extra",
+                );
+                assert_eq!(
+                    overlay.lines().next_back().map(str::trim),
+                    Some(">"),
+                    "{kind:?}: ...and the overlay still ends at its caret",
+                );
             }
         }
+    }
+
+    /// **The grid is laid out in the columns it is actually being drawn into**
+    /// (T7 review SHOULD-6). `cards_per_row` computed from `FLOOR_W`, so at any
+    /// width below 200 the index emitted rows wider than the terminal and the
+    /// terminal wrapped them MID-CARD — a grid of half-cards, on the one screen
+    /// whose whole job is letting a player recognize a card.
+    ///
+    /// Asserted over the CARD ROWS rather than the whole screen: the header and
+    /// footer are prose and soft-wrap harmlessly, while a card row that overruns
+    /// is the defect. Swept over every registry, because the four card widths
+    /// (24 / 49 / 66 / 49) put the breakpoints in four different places.
+    #[test]
+    fn every_registry_lays_its_cards_out_inside_the_width_it_is_given() {
+        for width in [80usize, 100, 120, 160, 200, 240] {
+            for kind in IndexKind::ALL {
+                let model = one_index(kind, Some(A_TARGET));
+                let card = card_render::card_width(kind);
+                let text = strip_ansi(&index_view(&model, &[], IndexContext::Overlay, width));
+                let rows: Vec<&str> = text
+                    .lines()
+                    .filter(|l| l.starts_with('┌') || l.starts_with('│') || l.starts_with('└'))
+                    .collect();
+                assert!(!rows.is_empty(), "{kind:?} at {width}: no card rows were drawn");
+                for row in &rows {
+                    // A card wider than the whole screen cannot fit and gets a
+                    // row of its own; that is the floor of what is achievable,
+                    // and the notice is what tells the player.
+                    let bound = width.max(card);
+                    assert!(
+                        visible_width(row) <= bound,
+                        "{kind:?} at {width} columns drew a {}-column row (card is {card}): {row:?}",
+                        visible_width(row),
+                    );
+                }
+                // The row really is packed, not one card per line by accident:
+                // the widest row uses the last card that fits.
+                let per_row = cards_per_row(card, width);
+                let widest = rows.iter().map(|r| visible_width(r)).max().expect("rows");
+                let expected = (per_row * (card + CARD_GAP)).saturating_sub(CARD_GAP);
+                assert!(
+                    widest <= expected,
+                    "{kind:?} at {width}: {widest} columns exceeds {per_row} cards' {expected}",
+                );
+            }
+        }
+    }
+
+    /// The arithmetic itself, at the widths a person actually uses — and the
+    /// mock's eight-to-a-row is the 200-column case rather than the rule.
+    #[test]
+    fn cards_per_row_is_computed_from_the_screen_not_from_the_floor() {
+        use crate::card_render::CARD_W;
+        assert_eq!(cards_per_row(CARD_W, FLOOR_W), 8, "the mock's row, at the design floor");
+        assert_eq!(cards_per_row(CARD_W, 120), 4, "a 120-column window takes four order cards");
+        assert_eq!(cards_per_row(CARD_W, 80), 3);
+        assert_eq!(cards_per_row(CARD_W, 240), 9, "and a wide one takes more, not eight");
+        // An achievement card is 66 columns: three at the floor, one at 120.
+        assert_eq!(cards_per_row(crate::card_render::GOAL_W, FLOOR_W), 3);
+        assert_eq!(cards_per_row(crate::card_render::GOAL_W, 120), 1);
+        // Never zero, however narrow — a row of one clipped card beats none.
+        assert_eq!(cards_per_row(crate::card_render::GOAL_W, 20), 1);
     }
 
     /// **Every registry's screen is byte-plain with color off and painted with
@@ -788,7 +907,7 @@ mod tests {
     fn the_row_holds_the_mocks_eight_cards() {
         use crate::card_render::CARD_W;
         const CARDS_PER_ROW: usize = (FLOOR_W + CARD_GAP) / (CARD_W + CARD_GAP);
-        assert_eq!(cards_per_row(CARD_W), 8, "the mock draws eight 24-column cards to a row");
+        assert_eq!(cards_per_row(CARD_W, FLOOR_W), 8, "the mock draws eight 24-column cards to a row");
         // The arithmetic behind that 8, in a `const` block so it is checked at
         // compile time rather than by an assertion the optimizer can fold: one
         // more card would put the row past the floor.
@@ -828,6 +947,7 @@ mod tests {
             &build_order_index(&rules, &placed, Some(A_TARGET), None),
             &[],
             IndexContext::Overlay,
+            FLOOR_W,
         ));
         assert!(text.contains("= Seat 0's deal"), "{text:.600}");
         assert!(text.contains("= Port A slot 1"), "{text:.600}");
@@ -969,6 +1089,7 @@ mod tests {
             ),
             &[],
             IndexContext::Overlay,
+            FLOOR_W,
         ));
 
         if std::env::var_os("UPDATE_T5_CAPTURE").is_some() {
@@ -991,7 +1112,7 @@ mod tests {
         let rules = Rules::standard();
         let index =
             build_order_index(&rules, &[], Some(A_TARGET), Some(IndexFilter::Country(Country::Dutch)));
-        let text = strip_ansi(&index_view(&index, &[], IndexContext::Overlay));
+        let text = strip_ansi(&index_view(&index, &[], IndexContext::Overlay, FLOOR_W));
         assert_eq!(index.shown, 5, "the Dutch group is five cards");
         assert!(text.contains("5 of 36, from Netherlands"), "{text:.300}");
         assert!(text.contains("[1] "), "the filtered grid renumbers from the base");

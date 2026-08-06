@@ -938,6 +938,7 @@ mod tests {
                 &index,
                 &[],
                 crate::index_render::IndexContext::Overlay,
+                crate::screen::FLOOR_W,
             ))
             .contains("not in play — no progress to show"),
         );

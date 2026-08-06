@@ -233,23 +233,16 @@ fn ask_card(
                 // INLINE, never an overlay: `ask_screened` prints this into the
                 // transcript and asks the same question underneath it, so the
                 // screen's own way-out line has to say that rather than offer
-                // four keys that close nothing (T7 review M3).
+                // four keys that close nothing, and it draws no caret of its own
+                // (T7 review M3).
                 CardEntry::OpenIndex => {
                     showing.set(numbered);
-                    Ask::Screen(crate::index_render::index_view(
-                        &model,
-                        ctx.colors,
-                        crate::index_render::IndexContext::Inline,
-                    ))
+                    Ask::Screen(inline_index(&model, ctx))
                 }
                 CardEntry::Filter(narrowed) => {
                     filter.set(narrowed);
                     showing.set(numbered);
-                    Ask::Screen(crate::index_render::index_view(
-                        &ctx.index(kind, screen_target, narrowed),
-                        ctx.colors,
-                        crate::index_render::IndexContext::Inline,
-                    ))
+                    Ask::Screen(inline_index(&ctx.index(kind, screen_target, narrowed), ctx))
                 }
                 // There is nothing to cancel BACK to inside the wizard: every
                 // question is one the setup cannot be built without, and the
@@ -270,6 +263,70 @@ fn ask_card(
     // one costs.
     out(&card_prompt::echo(card, ctx.rules, ctx.colors));
     Ok(card)
+}
+
+/// One card index drawn INLINE, at the real terminal's width, behind a
+/// one-time size notice when that width is under the design floor.
+///
+/// **The notice is §0.1's own device, moved to where the wizard can use it**
+/// (T7 review SHOULD-6). §0.1 says the layout is designed at 200 columns and
+/// degrades below that "with a one-time size notice"; the composed frame has
+/// one, but the wizard runs BEFORE `Repl` exists and so had no way to say
+/// anything. What the player saw instead was a grid laid out for 200 columns
+/// wrapping mid-card in a 120-column window, with nothing on screen to explain
+/// it. The grid now fits ([`crate::index_render::index_view`]'s width
+/// parameter) and the notice says what was traded for the fit.
+///
+/// Once per wizard RUN rather than per index: three registries are entered in a
+/// live setup and the terminal does not change size between them.
+fn inline_index(model: &IndexModel, ctx: &CardCtx<'_>) -> String {
+    let width = crate::screen::index_width();
+    format!(
+        "{}{}",
+        size_notice_once(model.kind, width),
+        crate::index_render::index_view(
+            model,
+            ctx.colors,
+            crate::index_render::IndexContext::Inline,
+            width,
+        ),
+    )
+}
+
+thread_local! {
+    /// Whether this wizard run has already printed the sub-floor size notice.
+    /// Thread-local for the reason `screen::force` is (parallel tests stay
+    /// hermetic), and RESET at [`run_wizard`] rather than left to the thread's
+    /// lifetime, so "once per run" is what it means in a test that runs two.
+    static SIZE_NOTICE_SHOWN: Cell<bool> = const { Cell::new(false) };
+}
+
+/// The notice, the first time an index is drawn under the design floor; the
+/// empty string afterwards, and always when the terminal is wide enough or its
+/// width is unknown (a piped run measures nothing and prints nothing — spec
+/// §0.12's byte-identical protocol is not negotiable for a convenience).
+fn size_notice_once(kind: IndexKind, width: usize) -> String {
+    if width >= crate::screen::FLOOR_W || SIZE_NOTICE_SHOWN.with(|f| f.get()) {
+        return String::new();
+    }
+    SIZE_NOTICE_SHOWN.with(|f| f.set(true));
+    let card = crate::card_render::card_width(kind);
+    let per_row = (width + 1) / (card + 1);
+    if per_row == 0 {
+        // Narrower than ONE card: the grid cannot help and says so, rather than
+        // promising a fit it is about to break.
+        return format!(
+            "  (your terminal is {width} columns and one card needs {card}, so the cards below \
+             will wrap. The index is drawn for {} — widen the window to read it.)\n",
+            crate::screen::FLOOR_W,
+        );
+    }
+    format!(
+        "  (your terminal is {width} columns; the index is drawn for {}, so it packs {} to a row \
+         here. Nothing is cut — widen the window for the full grid.)\n",
+        crate::screen::FLOOR_W,
+        crate::card_render::plural(per_row, "card"),
+    )
 }
 
 /// What names a card at this prompt, in the words the refusals use too.
@@ -388,6 +445,9 @@ pub fn run_wizard(
     out: &mut dyn FnMut(&str),
 ) -> Result<crate::repl::Repl, String> {
     let rules = Rules::standard();
+    // One notice per RUN, so a second wizard in the same process (or the same
+    // test thread) states the size again rather than inheriting a flag.
+    SIZE_NOTICE_SHOWN.with(|f| f.set(false));
 
     let is_live = ask_mode(input, out)?;
     let players = ask_player_count(input, out)?;
@@ -1732,6 +1792,7 @@ fn ask_tokens(
     out("the tile you entered there; Canal cells carry no token and are skipped. The menu\n");
     out("counts down as you go, and the old letters (i/c/s/t/f/y) still work.\n");
 
+    let roster = token_roster(&rules.five_power_tokens);
     let mut pool = rules.five_power_tokens.clone();
     let mut tokens: Vec<Option<FivePowerEffect>> = Vec::with_capacity(n);
     let mut row = 0usize;
@@ -1748,7 +1809,7 @@ fn ask_tokens(
             continue;
         }
         // Fixed for this one question, exactly as the tile offer is.
-        let offer = token_offer(&pool);
+        let offer = token_offer(&roster, &pool);
         let mut chosen: Option<FivePowerEffect> = None;
         ask(
             input,
@@ -1789,18 +1850,41 @@ fn ask_tokens(
     Ok(tokens)
 }
 
-/// The token faces still in the pool with their counts, in the canonical pool
-/// order (`rules.five_power_tokens`' own first-seen order, which is the order
-/// the box lists them).
-fn token_offer(pool: &[FivePowerEffect]) -> Vec<(FivePowerEffect, usize)> {
-    let mut offer: Vec<(FivePowerEffect, usize)> = Vec::new();
+/// Every face the box holds, in the canonical pool order
+/// (`rules.five_power_tokens`' own first-seen order) — computed once before the
+/// pass and never recomputed.
+///
+/// **This is the numbering, and its being fixed is the point** (T7 review
+/// round 2, item 3 — the tile treatment S1 got, finished here). The offer was
+/// the faces still IN the pool, numbered over that list, so the two-copy faces
+/// took their numbers with them as they ran out and everything below shuffled
+/// up: `4` was seafood for fourteen questions and then tea. The pass is asked
+/// up to seventeen times in a row off a physical board, which is exactly the
+/// question a person stops re-reading.
+fn token_roster(pool: &[FivePowerEffect]) -> Vec<FivePowerEffect> {
+    let mut roster: Vec<FivePowerEffect> = Vec::new();
     for face in pool {
-        match offer.iter_mut().find(|(f, _)| f == face) {
-            Some((_, count)) => *count += 1,
-            None => offer.push((*face, 1)),
+        if !roster.contains(face) {
+            roster.push(*face);
         }
     }
-    offer
+    roster
+}
+
+/// The roster with how many of each face is still to place — zeros included, so
+/// a position in this list is a stable answer number ([`token_roster`]).
+///
+/// The COUNTS still count down, which is what makes the menu an answer to "what
+/// is left"; a face that has run out drops off the screen. What no longer moves
+/// is where the surviving rows are numbered.
+fn token_offer(
+    roster: &[FivePowerEffect],
+    pool: &[FivePowerEffect],
+) -> Vec<(FivePowerEffect, usize)> {
+    roster
+        .iter()
+        .map(|face| (*face, pool.iter().filter(|p| *p == face).count()))
+        .collect()
 }
 
 /// The token offer as a numbered menu, in plain words.
@@ -1808,11 +1892,17 @@ fn token_offer(pool: &[FivePowerEffect]) -> Vec<(FivePowerEffect, usize)> {
 /// The same treatment the tile question gets and for the same reason (R1/F3):
 /// the prompt used to end `(i/c/s/t/f/y)` over a six-line legend, which is six
 /// letters to memorize for a question asked seventeen times.
+/// A face with none left is DROPPED rather than shown at zero, on
+/// [`tile_menu`]'s reasoning: the menu answers "what can I still place", and its
+/// number goes with it rather than to another face.
 fn token_menu(offer: &[(FivePowerEffect, usize)]) -> String {
     numbered_offer(
         "  Tokens still to place:\n",
-        offer.iter().enumerate().map(|(i, (face, left))| {
-            (menu_number(i), format!("{} x{left}", crate::describe::five_power_effect_label(*face)))
+        offer.iter().enumerate().filter(|(_, (_, left))| *left > 0).map(|(position, (face, left))| {
+            (
+                menu_number(position),
+                format!("{} x{left}", crate::describe::five_power_effect_label(*face)),
+            )
         }),
     )
 }
@@ -1825,8 +1915,15 @@ fn parse_token_entry(
 ) -> Result<FivePowerEffect, String> {
     let typed = s.trim();
     if typed.chars().all(|c| c.is_ascii_digit()) && !typed.is_empty() {
+        // The number indexes the ROSTER, not the visible rows ([`token_roster`]),
+        // so a number whose row has dropped off reaches the exhausted-face
+        // refusal by NAME rather than landing on whichever face now sits in that
+        // print position.
         return match typed.parse::<usize>().ok().and_then(|k| menu_index(k, offer.len())) {
-            Some(k) => Ok(offer[k].0),
+            Some(k) if offer[k].1 > 0 => Ok(offer[k].0),
+            Some(k) => Err(token_exhausted_message(offer[k].0)),
+            // The roster is every face the box holds, so it is empty only for a
+            // pool with no faces at all — which no `Rules` produces.
             None => Err(match menu_range(offer.len()) {
                 Some((lo, hi)) => format!("'{typed}' is not on the list -- pick {lo}-{hi}"),
                 None => "no tokens are left to place".to_string(),
@@ -1834,14 +1931,20 @@ fn parse_token_entry(
         };
     }
     let effect = crate::reveal::parse_token_letter(&[typed])?;
-    if offer.iter().any(|(face, _)| *face == effect) {
+    if offer.iter().any(|(face, left)| *face == effect && *left > 0) {
         Ok(effect)
     } else {
-        Err(format!(
-            "no more {} tokens available for this board",
-            crate::describe::five_power_effect_label(effect)
-        ))
+        Err(token_exhausted_message(effect))
     }
+}
+
+/// A face whose copies are all placed, refused with the same sentence whether
+/// the operator typed its letter or its still-valid number.
+fn token_exhausted_message(effect: FivePowerEffect) -> String {
+    format!(
+        "no more {} tokens available for this board",
+        crate::describe::five_power_effect_label(effect)
+    )
 }
 
 /// The confirmation checkpoint the live gate turns on (required outcome 3):
@@ -4127,6 +4230,296 @@ mod tests {
             transcript.contains("or '?' to redraw it"),
             "the prompt's own hint is in the transcript beside the screen's\n{transcript}"
         );
+        // **And it leaves no dead caret behind** (the real-terminal addendum).
+        // An overlay's `> ` is the line a player answers; here the question is
+        // printed underneath with its own, so this one read nothing and just sat
+        // there — once per index, three times in a live setup run.
+        assert!(
+            !transcript.lines().any(|l| l.trim() == ">"),
+            "a wizard index must draw no caret of its own\n{transcript}"
+        );
+    }
+
+    /// **The wizard says so when the terminal is under the design floor** (T7
+    /// review SHOULD-6), once per run, before the first index — §0.1's own
+    /// device, which the wizard could not use because it runs before `Repl` and
+    /// its width machinery exist.
+    ///
+    /// The screen it introduces now FITS: `index_view` lays the grid out in the
+    /// measured width, so what the notice explains is the trade (fewer cards to
+    /// a row), not a defect it is apologising for.
+    #[test]
+    fn a_sub_floor_terminal_gets_one_size_notice_before_the_first_index() {
+        crate::screen::force_width(Some(120));
+        let mut lines = live_2p_prefix(653);
+        // Two `?` at Port A, and a third at Laboratory A: three indexes, one
+        // notice.
+        lines.extend(["?", "?", "O1"].iter().map(|s| s.to_string()));
+        lines.extend(["O2", "O3", "O4", "O5", "O6"].iter().map(|s| s.to_string()));
+        lines.push("?".into());
+        lines.extend(["T1", "T2", "T3", "T4", "T5", "T6"].iter().map(|s| s.to_string()));
+        lines.push("confirm".into());
+        lines.push("yes".into());
+        let (repl, transcript) = feed_owned(lines);
+        crate::screen::clear_forced_width();
+        repl.unwrap_or_else(|e| panic!("expected Ok, got Err({e}); transcript:\n{transcript}"));
+        std::fs::remove_file("yokohama-game-653.json").ok();
+
+        assert_eq!(
+            transcript.matches("your terminal is 120 columns").count(),
+            1,
+            "the notice states the real width, ONCE for the run\n{transcript}"
+        );
+        assert!(
+            transcript.contains("the index is drawn for 200, so it packs 4 cards to a row here"),
+            "it says what the narrow window costs, in cards\n{transcript}"
+        );
+        // Before the index it introduces, not after it.
+        let notice = transcript.find("your terminal is 120 columns").expect("the notice");
+        let index = transcript.find("ORDER CARD INDEX").expect("the index");
+        assert!(notice < index, "the notice must lead the screen it explains\n{transcript}");
+
+        // ...and the screen it introduced actually fits 120 columns.
+        for row in transcript
+            .lines()
+            .filter(|l| l.starts_with('┌') || l.starts_with('│') || l.starts_with('└'))
+        {
+            assert!(
+                crate::screen::visible_width(row) <= 120,
+                "a card row ran to {} columns in a 120-column terminal: {row:?}",
+                crate::screen::visible_width(row),
+            );
+        }
+    }
+
+    /// **A terminal at or above the floor is told nothing, and a PIPED run is
+    /// told nothing** — the second is spec §0.12 and is not negotiable for a
+    /// convenience: a transcript that carried a notice would differ between a
+    /// developer's window and CI, and `piped_dogfood` compares bytes.
+    #[test]
+    fn a_wide_terminal_and_a_piped_run_get_no_size_notice() {
+        for width in [None, Some(200), Some(240)] {
+            crate::screen::force_width(width);
+            let mut lines = live_2p_prefix(654);
+            lines.push("?".into());
+            lines.extend(["O1", "O2", "O3", "O4", "O5", "O6"].iter().map(|s| s.to_string()));
+            lines.extend(["T1", "T2", "T3", "T4", "T5", "T6"].iter().map(|s| s.to_string()));
+            lines.push("confirm".into());
+            lines.push("yes".into());
+            let (repl, transcript) = feed_owned(lines);
+            crate::screen::clear_forced_width();
+            repl.unwrap_or_else(|e| panic!("expected Ok, got Err({e}); transcript:\n{transcript}"));
+            std::fs::remove_file("yokohama-game-654.json").ok();
+            assert!(transcript.contains("ORDER CARD INDEX"), "the index was drawn");
+            assert!(
+                !transcript.contains("your terminal is"),
+                "{width:?} needs no notice\n{transcript}"
+            );
+        }
+    }
+
+    /// **A token face's menu number does not move for the whole pass either**
+    /// (T7 review round 2, item 3 — the tile treatment S1 got, finished on the
+    /// question asked right after it).
+    ///
+    /// The order bug this pass already fixed (`swap_remove` reshuffling the
+    /// pool) was the loud half; this is the quiet one. The offer was the faces
+    /// still IN the pool, so a face running out took its number and everything
+    /// below it shuffled up — and the two-copy faces run out first, in a
+    /// seventeen-question pass answered off a physical board.
+    ///
+    /// Driven by EXHAUSTING two faces early rather than by playing the pass out:
+    /// at 2 players the canonical pool never runs a face down in ten cells
+    /// unless the operator spends one, so a test that simply answered ten
+    /// imports would prove nothing about a dropped row.
+    #[test]
+    fn a_token_faces_menu_number_is_the_same_at_every_cell_of_the_pass() {
+        let mut lines: Vec<String> = vec![
+            "live".into(), "2".into(), "red".into(), "blue".into(), "0".into(), "655".into(), "".into(),
+            "hidden".into(), "hidden".into(),
+        ];
+        lines.extend(P2_TILES.iter().map(|s| s.to_string()));
+        lines.extend((0u8..10).map(|i| i.to_string()));
+        // Both coppers, then both silks — the two rows in the middle of the
+        // roster — then imports for the rest. Copper `[2]` and silk `[3]` are
+        // gone by cell 4, and tea/seafood/yen must not slide up into them.
+        lines.extend(["c", "c", "s", "s"].iter().map(|s| s.to_string()));
+        lines.extend(std::iter::repeat_n("i".to_string(), 6));
+        lines.extend(P2_ACHIEVEMENTS.iter().map(|s| s.to_string()));
+        lines.extend(["O1", "O2", "O3", "O4", "O5", "O6"].iter().map(|s| s.to_string()));
+        lines.extend(["T1", "T2", "T3", "T4", "T5", "T6"].iter().map(|s| s.to_string()));
+        lines.push("confirm".into());
+        lines.push("yes".into());
+        let (repl, transcript) = feed_owned(lines);
+        repl.unwrap_or_else(|e| panic!("expected Ok, got Err({e}); transcript:\n{transcript}"));
+        std::fs::remove_file("yokohama-game-655.json").ok();
+
+        let menus: Vec<HashMap<usize, String>> = transcript
+            .split("Tokens still to place")
+            .skip(1)
+            .map(|block| {
+                block
+                    .lines()
+                    .take_while(|l| !l.starts_with("Cell "))
+                    .flat_map(|line| {
+                        line.split('[').skip(1).filter_map(|cell| {
+                            let (number, rest) = cell.split_once("] ")?;
+                            let (name, _) = rest.trim_end().rsplit_once(" x")?;
+                            Some((number.parse::<usize>().ok()?, name.trim().to_string()))
+                        })
+                    })
+                    .collect()
+            })
+            .collect();
+        assert_eq!(menus.len(), 10, "one menu per cell");
+        assert_eq!(menus[0].len(), 6, "the first cell offers all six faces");
+
+        // The rows really did drop — otherwise the pin below is vacuous.
+        assert!(menus[4].len() < menus[0].len(), "two faces must be spent by cell 4: {menus:?}");
+        assert!(!menus[4].values().any(|v| v.contains("copper")), "copper is gone: {:?}", menus[4]);
+        assert!(!menus[4].values().any(|v| v.contains("silk")), "silk is gone: {:?}", menus[4]);
+
+        let first = &menus[0];
+        for (i, menu) in menus.iter().enumerate() {
+            for (number, name) in menu {
+                assert_eq!(
+                    first.get(number),
+                    Some(name),
+                    "cell {i}: [{number}] is {name:?} here and {:?} at the first menu\n{transcript}",
+                    first.get(number),
+                );
+            }
+        }
+        // ...and a freed number is never handed to another face.
+        let mut seen: HashMap<usize, String> = HashMap::new();
+        for menu in &menus {
+            seen.extend(menu.clone());
+        }
+        assert_eq!(&seen, first, "a freed number was reused\n{transcript}");
+    }
+
+    /// **The PARSER refuses an exhausted face itself**, by number and by
+    /// letter, rather than leaning on `ask_tokens`' pool check to catch it.
+    ///
+    /// Pinned as a unit because the end-to-end test CANNOT distinguish the two:
+    /// the pool check's own refusal is byte-identical, so dropping either guard
+    /// leaves the transcript unchanged and a mutation of the parser passes
+    /// through a whole-wizard test. That is a fine belt-and-braces arrangement
+    /// and a poor pin, so the contract is stated where it lives. (The tile twin
+    /// needs no equivalent: its backstop word its message differently, so the
+    /// end-to-end pin already separates them.)
+    #[test]
+    fn the_token_parser_refuses_a_spent_face_by_number_and_by_letter() {
+        let roster = token_roster(&Rules::standard().five_power_tokens);
+        // Every copper spent, everything else untouched.
+        let pool: Vec<FivePowerEffect> = Rules::standard()
+            .five_power_tokens
+            .into_iter()
+            .filter(|f| !matches!(f, FivePowerEffect::Copper(_)))
+            .collect();
+        let offer = token_offer(&roster, &pool);
+        let copper_at = offer
+            .iter()
+            .position(|(f, _)| matches!(f, FivePowerEffect::Copper(_)))
+            .expect("copper keeps its roster row");
+        assert_eq!(offer[copper_at].1, 0, "fixture: no coppers left");
+
+        let want = "no more 2 copper tokens available for this board";
+        assert_eq!(
+            parse_token_entry(&menu_number(copper_at).to_string(), &offer),
+            Err(want.to_string()),
+            "the number that still means copper is refused as copper",
+        );
+        assert_eq!(parse_token_entry("c", &offer), Err(want.to_string()), "and so is its letter");
+        // ...while its NEIGHBOURS are untouched and still answer their own rows.
+        for (position, (face, left)) in offer.iter().enumerate() {
+            if *left > 0 {
+                assert_eq!(
+                    parse_token_entry(&menu_number(position).to_string(), &offer),
+                    Ok(*face),
+                    "position {position} must still name its own face",
+                );
+            }
+        }
+    }
+
+    /// **An exhausted token number is refused BY NAME**, with the same sentence
+    /// its letter gets — not bound to the face that now occupies that print
+    /// position (T7 review round 2, item 3; the twin of the tile pin above).
+    #[test]
+    fn an_exhausted_token_number_is_refused_by_name_not_bound_to_the_next_row() {
+        let mut lines: Vec<String> = vec![
+            "live".into(), "2".into(), "red".into(), "blue".into(), "0".into(), "656".into(), "".into(),
+            "hidden".into(), "hidden".into(),
+        ];
+        lines.extend(P2_TILES.iter().map(|s| s.to_string()));
+        lines.extend((0u8..10).map(|i| i.to_string()));
+        // Spend both coppers by number, then ask for `2` again (refused), then
+        // `c` again (refused the same way), then carry on with imports.
+        lines.extend(["2", "2", "2", "c", "i"].iter().map(|s| s.to_string()));
+        lines.extend(std::iter::repeat_n("i".to_string(), 7));
+        lines.extend(P2_ACHIEVEMENTS.iter().map(|s| s.to_string()));
+        lines.extend(["O1", "O2", "O3", "O4", "O5", "O6"].iter().map(|s| s.to_string()));
+        lines.extend(["T1", "T2", "T3", "T4", "T5", "T6"].iter().map(|s| s.to_string()));
+        lines.push("confirm".into());
+        lines.push("yes".into());
+        let (repl, transcript) = feed_owned(lines);
+        let repl = repl.unwrap_or_else(|e| panic!("expected Ok, got Err({e}); transcript:\n{transcript}"));
+        std::fs::remove_file("yokohama-game-656.json").ok();
+
+        assert_eq!(
+            transcript.matches("no more 2 copper tokens available for this board").count(),
+            2,
+            "the number and the letter get the SAME refusal\n{transcript}"
+        );
+        // The two coppers landed on cells 0 and 1, and cell 2 took an import —
+        // the refused `2` entered nothing at all.
+        let toks = &repl.session.state().board_layout.five_power_tokens;
+        assert!(
+            matches!(toks[&AreaId::new(0)], Some(FivePowerEffect::Copper(_)))
+                && matches!(toks[&AreaId::new(1)], Some(FivePowerEffect::Copper(_))),
+            "the two coppers are on the first two cells: {toks:?}"
+        );
+        assert!(
+            matches!(toks[&AreaId::new(2)], Some(FivePowerEffect::ImportedGoods(_))),
+            "and the refused `2` entered nothing, so cell 2 took the import: {toks:?}"
+        );
+        assert_eq!(
+            toks.values().filter(|t| matches!(t, Some(FivePowerEffect::Copper(_)))).count(),
+            2,
+            "exactly the two coppers the box holds"
+        );
+    }
+
+    /// The notice's two shapes, at the boundary and past it. Below one card's
+    /// width the grid cannot help, and the notice says THAT rather than
+    /// promising a fit it is about to break.
+    #[test]
+    fn the_size_notice_states_what_the_width_can_and_cannot_do() {
+        let fresh = |width: usize, kind: IndexKind| {
+            SIZE_NOTICE_SHOWN.with(|f| f.set(false));
+            size_notice_once(kind, width)
+        };
+        assert_eq!(fresh(200, IndexKind::Orders), "", "at the floor there is nothing to say");
+        assert_eq!(fresh(240, IndexKind::Orders), "", "and nothing above it");
+
+        let narrow = fresh(120, IndexKind::Orders);
+        assert!(narrow.contains("packs 4 cards to a row"), "{narrow}");
+        assert!(narrow.contains("Nothing is cut"), "{narrow}");
+
+        // An achievement card is 66 columns, so 120 fits exactly one...
+        let one = fresh(120, IndexKind::Achievements);
+        assert!(one.contains("packs 1 card to a row"), "singular, not '1 cards': {one}");
+        // ...and 40 fits none, which is a different sentence.
+        let none = fresh(40, IndexKind::Achievements);
+        assert!(none.contains("one card needs 66"), "{none}");
+        assert!(none.contains("will wrap"), "it does not promise a fit: {none}");
+        assert!(!none.contains("Nothing is cut"), "{none}");
+
+        // Once per run, whatever registry asks second.
+        SIZE_NOTICE_SHOWN.with(|f| f.set(false));
+        assert!(!size_notice_once(IndexKind::Orders, 120).is_empty());
+        assert_eq!(size_notice_once(IndexKind::Techs, 120), "", "the second index says nothing");
     }
 
     /// **The already-recorded line separates tags a person has to read apart**
@@ -4377,9 +4770,10 @@ mod tests {
             }
         }
         // The token menu's own, over the whole pool as it empties.
+        let roster = token_roster(&rules.five_power_tokens);
         let mut pool = rules.five_power_tokens.clone();
         while !pool.is_empty() {
-            measure(&token_menu(&token_offer(&pool)), &mut widest, &mut widest_cell);
+            measure(&token_menu(&token_offer(&roster, &pool)), &mut widest, &mut widest_cell);
             pool.pop();
         }
 

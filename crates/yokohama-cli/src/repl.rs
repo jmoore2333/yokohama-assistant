@@ -1351,6 +1351,7 @@ impl Repl {
             &self.index_model(kind),
             &self.seat_colors(),
             crate::index_render::IndexContext::Overlay,
+            screen::index_width(),
         )
     }
 

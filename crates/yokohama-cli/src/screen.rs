@@ -42,6 +42,14 @@ thread_local! {
     /// stays `None` on the main thread and `enabled` falls through to `ENABLED`
     /// exactly as before -- no behavioural change to the shipped app.
     static FORCED: std::cell::Cell<Option<bool>> = const { std::cell::Cell::new(None) };
+
+    /// A test's answer to "how wide is the terminal", or `None` for "this
+    /// thread has not said" — see `terminal_width`. The doubled `Option` is
+    /// deliberate: the outer one is whether a test has spoken, the inner one is
+    /// whether the answer is a width or "there is no terminal", and collapsing
+    /// them would make "no terminal" unstatable.
+    static FORCED_WIDTH: std::cell::Cell<Option<Option<usize>>> =
+        const { std::cell::Cell::new(None) };
 }
 
 /// Enable composed frames iff stdout is a real terminal. `main.rs` calls
@@ -68,6 +76,116 @@ pub fn enabled() -> bool {
 /// Display width of `s`: visible chars, ANSI escape runs excluded.
 pub(crate) fn visible_width(s: &str) -> usize {
     strip_ansi(s).chars().count()
+}
+
+/// The real terminal's column count, or `None` when there is no terminal to
+/// ask — measured ONCE per process and remembered.
+///
+/// **`std` still exposes no terminal size**, which is why every width in this
+/// module is a designed constant and why `Repl::board_cmd`'s note says so. The
+/// card index is the one surface that cannot live with that: it lays cards out
+/// in a GRID sized from [`FLOOR_W`], so below 200 columns every row it drew
+/// wrapped mid-card, at the exact moment a player was trying to read cards
+/// (T7 review SHOULD-6, found on a real terminal).
+///
+/// So it asks the terminal, through the one channel available without adding a
+/// dependency or unsafe code to a crate that has neither: `stty size`, reading
+/// `/dev/tty` rather than stdin so a redirected stdin cannot change the answer.
+///
+/// **Gated on stdout being a TTY, which is what keeps the piped protocol
+/// byte-identical** (spec §0.12). `/dev/tty` answers even when stdout is a pipe
+/// — verified — so without this gate a piped run inside a terminal would render
+/// differently from the same run in CI, and `piped_dogfood` would be measuring
+/// the developer's window. Under a pipe this is `None` and every caller falls
+/// back to the designed floor, exactly as before.
+///
+/// Everything here fails to `None`: no `/dev/tty`, no `stty`, a non-zero exit,
+/// unparseable output, or a nonsense width. A screen is no place to take the
+/// driver down over a rounding question.
+///
+/// **It reads the `ENABLED` atomic directly rather than calling [`enabled`],
+/// and that is the hermeticity fence.** `force` is a test hook for the LAYOUT
+/// question; letting it also decide whether this process shells out would make
+/// every test that forces frames on measure the DEVELOPER'S WINDOW, so the same
+/// suite would pass at 200 columns and fail at 120. Only `init_from_tty` sets
+/// the atomic, and only `main` calls that — so a test can never reach the
+/// subprocess, and [`force_width`] is how a test says what the terminal is.
+pub(crate) fn terminal_width() -> Option<usize> {
+    static MEASURED: std::sync::OnceLock<Option<usize>> = std::sync::OnceLock::new();
+    if let Some(forced) = FORCED_WIDTH.with(|f| f.get()) {
+        return forced;
+    }
+    if !may_measure() {
+        return None;
+    }
+    *MEASURED.get_or_init(measure_terminal_width)
+}
+
+/// Whether this process may ask a terminal how wide it is.
+///
+/// Its own function so the fence above can be ASSERTED rather than inferred: a
+/// test observing only `terminal_width() == None` would also pass with the
+/// fence removed on any machine without a `/dev/tty`, which is to say it would
+/// pass in CI and stop catching the regression on a developer's laptop —
+/// precisely the class of environment-dependence the fence exists to prevent.
+fn may_measure() -> bool {
+    ENABLED.load(Ordering::Relaxed)
+}
+
+/// Test hook: report `cols` (or `None`) as the terminal width without asking a
+/// terminal. Per-thread, for the reason [`force`] is; production never calls it.
+#[cfg(test)]
+pub(crate) fn force_width(cols: Option<usize>) {
+    FORCED_WIDTH.with(|f| f.set(Some(cols)));
+}
+
+/// Test hook: forget a [`force_width`], so this thread falls back to the
+/// production path (which, in a test, measures nothing — see [`terminal_width`]).
+#[cfg(test)]
+pub(crate) fn clear_forced_width() {
+    FORCED_WIDTH.with(|f| f.set(None));
+}
+
+/// One `stty size` call. Separate from the memo so a test can exercise the
+/// parse without burning the process-wide `OnceLock`.
+fn measure_terminal_width() -> Option<usize> {
+    let tty = std::fs::File::open("/dev/tty").ok()?;
+    let out = std::process::Command::new("stty")
+        .arg("size")
+        .stdin(std::process::Stdio::from(tty))
+        .output()
+        .ok()?;
+    out.status.success().then_some(())?;
+    parse_stty_size(&String::from_utf8_lossy(&out.stdout))
+}
+
+/// `"40 120\n"` — rows then columns, which is the order that has bitten
+/// everyone who assumed otherwise, so it is parsed by POSITION and named here.
+///
+/// **BOTH fields must be numbers**, even though only the second is used: the
+/// shape being recognized is "two integers", and a parser that skipped the first
+/// field unread would happily take the `4` out of `rows 4 columns 100`. A width
+/// under [`MIN_SANE_WIDTH`] is treated as no answer at all.
+fn parse_stty_size(out: &str) -> Option<usize> {
+    let mut fields = out.split_whitespace();
+    let _rows: usize = fields.next()?.parse().ok()?;
+    let cols: usize = fields.next()?.parse().ok()?;
+    (cols >= MIN_SANE_WIDTH).then_some(cols)
+}
+
+/// Below this, a reported width is not believed. Terminals do report 0 while
+/// being resized, and a detached PTY can report nonsense; the designed floor is
+/// a better answer than a one-column grid.
+const MIN_SANE_WIDTH: usize = 20;
+
+/// The columns a full-screen card index may use: the real terminal where that
+/// is knowable, the designed floor otherwise.
+///
+/// The floor is the FALLBACK rather than the target — see [`terminal_width`].
+/// Above 200 the index simply gets more cards to a row, which is the same
+/// "adaptive beyond the floor" §0.1 already asks the composed frame for.
+pub(crate) fn index_width() -> usize {
+    terminal_width().unwrap_or(FLOOR_W)
 }
 
 /// The redesign's raised layout FLOOR (Phase-3.5a spec §0.1): the frame is
@@ -1160,5 +1278,55 @@ mod capture {
             committed, rendered,
             "the committed 2P frame capture is stale; regenerate it with UPDATE_T3_CAPTURE=1",
         );
+    }
+
+    /// **`stty size` reports ROWS then COLUMNS**, which is the order everyone
+    /// who has assumed otherwise got wrong, so the parse is pinned by position
+    /// rather than trusted to a comment (T7 review SHOULD-6).
+    ///
+    /// Every malformed shape falls to `None` and the caller then uses the
+    /// designed floor: a terminal reporting nonsense mid-resize must not be
+    /// able to lay the card index out one column wide.
+    #[test]
+    fn a_terminal_size_report_is_read_rows_then_columns_and_nonsense_is_refused() {
+        assert_eq!(parse_stty_size("40 120\n"), Some(120), "the SECOND field is the width");
+        assert_eq!(parse_stty_size("50 200"), Some(200));
+        assert_eq!(parse_stty_size("  24   80  \n"), Some(80), "whitespace is not significant");
+        for junk in ["", "40", "40 x", "rows 40 cols 120", "\n", "40 -5"] {
+            assert_eq!(parse_stty_size(junk), None, "{junk:?} is not a size report");
+        }
+        // A width below the sanity floor is no answer: terminals really do
+        // report 0 while being resized.
+        assert_eq!(parse_stty_size(&format!("40 {}", MIN_SANE_WIDTH - 1)), None);
+        assert_eq!(parse_stty_size(&format!("40 {MIN_SANE_WIDTH}")), Some(MIN_SANE_WIDTH));
+    }
+
+    /// **`force` cannot make this process shell out** (T7 review SHOULD-6).
+    ///
+    /// `terminal_width` reads the `ENABLED` atomic rather than `enabled()`
+    /// precisely so a test forcing FRAMES on does not also start measuring the
+    /// developer's window — which would make the suite pass at 200 columns and
+    /// fail at 120, for reasons no failure message would mention. Only
+    /// `init_from_tty` sets that atomic, and only `main` calls it.
+    #[test]
+    fn forcing_frames_on_does_not_make_a_test_measure_the_real_terminal() {
+        clear_forced_width();
+        force(true);
+        // The fence itself, asserted rather than inferred from a `None` that a
+        // machine with no `/dev/tty` would produce anyway.
+        assert!(!may_measure(), "forcing frames on must not license a measurement");
+        assert_eq!(terminal_width(), None, "a forced frame is not a terminal");
+        assert_eq!(index_width(), FLOOR_W, "so the index falls back to the design floor");
+        force(false);
+        assert_eq!(terminal_width(), None);
+        assert_eq!(index_width(), FLOOR_W);
+
+        // ...and a test that DOES want a width says so, without a terminal.
+        force_width(Some(120));
+        assert_eq!(index_width(), 120);
+        force_width(None);
+        assert_eq!(index_width(), FLOOR_W, "'no terminal' is sayable and is not 'unset'");
+        clear_forced_width();
+        assert_eq!(index_width(), FLOOR_W);
     }
 }
