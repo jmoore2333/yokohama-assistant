@@ -3,8 +3,11 @@
 
 pub mod board_render;
 pub mod bot;
+pub(crate) mod card_prompt;
+pub mod card_render;
 pub mod decision_render;
 pub mod describe;
+pub mod index_render;
 pub(crate) mod input;
 pub mod panel_render;
 pub mod render;

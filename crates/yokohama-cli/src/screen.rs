@@ -179,6 +179,15 @@ const FRAME_WIDTHS: [usize; 3] = [198, 163, 180];
 /// two rows are the whole difference at turn 1; what T4 bought back is at the
 /// other end of the range, in [`WALK_HEIGHTS`].
 ///
+/// **T5 added one row at 3 players ONLY (78 → 79), and where it lands says
+/// what it is.** The standing hint gained the approved mock's `'?' the card
+/// index` clause — true from T5, when `?` stopped aliasing the view menu — and
+/// the hint WRAPS to the frame's own width. At 198 and 180 columns the longer
+/// clause list still fits one line; at 163 it does not, so the 3-player frame
+/// pays a second hint row and the other two pay nothing. That is the wrap
+/// working as `decision_render::wrap_hint` designed it, and it is also a
+/// reminder that these three numbers do not move together.
+///
 /// **T10 is the fix and it is a layout change, not a trim.** The approved 4P
 /// mock (`frame-4p.ans`) draws the players panel in FOUR COLUMNS across the
 /// board's own 180-column footprint and folds tracks and achievements onto one
@@ -194,7 +203,7 @@ const FRAME_WIDTHS: [usize; 3] = [198, 163, 180];
 /// frame is, so a production constant here would be dead code claiming to be
 /// used.
 #[cfg(test)]
-const FRAME_HEIGHTS: [usize; 3] = [48, 78, 87];
+const FRAME_HEIGHTS: [usize; 3] = [48, 79, 87];
 
 /// The design floor's height (spec §0.1's 200x50), which [`FRAME_HEIGHTS`]
 /// meets at 2 players and not at 3 or 4. `cfg(test)` for the same reason.
@@ -309,6 +318,17 @@ pub fn wrap(repl: &Repl, body: &str) -> String {
     if !frame_active(repl) {
         return body.to_string();
     }
+    // A FULL-SCREEN surface replaces the frame rather than sitting under it
+    // (spec §0.5's view pattern; T5's card index is the first of them). The
+    // approved `order-index` mock draws no board, no dashboard and no title
+    // strip -- 45 rows of cards on an otherwise empty screen -- and it has to:
+    // the index alone is 45 rows against the 2-player frame's 48, so composing
+    // the two would scroll both off a 50-row terminal. The clear-and-home
+    // prefix still leads, so the surface arrives on a clean screen exactly as
+    // a framed body does.
+    if repl.full_screen_surface() {
+        return format!("\u{1b}[2J\u{1b}[H{body}");
+    }
     let stage = stage(repl);
     let width = stage_width(&stage);
     let strip = panel_render::title_strip(&title_model(repl), width);
@@ -391,7 +411,7 @@ fn stage(repl: &Repl) -> String {
     // game-info surfaces and the command that opens them, so a player who
     // never read the guide finds them on screen.
     stage.push_str(
-        "info: type 'view' — board · players · ports · labs · tracks · sites · goals · hand · score · log\n",
+        "info: type 'view' — board · players · ports · labs · tracks · sites · goals · hand · score · log   ·   '?' — the card index\n",
     );
     stage
 }

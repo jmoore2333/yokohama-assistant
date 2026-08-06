@@ -38,11 +38,12 @@
 //! two-column form was drawn over the three shortest cards in the deck.
 
 use yokohama_core::{
-    AchievementCategory, AchievementType, AreaId, OrderRewards, PlayerColor, PlayerId,
-    PresidentLocation, TechEffect, TradeGoodRequirement,
+    AchievementCategory, AchievementType, AreaId, PlayerColor, PlayerId, PresidentLocation,
+    TechEffect,
 };
 
 use crate::board_render::{color_of, exact, Twin};
+use crate::card_render::{self, CardFace};
 use crate::describe;
 use crate::screen_model::{
     AchievementModel, AchievementsPanel, BoardModel, HandCardModel, HandPanel, Panel, PlayerModel,
@@ -57,13 +58,14 @@ use crate::style::{glyph, GoodKind, Tone};
 pub const DASH_W: usize = 74;
 
 /// A mini order card's total width, borders included — the mocks' `CARD_W`.
-pub const CARD_W: usize = 24;
+///
+/// **Re-exported, not declared.** The card itself moved to
+/// [`crate::card_render`] at T5, so the dashboard's hand and the full-screen
+/// index draw the same emitter; this name stays because `screen` and the hand
+/// row's own arithmetic pin read it here.
+pub use crate::card_render::CARD_W;
 
-/// Lines per mini order card.
-const CARD_H: usize = 6;
-
-/// Card interior text width: two columns of border and one of pad either side.
-const CARD_INNER: usize = CARD_W - 4;
+use crate::card_render::CARD_H;
 
 /// Columns a panel's content is indented under its section rule.
 const INDENT: usize = 2;
@@ -774,145 +776,19 @@ fn hand_lines(panel: &HandPanel) -> Vec<String> {
     out
 }
 
-/// One mini order card, every line exactly [`CARD_W`] columns:
-///
-/// ```text
-/// ┌ FRANCE           O02 ┐
-/// │ 1 Seafood 2 Tea      │
-/// │                      │
-/// │ ★3 VP                │
-/// │ your starting order  │
-/// └──────────────────────┘
-/// ```
+/// One hand card, through the crate's ONE card emitter
+/// ([`crate::card_render::order_card`]).
 ///
 /// The last interior line carries the starting-order note when there is one and
-/// the rewards' overflow otherwise — the mocks' own rule. A card that both pays
-/// more than one line of rewards AND is the kept starting deal therefore shows
-/// the note; `hand` is the surface that never elides.
+/// the rewards' overflow otherwise — the mocks' own rule, now enforced in the
+/// emitter for both of its callers. A card that both pays more than one line of
+/// rewards AND is the kept starting deal therefore shows the note; `hand` is
+/// the surface that never elides.
 fn order_card(card: &HandCardModel) -> Vec<String> {
-    let id = format!("O{:02}", card.id.0);
-
-    let Some(printed) = &card.printed else {
-        // An id the registry does not know. Draw the box with the id in it
-        // rather than a card's worth of invented content.
-        let mut top = Twin::default();
-        top.raw(&format!("{} ", glyph::BOX_TL)).tinted(Tone::Chrome, &id);
-        let mut unknown = Twin::default();
-        unknown.tinted(Tone::Dim, "not in the registry");
-        let mut rows = vec![card_top(&mut top), card_interior(&mut unknown)];
-        while rows.len() < CARD_H - 1 {
-            rows.push(card_interior(&mut Twin::default()));
-        }
-        rows.push(card_bottom());
-        return rows;
-    };
-
-    let mut top = Twin::default();
-    top.raw(&format!("{} ", glyph::BOX_TL)).tinted(
-        Tone::Flag(printed.country),
-        &describe::country_name(printed.country).to_uppercase(),
-    );
-
-    let needs = requirement_tokens(&printed.requirements);
-    let pays = reward_tokens(&printed.rewards);
-
-    let mut rows = vec![card_top_with_id(&mut top, &id)];
-    rows.push(card_interior(&mut token_row(&needs, 0, 2)));
-    rows.push(card_interior(&mut token_row(&needs, 2, 4)));
-    rows.push(card_interior(&mut token_row(&pays, 0, 2)));
-    if card.is_starting_order {
-        let mut note = Twin::default();
-        note.tinted(Tone::Chrome, "your starting order");
-        rows.push(card_interior(&mut note));
-    } else {
-        rows.push(card_interior(&mut token_row(&pays, 2, 4)));
-    }
-    rows.push(card_bottom());
-    rows
-}
-
-/// `┌ FRANCE           O02 ┐` — the title padded so the engine id closes the
-/// line as a small annotation.
-fn card_top_with_id(t: &mut Twin, id: &str) -> String {
-    t.pad_to(CARD_W - 6);
-    t.raw(" ").tinted(Tone::Chrome, id).raw(&format!(" {}", glyph::BOX_TR));
-    exact(t, CARD_W)
-}
-
-fn card_top(t: &mut Twin) -> String {
-    t.pad_to(CARD_W - 1);
-    t.raw(&glyph::BOX_TR.to_string());
-    exact(t, CARD_W)
-}
-
-fn card_interior(t: &mut Twin) -> String {
-    format!("{} {} {}", glyph::BOX_V, exact(t, CARD_INNER), glyph::BOX_V)
-}
-
-fn card_bottom() -> String {
-    format!("{}{}{}", glyph::BOX_BL, String::from(glyph::RULE).repeat(CARD_W - 2), glyph::BOX_BR)
-}
-
-/// Tokens `[from, to)` of a card's run, space-joined — the two-line split the
-/// card shape gives requirements and rewards alike.
-fn token_row(tokens: &[(String, Tone)], from: usize, to: usize) -> Twin {
-    let mut t = Twin::default();
-    for (i, (text, tone)) in tokens.iter().enumerate().take(to).skip(from) {
-        if i > from {
-            t.raw(" ");
-        }
-        t.tinted(*tone, text);
-    }
-    t
-}
-
-/// A card's goods requirement as colored tokens, in the board's own token order
-/// (seafood, tea, silk, copper — [`crate::board_render`]'s site strip reads the
-/// same way, so a card and a tile never disagree about which good comes first).
-fn requirement_tokens(r: &TradeGoodRequirement) -> Vec<(String, Tone)> {
-    [
-        (r.seafood, "Seafood", GoodKind::Seafood),
-        (r.tea, "Tea", GoodKind::Tea),
-        (r.silk, "Silk", GoodKind::Silk),
-        (r.copper, "Copper", GoodKind::Copper),
-    ]
-    .into_iter()
-    .filter(|&(n, _, _)| n > 0)
-    .map(|(n, label, kind)| (format!("{n} {label}"), Tone::Good(kind)))
-    .collect()
-}
-
-/// What completing a card pays, as colored tokens in a fixed order so the same
-/// card always reads the same way.
-fn reward_tokens(r: &OrderRewards) -> Vec<(String, Tone)> {
-    let mut out: Vec<(String, Tone)> = Vec::new();
-    if r.victory_points > 0 {
-        out.push((format!("{}{} VP", glyph::VP, r.victory_points), Tone::Vp));
-    }
-    if r.money > 0 {
-        out.push((format!("{}{}", glyph::YEN, r.money), Tone::Good(GoodKind::Yen)));
-    }
-    if r.imported_goods > 0 {
-        out.push((plural(r.imported_goods as usize, "Import"), Tone::Good(GoodKind::Imports)));
-    }
-    for (n, label, kind) in [
-        (r.seafood, "Seafood", GoodKind::Seafood),
-        (r.tea, "Tea", GoodKind::Tea),
-        (r.silk, "Silk", GoodKind::Silk),
-        (r.copper, "Copper", GoodKind::Copper),
-        (r.any_trade_good, "Any", GoodKind::Any),
-    ] {
-        if n > 0 {
-            out.push((format!("{n} {label}"), Tone::Good(kind)));
-        }
-    }
-    if r.movement > 0 {
-        out.push((format!("{} move", r.movement), Tone::ActionIcon));
-    }
-    if r.warehouse_tokens > 0 {
-        out.push((format!("{}{}", glyph::BUILT, r.warehouse_tokens), Tone::ActionIcon));
-    }
-    out
+    card_render::order_card(
+        &CardFace::new(card.id, card.printed.as_ref())
+            .note(card.is_starting_order.then(|| "your starting order".to_string())),
+    )
 }
 
 #[cfg(test)]

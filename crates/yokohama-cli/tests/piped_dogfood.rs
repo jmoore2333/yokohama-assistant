@@ -208,9 +208,15 @@ fn play_a_full_2p_game(label: &str, bots: &str) -> String {
 
     // Wizard: 2P sim, fixed seed, save into the temp dir, then the bot-seats
     // answer (blank = none).
+    //
+    // The two `"1"`s are the per-seat KEEP answers, and they are `1` rather
+    // than `0` because the wizard's dealt-card menu numbers from
+    // `screen_model::NUMBER_BASE` (T5's ruling: every numbered list starts at
+    // 1). The `"0"` before the seed is the START SEAT -- a seat id, which the
+    // ruling deliberately leaves alone.
     for line in [
         "sim", "2", "red", "blue", "0", "20260721",
-        &save.display().to_string(), "0", "0", bots, "confirm",
+        &save.display().to_string(), "1", "1", bots, "confirm",
     ] {
         send(line, &mut stdin);
     }

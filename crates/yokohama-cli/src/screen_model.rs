@@ -23,13 +23,72 @@
 //! can neither re-derive legality nor cost a second enumeration
 //! (engine-as-sole-authority).
 //!
-//! **T0 scope.** Nothing renders from these models yet. Two fields are shaped
-//! here and filled by a later task, each marked at its declaration:
-//! [`TileModel::reachable`] (the Movement `◈` feed) and
-//! [`DecisionModel::not_offered`] (the dimmed near-miss rows) both land in T4,
-//! and [`IndexModel`] is a stub T5 designs.
+//! **T0 scope, and what has since filled it.** Two fields were shaped at T0 and
+//! filled at T4 — [`TileModel::reachable`] (the Movement `◈` feed) and
+//! [`DecisionModel::not_offered`] (the dimmed near-miss rows) — and
+//! [`IndexModel`], left a deliberate stub for the task that would know what the
+//! input grammar needed, is designed at T5 alongside `card_prompt`. The one
+//! registry it covers is Orders; the tech, site and achievement indexes are
+//! T6's, which is what [`IndexKind`] is keyed for.
+//!
+//! **[`NUMBER_BASE`] lives here** — the one constant every numbered surface in
+//! the crate reads, on the reasoning at its declaration.
 
 use yokohama_core::*;
+
+// ---------------------------------------------------------------------------
+// The numbering base
+// ---------------------------------------------------------------------------
+
+/// **The number the FIRST item of any on-screen numbered list carries.**
+///
+/// The driver counted from ZERO everywhere until T5 — main-zone options, the
+/// view menu, the route sub-prompt, the wizard's keep-a-card menu — while every
+/// approved mock draws `[1]`. Spec §0's rule is that the mocks win, and the
+/// owner's own reading is the plain one: people count from one. So this is 1,
+/// and the ruling is recorded here rather than in the four places that print a
+/// number, because a base that lives at its call sites is a base that drifts
+/// per-surface — which is worse than either convention, since a player who has
+/// learned that the first option is `[1]` will type `1` into the next list too.
+///
+/// **What this governs and what it does not.** It governs SELECTION numbers:
+/// numbers the screen prints for the sole purpose of being typed back. It does
+/// NOT govern
+/// - **engine identities** — seat numbers (`Seat 0`), area ids (`A00`), order
+///   and tech ids (`O14`, `T07`), building-site indexes. Those are printed on
+///   the physical components or recorded in saves; renumbering them for
+///   display would break the one thing an id is for.
+/// - **quantities** — the guided retreat's `recover how many from … [0-4]`
+///   answers with a COUNT, and zero is a real answer there ("recover none").
+///   A count is not an index and does not shift.
+///
+/// Every numbered surface reads this constant. It lives in the MODEL rather
+/// than in `style` (which owns ANSI, and a numbering base is not a color) or in
+/// `repl` (which no renderer may depend on): the model is what assigns a
+/// display number — see [`IndexCard::selection`] and [`OptionModel::number`] —
+/// and it is the one module every surface, renderer and parser alike, is
+/// already allowed to see.
+pub const NUMBER_BASE: usize = 1;
+
+/// The number shown for the 0-based `index` of a list.
+pub const fn menu_number(index: usize) -> usize {
+    index + NUMBER_BASE
+}
+
+/// The 0-based index a typed selection `number` refers to, or `None` when it is
+/// outside a list of `len` entries (including the below-base numbers a 1-based
+/// list makes possible — `0` is not an option any more, and saying so beats
+/// wrapping it round to the last one).
+pub fn menu_index(number: usize, len: usize) -> Option<usize> {
+    let index = number.checked_sub(NUMBER_BASE)?;
+    (index < len).then_some(index)
+}
+
+/// The inclusive range of numbers a list of `len` entries accepts, as the range
+/// message prints it (`1-10`). Empty lists have no range and get `None`.
+pub fn menu_range(len: usize) -> Option<(usize, usize)> {
+    (len > 0).then(|| (NUMBER_BASE, menu_number(len - 1)))
+}
 
 // ---------------------------------------------------------------------------
 // Presentation context
@@ -410,8 +469,9 @@ pub struct FeeModel {
 /// One numbered option.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct OptionModel {
-    /// The option's index in the legal list the caller supplied — the same
-    /// 0-based global numbering the prompt uses.
+    /// The number the prompt SHOWS for this option — global across pages, and
+    /// 1-based since T5 ([`NUMBER_BASE`]). The option's position in the
+    /// caller's legal list is `number - NUMBER_BASE`.
     pub number: usize,
     pub mv: Move,
     /// `Some` for the four moves that pay another PLAYER as a consequence of
@@ -535,13 +595,229 @@ pub struct FrameModel {
     pub decision: DecisionModel,
 }
 
-/// Placeholder for the full-screen card-index surface's model (spec §0.6:
-/// order/tech/site/achievement grids, dim + location annotations, selection
-/// numbers). **T5 designs and fills this** — it is deliberately not designed
-/// here, so that T0 does not guess at a surface whose input grammar has not
-/// been built yet.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub struct IndexModel;
+// ---------------------------------------------------------------------------
+// The card index (spec §0.6, R8)
+// ---------------------------------------------------------------------------
+
+/// Which registry an index is showing.
+///
+/// One variant today and that is honest rather than provisional: T5 builds the
+/// ORDER index, which R8 names the canonical surface, and T6 adds the tech,
+/// site and achievement indexes. The enum exists now so the input grammar and
+/// the renderer are keyed on a KIND from the start — the alternative was three
+/// order-shaped functions T6 would have had to generalize.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum IndexKind {
+    Orders,
+}
+
+/// Where a card the index dims is ALREADY recorded (spec §0.6 / finding F6:
+/// "every duplicate refusal names WHERE the card already is").
+///
+/// **Typed, never worded** — `describe::card_location` says these in English at
+/// render time, and both the index's dim note and the refusal message a card
+/// prompt prints go through that one function, so a card can never be
+/// described two ways on two screens.
+///
+/// **What is NOT in this enum is the point of it.** There is no `Hand { seat }`
+/// for an opponent: a location is only ever supplied by a caller that already
+/// knows it from PUBLIC state or from its own recording context, so a live
+/// game's index cannot annotate a card sitting in an opponent's hidden hand.
+/// The model does not derive locations from `GameState` at all — see
+/// [`build_order_index`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CardLocation {
+    /// A seat's dealt starting pair (the wizard's own recording context).
+    Deal { seat: PlayerId },
+    /// A Port board's display slot, 0-based as the board stores it.
+    PortSlot { board_b: bool, slot: usize },
+    /// The VIEWING seat's own hand — supplied only when that hand is already
+    /// on screen unmasked, so the index never says more than the dashboard.
+    OwnHand,
+    /// Already named in the reveal group being collected right now.
+    ThisReveal,
+}
+
+/// What a card prompt is recording, shown as the index's context header ("which
+/// card is physically in the slot?"). Typed for the same reason
+/// [`CardLocation`] is.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RecordingTarget {
+    /// A live Port refill: `nth` of `of` reveals, into `slot` of that board.
+    PortRefill { board_b: bool, slot: usize, nth: usize, of: usize },
+    /// A live Laboratory refill (one slot, always).
+    LabRefill { board_b: bool },
+    /// The wizard's setup entry for one Port display slot.
+    PortSetup { board_b: bool, slot: usize, of: usize },
+    /// The wizard's setup entry for one seat's dealt card.
+    DealSetup { seat: PlayerId, which: usize, of: usize },
+}
+
+/// Which good a `f <term>` filter narrowed the index to.
+///
+/// Its own enum rather than [`crate::style::GoodKind`]: that one is the
+/// PALETTE's roster (it carries `Yen`, `Imports` and `Any`, none of which an
+/// order card requires) and it lives in the module this one may not depend on.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CardGood {
+    Seafood,
+    Tea,
+    Silk,
+    Copper,
+}
+
+/// An active index filter, already parsed. `card_prompt::parse_filter` turns
+/// the typed word into one of these, so the model holds no free text and the
+/// renderer words the filter line from a value.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum IndexFilter {
+    /// Cards requiring this good at all.
+    Good(CardGood),
+    /// Cards paying at least this many victory points.
+    MinVp(u8),
+    /// One country's cards.
+    Country(Country),
+}
+
+impl IndexFilter {
+    /// Whether `card` survives this filter.
+    fn admits(&self, card: &OrderCard) -> bool {
+        match self {
+            IndexFilter::Good(g) => {
+                let r = &card.requirements;
+                match g {
+                    CardGood::Seafood => r.seafood > 0,
+                    CardGood::Tea => r.tea > 0,
+                    CardGood::Silk => r.silk > 0,
+                    CardGood::Copper => r.copper > 0,
+                }
+            }
+            IndexFilter::MinVp(n) => card.rewards.victory_points >= *n,
+            IndexFilter::Country(c) => card.country == *c,
+        }
+    }
+}
+
+/// One card in an index grid.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct IndexCard {
+    pub id: OrderCardId,
+    /// The printed card from `Rules::orders`; `None` for an id the registry
+    /// does not know, exactly as [`HandCardModel::printed`] means it.
+    pub printed: Option<OrderCard>,
+    /// The number shown on this card and typed to select it — 1-based like
+    /// every other numbered surface (`input::NUMBER_BASE`), and assigned over
+    /// the cards actually DISPLAYED, so a filtered screen numbers 1..n rather
+    /// than showing gaps from the unfiltered run.
+    ///
+    /// `None` when the index is open as a standing VIEW: nothing is being
+    /// recorded, so there is nothing a number could select, and a number
+    /// printed on a card that cannot be picked is exactly the defect F3 names
+    /// from the other side.
+    pub selection: Option<usize>,
+    /// Already recorded elsewhere: the card dims and says where it is.
+    pub location: Option<CardLocation>,
+}
+
+/// One flag group of the order index (spec §0.6: "grouped by flag").
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct IndexGroup {
+    pub country: Country,
+    pub cards: Vec<IndexCard>,
+}
+
+/// The full-screen card index (spec §0.6, requirement R8) — "the canonical
+/// identification mechanism".
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct IndexModel {
+    pub kind: IndexKind,
+    /// Cards in the whole registry, filtered or not — the "all 36" the title
+    /// states.
+    pub total: usize,
+    /// Cards this screen actually shows (equal to [`Self::total`] unfiltered).
+    pub shown: usize,
+    /// What is being recorded, or `None` when the index is open as a view.
+    /// This is also what decides whether cards carry selection numbers.
+    pub target: Option<RecordingTarget>,
+    pub filter: Option<IndexFilter>,
+    /// Non-empty groups in `Country::ALL` order.
+    pub groups: Vec<IndexGroup>,
+}
+
+impl IndexModel {
+    /// The card a typed selection number picks, or `None` when no card on
+    /// screen carries it.
+    ///
+    /// Resolved through the MODEL rather than by the caller re-deriving the
+    /// display order: the number on screen and the number this answers are then
+    /// the same number by construction, which is the whole promise F3 makes.
+    pub fn select(&self, number: usize) -> Option<OrderCardId> {
+        self.groups
+            .iter()
+            .flat_map(|g| g.cards.iter())
+            .find(|c| c.selection == Some(number))
+            .map(|c| c.id)
+    }
+
+    /// Every displayed card in screen order — what a caller pages, counts, or
+    /// (in tests) sweeps.
+    pub fn cards(&self) -> impl Iterator<Item = &IndexCard> {
+        self.groups.iter().flat_map(|g| g.cards.iter())
+    }
+}
+
+/// The order index: every registry card, grouped by flag, dimmed where the
+/// caller says one is already recorded.
+///
+/// **`placed` is supplied, never derived, and that is a leak fence rather than
+/// a convenience.** The obvious implementation reads locations out of
+/// `GameState` — port slots, every seat's hand, the dealt starting orders — and
+/// the last two of those are hidden information in a live game. Taking the list
+/// from the caller means the index can only ever annotate what its caller
+/// already knew: public board slots in play, the operator's own recording
+/// context in the wizard. A model that cannot see the hidden set cannot leak
+/// it.
+///
+/// `filter` narrows the grid; `target` decides whether cards are selectable
+/// (see [`IndexCard::selection`]).
+pub fn build_order_index(
+    rules: &Rules,
+    placed: &[(OrderCardId, CardLocation)],
+    target: Option<RecordingTarget>,
+    filter: Option<IndexFilter>,
+) -> IndexModel {
+    let mut all: Vec<&OrderCard> = rules.orders.iter().collect();
+    all.sort_by_key(|c| c.id.0);
+    let total = all.len();
+
+    let mut next_selection = NUMBER_BASE;
+    let mut groups = Vec::new();
+    let mut shown = 0usize;
+    for country in Country::ALL {
+        let mut cards = Vec::new();
+        for card in all.iter().filter(|c| c.country == country) {
+            if filter.is_some_and(|f| !f.admits(card)) {
+                continue;
+            }
+            let selection = target.is_some().then(|| {
+                let n = next_selection;
+                next_selection += 1;
+                n
+            });
+            cards.push(IndexCard {
+                id: card.id,
+                printed: Some((*card).clone()),
+                selection,
+                location: placed.iter().find(|(id, _)| *id == card.id).map(|(_, at)| *at),
+            });
+        }
+        shown += cards.len();
+        if !cards.is_empty() {
+            groups.push(IndexGroup { country, cards });
+        }
+    }
+    IndexModel { kind: IndexKind::Orders, total, shown, target, filter, groups }
+}
 
 // ---------------------------------------------------------------------------
 // Builders
@@ -915,8 +1191,8 @@ pub fn build_decision(state: &GameState, rules: &Rules, legal: &[Move]) -> Decis
         options: legal
             .iter()
             .enumerate()
-            .map(|(number, mv)| OptionModel {
-                number,
+            .map(|(index, mv)| OptionModel {
+                number: menu_number(index),
                 mv: mv.clone(),
                 fee: option_fee(state, rules, mv),
             })
@@ -1426,9 +1702,12 @@ mod tests {
         let decision = build_decision(&state, &rules, &legal);
         assert_eq!(decision.options.len(), legal.len());
         for (i, opt) in decision.options.iter().enumerate() {
-            assert_eq!(opt.number, i);
+            // The number SHOWN, which is the index plus the base (T5's
+            // numbering ruling): the first option is `[1]`, not `[0]`.
+            assert_eq!(opt.number, menu_number(i));
             assert_eq!(opt.mv, legal[i]);
         }
+        assert_eq!(decision.options[0].number, NUMBER_BASE, "lists start at the base");
         assert!(
             decision.not_offered.is_empty(),
             "near-miss rows belong to a Movement decision; this is not one",

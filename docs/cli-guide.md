@@ -31,7 +31,7 @@ cargo run -p yokohama-cli -- save.json # resume a saved game
 
 **The composed screen (terminal only).** On a real terminal the tool is a full game screen, redrawn after every input: a title strip, the board (one bordered tile box per area, laid out as the physical staggered pyramid — widest row on top, each row below offset half a tile), a live dashboard (a PLAYERS panel — current player marked `▶`, then each seat's yen/VP, goods, assistant/shophouse/trade-house zones with the next trading-house take price, one line per technology owned, mercenaries, President location by area name, orders in hand, and the seat number the `reveal <seat>` command uses — then a TRACKS panel, an ACHIEVEMENTS panel, and YOUR HAND drawn as a card) — beside the board at 2 players, and stacked below it at 3 and 4, where the board is too wide to leave room beside it, the board legend, a game-info strip naming every view, then the message zone (what the last move changed) and the prompt. `panel` hides/shows the dashboard; `screen` turns the whole composed mode off and back on (plain rolling text, same content). Piped or redirected output is always plain rolling text with zero escape codes — the composed screen and all color exist only on a terminal.
 
-**Color and width.** The tool colors what matters — player names and their pieces in their colors, tile names in bold, site-slot tokens and goods letters in resource tones, VP, warnings, the phase line — and setting the standard `NO_COLOR` environment variable turns color off in a terminal too (the composed screen stays; `screen` turns that off). The composed screen is wide, and at most counts wider than the board alone: the board grid is 120 columns at 2 players, 150 at 3, and 180 at 4, and a different part of the screen sets the total at each count — the dashboard joined beside the board at 2, the site-slot legend (163 columns on its own) at 3, and the board itself at 4 — so the whole frame is 198 columns at 2 players, 163 at 3, and 180 at 4. It stays there: a test walks whole games at every player count and the frame never grows past those widths, so what you size the window to at the start is what the game needs at the end. There is no terminal-size detection, so size the window before you start: **200 columns** clears every layout's width — a test now pins every line the driver *lays out* (board, panel, option lists, prompts and hints, the choice banner, a lockdown notice) at or under 200 columns, so none of them wraps mid-token; the one thing that can still wrap is a message quoting something you typed, such as an autosave warning naming a long save path — and the screen opens 48 rows at 2 players, 78 at 3, and 87 at 4 — so a **200x50** window shows the whole opening screen at 2 players; at 3 and 4 it does not, because the dashboard stacks below a board too wide to sit beside it and the opening screen is taller than a usual terminal until those counts get their own column layout. What eats the extra rows is the part below the board: the decision zone budgets twelve rows for its option list (`more` pages the rest, packing short options into columns to fit more of them into those twelve), and a big message zone pushes the title and the top board row off the top. In play the screen reaches 60 rows at 2 players, 90 at 3, and 99 at 4 — measured over whole-game walks, and a test holds it there. `panel` (hide the dashboard) and `screen` (plain rolling text) buy those rows back. The `board` command's one-time reminder covers only the board grid's own width (and only when that grid is wider than 100 columns), which every player count now is.
+**Color and width.** The tool colors what matters — player names and their pieces in their colors, tile names in bold, site-slot tokens and goods letters in resource tones, VP, warnings, the phase line — and setting the standard `NO_COLOR` environment variable turns color off in a terminal too (the composed screen stays; `screen` turns that off). The composed screen is wide, and at most counts wider than the board alone: the board grid is 120 columns at 2 players, 150 at 3, and 180 at 4, and a different part of the screen sets the total at each count — the dashboard joined beside the board at 2, the site-slot legend (163 columns on its own) at 3, and the board itself at 4 — so the whole frame is 198 columns at 2 players, 163 at 3, and 180 at 4. It stays there: a test walks whole games at every player count and the frame never grows past those widths, so what you size the window to at the start is what the game needs at the end. There is no terminal-size detection, so size the window before you start: **200 columns** clears every layout's width — a test now pins every line the driver *lays out* (board, panel, option lists, prompts and hints, the choice banner, a lockdown notice) at or under 200 columns, so none of them wraps mid-token; the one thing that can still wrap is a message quoting something you typed, such as an autosave warning naming a long save path — and the screen opens 48 rows at 2 players, 79 at 3, and 87 at 4 — so a **200x50** window shows the whole opening screen at 2 players; at 3 and 4 it does not, because the dashboard stacks below a board too wide to sit beside it and the opening screen is taller than a usual terminal until those counts get their own column layout. What eats the extra rows is the part below the board: the decision zone budgets twelve rows for its option list (`more` pages the rest, packing short options into columns to fit more of them into those twelve), and a big message zone pushes the title and the top board row off the top. In play the screen reaches 60 rows at 2 players, 90 at 3, and 99 at 4 — measured over whole-game walks, and a test holds it there. `panel` (hide the dashboard) and `screen` (plain rolling text) buy those rows back. The `board` command's one-time reminder covers only the board grid's own width (and only when that grid is wider than 100 columns), which every player count now is.
 
 **Privacy at a live table.** The one genuinely hidden thing in Yokohama is a starting order, and it sits in a hand — so in **live** mode hand contents start hidden: `hand` and `players` show counts (`1 card (hidden — 'privacy' to toggle)`) instead of card text, and the dashboard never shows another seat's hand contents at all. Toggle with `privacy` (sim mode starts open). Everything public at the table — the board, tracks, buildings, port displays, deltas of face-up takes — never masks. **Bot seats mask on their own.** With a bot at the table (§3) that seat's hand stays hidden whatever `privacy` says — a bot's hand holds its unfulfilled starting order, and sim mode starts open — while your own hand keeps following the toggle; the bot's seat is marked `[bot]` in the dashboard. That mask is table manners, not a sealed envelope: you set the game up, so you saw every seat's dealt cards in the wizard, and `log` still replays everything that happened.
 
@@ -58,7 +58,7 @@ Questions are asked one at a time. An invalid answer re-asks the SAME question a
 | Seed | any integer, or **blank** for a time-derived one (it echoes `seed: N` — write it down; it is the game's identity) |
 | Save path | a path, or **blank** for `yokohama-game-<seed>.json` in the current directory |
 
-**Sim tail:** for each seat the two dealt order cards are shown, numbered `[0]`/`[1]` and each carrying a `(bot Keep score N)` — what the built-in bot (§4) would prefer, read off the card's printed economics alone. It is hand-set and unmeasured, and a note under the pair says so; the choice is yours. Answer `keep 0/1` with `0` or `1`.
+**Sim tail:** for each seat the two dealt order cards are shown, numbered `[1]`/`[2]` and each carrying a `(bot Keep score N)` — what the built-in bot (§4) would prefer, read off the card's printed economics alone. It is hand-set and unmeasured, and a note under the pair says so; the choice is yours. Answer `keep 0/1` with `0` or `1`.
 
 **Bot seats (sim only):** the sim tail's last question is `Bot seats?`. **Blank** — just Enter — means none, and the game is exactly the all-human one described everywhere else. Otherwise type the seat numbers a bot should play, space-separated: `1`, or `0 2`. At least one seat must stay human (an all-bot table is refused and the question re-asks), and there is no live-mode equivalent — a bot cannot read a face-down card off your table. Every bot plays the engine's `family-weighted` policy; the wizard draws a full-width stream key for them and echoes it as `bot seed: N`, so write that down beside the game seed if you want the bot's line to be reproducible. The setup review names them (`bots: seat 1 playing family-weighted (seed N)`), `edit bots` re-asks the question, and the answer travels in the save file — a resumed game comes back with the same seats botted.
 
@@ -104,8 +104,8 @@ Every screen ends with the **decision zone**: a phase chain, a "YOU ARE DECIDING
 TURN 1 · RED's turn    ADDITIONAL  ▸ Placement ▸ Movement ▸ Area Action ▸ 5-Power ▸ Building ▸ Recovery ▸ Additional ▸ End
 
 YOU ARE DECIDING · whether to use an additional action before Placement, or to move on.
-   [0] End additional-action phase
-(only option — press Enter to apply · nothing is final until you apply it · 'back' undoes the last applied entry · 'view' or '?' any surface · 'help' for commands)
+   [1] End additional-action phase
+(only option — press Enter to apply · nothing is final until you apply it · 'back' undoes the last applied entry · 'view' any surface · '?' the card index · 'help' for commands)
 > 
 ```
 
@@ -113,7 +113,9 @@ Chain anatomy: turn number and whose turn, then all nine phases of a turn (§8.4
 
 The standing hint's second clause is phase/choice-aware — it only ever names a shorthand that is actually usable right now: `'a'/'b' place directly` in `Placement`, `'r' retreats directly` in `Movement`, `'m <from> <to>' moves one directly` while an assistant-move choice is queued, and nothing extra everywhere else, including every OTHER kind of pending choice. Those shorthands are aliases for people who already know them; every decision on the screen is reachable by its number.
 
-Two things the hint does NOT yet say, because they are not true yet: the ↑ key does not recall what you typed (that arrives with the line editor), and `?` opens the view menu rather than a card index (that arrives with the card indexes).
+One thing the hint does NOT yet say, because it is not true yet: the ↑ key does not recall what you typed (that arrives with the line editor). Its other two navigation clauses are live and name two DIFFERENT screens — `view` opens the game-info menu, `?` opens the card index.
+
+**Numbers start at 1.** Every numbered list in the tool — the options below the decision zone, the `view` menu, a route sub-prompt, the card index — numbers its first entry `[1]`, so what you read is what you type. Three things on screen are *not* list numbers and do not shift: **seat numbers** (`Seat 0`), **ids** printed on the components or held in your save (`A03`, `O14`, `T07`, site indexes), and **counts** — the guided retreat's `recover how many from … [0-4]` is asking for a quantity, and `0` there means "recover none".
 
 **Choosing a move:** type the option's number. The list is budgeted at **twelve rows** rather than a fixed number of options: a long list of short options packs into two or three columns (numbered down the first column, then on to the top of the next), and whatever still does not fit pages — `more` goes forward (wrapping back to the first page), `list` returns to the first. Whenever there is more than one page, a line under the options says how many are left and which page `more` will land on; on the last page, where nothing is left to count, it says so and names the page `more` wraps back to. Short lists stay one option per line — and an option too long for your frame's width (§2) wraps onto an indented continuation line rather than being cut short, because the tail of an option row is where its price is and the price is usually what you are choosing between.
 
@@ -121,7 +123,13 @@ Two things the hint does NOT yet say, because they are not true yet: the ↑ key
 
 **Previews on the options.** Decisions carry their arithmetic inline, computed by the same engine code that will charge you: placement options show the fee and who receives it (`— fee 2 yen (2 to Blue)`); Employment Agency composites show their total (`— cost 6 yen`, from the 2-yen shophouse price and the printed 4/5/6/7 trading-house progression) or `(free)`; Church payment options show the faith they produce (`-> faith 6 (power 3 + 3 kinds)`); production options show the yield at your current power AND the next threshold (`Produce copper (power 2 -> +0 copper, next +1 at power 3)`), so a zero-yield line reads as "not yet", not as a bug; the Bank previews its yield the same way (`Take money at the Bank (power 3 -> +3 yen)`); and the Customs payment options preview the space(s) they land on with printed VP (`Customs: pay 1 imported good -> space 1 (+5 VP)`).
 
-**Finding information.** Everything the physical game shows you is one menu away: `view` (also `views` or `?`) opens a numbered game-info menu — board, players, port offer, lab offer, tracks, building sites, goals, hand, score, log — and picking a number renders that surface and returns you to the prompt. The composed screen's info strip lists the same names on every frame, every hint line points at `view`, and each surface is also a direct command (§5) — the menu and the commands render through the same code, so they can never disagree.
+**Finding information.** Everything the physical game shows you is one key away, and there are two keys. `view` (also `views`) opens a numbered game-info menu — the card index, board, players, port offer, lab offer, tracks, building sites, goals, hand, score, log — and picking a number renders that surface and returns you to the prompt. The composed screen's info strip lists the same names on every frame, every hint line points at `view`, and each surface is also a direct command (§5) — the menu and the commands render through the same code, so they can never disagree.
+
+**`?` is the card index** (also `orders`, or row 1 of the `view` menu). It is a full-screen picture of all 36 order cards, grouped by flag, each drawn as the card you are holding — country, its goods requirement, what it pays — with its engine id (`O14`) as a small grey tag in the corner. **You never have to know an id.** The index is the bridge: find the card by what you can see, type the number printed on it, done. Three things it does beyond looking things up:
+
+- **It opens from anywhere, including mid-question.** `?` works at the main prompt, inside a Movement sub-prompt, and — where it matters most — in the middle of a live reveal, when the tool is asking which card physically refilled a Port slot. Pressing `?` there shows the index with a header naming the exact slot being recorded; typing a card's number answers the question; `?` again (or Enter, or `cancel`) closes it and puts you back on the same question, with everything you had already typed still collected.
+- **It shows what is already recorded.** A card the tool can already see — sitting on a Port display, or in your own hand while it is unmasked — is drawn dimmed with a note saying where it is (`= Port A slot 1`). Type one anyway and the refusal names the same place, so "already entered" is never a mystery.
+- **It filters.** `f silk` narrows it to cards needing silk, `f 8vp` to cards paying 8 VP or more, `f france` to one flag; `f` on its own clears the filter. The remaining cards renumber from 1, so the number on screen is always the number to type.
 
 **Movement: destination-first, with sub-prompts.** The raw rules can offer thousands of Movement combinations — every route to every destination, every count of assistants to recover — so the Movement list is *collapsed*. Each reachable destination is ONE numbered entry: if a single route reaches it, that entry is the move itself — `Move to <AREA> ◈ — <k> steps · <price>`, where the `◈` is the same mark the board tints on that tile and the price is what the engine will charge (a Station or Tram hop has no steps to count, so it reads `— free teleport` and prices itself in that word); if several routes reach it — say a free walk versus a longer one that pays a pass-through fee — the entry reads `Move to <AREA> — <k> route options`. The whole *retreat* family (Movement Option B) collapses to one `Retreat President to hand — choose recovery (<k> combinations; 'r' grammar works too)` entry (a lone bare retreat — no assistants on board — stays a plain numbered entry, no sub-prompt). Under the offered entries the zone may add **dimmed near-miss rows** — `(not offered: <AREA> — <reason>)` — for a tile next to your President that the engine did *not* offer, when the state says plainly why: you have no assistant there to stop on, your President started the turn there (and may not return this turn), or it is the Canal, which is a crossing rather than a stop. When the reason would be something the screen cannot read off the state — an unaffordable toll, an opponent's President in the way — there is **no row at all** rather than a guess, so a row you do see is a fact. At most three rows appear at once; when more neighbours qualify, a dimmed `(…and N more)` line says how many were left out, so the cap never passes for the whole story. Two captured Movement lists follow, each rendered from its own position on the same four-area test board — your President on the Bank, an opponent's parked on the Silk Mill.
 
@@ -129,10 +137,10 @@ Two things the hint does NOT yet say, because they are not true yet: the ↑ key
 TURN 1 · RED's turn   Additional ▸ Placement ▸  MOVEMENT  ▸ Area Action ▸ 5-Power ▸ Building ▸ Recovery ▸ Additional ▸ End
 
 YOU ARE DECIDING · where your President moves — destinations need one of your assistants to stop on (◈ on the board).
-   [0] Move to COPPER MINE — 2 route options
-   [1] Move to TEA PLANTATION ◈ — 1 step · free
-   [2] Retreat President to hand — choose recovery (24 combinations; 'r' grammar works too)
-(pick a number · 'r' retreats directly · 'back' undoes the last applied entry · 'view' or '?' any surface · 'help' for commands)
+   [1] Move to COPPER MINE — 2 route options
+   [2] Move to TEA PLANTATION ◈ — 1 step · free
+   [3] Retreat President to hand — choose recovery (24 combinations; 'r' grammar works too)
+(pick a number · 'r' retreats directly · 'back' undoes the last applied entry · 'view' any surface · '?' the card index · 'help' for commands)
 > 
 ```
 
@@ -142,10 +150,10 @@ Both entry kinds are in that list: the Copper Mine is reachable two ways — a d
 TURN 1 · RED's turn   Additional ▸ Placement ▸  MOVEMENT  ▸ Area Action ▸ 5-Power ▸ Building ▸ Recovery ▸ Additional ▸ End
 
 YOU ARE DECIDING · where your President moves — destinations need one of your assistants to stop on (◈ on the board).
-   [0] Move to COPPER MINE — 2 route options
-   [1] Retreat President to hand — choose recovery (12 combinations; 'r' grammar works too)
+   [1] Move to COPPER MINE — 2 route options
+   [2] Retreat President to hand — choose recovery (12 combinations; 'r' grammar works too)
    (not offered: TEA PLANTATION — you have no assistant there to stop on)
-(pick a number · 'r' retreats directly · 'back' undoes the last applied entry · 'view' or '?' any surface · 'help' for commands)
+(pick a number · 'r' retreats directly · 'back' undoes the last applied entry · 'view' any surface · '?' the card index · 'help' for commands)
 > 
 ```
 
@@ -153,8 +161,8 @@ Selecting a `route options` entry opens a **route sub-prompt** — that destinat
 
 ```
 Routes to Fishing Ground (A05):
-[0] Move President to Fishing Ground (A05) — free
-[1] Move President to Fishing Ground (A05) — pay 1 yen (1 to Blue)
+[1] Move President to Fishing Ground (A05) — free
+[2] Move President to Fishing Ground (A05) — pay 1 yen (1 to Blue)
 > pick a number, or 'cancel'
 ```
 
@@ -168,7 +176,7 @@ Return President to hand, recovering 2 assistant(s) (A02 x1, A09 x1)
 > confirm / cancel
 ```
 
-Inside either sub-prompt the accepted inputs are a valid answer or `cancel` (which returns to the full Movement list, applying nothing); `quit`/`q` also exit the program, silently discarding the un-applied sub-prompt (nothing was recorded). An out-of-range number re-asks with its range. The **route** sub-prompt is itself a real paged list, and `more`/`list` step it exactly as they step the main options — though it still pages at twenty entries and words its footer in the older style (`...N more (type 'more')`, `page 2/3`) rather than in the decision zone's, a difference that goes away with the card indexes; everywhere else in the two sub-prompts a view/`save`/`undo` — and `more` inside the *sequential* guided retreat, which is a question flow rather than a list — is refused with `! finish or cancel this prompt first` (it would otherwise render or act against a state the half-finished prompt doesn't reflect yet). Whatever a sub-prompt assembles is matched against the real legal list before it applies — exactly like the `a`/`b`/`m`/`r` shorthands — so neither can produce a move the engine didn't offer.
+Inside either sub-prompt the accepted inputs are a valid answer or `cancel` (which returns to the full Movement list, applying nothing); `quit`/`q` also exit the program, silently discarding the un-applied sub-prompt (nothing was recorded). An out-of-range number re-asks with its range. The **route** sub-prompt is itself a real paged list, and `more`/`list` step it exactly as they step the main options — it pages at twenty entries and words its footer in the decision zone's own vocabulary (`(5 more — 'more' for page 2 of 2, 'list' back to the first)`), so one pager reads the same on every screen that has one; everywhere else in the two sub-prompts a view/`save`/`undo` — and `more` inside the *sequential* guided retreat, which is a question flow rather than a list — is refused with `! finish or cancel this prompt first` (it would otherwise render or act against a state the half-finished prompt doesn't reflect yet). Whatever a sub-prompt assembles is matched against the real legal list before it applies — exactly like the `a`/`b`/`m`/`r` shorthands — so neither can produce a move the engine didn't offer.
 
 **Choice prompts:** some rewards leave you a decision — which good, which warehouse item, where to move an assistant, which Church/Customs space (full inventory in §8.6). Whenever one or more of these is queued, the "YOU ARE DECIDING" line words that choice instead of the phase (the chain above still shows which phase you are in), and says how many more are stacked behind it; the numbered list below is exactly that choice's options — nothing about entering them differs from any other phase. A captured example, mid-cascade:
 
@@ -176,11 +184,11 @@ Inside either sub-prompt the accepted inputs are a valid answer or `cancel` (whi
 TURN 1 · RED's turn    ADDITIONAL  ▸ Placement ▸ Movement ▸ Area Action ▸ 5-Power ▸ Building ▸ Recovery ▸ Additional ▸ End
 
 YOU ARE DECIDING · which good to take — the reward is yours whichever you pick. (1 more to resolve after this one)
-   [0] Take 1 copper (any-good reward)
-   [1] Take 1 silk (any-good reward)
-   [2] Take 1 tea (any-good reward)
-   [3] Take 1 fish (any-good reward)
-(pick a number · 'back' undoes the last applied entry · 'view' or '?' any surface · 'help' for commands)
+   [1] Take 1 copper (any-good reward)
+   [2] Take 1 silk (any-good reward)
+   [3] Take 1 tea (any-good reward)
+   [4] Take 1 fish (any-good reward)
+(pick a number · 'back' undoes the last applied entry · 'view' any surface · '?' the card index · 'help' for commands)
 > 
 ```
 
@@ -214,8 +222,8 @@ Turn 2 Blue -> Turn 3 Red
 TURN 3 · RED's turn    ADDITIONAL  ▸ Placement ▸ Movement ▸ Area Action ▸ 5-Power ▸ Building ▸ Recovery ▸ Additional ▸ End
 
 YOU ARE DECIDING · whether to use an additional action before Placement, or to move on.
-   [0] End additional-action phase
-(only option — press Enter to apply · nothing is final until you apply it · 'back' undoes the last applied entry · 'view' or '?' any surface · 'help' for commands)
+   [1] End additional-action phase
+(only option — press Enter to apply · nothing is final until you apply it · 'back' undoes the last applied entry · 'view' any surface · '?' the card index · 'help' for commands)
 > 
 ```
 
@@ -289,19 +297,21 @@ tracks          show the Church and Customs tracks with printed VP and rider ico
 sites           show each area's building-site printed rewards, build marks, and adjacency
 goals           show achievement cards with claim VP, claim state, and per-player progress
 hand            show the current player's order-card hand
+orders          open the ORDER CARD INDEX: all 36 cards, grouped by flag, full-screen
+?               open the order card index from ANY prompt -- including mid-reveal -- and return to it
 score           show current VP/money (or the final scores once the game is over)
 log             show the tail of the move/event log
-view            open the numbered game-info menu over all of the views above ('views'/'?' also work)
+view            open the numbered game-info menu over all of the views above ('views' also works)
 suggest         simulation only: what the built-in bot would play from your seat, with its arithmetic
 privacy         toggle hiding hand contents in views (default: hidden in live mode)
 panel           toggle the players panel inside the composed screen (terminal only)
 screen          toggle the composed screen itself (terminal only; pipes are always plain)
-more            show the next page of legal options (wraps to page 0)
+more            show the next page of legal options (wraps to page 1)
 list            reset to the first page of legal options
 undo            undo the last move (and any reveals bound to it) ('back' also works)
 save [path]     save to path (or to the last-used path if omitted)
 reveal <seat> <O..>  live mode: make a hidden opponent starting order public
-cancel          back out of any sub-prompt: reveal collection (live), view menu, numbered pick, either Placement picker, guided retreat
+cancel          back out of any sub-prompt: reveal collection (live), view menu, card index, numbered pick, either Placement picker, guided retreat
 help            show this text
 quit            exit the REPL ('q' also works)
 ```

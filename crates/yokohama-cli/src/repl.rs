@@ -6,8 +6,11 @@
 
 use yokohama_core::*;
 
-use crate::input::parse_order_id;
+use crate::card_prompt::{self, CardEntry, CardPrompt};
 use crate::reveal::{lab_b_changed, refilled_port_slots, Pending};
+use crate::screen_model::{
+    menu_index, menu_number, menu_range, CardLocation, IndexModel, RecordingTarget, NUMBER_BASE,
+};
 use crate::session::{ApplyError, TrackingMode};
 use crate::style::{paint, Tone};
 use crate::{decision_render, describe, render, screen};
@@ -61,6 +64,30 @@ pub struct Repl {
     /// and a resumed save take ONE path; empty (all-human) for every game the
     /// wizard was not asked about, which makes every bot path below a no-op.
     pub(crate) bots: crate::bot::BotSeats,
+    /// The card index, when it is open over whatever the player was doing
+    /// (Phase-3.5a T5, spec §0.6).
+    ///
+    /// **An OVERLAY, deliberately, rather than a third capture state beside
+    /// `pending` and `sub`.** §0.6 requires the index to be available INSIDE an
+    /// input capture — *"that is where it is needed most"* — and to return to
+    /// the exact prompt with its state intact. Modelling it as an overlay makes
+    /// that structural instead of careful: opening it touches neither
+    /// `pending` nor `sub`, so there is no state to preserve and none to
+    /// restore, and closing it simply stops drawing it. The one test that could
+    /// fail is a caller that CLEARS one of those fields on the way in, and
+    /// nothing here does.
+    pub(crate) index: Option<IndexState>,
+}
+
+/// The card index while it is open: everything about the screen that is not
+/// derivable from the game state underneath it.
+///
+/// Which is only the FILTER. What is being recorded is re-derived from
+/// `pending` on every render ([`Repl::index_target`]) rather than captured at
+/// open time, so a reveal group that advances a slot while the index is up
+/// cannot leave the header describing the slot before it.
+pub(crate) struct IndexState {
+    pub(crate) filter: Option<crate::screen_model::IndexFilter>,
 }
 
 /// One line in the Movement phase's collapsed numbered list
@@ -207,6 +234,7 @@ impl Repl {
             show_panel: true,
             privacy,
             bots,
+            index: None,
         }
     }
 
@@ -221,6 +249,17 @@ impl Repl {
             })
             .collect();
         render::SeatDisplay::new(hide, self.bots.flags())
+    }
+
+    /// Whether the body `screen::wrap` is about to compose is a FULL-SCREEN
+    /// surface that replaces the frame instead of sitting under it (spec §0.5).
+    ///
+    /// One predicate rather than a check at each of the two sites, for the same
+    /// reason `screen::frame_active` is one: `wrap` suppresses the stage on
+    /// exactly this, and `out`/`out_view` draw the surface on exactly this, so
+    /// the two can never disagree about whether a board is on screen.
+    pub(crate) fn full_screen_surface(&self) -> bool {
+        self.index.is_some() && !self.locked
     }
 
     /// Engage a lockdown: flip the in-memory `locked` flag AND persist the
@@ -359,6 +398,25 @@ impl Repl {
                 false,
             );
         }
+        // The card index is an OVERLAY: while it is up it takes the input, and
+        // whatever was underneath -- a reveal collection, a sub-prompt, the
+        // main list -- is untouched and comes back exactly as it was
+        // (spec §0.6's return contract). Checked after the lockdown gate for
+        // the same reason the sub-prompt branch is: a locked session shows its
+        // status and nothing else.
+        if self.index.is_some() {
+            return self.step_index(&words);
+        }
+        // `?` opens the card index from ANY prompt -- the main list, a
+        // Movement sub-prompt, or mid-reveal-capture. Intercepted HERE, ahead
+        // of both capture branches below, because that is the whole point of
+        // §0.6: the index is needed most at the moment a capture is asking
+        // which card is in a slot, and both of those loops would otherwise
+        // swallow the key (the reveal collector as a bad card, the sub-prompt
+        // as "finish or cancel this prompt first").
+        if matches!(words.as_slice(), ["?"] | ["index"]) {
+            return self.open_index();
+        }
         // A Movement sub-prompt (route pick / guided retreat) captures input the
         // same way the reveal collector does -- checked AFTER the lockdown gate
         // above, so lockdown wins (entering or continuing a sub-prompt while
@@ -393,7 +451,7 @@ impl Repl {
             // re-prompt behavior.
             [] => {
                 if !self.session.is_over() && self.display_options().len() == 1 {
-                    self.pick_option(0)
+                    self.pick_option(NUMBER_BASE)
                 } else {
                     self.out(String::new(), false)
                 }
@@ -412,10 +470,11 @@ impl Repl {
             ["sites"] => self.out_view(render::sites_view(self.session.state(), self.session.rules())),
             ["goals"] => self.out_view(render::achievements_view(self.session.state(), self.session.rules())),
             ["hand"] => self.out_view(self.hand_text()),
+            ["orders"] => self.open_index(),
             ["score"] => self.out_view(self.score_text()),
             ["log"] => self.out_view(self.log_tail()),
             ["suggest"] => self.suggest_cmd(),
-            ["view"] | ["views"] | ["?"] => {
+            ["view"] | ["views"] => {
                 self.sub = SubPrompt::ViewMenu;
                 self.out(String::new(), false)
             }
@@ -481,6 +540,11 @@ impl Repl {
         }
         if self.locked {
             text.push_str(&self.lockdown_status());
+        } else if self.index.is_some() {
+            // The index is an overlay and takes the whole screen: what it
+            // replaces is the PROMPT, not the state underneath it, which is
+            // still there when it closes.
+            text.push_str(&self.index_text());
         } else if !matches!(self.sub, SubPrompt::None) {
             // Inside a Movement sub-prompt: append the sub-prompt screen (route
             // list / current recovery question / confirm line) instead of the
@@ -511,6 +575,11 @@ impl Repl {
         }
         if self.locked {
             text.push_str(&self.lockdown_status());
+        } else if self.index.is_some() {
+            // Defense in depth, like the sub-prompt arm below: `step` routes
+            // every line to the overlay while it is open, so no view command
+            // reaches here with the index up.
+            text.push_str(&self.index_text());
         } else if !matches!(self.sub, SubPrompt::None) {
             // Defense in depth: no view command is reachable mid-sub-prompt
             // (`step`'s sub-prompt branch routes elsewhere entirely), so this
@@ -595,13 +664,17 @@ impl Repl {
         self.page = (self.page + 1) % pages;
     }
 
-    fn pick_option(&mut self, k: usize) -> StepOutput {
+    /// Apply the option the player typed. `shown` is the number ON SCREEN, so
+    /// this is the one place the display base is turned back into a position
+    /// ([`menu_index`]) -- every caller above speaks the player's numbers and
+    /// every caller below speaks the list's.
+    fn pick_option(&mut self, shown: usize) -> StepOutput {
         // Index into the DISPLAYED entries: a `Direct` commits as before, a
         // `Route`/`Retreat` entry opens its sub-prompt. `display_options` calls
         // `legal()` exactly once (same as the old direct-index path).
         let options = self.display_options();
         let len = options.len();
-        match options.into_iter().nth(k) {
+        match menu_index(shown, len).and_then(|k| options.into_iter().nth(k)) {
             Some(PromptOption::Direct(mv)) => self.commit(mv),
             Some(PromptOption::Route { destination, moves }) => {
                 let title = format!("Routes to {}", describe::area_label(self.session.state(), destination));
@@ -630,7 +703,7 @@ impl Repl {
                 };
                 self.enter_pick_subprompt(format!("Assistant destinations from {from_label}"), moves)
             }
-            None => self.out(format!("option {k} out of range (0..{len})\n"), false),
+            None => self.out(format!("option {shown} out of range ({})\n", range_text(len)), false),
         }
     }
 
@@ -988,7 +1061,8 @@ impl Repl {
     /// command uses. NOTE this couples label to function only -- whether a
     /// label's WORDING matches what its view renders remains a human
     /// judgment (reviewed, not machine-checked).
-    const VIEW_MENU: [ViewEntry; 10] = [
+    const VIEW_MENU: [ViewEntry; 11] = [
+        ("Order card index — all 36 cards, grouped by flag ('?' anywhere)", |r| r.open_index()),
         ("Board — tiles, presidents, assistants, buildings", |r| r.board_cmd()),
         ("Players — every player's public holdings in full", |r| {
             let t = render::players_panel(r.session.state(), r.session.rules(), &r.seat_display());
@@ -1041,11 +1115,11 @@ impl Repl {
             }
             ["quit"] | ["q"] => StepOutput { text: "bye\n".to_string(), quit: true },
             [tok] if !tok.is_empty() && tok.chars().all(|c| c.is_ascii_digit()) => {
-                let Some(&(_, render_fn)) =
-                    tok.parse::<usize>().ok().and_then(|k| Self::VIEW_MENU.get(k))
+                let Some(&(_, render_fn)) = crate::card_prompt::list_index(tok, Self::VIEW_MENU.len())
+                    .and_then(|k| Self::VIEW_MENU.get(k))
                 else {
                     return self.out(
-                        format!("! pick a number 0-{}, or 'cancel'", Self::VIEW_MENU.len() - 1),
+                        format!("! pick a number {}, or 'cancel'", range_text(Self::VIEW_MENU.len())),
                         false,
                     );
                 };
@@ -1054,6 +1128,164 @@ impl Repl {
             }
             _ => self.out("! pick a numbered view, or 'cancel'".to_string(), false),
         }
+    }
+
+    // -----------------------------------------------------------------
+    // The card index (spec §0.6, R8)
+    // -----------------------------------------------------------------
+
+    /// Open the card index over whatever the player is doing. Nothing else
+    /// changes: `pending` and `sub` are left exactly as they were, which is
+    /// what makes the return contract structural (see [`Repl::index`]).
+    fn open_index(&mut self) -> StepOutput {
+        self.index = Some(IndexState { filter: None });
+        self.out(String::new(), false)
+    }
+
+    /// What the index is being opened to answer, re-derived from the live
+    /// capture state on every render rather than captured at open time.
+    ///
+    /// `None` whenever nothing is being recorded — which is also what makes the
+    /// screen a read-only VIEW, with no selection numbers on it (F3 from the
+    /// other side: a number is printed only where typing it does something).
+    fn index_target(&self) -> Option<RecordingTarget> {
+        match &self.pending {
+            Pending::OrderReveals { slots, board_b, collected, .. } => {
+                Some(RecordingTarget::PortRefill {
+                    board_b: *board_b,
+                    slot: slots[collected.len()],
+                    nth: collected.len() + 1,
+                    of: slots.len(),
+                })
+            }
+            // A tech reveal is a card prompt too, but the TECH index is T6's.
+            // Opening the order index over a tech question would answer a
+            // question nobody asked, so `?` there falls through to a view.
+            Pending::TechReveal { .. } | Pending::None => None,
+        }
+    }
+
+    /// Where the index may honestly say a card already is.
+    ///
+    /// **Public information only, and that is a leak fence rather than an
+    /// omission.** The port displays are face-up, and the viewing seat's own
+    /// hand is already on screen in the dashboard unless privacy masks it — so
+    /// both are things this player can see anyway. What is deliberately NOT
+    /// here is any other seat's hand: in a live game an opponent's starting
+    /// order is hidden, and an index that dimmed it with "in Seat 1's hand"
+    /// would leak the one card the whole observation boundary exists to
+    /// protect.
+    fn index_placements(&self) -> Vec<(OrderCardId, CardLocation)> {
+        let state = self.session.state();
+        let mut placed = Vec::new();
+        for (board_b, board) in
+            [(false, Some(&state.port_state.port_a)), (true, state.port_state.port_b.as_ref())]
+        {
+            let Some(board) = board else { continue };
+            for (slot, card) in board.slots.iter().enumerate() {
+                if let Some(id) = card {
+                    placed.push((*id, CardLocation::PortSlot { board_b, slot }));
+                }
+            }
+        }
+        let me = state.current_player;
+        if !self.seat_display().hides_hand(me) {
+            if let Some(p) = state.players.iter().find(|p| p.id == me) {
+                for &id in &p.order_cards_in_hand {
+                    placed.push((id, CardLocation::OwnHand));
+                }
+            }
+        }
+        if let Pending::OrderReveals { collected, .. } = &self.pending {
+            for &id in collected {
+                placed.push((id, CardLocation::ThisReveal));
+            }
+        }
+        placed
+    }
+
+    /// The index model for the current position and filter.
+    fn index_model(&self) -> IndexModel {
+        let filter = self.index.as_ref().and_then(|i| i.filter);
+        crate::screen_model::build_order_index(
+            self.session.rules(),
+            &self.index_placements(),
+            self.index_target(),
+            filter,
+        )
+    }
+
+    pub(crate) fn index_text(&self) -> String {
+        crate::index_render::index_view(&self.index_model())
+    }
+
+    /// One line of input while the index is open.
+    ///
+    /// Everything goes through `card_prompt::resolve`, which is the same
+    /// grammar the prompts underneath use — so a number, an id, `?` and a
+    /// filter mean the same thing here as they do there, which is the whole
+    /// content of §0.2's "one card-entry grammar everywhere".
+    fn step_index(&mut self, words: &[&str]) -> StepOutput {
+        if matches!(words, ["quit"] | ["q"]) {
+            return StepOutput { text: "bye\n".to_string(), quit: true };
+        }
+        let line = words.join(" ");
+        let model = self.index_model();
+        let placed = self.index_placements();
+        let prompt = CardPrompt {
+            candidates: &[],
+            placed: &placed,
+            numbering: card_prompt::Numbering::Selection(&model),
+        };
+        match card_prompt::resolve(&prompt, &line, self.session.rules()) {
+            // `?` toggles: the key that opened the screen closes it, which is
+            // the affordance a player reaches for first.
+            CardEntry::Cancel | CardEntry::OpenIndex => {
+                self.index = None;
+                // `out` re-draws whatever was underneath -- except a reveal
+                // capture, whose prompt is a complete self-describing message
+                // its callers pass as `text` (see `out`'s pending branch). So
+                // this passes it, which is what returns the player to the exact
+                // question they left.
+                let back = match self.pending {
+                    Pending::None => String::new(),
+                    _ => self.reveal_prompt(),
+                };
+                self.out(back, false)
+            }
+            CardEntry::Filter(filter) => {
+                if let Some(state) = self.index.as_mut() {
+                    state.filter = filter;
+                }
+                self.out(String::new(), false)
+            }
+            CardEntry::Refused(message) => self.out(message, false),
+            CardEntry::Card(id) => self.index_selection(id),
+        }
+    }
+
+    /// A card picked off the index screen, handed to whatever prompt is
+    /// underneath.
+    ///
+    /// The selection is fed in as the TYPED FORM of the same answer, so the
+    /// index adds no authority of its own: the reveal collector's own parser
+    /// still checks the card against the deck and the boxed pile, and refuses
+    /// it with its own words if it does not belong. What the index bought the
+    /// player is finding the card, not skipping the check.
+    fn index_selection(&mut self, id: OrderCardId) -> StepOutput {
+        let echo = card_prompt::echo(id, self.session.rules());
+        if matches!(self.pending, Pending::OrderReveals { .. }) {
+            self.index = None;
+            let token = format!("O{:02}", id.0);
+            let out = self.collect_reveal(&[&token]);
+            return StepOutput { text: format!("{echo}{}", out.text), quit: out.quit };
+        }
+        // No card prompt underneath: nothing to record, so the pick is an
+        // inspection. Say so rather than appearing to do something.
+        self.out(
+            format!("{echo}Nothing is being recorded right now — Enter or 'cancel' closes the index."),
+            false,
+        )
     }
 
     /// Numbered-pick sub-prompt input (route labels, assistant destinations,
@@ -1079,7 +1311,9 @@ impl Repl {
                 let selected: Result<Move, usize> = match &self.sub {
                     SubPrompt::Pick { moves, .. } => {
                         let n = moves.len();
-                        tok.parse::<usize>().ok().and_then(|k| moves.get(k).cloned()).ok_or(n)
+                        crate::card_prompt::list_index(tok, n)
+                            .and_then(|k| moves.get(k).cloned())
+                            .ok_or(n)
                     }
                     _ => return self.out(String::new(), false), // unreachable: dispatched as Pick
                 };
@@ -1089,7 +1323,7 @@ impl Repl {
                         self.page = 0;
                         self.commit(mv)
                     }
-                    Err(n) => self.out(format!("! pick a number 0-{}, or 'cancel'", n.saturating_sub(1)), false),
+                    Err(n) => self.out(format!("! pick a number {}, or 'cancel'", range_text(n)), false),
                 }
             }
             // Pick lists page like the main list (brief item 5): `more`/`list`
@@ -1416,13 +1650,35 @@ impl Repl {
                 let start = (self.page * 20).min(n);
                 let end = (start + 20).min(n);
                 for (i, mv) in moves[start..end].iter().enumerate() {
-                    out.push_str(&format!("[{}] {}\n", start + i, describe::describe_move(mv, state, rules)));
+                    out.push_str(&format!(
+                        "[{}] {}\n",
+                        menu_number(start + i),
+                        describe::describe_move(mv, state, rules),
+                    ));
                 }
-                if end < n {
-                    out.push_str(&format!("...{} more (type 'more')\n", n - end));
-                }
+                // The DECISION ZONE's pager vocabulary, not a second one.
+                // This footer used to read `...N more (type 'more')` over
+                // `page 2/3` while the main list said `(N more — 'more' for
+                // page 2 of 3, 'list' back to the first)`, so a player who had
+                // learned one screen's words met different ones on the next --
+                // for a pager that behaves identically. One wording, and the
+                // last-page form is the zone's too (`more` wraps there, and a
+                // footer counting "0 more" reads as a bug on the page every
+                // list ends on).
                 if total_pages > 1 {
-                    out.push_str(&format!("page {}/{total_pages}\n", self.page + 1));
+                    let footer = if end < n {
+                        format!(
+                            "({} more — 'more' for page {} of {total_pages}, 'list' back to the first)",
+                            n - end,
+                            (self.page + 1) % total_pages + 1,
+                        )
+                    } else {
+                        format!(
+                            "(last page — 'more' wraps to page 1 of {total_pages}, 'list' back to the first)",
+                        )
+                    };
+                    out.push_str(&footer);
+                    out.push('\n');
                 }
                 out.push_str("> pick a number, or 'cancel'\n");
                 out
@@ -1487,7 +1743,7 @@ impl Repl {
             SubPrompt::ViewMenu => {
                 let mut out = String::from("─ Game info ───────────────────────────\n");
                 for (i, (label, _)) in Self::VIEW_MENU.iter().enumerate() {
-                    out.push_str(&format!("[{i}] {label}\n"));
+                    out.push_str(&format!("[{}] {label}\n", menu_number(i)));
                 }
                 out.push_str("> pick a number to open a view, or 'cancel'\n");
                 out
@@ -1923,10 +2179,30 @@ impl Repl {
             Some(p) => p,
             None => return self.out(format!("'{seat_tok}' is not a valid seat number.\n"), false),
         };
-        let card = match parse_order_id(card_tok) {
-            Some(n) => OrderCardId(n),
-            None => return self.out(format!("'{card_tok}' is not a valid order-card code.\n"), false),
+        // The card half goes through the ONE card-entry grammar (§0.2/§0.6),
+        // so `reveal` takes an id, `?` for the index, and refuses a card that
+        // is visibly somewhere else BY NAMING WHERE (F6) -- the same three
+        // behaviours every other card prompt has. What it does not take from
+        // the grammar is authority: the engine's `apply_standalone` still
+        // rules on whether this seat can reveal this card.
+        let placed = self.index_placements();
+        let prompt = CardPrompt {
+            candidates: &[],
+            placed: &placed,
+            numbering: card_prompt::Numbering::Ids,
         };
+        let card = match card_prompt::resolve(&prompt, card_tok, self.session.rules()) {
+            CardEntry::Card(id) => id,
+            CardEntry::OpenIndex => return self.open_index(),
+            CardEntry::Refused(message) => return self.out(message, false),
+            CardEntry::Cancel | CardEntry::Filter(_) => {
+                return self.out("Usage: reveal <seat> <O..>".to_string(), false)
+            }
+        };
+        // The card echoed back in full before it commits (§0.6): a reveal is
+        // recorded into the game record, and an id typed one digit wrong is
+        // exactly the entry a player wants to catch on sight.
+        let echo = card_prompt::echo(card, self.session.rules());
         match self.session.apply_standalone(RecordedEvent::RevealStartingOrder { player: seat, card }) {
             Ok(delta) => {
                 // Surface the delta the same way `undo`/`apply` do (item 5,
@@ -1935,7 +2211,8 @@ impl Repl {
                 // used to discard -- leaving a failed live-tracking autosave
                 // invisible on the composed frame (same bug as the `undo` I3
                 // fix). `StepOutput.text` is the only channel `main.rs` renders.
-                let mut text = format!("Seat {} revealed O{:02} as their starting order.\n", seat.0, card.0);
+                let mut text =
+                    format!("{echo}Seat {} revealed O{:02} as their starting order.\n", seat.0, card.0);
                 for line in delta {
                     text.push_str(&line);
                     text.push('\n');
@@ -2161,19 +2438,21 @@ Commands:
   sites           show each area's building-site printed rewards, build marks, and adjacency
   goals           show achievement cards with claim VP, claim state, and per-player progress
   hand            show the current player's order-card hand
+  orders          open the order card index: all 36 cards by flag ('?' opens it from any prompt)
+  ?               open the order card index -- works mid-reveal and mid-sub-prompt, and returns you to it
   score           show current VP/money (or the final scores once the game is over)
   log             show the tail of the move/event log
-  view            open the numbered game-info menu over all of the views above ('views'/'?' also work)
+  view            open the numbered game-info menu over all of the views above ('views' also works)
   suggest         simulation only: what the built-in bot would play from your seat, with its arithmetic
   privacy         toggle hiding hand contents in views (default: hidden in live mode)
   panel           toggle the players panel inside the composed screen (terminal only)
   screen          toggle the composed screen itself (terminal only; pipes are always plain)
-  more            show the next page of legal options (wraps to page 0)
+  more            show the next page of legal options (wraps to page 1)
   list            reset to the first page of legal options
   undo            undo the last move (and any reveals bound to it) ('back' also works)
   save [path]     save to path (or to the last-used path if omitted)
   reveal <seat> <O..>  live mode: make a hidden opponent starting order public
-  cancel          back out of any sub-prompt: reveal collection (live), view menu, numbered pick, either Placement picker, guided retreat
+  cancel          back out of any sub-prompt: reveal collection (live), view menu, card index, numbered pick, either Placement picker, guided retreat
   help            show this text
   quit            exit the REPL ('q' also works)
 ";
@@ -2190,6 +2469,21 @@ Commands:
 /// still exactly what it means.
 fn total_pages_for(n: usize) -> usize {
     n.div_ceil(20).max(1)
+}
+
+/// The numbers a list of `n` entries accepts, as a range message says them:
+/// `1-10`, or the degenerate forms for one entry and none.
+///
+/// One helper for every numbered prompt in the driver, which is the point: the
+/// three range messages used to spell their own arithmetic (`0-{len-1}`,
+/// `0-{VIEW_MENU.len()-1}`, `0..{len}`) and disagreed on the bracket style
+/// while agreeing on the base. Now they cannot disagree on either.
+fn range_text(n: usize) -> String {
+    match menu_range(n) {
+        None => "nothing to pick here".to_string(),
+        Some((lo, hi)) if lo == hi => format!("{lo}"),
+        Some((lo, hi)) => format!("{lo}-{hi}"),
+    }
 }
 
 #[cfg(test)]
@@ -2245,16 +2539,21 @@ mod tests {
         panic!("no numbered option carrying {needle:?} in:\n{prompt}")
     }
 
-    /// The DISPLAY index (what a numbered answer addresses) of the first
+    /// The DISPLAY NUMBER (what a numbered answer addresses) of the first
     /// grouped entry whose rendered text contains `needle` -- fixtures pick
     /// by text now that grouping means raw legal-list positions no longer
     /// address the prompt (Task 6).
-    fn display_index_containing(r: &Repl, needle: &str) -> Option<usize> {
+    ///
+    /// A NUMBER since T5, not a position: the driver's lists are 1-based
+    /// (`screen_model::NUMBER_BASE`), so a fixture that typed a position would
+    /// pick the entry before the one it found.
+    fn display_number_containing(r: &Repl, needle: &str) -> Option<usize> {
         let state = r.session.state();
         let rules = r.session.rules();
         r.display_options()
             .iter()
             .position(|o| r.render_option(o, state, rules).contains(needle))
+            .map(menu_number)
     }
 
     /// A REPL over a fresh `n`-player simulation (n in 2..=4). Used for the
@@ -2402,7 +2701,7 @@ mod tests {
             screen::force(true);
             let opening = screen::wrap(&r, &r.prompt()).lines().count();
             r.step("view");
-            let out = r.step("0"); // Board
+            let out = r.step("2"); // Board
             let rows = screen::wrap(&r, &out.text).lines().count();
             screen::force(false);
             assert!(
@@ -2429,7 +2728,7 @@ mod tests {
     fn prompt_numbers_the_legal_options() {
         let r = repl_2p(4);
         let p = r.prompt();
-        assert!(p.contains("[0]"), "{p}");
+        assert!(p.contains("[1]"), "{p}");
         assert!(p.contains("End additional-action phase"), "{p}");
     }
 
@@ -2444,7 +2743,7 @@ mod tests {
 
         let chain = p.find("TURN 1 ").expect("the phase chain leads");
         let deciding = p.find("YOU ARE DECIDING").expect("the deciding line");
-        let option = p.find("[0]").expect("the numbered options");
+        let option = p.find("[1]").expect("the numbered options");
         let hint = p.find("'help' for commands").expect("the standing hint");
         assert!(chain < deciding && deciding < option && option < hint, "zone order:\n{p}");
         assert!(p.ends_with("> \n"), "the caret closes the zone: {p:?}");
@@ -2530,7 +2829,7 @@ mod tests {
     #[test]
     fn back_is_undo() {
         let mut r = repl_2p(4);
-        r.step("0");
+        r.step("1");
         let after_move = r.session.record().events.len();
         assert_eq!(after_move, 1, "one applied entry to take back");
 
@@ -2631,7 +2930,7 @@ mod tests {
     fn numeric_input_applies_that_option_and_reprompts() {
         let mut r = repl_2p(4);
         let phase_before = r.session.state().turn_phase;
-        let out = r.step("0");
+        let out = r.step("1");
         assert!(!out.quit);
         assert_ne!(r.session.state().turn_phase, phase_before);
         assert!(out.text.contains("Placement"), "{}", out.text); // delta line + new prompt
@@ -2640,7 +2939,7 @@ mod tests {
     #[test]
     fn placement_grammar_matches_by_multiset() {
         let mut r = repl_2p(4);
-        r.step("0"); // -> Placement
+        r.step("1"); // -> Placement
         let legal = r.session.legal();
         let some_a = legal.iter().find_map(|m| match m {
             Move::PlaceThreeAreas { placements } if placements.len() == 2 => Some(placements.clone()),
@@ -2731,7 +3030,7 @@ mod tests {
     #[test]
     fn placement_a_grammar_rejects_4_ids_without_newspaper() {
         let mut r = repl_2p(4);
-        r.step("0"); // -> Placement
+        r.step("1"); // -> Placement
         let out = r.step("a 0 1 2 3");
         assert!(out.text.contains("Illegal: that placement is not currently available."), "{}", out.text);
     }
@@ -2759,7 +3058,7 @@ mod tests {
     #[test]
     fn undo_save_quit_commands_work() {
         let mut r = repl_2p(4);
-        r.step("0");
+        r.step("1");
         let out = r.step("undo");
         assert!(out.text.contains("Undid"), "{}", out.text);
         assert!(r.session.record().events.is_empty());
@@ -2784,7 +3083,7 @@ mod tests {
     #[test]
     fn undo_autosave_failure_is_reported_in_the_step_output_not_stderr() {
         let mut r = repl_2p(4);
-        r.step("0"); // one real recorded event to undo
+        r.step("1"); // one real recorded event to undo
         assert_eq!(r.session.record().events.len(), 1, "fixture: something to undo");
         // A save target that cannot be written: its parent directory does not exist.
         r.session.save_path =
@@ -2860,13 +3159,19 @@ mod tests {
     /// through the actual `VIEW_MENU` dispatch -- so it cannot miss one that is
     /// in the menu -- plus the game-over `final_score` table (which is not a
     /// menu row, being `score`'s game-over form), and holds the shared header
-    /// on all of them. The board grid is its own layout, not a `─ Title ─`
-    /// view, and is skipped.
+    /// on all of them.
+    ///
+    /// TWO menu rows are skipped, each with its own layout rather than the
+    /// rule-header one: the board grid, and (since T5) the card index, which
+    /// is a FULL-SCREEN card surface drawn to its own approved mock and
+    /// pinned by `index_render`'s own tests. Skipping by a startswith on the
+    /// label is deliberate -- a row renamed out of the skip list rejoins the
+    /// sweep rather than silently staying out of it.
     #[test]
     fn all_state_views_share_the_rule_header_style() {
         let mut r = repl_2p(4);
         for (label, render_fn) in Repl::VIEW_MENU.iter() {
-            if label.starts_with("Board") {
+            if label.starts_with("Board") || label.starts_with("Order card index") {
                 continue;
             }
             let out = render_fn(&mut r);
@@ -2891,7 +3196,7 @@ mod tests {
     #[test]
     fn undo_with_a_writable_save_target_reports_no_warning() {
         let mut r = repl_2p(4);
-        r.step("0");
+        r.step("1");
         let path = std::env::temp_dir().join(format!("yokohama_i3_ok_{}.json", std::process::id()));
         r.session.save_path = Some(path.clone());
 
@@ -2933,7 +3238,7 @@ mod tests {
         let mut r = repl_2p(4);
         for cmd in ["board", "players", "ports", "labs", "tracks", "sites", "goals", "hand", "score", "log", "help"] {
             let out = r.step(cmd);
-            assert!(!out.text.contains("[0]"), "'{cmd}' unexpectedly showed the numbered options block: {}", out.text);
+            assert!(!out.text.contains("[1]"), "'{cmd}' unexpectedly showed the numbered options block: {}", out.text);
             assert!(
                 out.text.trim_end().ends_with("'help' for commands)"),
                 "'{cmd}' output is missing the one-line input hint: {}", out.text
@@ -3043,7 +3348,7 @@ mod tests {
         assert!(!p.contains("'a'/'b'"), "{p}");
         assert!(!p.contains("'r' retreats"), "{p}");
 
-        r.step("0"); // -> Placement
+        r.step("1"); // -> Placement
         let p = r.prompt();
         assert!(p.contains("'a'/'b' place directly"), "{p}");
         assert!(!p.contains("'r' retreats"), "{p}");
@@ -3151,34 +3456,50 @@ mod tests {
 
         // Back at the normal prompt: a move command works again.
         let p = r.prompt();
-        assert!(p.contains("[0]"), "{p}");
+        assert!(p.contains("[1]"), "{p}");
     }
 
-    /// `views` and `?` alias the menu; `cancel` closes it; an out-of-range
-    /// number re-asks.
+    /// `views` aliases the menu; `cancel` closes it; an out-of-range number
+    /// re-asks with the range it accepts.
+    ///
+    /// **`?` is NOT among the aliases since T5**, and that is the approved
+    /// mock's own split: its standing hint reads `'view' any surface · '?' the
+    /// card index`. The two keys now open two different screens, which is why
+    /// this test names only one of them and `the_index_opens_from_anywhere`
+    /// pins the other.
     #[test]
     fn view_menu_aliases_cancel_and_range() {
         let mut r = repl_2p(4);
-        for alias in ["views", "?"] {
+        for alias in ["view", "views"] {
             let out = r.step(alias);
             assert!(out.text.contains("Game info"), "'{alias}' must open the menu: {}", out.text);
             let out = r.step("cancel");
             assert!(matches!(r.sub, SubPrompt::None), "cancel closes the menu");
-            assert!(out.text.contains("[0]"), "main prompt back after cancel: {}", out.text);
+            assert!(out.text.contains("[1]"), "main prompt back after cancel: {}", out.text);
         }
         r.step("view");
         let out = r.step("99");
-        assert!(out.text.contains("pick a number"), "out-of-range re-asks: {}", out.text);
+        assert!(
+            out.text.contains(&format!("pick a number 1-{}", Repl::VIEW_MENU.len())),
+            "out-of-range re-asks with the range it takes: {}",
+            out.text,
+        );
         assert!(out.text.contains("Game info"), "menu still showing: {}", out.text);
+        // The base itself: `0` is below the first row now, and says so rather
+        // than wrapping round to the last one.
+        let out = r.step("0");
+        assert!(out.text.contains("pick a number 1-"), "0 is not a row: {}", out.text);
     }
 
-    /// The hint line on EVERY prompt names the menu — the discoverability
-    /// layer that survives piped/rolling modes.
+    /// The hint line on EVERY prompt names the menu AND the card index — the
+    /// discoverability layer that survives piped/rolling modes, and (since T5)
+    /// the two keys that reach the two kinds of surface.
     #[test]
     fn input_hint_names_the_view_menu() {
         let r = repl_2p(4);
         let p = r.prompt();
-        assert!(p.contains("'view' or '?' any surface"), "{p}");
+        assert!(p.contains("'view' any surface"), "{p}");
+        assert!(p.contains("'?' the card index"), "{p}");
     }
 
     #[test]
@@ -3210,17 +3531,17 @@ mod tests {
         // an assistant must land at Port A before PlacePresident can target it.
         let port_area = *r.session.state().board_layout.areas.iter()
             .find(|(_, c)| c.area_type == AreaType::PortA).unwrap().0;
-        r.step("0");
+        r.step("1");
         r.step(&format!("a {}", port_area.0));
         let k = r.session.legal().iter().position(|m| matches!(
             m, Move::PlacePresident { destination } if *destination == port_area
         )).expect("PlacePresident at Port A is legal from hand at game start");
-        r.step(&k.to_string());
+        r.step(&menu_number(k).to_string());
         let take = r.session.legal().iter().position(|m| matches!(
             m, Move::ExecuteAreaAction { action: AreaAction::Port { cards_taken, .. } } if cards_taken.len() == 1
         )).expect("1-card port take available");
         let events_before = r.session.record().events.len();
-        let out = r.step(&take.to_string());
+        let out = r.step(&menu_number(take).to_string());
         assert!(!out.text.to_lowercase().contains("slot"), "{}", out.text);
         assert_eq!(r.session.record().events.len(), events_before + 1);
         assert!(matches!(r.pending, Pending::None));
@@ -3241,7 +3562,7 @@ mod tests {
         assert_eq!(*r.session.state(), state_before);
         assert_eq!(r.session.record().events.len(), events_before);
 
-        let out = r.step("0");
+        let out = r.step("1");
         assert!(out.text.contains("locked"), "{}", out.text);
         assert_eq!(*r.session.state(), state_before);
         assert_eq!(r.session.record().events.len(), events_before);
@@ -3358,7 +3679,7 @@ mod tests {
         let k = r.session.legal().iter()
             .position(|m| matches!(m, Move::ChooseAnyGood { good: TradeGood::Copper }))
             .expect("Copper is always one of the four AnyGood options");
-        r.step(&k.to_string());
+        r.step(&menu_number(k).to_string());
         assert_eq!(r.session.state().pending_choices.len(), 1);
 
         let p = r.prompt();
@@ -3384,7 +3705,7 @@ mod tests {
         let k = r.session.legal().iter()
             .position(|m| matches!(m, Move::ChooseAnyGood { good: TradeGood::Copper }))
             .expect("Copper is always one of the four AnyGood options");
-        r.step(&k.to_string());
+        r.step(&menu_number(k).to_string());
         assert_eq!(r.session.state().pending_choices.len(), 1);
         let events_before = r.session.record().events.len();
 
@@ -3432,13 +3753,13 @@ mod tests {
         let k1 = r.session.legal().iter()
             .position(|m| matches!(m, Move::ChooseAnyGood { good: TradeGood::Copper }))
             .expect("Copper is always one of the four AnyGood options");
-        r.step(&k1.to_string());
+        r.step(&menu_number(k1).to_string());
         assert_eq!(r.session.state().pending_choices.len(), 1);
 
         let k2 = r.session.legal().iter()
             .position(|m| matches!(m, Move::ChooseAnyGood { good: TradeGood::Silk }))
             .expect("Silk is always one of the four AnyGood options");
-        r.step(&k2.to_string());
+        r.step(&menu_number(k2).to_string());
         assert!(r.session.state().pending_choices.is_empty());
         assert_eq!(r.session.record().events.len(), 2);
 
@@ -3482,7 +3803,7 @@ mod tests {
         if !r.session.legal().iter().any(|m| matches!(m, Move::PlaceTwoSameArea { .. })) {
             let end = r.session.legal().iter().position(|m| matches!(m, Move::EndAdditionalPhase))
                 .expect("EndAdditionalPhase reaches Placement");
-            r.step(&end.to_string());
+            r.step(&menu_number(end).to_string());
         }
         // Task 6: the Placement list is grouped (picker entries), so raw
         // legal-list indices no longer address it -- the `b` grammar does
@@ -3497,8 +3818,8 @@ mod tests {
         // Movement phase: PlacePresident entries stay Direct in the grouped
         // display; find the one for Church by its rendered text.
         let church_label = crate::describe::area_label(r.session.state(), church_area);
-        let idx = display_index_containing(r, &format!("Place President from hand in {church_label}"))
-            .or_else(|| display_index_containing(r, &format!("Move President to {church_label}")))
+        let idx = display_number_containing(r, &format!("Place President from hand in {church_label}"))
+            .or_else(|| display_number_containing(r, &format!("Move President to {church_label}")))
             .expect("President can reach Church turn 1");
         r.step(&idx.to_string());
 
@@ -3507,12 +3828,12 @@ mod tests {
                 copper: true, silk: true, tea: false, seafood: false, yen: true, imported_good: false,
             }
         })).expect("paying copper+silk+yen is affordable turn 1 (starting resources include 1 of each)");
-        r.step(&church_mv.to_string());
+        r.step(&menu_number(church_mv).to_string());
 
         if matches!(r.session.state().pending_choices.first(), Some(PendingChoice::ChurchSpace { .. })) {
             let space6 = r.session.legal().iter().position(|m| matches!(m, Move::ChooseChurchSpace { space: 6 }))
                 .expect("space 6 (Faith 6) is reachable and unclaimed turn 1");
-            r.step(&space6.to_string());
+            r.step(&menu_number(space6).to_string());
         }
 
         assert_eq!(
@@ -3583,7 +3904,7 @@ mod tests {
         if !r.session.legal().iter().any(|m| matches!(m, Move::PlaceTwoSameArea { .. })) {
             let end = r.session.legal().iter().position(|m| matches!(m, Move::EndAdditionalPhase))
                 .expect("EndAdditionalPhase reaches Placement");
-            r.step(&end.to_string());
+            r.step(&menu_number(end).to_string());
         }
         // Task 6 (grouped Placement list): drive the placement via the `b`
         // grammar rather than a raw legal-list index.
@@ -3664,7 +3985,7 @@ mod tests {
         if !r.session.legal().iter().any(|m| matches!(m, Move::PlaceThreeAreas { .. })) {
             let end = r.session.legal().iter().position(|m| matches!(m, Move::EndAdditionalPhase))
                 .expect("EndAdditionalPhase reaches Placement");
-            r.step(&end.to_string());
+            r.step(&menu_number(end).to_string());
         }
         // Task 6 (grouped Placement list): drive the placement via the `a`
         // grammar rather than a raw legal-list index.
@@ -3749,7 +4070,7 @@ mod tests {
     fn an_applied_move_resets_the_option_page() {
         let mut r = movement_grouping_fixture_with(1);
         r.page = 3; // as if the player had paged forward
-        let out = r.step("1"); // the single-route Tea Plantation move
+        let out = r.step("2"); // the single-route Tea Plantation move
         assert!(!out.text.contains("Illegal"), "fixture assumption drifted: {}", out.text);
         assert_eq!(r.session.record().events.len(), 1, "the move must have applied");
         assert_eq!(r.page, 0, "an applied move reopens the list at page 1");
@@ -3965,34 +4286,34 @@ mod tests {
         let state = r.session.state();
         let p = r.prompt();
 
-        // Entry 0: the multi-label destination as a route-options line.
+        // Entry 1: the multi-label destination as a route-options line.
         assert!(
             p.contains(&format!(
-                "[0] Move to {} — 2 route options",
+                "[1] Move to {} — 2 route options",
                 crate::describe::area_name_upper(state, multi),
             )),
             "{p}"
         );
-        // Entry 1: the single-label destination, worded by the zone from the
+        // Entry 2: the single-label destination, worded by the zone from the
         // model -- the area name, the reachable mark the board also draws, the
         // step count off the path, and the engine's price.
         assert!(
             p.contains(&format!(
-                "[1] Move to {} {} — 1 step · free",
+                "[2] Move to {} {} — 1 step · free",
                 crate::describe::area_type_name(state.board_layout.areas[&single].area_type)
                     .to_uppercase(),
                 crate::style::glyph::REACHABLE,
             )),
             "{p}"
         );
-        // Entry 2: the collapsed retreat family (24 = 3*2*2*2 combinations).
+        // Entry 3: the collapsed retreat family (24 = 3*2*2*2 combinations).
         assert!(
-            p.contains("[2] Retreat President to hand — choose recovery (24 combinations; 'r' grammar works too)"),
+            p.contains("[3] Retreat President to hand — choose recovery (24 combinations; 'r' grammar works too)"),
             "{p}"
         );
-        // Exactly three entries -- no [3], and none of the 27 raw legal moves
+        // Exactly three entries -- no [4], and none of the 27 raw legal moves
         // (3 MovePresident + 24 retreats) leaked through ungrouped.
-        assert!(!p.contains("[3]"), "grouping must leave exactly 3 entries: {p}");
+        assert!(!p.contains("[4]"), "grouping must leave exactly 3 entries: {p}");
         assert_eq!(r.session.legal().len(), 27, "fixture assumption: 3 MovePresident + 24 retreats");
     }
 
@@ -4015,17 +4336,17 @@ mod tests {
         let mut r = movement_grouping_fixture();
         let (multi, _single) = grouping_fixture_dests();
 
-        let out = r.step("0"); // enter the route sub-prompt for the multi-label dest
+        let out = r.step("1"); // enter the route sub-prompt for the multi-label dest
         assert!(out.text.contains(&format!("Routes to {}", crate::describe::area_label(r.session.state(), multi))), "{}", out.text);
         // Both labels, with the SAME cost/recipient wording describe_move uses.
-        assert!(out.text.contains("[0]") && out.text.contains("[1]"), "{}", out.text);
+        assert!(out.text.contains("[1]") && out.text.contains("[2]"), "{}", out.text);
         assert!(out.text.contains("canal toll"), "canal-toll route label missing: {}", out.text);
         assert!(out.text.contains("to Blue"), "fee-to-Blue route label missing: {}", out.text);
-        assert!(!out.text.contains("[2]"), "exactly two routes to this destination: {}", out.text);
+        assert!(!out.text.contains("[3]"), "exactly two routes to this destination: {}", out.text);
 
         // A number commits that exact MovePresident (assert via the applied event).
         let events_before = r.session.record().events.len();
-        let out = r.step("0");
+        let out = r.step("1");
         assert!(!out.text.to_lowercase().contains("illegal"), "{}", out.text);
         assert_eq!(r.session.record().events.len(), events_before + 1);
         assert!(matches!(
@@ -4042,7 +4363,7 @@ mod tests {
         let events_before = r.session.record().events.len();
         let state_before = r.session.state().clone();
 
-        r.step("0"); // into the route sub-prompt
+        r.step("1"); // into the route sub-prompt
         let out = r.step("cancel");
         assert!(out.text.to_lowercase().contains("cancel"), "{}", out.text);
         // The full grouped main list is back (the route-options entry again).
@@ -4060,7 +4381,7 @@ mod tests {
         let (a0, a1, a2, a3) = (AreaId::new(0), AreaId::new(1), AreaId::new(2), AreaId::new(3));
 
         // Enter the guided retreat (entry [2]).
-        let out = r.step("2");
+        let out = r.step("3");
         assert!(out.text.contains(&format!("recover how many from {}", crate::describe::area_label(r.session.state(), a0))), "{}", out.text);
         assert!(out.text.contains("[0-2]"), "A00 holds 2 assistants: {}", out.text);
 
@@ -4096,7 +4417,7 @@ mod tests {
     fn guided_retreat_reasks_on_out_of_range_and_garbage() {
         let mut r = movement_grouping_fixture();
         let a0 = AreaId::new(0);
-        r.step("2"); // enter -> first question is A00 [0-2]
+        r.step("3"); // enter -> first question is A00 [0-2]
 
         // Out of range (3 > 2 available): re-ask, nothing collected.
         let out = r.step("3");
@@ -4119,7 +4440,7 @@ mod tests {
     fn guided_retreat_cancel_mid_questions_restores_main_list() {
         let mut r = movement_grouping_fixture();
         let state_before = r.session.state().clone();
-        r.step("2");   // enter
+        r.step("3");   // enter
         r.step("2");   // answer A00
         let out = r.step("cancel");
         assert!(out.text.to_lowercase().contains("cancel"), "{}", out.text);
@@ -4134,7 +4455,7 @@ mod tests {
     #[test]
     fn subprompt_view_command_reasks_with_finish_or_cancel() {
         let mut r = movement_grouping_fixture();
-        r.step("2"); // enter the guided retreat
+        r.step("3"); // enter the guided retreat
         let out = r.step("board");
         assert!(out.text.contains("! finish or cancel this prompt first"), "{}", out.text);
         // The view did NOT render, and the question is still showing.
@@ -4148,7 +4469,7 @@ mod tests {
     #[test]
     fn subprompt_refused_under_lockdown() {
         let mut r = movement_grouping_fixture();
-        r.step("2"); // enter the guided retreat
+        r.step("3"); // enter the guided retreat
         r.locked = true;
         let out = r.step("2"); // would be an answer, but lockdown refuses it
         assert!(out.text.contains("locked"), "{}", out.text);
@@ -4186,13 +4507,13 @@ mod tests {
     #[test]
     fn placement_list_collapses_to_picker_entries() {
         let mut r = repl_2p(4);
-        r.step("0"); // -> Placement
+        r.step("1"); // -> Placement
         assert!(r.session.legal().len() > 100, "fixture: the raw wall is still combinatorial");
         let p = r.prompt();
-        assert!(p.contains("[0] Option A — place 1 assistant each in up to 3 areas"), "{p}");
-        assert!(p.contains("[1] Option B — place 2 assistants in one area (10 eligible"), "{p}");
-        assert!(p.contains("[2] Place no assistants"), "{p}");
-        assert!(!p.contains("[3]"), "exactly three entries: {p}");
+        assert!(p.contains("[1] Option A — place 1 assistant each in up to 3 areas"), "{p}");
+        assert!(p.contains("[2] Option B — place 2 assistants in one area (10 eligible"), "{p}");
+        assert!(p.contains("[3] Place no assistants"), "{p}");
+        assert!(!p.contains("[4]"), "exactly three entries: {p}");
         assert!(!p.contains("page 1/"), "no pagination on the grouped list: {p}");
         assert!(p.contains("'a' grammar works too") && p.contains("'b' grammar works too"), "{p}");
     }
@@ -4203,8 +4524,8 @@ mod tests {
     #[test]
     fn place_a_picker_toggles_areas_and_commits() {
         let mut r = repl_2p(4);
-        r.step("0");
-        let out = r.step("0"); // enter the Option A picker
+        r.step("1");
+        let out = r.step("1"); // enter the Option A picker
         assert!(out.text.contains("toggle areas by id"), "{}", out.text);
         assert!(out.text.contains("confirm places no assistants"), "{}", out.text);
 
@@ -4232,8 +4553,8 @@ mod tests {
     #[test]
     fn place_a_picker_toggle_off_and_empty_confirm() {
         let mut r = repl_2p(4);
-        r.step("0");
-        r.step("0"); // enter picker
+        r.step("1");
+        r.step("1"); // enter picker
         r.step("3");
         let out = r.step("3"); // toggle back off
         assert!(out.text.contains("confirm places no assistants"), "{}", out.text);
@@ -4255,8 +4576,8 @@ mod tests {
     #[test]
     fn place_a_picker_accepts_the_displayed_area_id_format() {
         let mut r = repl_2p(4);
-        r.step("0");
-        r.step("0"); // enter the Option A picker
+        r.step("1");
+        r.step("1"); // enter the Option A picker
         let out = r.step("A03");
         assert!(out.text.contains("Selected: A03"), "displayed-format toggle must work: {}", out.text);
         let out = r.step("a05");
@@ -4289,7 +4610,7 @@ mod tests {
 
         // `a A.. a..` multiset-matches like bare ids.
         let mut r2 = repl_2p(4);
-        r2.step("0");
+        r2.step("1");
         let two = r2
             .session
             .legal()
@@ -4318,8 +4639,8 @@ mod tests {
     #[test]
     fn place_a_picker_refusal_names_the_way_out() {
         let mut r = repl_2p(4);
-        r.step("0");
-        r.step("0"); // enter the Option A picker
+        r.step("1");
+        r.step("1"); // enter the Option A picker
         let out = r.step("help");
         assert!(
             out.text.contains("! toggle an area id, 'confirm', or 'cancel' (cancel first to use views/help)"),
@@ -4336,8 +4657,8 @@ mod tests {
     #[test]
     fn place_a_picker_rejects_a_nonexistent_area_id_at_toggle_and_keeps_selection() {
         let mut r = repl_2p(4);
-        r.step("0");
-        r.step("0"); // enter picker
+        r.step("1");
+        r.step("1"); // enter picker
         r.step("3"); // a real area
         // Fixture sanity: the 2P board has 10 areas (ids 0-9), so A99 is off-board.
         assert_eq!(r.session.state().board_layout.areas.len(), 10, "2P board is 10 areas");
@@ -4358,8 +4679,8 @@ mod tests {
     #[test]
     fn place_a_picker_over_limit_has_its_own_message_and_keeps_the_selection() {
         let mut r = repl_2p(4);
-        r.step("0");
-        r.step("0"); // enter picker
+        r.step("1");
+        r.step("1"); // enter picker
         r.step("3");
         r.step("5");
         r.step("6");
@@ -4389,8 +4710,8 @@ mod tests {
     #[test]
     fn place_b_picker_lists_areas_and_commits() {
         let mut r = repl_2p(4);
-        r.step("0");
-        let out = r.step("1"); // enter the Option B picker
+        r.step("1");
+        let out = r.step("2"); // enter the Option B picker
         assert!(out.text.contains("Option B — place 2 assistants in one area (by id):"), "{}", out.text);
         assert!(!out.text.contains("[0] "), "areas must not be numbered: {}", out.text);
         assert!(out.text.contains("Selected: (none)"), "{}", out.text);
@@ -4438,9 +4759,9 @@ mod tests {
             canal.0
         );
 
-        r.step("0"); // -> Placement
+        r.step("1"); // -> Placement
         let b_entry =
-            display_index_containing(&r, "Option B").expect("Option B entry present at 4P turn 1");
+            display_number_containing(&r, "Option B").expect("Option B entry present at 4P turn 1");
         let out = r.step(&b_entry.to_string());
         assert!(
             !out.text.contains(&format!("(A{:02})", canal.0)),
@@ -4480,8 +4801,8 @@ mod tests {
 
         // ...and a BARE number means the same id, not a list index.
         let mut r2 = repl_np(4, 0);
-        r2.step("0");
-        let b_entry = display_index_containing(&r2, "Option B").expect("Option B entry present");
+        r2.step("1");
+        let b_entry = display_number_containing(&r2, "Option B").expect("Option B entry present");
         r2.step(&b_entry.to_string());
         r2.step(&target.0.to_string());
         r2.step("confirm");
@@ -4510,8 +4831,8 @@ mod tests {
             .find(|(_, c)| c.area_type == AreaType::Canal)
             .expect("the 4-player board has a Canal")
             .0;
-        r.step("0");
-        let b_entry = display_index_containing(&r, "Option B").expect("Option B entry present");
+        r.step("1");
+        let b_entry = display_number_containing(&r, "Option B").expect("Option B entry present");
         r.step(&b_entry.to_string());
 
         let before = r.session.record().events.len();
@@ -4572,10 +4893,10 @@ mod tests {
         assert!(shown < flat, "grouping must shrink the list ({shown} shown vs {flat} legal): {p}");
 
         // Pick the first grouped entry -> destination list -> commit [0].
-        let out = r.step("0");
+        let out = r.step("1");
         assert!(out.text.contains("Assistant destinations from"), "{}", out.text);
         let events_before = r.session.record().events.len();
-        let out = r.step("0");
+        let out = r.step("1");
         assert!(!out.text.to_lowercase().contains("illegal"), "{}", out.text);
         assert_eq!(r.session.record().events.len(), events_before + 1);
         assert!(matches!(
@@ -4591,12 +4912,12 @@ mod tests {
     fn bare_retreat_only_state_keeps_direct_entry() {
         let mut r = movement_bare_retreat_fixture();
         let p = r.prompt();
-        assert!(p.contains("[0] Return the President to your hand — recovering no assistants"), "{p}");
+        assert!(p.contains("[1] Return the President to your hand — recovering no assistants"), "{p}");
         assert!(!p.contains("choose recovery"), "a lone retreat must NOT collapse: {p}");
-        assert!(!p.contains("[1]"), "a lone-retreat state has exactly one entry: {p}");
+        assert!(!p.contains("[2]"), "a lone-retreat state has exactly one entry: {p}");
 
         let events_before = r.session.record().events.len();
-        let out = r.step("0");
+        let out = r.step("1");
         assert!(!out.text.contains("recover how many") && !out.text.contains("confirm"), "a direct bare retreat must not hop into a sub-prompt: {}", out.text);
         assert_eq!(r.session.record().events.len(), events_before + 1);
         assert!(matches!(
@@ -4617,22 +4938,30 @@ mod tests {
             (0..25).map(|i| Move::MovePresident { path: vec![], destination: AreaId::new((i % 10) as u8) }).collect();
         r.sub = SubPrompt::Pick { title: "Routes to Bank (A00)".to_string(), moves };
 
-        // Page 1 caps at 20 entries ([0]..[19]) and shows both footer lines.
+        // Page 1 caps at 20 entries ([1]..[20]) and closes with the DECISION
+        // ZONE's own pager footer -- one pager vocabulary in the driver, not
+        // two (T5: the sub-prompt used to say `...5 more (type 'more')` over
+        // `page 1/2` for behaviour identical to the main list's).
         let p0 = r.sub_prompt_text();
-        assert!(p0.contains("[0] ") && p0.contains("[19] "), "{p0}");
-        assert!(!p0.contains("[20] "), "page 1 must cap at 20 route entries: {p0}");
-        assert!(p0.contains("...5 more (type 'more')"), "{p0}");
-        assert!(p0.contains("page 1/2"), "{p0}");
+        assert!(p0.contains("[1] ") && p0.contains("[20] "), "{p0}");
+        assert!(!p0.contains("[21] "), "page 1 must cap at 20 route entries: {p0}");
+        assert!(
+            p0.contains("(5 more — 'more' for page 2 of 2, 'list' back to the first)"),
+            "{p0}",
+        );
 
         // `more` pages forward to the remaining 5.
         let p1 = r.step("more").text;
-        assert!(p1.contains("[20] ") && p1.contains("[24] "), "{p1}");
-        assert!(!p1.contains("[19] "), "page 2 must not repeat page-1 entries: {p1}");
-        assert!(p1.contains("page 2/2"), "{p1}");
+        assert!(p1.contains("[21] ") && p1.contains("[25] "), "{p1}");
+        assert!(!p1.contains("[20] "), "page 2 must not repeat page-1 entries: {p1}");
+        assert!(
+            p1.contains("(last page — 'more' wraps to page 1 of 2, 'list' back to the first)"),
+            "{p1}",
+        );
 
         // `list` resets to page 1.
         let p2 = r.step("list").text;
-        assert!(p2.contains("[0] ") && p2.contains("page 1/2"), "{p2}");
+        assert!(p2.contains("[1] ") && p2.contains("'more' for page 2 of 2"), "{p2}");
         // Still in the sub-prompt, nothing applied.
         assert!(matches!(r.sub, SubPrompt::Pick { .. }));
         assert!(r.session.record().events.is_empty());
@@ -4998,7 +5327,7 @@ mod tests {
         match r.session.state().turn_phase {
             TurnPhase::Placement if !queued => r.step("a"),
             TurnPhase::Movement if !queued => r.step("r"),
-            _ => r.step("0"),
+            _ => r.step("1"),
         };
     }
 
@@ -5314,5 +5643,261 @@ mod tests {
         b.pump_bots();
         assert_eq!(a.session.record().events, b.session.record().events);
         assert!(!a.session.record().events.is_empty(), "fixture: the bot actually moved");
+    }
+    // -----------------------------------------------------------------
+    // T5: the card index and the numbering base
+    // -----------------------------------------------------------------
+
+    /// **`?` opens the index from every prompt this driver has**, which is
+    /// spec §0.6's whole point — the index is needed most inside an input
+    /// capture, and both capture loops used to swallow the key (the reveal
+    /// collector as a bad card, the sub-prompt as `! finish or cancel this
+    /// prompt first`).
+    #[test]
+    fn the_index_opens_from_every_prompt() {
+        // The main prompt.
+        let mut r = repl_2p(4);
+        let out = r.step("?");
+        assert!(out.text.contains("ORDER CARD INDEX"), "{}", out.text);
+        assert!(r.index.is_some(), "the overlay is up");
+
+        // A Movement sub-prompt: the guided retreat, mid-question.
+        let mut r = movement_grouping_fixture();
+        r.step("3"); // enter the guided retreat
+        assert!(matches!(r.sub, SubPrompt::Retreat { .. }));
+        let out = r.step("?");
+        assert!(out.text.contains("ORDER CARD INDEX"), "{}", out.text);
+        assert!(matches!(r.sub, SubPrompt::Retreat { .. }), "the sub-prompt is untouched");
+
+        // The `view` menu is a sub-prompt too, and `?` is no longer its alias.
+        let mut r = repl_2p(4);
+        r.step("view");
+        let out = r.step("?");
+        assert!(out.text.contains("ORDER CARD INDEX"), "{}", out.text);
+    }
+
+    /// **The return contract, pinned on the hardest case** (spec §0.6): the
+    /// index opens mid-reveal, is read-only while it is up, and closing it puts
+    /// the operator back on the EXACT question with everything already
+    /// collected still collected.
+    #[test]
+    fn the_index_inside_a_reveal_capture_is_read_only_and_returns_exactly() {
+        let (mut r, _) = live_repl_at_a_two_card_port_take();
+        let asked = r.reveal_prompt();
+        let events_before = r.session.record().events.len();
+        let state_before = r.session.state().clone();
+
+        let out = r.step("?");
+        assert!(out.text.contains("ORDER CARD INDEX"), "{}", out.text);
+        // The context header names the slot being recorded, not a generic view.
+        assert!(out.text.contains("Recording: Port"), "{}", out.text);
+        assert!(matches!(r.pending, Pending::OrderReveals { .. }), "the capture is untouched");
+
+        // Read-only: filtering and paging around the index changes nothing.
+        r.step("f silk");
+        r.step("f");
+        assert_eq!(r.session.record().events.len(), events_before, "the index records nothing");
+        assert_eq!(*r.session.state(), state_before, "the index applies nothing");
+
+        // Closing returns to the exact question.
+        let back = r.step("?");
+        assert!(back.text.contains(&asked), "must return to the same question: {}", back.text);
+        assert!(matches!(r.pending, Pending::OrderReveals { collected, .. } if collected.is_empty()));
+    }
+
+    /// A number typed on the index answers the prompt underneath it — the
+    /// identification bridge R8 exists to build. The card still goes through
+    /// the reveal's own pool check, so the index adds no authority.
+    #[test]
+    fn an_index_selection_answers_the_reveal_underneath_it() {
+        let (mut r, deck_card) = live_repl_at_a_two_card_port_take();
+        r.step("?");
+        let model = r.index_model();
+        let number = model
+            .cards()
+            .find(|c| c.id == deck_card)
+            .and_then(|c| c.selection)
+            .expect("an unplaced deck card is selectable on the recording screen");
+        let events_before = r.session.record().events.len();
+
+        let out = r.step(&number.to_string());
+        // The card is echoed in full before anything commits (§0.6).
+        assert!(out.text.contains(&format!("O{:02}", deck_card.0)), "{}", out.text);
+        assert!(r.index.is_none(), "the index closes on a selection");
+        // A two-slot refill: the first answer advances the group rather than
+        // applying, which is the reveal choreography unchanged.
+        assert!(matches!(&r.pending, Pending::OrderReveals { collected, .. } if collected == &vec![deck_card]));
+        assert_eq!(r.session.record().events.len(), events_before, "nothing applies mid-group");
+    }
+
+    /// A card already visible on a Port display is refused BY LOCATION when it
+    /// is typed at a card prompt (F6) — the refusal the owner's live-gate
+    /// attempt got as a bare "already entered".
+    #[test]
+    fn a_card_prompt_refusal_names_where_the_card_already_is() {
+        let (mut r, _) = repl_live_hidden(21);
+        let on_display = r.session.state().port_state.port_a.slots[0].expect("Port A slot 1 is dealt");
+        let out = r.step(&format!("reveal 1 O{:02}", on_display.0));
+        assert!(out.text.contains("Port A slot 1"), "the refusal names the place: {}", out.text);
+        assert!(out.text.contains("cannot be in two places"), "{}", out.text);
+        assert!(
+            r.session.record().events.iter().all(|e| !matches!(e, RecordedEvent::RevealStartingOrder { .. })),
+            "nothing was recorded",
+        );
+    }
+
+    /// The index is a FULL-SCREEN surface: the composed frame draws it alone,
+    /// with no board or dashboard above it (spec §0.5). Without this the 45-row
+    /// index under a 48-row frame would scroll both away on any real terminal.
+    #[test]
+    fn the_index_replaces_the_frame_rather_than_sitting_under_it() {
+        let mut r = repl_2p(4);
+        let out = r.step("?");
+        screen::force(true);
+        let framed = screen::wrap(&r, &out.text);
+        screen::force(false);
+        assert!(framed.starts_with("\u{1b}[2J\u{1b}[H"), "still clears the screen first");
+        assert!(framed.contains("ORDER CARD INDEX"), "{framed:.200}");
+        assert!(!framed.contains("YOKOHAMA"), "no title strip over a full-screen surface");
+        assert!(!framed.contains("PLAYERS"), "no dashboard: {framed:.400}");
+        assert!(!framed.contains("info: type 'view'"), "no info strip");
+        assert!(framed.lines().count() < 50, "the whole surface fits the design floor's rows");
+    }
+
+    /// `orders` and the `view` menu's first row reach the same screen `?` does
+    /// — three doors, one surface.
+    #[test]
+    fn the_index_has_three_doors() {
+        let by_key = { let mut r = repl_2p(4); r.step("?").text };
+        let by_command = { let mut r = repl_2p(4); r.step("orders").text };
+        let by_menu = {
+            let mut r = repl_2p(4);
+            r.step("view");
+            r.step("1").text
+        };
+        assert!(by_key.contains("ORDER CARD INDEX"));
+        assert_eq!(by_key, by_command, "'orders' is the same screen as '?'");
+        assert_eq!(by_key, by_menu, "so is the menu's first row");
+    }
+
+    /// **The numbering base is ONE base** (T5's ruling): every numbered surface
+    /// in the driver starts its list at `NUMBER_BASE`, and the sweep is over
+    /// the surfaces rather than over a list somebody remembered to update.
+    ///
+    /// A `[0]` anywhere in one of these screens is the per-surface drift the
+    /// ruling exists to prevent — a player who learns that the first option is
+    /// `[1]` will type `1` into the next list too.
+    #[test]
+    fn every_numbered_surface_starts_at_the_same_base() {
+        let first = format!("[{NUMBER_BASE}]");
+
+        // The main decision zone.
+        let mut r = repl_2p(4);
+        assert!(r.prompt().contains(&first), "main options: {}", r.prompt());
+
+        // The view menu.
+        r.step("view");
+        let menu = r.sub_prompt_text();
+        assert!(menu.contains(&format!("{first} Order card index")), "view menu: {menu}");
+        r.step("cancel");
+
+        // The card index.
+        let index = r.index_model();
+        assert!(index.cards().all(|c| c.selection.is_none()), "a standing view has no numbers");
+        let recording = crate::screen_model::build_order_index(
+            r.session.rules(),
+            &[],
+            Some(RecordingTarget::PortSetup { board_b: false, slot: 0, of: 6 }),
+            None,
+        );
+        assert_eq!(
+            recording.cards().next().and_then(|c| c.selection),
+            Some(NUMBER_BASE),
+            "the index numbers from the base too",
+        );
+
+        // A route sub-prompt.
+        let mut r = movement_grouping_fixture();
+        r.step("1");
+        let pick = r.sub_prompt_text();
+        assert!(pick.contains(&first), "route sub-prompt: {pick}");
+
+        // And nothing anywhere shows a zero-th entry.
+        for screen in [r.sub_prompt_text(), repl_2p(4).prompt()] {
+            assert!(!screen.contains("[0]"), "a zero-based list survived: {screen}");
+        }
+    }
+
+    /// The two things the base ruling deliberately does NOT move, pinned so a
+    /// future sweep cannot "fix" them: a COUNT (zero is a real answer) and an
+    /// engine ID (printed on the component, recorded in the save).
+    #[test]
+    fn counts_and_ids_are_not_menu_numbers() {
+        let mut r = movement_grouping_fixture();
+        r.step("3"); // the guided retreat
+        let q = r.sub_prompt_text();
+        assert!(q.contains("[0-"), "a recovery question still offers zero: {q}");
+        let out = r.step("0");
+        assert!(!out.text.contains("!"), "zero is a valid recovery answer: {}", out.text);
+
+        // Area ids in the Option-B picker are ids, not positions.
+        let mut r = repl_2p(4);
+        r.step("1");
+        let picker = r.step("2").text;
+        assert!(picker.contains("(by id)"), "{picker}");
+        assert!(!picker.contains("[1] A"), "the eligible areas carry no list numbers: {picker}");
+    }
+
+    /// A two-card Port take in live mode, parked at the first reveal question.
+    /// Returns the REPL and a card that is genuinely in the unrevealed deck,
+    /// so a test can answer the question truthfully.
+    fn live_repl_at_a_two_card_port_take() -> (Repl, OrderCardId) {
+        let rules = Rules::standard();
+        let config = GameConfig::for_player_count(2);
+        let table = new_game(config.clone(), &rules, 900).unwrap();
+        let obs = SetupObservations {
+            port_a: Some(std::array::from_fn(|i| table.state.port_state.port_a.slots[i].unwrap())),
+            lab_a: Some(std::array::from_fn(|i| table.state.lab_state.lab_a.slots[i].unwrap())),
+            deals: vec![(PlayerId::new(0), table.deals[0])],
+            ..Default::default()
+        };
+        let session = Session::new_live(
+            config,
+            901,
+            obs,
+            vec![StartingOrderChoice::Keep(0), StartingOrderChoice::Unknown],
+            rules,
+        )
+        .unwrap();
+        let mut r = Repl::new(session);
+        let deck_card = *r.session.state().order_deck.first().expect("an unrevealed card");
+
+        let port_area = *r
+            .session
+            .state()
+            .board_layout
+            .areas
+            .iter()
+            .find(|(_, c)| c.area_type == AreaType::PortA)
+            .unwrap()
+            .0;
+        r.step("1"); // end the additional phase
+        r.step(&format!("a {}", port_area.0));
+        let k = r
+            .session
+            .legal()
+            .iter()
+            .position(|m| matches!(m, Move::PlacePresident { destination } if *destination == port_area))
+            .expect("PlacePresident at Port A is legal from hand at game start");
+        r.step(&menu_number(k).to_string());
+        let take = r
+            .session
+            .legal()
+            .iter()
+            .position(|m| matches!(m, Move::ExecuteAreaAction { action: AreaAction::Port { cards_taken, .. } } if cards_taken.len() == 2))
+            .expect("a 2-card port take is available");
+        r.step(&menu_number(take).to_string());
+        assert!(matches!(r.pending, Pending::OrderReveals { .. }), "parked at a reveal");
+        (r, deck_card)
     }
 }

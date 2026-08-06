@@ -340,6 +340,7 @@ pub(crate) fn parse_token_letter(words: &[&str]) -> Result<FivePowerEffect, Stri
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::screen_model::menu_number;
     use crate::session::Session;
 
     fn live_repl() -> (Repl, Vec<OrderCardId>) {
@@ -377,17 +378,17 @@ mod tests {
         // President directly at Port A via the numbered list.
         let port_area = *r.session.state().board_layout.areas.iter()
             .find(|(_, c)| c.area_type == AreaType::PortA).unwrap().0;
-        r.step("0");        // EndAdditionalPhase
+        r.step("1");        // EndAdditionalPhase
         r.step(&format!("a {}", port_area.0)); // place 1 assistant at Port A
         let k = r.session.legal().iter().position(|m| matches!(
             m, Move::PlacePresident { destination } if *destination == port_area
         )).expect("PlacePresident at Port A is legal from hand at game start");
-        r.step(&k.to_string());
+        r.step(&menu_number(k).to_string());
         // Pick a 1-card port take.
         let take = r.session.legal().iter().position(|m| matches!(
             m, Move::ExecuteAreaAction { action: AreaAction::Port { cards_taken, .. } } if cards_taken.len() == 1
         )).expect("1-card port take available");
-        let out = r.step(&take.to_string());
+        let out = r.step(&menu_number(take).to_string());
         // Live mode must now be ASKING for the refill card, not applied yet.
         assert!(out.text.to_lowercase().contains("slot"), "{}", out.text);
         let events_before = r.session.record().events.len();
@@ -414,16 +415,16 @@ mod tests {
         // Same walk to a Port-A take as live_port_take_...; see its comment.
         let port_area = *r.session.state().board_layout.areas.iter()
             .find(|(_, c)| c.area_type == AreaType::PortA).unwrap().0;
-        r.step("0");
+        r.step("1");
         r.step(&format!("a {}", port_area.0));
         let k = r.session.legal().iter().position(|m| matches!(
             m, Move::PlacePresident { destination } if *destination == port_area
         )).expect("PlacePresident at Port A is legal from hand at game start");
-        r.step(&k.to_string());
+        r.step(&menu_number(k).to_string());
         let take = r.session.legal().iter().position(|m| matches!(
             m, Move::ExecuteAreaAction { action: AreaAction::Port { cards_taken, .. } } if cards_taken.len() == 1
         )).expect("1-card port take available");
-        let out = r.step(&take.to_string());
+        let out = r.step(&menu_number(take).to_string());
         assert!(out.text.to_lowercase().contains("slot"), "{}", out.text);
         // A physically-real order card the seeded setup boxed: in orders_removed,
         // never in the deck (conservation makes the two piles disjoint).
@@ -523,18 +524,18 @@ mod tests {
         // an assistant must land at Port A before PlacePresident can target it.
         let port_area = *r.session.state().board_layout.areas.iter()
             .find(|(_, c)| c.area_type == AreaType::PortA).unwrap().0;
-        r.step("0");
+        r.step("1");
         r.step(&format!("a {}", port_area.0));
         let k = r.session.legal().iter().position(|m| matches!(
             m, Move::PlacePresident { destination } if *destination == port_area
         )).unwrap();
-        r.step(&k.to_string());
+        r.step(&menu_number(k).to_string());
         let before = r.session.state().clone();
         let events_before = r.session.record().events.len();
         let take = r.session.legal().iter().position(|m| matches!(
             m, Move::ExecuteAreaAction { action: AreaAction::Port { cards_taken, .. } } if cards_taken.len() == 1
         )).unwrap();
-        r.step(&take.to_string());
+        r.step(&menu_number(take).to_string());
         r.step(&format!("O{}", others[0].0));
         r.step("undo");
         assert_eq!(*r.session.state(), before);
@@ -551,16 +552,16 @@ mod tests {
         let (mut r, _others) = live_repl();
         let lab_area = *r.session.state().board_layout.areas.iter()
             .find(|(_, c)| c.area_type == AreaType::LaboratoryA).unwrap().0;
-        r.step("0");
+        r.step("1");
         r.step(&format!("a {}", lab_area.0));
         let k = r.session.legal().iter().position(|m| matches!(
             m, Move::PlacePresident { destination } if *destination == lab_area
         )).expect("PlacePresident at Laboratory A is legal from hand at game start");
-        r.step(&k.to_string());
+        r.step(&menu_number(k).to_string());
         let take = r.session.legal().iter().position(|m| matches!(
             m, Move::ExecuteAreaAction { action: AreaAction::Laboratory { .. } }
         )).expect("a Laboratory acquisition is available");
-        let out = r.step(&take.to_string());
+        let out = r.step(&menu_number(take).to_string());
         // Live mode must now be ASKING for the refilled tech card, not applied yet.
         assert!(out.text.to_lowercase().contains("tech"), "{}", out.text);
         let events_before = r.session.record().events.len();

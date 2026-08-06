@@ -41,7 +41,7 @@ use yokohama_core::{AreaId, Move, PendingChoice, PlayerColor, TurnPhase};
 use crate::board_render::{color_of, Twin};
 use crate::describe;
 use crate::screen_model::{
-    BoardModel, Deciding, DecisionModel, FeeModel, NotOffered, NotOfferedReason,
+    menu_number, BoardModel, Deciding, DecisionModel, FeeModel, NotOffered, NotOfferedReason,
 };
 use crate::style::{glyph, paint, Tone};
 
@@ -716,7 +716,7 @@ fn wrap_cells(cells: &[Cell], first_room: usize, rest_room: usize) -> Vec<&[Cell
 
 /// One numbered option, worded from the model where this module re-words and
 /// from `describe`'s own line where it does not (module header).
-fn option_text(number: usize, row: &Row<'_>, board: &BoardModel) -> OptionRow {
+fn option_text(index: usize, row: &Row<'_>, board: &BoardModel) -> OptionRow {
     let mut body: Vec<Cell> = Vec::new();
     let mut plain = |s: &str| body.extend(s.chars().map(|c| (None, c)));
     match row {
@@ -729,7 +729,7 @@ fn option_text(number: usize, row: &Row<'_>, board: &BoardModel) -> OptionRow {
             None => plain(words),
         },
     };
-    OptionRow { number: format!("[{number}]"), body }
+    OptionRow { number: format!("[{}]", menu_number(index)), body }
 }
 
 /// A re-worded move row: the part that takes no tint, and the `◈` destination
@@ -903,16 +903,19 @@ fn fee_tail(fee: Option<&FeeModel>) -> String {
 // The standing hint
 // ---------------------------------------------------------------------------
 
-/// The mocks' standing hint, minus the two clauses that are not true yet.
+/// The mocks' standing hint, minus the one clause that is not true yet.
 ///
-/// **Two deviations from the approved mock, both because the mock describes a
+/// **One deviation from the approved mock, because the mock describes a
 /// finished 3.5a and this is the middle of one.** The mock's hint names
 /// `↑ recalls what you typed` — the line editor is T9's, and until it ships an
 /// arrow key produces an escape sequence, so claiming recall would be a lie
-/// printed on every screen. It also names `'?' the card index` — the index is
-/// T5's, and `?` today opens the view menu, which is what this says instead.
-/// Both clauses come back with the surfaces that make them true; neither is
-/// dropped.
+/// printed on every screen. It comes back with the surface that makes it true.
+///
+/// **The mock's OTHER clause is now true and printed.** T4 shipped this line
+/// reading `'view' or '?' any surface`, because `?` was then an alias for the
+/// view menu; T5 gave `?` the card index the mock always meant it to open, so
+/// the hint splits into the mock's own two clauses — `'view' any surface` and
+/// `'?' the card index` — which are two different screens and now say so.
 ///
 /// `back` IS true: it landed with this zone as an alias of `undo`, precisely so
 /// the standing hint the mocks draw could be printed without qualification.
@@ -964,7 +967,8 @@ fn hint_with_lead(lead: Vec<String>, ctx: &ZoneContext<'_>, players: u8) -> Stri
     // lead when there is a single option, and by `back`'s wording otherwise),
     // and how to reach the other surfaces.
     parts.push("'back' undoes the last applied entry".to_string());
-    parts.push("'view' or '?' any surface".to_string());
+    parts.push("'view' any surface".to_string());
+    parts.push("'?' the card index".to_string());
     parts.push("'help' for commands".to_string());
     wrap_hint(&parts, crate::screen::frame_width(usize::from(players)))
 }
@@ -1166,7 +1170,7 @@ mod tests {
         let mv = Move::ExecuteAreaAction { action: AreaAction::ProduceCopper };
         let words = describe::describe_move(&mv, &state, &rules);
         let row = option_text(4, &Row::Move { mv: &mv, fee: None, words: &words }, &board).painted();
-        assert_eq!(row, format!("[4] {words}"), "{row}");
+        assert_eq!(row, format!("[5] {words}"), "{row}");
     }
 
     /// Every `NotOfferedReason` words a distinct row, and each names its area.
@@ -1239,9 +1243,12 @@ mod tests {
         let zone =
             decision_zone(&d, &[Row::Family { words: "x" }], &board, &colors_np(&state), &ctx());
         assert!(!zone.contains(glyph::HISTORY_KEY), "no recall claim before T9: {zone}");
-        assert!(!zone.contains("card index"), "no index claim before T5: {zone}");
         assert!(zone.contains("'back' undoes"), "{zone}");
-        assert!(zone.contains("'view' or '?'"), "{zone}");
+        // Since T5 the mock's two navigation clauses are both true and both
+        // printed, and they name two DIFFERENT screens -- a hint that still
+        // said "'view' or '?'" would teach that either key reaches either one.
+        assert!(zone.contains("'view' any surface"), "{zone}");
+        assert!(zone.contains("'?' the card index"), "{zone}");
     }
 
     /// The zone ends on the caret, with nothing after it.
@@ -1382,7 +1389,7 @@ mod tests {
             .take_while(|l| l.starts_with(OPTION_INDENT))
             .collect();
         assert!(drawn.len() > 1, "a {}-column row must have wrapped:\n{zone}", words.chars().count());
-        assert!(drawn[0].starts_with("   [0] "), "{:?}", drawn[0]);
+        assert!(drawn[0].starts_with("   [1] "), "{:?}", drawn[0]);
         for line in &drawn {
             assert!(visible_width(line) <= budget, "{} columns: {line}", visible_width(line));
         }
@@ -1396,7 +1403,7 @@ mod tests {
         // clipping. Joined on single spaces, since the break eats its own.
         let rejoined: Vec<&str> = drawn.iter().flat_map(|l| l.split_whitespace()).collect();
         let expected: Vec<&str> =
-            std::iter::once("[0]").chain(words.split_whitespace()).collect();
+            std::iter::once("[1]").chain(words.split_whitespace()).collect();
         assert_eq!(rejoined, expected, "the wrap dropped or reordered a word");
 
     }

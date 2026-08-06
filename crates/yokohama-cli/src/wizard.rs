@@ -15,6 +15,7 @@
 use std::collections::{BTreeSet, HashMap};
 
 use crate::input::{parse_order_id, parse_tech_entry, tech_name, TechAmbiguity, TechEntryError};
+use crate::screen_model::{menu_index, menu_number};
 use crate::session::Session;
 use yokohama_core::*;
 
@@ -261,17 +262,25 @@ fn ask_bots(
     Ok(crate::bot::BotSeats::new(seats, bot_seed))
 }
 
-/// `Seat <n>: keep card 0 or 1?` -- shared by the sim tail and a live
+/// `Seat <n>: keep card 1 or 2?` -- shared by the sim tail and a live
 /// "known" seat.
+///
+/// **The numbers are the ones printed beside the two cards** (`[1]`/`[2]` in
+/// [`ask_sim_deal`]'s listing), which since T5 means the crate's numbering base
+/// (`screen_model::NUMBER_BASE`) rather than the engine's 0-based
+/// `StartingOrderChoice::Keep` index. The conversion happens HERE, once, in the
+/// same place the question is worded -- the returned value is the engine's.
 fn ask_keep(input: &mut dyn Iterator<Item = String>, out: &mut dyn FnMut(&str), seat: u8) -> Result<u8, String> {
     let mut keep: Option<u8> = None;
-    ask(input, out, &format!("Seat {seat}: keep card 0 or 1?"), &mut |s: &str| -> Result<(), String> {
-        match s.parse::<u8>() {
-            Ok(k) if k <= 1 => {
-                keep = Some(k);
+    let lo = menu_number(0);
+    let hi = menu_number(1);
+    ask(input, out, &format!("Seat {seat}: keep card {lo} or {hi}?"), &mut |s: &str| -> Result<(), String> {
+        match s.parse::<usize>().ok().and_then(|n| menu_index(n, 2)) {
+            Some(k) => {
+                keep = Some(k as u8);
                 Ok(())
             }
-            _ => Err(format!("'{s}' is not 0 or 1")),
+            None => Err(format!("'{s}' is not {lo} or {hi}")),
         }
     })?;
     Ok(keep.unwrap())
@@ -878,7 +887,8 @@ fn ask_sim_deal(
             // evaluator rungs argmax over -- read here rather than restated, so
             // the wizard cannot describe a Keep the bots do not make.
             out(&format!(
-                "  [{i}] {}  (bot Keep score {})\n",
+                "  [{}] {}  (bot Keep score {})\n",
+                menu_number(i),
                 order_prompt_line(card),
                 greedy::score_starting_order(card, rules),
             ));
@@ -1483,7 +1493,7 @@ mod tests {
     fn sim_wizard_builds_a_playable_session() {
         let (repl, transcript) = feed(&[
             "sim", "2", "red", "blue", "0", "42", "", // mode players colors start seed savepath(default)
-            "0", "1",                                  // keep choices for seats 0 and 1
+            "1", "2",                                  // keep choices for seats 0 and 1
             "",                                        // bot seats: none (T12)
             "confirm",                                 // review/edit step (design §5.5 item 3)
         ]);
@@ -1506,7 +1516,7 @@ mod tests {
     fn sim_wizard_honors_start_seat_and_color_choices() {
         let (repl, _transcript) = feed(&[
             "sim", "2", "blue", "red", "1", "43", "", // mode players colors(seat0=blue,seat1=red) start=1 seed savepath(default)
-            "0", "1",                                  // keep choices for seats 0 and 1
+            "1", "2",                                  // keep choices for seats 0 and 1
             "",                                        // bot seats: none (T12)
             "confirm",                                 // review/edit step (design §5.5 item 3)
         ]);
@@ -1549,7 +1559,7 @@ mod tests {
             "live".into(), "2".into(), "red".into(), "blue".into(), "0".into(), "77".into(), "".into(),
             // seat 0 known deal + keep, seat 1 hidden
             "known".into(),
-            format!("O{}", table.deals[0][0].0), format!("O{}", table.deals[0][1].0), "0".into(),
+            format!("O{}", table.deals[0][0].0), format!("O{}", table.deals[0][1].0), "1".into(),
             "hidden".into(),
         ];
         for i in 0..n {
@@ -1738,12 +1748,12 @@ mod tests {
     fn sim_tail_reasks_indefinitely_on_invalid_keep_answer() {
         let (repl, transcript) = feed(&[
             "sim", "2", "red", "blue", "0", "605", "",
-            "bogus", "still-bad", "nope", "0", // seat 0: 3 invalid + 1 valid keep answer
-            "1",                                // seat 1 keep
+            "bogus", "still-bad", "nope", "1", // seat 0: 3 invalid + 1 valid keep answer
+            "2",                                // seat 1 keep
             "",                                 // bot seats: none (T12)
             "confirm",
         ]);
-        assert_eq!(transcript.matches("is not 0 or 1").count(), 3, "{transcript}");
+        assert_eq!(transcript.matches("is not 1 or 2").count(), 3, "{transcript}");
         let repl = repl.unwrap_or_else(|e| panic!("expected Ok, got Err({e}); transcript:\n{transcript}"));
         assert!(!repl.session.legal().is_empty());
         std::fs::remove_file("yokohama-game-605.json").ok();
@@ -1762,7 +1772,7 @@ mod tests {
     #[test]
     fn the_sim_deal_question_carries_the_bots_keep_valuation() {
         let (repl, transcript) =
-            feed(&["sim", "2", "red", "blue", "0", "605", "", "0", "1", "", "confirm"]);
+            feed(&["sim", "2", "red", "blue", "0", "605", "", "1", "2", "", "confirm"]);
         repl.unwrap_or_else(|e| panic!("expected Ok, got Err({e}); transcript:\n{transcript}"));
         std::fs::remove_file("yokohama-game-605.json").ok();
 
@@ -2196,7 +2206,7 @@ mod tests {
     /// nothing for the operator to do and nothing to say.
     #[test]
     fn no_dummy_instruction_in_the_2p_sim_wizard() {
-        let (repl, transcript) = feed(&["sim", "2", "red", "blue", "0", "618", "", "0", "1", "", "confirm"]);
+        let (repl, transcript) = feed(&["sim", "2", "red", "blue", "0", "618", "", "1", "2", "", "confirm"]);
         repl.unwrap_or_else(|e| panic!("expected Ok, got Err({e}); transcript:\n{transcript}"));
         let said = transcript.to_lowercase();
         assert!(!said.contains("dummy"), "sim has no table to place pawns on\n{transcript}");
@@ -2428,11 +2438,11 @@ mod tests {
 
         let (repl, transcript) = feed(&[
             "sim", "2", "red", "blue", "0", "700", "",
-            "0", "1",       // seat 0/1 keep choices, answered while looking at seed 700's deal
+            "1", "2",       // seat 0/1 keep choices, answered while looking at seed 700's deal
             "",             // bot seats: none (T12)
             "edit seed",
             "701",          // change the seed -- the seed-700 preview the operator just answered against is now stale
-            "0", "1",       // seat 0/1 keep choices must be RE-ASKED against seed 701's (different) deal
+            "1", "2",       // seat 0/1 keep choices must be RE-ASKED against seed 701's (different) deal
             "confirm",
         ]);
         assert_eq!(
@@ -2467,7 +2477,7 @@ mod tests {
     fn sim_tail_asks_bots_and_edit_bots_round_trips() {
         let (repl, transcript) = feed(&[
             "sim", "2", "red", "blue", "0", "801", "",
-            "0", "1",     // keep choices
+            "1", "2",     // keep choices
             "1",          // bots: seat 1
             "edit bots",
             "",           // ...and back to none
@@ -2500,8 +2510,8 @@ mod tests {
     fn sim_wizard_bot_answer_reaches_the_record_as_provenance() {
         let (repl, transcript) = feed(&[
             "sim", "2", "red", "blue", "0", "802", "",
-            "0", "1",
-            "1",          // bots: seat 1
+            "1", "2",     // keep choices (menu numbers)
+            "1",          // bots: SEAT 1 -- a seat id, unaffected by the menu base
             "confirm",
         ]);
         let repl = repl.unwrap_or_else(|e| panic!("expected Ok, got Err({e}); transcript:\n{transcript}"));
@@ -2521,8 +2531,8 @@ mod tests {
     fn bots_question_refuses_an_all_bot_table_and_a_bad_seat() {
         let (repl, transcript) = feed(&[
             "sim", "2", "red", "blue", "0", "803", "",
-            "0", "1",
-            "0 1",        // every seat a bot -- refused
+            "1", "2",     // keep choices (menu numbers)
+            "0 1",        // every seat a bot -- refused (SEAT ids, not menu numbers)
             "5",          // not a seat -- refused
             "x",          // not a number -- refused
             "0",          // fine: seat 0 bot, seat 1 human

@@ -38,6 +38,83 @@ pub fn country_name(c: Country) -> &'static str {
     }
 }
 
+/// A good's name as a card index filter states it.
+pub fn card_good_name(g: crate::screen_model::CardGood) -> &'static str {
+    use crate::screen_model::CardGood;
+    match g {
+        CardGood::Seafood => "seafood",
+        CardGood::Tea => "tea",
+        CardGood::Silk => "silk",
+        CardGood::Copper => "copper",
+    }
+}
+
+/// Where a card already sits, in the words BOTH surfaces that name a location
+/// use: the dim note on an index card, and the refusal a card prompt prints
+/// when the operator types that card again (finding F6 — every duplicate
+/// refusal names WHERE the card already is).
+///
+/// One function rather than two strings kept in step: a player who reads
+/// `= Port A slot 1` on a card and then `O01 is Port A slot 1` in a refusal is
+/// reading the same fact twice, which is what makes a refusal something to act
+/// on rather than argue with.
+///
+/// **Every one of these fits a card's interior**, because the index prints them
+/// ON the card, two columns in behind a `= `. `card_locations_fit_a_card_face`
+/// is the pin, and it is why these read `Seat 0's deal` (the approved mock's
+/// own wording) rather than the longer phrasings that would clip.
+pub fn card_location(at: crate::screen_model::CardLocation) -> String {
+    use crate::screen_model::CardLocation;
+    match at {
+        CardLocation::Deal { seat } => format!("Seat {}'s deal", seat.0),
+        CardLocation::PortSlot { board_b, slot } => {
+            format!("{} slot {}", port_board_name(board_b), slot + 1)
+        }
+        CardLocation::OwnHand => "in your hand".to_string(),
+        CardLocation::ThisReveal => "in this reveal".to_string(),
+    }
+}
+
+/// What a card prompt is recording, as the index's context header states it.
+pub fn recording_target(target: crate::screen_model::RecordingTarget) -> String {
+    use crate::screen_model::RecordingTarget;
+    match target {
+        RecordingTarget::PortRefill { board_b, slot, nth, of } => format!(
+            "{} slot {} (reveal {nth} of {of})",
+            port_board_name(board_b),
+            slot + 1,
+        ),
+        RecordingTarget::LabRefill { board_b } => {
+            format!("the card that refilled {}", lab_board_name(board_b))
+        }
+        RecordingTarget::PortSetup { board_b, slot, of } => {
+            format!("{} slot {} of {of}", port_board_name(board_b), slot + 1)
+        }
+        RecordingTarget::DealSetup { seat, which, of } => {
+            format!("Seat {}'s dealt card {which} of {of}", seat.0)
+        }
+    }
+}
+
+/// Port slot numbers are shown 1-based everywhere (`render::ports_view`'s own
+/// labeling and the live reveal prompt's), so the two helpers above and the
+/// prompts they feed all read the same board name.
+fn port_board_name(board_b: bool) -> &'static str {
+    if board_b {
+        "Port B"
+    } else {
+        "Port A"
+    }
+}
+
+fn lab_board_name(board_b: bool) -> &'static str {
+    if board_b {
+        "Laboratory B"
+    } else {
+        "Laboratory A"
+    }
+}
+
 pub fn phase_name(p: TurnPhase) -> &'static str {
     match p {
         TurnPhase::AdditionalActionFirst => "Additional actions (before)",
