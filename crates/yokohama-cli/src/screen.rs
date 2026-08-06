@@ -239,13 +239,17 @@ pub(crate) mod test_support {
     /// offending text with its escapes stripped (a raw painted string in a
     /// failure message is unreadable).
     ///
-    /// KNOWN RESIDUAL (T0-review SF3; T1 owns the pins): the measurement is
-    /// a `char` COUNT, not a terminal COLUMN count. East-Asian-Wide glyphs
-    /// (`★`) and Ambiguous-width ones (`▲ ● ◈ ▶`, the em dash) each count 1
-    /// here but may render 2 columns on CJK-configured terminals or fonts.
-    /// T1's glyph vocabulary carries the explicit single-width pins for every
-    /// glyph the frames use; this guard alone does not prove column alignment
-    /// for them.
+    /// KNOWN RESIDUAL (T0-review SF3), now discharged where it can be: the
+    /// measurement is a `char` COUNT, not a terminal COLUMN count. The frames
+    /// draw no East-Asian-Wide glyph at all -- T0's note named `★` as one and
+    /// it is not (U+2605 is Ambiguous) -- but eighteen of the twenty glyphs
+    /// they do draw are Ambiguous-width (`▲ ● ◈ ▶ ★ ·`, the dashes, the box
+    /// characters), counting 1 here while rendering 2 columns on a
+    /// CJK-configured terminal or font. [`crate::style::glyph`] is the
+    /// vocabulary, the per-glyph width pins, and the recorded decision to
+    /// accept that class for the raised-floor design; read it for why a line
+    /// carrying the intended number of CHARACTERS carries the intended number
+    /// of COLUMNS. This guard alone does not prove the second thing.
     ///
     /// Test-support for now because T0 ships no emitter that calls it; the
     /// renderer tasks that build fixed-width tiles and cards are its callers.
