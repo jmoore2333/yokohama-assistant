@@ -641,15 +641,31 @@ pub enum CardLocation {
 /// What a card prompt is recording, shown as the index's context header ("which
 /// card is physically in the slot?"). Typed for the same reason
 /// [`CardLocation`] is.
+///
+/// **ONE positional convention, and it is the model's rather than the screen's**
+/// (T5 review S3). Every POSITION here — `slot`, `nth`, `which` — is **0-based**,
+/// exactly like [`CardLocation::PortSlot`] and every other index this crate
+/// stores; every `of` is a **total**, so a position is always `< of`.
+/// `describe::recording_target` is the ONE place that adds the `+ 1` a person
+/// reads, and it adds it to all three uniformly.
+///
+/// That rule is written down because the alternative had already shipped: `slot`
+/// arrived 0-based while `nth` and `which` arrived pre-incremented by their
+/// callers, so the same struct held two conventions and the converter had to
+/// know which field was which. The failure that invites is silent and
+/// off-screen-looking — a caller that passes `of` where a position goes, or
+/// increments twice, prints `slot 7 of 6`, which is a sentence about a board
+/// that does not exist. `describe::tests::recording_targets_render_positions_in_range`
+/// sweeps every variant at every position so T6/T7's new prompts cannot ship it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RecordingTarget {
-    /// A live Port refill: `nth` of `of` reveals, into `slot` of that board.
+    /// A live Port refill: reveal `nth` of `of`, into `slot` of that board.
     PortRefill { board_b: bool, slot: usize, nth: usize, of: usize },
     /// A live Laboratory refill (one slot, always).
     LabRefill { board_b: bool },
-    /// The wizard's setup entry for one Port display slot.
+    /// The wizard's setup entry for one Port display slot, `slot` of `of`.
     PortSetup { board_b: bool, slot: usize, of: usize },
-    /// The wizard's setup entry for one seat's dealt card.
+    /// The wizard's setup entry for one seat's dealt card, `which` of `of`.
     DealSetup { seat: PlayerId, which: usize, of: usize },
 }
 
@@ -706,9 +722,9 @@ pub struct IndexCard {
     /// does not know, exactly as [`HandCardModel::printed`] means it.
     pub printed: Option<OrderCard>,
     /// The number shown on this card and typed to select it — 1-based like
-    /// every other numbered surface (`input::NUMBER_BASE`), and assigned over
-    /// the cards actually DISPLAYED, so a filtered screen numbers 1..n rather
-    /// than showing gaps from the unfiltered run.
+    /// every other numbered surface ([`NUMBER_BASE`], which lives in this
+    /// module), and assigned over the cards actually DISPLAYED, so a filtered
+    /// screen numbers 1..n rather than showing gaps from the unfiltered run.
     ///
     /// `None` when the index is open as a standing VIEW: nothing is being
     /// recorded, so there is nothing a number could select, and a number

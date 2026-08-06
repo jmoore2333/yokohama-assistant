@@ -42,4 +42,5 @@ Recording: Port A slot 3 of 6 — which card is physically there? Type its [numb
 └──────────────────────┘ └──────────────────────┘ └──────────────────────┘ └──────────────────────┘ └──────────────────────┘
 
 Dimmed cards are already recorded elsewhere and cannot be entered twice — each says where it is.
+Enter, '?' or 'cancel' closes this index and puts you back at the prompt underneath, exactly as you left it — nothing is entered and nothing there is cancelled.
 > 

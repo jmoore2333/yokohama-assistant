@@ -73,6 +73,8 @@ pub fn index_view(index: &IndexModel) -> String {
 
     out.push_str(&footer_line(index));
     out.push('\n');
+    out.push_str(&exit_line());
+    out.push('\n');
     out.push_str(&paint(Tone::Prompt, "> "));
     out.push('\n');
     out
@@ -115,7 +117,7 @@ fn context_line(index: &IndexModel) -> String {
             filter_help(),
         ),
         None => format!(
-            "Open as a view {} nothing is being recorded. {} Enter or 'cancel' returns to your prompt.",
+            "Open as a view {} nothing is being recorded. {}",
             glyph::SECTION_DASH,
             filter_help(),
         ),
@@ -126,6 +128,28 @@ fn context_line(index: &IndexModel) -> String {
 /// The one line that teaches the filter grammar, in both context forms.
 fn filter_help() -> String {
     "'f silk' filters by a good · 'f 8vp' by reward · 'f france' by flag · 'f' clears.".to_string()
+}
+
+/// **How to leave, stated on every form of this screen** (T5 review M2, and the
+/// approved mock's own `Enter cancels.`).
+///
+/// The recording form had lost it: the header spent its width on the filter
+/// grammar and the footer talked about dimmed cards, so a full-screen overlay
+/// that had replaced the player's prompt said nothing at all about getting back
+/// to it. It sits BELOW the grid rather than in the header — one line above the
+/// caret, where a player looks for the way out, and where it does not have to
+/// compete with the recording target and four filter clauses for 200 columns.
+///
+/// **The wording distinguishes the two `cancel`s, which is the point.** On this
+/// screen `cancel` closes an OVERLAY; at the reveal prompt underneath, the same
+/// word DISCARDS the group being collected. A player who has just learned the
+/// second meaning needs to be told this one is not it.
+fn exit_line() -> String {
+    paint(
+        Tone::Chrome,
+        "Enter, '?' or 'cancel' closes this index and puts you back at the prompt underneath, \
+         exactly as you left it — nothing is entered and nothing there is cancelled.",
+    )
 }
 
 /// `■ GERMANY  (7 cards)` in the flag's own tint.
@@ -296,6 +320,47 @@ mod tests {
     #[test]
     fn the_footer_states_what_this_screen_actually_shows() {
         assert!(strip_ansi(&view(Some(A_TARGET), None)).contains("No card here is recorded"));
+    }
+
+    /// **Every form of this screen says how to leave it** (T5 review M2). The
+    /// RECORDING form is the one that had lost the clause, and it is the form
+    /// that needs it most: it appears over a prompt the player was in the middle
+    /// of answering, so "how do I get back?" is the first question a full-screen
+    /// takeover raises.
+    ///
+    /// Swept over every shape the screen takes — including the empty filter,
+    /// where a player with nothing on screen has the fewest other cues — and the
+    /// wording is checked for the DISTINCTION as well as the keys: `cancel` here
+    /// closes the overlay, while `cancel` at the reveal prompt underneath
+    /// discards the group being collected, and a line that said only "cancel
+    /// returns" would leave a player who had learned the second meaning guessing.
+    #[test]
+    fn every_form_of_the_index_states_the_way_out() {
+        for (what, text) in [
+            ("a view", view(None, None)),
+            ("a recording screen", view(Some(A_TARGET), None)),
+            (
+                "a filtered screen",
+                view(Some(A_TARGET), Some(IndexFilter::Good(CardGood::Silk))),
+            ),
+            ("an empty filter", view(Some(A_TARGET), Some(IndexFilter::MinVp(200)))),
+        ] {
+            let plain = strip_ansi(&text);
+            let line = plain
+                .lines()
+                .find(|l| l.contains("closes this index"))
+                .unwrap_or_else(|| panic!("{what} states no way out:\n{plain}"));
+            assert!(line.contains("Enter") && line.contains("'cancel'"), "{what}: {line}");
+            assert!(
+                line.contains("nothing there is cancelled"),
+                "{what} must separate closing this screen from cancelling the prompt \
+                 underneath, where 'cancel' discards a reveal: {line}",
+            );
+            // Directly above the caret, which is where a way out belongs.
+            let lines: Vec<&str> = plain.lines().collect();
+            let caret = lines.iter().position(|l| l.trim() == ">").expect("the caret");
+            assert_eq!(lines[caret - 1], line, "{what}: the way out sits above the prompt");
+        }
     }
 
     /// Every location the index can print fits ON a card, behind its `= `.

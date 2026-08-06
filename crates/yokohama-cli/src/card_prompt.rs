@@ -60,7 +60,13 @@ pub(crate) struct CardPrompt<'a> {
     /// Every card the prompt could legitimately be told about — the registry
     /// for a setup entry, the unrevealed cards for a live reveal. Used ONLY to
     /// word a refusal helpfully; the caller still validates what it gets back.
-    pub candidates: &'a [OrderCardId],
+    ///
+    /// `None` is "this prompt states no pool", which is a different fact from
+    /// `Some(&[])` — "this prompt's pool is empty, so nothing is enterable" —
+    /// and the two used to be the same value (T5 review): an empty slice was the
+    /// sentinel for no-restriction, so a caller that computed its pool and got
+    /// nothing would have opened the prompt to the whole registry.
+    pub candidates: Option<&'a [OrderCardId]>,
     /// Cards already recorded elsewhere, and where (F6).
     pub placed: &'a [(OrderCardId, CardLocation)],
     /// How a bare number reads right now.
@@ -100,7 +106,10 @@ pub(crate) fn resolve(prompt: &CardPrompt<'_>, line: &str, rules: &Rules) -> Car
         return CardEntry::OpenIndex;
     }
     if let Some(rest) = strip_filter_prefix(line) {
-        return CardEntry::Filter(parse_filter(rest, rules));
+        return match parse_filter(rest, rules) {
+            Ok(filter) => CardEntry::Filter(filter),
+            Err(message) => CardEntry::Refused(message),
+        };
     }
 
     // A bare number: a selection while the index is up, an id otherwise.
@@ -149,7 +158,7 @@ fn named(prompt: &CardPrompt<'_>, id: OrderCardId) -> CardEntry {
             describe::card_location(*at),
         ));
     }
-    if !prompt.candidates.is_empty() && !prompt.candidates.contains(&id) {
+    if prompt.candidates.is_some_and(|pool| !pool.contains(&id)) {
         return CardEntry::Refused(format!(
             "O{:02} is not one of the cards this prompt can take.",
             id.0,
@@ -178,9 +187,17 @@ pub(crate) fn echo(id: OrderCardId, rules: &Rules) -> String {
 }
 
 /// `f`, `f `, `filter ` — the filter grammar the index's own help line teaches.
+///
+/// **Case-insensitive, like every other clause of this grammar** (T5 review S1):
+/// `?`, `index`, `cancel`, `back` and `O14` all ignore case, and a `F silk` that
+/// fell through to "is not a card" would be the one keyword in the module that
+/// cared about the shift key.
 fn strip_filter_prefix(line: &str) -> Option<&str> {
     for prefix in ["filter", "f"] {
-        if let Some(rest) = line.strip_prefix(prefix) {
+        // `get` rather than slicing: a line whose first bytes are mid-character
+        // yields `None` here instead of panicking on a char boundary.
+        if line.get(..prefix.len()).is_some_and(|head| head.eq_ignore_ascii_case(prefix)) {
+            let rest = &line[prefix.len()..];
             if rest.is_empty() || rest.starts_with(' ') {
                 return Some(rest.trim());
             }
@@ -189,48 +206,113 @@ fn strip_filter_prefix(line: &str) -> Option<&str> {
     None
 }
 
-/// Parse a filter term: a good, a VP floor (`8vp`), or a country. An empty
-/// term clears the filter, and an unrecognized one clears it too rather than
-/// leaving the player looking at a screen filtered by something they did not
-/// ask for.
-pub(crate) fn parse_filter(term: &str, _rules: &Rules) -> Option<IndexFilter> {
-    let term = term.trim().to_lowercase();
+/// Parse a filter term: a good, a VP floor (`8vp`), or a country. An empty term
+/// CLEARS the filter (`Ok(None)`); anything the grammar does not recognize is a
+/// REFUSAL naming the forms that do work.
+///
+/// **An unrecognized term used to clear the filter**, which is the quietest kind
+/// of wrong answer a prompt can give (T5 review): `f 8` looked like it had done
+/// something — the screen visibly changed — while what it actually did was throw
+/// away the filter the player was reading. The refusal costs one line and leaves
+/// the screen exactly where it was.
+///
+/// **Prefixes refuse ambiguity rather than resolving it**, the rule
+/// [`country_prefix`] already followed and the goods table did not: `f s` used
+/// to answer with seafood because seafood is listed above silk, so the player
+/// got a confident wrong screen instead of a question. One rule for both now,
+/// pinned by `a_prefix_that_names_two_things_is_refused_not_guessed`.
+pub(crate) fn parse_filter(term: &str, _rules: &Rules) -> Result<Option<IndexFilter>, String> {
+    // Messages quote what was TYPED; matching is done on the folded form.
+    let typed = term.trim();
+    let term = typed.to_lowercase();
     if term.is_empty() {
-        return None;
+        return Ok(None);
     }
-    for (word, good) in [
+    match good_matches(&term).as_slice() {
+        [only] => return Ok(Some(IndexFilter::Good(*only))),
+        [] => {}
+        many => {
+            let names: Vec<&str> = many.iter().map(|g| describe::card_good_name(*g)).collect();
+            return Err(ambiguous_message(typed, &names));
+        }
+    }
+    if let Some(digits) = term.strip_suffix("vp").or_else(|| term.strip_suffix(" vp")) {
+        if let Ok(n) = digits.trim().parse::<u8>() {
+            return Ok(Some(IndexFilter::MinVp(n)));
+        }
+    }
+    match country_matches(&term).as_slice() {
+        [only] => Ok(Some(IndexFilter::Country(*only))),
+        [] => Err(unrecognized_message(typed)),
+        many => {
+            let names: Vec<&str> = many.iter().map(|c| describe::country_name(*c)).collect();
+            Err(ambiguous_message(typed, &names))
+        }
+    }
+}
+
+/// Every good a term prefixes, deduped by GOOD rather than by word — `fish` and
+/// `seafood` name one good, so the alias never reads as an ambiguity, while `s`
+/// names two and does.
+fn good_matches(needle: &str) -> Vec<CardGood> {
+    const WORDS: [(&str, CardGood); 5] = [
         ("seafood", CardGood::Seafood),
         ("fish", CardGood::Seafood),
         ("tea", CardGood::Tea),
         ("silk", CardGood::Silk),
         ("copper", CardGood::Copper),
-    ] {
-        if word.starts_with(&term) {
-            return Some(IndexFilter::Good(good));
+    ];
+    let mut hits: Vec<CardGood> = Vec::new();
+    for (word, good) in WORDS {
+        if word.starts_with(needle) && !hits.contains(&good) {
+            hits.push(good);
         }
     }
-    if let Some(digits) = term.strip_suffix("vp").or_else(|| term.strip_suffix(" vp")) {
-        if let Ok(n) = digits.trim().parse::<u8>() {
-            return Some(IndexFilter::MinVp(n));
-        }
+    hits
+}
+
+/// Every country a term prefixes, in `Country::ALL` order.
+fn country_matches(term: &str) -> Vec<Country> {
+    let needle = term.trim().to_lowercase();
+    if needle.is_empty() {
+        return Vec::new();
     }
-    country_prefix(&term).map(IndexFilter::Country)
+    Country::ALL
+        .into_iter()
+        .filter(|c| describe::country_name(*c).to_lowercase().starts_with(&needle))
+        .collect()
 }
 
 /// A country named by any prefix of its display name — `fr`, `france`,
 /// `Netherlands`. Prefixes are unique across the five names from the first
 /// letter, which `country_prefixes_are_unique_from_one_letter` pins rather
-/// than assumes.
+/// than assumes; an ambiguous one names no country.
 fn country_prefix(term: &str) -> Option<Country> {
-    let needle = term.trim().to_lowercase();
-    if needle.is_empty() {
-        return None;
+    match country_matches(term).as_slice() {
+        [only] => Some(*only),
+        _ => None,
     }
-    let mut hits = Country::ALL
-        .into_iter()
-        .filter(|c| describe::country_name(*c).to_lowercase().starts_with(&needle));
-    let first = hits.next()?;
-    hits.next().is_none().then_some(first)
+}
+
+/// `'s' could be seafood or silk — type more of the word.`
+fn ambiguous_message(term: &str, names: &[&str]) -> String {
+    format!("'{term}' could be {} — type more of the word.", join_or(names))
+}
+
+/// `'8' is not a good, flag, or '<n>vp' — …`, with the three forms that work.
+fn unrecognized_message(term: &str) -> String {
+    format!(
+        "'{term}' is not a good, flag, or '<n>vp' — try 'f silk', 'f 8vp', 'f france', or 'f' to clear.",
+    )
+}
+
+/// `a`, `a or b`, `a, b or c` — the list an ambiguity names.
+fn join_or(names: &[&str]) -> String {
+    match names {
+        [] => String::new(),
+        [only] => only.to_string(),
+        [rest @ .., last] => format!("{} or {last}", rest.join(", ")),
+    }
 }
 
 /// The range message a selection number outside the screen gets.
@@ -260,7 +342,7 @@ mod tests {
         placed: &'a [(OrderCardId, CardLocation)],
         numbering: Numbering<'a>,
     ) -> CardPrompt<'a> {
-        CardPrompt { candidates: &[], placed, numbering }
+        CardPrompt { candidates: None, placed, numbering }
     }
 
     /// **The grammar matrix.** Every accepted spelling and every refusal shape,
@@ -374,13 +456,106 @@ mod tests {
         );
 
         let not_a_candidate =
-            CardPrompt { candidates: &[OrderCardId(7)], placed: &[], numbering: Numbering::Ids };
+            CardPrompt { candidates: Some(&[OrderCardId(7)]), placed: &[], numbering: Numbering::Ids };
         assert!(
             matches!(
                 resolve(&not_a_candidate, "O08", &rules),
                 CardEntry::Refused(m) if m.contains("cannot take") || m.contains("can take"),
             ),
             "a card outside the pool is refused as such",
+        );
+    }
+
+    /// **One prefix discipline for goods and flags alike** (T5 review S2). The
+    /// countries always refused an ambiguous prefix; the goods table resolved
+    /// one by list order, so `f s` filtered to seafood — a confident wrong
+    /// screen, and the worst shape a refusal can take, because the player has no
+    /// reason to doubt it. Now both name what the term could have meant.
+    #[test]
+    fn a_prefix_that_names_two_things_is_refused_not_guessed() {
+        let rules = Rules::standard();
+        let refusal = parse_filter("s", &rules).expect_err("'s' names two goods");
+        assert!(refusal.contains("seafood") && refusal.contains("silk"), "{refusal}");
+        assert!(refusal.contains("type more of the word"), "the way forward: {refusal}");
+
+        // Through the whole grammar, not just the parser: `f s` reaches the
+        // player as a refusal rather than as a filter.
+        let index = build_order_index(&rules, &[], Some(TARGET), None);
+        for numbering in [Numbering::Ids, Numbering::Selection(&index)] {
+            assert_eq!(
+                resolve(&prompt(&[], numbering), "f s", &rules),
+                CardEntry::Refused(refusal.clone()),
+            );
+        }
+
+        // Every good is still reachable — by its whole word, and by the
+        // shortest prefix that names it alone.
+        for (term, good) in [
+            ("seafood", CardGood::Seafood),
+            ("se", CardGood::Seafood),
+            ("fish", CardGood::Seafood),
+            ("tea", CardGood::Tea),
+            ("t", CardGood::Tea),
+            ("silk", CardGood::Silk),
+            ("si", CardGood::Silk),
+            ("copper", CardGood::Copper),
+            ("c", CardGood::Copper),
+        ] {
+            assert_eq!(
+                parse_filter(term, &rules),
+                Ok(Some(IndexFilter::Good(good))),
+                "{term:?} names one good",
+            );
+        }
+    }
+
+    /// **An unrecognized filter term is a refusal, not a silent clear** (T5
+    /// review notes). `f 8` used to wipe the filter the player was reading and
+    /// look, from the screen, like it had filtered by something — the one
+    /// outcome a prompt must never produce, because nothing on screen says it
+    /// went wrong. `f` alone still clears, which is what the help line teaches.
+    #[test]
+    fn an_unrecognized_filter_term_is_refused_and_f_alone_still_clears() {
+        let rules = Rules::standard();
+        for term in ["8", "wat", "xvp", "zz"] {
+            let refusal = parse_filter(term, &rules)
+                .expect_err(&format!("{term:?} must be refused, not applied or cleared"));
+            assert!(
+                refusal.contains(&format!("'{term}'")) && refusal.contains("is not a good, flag"),
+                "{term:?}: {refusal}",
+            );
+            assert!(refusal.contains("'f' to clear"), "the way to clear is named: {refusal}");
+        }
+        // ...and the term that DOES clear still clears, through the grammar.
+        assert_eq!(parse_filter("", &rules), Ok(None));
+        assert_eq!(resolve(&prompt(&[], Numbering::Ids), "f", &rules), CardEntry::Filter(None));
+        assert!(matches!(
+            resolve(&prompt(&[], Numbering::Ids), "f 8", &rules),
+            CardEntry::Refused(m) if m.contains("is not a good, flag"),
+        ));
+    }
+
+    /// The filter keyword ignores case like every other clause of the grammar
+    /// (T5 review S1) — `?`, `cancel` and `O14` always did.
+    #[test]
+    fn the_filter_keyword_is_case_insensitive() {
+        let rules = Rules::standard();
+        let want = CardEntry::Filter(Some(IndexFilter::Good(CardGood::Silk)));
+        for line in ["f silk", "F silk", "filter silk", "Filter silk", "FILTER SILK", "F SILK"] {
+            assert_eq!(&resolve(&prompt(&[], Numbering::Ids), line, &rules), &want, "{line:?}");
+        }
+        for line in ["f", "F", "filter", "FILTER"] {
+            assert_eq!(
+                &resolve(&prompt(&[], Numbering::Ids), line, &rules),
+                &CardEntry::Filter(None),
+                "{line:?} clears",
+            );
+        }
+        // Not a false positive on a word that merely starts with the keyword:
+        // `france` is a flag, not `f` + `rance`.
+        assert_eq!(
+            resolve(&prompt(&[], Numbering::Ids), "france", &rules),
+            CardEntry::Filter(Some(IndexFilter::Country(Country::French))),
         );
     }
 

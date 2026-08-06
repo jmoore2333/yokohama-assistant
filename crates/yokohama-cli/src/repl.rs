@@ -1151,10 +1151,14 @@ impl Repl {
     fn index_target(&self) -> Option<RecordingTarget> {
         match &self.pending {
             Pending::OrderReveals { slots, board_b, collected, .. } => {
+                // Every position here is 0-based, which is the ONE convention
+                // `RecordingTarget` states: `collected.len()` is both the index
+                // of the slot being filled next and the index of this reveal in
+                // the run. `describe::recording_target` does the `+ 1`.
                 Some(RecordingTarget::PortRefill {
                     board_b: *board_b,
                     slot: slots[collected.len()],
-                    nth: collected.len() + 1,
+                    nth: collected.len(),
                     of: slots.len(),
                 })
             }
@@ -1233,7 +1237,7 @@ impl Repl {
         let model = self.index_model();
         let placed = self.index_placements();
         let prompt = CardPrompt {
-            candidates: &[],
+            candidates: None,
             placed: &placed,
             numbering: card_prompt::Numbering::Selection(&model),
         };
@@ -1656,28 +1660,21 @@ impl Repl {
                         describe::describe_move(mv, state, rules),
                     ));
                 }
-                // The DECISION ZONE's pager vocabulary, not a second one.
-                // This footer used to read `...N more (type 'more')` over
-                // `page 2/3` while the main list said `(N more — 'more' for
-                // page 2 of 3, 'list' back to the first)`, so a player who had
-                // learned one screen's words met different ones on the next --
-                // for a pager that behaves identically. One wording, and the
-                // last-page form is the zone's too (`more` wraps there, and a
-                // footer counting "0 more" reads as a bug on the page every
-                // list ends on).
+                // The DECISION ZONE's pager vocabulary, from the zone's own
+                // formatter (T5 review S4). This footer used to read `...N more
+                // (type 'more')` over `page 2/3` while the main list said `(N
+                // more — 'more' for page 2 of 3, 'list' back to the first)`, so
+                // a player who had learned one screen's words met different ones
+                // on the next -- for a pager that behaves identically. The two
+                // wordings were reconciled by hand once; calling
+                // `decision_render::pager_footer` is what stops them drifting
+                // again.
                 if total_pages > 1 {
-                    let footer = if end < n {
-                        format!(
-                            "({} more — 'more' for page {} of {total_pages}, 'list' back to the first)",
-                            n - end,
-                            (self.page + 1) % total_pages + 1,
-                        )
-                    } else {
-                        format!(
-                            "(last page — 'more' wraps to page 1 of {total_pages}, 'list' back to the first)",
-                        )
-                    };
-                    out.push_str(&footer);
+                    out.push_str(&crate::decision_render::pager_footer(
+                        n - end,
+                        self.page,
+                        total_pages,
+                    ));
                     out.push('\n');
                 }
                 out.push_str("> pick a number, or 'cancel'\n");
@@ -2185,9 +2182,22 @@ impl Repl {
         // behaviours every other card prompt has. What it does not take from
         // the grammar is authority: the engine's `apply_standalone` still
         // rules on whether this seat can reveal this card.
+        //
+        // **The location refusal runs BEFORE the engine, and that ordering is
+        // safe by CONSERVATION rather than by luck** (T5 review). A refusal
+        // ahead of the authority is only honest if it can never pre-empt a
+        // legal answer, and here it cannot: `index_placements` reports a card
+        // in a port display slot, in the viewing seat's own visible hand, or
+        // already named in the reveal being collected -- and a hidden starting
+        // order lives in the deck/removed split, which is DISJOINT from all
+        // three. A card the engine would accept as this seat's starting order
+        // is therefore never one this check has a location for, so the only
+        // entries it turns away are ones `apply_standalone` would refuse
+        // anyway -- with a worse message, since the engine cannot say where
+        // the operator has already put the card.
         let placed = self.index_placements();
         let prompt = CardPrompt {
-            candidates: &[],
+            candidates: None,
             placed: &placed,
             numbering: card_prompt::Numbering::Ids,
         };
@@ -3465,7 +3475,7 @@ mod tests {
     /// **`?` is NOT among the aliases since T5**, and that is the approved
     /// mock's own split: its standing hint reads `'view' any surface · '?' the
     /// card index`. The two keys now open two different screens, which is why
-    /// this test names only one of them and `the_index_opens_from_anywhere`
+    /// this test names only one of them and `the_index_opens_from_every_prompt`
     /// pins the other.
     #[test]
     fn view_menu_aliases_cancel_and_range() {
@@ -4945,19 +4955,13 @@ mod tests {
         let p0 = r.sub_prompt_text();
         assert!(p0.contains("[1] ") && p0.contains("[20] "), "{p0}");
         assert!(!p0.contains("[21] "), "page 1 must cap at 20 route entries: {p0}");
-        assert!(
-            p0.contains("(5 more — 'more' for page 2 of 2, 'list' back to the first)"),
-            "{p0}",
-        );
+        assert!(p0.contains(&crate::decision_render::pager_footer(5, 0, 2)), "{p0}");
 
         // `more` pages forward to the remaining 5.
         let p1 = r.step("more").text;
         assert!(p1.contains("[21] ") && p1.contains("[25] "), "{p1}");
         assert!(!p1.contains("[20] "), "page 2 must not repeat page-1 entries: {p1}");
-        assert!(
-            p1.contains("(last page — 'more' wraps to page 1 of 2, 'list' back to the first)"),
-            "{p1}",
-        );
+        assert!(p1.contains(&crate::decision_render::pager_footer(0, 1, 2)), "{p1}");
 
         // `list` resets to page 1.
         let p2 = r.step("list").text;
@@ -4965,6 +4969,98 @@ mod tests {
         // Still in the sub-prompt, nothing applied.
         assert!(matches!(r.sub, SubPrompt::Pick { .. }));
         assert!(r.session.record().events.is_empty());
+    }
+
+    /// The pager footer line of a rendered surface, ANSI stripped and trimmed.
+    fn pager_line(text: &str) -> String {
+        crate::style::strip_ansi(text)
+            .lines()
+            .find(|l| l.contains("'more'"))
+            .map(|l| l.trim().to_string())
+            .unwrap_or_else(|| panic!("no pager footer in:\n{text}"))
+    }
+
+    /// A footer with every run of digits collapsed to `#` — the SENTENCE
+    /// without the counts, so two surfaces showing different-sized lists can
+    /// still be compared word for word.
+    fn pager_shape(line: &str) -> String {
+        let mut out = String::new();
+        let mut in_digits = false;
+        for c in line.chars() {
+            if c.is_ascii_digit() {
+                if !in_digits {
+                    out.push('#');
+                }
+                in_digits = true;
+            } else {
+                in_digits = false;
+                out.push(c);
+            }
+        }
+        out
+    }
+
+    /// **One pager vocabulary, pinned as AGREEMENT rather than as two literal
+    /// copies** (T5 review S4). The main option list and the route sub-prompt
+    /// page identically, so they must print one sentence — and each surface's
+    /// footer is checked against `decision_render::pager_footer` at that
+    /// surface's OWN numbers, which is what makes the shared formatter the
+    /// thing under test rather than a wording two tests happen to spell alike.
+    ///
+    /// Both shapes are swept: a mid-list page (which counts a remainder) and a
+    /// last page (which words the wrap). The two surfaces hold lists of
+    /// different sizes, so the comparison BETWEEN them is over the sentence with
+    /// its counts collapsed; the comparison against the formatter is exact.
+    #[test]
+    fn one_pager_footer_serves_both_paged_surfaces() {
+        // Surface 1: the route sub-prompt, 25 rendering-only labels = 2 pages.
+        let mut sub = repl_2p(4);
+        let moves: Vec<Move> = (0..25)
+            .map(|i| Move::MovePresident { path: vec![], destination: AreaId::new((i % 10) as u8) })
+            .collect();
+        sub.sub = SubPrompt::Pick { title: "Routes".to_string(), moves };
+
+        // Surface 2: the main option list, an Employment Agency at power 5.
+        let mut state = create_test_game_state(2);
+        let ea = AreaId::new(0);
+        state
+            .board_layout
+            .areas
+            .insert(ea, AreaConfig { area_type: AreaType::EmploymentAgency, grid_position: (0, 0) });
+        let me = state.current_player;
+        state.players[me.0 as usize].president_location = PresidentLocation::OnBoard(ea);
+        state.players[me.0 as usize].money = 20;
+        state.players[me.0 as usize].assistants.on_board.insert(ea, 4);
+        state.players[me.0 as usize].assistants.in_hand -= 4;
+        state.turn_phase = TurnPhase::AreaAction;
+        state.current_action_power = Some(5);
+        let mut main = Repl::new(Session::for_test_from_state(state, Rules::empty_for_tests()));
+
+        // Mid-list: the route sub-prompt's numbers are known exactly.
+        let sub_first = pager_line(&sub.sub_prompt_text());
+        assert_eq!(sub_first, crate::decision_render::pager_footer(5, 0, 2), "{sub_first}");
+        let main_first = pager_line(&main.prompt());
+        assert_eq!(
+            pager_shape(&main_first),
+            pager_shape(&sub_first),
+            "the two paged surfaces must print ONE sentence:\n  main: {main_first}\n  sub:  {sub_first}",
+        );
+
+        // Last page: the wrap form, whose only count is the page total.
+        let sub_last = pager_line(&sub.step("more").text);
+        assert_eq!(sub_last, crate::decision_render::pager_footer(0, 1, 2), "{sub_last}");
+        let mut steps = 0;
+        while !pager_line(&main.prompt()).starts_with("(last page") {
+            main.step("more");
+            steps += 1;
+            assert!(steps < 20, "the main pager must reach a last page");
+        }
+        let main_last = pager_line(&main.prompt());
+        assert_eq!(
+            pager_shape(&main_last),
+            pager_shape(&sub_last),
+            "...on the last page too:\n  main: {main_last}\n  sub:  {sub_last}",
+        );
     }
 
     /// Task A review Minor 2: `cancel` now also aborts a route/retreat

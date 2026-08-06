@@ -76,24 +76,45 @@ pub fn card_location(at: crate::screen_model::CardLocation) -> String {
 }
 
 /// What a card prompt is recording, as the index's context header states it.
+///
+/// **The one place [`crate::screen_model::RecordingTarget`]'s 0-based positions
+/// become the numbers a person reads** (T5 review S3), and it converts all of
+/// them the same way: `nth`, `slot` and `which` each get [`human_position`], so
+/// no variant can be a special case and no caller has to pre-increment. Totals
+/// (`of`) are printed as they are — they are counts, not positions.
 pub fn recording_target(target: crate::screen_model::RecordingTarget) -> String {
     use crate::screen_model::RecordingTarget;
     match target {
         RecordingTarget::PortRefill { board_b, slot, nth, of } => format!(
-            "{} slot {} (reveal {nth} of {of})",
+            "{} slot {} (reveal {} of {of})",
             port_board_name(board_b),
-            slot + 1,
+            human_position(slot),
+            human_position(nth),
         ),
         RecordingTarget::LabRefill { board_b } => {
             format!("the card that refilled {}", lab_board_name(board_b))
         }
-        RecordingTarget::PortSetup { board_b, slot, of } => {
-            format!("{} slot {} of {of}", port_board_name(board_b), slot + 1)
-        }
-        RecordingTarget::DealSetup { seat, which, of } => {
-            format!("Seat {}'s dealt card {which} of {of}", seat.0)
-        }
+        RecordingTarget::PortSetup { board_b, slot, of } => format!(
+            "{} slot {} of {of}",
+            port_board_name(board_b),
+            human_position(slot),
+        ),
+        RecordingTarget::DealSetup { seat, which, of } => format!(
+            "Seat {}'s dealt card {} of {of}",
+            seat.0,
+            human_position(which),
+        ),
     }
+}
+
+/// A 0-based model position as the screen prints it.
+///
+/// Named rather than written `+ 1` at each site so the conversion is countable:
+/// a variant that renders a position WITHOUT calling this is visible at a
+/// glance, which is the whole content of the one-convention rule
+/// [`crate::screen_model::RecordingTarget`] states.
+fn human_position(index: usize) -> usize {
+    index + 1
 }
 
 /// Port slot numbers are shown 1-based everywhere (`render::ports_view`'s own
@@ -827,6 +848,87 @@ mod tests {
         let some_area = *state.board_layout.areas.keys().next().unwrap();
         let label = area_label(&state, some_area);
         assert!(label.contains(&format!("(A{:02})", some_area.0)), "{label}");
+    }
+
+    /// **Every `RecordingTarget` variant's rendered shape, pinned** (T5 review
+    /// S3) — the header a person reads while entering a card, at the LAST
+    /// position of each run, which is where an off-by-one shows up as a board
+    /// that does not exist.
+    #[test]
+    fn recording_targets_render_their_positions() {
+        use crate::screen_model::RecordingTarget as T;
+        assert_eq!(
+            recording_target(T::PortSetup { board_b: false, slot: 5, of: 6 }),
+            "Port A slot 6 of 6",
+        );
+        assert_eq!(
+            recording_target(T::PortSetup { board_b: true, slot: 0, of: 6 }),
+            "Port B slot 1 of 6",
+        );
+        assert_eq!(
+            recording_target(T::PortRefill { board_b: false, slot: 5, nth: 2, of: 3 }),
+            "Port A slot 6 (reveal 3 of 3)",
+        );
+        assert_eq!(recording_target(T::LabRefill { board_b: true }), "the card that refilled Laboratory B");
+        assert_eq!(
+            recording_target(T::DealSetup { seat: PlayerId::new(0), which: 1, of: 2 }),
+            "Seat 0's dealt card 2 of 2",
+        );
+    }
+
+    /// **`slot 7 of 6` is unreachable from a valid target.** The pin above
+    /// states four shapes; this one states the PROPERTY behind them, swept over
+    /// every variant and every position in range: a rendered position is
+    /// between 1 and its own total, never past it. A T6/T7 prompt that passes a
+    /// count where a position goes — or pre-increments the way `PortRefill`'s
+    /// `nth` used to be passed — fails here rather than on the owner's screen.
+    #[test]
+    fn recording_targets_render_positions_in_range() {
+        use crate::screen_model::RecordingTarget as T;
+        for of in 1..=6usize {
+            for i in 0..of {
+                // Seat 0, so the only numbers on the line are positions and
+                // totals — a seat index is neither, and would muddy the sweep.
+                // The count beside each case is how many POSITIONS it renders,
+                // total included: 2 for a "slot N of M", 3 once a reveal number
+                // joins them.
+                let cases = [
+                    (T::PortSetup { board_b: false, slot: i, of }, 2),
+                    (T::PortRefill { board_b: true, slot: i, nth: i, of }, 3),
+                    (T::DealSetup { seat: PlayerId::new(0), which: i, of }, 2),
+                ];
+                for (target, positions) in cases {
+                    let text = recording_target(target);
+                    // Every number the header prints, in order.
+                    let numbers: Vec<usize> = text
+                        .split(|c: char| !c.is_ascii_digit())
+                        .filter(|s| !s.is_empty())
+                        .map(|s| s.parse::<usize>().expect("a number"))
+                        .collect();
+                    assert!(!numbers.is_empty(), "{target:?} printed no position: {text}");
+                    // Anti-vacuity: the run's total must actually be stated, so
+                    // a header that dropped its "of N" cannot pass by silence.
+                    assert!(numbers.contains(&of), "{target:?} must state its total: {text}");
+                    // Nothing on the line may exceed the run's own total —
+                    // `slot 7 of 6` is a sentence about a board that does not
+                    // exist, and it is what a count passed as a position prints.
+                    for &n in &numbers {
+                        assert!(n <= of, "{target:?} printed {n}, past its total of {of}: {text}");
+                    }
+                    // ...and at the LAST position of a run, every position on
+                    // the line reads as the total. This is the clause that makes
+                    // the 1-based conversion load-bearing: a position rendered
+                    // straight from the 0-based field prints `of - 1` here.
+                    if i + 1 == of {
+                        assert_eq!(
+                            numbers.iter().filter(|&&n| n == of).count(),
+                            positions,
+                            "{target:?} must read every position as {of}: {text}",
+                        );
+                    }
+                }
+            }
+        }
     }
 
     #[test]

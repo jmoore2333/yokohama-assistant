@@ -167,25 +167,11 @@ pub fn decision_zone(
             out.push('\n');
         }
         if page.total > 1 {
-            // The LAST page has nothing left to count, and the arithmetic said
-            // so as "(0 more — 'more' for page 1 of 3, …)" — a footer that
-            // reads as a bug on the one page every list ends on. `more` still
-            // works there; what it does is wrap, so the line says that instead.
-            let footer = if page.end < rows.len() {
-                format!(
-                    "({} more — 'more' for page {} of {}, 'list' back to the first)",
-                    rows.len() - page.end,
-                    page.next_number(),
-                    page.total,
-                )
-            } else {
-                format!(
-                    "(last page — 'more' wraps to page 1 of {}, 'list' back to the first)",
-                    page.total,
-                )
-            };
             out.push_str(OPTION_INDENT);
-            out.push_str(&paint(Tone::Chrome, &footer));
+            out.push_str(&paint(
+                Tone::Chrome,
+                &pager_footer(rows.len() - page.end, page.number, page.total),
+            ));
             out.push('\n');
         }
     }
@@ -414,11 +400,33 @@ impl Page {
         let (start, end) = bounds[number];
         Page { start, end, number, total }
     }
+}
 
-    /// The 1-based number `more` will land on: the next page, wrapping.
-    fn next_number(&self) -> usize {
-        (self.number + 1) % self.total + 1
+/// The pager footer, for every paged surface in the driver.
+///
+/// **One formatter rather than two literals kept in step** (T5 review S4). The
+/// decision zone's option list and `repl`'s route sub-prompt page identically,
+/// so a player who learns one screen's words meets the same ones on the next —
+/// and a wording change here cannot land on one surface only. The two literal
+/// copies this replaced had already been reconciled once by hand.
+///
+/// `remaining` is how many rows the current page does NOT show. Zero means the
+/// last page, and its footer words the WRAP rather than counting a remainder it
+/// does not have: `more` still works there, and `(0 more — …)` reads as a bug on
+/// the one page every list ends on.
+///
+/// `page_number` is 0-based and `total_pages` is the count callers already hold.
+/// Callers print a footer only when a list actually pages (`total_pages > 1`),
+/// which is why the wrap arithmetic can assume a nonzero total; `max(1)` keeps
+/// it total anyway rather than dividing by zero on a caller that forgets.
+pub fn pager_footer(remaining: usize, page_number: usize, total_pages: usize) -> String {
+    if remaining == 0 {
+        return format!(
+            "(last page — 'more' wraps to page 1 of {total_pages}, 'list' back to the first)"
+        );
     }
+    let next = (page_number + 1) % total_pages.max(1) + 1;
+    format!("({remaining} more — 'more' for page {next} of {total_pages}, 'list' back to the first)")
 }
 
 /// Page boundaries over the option widths, each page as full as
@@ -1480,9 +1488,29 @@ mod tests {
         assert_eq!(kept, 500, "a mid-token break must not eat characters:\n{zone}");
     }
 
-    /// The LAST page words its footer as a wrap rather than counting a
-    /// remainder it does not have — it used to print `(0 more — …)`, which
-    /// reads as a bug on the one page every list ends on.
+    /// **The one place the pager's wording is written down** (T5 review S4).
+    /// Both shapes, in literals, in the module that owns the formatter — every
+    /// other test in the crate compares its surface's footer AGAINST
+    /// [`pager_footer`] rather than re-typing the sentence, so this is the
+    /// single site a wording change has to pass through.
+    #[test]
+    fn the_pager_footer_words_both_shapes() {
+        assert_eq!(
+            pager_footer(12, 0, 2),
+            "(12 more — 'more' for page 2 of 2, 'list' back to the first)",
+        );
+        // The wrap: from the last page `more` returns to the first, and the
+        // footer says so rather than counting a remainder it does not have.
+        let last = pager_footer(0, 1, 2);
+        assert_eq!(last, "(last page — 'more' wraps to page 1 of 2, 'list' back to the first)");
+        assert!(!last.contains("(0 more"), "the zero-remainder form reads as a bug: {last}");
+        // Mid-list, the "next page" number is the one `more` actually lands on.
+        assert!(pager_footer(7, 1, 3).contains("for page 3 of 3"), "{}", pager_footer(7, 1, 3));
+    }
+
+    /// The LAST page of a real decision zone words its footer as a wrap — the
+    /// property from the surface's side, checked against the formatter rather
+    /// than against a second copy of its sentence.
     #[test]
     fn the_last_pages_footer_words_the_wrap_instead_of_counting_zero() {
         let (state, rules) = state_np(2);
@@ -1493,12 +1521,12 @@ mod tests {
         let colors = colors_np(&state);
 
         let first = decision_zone(&d, &rows, &board, &colors, &ctx());
-        assert!(first.contains("(12 more — 'more' for page 2 of 2"), "{first}");
+        assert!(first.contains(&pager_footer(12, 0, 2)), "{first}");
 
         let last =
             decision_zone(&d, &rows, &board, &colors, &ZoneContext { page: 1, ..ctx() });
         assert!(!last.contains("(0 more"), "{last}");
-        assert!(last.contains("(last page — 'more' wraps to page 1 of 2"), "{last}");
+        assert!(last.contains(&pager_footer(0, 1, 2)), "{last}");
     }
 
     /// A truncated near-miss list SAYS it was truncated. Three rows and three
