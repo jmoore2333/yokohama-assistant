@@ -492,6 +492,13 @@ pub struct DecisionModel {
     /// decision but a Movement one, and empty there too whenever no adjacent
     /// area's absence has an observable fact behind it.
     pub not_offered: Vec<NotOffered>,
+    /// How many further near misses [`NOT_OFFERED_ROWS`] cut from
+    /// [`Self::not_offered`] — zero whenever the cap did not fire.
+    ///
+    /// Carried rather than left implicit because the renderer cannot recover
+    /// it: a capped list and a complete one are the same three rows on screen,
+    /// and a truncation nobody is told about reads as "those were all of them".
+    pub not_offered_suppressed: usize,
 }
 
 // ---------------------------------------------------------------------------
@@ -627,13 +634,20 @@ pub const NOT_OFFERED_ROWS: usize = 3;
 /// re-deriving the movement rules, so it says nothing rather than guessing —
 /// and the guess it would otherwise fall into is the tempting one,
 /// `NoAssistantThere` on an area whose count is not zero at all.
-pub fn build_not_offered(state: &GameState, legal: &[Move]) -> Vec<NotOffered> {
+///
+/// **What it RETURNS is a pair**, and the second half is why: the rows to draw,
+/// capped at [`NOT_OFFERED_ROWS`], and how many further near misses that cap
+/// CUT. A caller cannot recover the second from the first — three rows look
+/// identical whether they were all of them or the first three of five — so a
+/// truncation that is not reported is a truncation that reads as completeness.
+/// Both come off ONE walk of the neighbours rather than two.
+pub fn build_not_offered(state: &GameState, legal: &[Move]) -> (Vec<NotOffered>, usize) {
     if state.turn_phase != TurnPhase::Movement || !state.pending_choices.is_empty() {
-        return Vec::new();
+        return (Vec::new(), 0);
     }
     let PresidentLocation::OnBoard(here) = state.player(state.current_player).president_location
     else {
-        return Vec::new();
+        return (Vec::new(), 0);
     };
     let offered = president_destinations(legal);
     let me = state.player(state.current_player);
@@ -643,9 +657,6 @@ pub fn build_not_offered(state: &GameState, legal: &[Move]) -> Vec<NotOffered> {
     // (`board_gen` builds it into a BTreeMap of sorted vectors), so the rows
     // come out in board order without this function imposing one.
     for &area in state.board_layout.adjacent_areas(here) {
-        if rows.len() == NOT_OFFERED_ROWS {
-            break;
-        }
         if offered.contains(&area) {
             continue;
         }
@@ -662,7 +673,9 @@ pub fn build_not_offered(state: &GameState, legal: &[Move]) -> Vec<NotOffered> {
         };
         rows.push(NotOffered { area, reason });
     }
-    rows
+    let suppressed = rows.len().saturating_sub(NOT_OFFERED_ROWS);
+    rows.truncate(NOT_OFFERED_ROWS);
+    (rows, suppressed)
 }
 
 fn tile_from(state: &GameState, rules: &Rules, area: AreaId, cfg: &AreaConfig) -> TileModel {
@@ -891,6 +904,8 @@ pub fn build_decision(state: &GameState, rules: &Rules, legal: &[Move]) -> Decis
         Deciding::Phase(state.turn_phase)
     };
 
+    let (not_offered, not_offered_suppressed) = build_not_offered(state, legal);
+
     DecisionModel {
         turn_number: state.turn_number,
         seat: state.current_player,
@@ -906,7 +921,8 @@ pub fn build_decision(state: &GameState, rules: &Rules, legal: &[Move]) -> Decis
                 fee: option_fee(state, rules, mv),
             })
             .collect(),
-        not_offered: build_not_offered(state, legal),
+        not_offered,
+        not_offered_suppressed,
     }
 }
 
@@ -1453,10 +1469,14 @@ mod tests {
         state.turn_phase = TurnPhase::Movement;
         state.players[0].president_location = PresidentLocation::OnBoard(here);
         let neighbours = state.board_layout.adjacent_areas(here).to_vec();
-        assert!(neighbours.len() >= 2, "the fixture needs neighbours to miss: {neighbours:?}");
+        assert!(
+            neighbours.len() > NOT_OFFERED_ROWS,
+            "the fixture needs MORE neighbours than the cap, so the cut count below is not \
+             vacuously zero: {neighbours:?}",
+        );
 
         // (a) An area the player has no assistant in.
-        let rows = build_not_offered(&state, &[]);
+        let (rows, cut) = build_not_offered(&state, &[]);
         assert!(!rows.is_empty(), "every neighbour is a near miss when nothing is offered");
         assert!(
             rows.iter().all(|r| r.reason == NotOfferedReason::NoAssistantThere),
@@ -1464,6 +1484,10 @@ mod tests {
         );
         assert!(rows.iter().all(|r| neighbours.contains(&r.area)), "rows are adjacent only");
         assert!(rows.len() <= NOT_OFFERED_ROWS, "the row cap holds: {rows:?}");
+        // ...and when it fires it SAYS so, which is the whole of the second
+        // return value: this fixture offers nothing, so every neighbour past
+        // the third is a row the zone will not draw.
+        assert_eq!(cut, neighbours.len() - rows.len(), "the cap must report what it cut");
 
         // (b) The start-area rule outranks it, on the SAME area — the row a
         // player is most likely to be confused by, and the one an
@@ -1471,7 +1495,7 @@ mod tests {
         let start = neighbours[0];
         state.president_start_area = Some(start);
         state.players[0].assistants.on_board.insert(start, 1);
-        let rows = build_not_offered(&state, &[]);
+        let (rows, _) = build_not_offered(&state, &[]);
         let start_row = rows.iter().find(|r| r.area == start).expect("the start area is a row");
         assert_eq!(start_row.reason, NotOfferedReason::StartedThereThisTurn);
 
@@ -1479,13 +1503,13 @@ mod tests {
         // row at all: the reason would be an unaffordable toll or a blocking
         // President, neither of which this reads off the state.
         state.president_start_area = None;
-        let rows = build_not_offered(&state, &[]);
+        let (rows, _) = build_not_offered(&state, &[]);
         assert!(rows.iter().all(|r| r.area != start), "silence beats a guess: {rows:?}");
 
         // (d) An area the engine DOES offer is not a near miss.
         let offered = neighbours[1];
         let legal = vec![Move::MovePresident { path: vec![offered], destination: offered }];
-        let rows = build_not_offered(&state, &legal);
+        let (rows, _) = build_not_offered(&state, &legal);
         assert!(rows.iter().all(|r| r.area != offered), "{rows:?}");
     }
 
@@ -1509,7 +1533,7 @@ mod tests {
         state.turn_phase = TurnPhase::Movement;
         state.players[0].president_location = PresidentLocation::OnBoard(here);
 
-        let rows = build_not_offered(&state, &[]);
+        let (rows, _) = build_not_offered(&state, &[]);
         let canal_row = rows.iter().find(|r| r.area == canal);
         if let Some(row) = canal_row {
             assert_eq!(row.reason, NotOfferedReason::CanalIsNeverAStop, "{rows:?}");
@@ -1528,15 +1552,23 @@ mod tests {
         state.players[0].president_location = PresidentLocation::OnBoard(here);
 
         state.turn_phase = TurnPhase::Placement;
-        assert!(build_not_offered(&state, &[]).is_empty(), "not a Movement decision");
+        assert_eq!(build_not_offered(&state, &[]), (Vec::new(), 0), "not a Movement decision");
 
         state.turn_phase = TurnPhase::Movement;
         state.pending_choices = vec![PendingChoice::AnyGood];
-        assert!(build_not_offered(&state, &[]).is_empty(), "a queued choice outranks the phase");
+        assert_eq!(
+            build_not_offered(&state, &[]),
+            (Vec::new(), 0),
+            "a queued choice outranks the phase",
+        );
 
         state.pending_choices.clear();
         state.players[0].president_location = PresidentLocation::InHand;
-        assert!(build_not_offered(&state, &[]).is_empty(), "no President on the board, no near miss");
+        assert_eq!(
+            build_not_offered(&state, &[]),
+            (Vec::new(), 0),
+            "no President on the board, no near miss",
+        );
     }
 
     /// T0-review MF1, discharged: a placement into an area an opponent

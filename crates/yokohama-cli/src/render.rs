@@ -97,41 +97,6 @@ pub(crate) fn masked_hand(cards: usize, is_bot: bool) -> String {
     }
 }
 
-/// One-line turn/phase/resource summary, e.g.
-/// `"Turn 12 | Red | Placement | 5 yen 3 VP | c1 s2 t0 f1 i0 | hand 2"`.
-/// `phase_text` fills the third slot verbatim -- the normal phase name
-/// (`describe::phase_name`) most of the time, or the pending-choice banner
-/// text when `Repl::prompt` (Task 11, design §5.4) detects a queued choice.
-/// Deciding WHICH text that is stays the caller's job; this function only
-/// formats.
-pub fn prompt_header(state: &GameState, phase_text: &str) -> String {
-    let p = state.current_player();
-    format!(
-        "Turn {} | {} | {} | {} {} | {} | hand {}",
-        state.turn_number,
-        paint(Tone::Player(p.color), color_name(p.color)),
-        paint(Tone::Prompt, phase_text),
-        paint(Tone::Good(GoodKind::Yen), &format!("{} yen", p.money)),
-        paint(Tone::Vp, &format!("{} VP", p.victory_points)),
-        goods_run(p),
-        p.order_cards_in_hand.len(),
-    )
-}
-
-/// The `c1 s2 t0 f1 i0` goods run, each token painted in its good's color
-/// (Task 6 full-color treatment). Space-joined AFTER painting, so the plain
-/// render is byte-identical to the old inline format string.
-fn goods_run(p: &PlayerState) -> String {
-    [
-        paint(Tone::Good(GoodKind::Copper), &format!("c{}", p.copper)),
-        paint(Tone::Good(GoodKind::Silk), &format!("s{}", p.silk)),
-        paint(Tone::Good(GoodKind::Tea), &format!("t{}", p.tea)),
-        paint(Tone::Good(GoodKind::Seafood), &format!("f{}", p.seafood)),
-        paint(Tone::Good(GoodKind::Imports), &format!("i{}", p.imported_goods)),
-    ]
-    .join(" ")
-}
-
 /// A `─ Title ─────...` rule header opening every state view (Task 6, one
 /// design language across views). 40 columns total. `pub(crate)` so the
 /// repl-side views (`score`/`log`/`final_score`/`hand`) share the exact same
@@ -1336,33 +1301,6 @@ mod tests {
     }
 
     #[test]
-    fn prompt_header_shows_turn_color_phase_and_money() {
-        let state = test_state_2p();
-        let h = prompt_header(&state, describe::phase_name(state.turn_phase));
-        assert!(h.contains("Turn 1"), "{h}");
-        assert!(h.contains("Red"), "{h}");
-        assert!(h.contains("Additional actions (before)"), "{h}");
-        assert!(h.contains("3 yen"), "{h}");
-    }
-
-    /// S4 (pre-gate view batch): the header's current-player name is a
-    /// who-is-where surface and paints in that player's color, alongside the
-    /// phase text that already paints. The plain (disabled) header is
-    /// unchanged -- so the existing `prompt_header_*` plain-text tests keep
-    /// passing -- and `strip_ansi` round-trips the painted header to it.
-    #[test]
-    fn prompt_header_paints_the_current_player_name() {
-        let state = test_state_2p(); // Red is the start/current player
-        crate::style::force(true);
-        let colored = prompt_header(&state, "Placement");
-        let painted_name = paint(Tone::Player(PlayerColor::Red), "Red");
-        crate::style::force(false);
-        let plain = prompt_header(&state, "Placement");
-        assert!(colored.contains(&painted_name), "current-player name must paint: {colored:?}");
-        assert_eq!(strip_ansi(&colored), plain);
-    }
-
-    #[test]
     fn board_grid_has_one_cell_per_area_with_ids() {
         let state = test_state_2p();
         let g = board_grid(&state, &Rules::standard(), &[]);
@@ -1904,23 +1842,6 @@ mod tests {
         ] {
             assert!(text.starts_with("─ "), "view '{name}' must open with a rule header: {text}");
         }
-    }
-
-    /// Task 6 full color: the prompt header's goods/yen/VP tokens paint
-    /// (strip-equality keeps the plain text authoritative).
-    #[test]
-    fn prompt_header_paints_goods_and_yen() {
-        let state = test_state_2p();
-        crate::style::force(true);
-        let colored = prompt_header(&state, "Placement");
-        crate::style::force(false);
-        let plain = prompt_header(&state, "Placement");
-        assert_eq!(strip_ansi(&colored), plain);
-        // The goods run itself must carry paint, not just the earlier
-        // player/phase tokens: escapes must appear AFTER the first goods
-        // token (its own close, and the later goods' opens).
-        let goods_start = colored.find("c1").expect("goods token present");
-        assert!(colored[goods_start..].contains('\u{1b}'), "goods tokens must paint: {colored:?}");
     }
 
     /// Task 11 (T2.1): the panel must show assistant/shophouse/trading-house

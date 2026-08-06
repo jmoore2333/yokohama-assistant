@@ -239,7 +239,8 @@ impl Repl {
     /// DISPLAYED entries, paged by [`decision_render`]'s row budget.
     ///
     /// **This replaced the pre-redesign block wholesale**, which was a
-    /// `prompt_header` state line, an optional `Choose: …` banner, one option
+    /// `Turn 1 | Red | Placement | …` state line, an optional `Choose: …`
+    /// banner (both retired with `render::prompt_header` itself), one option
     /// per row at twenty per page, and a `> enter a number, …` hint. What it
     /// keeps verbatim is the behaviour underneath: global option numbering, the
     /// `more`/`list` pager, and the bare-Enter forced-single-option ceremony
@@ -3008,11 +3009,17 @@ mod tests {
         let p0 = r.prompt();
         assert!(p0.contains("more — 'more' for page 2 of "), "{p0}");
         let p1 = r.step("more").text;
-        assert!(p1.contains("for page 1 of "), "page 2's footer points back at page 1: {p1}");
         assert_ne!(p0, p1);
         // ...and `more` from the last page wraps to the first, as HELP_TEXT says.
+        // The LAST page words that wrap rather than counting a remainder it does
+        // not have (T4 review S1): it used to print "(0 more — ...)".
         let mut pages = 1;
-        while !r.prompt().contains("for page 1 of ") {
+        while !r.prompt().contains("(last page — 'more' wraps to page 1 of ") {
+            assert!(
+                !r.prompt().contains("(0 more"),
+                "a page with nothing left must not word itself as a count: {}",
+                r.prompt(),
+            );
             r.step("more");
             pages += 1;
             assert!(pages < 20, "the pager must terminate");
@@ -3727,6 +3734,69 @@ mod tests {
     // is held at 20 by draining the warehouse to match the 6 placed on board.
     fn movement_grouping_fixture() -> Repl {
         movement_grouping_fixture_with(1)
+    }
+
+    /// An applied move puts the option list back on its FIRST page.
+    ///
+    /// A player who pages forward on one decision must not land mid-list on the
+    /// next: the numbers on that screen belong to a different question, and a
+    /// list that opens at `[24]` reads as a driver that lost its place. The
+    /// reset lives one frame deeper than the apply — in `apply_and_describe`,
+    /// the shared inner of `finish_apply_ex` and the bot pump — so it covers a
+    /// bot's replies as well as the human's own move; this pins the property at
+    /// the surface that has to hold it either way.
+    #[test]
+    fn an_applied_move_resets_the_option_page() {
+        let mut r = movement_grouping_fixture_with(1);
+        r.page = 3; // as if the player had paged forward
+        let out = r.step("1"); // the single-route Tea Plantation move
+        assert!(!out.text.contains("Illegal"), "fixture assumption drifted: {}", out.text);
+        assert_eq!(r.session.record().events.len(), 1, "the move must have applied");
+        assert_eq!(r.page, 0, "an applied move reopens the list at page 1");
+    }
+
+    /// Guide §4's two captured Movement screens are what these two fixtures
+    /// actually render — byte for byte, caret included.
+    ///
+    /// **Written after the T4 review found the block was a SPLICE** (finding
+    /// M1): it showed the `a3 = 1` position's three offered entries with the
+    /// `a3 = 0` position's near-miss row pasted under them, and re-pointed at
+    /// the Silk Mill — the one neighbour whose absence this screen deliberately
+    /// says NOTHING about, because an opponent's President is not a fact it can
+    /// read off the state. The guide was documenting, in a captured screen, the
+    /// exact lie the design exists to prevent. Nothing but a regeneration check
+    /// catches that class: a hand-edited transcript compiles, renders and reads
+    /// perfectly well.
+    ///
+    /// One captured screen per fixture, and the fixtures are the ones the
+    /// near-miss tests already use — so a wording change anywhere in the zone
+    /// fails HERE with the new text to paste, rather than leaving the guide
+    /// quietly describing a driver that no longer exists.
+    #[test]
+    fn the_guide_movement_captures_are_what_the_fixtures_render() {
+        const GUIDE_MD: &str = include_str!("../../../docs/cli-guide.md");
+        let blocks: Vec<&str> = GUIDE_MD
+            .split("```")
+            .map(|part| part.trim_matches('\n'))
+            .filter(|part| part.starts_with("TURN 1 · RED's turn   Additional ▸ Placement ▸  MOVEMENT"))
+            .collect();
+        assert_eq!(
+            blocks.len(),
+            2,
+            "guide §4 must carry exactly two captured Movement screens, one per fixture below",
+        );
+        for (a3, block) in [1u8, 0].iter().zip(&blocks) {
+            let rendered = movement_grouping_fixture_with(*a3).prompt();
+            assert_eq!(
+                rendered.trim_end_matches('\n'),
+                *block,
+                "docs/cli-guide.md's captured Movement screen no longer matches what \
+                 `movement_grouping_fixture_with({a3})` renders. Re-capture it in BOTH formats \
+                 from ONE run of this fixture — never by editing the block by hand, and never by \
+                 splicing two runs together (that is exactly what T4 review M1 found). The \
+                 rendered screen is above; `guide_sync` pins the .html twin against the .md.",
+            );
+        }
     }
 
     /// The grouping fixture, with `a3_assistants` of the mover's pawns on the

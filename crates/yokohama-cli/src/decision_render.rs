@@ -155,17 +155,37 @@ pub fn decision_zone(
             out.push_str(&paint(Tone::Dim, &not_offered_row(row, board)));
             out.push('\n');
         }
-        if page.total > 1 {
+        // The near-miss list is CAPPED (`screen_model::NOT_OFFERED_ROWS`), and a
+        // cap that fires silently reads as "those were all of them" — the exact
+        // opposite of what a truncation means. Say so.
+        if d.not_offered_suppressed > 0 {
             out.push_str(OPTION_INDENT);
             out.push_str(&paint(
-                Tone::Chrome,
-                &format!(
+                Tone::Dim,
+                &format!("(…and {} more)", d.not_offered_suppressed),
+            ));
+            out.push('\n');
+        }
+        if page.total > 1 {
+            // The LAST page has nothing left to count, and the arithmetic said
+            // so as "(0 more — 'more' for page 1 of 3, …)" — a footer that
+            // reads as a bug on the one page every list ends on. `more` still
+            // works there; what it does is wrap, so the line says that instead.
+            let footer = if page.end < rows.len() {
+                format!(
                     "({} more — 'more' for page {} of {}, 'list' back to the first)",
                     rows.len() - page.end,
                     page.next_number(),
                     page.total,
-                ),
-            ));
+                )
+            } else {
+                format!(
+                    "(last page — 'more' wraps to page 1 of {}, 'list' back to the first)",
+                    page.total,
+                )
+            };
+            out.push_str(OPTION_INDENT);
+            out.push_str(&paint(Tone::Chrome, &footer));
             out.push('\n');
         }
     }
@@ -432,15 +452,15 @@ fn page_bounds(widths: &[usize], budget: usize) -> Vec<(usize, usize)> {
     bounds
 }
 
-/// Every option's rendered text and its PLAIN width, in list order.
+/// Every option's rendered row and its PLAIN width, in list order.
 ///
 /// Rendered once and measured once: the pager needs the widths to decide where
-/// a page ends, and the renderer needs the same texts to draw it, so computing
+/// a page ends, and the renderer needs the same rows to draw it, so computing
 /// them apart would be two chances to disagree about where page two starts.
-fn option_texts(rows: &[Row<'_>], board: &BoardModel) -> (Vec<String>, Vec<usize>) {
-    let texts: Vec<String> =
+fn option_texts(rows: &[Row<'_>], board: &BoardModel) -> (Vec<OptionRow>, Vec<usize>) {
+    let texts: Vec<OptionRow> =
         rows.iter().enumerate().map(|(i, row)| option_text(i, row, board)).collect();
-    let widths = texts.iter().map(|t| crate::style::strip_ansi(t).chars().count()).collect();
+    let widths = texts.iter().map(OptionRow::width).collect();
     (texts, widths)
 }
 
@@ -450,12 +470,25 @@ pub fn page_count(rows: &[Row<'_>], board: &BoardModel) -> usize {
     page_bounds(&option_texts(rows, board).1, column_budget(board)).len()
 }
 
-/// The numbered options of one page, packed into as many columns as fit.
-fn option_block(all: &[String], plain_all: &[usize], page: &Page, budget: usize) -> String {
+/// The numbered options of one page, packed into as many columns as fit — or,
+/// when they will not pack at all, one per line and WRAPPED to the budget.
+fn option_block(all: &[OptionRow], plain_all: &[usize], page: &Page, budget: usize) -> String {
     let texts = &all[page.start..page.end];
     let plain = &plain_all[page.start..page.end];
     let widest = plain.iter().copied().max().unwrap_or(0);
     let columns = columns_for(texts.len(), widest, budget);
+
+    // ONE option per line is the only shape that can overrun the frame:
+    // [`columns_for`] approves a multi-column fit against the budget BEFORE it
+    // returns one, and per-column sizing below can only narrow that. So this is
+    // the only branch that wraps, and the packed branch needs no width guard.
+    if columns == 1 {
+        return texts
+            .iter()
+            .flat_map(|row| row.lines(budget))
+            .map(|line| format!("{line}\n"))
+            .collect();
+    }
 
     // Column-MAJOR: the numbers run down the first column and continue at the
     // top of the second, so a page reads in one downward sweep. Reading order
@@ -487,7 +520,7 @@ fn option_block(all: &[String], plain_all: &[usize], page: &Page, budget: usize)
             if c > 0 {
                 line.push_str(&" ".repeat(COLUMN_GAP));
             }
-            line.push_str(&texts[i]);
+            line.push_str(&texts[i].painted());
             // Pad every cell but the last on its line, so the next column
             // starts where the others do. Measured on the PLAIN text: escapes
             // carry bytes and no display width (style.rs's alignment rule).
@@ -554,33 +587,168 @@ fn column_budget(board: &BoardModel) -> usize {
     crate::screen::frame_width(usize::from(board.player_count))
 }
 
-/// One numbered option: `[3] Move to CUSTOMS ◈ — 1 step · free`.
-fn option_text(number: usize, row: &Row<'_>, board: &BoardModel) -> String {
-    let mut t = Twin::default();
-    t.tinted(Tone::Strong, &format!("[{number}]"));
-    t.raw(" ");
-    match row {
-        Row::Family { words } => {
-            t.raw(words);
-        }
-        Row::Move { mv, fee, words } => match move_row(mv, *fee, board) {
-            Some(worded) => {
-                t.raw(&worded.plain_prefix).tinted(worded.tone, &worded.marked);
-            }
-            None => {
-                t.raw(words);
-            }
-        },
-    };
-    t.painted
+/// One character of an option row with the tone it is painted in — `None` for
+/// text that takes no tint.
+///
+/// **Per CHARACTER, because the row WRAPS.** A row too wide for the frame is
+/// split at whatever column the budget falls on, and splitting an already-
+/// painted string there can cut an escape run in half: the first line then
+/// carries an opening SGR with no reset and bleeds its tone across everything
+/// drawn after it. Carrying the tone alongside each character instead means
+/// every wrapped line paints its own runs from scratch, which makes that
+/// unrepresentable rather than merely avoided.
+type Cell = (Option<Tone>, char);
+
+/// One numbered option: `[3] Move to CUSTOMS ◈ — 1 step · free`, held as the
+/// cells it is painted from so it can be drawn on one line or several.
+struct OptionRow {
+    /// The `[3]` number cell, PLAIN. Painted [`Tone::Strong`] at emission, and
+    /// its width plus the following space is the hanging indent a wrapped row's
+    /// continuation lines sit at — so a tail reads as more of the option above
+    /// it rather than as an unnumbered new one.
+    number: String,
+    /// Everything after the number cell and its space.
+    body: Vec<Cell>,
 }
 
-/// A re-worded move row: the part that takes no tint, and the part that does
-/// (the `◈` mark and what follows it).
+impl OptionRow {
+    /// The row's PLAIN width, [`OPTION_INDENT`] excluded (every row pays that
+    /// equally, and [`columns_for`] adds it once).
+    fn width(&self) -> usize {
+        self.number.chars().count() + 1 + self.body.len()
+    }
+
+    /// Every cell of the row, number included — the one form both the one-line
+    /// and the wrapped renderings are painted from.
+    fn cells(&self) -> Vec<Cell> {
+        let mut cells: Vec<Cell> =
+            self.number.chars().map(|c| (Some(Tone::Strong), c)).collect();
+        cells.push((None, ' '));
+        cells.extend_from_slice(&self.body);
+        cells
+    }
+
+    /// The row on ONE line, painted and un-indented: the packed-columns cell.
+    fn painted(&self) -> String {
+        paint_cells(&self.cells())
+    }
+
+    /// The row as one or more painted, INDENTED lines, none wider than
+    /// `budget`.
+    fn lines(&self, budget: usize) -> Vec<String> {
+        let indent = OPTION_INDENT.chars().count();
+        let hang = indent + self.number.chars().count() + 1;
+        let cells = self.cells();
+        wrap_cells(&cells, budget.saturating_sub(indent), budget.saturating_sub(hang))
+            .into_iter()
+            .enumerate()
+            .map(|(i, piece)| {
+                let lead = if i == 0 { OPTION_INDENT.to_string() } else { " ".repeat(hang) };
+                format!("{lead}{}", paint_cells(piece))
+            })
+            .collect()
+    }
+}
+
+/// Paint a run of cells, one `paint` call per maximal same-tone run.
+///
+/// Runs rather than characters because `paint` wraps whatever it is given in a
+/// full SGR pair: per character that would be an escape pair per letter, and
+/// the frame composer measures those bytes on every line it joins.
+fn paint_cells(cells: &[Cell]) -> String {
+    let mut out = String::new();
+    let mut i = 0;
+    while i < cells.len() {
+        let tone = cells[i].0;
+        let mut run = String::new();
+        while i < cells.len() && cells[i].0 == tone {
+            run.push(cells[i].1);
+            i += 1;
+        }
+        match tone {
+            Some(t) => out.push_str(&paint(t, &run)),
+            None => out.push_str(&run),
+        }
+    }
+    out
+}
+
+/// Split `cells` into lines of at most `first_room` then `rest_room` columns,
+/// breaking at spaces where there is one and mid-token where there is not.
+///
+/// **The mid-token break is not a fallback nobody hits.** An option row states
+/// its own fee recipients and its own recovered areas, and a 22-pawn retreat
+/// measures over 300 columns as one comma-run with no space wide enough to
+/// break at inside the budget. Clipping it is the wrong trade — the tail of an
+/// option row carries the price, which is exactly what the player is choosing
+/// between — so the line breaks wherever it must and the words all survive.
+fn wrap_cells(cells: &[Cell], first_room: usize, rest_room: usize) -> Vec<&[Cell]> {
+    let mut lines: Vec<&[Cell]> = Vec::new();
+    let mut pos = 0usize;
+    while pos < cells.len() {
+        // At least one column, always: a budget narrower than the indent would
+        // otherwise loop forever rather than draw something ugly.
+        let room = if lines.is_empty() { first_room } else { rest_room }.max(1);
+        if cells.len() - pos <= room {
+            lines.push(&cells[pos..]);
+            break;
+        }
+        let limit = pos + room;
+        match cells[pos..=limit].iter().rposition(|(_, c)| *c == ' ') {
+            Some(at) if at > 0 => {
+                lines.push(&cells[pos..pos + at]);
+                pos += at + 1;
+                // A break eats its own space, and any run of them: a
+                // continuation line that opened on whitespace would sit one
+                // column right of the hanging indent for no reason.
+                while pos < cells.len() && cells[pos].1 == ' ' {
+                    pos += 1;
+                }
+            }
+            _ => {
+                lines.push(&cells[pos..limit]);
+                pos = limit;
+            }
+        }
+    }
+    lines
+}
+
+/// One numbered option, worded from the model where this module re-words and
+/// from `describe`'s own line where it does not (module header).
+fn option_text(number: usize, row: &Row<'_>, board: &BoardModel) -> OptionRow {
+    let mut body: Vec<Cell> = Vec::new();
+    let mut plain = |s: &str| body.extend(s.chars().map(|c| (None, c)));
+    match row {
+        Row::Family { words } => plain(words),
+        Row::Move { mv, fee, words } => match move_row(mv, *fee, board) {
+            Some(worded) => {
+                plain(&worded.plain_prefix);
+                body.extend(worded.marked.chars().map(|c| (Some(Tone::Reachable), c)));
+            }
+            None => plain(words),
+        },
+    };
+    OptionRow { number: format!("[{number}]"), body }
+}
+
+/// A re-worded move row: the part that takes no tint, and the `◈` destination
+/// mark (with what follows it), which takes [`Tone::Reachable`].
 struct WordedMove {
     plain_prefix: String,
     marked: String,
-    tone: Tone,
+}
+
+impl WordedMove {
+    /// A row with no destination mark — everything it says takes no tint.
+    ///
+    /// Most re-worded rows are this shape (the retreat and the two placements),
+    /// which is why it is a constructor: they used to carry an empty `marked`
+    /// and a `tone` that painted it, i.e. two fields of plumbing that could
+    /// only ever paint nothing.
+    fn plain(text: String) -> WordedMove {
+        WordedMove { plain_prefix: text, marked: String::new() }
+    }
 }
 
 /// The five move kinds the mocks draw, worded from the MODEL — destination
@@ -590,17 +758,26 @@ struct WordedMove {
 fn move_row(mv: &Move, fee: Option<&FeeModel>, board: &BoardModel) -> Option<WordedMove> {
     match mv {
         Move::MovePresident { path, destination } => {
-            let steps = if path.is_empty() {
-                "free teleport".to_string()
-            } else {
-                format!("{} step{}", path.len(), if path.len() == 1 { "" } else { "s" })
+            // A TELEPORT states its price in the word and stops: an empty path
+            // means `route_fee_vector` had nothing to charge for, so the fee
+            // clause could only ever have said "free" a second time
+            // (`— free teleport · free`). A priced one — which the model above
+            // cannot produce, and which this does not assume away — still says
+            // what it costs, once.
+            let tail = match (path.is_empty(), fee) {
+                (true, Some(f)) if f.total > 0 => {
+                    format!("teleport {} {}", glyph::SEPARATOR, fee_words(fee))
+                }
+                (true, _) => "free teleport".to_string(),
+                (false, _) => format!(
+                    "{} step{} {} {}",
+                    path.len(),
+                    if path.len() == 1 { "" } else { "s" },
+                    glyph::SEPARATOR,
+                    fee_words(fee),
+                ),
             };
-            Some(destination_row(
-                "Move to",
-                *destination,
-                board,
-                &format!("{steps} {} {}", glyph::SEPARATOR, fee_words(fee)),
-            ))
+            Some(destination_row("Move to", *destination, board, &tail))
         }
         Move::PlacePresident { destination } => Some(destination_row(
             "Place your President in",
@@ -619,42 +796,30 @@ fn move_row(mv: &Move, fee: Option<&FeeModel>, board: &BoardModel) -> Option<Wor
                     .collect();
                 format!("recovering {recovered} ({})", where_from.join(", "))
             };
-            Some(WordedMove {
-                plain_prefix: format!(
-                    "Return the President to your hand {} {tail}",
-                    glyph::SECTION_DASH
-                ),
-                marked: String::new(),
-                tone: Tone::Chrome,
-            })
+            Some(WordedMove::plain(format!(
+                "Return the President to your hand {} {tail}",
+                glyph::SECTION_DASH
+            )))
         }
         Move::PlaceThreeAreas { placements } if !placements.is_empty() => {
             let areas: Vec<String> =
                 placements.iter().map(|a| area_name_with_id(board, *a)).collect();
-            Some(WordedMove {
-                plain_prefix: format!(
-                    "Place 1 assistant in {}{}",
-                    areas.join(", "),
-                    fee_tail(fee),
-                ),
-                marked: String::new(),
-                tone: Tone::Chrome,
-            })
+            Some(WordedMove::plain(format!(
+                "Place 1 assistant in {}{}",
+                areas.join(", "),
+                fee_tail(fee),
+            )))
         }
         Move::PlaceTwoSameArea { area, adjacent_bonus } => {
             let bonus = match adjacent_bonus {
                 Some(adj) => format!(" and 1 in {} (Telegram)", area_name_with_id(board, *adj)),
                 None => String::new(),
             };
-            Some(WordedMove {
-                plain_prefix: format!(
-                    "Place 2 assistants in {}{bonus}{}",
-                    area_name_with_id(board, *area),
-                    fee_tail(fee),
-                ),
-                marked: String::new(),
-                tone: Tone::Chrome,
-            })
+            Some(WordedMove::plain(format!(
+                "Place 2 assistants in {}{bonus}{}",
+                area_name_with_id(board, *area),
+                fee_tail(fee),
+            )))
         }
         _ => None,
     }
@@ -671,7 +836,6 @@ fn destination_row(verb: &str, area: AreaId, board: &BoardModel, tail: &str) -> 
     WordedMove {
         plain_prefix: format!("{verb} {} ", area_name(board, area)),
         marked: if marked { format!("{} ", glyph::REACHABLE) } else { String::new() },
-        tone: Tone::Reachable,
     }
     .with_tail(tail)
 }
@@ -679,9 +843,14 @@ fn destination_row(verb: &str, area: AreaId, board: &BoardModel, tail: &str) -> 
 impl WordedMove {
     /// Append the `— <tail>` clause after the marked segment.
     ///
-    /// The tail rides the PREFIX rather than the marked segment: only the `◈`
-    /// itself is tinted [`Tone::Reachable`], and a fee painted in the
-    /// destination-mark color would claim a meaning it does not have.
+    /// **On an UNMARKED row the tail takes no tint; on a marked one it is
+    /// currently tinted along with the `◈`, which the approved mock is not** —
+    /// `main-frame-mid.ans` closes its green run after the mark and leaves
+    /// ` — 1 step · free` plain. Recorded rather than changed here: the T4
+    /// review ruled the wording of this row (the teleport clause above), not
+    /// its color, and the same mock line also bolds the area NAME, which this
+    /// module does not do either. Both belong to one deliberate pass over the
+    /// row's palette rather than to a fix wave.
     fn with_tail(mut self, tail: &str) -> WordedMove {
         // The mark already carries its trailing space when present; without it
         // the prefix's own space closes the gap.
@@ -955,13 +1124,15 @@ mod tests {
         let dest = AreaId::new(3);
         let mv = Move::MovePresident { path: vec![dest], destination: dest };
         let mut board = screen_model::build_board(&state, &rules, &[]);
-        let unmarked = option_text(0, &Row::Move { mv: &mv, fee: None, words: "fallback" }, &board);
+        let unmarked =
+            option_text(0, &Row::Move { mv: &mv, fee: None, words: "fallback" }, &board).painted();
         assert!(!unmarked.contains(glyph::REACHABLE), "{unmarked}");
 
         for tile in &mut board.tiles {
             tile.reachable = tile.area == dest;
         }
-        let marked = option_text(0, &Row::Move { mv: &mv, fee: None, words: "fallback" }, &board);
+        let marked =
+            option_text(0, &Row::Move { mv: &mv, fee: None, words: "fallback" }, &board).painted();
         assert!(marked.contains(glyph::REACHABLE), "{marked}");
         assert!(marked.contains("1 step"), "the step count comes off the path: {marked}");
         assert!(marked.contains("free"), "an unpriced move is free: {marked}");
@@ -994,7 +1165,7 @@ mod tests {
         let board = screen_model::build_board(&state, &rules, &[]);
         let mv = Move::ExecuteAreaAction { action: AreaAction::ProduceCopper };
         let words = describe::describe_move(&mv, &state, &rules);
-        let row = option_text(4, &Row::Move { mv: &mv, fee: None, words: &words }, &board);
+        let row = option_text(4, &Row::Move { mv: &mv, fee: None, words: &words }, &board).painted();
         assert_eq!(row, format!("[4] {words}"), "{row}");
     }
 
@@ -1084,11 +1255,15 @@ mod tests {
     }
 
     /// A page of short options packs into columns; the same count of LONG ones
-    /// falls back to a single column rather than running past the design floor.
-    /// The row budget holds either way — that is what makes the zone's height
-    /// bounded by construction rather than by how the options happen to read.
+    /// falls back to a single column. The row budget holds either way — that is
+    /// what makes the zone's height bounded by construction rather than by how
+    /// the options happen to read.
+    ///
+    /// The WIDTH bound this used to check alongside moved to
+    /// [`no_option_list_at_any_width_costs_more_than_the_row_budget`], where it
+    /// is swept rather than sampled at these two shapes (T4 review M2).
     #[test]
-    fn the_option_list_packs_columns_but_never_past_the_floor() {
+    fn the_option_list_packs_columns_or_falls_back_to_one_per_line() {
         let (state, rules) = state_np(2);
         let board = screen_model::build_board(&state, &rules, &[]);
         let d = screen_model::build_decision(&state, &rules, &[]);
@@ -1109,25 +1284,25 @@ mod tests {
         let single = decision_zone(&d, &long, &board, &colors_np(&state), &ctx());
         assert_eq!(count_rows(&single), OPTION_ROWS, "one column, one option per row:\n{single}");
         assert!(single.contains("more — 'more'"), "a long list pages: {single}");
-
-        for zone in [&packed, &single] {
-            for line in zone.lines() {
-                assert!(
-                    visible_width(line) <= crate::screen::FLOOR_W,
-                    "a packed row ran past the floor ({} columns): {line}",
-                    visible_width(line),
-                );
-            }
-        }
     }
 
     /// The row budget is the bound, and it holds at EVERY width an option can
     /// render at — not only at the two the test above happens to pick.
+    ///
+    /// **And so does the WIDTH bound, which is why it moved here** (T4 review
+    /// M2). It used to be checked on the two hand-picked lists above, against
+    /// [`crate::screen::FLOOR_W`] — a check that could not see the defect it
+    /// existed to catch, because a list of long options is exactly what the
+    /// other test does NOT sweep and 200 columns is not the budget any real
+    /// frame has. A 22-pawn recovery row measures 326 columns against a 180-
+    /// column 4P frame; the assertion below is per emitted LINE and against the
+    /// count's own `frame_width`, so a row that cannot be packed has to wrap.
     #[test]
     fn no_option_list_at_any_width_costs_more_than_the_row_budget() {
         let (state, rules) = state_np(2);
         let board = screen_model::build_board(&state, &rules, &[]);
         let d = screen_model::build_decision(&state, &rules, &[]);
+        let budget = crate::screen::frame_width(usize::from(board.player_count));
         for width in [1usize, 5, 20, 40, 60, 61, 62, 95, 96, 130, 197, 250] {
             let text = "x".repeat(width);
             for count in [1usize, 2, 13, 27, 40, 200] {
@@ -1138,6 +1313,14 @@ mod tests {
                     drawn <= OPTION_ROWS,
                     "{count} options of {width} columns cost {drawn} rows, past the {OPTION_ROWS}-row budget",
                 );
+                for line in zone.lines() {
+                    assert!(
+                        visible_width(line) <= budget,
+                        "{count} options of {width} columns drew a {}-column line past the \
+                         {budget}-column frame: {line}",
+                        visible_width(line),
+                    );
+                }
             }
         }
     }
@@ -1170,6 +1353,203 @@ mod tests {
         );
     }
 
+    /// A row too wide for the frame WRAPS, hangs its tail under the option's
+    /// own text, and loses nothing.
+    ///
+    /// Wrapping rather than clipping because what actually runs long on a real
+    /// row is the priced detail: a retreat's per-area recovery list, a
+    /// movement's fee recipients. Those are what the player is choosing
+    /// BETWEEN, so a `…` on the right would cut off the answer to the question
+    /// the row was drawn to ask.
+    #[test]
+    fn a_row_too_wide_for_the_frame_wraps_under_its_own_text() {
+        let (state, rules) = state_np(2);
+        let board = screen_model::build_board(&state, &rules, &[]);
+        let d = screen_model::build_decision(&state, &rules, &[]);
+        let budget = crate::screen::frame_width(usize::from(board.player_count));
+
+        // The shape a 22-pawn retreat draws: one long comma-run of area names,
+        // 326 columns against the 4P frame's 180 when the T4 review measured it.
+        let words: Vec<String> =
+            (0..24).map(|i| format!("1 from PRODUCTION AREA (A{i:02})")).collect();
+        let words = format!("Return the President to your hand — recovering 24 ({})", words.join(", "));
+        let zone =
+            decision_zone(&d, &[Row::Family { words: &words }], &board, &colors_np(&state), &ctx());
+
+        let drawn: Vec<&str> = zone
+            .lines()
+            .skip_while(|l| !l.trim_start().starts_with('['))
+            .take_while(|l| l.starts_with(OPTION_INDENT))
+            .collect();
+        assert!(drawn.len() > 1, "a {}-column row must have wrapped:\n{zone}", words.chars().count());
+        assert!(drawn[0].starts_with("   [0] "), "{:?}", drawn[0]);
+        for line in &drawn {
+            assert!(visible_width(line) <= budget, "{} columns: {line}", visible_width(line));
+        }
+        for line in &drawn[1..] {
+            assert!(
+                line.starts_with("       ") && !line.trim_start().starts_with('['),
+                "a continuation hangs under the option's text, unnumbered: {line:?}",
+            );
+        }
+        // Every word survives the wrap, in order — the whole point of not
+        // clipping. Joined on single spaces, since the break eats its own.
+        let rejoined: Vec<&str> = drawn.iter().flat_map(|l| l.split_whitespace()).collect();
+        let expected: Vec<&str> =
+            std::iter::once("[0]").chain(words.split_whitespace()).collect();
+        assert_eq!(rejoined, expected, "the wrap dropped or reordered a word");
+
+    }
+
+    /// A wrap that lands INSIDE a tinted run still closes every tone it opens.
+    ///
+    /// **This is the property [`Cell`] exists for.** The obvious implementation
+    /// — render the row to a painted string, then split it at the budget —
+    /// leaves the first line holding an opening SGR whose reset went to the
+    /// second, and that tone then bleeds across the whole rest of the frame. It
+    /// is invisible to a plain-text assertion and glaring on a real terminal,
+    /// which is exactly the combination that ships. The fixture is a marked
+    /// destination row whose priced tail is long enough to wrap, so the green
+    /// `◈` run is what the break has to fall inside.
+    #[test]
+    fn a_wrap_inside_a_tinted_run_closes_every_tone_it_opens() {
+        let (state, rules) = state_np(2);
+        let dest = AreaId::new(3);
+        let mut board = screen_model::build_board(&state, &rules, &[]);
+        for tile in &mut board.tiles {
+            tile.reachable = tile.area == dest;
+        }
+        let d = screen_model::build_decision(&state, &rules, &[]);
+        let mv = Move::MovePresident { path: vec![dest], destination: dest };
+        // A fee naming enough recipients to run the tinted tail past the frame.
+        let fee = FeeModel {
+            total: 60,
+            to_players: (0..30).map(|i| (PlayerId::new(i % 4), 2)).collect(),
+            canal_tolls: 0,
+        };
+        let rows = [Row::Move { mv: &mv, fee: Some(&fee), words: "fallback" }];
+
+        let plain = decision_zone(&d, &rows, &board, &colors_np(&state), &ctx());
+        crate::style::force(true);
+        let painted = decision_zone(&d, &rows, &board, &colors_np(&state), &ctx());
+        crate::style::force(false);
+
+        assert_eq!(crate::style::strip_ansi(&painted), plain, "painting moved a visible character");
+        let marked: Vec<&str> =
+            painted.lines().filter(|l| l.contains(glyph::REACHABLE)).collect();
+        assert_eq!(marked.len(), 1, "the fixture must draw exactly one marked row:\n{plain}");
+        assert!(
+            plain.lines().filter(|l| l.starts_with(OPTION_INDENT)).count() > 1,
+            "the fixture must actually wrap:\n{plain}",
+        );
+        for line in painted.lines() {
+            let opens = line.matches('\u{1b}').count();
+            let closes = line.matches("\u{1b}[0m").count();
+            assert_eq!(opens, closes * 2, "a wrapped line left an escape run open: {line:?}");
+        }
+    }
+
+    /// A row with no space to break at still fits: the line breaks mid-token
+    /// rather than shearing the frame, and every character survives.
+    #[test]
+    fn an_unbreakable_row_breaks_mid_token_rather_than_overrunning() {
+        let (state, rules) = state_np(2);
+        let board = screen_model::build_board(&state, &rules, &[]);
+        let d = screen_model::build_decision(&state, &rules, &[]);
+        let budget = crate::screen::frame_width(usize::from(board.player_count));
+
+        let words = "x".repeat(500);
+        let zone =
+            decision_zone(&d, &[Row::Family { words: &words }], &board, &colors_np(&state), &ctx());
+        let drawn: Vec<&str> = zone
+            .lines()
+            .skip_while(|l| !l.trim_start().starts_with('['))
+            .take_while(|l| l.starts_with(OPTION_INDENT))
+            .collect();
+        for line in &drawn {
+            assert!(visible_width(line) <= budget, "{} columns: {line}", visible_width(line));
+        }
+        let kept: usize = drawn.iter().map(|l| l.matches('x').count()).sum();
+        assert_eq!(kept, 500, "a mid-token break must not eat characters:\n{zone}");
+    }
+
+    /// The LAST page words its footer as a wrap rather than counting a
+    /// remainder it does not have — it used to print `(0 more — …)`, which
+    /// reads as a bug on the one page every list ends on.
+    #[test]
+    fn the_last_pages_footer_words_the_wrap_instead_of_counting_zero() {
+        let (state, rules) = state_np(2);
+        let board = screen_model::build_board(&state, &rules, &[]);
+        let d = screen_model::build_decision(&state, &rules, &[]);
+        let long_text = "x".repeat(150);
+        let rows: Vec<Row> = (0..24).map(|_| Row::Family { words: &long_text }).collect();
+        let colors = colors_np(&state);
+
+        let first = decision_zone(&d, &rows, &board, &colors, &ctx());
+        assert!(first.contains("(12 more — 'more' for page 2 of 2"), "{first}");
+
+        let last =
+            decision_zone(&d, &rows, &board, &colors, &ZoneContext { page: 1, ..ctx() });
+        assert!(!last.contains("(0 more"), "{last}");
+        assert!(last.contains("(last page — 'more' wraps to page 1 of 2"), "{last}");
+    }
+
+    /// A truncated near-miss list SAYS it was truncated. Three rows and three
+    /// rows-of-five look identical on screen otherwise, and silence there reads
+    /// as "those were all of them" — the opposite of what a cap means.
+    #[test]
+    fn a_capped_near_miss_list_says_how_many_it_cut() {
+        let (state, rules) = state_np(2);
+        let board = screen_model::build_board(&state, &rules, &[]);
+        let mut d = screen_model::build_decision(&state, &rules, &[]);
+        d.not_offered = vec![NotOffered {
+            area: AreaId::new(1),
+            reason: NotOfferedReason::NoAssistantThere,
+        }];
+        let rows = [Row::Family { words: "x" }];
+        let colors = colors_np(&state);
+
+        let complete = decision_zone(&d, &rows, &board, &colors, &ctx());
+        assert!(complete.contains("(not offered: "), "{complete}");
+        assert!(!complete.contains("and 0 more"), "an uncapped list says nothing: {complete}");
+
+        d.not_offered_suppressed = 2;
+        let capped = decision_zone(&d, &rows, &board, &colors, &ctx());
+        assert!(capped.contains("(…and 2 more)"), "{capped}");
+    }
+
+    /// A teleport states its price ONCE. `path.is_empty()` is the whole
+    /// difference between a walk and a hop, and wording it "free teleport" and
+    /// then pricing it "· free" said the same thing twice.
+    #[test]
+    fn a_teleport_row_states_its_price_once() {
+        let (state, rules) = state_np(2);
+        let board = screen_model::build_board(&state, &rules, &[]);
+        let dest = AreaId::new(3);
+
+        let hop = Move::MovePresident { path: vec![], destination: dest };
+        let row = option_text(0, &Row::Move { mv: &hop, fee: None, words: "fallback" }, &board)
+            .painted();
+        assert!(row.contains("free teleport"), "{row}");
+        assert_eq!(row.matches("free").count(), 1, "the price is stated once: {row}");
+
+        // A walk still prices itself, teleport wording nowhere near it.
+        let walk = Move::MovePresident { path: vec![dest], destination: dest };
+        let walked = option_text(0, &Row::Move { mv: &walk, fee: None, words: "fallback" }, &board)
+            .painted();
+        assert!(walked.contains("1 step · free"), "{walked}");
+        assert!(!walked.contains("teleport"), "{walked}");
+
+        // ...and a hop the model DID price says what it costs, once — the arm
+        // that keeps "free teleport" from being an assumption about fees.
+        let paid = FeeModel { total: 2, to_players: vec![(PlayerId::new(1), 2)], canal_tolls: 0 };
+        let priced =
+            option_text(0, &Row::Move { mv: &hop, fee: Some(&paid), words: "fallback" }, &board)
+                .painted();
+        assert!(priced.contains("teleport · pay ¥2 (2 to seat 1)"), "{priced}");
+        assert!(!priced.contains("free"), "{priced}");
+    }
+
     /// Painting never moves a visible character — the crate's standing
     /// alignment rule, checked on the whole zone including its packed columns.
     #[test]
@@ -1177,7 +1557,10 @@ mod tests {
         let (state, rules) = state_np(2);
         let board = screen_model::build_board(&state, &rules, &[]);
         let d = screen_model::build_decision(&state, &rules, &[]);
-        let rows: Vec<Row> = (0..7).map(|_| Row::Family { words: "take copper" }).collect();
+        // Past `OPTION_ROWS`, so the packed-column path is what round-trips
+        // here: at seven rows the list stays one per line and the assertion
+        // never saw a padded column at all (T4 review S5).
+        let rows: Vec<Row> = (0..24).map(|_| Row::Family { words: "take copper" }).collect();
 
         crate::style::force(true);
         let painted = decision_zone(&d, &rows, &board, &colors_np(&state), &ctx());

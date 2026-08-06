@@ -381,6 +381,49 @@ fn the_suggest_block_is_identical_across_formats() {
     );
 }
 
+/// The opening line of §4's two captured Movement screens — the phase chain
+/// with `MOVEMENT` lit, which no other captured block in either guide carries.
+const MOVEMENT_BLOCK_OPENING: &str = "TURN 1 · RED's turn   Additional ▸ Placement ▸  MOVEMENT";
+
+/// (j) §4's captured Movement screens are text-identical between the two
+/// formats — §5's and the suggest block's parity pin, applied to the third
+/// block a tester reads line by line.
+///
+/// The CONTENT half lives elsewhere on purpose: `repl.rs`'s
+/// `the_guide_movement_captures_are_what_the_fixtures_render` regenerates both
+/// blocks from the fixtures that produce them, which needs a crate-private test
+/// fixture this integration test cannot reach. Together they are the same
+/// two-part shape the suggest capture has — one test says the words are the
+/// driver's, this one says both formats carry the same words.
+#[test]
+fn the_movement_blocks_are_identical_across_formats() {
+    let md: Vec<String> = GUIDE_MD
+        .split("```")
+        .map(|part| part.trim_matches('\n').to_string())
+        .filter(|part| part.starts_with(MOVEMENT_BLOCK_OPENING))
+        .collect();
+    let html: Vec<String> = GUIDE_HTML
+        .match_indices("<pre><code>")
+        .filter_map(|(at, tag)| {
+            let open = at + tag.len();
+            let close = GUIDE_HTML[open..].find("</code></pre>")? + open;
+            let block = unescape_html(&GUIDE_HTML[open..close]).trim_matches('\n').to_string();
+            block.starts_with(MOVEMENT_BLOCK_OPENING).then_some(block)
+        })
+        .collect();
+    assert_eq!(
+        md.len(),
+        2,
+        "cli-guide.md must carry §4's TWO captured Movement screens (one per fixture)",
+    );
+    assert_eq!(
+        md, html,
+        "cli-guide.md and cli-guide.html §4 Movement captures diverged. They must stay \
+         byte-identical (modulo the HTML <pre><code> wrapper + entity escaping); re-capture BOTH \
+         from the fixture runs that produce them -- never by splicing."
+    );
+}
+
 /// (e) The environment/persistence promises §2 makes a tester -- the `NO_COLOR`
 /// switch and per-move autosave -- are present in BOTH formats.
 #[test]
