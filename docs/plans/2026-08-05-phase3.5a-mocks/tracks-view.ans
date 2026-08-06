@@ -1,13 +1,13 @@
 [1mTRACKS — full view[0m   [90mthe 'view' pattern: every frame panel is a summary; its full surface renders like this (ports · labs · tracks · sites · goals · hand · log)[0m
 
-[1mCHURCH[0m — pay faith, place an assistant on a space, take its printed reward. [90mFilled at 4 occupied (2-player) · game-end majority bonus 6 / 3 VP — the dummy competes.[0m
+[1mCHURCH[0m — pay faith, place an assistant on a space, take its printed reward. [90mEnds at 4 REAL assistants (2P; the dummy never advances the end-count) · majority 6 / 3 VP — the dummy competes.[0m
 ┌ [1mfaith 4[0m             ┐ ┌ [1mfaith 5[0m             ┐ ┌ [1mfaith 6[0m             ┐ ┌ [1mfaith 7[0m             ┐ ┌ [1mfaith 8[0m             ┐ ┌ [1mfaith 9[0m             ┐ ┌ [1mfaith 10[0m            ┐ ┌ [1mfaith 11[0m            ┐
 │ [38;5;75m★3 VP[0m               │ │ [38;5;75m★4 VP[0m               │ │ [38;5;75m★5 VP[0m               │ │ [38;5;75m★6 VP[0m               │ │ [38;5;75m★7 VP[0m               │ │ [38;5;75m★8 VP[0m               │ │ [38;5;75m★11 VP[0m              │ │ [38;5;75m★14 VP[0m              │
 │ [32m+1 movement[0m         │ │ [32m+1 movement[0m         │ │ [32m+2 movement[0m         │ │ [32m+2 movement[0m         │ │ [32m+2 movement[0m         │ │ [32m+2 movement[0m         │ │ [32m+3 movement[0m         │ │ [32m+3 movement[0m         │
 │ [2mempty[0m               │ │ [2mempty[0m               │ │ [2mempty[0m               │ │ [7m D · neutral dummy [0m │ │ [2mempty[0m               │ │ [2mempty[0m               │ │ [2mempty[0m               │ │ [2mempty[0m               │
 └─────────────────────┘ └─────────────────────┘ └─────────────────────┘ └─────────────────────┘ └─────────────────────┘ └─────────────────────┘ └─────────────────────┘ └─────────────────────┘
 
-[1mCUSTOMS[0m — pay the space's printed cost in imported goods (power caps the payment), take its reward. [90mFilled at 4 occupied (2-player) · majority bonus 8 / 4 VP — the dummy competes.[0m
+[1mCUSTOMS[0m — pay the printed cost in imported goods (power caps it), take the reward. [90mEnds at 4 REAL assistants — the dummy never counts · majority 8 / 4 VP, dummy competes.[0m
 ┌ [1mspace 1[0m             ┐ ┌ [1mspace 2[0m             ┐ ┌ [1mspace 3[0m             ┐ ┌ [1mspace 4[0m             ┐ ┌ [1mspace 5[0m             ┐ ┌ [1mspace 6[0m             ┐ ┌ [1mspace 7[0m             ┐
 │ [93mpay 1 import[0m        │ │ [93mpay 1 import[0m        │ │ [93mpay 2 imports[0m       │ │ [93mpay 2 imports[0m       │ │ [93mpay 3 imports[0m       │ │ [93mpay 3 imports[0m       │ │ [93mpay 4 imports[0m       │
 │ [38;5;75m★5 VP[0m               │ │ [38;5;75m★4 VP[0m               │ │ [38;5;75m★10 VP[0m              │ │ [38;5;75m★9 VP[0m               │ │ [38;5;75m★16 VP[0m              │ │ [38;5;75m★15 VP[0m              │ │ [38;5;75m★22 VP[0m              │

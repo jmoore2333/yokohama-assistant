@@ -414,9 +414,16 @@ pub struct OptionModel {
     /// 0-based global numbering the prompt uses.
     pub number: usize,
     pub mv: Move,
-    /// `Some` for the two moves that carry a President fee dimension
-    /// (`MovePresident`, `PlacePresident`); `None` elsewhere, deliberately
-    /// rather than a zeroed model, which would read as "priced, and free".
+    /// `Some` for the moves whose fee dimension this model carries SO FAR:
+    /// the two President moves (`MovePresident`, `PlacePresident`); `None`
+    /// elsewhere, deliberately rather than a zeroed model, which would read
+    /// as "priced, and free". **Known gap — T4 fills it (T0-review MF1):**
+    /// `PlaceAssistants` ALSO carries a fee dimension (1 Yen per assistant
+    /// placed to each opponent President's owner), which the shipped CLI
+    /// already previews (`describe::placement_fee_note`, engine-pinned by
+    /// `placement_fee_preview_matches_the_engine_charge`). Core keeps
+    /// `calculate_placement_cost` crate-private, so T4 mirrors the preview's
+    /// pinned arithmetic rather than re-deriving a fee here.
     pub fee: Option<FeeModel>,
 }
 
@@ -461,9 +468,30 @@ pub struct DecisionModel {
 // Frame
 // ---------------------------------------------------------------------------
 
+/// The title strip's SESSION facts (the mocks' line 1: mode, seed,
+/// autosave). Carried on the model precisely so T2's renderer never reaches
+/// into `Session` — the R9 weld T0-review SF2 named. `TitleMode` mirrors
+/// `session::TrackingMode` as a local two-variant enum so this module's
+/// dependency list stays `yokohama_core` alone; the CALLER maps between them.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TitleMode {
+    Sim,
+    Live,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TitleModel {
+    pub mode: TitleMode,
+    /// The game's identity seed; the renderer abbreviates it for display.
+    pub seed: u64,
+    /// Whether autosave has a live target (the strip prints "autosaved").
+    pub autosaved: bool,
+}
+
 /// A whole composed frame.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FrameModel {
+    pub title: TitleModel,
     pub board: BoardModel,
     /// The dashboard panels in display order.
     pub dashboard: Vec<Panel>,
@@ -687,10 +715,18 @@ pub fn build_achievements(state: &GameState) -> AchievementsPanel {
 }
 
 /// One seat's hand. `hidden` is the EFFECTIVE mask the caller has already
-/// resolved; a hidden panel carries the count and no cards at all.
-pub fn build_hand(state: &GameState, rules: &Rules, seat: PlayerId, hidden: bool) -> HandPanel {
-    let p = state.player(seat);
-    HandPanel {
+/// resolved; a hidden panel carries the count and no cards at all. `None`
+/// for a seat the state does not hold — the same totality posture as
+/// [`build_tile`]: a display model is no place to panic over a stale id
+/// (T0-review N2 aligned the two).
+pub fn build_hand(
+    state: &GameState,
+    rules: &Rules,
+    seat: PlayerId,
+    hidden: bool,
+) -> Option<HandPanel> {
+    let p = state.players.iter().find(|p| p.id == seat)?;
+    Some(HandPanel {
         seat,
         hidden,
         cards: if hidden {
@@ -706,7 +742,7 @@ pub fn build_hand(state: &GameState, rules: &Rules, seat: PlayerId, hidden: bool
                 .collect()
         },
         card_count: p.order_cards_in_hand.len(),
-    }
+    })
 }
 
 /// The decision zone over the legal list the caller already holds. `legal` is
@@ -829,15 +865,24 @@ pub fn build_frame(
     seats: &[SeatFacts],
     seat: PlayerId,
     legal: &[Move],
+    title: TitleModel,
 ) -> FrameModel {
     FrameModel {
+        title,
         board: build_board(state, rules),
-        dashboard: vec![
-            Panel::Players(build_players(state, rules, seats)),
-            Panel::Tracks(build_tracks(state)),
-            Panel::Achievements(build_achievements(state)),
-            Panel::Hand(build_hand(state, rules, seat, SeatFacts::for_seat(seats, seat).hand_hidden)),
-        ],
+        dashboard: {
+            let mut panels = vec![
+                Panel::Players(build_players(state, rules, seats)),
+                Panel::Tracks(build_tracks(state)),
+                Panel::Achievements(build_achievements(state)),
+            ];
+            if let Some(hand) =
+                build_hand(state, rules, seat, SeatFacts::for_seat(seats, seat).hand_hidden)
+            {
+                panels.push(Panel::Hand(hand));
+            }
+            panels
+        },
         decision: build_decision(state, rules, legal),
     }
 }
@@ -1288,7 +1333,7 @@ mod tests {
     fn the_hand_panel_renders_the_seats_own_cards() {
         let (state, rules) = state_np(2);
         let seat = PlayerId::new(0);
-        let panel = build_hand(&state, &rules, seat, false);
+        let panel = build_hand(&state, &rules, seat, false).expect("a live seat");
         assert_eq!(panel.seat, seat);
         assert!(!panel.hidden);
         assert_eq!(panel.card_count, 1);
@@ -1309,7 +1354,7 @@ mod tests {
     #[test]
     fn a_hidden_hand_carries_the_count_but_never_the_cards() {
         let (state, rules) = state_np(2);
-        let panel = build_hand(&state, &rules, PlayerId::new(0), true);
+        let panel = build_hand(&state, &rules, PlayerId::new(0), true).expect("a live seat");
         assert!(panel.hidden);
         assert_eq!(panel.card_count, 1, "the count still reads");
         assert!(panel.cards.is_empty(), "a masked hand must carry no card data");
@@ -1319,7 +1364,8 @@ mod tests {
     fn the_frame_assembles_the_board_and_the_four_dashboard_panels() {
         let (state, rules) = state_np(2);
         let legal = get_legal_moves(&state, &rules);
-        let frame = build_frame(&state, &rules, &SeatFacts::all_open(2), PlayerId::new(0), &legal);
+        let frame = build_frame(&state, &rules, &SeatFacts::all_open(2), PlayerId::new(0), &legal,
+            TitleModel { mode: TitleMode::Sim, seed: 1, autosaved: false });
 
         assert_eq!(frame.board.tiles.len(), state.board_layout.areas.len());
         assert_eq!(frame.decision.options.len(), legal.len());
@@ -1338,10 +1384,97 @@ mod tests {
     fn the_frames_hand_panel_obeys_the_viewing_seats_mask() {
         let (state, rules) = state_np(2);
         let seats = vec![SeatFacts { is_bot: false, hand_hidden: true }; 2];
-        let frame = build_frame(&state, &rules, &seats, PlayerId::new(0), &[]);
+        let frame = build_frame(&state, &rules, &seats, PlayerId::new(0), &[],
+            TitleModel { mode: TitleMode::Sim, seed: 1, autosaved: false });
         let Some(Panel::Hand(hand)) = frame.dashboard.last() else {
             panic!("the hand panel closes the dashboard");
         };
         assert!(hand.hidden && hand.cards.is_empty() && hand.card_count == 1);
+    }
+
+    #[test]
+    fn player_model_discriminates_fields_an_opening_state_cannot() {
+        // T0-review SF1: opening fixtures make silk == tea and church ==
+        // customs, so a transposed field read survives the suite. Mutate a
+        // generated state to pairwise-distinct values and assert every
+        // mirrored field exactly.
+        let (mut state, rules) = state_np(2);
+        let extra_completed = state.order_deck.pop().expect("the deck is not empty at setup");
+        let area0 = *state.board_layout.areas.keys().next().expect("a generated board has areas");
+        {
+            let p = &mut state.players[0];
+            p.copper = 1;
+            p.silk = 2;
+            p.tea = 3;
+            p.seafood = 4;
+            p.imported_goods = 5;
+            p.assistants.on_church = 2;
+            p.assistants.on_customs = 3;
+            p.five_power_tokens = 2;
+            p.completed_orders.push(extra_completed);
+            p.shophouses.built.insert(area0, 1);
+        }
+        let m = build_players(&state, &rules, &SeatFacts::all_open(2)).players[0].clone();
+        assert_eq!(
+            (m.goods.copper, m.goods.silk, m.goods.tea, m.goods.seafood, m.goods.imports),
+            (1, 2, 3, 4, 5)
+        );
+        assert_eq!((m.assistants.on_church, m.assistants.on_customs), (2, 3));
+        assert_eq!(m.five_power_tokens, 2);
+        assert_eq!(m.completed_orders, 1);
+        assert_eq!(m.shophouses.built, 1);
+    }
+
+    #[test]
+    fn tile_model_carries_built_ownership_and_the_trading_house_owner() {
+        // T0-review SF1: `built_by` and `trading_house_owner` were never
+        // asserted; a builder hardcoding `None` passed.
+        let (mut state, rules) = state_np(2);
+        let area = *state
+            .board_layout
+            .building_sites
+            .keys()
+            .next()
+            .expect("a generated board has sites");
+        let owner = state.players[0].id;
+        let other = state.players[1].id;
+        let site = state.board_layout.building_sites.get_mut(&area).expect("the site exists");
+        site.shophouses_built[2] = Some(other);
+        site.trading_house_owner = Some(owner);
+        let tile = build_tile(&state, &rules, area).expect("the area exists");
+        let s = tile.site.expect("a non-Canal area carries a site");
+        assert_eq!(s.slots[2].built_by, Some(other));
+        assert_eq!(s.slots[0].built_by, None);
+        assert_eq!(s.trading_house_owner, Some(owner));
+    }
+
+    #[test]
+    fn a_non_starting_hand_card_reads_is_starting_order_false() {
+        // T0-review SF1: `is_starting_order` was only ever asserted true.
+        let (mut state, rules) = state_np(2);
+        let seat = state.players[0].id;
+        let extra = state.order_deck.pop().expect("the deck is not empty at setup");
+        state.players[0].order_cards_in_hand.push(extra);
+        let panel = build_hand(&state, &rules, seat, false).expect("a live seat");
+        let pushed = panel.cards.iter().find(|c| c.id == extra).expect("the pushed card");
+        assert!(!pushed.is_starting_order);
+        assert!(panel.cards.iter().any(|c| c.is_starting_order));
+    }
+
+    #[test]
+    fn a_stale_seat_yields_no_hand_panel() {
+        // Seat 3 is a valid `PlayerId` (the type checks 0-3 at construction)
+        // but holds no chair in a 2-player state.
+        let (state, rules) = state_np(2);
+        assert!(build_hand(&state, &rules, PlayerId::new(3), false).is_none());
+    }
+
+    #[test]
+    fn three_player_builders_smoke() {
+        // T0-review N1: 2P and 4P were exercised, 3P not at all.
+        let (state, rules) = state_np(3);
+        assert_eq!(build_board(&state, &rules).tiles.len(), 14);
+        assert_eq!(build_players(&state, &rules, &SeatFacts::all_open(3)).players.len(), 3);
+        assert!(build_tracks(&state).church.iter().all(|s| s.occupant.is_none()));
     }
 }

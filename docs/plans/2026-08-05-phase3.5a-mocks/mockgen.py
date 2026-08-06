@@ -177,14 +177,14 @@ def dashboard():
     L.append(f"  Trade houses  0 in hand · 4 in warehouse · 0 built {GRAY}(next take ¥4){R}")
     L.append(f"  President {DIM}in hand{R} · 1 order in hand {GRAY}(hidden){R}")
     L.append("")
-    L.append(hdr("TRACKS  (2-player: filled at 4 · D = neutral dummy)"))
+    L.append(hdr("TRACKS  (ends at 4 of YOUR pawns · D = dummy, not counted)"))
     church = (f"  Church   faith "
               f"{DIM}[4]{R}{DIM}[5]{R}{DIM}[6]{R}{INV}[7 D]{R}{DIM}[8]{R}{DIM}[9]{R}{DIM}[10]{R}{DIM}[11]{R}"
-              f" 1/4 · {VP}★3–14{R}+mv")
+              f" 0/4 · {VP}★3–14{R}+mv")
     L.append(church)
     customs = (f"  Customs  pay   "
                f"{DIM}[1]{R}{DIM}[1]{R}{DIM}[2]{R}{INV}[2 D]{R}{DIM}[3]{R}{DIM}[3]{R}{DIM}[4]{R} imports"
-               f" 1/4 · {VP}★4–22{R}")
+               f" 0/4 · {VP}★4–22{R}")
     L.append(customs)
     L.append(f"  {GRAY}('tracks' renders every space: cost · VP · rider · occupant){R}")
     L.append("")
@@ -326,7 +326,7 @@ def tracks_view():
     L = []
     L.append(f"{BOLD}TRACKS — full view{R}   {GRAY}the 'view' pattern: every frame panel is a summary; its full surface renders like this (ports · labs · tracks · sites · goals · hand · log){R}")
     L.append("")
-    L.append(f"{BOLD}CHURCH{R} — pay faith, place an assistant on a space, take its printed reward. {GRAY}Filled at 4 occupied (2-player) · game-end majority bonus 6 / 3 VP — the dummy competes.{R}")
+    L.append(f"{BOLD}CHURCH{R} — pay faith, place an assistant on a space, take its printed reward. {GRAY}Ends at 4 REAL assistants (2P; the dummy never advances the end-count) · majority 6 / 3 VP — the dummy competes.{R}")
     cards = []
     for f_, vp, rider in CHURCH_SP:
         cards.append(space_card(f"faith {f_}", [f"{VP}★{vp} VP{R}", f"{GREEN}{rider}{R}"],
@@ -334,7 +334,7 @@ def tracks_view():
     for ln in row_of_cards_h(cards, 5):
         L.append(ln)
     L.append("")
-    L.append(f"{BOLD}CUSTOMS{R} — pay the space's printed cost in imported goods (power caps the payment), take its reward. {GRAY}Filled at 4 occupied (2-player) · majority bonus 8 / 4 VP — the dummy competes.{R}")
+    L.append(f"{BOLD}CUSTOMS{R} — pay the printed cost in imported goods (power caps it), take the reward. {GRAY}Ends at 4 REAL assistants — the dummy never counts · majority 8 / 4 VP, dummy competes.{R}")
     cards = []
     for sp, cost, vp, rider in CUSTOMS_SP:
         body = [f"{YELLOW}pay {cost} import{'s' if cost>1 else ''}{R}", f"{VP}★{vp} VP{R}"]
@@ -537,14 +537,14 @@ def dashboard_mid():
     L.append(f"  Tech  {DIM}none yet{R} · Mercenaries 0 unused · 0 used")
     L.append(f"  President {BLUE}▲{R} on BANK · 1 order in hand {GRAY}(hidden){R}")
     L.append("")
-    L.append(hdr("TRACKS  (filled at 4 · D = neutral dummy)"))
+    L.append(hdr("TRACKS  (ends at 4 of YOUR pawns · D = dummy, not counted)"))
     church = (f"  Church   faith "
               f"{DIM}[4]{R}{BLUE}[5●]{R}{DIM}[6]{R}{INV}[7 D]{R}{DIM}[8]{R}{DIM}[9]{R}{DIM}[10]{R}{DIM}[11]{R}"
-              f" 2/4 · {VP}★3–14{R}+mv")
+              f" 1/4 · {VP}★3–14{R}+mv")
     L.append(church)
     customs = (f"  Customs  pay   "
                f"{DIM}[1]{R}{DIM}[1]{R}{DIM}[2]{R}{INV}[2 D]{R}{DIM}[3]{R}{DIM}[3]{R}{DIM}[4]{R} imports"
-               f" 1/4 · {VP}★4–22{R}")
+               f" 0/4 · {VP}★4–22{R}")
     L.append(customs)
     L.append(f"  {GRAY}Mercenary supply: 5 tiles left · ('tracks' renders every space){R}")
     L.append("")

@@ -239,6 +239,14 @@ pub(crate) mod test_support {
     /// offending text with its escapes stripped (a raw painted string in a
     /// failure message is unreadable).
     ///
+    /// KNOWN RESIDUAL (T0-review SF3; T1 owns the pins): the measurement is
+    /// a `char` COUNT, not a terminal COLUMN count. East-Asian-Wide glyphs
+    /// (`★`) and Ambiguous-width ones (`▲ ● ◈ ▶`, the em dash) each count 1
+    /// here but may render 2 columns on CJK-configured terminals or fonts.
+    /// T1's glyph vocabulary carries the explicit single-width pins for every
+    /// glyph the frames use; this guard alone does not prove column alignment
+    /// for them.
+    ///
     /// Test-support for now because T0 ships no emitter that calls it; the
     /// renderer tasks that build fixed-width tiles and cards are its callers.
     pub(crate) fn assert_exact_width<S: AsRef<str>>(lines: &[S], width: usize) {
