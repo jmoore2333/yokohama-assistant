@@ -3,6 +3,7 @@
 
 pub mod board_render;
 pub mod bot;
+pub mod decision_render;
 pub mod describe;
 pub(crate) mod input;
 pub mod panel_render;

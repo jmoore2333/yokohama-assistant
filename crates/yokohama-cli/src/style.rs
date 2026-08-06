@@ -153,12 +153,19 @@ fn enabled() -> bool {
 /// mock, and admitting a glyph no mock uses would widen the one set whose
 /// whole value is being closed. Each is registered here against the task that
 /// owns its region, so the call gets made once, with the surface, instead of
-/// being forgotten (sites are as of T1):
+/// being forgotten (sites are as of T1).
+///
+/// **The `§` row was T4's or T11's and is now T11's alone.** It was routed
+/// conditionally, on "T4 if it touches those lines". T4 replaced the decision
+/// zone and neither of the two live sites is in it — one is the `board`
+/// command's terminal-width note, the other the live-mode bot warning — so the
+/// row moves whole to T11 rather than being half-converted by a task that never
+/// went near it:
 ///
 /// | glyph | code point | live site | owing task |
 /// |---|---|---|---|
 /// | `═` | U+2550 | ~~`screen.rs`, the title strip~~ | **DONE (T3)** |
-/// | `§` | U+00A7 | `repl.rs:554`, `repl.rs:1881` (guide cross-references) | T4 / T11 |
+/// | `§` | U+00A7 | `repl.rs`'s two guide cross-references (the board width note, the live-bot warning) | T11 |
 /// | `−` | U+2212 | `suggest.rs:122`, the honesty note's minus | T11 |
 /// | `×` | U+00D7 | `suggest.rs:123`, the honesty note's times | T11 |
 ///

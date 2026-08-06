@@ -10,7 +10,7 @@ use crate::input::parse_order_id;
 use crate::reveal::{lab_b_changed, refilled_port_slots, Pending};
 use crate::session::{ApplyError, TrackingMode};
 use crate::style::{paint, Tone};
-use crate::{describe, render, screen};
+use crate::{decision_render, describe, render, screen};
 
 /// One REPL turn's worth of state layered over a `Session`: which options
 /// page is showing, any in-progress live-mode reveal collection, and
@@ -232,10 +232,18 @@ impl Repl {
         self.session.lock_down(reason)
     }
 
-    /// The whole prompt screen for the current state: header line, options
-    /// page (or a game-over/no-options notice), and an input hint. Legal
-    /// options are numbered by their GLOBAL 0-based index into
-    /// `session.legal()`, 20 per page.
+    /// The whole prompt screen for the current state: the DECISION ZONE
+    /// (Phase-3.5a T4) — phase chain, "YOU ARE DECIDING" line, the numbered
+    /// options page, the dimmed near-miss rows, the standing hint and the input
+    /// caret. Options are numbered by their GLOBAL 0-based index into the
+    /// DISPLAYED entries, paged by [`decision_render`]'s row budget.
+    ///
+    /// **This replaced the pre-redesign block wholesale**, which was a
+    /// `prompt_header` state line, an optional `Choose: …` banner, one option
+    /// per row at twenty per page, and a `> enter a number, …` hint. What it
+    /// keeps verbatim is the behaviour underneath: global option numbering, the
+    /// `more`/`list` pager, and the bare-Enter forced-single-option ceremony
+    /// with its apply/open split.
     pub fn prompt(&self) -> String {
         // A locked session (including one reloaded from a persisted lockdown --
         // review §3) shows only its lockdown status: the numbered options can't
@@ -245,115 +253,92 @@ impl Repl {
             return self.lockdown_status();
         }
         let state = self.session.state();
-        // The pending-choice banner gets its OWN line rather than the
-        // header's phase slot (I6, third review): inlined, it pushed the
-        // header to 150 columns past the documented 140, and the terminal
-        // wrapped it mid-token -- the goods block's `i0` rendering as `i`
-        // with a stray `0 | hand 1` underneath, which reads as corrupted
-        // state rather than as a wrapped line. Split, both lines sit inside
-        // the bound at every player count, and the banner is if anything
-        // more prominent on a line of its own.
-        let mut out = render::prompt_header(state, describe::phase_name(state.turn_phase));
-        out.push('\n');
-        if let Some(head) = state.pending_choices.first() {
-            let n = state.pending_choices.len();
-            out.push_str(&paint(
-                Tone::Prompt,
-                &format!(
-                    "Choose: {} — {n} choice{} pending",
-                    describe::describe_pending_choice(head, state, self.session.rules()),
-                    if n == 1 { "" } else { "s" },
-                ),
-            ));
-            out.push('\n');
-        }
-        if self.session.is_over() {
-            out.push_str("game over — commands only\n");
-        } else {
-            // The Movement phase collapses its list into `display_options`
-            // (destination-first + one retreat line); every other phase yields
-            // one `Direct` per legal move, so this renders byte-for-byte as the
-            // old `legal()` loop did. Paging is over the DISPLAYED entries, not
-            // the raw legal list, so a grouped Movement list pages by its own
-            // (much smaller) count.
-            let options = self.display_options();
-            let n = options.len();
-            if n == 0 {
-                out.push_str("(no legal options right now -- commands only)\n");
-            } else {
-                let total_pages = total_pages_for(n);
-                let start = (self.page * 20).min(n);
-                let end = (start + 20).min(n);
-                for (i, opt) in options[start..end].iter().enumerate() {
-                    out.push_str(&format!(
-                        "[{}] {}\n",
-                        start + i,
-                        self.render_option(opt, state, self.session.rules())
-                    ));
-                }
-                if end < n {
-                    out.push_str(&format!("...{} more (type 'more')\n", n - end));
-                }
-                if total_pages > 1 {
-                    out.push_str(&format!("page {}/{total_pages}\n", self.page + 1));
-                }
-                // Ceremony reduction (Task 6): a forced single-option prompt
-                // advertises the bare-Enter shortcut `step`'s `[]` arm honors.
-                // What that keystroke DOES depends on the entry, though: a
-                // `Direct` commits a move, while a grouped family opens a
-                // sub-prompt (`pick_option`'s own split). Saying "apply" for
-                // the grouped case over-promised (F4, Codex review of PR #4)
-                // -- most visibly in an emergency-retreat position, whose
-                // only displayed entry is the Retreat family.
-                if n == 1 {
-                    let verb = match options.first() {
-                        Some(PromptOption::Direct(_)) => "apply",
-                        _ => "open",
-                    };
-                    out.push_str(&format!("(only option — press Enter to {verb})\n"));
-                }
-            }
-        }
-        out.push_str(&self.input_hint());
-        out
+        let legal = self.session.legal();
+        let rows = self.display_rows(&legal);
+        render::decision_zone(
+            state,
+            self.session.rules(),
+            &legal,
+            &rows,
+            &decision_render::ZoneContext {
+                page: self.page,
+                expert: self.expert_grammar(),
+                game_over: self.session.is_over(),
+            },
+        )
     }
 
-    /// The one-line trailing hint every prompt screen ends with -- shared by
-    /// `prompt()`'s full block and `out_view`'s hint-only block so they
-    /// agree on its wording verbatim (Task 13; made phase-aware for the
-    /// Codex review I-4 fix). Names only the shorthand that's ACTUALLY
-    /// usable right now: `a`/`b` in `Placement`, `r` in `Movement`, or
-    /// `m <from> <to>` (plus the numbered Decline) while an
-    /// `AssistantMove` choice sits at the head of the queue -- checked
-    /// ahead of phase, same priority order `prompt()`'s own `phase_text`
-    /// banner uses. Every other phase, and every other pending-choice kind
-    /// (`AnyGood`, `WarehouseTake`, `ChurchSpace`, ...), has no shorthand of
-    /// its own, so it gets the bare numbers+'help' hint.
-    fn input_hint(&self) -> String {
-        const TAIL: &str = "or a command ('view' for game info, 'help' for the list)";
+    /// The display entries as the zone consumes them: the collapsed families
+    /// keep their own summaries, every direct entry carries its `Move` so the
+    /// zone can price it and mark it.
+    ///
+    /// Takes the legal list rather than fetching one, so a single `prompt()`
+    /// costs exactly one enumeration where the entries, the `◈` marks and the
+    /// near-miss rows all read the same list.
+    fn display_rows(&self, legal: &[Move]) -> Vec<render::DisplayRow> {
+        let state = self.session.state();
+        let rules = self.session.rules();
+        Self::group_options(state, legal.to_vec())
+            .iter()
+            .map(|opt| render::DisplayRow {
+                mv: match opt {
+                    PromptOption::Direct(mv) => Some(mv.clone()),
+                    _ => None,
+                },
+                words: self.render_option(opt, state, rules),
+            })
+            .collect()
+    }
+
+    /// The expert grammar usable at THIS decision, for the standing hint --
+    /// `a`/`b` in `Placement`, `r` in `Movement`, `m <from> <to>` while an
+    /// `AssistantMove` choice heads the queue (checked ahead of phase, the same
+    /// priority order the deciding line uses). Every other decision has no
+    /// shorthand of its own and gets an empty string, which the hint omits
+    /// rather than padding around.
+    ///
+    /// **Alias, not instruction** (spec §0.2): every one of these decisions is
+    /// reachable by number from the menu above, and the grammars survive for
+    /// the player who already knows them.
+    fn expert_grammar(&self) -> &'static str {
         let state = self.session.state();
         if matches!(state.pending_choices.first(), Some(PendingChoice::AssistantMove)) {
-            return format!("> enter a number, 'm <from> <to>' to resolve (or the numbered Decline), {TAIL}\n");
+            return "'m <from> <to>' moves one directly";
         }
         if !state.pending_choices.is_empty() {
-            return format!("> enter a number, {TAIL}\n");
+            return "";
         }
         match state.turn_phase {
-            TurnPhase::Placement => format!("> enter a number, 'a'/'b' for placement, {TAIL}\n"),
-            TurnPhase::Movement => {
-                // Deliberately terser than the other two clauses: at 142
-                // columns this was the longest line the driver ever printed,
-                // past the 140 the guide promises (I6, third review).
-                format!("> enter a number, 'r' to retreat (the numbered retreat entry is guided), {TAIL}\n")
-            }
+            TurnPhase::Placement => "'a'/'b' place directly",
+            TurnPhase::Movement => "'r' retreats directly",
             TurnPhase::AdditionalActionFirst
             | TurnPhase::AreaAction
             | TurnPhase::FivePowerBonus
             | TurnPhase::Building
             | TurnPhase::Recovery
             | TurnPhase::AdditionalActionSecond
-            | TurnPhase::TurnEnd => format!("> enter a number, {TAIL}\n"),
+            | TurnPhase::TurnEnd => "",
         }
+    }
+
+    /// The one-line trailing hint a read-only VIEW command ends with: the
+    /// decision zone's own standing hint, with no options above it.
+    ///
+    /// A view never changes state, so reprinting the whole zone after every
+    /// glance at the board is the noise `out_view` exists to avoid (Task 13
+    /// test (e)) -- but the hint has to be the SAME hint, or the player learns
+    /// two vocabularies. It is therefore rendered by the zone's own function
+    /// over an empty row list, which is what makes "same wording" a property of
+    /// the code rather than of two strings kept in step by hand.
+    fn input_hint(&self) -> String {
+        decision_render::standing_hint(
+            &decision_render::ZoneContext {
+                page: 0,
+                expert: self.expert_grammar(),
+                game_over: self.session.is_over(),
+            },
+            self.session.state().config.player_count,
+        )
     }
 
     /// One REPL interaction: parse `line`, act on `session`, return output
@@ -441,7 +426,13 @@ impl Repl {
                 self.page = 0;
                 self.out(String::new(), false)
             }
-            ["undo"] => self.undo_cmd(),
+            // `back` is `undo`'s alias, added with the T4 decision zone so the
+            // approved mocks' standing hint ("'back' undoes the last applied
+            // entry") could be printed without qualification. One command, two
+            // spellings -- the hint teaches the word a player about to take
+            // something back would actually reach for, and `undo` keeps working
+            // for everyone who already knows it.
+            ["undo"] | ["back"] => self.undo_cmd(),
             ["privacy"] => {
                 self.privacy = !self.privacy;
                 let word = if self.privacy { "HIDDEN" } else { "shown" };
@@ -544,7 +535,8 @@ impl Repl {
     /// via the first row of the `view` menu. The width note still fires there
     /// (it is about the terminal, not about this command's output).
     fn board_cmd(&mut self) -> StepOutput {
-        let grid = render::board_grid(self.session.state(), self.session.rules());
+        let grid =
+            render::board_grid(self.session.state(), self.session.rules(), &self.session.legal());
         let width = grid.lines().next().map(|l| l.chars().count()).unwrap_or(0);
 
         let mut text = String::new();
@@ -591,10 +583,15 @@ impl Repl {
     }
 
     fn advance_page(&mut self) {
-        // Paging is over the DISPLAYED entry count (grouped in Movement), so
-        // `more` wraps exactly where `prompt()`'s "page N/M" footer says it will.
-        let n = self.display_options().len();
-        self.page = (self.page + 1) % total_pages_for(n);
+        // Paging is over the DISPLAYED entry count (grouped in Movement), and
+        // the page COUNT comes from the zone's own walk, so `more` wraps
+        // exactly where the zone's footer says it will. It is the zone's
+        // because a page is a budget of ROWS there, not of options: how many
+        // options fit depends on how wide they are.
+        let legal = self.session.legal();
+        let rows = self.display_rows(&legal);
+        let pages = render::decision_pages(self.session.state(), self.session.rules(), &legal, &rows);
+        self.page = (self.page + 1) % pages;
     }
 
     fn pick_option(&mut self, k: usize) -> StepOutput {
@@ -648,11 +645,18 @@ impl Repl {
     /// variant, which stays `Direct`). Single pass over `legal()` into a
     /// `BTreeMap` -- no per-keystroke rescans beyond the one `legal()` call.
     fn display_options(&self) -> Vec<PromptOption> {
-        let legal = self.session.legal();
-        let state = self.session.state();
+        Self::group_options(self.session.state(), self.session.legal())
+    }
+
+    /// [`Self::display_options`]'s body, over a legal list the caller already
+    /// holds. Split out at T4 so `prompt()` can group the SAME list it hands
+    /// the decision zone for the `◈` marks and the near-miss rows — one
+    /// enumeration per prompt, and no chance of the entries and the marks
+    /// reading two different lists.
+    fn group_options(state: &GameState, legal: Vec<Move>) -> Vec<PromptOption> {
         // A pending AssistantMove choice groups its options by SOURCE (Task
         // 6 picker) -- checked ahead of phase, same priority order the
-        // banner/hint use.
+        // deciding line/hint use.
         if matches!(state.pending_choices.first(), Some(PendingChoice::AssistantMove)) {
             return Self::group_assistant_moves(legal);
         }
@@ -789,9 +793,14 @@ impl Repl {
     fn render_option(&self, opt: &PromptOption, state: &GameState, rules: &Rules) -> String {
         match opt {
             PromptOption::Direct(mv) => describe::describe_move(mv, state, rules),
+            // The collapsed families name their areas in the decision zone's
+            // own vocabulary (NAME in caps, id only where a grammar has to type
+            // it), so one option list does not mix two ways of naming the same
+            // tile: a Route entry and the single-route entry beside it are the
+            // same kind of thing and now read like it.
             PromptOption::Route { destination, moves } => format!(
-                "Move President to {} — {} route options",
-                describe::area_label(state, *destination),
+                "Move to {} — {} route options",
+                describe::area_name_upper(state, *destination),
                 moves.len()
             ),
             PromptOption::Retreat { count } => format!(
@@ -807,7 +816,8 @@ impl Repl {
             PromptOption::MoveFrom { from, moves } => {
                 let from_label = match from {
                     MoveSource::Hand => "hand".to_string(),
-                    MoveSource::Area(a) => describe::area_label(state, *a),
+                    // The `m <from> <to>` grammar types this id.
+                    MoveSource::Area(a) => describe::area_label_upper(state, *a),
                 };
                 format!("Move an assistant from {from_label} — {} destinations", moves.len())
             }
@@ -2159,7 +2169,7 @@ Commands:
   screen          toggle the composed screen itself (terminal only; pipes are always plain)
   more            show the next page of legal options (wraps to page 0)
   list            reset to the first page of legal options
-  undo            undo the last move (and any reveals bound to it)
+  undo            undo the last move (and any reveals bound to it) ('back' also works)
   save [path]     save to path (or to the last-used path if omitted)
   reveal <seat> <O..>  live mode: make a hidden opponent starting order public
   cancel          back out of any sub-prompt: reveal collection (live), view menu, numbered pick, either Placement picker, guided retreat
@@ -2167,10 +2177,16 @@ Commands:
   quit            exit the REPL ('q' also works)
 ";
 
-/// How many 20-per-page screens `n` legal options need, minimum 1 -- shared
-/// by `prompt()`'s "page N/M" footer and `advance_page`'s wraparound so the
-/// footer's M always matches where `more` actually wraps (Codex review I-4
-/// page-count fix).
+/// How many 20-per-page screens `n` entries need, minimum 1 -- shared by the
+/// Movement PICK sub-prompt's "page N/M" footer and its own `more` wraparound,
+/// so the footer's M always matches where `more` actually wraps (Codex review
+/// I-4 page-count fix).
+///
+/// **The MAIN list stopped using this at T4** and now pages by ROWS
+/// (`decision_render::page_count`), because the decision zone packs short
+/// options into columns and "how many options fit" is no longer a constant. The
+/// sub-prompt still draws one entry per line, so a fixed twenty per page is
+/// still exactly what it means.
 fn total_pages_for(n: usize) -> usize {
     n.div_ceil(20).max(1)
 }
@@ -2193,6 +2209,39 @@ mod tests {
             vec![StartingOrderChoice::Keep(0), StartingOrderChoice::Keep(0)],
             Rules::standard(),
         ).unwrap())
+    }
+
+    /// The option NUMBER attached to `needle` on a rendered prompt: the `[k]`
+    /// immediately before it.
+    ///
+    /// Scans backwards from the needle rather than taking a line's first
+    /// bracket, because the T4 zone packs a long option list into COLUMNS, so
+    /// one line can carry two or three entries and "the number at the start of
+    /// the line the text is on" stops being that text's number.
+    fn option_number(prompt: &str, needle: &str) -> usize {
+        // Scanned forward over the `[k]` markers rather than backward from the
+        // needle: the deciding line names things like "Option B" too (it says
+        // what the phase is asking), and searching backward from the first
+        // occurrence would land in a sentence with no option number in front
+        // of it at all.
+        let mut rest = prompt;
+        while let Some(open) = rest.find('[') {
+            let close = match rest[open..].find(']') {
+                Some(c) => open + c,
+                None => break,
+            };
+            let cell_end = rest[close..]
+                .find('[')
+                .map(|next| close + next)
+                .unwrap_or(rest.len());
+            if rest[close..cell_end].contains(needle) {
+                if let Ok(k) = rest[open + 1..close].parse() {
+                    return k;
+                }
+            }
+            rest = &rest[close + 1..];
+        }
+        panic!("no numbered option carrying {needle:?} in:\n{prompt}")
     }
 
     /// The DISPLAY index (what a numbered answer addresses) of the first
@@ -2238,7 +2287,7 @@ mod tests {
     fn board_command_prints_a_one_time_width_note_on_a_wide_board() {
         let mut r = repl_np(4, 7);
         let width =
-            render::board_grid(r.session.state(), r.session.rules()).lines().next().map(|l| l.chars().count()).unwrap_or(0);
+            render::board_grid(r.session.state(), r.session.rules(), &[]).lines().next().map(|l| l.chars().count()).unwrap_or(0);
         assert!(width > 100, "4p board should exceed 100 columns, got {width}");
 
         let first = r.step("board");
@@ -2383,6 +2432,115 @@ mod tests {
         assert!(p.contains("End additional-action phase"), "{p}");
     }
 
+    /// The T4 cutover: the prompt IS the decision zone. Its four parts are all
+    /// there, in order, and the pre-redesign block's own lines are gone —
+    /// checked by absence as well as presence, since a zone drawn UNDER the old
+    /// header would satisfy every "contains" assertion above.
+    #[test]
+    fn the_prompt_is_the_decision_zone_and_the_old_block_is_gone() {
+        let r = repl_2p(4);
+        let p = r.prompt();
+
+        let chain = p.find("TURN 1 ").expect("the phase chain leads");
+        let deciding = p.find("YOU ARE DECIDING").expect("the deciding line");
+        let option = p.find("[0]").expect("the numbered options");
+        let hint = p.find("'help' for commands").expect("the standing hint");
+        assert!(chain < deciding && deciding < option && option < hint, "zone order:\n{p}");
+        assert!(p.ends_with("> \n"), "the caret closes the zone: {p:?}");
+        assert!(p.contains(" ADDITIONAL "), "the current phase is lit: {p}");
+
+        // The retired block.
+        assert!(!p.contains("Turn 1 | Red |"), "the old state header must be gone:\n{p}");
+        assert!(!p.contains("> enter a number"), "the old hint must be gone:\n{p}");
+        assert!(!p.contains("Choose:"), "the old choice banner must be gone:\n{p}");
+    }
+
+    /// The ◈ feed (spec §0.7): the marks the BOARD draws during Movement are
+    /// exactly the destinations the ENGINE's list offers — checked by taking
+    /// the marks off the rendered board and the destinations off `legal()`,
+    /// with nothing in between deriving either.
+    #[test]
+    fn the_board_marks_exactly_the_engines_movement_destinations() {
+        let r = movement_grouping_fixture();
+        let legal = r.session.legal();
+        let offered = crate::screen_model::president_destinations(&legal);
+        assert!(!offered.is_empty(), "the fixture must offer destinations");
+
+        // Tiles sit side by side on a line, so a mark is read against the id
+        // it FOLLOWS: split each title line on its `A<nn> ` labels and keep the
+        // ids whose own segment carries the glyph.
+        let grid = render::board_grid(r.session.state(), r.session.rules(), &legal);
+        let mut got: Vec<u8> = Vec::new();
+        for line in grid.lines() {
+            let mut id: Option<u8> = None;
+            let mut carries = false;
+            for tok in line.split_whitespace() {
+                if let Some(n) = tok.strip_prefix('A').and_then(|n| n.parse::<u8>().ok()) {
+                    if carries {
+                        got.extend(id);
+                    }
+                    id = Some(n);
+                    carries = false;
+                } else if tok.contains(crate::style::glyph::REACHABLE) {
+                    carries = true;
+                }
+            }
+            if carries {
+                got.extend(id);
+            }
+        }
+        let mut expected: Vec<u8> = offered.iter().map(|a| a.0).collect();
+        expected.sort_unstable();
+        got.sort_unstable();
+        assert_eq!(got, expected, "board marks vs engine destinations:\n{grid}");
+
+        // ...and OUTSIDE a Movement decision the same board draws none, because
+        // the engine offers no President move rather than because the CLI
+        // decided the phase was wrong.
+        let opening = repl_2p(4);
+        let plain = render::board_grid(
+            opening.session.state(),
+            opening.session.rules(),
+            &opening.session.legal(),
+        );
+        assert!(!plain.contains(crate::style::glyph::REACHABLE), "{plain}");
+    }
+
+    /// The dimmed near-miss rows reach the screen, and they only ever name an
+    /// area the engine did NOT offer.
+    #[test]
+    fn the_zone_prints_the_near_miss_rows_for_unoffered_neighbours() {
+        let r = movement_grouping_fixture_with(0);
+        let p = r.prompt();
+        let rows: Vec<&str> = p.lines().filter(|l| l.contains("(not offered:")).collect();
+        assert!(!rows.is_empty(), "the fixture must have a near miss:\n{p}");
+        let offered = crate::screen_model::president_destinations(&r.session.legal());
+        for row in &rows {
+            for area in &offered {
+                let name = crate::describe::area_name_upper(r.session.state(), *area);
+                assert!(!row.contains(&name), "an OFFERED area must never be a near miss: {row}");
+            }
+        }
+    }
+
+    /// `back` is `undo`'s alias, which is what makes the standing hint's
+    /// "'back' undoes the last applied entry" a true sentence rather than a
+    /// promise about a command that does not exist.
+    #[test]
+    fn back_is_undo() {
+        let mut r = repl_2p(4);
+        r.step("0");
+        let after_move = r.session.record().events.len();
+        assert_eq!(after_move, 1, "one applied entry to take back");
+
+        let out = r.step("back");
+        assert_eq!(r.session.record().events.len(), 0, "'back' took it back: {}", out.text);
+        assert_eq!(r.session.state().turn_phase, TurnPhase::AdditionalActionFirst);
+        // Same command, same refusal when there is nothing left.
+        assert!(r.step("back").text.contains("Cannot undo"), "{}", r.step("back").text);
+        assert!(HELP_TEXT.contains("'back' also works"), "and it is documented");
+    }
+
     /// Ceremony reduction (Task 6): bare Enter on a forced single-option
     /// prompt applies that option through the normal commit path -- one real
     /// recorded event, phase advanced -- and the prompt advertised it.
@@ -2390,7 +2548,7 @@ mod tests {
     fn bare_enter_applies_a_forced_single_option() {
         let mut r = repl_2p(4);
         let p = r.prompt();
-        assert!(p.contains("(only option — press Enter to apply)"), "{p}");
+        assert!(p.contains("only option — press Enter to apply"), "{p}");
         let events_before = r.session.record().events.len();
         let out = r.step("");
         assert!(!out.quit);
@@ -2441,7 +2599,7 @@ mod tests {
         assert_eq!(r.display_options().len(), 1, "fixture must display exactly one entry:\n{p}");
         assert!(p.contains("Retreat President to hand"), "the lone entry is the grouped family:\n{p}");
         assert!(
-            p.contains("(only option — press Enter to open)"),
+            p.contains("only option — press Enter to open"),
             "a grouped entry OPENS a sub-prompt; it does not apply a move:\n{p}"
         );
         assert!(!p.contains("press Enter to apply"), "must not promise an apply here:\n{p}");
@@ -2776,7 +2934,7 @@ mod tests {
             let out = r.step(cmd);
             assert!(!out.text.contains("[0]"), "'{cmd}' unexpectedly showed the numbered options block: {}", out.text);
             assert!(
-                out.text.trim_end().ends_with("'help' for the list)"),
+                out.text.trim_end().ends_with("'help' for commands)"),
                 "'{cmd}' output is missing the one-line input hint: {}", out.text
             );
         }
@@ -2848,11 +3006,18 @@ mod tests {
         let n = r.session.legal().len();
         assert!(n > 20, "fixture assumption: EA at power 5 must offer >20 composites, got {n}");
         let p0 = r.prompt();
-        assert!(p0.contains("more"), "{p0}");
-        assert!(p0.contains("page 1/"), "{p0}");
+        assert!(p0.contains("more — 'more' for page 2 of "), "{p0}");
         let p1 = r.step("more").text;
-        assert!(p1.contains("page 2/"), "{p1}");
+        assert!(p1.contains("for page 1 of "), "page 2's footer points back at page 1: {p1}");
         assert_ne!(p0, p1);
+        // ...and `more` from the last page wraps to the first, as HELP_TEXT says.
+        let mut pages = 1;
+        while !r.prompt().contains("for page 1 of ") {
+            r.step("more");
+            pages += 1;
+            assert!(pages < 20, "the pager must terminate");
+        }
+        assert_eq!(r.step("more").text, p0, "the wrap lands back on page 1");
     }
 
     /// Codex review Item 2 (phase-aware hint): the trailing input hint used
@@ -2867,19 +3032,19 @@ mod tests {
     fn input_hint_is_phase_aware() {
         let mut r = repl_2p(4);
         let p = r.prompt();
-        assert!(p.contains("enter a number, or a command ('view' for game info, 'help' for the list)"), "{p}");
+        assert!(p.contains("'help' for commands"), "the standing hint is always there: {p}");
         assert!(!p.contains("'a'/'b'"), "{p}");
-        assert!(!p.contains("'r' to retreat"), "{p}");
+        assert!(!p.contains("'r' retreats"), "{p}");
 
         r.step("0"); // -> Placement
         let p = r.prompt();
-        assert!(p.contains("'a'/'b' for placement"), "{p}");
-        assert!(!p.contains("'r' to retreat"), "{p}");
+        assert!(p.contains("'a'/'b' place directly"), "{p}");
+        assert!(!p.contains("'r' retreats"), "{p}");
 
         r.step("a"); // place nothing -> Movement
         assert_eq!(r.session.state().turn_phase, TurnPhase::Movement, "fixture assumption drifted");
         let p = r.prompt();
-        assert!(p.contains("'r' to retreat"), "{p}");
+        assert!(p.contains("'r' retreats directly"), "{p}");
         assert!(!p.contains("'a'/'b'"), "{p}");
     }
 
@@ -2908,7 +3073,7 @@ mod tests {
     fn input_hint_is_plain_for_non_assistant_move_pending_choices() {
         let r = repl_with_any_good_cascade();
         let p = r.prompt();
-        assert!(p.contains("enter a number, or a command ('view' for game info, 'help' for the list)"), "{p}");
+        assert!(p.contains("'help' for commands"), "the standing hint is always there: {p}");
         assert!(!p.contains("'m <from> <to>'"), "{p}");
         assert!(!p.contains("'a'/'b'"), "{p}");
     }
@@ -3006,7 +3171,7 @@ mod tests {
     fn input_hint_names_the_view_menu() {
         let r = repl_2p(4);
         let p = r.prompt();
-        assert!(p.contains("('view' for game info"), "{p}");
+        assert!(p.contains("'view' or '?' any surface"), "{p}");
     }
 
     #[test]
@@ -3190,13 +3355,12 @@ mod tests {
         assert_eq!(r.session.state().pending_choices.len(), 1);
 
         let p = r.prompt();
-        assert!(p.contains("Choose:"), "{p}");
-        assert!(p.contains("1 choice pending"), "{p}");
-        // describe_pending_choice's own AnyGood banner text (the "reward:"
-        // colon form is unique to it -- describe_move's per-option text
-        // below uses "(any-good reward)" in parens instead, so this can't
-        // pass on the numbered options' wording alone).
-        assert!(p.contains("any-good reward: choose"), "{p}");
+        assert!(p.contains("YOU ARE DECIDING"), "{p}");
+        assert!(!p.contains("more to resolve"), "the last of the cascade has nothing behind it: {p}");
+        // The deciding line's own AnyGood copy (T4's zone), which the numbered
+        // options do not carry -- `describe_move` words each option "(any-good
+        // reward)", so this cannot pass on the option list alone.
+        assert!(p.contains("which good to take"), "{p}");
         // The four numbered ChooseAnyGood options (describe_move's wording).
         assert!(p.contains("copper"), "{p}");
         assert!(p.contains("silk"), "{p}");
@@ -3225,10 +3389,11 @@ mod tests {
             "undo must step back exactly ONE choice (re-queue the cascade), not unwind further"
         );
 
-        // "the same choice again": still AnyGood, same banner shape.
+        // "the same choice again": still AnyGood, and the deciding line says
+        // one more is queued behind it.
         let p = r.prompt();
-        assert!(p.contains("Choose:"), "{p}");
-        assert!(p.contains("2 choice"), "{p}");
+        assert!(p.contains("which good to take"), "{p}");
+        assert!(p.contains("1 more to resolve"), "{p}");
 
         // Stronger discriminator (code-review request): undo isn't a no-op
         // or a fixed reset -- there is nothing LEFT to undo at the
@@ -3356,8 +3521,8 @@ mod tests {
         let mut r = repl_2p(4);
         let church_area = drive_to_double_assistant_move_cascade(&mut r);
         let p = r.prompt();
-        assert!(p.contains("Choose:"), "{p}");
-        assert!(p.contains("2 choice"), "{p}");
+        assert!(p.contains("which assistant to move"), "{p}");
+        assert!(p.contains("1 more to resolve"), "{p}");
         let events_before = r.session.record().events.len();
 
         // First rider: source is the on-board area holding our assistants.
@@ -3561,6 +3726,14 @@ mod tests {
     // order/tech conservation gates stay off; the per-player assistant total
     // is held at 20 by draining the warehouse to match the 6 placed on board.
     fn movement_grouping_fixture() -> Repl {
+        movement_grouping_fixture_with(1)
+    }
+
+    /// The grouping fixture, with `a3_assistants` of the mover's pawns on the
+    /// Tea Plantation. At 1 it is a reachable destination; at 0 it becomes a
+    /// NEAR MISS — adjacent, unoffered, and with the observable reason for it
+    /// sitting right there in the assistant count.
+    fn movement_grouping_fixture_with(a3_assistants: u8) -> Repl {
         use std::collections::BTreeMap;
         let a0 = AreaId::new(0);
         let a1 = AreaId::new(1);
@@ -3597,8 +3770,11 @@ mod tests {
         players[0].assistants.on_board.insert(a0, 2);
         players[0].assistants.on_board.insert(a1, 1);
         players[0].assistants.on_board.insert(a2, 1);
-        players[0].assistants.on_board.insert(a3, 1);
-        players[0].assistants.in_warehouse -= 5; // 5 placed on board -> keep the per-player total at 20
+        if a3_assistants > 0 {
+            players[0].assistants.on_board.insert(a3, a3_assistants);
+        }
+        // Keep the per-player total at 20 whatever is on the board.
+        players[0].assistants.in_warehouse -= 4 + a3_assistants;
         players[1].president_location = PresidentLocation::OnBoard(a2); // Blue blocks A2
         players[1].money = 10;
 
@@ -3717,18 +3893,26 @@ mod tests {
         let r = movement_grouping_fixture();
         let (multi, single) = grouping_fixture_dests();
         let state = r.session.state();
-        let rules = r.session.rules();
         let p = r.prompt();
 
         // Entry 0: the multi-label destination as a route-options line.
         assert!(
-            p.contains(&format!("[0] Move President to {} — 2 route options", crate::describe::area_label(state, multi))),
+            p.contains(&format!(
+                "[0] Move to {} — 2 route options",
+                crate::describe::area_name_upper(state, multi),
+            )),
             "{p}"
         );
-        // Entry 1: the single-label destination rendered exactly as the move.
-        let single_move = Move::MovePresident { path: vec![single], destination: single };
+        // Entry 1: the single-label destination, worded by the zone from the
+        // model -- the area name, the reachable mark the board also draws, the
+        // step count off the path, and the engine's price.
         assert!(
-            p.contains(&format!("[1] {}", crate::describe::describe_move(&single_move, state, rules))),
+            p.contains(&format!(
+                "[1] Move to {} {} — 1 step · free",
+                crate::describe::area_type_name(state.board_layout.areas[&single].area_type)
+                    .to_uppercase(),
+                crate::style::glyph::REACHABLE,
+            )),
             "{p}"
         );
         // Entry 2: the collapsed retreat family (24 = 3*2*2*2 combinations).
@@ -3742,14 +3926,15 @@ mod tests {
         assert_eq!(r.session.legal().len(), 27, "fixture assumption: 3 MovePresident + 24 retreats");
     }
 
-    /// The Movement hint keeps the `'r' to retreat` shorthand AND now names
-    /// the numbered retreat entry (brief item 6), all on one line.
+    /// The Movement hint keeps the `r` shorthand as the expert ALIAS (§0.2)
+    /// and the numbered entry stays the guided way in, so both routes to a
+    /// retreat are on screen at once.
     #[test]
     fn movement_hint_names_the_retreat_entry() {
         let r = movement_grouping_fixture();
         let p = r.prompt();
-        assert!(p.contains("'r' to retreat"), "{p}");
-        assert!(p.contains("retreat entry"), "{p}");
+        assert!(p.contains("'r' retreats directly"), "{p}");
+        assert!(p.contains("choose recovery"), "the numbered entry is the guided route: {p}");
     }
 
     /// Route sub-prompt: selecting the multi-label entry lists exactly that
@@ -4293,16 +4478,7 @@ mod tests {
         let mut r = Repl::new(Session::for_test_from_state(state, Rules::empty_for_tests()));
 
         let p = r.prompt();
-        let b_entry = p
-            .lines()
-            .find(|l| l.contains("Option B"))
-            .expect("Option B entry present")
-            .trim_start()
-            .trim_start_matches('[')
-            .chars()
-            .next()
-            .unwrap();
-        let out = r.step(&b_entry.to_string());
+        let out = r.step(&option_number(&p, "Option B").to_string());
         let a0_line = out.text.lines().find(|l| l.contains("(A00)")).expect("A00 listed");
         assert!(a0_line.contains("fee 2 yen (2 to Blue)"), "{a0_line}");
         let a1_line = out.text.lines().find(|l| l.contains("(A01)")).expect("A01 listed");
@@ -4345,7 +4521,7 @@ mod tests {
     fn bare_retreat_only_state_keeps_direct_entry() {
         let mut r = movement_bare_retreat_fixture();
         let p = r.prompt();
-        assert!(p.contains("[0] Return President to hand (recover no assistants)"), "{p}");
+        assert!(p.contains("[0] Return the President to your hand — recovering no assistants"), "{p}");
         assert!(!p.contains("choose recovery"), "a lone retreat must NOT collapse: {p}");
         assert!(!p.contains("[1]"), "a lone-retreat state has exactly one entry: {p}");
 

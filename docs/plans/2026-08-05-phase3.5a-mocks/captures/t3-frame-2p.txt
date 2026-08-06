@@ -40,8 +40,10 @@ marks: ▲ president (owner color) · ● assistants (4, then +n) · ◈ a Movem
 site slots: ⌂ built (owner color) · ★n VP · ¥n yen · f/t/s/cn goods · *n any good · an assistants · ⌂n build · Tn trading-house VP — 'sites' renders the full cards
 info: type 'view' — board · players · ports · labs · tracks · sites · goals · hand · score · log
 ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
-Turn 1 | Red | Additional actions (before) | 3 yen 0 VP | c1 s1 t1 f1 i0 | hand 1
-[0] End additional-action phase
-(only option — press Enter to apply)
-> enter a number, or a command ('view' for game info, 'help' for the list)
+TURN 1 · RED's turn    ADDITIONAL  ▸ Placement ▸ Movement ▸ Area Action ▸ 5-Power ▸ Building ▸ Recovery ▸ Additional ▸ End
+
+YOU ARE DECIDING · whether to use an additional action before Placement, or to move on.
+   [0] End additional-action phase
+(only option — press Enter to apply · nothing is final until you apply it · 'back' undoes the last applied entry · 'view' or '?' any surface · 'help' for commands)
+> 
 

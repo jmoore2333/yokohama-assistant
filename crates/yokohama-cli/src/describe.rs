@@ -52,6 +52,31 @@ pub fn phase_name(p: TurnPhase) -> &'static str {
     }
 }
 
+/// The SHORT name a phase carries in the decision zone's chain, where all nine
+/// sit on one line together (3.5a §0.8; the approved mocks' own list).
+///
+/// A second table rather than a shortening of [`phase_name`], because the two
+/// answer different questions and the difference is not mechanical: the chain
+/// distinguishes its two `Additional` steps by POSITION — they are the first
+/// and last links of a line the player reads left to right — while
+/// [`phase_name`] has to name one on its own, out of context, and so spells
+/// "Additional actions (before)". Deriving one from the other would mean
+/// trimming a parenthetical and hoping, and would put the chain's width at the
+/// mercy of a wording change made for a different surface.
+pub fn phase_chain_name(p: TurnPhase) -> &'static str {
+    match p {
+        TurnPhase::AdditionalActionFirst => "Additional",
+        TurnPhase::Placement => "Placement",
+        TurnPhase::Movement => "Movement",
+        TurnPhase::AreaAction => "Area Action",
+        TurnPhase::FivePowerBonus => "5-Power",
+        TurnPhase::Building => "Building",
+        TurnPhase::Recovery => "Recovery",
+        TurnPhase::AdditionalActionSecond => "Additional",
+        TurnPhase::TurnEnd => "End",
+    }
+}
+
 pub fn area_label(state: &GameState, area: AreaId) -> String {
     let name = state
         .board_layout
@@ -60,6 +85,30 @@ pub fn area_label(state: &GameState, area: AreaId) -> String {
         .map(|a| area_type_name(a.area_type))
         .unwrap_or("Unknown area");
     format!("{name} (A{:02})", area.0)
+}
+
+/// An area's name in the redesigned frame's vocabulary: the NAME in caps, as
+/// the board tiles and the dashboard already spell it.
+///
+/// The frame has TWO name resolvers by design, not by accident: the renderers
+/// resolve an [`AreaId`] against the board MODEL (they may not open a
+/// `GameState` — the R9 seam), and this resolves it against the state, for the
+/// call sites that already hold one. They must agree, and they do because both
+/// spell the name with [`area_type_name`]; what they cannot share is the
+/// lookup.
+pub fn area_name_upper(state: &GameState, area: AreaId) -> String {
+    state
+        .board_layout
+        .areas
+        .get(&area)
+        .map(|a| area_type_name(a.area_type).to_uppercase())
+        .unwrap_or_else(|| format!("A{:02}", area.0))
+}
+
+/// [`area_name_upper`] plus the printed id, for a row naming an area the
+/// player may have to TYPE (the `a`/`b`/`m`/`r` grammars address areas by id).
+pub fn area_label_upper(state: &GameState, area: AreaId) -> String {
+    format!("{} (A{:02})", area_name_upper(state, area), area.0)
 }
 
 /// Plain-words statement of an achievement's fulfillment condition.
@@ -234,36 +283,32 @@ fn production_preview(state: &GameState, verb: &str, good: TradeGood, reward_fn:
 }
 
 /// Fee preview suffix for a placement option (Task 6): ` — fee N yen (1 to
-/// Blue, ...)`, or empty when free. One yen per assistant placed into an
-/// area holding an opponent President, credited per owner -- the same
-/// public-state read the engine's `calculate_placement_cost` /
-/// `credit_placement_fees` pair makes. That engine fn is `pub(crate)` to
-/// yokohama-core (checked at the T6 review, 2026-07-21) and this crate may
-/// not widen it, so the mirror here plus the scratch-apply pin
-/// (`placement_fee_preview_matches_the_engine_charge`) IS the sourcing:
-/// drift from the engine's charge fails the test. `placements` lists one
-/// entry PER ASSISTANT (Option B passes its area twice, plus the Telegram
-/// bonus area). `pub(crate)`: the Option-B picker reuses it for per-area
-/// fee marks so the picker and the option text can never disagree.
+/// Blue, ...)`, or empty when free.
+///
+/// **The arithmetic is [`crate::screen_model::placement_fee`]; this function is
+/// only its wording** (T0-review MF1, discharged at T4). It used to hold the
+/// per-owner tally itself, which left the decision zone's typed `FeeModel` with
+/// no placement half and would have meant two copies of the same rule the
+/// moment the zone printed one. The engine's `calculate_placement_cost` /
+/// `credit_placement_fees` pair is `pub(crate)` to yokohama-core and this crate
+/// may not widen it, so the sourcing is unchanged in kind: the mirror plus the
+/// scratch-apply pin (`placement_fee_preview_matches_the_engine_charge`), which
+/// now covers both the model and this string because one is computed from the
+/// other.
+///
+/// `placements` lists one entry PER ASSISTANT (Option B passes its area twice,
+/// plus the Telegram bonus area). `pub(crate)`: the Option-B picker reuses it
+/// for per-area fee marks so the picker and the option text can never disagree.
 pub(crate) fn placement_fee_note(state: &GameState, placements: &[AreaId]) -> String {
-    let me = state.current_player;
-    let mut per_owner: std::collections::BTreeMap<PlayerId, u32> = std::collections::BTreeMap::new();
-    for &area in placements {
-        for p in &state.players {
-            if p.id != me && p.president_location == PresidentLocation::OnBoard(area) {
-                *per_owner.entry(p.id).or_insert(0) += 1;
-            }
-        }
-    }
-    if per_owner.is_empty() {
+    let Some(fee) = crate::screen_model::placement_fee(state, placements) else {
         return String::new();
-    }
-    let total: u32 = per_owner.values().sum();
-    let parts: Vec<String> = per_owner
+    };
+    let parts: Vec<String> = fee
+        .to_players
         .iter()
-        .map(|(&owner, &n)| format!("{n} to {}", render::color_name(state.player(owner).color)))
+        .map(|&(owner, n)| format!("{n} to {}", render::color_name(state.player(owner).color)))
         .collect();
-    format!(" — fee {total} yen ({})", parts.join(", "))
+    format!(" — fee {} yen ({})", fee.total, parts.join(", "))
 }
 
 /// One plain-words line describing an `AreaAction` (called from

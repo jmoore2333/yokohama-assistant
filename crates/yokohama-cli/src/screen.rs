@@ -16,9 +16,10 @@
 //! delta/error lines plus the normal prompt block, unchanged from piped mode --
 //! nothing exists only in the frame).
 //!
-//! **Transitional between Phase-3.5a T3 and T4.** The board region and the
-//! dashboard are the redesigned ones; the decision zone below them is still
-//! the pre-redesign surface, and T4 replaces it.
+//! **Every region of the frame is now the redesigned one** (T4 finished the
+//! last of them): the V3 board, the dashboard beside or below it, and the
+//! decision zone in the body. What remains transitional is the 3P/4P
+//! ARRANGEMENT, which T10 re-lays — see [`FRAME_HEIGHTS`].
 
 use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -163,12 +164,20 @@ const FRAME_WIDTHS: [usize; 3] = [198, 163, 180];
 /// **Two of these three are past the design floor's 50 rows, and it is
 /// deliberate, transitional and scheduled.** Spec §0.1 designs the frame at
 /// 200x50. At 2 players the dashboard joins BESIDE the board and the frame
-/// opens at 46 rows, inside it. At 3 and 4 the board is too wide to leave room
+/// opens at 48 rows, inside it. At 3 and 4 the board is too wide to leave room
 /// beside it, so the same panel block stacks BELOW, and a block that costs 8
-/// rows per seat plus its three other panels runs the frame to 76 and 85 rows:
+/// rows per seat plus its three other panels runs the frame to 78 and 87 rows:
 /// on a 50-row terminal the title strip and the top board rows have scrolled
 /// off before the player can read them, which is F3 exactly, returning by a
 /// different door.
+///
+/// **T4 added two rows to all three**, and they are the decision zone's own
+/// shape rather than growth: the redesigned zone leads with a phase chain and a
+/// blank line above its "YOU ARE DECIDING" sentence (spec §0.8, the approved
+/// mocks' own spacing) where the pre-redesign block opened straight onto a
+/// one-line state header. The opening frame shows ONE option either way, so the
+/// two rows are the whole difference at turn 1; what T4 bought back is at the
+/// other end of the range, in [`WALK_HEIGHTS`].
 ///
 /// **T10 is the fix and it is a layout change, not a trim.** The approved 4P
 /// mock (`frame-4p.ans`) draws the players panel in FOUR COLUMNS across the
@@ -185,7 +194,7 @@ const FRAME_WIDTHS: [usize; 3] = [198, 163, 180];
 /// frame is, so a production constant here would be dead code claiming to be
 /// used.
 #[cfg(test)]
-const FRAME_HEIGHTS: [usize; 3] = [46, 76, 85];
+const FRAME_HEIGHTS: [usize; 3] = [48, 78, 87];
 
 /// The design floor's height (spec §0.1's 200x50), which [`FRAME_HEIGHTS`]
 /// meets at 2 players and not at 3 or 4. `cfg(test)` for the same reason.
@@ -205,28 +214,35 @@ const FLOOR_H: usize = 50;
 /// T3 and nobody could have known, because nothing measured it.
 ///
 /// **MEASURED, then set** — the same discipline as [`FRAME_MARGIN`], run over
-/// the same 250-move walk:
+/// the same 250-move walk, and **RE-MEASURED at T4**, which is the condition
+/// the previous revision of this doc attached to the table:
 ///
-/// | count | opening | tallest in play | overshoot |
-/// |---|---|---|---|
-/// | 2 | 46 | 66 | +20 |
-/// | 3 | 76 | 96 | +20 |
-/// | 4 | 85 | 105 | +20 |
+/// | count | opening | tallest in play | overshoot | (T3's reading) |
+/// |---|---|---|---|---|
+/// | 2 | 48 | 60 | +12 | 66, +20 |
+/// | 3 | 78 | 90 | +12 | 96, +20 |
+/// | 4 | 87 | 99 | +12 | 105, +20 |
 ///
-/// **These numbers RECORD the transitional overrun rather than bless it.** All
-/// three peaks are the same frame — the walk's move 7, an AreaAction on the
-/// Church whose 27 payment combinations page at 20 options — so the growth is
-/// the pre-redesign DECISION ZONE's option list, not the dashboard. That is why
-/// the overshoot is +20 at every count while the openings differ: one paged body
-/// under three different boards. T4 replaces that zone, and the honest thing at
-/// this task's boundary is to write the number down where the next task will
-/// see it, exactly as [`FRAME_HEIGHTS`] does for the 3P/4P openings.
+/// **The peak is the same frame it always was and it now costs eight rows
+/// less.** All three maxima are the walk's move 7, an AreaAction on the Church
+/// with 27 payment combinations — the position that set the old +20. The
+/// pre-redesign zone drew twenty of those on twenty lines; the T4 zone budgets
+/// ROWS instead of options (`decision_render::OPTION_ROWS`, twelve) and packs
+/// short options into columns, so the same decision fits twelve rows at every
+/// count. The overshoot is +12 at all three for the same reason it was +20 at
+/// all three: one option list under three different boards.
+///
+/// **What is left is the zone's own budget, not a defect with a fix pending.**
+/// A decision with more options than one screen holds has to either page or
+/// grow, and this driver pages; twelve rows is the deliberate size of that
+/// page. The 2P frame therefore reaches 60 rows against a 48-row opening, which
+/// is 10 past the design floor at the tallest position a real game walk finds.
 ///
 /// A number that is recorded is not a number that is licensed: growth PAST these
 /// fails, and the fix is to re-measure the table deliberately, not to raise one
 /// entry until a run goes quiet.
 #[cfg(test)]
-const WALK_HEIGHTS: [usize; 3] = [66, 96, 105];
+const WALK_HEIGHTS: [usize; 3] = [60, 90, 99];
 
 /// Allowance over [`WALK_HEIGHTS`], and one row is all it is.
 ///
@@ -331,7 +347,7 @@ fn title_model(repl: &Repl) -> TitleModel {
 /// re-derived by parsing a finished frame back apart.
 ///
 /// **The stacked arrangement is TRANSITIONAL and it costs rows.** At 2 players
-/// the dashboard joins beside the board and the frame stays inside the design
+/// the dashboard joins beside the board and the frame opens inside the design
 /// floor. At 3 and 4 the same panel block stacks BELOW a board too wide to sit
 /// beside, and the frame runs well past 50 rows — see [`FRAME_HEIGHTS`], which
 /// records what each count actually opens at. T10 is the task that fixes it,
@@ -340,7 +356,14 @@ fn title_model(repl: &Repl) -> TitleModel {
 fn stage(repl: &Repl) -> String {
     let state = repl.session.state();
     let rules = repl.session.rules();
-    let board = render::board_grid(state, rules);
+    // The legal list is what tints the `◈` destination marks (spec §0.7), so
+    // the board the frame draws is asked for with it. Fetched here rather than
+    // threaded down from `prompt()`: `wrap` composes a frame around a body that
+    // was built earlier and may not be a prompt at all (a view, a delta, an
+    // error), and a frame that showed marks only when the body happened to be a
+    // prompt would flicker them on and off as the player looked around.
+    let legal = repl.session.legal();
+    let board = render::board_grid(state, rules, &legal);
     let board_width = board.lines().next().map(visible_width).unwrap_or(0);
 
     let seats = repl.seat_display();
@@ -1068,13 +1091,13 @@ mod capture {
     /// once, so it cannot quietly stop being what the code renders.
     ///
     /// **Whole frame, not a region.** T2's `t2-board-2p.txt` captured the board
-    /// alone because that was all T2 had cut over. T3 finishes the top half of
-    /// the frame, so the golden is now the thing the mock actually is: title
-    /// strip, board, dashboard beside it, legend, info strip, rule and body.
-    /// The DECISION ZONE inside that body is still the pre-redesign one — T4
-    /// replaces it — so the last four lines of this file are expected to look
-    /// nothing like `main-frame.ans`'s, and that is the transitional state
-    /// rather than a defect in the capture.
+    /// alone because that was all T2 had cut over; T3 added the top half. T4
+    /// finishes it, so the golden is now the whole surface the mock is: title
+    /// strip, board, dashboard beside it, legend, info strip, rule, and the
+    /// decision zone — phase chain, deciding line, numbered option, standing
+    /// hint, caret. Compare its tail against `main-frame.ans` directly; the two
+    /// deliberate omissions from the mock's hint (T9's recall key, T5's card
+    /// index) are recorded in `decision_render::hint_line`.
     ///
     /// Plain text, because a capture full of escapes is a capture nobody can
     /// read in a diff. Regenerate with `UPDATE_T3_CAPTURE=1 cargo test -p

@@ -939,7 +939,7 @@ mod tests {
     fn panels_np(n: u8) -> (Vec<Panel>, BoardModel, Vec<PlayerColor>) {
         let (state, rules) = state_np(n);
         let seats = crate::screen_model::SeatFacts::all_open(state.players.len());
-        let board = crate::screen_model::build_board(&state, &rules);
+        let board = crate::screen_model::build_board(&state, &rules, &[]);
         // Through the model's own assembler, so these tests render the panel
         // set (and the ORDER) the shipped adapter renders, not a second list
         // that agrees with it today.
@@ -1087,7 +1087,7 @@ mod tests {
             })
             .collect();
         let panel = crate::screen_model::build_players(&state, &rules, &seats);
-        let lines = players_lines(&panel, &crate::screen_model::build_board(&state, &rules), &colors_np(&state));
+        let lines = players_lines(&panel, &crate::screen_model::build_board(&state, &rules, &[]), &colors_np(&state));
 
         // HEADER lines only. `¥` also appears in every seat's trade-house
         // line, so keying on the glyph alone finds two rows per seat.
@@ -1126,7 +1126,7 @@ mod tests {
         let seats = crate::screen_model::SeatFacts::all_open(2);
         let panel = crate::screen_model::build_players(&state, &rules, &seats);
         let lines: Vec<String> =
-            players_lines(&panel, &crate::screen_model::build_board(&state, &rules), &colors_np(&state))
+            players_lines(&panel, &crate::screen_model::build_board(&state, &rules, &[]), &colors_np(&state))
                 .iter()
                 .map(|l| strip_ansi(l))
                 .collect();
@@ -1199,7 +1199,7 @@ mod tests {
         let panel = crate::screen_model::build_players(&state, &rules, &seats);
         let rendered: Vec<String> = players_lines(
             &panel,
-            &crate::screen_model::build_board(&state, &rules),
+            &crate::screen_model::build_board(&state, &rules, &[]),
             &colors_np(&state),
         )
         .iter()
@@ -1583,7 +1583,7 @@ mod tests {
         let area = AreaId(3);
         state.players[0].president_location = PresidentLocation::OnBoard(area);
         let seats = crate::screen_model::SeatFacts::all_open(2);
-        let board = crate::screen_model::build_board(&state, &rules);
+        let board = crate::screen_model::build_board(&state, &rules, &[]);
         let panel = crate::screen_model::build_players(&state, &rules, &seats);
         let text = strip_ansi(&players_lines(&panel, &board, &colors_np(&state)).join("\n"));
         let expected = describe::area_type_name(

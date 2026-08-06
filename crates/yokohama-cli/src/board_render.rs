@@ -603,7 +603,7 @@ mod tests {
 
     fn model_np(n: u8) -> (BoardModel, Vec<PlayerColor>) {
         let (state, rules) = state_np(n);
-        (crate::screen_model::build_board(&state, &rules), colors_np(&state))
+        (crate::screen_model::build_board(&state, &rules, &[]), colors_np(&state))
     }
 
     /// A tile with nothing on it: the opening state of any area.
@@ -1107,7 +1107,7 @@ mod tests {
             "/../../docs/plans/2026-08-05-phase3.5a-mocks/captures/t2-board-2p.txt",
         );
         let (state, rules) = state_np(2);
-        let board = crate::screen_model::build_board(&state, &rules);
+        let board = crate::screen_model::build_board(&state, &rules, &[]);
         let colors = colors_np(&state);
         let rendered =
             format!("{}{}\n", board_view(&board, &colors), board_legend(has_canal(&board)));

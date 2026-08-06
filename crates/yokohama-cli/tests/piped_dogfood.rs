@@ -85,12 +85,20 @@ fn read_to_prompt(rx: &Receiver<Vec<u8>>, transcript: &mut Vec<u8>) -> String {
 
 /// The displayed option indices (`[k] ...` lines) on this screen.
 fn shown_indices(screen: &str) -> Vec<usize> {
+    // Since the T4 decision zone a long option list packs SEVERAL entries onto
+    // one row, so this takes every `[k]` on an option line rather than the one
+    // at a line's start. A line COUNTS as an option line when its first visible
+    // character is the bracket — which is the main zone's indented rows and the
+    // sub-prompts' unindented ones, and is not a line that merely contains a
+    // bracket somewhere (a `[St]` on a board tile, a track's `[4][5]`).
     screen
         .lines()
-        .filter_map(|l| {
-            let rest = l.strip_prefix('[')?;
-            let end = rest.find(']')?;
-            rest[..end].parse::<usize>().ok()
+        .filter(|l| l.trim_start().starts_with('['))
+        .flat_map(|l| {
+            l.split('[').skip(1).filter_map(|chunk| {
+                let end = chunk.find(']')?;
+                chunk[..end].parse::<usize>().ok()
+            })
         })
         .collect()
 }
@@ -245,12 +253,12 @@ fn play_a_full_2p_game(label: &str, bots: &str) -> String {
             recover_max(&screen).expect("retreat question carries its [0-N] range").to_string()
         } else if screen.lines().last().is_some_and(|l| l.starts_with("> confirm / cancel")) {
             "confirm".to_string()
-        } else if screen.contains("(only option — press Enter to apply)") {
+        } else if screen.contains("only option — press Enter to apply") {
             String::new() // the bare-Enter ceremony path, exercised for real
         } else {
             let shown = shown_indices(&screen);
             if shown.is_empty() {
-                if screen.contains("game over") {
+                if screen.contains("the game is over") {
                     break; // final WINNER text already passed by
                 }
                 panic!("no answerable prompt found:\n{screen}");

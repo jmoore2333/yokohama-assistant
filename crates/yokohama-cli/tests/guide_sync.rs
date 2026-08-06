@@ -94,7 +94,9 @@ fn board_width(players: u8) -> usize {
         Rules::standard(),
     )
     .expect("new_sim over a standard board");
-    render::board_grid(session.state(), session.rules())
+    // No legal list: a board's WIDTH does not depend on which tiles carry a
+    // `◈`, and this measurement is about geometry alone.
+    render::board_grid(session.state(), session.rules(), &[])
         .lines()
         .next()
         .map(|line| line.chars().count())

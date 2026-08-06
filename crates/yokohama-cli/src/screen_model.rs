@@ -414,26 +414,54 @@ pub struct OptionModel {
     /// 0-based global numbering the prompt uses.
     pub number: usize,
     pub mv: Move,
-    /// `Some` for the moves whose fee dimension this model carries SO FAR:
-    /// the two President moves (`MovePresident`, `PlacePresident`); `None`
-    /// elsewhere, deliberately rather than a zeroed model, which would read
-    /// as "priced, and free". **Known gap — T4 fills it (T0-review MF1):**
-    /// `PlaceAssistants` ALSO carries a fee dimension (1 Yen per assistant
-    /// placed to each opponent President's owner), which the shipped CLI
-    /// already previews (`describe::placement_fee_note`, engine-pinned by
-    /// `placement_fee_preview_matches_the_engine_charge`). Core keeps
-    /// `calculate_placement_cost` crate-private, so T4 mirrors the preview's
-    /// pinned arithmetic rather than re-deriving a fee here.
+    /// `Some` for the four moves that pay another PLAYER as a consequence of
+    /// being chosen — the two President moves (`MovePresident`,
+    /// `PlacePresident`) and the two placements (`PlaceThreeAreas`,
+    /// `PlaceTwoSameArea`) — and `None` elsewhere, deliberately rather than a
+    /// zeroed model, which would read as "priced, and free". A fee of zero on
+    /// a move that CAN carry one is still `None` for the same reason; see
+    /// [`option_fee`].
+    ///
+    /// **T0-review MF1 is discharged here** — the placement half used to be a
+    /// stated gap. Its arithmetic is [`placement_fee`], which
+    /// `describe::placement_fee_note` now computes its preview FROM, so the
+    /// engine pin `placement_fee_preview_matches_the_engine_charge` guards the
+    /// model and the words at once instead of only the words.
     pub fee: Option<FeeModel>,
 }
 
 /// Why a near-miss did not make the offered list.
+///
+/// **Every variant states a fact read straight off the state, never a verdict
+/// re-derived from the rules** (spec §0.7: the CLI computes no legality). The
+/// shape of every row is the same: the area is ADJACENT to the President and
+/// ABSENT from the engine's destination list, and the variant names the one
+/// observable fact that explains the absence. An area whose absence has no such
+/// fact behind it gets NO row at all — [`build_not_offered`] is silent rather
+/// than inventive, which is the whole reason this enum is small.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum NotOfferedReason {
-    /// **T4 (the decision zone) replaces this** with the engine-derived reason
-    /// set — spec §0.7's dimmed "not offered: <area> — <reason>" rows. T0
-    /// defines the shape and populates nothing.
-    Unspecified,
+    /// The President began this turn here, and the rulebook forbids returning
+    /// to it in the same turn. Read off `GameState::president_start_area` —
+    /// the engine's own field, and the one
+    /// `apply_move::validate_movement_destination` refuses on.
+    StartedThereThisTurn,
+    /// The Canal is a crossing, never a stop (rulebook p.14, single-sourced in
+    /// the engine's two shared movement predicates). Its own variant rather
+    /// than falling through to [`Self::NoAssistantThere`], which would be
+    /// actively misleading: no assistant can ever stand on a Canal, so
+    /// "you have no assistant there" reads as a shortfall the player could fix.
+    CanalIsNeverAStop,
+    /// The viewing player has no assistant in the area, and an ordinary walk
+    /// may only STOP where the mover has one. Read off the player's own
+    /// `assistants.in_area` count, which is zero.
+    ///
+    /// Deliberately the LAST test of the three: it is the weakest of them,
+    /// because an area can be absent for a reason this row does not know about
+    /// (an unaffordable toll, an opponent's President) — so it is only ever
+    /// claimed once the two facts above have been ruled out, and only when the
+    /// count really is zero.
+    NoAssistantThere,
 }
 
 /// A dimmed near-miss row under the offered options.
@@ -460,7 +488,9 @@ pub struct DecisionModel {
     pub deciding: Deciding,
     /// One per move in the legal list the caller supplied, in that order.
     pub options: Vec<OptionModel>,
-    /// **T4 fills this** (see [`NotOfferedReason`]); T0 always leaves it empty.
+    /// The dimmed near-miss rows (see [`build_not_offered`]): empty at every
+    /// decision but a Movement one, and empty there too whenever no adjacent
+    /// area's absence has an observable fact behind it.
     pub not_offered: Vec<NotOffered>,
 }
 
@@ -510,17 +540,52 @@ pub struct IndexModel;
 // Builders
 // ---------------------------------------------------------------------------
 
-/// The board region: one [`TileModel`] per area, in `AreaId` order.
-pub fn build_board(state: &GameState, rules: &Rules) -> BoardModel {
+/// The board region: one [`TileModel`] per area, in `AreaId` order, with the
+/// `◈` mark set on every area the ENGINE's `legal` list offers the President
+/// (spec §0.7).
+///
+/// `legal` is the list the caller already holds, passed rather than generated
+/// for the reason this module's header states: a model that called the move
+/// generator itself would be both a second enumeration and a second opinion on
+/// legality. A caller that has no list — or is drawing a board for something
+/// other than the current decision — passes `&[]` and gets an unmarked board,
+/// which is the truthful model of "nothing is offered here", not a defaulted
+/// one.
+pub fn build_board(state: &GameState, rules: &Rules, legal: &[Move]) -> BoardModel {
+    let reachable = president_destinations(legal);
     BoardModel {
         player_count: state.config.player_count,
         tiles: state
             .board_layout
             .areas
             .iter()
-            .map(|(&area, cfg)| tile_from(state, rules, area, cfg))
+            .map(|(&area, cfg)| {
+                let mut tile = tile_from(state, rules, area, cfg);
+                tile.reachable = reachable.contains(&area);
+                tile
+            })
             .collect(),
     }
+}
+
+/// Every area the President may end this decision on, straight off the legal
+/// list: the two moves that put a President on a tile, and nothing else.
+///
+/// Exhaustive on the two variants by name rather than by a `destination` field
+/// pattern, so a future move that also lands a President has to be added here
+/// deliberately. Outside Movement the list holds neither variant and the set is
+/// empty, which is why the `◈` mark needs no phase test of its own — it is
+/// absent because the engine is offering nothing, not because the CLI decided
+/// the phase was wrong.
+pub fn president_destinations(legal: &[Move]) -> std::collections::BTreeSet<AreaId> {
+    legal
+        .iter()
+        .filter_map(|mv| match mv {
+            Move::MovePresident { destination, .. } => Some(*destination),
+            Move::PlacePresident { destination } => Some(*destination),
+            _ => None,
+        })
+        .collect()
 }
 
 /// One tile, or `None` for an area that is not on this board. An `Option`
@@ -529,6 +594,75 @@ pub fn build_board(state: &GameState, rules: &Rules) -> BoardModel {
 /// id either.
 pub fn build_tile(state: &GameState, rules: &Rules, area: AreaId) -> Option<TileModel> {
     state.board_layout.areas.get(&area).map(|cfg| tile_from(state, rules, area, cfg))
+}
+
+/// How many near-miss rows [`build_not_offered`] will state.
+///
+/// The zone is an aid, not a report: the approved mock draws ONE row, a 4P
+/// board gives a President up to six neighbours, and a screen that lists five
+/// reasons has buried the two offered destinations it exists to help pick
+/// between. Three is "the mock's row plus room for the other kinds to show up
+/// together" — the cap is stated here rather than at the renderer because a
+/// truncated list is a fact about the model, not about the drawing of it.
+pub const NOT_OFFERED_ROWS: usize = 3;
+
+/// The dimmed near-miss rows under a Movement decision (spec §0.7).
+///
+/// **What it looks at, exactly.** Only areas ADJACENT to where the President
+/// stands — a near miss is a step the player was about to take, and every
+/// non-adjacent area on the board is "not offered" in a sense nobody needs
+/// explained. Only areas ABSENT from the engine's own destination list, taken
+/// from `legal` (an area the engine offers is not a near miss however it got
+/// there — Station, Tram and zero-cost teleports are all included for free by
+/// asking the list rather than the rules). And only at a Movement decision with
+/// the President on the board and no choice queued: a queued choice is a
+/// different question, and a President in hand is answered by
+/// `PlacePresident`, whose near misses are a different set with different
+/// reasons.
+///
+/// **What it will not do.** Each candidate is matched against
+/// [`NotOfferedReason`]'s facts in order, and an area that matches none gets no
+/// row. That silence is the point: an unaffordable toll and a blocking
+/// President are real reasons this function cannot read off the state without
+/// re-deriving the movement rules, so it says nothing rather than guessing —
+/// and the guess it would otherwise fall into is the tempting one,
+/// `NoAssistantThere` on an area whose count is not zero at all.
+pub fn build_not_offered(state: &GameState, legal: &[Move]) -> Vec<NotOffered> {
+    if state.turn_phase != TurnPhase::Movement || !state.pending_choices.is_empty() {
+        return Vec::new();
+    }
+    let PresidentLocation::OnBoard(here) = state.player(state.current_player).president_location
+    else {
+        return Vec::new();
+    };
+    let offered = president_destinations(legal);
+    let me = state.player(state.current_player);
+
+    let mut rows = Vec::new();
+    // `adjacent_areas` is the engine's own graph, already ascending by AreaId
+    // (`board_gen` builds it into a BTreeMap of sorted vectors), so the rows
+    // come out in board order without this function imposing one.
+    for &area in state.board_layout.adjacent_areas(here) {
+        if rows.len() == NOT_OFFERED_ROWS {
+            break;
+        }
+        if offered.contains(&area) {
+            continue;
+        }
+        let is_canal =
+            state.board_layout.areas.get(&area).map(|c| c.area_type) == Some(AreaType::Canal);
+        let reason = if state.president_start_area == Some(area) {
+            NotOfferedReason::StartedThereThisTurn
+        } else if is_canal {
+            NotOfferedReason::CanalIsNeverAStop
+        } else if me.assistants.in_area(area) == 0 {
+            NotOfferedReason::NoAssistantThere
+        } else {
+            continue;
+        };
+        rows.push(NotOffered { area, reason });
+    }
+    rows
 }
 
 fn tile_from(state: &GameState, rules: &Rules, area: AreaId, cfg: &AreaConfig) -> TileModel {
@@ -556,7 +690,8 @@ fn tile_from(state: &GameState, rules: &Rules, area: AreaId, cfg: &AreaConfig) -
             .collect(),
         has_station: state.station_location == Some(area),
         assistants: state.players.iter().map(|p| (p.id, p.assistants.in_area(area))).collect(),
-        // T4 feeds the ◈ mark from the engine's legal list.
+        // Set by [`build_board`] from the engine's legal list; a tile built on
+        // its own carries no mark, since a single tile has no list to read.
         reachable: false,
     }
 }
@@ -771,8 +906,7 @@ pub fn build_decision(state: &GameState, rules: &Rules, legal: &[Move]) -> Decis
                 fee: option_fee(state, rules, mv),
             })
             .collect(),
-        // T4 derives the near-miss rows from the engine's list complement.
-        not_offered: Vec::new(),
+        not_offered: build_not_offered(state, legal),
     }
 }
 
@@ -793,7 +927,49 @@ fn phase_chain_index(phase: TurnPhase) -> usize {
     }
 }
 
-/// The President fee an option carries, priced by the ENGINE.
+/// The fee a set of assistant PLACEMENTS incurs: 1 Yen per assistant placed
+/// into an area holding an opponent President, credited to that President's
+/// owner. `placements` lists one entry PER ASSISTANT — Option B passes its area
+/// twice, plus the Telegram bonus area — because the charge is per pawn, not
+/// per area (rulebook: Option B's two-into-one-area costs 2, not 1).
+///
+/// **This is the arithmetic `describe::placement_fee_note` prints, and it lives
+/// here so the two cannot say different numbers** (T0-review MF1). The engine's
+/// own `calculate_placement_cost` / `credit_placement_fees` pair is
+/// `pub(crate)` to yokohama-core and this crate may not widen it, so the
+/// sourcing is this mirror plus the scratch-apply pin
+/// `describe::placement_fee_preview_matches_the_engine_charge`, which applies a
+/// real placement and compares the money actually charged: drift from the
+/// engine fails that test, and it now guards the model as well as the note,
+/// because the note is computed FROM the model.
+///
+/// `None` rather than a zeroed model when nothing is owed, matching
+/// [`OptionModel::fee`]'s own convention — a zeroed fee reads as "priced, and
+/// free", which for a placement into an empty area is not what happened.
+pub fn placement_fee(state: &GameState, placements: &[AreaId]) -> Option<FeeModel> {
+    let me = state.current_player;
+    let mut per_owner: std::collections::BTreeMap<PlayerId, u32> =
+        std::collections::BTreeMap::new();
+    for &area in placements {
+        for p in &state.players {
+            if p.id != me && p.president_location == PresidentLocation::OnBoard(area) {
+                *per_owner.entry(p.id).or_insert(0) += 1;
+            }
+        }
+    }
+    if per_owner.is_empty() {
+        return None;
+    }
+    Some(FeeModel {
+        total: per_owner.values().sum(),
+        to_players: per_owner.into_iter().collect(),
+        // Placement pays PLAYERS only; the Canal toll is a movement concept and
+        // no placement ever crosses one.
+        canal_tolls: 0,
+    })
+}
+
+/// The fee an option carries, priced by the ENGINE.
 ///
 /// `MovePresident` reads `route_fee_vector`, whose `path` already ends at the
 /// destination — the same slice `apply_movement` prices, passed unchanged so
@@ -802,14 +978,25 @@ fn phase_chain_index(phase: TurnPhase) -> usize {
 /// attribution; the engine's rule IS 1 Yen to each opponent President owner
 /// standing on the destination, so listing exactly those owners at 1 each sums
 /// to the engine's total by construction — and the Stagecoach waiver, which
-/// zeroes that total, yields no recipients at all.
+/// zeroes that total, yields no recipients at all. The two PLACEMENT moves go
+/// through [`placement_fee`], one entry per assistant.
 ///
 /// The wildcard arm is deliberate rather than the exhaustive match this repo
-/// prefers elsewhere: a President fee is a President-MOVEMENT concept, these
-/// two moves are the only ones the engine prices, and every other variant
-/// would have to be listed as `None` for no gain.
-fn option_fee(state: &GameState, rules: &Rules, mv: &Move) -> Option<FeeModel> {
+/// prefers elsewhere: these four moves are the only ones that move money to
+/// another player as a side effect of being CHOSEN, and every other variant
+/// would have to be listed as `None` for no gain. (Costs a player pays to the
+/// BANK — a tech's price, a warehouse take — are part of what the option DOES,
+/// and `describe` states them in the option's own words.)
+pub fn option_fee(state: &GameState, rules: &Rules, mv: &Move) -> Option<FeeModel> {
     match mv {
+        Move::PlaceThreeAreas { placements } => placement_fee(state, placements),
+        Move::PlaceTwoSameArea { area, adjacent_bonus } => {
+            let mut placements = vec![*area, *area];
+            if let Some(adj) = adjacent_bonus {
+                placements.push(*adj);
+            }
+            placement_fee(state, &placements)
+        }
         Move::MovePresident { path, .. } => {
             let vector = route_fee_vector(
                 state,
@@ -901,7 +1088,7 @@ pub fn build_frame(
 ) -> FrameModel {
     FrameModel {
         title,
-        board: build_board(state, rules),
+        board: build_board(state, rules, legal),
         dashboard: build_dashboard(state, rules, seats, seat),
         decision: build_decision(state, rules, legal),
     }
@@ -926,7 +1113,7 @@ mod tests {
     #[test]
     fn the_board_model_carries_every_area_with_its_type_token_and_printed_site() {
         let (state, rules) = state_np(2);
-        let board = build_board(&state, &rules);
+        let board = build_board(&state, &rules, &[]);
         assert_eq!(board.player_count, 2);
         assert_eq!(board.tiles.len(), state.board_layout.areas.len());
 
@@ -955,7 +1142,7 @@ mod tests {
     #[test]
     fn tiles_open_with_no_pawns_no_station_and_no_reachable_mark() {
         let (state, rules) = state_np(2);
-        for tile in build_board(&state, &rules).tiles {
+        for tile in build_board(&state, &rules, &[]).tiles {
             assert!(tile.presidents.is_empty(), "A{:02} presidents", tile.area.0);
             assert!(!tile.has_station, "A{:02} station", tile.area.0);
             assert_eq!(tile.assistants.len(), 2, "one entry per seat, zeros included");
@@ -976,7 +1163,7 @@ mod tests {
         state.players[0].assistants.on_board.insert(here, 3);
         state.station_location = Some(here);
 
-        let board = build_board(&state, &rules);
+        let board = build_board(&state, &rules, &[]);
         let tile = board.tiles.iter().find(|t| t.area == here).expect("A00");
         assert_eq!(tile.presidents, vec![PlayerId::new(1)]);
         assert!(tile.has_station);
@@ -995,7 +1182,7 @@ mod tests {
     fn a_single_tile_matches_the_board_and_an_unknown_area_yields_none() {
         let (state, rules) = state_np(2);
         let area = AreaId::new(0);
-        let from_board = build_board(&state, &rules)
+        let from_board = build_board(&state, &rules, &[])
             .tiles
             .into_iter()
             .find(|t| t.area == area)
@@ -1034,7 +1221,7 @@ mod tests {
         let here = AreaId::new(0);
         state.players[0].president_location = PresidentLocation::OnBoard(here);
         state.players[1].president_location = PresidentLocation::OnBoard(here);
-        let board = build_board(&state, &rules);
+        let board = build_board(&state, &rules, &[]);
         let tile = board.tiles.iter().find(|t| t.area == here).expect("A00");
         assert_eq!(tile.presidents, vec![PlayerId::new(0), PlayerId::new(1)]);
     }
@@ -1044,7 +1231,7 @@ mod tests {
     #[test]
     fn the_canal_tile_has_no_building_site() {
         let (state, rules) = state_np(4);
-        let board = build_board(&state, &rules);
+        let board = build_board(&state, &rules, &[]);
         let canal = board
             .tiles
             .iter()
@@ -1226,7 +1413,164 @@ mod tests {
             assert_eq!(opt.number, i);
             assert_eq!(opt.mv, legal[i]);
         }
-        assert!(decision.not_offered.is_empty(), "not-offered rows are T4's; T0 populates none");
+        assert!(
+            decision.not_offered.is_empty(),
+            "near-miss rows belong to a Movement decision; this is not one",
+        );
+    }
+
+    /// The `◈` feed: exactly the areas the ENGINE's list offers a President,
+    /// and nothing else — not "areas the player could reach", which is a
+    /// question this crate is forbidden from answering.
+    #[test]
+    fn the_reachable_marks_are_exactly_the_engines_president_destinations() {
+        let (state, rules) = state_np(2);
+        let (a, b) = (AreaId::new(2), AreaId::new(5));
+        let legal = vec![
+            Move::MovePresident { path: vec![a], destination: a },
+            Move::PlacePresident { destination: b },
+            // Not a President move: must NOT mark anything.
+            Move::PlaceTwoSameArea { area: AreaId::new(7), adjacent_bonus: None },
+        ];
+        let board = build_board(&state, &rules, &legal);
+        let marked: Vec<AreaId> =
+            board.tiles.iter().filter(|t| t.reachable).map(|t| t.area).collect();
+        assert_eq!(marked, vec![a, b], "one mark per offered destination, and no others");
+
+        let unmarked = build_board(&state, &rules, &[]);
+        assert!(
+            unmarked.tiles.iter().all(|t| !t.reachable),
+            "no list, no marks -- an unmarked board is the truthful model of 'nothing offered'",
+        );
+    }
+
+    /// The near-miss rows: adjacent, absent from the engine's list, and each
+    /// one carrying the observable fact that explains the absence.
+    #[test]
+    fn the_near_miss_rows_state_the_fact_behind_each_absence() {
+        let (mut state, _rules) = state_np(2);
+        let here = AreaId::new(4);
+        state.turn_phase = TurnPhase::Movement;
+        state.players[0].president_location = PresidentLocation::OnBoard(here);
+        let neighbours = state.board_layout.adjacent_areas(here).to_vec();
+        assert!(neighbours.len() >= 2, "the fixture needs neighbours to miss: {neighbours:?}");
+
+        // (a) An area the player has no assistant in.
+        let rows = build_not_offered(&state, &[]);
+        assert!(!rows.is_empty(), "every neighbour is a near miss when nothing is offered");
+        assert!(
+            rows.iter().all(|r| r.reason == NotOfferedReason::NoAssistantThere),
+            "{rows:?}",
+        );
+        assert!(rows.iter().all(|r| neighbours.contains(&r.area)), "rows are adjacent only");
+        assert!(rows.len() <= NOT_OFFERED_ROWS, "the row cap holds: {rows:?}");
+
+        // (b) The start-area rule outranks it, on the SAME area — the row a
+        // player is most likely to be confused by, and the one an
+        // assistant-count test would mis-explain.
+        let start = neighbours[0];
+        state.president_start_area = Some(start);
+        state.players[0].assistants.on_board.insert(start, 1);
+        let rows = build_not_offered(&state, &[]);
+        let start_row = rows.iter().find(|r| r.area == start).expect("the start area is a row");
+        assert_eq!(start_row.reason, NotOfferedReason::StartedThereThisTurn);
+
+        // (c) An area WITH an assistant and no other fact against it gets no
+        // row at all: the reason would be an unaffordable toll or a blocking
+        // President, neither of which this reads off the state.
+        state.president_start_area = None;
+        let rows = build_not_offered(&state, &[]);
+        assert!(rows.iter().all(|r| r.area != start), "silence beats a guess: {rows:?}");
+
+        // (d) An area the engine DOES offer is not a near miss.
+        let offered = neighbours[1];
+        let legal = vec![Move::MovePresident { path: vec![offered], destination: offered }];
+        let rows = build_not_offered(&state, &legal);
+        assert!(rows.iter().all(|r| r.area != offered), "{rows:?}");
+    }
+
+    /// The Canal gets its own reason rather than the assistant one, which would
+    /// name a shortfall the player could never fix.
+    #[test]
+    fn a_canal_neighbour_is_never_explained_as_a_missing_assistant() {
+        let (mut state, _rules) = state_np(4);
+        let canal = *state
+            .board_layout
+            .areas
+            .iter()
+            .find(|(_, cfg)| cfg.area_type == AreaType::Canal)
+            .map(|(id, _)| id)
+            .expect("a 4P board carries a Canal");
+        let here = *state
+            .board_layout
+            .adjacent_areas(canal)
+            .first()
+            .expect("the Canal has neighbours");
+        state.turn_phase = TurnPhase::Movement;
+        state.players[0].president_location = PresidentLocation::OnBoard(here);
+
+        let rows = build_not_offered(&state, &[]);
+        let canal_row = rows.iter().find(|r| r.area == canal);
+        if let Some(row) = canal_row {
+            assert_eq!(row.reason, NotOfferedReason::CanalIsNeverAStop, "{rows:?}");
+        } else {
+            // The cap can crowd it out; then nothing may claim it either.
+            assert!(rows.len() == NOT_OFFERED_ROWS, "the Canal row was dropped for no reason");
+        }
+    }
+
+    /// Near-miss rows are a MOVEMENT thing: a queued choice is a different
+    /// question, and a President in hand is answered by `PlacePresident`.
+    #[test]
+    fn no_near_miss_rows_outside_a_movement_decision() {
+        let (mut state, _rules) = state_np(2);
+        let here = AreaId::new(4);
+        state.players[0].president_location = PresidentLocation::OnBoard(here);
+
+        state.turn_phase = TurnPhase::Placement;
+        assert!(build_not_offered(&state, &[]).is_empty(), "not a Movement decision");
+
+        state.turn_phase = TurnPhase::Movement;
+        state.pending_choices = vec![PendingChoice::AnyGood];
+        assert!(build_not_offered(&state, &[]).is_empty(), "a queued choice outranks the phase");
+
+        state.pending_choices.clear();
+        state.players[0].president_location = PresidentLocation::InHand;
+        assert!(build_not_offered(&state, &[]).is_empty(), "no President on the board, no near miss");
+    }
+
+    /// T0-review MF1, discharged: a placement into an area an opponent
+    /// President stands in carries the fee the CLI has always previewed, and
+    /// the preview is now computed FROM this model — so the engine pin behind
+    /// `describe::placement_fee_note` guards both.
+    #[test]
+    fn placement_options_carry_the_fee_the_preview_prints() {
+        let (mut state, rules) = state_np(2);
+        let blocked = AreaId::new(0);
+        let free = AreaId::new(1);
+        state.players[1].president_location = PresidentLocation::OnBoard(blocked);
+
+        let spread = Move::PlaceThreeAreas { placements: vec![blocked, free] };
+        let doubled = Move::PlaceTwoSameArea { area: blocked, adjacent_bonus: Some(free) };
+        let decision = build_decision(&state, &rules, &[spread, doubled]);
+
+        let one = decision.options[0].fee.clone().expect("one assistant into the blocked area");
+        assert_eq!(one.total, 1);
+        assert_eq!(one.to_players, vec![(PlayerId::new(1), 1)]);
+
+        // Option B's two pawns into one blocked area cost 2, not 1 — the rule
+        // the fee is per ASSISTANT rather than per area.
+        let two = decision.options[1].fee.clone().expect("two assistants into the blocked area");
+        assert_eq!(two.total, 2, "1 Yen PER ASSISTANT placed");
+        assert_eq!(two.to_players, vec![(PlayerId::new(1), 2)]);
+
+        // ...and the words the CLI prints are this model, formatted.
+        let note = crate::describe::placement_fee_note(&state, &[blocked, blocked, free]);
+        assert!(note.contains("fee 2 yen"), "{note}");
+
+        // A placement nobody is standing in carries no fee model at all.
+        let empty = Move::PlaceThreeAreas { placements: vec![free] };
+        assert!(build_decision(&state, &rules, &[empty]).options[0].fee.is_none());
     }
 
     #[test]
@@ -1493,7 +1837,7 @@ mod tests {
     fn three_player_builders_smoke() {
         // T0-review N1: 2P and 4P were exercised, 3P not at all.
         let (state, rules) = state_np(3);
-        assert_eq!(build_board(&state, &rules).tiles.len(), 14);
+        assert_eq!(build_board(&state, &rules, &[]).tiles.len(), 14);
         assert_eq!(build_players(&state, &rules, &SeatFacts::all_open(3)).players.len(), 3);
         assert!(build_tracks(&state).church.iter().all(|s| s.occupant.is_none()));
     }

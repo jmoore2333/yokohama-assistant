@@ -1226,7 +1226,9 @@ fn ask_board_check(
     out("\n--- Board check ---\n");
     out("This is the board the engine will play. Compare it with the physical table: the\n");
     out("SHAPE first (widest row on top), then the tile in every cell.\n\n");
-    out(&crate::render::board_grid(session.state(), session.rules()));
+    // No legal list (`&[]`): the board check is a SETUP screen, and the `◈`
+    // destination marks belong to a Movement decision that has not been reached.
+    out(&crate::render::board_grid(session.state(), session.rules(), &[]));
     out("\nA00 is cell 0, the leftmost tile of the widest top row; ids run left to right\n");
     out("along each row, then down to the next row.\n");
     let notice = dummy_placement_notice(session.state());
@@ -2031,7 +2033,7 @@ mod tests {
         let repl = repl.unwrap_or_else(|e| panic!("expected Ok, got Err({e}); transcript:\n{transcript}"));
         assert!(transcript.contains("--- Board check ---"), "{transcript}");
         assert!(
-            transcript.contains(&crate::render::board_grid(repl.session.state(), repl.session.rules())),
+            transcript.contains(&crate::render::board_grid(repl.session.state(), repl.session.rules(), &[])),
             "the check must draw the board with the same renderer play uses\n{transcript}"
         );
         assert!(transcript.contains("is not 'yes' or 'no'"), "a junk answer must re-ask\n{transcript}");

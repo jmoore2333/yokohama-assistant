@@ -12,6 +12,7 @@ use yokohama_core::game::actions::resolve_acting_area;
 use yokohama_core::*;
 
 use crate::board_render;
+use crate::decision_render;
 use crate::describe;
 use crate::input::tech_name;
 use crate::panel_render;
@@ -150,9 +151,16 @@ pub(crate) fn section(title: &str) -> String {
 /// one parameter: `rules`, which the model needs to recover a building site's
 /// PRINTED index (a runtime site is a clone of the registry card and carries
 /// no index of its own).
-pub fn board_grid(state: &GameState, rules: &Rules) -> String {
+///
+/// `legal` is the ENGINE's current legal list, and it is what tints the `◈`
+/// destination marks (spec §0.7, added at T4). It is a PARAMETER rather than
+/// something derived here for the reason the mark exists at all: the CLI
+/// computes no legality, so the board can only show what the engine is already
+/// offering. A caller drawing a board outside a decision passes `&[]` and gets
+/// an unmarked one.
+pub fn board_grid(state: &GameState, rules: &Rules, legal: &[Move]) -> String {
     let colors: Vec<PlayerColor> = state.players.iter().map(|p| p.color).collect();
-    board_render::board_view(&screen_model::build_board(state, rules), &colors)
+    board_render::board_view(&screen_model::build_board(state, rules, legal), &colors)
 }
 
 /// The composed frame's DASHBOARD (Phase-3.5a T3): the players, tracks,
@@ -180,9 +188,103 @@ pub fn dashboard(state: &GameState, rules: &Rules, seats: &SeatDisplay, seat: Pl
         })
         .collect();
 
-    let board = screen_model::build_board(state, rules);
+    // Unmarked (`&[]`): the dashboard reads this model for AREA NAMES alone —
+    // where a President stands, which area a track occupant sits in — and none
+    // of its panels draws a `◈`. Handing it the legal list would build a
+    // marked board nothing looks at.
+    let board = screen_model::build_board(state, rules, &[]);
     let panels = screen_model::build_dashboard(state, rules, &facts, seat);
     panel_render::dashboard(&panels, &board, &colors)
+}
+
+/// The composed frame's DECISION ZONE (Phase-3.5a T4): the phase chain, the
+/// deciding line, the numbered options, the near-miss rows and the standing
+/// hint. [`board_grid`]'s and [`dashboard`]'s third sibling, and the same
+/// ADAPTER shape — the one place that reads `&GameState` on the zone's behalf,
+/// builds the model, words the options, and hands both to
+/// [`crate::decision_render`], which draws them without ever seeing a
+/// `GameState` (the R9 seam; read that module's import list).
+///
+/// `rows` is the caller's DISPLAY list, not the legal list: the REPL collapses
+/// a Movement family into one entry per destination, the retreat family into
+/// one line, Placement into its two options. That grouping stays with the
+/// pickers it feeds (`Repl::display_options`), so this takes the entries and
+/// their words already assembled and supplies the two things only the model
+/// knows — the per-move fee, and whether the board marks a destination
+/// reachable.
+///
+/// `legal` is the ENGINE's list, used for the `◈` marks and the near-miss
+/// rows; it is the SAME list the caller grouped `rows` from, passed rather
+/// than regenerated so the zone and the board cannot disagree about what is
+/// offered.
+pub fn decision_zone(
+    state: &GameState,
+    rules: &Rules,
+    legal: &[Move],
+    rows: &[DisplayRow],
+    ctx: &decision_render::ZoneContext<'_>,
+) -> String {
+    let colors: Vec<PlayerColor> = state.players.iter().map(|p| p.color).collect();
+    let board = screen_model::build_board(state, rules, legal);
+    let model = screen_model::build_decision(state, rules, legal);
+    let fees = price_rows(state, rules, rows);
+    let zone_rows = zone_rows(rows, &fees);
+    decision_render::decision_zone(&model, &zone_rows, &board, &colors, ctx)
+}
+
+/// How many pages [`decision_zone`] will draw this list in — what the `more`
+/// command wraps on.
+///
+/// A separate entry point rather than a number the REPL could compute, because
+/// a page is a budget of ROWS in the zone and how many options fill it depends
+/// on how wide they render. Both functions build the same rows through the same
+/// two helpers, so the pager and the footer cannot disagree about where page
+/// two starts.
+pub fn decision_pages(
+    state: &GameState,
+    rules: &Rules,
+    legal: &[Move],
+    rows: &[DisplayRow],
+) -> usize {
+    let board = screen_model::build_board(state, rules, legal);
+    let fees = price_rows(state, rules, rows);
+    decision_render::page_count(&zone_rows(rows, &fees), &board)
+}
+
+/// Every row's fee, priced ONCE by the model: `screen_model` owns the
+/// arithmetic (including the placement half T0-review MF1 named), so neither
+/// this adapter nor the renderer re-derives a price.
+fn price_rows(
+    state: &GameState,
+    rules: &Rules,
+    rows: &[DisplayRow],
+) -> Vec<Option<screen_model::FeeModel>> {
+    rows.iter()
+        .map(|row| row.mv.as_ref().and_then(|mv| screen_model::option_fee(state, rules, mv)))
+        .collect()
+}
+
+fn zone_rows<'a>(
+    rows: &'a [DisplayRow],
+    fees: &'a [Option<screen_model::FeeModel>],
+) -> Vec<decision_render::Row<'a>> {
+    rows.iter()
+        .zip(fees.iter())
+        .map(|(row, fee)| match &row.mv {
+            Some(mv) => decision_render::Row::Move { mv, fee: fee.as_ref(), words: &row.words },
+            None => decision_render::Row::Family { words: &row.words },
+        })
+        .collect()
+}
+
+/// One entry of the REPL's display list, handed to [`decision_zone`].
+///
+/// `mv` is `Some` for an entry that IS a single legal move and `None` for a
+/// collapsed family — the distinction the bare-Enter ceremony turns on, carried
+/// as data rather than re-derived from the words.
+pub struct DisplayRow {
+    pub mv: Option<Move>,
+    pub words: String,
 }
 
 /// Interior text width of one numbered skeleton cell; a full cell adds 2
@@ -1263,7 +1365,7 @@ mod tests {
     #[test]
     fn board_grid_has_one_cell_per_area_with_ids() {
         let state = test_state_2p();
-        let g = board_grid(&state, &Rules::standard());
+        let g = board_grid(&state, &Rules::standard(), &[]);
         for id in state.board_layout.areas.keys() {
             assert!(g.contains(&format!("A{:02}", id.0)), "missing A{:02} in\n{g}", id.0);
         }
@@ -1281,9 +1383,9 @@ mod tests {
             let rules = Rules::standard();
             let colors: Vec<PlayerColor> = state.players.iter().map(|p| p.color).collect();
             assert_eq!(
-                board_grid(&state, &rules),
+                board_grid(&state, &rules, &[]),
                 crate::board_render::board_view(
-                    &crate::screen_model::build_board(&state, &rules),
+                    &crate::screen_model::build_board(&state, &rules, &[]),
                     &colors,
                 ),
                 "{n}P: the adapter must add nothing to the renderer's output",
@@ -1367,7 +1469,7 @@ mod tests {
     #[test]
     fn board_grid_lines_share_one_width_and_2p_is_120_cols() {
         let state = test_state_2p();
-        let g = board_grid(&state, &Rules::standard());
+        let g = board_grid(&state, &Rules::standard(), &[]);
         for glyph in ['─', '│', '┌', '┐', '└', '┘'] {
             assert!(g.contains(glyph), "missing {glyph} in:\n{g}");
         }
@@ -1381,7 +1483,7 @@ mod tests {
     #[test]
     fn board_grid_names_tiles_in_full() {
         let state = test_state_2p();
-        let g = board_grid(&state, &Rules::standard());
+        let g = board_grid(&state, &Rules::standard(), &[]);
         // The 2P tile pool always includes these four (Chinatown/PortB/LabB/
         // Canal are removed at 2P).
         for name in ["CHURCH", "CUSTOMS", "BANK", "EMPLOYMENT AGENCY"] {
@@ -1406,7 +1508,7 @@ mod tests {
             .expect("2P pyramid has a (3,0) tip tile")
             .0;
         state.board_layout.areas.get_mut(&tip).unwrap().area_type = AreaType::Canal;
-        let g = board_grid(&state, &Rules::standard());
+        let g = board_grid(&state, &Rules::standard(), &[]);
         assert!(g.contains("CANAL"), "the canal tile must be named:\n{g}");
         assert!(g.contains("transit only"), "canal transit note expected:\n{g}");
         assert!(g.contains("to the bank / crossing"), "canal toll expected:\n{g}");
@@ -1421,11 +1523,11 @@ mod tests {
         let rules = Rules::standard();
         let area = *state.board_layout.areas.keys().next().unwrap();
         assert!(
-            !board_grid(&state, &rules).contains("[St]"),
+            !board_grid(&state, &rules, &[]).contains("[St]"),
             "unplaced Station must not mark anything"
         );
         state.station_location = Some(area);
-        assert!(board_grid(&state, &rules).contains("[St]"), "placed Station must mark its tile");
+        assert!(board_grid(&state, &rules, &[]).contains("[St]"), "placed Station must mark its tile");
     }
 
     /// The legend keys what the V3 tiles actually draw — the marks and the
@@ -1480,11 +1582,11 @@ mod tests {
         let rules = Rules::standard();
         let area = *state.board_layout.areas.keys().next().unwrap();
         state.board_layout.five_power_tokens.insert(area, Some(FivePowerEffect::Copper(2)));
-        let g = board_grid(&state, &rules);
+        let g = board_grid(&state, &rules, &[]);
         assert!(g.contains("5-Power: 2 Copper"), "a Copper token spells its face: {g}");
 
         state.board_layout.five_power_tokens.insert(area, None);
-        let claimed = board_grid(&state, &rules);
+        let claimed = board_grid(&state, &rules, &[]);
         assert!(claimed.contains("5-Power: taken"), "a claimed token says so: {claimed}");
     }
 
@@ -2684,9 +2786,9 @@ mod tests {
         state.players[1].assistants.on_board.insert(area, 1);
 
         let rules = Rules::standard();
-        let plain = board_grid(&state, &rules);
+        let plain = board_grid(&state, &rules, &[]);
         crate::style::force(true);
-        let colored = board_grid(&state, &rules);
+        let colored = board_grid(&state, &rules, &[]);
         crate::style::force(false);
         assert_ne!(colored, plain, "forced mode must actually paint something");
         assert_eq!(strip_ansi(&colored), plain);
