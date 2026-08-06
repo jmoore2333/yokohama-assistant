@@ -31,3 +31,6 @@ docs/temp/
 .claude/settings.local.json
 .claude/skills/
 skills-lock.json
+
+# Wizard default autosaves (yokohama-game-<seed>.json in CWD) — never commit; the one that slipped in was removed 2026-08-06 (owner-cleared)
+yokohama-game-*.json
