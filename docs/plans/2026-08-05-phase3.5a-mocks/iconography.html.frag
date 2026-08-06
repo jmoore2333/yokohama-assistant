@@ -1,0 +1,11 @@
+<span style="font-weight:bold">TILE PRESENCE — three treatments of the same mid-game tile</span>   <span style="color:#5c6773">(Silk Mill: Red president + 2 Red assistants + 1 Blue assistant)</span>
+
+<span style="color:#5c6773">V1 — today&#x27;s letters/counts</span>     <span style="color:#5c6773">V2 — pawn glyph line</span>            <span style="color:#5c6773">V3 — marker on the title + slots</span>
+┌ A06 SILK MILL ─────────────┐  ┌ A06 SILK MILL ─────────────┐  ┌ <span style="color:#5c6773">A06</span> <span style="font-weight:bold">SILK MILL</span> <span style="color:#ff5f56">▲</span> ───────────┐
+│ President: <span style="color:#ff5f56">Red</span>             │  │ <span style="color:#ff5f56">▲</span> <span style="color:#ff5f56">●●</span>  <span style="color:#6f9bff">●</span>                    │  │ 5-Power: <span style="color:#f2c14e">1 Import</span>  <span style="color:#5c6773">Site 8</span>  │
+│ <span style="color:#ff5f56">Red 2</span> · <span style="color:#6f9bff">Blue 1</span> assistants  │  │ <span style="color:#5c6773">▲ president · ● assistants</span> │  │ <span style="color:#ff5f56">●●</span>  <span style="color:#6f9bff">●</span>                      │
+│ Shophouses <span style="opacity:.45">····</span> Trade <span style="opacity:.45">·</span>    │  │ Shophouses <span style="opacity:.45">····</span> Trade <span style="opacity:.45">·</span>    │  │ sites <span style="color:#5fa8ff">★1</span> <span style="color:#d78ef0">*2</span> <span style="color:#5c6773">—</span> <span style="color:#d78ef0">*1</span>  <span style="color:#5c6773">│</span> T6     │
+└────────────────────────────┘  └────────────────────────────┘  └────────────────────────────┘
+
+<span style="color:#5c6773">V3 frees a whole tile line for the site slots by moving the president marker (▲, in its owner&#x27;s color) onto the title — scanning the board for ▲ answers</span>
+<span style="color:#5c6773">&quot;where are the presidents&quot; at a glance, and </span><span style="color:#69c25f">◈</span><span style="color:#5c6773"> tints tiles the engine&#x27;s own legal list marks as reachable during Movement (see the mid-game frame).</span>

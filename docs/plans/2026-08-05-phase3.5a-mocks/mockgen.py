@@ -427,8 +427,201 @@ def frame_4p():
     L.append(f"{BOLD}> {R}")
     return L
 
+
+# ================================================================ ROUND 3 ====
+# Mid-game 2P state (ILLUSTRATIVE — turn 9, Movement phase, Red to move).
+# Same board as the owner's game; pawns/builds/goods invented to exercise the
+# rendering. Site rewards are the REAL S-card data from 09-building-sites.yaml.
+
+SITE_R = {  # site index -> (TL, TR, ML, MR, TH)  as compact tokens
+ 2:("★1","f3","—","f2",7), 3:("★1","★4","—","t2",7), 4:("★1","⌂2","—","t2",8),
+ 5:("★1","s2","—","c1",9), 6:("★1","c2","—","s2",9), 7:("★1","*2","—","*1",7),
+ 8:("★1","*2","—","*1",6), 9:("★1","★4","—","a2",8), 0:("★1","f3","—","f2",7),
+ 23:("★1","★4","—","★3",9),
+}
+TOKC = {"★":VP,"¥":YEN,"f":CYAN,"t":GREEN,"s":WHITE,"c":COPPER,"*":MAG,"a":WHITE,"⌂":WHITE,"—":GRAY}
+def tok(t):
+    return f"{TOKC.get(t[0],GRAY)}{t}{R}"
+
+# per-area mid-game presence: aid -> (president_color|None, red_asst, blue_asst, built list)
+MID = {
+ "A00": (None,0,1,[("TL",BLUE)]), "A01": (BLUE,0,2,[]), "A02": (None,1,0,[]),
+ "A03": (None,0,0,[]), "A04": (None,0,0,[]), "A05": (None,2,1,[]),
+ "A06": (RED,2,1,[]), "A07": (None,0,2,[]), "A08": (None,0,0,[]), "A09": (None,0,0,[]),
+}
+REACHABLE = {"A05", "A02"}
+
+def pawn_run(color, n):
+    if n == 0: return ""
+    dots = "●" * min(n, 4) + (f"+{n-4}" if n > 4 else "")
+    return f"{color}{dots}{R}"
+
+def tile_mid(aid, style="v3"):
+    name = NAMES[aid]; tok_ = TOKENS[aid]; tokc = TOKCOL[tok_.split()[1]]
+    pres, ra, ba, built = MID[aid]
+    reach = aid in REACHABLE
+    mark = f" {pres}▲{R}" if pres else ""
+    rtag = f" {GREEN}◈{R}" if reach else ""
+    head = f"┌ {GRAY}{aid}{R} {BOLD}{name}{R}{mark}{rtag} "
+    l1 = pad(head, TILE_W - 1) + "┐"
+    l1 = l1[:len(l1)]
+    fill = TILE_W - 1 - vis(head)
+    l1 = head + "─" * fill + "┐" if fill > 0 else pad(head, TILE_W - 1) + "┐"
+    l2 = f"│ {pad(f'5-Power: {tokc}{tok_}{R}  {GRAY}Site {SITES[aid]}{R}', TILE_W-4)} │"
+    pawns = "  ".join(x for x in [pawn_run(RED, ra), pawn_run(BLUE, ba)] if x)
+    if not pawns: pawns = f"{DIM}no pawns{R}"
+    l3 = f"│ {pad(pawns, TILE_W-4)} │"
+    tl, tr, ml, mr, th = SITE_R[SITES[aid]]
+    slots = []
+    built_keys = {k for k, _ in built}
+    for key, t in (("TL",tl),("TR",tr),("ML",ml),("MR",mr)):
+        if key in built_keys:
+            owner = dict(built)[key]
+            slots.append(f"{owner}⌂{R}")
+        else:
+            slots.append(tok(t))
+    l4 = f"│ {pad('sites ' + ' '.join(slots) + f'  {GRAY}│{R} T' + str(th), TILE_W-4)} │"
+    l5 = "└" + "─" * (TILE_W - 2) + "┘"
+    return [l1, l2, l3, l4, l5]
+
+def iconography_study():
+    L = []
+    L.append(f"{BOLD}TILE PRESENCE — three treatments of the same mid-game tile{R}   {GRAY}(Silk Mill: Red president + 2 Red assistants + 1 Blue assistant){R}")
+    L.append("")
+    v1 = ["┌ A06 SILK MILL ─────────────┐",
+          f"│ {pad(f'President: {RED}Red{R}', TILE_W-4)} │",
+          f"│ {pad(f'{RED}Red 2{R} · {BLUE}Blue 1{R} assistants', TILE_W-4)} │",
+          f"│ {pad(f'Shophouses {DIM}····{R} Trade {DIM}·{R}', TILE_W-4)} │",
+          "└────────────────────────────┘"]
+    v2 = ["┌ A06 SILK MILL ─────────────┐",
+          f"│ {pad(f'{RED}▲{R} {RED}●●{R}  {BLUE}●{R}', TILE_W-4)} │",
+          f"│ {pad(f'{GRAY}▲ president · ● assistants{R}', TILE_W-4)} │",
+          f"│ {pad(f'Shophouses {DIM}····{R} Trade {DIM}·{R}', TILE_W-4)} │",
+          "└────────────────────────────┘"]
+    v3 = tile_mid("A06")
+    labels = [pad(f"{GRAY}V1 — today's letters/counts{R}", TILE_W + 2),
+              pad(f"{GRAY}V2 — pawn glyph line{R}", TILE_W + 2),
+              pad(f"{GRAY}V3 — marker on the title + slots{R}", TILE_W + 2)]
+    L.append("".join(labels).rstrip())
+    rows = max(len(v1), len(v2), len(v3))
+    for v in (v1, v2, v3):
+        while len(v) < rows: v.append(pad("", TILE_W))
+    for i in range(rows):
+        L.append(pad(v1[i], TILE_W + 2) + pad(v2[i], TILE_W + 2) + v3[i])
+    L.append("")
+    L.append(f"{GRAY}V3 frees a whole tile line for the site slots by moving the president marker (▲, in its owner's color) onto the title — scanning the board for ▲ answers")
+    L.append(f"{GRAY}\"where are the presidents\" at a glance, and {R}{GREEN}◈{R}{GRAY} tints tiles the engine's own legal list marks as reachable during Movement (see the mid-game frame).{R}")
+    return L
+
+def dashboard_mid():
+    L = []
+    L.append(hdr("PLAYERS"))
+    L.append(f"{RED}{BOLD}▶ RED — your turn{R}        {YEN}¥6{R}   {VP}11 VP{R}")
+    L.append(f"  Goods  {COPPER}0 Copper{R} · {WHITE}2 Silk{R} · {GREEN}1 Tea{R} · {CYAN}0 Seafood{R} · {YELLOW}1 Import{R}")
+    L.append(f"  Assistants  2 hand · {BOLD}5 on board{R} · 13 warehouse")
+    L.append(f"  Shophouses  2 in hand · 5 in warehouse · 1 built")
+    L.append(f"  Trade houses  0 in hand · 4 in warehouse · 0 built {GRAY}(next take ¥4){R}")
+    L.append(f"  Tech  {BOLD}Telegram{R} · Mercenaries {BOLD}1 unused{R} · 0 used")
+    L.append(f"  President {RED}▲{R} on SILK MILL · 1 order in hand")
+    L.append("")
+    L.append(f"{BLUE}{BOLD}  BLUE{R}                    {YEN}¥3{R}   {VP}8 VP{R}")
+    L.append(f"  Goods  {COPPER}1 Copper{R} · {WHITE}0 Silk{R} · {GREEN}2 Tea{R} · {CYAN}1 Seafood{R} · {DIM}0 Imports{R}")
+    L.append(f"  Assistants  4 hand · 4 on board · 12 warehouse")
+    L.append(f"  Shophouses  1 in hand · 6 in warehouse · 1 built")
+    L.append(f"  Trade houses  0 in hand · 4 in warehouse · 0 built {GRAY}(next take ¥4){R}")
+    L.append(f"  Tech  {DIM}none yet{R} · Mercenaries 0 unused · 0 used")
+    L.append(f"  President {BLUE}▲{R} on BANK · 1 order in hand {GRAY}(hidden){R}")
+    L.append("")
+    L.append(hdr("TRACKS  (filled at 4 · D = neutral dummy)"))
+    church = (f"  Church   faith "
+              f"{DIM}[4]{R}{BLUE}[5●]{R}{DIM}[6]{R}{INV}[7 D]{R}{DIM}[8]{R}{DIM}[9]{R}{DIM}[10]{R}{DIM}[11]{R}"
+              f" 2/4 · {VP}★3–14{R}+mv")
+    L.append(church)
+    customs = (f"  Customs  pay   "
+               f"{DIM}[1]{R}{DIM}[1]{R}{DIM}[2]{R}{INV}[2 D]{R}{DIM}[3]{R}{DIM}[3]{R}{DIM}[4]{R} imports"
+               f" 1/4 · {VP}★4–22{R}")
+    L.append(customs)
+    L.append(f"  {GRAY}Mercenary supply: 5 tiles left · ('tracks' renders every space){R}")
+    L.append("")
+    L.append(hdr("ACHIEVEMENTS  (one per category)"))
+    L.append(f"  {BOLD}A{R} · Copper 5      own 5 copper                {VP}8 / 6 VP{R}   {DIM}unclaimed{R}")
+    L.append(f"  {BOLD}B{R} · Money 10      own 10 yen                  {VP}9 / 7 VP{R}   {DIM}unclaimed{R}")
+    L.append(f"  {BOLD}C{R} · Production 4  buildings in 4 production   {VP}10 / 8 VP{R}  {DIM}unclaimed{R}")
+    L.append("")
+    L.append(hdr("YOUR HAND  ('hand' expands · 'privacy' hides)"))
+    for ln in order_card(2, note="your starting order"):
+        L.append("  " + ln)
+    return L
+
+def main_frame_mid():
+    L = []
+    title = f"{BOLD}Y O K O H A M A{R}   {GRAY}MID-GAME STUDY (illustrative state, turn 9) · live tracking · autosaved{R}"
+    L.append(pad("", max((FLOOR_W - vis(title)) // 2, 0)) + title)
+    L.append("")
+    rows = [["A00","A01","A02","A03"], ["A04","A05","A06"], ["A07","A08"], ["A09"]]
+    board = []
+    for i, row in enumerate(rows):
+        offset = " " * (i * (TILE_W // 2))
+        tiles = [tile_mid(a) for a in row]
+        for li in range(5):
+            board.append(offset + "".join(t[li] for t in tiles))
+    dash = dashboard_mid()
+    n = max(len(board), len(dash))
+    board += [""] * (n - len(board)); dash += [""] * (n - len(dash))
+    for b, d in zip(board, dash):
+        L.append(pad(b, 124) + d)
+    L.append(f"{GRAY}site slots: {R}{WHITE}⌂{R}{GRAY} built (owner color) · {R}{VP}★n{R}{GRAY} VP · {R}{CYAN}f{R}{GREEN}t{R}{WHITE}s{R}{COPPER}c{R}{GRAY}=goods · {R}{MAG}*{R}{GRAY}=any good · a=assistants · T=trading-house VP — 'sites' renders the full cards{R}")
+    L.append("")
+    L.append(f"{GRAY}{'─'*FLOOR_W}{R}")
+    phases = ["Additional", "Placement", "Movement", "Area Action", "5-Power", "Building", "Recovery", "Additional", "End"]
+    chain = f"{BOLD}TURN 9 · {RED}RED{R}{BOLD}'s turn{R}   "
+    for i, p in enumerate(phases):
+        chain += (f"{INV}{BOLD} {p.upper()} {R}" if i == 2 else f"{DIM}{p}{R}")
+        if i < len(phases) - 1: chain += f"{GRAY} ▸ {R}"
+    L.append(chain)
+    L.append("")
+    L.append(f"{BOLD}YOU ARE DECIDING{R} · where your President moves — destinations need one of your assistants to stop on ({GREEN}◈{R} on the board).")
+    L.append(f"   {BOLD}[1]{R} Move to {BOLD}CUSTOMS{R} {GREEN}◈{R} — 1 step · free")
+    L.append(f"   {BOLD}[2]{R} Move to {BOLD}PORT A{R} {GREEN}◈{R} — 1 step · free")
+    L.append(f"   {BOLD}[3]{R} Return the President to your hand")
+    L.append(f"   {DIM}(not offered: TEA PLANTATION — you have no assistant there to stop on){R}")
+    L.append(f"{GRAY}(pick a number · 'back' undoes the last applied entry · ↑ recalls what you typed · 'view' any surface · '?' the card index){R}")
+    L.append(f"{BOLD}> {R}")
+    return L
+
+def sites_view():
+    W = 44
+    def scard(idx, area, spaces, built, th, th_note):
+        rows = [pad(f"┌ {BOLD}SITE {idx}{R} {GRAY}— on {area}{R} ", W - 1) + "┐"]
+        names = {"TL":"top-left","TR":"top-right","ML":"mid-left","MR":"mid-right"}
+        for key, desc in spaces:
+            b = built.get(key)
+            state = f"{b}⌂ built{R}" if b else f"{DIM}empty{R}"
+            rows.append(pad(f"│ {names[key]:<10} {desc:<16} {state}", W - 1) + "│")
+        rows.append(pad(f"│ trading house  {VP}★{th} VP{R}  {th_note}", W - 1) + "│")
+        rows.append("└" + "─" * (W - 2) + "┘")
+        return rows
+    L = []
+    L.append(f"{BOLD}BUILDING SITES — full view{R}   {GRAY}every area's site card: each space's printed reward, what is built, and by whom ('sites'){R}")
+    L.append("")
+    c1 = scard(2, "COPPER MINE", [("TL","1 VP"),("TR","3 Seafood"),("ML","— blank"),("MR","2 Seafood")],
+               {"TL": BLUE}, 7, f"{DIM}open{R}")
+    c2 = scard(8, "SILK MILL", [("TL","1 VP"),("TR","2 any goods"),("ML","— blank"),("MR","1 any good")],
+               {}, 6, f"{DIM}open{R}")
+    c3 = scard(9, "CHURCH", [("TL","1 VP"),("TR","4 VP"),("ML","— blank"),("MR","2 assistants")],
+               {}, 8, f"{DIM}open{R}")
+    for i in range(len(c1)):
+        L.append(pad(c1[i], W + 2) + pad(c2[i], W + 2) + c3[i])
+    L.append("")
+    L.append(f"{GRAY}A shophouse built on a space takes that space's printed reward once; the trading house builds FREE from hand and scores its VP. Seven more cards page with n / p.{R}")
+    L.append(f"{BOLD}> {R}{GRAY}Enter returns to the game{R}")
+    return L
+
 if __name__ == "__main__":
     emit("main-frame", main_frame())
     emit("order-index", order_index())
     emit("tracks-view", tracks_view())
     emit("frame-4p", frame_4p())
+    emit("iconography", iconography_study())
+    emit("main-frame-mid", main_frame_mid())
+    emit("sites-view", sites_view())

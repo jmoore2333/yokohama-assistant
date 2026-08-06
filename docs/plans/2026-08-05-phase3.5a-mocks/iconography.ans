@@ -1,0 +1,11 @@
+[1mTILE PRESENCE — three treatments of the same mid-game tile[0m   [90m(Silk Mill: Red president + 2 Red assistants + 1 Blue assistant)[0m
+
+[90mV1 — today's letters/counts[0m     [90mV2 — pawn glyph line[0m            [90mV3 — marker on the title + slots[0m
+┌ A06 SILK MILL ─────────────┐  ┌ A06 SILK MILL ─────────────┐  ┌ [90mA06[0m [1mSILK MILL[0m [91m▲[0m ───────────┐
+│ President: [91mRed[0m             │  │ [91m▲[0m [91m●●[0m  [94m●[0m                    │  │ 5-Power: [93m1 Import[0m  [90mSite 8[0m  │
+│ [91mRed 2[0m · [94mBlue 1[0m assistants  │  │ [90m▲ president · ● assistants[0m │  │ [91m●●[0m  [94m●[0m                      │
+│ Shophouses [2m····[0m Trade [2m·[0m    │  │ Shophouses [2m····[0m Trade [2m·[0m    │  │ sites [38;5;75m★1[0m [95m*2[0m [90m—[0m [95m*1[0m  [90m│[0m T6     │
+└────────────────────────────┘  └────────────────────────────┘  └────────────────────────────┘
+
+[90mV3 frees a whole tile line for the site slots by moving the president marker (▲, in its owner's color) onto the title — scanning the board for ▲ answers
+[90m"where are the presidents" at a glance, and [0m[32m◈[0m[90m tints tiles the engine's own legal list marks as reachable during Movement (see the mid-game frame).[0m
