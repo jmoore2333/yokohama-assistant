@@ -489,7 +489,8 @@ fn the_reveal_blocks_are_identical_across_formats() {
 }
 
 /// (e) The environment/persistence promises §2 makes a tester -- the `NO_COLOR`
-/// switch and per-move autosave -- are present in BOTH formats.
+/// switch, per-move autosave, and (T9) the two the line editor adds -- are
+/// present in BOTH formats.
 #[test]
 fn section2_environment_promises_are_in_both_guides() {
     for (file, text) in [("cli-guide.md", GUIDE_MD), ("cli-guide.html", GUIDE_HTML)] {
@@ -502,6 +503,24 @@ fn section2_environment_promises_are_in_both_guides() {
             text.contains("autosaves after"),
             "{file} no longer states the game autosaves after every applied move -- §2 promises it \
              (authority: the REPL's post-apply autosave)."
+        );
+        // The two T9 promises are here rather than in prose alone because both
+        // are guarantees a tester at a LIVE table would act on: one says their
+        // opponents' revealed cards do not outlive the game on disk, the other
+        // says the key they reach for to abandon a mistyped line cannot play a
+        // move for them.
+        assert!(
+            text.contains("never written to a file"),
+            "{file} no longer promises the input history stays off disk -- §2 makes that promise \
+             to live-table testers, whose typed lines name hidden cards (authority: the CLI takes \
+             rustyline with default-features off, so `DefaultHistory` IS `MemHistory`; pinned by \
+             input::tests::history_is_in_memory_by_construction)."
+        );
+        assert!(
+            text.contains("it does not quit, and it never applies anything"),
+            "{file} no longer states what Ctrl-C does -- §2 promises it abandons the typed line \
+             without applying anything (authority: input::classify maps Interrupted to a re-read, \
+             deliberately NOT to an empty line, which would be the forced-option bare Enter)."
         );
     }
 }

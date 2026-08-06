@@ -1,12 +1,16 @@
-use std::io::{BufRead, Write};
+use std::io::Write;
 
 fn main() {
     yokohama_cli::style::init_from_tty();
     yokohama_cli::screen::init_from_tty();
+    // The third of the three arm-once-from-the-real-streams switches, and the
+    // only one that reads stdin (see `input::editor_gate`). It has to run
+    // before the reader is built, and only `main` may call it -- that is what
+    // keeps the line editor out of every test and every pipe.
+    yokohama_cli::input::init_from_tty();
     let rules = yokohama_core::Rules::standard();
     let args: Vec<String> = std::env::args().collect();
-    let stdin = std::io::stdin();
-    let mut lines = stdin.lock().lines().map_while(Result::ok);
+    let mut lines = yokohama_cli::input::LineReader::from_stdin();
 
     if yokohama_cli::screen::enabled() {
         println!("{}", yokohama_cli::screen::banner());
