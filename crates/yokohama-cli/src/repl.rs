@@ -182,6 +182,24 @@ pub(crate) enum SubPrompt {
     /// surface over the same render functions the direct commands call, so
     /// the two can never disagree.
     ViewMenu,
+    /// The guided `reveal` flow (T8, spec §0.2's "every decision reachable by
+    /// numbered menu"): pick the SEAT whose hidden starting order just became
+    /// public from a numbered list of the seats that have one, then name the
+    /// card in the crate's one card grammar. `seat` is `None` while the menu is
+    /// up and `Some` once it has been picked, mirroring `PlaceB`'s
+    /// select -> answer shape.
+    ///
+    /// **The one variant here that collects HIDDEN information, which the
+    /// paragraph above this enum says sub-prompts do not do** — so the claim is
+    /// narrowed rather than left false. What that paragraph is really about is
+    /// `pending`: a bound reveal is parked behind a move and nothing may be
+    /// recorded until the group completes, which is a state machine no ordinary
+    /// prompt should be able to enter. This one records a STANDALONE event with
+    /// no move behind it (`Session::apply_standalone`, the same call the
+    /// `reveal <seat> <card>` alias makes), so it needs no parking and belongs
+    /// with the other guided entry helpers. It is live-only for the ordinary
+    /// reason: no seat has a hidden starting order in a simulation.
+    Reveal { seats: Vec<PlayerId>, seat: Option<PlayerId> },
 }
 
 /// The result of one `Repl::step` call: the text to show the user (which
@@ -577,7 +595,16 @@ impl Repl {
             }
             ["save"] => self.save_cmd(None),
             ["save", _] => self.save_cmd(Some(words[1])),
+            // The expert alias names both halves; every shorter form opens the
+            // guided menu instead of teaching a usage line (spec §0.2).
             ["reveal", seat_tok, card_tok] => self.reveal_cmd(seat_tok, card_tok),
+            ["reveal"] => self.reveal_menu(None),
+            ["reveal", seat_tok] => {
+                match seat_tok.parse::<u8>().ok().and_then(|n| PlayerId::try_new(n).ok()) {
+                    Some(seat) => self.reveal_menu(Some(seat)),
+                    None => self.out(format!("'{seat_tok}' is not a valid seat number.\n"), false),
+                }
+            }
             ["reveal", ..] => self.out("Usage: reveal <seat> <O..>\n".to_string(), false),
             ["a", rest @ ..] => self.try_placement_a(rest),
             ["b", rest @ ..] => self.try_placement_b(rest),
@@ -1116,6 +1143,7 @@ impl Repl {
             SubPrompt::PlaceA { .. } => self.step_place_a(words),
             SubPrompt::PlaceB { .. } => self.step_place_b(words),
             SubPrompt::ViewMenu => self.step_view_menu(words),
+            SubPrompt::Reveal { .. } => self.step_reveal(words),
             SubPrompt::None => self.out(String::new(), false), // unreachable: gated by caller
         }
     }
@@ -1212,7 +1240,22 @@ impl Repl {
     /// changes: `pending` and `sub` are left exactly as they were, which is
     /// what makes the return contract structural (see [`Repl::overlay`]).
     fn open_index(&mut self, kind: IndexKind) -> StepOutput {
-        self.overlay = Some(Overlay::Index { kind, filter: None });
+        self.open_index_filtered(kind, None)
+    }
+
+    /// The same, narrowed — what `f silk` typed AT a prompt does (T8).
+    ///
+    /// The grammar accepts a filter wherever it accepts a card, so a filter
+    /// typed with no index up has to mean something; opening the index already
+    /// narrowed is the reading that matches the wizard's (`ask_card` prints the
+    /// filtered screen there), and it is the only one that does not throw the
+    /// player's term away.
+    pub(crate) fn open_index_filtered(
+        &mut self,
+        kind: IndexKind,
+        filter: Option<crate::screen_model::IndexFilter>,
+    ) -> StepOutput {
+        self.overlay = Some(Overlay::Index { kind, filter });
         self.out(String::new(), false)
     }
 
@@ -1222,30 +1265,37 @@ impl Repl {
     /// `None` whenever nothing is being recorded — which is also what makes the
     /// screen a read-only VIEW, with no selection numbers on it (F3 from the
     /// other side: a number is printed only where typing it does something).
+    ///
+    /// **Two capture states can be open, never both.** A bound reveal
+    /// (`pending`) is parked behind a move; the guided `reveal` flow
+    /// (`SubPrompt::Reveal`) is a standalone command that only ever starts from
+    /// a clean main prompt, where `pending` is `None` by construction. The
+    /// bound one is read first so the order is stated rather than assumed.
+    ///
+    /// **A tech reveal is a card prompt too, and T6 routes it** — the hand-off
+    /// T5 named. Until the tech index existed, `?` there opened the ORDER index,
+    /// a screen of thirty-six cards that cannot answer "which technology
+    /// refilled the Lab"; now it opens the technology index in recording
+    /// context, with the same leak fence (`index_placements` supplies the
+    /// locations; nothing is derived).
     fn index_target(&self) -> Option<RecordingTarget> {
-        match &self.pending {
-            Pending::OrderReveals { slots, board_b, collected, .. } => {
-                // Every position here is 0-based, which is the ONE convention
-                // `RecordingTarget` states: `collected.len()` is both the index
-                // of the slot being filled next and the index of this reveal in
-                // the run. `describe::recording_target` does the `+ 1`.
-                Some(RecordingTarget::PortRefill {
-                    board_b: *board_b,
-                    slot: slots[collected.len()],
-                    nth: collected.len(),
-                    of: slots.len(),
-                })
+        if let Some(model) = self.reveal_model() {
+            return Some(model.target);
+        }
+        match &self.sub {
+            // Only once a seat is chosen: while the seat MENU is up the question
+            // is "whose card", which the order index cannot answer, so numbering
+            // its cards would print numbers that mean nothing here (F3).
+            SubPrompt::Reveal { seat: Some(seat), .. } => {
+                Some(RecordingTarget::StartingOrder { seat: *seat })
             }
-            // **A tech reveal is a card prompt too, and T6 routes it** — the
-            // hand-off T5 named. Until the tech index existed, `?` here opened
-            // the ORDER index, a screen of thirty-six cards that cannot answer
-            // "which technology refilled the Lab"; now it opens the technology
-            // index in recording context, with the same leak fence
-            // (`index_placements` supplies the locations; nothing is derived).
-            Pending::TechReveal { board_b, .. } => {
-                Some(RecordingTarget::TechRefill { board_b: *board_b })
-            }
-            Pending::None => None,
+            SubPrompt::Reveal { .. }
+            | SubPrompt::None
+            | SubPrompt::Pick { .. }
+            | SubPrompt::Retreat { .. }
+            | SubPrompt::PlaceA { .. }
+            | SubPrompt::PlaceB { .. }
+            | SubPrompt::ViewMenu => None,
         }
     }
 
@@ -1259,7 +1309,7 @@ impl Repl {
     /// order is hidden, and an index that dimmed it with "in Seat 1's hand"
     /// would leak the one card the whole observation boundary exists to
     /// protect.
-    fn index_placements(&self) -> Vec<(CardRef, CardLocation)> {
+    pub(crate) fn index_placements(&self) -> Vec<(CardRef, CardLocation)> {
         let state = self.session.state();
         let mut placed = Vec::new();
         for (board_b, board) in
@@ -1518,6 +1568,24 @@ impl Repl {
                 let token = format!("T{:02}", id.0);
                 let out = self.collect_reveal(&[&token]);
                 StepOutput { text: out.text, quit: out.quit }
+            }
+            // The guided `reveal` flow, once a seat has been picked — the same
+            // hand-off, to the other capture (T8). Fed in as the typed form for
+            // the same reason: `apply_standalone` still rules on whether this
+            // seat can reveal this card, so the index buys finding the card and
+            // nothing else.
+            //
+            // **No echo added here, unlike the arm above**, and the asymmetry is
+            // in the two capture paths rather than in this function:
+            // `collect_reveal` does not draw the card (a bound reveal never
+            // did), while `commit_starting_order` does — so echoing again on
+            // this side would print the same card twice on one screen.
+            (CardRef::Order(id), Pending::None)
+                if matches!(self.sub, SubPrompt::Reveal { seat: Some(_), .. }) =>
+            {
+                self.overlay = None;
+                let token = format!("O{:02}", id.0);
+                self.step_reveal(&[&token])
             }
             // Either nothing is being recorded, or the pick is from a registry
             // the prompt underneath is not asking about. Both are inspections
@@ -2013,6 +2081,34 @@ impl Repl {
                     format!("{}\n> confirm / cancel\n", describe::describe_move(&mv, state, rules))
                 }
             }
+            SubPrompt::Reveal { seats, seat } => match seat {
+                // The card half is the SAME composed screen a bound reveal
+                // draws, from the same model and the same renderer — so the two
+                // reveal flows in this driver look like one flow, which is the
+                // whole content of "one card grammar everywhere" at the level a
+                // player actually experiences it.
+                Some(seat) => crate::decision_render::reveal_zone(
+                    &crate::screen_model::RevealModel {
+                        target: RecordingTarget::StartingOrder { seat: *seat },
+                        collected: Vec::new(),
+                    },
+                    state.config.player_count,
+                ),
+                None => {
+                    let mut out = String::from("Whose starting order just became public?\n");
+                    for (i, seat) in seats.iter().enumerate() {
+                        let color = state
+                            .players
+                            .iter()
+                            .find(|p| p.id == *seat)
+                            .map(|p| render::color_name(p.color))
+                            .unwrap_or("that seat");
+                        out.push_str(&format!("[{}] Seat {} — {color}\n", menu_number(i), seat.0));
+                    }
+                    out.push_str("> pick a number, or 'cancel'\n");
+                    out
+                }
+            },
         }
     }
 
@@ -2417,10 +2513,133 @@ impl Repl {
         }
     }
 
+    /// The seats a `reveal` could legitimately be about: live-tracked players
+    /// whose starting order the engine still holds as hidden, in seat order.
+    ///
+    /// The ENGINE's flag, never a guess of the driver's — `reveal_starting_order`
+    /// refuses any other seat, so a menu built from anything else would be
+    /// offering rows the authority below it rejects (F2's defect, at a different
+    /// prompt).
+    fn revealable_seats(&self) -> Vec<PlayerId> {
+        self.session
+            .state()
+            .players
+            .iter()
+            .filter(|p| p.starting_order_hidden)
+            .map(|p| p.id)
+            .collect()
+    }
+
+    /// `reveal` with nothing to name a card: the GUIDED path (T8, spec §0.2 —
+    /// "every decision reachable by numbered menu"). Opens the seat menu, or
+    /// jumps straight to the card question when the seat is already named and
+    /// only the card is missing.
+    ///
+    /// Refuses with a reason rather than an empty menu when no seat has a hidden
+    /// starting order — which is every simulation and any live game where they
+    /// have all been revealed. An empty numbered list is the shape that makes a
+    /// player wonder what they typed wrong.
+    fn reveal_menu(&mut self, seat: Option<PlayerId>) -> StepOutput {
+        let seats = self.revealable_seats();
+        if seats.is_empty() {
+            return self.out(
+                "No seat has a hidden starting order right now — there is nothing to reveal.\n"
+                    .to_string(),
+                false,
+            );
+        }
+        if let Some(seat) = seat {
+            if !seats.contains(&seat) {
+                return self.out(
+                    format!("Seat {}'s starting order is not hidden — nothing to reveal there.\n", seat.0),
+                    false,
+                );
+            }
+        }
+        // A single candidate still shows its menu rather than auto-picking: a
+        // reveal writes an event into the record, and choosing a seat on the
+        // player's behalf is the one shortcut that could record the wrong one
+        // without them ever reading a seat number.
+        self.sub = SubPrompt::Reveal { seats, seat };
+        self.out(String::new(), false)
+    }
+
+    /// One line inside the guided `reveal` flow: a numbered seat pick, then the
+    /// card, in the crate's one card grammar.
+    fn step_reveal(&mut self, words: &[&str]) -> StepOutput {
+        let (seats, seat) = match &self.sub {
+            SubPrompt::Reveal { seats, seat } => (seats.clone(), *seat),
+            _ => return self.out(String::new(), false), // unreachable: dispatched as Reveal
+        };
+        match words {
+            ["quit"] | ["q"] => return StepOutput { text: "bye\n".to_string(), quit: true },
+            ["cancel"] => {
+                self.sub = SubPrompt::None;
+                return self.out("Reveal cancelled — nothing was recorded.".to_string(), false);
+            }
+            _ => {}
+        }
+        let Some(seat) = seat else {
+            let [tok] = words else {
+                return self.out("! pick a numbered seat, or 'cancel'".to_string(), false);
+            };
+            let Some(picked) = card_prompt::list_index(tok, seats.len()).map(|k| seats[k]) else {
+                return self
+                    .out(format!("! pick a number {}, or 'cancel'", range_text(seats.len())), false);
+            };
+            self.sub = SubPrompt::Reveal { seats, seat: Some(picked) };
+            return self.out(String::new(), false);
+        };
+        let placed = self.index_placements();
+        let prompt = CardPrompt::orders(&placed, card_prompt::Numbering::Ids);
+        match card_prompt::resolve(&prompt, &words.join(" "), self.session.rules()) {
+            // **The flow closes on SUCCESS ONLY, and that is not tidiness.**
+            // The engine is the authority on whether this seat can reveal this
+            // card, and it refuses with one line ("Illegal: card not found" —
+            // what a card already in somebody's hand gets). Closing the flow
+            // there would drop the player back at the main prompt and make them
+            // retype `reveal` and re-pick the seat to correct one typo, which is
+            // the tool-fighting this phase exists to end. Found by driving the
+            // real binary in a PTY, not by reading the code.
+            CardEntry::Card(CardRef::Order(card)) => {
+                let (text, applied) = self.commit_starting_order(seat, card);
+                // Cleared BEFORE the screen is composed, not after: `out`
+                // appends whatever prompt is standing, so clearing it second
+                // prints the answered question again under its own answer.
+                if applied {
+                    self.sub = SubPrompt::None;
+                }
+                self.out(text, false)
+            }
+            CardEntry::OpenIndex => self.open_index(IndexKind::Orders),
+            CardEntry::Filter(filter) => self.open_index_filtered(IndexKind::Orders, filter),
+            // Bare Enter and `back` back OUT here, unlike at a bound reveal —
+            // and the difference is what is at stake, not a preference. There
+            // nothing may be lost silently because a MOVE is parked behind the
+            // question; here nothing is parked at all, so leaving costs the
+            // player one word to start again.
+            CardEntry::Cancel => {
+                self.sub = SubPrompt::None;
+                self.out("Reveal cancelled — nothing was recorded.".to_string(), false)
+            }
+            CardEntry::Refused(message) => self.out(message, false),
+            CardEntry::Card(other) => self.out(
+                format!("{} is not an order card.", card_prompt::card_tag(other)),
+                false,
+            ),
+        }
+    }
+
     /// `reveal <seat> <card>`: make a live-tracked opponent's hidden
     /// starting order public via `Session::apply_standalone`. Unlike the
     /// bound reveals above, this is a normal top-level command usable any
     /// time outside lockdown/collection -- it isn't triggered by a move.
+    ///
+    /// **Kept verbatim as the EXPERT ALIAS** (spec §0.2: today's grammars
+    /// "survive as expert aliases only"), with [`Repl::reveal_menu`] as the path
+    /// that needs nothing memorized. Both end at
+    /// [`Repl::commit_starting_order`], so the two cannot record different
+    /// things.
     fn reveal_cmd(&mut self, seat_tok: &str, card_tok: &str) -> StepOutput {
         let seat = match seat_tok.parse::<u8>().ok().and_then(|n| PlayerId::try_new(n).ok()) {
             Some(p) => p,
@@ -2458,6 +2677,27 @@ impl Repl {
                 return self.out("Usage: reveal <seat> <O..>".to_string(), false)
             }
         };
+        // The alias is one-shot: it took both halves on one line, so there is no
+        // flow to hold open and the success flag has no reader here.
+        let (text, _applied) = self.commit_starting_order(seat, card);
+        self.out(text, false)
+    }
+
+    /// Record one seat's starting order — the shared tail of the `reveal`
+    /// alias and the guided menu (T8) — as SCREEN TEXT plus whether it APPLIED.
+    ///
+    /// **One function so the two paths cannot record different things.** The
+    /// event, the echo, the confirmation wording and the delta surfacing are all
+    /// here; what differs upstream is only how the seat and the card were named,
+    /// and what each does with a refusal (the alias prints it and is done, the
+    /// guided flow stays open on the question).
+    ///
+    /// It returns TEXT rather than a finished `StepOutput` for one reason worth
+    /// stating: `out` appends whatever prompt is currently standing, so the
+    /// caller has to be able to put the driver into its post-answer state before
+    /// the screen is composed. Composing first and tidying after prints the
+    /// question again underneath its own answer.
+    fn commit_starting_order(&mut self, seat: PlayerId, card: OrderCardId) -> (String, bool) {
         // The card echoed back in full before it commits (§0.6): a reveal is
         // recorded into the game record, and an id typed one digit wrong is
         // exactly the entry a player wants to catch on sight.
@@ -2476,9 +2716,9 @@ impl Repl {
                     text.push_str(&line);
                     text.push('\n');
                 }
-                self.out(text, false)
+                (text, true)
             }
-            Err(e) => self.out(format!("Illegal: {e}\n"), false),
+            Err(e) => (format!("Illegal: {e}\n"), false),
         }
     }
 
@@ -2712,8 +2952,9 @@ Commands:
   list            reset to the first page of legal options
   undo            undo the last move (and any reveals bound to it) ('back' also works)
   save [path]     save to path (or to the last-used path if omitted)
-  reveal <seat> <O..>  live mode: make a hidden opponent starting order public
-  cancel          back out of any sub-prompt or full-screen surface: reveal collection (live), view menu, card index, tracks/sites view, numbered pick, either Placement picker, guided retreat
+  reveal          live mode: pick the seat whose hidden starting order just became public from a numbered menu, then name the card
+  reveal <seat> <O..>  the same thing in one line, for anyone who knows both halves
+  cancel          back out of any sub-prompt or full-screen surface: reveal collection (live), guided reveal, view menu, card index, tracks/sites view, numbered pick, either Placement picker, guided retreat
   help            show this text
   quit            exit the REPL ('q' also works)
 ";
@@ -6259,6 +6500,217 @@ mod tests {
             refusal.text.contains("nothing is being recorded right now"),
             "{}",
             refusal.text,
+        );
+    }
+
+    // -----------------------------------------------------------------
+    // T8: the guided reveal, and the alias it keeps
+    // -----------------------------------------------------------------
+
+    /// A 3P live session with TWO seats' starting orders hidden, plus what each
+    /// of them was actually dealt.
+    ///
+    /// Two, deliberately: with one hidden seat every wrong seat plumbing gives
+    /// the right answer, so a menu that ignored the pick entirely would pass.
+    fn live_3p_two_hidden(seed: u64) -> (Repl, Vec<(PlayerId, OrderCardId)>) {
+        let rules = Rules::standard();
+        let config = GameConfig::for_player_count(3);
+        let table = new_game(config.clone(), &rules, seed).unwrap();
+        let hidden =
+            vec![(PlayerId::new(1), table.deals[1][0]), (PlayerId::new(2), table.deals[2][0])];
+        let session = Session::new_live(
+            config,
+            seed,
+            SetupObservations::default(),
+            vec![
+                StartingOrderChoice::Keep(0),
+                StartingOrderChoice::Unknown,
+                StartingOrderChoice::Unknown,
+            ],
+            rules,
+        )
+        .unwrap();
+        (Repl::new(session), hidden)
+    }
+
+    /// **`reveal` on its own opens a numbered seat menu, and the menu path
+    /// records exactly what the alias records** (spec §0.2: every decision
+    /// reachable by numbered menu; today's grammars survive as expert aliases).
+    ///
+    /// Pinned as an EQUALITY of recorded events rather than as two independent
+    /// "it worked" checks: two paths into one record is precisely the shape that
+    /// drifts, and the event log is the thing a replay reads back.
+    ///
+    /// **Driven at the SECOND menu row of two**, which is what makes the
+    /// equality bite: a guided path that ignored the pick and revealed the first
+    /// hidden seat — or any hard-coded one — passes every check here except this
+    /// one.
+    #[test]
+    fn the_guided_reveal_records_exactly_what_the_alias_records() {
+        let (_, hidden) = live_3p_two_hidden(21);
+        let (seat, card) = hidden[1]; // seat 2, the SECOND row of the menu
+
+        // The alias, verbatim.
+        let (mut r_alias, _) = live_3p_two_hidden(21);
+        let out = r_alias.step(&format!("reveal {} O{:02}", seat.0, card.0));
+        assert!(out.text.contains("revealed"), "{}", out.text);
+
+        // The menu path: `reveal`, pick the seat by number, name the card.
+        let (mut r_menu, _) = live_3p_two_hidden(21);
+        let menu = r_menu.step("reveal");
+        assert!(menu.text.contains("Whose starting order just became public?"), "{}", menu.text);
+        assert!(
+            menu.text.contains(&format!("[{}] Seat 1", NUMBER_BASE))
+                && menu.text.contains(&format!("[{}] Seat 2", NUMBER_BASE + 1)),
+            "both hidden seats are numbered from the crate's base: {}",
+            menu.text,
+        );
+        assert!(!menu.text.contains("Seat 0"), "seat 0 kept its dealt card and is not hidden");
+        r_menu.step(&(NUMBER_BASE + 1).to_string());
+        // The card question is the SAME composed zone the bound captures draw,
+        // and it names the seat that was picked rather than the first one.
+        let asked = crate::style::strip_ansi(&r_menu.sub_prompt_text());
+        assert!(asked.contains("YOU ARE RECORDING"), "{asked}");
+        assert!(asked.contains("Seat 2's hidden starting order"), "{asked}");
+        assert!(!asked.contains("Seat 1's"), "{asked}");
+        assert!(asked.contains("'cancel' backs out"), "no move is parked here: {asked}");
+        let out = r_menu.step(&format!("O{:02}", card.0));
+        assert!(
+            out.text.contains(&format!("Seat {} revealed O{:02}", seat.0, card.0)),
+            "the confirmation names the seat and the card: {}",
+            out.text,
+        );
+        assert!(matches!(r_menu.sub, SubPrompt::None), "the flow closes on success");
+
+        assert_eq!(
+            r_menu.session.record().events,
+            r_alias.session.record().events,
+            "the menu path and the alias must record the same event, byte for byte",
+        );
+        assert_eq!(r_menu.session.state(), r_alias.session.state());
+        assert!(
+            r_menu.session.record().events.iter().any(|e| matches!(
+                e,
+                RecordedEvent::RevealStartingOrder { player, .. } if *player == seat
+            )),
+            "anti-vacuity: the event is really about the seat that was picked",
+        );
+    }
+
+    /// The guided flow refuses rather than showing an empty list when there is
+    /// nothing to reveal — every simulation, and any live game whose starting
+    /// orders are all public. An empty numbered menu is the shape that makes a
+    /// player wonder what they typed wrong.
+    #[test]
+    fn the_guided_reveal_refuses_when_no_seat_has_a_hidden_starting_order() {
+        let mut r = repl_2p(4); // a simulation: nothing is hidden from the engine
+        let out = r.step("reveal");
+        assert!(out.text.contains("nothing to reveal"), "{}", out.text);
+        assert!(matches!(r.sub, SubPrompt::None), "no sub-prompt opens");
+
+        // A named seat that is not hidden is refused by SEAT, which is a
+        // different fact and says so.
+        let (mut r, _) = repl_live_hidden(21);
+        let out = r.step("reveal 0");
+        assert!(out.text.contains("Seat 0's starting order is not hidden"), "{}", out.text);
+        assert!(matches!(r.sub, SubPrompt::None));
+    }
+
+    /// **An engine refusal leaves the guided flow OPEN, on the same question.**
+    ///
+    /// Found by driving the shipped binary in a PTY rather than by reading the
+    /// code: the flow closed on any answer, so one mistyped card sent the
+    /// operator back to the main prompt to retype `reveal` and re-pick the seat.
+    /// The engine stays the authority — it still refuses — but a refusal is a
+    /// re-ask, which is what every other prompt in this driver does.
+    ///
+    /// The card used is one the take put in a HAND, which is the reachable way
+    /// to get a refusal here: it is a real order card, and it is neither in the
+    /// deck nor in the boxed pile, so `reveal_starting_order` cannot find it.
+    #[test]
+    fn an_engine_refusal_keeps_the_guided_reveal_open_on_the_same_question() {
+        let (mut r, hidden) = repl_live_hidden(21);
+        let in_a_hand = r.session.state().players[0]
+            .order_cards_in_hand
+            .first()
+            .copied()
+            .expect("seat 0 kept a starting order");
+        r.step("reveal");
+        r.step(&NUMBER_BASE.to_string());
+        let out = r.step(&format!("O{:02}", in_a_hand.0));
+        assert!(out.text.contains("Illegal"), "the engine still refuses: {}", out.text);
+        assert!(
+            matches!(r.sub, SubPrompt::Reveal { seat: Some(s), .. } if s == PlayerId::new(1)),
+            "the flow stays open on the SAME seat, so one typo does not cost the whole entry",
+        );
+        assert!(
+            crate::style::strip_ansi(&out.text).contains("Seat 1's hidden starting order"),
+            "and the question is re-asked under the refusal: {}",
+            out.text,
+        );
+        // ...and the correct card, typed next, still lands — and the SUCCESS
+        // screen does not re-ask. That second half is its own defect and its
+        // own fix: `out` appends whatever prompt is standing, so clearing the
+        // flow after composing the screen printed the answered question again
+        // underneath its own answer (also found in the PTY, not in the code).
+        let out = r.step(&format!("O{:02}", hidden.0));
+        assert!(out.text.contains("revealed"), "{}", out.text);
+        assert!(matches!(r.sub, SubPrompt::None), "success closes it");
+        assert!(
+            !crate::style::strip_ansi(&out.text).contains("YOU ARE RECORDING"),
+            "an answered question must not be re-asked under its own answer: {}",
+            out.text,
+        );
+    }
+
+    /// **The index answers the guided reveal too** (spec §0.6: the index is
+    /// available inside input-capture prompts). Without the routing this pins,
+    /// `?` here would open a read-only order index whose numbers select nothing
+    /// and whose pick is refused with "nothing is being recorded" — false, since
+    /// a capture is open, which is the T6 review's finding at a new prompt.
+    #[test]
+    fn the_index_inside_the_guided_reveal_answers_it() {
+        let (mut r, hidden) = repl_live_hidden(21);
+        r.step("reveal");
+        r.step(&NUMBER_BASE.to_string());
+        let out = r.step("?");
+        assert!(out.text.contains("ORDER CARD INDEX"), "{}", out.text);
+        assert!(
+            out.text.contains("Recording: Seat 1's hidden starting order"),
+            "in RECORDING context, naming what it is collecting: {}",
+            out.text,
+        );
+        let number = r
+            .index_model(IndexKind::Orders)
+            .cards()
+            .find(|c| c.face.card_ref() == Some(CardRef::Order(hidden)))
+            .and_then(|c| c.selection)
+            .expect("an unplaced card is selectable on a recording screen");
+        let out = r.step(&number.to_string());
+        let plain = crate::style::strip_ansi(&out.text);
+        assert!(plain.contains(&format!("O{:02}", hidden.0)), "echoed in full: {plain}");
+        assert!(out.text.contains("revealed"), "{}", out.text);
+        // ...and DRAWN once. Both this hand-off and `commit_starting_order` can
+        // draw the card, and each doing so prints the whole face twice on one
+        // screen — which is what the sibling arms above look like if the
+        // asymmetry between the two capture paths is not noticed (the bound
+        // reveal's collector draws nothing, so that one adds the echo itself).
+        // Counted over CARD FACES rather than over mentions of the id, since the
+        // confirmation sentence and the delta line legitimately name it too.
+        let drawn = plain
+            .lines()
+            .filter(|l| l.starts_with('┌') && l.contains(&format!("O{:02}", hidden.0)))
+            .count();
+        assert_eq!(drawn, 1, "the card is drawn exactly once:\n{plain}");
+        assert!(r.overlay.is_none(), "the index closes on a selection");
+        assert!(matches!(r.sub, SubPrompt::None), "and the flow closes with it");
+        assert!(
+            r.session.record().events.iter().any(|e| matches!(
+                e,
+                RecordedEvent::RevealStartingOrder { player, card }
+                    if *player == PlayerId::new(1) && *card == hidden
+            )),
+            "the pick reached the engine as the reveal",
         );
     }
 

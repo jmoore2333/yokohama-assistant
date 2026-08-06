@@ -4,6 +4,13 @@
 //! authority is the approved mock pair
 //! `2026-08-05-phase3.5a-mocks/main-frame.ans` + `main-frame-mid.ans`).
 //!
+//! **And, since T8, the REVEAL zone** ([`reveal_zone`]) — the prompt that
+//! replaces the decision zone while a live capture is waiting for a card. It is
+//! here rather than in a module of its own because it is the same zone of the
+//! screen answering a different question, and because it has to be *drawn* the
+//! same way: same banner-then-blank-then-sentence rhythm, same [`wrap_hint`], a
+//! caret on its own last line. Two modules would be two rhythms inside a week.
+//!
 //! **The third module on the R9 seam, held the same way its two siblings hold
 //! it, and the import list is the proof.** This module renders; it never reads
 //! game state. Its inputs are [`crate::screen_model`]'s pure data plus a seat
@@ -981,6 +988,98 @@ fn hint_with_lead(lead: Vec<String>, ctx: &ZoneContext<'_>, players: u8) -> Stri
     wrap_hint(&parts, crate::screen::frame_width(usize::from(players)))
 }
 
+// ---------------------------------------------------------------------------
+// The reveal zone (plan T8, spec §0.2/§0.6)
+// ---------------------------------------------------------------------------
+
+/// The prompt a live capture shows instead of the decision zone: what refilled,
+/// which card is being asked for, what this group already holds, and the ways
+/// out.
+///
+/// **The same four-part rhythm as [`decision_zone`]**, deliberately — a banner
+/// line, a blank, the one-sentence statement of what is being asked, and the
+/// standing hint above the caret. A capture is the one moment the player is
+/// looking away from the screen and at the table, so the shape they read has to
+/// be the shape they already know; the pre-redesign prompt was a single wrapped
+/// sentence with the slot number, the run position, the grammar and the escape
+/// all packed into it (*"a lot of abbreviations"*, the brief's first finding).
+///
+/// It carries no options and no phase chain: the frame underneath it is
+/// unchanged and still on screen, and nothing here is a decision — the engine
+/// has already ruled the parked move legal.
+pub fn reveal_zone(model: &crate::screen_model::RevealModel, players: u8) -> String {
+    let mut out = String::new();
+    out.push_str(&paint(Tone::Strong, "LIVE TRACKING"));
+    out.push_str(&paint(Tone::Chrome, &format!(" {} ", glyph::SEPARATOR)));
+    out.push_str(&paint(Tone::Chrome, &describe::reveal_event(model.target)));
+    out.push_str("\n\n");
+    out.push_str(&paint(Tone::Strong, "YOU ARE RECORDING"));
+    // The target is a NOUN PHRASE ("Port A slot 6 (reveal 1 of 1)", "the card
+    // that refilled Laboratory A"), which is what the index header consumes it
+    // as — so the question hangs off it rather than trying to read through it.
+    // The alternative frame, `which <registry> is <target>?`, produces "which
+    // technology is the card that refilled Laboratory A?".
+    out.push_str(&format!(
+        " {} {} {} which {} is it?\n",
+        glyph::SEPARATOR,
+        describe::recording_target(model.target),
+        glyph::SECTION_DASH,
+        describe::registry_name_singular(model.kind()),
+    ));
+    if !model.collected.is_empty() {
+        let tags: Vec<String> =
+            model.collected.iter().copied().map(crate::card_prompt::card_tag).collect();
+        out.push_str(OPTION_INDENT);
+        out.push_str(&paint(
+            Tone::Chrome,
+            &format!(
+                "already recorded in this reveal {} {}",
+                glyph::SECTION_DASH,
+                tags.join(&format!(" {} ", glyph::SEPARATOR)),
+            ),
+        ));
+        out.push('\n');
+    }
+    out.push_str(&reveal_hint(model, players));
+    out.push_str(&paint(Tone::Prompt, "> "));
+    out.push('\n');
+    out
+}
+
+/// The reveal prompt's standing hint.
+///
+/// **Its own clause set rather than [`standing_hint`]'s, because that one would
+/// be false here.** `back` undoes the last APPLIED entry and nothing has been
+/// applied; `view` opens the game-info menu, which the capture branch of
+/// `Repl::step` never reaches. What IS reachable mid-capture is exactly what
+/// this names: the card grammar, the index, the two full-screen views the
+/// overlay interception lets through, and the two escapes.
+fn reveal_hint(model: &crate::screen_model::RevealModel, players: u8) -> String {
+    use crate::screen_model::RecordingTarget;
+    // What `cancel` costs, which is not the same fact in the two shapes: a bound
+    // reveal has a MOVE parked behind it and dropping the reveal drops the move,
+    // while a standalone starting-order reveal has nothing parked at all. Said
+    // exhaustively, never with a `_` arm, on this module's standing rule.
+    let cancel = match model.target {
+        RecordingTarget::StartingOrder { .. } => "'cancel' backs out — nothing is recorded",
+        RecordingTarget::PortRefill { .. }
+        | RecordingTarget::TechRefill { .. }
+        | RecordingTarget::PortSetup { .. }
+        | RecordingTarget::DealSetup { .. }
+        | RecordingTarget::LabSetup { .. }
+        | RecordingTarget::SiteSetup { .. }
+        | RecordingTarget::AchievementSetup { .. } => {
+            "'cancel' drops the move — nothing is applied or recorded"
+        }
+    };
+    let parts = vec![
+        crate::card_prompt::entry_hint(model.kind(), false).to_string(),
+        cancel.to_string(),
+        "'sites' or 'tracks' to look around".to_string(),
+    ];
+    wrap_hint(&parts, crate::screen::frame_width(usize::from(players)))
+}
+
 /// The hint's clauses packed into as few lines as fit `budget` columns, each
 /// continued line signalled by the trailing separator on the one before it.
 ///
@@ -1049,6 +1148,68 @@ mod tests {
 
     fn ctx() -> ZoneContext<'static> {
         ZoneContext { page: 0, expert: "", game_over: false }
+    }
+
+    /// **The reveal zone, at every target a live capture can reach** (T8): the
+    /// banner sentence, the noun-phrase question, and a hint that fits the frame.
+    ///
+    /// The three targets are swept rather than spot-checked because the zone
+    /// words itself from the target alone — a variant that reached it with an
+    /// empty sentence or a hint whose clauses were false would render a screen
+    /// that looks finished and says nothing.
+    #[test]
+    fn the_reveal_zone_words_every_live_target_and_fits_the_frame() {
+        use crate::screen_model::{CardRef, RecordingTarget, RevealModel};
+        for target in [
+            RecordingTarget::PortRefill { board_b: false, slot: 5, nth: 0, of: 2 },
+            RecordingTarget::TechRefill { board_b: true },
+            RecordingTarget::StartingOrder { seat: PlayerId::new(1) },
+        ] {
+            let model = RevealModel { target, collected: Vec::new() };
+            let text = crate::style::strip_ansi(&reveal_zone(&model, 2));
+            assert!(text.starts_with("LIVE TRACKING"), "{text}");
+            assert!(text.contains(&describe::reveal_event(target)), "the event sentence: {text}");
+            assert!(text.contains("YOU ARE RECORDING"), "{text}");
+            assert!(text.contains(&describe::recording_target(target)), "the target: {text}");
+            assert!(
+                text.contains(describe::registry_name_singular(target.kind())),
+                "and the registry the answer comes from: {text}",
+            );
+            // The two clauses of the decision zone's hint that would be FALSE
+            // here: nothing has been applied to take back, and `view` is a
+            // command the capture branch of `Repl::step` never reaches.
+            assert!(!text.contains("'back' undoes"), "{text}");
+            assert!(!text.contains("'view' any surface"), "{text}");
+            assert!(text.contains("'?' for the card index"), "{text}");
+            // Every line inside the 2P frame, hint wrap included.
+            for line in text.lines() {
+                assert!(
+                    visible_width(line) <= crate::screen::frame_width(2),
+                    "{:?} is {} columns: {text}",
+                    line,
+                    visible_width(line),
+                );
+            }
+            assert!(text.ends_with("> \n"), "the caret is the zone's last line: {text:?}");
+        }
+
+        // A bound reveal says what `cancel` costs; a standalone one says the
+        // other true thing. Two shapes, and they are not interchangeable.
+        let bound = RevealModel {
+            target: RecordingTarget::PortRefill { board_b: false, slot: 0, nth: 1, of: 2 },
+            collected: vec![CardRef::Order(OrderCardId(4))],
+        };
+        let text = crate::style::strip_ansi(&reveal_zone(&bound, 2));
+        assert!(text.contains("'cancel' drops the move"), "{text}");
+        assert!(text.contains("already recorded in this reveal"), "{text}");
+        assert!(text.contains("O04"), "{text}");
+        let standalone = RevealModel {
+            target: RecordingTarget::StartingOrder { seat: PlayerId::new(1) },
+            collected: Vec::new(),
+        };
+        let text = crate::style::strip_ansi(&reveal_zone(&standalone, 2));
+        assert!(text.contains("'cancel' backs out"), "{text}");
+        assert!(!text.contains("drops the move"), "nothing is parked behind this one: {text}");
     }
 
     /// Every `PendingChoice` variant words a deciding line, and every one of

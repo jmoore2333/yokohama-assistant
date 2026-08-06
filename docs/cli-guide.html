@@ -305,28 +305,45 @@ more            show the next page of legal options (wraps to page 1)
 list            reset to the first page of legal options
 undo            undo the last move (and any reveals bound to it) ('back' also works)
 save [path]     save to path (or to the last-used path if omitted)
-reveal &lt;seat&gt; &lt;O..&gt;  live mode: make a hidden opponent starting order public
-cancel          back out of any sub-prompt or full-screen surface: reveal collection (live), view menu, card index, tracks/sites view, numbered pick, either Placement picker, guided retreat
+reveal          live mode: pick the seat whose hidden starting order just became public from a numbered menu, then name the card
+reveal &lt;seat&gt; &lt;O..&gt;  the same thing in one line, for anyone who knows both halves
+cancel          back out of any sub-prompt or full-screen surface: reveal collection (live), guided reveal, view menu, card index, tracks/sites view, numbered pick, either Placement picker, guided retreat
 help            show this text
 quit            exit the REPL ('q' also works)</code></pre>
 <p>After each applied move the tool prints a <strong>delta summary</strong> — what changed (money, VP, goods, hand, tech, President location, phase, deck sizes, end-trigger announcements) — then the next prompt.</p>
 
 <h2>6. Live tracking: reveals</h2>
-<p>In live mode, whenever a move would draw hidden cards, the tool <strong>does not apply it yet</strong> — it asks what physically appeared:</p>
+<p>In live mode, whenever a move would draw hidden cards, the tool <strong>does not apply it yet</strong> — it parks the move and asks what physically appeared, on its own screen:</p>
+<pre><code>LIVE TRACKING · Port A refilled 1 slot from the order deck.
+
+YOU ARE RECORDING · Port A slot 6 (reveal 1 of 1) — which order card is it?
+(a number, 'O14', or '?' for the card index · 'cancel' drops the move — nothing is applied or recorded · 'sites' or 'tracks' to look around)
+&gt; </code></pre>
+<p>The first line says what just happened; the second names the exact slot and what kind of card answers it; the last line is the grammar and the ways out. A multi-slot refill asks once per slot, right-to-left (the physical refill order), and carries an <code>already recorded in this reveal — O04 · O17</code> line so you can see what the group holds so far.</p>
 <ul>
-  <li><strong>Port take</strong> → for each refilled slot, right-to-left (the physical refill order): <code>What card is now in slot N (Zone)? Enter as 'O&lt;id&gt;' or '&lt;id&gt;'</code>. Type the order card's <strong>corner number</strong>. Any real, still-hidden order card is accepted — including one boxed face-down at setup (at 2–3 players most of the 36-card deck is never seen): the tool cannot know the true deck order, so it trusts the table and reconciles its hidden model to match. A truthful card is never refused for being one the tool "didn't expect"; only a card that is already face-up elsewhere, or not a real order card, is rejected.</li>
-  <li><strong>Lab take</strong> → the one refilled tech slot: enter a <strong>name</strong> (any unambiguous start of one, e.g. <code>postal</code>), <code>T&lt;id&gt;</code>, or <code>?</code> for the technology index. A name that matches both copies of a title still in the deck resolves automatically to the lowest matching id — the two copies are identical, so tracking is unaffected, and the <em>wizard</em> now reads a name the same way (§3.7). Techs are never boxed at setup, so a tech that is not in the deck is a genuine mismatch and is refused.</li>
-  <li><code>cancel</code> at any of these aborts the move entirely (nothing is applied or recorded); <code>quit</code>/<code>q</code> also exit the program from a reveal prompt, discarding the parked (un-applied) move the same way.</li>
+  <li><strong>Port take</strong> → for each refilled slot, type the order card's <strong>corner number</strong> (<code>14</code>), its id (<code>O14</code>), or press <code>?</code> and pick it off the index. Any real, still-hidden order card is accepted — including one boxed face-down at setup (at 2–3 players most of the 36-card deck is never seen): the tool cannot know the true deck order, so it trusts the table and reconciles its hidden model to match. A truthful card is never refused for being one the tool "didn't expect"; only a card that is already face-up elsewhere, or not a real order card, is rejected — and a card that is elsewhere is refused <strong>by saying where</strong> (<code>O04 is Port A slot 1 — a card cannot be in two places.</code>).</li>
+  <li><strong>Lab take</strong> → the one refilled tech slot: enter a <strong>name</strong> (any unambiguous start of one, e.g. <code>postal</code>), <code>T&lt;id&gt;</code>, or <code>?</code> for the technology index. A name that matches both copies of a title resolves automatically to the copy nothing has claimed — the two copies are identical, so tracking is unaffected, and the <em>wizard</em> reads a name the same way (§3.7). Techs are never boxed at setup, so a tech that is not in the deck is a genuine mismatch and is refused.</li>
+  <li><strong>Card entry is the same grammar everywhere</strong> (§4, <em>The card index</em>): a bare number, an id, a name where cards have names, <code>?</code> for the index, <code>f &lt;term&gt;</code> to open it filtered. Nothing here is a grammar you only need at a reveal.</li>
+  <li><code>cancel</code> at any of these aborts the move entirely (nothing is applied or recorded); <code>quit</code>/<code>q</code> also exit the program from a reveal prompt, discarding the parked (un-applied) move the same way. A <strong>blank line</strong> and <code>back</code> do neither — they re-ask, so pressing Enter can never throw away the move you have half-answered for.</li>
 </ul>
 <p>There is <strong>no</strong> 5-Power token reveal: the tokens are face-up open information you enter once at setup (§3, step 4) and read off the board (§8.5), so taking one at 5 power just applies — the tool already knows the face.</p>
-<p>While one of these prompts is showing, everything you type is read as the answer to it, not as a command — numbered picks, <code>m</code>, and view commands like <code>board</code> don't work until the reveal is answered, or you <code>cancel</code> (or <code>quit</code>/<code>q</code>, which exits and discards the parked move). (These prompts are unrelated to the choice banner and <code>m</code> grammar in §4/§5: reveals are about typing in what physically appeared on a hidden card, not about deciding between options the engine already knows.)</p>
+<p>While one of these prompts is showing, everything you type is read as the answer to it, not as a command — numbered picks, <code>m</code>, and view commands like <code>board</code> don't work until the reveal is answered, or you <code>cancel</code> (or <code>quit</code>/<code>q</code>, which exits and discards the parked move). What DOES work mid-reveal is what the hint line names: <code>?</code> and the index commands, and the <code>sites</code>/<code>tracks</code> views — all of which return you to the exact question with everything already collected still collected. (These prompts are unrelated to the choice banner and <code>m</code> grammar in §4/§5: reveals are about typing in what physically appeared on a hidden card, not about deciding between options the engine already knows.)</p>
 <p>Once all reveals are typed, the move + reveals commit <strong>as one atomic unit</strong> — and one <code>undo</code> removes the whole unit.</p>
-<p><strong>Hidden starting orders:</strong> when an opponent's starting order becomes public at the table (they fulfill it), enter <code>reveal &lt;seat&gt; O&lt;n&gt;</code> — e.g. <code>reveal 1 O23</code> → <code>Seat 1 revealed O23 as their starting order.</code>, and the card then shows entering that seat's hand (any autosave failure is reported inline)</p>
+<p><strong>Hidden starting orders.</strong> When an opponent's starting order becomes public at the table (they fulfill it), type <code>reveal</code> and pick the seat:</p>
+<pre><code>Whose starting order just became public?
+[1] Seat 1 — Blue
+&gt; pick a number, or 'cancel'</code></pre>
+<p>...and the card question is the same screen every other reveal uses:</p>
+<pre><code>LIVE TRACKING · Seat 1's starting order is face up at the table.
+
+YOU ARE RECORDING · Seat 1's hidden starting order — which order card is it?
+(a number, 'O14', or '?' for the card index · 'cancel' backs out — nothing is recorded · 'sites' or 'tracks' to look around)
+&gt; </code></pre>
+<p>The result is <code>Seat 1 revealed O23 as their starting order.</code>, and the card then shows entering that seat's hand (any autosave failure is reported inline). Only seats whose starting order the engine still holds as hidden appear on the menu; if none do, the tool says so instead of showing an empty list. <code>reveal &lt;seat&gt; O&lt;n&gt;</code> — e.g. <code>reveal 1 O23</code> — does the whole thing in one line and records exactly the same event, for anyone who knows both halves.</p>
 <p><strong>Catching your own typos.</strong> Nothing can detect that you typed the <em>wrong</em> real card — enter <code>O16</code> for a slot that physically shows <code>O17</code> and the tool faithfully records <code>O16</code>. Two things let you catch it yourself: every reveal is echoed as it applies, and the <code>log</code> view lists the exact card ids recorded for each reveal event, so you can read them back against the table. When you spot a mis-entry, <code>undo</code> removes the whole move-and-reveal group so you can re-enter it.</p>
 <p><strong>Desync guard.</strong> After a reveal applies, the tool re-reads the board and confirms the engine placed the revealed card where it said it would. Because the engine places exactly the card you typed, this is an <em>internal</em> consistency check — a tripwire for a driver/engine bug, <strong>not</strong> a check that your entry matched the table (that is what the echo and <code>log</code> above are for). If it ever fails you'll see:</p>
 <pre><code>CRITICAL: desync detected -- the revealed card(s) do not match the board after applying the move. Session locked.</code></pre>
 <p>A locked session accepts only <code>save</code>, <code>log</code>, and <code>quit</code>, and the lockdown is <strong>persisted</strong>: it survives <code>save</code> → quit → reload (the reason is written into the save file and restored on load), so a desynced game can never be reopened as if nothing were wrong. <strong>Save immediately</strong> and report with the file (§9).</p>
-
 <h2>7. Save, load, undo</h2>
 <ul>
   <li><code>save</code> / autosave writes the full game record as JSON — seed, setup, every move and reveal. Saves are atomic (a crash mid-save can't corrupt the previous good file).</li>

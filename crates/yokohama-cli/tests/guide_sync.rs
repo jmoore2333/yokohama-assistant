@@ -424,6 +424,49 @@ fn the_movement_blocks_are_identical_across_formats() {
     );
 }
 
+/// The opening line of §6's captured reveal screens — the live-capture banner,
+/// which no other block in either guide carries.
+const REVEAL_BLOCK_OPENING: &str = "LIVE TRACKING ";
+
+/// (k) §6's captured reveal screens are text-identical between the two formats
+/// — §5's and the Movement captures' parity pin, applied to the screens a
+/// tester meets on their first live game (plan T8).
+///
+/// The CONTENT half lives in `reveal.rs`'s
+/// `the_guide_reveal_captures_are_what_the_fixtures_render`, which regenerates
+/// each block from the fixture that produces it — the same two-part shape the
+/// Movement captures have, and for the same reason: one test says the words are
+/// the driver's, this one says both formats carry the same words.
+#[test]
+fn the_reveal_blocks_are_identical_across_formats() {
+    let md: Vec<String> = GUIDE_MD
+        .split("```")
+        .map(|part| part.trim_matches('\n').to_string())
+        .filter(|part| part.starts_with(REVEAL_BLOCK_OPENING))
+        .collect();
+    let html: Vec<String> = GUIDE_HTML
+        .match_indices("<pre><code>")
+        .filter_map(|(at, tag)| {
+            let open = at + tag.len();
+            let close = GUIDE_HTML[open..].find("</code></pre>")? + open;
+            let block = unescape_html(&GUIDE_HTML[open..close]).trim_matches('\n').to_string();
+            block.starts_with(REVEAL_BLOCK_OPENING).then_some(block)
+        })
+        .collect();
+    assert_eq!(
+        md.len(),
+        2,
+        "cli-guide.md must carry §6's TWO captured reveal screens (the bound Port refill and \
+         the guided starting-order question)",
+    );
+    assert_eq!(
+        md, html,
+        "cli-guide.md and cli-guide.html §6 reveal captures diverged. They must stay \
+         byte-identical (modulo the HTML <pre><code> wrapper + entity escaping); re-capture BOTH \
+         from the fixture runs that produce them -- never by splicing."
+    );
+}
+
 /// (e) The environment/persistence promises §2 makes a tester -- the `NO_COLOR`
 /// switch and per-move autosave -- are present in BOTH formats.
 #[test]

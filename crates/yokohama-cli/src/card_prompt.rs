@@ -230,6 +230,40 @@ pub(crate) fn resolve(prompt: &CardPrompt<'_>, line: &str, rules: &Rules) -> Car
     CardEntry::Refused(format!("'{line}' is not a card. {}", how_to_name(prompt.kind)))
 }
 
+/// What names a card at this prompt, in the words the refusals use too.
+///
+/// `showing` is whether numbered cards are on screen right now, and it changes
+/// what "a number" means — a pick from the screen rather than a card id. The
+/// prompt says which, every time it is printed, because that is the one thing a
+/// player cannot infer from the line itself.
+///
+/// **Here rather than in the wizard, since T8**, which is where it started and
+/// where it would have been copied from: the live reveal prompt asks the same
+/// question about the same two registries, and a second hand-written hint is how
+/// two prompts start teaching two grammars — the F4 defect this module exists to
+/// end, re-created one layer up. Two arms are unreachable from either caller
+/// today (the wizard's achievement question always prints its menu, so `showing`
+/// is true there; its site index never numbers cards at all, so `showing` is
+/// false there; and the reveal prompt only ever asks for orders or technologies)
+/// — both are kept so the match is total per registry and a third caller gets a
+/// hint rather than a compile error.
+pub(crate) fn entry_hint(kind: IndexKind, showing: bool) -> &'static str {
+    if showing {
+        return match kind {
+            IndexKind::Orders => "a number from the screen, 'O14', or '?' to redraw it",
+            IndexKind::Techs => "a number from the screen, a name, or '?' to redraw it",
+            IndexKind::Achievements => "a number from the list, a name, or '?' for all twelve",
+            IndexKind::Sites => "a number, 'S12', or '?' for the card index",
+        };
+    }
+    match kind {
+        IndexKind::Orders => "a number, 'O14', or '?' for the card index",
+        IndexKind::Techs => "a name, 'T07', or '?' for the card index",
+        IndexKind::Achievements => "a number, a name, or '?' for the card index",
+        IndexKind::Sites => "a number, 'S12', or '?' for the card index",
+    }
+}
+
 /// The forms that DO name a card here, per registry — the second half of every
 /// refusal, because a refusal that does not say what would have worked leaves
 /// the player guessing, which is F4 from the other side.

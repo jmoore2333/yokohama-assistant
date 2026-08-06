@@ -776,6 +776,14 @@ pub enum RecordingTarget {
     /// category. Category rather than position, on [`CardLocation::
     /// AchievementSlot`]'s reasoning.
     AchievementSetup { category: AchievementCategory },
+    /// A live-tracked seat's hidden starting order, becoming public at the
+    /// table (T8, the `reveal <seat>` flow).
+    ///
+    /// **Seat rather than position, and there is nothing to convert**: this
+    /// question is asked about one player, once, and never about the n-th of
+    /// anything — so it joins [`Self::SiteSetup`] and [`Self::AchievementSetup`]
+    /// on the identity side of the 0-based-position rule above.
+    StartingOrder { seat: PlayerId },
 }
 
 impl RecordingTarget {
@@ -794,10 +802,39 @@ impl RecordingTarget {
             }
             RecordingTarget::PortRefill { .. }
             | RecordingTarget::PortSetup { .. }
-            | RecordingTarget::DealSetup { .. } => IndexKind::Orders,
+            | RecordingTarget::DealSetup { .. }
+            | RecordingTarget::StartingOrder { .. } => IndexKind::Orders,
             RecordingTarget::SiteSetup { .. } => IndexKind::Sites,
             RecordingTarget::AchievementSetup { .. } => IndexKind::Achievements,
         }
+    }
+}
+
+/// The prompt a live capture shows while it waits for a card (plan T8, spec
+/// §0.2/§0.6): what is being recorded, and what this group has collected so far.
+///
+/// **One model for all three capture shapes** — a Port refill, a Laboratory
+/// refill, and the standalone `reveal <seat>` — because they are one question
+/// asked about three registries and three targets, and giving each its own
+/// prompt is how the driver ended up with three card grammars in the first place
+/// (F4). The renderer words the difference from [`Self::target`] alone.
+///
+/// **Typed, never worded**, like every other model here: `collected` holds card
+/// identities and [`crate::decision_render::reveal_zone`] tags them.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RevealModel {
+    /// The card this question is asking for.
+    pub target: RecordingTarget,
+    /// Cards already named for this group, in entry order. Empty for every
+    /// capture that takes exactly one answer.
+    pub collected: Vec<CardRef>,
+}
+
+impl RevealModel {
+    /// The registry the answer must come from — the target's, always, so a
+    /// prompt and the index it opens can never be about different registries.
+    pub fn kind(&self) -> IndexKind {
+        self.target.kind()
     }
 }
 

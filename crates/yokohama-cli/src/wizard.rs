@@ -15,7 +15,7 @@
 use std::cell::Cell;
 use std::collections::HashMap;
 
-use crate::card_prompt::{self, CardEntry, CardPrompt, Numbering};
+use crate::card_prompt::{self, entry_hint, CardEntry, CardPrompt, Numbering};
 use crate::input::tech_name;
 use crate::screen_model::{
     achievement_registry, build_index, menu_index, menu_number, menu_range, CardLocation, CardRef,
@@ -327,38 +327,6 @@ fn size_notice_once(kind: IndexKind, width: usize) -> String {
         crate::screen::FLOOR_W,
         crate::card_render::plural(per_row, "card"),
     )
-}
-
-/// What names a card at this prompt, in the words the refusals use too.
-///
-/// `showing` is whether numbered cards are on screen right now, and it changes
-/// what "a number" means — a pick from the screen rather than a card id. The
-/// prompt says which, every time it is printed, because that is the one thing a
-/// player cannot infer from the line itself.
-fn entry_hint(kind: IndexKind, showing: bool) -> &'static str {
-    if showing {
-        return match kind {
-            IndexKind::Orders => "a number from the screen, 'O14', or '?' to redraw it",
-            IndexKind::Techs => "a number from the screen, a name, or '?' to redraw it",
-            IndexKind::Achievements => "a number from the list, a name, or '?' for all twelve",
-            // Unreachable: the site index is a look-up and never numbers its
-            // cards for picking (`numbered_screen`), so `showing` stays false.
-            IndexKind::Sites => "a number, 'S12', or '?' for the card index",
-        };
-    }
-    match kind {
-        IndexKind::Orders => "a number, 'O14', or '?' for the card index",
-        IndexKind::Techs => "a name, 'T07', or '?' for the card index",
-        // Unreachable, and for the mirror-image reason the `Sites` arm above is:
-        // the only achievement prompt is `ask_achievements`, which prints the
-        // category's four numbered cards WITH the question, so it passes
-        // `menu_on_screen: true` and `showing` is true before the first keypress
-        // and stays true. Both arms are kept so the match is total per registry
-        // and a second achievement prompt — one with no menu of its own — gets a
-        // hint rather than a compile error.
-        IndexKind::Achievements => "a number, a name, or '?' for the card index",
-        IndexKind::Sites => "a number, 'S12', or '?' for the card index",
-    }
 }
 
 /// The running already-placed summary R8 asks setup screens to carry, on one

@@ -323,8 +323,9 @@ more            show the next page of legal options (wraps to page 1)
 list            reset to the first page of legal options
 undo            undo the last move (and any reveals bound to it) ('back' also works)
 save [path]     save to path (or to the last-used path if omitted)
-reveal <seat> <O..>  live mode: make a hidden opponent starting order public
-cancel          back out of any sub-prompt or full-screen surface: reveal collection (live), view menu, card index, tracks/sites view, numbered pick, either Placement picker, guided retreat
+reveal          live mode: pick the seat whose hidden starting order just became public from a numbered menu, then name the card
+reveal <seat> <O..>  the same thing in one line, for anyone who knows both halves
+cancel          back out of any sub-prompt or full-screen surface: reveal collection (live), guided reveal, view menu, card index, tracks/sites view, numbered pick, either Placement picker, guided retreat
 help            show this text
 quit            exit the REPL ('q' also works)
 ```
@@ -333,19 +334,48 @@ After each applied move the tool prints a **delta summary** — what changed (mo
 
 ## 6. Live tracking: reveals
 
-In live mode, whenever a move would draw hidden cards, the tool **does not apply it yet** — it asks what physically appeared:
+In live mode, whenever a move would draw hidden cards, the tool **does not apply it yet** — it parks the move and asks what physically appeared, on its own screen:
 
-- **Port take** → for each refilled slot, right-to-left (the physical refill order): `What card is now in slot N (Zone)? Enter as 'O<id>' or '<id>'`. Type the order card's **corner number**. Any real, still-hidden order card is accepted — including one boxed face-down at setup (at 2–3 players most of the 36-card deck is never seen): the tool cannot know the true deck order, so it trusts the table and reconciles its hidden model to match. A truthful card is never refused for being one the tool "didn't expect"; only a card that is already face-up elsewhere, or not a real order card, is rejected.
-- **Lab take** → the one refilled tech slot: enter a **name** (any unambiguous start of one, e.g. `postal`), `T<id>`, or `?` for the technology index. A name that matches both copies of a title still in the deck resolves automatically to the lowest matching id — the two copies are identical, so tracking is unaffected, and the *wizard* now reads a name the same way (§3.7). Techs are never boxed at setup, so a tech that is not in the deck is a genuine mismatch and is refused.
-- `cancel` at any of these aborts the move entirely (nothing is applied or recorded); `quit`/`q` also exit the program from a reveal prompt, discarding the parked (un-applied) move the same way.
+```
+LIVE TRACKING · Port A refilled 1 slot from the order deck.
+
+YOU ARE RECORDING · Port A slot 6 (reveal 1 of 1) — which order card is it?
+(a number, 'O14', or '?' for the card index · 'cancel' drops the move — nothing is applied or recorded · 'sites' or 'tracks' to look around)
+> 
+```
+
+The first line says what just happened; the second names the exact slot and what kind of card answers it; the last line is the grammar and the ways out. A multi-slot refill asks once per slot, right-to-left (the physical refill order), and carries an `already recorded in this reveal — O04 · O17` line so you can see what the group holds so far.
+
+- **Port take** → for each refilled slot, type the order card's **corner number** (`14`), its id (`O14`), or press `?` and pick it off the index. Any real, still-hidden order card is accepted — including one boxed face-down at setup (at 2–3 players most of the 36-card deck is never seen): the tool cannot know the true deck order, so it trusts the table and reconciles its hidden model to match. A truthful card is never refused for being one the tool "didn't expect"; only a card that is already face-up elsewhere, or not a real order card, is rejected — and a card that is elsewhere is refused **by saying where** (`O04 is Port A slot 1 — a card cannot be in two places.`).
+- **Lab take** → the one refilled tech slot: enter a **name** (any unambiguous start of one, e.g. `postal`), `T<id>`, or `?` for the technology index. A name that matches both copies of a title resolves automatically to the copy nothing has claimed — the two copies are identical, so tracking is unaffected, and the *wizard* reads a name the same way (§3.7). Techs are never boxed at setup, so a tech that is not in the deck is a genuine mismatch and is refused.
+- **Card entry is the same grammar everywhere** (§4, *The card index*): a bare number, an id, a name where cards have names, `?` for the index, `f <term>` to open it filtered. Nothing here is a grammar you only need at a reveal.
+- `cancel` at any of these aborts the move entirely (nothing is applied or recorded); `quit`/`q` also exit the program from a reveal prompt, discarding the parked (un-applied) move the same way. A **blank line** and `back` do neither — they re-ask, so pressing Enter can never throw away the move you have half-answered for.
 
 There is **no** 5-Power token reveal: the tokens are face-up open information you enter once at setup (§3, step 4) and read off the board (§8.5), so taking one at 5 power just applies — the tool already knows the face.
 
-While one of these prompts is showing, everything you type is read as the answer to it, not as a command — numbered picks, `m`, and view commands like `board` don't work until the reveal is answered, or you `cancel` (or `quit`/`q`, which exits and discards the parked move). (These prompts are unrelated to the choice banner and `m` grammar in §4/§5: reveals are about typing in what physically appeared on a hidden card, not about deciding between options the engine already knows.)
+While one of these prompts is showing, everything you type is read as the answer to it, not as a command — numbered picks, `m`, and view commands like `board` don't work until the reveal is answered, or you `cancel` (or `quit`/`q`, which exits and discards the parked move). What DOES work mid-reveal is what the hint line names: `?` and the index commands, and the `sites`/`tracks` views — all of which return you to the exact question with everything already collected still collected. (These prompts are unrelated to the choice banner and `m` grammar in §4/§5: reveals are about typing in what physically appeared on a hidden card, not about deciding between options the engine already knows.)
 
 Once all reveals are typed, the move + reveals commit **as one atomic unit** — and one `undo` removes the whole unit.
 
-**Hidden starting orders:** when an opponent's starting order becomes public at the table (they fulfill it), enter `reveal <seat> O<n>` — e.g. `reveal 1 O23` → `Seat 1 revealed O23 as their starting order.`, and the card then shows entering that seat's hand (any autosave failure is reported inline)
+**Hidden starting orders.** When an opponent's starting order becomes public at the table (they fulfill it), type `reveal` and pick the seat:
+
+```
+Whose starting order just became public?
+[1] Seat 1 — Blue
+> pick a number, or 'cancel'
+```
+
+...and the card question is the same screen every other reveal uses:
+
+```
+LIVE TRACKING · Seat 1's starting order is face up at the table.
+
+YOU ARE RECORDING · Seat 1's hidden starting order — which order card is it?
+(a number, 'O14', or '?' for the card index · 'cancel' backs out — nothing is recorded · 'sites' or 'tracks' to look around)
+> 
+```
+
+The result is `Seat 1 revealed O23 as their starting order.`, and the card then shows entering that seat's hand (any autosave failure is reported inline). Only seats whose starting order the engine still holds as hidden appear on the menu; if none do, the tool says so instead of showing an empty list. `reveal <seat> O<n>` — e.g. `reveal 1 O23` — does the whole thing in one line and records exactly the same event, for anyone who knows both halves.
 
 **Catching your own typos.** Nothing can detect that you typed the *wrong* real card — enter `O16` for a slot that physically shows `O17` and the tool faithfully records `O16`. Two things let you catch it yourself: every reveal is echoed as it applies, and the `log` view lists the exact card ids recorded for each reveal event, so you can read them back against the table. When you spot a mis-entry, `undo` removes the whole move-and-reveal group so you can re-enter it.
 

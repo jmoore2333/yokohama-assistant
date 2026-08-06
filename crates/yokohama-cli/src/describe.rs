@@ -154,6 +154,52 @@ pub fn recording_target(target: crate::screen_model::RecordingTarget) -> String 
         RecordingTarget::AchievementSetup { category } => {
             format!("the category {} Achievement card", category_letter(category))
         }
+        RecordingTarget::StartingOrder { seat } => {
+            format!("Seat {}'s hidden starting order", seat.0)
+        }
+    }
+}
+
+/// What a live capture just did, as the prompt above the question states it —
+/// the plain-words sentence R1 asks for, in place of the abbreviations the
+/// pre-redesign one-liner packed together.
+///
+/// Worded here rather than in the renderer for the reason every other sentence
+/// in this crate is: the renderer draws, `describe` speaks. The two setup
+/// targets are unreachable from the REPL's capture (the wizard asks those
+/// inline, with its own question text) and are worded anyway, because a
+/// `RecordingTarget` that could reach this function with nothing to say would be
+/// a hole waiting for the next variant.
+pub fn reveal_event(target: crate::screen_model::RecordingTarget) -> String {
+    use crate::screen_model::RecordingTarget;
+    match target {
+        RecordingTarget::PortRefill { board_b, of, .. } => format!(
+            "{} refilled {} from the order deck.",
+            port_board_name(board_b),
+            crate::card_render::plural(of, "slot"),
+        ),
+        RecordingTarget::TechRefill { board_b } => {
+            format!("{} refilled from the technology deck.", lab_board_name(board_b))
+        }
+        RecordingTarget::StartingOrder { seat } => {
+            format!("Seat {}'s starting order is face up at the table.", seat.0)
+        }
+        RecordingTarget::PortSetup { board_b, .. } => {
+            format!("{}'s display is being recorded.", port_board_name(board_b))
+        }
+        RecordingTarget::LabSetup { board_b, .. } => {
+            format!("{}'s display is being recorded.", lab_board_name(board_b))
+        }
+        RecordingTarget::DealSetup { seat, .. } => {
+            format!("Seat {}'s dealt cards are being recorded.", seat.0)
+        }
+        RecordingTarget::SiteSetup { area } => {
+            format!("Area A{:02}'s building-site card is being recorded.", area.0)
+        }
+        RecordingTarget::AchievementSetup { category } => format!(
+            "The category {} Achievement card is being recorded.",
+            category_letter(category),
+        ),
     }
 }
 
@@ -971,6 +1017,53 @@ mod tests {
             recording_target(T::AchievementSetup { category: AchievementCategory::B }),
             "the category B Achievement card",
         );
+        // T8's, on the same identity side: a seat, and nothing to convert.
+        assert_eq!(
+            recording_target(T::StartingOrder { seat: PlayerId::new(1) }),
+            "Seat 1's hidden starting order",
+        );
+    }
+
+    /// **Every target says what just happened in plain words** (T8, requirement
+    /// R1) — the sentence above the question, which the pre-redesign prompt
+    /// packed into the question itself.
+    ///
+    /// Swept over every variant rather than spot-checked, and asserting a SHAPE
+    /// rather than a wording, because the failure this catches is a variant
+    /// added with nothing to say: an empty banner line reads as a rendering bug
+    /// on the one screen an operator meets while looking at the table.
+    #[test]
+    fn every_recording_target_states_its_event_as_a_sentence() {
+        use crate::screen_model::RecordingTarget as T;
+        for target in [
+            T::PortRefill { board_b: false, slot: 0, nth: 0, of: 2 },
+            T::TechRefill { board_b: true },
+            T::PortSetup { board_b: true, slot: 0, of: 6 },
+            T::DealSetup { seat: PlayerId::new(1), which: 0, of: 2 },
+            T::LabSetup { board_b: false, slot: 0, of: 6 },
+            T::SiteSetup { area: AreaId::new(3) },
+            T::AchievementSetup { category: AchievementCategory::A },
+            T::StartingOrder { seat: PlayerId::new(1) },
+        ] {
+            let text = reveal_event(target);
+            assert!(text.ends_with('.'), "{target:?} must read as a sentence: {text:?}");
+            assert!(text.len() > 20, "{target:?} said almost nothing: {text:?}");
+        }
+        // The two the live capture actually reaches, pinned verbatim — the
+        // count is pluralized rather than printed as "1 slot(s)", which is the
+        // abbreviation-shaped wording R1 exists to retire.
+        assert_eq!(
+            reveal_event(T::PortRefill { board_b: false, slot: 0, nth: 0, of: 1 }),
+            "Port A refilled 1 slot from the order deck.",
+        );
+        assert_eq!(
+            reveal_event(T::PortRefill { board_b: true, slot: 0, nth: 0, of: 2 }),
+            "Port B refilled 2 slots from the order deck.",
+        );
+        assert_eq!(
+            reveal_event(T::TechRefill { board_b: false }),
+            "Laboratory A refilled from the technology deck.",
+        );
     }
 
     /// **Every target names the registry its prompt collects** (T7 moved this
@@ -989,6 +1082,7 @@ mod tests {
             (T::LabSetup { board_b: true, slot: 0, of: 6 }, IndexKind::Techs),
             (T::SiteSetup { area: AreaId::new(0) }, IndexKind::Sites),
             (T::AchievementSetup { category: AchievementCategory::A }, IndexKind::Achievements),
+            (T::StartingOrder { seat: PlayerId::new(1) }, IndexKind::Orders),
         ] {
             assert_eq!(target.kind(), want, "{target:?}");
         }
