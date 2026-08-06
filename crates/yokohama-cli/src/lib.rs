@@ -8,6 +8,7 @@ pub mod render;
 pub mod repl;
 pub(crate) mod reveal;
 pub mod screen;
+pub mod screen_model;
 pub mod session;
 pub mod style;
 pub mod suggest;

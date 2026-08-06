@@ -223,6 +223,38 @@ fn join_side_by_side(left: &str, right: &str, gap: usize) -> String {
 }
 
 #[cfg(test)]
+pub(crate) mod test_support {
+    /// Panic unless EVERY line of `lines` renders at exactly `width` visible
+    /// columns (Phase-3.5a spec §0.4: "every tile builder line is exactly
+    /// `TILE_W` — asserted in tests").
+    ///
+    /// Width is measured through [`super::visible_width`], the crate's one
+    /// escape-stripping measurement, so a painted line and its plain twin
+    /// measure the same — which is precisely the property a hand-rolled
+    /// `.len()` check would miss. BOTH directions fail: a short line shears a
+    /// side-by-side join exactly as an over-long one does.
+    ///
+    /// The message names the four facts that turn a width failure into a
+    /// one-look fix: which line, what was expected, what was measured, and the
+    /// offending text with its escapes stripped (a raw painted string in a
+    /// failure message is unreadable).
+    ///
+    /// Test-support for now because T0 ships no emitter that calls it; the
+    /// renderer tasks that build fixed-width tiles and cards are its callers.
+    pub(crate) fn assert_exact_width<S: AsRef<str>>(lines: &[S], width: usize) {
+        for (i, line) in lines.iter().enumerate() {
+            let text = line.as_ref();
+            let measured = super::visible_width(text);
+            assert!(
+                measured == width,
+                "line {i} is {measured} columns wide, expected {width}: {:?}",
+                crate::style::strip_ansi(text),
+            );
+        }
+    }
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use crate::repl::Repl;
@@ -523,5 +555,42 @@ mod tests {
         let b = banner();
         assert!(b.lines().count() >= 4, "{b}");
         assert!(b.is_ascii(), "banner must be plain ASCII: {b}");
+    }
+
+    /// The guard's happy path: a block whose every line already measures the
+    /// declared width passes silently.
+    #[test]
+    fn assert_exact_width_accepts_a_uniform_block() {
+        test_support::assert_exact_width(&["┌──┐", "│ab│", "└──┘"], 4);
+        test_support::assert_exact_width::<&str>(&[], 30);
+    }
+
+    /// One column over is a failure, and the message names WHICH line, what
+    /// was expected, what was measured, and the offending text -- the four
+    /// facts that turn a width failure into a one-look fix.
+    #[test]
+    #[should_panic(expected = "line 1 is 5 columns wide, expected 4")]
+    fn assert_exact_width_rejects_a_line_that_is_one_column_over() {
+        test_support::assert_exact_width(&["│ab│", "│abc│"], 4);
+    }
+
+    /// ...and one column short fails just as loudly: a short line shears a
+    /// side-by-side join exactly as an over-long one does.
+    #[test]
+    #[should_panic(expected = "line 0 is 3 columns wide, expected 4")]
+    fn assert_exact_width_rejects_a_line_that_is_one_column_short() {
+        test_support::assert_exact_width(&["│a│"], 4);
+    }
+
+    /// Escapes carry zero display width, so a painted line of the same
+    /// visible text passes the same bound its plain twin does -- the crate's
+    /// standing alignment rule, made checkable.
+    #[test]
+    fn assert_exact_width_ignores_ansi_escapes() {
+        crate::style::force(true);
+        let painted = crate::style::paint(crate::style::Tone::Vp, "ab");
+        crate::style::force(false);
+        assert_ne!(painted, "ab", "forced color must actually paint");
+        test_support::assert_exact_width(&[painted], 2);
     }
 }
