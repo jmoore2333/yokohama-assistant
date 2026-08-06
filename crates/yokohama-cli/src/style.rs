@@ -60,8 +60,12 @@ fn enabled() -> bool {
 }
 
 /// The frame's GLYPH VOCABULARY: every non-ASCII character the redesigned
-/// surfaces draw, named once so no emitter ever spells one inline
-/// (Phase-3.5a spec §0.4, plan T1). The set is CLOSED and small on purpose
+/// surfaces draw, named once so those surfaces never spell one inline
+/// (Phase-3.5a spec §0.4, plan T1). Read that rule as binding on the
+/// REDESIGNED surfaces, task by task as each cuts over: T1 ships the
+/// vocabulary and no consumers, so today's frame still spells its own
+/// characters, and the non-ASCII ones that are NOT vocabulary are registered
+/// under DEFERRED CONVERSIONS below. The set is CLOSED and small on purpose
 /// -- it is exactly the twenty code points the approved mocks use
 /// (`docs/plans/2026-08-05-phase3.5a-mocks/`), so "does this frame match its
 /// mock?" stays a question about layout and color and never becomes a
@@ -103,9 +107,10 @@ fn enabled() -> bool {
 ///
 /// **Width decision (the SF3 pin; completes the KNOWN RESIDUAL on
 /// `screen::test_support::assert_exact_width`).** The vocabulary spans three
-/// East-Asian-Width classes and NO Wide one: `¥` is Narrow, `⌂` and `▸` are
-/// Neutral -- both classes are one column everywhere -- and the other
-/// eighteen are Ambiguous, which means one column in a Western locale and
+/// East-Asian-Width classes and NO Wide one, counted by NAME (the basis used
+/// everywhere below): `¥` is Narrow, `⌂` and `▸` are Neutral -- both classes
+/// are one column everywhere -- and the other eighteen of the twenty-one
+/// names are Ambiguous, which means one column in a Western locale and
 /// two under a CJK-configured locale or font. T0's residual note called `★`
 /// East-Asian-WIDE; it is not. U+2605 is Ambiguous (UCD 16.0
 /// `EastAsianWidth.txt`), so the residual is narrower than recorded -- not
@@ -123,56 +128,141 @@ fn enabled() -> bool {
 /// shear every fixed-width join silently; the fix then is a width TABLE
 /// inside `visible_width`, not a change here.
 ///
-/// The [`VOCABULARY`](glyph::VOCABULARY) table below is the executable half:
-/// it pins each constant's code point against the class recorded for it,
-/// refuses a Wide entry outright, and keeps variation selectors and the
-/// emoji planes out -- `★` U+2605 is a text symbol, while `⭐` U+2B50
-/// (WHITE MEDIUM STAR) is Emoji_Presentation and would render two columns
-/// in color. That substitution is the exact accident these pins exist to
-/// catch.
+/// MEMBERSHIP is not tested, it is CONSTRUCTED: the constants and the
+/// [`VOCABULARY`](glyph::VOCABULARY) rows are emitted from the same source
+/// lines by the `vocabulary!` macro, so a glyph declared with no row covering
+/// it is unrepresentable in the vocabulary's own declaration rather than
+/// merely unnoticed. Read that macro's doc for the failure this closes, why
+/// no test could have closed it, and the one deviation it leaves to review.
+///
+/// The table below is the executable half of everything else,
+/// and it is worth being exact about which half. It pins each row's code
+/// point against the constant it names, refuses a [`Wide`](glyph::Eaw::Wide)
+/// entry outright, and keeps the astral planes out. It does NOT compute a
+/// row's width class -- nothing in this crate can, which is what
+/// [`Eaw`](glyph::Eaw)'s own doc says: Narrow/Neutral/Ambiguous is a fact
+/// checked off-line against the UCD and then pinned by review. Nor is the
+/// astral guard an emoji guard. `⭐` U+2B50 (WHITE MEDIUM STAR) is
+/// Emoji_Presentation and would render two columns in color, but it sits in
+/// the BMP and sails straight through; a `★` -> `⭐` substitution is caught
+/// by the class column and the review that checks it, not by an assert.
+///
+/// **DEFERRED CONVERSIONS -- non-vocabulary glyphs the live frame still
+/// draws.** Four non-ASCII characters are spelled inline by emitters today
+/// and are deliberately NOT vocabulary: none of them appears in an approved
+/// mock, and admitting a glyph no mock uses would widen the one set whose
+/// whole value is being closed. Each is registered here against the task that
+/// owns its region, so the call gets made once, with the surface, instead of
+/// being forgotten (sites are as of T1):
+///
+/// | glyph | code point | live site | owing task |
+/// |---|---|---|---|
+/// | `═` | U+2550 | `screen.rs:145`, the title strip | T2 |
+/// | `§` | U+00A7 | `repl.rs:554`, `repl.rs:1881` (guide cross-references) | T4 / T11 |
+/// | `−` | U+2212 | `suggest.rs:122`, the honesty note's minus | T11 |
+/// | `×` | U+00D7 | `suggest.rs:123`, the honesty note's times | T11 |
+///
+/// The owing task either replaces the character -- the title strip's `═` has
+/// a vocabulary twin in [`RULE`](glyph::RULE) -- or admits it here with a row
+/// and a class. What it must not do is leave one spelled inline inside a
+/// surface the redesign has already claimed.
 pub mod glyph {
-    /// The president marker, on the tile title in its owner's color (V3).
-    pub const PRESIDENT: char = '▲';
-    /// One assistant pawn.
-    pub const ASSISTANT: char = '●';
-    /// A Movement destination the engine's own legal list offers.
-    pub const REACHABLE: char = '◈';
-    /// A built building-site slot, in its builder's color.
-    pub const BUILT: char = '⌂';
-    /// Victory points.
-    pub const VP: char = '★';
-    /// Money.
-    pub const YEN: char = '¥';
-    /// The seat whose turn it is.
-    pub const ACTIVE: char = '▶';
-    /// The step separator in the phase chain.
-    pub const CHAIN_STEP: char = '▸';
-    /// An index's group heading.
-    pub const CATEGORY: char = '■';
-    /// The recall key, named in the standing hint.
-    pub const HISTORY_KEY: char = '↑';
-    /// Between facts packed onto one line.
-    pub const SEPARATOR: char = '·';
-    /// An unfilled slot. Same code point as [`SEPARATOR`], different job.
-    pub const EMPTY_SLOT: char = '·';
-    /// Em dash: a title's trailing gloss, a blank site space.
-    pub const SECTION_DASH: char = '—';
-    /// En dash: a reward RANGE.
-    pub const RANGE_DASH: char = '–';
-    /// An elided middle.
-    pub const ELLIPSIS: char = '…';
-    /// A horizontal rule; also a box's top and bottom edge.
-    pub const RULE: char = '─';
-    /// A box's side.
-    pub const BOX_V: char = '│';
-    /// Box corner, top-left.
-    pub const BOX_TL: char = '┌';
-    /// Box corner, top-right.
-    pub const BOX_TR: char = '┐';
-    /// Box corner, bottom-left.
-    pub const BOX_BL: char = '└';
-    /// Box corner, bottom-right.
-    pub const BOX_BR: char = '┘';
+    /// Declares the vocabulary ONCE. One source line per glyph carries its
+    /// doc comment, its constant name, its character, the code point recorded
+    /// for it and its width class, and the macro emits BOTH the `pub const`
+    /// and the matching [`VOCABULARY`] row from that single line.
+    ///
+    /// This is a closure, not tidiness. The constants and the table used to be
+    /// two hand-written lists with a length assertion between them, and a
+    /// length assertion cannot tell a missing row from a missing constant: add
+    /// a constant, skip its row, and the count still matches whatever it
+    /// matched before -- every test green, the glyph covered by no pin, and
+    /// the module doc claiming otherwise. No test could have closed that hole,
+    /// because a test can only check the rows it is handed. The fix has to be
+    /// structural, so it is: inside the vocabulary's declaration -- the list
+    /// below, the one place a glyph is declared -- a constant and its row are
+    /// the SAME LINE and cannot diverge. Forgetting a row is not an omission
+    /// you can make any more; it does not parse, and the crate does not build.
+    /// The macro is the test that could not be written.
+    ///
+    /// What that does NOT close, said plainly rather than left implied:
+    /// nothing in Rust forbids writing a bare `pub const FOO: char = '…';`
+    /// into this module beside the list, and such a constant would carry no
+    /// row and break no test. But that is a different act from forgetting a
+    /// row -- a declaration made OUTSIDE the vocabulary rather than an
+    /// omission inside it -- and it reads on sight as the one line that does
+    /// not look like its twenty-one neighbours. The two-list divergence is
+    /// structurally gone; the deviation is left to review, which is where the
+    /// width classes below already live.
+    ///
+    /// (The types it expands into -- [`Glyph`], [`Eaw`] and the `g`
+    /// constructor -- are defined below, after the table they describe.)
+    macro_rules! vocabulary {
+        ($(
+            $(#[$row_doc:meta])*
+            $name:ident = $ch:literal, $codepoint:literal, $eaw:ident;
+        )*) => {
+            $(
+                $(#[$row_doc])*
+                pub const $name: char = $ch;
+            )*
+
+            /// The whole vocabulary as data, in the doc table's order, so a
+            /// pin can sweep it rather than naming glyphs one at a time.
+            /// Generated from the same source lines as the constants above,
+            /// so the two cannot disagree about WHICH glyphs exist; what the
+            /// pins still buy is whether each row tells the truth about the
+            /// one it names.
+            pub const VOCABULARY: &[Glyph] = &[
+                $( g(stringify!($name), $name, $codepoint, Eaw::$eaw), )*
+            ];
+        };
+    }
+
+    vocabulary! {
+        /// The president marker, on the tile title in its owner's color (V3).
+        PRESIDENT = '▲', 0x25B2, Ambiguous;
+        /// One assistant pawn.
+        ASSISTANT = '●', 0x25CF, Ambiguous;
+        /// A Movement destination the engine's own legal list offers.
+        REACHABLE = '◈', 0x25C8, Ambiguous;
+        /// A built building-site slot, in its builder's color.
+        BUILT = '⌂', 0x2302, Neutral;
+        /// Victory points.
+        VP = '★', 0x2605, Ambiguous;
+        /// Money.
+        YEN = '¥', 0x00A5, Narrow;
+        /// The seat whose turn it is.
+        ACTIVE = '▶', 0x25B6, Ambiguous;
+        /// The step separator in the phase chain.
+        CHAIN_STEP = '▸', 0x25B8, Neutral;
+        /// An index's group heading.
+        CATEGORY = '■', 0x25A0, Ambiguous;
+        /// The recall key, named in the standing hint.
+        HISTORY_KEY = '↑', 0x2191, Ambiguous;
+        /// Between facts packed onto one line.
+        SEPARATOR = '·', 0x00B7, Ambiguous;
+        /// An unfilled slot. Same code point as [`SEPARATOR`], different job.
+        EMPTY_SLOT = '·', 0x00B7, Ambiguous;
+        /// Em dash: a title's trailing gloss, a blank site space.
+        SECTION_DASH = '—', 0x2014, Ambiguous;
+        /// En dash: a reward RANGE.
+        RANGE_DASH = '–', 0x2013, Ambiguous;
+        /// An elided middle.
+        ELLIPSIS = '…', 0x2026, Ambiguous;
+        /// A horizontal rule; also a box's top and bottom edge.
+        RULE = '─', 0x2500, Ambiguous;
+        /// A box's side.
+        BOX_V = '│', 0x2502, Ambiguous;
+        /// Box corner, top-left.
+        BOX_TL = '┌', 0x250C, Ambiguous;
+        /// Box corner, top-right.
+        BOX_TR = '┐', 0x2510, Ambiguous;
+        /// Box corner, bottom-left.
+        BOX_BL = '└', 0x2514, Ambiguous;
+        /// Box corner, bottom-right.
+        BOX_BR = '┘', 0x2518, Ambiguous;
+    }
 
     /// East-Asian-Width class, as recorded from the Unicode Character
     /// Database (`EastAsianWidth.txt`, UCD 16.0) when this table was
@@ -210,33 +300,6 @@ pub mod glyph {
     const fn g(name: &'static str, ch: char, codepoint: u32, eaw: Eaw) -> Glyph {
         Glyph { name, ch, codepoint, eaw }
     }
-
-    /// The whole vocabulary as data, in the doc table's order, so a pin can
-    /// sweep it rather than naming glyphs one at a time -- a constant added
-    /// above and forgotten here is what the length assertion catches.
-    pub const VOCABULARY: &[Glyph] = &[
-        g("PRESIDENT", PRESIDENT, 0x25B2, Eaw::Ambiguous),
-        g("ASSISTANT", ASSISTANT, 0x25CF, Eaw::Ambiguous),
-        g("REACHABLE", REACHABLE, 0x25C8, Eaw::Ambiguous),
-        g("BUILT", BUILT, 0x2302, Eaw::Neutral),
-        g("VP", VP, 0x2605, Eaw::Ambiguous),
-        g("YEN", YEN, 0x00A5, Eaw::Narrow),
-        g("ACTIVE", ACTIVE, 0x25B6, Eaw::Ambiguous),
-        g("CHAIN_STEP", CHAIN_STEP, 0x25B8, Eaw::Neutral),
-        g("CATEGORY", CATEGORY, 0x25A0, Eaw::Ambiguous),
-        g("HISTORY_KEY", HISTORY_KEY, 0x2191, Eaw::Ambiguous),
-        g("SEPARATOR", SEPARATOR, 0x00B7, Eaw::Ambiguous),
-        g("EMPTY_SLOT", EMPTY_SLOT, 0x00B7, Eaw::Ambiguous),
-        g("SECTION_DASH", SECTION_DASH, 0x2014, Eaw::Ambiguous),
-        g("RANGE_DASH", RANGE_DASH, 0x2013, Eaw::Ambiguous),
-        g("ELLIPSIS", ELLIPSIS, 0x2026, Eaw::Ambiguous),
-        g("RULE", RULE, 0x2500, Eaw::Ambiguous),
-        g("BOX_V", BOX_V, 0x2502, Eaw::Ambiguous),
-        g("BOX_TL", BOX_TL, 0x250C, Eaw::Ambiguous),
-        g("BOX_TR", BOX_TR, 0x2510, Eaw::Ambiguous),
-        g("BOX_BL", BOX_BL, 0x2514, Eaw::Ambiguous),
-        g("BOX_BR", BOX_BR, 0x2518, Eaw::Ambiguous),
-    ];
 }
 
 /// Resource kinds that get their own display color, for `Tone::Good`: the
@@ -304,6 +367,13 @@ pub enum Tone {
     /// A Movement destination the ENGINE's legal list offers -- the `◈`
     /// mark and the tile it tints (§0.7). Its own meaning, never a
     /// player's: the CLI computes no legality, it colors what it is told.
+    ///
+    /// Ships at `32`, which is also `Player(Green)` and the Tea Plantation
+    /// tile: invisible at 2P (no green seat), a real collision at 3P/4P. The
+    /// value is the approved mock's and stays; the palette refresh below
+    /// moves the player colors to their bright twins (`92` for green), so the
+    /// task that lands that row -- T2/T4 mark the tiles, T10 the higher
+    /// counts -- is where this stops overlapping on screen.
     Reachable,
     /// Reverse video: the one lit item in a run of alternatives -- the
     /// current phase in the chain, the neutral dummy's occupied space.
@@ -321,6 +391,119 @@ pub enum Tone {
     Warn,
     Prompt,
     Dim,
+}
+
+/// Every [`AreaType`], for the [`Tone::Tile`] half of [`Tone::all`]. Core
+/// exposes no `AreaType::ALL` the way it does for `PlayerColor` and `Country`,
+/// and this branch is CLI-only, so the roster is spelled here -- but not left
+/// to good intentions: [`sgr`] and [`every_tone_is_accounted_for`] both name
+/// every variant with no wildcard, so a new area type in core is a compile
+/// error in this file before it can be a hole in this list.
+const AREA_TYPES: [AreaType; 14] = [
+    AreaType::CopperMine,
+    AreaType::SilkMill,
+    AreaType::TeaPlantation,
+    AreaType::FishingGround,
+    AreaType::Bank,
+    AreaType::PortA,
+    AreaType::PortB,
+    AreaType::LaboratoryA,
+    AreaType::LaboratoryB,
+    AreaType::EmploymentAgency,
+    AreaType::Chinatown,
+    AreaType::Church,
+    AreaType::Customs,
+    AreaType::Canal,
+];
+
+impl Tone {
+    /// Every tone there is: the parameterized families expanded from their
+    /// own rosters, then the unit variants.
+    ///
+    /// FAIL-CLOSED, and the mechanism is the whole point. A hand-kept list of
+    /// "the tones worth sweeping" fails OPEN -- the tone somebody forgets is
+    /// exactly the one no pin covers, and the sweep still passes, reporting
+    /// health it never measured. So this roster is composed from the component
+    /// `::ALL`s rather than typed out, and [`every_tone_is_accounted_for`]
+    /// carries a wildcard-free `match` naming every `Tone` variant and every
+    /// variant of every family inside them. Adding a tone -- or a
+    /// `PlayerColor`, `GoodKind`, `AreaType` or `Country` -- is a COMPILE
+    /// error there, and the arm you are forced to write is the reminder that
+    /// its family belongs here.
+    pub fn all() -> Vec<Tone> {
+        // The hook that keeps the checker alive: an uncalled private fn is
+        // dead code. Its match is exhaustive by PATTERN, so one call proves
+        // exactly as much as sweeping the whole roster would -- the guarantee
+        // belongs to the compiler, not to this line.
+        every_tone_is_accounted_for(Tone::Vp);
+
+        let mut tones: Vec<Tone> = PlayerColor::ALL.map(Tone::Player).into();
+        tones.extend(GoodKind::ALL.map(Tone::Good));
+        tones.extend(AREA_TYPES.map(Tone::Tile));
+        tones.extend(Country::ALL.map(Tone::Flag));
+        tones.extend([
+            Tone::Vp,
+            Tone::Reachable,
+            Tone::Highlight,
+            Tone::Strong,
+            Tone::Chrome,
+            Tone::Warn,
+            Tone::Prompt,
+            Tone::Dim,
+        ]);
+        tones
+    }
+}
+
+/// The closure mechanism behind [`Tone::all`] -- see its doc for why. No
+/// wildcard, every variant named, every arm a no-op: this function exists to
+/// be COMPILED, not to be run.
+fn every_tone_is_accounted_for(tone: Tone) {
+    match tone {
+        Tone::Player(
+            PlayerColor::Red | PlayerColor::Blue | PlayerColor::Green | PlayerColor::Yellow,
+        ) => (),
+        Tone::Good(
+            GoodKind::Copper
+            | GoodKind::Silk
+            | GoodKind::Tea
+            | GoodKind::Seafood
+            | GoodKind::Yen
+            | GoodKind::Imports
+            | GoodKind::Any,
+        ) => (),
+        Tone::Tile(
+            AreaType::CopperMine
+            | AreaType::SilkMill
+            | AreaType::TeaPlantation
+            | AreaType::FishingGround
+            | AreaType::Bank
+            | AreaType::PortA
+            | AreaType::PortB
+            | AreaType::LaboratoryA
+            | AreaType::LaboratoryB
+            | AreaType::EmploymentAgency
+            | AreaType::Chinatown
+            | AreaType::Church
+            | AreaType::Customs
+            | AreaType::Canal,
+        ) => (),
+        Tone::Flag(
+            Country::English
+            | Country::American
+            | Country::French
+            | Country::German
+            | Country::Dutch,
+        ) => (),
+        Tone::Vp => (),
+        Tone::Reachable => (),
+        Tone::Highlight => (),
+        Tone::Strong => (),
+        Tone::Chrome => (),
+        Tone::Warn => (),
+        Tone::Prompt => (),
+        Tone::Dim => (),
+    }
 }
 
 /// SGR parameter string for a tone (the `N` of `ESC[Nm`). Players map to
@@ -478,45 +661,34 @@ mod tests {
         assert_eq!(test_support::strip_ansi(&s), "CRITICAL");
     }
 
-    /// The tones 3.5a adds, as a roster the paint pins can sweep. Not
-    /// exhaustive over `Tone` by construction -- `sgr`'s match is what makes
-    /// a new variant a compile error -- so a later task that adds a tone
-    /// adds its row here too.
-    fn tones_added_by_the_redesign() -> Vec<Tone> {
-        let mut tones: Vec<Tone> = Country::ALL.iter().map(|&c| Tone::Flag(c)).collect();
-        tones.extend([
-            Tone::Reachable,
-            Tone::Highlight,
-            Tone::Strong,
-            Tone::Chrome,
-            Tone::Good(GoodKind::Any),
-        ]);
-        tones
-    }
-
-    /// The redesign's tones inherit the module's whole point: at rest they
-    /// are the identity, byte for byte. That is the state a piped run and a
-    /// `NO_COLOR` run both leave the switch in -- `init_from_tty`'s one
-    /// `&&` is the only path `NO_COLOR` takes to `paint`, so off-state
-    /// identity IS the NO_COLOR property for a tone -- and it is why adding
-    /// palette entries cannot move a single byte of the line protocol.
+    /// EVERY tone is the identity at rest, byte for byte -- the module's
+    /// whole point, and the state a piped run and a `NO_COLOR` run both leave
+    /// the switch in (`init_from_tty`'s one `&&` is the only path `NO_COLOR`
+    /// takes to `paint`, so off-state identity IS the NO_COLOR property for a
+    /// tone). It is why adding palette entries cannot move a single byte of
+    /// the line protocol.
+    ///
+    /// Swept over [`Tone::all`], not over the tones one task happened to add:
+    /// a roster assembled by hand is a roster that quietly stops being
+    /// complete, and this pin would then pass by measuring less. See
+    /// `Tone::all`'s doc for how a new variant is forced into it.
     #[test]
-    fn every_new_tone_is_the_identity_while_color_is_off() {
+    fn every_tone_is_the_identity_while_color_is_off() {
         force(false);
-        for tone in tones_added_by_the_redesign() {
+        for tone in Tone::all() {
             assert_eq!(paint(tone, "token"), "token", "{tone:?} painted while color was off");
         }
     }
 
-    /// ...and each one actually paints when color is on, wrapping the token
-    /// without disturbing it. A tone whose SGR string were empty or
-    /// malformed would still round-trip through `strip_ansi`, so the
-    /// wrapper shape is checked too.
+    /// ...and every one of them actually paints when color is on, wrapping
+    /// the token without disturbing it. A tone whose SGR string were empty or
+    /// malformed would still round-trip through `strip_ansi`, so the wrapper
+    /// shape is checked too.
     #[test]
-    fn every_new_tone_paints_and_restores_when_color_is_on() {
+    fn every_tone_paints_and_restores_when_color_is_on() {
         force(true);
         let painted: Vec<(Tone, String)> =
-            tones_added_by_the_redesign().into_iter().map(|t| (t, paint(t, "token"))).collect();
+            Tone::all().into_iter().map(|t| (t, paint(t, "token"))).collect();
         force(false);
         for (tone, s) in painted {
             assert!(s.starts_with("\u{1b}["), "{tone:?} did not open an escape: {s:?}");
@@ -541,17 +713,32 @@ mod tests {
         }
     }
 
-    /// The vocabulary's doc table is the shipped RECORD of what each glyph
-    /// is, and a record that drifts from its constants is worse than none:
-    /// the width decision it carries would then describe characters the
-    /// frames do not draw. Every row is checked against its constant.
+    /// Each row's recorded facts, checked against the character it names.
+    /// WHICH glyphs exist can no longer drift -- constants and rows come off
+    /// the same source lines, see the `vocabulary!` macro -- so what is left
+    /// to check is whether a row tells the truth about its own glyph, and the
+    /// doc table's width decision rests on exactly that.
     ///
-    /// Two shapes are refused outright. A variation selector would make
-    /// "one char" a lie the moment it were composed onto a base character,
-    /// and an emoji-plane code point renders wide and in color on every
-    /// modern terminal -- the `★` U+2605 -> `⭐` U+2B50 substitution being
-    /// the plausible accident, since the two look alike in a font picker
-    /// and only one of them is a text symbol.
+    /// Being precise about what each pin buys, because three of them are
+    /// narrower than they look:
+    ///
+    /// - the code point IS checked against the constant, so no row can record
+    ///   U+2605 beside a character that is not `★`;
+    /// - `Wide` is refused outright -- two columns everywhere is the one class
+    ///   `screen::visible_width` could not model at all;
+    /// - a row's Narrow/Neutral/Ambiguous class is NOT computed. Nothing in
+    ///   the crate can compute it (no Unicode width table in tree, no
+    ///   dependency to add one), so the class is a fact checked off-line
+    ///   against the UCD and pinned by review, exactly as [`glyph::Eaw`]'s own
+    ///   doc states. A row mis-recording `★` as Narrow passes here;
+    /// - the astral guard is a PLANE check and no more. It keeps U+1F000-and-up
+    ///   out and says nothing about a BMP emoji: `⭐` U+2B50 renders wide and
+    ///   in color yet would sail through, so the `★` -> `⭐` substitution is
+    ///   caught by the class column and its review, not by this assert;
+    /// - a variation selector cannot be COMPOSED onto a glyph here at all,
+    ///   because `char` is one scalar value. That is the type's guarantee, not
+    ///   a test's. The assert covers only the residue -- a lone selector
+    ///   declared as though it were a glyph.
     #[test]
     fn the_glyph_table_records_every_constant_truthfully() {
         let mut names = std::collections::BTreeSet::new();
@@ -576,16 +763,29 @@ mod tests {
             );
             assert!(
                 gl.codepoint < 0x1F000,
-                "{} sits in the emoji planes; the vocabulary is text symbols only",
+                "{} sits in the astral planes; the vocabulary is BMP text symbols only",
                 gl.name,
             );
         }
+
+        // The one sanctioned duplicate, stated as a PROPERTY rather than as a
+        // count. The retired length literal could only say "twenty-one names
+        // over twenty code points" and could not say which twenty; this names
+        // the pair, so a second glyph that silently repeats an existing
+        // character -- two names for one mark, where one name was wanted --
+        // fails instead of quietly restoring the arithmetic.
+        let mut by_codepoint: std::collections::BTreeMap<u32, Vec<&str>> = Default::default();
+        for gl in glyph::VOCABULARY {
+            by_codepoint.entry(gl.codepoint).or_default().push(gl.name);
+        }
+        let shared: Vec<(u32, Vec<&str>)> =
+            by_codepoint.into_iter().filter(|(_, names)| names.len() > 1).collect();
         assert_eq!(
-            glyph::VOCABULARY.len(),
-            21,
-            "the vocabulary is twenty-one names over twenty code points \
-             (SEPARATOR and EMPTY_SLOT share U+00B7) -- a constant added to the module \
-             without a row here is a glyph no pin covers",
+            shared,
+            vec![(0x00B7, vec!["SEPARATOR", "EMPTY_SLOT"])],
+            "U+00B7 carried by SEPARATOR and EMPTY_SLOT is the vocabulary's only shared \
+             code point -- one character with two jobs. Any other sharing is two names \
+             for one mark, and wants one name",
         );
     }
 

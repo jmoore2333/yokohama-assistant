@@ -242,9 +242,10 @@ pub(crate) mod test_support {
     /// KNOWN RESIDUAL (T0-review SF3), now discharged where it can be: the
     /// measurement is a `char` COUNT, not a terminal COLUMN count. The frames
     /// draw no East-Asian-Wide glyph at all -- T0's note named `★` as one and
-    /// it is not (U+2605 is Ambiguous) -- but eighteen of the twenty glyphs
-    /// they do draw are Ambiguous-width (`▲ ● ◈ ▶ ★ ·`, the dashes, the box
-    /// characters), counting 1 here while rendering 2 columns on a
+    /// it is not (U+2605 is Ambiguous) -- but eighteen of the vocabulary's
+    /// twenty-one NAMED glyphs are Ambiguous-width (`▲ ● ◈ ▶ ★ ■ ↑ · …`, the
+    /// two dashes, the six box characters; `·` is two of the eighteen, being
+    /// both SEPARATOR and EMPTY_SLOT), counting 1 here while rendering 2 on a
     /// CJK-configured terminal or font. [`crate::style::glyph`] is the
     /// vocabulary, the per-glyph width pins, and the recorded decision to
     /// accept that class for the raised-floor design; read it for why a line
