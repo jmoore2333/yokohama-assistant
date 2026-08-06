@@ -3128,7 +3128,7 @@ mod tests {
     /// columns at 2/3/4 players, all past the note's 100-column trigger, where
     /// the pre-redesign boards were 72/90/108 and only 4 players fired it. The
     /// note keys on the GRID width, not the composed frame's, which is wider
-    /// still (198/163/200 since T10). Guide §2 states the frame widths; making
+    /// still (198/175/200 since the T10 review). Guide §2 states the frame widths; making
     /// the note frame-aware is on the carry-forward list.
     #[test]
     fn board_command_prints_a_one_time_width_note_on_a_wide_board() {

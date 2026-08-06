@@ -47,7 +47,7 @@
 //! areas`) is 46 columns, and the two-column form was drawn over the three
 //! shortest cards in the deck.
 //!
-//! **And three more in the BELOW form, all of them about columns that are 48
+//! **And four more in the BELOW form, all of them about columns that are 48
 //! wide where the beside strip is 74.** (4) The stride is
 //! [`SEAT_COL_W`] = 50 rather than the 4P mock's 49, which lands the block on
 //! the 200-column design floor that mock's own frame is drawn at. (5) The mock
@@ -58,9 +58,14 @@
 //! costs 61. Technologies are NAMED rather than explained there, because the
 //! shortest [`tech_summary`] needs 34 columns beside a name and a label. (6)
 //! The mock folds TRACKS and ACHIEVEMENTS onto ONE 192-column line; they get a
-//! row each here, because the 3-player block is 163 columns and a combined line
-//! could not be total at both counts — and the split is what buys the
-//! achievements back their VP tiers and claim state.
+//! row each here, because the 3-player block is [`BELOW_BLOCK_MIN`] columns and
+//! a combined line could not be total at both counts — and the split is what
+//! buys the achievements back their VP tiers and claim state. (7) The mock's
+//! `President in hand · 1 order (hidden)` is ONE line and this draws TWO —
+//! [`president_row`] and [`seat_tail_row`] — because the orders count travels
+//! with the locked-pawn tally and the next-take price rather than with the
+//! President (see (5)), and no information is lost by the split: both facts
+//! still appear, on adjacent rows of the same column.
 
 use yokohama_core::{
     AchievementType, AreaId, PlayerColor, PlayerId, PresidentLocation,
@@ -159,7 +164,8 @@ fn line(t: &Twin) -> String {
 }
 
 /// A content line at a width other than [`DASH_W`] — the below arrangement's
-/// columns, which are 48 or 52 wide rather than 74. Same rule, one number.
+/// seat columns (48 wide at 4 players, 56 at 3) and its compressed panel rows
+/// (the whole block, 175 or 200). Same rule, one number.
 fn line_at(t: &Twin, width: usize) -> String {
     if t.width() <= width {
         return t.painted.clone();
@@ -172,7 +178,7 @@ fn header(title: &str) -> String {
     header_at(title, DASH_W)
 }
 
-/// [`header`] at an arbitrary width — the below arrangement's blocks are 163
+/// [`header`] at an arbitrary width — the below arrangement's blocks are 175
 /// and 200 columns, not 74.
 fn header_at(title: &str, width: usize) -> String {
     let mut t = Twin::default();
@@ -189,6 +195,16 @@ fn header_at(title: &str, width: usize) -> String {
 /// line 36 draws the TRACKS rule, its content and the ACHIEVEMENTS summary on a
 /// single line and simply stops). Ragged right and clipped at `width`, like
 /// every other content line — only [`header_at`] draws a shape.
+///
+/// **The clip is now a SAFETY NET rather than a working part**, and it is kept
+/// deliberately. Since [`BELOW_BLOCK_MIN`] widened the 3-player block past the
+/// widest legal compressed row, no state this driver can reach clips here — so
+/// the branch is exercised by exactly one thing, its own unit pin
+/// (`an_over_wide_compressed_row_is_clipped_to_its_block_not_overrun`) with a
+/// synthetic over-wide body. Removing it would leave the whole frame resting on
+/// an arithmetic argument about strings nobody re-measures: a row past its block
+/// is written over whatever sits to its right, and a clipped tail is a bad
+/// screen where an overrun is a broken one.
 fn header_row(title: &str, body: &Twin, width: usize) -> String {
     let mut t = Twin::default();
     t.tinted(Tone::Chrome, &format!("{} ", glyph::RULE)).tinted(Tone::Strong, title).raw("  ");
@@ -856,8 +872,9 @@ fn order_card(card: &HandCardModel) -> Vec<String> {
 /// the gutter, so a column writes 48 columns and the mock writes 43 into 49.
 ///
 /// It is a FLOOR on the stride, not a cap — [`crate::screen`] hands this module
-/// a block at least as wide as the board and legend already above it, so at 3
-/// players the 163-column stage gives columns of 54 rather than 50. What the
+/// a block at least as wide as the board and legend already above it AND at
+/// least [`BELOW_BLOCK_MIN`], so at 3 players the 175-column block gives
+/// columns of 58 rather than 50. What the
 /// constant guarantees is the other direction: four columns of a 180-column
 /// board would be 45 wide, and the seat header alone spends 46 of them.
 pub const SEAT_COL_W: usize = 50;
@@ -866,6 +883,41 @@ pub const SEAT_COL_W: usize = 50;
 /// columns are ragged-right text rather than boxes, so the gutter only has to
 /// stop the longest line of one column touching the shortest of the next.
 const SEAT_COL_GAP: usize = 2;
+
+/// The NARROWEST block the below arrangement may be handed — the constant that
+/// widened the 3-player frame off the site-slot legend's 163 columns at the T10
+/// review.
+///
+/// **What it protects is the three COMPRESSED panels, not the seat columns.**
+/// [`tracks_row`], [`achievements_row`] and [`hand_row`] each fold a whole
+/// panel onto one ragged row, and a row longer than its block does not overrun
+/// the frame — [`line_at`] clips it, which costs the row's TAIL. On the
+/// achievements row that tail is the claim state, so a clipped row quietly
+/// stops saying who has taken each card, which is the one fact on it that moves
+/// during a game. A clip is the safe failure, not an acceptable one.
+///
+/// **MEASURED, then set**, and swept rather than argued — which is the whole
+/// reason this constant exists. T10 shipped a 162-column figure taken from a
+/// fixture that hard-coded seats 0 and 1, i.e. `RED, BLUE`, the NARROWEST
+/// claimant pair there is; the real maxima are wider, and at 163 columns 580 of
+/// the 32,768 legal 3-player achievements states clipped:
+///
+/// | row | 3P legal max | 4P legal max | swept over |
+/// |---|---|---|---|
+/// | achievements | **171** | **174** | all 64 card triples x every claimant subset of every card (32,768 states at 3P, 262,144 at 4P) |
+/// | tracks | **170** | **170** | 0..15 pawns graduated across both boards, up to every space occupied |
+///
+/// 175 is the widest of the four plus one column of margin. It BINDS at 3
+/// players only: at 4 the block is already 200 (four columns of
+/// [`SEAT_COL_W`]), which is why the 4-player maxima are the wider pair and
+/// still never come near their block.
+///
+/// One constant rather than one per count, deliberately. The two counts differ
+/// only in which seat colors can appear in a claim state (`BLUE, YELLOW` at 3
+/// against `YELLOW, GREEN` at 4), which is not a layout fact worth a table —
+/// and a minimum below some count's legal maximum would be a number nobody
+/// could read without first asking which count it was for.
+pub const BELOW_BLOCK_MIN: usize = 175;
 
 /// Rows a seat column spends, whatever the seat owns — and the reason the 3P
 /// and 4P frames stopped growing in play.
@@ -956,6 +1008,13 @@ fn players_columns(
     // `seats` columns of the designed stride is a caller error, and the safe
     // direction is a block that overruns its width rather than columns that
     // overwrite each other.
+    //
+    // KNOWN-EQUIVALENT MUTANT (T10 review N3, recorded so it is not re-derived):
+    // dropping the `.max(SEAT_COL_W)` changes nothing at either shipped
+    // geometry — 175 / 3 is 58 and 200 / 4 is exactly 50 — so no test can
+    // distinguish it today. It stays as the defence it is written to be: a
+    // caller that hands this a narrower block gets an overrunning row rather
+    // than seat columns written over each other.
     let col_w = (width / seats).max(SEAT_COL_W);
     let content_w = col_w - SEAT_COL_GAP;
     let columns: Vec<Vec<String>> =
@@ -1207,6 +1266,14 @@ fn president_row(
 /// fits where it belongs: `· 3 locked` costs 11 columns on a 40-column
 /// assistants line, `(next take ¥4)` costs 15 on a 46-column trade-house line,
 /// and the column is 48.
+///
+/// **It is the tightest row in the column layout: 47 columns against 48 at 4
+/// players**, swept over its three fields (orders 0..36 x masked or not x
+/// locked 0..18 x the whole 4/5/6/7 take progression) and held by
+/// `the_widest_legal_seat_tail_row_still_fits_its_column`. One column of
+/// margin, at the count with the narrowest columns — so a word added to any of
+/// these three facts costs one of the others, and the pin is what turns that
+/// into a failing test rather than a silently truncated next-take price.
 fn seat_tail_row(p: &PlayerModel, w: usize) -> String {
     let mut t = indented();
     t.raw(&plural(p.orders_in_hand, "order"));
@@ -1229,6 +1296,14 @@ fn seat_tail_row(p: &PlayerModel, w: usize) -> String {
 /// shape). What is dropped against the beside form is the trailing
 /// `'tracks' renders every space` hint, which the frame's info strip already
 /// names on every screen.
+///
+/// **This row GROWS WITH PAWNS**, which is what the T10 review found it had not
+/// been measured against: an occupied space draws `[7●]` where an empty one
+/// draws `[7]`, so every pawn on either board costs a column and the tail —
+/// the mercenary supply — is what a clip takes. Fully occupied (all 8 Church
+/// spaces and all 7 Customs), the row measures **170 columns**, held by
+/// `the_widest_legal_tracks_row_survives_its_block_at_both_counts` and inside
+/// [`BELOW_BLOCK_MIN`] at both counts.
 fn tracks_row(t: &TracksPanel, colors: &[PlayerColor], width: usize) -> String {
     let has_dummy = t
         .church
@@ -1272,11 +1347,21 @@ fn tracks_row(t: &TracksPanel, colors: &[PlayerColor], width: usize) -> String {
 /// asks, what it pays first and later, and who has taken it.
 ///
 /// Ragged rather than three fixed cells, and that is what makes it fit: the
-/// three cards are one per CATEGORY, and only the B and C decks carry a
-/// 28-column requirement, so the widest legal row is 161 columns against the
-/// 163 the 3-player block gives it. A state that somehow held three long cards
-/// would clip rather than overrun — [`line_at`] is the guarantee, not the
-/// arithmetic.
+/// three cards are one per CATEGORY, so the row can only ever carry one
+/// requirement out of each deck.
+///
+/// **This is the WIDEST row the below arrangement draws, and the number is
+/// swept rather than reasoned.** Every one of the 64 legal card triples, at
+/// every claimant subset of every card, measures at most **171 columns at 3
+/// players and 174 at 4** — the maxima [`BELOW_BLOCK_MIN`] is set from, held by
+/// `the_widest_legal_achievements_row_survives_its_block_at_both_counts`. The
+/// figure T10 shipped (161/162) was measured on a fixture that hard-coded seats
+/// 0 and 1, i.e. the narrowest claimant pair in the game, and 580 of the 32,768
+/// legal 3-player states were clipping at the block it licensed.
+///
+/// A state somehow wider than its block still clips rather than overruns —
+/// [`line_at`] is the guarantee, and the arithmetic above is only what keeps
+/// the guarantee from having to fire.
 fn achievements_row(panel: &AchievementsPanel, colors: &[PlayerColor], width: usize) -> String {
     let mut body = Twin::default();
     for (i, card) in panel.cards.iter().enumerate() {
@@ -2010,9 +2095,9 @@ mod tests {
     // -----------------------------------------------------------------------
 
     /// The block width [`crate::screen`] hands the below arrangement at `n`
-    /// players: `seats x SEAT_COL_W` against what the stage already occupies,
-    /// which at these two counts is the 163-column site-slot legend and the
-    /// 180-column 4P board.
+    /// players: `seats x SEAT_COL_W` against what the stage already occupies
+    /// (the 163-column site-slot legend at 3, the 180-column board at 4) and
+    /// against [`BELOW_BLOCK_MIN`], which is the one that wins at 3.
     ///
     /// A mirror of `screen::below_block_width`, and deliberately a crude one —
     /// these tests are about what a block of a given width renders, so they
@@ -2020,7 +2105,54 @@ mod tests {
     /// COMPOSED numbers are pinned where they are produced, by
     /// `screen::the_frame_width_table_matches_the_composed_opening_frame`.
     fn block_np(n: u8) -> usize {
-        (usize::from(n) * SEAT_COL_W).max(if n == 3 { 163 } else { 180 })
+        (usize::from(n) * SEAT_COL_W).max(if n == 3 { 163 } else { 180 }).max(BELOW_BLOCK_MIN)
+    }
+
+    /// Every legal Achievement card triple: one per category, which is the
+    /// engine's own rule for the three in play, so the product is 4 x 4 x 4.
+    fn achievement_triples() -> Vec<[AchievementType; 3]> {
+        const A: [AchievementType; 4] = [
+            AchievementType::Copper5,
+            AchievementType::Silk6,
+            AchievementType::Tea7,
+            AchievementType::Seafood7,
+        ];
+        const B: [AchievementType; 4] = [
+            AchievementType::Money10,
+            AchievementType::Tokens5,
+            AchievementType::Orders5,
+            AchievementType::Technologies4,
+        ];
+        const C: [AchievementType; 4] = [
+            AchievementType::Production4,
+            AchievementType::Commercial4,
+            AchievementType::Prod3Comm2,
+            AchievementType::Prod2Comm3,
+        ];
+        let mut out = Vec::new();
+        for a in A {
+            for b in B {
+                for c in C {
+                    out.push([a, b, c]);
+                }
+            }
+        }
+        out
+    }
+
+    /// Every claim state one card can be in at `n` players: the claimants are a
+    /// SUBSET of the seats, so this is the power set.
+    ///
+    /// Subsets rather than ORDERED claim lists, and the reason is width: a
+    /// two-claimant state renders `NAME, NAME`, whose width does not depend on
+    /// which name comes first, and every other arity renders a name or a count.
+    /// The engine's `claimed_by` is ordered; the row's width is not.
+    fn claim_subsets(n: u8) -> Vec<Vec<PlayerId>> {
+        (0..(1u32 << n))
+            .map(|mask| {
+                (0..n).filter(|i| mask & (1 << i) != 0).map(PlayerId::new).collect()
+            })
+            .collect()
     }
 
     fn below_np(n: u8) -> String {
@@ -2124,66 +2256,245 @@ mod tests {
         }
     }
 
-    /// The compressed ACHIEVEMENTS row survives its WIDEST legal content at
-    /// the NARROWER block — the one place the below arrangement rests on
-    /// arithmetic rather than on a shape.
+    /// The compressed ACHIEVEMENTS row survives EVERY legal content at BOTH
+    /// blocks — the one place the below arrangement rests on arithmetic rather
+    /// than on a shape, so the arithmetic is swept rather than argued.
     ///
     /// [`line_at`] clips, so a row that outgrew its block would not break the
-    /// frame; it would quietly lose the tail, which is the claim state. So the
-    /// check is that the row arrives INTACT: the widest requirement in each
-    /// category, two claimants apiece (the longest state this line draws), at
-    /// the 3-player block, with no ellipsis and every field still readable.
+    /// frame; it would quietly lose its TAIL, which is the third card's claim
+    /// state — the one fact on this row that moves during a game.
     ///
-    /// One per category is what makes the arithmetic work and it is the
-    /// engine's own rule for the three cards in play, so the fixture builds the
-    /// widest LEGAL row rather than three C-deck cards. Three C-deck cards
-    /// would not fit and are not reachable; if they ever became reachable, this
-    /// row would clip rather than overrun the frame.
+    /// **This test replaced a fixture that measured one hand-built row and got
+    /// the number wrong.** T10 recorded "the widest legal row is 162 columns"
+    /// from a fixture that set `claimed_by` to seats 0 and 1 — `RED, BLUE`, the
+    /// NARROWEST claimant pair in the game. The widest is `BLUE, YELLOW` at 3
+    /// players and `YELLOW, GREEN` at 4, and at the 163-column block T10
+    /// shipped, **580 of the 32,768 legal 3-player states clipped**. A pin that
+    /// states one state's width can only ever be as right as its author's
+    /// guess about which state is widest; this one enumerates.
     ///
-    /// **MEASURED: 162 columns against the 163 the 3-player block gives it.**
-    /// One column, which is why this pin is per-edit and states the number:
-    /// adding a word to a requirement string, to the VP form, or to the claim
-    /// state costs the claim state on the narrower block, and the failure it
-    /// would otherwise produce is a quiet ellipsis rather than a broken
-    /// layout.
+    /// **MEASURED, then set:** 171 columns at 3 players over 32,768 states,
+    /// 174 at 4 over 262,144 — the two numbers [`BELOW_BLOCK_MIN`] is derived
+    /// from, asserted here as equalities so a wording change that moves either
+    /// one fails next to the constant it feeds rather than eating its margin
+    /// silently.
     #[test]
-    fn the_widest_legal_achievements_row_is_not_clipped_at_the_narrower_block() {
-        let (mut state, _) = state_np(3);
-        // The longest requirement string in each of the three categories.
-        let widest = [
-            AchievementType::Seafood7,
-            AchievementType::Tokens5,
-            AchievementType::Prod3Comm2,
-        ];
-        for (card, want) in state.achievements.iter_mut().zip(widest) {
-            assert_eq!(want.category(), card.achievement_type.category(), "one per category");
-            card.achievement_type = want;
-            card.claimed_by = vec![PlayerId::new(0), PlayerId::new(1)];
-        }
-        let block = block_np(3);
-        let row = achievements_row(
-            &crate::screen_model::build_achievements(&state),
-            &colors_np(&state),
-            block,
-        );
-        let plain = strip_ansi(&row);
-        assert!(
-            !plain.contains(glyph::ELLIPSIS),
-            "the widest legal achievements row is {} columns against a {block}-column block \
-             and arrived clipped: {plain:?}",
-            visible_width(&row),
-        );
-        for want in widest {
+    fn the_widest_legal_achievements_row_survives_its_block_at_both_counts() {
+        for (n, want_max) in [(3u8, 171usize), (4, 174)] {
+            let (state, _) = state_np(n);
+            let colors = colors_np(&state);
+            let block = block_np(n);
+            let subsets = claim_subsets(n);
+            let mut swept = 0usize;
+            let mut worst = (0usize, String::new());
+            for triple in achievement_triples() {
+                for ca in &subsets {
+                    for cb in &subsets {
+                        for cc in &subsets {
+                            let cards = [(triple[0], ca), (triple[1], cb), (triple[2], cc)]
+                                .into_iter()
+                                .map(|(t, claim)| AchievementModel {
+                                    achievement_type: t,
+                                    category: t.category(),
+                                    first_place_vp: t.first_place_vp(),
+                                    subsequent_vp: t.subsequent_vp(),
+                                    claimed_by: (*claim).clone(),
+                                    // Per-seat progress is the `goals` view's
+                                    // business; this row never reads it.
+                                    progress: Vec::new(),
+                                })
+                                .collect();
+                            let row = achievements_row(
+                                &AchievementsPanel { cards },
+                                &colors,
+                                block,
+                            );
+                            let plain = strip_ansi(&row);
+                            assert!(
+                                !plain.contains(glyph::ELLIPSIS),
+                                "a legal {n}P achievements row clipped inside a {block}-column \
+                                 block: {plain:?}",
+                            );
+                            swept += 1;
+                            if visible_width(&row) > worst.0 {
+                                worst = (visible_width(&row), plain);
+                            }
+                        }
+                    }
+                }
+            }
+            assert_eq!(
+                swept,
+                64 * subsets.len().pow(3),
+                "the sweep must cover every card triple at every claim state",
+            );
+            assert_eq!(
+                worst.0, want_max,
+                "the widest legal {n}P achievements row measures {} columns, not the recorded \
+                 {want_max}: {:?}\nIf that is deliberate, RE-MEASURE BELOW_BLOCK_MIN from this \
+                 sweep -- it is set from these two numbers",
+                worst.0, worst.1,
+            );
             assert!(
-                plain.contains(achievement_requirement(want)),
-                "want {want:?}'s requirement intact in: {plain:?}"
+                worst.0 < block,
+                "{n}P: the widest legal row ({}) must fit its {block}-column block with room \
+                 to spare",
+                worst.0,
             );
         }
+    }
+
+    /// The compressed TRACKS row survives every pawn count, at both blocks.
+    ///
+    /// **This row grows with the game and T10 never measured it that way.** An
+    /// occupied space draws `[7●]` where an empty one draws `[7]`, so every
+    /// pawn placed on either management board costs the row a column, and what
+    /// a clip takes is the tail — the mercenary supply. The review found it
+    /// clipping from 9 pawns at the 163-column block.
+    ///
+    /// Graduated 0..=15 pawns, which walks past every count's end-game trigger
+    /// (5 real pawns at 3 players, 6 at 4) and on to the structural ceiling:
+    /// all 8 Church spaces and all 7 Customs occupied. The trigger only starts
+    /// a final round rather than freezing the boards, so the reachable maximum
+    /// is somewhere above the trigger and below the ceiling — sweeping to the
+    /// ceiling makes the pin independent of exactly where.
+    ///
+    /// **MEASURED: 170 columns at both counts**, at 15 pawns. The 2-player
+    /// dummy's ` · D = dummy, not counted` tail is 24 columns more and is NOT
+    /// swept here: the dummy exists only at 2 players and 2 players draws the
+    /// BESIDE arrangement, which does not use this row at all.
+    #[test]
+    fn the_widest_legal_tracks_row_survives_its_block_at_both_counts() {
+        for n in [3u8, 4] {
+            let (state, _) = state_np(n);
+            let colors = colors_np(&state);
+            let block = block_np(n);
+            let mut worst = (0usize, String::new(), 0usize);
+            for pawns in 0..=15usize {
+                let mut s = state.clone();
+                for i in 0..pawns.min(s.church_track.slots.len()) {
+                    s.church_track.slots[i] = Some(ChurchSlot {
+                        player: PlayerId::new((i % usize::from(n)) as u8),
+                        arrival_order: i as u8,
+                    });
+                }
+                let on_customs = pawns.saturating_sub(s.church_track.slots.len());
+                for i in 0..on_customs.min(s.customs_track.slots.len()) {
+                    s.customs_track.slots[i] = Some(CustomsSlot {
+                        player: PlayerId::new((i % usize::from(n)) as u8),
+                        arrival_order: i as u8,
+                    });
+                }
+                let row = tracks_row(&crate::screen_model::build_tracks(&s), &colors, block);
+                let plain = strip_ansi(&row);
+                assert!(
+                    !plain.contains(glyph::ELLIPSIS),
+                    "the {n}P tracks row clipped at {pawns} pawns inside a {block}-column \
+                     block: {plain:?}",
+                );
+                assert!(
+                    plain.contains("mercenaries left"),
+                    "the row's TAIL is what a clip takes, so it is what a pass must show: \
+                     {plain:?}",
+                );
+                if visible_width(&row) > worst.0 {
+                    worst = (visible_width(&row), plain, pawns);
+                }
+            }
+            assert_eq!(
+                worst.0, 170,
+                "the widest {n}P tracks row measures {} columns at {} pawns, not the recorded \
+                 170: {:?}\nIf that is deliberate, RE-MEASURE BELOW_BLOCK_MIN",
+                worst.0, worst.2, worst.1,
+            );
+            assert_eq!(worst.2, 15, "the widest row must be the fullest one");
+        }
+    }
+
+    /// The seat TAIL row is the tightest line in the column layout, so it gets
+    /// the measured-maximum treatment its column-mates do not need (T10 review
+    /// N1).
+    ///
+    /// **MEASURED: 47 columns against the 48 a 4-player column gives it** —
+    /// swept over all three of its fields at once, because they are drawn on
+    /// one line and it is their SUM that has to fit: the orders count (0..=36,
+    /// the whole deck), the mask, the locked-pawn tally (0..=18, the three
+    /// Achievement cards plus both management boards), and the whole 4/5/6/7
+    /// Employment-Agency progression.
+    ///
+    /// One column of margin is why this is a per-edit pin. A word added to any
+    /// one of these three facts costs one of the other two, and without this
+    /// the failure would be a silently truncated next-take price on the count
+    /// with the narrowest columns.
+    #[test]
+    fn the_widest_legal_seat_tail_row_still_fits_its_column() {
+        let (state, rules) = state_np(4);
+        let seats = crate::screen_model::SeatFacts::all_open(4);
+        let panel = crate::screen_model::build_players(&state, &rules, &seats);
+        let content_w = SEAT_COL_W - SEAT_COL_GAP;
+        let mut worst = (0usize, String::new());
+        for orders in 0..=36usize {
+            for hidden in [false, true] {
+                for locked in 0..=18u8 {
+                    for take in [4u8, 5, 6, 7] {
+                        let mut p = panel.players[0].clone();
+                        p.orders_in_hand = orders;
+                        p.hand_hidden = hidden;
+                        // Spread the locked pawns across the three places they
+                        // can be, capped at what each holds: 3 Achievement
+                        // cards, 8 Church spaces, 7 Customs spaces.
+                        p.assistants.on_achievements = locked.min(3);
+                        p.assistants.on_church = locked.saturating_sub(3).min(8);
+                        p.assistants.on_customs = locked.saturating_sub(11).min(7);
+                        p.trading_houses.next_take_cost = take;
+                        let row = seat_tail_row(&p, content_w);
+                        let plain = strip_ansi(&row);
+                        assert!(
+                            !plain.contains(glyph::ELLIPSIS),
+                            "a legal tail row clipped inside a {content_w}-column column: \
+                             {plain:?}",
+                        );
+                        if visible_width(&row) > worst.0 {
+                            worst = (visible_width(&row), plain);
+                        }
+                    }
+                }
+            }
+        }
         assert_eq!(
-            plain.matches("RED, BLUE").count(),
-            3,
-            "every card's claim state must survive: {plain:?}"
+            worst.0, 47,
+            "the widest legal seat tail row measures {} columns, not the recorded 47: {:?}",
+            worst.0, worst.1,
         );
+        assert!(worst.0 < content_w, "and it must still fit the {content_w}-column column");
+    }
+
+    /// [`header_row`]'s clip, pinned on its own (T10 review MUST-1(c)).
+    ///
+    /// **The branch is unreachable from any legal state since
+    /// [`BELOW_BLOCK_MIN`] widened the 3-player block**, which is exactly why
+    /// it needs this: the review deleted the clip entirely and all 569 tests
+    /// stayed green. An untested safety net is not a safety net, and the thing
+    /// it prevents — a compressed row written over whatever sits to its right —
+    /// is worse than the truncation it produces.
+    ///
+    /// Synthetic input, because the point is that no real one reaches here.
+    #[test]
+    fn an_over_wide_compressed_row_is_clipped_to_its_block_not_overrun() {
+        let mut body = Twin::default();
+        body.raw(&"x".repeat(200));
+        let row = header_row("TRACKS", &body, 40);
+        assert_eq!(visible_width(&row), 40, "a clipped row is EXACTLY its block: {row:?}");
+        assert!(
+            strip_ansi(&row).ends_with(glyph::ELLIPSIS),
+            "and it says it was clipped: {row:?}",
+        );
+        // The other direction, so this pin cannot pass by clipping everything:
+        // a row inside its block is left alone, ragged right.
+        let mut short = Twin::default();
+        short.raw("fits");
+        let row = header_row("TRACKS", &short, 40);
+        assert_eq!(strip_ansi(&row), "─ TRACKS  fits", "an inside-block row is untouched");
     }
 
     /// The privacy fence is identical at every count: a masked seat's hand
@@ -2226,6 +2537,16 @@ mod tests {
     /// A bot seat is badged in the column layout exactly as it is beside the
     /// board, and its hand stays masked — 3.2's rule, unchanged by the
     /// arrangement.
+    ///
+    /// **The mask half of this used to be checked with `text.contains("hidden")`
+    /// over the WHOLE frame, and that assertion was vacuous**: the YOUR HAND row
+    /// says `1 card — hidden` for the viewing seat, so the frame contains the
+    /// word whether or not any seat column carries its own marker. Disabling
+    /// [`seat_tail_row`]'s hidden branch entirely passed all 558 tests. That is
+    /// the crate's THIRD recurrence of one lesson — a whole-frame `contains` is
+    /// satisfied by overlapping text elsewhere on the screen — so the marker is
+    /// pinned per LINE below, by
+    /// `the_hidden_marker_is_drawn_on_exactly_the_masked_seats_tail_row`.
     #[test]
     fn a_bot_seat_is_badged_and_masked_in_the_column_layout() {
         let (state, rules) = state_np(4);
@@ -2237,6 +2558,46 @@ mod tests {
         let text = strip_ansi(&dashboard_below(&panels, &board, &colors_np(&state), block_np(4)));
         assert!(text.contains(BOT_BADGE.trim()), "the bot seat is badged:\n{text}");
         assert!(text.contains("hidden"), "and its own hand stays masked:\n{text}");
+    }
+
+    /// The per-seat `(hidden)` marker, asserted where it is DRAWN (T10 review
+    /// SHOULD-3).
+    ///
+    /// Two properties one whole-frame `contains` cannot express: the masked
+    /// seat's tail row carries the marker exactly ONCE, and an open seat's tail
+    /// row carries it NOT AT ALL. Checked on the tail rows themselves — the
+    /// column-layout rows that begin with an orders count — rather than on the
+    /// frame, because the frame also contains the viewing seat's YOUR HAND row
+    /// and that row says `hidden` in every masked game.
+    ///
+    /// Masking two of four seats rather than one, so a renderer that drew the
+    /// marker on the FIRST masked column and stopped fails here too.
+    #[test]
+    fn the_hidden_marker_is_drawn_on_exactly_the_masked_seats_tail_row() {
+        let (state, rules) = state_np(4);
+        let masked = [false, true, false, true];
+        let seats: Vec<crate::screen_model::SeatFacts> = masked
+            .iter()
+            .map(|&m| crate::screen_model::SeatFacts { is_bot: m, hand_hidden: m })
+            .collect();
+        let panel = crate::screen_model::build_players(&state, &rules, &seats);
+        for (seat, want_marker) in masked.iter().enumerate().map(|(i, m)| (i, *m)) {
+            let row = strip_ansi(&seat_tail_row(
+                &panel.players[seat],
+                SEAT_COL_W - SEAT_COL_GAP,
+            ));
+            assert_eq!(
+                row.matches("(hidden)").count(),
+                usize::from(want_marker),
+                "seat {seat} is {} masked, so its tail row must carry the marker {} time(s): \
+                 {row:?}",
+                if want_marker { "" } else { "NOT" },
+                usize::from(want_marker),
+            );
+            // Anti-vacuity: the row must be a tail row at all, not an empty
+            // string that trivially contains nothing.
+            assert!(row.contains("next take"), "seat {seat}'s tail row: {row:?}");
+        }
     }
 
     /// Painting must never move a visible character — the crate's alignment

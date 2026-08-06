@@ -592,9 +592,9 @@ fn columns_for(count: usize, widest: usize, budget: usize) -> usize {
 /// The column budget a zone under THIS board has: the width its composed frame
 /// opens at (`screen::frame_width`), not the design floor.
 ///
-/// The distinction is not cosmetic. A 3-player frame is 163 columns wide — the
+/// The distinction is not cosmetic. A 3-player frame is 175 columns wide — the
 /// board is narrower than the floor and the dashboard stacks below it — so a
-/// zone packed to 200 would print option rows 19 columns past the widest thing
+/// zone packed to 200 would print option rows 25 columns past the widest thing
 /// above them, and the frame's own width pin would (correctly) call that a
 /// defect. The player count is the one layout fact the board model carries, and
 /// this is the one place the zone needs it.
@@ -1084,7 +1084,7 @@ fn reveal_hint(model: &crate::screen_model::RevealModel, players: u8) -> String 
 /// continued line signalled by the trailing separator on the one before it.
 ///
 /// **It wraps rather than being written short enough to fit**, because "short
-/// enough" is not one length: the frame is 198 columns at 2 players and 163 at
+/// enough" is not one length: the frame is 198 columns at 2 players and 175 at
 /// 3, and the longest hint — a forced single option, in a phase with an expert
 /// grammar — is 187. Trimming the clause set until the widest case cleared the
 /// NARROWEST frame would have cost the spec-required wording everywhere to fix

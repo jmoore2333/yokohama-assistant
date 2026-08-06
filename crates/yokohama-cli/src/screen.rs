@@ -264,30 +264,40 @@ const DASH_W: usize = panel_render::DASH_W;
 ///
 /// **A DIFFERENT element is the widest one at each count**, which is why the
 /// three numbers do not track the board: at 2 it is the board with the
-/// dashboard joined beside it, at 120 + [`PANEL_GAP`] + [`DASH_W`] = 198; at 3
-/// it is the site-slot LEGEND, at 163 columns the one row that keys the V3
-/// tiles' compact tokens and the same length at every count; at 4, since T10,
-/// it is the BELOW DASHBOARD, whose four seat columns of
+/// dashboard joined beside it, at 120 + [`PANEL_GAP`] + [`DASH_W`] = 198; at 4,
+/// since T10, it is the BELOW DASHBOARD, whose four seat columns of
 /// [`panel_render::SEAT_COL_W`] span 200 — see [`below_block_width`] for why
-/// four columns of the 180-column board would be too narrow to draw a seat in.
+/// four columns of the 180-column board would be too narrow to draw a seat in;
+/// and at 3, since the T10 review, it is that same below dashboard held open to
+/// [`panel_render::BELOW_BLOCK_MIN`] by the widest legal ACHIEVEMENTS row.
 ///
-/// The history in one line, because three tasks moved these: the pre-redesign
+/// The history in one line, because four changes moved these: the pre-redesign
 /// numbers were 114/132/108; T2's V3 board took them to 163/163/180 and then
 /// 164/163/180 when [`PANEL_GAP`] widened to the mocks' four-column gutter; T3
 /// replaced the 40-column compact panel with the designed 74-column dashboard,
 /// which put the 2P join at 198; T10 laid the 3P and 4P dashboards out in
-/// columns, which left 163 alone and took 180 to 200.
+/// columns, which left 163 alone and took 180 to 200; and the T10 review found
+/// that 163 was too narrow for the compressed rows the column layout had just
+/// created, which took 3 players from 163 to 175.
 ///
-/// **198 and 200 are the design working, not near misses.** Spec §0.1 designs
-/// the frame at 200 columns and every approved mock is drawn at exactly that —
-/// the 4P mock's own closing rule measures 200. At 2 players, 120 + 4 + 74 is
-/// what "the board and the dashboard side by side inside 200" costs; at 4, four
-/// seat columns is what the floor is for. What that costs is SLACK: the 4P
-/// frame now sits exactly on [`FLOOR_W`], so the floor rather than
-/// `FRAME_MARGIN` is the binding bound there, which is the failure
+/// **The 3-player number is DERIVED, not chosen.** It is the widest legal
+/// compressed panel row plus a column, swept over every card triple and every
+/// claimant state — the table is in [`panel_render::BELOW_BLOCK_MIN`], with the
+/// 580-of-32,768 clip rate that made it necessary. Nothing about the site-slot
+/// legend or the 3-player board sets that frame's width any more.
+///
+/// **198, 175 and 200 are the design working, not near misses.** Spec §0.1
+/// designs the frame at 200 columns and every approved mock is drawn at exactly
+/// that — the 4P mock's own closing rule measures 200. At 2 players, 120 + 4 +
+/// 74 is what "the board and the dashboard side by side inside 200" costs; at
+/// 4, four seat columns is what the floor is for; at 3, the design floor's 37
+/// columns of headroom over the old 163 is what pays for full words in every
+/// legal state rather than an abbreviation. What that costs is SLACK: the 4P
+/// frame sits exactly on [`FLOOR_W`], so the floor rather than `FRAME_MARGIN`
+/// is the binding bound there, which is the failure
 /// `frame_fits_the_raised_floor_at_every_player_count` says is the right one to
 /// get.
-const FRAME_WIDTHS: [usize; 3] = [198, 163, 200];
+const FRAME_WIDTHS: [usize; 3] = [198, 175, 200];
 
 /// The composed frame's HEIGHT at each player count, indexed `players - 2` --
 /// the three numbers guide §2 states, measured the same way [`FRAME_WIDTHS`] is
@@ -310,12 +320,18 @@ const FRAME_WIDTHS: [usize; 3] = [198, 163, 200];
 /// apiece. That is 15 rows at both counts against 45 and 54, and it lands the
 /// openings at 49 and 48.
 ///
-/// **The three numbers no longer move independently, and that is a property
-/// rather than a coincidence.** The below block is FIXED-height by construction
-/// (see [`panel_render::SEAT_ROWS`]), so what separates 49 from 48 is the one
-/// row 3 players pays elsewhere: the standing hint WRAPS to the frame's own
-/// width, and at 163 columns its clause list needs two lines where 198 and 200
-/// take one. Everything else about the two frames is the same size.
+/// **The three OPENING numbers no longer move independently, and that is a
+/// property rather than a coincidence.** The below block is FIXED-height by
+/// construction (see [`panel_render::SEAT_ROWS`]), so what separates 49 from 48
+/// is the one row 3 players pays elsewhere: the standing hint WRAPS to the
+/// frame's own width, and at 175 columns its clause list still needs two lines
+/// where 198 and 200 take one. Everything else about the two frames is the same
+/// size.
+///
+/// That property is about the OPENING frame and about the 3- and 4-player
+/// arrangement. It does NOT extend to what a frame reaches in play at 2
+/// players, where the dashboard is ragged and grows with holdings —
+/// [`WALK_HEIGHTS`] is where that distinction is drawn, and T10 blurred it.
 ///
 /// `cfg(test)`, unlike [`FRAME_WIDTHS`]: a width is a BUDGET the running driver
 /// spends (`suggest` sizes its body against `frame_width`), while a height is
@@ -342,38 +358,54 @@ const FLOOR_H: usize = 50;
 /// number: the 2P in-play maximum was 20 rows past its opening for the whole of
 /// T3 and nobody could have known, because nothing measured it.
 ///
-/// **MEASURED, then set** — the same discipline as [`FRAME_MARGIN`], run over
-/// the same 250-move walk, and **RE-MEASURED at T4 and again at T10**, which is
-/// the condition each revision of this doc attached to the table:
+/// **MEASURED, then set** — the same discipline as [`FRAME_MARGIN`], and
+/// **RE-MEASURED at T4, at T10, and again at the T10 review**, which is the
+/// condition each revision of this doc attached to the table:
 ///
-/// | count | opening | tallest in play | overshoot | (T4's reading) | (T3's) |
-/// |---|---|---|---|---|---|
-/// | 2 | 48 | 60 | +12 | 60, +12 | 66, +20 |
-/// | 3 | 49 | 60 | +11 | 90, +12 | 96, +20 |
-/// | 4 | 48 | 60 | +12 | 99, +12 | 105, +20 |
+/// | count | opening | tallest in play | overshoot | measured on | (T10's reading) | (T4's) | (T3's) |
+/// |---|---|---|---|---|---|---|---|
+/// | 2 | 48 | 67 | +19 | seed 18, rot 2, 900 moves | 60, +12 | 60, +12 | 66, +20 |
+/// | 3 | 49 | 60 | +11 | seed 7, rot 0, 250 moves | 60, +11 | 90, +12 | 96, +20 |
+/// | 4 | 48 | 60 | +12 | seed 7, rot 0, 250 moves | 60, +12 | 99, +12 | 105, +20 |
 ///
-/// **All three counts now reach the SAME height, and that is what a
-/// fixed-height dashboard buys.** Every maximum is the walk's move 7, an
-/// AreaAction on the Church with 27 payment combinations, and after T10 nothing
-/// else about the frame differs by count in a way that survives to the peak:
-/// the board is 20 rows at every count, the below block is 15 at both counts
-/// that use it, and the decision zone budgets ROWS rather than options
-/// (`decision_render::OPTION_ROWS`, twelve). The 3-player frame's +11 rather
-/// than +12 is its wrapped standing hint, which the taller move-7 body does not
-/// pay a second time.
+/// **THE THREE ENTRIES ARE NOT THE SAME KIND OF NUMBER, and T10 claimed they
+/// were.** Its commit read "all three in-play maxima are now the SAME number,
+/// which is what a fixed-height dashboard buys" — true of 3 and 4 players and
+/// false of 2, which shares none of that layout. The review reproduced a 2P
+/// frame at 66 rows on the parent commit and this table's own deep walk finds
+/// 67, against the 60 T10 recorded from a 250-move walk. Nothing regressed; the
+/// number had never been looked for.
 ///
-/// **What is left is the zone's own budget, not a defect with a fix pending.**
-/// A decision with more options than one screen holds has to either page or
-/// grow, and this driver pages; twelve rows is the deliberate size of that
-/// page. Every frame therefore reaches 60 rows against a 48-or-49-row opening,
-/// which is 10 past the design floor at the tallest position a real game walk
-/// finds — the same overshoot at every count, from the same screen.
+/// - **3 and 4 players are CEILINGS.** Their dashboard is a fixed-height block
+///   (`panel_render::SEAT_ROWS`), so nothing a seat collects can add a row and
+///   the only thing that grows those frames is the decision zone's own
+///   twelve-row page (`decision_render::OPTION_ROWS`). Both peak at the walk's
+///   move 7 — an AreaAction on the Church with 27 payment combinations — and a
+///   longer walk does not find a taller frame.
+/// - **2 players is NOT a ceiling.** Its dashboard joins BESIDE the board and
+///   is ragged: one line per owned Technology, per hand card, per panel that
+///   fills up. It therefore grows with holdings for as long as a game runs, and
+///   the recorded figure is a property of the WALK rather than of the layout —
+///   a 4,000-move version of the same walk reaches 68 and is still climbing
+///   when it stops. What 67 means is exactly "what the walk pinned in
+///   `every_frame_of_a_real_game_walk_fits_its_recorded_bounds` draws", which is
+///   all a regression net needs: that walk is deterministic, so a layout change
+///   that adds a row to the 2P dashboard moves this number and fails.
+///
+/// The 2P entry is deliberately NOT quoted as a bound anywhere a player reads
+/// (guide §2 says what the shape is instead), and fixing the raggedness itself
+/// is a layout question this task did not open.
+///
+/// **What the overshoot is, at every count, is the zone's own budget rather
+/// than a defect with a fix pending.** A decision with more options than one
+/// screen holds has to either page or grow, and this driver pages; twelve rows
+/// is the deliberate size of that page.
 ///
 /// A number that is recorded is not a number that is licensed: growth PAST these
 /// fails, and the fix is to re-measure the table deliberately, not to raise one
 /// entry until a run goes quiet.
 #[cfg(test)]
-const WALK_HEIGHTS: [usize; 3] = [60, 60, 60];
+const WALK_HEIGHTS: [usize; 3] = [67, 60, 60];
 
 /// Allowance over [`WALK_HEIGHTS`], and one row is all it is.
 ///
@@ -548,26 +580,39 @@ fn push_block(stage: &mut String, block: &str) {
 
 /// The columns the BELOW dashboard is laid out across (T10).
 ///
-/// Two numbers, whichever is larger. The first is what `seats` columns of
-/// [`panel_render::SEAT_COL_W`] cost, which is the block the approved 4P mock
-/// draws — four columns of 50 is 200, the design floor, and that mock's own
-/// frame is exactly that wide. The second is what the stage ALREADY occupies,
-/// so a dashboard laid under a wide board spans it rather than sitting short of
-/// it.
+/// THREE numbers, whichever is largest, and each one is a different thing the
+/// block has to hold:
 ///
-/// **Taking the maximum is what keeps the frame's width where guide §2 states
-/// it.** At 3 players the board is 150 columns and the site-slot legend 163, so
-/// the block is 163 and the frame stays at the 163 it has been since T2 — three
-/// columns of 54, comfortably past the designed stride. At 4 the board is 180
-/// and 4 x 50 is 200, so the block is 200 and the 4-player frame moves 180 ->
-/// 200: the count where four columns of the board's own width would be 45
-/// apiece, against a seat header that spends 46.
+/// 1. what `seats` columns of [`panel_render::SEAT_COL_W`] cost — the block the
+///    approved 4P mock draws, four columns of 50 being 200, the design floor
+///    and that mock's own frame width;
+/// 2. what the stage ALREADY occupies, so a dashboard laid under a wide board
+///    spans it rather than sitting short of it;
+/// 3. [`panel_render::BELOW_BLOCK_MIN`], the widest LEGAL compressed panel row
+///    plus a column — added at the T10 review, which measured the achievements
+///    row at 171 columns against a 3-player block of 163.
 ///
-/// Measured off the stage TEXT rather than off a table, so a legend or a board
-/// that changes width moves this with it and cannot leave the block short.
+/// **The third is what sets the 3-player frame**, and it is why that frame is
+/// 175 columns rather than the 163 it had been since T2. The 3-player board is
+/// 150 columns and the site-slot legend 163, so before the review neither (1)
+/// nor (2) reached what the compressed rows need and the achievements row
+/// clipped its claim state in 580 of its 32,768 legal states. At 4 players (1)
+/// gives 200 and dominates both others, so nothing there moved.
+///
+/// (2) is measured off the stage TEXT rather than off a table, so a legend or a
+/// board that changes width moves this with it and cannot leave the block
+/// short.
+///
+/// **KNOWN-EQUIVALENT MUTANT (T10 review N3, recorded so it is not re-derived):
+/// (2) is inert at both shipped geometries** and has been since (3) was added —
+/// the 3-player legend is 163 and (3) gives 175, the 4-player board is 180 and
+/// (1) gives 200 — so deleting it fails no test today. It stays because it is
+/// the only term that tracks the stage: a board or a legend that grew past 200
+/// columns would leave the dashboard short of it, and no other term would
+/// notice.
 fn below_block_width(seats: usize, stage_so_far: &str) -> usize {
     let occupied = stage_so_far.lines().map(visible_width).max().unwrap_or(0);
-    (seats * panel_render::SEAT_COL_W).max(occupied)
+    (seats * panel_render::SEAT_COL_W).max(occupied).max(panel_render::BELOW_BLOCK_MIN)
 }
 
 /// The width [`wrap`] sizes a frame to: its stage's widest line, floored at 60
@@ -936,30 +981,30 @@ mod tests {
     /// How far past its OPENING width ([`frame_width`]) a composed frame may
     /// grow in play before the two width pins below call it a defect.
     ///
-    /// **MEASURED, then set — and RE-MEASURED at T3 and again at T10**, which is
-    /// the condition each revision of this doc attached to the constant. The
-    /// instrumentation is re-run over both pins below — every constructed worst
-    /// case (turn 99, 199 money and VP, 15 of every good on every seat, all
-    /// seven pending-choice banners, a lockdown) and a real 250-move game walk,
-    /// at each count — and the overshoot has come back at zero every time, so
-    /// the constant stays at one and the table states the current openings:
+    /// **MEASURED, then set — and RE-MEASURED at T3, at T10 and at the T10
+    /// review**, which is the condition each revision of this doc attached to
+    /// the constant. The instrumentation is re-run over both pins below — every
+    /// constructed worst case (turn 99, 199 money and VP, 15 of every good on
+    /// every seat, all seven pending-choice banners, a lockdown) and the game
+    /// walks, at each count — and the overshoot has come back at zero every
+    /// time, so the constant stays at one and the table states the current
+    /// openings:
     ///
-    /// | count | opening | widest measured | overshoot | (T3's reading) |
-    /// |---|---|---|---|---|
-    /// | 2 | 198 | 198 | 0 | 198 |
-    /// | 3 | 163 | 163 | 0 | 163 |
-    /// | 4 | 200 | 200 | 0 | 180 |
+    /// | count | opening | widest measured | overshoot | (T10's reading) | (T3's) |
+    /// |---|---|---|---|---|---|
+    /// | 2 | 198 | 198 | 0 | 198 | 198 |
+    /// | 3 | 175 | 175 | 0 | 163 | 163 |
+    /// | 4 | 200 | 200 | 0 | 200 | 180 |
     ///
     /// A frame reaches its opening width and stops, and at every count the
-    /// reason is now STRUCTURAL rather than incidental. At 3 the fixed
-    /// site-slot legend sets it. At 2 the dashboard joined beside the board
-    /// does, and every one of its lines is clipped at [`DASH_W`] by
-    /// [`panel_render`], with the section rules sitting at exactly that width
-    /// from turn 1. At 4, since T10, the below dashboard sets it: its PLAYERS
-    /// rule spans the block exactly and every other line in it is clipped
-    /// there, so the widest line is at its ceiling before a move is applied.
-    /// The old panel had no such rule and reached 164 by measuring its own
-    /// content.
+    /// reason is now STRUCTURAL rather than incidental. At 2 the dashboard
+    /// joined beside the board sets it, and every one of its lines is clipped at
+    /// [`DASH_W`] by [`panel_render`], with the section rules sitting at exactly
+    /// that width from turn 1. At 3 and 4, since T10, the below dashboard sets
+    /// it: its PLAYERS rule spans the block exactly and every other line in it
+    /// is clipped there, so the widest line is at its ceiling before a move is
+    /// applied. The old panel had no such rule and reached 164 by measuring its
+    /// own content.
     ///
     /// It is a MARGIN, not a second floor: what it has to stay is a bound a
     /// growing line can actually break. [`FLOOR_W`] alone leaves 0 to 37
@@ -1098,20 +1143,41 @@ mod tests {
     /// construction. The same walk answers both questions and costs one
     /// traversal, so the height bound rides here rather than in a second test
     /// that would replay the identical 250 moves.
+    ///
+    /// **FOUR walks since the T10 review, not three, and the fourth is a 2P
+    /// walk that runs much deeper.** The 3- and 4-player dashboards are
+    /// fixed-height blocks, so 250 moves finds their ceiling; the 2-player one
+    /// is ragged and grows with what its two seats own, so how tall a 2P frame
+    /// gets is a question about how long you walk, not about the layout. The
+    /// review found the shipped table's 2P entry understated by six rows for
+    /// exactly that reason. The deep arm is the walk [`WALK_HEIGHTS`]'s 2P entry
+    /// is measured on, stated here so the number and the thing that produces it
+    /// cannot drift apart.
     #[test]
     fn every_frame_of_a_real_game_walk_fits_its_recorded_bounds() {
         let mut report = Vec::new();
-        let mut widest = Vec::new();
-        let mut tallest = Vec::new();
-        for n in [2u8, 3, 4] {
-            let mut r = repl_np(n);
+        let mut widest: Vec<(u8, usize, String)> = Vec::new();
+        let mut tallest: Vec<(u8, usize, String)> = Vec::new();
+        // (count, seed, rotation offset, step cap). The first three are the
+        // walk this test has always run; the fourth is the T10-review deep 2P
+        // arm -- see the doc above and [`WALK_HEIGHTS`].
+        for (n, seed, rot, cap) in [(2u8, 7u64, 0usize, 250usize), (3, 7, 0, 250), (4, 7, 0, 250), (2, 18, 2, 900)] {
+            let mut r = Repl::new(
+                Session::new_sim(
+                    GameConfig::for_player_count(n),
+                    seed,
+                    vec![StartingOrderChoice::Keep(0); usize::from(n)],
+                    Rules::standard(),
+                )
+                .expect("a session"),
+            );
             force(true);
             let mut steps = 0usize;
             let mut worst = (0usize, String::new());
             let mut worst_h = (0usize, String::new());
-            while !r.session.is_over() && steps < 250 {
+            while !r.session.is_over() && steps < cap {
                 let frame = wrap(&r, &r.prompt());
-                let label = format!("move {steps}");
+                let label = format!("seed {seed} rot {rot} move {steps}");
                 let w = measure_frame(n, &label, &frame, &mut report);
                 if w > worst.0 {
                     worst = (w, label.clone());
@@ -1127,7 +1193,7 @@ mod tests {
                 // Rotate through the list rather than always taking [0], so the
                 // walk reaches positions with buildings, techs and orders in
                 // them instead of replaying one degenerate line.
-                let mv = legal[steps % legal.len()].clone();
+                let mv = legal[(steps + rot) % legal.len()].clone();
                 if r.session.apply(mv, Vec::new()).is_err() {
                     break;
                 }
@@ -1136,11 +1202,26 @@ mod tests {
             force(false);
             assert!(
                 steps > 100,
-                "the {n}P walk must actually reach mid-game positions, only got {steps} moves",
+                "the {n}P walk (seed {seed}, rot {rot}) must actually reach mid-game positions, \
+                 only got {steps} moves",
             );
-            widest.push((n, worst.0, worst.1));
-            tallest.push((n, worst_h.0, worst_h.1));
+            // One row per COUNT, keeping whichever arm reached furthest, so the
+            // reports below still read as a per-count table.
+            let keep_max = |acc: &mut Vec<(u8, usize, String)>, got: (usize, String)| {
+                match acc.iter_mut().find(|(c, _, _)| *c == n) {
+                    Some(slot) if got.0 > slot.1 => {
+                        slot.1 = got.0;
+                        slot.2 = got.1;
+                    }
+                    Some(_) => {}
+                    None => acc.push((n, got.0, got.1)),
+                }
+            };
+            keep_max(&mut widest, worst);
+            keep_max(&mut tallest, worst_h);
         }
+        widest.sort_by_key(|(n, _, _)| *n);
+        tallest.sort_by_key(|(n, _, _)| *n);
         assert!(
             report.is_empty(),
             "{}\nwidest line per count:\n{}",
@@ -1186,12 +1267,21 @@ mod tests {
     /// Three properties the per-count width table cannot see, because it
     /// measures one number off one frame:
     ///
-    /// 1. **The columns line up.** Seat columns are padded to a stride, and a
-    ///    stride that stopped being uniform would still pass every width bound
-    ///    while drawing a ragged dashboard. Derived from the rendered frame —
-    ///    the offsets of the repeated `Assistants  ` label — rather than from
-    ///    the constant that produced them, so the pin fails on a padding bug
-    ///    and not only on a changed constant.
+    /// 1. **The columns line up, on the stride the block designs.** Seat
+    ///    columns are padded to a stride, and a stride that stopped being
+    ///    uniform would still pass every width bound while drawing a ragged
+    ///    dashboard. Derived from the rendered frame — the offsets of the
+    ///    repeated `Assistants  ` label — rather than from the constant that
+    ///    produced them, so the pin fails on a padding bug and not only on a
+    ///    changed constant.
+    ///
+    ///    **An EQUALITY since the T10 review**, which found the old
+    ///    `stride >= SEAT_COL_W` was a floor rather than the property: padding
+    ///    the columns with the constant instead of the block-derived `col_w`
+    ///    left every property test green and was caught only by the committed
+    ///    golden. At 4 players the two numbers coincide (200 / 4 == 50), so the
+    ///    3-player cell is the one with the grip — 175 / 3 == 58 against the
+    ///    constant's 50.
     /// 2. **The block is fixed-height.** Every worst case must draw the same
     ///    number of dashboard rows as the opening frame; that is what keeps the
     ///    3P and 4P frames inside the design floor for a whole game rather than
@@ -1260,11 +1350,20 @@ mod tests {
                          stride, and these are at {offsets:?}",
                     );
                 }
-                assert!(
-                    stride >= panel_render::SEAT_COL_W,
-                    "{n}P '{label}': a {stride}-column stride is narrower than the designed \
-                     {}, so a seat header would overwrite its neighbour",
-                    panel_render::SEAT_COL_W,
+                // ...and it is the DESIGNED stride, not merely a wide enough
+                // one. Both halves derived from this very frame: the PLAYERS
+                // rule spans the block exactly (`panel_render::header_at`), so
+                // the block is its width, and the stride the layout owes is
+                // that block shared between the seats, floored at the designed
+                // minimum.
+                let block = rows[0].chars().count();
+                let designed = (block / usize::from(n)).max(panel_render::SEAT_COL_W);
+                assert_eq!(
+                    stride, designed,
+                    "{n}P '{label}': the seat columns sit on a {stride}-column stride, but a \
+                     {block}-column block shared between {n} seats designs {designed} -- a \
+                     stride that is merely WIDE ENOUGH leaves the block's right-hand columns \
+                     unused and every seat's content shifted left of where it belongs",
                 );
             }
         }
@@ -1422,10 +1521,10 @@ mod capture {
     /// renders and nobody finds out.
     ///
     /// **Both counts, because 3 players is not a narrow 4.** Its block is set
-    /// by the site-slot legend rather than by four seat columns (163 against
-    /// 200), its columns are 54 wide rather than 50, and its standing hint
-    /// wraps where the others' does not — three differences that a 4-player
-    /// capture alone would show none of.
+    /// by [`panel_render::BELOW_BLOCK_MIN`] rather than by four seat columns
+    /// (175 against 200), its columns are 58 wide rather than 50, and its
+    /// standing hint wraps where the others' does not — three differences that
+    /// a 4-player capture alone would show none of.
     ///
     /// Plain text, and regenerated with `UPDATE_T10_CAPTURE=1 cargo test -p
     /// yokohama-cli --lib the_committed_below_frame_captures` after a
@@ -1520,4 +1619,3 @@ mod capture {
         assert_eq!(index_width(), FLOOR_W);
     }
 }
-
