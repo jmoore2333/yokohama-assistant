@@ -628,6 +628,7 @@ mod tests {
             has_station: false,
             assistants: vec![(PlayerId::new(0), 0), (PlayerId::new(1), 0)],
             reachable: false,
+            canal_crossings: Vec::new(),
         }
     }
 

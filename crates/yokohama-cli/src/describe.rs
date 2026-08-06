@@ -72,8 +72,31 @@ pub fn card_location(at: crate::screen_model::CardLocation) -> String {
         }
         CardLocation::OwnHand => "in your hand".to_string(),
         CardLocation::ThisReveal => "in this reveal".to_string(),
+        CardLocation::LabSlot { board_b, slot } => {
+            format!("{} slot {}", lab_board_name(board_b), slot + 1)
+        }
+        CardLocation::OwnedBy { seat } => format!("owned by Seat {}", seat.0),
+        CardLocation::OnArea { area } => format!("on area A{:02}", area.0),
     }
 }
+
+/// One of a building site's four Shophouse spaces, in the words the printed
+/// card lays them out in (`09-building-sites.yaml`'s TL/TR/ML/MR keys). Named
+/// rather than abbreviated because the `sites` view exists to be read at the
+/// table beside the physical card: `top-left` finds the space, `TL` does not.
+pub fn site_space_name(slot: usize) -> &'static str {
+    match slot {
+        0 => "top-left",
+        1 => "top-right",
+        2 => "mid-left",
+        3 => "mid-right",
+        // `SPACES_PER_SITE` is 4 and the arrays are fixed-size, so this arm is
+        // unreachable from any real card; it names the slot rather than
+        // panicking, on the same totality rule every other renderer here holds.
+        _ => "space",
+    }
+}
+
 
 /// What a card prompt is recording, as the index's context header states it.
 ///
@@ -91,7 +114,7 @@ pub fn recording_target(target: crate::screen_model::RecordingTarget) -> String 
             human_position(slot),
             human_position(nth),
         ),
-        RecordingTarget::LabRefill { board_b } => {
+        RecordingTarget::TechRefill { board_b } => {
             format!("the card that refilled {}", lab_board_name(board_b))
         }
         RecordingTarget::PortSetup { board_b, slot, of } => format!(
@@ -869,7 +892,7 @@ mod tests {
             recording_target(T::PortRefill { board_b: false, slot: 5, nth: 2, of: 3 }),
             "Port A slot 6 (reveal 3 of 3)",
         );
-        assert_eq!(recording_target(T::LabRefill { board_b: true }), "the card that refilled Laboratory B");
+        assert_eq!(recording_target(T::TechRefill { board_b: true }), "the card that refilled Laboratory B");
         assert_eq!(
             recording_target(T::DealSetup { seat: PlayerId::new(0), which: 1, of: 2 }),
             "Seat 0's dealt card 2 of 2",

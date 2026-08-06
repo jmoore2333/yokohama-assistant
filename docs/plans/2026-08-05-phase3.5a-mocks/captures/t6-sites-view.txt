@@ -1,0 +1,31 @@
+BUILDING SITES — full view   every area's site card: each space's printed reward, what is built, and by whom
+
+┌ SITE 22 — on SILK MILL ────────────────────┐ ┌ SITE 6 — on FISHING GROUND ────────────────┐ ┌ SITE 14 — on PORT A ───────────────────────┐ ┌ SITE 10 — on COPPER MINE ──────────────────┐
+│ top-left   1 VP                open        │ │ top-left   1 VP                open        │ │ top-left   1 VP                open        │ │ top-left   1 VP                open        │
+│ top-right  4 VP                open        │ │ top-right  2 any goods         open        │ │ top-right  3 VP                open        │ │ top-right  2 warehouse takes   open        │
+│ mid-left   blank               open        │ │ mid-left   blank               open        │ │ mid-left   blank               open        │ │ mid-left   blank               open        │
+│ mid-right  3 VP                open        │ │ mid-right  1 any good          open        │ │ mid-right  2 warehouse takes   open        │ │ mid-right  2 assistant moves   open        │
+│ trading house  ★9 VP           open        │ │ trading house  ★7 VP           open        │ │ trading house  ★8 VP           open        │ │ trading house  ★7 VP           open        │
+│ A00                                        │ │ A01                                        │ │ A02                                        │ │ A03                                        │
+└────────────────────────────────────────────┘ └────────────────────────────────────────────┘ └────────────────────────────────────────────┘ └────────────────────────────────────────────┘
+┌ SITE 9 — on CHURCH ────────────────────────┐ ┌ SITE 7 — on BANK ──────────────────────────┐ ┌ SITE 21 — on LABORATORY A ─────────────────┐ ┌ SITE 16 — on CUSTOMS ──────────────────────┐
+│ top-left   1 VP                open        │ │ top-left   1 VP                open        │ │ top-left   1 VP                open        │ │ top-left   1 VP                open        │
+│ top-right  2 warehouse takes   open        │ │ top-right  2 any goods         open        │ │ top-right  4 VP                open        │ │ top-right  2 VP + 1 yen        open        │
+│ mid-left   blank               open        │ │ mid-left   blank               open        │ │ mid-left   blank               open        │ │ mid-left   blank               open        │
+│ mid-right  2 assistant moves   open        │ │ mid-right  1 any good          open        │ │ mid-right  1 VP + 2 yen        open        │ │ mid-right  1 VP + 1 yen        open        │
+│ trading house  ★6 VP           open        │ │ trading house  ★6 VP           open        │ │ trading house  ★5 VP           open        │ │ trading house  ★9 VP           open        │
+│ A04                                        │ │ A05                                        │ │ A06                                        │ │ A07                                        │
+└────────────────────────────────────────────┘ └────────────────────────────────────────────┘ └────────────────────────────────────────────┘ └────────────────────────────────────────────┘
+┌ SITE 17 — on EMPLOYMENT AGENCY ────────────┐ ┌ SITE 13 — on TEA PLANTATION ───────────────┐
+│ top-left   1 VP                open        │ │ top-left   1 VP                open        │
+│ top-right  2 VP + 1 yen        open        │ │ top-right  3 warehouse takes   open        │
+│ mid-left   blank               open        │ │ mid-left   blank               open        │
+│ mid-right  2 VP                open        │ │ mid-right  2 warehouse takes   open        │
+│ trading house  ★8 VP           open        │ │ trading house  ★5 VP           open        │
+│ A08                                        │ │ A09                                        │
+└────────────────────────────────────────────┘ └────────────────────────────────────────────┘
+
+A Shophouse built on a space takes that space's printed reward once; a Trading House builds FREE from hand and scores its VP.
+Which tiles touch which is on the board itself; the tolled canal crossings are not, so each card names its own.
+Enter or 'cancel' closes this view and puts you back at the prompt underneath, exactly as you left it — nothing is entered and nothing there is cancelled. Any other command closes it and runs.
+> 

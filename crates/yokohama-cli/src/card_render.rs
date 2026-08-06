@@ -1,6 +1,16 @@
-//! The mini order card — **one emitter, drawn by every surface that draws a
-//! card** (Phase-3.5a spec §0.6, plan T5; design authority is the approved mock
-//! `2026-08-05-phase3.5a-mocks/order-index.ans` and its `order_card()`).
+//! The index cards — **one emitter per registry, drawn by every surface that
+//! draws a card** (Phase-3.5a spec §0.6, plans T5/T6; design authority is the
+//! approved mock `2026-08-05-phase3.5a-mocks/order-index.ans` and its
+//! `order_card()`, generalized to the other three registries at T6).
+//!
+//! **Four card shapes, one entry point.** [`index_card`] dispatches on the
+//! model's own [`crate::screen_model::CardFaceModel`], so nothing outside this
+//! module decides what a card looks like, and a card is as tall as its own
+//! content — a technology with a one-line effect costs one row less than one
+//! with three, which is what keeps the tech index inside the design floor.
+//! The four widths differ because the four physical cards do: an order card is
+//! a grid of tokens, a technology is a paragraph of rules text, an achievement
+//! is a sentence, a building site is eight printed rewards.
 //!
 //! **Why this is its own module.** The card shape landed at T3 inside
 //! [`crate::panel_render`], where the dashboard's hand panel needed it, and T5
@@ -27,14 +37,34 @@
 //! which is the case `the_widest_card_title_still_measures_exactly_card_w`
 //! pins.
 
-use yokohama_core::{OrderCard, OrderCardId, OrderRewards, TradeGoodRequirement};
+use yokohama_core::{
+    AchievementCategory, OrderCard, OrderCardId, OrderRewards, PlayerColor, SpaceReward,
+    TradeGoodRequirement,
+};
 
-use crate::board_render::{exact, Twin};
+use crate::board_render::{color_of, exact, Twin};
 use crate::describe;
+use crate::screen_model::{AchievementModel, CardFaceModel, CardLocation, IndexCard, IndexKind};
 use crate::style::{glyph, GoodKind, Tone};
 
 /// A mini order card's total width, borders included — the mocks' `CARD_W`.
 pub const CARD_W: usize = 24;
+
+/// A technology card's width. Four to a row inside the 200-column floor, which
+/// is what the effect text needs: the longest of the twenty (`Telegram`,
+/// `Station`) runs 103 characters and wraps to three lines at this interior —
+/// the widest card that still keeps a six-title flag group to two rows.
+pub const TECH_W: usize = 49;
+
+/// An achievement card's width — three to a row, exactly filling the floor at a
+/// one-column gutter. Wide because the condition is a SENTENCE (the mixed
+/// categories run to 45 characters) and clipping the sentence would leave two
+/// cards reading identically.
+pub const GOAL_W: usize = 66;
+
+/// A building-site card's width on the INDEX — four to a row, its four spaces
+/// in two columns of two.
+pub const SITE_W: usize = 49;
 
 /// Lines per mini order card.
 pub const CARD_H: usize = 6;
@@ -161,6 +191,340 @@ fn push_selection(t: &mut Twin, face: &CardFace<'_>, tone: Tone) {
     }
 }
 
+// ---------------------------------------------------------------------------
+// The other three registries (T6)
+// ---------------------------------------------------------------------------
+
+/// One card of ANY registry, at that registry's own width.
+///
+/// The one entry point the index renderer draws through, so "which card shape"
+/// is decided once, from the model's own face, rather than by a renderer
+/// branching on a kind it was told separately. The match has no `_` arm: a fifth
+/// registry cannot reach a screen without a card being designed for it.
+///
+/// `colors` is the seat color table, needed only by the faces that name a
+/// player (an achievement's claimants and progress). Everything else ignores it.
+pub fn index_card(card: &IndexCard, colors: &[PlayerColor]) -> Vec<String> {
+    match &card.face {
+        CardFaceModel::Order { id, printed } => order_card(
+            &CardFace::new(*id, printed.as_ref())
+                .selection(card.selection)
+                .note(card.location.map(|at| format!("= {}", describe::card_location(at))))
+                .dim(card.location.is_some()),
+        ),
+        CardFaceModel::Tech { copies, printed, placed } => {
+            tech_card(copies, printed, placed, card.selection, card.location.is_some())
+        }
+        CardFaceModel::Achievement(a) => {
+            achievement_card(a, card.selection, card.location.is_some(), colors)
+        }
+        CardFaceModel::Site { index, site } => {
+            site_index_card(*index, site, card.selection, card.location, card.location.is_some())
+        }
+    }
+}
+
+
+/// One technology TITLE: name and cost on the title line, the purchase text
+/// underneath, and what is known about its copies on the last interior line.
+///
+/// **The effect text is the point of this card** (spec §0.6: "techs lead with
+/// names and effects"). `describe::tech_effect_text` is its single source — the
+/// same string the `labs` offer prints — and it is WRAPPED rather than clipped,
+/// because F2 made every qualifier in those lines load-bearing: the cost a card
+/// still charges, the restriction it does not lift. A card that clipped
+/// `(normal placement fee applies)` would be teaching the defect that review
+/// removed.
+fn tech_card(
+    copies: &[yokohama_core::TechCardId],
+    printed: &yokohama_core::TechCard,
+    placed: &[(yokohama_core::TechCardId, CardLocation)],
+    selection: Option<usize>,
+    dim: bool,
+) -> Vec<String> {
+    let tone = |t: Tone| if dim { Tone::Dim } else { t };
+    let ids: Vec<String> = copies.iter().map(|id| format!("T{:02}", id.0)).collect();
+    let ids = ids.join("/");
+
+    let mut top = Twin::default();
+    top.raw(&format!("{} ", glyph::BOX_TL));
+    if let Some(n) = selection {
+        top.tinted(tone(Tone::Strong), &format!("[{n}]")).raw(" ");
+    }
+    top.tinted(tone(Tone::Strong), &printed.name.to_uppercase());
+    top.raw("  ").tinted(tone(Tone::Chrome), &format!("industry {}", printed.industry_cost));
+    // The id field closes the line, exactly as an order card's does: padded from
+    // the plain width, then one space either side of the tag.
+    let want = TECH_W - 2 - ids.chars().count() - 2;
+    if top.width() < want {
+        top.raw(&" ".repeat(want - top.width()));
+    }
+    top.raw(" ").tinted(tone(Tone::Chrome), &ids).raw(&format!(" {}", glyph::BOX_TR));
+
+    let mut rows = vec![exact(&top, TECH_W)];
+    for line in wrap_words(describe::tech_effect_text(printed.effect), TECH_W - 4) {
+        let mut t = Twin::default();
+        // The effect is the card's CONTENT, so it takes no tint at all — the
+        // small annotations around it are what `Chrome` is for, and a card whose
+        // every line was chrome would read as one long parenthetical.
+        if dim {
+            t.tinted(Tone::Dim, &line);
+        } else {
+            t.raw(&line);
+        }
+        rows.push(interior(&t, TECH_W));
+    }
+    let mut tail = Twin::default();
+    tail.tinted(if dim { Tone::Dim } else { Tone::Chrome }, &copy_note(copies, placed));
+    rows.push(interior(&tail, TECH_W));
+    rows.push(bottom(TECH_W));
+    rows
+}
+
+/// What is known about a title's physical copies: how many there are while none
+/// is accounted for, and where they went as they are.
+///
+/// **The half-placed case is why this is not just a location string.** Ten
+/// titles circulate as two cards, so "Telegram is in Lab A" is only ever half an
+/// answer — the other copy may still be in the deck, in which case the card must
+/// stay live and enterable. Saying `1 of 2 seen` is what lets a player trust the
+/// screen when they are holding the second one.
+fn copy_note(
+    copies: &[yokohama_core::TechCardId],
+    placed: &[(yokohama_core::TechCardId, CardLocation)],
+) -> String {
+    let total = copies.len();
+    match placed.len() {
+        0 => {
+            if total == 1 {
+                "1 copy in the deck".to_string()
+            } else {
+                format!("{total} copies in the deck")
+            }
+        }
+        seen if seen < total => format!(
+            "{seen} of {total} seen: {}",
+            describe::card_location(placed[0].1),
+        ),
+        _ => {
+            let first = describe::card_location(placed[0].1);
+            if placed.len() > 1 {
+                format!("= {first} +{} more", placed.len() - 1)
+            } else {
+                format!("= {first}")
+            }
+        }
+    }
+}
+
+/// One achievement: its condition as a sentence, what it pays first and later,
+/// who has claimed it, and where every seat stands.
+fn achievement_card(
+    card: &AchievementModel,
+    selection: Option<usize>,
+    dim: bool,
+    colors: &[PlayerColor],
+) -> Vec<String> {
+    let tone = |t: Tone| if dim { Tone::Dim } else { t };
+
+    let mut top = Twin::default();
+    top.raw(&format!("{} ", glyph::BOX_TL));
+    if let Some(n) = selection {
+        top.tinted(tone(Tone::Strong), &format!("[{n}]")).raw(" ");
+    }
+    top.tinted(tone(Tone::Strong), &describe::achievement_desc(card.achievement_type));
+    top.raw(" ");
+    let fill = (GOAL_W - 1).saturating_sub(top.width());
+    top.raw(&String::from(glyph::RULE).repeat(fill));
+    top.raw(&glyph::BOX_TR.to_string());
+
+    // VP tiers and claim state on one line: the two facts a player weighs
+    // together ("worth 7 to me, 4 if someone beat me to it").
+    let mut pay = Twin::default();
+    pay.tinted(tone(Tone::Vp), &format!("first {}{} VP", glyph::VP, card.first_place_vp));
+    pay.raw(&format!("  {}  ", glyph::SEPARATOR));
+    pay.tinted(tone(Tone::Vp), &format!("later {}{} VP", glyph::VP, card.subsequent_vp));
+    pay.raw(&format!("  {}  ", glyph::SEPARATOR));
+    // MORE than one player may claim the same card — the first at
+    // `first_place_vp`, each later one at `subsequent_vp` — so every claimant is
+    // named while naming them still fits. Past two the names stop fitting beside
+    // the VP columns, and a count is more honest than a list clipped mid-word
+    // (the rule `panel_render::achievement_line` already applies).
+    match card.claimed_by.len() {
+        0 => {
+            pay.tinted(Tone::Dim, "unclaimed");
+        }
+        n if n <= 2 => {
+            pay.raw("claimed by ");
+            for (i, &seat) in card.claimed_by.iter().enumerate() {
+                if i > 0 {
+                    pay.raw(", ");
+                }
+                match color_of(colors, seat) {
+                    Some(c) => pay.tinted(tone(Tone::Player(c)), crate::render::color_name(c)),
+                    None => pay.raw(&format!("seat {}", seat.0)),
+                };
+            }
+        }
+        n => {
+            pay.raw(&format!("claimed by {n} players"));
+        }
+    }
+
+    let mut progress = Twin::default();
+    if card.progress.is_empty() {
+        progress.tinted(Tone::Dim, "not in play — no progress to show");
+    } else {
+        for (i, &(seat, current, needed)) in card.progress.iter().enumerate() {
+            if i > 0 {
+                progress.raw(&format!("  {}  ", glyph::SEPARATOR));
+            }
+            let text = format!("{current}/{needed}");
+            match color_of(colors, seat) {
+                Some(c) => {
+                    progress.tinted(tone(Tone::Player(c)), crate::render::color_name(c)).raw(" ");
+                    progress.tinted(tone(Tone::Player(c)), &text)
+                }
+                None => progress.raw(&format!("seat {} {text}", seat.0)),
+            };
+        }
+    }
+
+    vec![exact(&top, GOAL_W), interior(&pay, GOAL_W), interior(&progress, GOAL_W), bottom(GOAL_W)]
+}
+
+/// One building-site card as the INDEX shows it: the four spaces in two columns,
+/// then the trading house.
+///
+/// **Abbreviated space keys here, full words in the `sites` view**, and the
+/// split is deliberate rather than an inconsistency. This screen is a
+/// twenty-four-card grid whose job is to let an operator match the card in their
+/// hand at setup, so it spends its width on the REWARDS; the view has one card
+/// per area and four lines to spend, so it spells `top-left` out. Both read the
+/// same `SpaceReward` through [`space_reward_tokens`], so the two can
+/// differ in layout and never in content.
+fn site_index_card(
+    index: u8,
+    site: &yokohama_core::BuildingSite,
+    selection: Option<usize>,
+    location: Option<CardLocation>,
+    dim: bool,
+) -> Vec<String> {
+    let tone = |t: Tone| if dim { Tone::Dim } else { t };
+
+    let mut top = Twin::default();
+    top.raw(&format!("{} ", glyph::BOX_TL));
+    if let Some(n) = selection {
+        top.tinted(tone(Tone::Strong), &format!("[{n}]")).raw(" ");
+    }
+    top.tinted(tone(Tone::Strong), &format!("SITE {index}"));
+    top.raw(" ");
+    let fill = (SITE_W - 1).saturating_sub(top.width());
+    top.raw(&String::from(glyph::RULE).repeat(fill));
+    top.raw(&glyph::BOX_TR.to_string());
+
+    let column = (SITE_W - 4) / 2;
+    let mut rows = vec![exact(&top, SITE_W)];
+    for pair in [(0usize, 1usize), (2, 3)] {
+        let mut t = Twin::default();
+        for (i, slot) in [pair.0, pair.1].into_iter().enumerate() {
+            if i > 0 {
+                t.pad_to(column);
+            }
+            t.tinted(tone(Tone::Chrome), &format!("{} ", space_key(slot)));
+            push_space_reward(&mut t, &site.spaces[slot], dim);
+        }
+        rows.push(interior(&t, SITE_W));
+    }
+
+    let mut house = Twin::default();
+    house.raw("trading house  ");
+    house.tinted(tone(Tone::Vp), &format!("{}{} VP", glyph::VP, site.trading_house_reward));
+    if let Some(at) = location {
+        house.raw("  ").tinted(Tone::Dim, &format!("= {}", describe::card_location(at)));
+    }
+    rows.push(interior(&house, SITE_W));
+    rows.push(bottom(SITE_W));
+    rows
+}
+
+/// `TL`/`TR`/`ML`/`MR` — the printed card's own space keys, as
+/// `09-building-sites.yaml` names them.
+fn space_key(slot: usize) -> &'static str {
+    match slot {
+        0 => "TL",
+        1 => "TR",
+        2 => "ML",
+        3 => "MR",
+        _ => "??",
+    }
+}
+
+/// A content line inside a box of `width`.
+pub(crate) fn interior(t: &Twin, width: usize) -> String {
+    format!("{} {} {}", glyph::BOX_V, exact(t, width - 4), glyph::BOX_V)
+}
+
+/// A box's closing edge at `width`.
+pub(crate) fn bottom(width: usize) -> String {
+    format!("{}{}{}", glyph::BOX_BL, String::from(glyph::RULE).repeat(width - 2), glyph::BOX_BR)
+}
+
+/// Greedy word wrap at `width` columns, never breaking a word that fits.
+///
+/// A word LONGER than the line is broken rather than allowed to overrun: the
+/// twenty effect texts hold no such word today, and a renderer whose totality
+/// depends on that staying true is a renderer waiting for a rules correction.
+/// Always returns at least one line, so a card's height never depends on whether
+/// its text was empty.
+pub(crate) fn wrap_words(text: &str, width: usize) -> Vec<String> {
+    let mut lines: Vec<String> = Vec::new();
+    let mut line = String::new();
+    for word in text.split_whitespace() {
+        let mut word = word;
+        while word.chars().count() > width {
+            if !line.is_empty() {
+                lines.push(std::mem::take(&mut line));
+            }
+            let head: String = word.chars().take(width).collect();
+            let taken = head.len();
+            lines.push(head);
+            word = &word[taken..];
+        }
+        let need = if line.is_empty() { word.chars().count() } else { line.chars().count() + 1 + word.chars().count() };
+        if need > width && !line.is_empty() {
+            lines.push(std::mem::take(&mut line));
+        }
+        if !line.is_empty() {
+            line.push(' ');
+        }
+        line.push_str(word);
+    }
+    if !line.is_empty() || lines.is_empty() {
+        lines.push(line);
+    }
+    lines
+}
+
+/// Cards of `kind` at their own width and lines-per-row gutter.
+pub fn card_width(kind: IndexKind) -> usize {
+    match kind {
+        IndexKind::Orders => CARD_W,
+        IndexKind::Techs => TECH_W,
+        IndexKind::Achievements => GOAL_W,
+        IndexKind::Sites => SITE_W,
+    }
+}
+
+/// `A`, `B`, `C` — an achievement category as its card and heading name it.
+pub fn category_letter(c: AchievementCategory) -> &'static str {
+    match c {
+        AchievementCategory::A => "A",
+        AchievementCategory::B => "B",
+        AchievementCategory::C => "C",
+    }
+}
+
 /// `┌ FRANCE           O02 ┐` — the title padded so the engine id closes the
 /// line as a small annotation (spec §0.6: ids are shown, never required).
 ///
@@ -187,11 +551,11 @@ fn card_top(t: &mut Twin) -> String {
 }
 
 fn card_interior(t: &mut Twin) -> String {
-    format!("{} {} {}", glyph::BOX_V, exact(t, CARD_INNER), glyph::BOX_V)
+    interior(t, CARD_W)
 }
 
 fn card_bottom() -> String {
-    format!("{}{}{}", glyph::BOX_BL, String::from(glyph::RULE).repeat(CARD_W - 2), glyph::BOX_BR)
+    bottom(CARD_W)
 }
 
 /// Tokens `[from, to)` of a card's run, space-joined — the two-line split the
@@ -273,6 +637,69 @@ pub(crate) fn reward_tokens(r: &OrderRewards, dim: bool) -> Vec<(String, Tone)> 
         ));
     }
     out
+}
+
+/// A building-site space's printed reward as FULL-WORD tokens, each in the
+/// colour of the thing it pays — the `sites` surfaces' vocabulary (approved mock
+/// `sites-view.ans`: `3 Seafood`, `2 any goods`, `blank`).
+///
+/// **The deliberate contrast with `board_render`'s site strip**, which prints
+/// the same reward as `f3`: a tile has twenty-six columns for four spaces and a
+/// legend underneath, while these surfaces give a space a line of its own and
+/// exist precisely so nothing has to be decoded. Both read the same
+/// `SpaceReward` in the same fixed order, so a card and a tile can differ in
+/// vocabulary but never in content.
+///
+/// Multi-part rewards (`{vp: 2, yen: 1}` is printed on four of the twenty-four
+/// cards) emit both tokens, so a space that pays two things says so.
+pub(crate) fn space_reward_tokens(r: &SpaceReward, dim: bool) -> Vec<(String, Tone)> {
+    let mut parts: Vec<(String, Tone)> = Vec::new();
+    if r.vp > 0 {
+        parts.push((format!("{} VP", r.vp), tint(Tone::Vp, dim)));
+    }
+    if r.yen > 0 {
+        parts.push((format!("{} yen", r.yen), tint(Tone::Good(GoodKind::Yen), dim)));
+    }
+    for (n, one, many, tone) in [
+        (r.seafood, "Seafood", "Seafood", Tone::Good(GoodKind::Seafood)),
+        (r.tea, "Tea", "Tea", Tone::Good(GoodKind::Tea)),
+        (r.silk, "Silk", "Silk", Tone::Good(GoodKind::Silk)),
+        (r.copper, "Copper", "Copper", Tone::Good(GoodKind::Copper)),
+        (r.any_good, "any good", "any goods", Tone::Good(GoodKind::Any)),
+        (r.movement, "assistant move", "assistant moves", Tone::ActionIcon),
+        (r.warehouse_tokens, "warehouse take", "warehouse takes", Tone::ActionIcon),
+    ] {
+        if n > 0 {
+            let word = if n == 1 { one } else { many };
+            parts.push((format!("{n} {word}"), tint(tone, dim)));
+        }
+    }
+    if parts.is_empty() {
+        // Every card in the set prints one blank space (the ML one), so this is
+        // a real face rather than a defensive arm.
+        parts.push(("blank".to_string(), Tone::Dim));
+    }
+    parts
+}
+
+/// [`space_reward_tokens`] joined into one plain string — the same words, for
+/// the callers that measure rather than paint.
+pub fn space_reward_words(r: &SpaceReward) -> String {
+    space_reward_tokens(r, false)
+        .into_iter()
+        .map(|(word, _)| word)
+        .collect::<Vec<_>>()
+        .join(" + ")
+}
+
+/// Append a reward's tokens to `t`, joined by ` + `.
+pub(crate) fn push_space_reward(t: &mut Twin, r: &SpaceReward, dim: bool) {
+    for (i, (word, tone)) in space_reward_tokens(r, dim).into_iter().enumerate() {
+        if i > 0 {
+            t.raw(" + ");
+        }
+        t.tinted(tone, &word);
+    }
 }
 
 /// A token's tone, or [`Tone::Dim`] on a card that is already recorded

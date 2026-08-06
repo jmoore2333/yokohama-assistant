@@ -30,11 +30,11 @@
 //! registry", and a shared grammar that also knew those rules would be a
 //! second opinion about the game state.
 
-use yokohama_core::{Country, OrderCardId, Rules};
+use yokohama_core::{AchievementCategory, Country, OrderCardId, Rules, TechCardId};
 
 use crate::describe;
 use crate::screen_model::{
-    menu_index, CardGood, CardLocation, IndexFilter, IndexModel, NUMBER_BASE,
+    menu_index, CardGood, CardLocation, CardRef, IndexFilter, IndexKind, IndexModel, NUMBER_BASE,
 };
 
 /// How a bare number reads at this prompt.
@@ -51,12 +51,15 @@ pub(crate) enum Numbering<'a> {
 
 /// One card-entry prompt.
 ///
-/// There is no `kind` field, and its absence is the honest state of things:
-/// every card prompt in the driver today identifies an ORDER card, so a
-/// discriminator would be a field nothing could branch on. T6 adds one with
-/// the tech, site and achievement indexes — the registry it would name is
-/// exactly what [`crate::screen_model::IndexKind`] is keyed for.
+/// **The `kind` field is T6's**, and T5's doc said exactly where it would come
+/// from: every prompt in the driver identified an ORDER card, so a
+/// discriminator would have been a field nothing could branch on. Three more
+/// registries later it is what decides which one a bare id names and which
+/// vocabulary a name is matched against — the alternative being a grammar that
+/// guesses, which is the F4 defect this module exists to end.
 pub(crate) struct CardPrompt<'a> {
+    /// Which registry this prompt is asking about.
+    pub kind: IndexKind,
     /// Every card the prompt could legitimately be told about — the registry
     /// for a setup entry, the unrevealed cards for a live reveal. Used ONLY to
     /// word a refusal helpfully; the caller still validates what it gets back.
@@ -67,10 +70,22 @@ pub(crate) struct CardPrompt<'a> {
     /// sentinel for no-restriction, so a caller that computed its pool and got
     /// nothing would have opened the prompt to the whole registry.
     pub candidates: Option<&'a [OrderCardId]>,
-    /// Cards already recorded elsewhere, and where (F6).
-    pub placed: &'a [(OrderCardId, CardLocation)],
+    /// Cards already recorded elsewhere, and where (F6). Typed as [`CardRef`]
+    /// so one prompt can carry locations from any registry.
+    pub placed: &'a [(CardRef, CardLocation)],
     /// How a bare number reads right now.
     pub numbering: Numbering<'a>,
+}
+
+impl<'a> CardPrompt<'a> {
+    /// An ORDER prompt — the shape every pre-T6 caller wants, spelled once so
+    /// those call sites do not each have to name the kind and the empty pool.
+    pub fn orders(
+        placed: &'a [(CardRef, CardLocation)],
+        numbering: Numbering<'a>,
+    ) -> CardPrompt<'a> {
+        CardPrompt { kind: IndexKind::Orders, candidates: None, placed, numbering }
+    }
 }
 
 /// What one line of input at a card prompt turned out to be.
@@ -78,7 +93,7 @@ pub(crate) struct CardPrompt<'a> {
 pub(crate) enum CardEntry {
     /// A card was named. The caller validates it against its own pool, echoes
     /// it ([`echo`]), and commits.
-    Card(OrderCardId),
+    Card(CardRef),
     /// `?` — open the index for this prompt.
     OpenIndex,
     /// `f <term>` — narrow the index. `None` clears the filter.
@@ -106,7 +121,7 @@ pub(crate) fn resolve(prompt: &CardPrompt<'_>, line: &str, rules: &Rules) -> Car
         return CardEntry::OpenIndex;
     }
     if let Some(rest) = strip_filter_prefix(line) {
-        return match parse_filter(rest, rules) {
+        return match parse_filter(rest, prompt.kind) {
             Ok(filter) => CardEntry::Filter(filter),
             Err(message) => CardEntry::Refused(message),
         };
@@ -117,58 +132,172 @@ pub(crate) fn resolve(prompt: &CardPrompt<'_>, line: &str, rules: &Rules) -> Car
         if let Ok(n) = line.parse::<usize>() {
             if let Numbering::Selection(index) = prompt.numbering {
                 return match index.select(n) {
-                    Some(id) => named(prompt, id),
+                    Some(card) => named(prompt, card),
                     None => CardEntry::Refused(selection_range_message(index)),
                 };
             }
             if let Ok(id) = u8::try_from(n) {
-                return named(prompt, OrderCardId(id));
+                // Which registry a bare id names is the prompt's business, not
+                // a guess — the whole reason `kind` exists.
+                match prompt.kind {
+                    IndexKind::Orders => return named(prompt, CardRef::Order(OrderCardId(id))),
+                    IndexKind::Techs => return named(prompt, CardRef::Tech(TechCardId(id))),
+                    IndexKind::Sites => return named(prompt, CardRef::Site(id)),
+                    // Achievement cards carry no number of any kind, so a bare
+                    // one at an id prompt names nothing. Saying so beats
+                    // inventing an ordering nothing is printed with.
+                    IndexKind::Achievements => {
+                        return CardEntry::Refused(
+                            "achievement cards carry no number — press '?' and pick one from the index."
+                                .to_string(),
+                        )
+                    }
+                }
             }
         }
         return CardEntry::Refused(format!("'{line}' is not a card number on this screen."));
     }
 
-    // `O14`/`o14` — the same id, spelled the way the corner of the card spells
-    // it. Accepted whether or not an index is open: a player who knows the id
-    // is not made to find its position on a screen.
-    if let Some(id) = crate::input::parse_order_id(line).filter(|_| line.len() > 1) {
-        return named(prompt, OrderCardId(id));
+    // `O14`/`o14`, `T07`/`t7`, `S12`/`s12` — the same id, spelled the way the
+    // registry spells it. Accepted whether or not an index is open: a player who
+    // knows the id is not made to find its position on a screen.
+    if line.len() > 1 {
+        if let Some(id) = prefixed_id(line, prompt.kind) {
+            return named(prompt, id);
+        }
+    }
+
+    // A technology is identified by its NAME (nothing is printed on it to
+    // identify it by), so a name or any unambiguous prefix of one picks a card.
+    if prompt.kind == IndexKind::Techs {
+        return match tech_matches(line, rules).as_slice() {
+            [only] => named(prompt, CardRef::Tech(free_copy(prompt, *only, rules))),
+            [] => CardEntry::Refused(format!(
+                "'{line}' is not a technology. Type its name, its id (like 'T07'), or '?' for the index.",
+            )),
+            many => {
+                let names: Vec<&str> = many
+                    .iter()
+                    .filter_map(|id| rules.techs.get(*id).map(|c| c.name.as_str()))
+                    .collect();
+                CardEntry::Refused(ambiguous_message(line, &names))
+            }
+        };
     }
 
     // A country name or prefix. Orders carry a FLAG rather than a title, so a
     // country never identifies one card — it identifies a group, which is
     // exactly what the index filter is for, so that is what this becomes
     // rather than a refusal the player has to translate.
-    if let Some(country) = country_prefix(line) {
-        return CardEntry::Filter(Some(IndexFilter::Country(country)));
+    if matches!(prompt.kind, IndexKind::Orders) {
+        if let Some(country) = country_prefix(line) {
+            return CardEntry::Filter(Some(IndexFilter::Country(country)));
+        }
     }
 
-    CardEntry::Refused(format!(
-        "'{line}' is not a card. Type its number, its id (like 'O14'), or '?' for the index.",
-    ))
+    CardEntry::Refused(format!("'{line}' is not a card. {}", how_to_name(prompt.kind)))
+}
+
+/// The forms that DO name a card here, per registry — the second half of every
+/// refusal, because a refusal that does not say what would have worked leaves
+/// the player guessing, which is F4 from the other side.
+fn how_to_name(kind: IndexKind) -> &'static str {
+    match kind {
+        IndexKind::Orders => "Type its number, its id (like 'O14'), or '?' for the index.",
+        IndexKind::Techs => "Type its name, its id (like 'T07'), or '?' for the index.",
+        IndexKind::Achievements => "Press '?' and pick one from the index.",
+        IndexKind::Sites => "Type its number (like 'S12' or '12'), or '?' for the index.",
+    }
+}
+
+/// `O14` / `T07` / `S12` — a letter-prefixed id in the prompt's own registry.
+/// The letters are NOT interchangeable: `T07` at an order prompt names nothing,
+/// and answering it as `O07` would be the silent wrong answer this grammar is
+/// built to refuse.
+fn prefixed_id(line: &str, kind: IndexKind) -> Option<CardRef> {
+    let (letter, digits) = line.split_at(1);
+    let n: u8 = digits.parse().ok()?;
+    match (letter.to_ascii_lowercase().as_str(), kind) {
+        ("o", IndexKind::Orders) => Some(CardRef::Order(OrderCardId(n))),
+        ("t", IndexKind::Techs) => Some(CardRef::Tech(TechCardId(n))),
+        ("s", IndexKind::Sites) => Some(CardRef::Site(n)),
+        _ => None,
+    }
+}
+
+/// Every technology whose NAME `needle` prefixes, deduped by TITLE — the two
+/// copies of a title are one answer, not an ambiguity.
+fn tech_matches(needle: &str, rules: &Rules) -> Vec<TechCardId> {
+    let needle = needle.trim().to_lowercase();
+    if needle.is_empty() {
+        return Vec::new();
+    }
+    let mut cards: Vec<&yokohama_core::TechCard> = rules.techs.iter().collect();
+    cards.sort_by_key(|c| c.id.0);
+    let mut hits: Vec<TechCardId> = Vec::new();
+    let mut names: Vec<String> = Vec::new();
+    for card in cards {
+        if card.name.to_lowercase().starts_with(&needle) && !names.contains(&card.name) {
+            names.push(card.name.clone());
+            hits.push(card.id);
+        }
+    }
+    hits
+}
+
+/// The first copy of `id`'s TITLE that nothing has claimed yet.
+///
+/// A player naming `telegram` means the card in their hand, not a particular
+/// engine id — so when one copy is already recorded, the name has to resolve to
+/// the OTHER one or the entry would be refused as a duplicate of itself.
+fn free_copy(prompt: &CardPrompt<'_>, id: TechCardId, rules: &Rules) -> TechCardId {
+    let Some(name) = rules.techs.get(id).map(|c| c.name.clone()) else {
+        return id;
+    };
+    let mut copies: Vec<TechCardId> =
+        rules.techs.iter().filter(|c| c.name == name).map(|c| c.id).collect();
+    copies.sort_unstable_by_key(|c| c.0);
+    copies
+        .iter()
+        .copied()
+        .find(|c| !prompt.placed.iter().any(|(placed, _)| *placed == CardRef::Tech(*c)))
+        .unwrap_or(id)
 }
 
 /// A named card, refused if it is already recorded somewhere (F6: the refusal
-/// names where) or if it is not a card at all.
-fn named(prompt: &CardPrompt<'_>, id: OrderCardId) -> CardEntry {
-    if let Some((_, at)) = prompt.placed.iter().find(|(placed, _)| *placed == id) {
+/// names where) or if it is not a card this prompt can take.
+fn named(prompt: &CardPrompt<'_>, card: CardRef) -> CardEntry {
+    if let Some((_, at)) = prompt.placed.iter().find(|(placed, _)| *placed == card) {
         return CardEntry::Refused(format!(
-            "O{:02} is {} — a card cannot be in two places.",
-            id.0,
+            "{} is {} — a card cannot be in two places.",
+            card_tag(card),
             describe::card_location(*at),
         ));
     }
-    if prompt.candidates.is_some_and(|pool| !pool.contains(&id)) {
-        return CardEntry::Refused(format!(
-            "O{:02} is not one of the cards this prompt can take.",
-            id.0,
-        ));
+    if let CardRef::Order(id) = card {
+        if prompt.candidates.is_some_and(|pool| !pool.contains(&id)) {
+            return CardEntry::Refused(format!(
+                "O{:02} is not one of the cards this prompt can take.",
+                id.0,
+            ));
+        }
     }
-    CardEntry::Card(id)
+    CardEntry::Card(card)
 }
 
-/// The full card, drawn, for the echo spec §0.6 requires before an entered id
-/// commits: *"entered ids echo the full card back before committing"*.
+/// How a refusal names a card: its id where one exists, its condition where
+/// none does.
+pub(crate) fn card_tag(card: CardRef) -> String {
+    match card {
+        CardRef::Order(id) => format!("O{:02}", id.0),
+        CardRef::Tech(id) => format!("T{:02}", id.0),
+        CardRef::Site(index) => format!("Site {index}"),
+        CardRef::Achievement(a) => describe::achievement_desc(a),
+    }
+}
+
+/// The full ORDER card, drawn, for the echo spec §0.6 requires before an entered
+/// id commits: *"entered ids echo the full card back before committing"*.
 ///
 /// It is an ECHO rather than a confirmation step, and that is a ruling worth
 /// stating: R6 asks for minimum ceremony at the table, and a second keystroke
@@ -221,15 +350,35 @@ fn strip_filter_prefix(line: &str) -> Option<&str> {
 /// to answer with seafood because seafood is listed above silk, so the player
 /// got a confident wrong screen instead of a question. One rule for both now,
 /// pinned by `a_prefix_that_names_two_things_is_refused_not_guessed`.
-pub(crate) fn parse_filter(term: &str, _rules: &Rules) -> Result<Option<IndexFilter>, String> {
+pub(crate) fn parse_filter(term: &str, kind: IndexKind) -> Result<Option<IndexFilter>, String> {
     // Messages quote what was TYPED; matching is done on the folded form.
     let typed = term.trim();
     let term = typed.to_lowercase();
     if term.is_empty() {
         return Ok(None);
     }
+    // **A filter this registry cannot answer is refused, not applied.** The two
+    // failure shapes look identical on screen — an empty grid — and only one of
+    // them is a real answer; see `IndexFilter::applies_to`.
+    let applicable = |f: IndexFilter| -> Result<Option<IndexFilter>, String> {
+        if f.applies_to(kind) {
+            Ok(Some(f))
+        } else {
+            Err(inapplicable_message(typed, kind))
+        }
+    };
+
+    // **Only where a category is a thing there IS**, and the guard is the point:
+    // `c` is copper on the order index and category C on the achievement index,
+    // and which one it means is decided by the prompt's registry rather than by
+    // a precedence order that would silently take `f c` away from copper.
+    if kind == IndexKind::Achievements {
+        if let Some(category) = category_term(&term) {
+            return applicable(IndexFilter::Category(category));
+        }
+    }
     match good_matches(&term).as_slice() {
-        [only] => return Ok(Some(IndexFilter::Good(*only))),
+        [only] => return applicable(IndexFilter::Good(*only)),
         [] => {}
         many => {
             let names: Vec<&str> = many.iter().map(|g| describe::card_good_name(*g)).collect();
@@ -238,16 +387,43 @@ pub(crate) fn parse_filter(term: &str, _rules: &Rules) -> Result<Option<IndexFil
     }
     if let Some(digits) = term.strip_suffix("vp").or_else(|| term.strip_suffix(" vp")) {
         if let Ok(n) = digits.trim().parse::<u8>() {
-            return Ok(Some(IndexFilter::MinVp(n)));
+            return applicable(IndexFilter::MinVp(n));
         }
     }
     match country_matches(&term).as_slice() {
-        [only] => Ok(Some(IndexFilter::Country(*only))),
-        [] => Err(unrecognized_message(typed)),
+        [only] => applicable(IndexFilter::Country(*only)),
+        [] => Err(unrecognized_message(typed, kind)),
         many => {
             let names: Vec<&str> = many.iter().map(|c| describe::country_name(*c)).collect();
             Err(ambiguous_message(typed, &names))
         }
+    }
+}
+
+/// `a`, `b`, `c` — an achievement category, which is the one filter dimension
+/// that index has. Single letters only: the categories have no printed names,
+/// so there is nothing longer to prefix-match against.
+fn category_term(term: &str) -> Option<AchievementCategory> {
+    match term {
+        "a" => Some(AchievementCategory::A),
+        "b" => Some(AchievementCategory::B),
+        "c" => Some(AchievementCategory::C),
+        _ => None,
+    }
+}
+
+/// `'silk' is a real filter, but not on this index — …`
+fn inapplicable_message(term: &str, kind: IndexKind) -> String {
+    format!("'{term}' is not something this index can filter by. {}", filter_forms(kind))
+}
+
+/// The filter terms a registry does take.
+fn filter_forms(kind: IndexKind) -> &'static str {
+    match kind {
+        IndexKind::Orders => "Try 'f silk', 'f 8vp', 'f france', or 'f' to clear.",
+        IndexKind::Techs => "Try 'f france', or 'f' to clear.",
+        IndexKind::Achievements => "Try 'f a', 'f b', 'f c', or 'f' to clear.",
+        IndexKind::Sites => "This index takes no filters; 'f' clears.",
     }
 }
 
@@ -299,11 +475,9 @@ fn ambiguous_message(term: &str, names: &[&str]) -> String {
     format!("'{term}' could be {} — type more of the word.", join_or(names))
 }
 
-/// `'8' is not a good, flag, or '<n>vp' — …`, with the three forms that work.
-fn unrecognized_message(term: &str) -> String {
-    format!(
-        "'{term}' is not a good, flag, or '<n>vp' — try 'f silk', 'f 8vp', 'f france', or 'f' to clear.",
-    )
+/// `'8' is not a good, flag, or '<n>vp' — …`, with the forms that work here.
+fn unrecognized_message(term: &str, kind: IndexKind) -> String {
+    format!("'{term}' is not a good, flag, or '<n>vp' — {}", filter_forms(kind))
 }
 
 /// `a`, `a or b`, `a, b or c` — the list an ambiguity names.
@@ -333,16 +507,30 @@ pub(crate) fn list_index(token: &str, len: usize) -> Option<usize> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::screen_model::{build_order_index, RecordingTarget};
+    use crate::screen_model::{build_order_index, build_tech_index, RecordingTarget};
     use yokohama_core::PlayerId;
 
     const TARGET: RecordingTarget = RecordingTarget::PortSetup { board_b: false, slot: 0, of: 6 };
+    const TECH_TARGET: RecordingTarget = RecordingTarget::TechRefill { board_b: false };
 
     fn prompt<'a>(
-        placed: &'a [(OrderCardId, CardLocation)],
+        placed: &'a [(CardRef, CardLocation)],
         numbering: Numbering<'a>,
     ) -> CardPrompt<'a> {
-        CardPrompt { candidates: None, placed, numbering }
+        CardPrompt::orders(placed, numbering)
+    }
+
+    /// A TECH prompt over the same shared grammar.
+    fn tech_prompt<'a>(
+        placed: &'a [(CardRef, CardLocation)],
+        numbering: Numbering<'a>,
+    ) -> CardPrompt<'a> {
+        CardPrompt { kind: IndexKind::Techs, candidates: None, placed, numbering }
+    }
+
+    /// The order card an entry names.
+    fn order(n: u8) -> CardEntry {
+        CardEntry::Card(CardRef::Order(OrderCardId(n)))
     }
 
     /// **The grammar matrix.** Every accepted spelling and every refusal shape,
@@ -365,21 +553,9 @@ mod tests {
             ("back", CardEntry::Cancel, CardEntry::Cancel),
             ("?", CardEntry::OpenIndex, CardEntry::OpenIndex),
             ("index", CardEntry::OpenIndex, CardEntry::OpenIndex),
-            (
-                "O14",
-                CardEntry::Card(OrderCardId(14)),
-                CardEntry::Card(OrderCardId(14)),
-            ),
-            (
-                "o14",
-                CardEntry::Card(OrderCardId(14)),
-                CardEntry::Card(OrderCardId(14)),
-            ),
-            (
-                "1",
-                CardEntry::Card(OrderCardId(1)),
-                CardEntry::Card(first_shown),
-            ),
+            ("O14", order(14), order(14)),
+            ("o14", order(14), order(14)),
+            ("1", order(1), CardEntry::Card(first_shown)),
             (
                 "f silk",
                 CardEntry::Filter(Some(IndexFilter::Good(CardGood::Silk))),
@@ -422,8 +598,8 @@ mod tests {
     #[test]
     fn every_refusal_names_a_way_forward() {
         let rules = Rules::standard();
-        let placed = [(OrderCardId(4), CardLocation::Deal { seat: PlayerId::new(0) })];
-        let index = build_order_index(&rules, &placed, Some(TARGET), None);
+        let placed = [(CardRef::Order(OrderCardId(4)), CardLocation::Deal { seat: PlayerId::new(0) })];
+        let index = build_order_index(&rules, &[(OrderCardId(4), CardLocation::Deal { seat: PlayerId::new(0) })], Some(TARGET), None);
 
         let duplicate = resolve(&prompt(&placed, Numbering::Ids), "O04", &rules);
         assert_eq!(
@@ -435,7 +611,7 @@ mod tests {
         // the SAME way -- the two paths share one rule rather than two.
         let number = index
             .cards()
-            .find(|c| c.id == OrderCardId(4))
+            .find(|c| c.face.card_ref() == Some(CardRef::Order(OrderCardId(4))))
             .and_then(|c| c.selection)
             .expect("O04 is on the screen");
         assert_eq!(
@@ -455,8 +631,12 @@ mod tests {
             "an out-of-range selection states the range on THIS screen: {out_of_range:?}",
         );
 
-        let not_a_candidate =
-            CardPrompt { candidates: Some(&[OrderCardId(7)]), placed: &[], numbering: Numbering::Ids };
+        let not_a_candidate = CardPrompt {
+            kind: IndexKind::Orders,
+            candidates: Some(&[OrderCardId(7)]),
+            placed: &[],
+            numbering: Numbering::Ids,
+        };
         assert!(
             matches!(
                 resolve(&not_a_candidate, "O08", &rules),
@@ -474,7 +654,7 @@ mod tests {
     #[test]
     fn a_prefix_that_names_two_things_is_refused_not_guessed() {
         let rules = Rules::standard();
-        let refusal = parse_filter("s", &rules).expect_err("'s' names two goods");
+        let refusal = parse_filter("s", IndexKind::Orders).expect_err("'s' names two goods");
         assert!(refusal.contains("seafood") && refusal.contains("silk"), "{refusal}");
         assert!(refusal.contains("type more of the word"), "the way forward: {refusal}");
 
@@ -502,7 +682,7 @@ mod tests {
             ("c", CardGood::Copper),
         ] {
             assert_eq!(
-                parse_filter(term, &rules),
+                parse_filter(term, IndexKind::Orders),
                 Ok(Some(IndexFilter::Good(good))),
                 "{term:?} names one good",
             );
@@ -518,7 +698,7 @@ mod tests {
     fn an_unrecognized_filter_term_is_refused_and_f_alone_still_clears() {
         let rules = Rules::standard();
         for term in ["8", "wat", "xvp", "zz"] {
-            let refusal = parse_filter(term, &rules)
+            let refusal = parse_filter(term, IndexKind::Orders)
                 .expect_err(&format!("{term:?} must be refused, not applied or cleared"));
             assert!(
                 refusal.contains(&format!("'{term}'")) && refusal.contains("is not a good, flag"),
@@ -527,7 +707,7 @@ mod tests {
             assert!(refusal.contains("'f' to clear"), "the way to clear is named: {refusal}");
         }
         // ...and the term that DOES clear still clears, through the grammar.
-        assert_eq!(parse_filter("", &rules), Ok(None));
+        assert_eq!(parse_filter("", IndexKind::Orders), Ok(None));
         assert_eq!(resolve(&prompt(&[], Numbering::Ids), "f", &rules), CardEntry::Filter(None));
         assert!(matches!(
             resolve(&prompt(&[], Numbering::Ids), "f 8", &rules),
@@ -589,6 +769,185 @@ mod tests {
         assert!(text.contains("GERMANY"), "the flag a player would recognize: {text}");
     }
 
+    /// **A technology is named by its NAME**, because nothing is printed on the
+    /// card to name it by — the sharpest form of F4/F5, and the reason `kind`
+    /// exists on this struct. Every one of the twenty titles resolves by its
+    /// whole name; an ambiguous prefix is refused rather than guessed (the same
+    /// discipline the goods and the flags follow).
+    #[test]
+    fn a_technology_is_named_by_its_name_and_an_ambiguous_prefix_is_refused() {
+        let rules = Rules::standard();
+        for card in rules.techs.iter() {
+            let by_name = resolve(&tech_prompt(&[], Numbering::Ids), &card.name, &rules);
+            // The FIRST copy of the title, which is what "the card in my hand"
+            // means when nothing has claimed either copy yet.
+            let mut copies: Vec<TechCardId> =
+                rules.techs.iter().filter(|c| c.name == card.name).map(|c| c.id).collect();
+            copies.sort_unstable_by_key(|c| c.0);
+            assert_eq!(
+                by_name,
+                CardEntry::Card(CardRef::Tech(copies[0])),
+                "{:?} must resolve by name",
+                card.name,
+            );
+            // ...and case-insensitively, like every other clause.
+            assert_eq!(
+                resolve(&tech_prompt(&[], Numbering::Ids), &card.name.to_uppercase(), &rules),
+                by_name,
+            );
+        }
+
+        // `tele` prefixes Telegram and Telephone: refused, naming both.
+        let ambiguous = resolve(&tech_prompt(&[], Numbering::Ids), "tele", &rules);
+        assert!(
+            matches!(&ambiguous, CardEntry::Refused(m)
+                if m.contains("Telegram") && m.contains("Telephone") && m.contains("type more")),
+            "{ambiguous:?}",
+        );
+        // One more letter settles it.
+        assert!(matches!(
+            resolve(&tech_prompt(&[], Numbering::Ids), "telep", &rules),
+            CardEntry::Card(CardRef::Tech(_)),
+        ));
+    }
+
+    /// **A name resolves to the copy nobody has claimed.** A player typing
+    /// `telegram` means the card in their hand, not a particular engine id — so
+    /// with one copy already in a Lab slot the name has to reach the OTHER one,
+    /// or the entry would be refused as a duplicate of itself.
+    #[test]
+    fn a_tech_name_resolves_past_a_copy_that_is_already_placed() {
+        let rules = Rules::standard();
+        let mut copies: Vec<TechCardId> =
+            rules.techs.iter().filter(|c| c.name == "Telegram").map(|c| c.id).collect();
+        copies.sort_unstable_by_key(|c| c.0);
+        let placed = [(
+            CardRef::Tech(copies[0]),
+            CardLocation::LabSlot { board_b: false, slot: 0 },
+        )];
+        assert_eq!(
+            resolve(&tech_prompt(&placed, Numbering::Ids), "telegram", &rules),
+            CardEntry::Card(CardRef::Tech(copies[1])),
+        );
+        // The placed copy is still refused BY LOCATION when named by its id.
+        let by_id =
+            resolve(&tech_prompt(&placed, Numbering::Ids), &format!("T{:02}", copies[0].0), &rules);
+        assert!(
+            matches!(&by_id, CardEntry::Refused(m)
+                if m.contains("Laboratory A slot 1") && m.contains("two places")),
+            "{by_id:?}",
+        );
+    }
+
+    /// **A bare id means what the PROMPT'S registry says it means**, and the
+    /// letter prefixes are not interchangeable: `T07` at an order prompt names
+    /// nothing, and answering it as `O07` would be exactly the silent wrong
+    /// answer this grammar exists to refuse.
+    #[test]
+    fn a_bare_id_reads_in_the_prompts_own_registry() {
+        let rules = Rules::standard();
+        assert_eq!(resolve(&prompt(&[], Numbering::Ids), "7", &rules), order(7));
+        assert_eq!(
+            resolve(&tech_prompt(&[], Numbering::Ids), "7", &rules),
+            CardEntry::Card(CardRef::Tech(TechCardId(7))),
+        );
+        let site = CardPrompt { kind: IndexKind::Sites, candidates: None, placed: &[], numbering: Numbering::Ids };
+        assert_eq!(resolve(&site, "7", &rules), CardEntry::Card(CardRef::Site(7)));
+        assert_eq!(resolve(&site, "S07", &rules), CardEntry::Card(CardRef::Site(7)));
+
+        // Cross-registry spellings name nothing rather than the wrong card.
+        for (kind, wrong) in [(IndexKind::Orders, "T07"), (IndexKind::Techs, "O07"), (IndexKind::Sites, "O07")] {
+            let p = CardPrompt { kind, candidates: None, placed: &[], numbering: Numbering::Ids };
+            assert!(
+                matches!(resolve(&p, wrong, &rules), CardEntry::Refused(_)),
+                "{wrong:?} must not resolve at a {kind:?} prompt",
+            );
+        }
+
+        // An achievement card carries no number at all, and the refusal says so
+        // rather than inventing an ordering nothing is printed with.
+        let goals = CardPrompt {
+            kind: IndexKind::Achievements,
+            candidates: None,
+            placed: &[],
+            numbering: Numbering::Ids,
+        };
+        assert!(
+            matches!(resolve(&goals, "3", &rules), CardEntry::Refused(m) if m.contains("no number")),
+            "an achievement id prompt refuses a bare number with the reason",
+        );
+    }
+
+    /// **A filter this registry cannot answer is REFUSED, not applied.** The two
+    /// failure shapes look identical on screen — an empty grid — and only one of
+    /// them is a real answer, so the inapplicable one has to say so and name
+    /// what would work here.
+    #[test]
+    fn a_filter_that_does_not_apply_to_this_registry_is_refused_with_the_forms_that_do() {
+        // `silk` is a real order filter and nothing at all on the site index.
+        let refusal = parse_filter("silk", IndexKind::Sites)
+            .expect_err("the site index cannot filter by a good");
+        assert!(refusal.contains("this index can filter by"), "{refusal}");
+        assert!(refusal.contains("takes no filters"), "and what it does take: {refusal}");
+
+        // `c` is COPPER at an order prompt and CATEGORY C at an achievement
+        // one — decided by the registry, never by a precedence order that would
+        // quietly take `f c` away from copper.
+        assert_eq!(
+            parse_filter("c", IndexKind::Orders),
+            Ok(Some(IndexFilter::Good(CardGood::Copper))),
+        );
+        assert_eq!(
+            parse_filter("c", IndexKind::Achievements),
+            Ok(Some(IndexFilter::Category(AchievementCategory::C))),
+        );
+        // A flag filters orders and techs, and nothing else.
+        assert_eq!(
+            parse_filter("france", IndexKind::Techs),
+            Ok(Some(IndexFilter::Country(Country::French))),
+        );
+        assert!(parse_filter("france", IndexKind::Achievements).is_err());
+        // `f` alone still clears, at every registry.
+        for kind in IndexKind::ALL {
+            assert_eq!(parse_filter("", kind), Ok(None), "{kind:?}");
+        }
+        // **The parser never hands back a filter its own registry cannot
+        // answer.** Stated over the parser's OUTPUT rather than over the term's
+        // intent, because a term can legitimately mean different filters at
+        // different registries — `a` is category A on the achievement index and
+        // AMERICA at an order prompt, and both are right.
+        for kind in IndexKind::ALL {
+            for term in ["silk", "8vp", "france", "a", "b", "c", "fish", "copper"] {
+                if let Ok(Some(filter)) = parse_filter(term, kind) {
+                    assert!(
+                        filter.applies_to(kind),
+                        "{term:?} at {kind:?} parsed to {filter:?}, which does not apply there",
+                    );
+                }
+            }
+        }
+    }
+
+    /// A selection number typed on a TECH screen resolves through that model,
+    /// exactly as an order selection does — the shared rule, at a second
+    /// registry.
+    #[test]
+    fn a_tech_selection_resolves_through_its_own_index_model() {
+        let rules = Rules::standard();
+        let index = build_tech_index(&rules, &[], Some(TECH_TARGET), None);
+        let first = index.select(NUMBER_BASE).expect("a first card");
+        assert_eq!(
+            resolve(&tech_prompt(&[], Numbering::Selection(&index)), "1", &rules),
+            CardEntry::Card(first),
+        );
+        assert!(matches!(first, CardRef::Tech(_)), "a tech screen selects techs: {first:?}");
+        let out_of_range = resolve(&tech_prompt(&[], Numbering::Selection(&index)), "99", &rules);
+        assert!(
+            matches!(&out_of_range, CardEntry::Refused(m) if m.contains("1-20")),
+            "{out_of_range:?}",
+        );
+    }
+
     /// An id for a card the registry does not hold still resolves to a CARD —
     /// the pool check is the caller's, and this module refusing it here would
     /// be the second opinion the module doc rules out.
@@ -597,7 +956,7 @@ mod tests {
         let rules = Rules::standard();
         assert_eq!(
             resolve(&prompt(&[], Numbering::Ids), "O99", &rules),
-            CardEntry::Card(OrderCardId(99)),
+            order(99),
         );
     }
 }

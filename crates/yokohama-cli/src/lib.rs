@@ -18,4 +18,5 @@ pub mod screen_model;
 pub mod session;
 pub mod style;
 pub mod suggest;
+pub mod view_render;
 pub mod wizard;

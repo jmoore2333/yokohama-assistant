@@ -9,7 +9,8 @@ use yokohama_core::*;
 use crate::card_prompt::{self, CardEntry, CardPrompt};
 use crate::reveal::{lab_b_changed, refilled_port_slots, Pending};
 use crate::screen_model::{
-    menu_index, menu_number, menu_range, CardLocation, IndexModel, RecordingTarget, NUMBER_BASE,
+    menu_index, menu_number, menu_range, CardLocation, CardRef, IndexKind, IndexModel,
+    RecordingTarget, NUMBER_BASE,
 };
 use crate::session::{ApplyError, TrackingMode};
 use crate::style::{paint, Tone};
@@ -64,30 +65,53 @@ pub struct Repl {
     /// and a resumed save take ONE path; empty (all-human) for every game the
     /// wizard was not asked about, which makes every bot path below a no-op.
     pub(crate) bots: crate::bot::BotSeats,
-    /// The card index, when it is open over whatever the player was doing
-    /// (Phase-3.5a T5, spec §0.6).
+    /// The full-screen surface open over whatever the player was doing — a card
+    /// index (Phase-3.5a T5, spec §0.6) or a view (T6, spec §0.5).
     ///
     /// **An OVERLAY, deliberately, rather than a third capture state beside
     /// `pending` and `sub`.** §0.6 requires the index to be available INSIDE an
-    /// input capture — *"that is where it is needed most"* — and to return to
-    /// the exact prompt with its state intact. Modelling it as an overlay makes
-    /// that structural instead of careful: opening it touches neither
-    /// `pending` nor `sub`, so there is no state to preserve and none to
-    /// restore, and closing it simply stops drawing it. The one test that could
-    /// fail is a caller that CLEARS one of those fields on the way in, and
-    /// nothing here does.
-    pub(crate) index: Option<IndexState>,
+    /// input capture — *"that is where it is needed most"* — and §0.5 requires
+    /// the same of the views: one action away, and back at the interrupted
+    /// prompt with its state preserved. Modelling it as an overlay makes that
+    /// structural instead of careful: opening it touches neither `pending` nor
+    /// `sub`, so there is no state to preserve and none to restore, and closing
+    /// it simply stops drawing it. The one test that could fail is a caller
+    /// that CLEARS one of those fields on the way in, and nothing here does.
+    pub(crate) overlay: Option<Overlay>,
 }
 
-/// The card index while it is open: everything about the screen that is not
-/// derivable from the game state underneath it.
-///
-/// Which is only the FILTER. What is being recorded is re-derived from
-/// `pending` on every render ([`Repl::index_target`]) rather than captured at
-/// open time, so a reveal group that advances a slot while the index is up
-/// cannot leave the header describing the slot before it.
-pub(crate) struct IndexState {
-    pub(crate) filter: Option<crate::screen_model::IndexFilter>,
+/// The full-screen surface currently drawn over the frame.
+pub(crate) enum Overlay {
+    /// A card index, and everything about the screen that is not derivable
+    /// from the game state underneath it.
+    ///
+    /// Which is the registry and the FILTER. What is being RECORDED is
+    /// re-derived from `pending` on every render ([`Repl::index_target`])
+    /// rather than captured at open time, so a reveal group that advances a
+    /// slot while the index is up cannot leave the header describing the slot
+    /// before it.
+    Index { kind: IndexKind, filter: Option<crate::screen_model::IndexFilter> },
+    /// A read-only view. Which one is all there is to remember: both are built
+    /// fresh from current state on every render, exactly as the frame is.
+    View(ViewSurface),
+}
+
+/// The full-screen views (spec §0.5's view pattern).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ViewSurface {
+    Tracks,
+    Sites,
+}
+
+impl ViewSurface {
+    /// The command word that opens this view — and, because a toggle should be
+    /// the key that opened it, the word that closes it again.
+    fn command(self) -> &'static str {
+        match self {
+            ViewSurface::Tracks => "tracks",
+            ViewSurface::Sites => "sites",
+        }
+    }
 }
 
 /// One line in the Movement phase's collapsed numbered list
@@ -172,6 +196,80 @@ pub struct StepOutput {
 /// dispatches to (see [`Repl::VIEW_MENU`]).
 type ViewEntry = (&'static str, fn(&mut Repl) -> StepOutput);
 
+/// The full-screen VIEW a command word opens, if any.
+///
+/// **A whole-line match, and only ever on one word.** These are intercepted
+/// ahead of the capture branches so §0.5's "one action away" holds inside a
+/// Movement sub-prompt; that interception is safe precisely because no card id,
+/// area id or option number can spell `tracks`.
+fn view_surface(word: &str) -> Option<ViewSurface> {
+    match word {
+        "tracks" => Some(ViewSurface::Tracks),
+        "sites" => Some(ViewSurface::Sites),
+        _ => None,
+    }
+}
+
+/// The card INDEX a command word opens, if any.
+///
+/// `goals` opens the achievement index rather than a separate view, which is
+/// T6's supersession ruling: the index shows the same three cards with claim
+/// state and per-seat progress, one card each, and the old `achievements_view`
+/// was that information in a denser shape with no card.
+fn index_command(word: &str) -> Option<IndexKind> {
+    match word {
+        "orders" => Some(IndexKind::Orders),
+        "techs" => Some(IndexKind::Techs),
+        "goals" => Some(IndexKind::Achievements),
+        "sitecards" => Some(IndexKind::Sites),
+        _ => None,
+    }
+}
+
+/// Which registry a recording target is asking about — the routing that puts
+/// `?` at a tech reveal in front of the TECHNOLOGY index (the T5 hand-off).
+fn target_kind(target: RecordingTarget) -> IndexKind {
+    match target {
+        RecordingTarget::TechRefill { .. } => IndexKind::Techs,
+        RecordingTarget::PortRefill { .. }
+        | RecordingTarget::PortSetup { .. }
+        | RecordingTarget::DealSetup { .. } => IndexKind::Orders,
+    }
+}
+
+/// The order-card half of a mixed placement list, for the builder that takes
+/// order ids. Splitting at the call site rather than storing four lists keeps
+/// ONE leak fence to audit (`Repl::index_placements`) instead of four.
+fn only_orders(placed: &[(CardRef, CardLocation)]) -> Vec<(OrderCardId, CardLocation)> {
+    placed
+        .iter()
+        .filter_map(|(card, at)| match card {
+            CardRef::Order(id) => Some((*id, *at)),
+            _ => None,
+        })
+        .collect()
+}
+
+fn only_techs(placed: &[(CardRef, CardLocation)]) -> Vec<(TechCardId, CardLocation)> {
+    placed
+        .iter()
+        .filter_map(|(card, at)| match card {
+            CardRef::Tech(id) => Some((*id, *at)),
+            _ => None,
+        })
+        .collect()
+}
+
+fn only_sites(placed: &[(CardRef, CardLocation)]) -> Vec<(u8, CardLocation)> {
+    placed
+        .iter()
+        .filter_map(|(card, at)| match card {
+            CardRef::Site(index) => Some((*index, *at)),
+            _ => None,
+        })
+        .collect()
+}
+
 /// What one `Session::apply` produced, before any prompt or pump is added --
 /// the shared currency of `Repl::apply_and_describe`'s two callers.
 enum ApplyOutcome {
@@ -234,7 +332,7 @@ impl Repl {
             show_panel: true,
             privacy,
             bots,
-            index: None,
+            overlay: None,
         }
     }
 
@@ -259,7 +357,7 @@ impl Repl {
     /// exactly this, and `out`/`out_view` draw the surface on exactly this, so
     /// the two can never disagree about whether a board is on screen.
     pub(crate) fn full_screen_surface(&self) -> bool {
-        self.index.is_some() && !self.locked
+        self.overlay.is_some() && !self.locked
     }
 
     /// Engage a lockdown: flip the in-memory `locked` flag AND persist the
@@ -404,8 +502,8 @@ impl Repl {
         // (spec §0.6's return contract). Checked after the lockdown gate for
         // the same reason the sub-prompt branch is: a locked session shows its
         // status and nothing else.
-        if self.index.is_some() {
-            return self.step_index(&words);
+        if self.overlay.is_some() {
+            return self.step_overlay(&words);
         }
         // `?` opens the card index from ANY prompt -- the main list, a
         // Movement sub-prompt, or mid-reveal-capture. Intercepted HERE, ahead
@@ -415,7 +513,24 @@ impl Repl {
         // swallow the key (the reveal collector as a bad card, the sub-prompt
         // as "finish or cancel this prompt first").
         if matches!(words.as_slice(), ["?"] | ["index"]) {
-            return self.open_index();
+            return self.open_index(self.index_target().map_or(IndexKind::Orders, target_kind));
+        }
+        // **The full-screen surfaces are reachable from inside a capture too**
+        // (spec §0.5: "one action away"), and `sites` is the one that names the
+        // requirement — it is the Movement companion, so it has to be reachable
+        // from the Movement sub-prompt a route pick puts the player in, which
+        // would otherwise swallow the word as a bad route number. Intercepted
+        // for exactly the same reason `?` is, one line above, and by the same
+        // rule: a WHOLE-LINE match on a surface's own name, which no card id,
+        // area id or option number can collide with.
+        if let [word] = words.as_slice() {
+            if let Some(surface) = view_surface(word) {
+                self.overlay = Some(Overlay::View(surface));
+                return self.out(String::new(), false);
+            }
+            if let Some(kind) = index_command(word) {
+                return self.open_index(kind);
+            }
         }
         // A Movement sub-prompt (route pick / guided retreat) captures input the
         // same way the reveal collector does -- checked AFTER the lockdown gate
@@ -466,11 +581,7 @@ impl Repl {
             )),
             ["ports"] => self.out_view(render::ports_view(self.session.state(), self.session.rules())),
             ["labs"] => self.out_view(render::labs_view(self.session.state(), self.session.rules())),
-            ["tracks"] => self.out_view(render::tracks_view(self.session.state())),
-            ["sites"] => self.out_view(render::sites_view(self.session.state(), self.session.rules())),
-            ["goals"] => self.out_view(render::achievements_view(self.session.state(), self.session.rules())),
             ["hand"] => self.out_view(self.hand_text()),
-            ["orders"] => self.open_index(),
             ["score"] => self.out_view(self.score_text()),
             ["log"] => self.out_view(self.log_tail()),
             ["suggest"] => self.suggest_cmd(),
@@ -540,11 +651,11 @@ impl Repl {
         }
         if self.locked {
             text.push_str(&self.lockdown_status());
-        } else if self.index.is_some() {
+        } else if self.overlay.is_some() {
             // The index is an overlay and takes the whole screen: what it
             // replaces is the PROMPT, not the state underneath it, which is
             // still there when it closes.
-            text.push_str(&self.index_text());
+            text.push_str(&self.overlay_text());
         } else if !matches!(self.sub, SubPrompt::None) {
             // Inside a Movement sub-prompt: append the sub-prompt screen (route
             // list / current recovery question / confirm line) instead of the
@@ -575,11 +686,11 @@ impl Repl {
         }
         if self.locked {
             text.push_str(&self.lockdown_status());
-        } else if self.index.is_some() {
+        } else if self.overlay.is_some() {
             // Defense in depth, like the sub-prompt arm below: `step` routes
             // every line to the overlay while it is open, so no view command
             // reaches here with the index up.
-            text.push_str(&self.index_text());
+            text.push_str(&self.overlay_text());
         } else if !matches!(self.sub, SubPrompt::None) {
             // Defense in depth: no view command is reachable mid-sub-prompt
             // (`step`'s sub-prompt branch routes elsewhere entirely), so this
@@ -1061,8 +1172,16 @@ impl Repl {
     /// command uses. NOTE this couples label to function only -- whether a
     /// label's WORDING matches what its view renders remains a human
     /// judgment (reviewed, not machine-checked).
-    const VIEW_MENU: [ViewEntry; 11] = [
-        ("Order card index — all 36 cards, grouped by flag ('?' anywhere)", |r| r.open_index()),
+    const VIEW_MENU: [ViewEntry; 13] = [
+        ("Order card index — all 36 cards, grouped by flag ('?' anywhere)", |r| {
+            r.open_index(IndexKind::Orders)
+        }),
+        ("Technology index — all 20 titles by flag, with what each one does", |r| {
+            r.open_index(IndexKind::Techs)
+        }),
+        ("Site card index — all 24 printed cards and their four spaces", |r| {
+            r.open_index(IndexKind::Sites)
+        }),
         ("Board — tiles, presidents, assistants, buildings", |r| r.board_cmd()),
         ("Players — every player's public holdings in full", |r| {
             let t = render::players_panel(r.session.state(), r.session.rules(), &r.seat_display());
@@ -1072,21 +1191,20 @@ impl Repl {
             let t = render::ports_view(r.session.state(), r.session.rules());
             r.out_view(t)
         }),
-        ("Lab offer — the techs on display, with slot surcharges", |r| {
+        ("Lab offer — the techs on display now, with slot surcharges and prices", |r| {
             let t = render::labs_view(r.session.state(), r.session.rules());
             r.out_view(t)
         }),
-        ("Tracks — Church/Customs spaces (incl. the 2P dummy), Station, mercenary supply", |r| {
-            let t = render::tracks_view(r.session.state());
-            r.out_view(t)
+        ("Tracks — every Church and Customs space as a card, with the 2P dummy", |r| {
+            r.overlay = Some(Overlay::View(ViewSurface::Tracks));
+            r.out(String::new(), false)
         }),
-        ("Building sites — printed rewards, what's built and whose, adjacency", |r| {
-            let t = render::sites_view(r.session.state(), r.session.rules());
-            r.out_view(t)
+        ("Building sites — every area's site card: rewards, builders, canal tolls", |r| {
+            r.overlay = Some(Overlay::View(ViewSurface::Sites));
+            r.out(String::new(), false)
         }),
         ("Goals — the achievement cards, claim VP, and per-player progress", |r| {
-            let t = render::achievements_view(r.session.state(), r.session.rules());
-            r.out_view(t)
+            r.open_index(IndexKind::Achievements)
         }),
         ("Hand — the current player's order cards", |r| {
             let t = r.hand_text();
@@ -1134,11 +1252,11 @@ impl Repl {
     // The card index (spec §0.6, R8)
     // -----------------------------------------------------------------
 
-    /// Open the card index over whatever the player is doing. Nothing else
+    /// Open a card index over whatever the player is doing. Nothing else
     /// changes: `pending` and `sub` are left exactly as they were, which is
-    /// what makes the return contract structural (see [`Repl::index`]).
-    fn open_index(&mut self) -> StepOutput {
-        self.index = Some(IndexState { filter: None });
+    /// what makes the return contract structural (see [`Repl::overlay`]).
+    fn open_index(&mut self, kind: IndexKind) -> StepOutput {
+        self.overlay = Some(Overlay::Index { kind, filter: None });
         self.out(String::new(), false)
     }
 
@@ -1162,10 +1280,16 @@ impl Repl {
                     of: slots.len(),
                 })
             }
-            // A tech reveal is a card prompt too, but the TECH index is T6's.
-            // Opening the order index over a tech question would answer a
-            // question nobody asked, so `?` there falls through to a view.
-            Pending::TechReveal { .. } | Pending::None => None,
+            // **A tech reveal is a card prompt too, and T6 routes it** — the
+            // hand-off T5 named. Until the tech index existed, `?` here opened
+            // the ORDER index, a screen of thirty-six cards that cannot answer
+            // "which technology refilled the Lab"; now it opens the technology
+            // index in recording context, with the same leak fence
+            // (`index_placements` supplies the locations; nothing is derived).
+            Pending::TechReveal { board_b, .. } => {
+                Some(RecordingTarget::TechRefill { board_b: *board_b })
+            }
+            Pending::None => None,
         }
     }
 
@@ -1179,7 +1303,7 @@ impl Repl {
     /// order is hidden, and an index that dimmed it with "in Seat 1's hand"
     /// would leak the one card the whole observation boundary exists to
     /// protect.
-    fn index_placements(&self) -> Vec<(OrderCardId, CardLocation)> {
+    fn index_placements(&self) -> Vec<(CardRef, CardLocation)> {
         let state = self.session.state();
         let mut placed = Vec::new();
         for (board_b, board) in
@@ -1188,7 +1312,7 @@ impl Repl {
             let Some(board) = board else { continue };
             for (slot, card) in board.slots.iter().enumerate() {
                 if let Some(id) = card {
-                    placed.push((*id, CardLocation::PortSlot { board_b, slot }));
+                    placed.push((CardRef::Order(*id), CardLocation::PortSlot { board_b, slot }));
                 }
             }
         }
@@ -1196,31 +1320,169 @@ impl Repl {
         if !self.seat_display().hides_hand(me) {
             if let Some(p) = state.players.iter().find(|p| p.id == me) {
                 for &id in &p.order_cards_in_hand {
-                    placed.push((id, CardLocation::OwnHand));
+                    placed.push((CardRef::Order(id), CardLocation::OwnHand));
                 }
             }
         }
         if let Pending::OrderReveals { collected, .. } = &self.pending {
             for &id in collected {
-                placed.push((id, CardLocation::ThisReveal));
+                placed.push((CardRef::Order(id), CardLocation::ThisReveal));
+            }
+        }
+        // **The technology half of the fence.** The two Lab displays are
+        // face-up, and a bought Technology sits face-up in front of its owner
+        // (`PlayerState::technologies` is public, unlike a hand) — so both are
+        // things everyone at the table can already see. Nothing here reads the
+        // tech DECK, which is the hidden set a live game reconciles rather than
+        // knows.
+        for (board_b, board) in
+            [(false, Some(&state.lab_state.lab_a)), (true, state.lab_state.lab_b.as_ref())]
+        {
+            let Some(board) = board else { continue };
+            for (slot, card) in board.slots.iter().enumerate() {
+                if let Some(id) = card {
+                    placed.push((CardRef::Tech(*id), CardLocation::LabSlot { board_b, slot }));
+                }
+            }
+        }
+        for p in &state.players {
+            for &id in &p.technologies {
+                placed.push((CardRef::Tech(id), CardLocation::OwnedBy { seat: p.id }));
+            }
+        }
+        // Every building-site card in play is face-up on its area from setup.
+        for (&area, site) in &state.board_layout.building_sites {
+            if let Some(index) = crate::screen_model::printed_site_index(site, self.session.rules())
+            {
+                placed.push((CardRef::Site(index), CardLocation::OnArea { area }));
             }
         }
         placed
     }
 
-    /// The index model for the current position and filter.
-    fn index_model(&self) -> IndexModel {
-        let filter = self.index.as_ref().and_then(|i| i.filter);
-        crate::screen_model::build_order_index(
-            self.session.rules(),
-            &self.index_placements(),
-            self.index_target(),
-            filter,
-        )
+    /// The index model for the current position, registry and filter.
+    fn index_model(&self, kind: IndexKind) -> IndexModel {
+        let filter = match self.overlay {
+            Some(Overlay::Index { filter, .. }) => filter,
+            _ => None,
+        };
+        let placed = self.index_placements();
+        let target = self.index_target();
+        let rules = self.session.rules();
+        match kind {
+            IndexKind::Orders => crate::screen_model::build_order_index(
+                rules,
+                &only_orders(&placed),
+                target,
+                filter,
+            ),
+            IndexKind::Techs => {
+                crate::screen_model::build_tech_index(rules, &only_techs(&placed), target, filter)
+            }
+            IndexKind::Achievements => crate::screen_model::build_achievement_index(
+                &crate::screen_model::build_achievements(self.session.state()).cards,
+                &[],
+                target,
+                filter,
+            ),
+            IndexKind::Sites => {
+                crate::screen_model::build_site_index(rules, &only_sites(&placed), target, filter)
+            }
+        }
     }
 
-    pub(crate) fn index_text(&self) -> String {
-        crate::index_render::index_view(&self.index_model())
+    pub(crate) fn index_text(&self, kind: IndexKind) -> String {
+        crate::index_render::index_view(&self.index_model(kind), &self.seat_colors())
+    }
+
+    /// The seat color table every card and view renderer takes, in seat order.
+    fn seat_colors(&self) -> Vec<PlayerColor> {
+        self.session.state().players.iter().map(|p| p.color).collect()
+    }
+
+    /// The text of whichever full-screen surface is open.
+    pub(crate) fn overlay_text(&self) -> String {
+        match &self.overlay {
+            Some(Overlay::Index { kind, .. }) => self.index_text(*kind),
+            Some(Overlay::View(surface)) => self.view_text(*surface),
+            None => String::new(),
+        }
+    }
+
+    /// One of spec §0.5's full-screen views, built from the SAME models the
+    /// dashboard panels are — so a panel summary and its full surface can never
+    /// disagree about a fact.
+    fn view_text(&self, surface: ViewSurface) -> String {
+        let state = self.session.state();
+        let colors = self.seat_colors();
+        match surface {
+            ViewSurface::Tracks => crate::view_render::tracks_view(
+                &crate::screen_model::build_tracks(state),
+                &colors,
+            ),
+            ViewSurface::Sites => crate::view_render::sites_view(
+                // No legal list: this surface draws no `◈` marks, and asking
+                // for one would cost an enumeration to feed a field nothing
+                // here reads.
+                &crate::screen_model::build_board(state, self.session.rules(), &[]),
+                &colors,
+            ),
+        }
+    }
+
+    /// One line of input while a full-screen surface is open.
+    fn step_overlay(&mut self, words: &[&str]) -> StepOutput {
+        if matches!(words, ["quit"] | ["q"]) {
+            return StepOutput { text: "bye\n".to_string(), quit: true };
+        }
+        match self.overlay {
+            Some(Overlay::Index { kind, .. }) => self.step_index(words, kind),
+            Some(Overlay::View(surface)) => self.step_view(words, surface),
+            None => self.out(String::new(), false),
+        }
+    }
+
+    /// One line of input while a VIEW is open.
+    ///
+    /// **A different rule from the index's, because a view is a different kind
+    /// of screen.** An index is an INPUT surface: its numbers select, so a
+    /// mistyped line has to be refused there and leave the screen up. A view
+    /// selects nothing — it is a thing to look at — so any command a player
+    /// types while looking at one is a command they want RUN, and holding it
+    /// hostage behind "press Enter first" would make §0.5's "one action away"
+    /// cost two.
+    ///
+    /// The one input that closes without re-dispatching is the EMPTY line, and
+    /// that exclusion is load-bearing rather than tidy: bare Enter at a
+    /// single-option prompt applies that option (the ceremony rule), so a blank
+    /// line re-dispatched from a view would apply a move the player pressed
+    /// Enter to stop looking at a screen.
+    fn step_view(&mut self, words: &[&str], surface: ViewSurface) -> StepOutput {
+        self.overlay = None;
+        // A reveal capture's prompt is a complete self-describing message its
+        // callers pass as `text` (see `out`'s pending branch), so returning to
+        // one means passing it — the same return contract the index honors.
+        let back = |repl: &Repl| match repl.pending {
+            Pending::None => String::new(),
+            _ => repl.reveal_prompt(),
+        };
+        match words {
+            [] => {
+                let text = back(self);
+                self.out(text, false)
+            }
+            ["cancel"] | ["back"] => {
+                let text = back(self);
+                self.out(text, false)
+            }
+            // The key that opened it closes it — the affordance a player
+            // reaches for first.
+            [word] if *word == surface.command() => {
+                let text = back(self);
+                self.out(text, false)
+            }
+            _ => self.step(&words.join(" ")),
+        }
     }
 
     /// One line of input while the index is open.
@@ -1229,14 +1491,12 @@ impl Repl {
     /// grammar the prompts underneath use — so a number, an id, `?` and a
     /// filter mean the same thing here as they do there, which is the whole
     /// content of §0.2's "one card-entry grammar everywhere".
-    fn step_index(&mut self, words: &[&str]) -> StepOutput {
-        if matches!(words, ["quit"] | ["q"]) {
-            return StepOutput { text: "bye\n".to_string(), quit: true };
-        }
+    fn step_index(&mut self, words: &[&str], kind: IndexKind) -> StepOutput {
         let line = words.join(" ");
-        let model = self.index_model();
+        let model = self.index_model(kind);
         let placed = self.index_placements();
         let prompt = CardPrompt {
+            kind,
             candidates: None,
             placed: &placed,
             numbering: card_prompt::Numbering::Selection(&model),
@@ -1245,7 +1505,7 @@ impl Repl {
             // `?` toggles: the key that opened the screen closes it, which is
             // the affordance a player reaches for first.
             CardEntry::Cancel | CardEntry::OpenIndex => {
-                self.index = None;
+                self.overlay = None;
                 // `out` re-draws whatever was underneath -- except a reveal
                 // capture, whose prompt is a complete self-describing message
                 // its callers pass as `text` (see `out`'s pending branch). So
@@ -1257,14 +1517,14 @@ impl Repl {
                 };
                 self.out(back, false)
             }
-            CardEntry::Filter(filter) => {
-                if let Some(state) = self.index.as_mut() {
-                    state.filter = filter;
+            CardEntry::Filter(new_filter) => {
+                if let Some(Overlay::Index { filter, .. }) = self.overlay.as_mut() {
+                    *filter = new_filter;
                 }
                 self.out(String::new(), false)
             }
             CardEntry::Refused(message) => self.out(message, false),
-            CardEntry::Card(id) => self.index_selection(id),
+            CardEntry::Card(card) => self.index_selection(card),
         }
     }
 
@@ -1276,20 +1536,32 @@ impl Repl {
     /// still checks the card against the deck and the boxed pile, and refuses
     /// it with its own words if it does not belong. What the index bought the
     /// player is finding the card, not skipping the check.
-    fn index_selection(&mut self, id: OrderCardId) -> StepOutput {
-        let echo = card_prompt::echo(id, self.session.rules());
-        if matches!(self.pending, Pending::OrderReveals { .. }) {
-            self.index = None;
-            let token = format!("O{:02}", id.0);
-            let out = self.collect_reveal(&[&token]);
-            return StepOutput { text: format!("{echo}{}", out.text), quit: out.quit };
+    fn index_selection(&mut self, card: CardRef) -> StepOutput {
+        match (card, &self.pending) {
+            (CardRef::Order(id), Pending::OrderReveals { .. }) => {
+                let echo = card_prompt::echo(id, self.session.rules());
+                self.overlay = None;
+                let token = format!("O{:02}", id.0);
+                let out = self.collect_reveal(&[&token]);
+                StepOutput { text: format!("{echo}{}", out.text), quit: out.quit }
+            }
+            (CardRef::Tech(id), Pending::TechReveal { .. }) => {
+                self.overlay = None;
+                let token = format!("T{:02}", id.0);
+                let out = self.collect_reveal(&[&token]);
+                StepOutput { text: out.text, quit: out.quit }
+            }
+            // Either nothing is being recorded, or the pick is from a registry
+            // the prompt underneath is not asking about. Both are inspections;
+            // saying so beats appearing to do something.
+            _ => self.out(
+                format!(
+                    "{} — nothing is being recorded right now. Enter or 'cancel' closes the index.",
+                    card_prompt::card_tag(card),
+                ),
+                false,
+            ),
         }
-        // No card prompt underneath: nothing to record, so the pick is an
-        // inspection. Say so rather than appearing to do something.
-        self.out(
-            format!("{echo}Nothing is being recorded right now — Enter or 'cancel' closes the index."),
-            false,
-        )
     }
 
     /// Numbered-pick sub-prompt input (route labels, assistant destinations,
@@ -2196,16 +2468,15 @@ impl Repl {
         // anyway -- with a worse message, since the engine cannot say where
         // the operator has already put the card.
         let placed = self.index_placements();
-        let prompt = CardPrompt {
-            candidates: None,
-            placed: &placed,
-            numbering: card_prompt::Numbering::Ids,
-        };
+        let prompt = CardPrompt::orders(&placed, card_prompt::Numbering::Ids);
         let card = match card_prompt::resolve(&prompt, card_tok, self.session.rules()) {
-            CardEntry::Card(id) => id,
-            CardEntry::OpenIndex => return self.open_index(),
+            // An ORDER prompt, so the grammar can only ever hand back an order
+            // card; the other arms are refused rather than matched loosely, so
+            // a future kind cannot slip through as a starting order.
+            CardEntry::Card(CardRef::Order(id)) => id,
+            CardEntry::OpenIndex => return self.open_index(IndexKind::Orders),
             CardEntry::Refused(message) => return self.out(message, false),
-            CardEntry::Cancel | CardEntry::Filter(_) => {
+            CardEntry::Card(_) | CardEntry::Cancel | CardEntry::Filter(_) => {
                 return self.out("Usage: reveal <seat> <O..>".to_string(), false)
             }
         };
@@ -2443,16 +2714,18 @@ Commands:
   board           show the area grid and its legend (5-Power token faces, [St] Station, · empty build slot, ~ Canal toll)
   players         show each player's resources, hand, tech, tokens, President
   ports           show both Port boards and the order-deck size
-  labs            show both Laboratory boards (each tech's country + effect) and the tech-deck size
-  tracks          show the Church and Customs tracks with printed VP and rider icons
-  sites           show each area's building-site printed rewards, build marks, and adjacency
-  goals           show achievement cards with claim VP, claim state, and per-player progress
+  labs            show both Laboratory boards (what is on offer NOW, with slot surcharges) and the tech-deck size
+  tracks          open the TRACKS view: every Church and Customs space as a card, with the 2P dummy
+  sites           open the BUILDING SITES view: every area's site card, its builders, and its canal tolls
   hand            show the current player's order-card hand
-  orders          open the order card index: all 36 cards by flag ('?' opens it from any prompt)
-  ?               open the order card index -- works mid-reveal and mid-sub-prompt, and returns you to it
+  orders          open the ORDER CARD INDEX: all 36 cards, grouped by flag, full-screen
+  techs           open the TECHNOLOGY INDEX: all 20 titles by flag, each with its full purchase text
+  goals           open the ACHIEVEMENTS index: the cards in play by category, with claim VP and progress
+  sitecards       open the SITE CARD INDEX: all 24 printed cards, for setup entry
+  ?               open the card index for whatever is being asked -- works mid-reveal and mid-sub-prompt, and returns you to it
   score           show current VP/money (or the final scores once the game is over)
   log             show the tail of the move/event log
-  view            open the numbered game-info menu over all of the views above ('views' also works)
+  view            open the numbered game-info menu over all of the views and indexes above ('views' also works)
   suggest         simulation only: what the built-in bot would play from your seat, with its arithmetic
   privacy         toggle hiding hand contents in views (default: hidden in live mode)
   panel           toggle the players panel inside the composed screen (terminal only)
@@ -2462,7 +2735,7 @@ Commands:
   undo            undo the last move (and any reveals bound to it) ('back' also works)
   save [path]     save to path (or to the last-used path if omitted)
   reveal <seat> <O..>  live mode: make a hidden opponent starting order public
-  cancel          back out of any sub-prompt: reveal collection (live), view menu, card index, numbered pick, either Placement picker, guided retreat
+  cancel          back out of any sub-prompt or full-screen surface: reveal collection (live), view menu, card index, tracks/sites view, numbered pick, either Placement picker, guided retreat
   help            show this text
   quit            exit the REPL ('q' also works)
 ";
@@ -2711,7 +2984,13 @@ mod tests {
             screen::force(true);
             let opening = screen::wrap(&r, &r.prompt()).lines().count();
             r.step("view");
-            let out = r.step("2"); // Board
+            let menu = r.sub_prompt_text();
+            let board_idx = menu
+                .lines()
+                .find(|l| l.contains("Board"))
+                .and_then(|l| l.trim().strip_prefix('[')?.split(']').next()?.parse::<usize>().ok())
+                .expect("the Board entry carries its number");
+            let out = r.step(&board_idx.to_string());
             let rows = screen::wrap(&r, &out.text).lines().count();
             screen::force(false);
             assert!(
@@ -3171,19 +3450,38 @@ mod tests {
     /// menu row, being `score`'s game-over form), and holds the shared header
     /// on all of them.
     ///
-    /// TWO menu rows are skipped, each with its own layout rather than the
-    /// rule-header one: the board grid, and (since T5) the card index, which
-    /// is a FULL-SCREEN card surface drawn to its own approved mock and
-    /// pinned by `index_render`'s own tests. Skipping by a startswith on the
-    /// label is deliberate -- a row renamed out of the skip list rejoins the
-    /// sweep rather than silently staying out of it.
+    /// The skipped rows are the ones with their OWN layout rather than the
+    /// rule-header one: the board grid, and every FULL-SCREEN surface (the four
+    /// card indexes since T6, and the two views), each drawn to its own approved
+    /// mock and pinned by `index_render`/`view_render`'s own tests. Skipping by
+    /// a startswith on the label is deliberate -- a row renamed out of the skip
+    /// list rejoins the sweep rather than silently staying out of it.
+    ///
+    /// **The complement is asserted too**, because a skip list that grew to
+    /// cover everything would leave this test passing over an empty sweep: the
+    /// rule-header views are counted, and there must still be some.
     #[test]
     fn all_state_views_share_the_rule_header_style() {
+        const FULL_SCREEN: [&str; 6] = [
+            "Board",
+            "Order card index",
+            "Technology index",
+            "Site card index",
+            "Tracks",
+            "Building sites",
+        ];
         let mut r = repl_2p(4);
+        let mut swept = 0;
         for (label, render_fn) in Repl::VIEW_MENU.iter() {
-            if label.starts_with("Board") || label.starts_with("Order card index") {
+            if FULL_SCREEN.iter().any(|skip| label.starts_with(skip)) || label.starts_with("Goals")
+            {
+                // `Goals` is the achievement INDEX since T6 -- a full-screen
+                // card surface, named separately here so the reason is visible
+                // rather than folded into a list of layout exceptions.
+                r.overlay = None;
                 continue;
             }
+            swept += 1;
             let out = render_fn(&mut r);
             assert!(
                 out.text.starts_with("─ "),
@@ -3191,6 +3489,7 @@ mod tests {
                 out.text.lines().next().unwrap_or("")
             );
         }
+        assert!(swept >= 4, "the sweep must still cover the rule-header views, not {swept}");
         // `final_score` is not a menu row (it is `score`'s game-over form);
         // pin it directly. `final_score_table` scores the current state, so it
         // renders on a live game without needing to drive it to a winner.
@@ -3243,10 +3542,16 @@ mod tests {
     /// a dogfooding friction note: re-showing up to 20 numbered options after
     /// every single glance at the board/hand/log was pure noise since the
     /// glance itself never changes which options are legal.
+    ///
+    /// **The list shrank at T6 and the reason is not that the property weakened.**
+    /// `tracks`, `sites` and `goals` became FULL-SCREEN surfaces (spec §0.5/§0.6),
+    /// which do not append a hint at all -- they replace the prompt and carry
+    /// their own "how to leave" line. Their property is the return contract, and
+    /// it is pinned by `a_view_returns_to_the_prompt_it_interrupted`.
     #[test]
     fn view_commands_show_only_the_input_hint_not_the_full_options_block() {
         let mut r = repl_2p(4);
-        for cmd in ["board", "players", "ports", "labs", "tracks", "sites", "goals", "hand", "score", "log", "help"] {
+        for cmd in ["board", "players", "ports", "labs", "hand", "score", "log", "help"] {
             let out = r.step(cmd);
             assert!(!out.text.contains("[1]"), "'{cmd}' unexpectedly showed the numbered options block: {}", out.text);
             assert!(
@@ -3447,7 +3752,21 @@ mod tests {
         let mut r = repl_2p(4);
         let out = r.step("view");
         assert!(out.text.contains("Game info"), "{}", out.text);
-        for name in ["Board", "Players", "Port offer", "Lab offer", "Tracks", "Building sites", "Goals", "Hand", "Score", "Log"] {
+        for name in [
+            "Order card index",
+            "Technology index",
+            "Site card index",
+            "Board",
+            "Players",
+            "Port offer",
+            "Lab offer",
+            "Tracks",
+            "Building sites",
+            "Goals",
+            "Hand",
+            "Score",
+            "Log",
+        ] {
             assert!(out.text.contains(name), "menu must name {name}: {}", out.text);
         }
         assert!(out.text.contains("'cancel'"), "{}", out.text);
@@ -3460,11 +3779,18 @@ mod tests {
             .and_then(|l| l.strip_prefix('[')?.split(']').next()?.parse::<usize>().ok())
             .expect("Goals entry carries its number");
         let shown = r.step(&goals_idx.to_string());
-        assert!(shown.text.contains("G0:"), "picking Goals must render the goals view: {}", shown.text);
+        // Goals is the ACHIEVEMENT INDEX since T6 -- the same three cards with
+        // claim state and per-seat progress, one card each.
+        assert!(
+            shown.text.contains("ACHIEVEMENTS") && shown.text.contains("CATEGORY A"),
+            "picking Goals must open the achievement index: {}",
+            shown.text,
+        );
         assert!(matches!(r.sub, SubPrompt::None), "the menu is one-shot");
         assert!(r.session.record().events.is_empty(), "views never apply moves");
 
         // Back at the normal prompt: a move command works again.
+        r.step("");
         let p = r.prompt();
         assert!(p.contains("[1]"), "{p}");
     }
@@ -5755,7 +6081,7 @@ mod tests {
         let mut r = repl_2p(4);
         let out = r.step("?");
         assert!(out.text.contains("ORDER CARD INDEX"), "{}", out.text);
-        assert!(r.index.is_some(), "the overlay is up");
+        assert!(r.overlay.is_some(), "the overlay is up");
 
         // A Movement sub-prompt: the guided retreat, mid-question.
         let mut r = movement_grouping_fixture();
@@ -5808,10 +6134,10 @@ mod tests {
     fn an_index_selection_answers_the_reveal_underneath_it() {
         let (mut r, deck_card) = live_repl_at_a_two_card_port_take();
         r.step("?");
-        let model = r.index_model();
+        let model = r.index_model(IndexKind::Orders);
         let number = model
             .cards()
-            .find(|c| c.id == deck_card)
+            .find(|c| c.face.card_ref() == Some(CardRef::Order(deck_card)))
             .and_then(|c| c.selection)
             .expect("an unplaced deck card is selectable on the recording screen");
         let events_before = r.session.record().events.len();
@@ -5819,7 +6145,7 @@ mod tests {
         let out = r.step(&number.to_string());
         // The card is echoed in full before anything commits (§0.6).
         assert!(out.text.contains(&format!("O{:02}", deck_card.0)), "{}", out.text);
-        assert!(r.index.is_none(), "the index closes on a selection");
+        assert!(r.overlay.is_none(), "the index closes on a selection");
         // A two-slot refill: the first answer advances the group rather than
         // applying, which is the reveal choreography unchanged.
         assert!(matches!(&r.pending, Pending::OrderReveals { collected, .. } if collected == &vec![deck_card]));
@@ -5840,6 +6166,136 @@ mod tests {
             r.session.record().events.iter().all(|e| !matches!(e, RecordedEvent::RevealStartingOrder { .. })),
             "nothing was recorded",
         );
+    }
+
+    // -----------------------------------------------------------------
+    // T6: the other three registries, and the two full-screen views
+    // -----------------------------------------------------------------
+
+    /// **`?` at a live TECH reveal opens the TECHNOLOGY index** — the T5
+    /// hand-off, routed. Until T6 it opened the ORDER index: thirty-six cards
+    /// that cannot answer "which technology refilled the Lab", which is a screen
+    /// answering a question nobody asked.
+    ///
+    /// The pending state is set directly. That is a fixture rather than a
+    /// shortcut: driving a live Laboratory action to its reveal question takes a
+    /// dozen moves and would pin the route, not the routing, which is what this
+    /// test is about.
+    #[test]
+    fn a_tech_reveal_routes_the_question_mark_to_the_technology_index() {
+        let (mut r, _) = repl_live_hidden(21);
+        r.pending = Pending::TechReveal {
+            mv: Move::UseUniversity,
+            board_b: false,
+        };
+        let out = r.step("?");
+        assert!(out.text.contains("TECHNOLOGY INDEX"), "{}", out.text);
+        assert!(
+            out.text.contains("Recording: the card that refilled Laboratory A"),
+            "in RECORDING context, naming the board it is asking about: {}",
+            out.text,
+        );
+        assert!(matches!(r.pending, Pending::TechReveal { .. }), "the capture is untouched");
+        // The leak fence, on the tech half: the locations on screen are the
+        // face-up ones the caller supplied (Lab slots, owned techs) and nothing
+        // is derived from the tech DECK.
+        for id in r.session.state().lab_state.lab_a.slots.iter().flatten() {
+            let name = r.session.rules().techs.get(*id).map(|c| c.name.clone()).expect("a card");
+            assert!(out.text.contains(&name.to_uppercase()), "{name} is on screen");
+        }
+        assert!(out.text.contains("Laboratory A slot"), "and says where it is: {}", out.text);
+    }
+
+    /// **The two views are one action away and return with the prompt intact**
+    /// (spec §0.5) — including from inside a Movement sub-prompt, which is the
+    /// clause `sites` exists for: it is the Movement companion, and a route pick
+    /// would otherwise swallow the word as a bad number.
+    #[test]
+    fn a_view_returns_to_the_prompt_it_interrupted() {
+        for (word, title) in [("tracks", "TRACKS — full view"), ("sites", "BUILDING SITES — full view")] {
+            // From the main prompt.
+            let mut r = repl_2p(4);
+            let before = r.prompt();
+            let out = r.step(word);
+            assert!(out.text.contains(title), "'{word}' opens its view: {}", out.text);
+            assert!(r.overlay.is_some(), "the overlay is up");
+            let back = r.step("");
+            assert!(back.text.contains(&before), "Enter returns to the same prompt: {}", back.text);
+            assert!(r.overlay.is_none(), "and the overlay is down");
+
+            // From inside a Movement sub-prompt, with the sub-prompt untouched.
+            let mut r = movement_grouping_fixture();
+            r.step("3"); // the guided retreat
+            assert!(matches!(r.sub, SubPrompt::Retreat { .. }));
+            let asked = r.sub_prompt_text();
+            let out = r.step(word);
+            assert!(out.text.contains(title), "'{word}' opens from a sub-prompt: {}", out.text);
+            assert!(matches!(r.sub, SubPrompt::Retreat { .. }), "the sub-prompt is untouched");
+            let back = r.step(word); // the key that opened it closes it
+            assert!(back.text.contains(&asked), "back at the same question: {}", back.text);
+            assert!(matches!(r.sub, SubPrompt::Retreat { .. }));
+        }
+    }
+
+    /// A view applies nothing and records nothing, however it is left — the
+    /// read-only half of the return contract.
+    #[test]
+    fn a_view_is_read_only() {
+        let mut r = repl_2p(4);
+        let events = r.session.record().events.len();
+        let state = r.session.state().clone();
+        r.step("sites");
+        r.step("tracks");
+        r.step("cancel");
+        assert_eq!(r.session.record().events.len(), events, "a view records nothing");
+        assert_eq!(*r.session.state(), state, "a view applies nothing");
+    }
+
+    /// **Bare Enter closes a view WITHOUT re-dispatching**, and the exclusion is
+    /// load-bearing rather than tidy: at a single-option prompt bare Enter
+    /// applies that option (the ceremony rule), so a blank line re-dispatched
+    /// out of a view would apply a move the player pressed Enter to stop looking
+    /// at a screen. Every OTHER line closes the view and runs, which is what
+    /// makes §0.5's "one action away" cost one action rather than two.
+    #[test]
+    fn enter_closes_a_view_without_applying_the_forced_option_underneath() {
+        let mut r = repl_2p(4);
+        assert_eq!(r.display_options().len(), 1, "fixture: a single-option prompt");
+        r.step("tracks");
+        let events = r.session.record().events.len();
+        r.step("");
+        assert_eq!(
+            r.session.record().events.len(),
+            events,
+            "Enter left the view; it must not also apply the forced option",
+        );
+        assert!(r.overlay.is_none(), "but it did leave the view");
+
+        // ...and a real command typed at a view runs, having closed it.
+        r.step("sites");
+        let out = r.step("score");
+        assert!(r.overlay.is_none(), "the view closed");
+        assert!(out.text.contains("Score"), "and the command ran: {}", out.text);
+    }
+
+    /// The three commands the T6 surfaces supersede open the NEW surfaces, and
+    /// the `view` menu dispatches to the same code path — the property
+    /// `VIEW_MENU`'s tuple shape exists to keep true.
+    #[test]
+    fn the_superseded_commands_open_the_new_surfaces() {
+        let mut r = repl_2p(4);
+        for (word, title) in [
+            ("tracks", "TRACKS — full view"),
+            ("sites", "BUILDING SITES — full view"),
+            ("goals", "ACHIEVEMENTS"),
+            ("techs", "TECHNOLOGY INDEX"),
+            ("sitecards", "BUILDING-SITE CARD INDEX"),
+            ("orders", "ORDER CARD INDEX"),
+        ] {
+            let out = r.step(word);
+            assert!(out.text.contains(title), "'{word}' must open {title}: {}", out.text);
+            r.overlay = None;
+        }
     }
 
     /// The index is a FULL-SCREEN surface: the composed frame draws it alone,
@@ -5898,7 +6354,7 @@ mod tests {
         r.step("cancel");
 
         // The card index.
-        let index = r.index_model();
+        let index = r.index_model(IndexKind::Orders);
         assert!(index.cards().all(|c| c.selection.is_none()), "a standing view has no numbers");
         let recording = crate::screen_model::build_order_index(
             r.session.rules(),

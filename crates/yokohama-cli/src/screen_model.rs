@@ -27,9 +27,9 @@
 //! filled at T4 — [`TileModel::reachable`] (the Movement `◈` feed) and
 //! [`DecisionModel::not_offered`] (the dimmed near-miss rows) — and
 //! [`IndexModel`], left a deliberate stub for the task that would know what the
-//! input grammar needed, is designed at T5 alongside `card_prompt`. The one
-//! registry it covers is Orders; the tech, site and achievement indexes are
-//! T6's, which is what [`IndexKind`] is keyed for.
+//! input grammar needed, is designed at T5 alongside `card_prompt` and widened
+//! at T6 to all four registries [`IndexKind`] names — orders, technologies,
+//! achievements and building sites — over one [`CardFaceModel`] sum.
 //!
 //! **[`NUMBER_BASE`] lives here** — the one constant every numbered surface in
 //! the crate reads, on the reasoning at its declaration.
@@ -187,6 +187,16 @@ pub struct TileModel {
     /// because the CLI computing its own reachability is exactly what
     /// engine-as-sole-authority forbids.
     pub reachable: bool,
+    /// The areas this one connects to only by CROSSING the Canal, ascending —
+    /// the tolled, transit-only edges (1 Yen to the bank).
+    ///
+    /// Read straight off `BoardLayout::canal_crossings`, never re-derived from
+    /// geometry, on exactly the reasoning the retired `render::sites_view` gave:
+    /// the crossing set is what `derive_canal_crossings` single-sources and what
+    /// movement actually charges for, and a second derivation here could
+    /// disagree with it. Empty on every tile of a 2-player board, which has no
+    /// Canal at all.
+    pub canal_crossings: Vec<AreaId>,
 }
 
 /// The board region of a frame.
@@ -601,14 +611,65 @@ pub struct FrameModel {
 
 /// Which registry an index is showing.
 ///
-/// One variant today and that is honest rather than provisional: T5 builds the
-/// ORDER index, which R8 names the canonical surface, and T6 adds the tech,
-/// site and achievement indexes. The enum exists now so the input grammar and
-/// the renderer are keyed on a KIND from the start — the alternative was three
-/// order-shaped functions T6 would have had to generalize.
+/// T5 shipped one variant and named the widening point; T6 took it. All four
+/// registries R8 lists are here now, and the reason they share ONE enum rather
+/// than four order-shaped surfaces is the same reason [`CardPrompt`] takes a
+/// kind: the player learns one screen and one grammar, and which registry is
+/// underneath changes what the cards say, never how the screen works.
+///
+/// [`CardPrompt`]: crate::card_prompt::CardPrompt
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum IndexKind {
     Orders,
+    /// Technology TITLES, not physical cards. Ten of the twenty titles
+    /// circulate as two identical copies, so a 30-card screen would ask a
+    /// player to tell apart two cards the printer did not — see
+    /// [`CardFaceModel::Tech`].
+    Techs,
+    Achievements,
+    /// Building-site cards by the index the wizard names them with (`S<n>`).
+    Sites,
+}
+
+impl IndexKind {
+    /// Every kind, for sweeps. Spelled out with no wildcard anywhere that
+    /// matches on this enum, so a fifth registry is a compile error rather
+    /// than a screen that silently renders as an order index.
+    pub const ALL: [IndexKind; 4] =
+        [IndexKind::Orders, IndexKind::Techs, IndexKind::Achievements, IndexKind::Sites];
+}
+
+/// The identity a selection resolves to: which card, in which registry.
+///
+/// The four id types are genuinely different — an order card prints a corner
+/// number, a technology prints only a name, an achievement prints only its
+/// condition, a site card prints nothing at all — so this is a sum rather than
+/// a `u8` the caller has to remember the meaning of. A prompt that asked for a
+/// technology and got back a bare number could not tell a tech id from an order
+/// id, and that is exactly the F4 confusion the one grammar exists to end.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CardRef {
+    Order(OrderCardId),
+    Tech(TechCardId),
+    Achievement(AchievementType),
+    /// A building-site card by its index into `Rules::building_sites` — the
+    /// number `wizard::ask_sites` already accepts as `S<n>`, 0-based, and
+    /// deliberately NOT renumbered by [`NUMBER_BASE`] (which excludes
+    /// identities; this is one).
+    Site(u8),
+}
+
+impl CardRef {
+    /// The registry this identity belongs to. Lets a caller check that what
+    /// came back is what its prompt asked for without matching twice.
+    pub fn kind(&self) -> IndexKind {
+        match self {
+            CardRef::Order(_) => IndexKind::Orders,
+            CardRef::Tech(_) => IndexKind::Techs,
+            CardRef::Achievement(_) => IndexKind::Achievements,
+            CardRef::Site(_) => IndexKind::Sites,
+        }
+    }
 }
 
 /// Where a card the index dims is ALREADY recorded (spec §0.6 / finding F6:
@@ -625,6 +686,13 @@ pub enum IndexKind {
 /// game's index cannot annotate a card sitting in an opponent's hidden hand.
 /// The model does not derive locations from `GameState` at all — see
 /// [`build_order_index`].
+///
+/// **The three T6 variants keep that fence exactly where T5 put it.** A Lab
+/// slot is face-up on the table; an owned Technology sits face-up in front of
+/// its owner (`PlayerState::technologies` is public state, unlike
+/// `order_cards_in_hand`); a site card is dealt face-up onto its area at setup.
+/// Every one of them is something the person at the table can already see, which
+/// is the test a new variant has to pass to belong here.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CardLocation {
     /// A seat's dealt starting pair (the wizard's own recording context).
@@ -636,6 +704,14 @@ pub enum CardLocation {
     OwnHand,
     /// Already named in the reveal group being collected right now.
     ThisReveal,
+    /// A Laboratory board's display slot, 0-based as the board stores it.
+    LabSlot { board_b: bool, slot: usize },
+    /// A face-up holding in front of a seat: a Technology that player bought.
+    /// Never an order card — a hand is hidden and this variant must not be
+    /// used to say otherwise.
+    OwnedBy { seat: PlayerId },
+    /// A building-site card already dealt onto an area of the board.
+    OnArea { area: AreaId },
 }
 
 /// What a card prompt is recording, shown as the index's context header ("which
@@ -661,8 +737,17 @@ pub enum CardLocation {
 pub enum RecordingTarget {
     /// A live Port refill: reveal `nth` of `of`, into `slot` of that board.
     PortRefill { board_b: bool, slot: usize, nth: usize, of: usize },
-    /// A live Laboratory refill (one slot, always).
-    LabRefill { board_b: bool },
+    /// A live Laboratory refill (one slot, always) — a TECH prompt.
+    ///
+    /// **Named for its registry, and renamed at T6 from `LabRefill`.** T5 shaped
+    /// the variant for this event and deliberately left it unrouted: `?` at a
+    /// tech reveal opened the ORDER index, a screen of thirty-six cards that
+    /// cannot answer "which technology refilled the Lab", so it fell through to
+    /// a view instead. Routing it needed the tech index, which is T6's. The name
+    /// moved with the routing because the old one described the BOARD and the
+    /// question is about the CARD, and a target whose name does not say which
+    /// registry it belongs to is exactly how the mis-route happened once.
+    TechRefill { board_b: bool },
     /// The wizard's setup entry for one Port display slot, `slot` of `of`.
     PortSetup { board_b: bool, slot: usize, of: usize },
     /// The wizard's setup entry for one seat's dealt card, `which` of `of`.
@@ -693,13 +778,38 @@ pub enum IndexFilter {
     MinVp(u8),
     /// One country's cards.
     Country(Country),
+    /// One achievement category.
+    Category(AchievementCategory),
 }
 
 impl IndexFilter {
-    /// Whether `card` survives this filter.
-    fn admits(&self, card: &OrderCard) -> bool {
-        match self {
-            IndexFilter::Good(g) => {
+    /// Which registries this filter can be spoken about at all.
+    ///
+    /// **Stated rather than left to fall out of [`Self::admits`]**, because the
+    /// two failure shapes read identically on screen and only one of them is
+    /// honest: a filter that does not APPLY to a registry (`f 8vp` on the site
+    /// index) and a filter that applies but matches nothing (`f 30vp` on the
+    /// order index) would both draw an empty grid. The first is a question this
+    /// screen cannot answer and belongs in a refusal that says so; the second is
+    /// a real answer. `card_prompt::parse_filter` reads this to tell them apart.
+    pub fn applies_to(&self, kind: IndexKind) -> bool {
+        match (self, kind) {
+            (IndexFilter::Good(_) | IndexFilter::MinVp(_), IndexKind::Orders) => true,
+            (IndexFilter::Good(_) | IndexFilter::MinVp(_), _) => false,
+            (IndexFilter::Country(_), IndexKind::Orders | IndexKind::Techs) => true,
+            (IndexFilter::Country(_), _) => false,
+            (IndexFilter::Category(_), IndexKind::Achievements) => true,
+            (IndexFilter::Category(_), _) => false,
+        }
+    }
+
+    /// Whether `face` survives this filter. A filter that does not apply to the
+    /// face's registry admits everything rather than nothing — the screen it
+    /// could not narrow is left as it was, and the refusal at the prompt is what
+    /// tells the player why (see [`Self::applies_to`]).
+    fn admits(&self, face: &CardFaceModel) -> bool {
+        match (self, face) {
+            (IndexFilter::Good(g), CardFaceModel::Order { printed: Some(card), .. }) => {
                 let r = &card.requirements;
                 match g {
                     CardGood::Seafood => r.seafood > 0,
@@ -708,8 +818,103 @@ impl IndexFilter {
                     CardGood::Copper => r.copper > 0,
                 }
             }
-            IndexFilter::MinVp(n) => card.rewards.victory_points >= *n,
-            IndexFilter::Country(c) => card.country == *c,
+            (IndexFilter::MinVp(n), CardFaceModel::Order { printed: Some(card), .. }) => {
+                card.rewards.victory_points >= *n
+            }
+            // An id the registry does not know has no printed content to test,
+            // so a content filter cannot claim it matches.
+            (
+                IndexFilter::Good(_) | IndexFilter::MinVp(_),
+                CardFaceModel::Order { printed: None, .. },
+            ) => false,
+            (IndexFilter::Country(c), CardFaceModel::Order { printed, .. }) => {
+                printed.as_ref().is_some_and(|card| card.country == *c)
+            }
+            (IndexFilter::Country(c), CardFaceModel::Tech { printed, .. }) => {
+                printed.country == *c
+            }
+            (IndexFilter::Category(cat), CardFaceModel::Achievement(a)) => a.category == *cat,
+            _ => true,
+        }
+    }
+}
+
+/// What one card in an index IS — its identity and its printed content.
+///
+/// One variant per [`IndexKind`], and they carry genuinely different things
+/// because the four physical cards are genuinely different objects. The renderer
+/// matches on this with no `_` arm, so a registry added to `IndexKind` cannot
+/// reach a screen without someone deciding what its card looks like.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CardFaceModel {
+    Order {
+        id: OrderCardId,
+        /// The printed card from `Rules::orders`; `None` for an id the registry
+        /// does not know, exactly as [`HandCardModel::printed`] means it.
+        printed: Option<OrderCard>,
+    },
+    /// **One card per TITLE, not per physical card**, which is the whole reason
+    /// this face carries a list of ids.
+    ///
+    /// Ten of the twenty titles circulate as two identical copies (CLAUDE.md's
+    /// "20 tech titles × copies = 30 physical cards"), so an index over the 30
+    /// registry entries would draw `Telegram` twice, side by side, indexed `T03`
+    /// and `T04` — and then ask the player which of two identical pieces of
+    /// cardboard they are holding. That is R8's defect wearing a different hat.
+    /// The screen shows the title once; `copies` is what makes a selection
+    /// resolvable, and `placed` is what makes "one copy is already in Lab A"
+    /// sayable without pretending the other one is too.
+    Tech {
+        /// Every registry id printing this title, ascending.
+        copies: Vec<TechCardId>,
+        /// The printed card (all copies of a title are identical apart from id,
+        /// which `tech_titles_are_identical_across_copies` pins).
+        printed: TechCard,
+        /// Where copies of this title already are, in `copies` order. Shorter
+        /// than `copies` while any copy is still unaccounted for.
+        placed: Vec<(TechCardId, CardLocation)>,
+    },
+    /// An achievement card with its live claim state and per-seat progress —
+    /// the same [`AchievementModel`] the dashboard panel summarizes, so the
+    /// panel and the full surface can never disagree about a number.
+    Achievement(AchievementModel),
+    Site {
+        /// Index into `Rules::building_sites` — the number `wizard::ask_sites`
+        /// takes as `S<n>`. Nothing is printed on the physical card, which is
+        /// precisely why this index exists.
+        index: u8,
+        site: BuildingSite,
+    },
+}
+
+impl CardFaceModel {
+    /// The registry this face belongs to.
+    pub fn kind(&self) -> IndexKind {
+        match self {
+            CardFaceModel::Order { .. } => IndexKind::Orders,
+            CardFaceModel::Tech { .. } => IndexKind::Techs,
+            CardFaceModel::Achievement(_) => IndexKind::Achievements,
+            CardFaceModel::Site { .. } => IndexKind::Sites,
+        }
+    }
+
+    /// What a selection on this card resolves to, or `None` when nothing on it
+    /// is still available to name — a technology whose every copy is already
+    /// placed being the one case that arises.
+    pub fn card_ref(&self) -> Option<CardRef> {
+        match self {
+            CardFaceModel::Order { id, .. } => Some(CardRef::Order(*id)),
+            // The first copy nobody has accounted for, or — when every copy is
+            // spoken for — the first copy anyway, so that typing this card's
+            // number reaches the duplicate refusal that names where it is
+            // rather than a range message about the screen.
+            CardFaceModel::Tech { copies, placed, .. } => copies
+                .iter()
+                .find(|id| !placed.iter().any(|(placed_id, _)| placed_id == *id))
+                .or_else(|| copies.first())
+                .map(|id| CardRef::Tech(*id)),
+            CardFaceModel::Achievement(a) => Some(CardRef::Achievement(a.achievement_type)),
+            CardFaceModel::Site { index, .. } => Some(CardRef::Site(*index)),
         }
     }
 }
@@ -717,10 +922,7 @@ impl IndexFilter {
 /// One card in an index grid.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct IndexCard {
-    pub id: OrderCardId,
-    /// The printed card from `Rules::orders`; `None` for an id the registry
-    /// does not know, exactly as [`HandCardModel::printed`] means it.
-    pub printed: Option<OrderCard>,
+    pub face: CardFaceModel,
     /// The number shown on this card and typed to select it — 1-based like
     /// every other numbered surface ([`NUMBER_BASE`], which lives in this
     /// module), and assigned over the cards actually DISPLAYED, so a filtered
@@ -729,16 +931,31 @@ pub struct IndexCard {
     /// `None` when the index is open as a standing VIEW: nothing is being
     /// recorded, so there is nothing a number could select, and a number
     /// printed on a card that cannot be picked is exactly the defect F3 names
-    /// from the other side.
+    /// from the other side. Also `None` on a card that is fully spoken for —
+    /// see [`Self::location`].
     pub selection: Option<usize>,
-    /// Already recorded elsewhere: the card dims and says where it is.
+    /// This card is entirely accounted for elsewhere: it dims and says where.
+    ///
+    /// For a two-copy technology that means BOTH copies are placed; while one
+    /// is still free the card stays live and its face reports the placed copy
+    /// (see [`CardFaceModel::Tech`]).
     pub location: Option<CardLocation>,
 }
 
-/// One flag group of the order index (spec §0.6: "grouped by flag").
+/// How an index groups its cards. Orders group by flag (spec §0.6),
+/// achievements by category, techs by flag, sites not at all.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum IndexGroupKey {
+    Country(Country),
+    Category(AchievementCategory),
+    /// One ungrouped run: the registry has no dimension worth splitting on.
+    All,
+}
+
+/// One group of an index grid.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct IndexGroup {
-    pub country: Country,
+    pub key: IndexGroupKey,
     pub cards: Vec<IndexCard>,
 }
 
@@ -747,8 +964,10 @@ pub struct IndexGroup {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct IndexModel {
     pub kind: IndexKind,
-    /// Cards in the whole registry, filtered or not — the "all 36" the title
-    /// states.
+    /// Cards in the whole population this index is over, filtered or not — the
+    /// "all 36" the title states. For techs that counts TITLES, not the thirty
+    /// physical cards; for achievements it is whatever population the caller
+    /// passed (three in play, or all twelve at setup).
     pub total: usize,
     /// Cards this screen actually shows (equal to [`Self::total`] unfiltered).
     pub shown: usize,
@@ -756,7 +975,7 @@ pub struct IndexModel {
     /// This is also what decides whether cards carry selection numbers.
     pub target: Option<RecordingTarget>,
     pub filter: Option<IndexFilter>,
-    /// Non-empty groups in `Country::ALL` order.
+    /// Non-empty groups in display order.
     pub groups: Vec<IndexGroup>,
 }
 
@@ -767,12 +986,12 @@ impl IndexModel {
     /// Resolved through the MODEL rather than by the caller re-deriving the
     /// display order: the number on screen and the number this answers are then
     /// the same number by construction, which is the whole promise F3 makes.
-    pub fn select(&self, number: usize) -> Option<OrderCardId> {
+    pub fn select(&self, number: usize) -> Option<CardRef> {
         self.groups
             .iter()
             .flat_map(|g| g.cards.iter())
             .find(|c| c.selection == Some(number))
-            .map(|c| c.id)
+            .and_then(|c| c.face.card_ref())
     }
 
     /// Every displayed card in screen order — what a caller pages, counts, or
@@ -780,6 +999,50 @@ impl IndexModel {
     pub fn cards(&self) -> impl Iterator<Item = &IndexCard> {
         self.groups.iter().flat_map(|g| g.cards.iter())
     }
+}
+
+/// One card as a builder hands it over: its printed content, plus where the
+/// CALLER says the whole card already is (`None` while any of it is still
+/// unaccounted for — see [`CardFaceModel::Tech`]).
+type FacedCard = (CardFaceModel, Option<CardLocation>);
+
+/// Number the displayed cards and pack them into non-empty groups.
+///
+/// The one place selection numbers are assigned, shared by all four builders:
+/// they run 1..n over the cards actually SHOWN, in screen order, across group
+/// boundaries — so a filtered screen numbers from the base rather than carrying
+/// gaps, and no builder can invent its own numbering rule.
+fn number_groups(
+    faces: Vec<(IndexGroupKey, Vec<FacedCard>)>,
+    target: Option<RecordingTarget>,
+    filter: Option<IndexFilter>,
+) -> (Vec<IndexGroup>, usize) {
+    let mut next = NUMBER_BASE;
+    let mut groups = Vec::new();
+    let mut shown = 0usize;
+    for (key, faces) in faces {
+        let mut cards = Vec::new();
+        for (face, location) in faces {
+            if filter.is_some_and(|f| !f.admits(&face)) {
+                continue;
+            }
+            // A DIMMED card is numbered too, exactly as the approved mock draws
+            // it: typing that number is how a player asks about the card they
+            // are looking at, and the answer they get is F6's refusal naming
+            // where it already is — which is more use than "not on this screen".
+            let selection = target.is_some().then(|| {
+                let n = next;
+                next += 1;
+                n
+            });
+            cards.push(IndexCard { face, selection, location });
+        }
+        shown += cards.len();
+        if !cards.is_empty() {
+            groups.push(IndexGroup { key, cards });
+        }
+    }
+    (groups, shown)
 }
 
 /// The order index: every registry card, grouped by flag, dimmed where the
@@ -806,33 +1069,166 @@ pub fn build_order_index(
     all.sort_by_key(|c| c.id.0);
     let total = all.len();
 
-    let mut next_selection = NUMBER_BASE;
-    let mut groups = Vec::new();
-    let mut shown = 0usize;
-    for country in Country::ALL {
-        let mut cards = Vec::new();
-        for card in all.iter().filter(|c| c.country == country) {
-            if filter.is_some_and(|f| !f.admits(card)) {
-                continue;
-            }
-            let selection = target.is_some().then(|| {
-                let n = next_selection;
-                next_selection += 1;
-                n
-            });
-            cards.push(IndexCard {
-                id: card.id,
-                printed: Some((*card).clone()),
-                selection,
-                location: placed.iter().find(|(id, _)| *id == card.id).map(|(_, at)| *at),
-            });
-        }
-        shown += cards.len();
-        if !cards.is_empty() {
-            groups.push(IndexGroup { country, cards });
+    let faces = Country::ALL
+        .into_iter()
+        .map(|country| {
+            let cards = all
+                .iter()
+                .filter(|c| c.country == country)
+                .map(|card| {
+                    let face = CardFaceModel::Order {
+                        id: card.id,
+                        printed: Some((*card).clone()),
+                    };
+                    let at = placed.iter().find(|(id, _)| *id == card.id).map(|(_, at)| *at);
+                    (face, at)
+                })
+                .collect();
+            (IndexGroupKey::Country(country), cards)
+        })
+        .collect();
+
+    let (groups, shown) = number_groups(faces, target, filter);
+    IndexModel { kind: IndexKind::Orders, total, shown, target, filter, groups }
+}
+
+/// The technology index: every TITLE, grouped by flag, with the effect text a
+/// purchase decision needs.
+///
+/// **NAME-first, because no technology card prints a number** (spec §0.6 / R8,
+/// and F4 in the owner's own words: the tech prompt refused `12`, `1` and `2`
+/// alike and wanted an id printed on nothing). `T<n>` stays on the card as the
+/// small annotation every index carries, and the title is what the screen is
+/// organized around.
+///
+/// **One card per title.** `Rules::techs` holds the thirty PHYSICAL cards, ten
+/// titles twice over; this collapses them and keeps the copies on the face, so
+/// "Telegram, one copy left, the other is in Lab A" is sayable — see
+/// [`CardFaceModel::Tech`].
+///
+/// `placed` is supplied, never derived, on exactly the reasoning
+/// [`build_order_index`] states. For techs the caller's honest sources are the
+/// two face-up Lab boards and the seats' face-up `technologies`; a hand holds no
+/// technology, so there is no hidden set to leak here at all.
+pub fn build_tech_index(
+    rules: &Rules,
+    placed: &[(TechCardId, CardLocation)],
+    target: Option<RecordingTarget>,
+    filter: Option<IndexFilter>,
+) -> IndexModel {
+    // Titles in first-id order within each flag, which is the order the physical
+    // deck is printed in and the order the lab boards display.
+    let mut all: Vec<&TechCard> = rules.techs.iter().collect();
+    all.sort_by_key(|c| c.id.0);
+
+    let mut titles: Vec<(&TechCard, Vec<TechCardId>)> = Vec::new();
+    for card in &all {
+        match titles.iter_mut().find(|(first, _)| first.name == card.name) {
+            Some((_, copies)) => copies.push(card.id),
+            None => titles.push((card, vec![card.id])),
         }
     }
-    IndexModel { kind: IndexKind::Orders, total, shown, target, filter, groups }
+    let total = titles.len();
+
+    let faces = Country::ALL
+        .into_iter()
+        .map(|country| {
+            let cards = titles
+                .iter()
+                .filter(|(card, _)| card.country == country)
+                .map(|(card, copies)| {
+                    let copy_locations: Vec<(TechCardId, CardLocation)> = copies
+                        .iter()
+                        .filter_map(|id| {
+                            placed.iter().find(|(placed_id, _)| placed_id == id).copied()
+                        })
+                        .collect();
+                    // Dim only once EVERY copy is accounted for: a title with a
+                    // copy still in the deck is a title the player can still be
+                    // holding, and dimming it would refuse a true answer.
+                    let at = (copy_locations.len() == copies.len())
+                        .then(|| copy_locations.first().map(|(_, at)| *at))
+                        .flatten();
+                    let face = CardFaceModel::Tech {
+                        copies: copies.clone(),
+                        printed: (*card).clone(),
+                        placed: copy_locations,
+                    };
+                    (face, at)
+                })
+                .collect();
+            (IndexGroupKey::Country(country), cards)
+        })
+        .collect();
+
+    let (groups, shown) = number_groups(faces, target, filter);
+    IndexModel { kind: IndexKind::Techs, total, shown, target, filter, groups }
+}
+
+/// The achievement index, grouped A / B / C.
+///
+/// **The population is the CALLER's**, and that is what makes one surface serve
+/// two jobs: the `goals` command passes the three cards in play (with their live
+/// claim state and per-seat progress, which is what supersedes the old
+/// `achievements_view`), while a setup prompt passes all twelve types so the
+/// operator can say which three are on the table. Deriving the population here
+/// would have forced one of those two to be a second screen.
+pub fn build_achievement_index(
+    cards: &[AchievementModel],
+    placed: &[(AchievementType, CardLocation)],
+    target: Option<RecordingTarget>,
+    filter: Option<IndexFilter>,
+) -> IndexModel {
+    let total = cards.len();
+    let faces = [AchievementCategory::A, AchievementCategory::B, AchievementCategory::C]
+        .into_iter()
+        .map(|category| {
+            let group = cards
+                .iter()
+                .filter(|c| c.category == category)
+                .map(|card| {
+                    let at = placed
+                        .iter()
+                        .find(|(t, _)| *t == card.achievement_type)
+                        .map(|(_, at)| *at);
+                    (CardFaceModel::Achievement(card.clone()), at)
+                })
+                .collect();
+            (IndexGroupKey::Category(category), group)
+        })
+        .collect();
+
+    let (groups, shown) = number_groups(faces, target, filter);
+    IndexModel { kind: IndexKind::Achievements, total, shown, target, filter, groups }
+}
+
+/// The building-site card index: the whole registry in one ungrouped run,
+/// numbered by the index `wizard::ask_sites` names (`S<n>`).
+///
+/// Ungrouped on purpose — the twenty-four cards differ only in their printed
+/// rewards, so there is no dimension to split on that a player would recognize,
+/// and inventing one (by trading-house VP, say) would organize the screen around
+/// a fact nobody identifies a card by.
+pub fn build_site_index(
+    rules: &Rules,
+    placed: &[(u8, CardLocation)],
+    target: Option<RecordingTarget>,
+    filter: Option<IndexFilter>,
+) -> IndexModel {
+    let total = rules.building_sites.len();
+    let cards = rules
+        .building_sites
+        .iter()
+        .enumerate()
+        .map(|(i, site)| {
+            let index = i as u8;
+            let at = placed.iter().find(|(placed_index, _)| *placed_index == index).map(|(_, at)| *at);
+            (CardFaceModel::Site { index, site: site.clone() }, at)
+        })
+        .collect();
+
+    let (groups, shown) = number_groups(vec![(IndexGroupKey::All, cards)], target, filter);
+    IndexModel { kind: IndexKind::Sites, total, shown, target, filter, groups }
 }
 
 // ---------------------------------------------------------------------------
@@ -998,7 +1394,34 @@ fn tile_from(state: &GameState, rules: &Rules, area: AreaId, cfg: &AreaConfig) -
         // Set by [`build_board`] from the engine's legal list; a tile built on
         // its own carries no mark, since a single tile has no list to read.
         reachable: false,
+        canal_crossings: canal_partners(state, area),
     }
+}
+
+/// Every area `area` reaches only by crossing the Canal, ascending and deduped.
+///
+/// Each stored pair is scanned in BOTH orders so a crossing shows on both of its
+/// members — the retired `render::adjacency_suffix` did the same, for the same
+/// reason: `canal_crossings` stores one entry per pair, and an area that only
+/// ever matched the first member would show half its crossings.
+fn canal_partners(state: &GameState, area: AreaId) -> Vec<AreaId> {
+    let mut out: Vec<AreaId> = state
+        .board_layout
+        .canal_crossings
+        .iter()
+        .filter_map(|&(a, b)| {
+            if a == area {
+                Some(b)
+            } else if b == area {
+                Some(a)
+            } else {
+                None
+            }
+        })
+        .collect();
+    out.sort_unstable_by_key(|a| a.0);
+    out.dedup();
+    out
 }
 
 /// The printed index of a runtime building site, by unique content match
@@ -1007,7 +1430,7 @@ fn tile_from(state: &GameState, rules: &Rules, area: AreaId, cfg: &AreaConfig) -
 /// distinct in printed content, so the match is unique on a real board; a
 /// registry with duplicates (or none, as in `Rules::empty_for_tests`) yields
 /// `None` rather than an arbitrary first hit.
-fn printed_site_index(site: &BuildingSite, rules: &Rules) -> Option<u8> {
+pub fn printed_site_index(site: &BuildingSite, rules: &Rules) -> Option<u8> {
     let mut found = None;
     for (i, printed) in rules.building_sites.iter().enumerate() {
         if printed.spaces == site.spaces
@@ -1126,6 +1549,46 @@ pub fn build_tracks(state: &GameState) -> TracksPanel {
 }
 
 /// The achievements panel: the three cards in play with per-seat progress.
+/// **Every achievement type there is** — the population a SETUP prompt indexes,
+/// as against the three in play [`build_achievements`] returns.
+///
+/// The roster is spelled here because core exposes no `AchievementType::ALL`
+/// (and a core edit is out of scope for this phase), so it is held the way
+/// `style`'s `AREA_TYPES` is held: named exhaustively, and pinned by
+/// `the_registry_names_every_achievement_type`, which counts the categories back
+/// out — four per category is the printed set, so a type dropped from this list
+/// fails there rather than quietly vanishing from a setup screen.
+///
+/// Claim state and progress are EMPTY: none of these is on a table yet, and
+/// zeros would read as "nobody has made progress" rather than "this card is not
+/// in play". The renderer says the latter.
+pub fn achievement_registry() -> Vec<AchievementModel> {
+    [
+        AchievementType::Copper5,
+        AchievementType::Silk6,
+        AchievementType::Tea7,
+        AchievementType::Seafood7,
+        AchievementType::Money10,
+        AchievementType::Tokens5,
+        AchievementType::Orders5,
+        AchievementType::Technologies4,
+        AchievementType::Production4,
+        AchievementType::Commercial4,
+        AchievementType::Prod3Comm2,
+        AchievementType::Prod2Comm3,
+    ]
+    .into_iter()
+    .map(|achievement_type| AchievementModel {
+        achievement_type,
+        category: achievement_type.category(),
+        first_place_vp: achievement_type.first_place_vp(),
+        subsequent_vp: achievement_type.subsequent_vp(),
+        claimed_by: Vec::new(),
+        progress: Vec::new(),
+    })
+    .collect()
+}
+
 pub fn build_achievements(state: &GameState) -> AchievementsPanel {
     AchievementsPanel {
         cards: state

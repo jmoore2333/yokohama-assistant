@@ -1,0 +1,21 @@
+TRACKS — full view   the 'view' pattern: every frame panel is a summary; this is its full surface
+
+CHURCH — pay faith, place an assistant on a space, take its printed reward.  0 of 4 REAL assistants placed · majority 6 / 3 VP · the dummy COMPETES but is not counted
+┌ faith 4 ────────────┐ ┌ faith 5 ────────────┐ ┌ faith 6 ────────────┐ ┌ faith 7 ────────────┐ ┌ faith 8 ────────────┐ ┌ faith 9 ────────────┐ ┌ faith 10 ───────────┐ ┌ faith 11 ───────────┐
+│ ★3 VP               │ │ ★4 VP               │ │ ★5 VP               │ │ ★6 VP               │ │ ★7 VP               │ │ ★8 VP               │ │ ★11 VP              │ │ ★14 VP              │
+│ +1 assistant moves  │ │ +1 assistant moves  │ │ +2 assistant moves  │ │ +2 assistant moves  │ │ +2 assistant moves  │ │ +2 assistant moves  │ │ +3 assistant moves  │ │ +3 assistant moves  │
+│ empty               │ │ empty               │ │ empty               │ │  D · neutral dummy  │ │ empty               │ │ empty               │ │ empty               │ │ empty               │
+└─────────────────────┘ └─────────────────────┘ └─────────────────────┘ └─────────────────────┘ └─────────────────────┘ └─────────────────────┘ └─────────────────────┘ └─────────────────────┘
+
+CUSTOMS — pay the printed cost in imported goods (power caps it), take the reward.  0 of 4 REAL assistants placed · majority 8 / 4 VP · the dummy COMPETES but is not counted
+┌ space 1 ────────────┐ ┌ space 2 ────────────┐ ┌ space 3 ────────────┐ ┌ space 4 ────────────┐ ┌ space 5 ────────────┐ ┌ space 6 ────────────┐ ┌ space 7 ────────────┐
+│ pay 1 import        │ │ pay 1 import        │ │ pay 2 imports       │ │ pay 2 imports       │ │ pay 3 imports       │ │ pay 3 imports       │ │ pay 4 imports       │
+│ ★5 VP               │ │ ★4 VP               │ │ ★10 VP              │ │ ★9 VP               │ │ ★16 VP              │ │ ★15 VP              │ │ ★22 VP              │
+│ +2 warehouse takes  │ │ +2 yen              │ │ +1 warehouse take   │ │ +1 yen              │ │ —                   │ │ —                   │ │ —                   │
+│ empty               │ │ empty               │ │ empty               │ │  D · neutral dummy  │ │ empty               │ │ empty               │ │ empty               │
+└─────────────────────┘ └─────────────────────┘ └─────────────────────┘ └─────────────────────┘ └─────────────────────┘ └─────────────────────┘ └─────────────────────┘
+
+A Customs payment must EXACTLY match a space's printed cost; with both spaces of a cost filled, that payment is unplaceable.
+Station: not placed   ·   Mercenary supply: GB 3  US 2  FR 2  DE 2  NL 1
+Enter or 'cancel' closes this view and puts you back at the prompt underneath, exactly as you left it — nothing is entered and nothing there is cancelled. Any other command closes it and runs.
+> 
