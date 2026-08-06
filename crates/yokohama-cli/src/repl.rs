@@ -605,7 +605,15 @@ impl Repl {
                     None => self.out(format!("'{seat_tok}' is not a valid seat number.\n"), false),
                 }
             }
-            ["reveal", ..] => self.out("Usage: reveal <seat> <O..>\n".to_string(), false),
+            // The GUIDED form leads, matching `HELP_TEXT`'s order (T8 review,
+            // NOTE-6b): a player who has just typed a `reveal` line the driver
+            // could not read is the last person to be handed only the form that
+            // needs both halves memorized.
+            ["reveal", ..] => self.out(
+                "Usage: 'reveal' to pick the seat and card from menus, or 'reveal <seat> <O..>' in one line.\n"
+                    .to_string(),
+                false,
+            ),
             ["a", rest @ ..] => self.try_placement_a(rest),
             ["b", rest @ ..] => self.try_placement_b(rest),
             ["m", src, dst] => self.try_assistant_move(src, dst),
@@ -2540,6 +2548,24 @@ impl Repl {
     /// have all been revealed. An empty numbered list is the shape that makes a
     /// player wonder what they typed wrong.
     fn reveal_menu(&mut self, seat: Option<PlayerId>) -> StepOutput {
+        // EXISTENCE first, then hiddenness — two facts, and the first one has to
+        // be settled before the second is even a question (T8 review, NOTE-6a).
+        // `PlayerId::try_new` admits 0-3 whatever the table size, so `reveal 3`
+        // at a two-player table reached the hidden-check and came back "Seat 3's
+        // starting order is not hidden", which is true of nothing.
+        let seated = self.session.state().players.len();
+        if let Some(seat) = seat {
+            if usize::from(seat.0) >= seated {
+                return self.out(
+                    format!(
+                        "There is no Seat {} in this game — {seated} players are seated, Seat 0 to Seat {}.\n",
+                        seat.0,
+                        seated.saturating_sub(1),
+                    ),
+                    false,
+                );
+            }
+        }
         let seats = self.revealable_seats();
         if seats.is_empty() {
             return self.out(
@@ -2697,7 +2723,26 @@ impl Repl {
     /// caller has to be able to put the driver into its post-answer state before
     /// the screen is composed. Composing first and tidying after prints the
     /// question again underneath its own answer.
+    ///
+    /// **The pool check below is the same one the bound capture runs** (T8
+    /// review, SHOULD-4). Without it this path went straight to the engine, so
+    /// the guided flow could offer a card at the index and then refuse it with
+    /// `Illegal: card not found` while the other reveal prompt stated the rule in
+    /// words — one rule, two answers, and the worse one on the path a player is
+    /// steered onto. It cannot pre-empt a legal answer: `reveal_starting_order`
+    /// finds its card through `extract_order_from_deck`, whose search is exactly
+    /// the deck and the removed pile [`reveal::check_order_reveal`] admits. The
+    /// engine remains the authority — it still rules on the SEAT, on invariants,
+    /// and on a finished game — and nothing about the record stream moves: a
+    /// refusal here replaces a refusal there, and neither records anything.
     fn commit_starting_order(&mut self, seat: PlayerId, card: OrderCardId) -> (String, bool) {
+        if let Err(message) = crate::reveal::check_order_reveal(
+            card,
+            &self.session.state().order_deck,
+            &self.session.state().orders_removed,
+        ) {
+            return (format!("{message}\n"), false);
+        }
         // The card echoed back in full before it commits (§0.6): a reveal is
         // recorded into the game record, and an id typed one digit wrong is
         // exactly the entry a player wants to catch on sight.
@@ -6616,19 +6661,64 @@ mod tests {
         assert!(matches!(r.sub, SubPrompt::None));
     }
 
-    /// **An engine refusal leaves the guided flow OPEN, on the same question.**
+    /// **A seat the table does not have is refused as exactly that** (T8 review,
+    /// NOTE-6a).
+    ///
+    /// `reveal 3` at a two-player table used to answer "Seat 3's starting order
+    /// is not hidden — nothing to reveal there", which is true of nothing: there
+    /// is no Seat 3 to hold a starting order, hidden or otherwise. The
+    /// hidden-check answers a question about a REAL seat, so the existence check
+    /// has to run ahead of it — and `PlayerId::try_new` cannot do the job, since
+    /// it admits 0-3 for every table size.
+    #[test]
+    fn reveal_refuses_a_seat_the_table_does_not_have() {
+        let (mut r, _) = repl_live_hidden(21);
+        assert_eq!(r.session.state().players.len(), 2, "fixture: a two-seat table");
+
+        let out = r.step("reveal 3");
+        assert!(out.text.contains("no Seat 3"), "the refusal names what is wrong: {}", out.text);
+        assert!(
+            !out.text.contains("not hidden"),
+            "and does not answer the hidden question for a seat that does not exist: {}",
+            out.text,
+        );
+        assert!(matches!(r.sub, SubPrompt::None), "no sub-prompt opens");
+
+        // The seat that DOES exist and simply is not hidden keeps its own
+        // wording — two facts, two messages.
+        let out = r.step("reveal 0");
+        assert!(out.text.contains("Seat 0's starting order is not hidden"), "{}", out.text);
+
+        // ...and the same is true where there is nothing to reveal at all: the
+        // more specific fact wins, rather than being masked by the empty-menu
+        // refusal that fires first for a real seat.
+        let mut sim = repl_2p(4);
+        let out = sim.step("reveal 3");
+        assert!(out.text.contains("no Seat 3"), "{}", out.text);
+        let out = sim.step("reveal");
+        assert!(out.text.contains("nothing to reveal"), "{}", out.text);
+    }
+
+    /// **A refusal leaves the guided flow OPEN, on the same question.**
     ///
     /// Found by driving the shipped binary in a PTY rather than by reading the
     /// code: the flow closed on any answer, so one mistyped card sent the
     /// operator back to the main prompt to retype `reveal` and re-pick the seat.
-    /// The engine stays the authority — it still refuses — but a refusal is a
-    /// re-ask, which is what every other prompt in this driver does.
+    /// The engine stays the authority — `apply_standalone` still runs and can
+    /// still refuse — but a refusal is a re-ask, which is what every other prompt
+    /// in this driver does.
     ///
-    /// The card used is one the take put in a HAND, which is the reachable way
-    /// to get a refusal here: it is a real order card, and it is neither in the
-    /// deck nor in the boxed pile, so `reveal_starting_order` cannot find it.
+    /// The card used is one the deal put in a HAND, which is the reachable way to
+    /// get a refusal here: it is a real order card, and it is neither in the deck
+    /// nor in the boxed pile, so it is not still hidden.
+    ///
+    /// **The record stream is asserted across the whole exchange** (T8 review,
+    /// SHOULD-4): the refusal now happens one layer earlier, in the driver rather
+    /// than in `apply_standalone`, and the thing that must not have changed is
+    /// that a refused reveal writes nothing and an accepted one writes exactly
+    /// one event.
     #[test]
-    fn an_engine_refusal_keeps_the_guided_reveal_open_on_the_same_question() {
+    fn a_refusal_keeps_the_guided_reveal_open_on_the_same_question() {
         let (mut r, hidden) = repl_live_hidden(21);
         let in_a_hand = r.session.state().players[0]
             .order_cards_in_hand
@@ -6637,8 +6727,19 @@ mod tests {
             .expect("seat 0 kept a starting order");
         r.step("reveal");
         r.step(&NUMBER_BASE.to_string());
+        let before = r.session.record().events.len();
         let out = r.step(&format!("O{:02}", in_a_hand.0));
-        assert!(out.text.contains("Illegal"), "the engine still refuses: {}", out.text);
+        assert!(
+            crate::style::strip_ansi(&out.text).contains("is not an unrevealed order card"),
+            "the refusal states the rule: {}",
+            out.text,
+        );
+        assert_eq!(
+            r.session.record().events.len(),
+            before,
+            "a refused reveal records nothing: {}",
+            out.text,
+        );
         assert!(
             matches!(r.sub, SubPrompt::Reveal { seat: Some(s), .. } if s == PlayerId::new(1)),
             "the flow stays open on the SAME seat, so one typo does not cost the whole entry",
@@ -6661,6 +6762,72 @@ mod tests {
             "an answered question must not be re-asked under its own answer: {}",
             out.text,
         );
+        assert_eq!(
+            r.session.record().events.len(),
+            before + 1,
+            "and the whole exchange — one refusal, one answer — is exactly one recorded event",
+        );
+        assert!(
+            matches!(
+                r.session.record().events.last(),
+                Some(RecordedEvent::RevealStartingOrder { player, card })
+                    if *player == PlayerId::new(1) && *card == hidden
+            ),
+            "and it is the reveal that was accepted: {:?}",
+            r.session.record().events.last(),
+        );
+    }
+
+    /// **One refusal per rule: the two reveal paths turn the same card away in
+    /// the same words** (T8 review, SHOULD-4).
+    ///
+    /// The guided flow used to offer a card at the index and then meet it with
+    /// the engine's terse `Illegal: card not found`, while the bound capture
+    /// stated the rule properly through `reveal::check_order_reveal` — two
+    /// prompts, one rule, two answers, and the worse one on the path a player is
+    /// steered onto. `commit_starting_order` now runs that same check, so the
+    /// wording is single-sourced by construction.
+    ///
+    /// The expected text is DERIVED from the check itself rather than copied, so
+    /// the pin is on the two paths agreeing, not on a literal that would have to
+    /// be edited in three places.
+    ///
+    /// **What did NOT change is the record stream.** The check only converts a
+    /// would-be-refused `apply_standalone` — which records nothing — into an
+    /// earlier refusal, and the engine is still the authority behind it: this
+    /// cannot pre-empt a legal answer, because `reveal_starting_order` finds a
+    /// card through `extract_order_from_deck`, whose search is exactly the deck
+    /// and the removed pile this check admits.
+    #[test]
+    fn both_reveal_paths_refuse_a_non_pool_card_in_the_same_words() {
+        let (r, _) = repl_live_hidden(21);
+        let in_a_hand = r.session.state().players[0]
+            .order_cards_in_hand
+            .first()
+            .copied()
+            .expect("seat 0 kept a starting order");
+        let expected = crate::reveal::check_order_reveal(
+            in_a_hand,
+            &r.session.state().order_deck,
+            &r.session.state().orders_removed,
+        )
+        .expect_err("fixture: a card already in a hand is in neither pile");
+
+        // The expert alias, one line.
+        let (mut r_alias, _) = repl_live_hidden(21);
+        let before = r_alias.session.record().events.len();
+        let alias = crate::style::strip_ansi(&r_alias.step(&format!("reveal 1 O{:02}", in_a_hand.0)).text);
+        assert!(alias.contains(&expected), "the alias must state the rule: {alias}");
+        assert!(!alias.contains("Illegal"), "and not the engine's terse refusal: {alias}");
+        assert_eq!(r_alias.session.record().events.len(), before, "nothing recorded: {alias}");
+
+        // The guided menu, same card, same rule.
+        let (mut r_menu, _) = repl_live_hidden(21);
+        r_menu.step("reveal");
+        r_menu.step(&NUMBER_BASE.to_string());
+        let menu = crate::style::strip_ansi(&r_menu.step(&format!("O{:02}", in_a_hand.0)).text);
+        assert!(menu.contains(&expected), "the guided path must state the same rule: {menu}");
+        assert_eq!(r_menu.session.record().events.len(), before, "nothing recorded: {menu}");
     }
 
     /// **The index answers the guided reveal too** (spec §0.6: the index is

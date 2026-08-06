@@ -428,9 +428,21 @@ fn the_movement_blocks_are_identical_across_formats() {
 /// which no other block in either guide carries.
 const REVEAL_BLOCK_OPENING: &str = "LIVE TRACKING ";
 
+/// The opening line of §6's THIRD captured screen, the guided reveal's seat
+/// menu. It carries no `LIVE TRACKING` banner — it is the question asked before
+/// there is a capture to banner — so it needs its own key, and without one it
+/// sat outside the parity pin entirely (T8 review, NOTE-3).
+const SEAT_MENU_BLOCK_OPENING: &str = "Whose starting order just became public?";
+
 /// (k) §6's captured reveal screens are text-identical between the two formats
 /// — §5's and the Movement captures' parity pin, applied to the screens a
 /// tester meets on their first live game (plan T8).
+///
+/// **All THREE of them.** §6 captures the bound Port refill, the guided seat
+/// menu and the guided card question; the first and third share the live-capture
+/// banner, and keying on that alone left the seat menu — a screen a tester reads
+/// line by line like any other — unpinned in the format they are most likely to
+/// read.
 ///
 /// The CONTENT half lives in `reveal.rs`'s
 /// `the_guide_reveal_captures_are_what_the_fixtures_render`, which regenerates
@@ -464,6 +476,15 @@ fn the_reveal_blocks_are_identical_across_formats() {
         "cli-guide.md and cli-guide.html §6 reveal captures diverged. They must stay \
          byte-identical (modulo the HTML <pre><code> wrapper + entity escaping); re-capture BOTH \
          from the fixture runs that produce them -- never by splicing."
+    );
+
+    // The third screen, which carries no banner to be found by.
+    let (menu_md, menu_html) = captured_block_starting_with(SEAT_MENU_BLOCK_OPENING);
+    assert_eq!(
+        menu_md, menu_html,
+        "cli-guide.md and cli-guide.html §6 seat-menu captures diverged. They must stay \
+         byte-identical (modulo the HTML <pre><code> wrapper + entity escaping); re-capture BOTH \
+         from the fixture run that produces them -- never by splicing."
     );
 }
 

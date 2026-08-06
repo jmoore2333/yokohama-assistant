@@ -1024,6 +1024,28 @@ mod tests {
         );
     }
 
+    /// **The words a duplicate refusal ends in, pinned directly** (T8 review,
+    /// mutation M13).
+    ///
+    /// [`card_location`] is the whole content of the F6 refusal `card_prompt`
+    /// builds ("O10 is <this> — a card cannot be in two places."), and nothing
+    /// pinned its strings: the index sweep
+    /// (`index_render::card_locations_fit_a_card_face`) measures their WIDTH and
+    /// is satisfied by any short phrase, so a refusal that named the wrong place
+    /// was a compiling, passing, silently-lying screen. `ThisReveal` is the one
+    /// the reveal capture depends on, so it is the one with a wording pin;
+    /// the others ride along, because a location that reads as another
+    /// location's words is the same defect wherever it happens.
+    #[test]
+    fn the_this_reveal_location_says_in_this_reveal() {
+        use crate::screen_model::CardLocation as L;
+        assert_eq!(card_location(L::ThisReveal), "in this reveal");
+        // The neighbours it must not be confusable with — the two other places
+        // an order card the operator can see already sits.
+        assert_eq!(card_location(L::OwnHand), "in your hand");
+        assert_eq!(card_location(L::PortSlot { board_b: false, slot: 0 }), "Port A slot 1");
+    }
+
     /// **Every target says what just happened in plain words** (T8, requirement
     /// R1) — the sentence above the question, which the pre-redesign prompt
     /// packed into the question itself.

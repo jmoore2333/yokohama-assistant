@@ -1157,40 +1157,57 @@ mod tests {
     /// words itself from the target alone — a variant that reached it with an
     /// empty sentence or a hint whose clauses were false would render a screen
     /// that looks finished and says nothing.
+    ///
+    /// **At every player count, not just 2** (T8 review, NOTE-4): the hint WRAPS
+    /// to `frame_width(count)` and the 3P frame is the narrowest of the three, so
+    /// a 2P-only sweep measures the zone against the widest budget it will ever
+    /// be given and would miss exactly the overrun the wrap exists to prevent.
     #[test]
     fn the_reveal_zone_words_every_live_target_and_fits_the_frame() {
         use crate::screen_model::{CardRef, RecordingTarget, RevealModel};
-        for target in [
-            RecordingTarget::PortRefill { board_b: false, slot: 5, nth: 0, of: 2 },
-            RecordingTarget::TechRefill { board_b: true },
-            RecordingTarget::StartingOrder { seat: PlayerId::new(1) },
-        ] {
-            let model = RevealModel { target, collected: Vec::new() };
-            let text = crate::style::strip_ansi(&reveal_zone(&model, 2));
-            assert!(text.starts_with("LIVE TRACKING"), "{text}");
-            assert!(text.contains(&describe::reveal_event(target)), "the event sentence: {text}");
-            assert!(text.contains("YOU ARE RECORDING"), "{text}");
-            assert!(text.contains(&describe::recording_target(target)), "the target: {text}");
-            assert!(
-                text.contains(describe::registry_name_singular(target.kind())),
-                "and the registry the answer comes from: {text}",
-            );
-            // The two clauses of the decision zone's hint that would be FALSE
-            // here: nothing has been applied to take back, and `view` is a
-            // command the capture branch of `Repl::step` never reaches.
-            assert!(!text.contains("'back' undoes"), "{text}");
-            assert!(!text.contains("'view' any surface"), "{text}");
-            assert!(text.contains("'?' for the card index"), "{text}");
-            // Every line inside the 2P frame, hint wrap included.
-            for line in text.lines() {
+        for players in [2u8, 3, 4] {
+            for target in [
+                RecordingTarget::PortRefill { board_b: false, slot: 5, nth: 0, of: 2 },
+                RecordingTarget::TechRefill { board_b: true },
+                RecordingTarget::StartingOrder { seat: PlayerId::new(1) },
+            ] {
+                let model = RevealModel { target, collected: Vec::new() };
+                let text = crate::style::strip_ansi(&reveal_zone(&model, players));
+                assert!(text.starts_with("LIVE TRACKING"), "{players}P: {text}");
                 assert!(
-                    visible_width(line) <= crate::screen::frame_width(2),
-                    "{:?} is {} columns: {text}",
-                    line,
-                    visible_width(line),
+                    text.contains(&describe::reveal_event(target)),
+                    "{players}P: the event sentence: {text}",
+                );
+                assert!(text.contains("YOU ARE RECORDING"), "{players}P: {text}");
+                assert!(
+                    text.contains(&describe::recording_target(target)),
+                    "{players}P: the target: {text}",
+                );
+                assert!(
+                    text.contains(describe::registry_name_singular(target.kind())),
+                    "{players}P: and the registry the answer comes from: {text}",
+                );
+                // The two clauses of the decision zone's hint that would be FALSE
+                // here: nothing has been applied to take back, and `view` is a
+                // command the capture branch of `Repl::step` never reaches.
+                assert!(!text.contains("'back' undoes"), "{players}P: {text}");
+                assert!(!text.contains("'view' any surface"), "{players}P: {text}");
+                assert!(text.contains("'?' for the card index"), "{players}P: {text}");
+                // Every line inside THIS count's frame, hint wrap included.
+                for line in text.lines() {
+                    assert!(
+                        visible_width(line) <= crate::screen::frame_width(usize::from(players)),
+                        "{players}P: {:?} is {} columns against a {}-column frame: {text}",
+                        line,
+                        visible_width(line),
+                        crate::screen::frame_width(usize::from(players)),
+                    );
+                }
+                assert!(
+                    text.ends_with("> \n"),
+                    "{players}P: the caret is the zone's last line: {text:?}",
                 );
             }
-            assert!(text.ends_with("> \n"), "the caret is the zone's last line: {text:?}");
         }
 
         // A bound reveal says what `cancel` costs; a standalone one says the
