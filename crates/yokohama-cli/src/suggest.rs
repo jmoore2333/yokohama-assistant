@@ -44,9 +44,10 @@
 //! **EVERY LINE FITS THE COMPOSED FRAME** (T10 review M1). `screen::wrap` sizes
 //! the game screen to its widest line, so a body wider than the frame shoves the
 //! board sideways for one command and back on the next. The budget is therefore
-//! per PLAYER COUNT, because the frame is — `screen::frame_width`, **198/163/180
+//! per PLAYER COUNT, because the frame is — `screen::frame_width`, **198/163/200
 //! at 2/3/4 players** (the 2P entry moved at T3, when the designed dashboard
-//! joined beside the board).
+//! joined beside the board; the 4P one at T10, when it stacked below in seat
+//! columns).
 //!
 //! **That budget no longer BINDS organically, and saying so is the point** (T2
 //! review M1). The widest thing real play hands this screen is a placement
@@ -1006,7 +1007,7 @@ mod tests {
     /// What this replaced was asserting a property the render did not have. The
     /// old pin measured against a flat `<= 100`, which was not any frame's width:
     /// the composed frame was 114/132/108 columns at 2/3/4 players then (it is
-    /// 198/163/180 since T3 — `screen::frame_width` is the authority either
+    /// 198/163/200 since T10 — `screen::frame_width` is the authority either
     /// way), so 100 was simultaneously too strict for 2P/3P and too slack for
     /// the case that actually broke — 4P, where the frame was NARROWEST while
     /// the board was widest. It also drove `repl_mid_game(4)`-style 2P fixtures
@@ -1103,7 +1104,8 @@ mod tests {
     /// A real 4-player legal list offers moves whose description alone runs to
     /// 135 columns — a placement naming three areas plus every fee recipient.
     /// That used to be past the WHOLE 4P frame, which was the narrowest at 108;
-    /// since T2 it is the widest at 180, so the cut is driven by an explicit
+    /// since T2 it is the widest, at 180 and then 200 from T10, so the cut is
+    /// driven by an explicit
     /// budget one column under the move. What did not change is where the move
     /// comes from, and that is the anti-vacuity: the fixture walks until the
     /// position offers such a move and the suggestion is doctored to it — one
@@ -1119,7 +1121,7 @@ mod tests {
     #[test]
     fn a_move_too_wide_for_the_frame_is_reflowed_and_rows_are_elided() {
         // The 4P frame was the NARROWEST (108) until T2's V3 board made it the
-        // widest (180), which put it past the ~135 columns a real move
+        // widest (180, and 200 since T10), which put it past the ~135 columns a real move
         // description reaches — so the position no longer offers a move wider
         // than its own frame, and the fixture drives the budget instead. See
         // `render_suggestion_within`.

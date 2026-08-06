@@ -1,0 +1,50 @@
+                                                               Y O K O H A M A   simulation · seed 7
+
+┌ A00 CUSTOMS ───────────────┐┌ A01 FISHING GROUND ────────┐┌ A02 EMPLOYMENT AGENCY ─────┐┌ A03 CHURCH ────────────────┐┌ A04 CHINATOWN ─────────────┐
+│ 5-Power: 1 Import Site 18  ││ 5-Power: 3 Seafood Site 9  ││ 5-Power: 2 Silk Site 19    ││ 5-Power: 1 Import Site 15  ││ 5-Power: 3 Tea Site 16     │
+│ no pawns                   ││ no pawns                   ││ no pawns                   ││ no pawns                   ││ no pawns                   │
+│ sites ★1 ★4 — ¥2  │ T9     ││ sites ★1 ⌂2 — a2  │ T6     ││ sites ★1 ★4 — ¥2  │ T6     ││ sites ★1 ★2¥1 — ⌂2  │ T8   ││ sites ★1 ★2¥1 — ★1¥1  │ T9 │
+└────────────────────────────┘└────────────────────────────┘└────────────────────────────┘└────────────────────────────┘└────────────────────────────┘
+               ┌ A05 SILK MILL ─────────────┐┌ A06 CANAL ─────────────────┐┌ A07 PORT A ────────────────┐┌ A08 BANK ──────────────────┐               
+               │ 5-Power: 1 Import Site 6   ││ transit only — no pawns,   ││ 5-Power: 2 Silk Site 22    ││ 5-Power: 1 Import Site 14  │               
+               │ no pawns                   ││ no tokens, no buildings    ││ no pawns                   ││ no pawns                   │               
+               │ sites ★1 *2 — *1  │ T7     ││ ¥1 to the bank / crossing  ││ sites ★1 ★4 — ★3  │ T9     ││ sites ★1 ★3 — ⌂2  │ T8     │               
+               └────────────────────────────┘└────────────────────────────┘└────────────────────────────┘└────────────────────────────┘               
+                              ┌ A09 PORT B ────────────────┐┌ A10 COPPER MINE ───────────┐┌ A11 LABORATORY A ──────────┐                              
+                              │ 5-Power: 3 Yen Site 21     ││ 5-Power: 2 Copper Site 13  ││ 5-Power: 1 Import Site 3   │                              
+                              │ no pawns                   ││ no pawns                   ││ no pawns                   │                              
+                              │ sites ★1 ★4 — ★1¥2  │ T5   ││ sites ★1 ⌂3 — ⌂2  │ T5     ││ sites ★1 ⌂2 — t2  │ T8     │                              
+                              └────────────────────────────┘└────────────────────────────┘└────────────────────────────┘                              
+                                             ┌ A12 FISHING GROUND ────────┐┌ A13 TEA PLANTATION ────────┐                                             
+                                             │ 5-Power: 2 Copper Site 2   ││ 5-Power: 1 Import Site 0   │                                             
+                                             │ no pawns                   ││ no pawns                   │                                             
+                                             │ sites ★1 ★4 — t2  │ T7     ││ sites ★1 ★3 — f3  │ T7     │                                             
+                                             └────────────────────────────┘└────────────────────────────┘                                             
+marks: ▲ president (owner color) · ● assistants (4, then +n) · ◈ a Movement destination the engine offers · [St] Station (+1 Power for everyone)
+site slots: ⌂ built (owner color) · ★n VP · ¥n yen · f/t/s/cn goods · *n any good · an assistants · ⌂n build · Tn trading-house VP — 'sites' renders the full cards
+Canal: the President may cross shore to shore for ¥1 to the bank ('sites' lists the pairs)
+─ PLAYERS ─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+▶ RED — your turn          ¥3    0 VP   seat 0          BLUE                     ¥4    0 VP   seat 1          YELLOW                   ¥4    0 VP   seat 2
+  Goods  1 Copper · 1 Silk · 1 Tea                      Goods  1 Copper · 1 Silk · 1 Tea                      Goods  1 Copper · 1 Silk · 1 Tea
+         1 Seafood · 0 Imports                                 1 Seafood · 0 Imports                                 1 Seafood · 0 Imports
+  Assistants  8 hand · 0 board · 12 warehouse           Assistants  8 hand · 0 board · 12 warehouse           Assistants  8 hand · 0 board · 12 warehouse
+  Shophouses  2 hand · 6 warehouse · 0 built            Shophouses  2 hand · 6 warehouse · 0 built            Shophouses  2 hand · 6 warehouse · 0 built
+  Trade houses  0 hand · 4 warehouse · 0 built          Trade houses  0 hand · 4 warehouse · 0 built          Trade houses  0 hand · 4 warehouse · 0 built
+  Tech  none yet                                        Tech  none yet                                        Tech  none yet
+  Mercenaries  0 unused · 0 used                        Mercenaries  0 unused · 0 used                        Mercenaries  0 unused · 0 used
+  President in hand                                     President in hand                                     President in hand
+  1 order · next take ¥4                                1 order · next take ¥4                                1 order · next take ¥4
+
+─ TRACKS  (ends at 5 of YOUR pawns)  Church [4][5][6][7][8][9][10][11] 0/5 ★3–14+mv · Customs [1][1][2][2][3][3][4] imports 0/5 ★4–22 · 10 mercenaries left
+─ ACHIEVEMENTS  A · own 6 silk  8/6 VP  unclaimed · B · complete 5 orders  9/7 VP  unclaimed · C · buildings in 4 production  10/8 VP  unclaimed
+─ YOUR HAND  O01 America · 'hand' expands
+info: type 'view' — board · players · ports · labs · tracks · sites · goals · hand · score · log   ·   '?' — the card index
+───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+TURN 1 · RED's turn    ADDITIONAL  ▸ Placement ▸ Movement ▸ Area Action ▸ 5-Power ▸ Building ▸ Recovery ▸ Additional ▸ End
+
+YOU ARE DECIDING · whether to use an additional action before Placement, or to move on.
+   [1] End additional-action phase
+(only option — press Enter to apply · nothing is final until you apply it · 'back' undoes the last applied entry · 'view' any surface · '?' the card index ·
+ 'help' for commands)
+> 
+

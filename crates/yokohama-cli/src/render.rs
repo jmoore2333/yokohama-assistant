@@ -140,6 +140,40 @@ pub fn board_grid(state: &GameState, rules: &Rules, legal: &[Move]) -> String {
 /// the seat whose own hand the panel shows; `seats` carries the per-seat
 /// privacy and bot policy, already folded by the REPL.
 pub fn dashboard(state: &GameState, rules: &Rules, seats: &SeatDisplay, seat: PlayerId) -> String {
+    let (panels, board, colors) = dashboard_inputs(state, rules, seats, seat);
+    panel_render::dashboard(&panels, &board, &colors)
+}
+
+/// The composed frame's dashboard STACKED BELOW the board (Phase-3.5a T10), at
+/// 3 and 4 players — [`dashboard`]'s twin over the same models and the same
+/// adapter shape, differing only in which `panel_render` entry point draws
+/// them.
+///
+/// `width` is the block the frame gives it, which [`crate::screen`] computes
+/// from what is already on screen above it. It is a parameter rather than a
+/// constant here because the answer is a fact about the composed frame — the
+/// board's own width and the site-slot legend's — and this module cannot see a
+/// frame.
+pub fn dashboard_below(
+    state: &GameState,
+    rules: &Rules,
+    seats: &SeatDisplay,
+    seat: PlayerId,
+    width: usize,
+) -> String {
+    let (panels, board, colors) = dashboard_inputs(state, rules, seats, seat);
+    panel_render::dashboard_below(&panels, &board, &colors, width)
+}
+
+/// The three things both dashboard arrangements are drawn from. Shared rather
+/// than built twice: the per-seat privacy and bot policy is the one input a
+/// second copy could get wrong, and getting it wrong leaks a hand.
+fn dashboard_inputs(
+    state: &GameState,
+    rules: &Rules,
+    seats: &SeatDisplay,
+    seat: PlayerId,
+) -> (Vec<screen_model::Panel>, screen_model::BoardModel, Vec<PlayerColor>) {
     let colors: Vec<PlayerColor> = state.players.iter().map(|p| p.color).collect();
     // `SeatDisplay` and `SeatFacts` hold the same two facts in two modules on
     // purpose (screen_model may not depend on the renderer), so the adapter is
@@ -159,7 +193,7 @@ pub fn dashboard(state: &GameState, rules: &Rules, seats: &SeatDisplay, seat: Pl
     // marked board nothing looks at.
     let board = screen_model::build_board(state, rules, &[]);
     let panels = screen_model::build_dashboard(state, rules, &facts, seat);
-    panel_render::dashboard(&panels, &board, &colors)
+    (panels, board, colors)
 }
 
 /// The composed frame's DECISION ZONE (Phase-3.5a T4): the phase chain, the

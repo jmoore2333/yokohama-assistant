@@ -1487,9 +1487,11 @@ mod tests {
     /// [`crate::screen::FLOOR_W`] — a check that could not see the defect it
     /// existed to catch, because a list of long options is exactly what the
     /// other test does NOT sweep and 200 columns is not the budget any real
-    /// frame has. A 22-pawn recovery row measures 326 columns against a 180-
-    /// column 4P frame; the assertion below is per emitted LINE and against the
-    /// count's own `frame_width`, so a row that cannot be packed has to wrap.
+    /// frame has. A 22-pawn recovery row measures 326 columns against a 4P
+    /// frame that was 180 columns when the T4 review measured it and is 200
+    /// since T10; the assertion below is per emitted LINE and against the
+    /// count's own `frame_width`, so it follows the layout either way and a row
+    /// that cannot be packed still has to wrap.
     #[test]
     fn no_option_list_at_any_width_costs_more_than_the_row_budget() {
         let (state, rules) = state_np(2);

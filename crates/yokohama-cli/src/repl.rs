@@ -3128,7 +3128,7 @@ mod tests {
     /// columns at 2/3/4 players, all past the note's 100-column trigger, where
     /// the pre-redesign boards were 72/90/108 and only 4 players fired it. The
     /// note keys on the GRID width, not the composed frame's, which is wider
-    /// still (198/163/180 since T3). Guide §2 states the frame widths; making
+    /// still (198/163/200 since T10). Guide §2 states the frame widths; making
     /// the note frame-aware is on the carry-forward list.
     #[test]
     fn board_command_prints_a_one_time_width_note_on_a_wide_board() {
@@ -3232,10 +3232,11 @@ mod tests {
     /// must not be TALLER than the opening frame at the same count.
     ///
     /// **The bound was a flat 50 rows until T3 and is now relative**, for the
-    /// reason `screen::FRAME_HEIGHTS` records in full: T3 stacks the whole
-    /// designed dashboard below the board at 3 and 4 players, which puts those
-    /// two opening frames at 76 and 85 rows until T10 re-lays them into the 4P
-    /// mock's four columns. What this test was ever really checking is that
+    /// reason `screen::FRAME_HEIGHTS` records in full: T3 stacked the whole
+    /// designed dashboard below the board at 3 and 4 players, which put those
+    /// two opening frames at 79 and 87 rows until T10 re-laid them into the 4P
+    /// mock's seat columns and brought them back to 49 and 48. What this test
+    /// was ever really checking is that
     /// this PATH costs no more rows than the screen the player was already
     /// looking at -- I5's finding was a menu entry that re-printed a board the
     /// frame above it had already drawn -- and stated that way it keeps its

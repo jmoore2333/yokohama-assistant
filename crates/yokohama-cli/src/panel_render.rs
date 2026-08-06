@@ -23,19 +23,44 @@
 //! [`DASH_W`], because a panel line past its column is a line written over
 //! whatever sits to its right.
 //!
-//! **Where this deviates from the mocks, and why.** Three places, recorded
-//! rather than silent. (1) The section rules run to exactly [`DASH_W`]; the
-//! mocks' generator computes its fill as `DASH_W - 4 - len(title)` against
-//! three columns of fixed chrome and so lands one short, at 73. That is
-//! generator arithmetic, not a design intent — the intent is a rule that spans
-//! the dashboard. (2) Technologies get ONE LINE EACH carrying a summary of what
-//! the card does (spec §0.3's "per-owned-tech summary lines"); the mocks show a
-//! single `Tech  Telegram · Mercenaries …` line, which is that shape at exactly
-//! one owned card and has nowhere to put a summary. Mercenaries therefore take
-//! their own line. (3) Achievements carry ONE requirement column rather than
-//! the mocks' short-name-plus-requirement pair: the widest condition in the set
-//! (`Buildings in 3 production + 2 commercial areas`) is 46 columns, and the
-//! two-column form was drawn over the three shortest cards in the deck.
+//! **TWO ARRANGEMENTS since T10, and they share their models, not their
+//! layout.** [`dashboard`] is the BESIDE form: a [`DASH_W`]-wide strip joined
+//! to the right of a 2-player board, panels stacked vertically, one line per
+//! owned Technology. [`dashboard_below`] is the BELOW form, at 3 and 4 players,
+//! where a 150- or 180-column board leaves no room beside it: the players panel
+//! turns on its side into one column per seat and the other three compress onto
+//! a single titled row each. Which one runs is [`crate::screen`]'s decision,
+//! taken from the geometry.
+//!
+//! **Where this deviates from the mocks, and why.** Recorded rather than
+//! silent. (1) The section rules run to exactly [`DASH_W`]; the mocks'
+//! generator computes its fill as `DASH_W - 4 - len(title)` against three
+//! columns of fixed chrome and so lands one short, at 73. That is generator
+//! arithmetic, not a design intent — the intent is a rule that spans the
+//! dashboard. (2) In the BESIDE form Technologies get ONE LINE EACH carrying a
+//! summary of what the card does (spec §0.3's "per-owned-tech summary lines");
+//! the mocks show a single `Tech  Telegram · Mercenaries …` line, which is that
+//! shape at exactly one owned card and has nowhere to put a summary.
+//! Mercenaries therefore take their own line. (3) Achievements carry ONE
+//! requirement column rather than the mocks' short-name-plus-requirement pair:
+//! the widest condition in the set (`Buildings in 3 production + 2 commercial
+//! areas`) is 46 columns, and the two-column form was drawn over the three
+//! shortest cards in the deck.
+//!
+//! **And three more in the BELOW form, all of them about columns that are 48
+//! wide where the beside strip is 74.** (4) The stride is
+//! [`SEAT_COL_W`] = 50 rather than the 4P mock's 49, which lands the block on
+//! the 200-column design floor that mock's own frame is drawn at. (5) The mock
+//! draws seven lines per seat and no tech, mercenary, seat-number, locked-pawn
+//! or next-take figure at all; this keeps every one of them — the first two on
+//! their own rows, the last three on a tail row, since a fourth zone on the
+//! assistants line costs 51 columns and the trade-house line with its price
+//! costs 61. Technologies are NAMED rather than explained there, because the
+//! shortest [`tech_summary`] needs 34 columns beside a name and a label. (6)
+//! The mock folds TRACKS and ACHIEVEMENTS onto ONE 192-column line; they get a
+//! row each here, because the 3-player block is 163 columns and a combined line
+//! could not be total at both counts — and the split is what buys the
+//! achievements back their VP tiers and claim state.
 
 use yokohama_core::{
     AchievementType, AreaId, PlayerColor, PlayerId, PresidentLocation,
@@ -133,13 +158,46 @@ fn line(t: &Twin) -> String {
     exact(t, DASH_W)
 }
 
+/// A content line at a width other than [`DASH_W`] — the below arrangement's
+/// columns, which are 48 or 52 wide rather than 74. Same rule, one number.
+fn line_at(t: &Twin, width: usize) -> String {
+    if t.width() <= width {
+        return t.painted.clone();
+    }
+    exact(t, width)
+}
+
 /// A section rule: `─ PLAYERS ────…` at exactly [`DASH_W`] columns.
 fn header(title: &str) -> String {
+    header_at(title, DASH_W)
+}
+
+/// [`header`] at an arbitrary width — the below arrangement's blocks are 163
+/// and 200 columns, not 74.
+fn header_at(title: &str, width: usize) -> String {
     let mut t = Twin::default();
     t.tinted(Tone::Chrome, &format!("{} ", glyph::RULE)).tinted(Tone::Strong, title).raw(" ");
-    let fill = DASH_W.saturating_sub(t.width());
+    let fill = width.saturating_sub(t.width());
     t.tinted(Tone::Chrome, &String::from(glyph::RULE).repeat(fill));
-    exact(&t, DASH_W)
+    exact(&t, width)
+}
+
+/// A section rule that CARRIES its panel instead of introducing it:
+/// `─ TRACKS  Church …`, with no trailing fill.
+///
+/// The approved 4P mock's own shape for a panel compressed onto one row (its
+/// line 36 draws the TRACKS rule, its content and the ACHIEVEMENTS summary on a
+/// single line and simply stops). Ragged right and clipped at `width`, like
+/// every other content line — only [`header_at`] draws a shape.
+fn header_row(title: &str, body: &Twin, width: usize) -> String {
+    let mut t = Twin::default();
+    t.tinted(Tone::Chrome, &format!("{} ", glyph::RULE)).tinted(Tone::Strong, title).raw("  ");
+    // Both halves of the pair, appended together — the one place this module
+    // concatenates two Twins, and doing it field-by-field is what keeps the
+    // plain text and the painted text describing the same line.
+    t.plain.push_str(&body.plain);
+    t.painted.push_str(&body.painted);
+    line_at(&t, width)
 }
 
 /// A content line under a section rule, already indented.
@@ -781,6 +839,520 @@ fn order_card(card: &HandCardModel) -> Vec<String> {
         &CardFace::new(card.id, card.printed.as_ref())
             .note(card.is_starting_order.then(|| "your starting order".to_string())),
     )
+}
+
+// ---------------------------------------------------------------------------
+// The below arrangement (3 and 4 players)
+// ---------------------------------------------------------------------------
+
+/// The designed per-seat COLUMN stride when the dashboard stacks BELOW the
+/// board (spec §0.1's 3P/4P ruling; design authority is the approved
+/// `frame-4p.ans`, whose player columns start at 0, 49, 98 and 147).
+///
+/// **50 rather than the mock's 49, because 50 lands the four-player block
+/// exactly on the 200-column design floor** — four columns of 50 is 200, which
+/// is the width that mock's own frame is drawn at (its closing rule measures
+/// 200). The number is a STRIDE, not a content width: [`SEAT_COL_GAP`] of it is
+/// the gutter, so a column writes 48 columns and the mock writes 43 into 49.
+///
+/// It is a FLOOR on the stride, not a cap — [`crate::screen`] hands this module
+/// a block at least as wide as the board and legend already above it, so at 3
+/// players the 163-column stage gives columns of 54 rather than 50. What the
+/// constant guarantees is the other direction: four columns of a 180-column
+/// board would be 45 wide, and the seat header alone spends 46 of them.
+pub const SEAT_COL_W: usize = 50;
+
+/// Columns between two seat columns. Two, matching [`HAND_CARD_GAP`]: the
+/// columns are ragged-right text rather than boxes, so the gutter only has to
+/// stop the longest line of one column touching the shortest of the next.
+const SEAT_COL_GAP: usize = 2;
+
+/// Rows a seat column spends, whatever the seat owns — and the reason the 3P
+/// and 4P frames stopped growing in play.
+///
+/// **The beside arrangement is ragged and the below arrangement cannot be.**
+/// Beside the board a seat's block runs one line per owned Technology and the
+/// dashboard simply gets longer; stacked below it, four seats sit SIDE BY SIDE,
+/// so a ragged block would leave three columns short and the frame's height
+/// would be the tallest seat's. Fixing the count makes the below dashboard a
+/// constant-height block: the 3P and 4P frames now open and stay at the same
+/// height for the whole game, and the only thing that can move them is the
+/// decision zone's own twelve-row page (`decision_render::OPTION_ROWS`).
+///
+/// Ten is what the fields cost: the mock's seven (header, two goods rows, the
+/// three zone rows, President) plus Technologies, Mercenaries, and the tail row
+/// that carries the three facts no zone row has the columns for.
+const SEAT_ROWS: usize = 10;
+
+/// Column the seat header's money field starts at, and its two successors —
+/// [`NAME_COL`]'s below-arrangement twin, sized to the same longest label
+/// (`▶ YELLOW — your turn [bot]`, 26 columns) inside a 48-column budget rather
+/// than a 74-column one. `seat 3` therefore ends at column 46 and the seat
+/// number survives the arrangement (T3 kept it as the `reveal <seat>` key).
+const SEAT_MONEY_COL: usize = 27;
+const SEAT_VP_COL: usize = 33;
+const SEAT_NUMBER_COL: usize = 40;
+
+/// The whole dashboard, stacked BELOW the board across `width` columns.
+///
+/// [`dashboard`]'s twin, and deliberately a SECOND function rather than a
+/// parameter on the first: the two arrangements share their models and none of
+/// their layout. Beside the board a panel is a 74-column strip stacked
+/// vertically; below it the players panel is one column per seat and the other
+/// three are single titled rows, because 20 rows of board leave the design
+/// floor's 50 with nothing like the 45 rows the vertical form wants.
+///
+/// The blank-line rule: **a block of more than one row is followed by one.**
+/// Only the players block is multi-row, so the three compressed panels stack
+/// straight onto each other, each being its own titled rule — the approved 4P
+/// mock's own shape.
+pub fn dashboard_below(
+    panels: &[Panel],
+    board: &BoardModel,
+    colors: &[PlayerColor],
+    width: usize,
+) -> String {
+    let mut lines: Vec<String> = Vec::new();
+    for panel in panels {
+        let block = below_panel_lines(panel, board, colors, width);
+        let multi = block.len() > 1;
+        lines.extend(block);
+        if multi {
+            lines.push(String::new());
+        }
+    }
+    let mut out = String::new();
+    for l in lines {
+        out.push_str(&l);
+        out.push('\n');
+    }
+    out
+}
+
+fn below_panel_lines(
+    panel: &Panel,
+    board: &BoardModel,
+    colors: &[PlayerColor],
+    width: usize,
+) -> Vec<String> {
+    match panel {
+        Panel::Players(p) => players_columns(p, board, colors, width),
+        Panel::Tracks(t) => vec![tracks_row(t, colors, width)],
+        Panel::Achievements(a) => vec![achievements_row(a, colors, width)],
+        Panel::Hand(h) => vec![hand_row(h, width)],
+    }
+}
+
+/// The players panel as one column per seat, in seat order, under a rule that
+/// spans the block.
+fn players_columns(
+    panel: &PlayersPanel,
+    board: &BoardModel,
+    colors: &[PlayerColor],
+    width: usize,
+) -> Vec<String> {
+    let seats = panel.players.len().max(1);
+    // Never narrower than a seat column has to be: a block that cannot hold
+    // `seats` columns of the designed stride is a caller error, and the safe
+    // direction is a block that overruns its width rather than columns that
+    // overwrite each other.
+    let col_w = (width / seats).max(SEAT_COL_W);
+    let content_w = col_w - SEAT_COL_GAP;
+    let columns: Vec<Vec<String>> =
+        panel.players.iter().map(|p| seat_column(p, board, colors, content_w)).collect();
+
+    let mut out = vec![header_at("PLAYERS", width)];
+    for row in 0..SEAT_ROWS {
+        let mut text = String::new();
+        for column in &columns {
+            let cell = &column[row];
+            text.push_str(cell);
+            // Every cell went through `line_at(_, content_w)`, so the pad is at
+            // least SEAT_COL_GAP and this subtraction cannot wrap.
+            text.push_str(&" ".repeat(col_w - crate::screen::visible_width(cell)));
+        }
+        while text.ends_with(' ') {
+            text.pop();
+        }
+        out.push(text);
+    }
+    out
+}
+
+/// One seat's column: exactly [`SEAT_ROWS`] lines, each at most `w` columns.
+///
+/// The wording is the approved 4P mock's compressed set (`8 hand · 0 board · 12
+/// warehouse`), not [`players_lines`]'s long one (`8 in hand · 0 on board · 12
+/// in warehouse`) — and the two mocks differ the same way, which is what makes
+/// this a per-arrangement design rather than an inconsistency: `main-frame.ans`
+/// draws the long form beside a 120-column board and `frame-4p.ans` draws the
+/// short one under a 180-column one. The long form is 53 columns and a column
+/// is 48.
+fn seat_column(
+    p: &PlayerModel,
+    board: &BoardModel,
+    colors: &[PlayerColor],
+    w: usize,
+) -> Vec<String> {
+    let (goods_first, goods_rest) = goods_rows(p, w);
+    let rows = vec![
+        seat_header(p, colors, w),
+        goods_first,
+        goods_rest,
+        assistants_row(p, w),
+        shophouses_row(p, w),
+        trading_houses_row(p, w),
+        tech_row(p, w),
+        mercenaries_row(p, w),
+        president_row(p, board, colors, w),
+        seat_tail_row(p, w),
+    ];
+    debug_assert_eq!(rows.len(), SEAT_ROWS, "a seat column is a fixed-height block");
+    rows
+}
+
+/// `▶ RED — your turn [bot]    ¥3   0 VP  seat 0`.
+fn seat_header(p: &PlayerModel, colors: &[PlayerColor], w: usize) -> String {
+    let mut label = String::new();
+    if p.is_current {
+        label.push(glyph::ACTIVE);
+        label.push(' ');
+    } else {
+        label.push_str("  ");
+    }
+    label.push_str(color_name(p.color));
+    if p.is_current {
+        label.push_str(" — your turn");
+    }
+    if p.is_bot {
+        label.push_str(BOT_BADGE);
+    }
+
+    let mut t = Twin::default();
+    match color_of(colors, p.seat) {
+        Some(c) => t.tinted(Tone::Player(c), &label),
+        None => t.raw(&label),
+    };
+    t.pad_to(SEAT_MONEY_COL);
+    t.tinted(Tone::Good(GoodKind::Yen), &format!("{}{}", glyph::YEN, p.money));
+    t.pad_to(SEAT_VP_COL);
+    t.tinted(Tone::Vp, &format!("{} VP", p.victory_points));
+    t.pad_to(SEAT_NUMBER_COL);
+    t.tinted(Tone::Chrome, &format!("seat {}", p.seat.0));
+    line_at(&t, w)
+}
+
+/// The five goods over TWO rows, the second aligned under the first good — the
+/// approved 4P mock's own split, and what the beside panel's one-line form
+/// costs at 57 columns against a 48-column budget.
+fn goods_rows(p: &PlayerModel, w: usize) -> (String, String) {
+    let g = &p.goods;
+    let label = "Goods  ";
+    let mut first = indented();
+    first.raw(label);
+    for (i, (n, name, kind)) in [
+        (g.copper, "Copper", GoodKind::Copper),
+        (g.silk, "Silk", GoodKind::Silk),
+        (g.tea, "Tea", GoodKind::Tea),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        if i > 0 {
+            sep(&mut first);
+        }
+        first.tinted(Tone::Good(kind), &format!("{n} {name}"));
+    }
+
+    let mut rest = Twin::default();
+    rest.raw(&" ".repeat(INDENT + label.len()));
+    rest.tinted(Tone::Good(GoodKind::Seafood), &format!("{} Seafood", g.seafood));
+    sep(&mut rest);
+    // Imports dim at zero, the mocks' own rule (see `goods_line`).
+    let imports = plural(g.imports as usize, "Import");
+    if g.imports == 0 {
+        rest.tinted(Tone::Dim, &imports);
+    } else {
+        rest.tinted(Tone::Good(GoodKind::Imports), &imports);
+    }
+    (line_at(&first, w), line_at(&rest, w))
+}
+
+/// `Assistants  8 hand · 0 board · 12 warehouse`. The locked tally rides
+/// [`seat_tail_row`] rather than this line: a fourth zone here costs 51 columns
+/// against 48, and clipping the very field that exists to make the numbers
+/// reconcile would be worse than moving it.
+fn assistants_row(p: &PlayerModel, w: usize) -> String {
+    let a = &p.assistants;
+    let mut t = indented();
+    t.raw("Assistants  ");
+    zone_count(&mut t, u32::from(a.in_hand), "hand");
+    sep(&mut t).raw(&format!("{} board", a.on_board));
+    sep(&mut t).raw(&format!("{} warehouse", a.in_warehouse));
+    line_at(&t, w)
+}
+
+fn shophouses_row(p: &PlayerModel, w: usize) -> String {
+    let s = &p.shophouses;
+    let mut t = indented();
+    t.raw("Shophouses  ");
+    zone_count(&mut t, u32::from(s.in_hand), "hand");
+    sep(&mut t).raw(&format!("{} warehouse", s.in_warehouse));
+    sep(&mut t).raw(&format!("{} built", s.built));
+    line_at(&t, w)
+}
+
+fn trading_houses_row(p: &PlayerModel, w: usize) -> String {
+    let h = &p.trading_houses;
+    let mut t = indented();
+    t.raw("Trade houses  ");
+    zone_count(&mut t, u32::from(h.in_hand), "hand");
+    sep(&mut t).raw(&format!("{} warehouse", h.in_warehouse));
+    sep(&mut t).raw(&format!("{} built", h.built));
+    line_at(&t, w)
+}
+
+/// Owned Technology NAMES on one line, `+N more` for whatever does not fit.
+///
+/// The beside arrangement gives each card its own line and a summary of what it
+/// does; a 48-column column cannot — the shortest summary in
+/// [`tech_summary`] needs 34 columns beside a name and the label. So the below
+/// arrangement keeps the FACT (which cards this seat owns, which is what an
+/// opponent reads a dashboard for) and leaves the effects to `labs` and the
+/// 2-player panel. The mock draws no tech line at all at 4 players.
+fn tech_row(p: &PlayerModel, w: usize) -> String {
+    let mut t = indented();
+    t.raw("Tech  ");
+    if p.technologies.is_empty() {
+        t.tinted(Tone::Dim, "none yet");
+        return line_at(&t, w);
+    }
+    let names: Vec<String> = p
+        .technologies
+        .iter()
+        .map(|tech| match &tech.printed {
+            Some(card) => card.name.clone(),
+            None => format!("T{:02}", tech.id.0),
+        })
+        .collect();
+
+    // Fit as many whole names as the column holds, then count the rest. A
+    // clipped name identifies nothing, and `+N more` is the idiom the hand
+    // panel already uses for the same problem.
+    let mut shown = 0usize;
+    for (i, name) in names.iter().enumerate() {
+        let sep_cost = if i > 0 { 3 } else { 0 };
+        let tail_cost = if i + 1 < names.len() {
+            // Room for `· +N more` after this name, or this is the last one it
+            // can carry.
+            3 + format!("+{} more", names.len() - i - 1).chars().count()
+        } else {
+            0
+        };
+        if t.width() + sep_cost + name.chars().count() + tail_cost > w {
+            break;
+        }
+        if i > 0 {
+            sep(&mut t);
+        }
+        t.tinted(Tone::Strong, name);
+        shown += 1;
+    }
+    if shown == 0 {
+        // A single name too long for the column: say how many there are rather
+        // than draw a clipped one.
+        t.tinted(Tone::Chrome, &format!("{} owned", names.len()));
+    } else if shown < names.len() {
+        sep(&mut t).tinted(Tone::Chrome, &format!("+{} more", names.len() - shown));
+    }
+    line_at(&t, w)
+}
+
+fn mercenaries_row(p: &PlayerModel, w: usize) -> String {
+    let mut t = indented();
+    t.raw("Mercenaries  ");
+    zone_count(&mut t, u32::from(p.mercenaries_unused), "unused");
+    sep(&mut t).raw(&format!("{} used", p.mercenaries_used));
+    line_at(&t, w)
+}
+
+/// `President ▲ EMPLOYMENT AGENCY`, or `President in hand`. The beside form's
+/// ` on ` is dropped and the orders count moves to [`seat_tail_row`]: the
+/// longest area name is 17 columns and the full beside line runs to 53.
+fn president_row(
+    p: &PlayerModel,
+    board: &BoardModel,
+    colors: &[PlayerColor],
+    w: usize,
+) -> String {
+    let mut t = indented();
+    t.raw("President ");
+    match p.president {
+        PresidentLocation::InHand => {
+            t.tinted(Tone::Dim, "in hand");
+        }
+        PresidentLocation::OnBoard(area) => {
+            t.owned(colors, p.seat, &glyph::PRESIDENT.to_string());
+            t.raw(&format!(" {}", area_name(board, area)));
+        }
+    }
+    line_at(&t, w)
+}
+
+/// The three facts no zone row has the columns for: the orders in hand (with
+/// the mask declared, exactly as the beside panel declares it), the assistants
+/// locked on goals and tracks, and the next Employment-Agency take price.
+///
+/// A row rather than three tails, because all three are short and none of them
+/// fits where it belongs: `· 3 locked` costs 11 columns on a 40-column
+/// assistants line, `(next take ¥4)` costs 15 on a 46-column trade-house line,
+/// and the column is 48.
+fn seat_tail_row(p: &PlayerModel, w: usize) -> String {
+    let mut t = indented();
+    t.raw(&plural(p.orders_in_hand, "order"));
+    if p.hand_hidden {
+        t.raw(" ").tinted(Tone::Chrome, "(hidden)");
+    }
+    let locked = p.assistants.locked();
+    if locked > 0 {
+        sep(&mut t).raw(&format!("{locked} locked"));
+    }
+    sep(&mut t).tinted(Tone::Chrome, &format!("next take {}{}", glyph::YEN, p.trading_houses.next_take_cost));
+    line_at(&t, w)
+}
+
+/// Both management boards on ONE titled row.
+///
+/// The beside arrangement spends four rows on this panel and the below one has
+/// none to spare, so the spaces, the fills and the reward ranges pack onto the
+/// rule itself — the approved 4P mock's own move (its line 36 is exactly this
+/// shape). What is dropped against the beside form is the trailing
+/// `'tracks' renders every space` hint, which the frame's info strip already
+/// names on every screen.
+fn tracks_row(t: &TracksPanel, colors: &[PlayerColor], width: usize) -> String {
+    let has_dummy = t
+        .church
+        .iter()
+        .filter_map(|s| s.occupant)
+        .chain(t.customs.iter().filter_map(|s| s.occupant))
+        .any(|o| o.is_dummy());
+
+    let mut body = Twin::default();
+    body.raw("Church ");
+    for space in &t.church {
+        track_space(&mut body, &space.faith.to_string(), space.occupant, colors);
+    }
+    body.raw(&format!(" {}/{}", t.church_filled, t.trigger_at));
+    body.raw(" ").tinted(Tone::Vp, &vp_range(t.church.iter().map(|s| s.vp)));
+    if t.church.iter().any(|s| s.movement_rider > 0) {
+        body.tinted(Tone::Vp, "+mv");
+    }
+
+    sep(&mut body).raw("Customs ");
+    for space in &t.customs {
+        track_space(&mut body, &space.import_cost.to_string(), space.occupant, colors);
+    }
+    body.raw(&format!(" imports {}/{}", t.customs_filled, t.trigger_at));
+    body.raw(" ").tinted(Tone::Vp, &vp_range(t.customs.iter().map(|s| s.vp)));
+
+    let supply = t.mercenary_supply.english
+        + t.mercenary_supply.american
+        + t.mercenary_supply.french
+        + t.mercenary_supply.german
+        + t.mercenary_supply.dutch;
+    sep(&mut body).tinted(Tone::Chrome, &format!("{supply} mercenaries left"));
+    if has_dummy {
+        sep(&mut body).tinted(Tone::Chrome, "D = dummy, not counted");
+    }
+
+    header_row(&format!("TRACKS  (ends at {} of YOUR pawns)", t.trigger_at), &body, width)
+}
+
+/// The three cards in play on ONE titled row, each naming its category, what it
+/// asks, what it pays first and later, and who has taken it.
+///
+/// Ragged rather than three fixed cells, and that is what makes it fit: the
+/// three cards are one per CATEGORY, and only the B and C decks carry a
+/// 28-column requirement, so the widest legal row is 161 columns against the
+/// 163 the 3-player block gives it. A state that somehow held three long cards
+/// would clip rather than overrun — [`line_at`] is the guarantee, not the
+/// arithmetic.
+fn achievements_row(panel: &AchievementsPanel, colors: &[PlayerColor], width: usize) -> String {
+    let mut body = Twin::default();
+    for (i, card) in panel.cards.iter().enumerate() {
+        if i > 0 {
+            sep(&mut body);
+        }
+        body.tinted(Tone::Strong, describe::category_letter(card.category));
+        body.raw(&format!(" {} ", glyph::SEPARATOR));
+        body.raw(achievement_requirement(card.achievement_type));
+        body.raw("  ");
+        body.tinted(Tone::Vp, &format!("{}/{} VP", card.first_place_vp, card.subsequent_vp));
+        body.raw("  ");
+        claim_state(&mut body, card, colors);
+    }
+    header_row("ACHIEVEMENTS", &body, width)
+}
+
+/// Who has taken an Achievement, in the fewest columns that stay truthful: the
+/// claimants by name up to two, a count past that, `unclaimed` for none.
+fn claim_state(t: &mut Twin, card: &AchievementModel, colors: &[PlayerColor]) {
+    match card.claimed_by.len() {
+        0 => {
+            t.tinted(Tone::Dim, "unclaimed");
+        }
+        n if n <= 2 => {
+            for (i, &seat) in card.claimed_by.iter().enumerate() {
+                if i > 0 {
+                    t.raw(", ");
+                }
+                match color_of(colors, seat) {
+                    Some(c) => t.tinted(Tone::Player(c), color_name(c)),
+                    None => t.raw(&format!("seat {}", seat.0)),
+                };
+            }
+        }
+        n => {
+            t.raw(&format!("{n} players"));
+        }
+    }
+}
+
+/// The viewing seat's own Order cards on ONE titled row, named rather than
+/// drawn.
+///
+/// The beside arrangement draws them as cards, which costs [`CARD_H`] rows plus
+/// a rule; below a 20-row board inside a 50-row floor there are not six rows to
+/// spend, and `hand` renders the cards full-screen one word away. The approved
+/// 4P mock draws no hand panel at all, so a named row is more than it asks for.
+///
+/// The mask is the model's, not this renderer's: a hidden [`HandPanel`] arrives
+/// with an EMPTY card list, so the count below is the only thing there is to
+/// print even if this function forgot to check `hidden`.
+fn hand_row(panel: &HandPanel, width: usize) -> String {
+    let mut body = Twin::default();
+    if panel.hidden {
+        body.tinted(
+            Tone::Dim,
+            &format!("{} {} hidden", plural(panel.card_count, "card"), glyph::SECTION_DASH),
+        );
+        return header_row("YOUR HAND", &body, width);
+    }
+    if panel.cards.is_empty() {
+        body.tinted(Tone::Dim, "no orders in hand");
+        return header_row("YOUR HAND", &body, width);
+    }
+    for (i, card) in panel.cards.iter().enumerate() {
+        if i > 0 {
+            sep(&mut body);
+        }
+        body.tinted(Tone::Strong, &format!("O{:02}", card.id.0));
+        if let Some(printed) = &card.printed {
+            body.raw(&format!(" {}", describe::country_name(printed.country)));
+        }
+    }
+    sep(&mut body).tinted(Tone::Chrome, "'hand' expands");
+    header_row("YOUR HAND", &body, width)
 }
 
 #[cfg(test)]
@@ -1428,6 +2000,253 @@ mod tests {
         let plain = dashboard(&panels, &board, &colors);
         crate::style::force(true);
         let painted = dashboard(&panels, &board, &colors);
+        crate::style::force(false);
+        assert_ne!(painted, plain, "forced color must actually paint");
+        assert_eq!(strip_ansi(&painted), plain);
+    }
+
+    // -----------------------------------------------------------------------
+    // The below arrangement (T10)
+    // -----------------------------------------------------------------------
+
+    /// The block width [`crate::screen`] hands the below arrangement at `n`
+    /// players: `seats x SEAT_COL_W` against what the stage already occupies,
+    /// which at these two counts is the 163-column site-slot legend and the
+    /// 180-column 4P board.
+    ///
+    /// A mirror of `screen::below_block_width`, and deliberately a crude one —
+    /// these tests are about what a block of a given width renders, so they
+    /// state the width rather than compose a frame to discover it. The
+    /// COMPOSED numbers are pinned where they are produced, by
+    /// `screen::the_frame_width_table_matches_the_composed_opening_frame`.
+    fn block_np(n: u8) -> usize {
+        (usize::from(n) * SEAT_COL_W).max(if n == 3 { 163 } else { 180 })
+    }
+
+    fn below_np(n: u8) -> String {
+        let (panels, board, colors) = panels_np(n);
+        dashboard_below(&panels, &board, &colors, block_np(n))
+    }
+
+    /// THE below-arrangement width property, and the frame's whole width
+    /// budget: no line may exceed the block it was given, and the section
+    /// rules span it exactly.
+    #[test]
+    fn no_below_dashboard_line_exceeds_its_block_at_three_and_four_players() {
+        for n in [3u8, 4] {
+            let block = block_np(n);
+            let text = below_np(n);
+            for l in text.lines() {
+                assert!(
+                    visible_width(l) <= block,
+                    "a {n}P below-dashboard line is {} columns, past the {block}-column \
+                     block: {:?}",
+                    visible_width(l),
+                    strip_ansi(l),
+                );
+            }
+            let rules: Vec<&str> =
+                text.lines().filter(|l| strip_ansi(l).starts_with(glyph::RULE)).collect();
+            assert_eq!(rules.len(), 4, "one rule per panel at {n}P:\n{text}");
+            // Only the PLAYERS rule fills its block; the three compressed
+            // panels are titled rules that carry content and stop where their
+            // content does (the approved 4P mock's own shape).
+            assert_exact_width(&rules[..1], block);
+        }
+    }
+
+    /// The below dashboard is a FIXED-HEIGHT block, and that is what retires
+    /// the 3P/4P height debt: every seat spends exactly [`SEAT_ROWS`] rows
+    /// whatever it owns, so no position in a game can grow the frame.
+    #[test]
+    fn the_below_dashboard_is_a_fixed_height_block_at_every_position() {
+        for n in [3u8, 4] {
+            let opening = below_np(n).lines().count();
+            let (state, rules) = state_np(n);
+            let mut loaded = state.clone();
+            // A seat that owns half the tech deck, holds a hand, and has pawns
+            // locked on goals and tracks: every field that could add a line.
+            let ids: Vec<TechCardId> =
+                rules.techs.iter_sorted_by_id().iter().take(10).map(|c| c.id).collect();
+            loaded.players[0].technologies = ids;
+            loaded.players[0].assistants.on_achievements = 3;
+            loaded.players[0].assistants.on_church = 1;
+            loaded.players[1].order_cards_in_hand =
+                rules.orders.iter_sorted_by_id().iter().take(6).map(|c| c.id).collect();
+            let seats = crate::screen_model::SeatFacts::all_open(usize::from(n));
+            let panels =
+                crate::screen_model::build_dashboard(&loaded, &rules, &seats, PlayerId::new(0));
+            let board = crate::screen_model::build_board(&loaded, &rules, &[]);
+            let colors = colors_np(&loaded);
+            let text = dashboard_below(&panels, &board, &colors, block_np(n));
+            assert_eq!(
+                text.lines().count(),
+                opening,
+                "a loaded {n}P position must render the same number of rows as the \
+                 opening one:\n{text}"
+            );
+            for l in text.lines() {
+                assert!(
+                    visible_width(l) <= block_np(n),
+                    "a loaded {n}P line is {} columns, past its block: {:?}",
+                    visible_width(l),
+                    strip_ansi(l),
+                );
+            }
+        }
+    }
+
+    /// Every seat gets a column, in seat order, carrying the whole public
+    /// picture — the same fields the beside arrangement shows, in the approved
+    /// 4P mock's compressed wording.
+    #[test]
+    fn a_below_seat_column_carries_every_public_field() {
+        let text = strip_ansi(&below_np(4));
+        for want in [
+            "PLAYERS", "Goods  ", "Assistants  ", "Shophouses  ", "Trade houses  ", "Tech  ",
+            "Mercenaries  ", "President ", "next take ", "TRACKS", "ACHIEVEMENTS", "YOUR HAND",
+        ] {
+            assert!(text.contains(want), "want {want:?} in the below dashboard:\n{text}");
+        }
+        for name in ["RED", "BLUE", "YELLOW", "GREEN"] {
+            assert!(text.contains(name), "every seat gets a column: {name}\n{text}");
+        }
+        // The compressed noun set is the 4P mock's, not the beside panel's.
+        assert!(text.contains("8 hand"), "the mock's compressed zone wording:\n{text}");
+        assert!(
+            !text.contains("in warehouse"),
+            "the below column has no room for the long form:\n{text}"
+        );
+        // One header row carries every seat, so the four names share a line.
+        let header = text.lines().find(|l| l.contains("RED")).expect("a header row");
+        for name in ["BLUE", "YELLOW", "GREEN"] {
+            assert!(header.contains(name), "the seats are COLUMNS, not rows: {header:?}");
+        }
+    }
+
+    /// The compressed ACHIEVEMENTS row survives its WIDEST legal content at
+    /// the NARROWER block — the one place the below arrangement rests on
+    /// arithmetic rather than on a shape.
+    ///
+    /// [`line_at`] clips, so a row that outgrew its block would not break the
+    /// frame; it would quietly lose the tail, which is the claim state. So the
+    /// check is that the row arrives INTACT: the widest requirement in each
+    /// category, two claimants apiece (the longest state this line draws), at
+    /// the 3-player block, with no ellipsis and every field still readable.
+    ///
+    /// One per category is what makes the arithmetic work and it is the
+    /// engine's own rule for the three cards in play, so the fixture builds the
+    /// widest LEGAL row rather than three C-deck cards. Three C-deck cards
+    /// would not fit and are not reachable; if they ever became reachable, this
+    /// row would clip rather than overrun the frame.
+    ///
+    /// **MEASURED: 162 columns against the 163 the 3-player block gives it.**
+    /// One column, which is why this pin is per-edit and states the number:
+    /// adding a word to a requirement string, to the VP form, or to the claim
+    /// state costs the claim state on the narrower block, and the failure it
+    /// would otherwise produce is a quiet ellipsis rather than a broken
+    /// layout.
+    #[test]
+    fn the_widest_legal_achievements_row_is_not_clipped_at_the_narrower_block() {
+        let (mut state, _) = state_np(3);
+        // The longest requirement string in each of the three categories.
+        let widest = [
+            AchievementType::Seafood7,
+            AchievementType::Tokens5,
+            AchievementType::Prod3Comm2,
+        ];
+        for (card, want) in state.achievements.iter_mut().zip(widest) {
+            assert_eq!(want.category(), card.achievement_type.category(), "one per category");
+            card.achievement_type = want;
+            card.claimed_by = vec![PlayerId::new(0), PlayerId::new(1)];
+        }
+        let block = block_np(3);
+        let row = achievements_row(
+            &crate::screen_model::build_achievements(&state),
+            &colors_np(&state),
+            block,
+        );
+        let plain = strip_ansi(&row);
+        assert!(
+            !plain.contains(glyph::ELLIPSIS),
+            "the widest legal achievements row is {} columns against a {block}-column block \
+             and arrived clipped: {plain:?}",
+            visible_width(&row),
+        );
+        for want in widest {
+            assert!(
+                plain.contains(achievement_requirement(want)),
+                "want {want:?}'s requirement intact in: {plain:?}"
+            );
+        }
+        assert_eq!(
+            plain.matches("RED, BLUE").count(),
+            3,
+            "every card's claim state must survive: {plain:?}"
+        );
+    }
+
+    /// The privacy fence is identical at every count: a masked seat's hand
+    /// shows a count and no card identity, and the panel that could leak one
+    /// is empty before it reaches this renderer.
+    #[test]
+    fn the_below_hand_row_masks_exactly_as_the_beside_panel_does() {
+        let (state, rules) = state_np(4);
+        let board = crate::screen_model::build_board(&state, &rules, &[]);
+        let colors = colors_np(&state);
+        let card = state.players[0].order_cards_in_hand[0];
+        let printed = rules.orders.get(card).expect("a registry order");
+
+        let open = crate::screen_model::build_hand(&state, &rules, PlayerId::new(0), false)
+            .expect("seat 0");
+        let open_text = strip_ansi(&dashboard_below(
+            &[Panel::Hand(open)],
+            &board,
+            &colors,
+            block_np(4),
+        ));
+        assert!(open_text.contains(&format!("O{:02}", printed.id.0)), "{open_text}");
+
+        let masked = crate::screen_model::build_hand(&state, &rules, PlayerId::new(0), true)
+            .expect("seat 0");
+        let masked_text = strip_ansi(&dashboard_below(
+            &[Panel::Hand(masked)],
+            &board,
+            &colors,
+            block_np(4),
+        ));
+        assert!(masked_text.contains("1 card"), "the count survives the mask: {masked_text}");
+        assert!(masked_text.contains("hidden"), "{masked_text}");
+        assert!(
+            !masked_text.contains(&format!("O{:02}", printed.id.0)),
+            "a masked hand names no card: {masked_text}"
+        );
+    }
+
+    /// A bot seat is badged in the column layout exactly as it is beside the
+    /// board, and its hand stays masked — 3.2's rule, unchanged by the
+    /// arrangement.
+    #[test]
+    fn a_bot_seat_is_badged_and_masked_in_the_column_layout() {
+        let (state, rules) = state_np(4);
+        let seats: Vec<crate::screen_model::SeatFacts> = (0..4)
+            .map(|i| crate::screen_model::SeatFacts { is_bot: i == 2, hand_hidden: i == 2 })
+            .collect();
+        let panels = crate::screen_model::build_dashboard(&state, &rules, &seats, PlayerId::new(2));
+        let board = crate::screen_model::build_board(&state, &rules, &[]);
+        let text = strip_ansi(&dashboard_below(&panels, &board, &colors_np(&state), block_np(4)));
+        assert!(text.contains(BOT_BADGE.trim()), "the bot seat is badged:\n{text}");
+        assert!(text.contains("hidden"), "and its own hand stays masked:\n{text}");
+    }
+
+    /// Painting must never move a visible character — the crate's alignment
+    /// invariant, on the arrangement that pads columns to a fixed stride.
+    #[test]
+    fn a_painted_below_dashboard_strips_back_to_the_plain_one() {
+        let (panels, board, colors) = panels_np(4);
+        let plain = dashboard_below(&panels, &board, &colors, block_np(4));
+        crate::style::force(true);
+        let painted = dashboard_below(&panels, &board, &colors, block_np(4));
         crate::style::force(false);
         assert_ne!(painted, plain, "forced color must actually paint");
         assert_eq!(strip_ansi(&painted), plain);
