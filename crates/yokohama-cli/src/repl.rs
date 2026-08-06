@@ -2338,7 +2338,7 @@ mod tests {
     /// **The bound was a flat 50 rows until T3 and is now relative**, for the
     /// reason `screen::FRAME_HEIGHTS` records in full: T3 stacks the whole
     /// designed dashboard below the board at 3 and 4 players, which puts those
-    /// two opening frames at 75 and 84 rows until T10 re-lays them into the 4P
+    /// two opening frames at 76 and 85 rows until T10 re-lays them into the 4P
     /// mock's four columns. What this test was ever really checking is that
     /// this PATH costs no more rows than the screen the player was already
     /// looking at -- I5's finding was a menu entry that re-printed a board the

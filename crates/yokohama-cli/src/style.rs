@@ -353,9 +353,15 @@ impl GoodKind {
 /// warnings loud, prompts bold, de-emphasis dim.
 ///
 /// Two tones may share an SGR code without that being a fork -- `Player`
-/// yellow and `Good(Copper)` are both `33` today -- because the discipline
-/// is one tone per MEANING, not one tone per color. What the discipline
-/// does forbid is a second tone for a meaning that already has one; the
+/// yellow and `Flag(German)` are both `93` today -- because the discipline
+/// is one tone per MEANING, not one tone per color. The share is allowed
+/// where the two never appear in one block: a flag tints an order card's
+/// nationality inside the card's border and is never a seat header, so the
+/// yellow it shares with a seat cannot be mistaken for one. Where two tones
+/// DO co-occur the share is a defect, which is what
+/// `no_player_color_shares_a_code_with_a_good` pins for the `Player`/`Good`
+/// pair (see [`sgr`]'s SF-Yellow note). What the discipline
+/// does forbid outright is a second tone for a meaning that already has one; the
 /// 3.5a additions below are all meanings the pre-redesign palette had no
 /// name for, and the redesign's owner-tinted marks (the `▲` president, the
 /// `●` pawn runs, the `⌂` built slot) deliberately reuse `Player` rather
@@ -558,15 +564,49 @@ fn every_tone_is_accounted_for(tone: Tone) {
 /// `Tone::Reachable` has carried since T1: that tone ships at `32`, which WAS
 /// `Player(Green)` and the Tea Plantation tile, so a green seat's marks and the
 /// `◈` a Movement destination is tinted with painted identically at 3 and 4
-/// players. Green is now `92` and the two read apart. `Tile(TeaPlantation)`
-/// still sits at `32` and still matches `Reachable`, which is harmless for the
-/// reason `Tile(_)` is noted as UNCONSUMED below: nothing draws it.
+/// players. Green is now `92` and the two read apart.
+///
+/// **Two tones still sit at `32` beside `Reachable`, and only one of them is
+/// dead** — the T3 review's correction to what this paragraph used to say.
+/// `Tile(TeaPlantation)` is the harmless one, for the reason `Tile(_)` is noted
+/// as UNCONSUMED below: nothing draws it. `Good(Tea)` is `32` as well and is
+/// very much LIVE — it counts tea in the goods strips — so `32` is a share on a
+/// board that draws both. It is ACCEPTED as a CONTEXTUAL share rather than
+/// fixed: `Reachable` paints a `◈` mark beside a tile's title, `Good(Tea)`
+/// paints counts inside a strip, and the two never stand where one could be
+/// read as the other. That is the same disposition as `Flag(German)` sharing
+/// `93` with `Player(Yellow)`, and the opposite of the SF-Yellow case below,
+/// where the two families DID land in one block.
 ///
 /// The T2 refresh also closed a collision this table used to warn about:
 /// `Good(Any)` and `Good(Imports)` both shipped at `95` and painted
 /// identically, which the site strip would have shown on a single tile (a
-/// `*n` any-good space beside a `1 Import` token). Imports has moved to `93`
-/// and the two now read apart, which is what `Good(Any)` was added for.
+/// `*n` any-good space beside a `1 Import` token). Imports moved off `95` and
+/// the two now read apart, which is what `Good(Any)` was added for.
+///
+/// **SF-YELLOW (T3 review): `Good(Imports)` `93` -> `38;5;178`, and this is a
+/// DELIBERATE DEPARTURE FROM THE MOCKS.** T2 moved Imports to `93` to clear the
+/// `95` collision above; T3 then moved the player colors to their bright twins,
+/// which put `Player(Yellow)` on `93` too — and unlike the shares above, these
+/// two co-occur. A dashboard player block is a `Player(_)` seat header with
+/// that seat's goods counted underneath, so on any board carrying a yellow seat
+/// — the default at 3 and 4 players, and a 2-player game whose wizard assigned
+/// it — that seat's name and its imports count painted the same, and the tint
+/// that exists to say whose block this is stopped saying it. Player identity
+/// wins: Imports takes
+/// `38;5;178`, a near-yellow gold that reads as the mock's `93` at a glance
+/// while being a distinct code.
+///
+/// The departure is recorded rather than silent because the MOCK ITSELF carried
+/// this collision, so there is no approved value to defer to: `mockgen.py`
+/// binds `YELLOW = c(93)`, hands it to the imports good (`GOOD["imports"]`) and
+/// hands the same `93` to the YELLOW seat column, then draws a frame in which
+/// both appear. Departing from an approved mock is a call this crate records
+/// rather than makes quietly — the same posture as the SP1-precedent
+/// departures — and what is departed from here is a value the mock could not
+/// have meant, since it makes its own frame ambiguous.
+/// `no_player_color_shares_a_code_with_a_good` is the pin, and it sweeps the
+/// whole `Good` roster rather than the pair that collided.
 ///
 /// **UNCONSUMED: the whole [`Tone::Tile`] family** (T2 review S1). It has
 /// fourteen entries below and, since T2, **zero call sites** -- V3 draws a
@@ -591,7 +631,7 @@ fn sgr(tone: Tone) -> &'static str {
         Tone::Good(GoodKind::Tea) => "32",
         Tone::Good(GoodKind::Seafood) => "96",
         Tone::Good(GoodKind::Yen) => "38;5;220",
-        Tone::Good(GoodKind::Imports) => "93",
+        Tone::Good(GoodKind::Imports) => "38;5;178",
         Tone::Good(GoodKind::Any) => "95",
         Tone::Tile(AreaType::CopperMine) => "33",
         Tone::Tile(AreaType::SilkMill) => "37",
@@ -686,6 +726,45 @@ mod tests {
         for (i, a) in painted.iter().enumerate() {
             for b in &painted[i + 1..] {
                 assert_ne!(a, b, "two player colors share an SGR code");
+            }
+        }
+    }
+
+    /// **The two families that co-occur inside one player block must stay
+    /// disjoint** — the T3 review's SF-Yellow finding, made a pin.
+    ///
+    /// A dashboard player block is a seat header painted `Player(_)` with that
+    /// seat's goods counted beneath it in `Good(_)`, and the whole point of the
+    /// owner tint is that it says WHOSE the block is. `Good(Imports)` shipped at
+    /// `93`, which is `Player(Yellow)`: on any board carrying a yellow seat (the
+    /// default at 3 and 4 players) that seat's name and its imports count
+    /// painted identically, so the one token that was supposed to identify the
+    /// seat read as just another resource. Imports moved to `38;5;178` and this
+    /// test is what keeps it moved.
+    ///
+    /// Sweeping the whole [`GoodKind::ALL`] roster rather than the one pair that
+    /// collided: the fix would be worth little if the next good added took `91`.
+    ///
+    /// **A share OUTSIDE these two families is not what this pin forbids** —
+    /// [`sgr`]'s doc states the discipline as one tone per MEANING, and two tones
+    /// may legitimately paint alike where no surface shows them together.
+    /// `Flag(German)` is `93`, the same as `Player(Yellow)`, and that one is
+    /// ACCEPTED: flag tints are drawn on an order card's nationality, inside the
+    /// card's border, and never as a seat header — the two never sit in one
+    /// block the way a header and a goods count do. Same disposition, same
+    /// reasoning, as the `Good(Tea)`/`Reachable` share [`sgr`] records.
+    #[test]
+    fn no_player_color_shares_a_code_with_a_good() {
+        for &c in PlayerColor::ALL.iter() {
+            for &g in GoodKind::ALL.iter() {
+                assert_ne!(
+                    sgr(Tone::Player(c)),
+                    sgr(Tone::Good(g)),
+                    "Player({c:?}) and Good({g:?}) both paint {} — a seat header and that \
+                     seat's own goods counts sit in one dashboard block, so the owner tint \
+                     stops identifying the owner",
+                    sgr(Tone::Player(c)),
+                );
             }
         }
     }

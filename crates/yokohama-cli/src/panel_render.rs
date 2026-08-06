@@ -34,7 +34,7 @@
 //! one owned card and has nowhere to put a summary. Mercenaries therefore take
 //! their own line. (3) Achievements carry ONE requirement column rather than
 //! the mocks' short-name-plus-requirement pair: the widest condition in the set
-//! (`Buildings in 3 production + 2 commercial areas`) is 45 columns, and the
+//! (`Buildings in 3 production + 2 commercial areas`) is 46 columns, and the
 //! two-column form was drawn over the three shortest cards in the deck.
 
 use yokohama_core::{
@@ -81,7 +81,34 @@ const HAND_CARDS_SHOWN: usize = 4;
 
 /// Hand cards drawn side by side per row: two 24-column cards and a gap fit
 /// [`DASH_W`] with room to spare, three do not.
+///
+/// `a_hand_row_of_cards_fits_the_dashboard_column` is the pin, and it exists
+/// because a hand row is the ONE dashboard line that never passes through
+/// [`line`] — a card row is assembled from fixed-width card slices and pushed
+/// raw, so nothing clips it and a third card per row would simply write four
+/// columns over whatever sits to the right.
 const HAND_CARDS_PER_ROW: usize = 2;
+
+/// Columns between two hand cards on the same row. Named rather than spelled
+/// at the one push site so the arithmetic pin and the renderer read the same
+/// number instead of agreeing by coincidence.
+const HAND_CARD_GAP: usize = 2;
+
+/// The bot marker, shared by the two surfaces that draw one.
+///
+/// Deliberately short: it rides the END of a player's name label, which
+/// [`player_header`] pads to [`NAME_COL`] — wide enough to hold the longest
+/// badged header there is — so a badged frame is exactly as wide as an unbadged
+/// one and guide §2's published widths do not move.
+/// `render::bot_badge_is_width_neutral_in_the_dashboard` is that claim's pin.
+///
+/// **One const rather than two since the T3 review.** The dashboard spelled
+/// `" [bot]"` inline here and [`crate::render`] held its own `BOT_BADGE` for the
+/// `players` view, so the two surfaces agreed on the string only by coincidence
+/// — and a player reading `[bot]` on one screen and something else on the other
+/// has no way to tell which is the marker.
+/// `render::the_bot_badge_is_one_string_on_every_surface` is the pin.
+pub(crate) const BOT_BADGE: &str = " [bot]";
 
 /// Columns the achievement requirement column spans before the VP column.
 const GOAL_TEXT_W: usize = 30;
@@ -287,7 +314,7 @@ fn player_header(p: &PlayerModel, colors: &[PlayerColor]) -> String {
         label.push_str(" — your turn");
     }
     if p.is_bot {
-        label.push_str(" [bot]");
+        label.push_str(BOT_BADGE);
     }
 
     // Painted as ONE run so the marker, the name and the badge read as a
@@ -440,29 +467,36 @@ fn tech_lines(p: &PlayerModel) -> Vec<String> {
 /// compile error here rather than a silently blank line. Authored from the
 /// rules sources the long form was ([`describe::tech_effect_text`]'s authoring
 /// rule names them: rulebook pp. 15-16, the KB reference, and guidingpath's
-/// decision log), then cut to fit: each line is at most 43 columns, which is
-/// what the longest card name in the set (`Letterpress Printing`, 20) leaves of
-/// [`DASH_W`] once the indent, the label and the dash are paid for.
+/// decision log), then cut to fit.
+///
+/// **The budget is PER CARD**, and it is what
+/// `every_technology_summary_fits_the_panel_beside_its_name` computes and
+/// reports: a summary may spend whatever [`DASH_W`] has left once the indent,
+/// the `Tech  ` label, ITS OWN card name and the dash are paid for — 43 columns
+/// beside `Letterpress Printing`, 59 beside `Tram`. Charging every card the
+/// longest name's cost is a bound that holds and a budget that lies, and three
+/// of the lines below (Station, Postal System, Stagecoach) need the columns the
+/// real budget gives them to carry a qualifier that changes how the card plays.
 fn tech_summary(effect: TechEffect) -> &'static str {
     match effect {
         TechEffect::Tram => "teleport to any opponent-free area",
-        TechEffect::Stagecoach => "move through opponent Presidents free",
-        TechEffect::PostalSystem => "may stop where opponents stand, 1 Yen each",
-        TechEffect::Station => "the Station: +1 Power there, free teleport",
+        TechEffect::Stagecoach => "through opponent Presidents free; stops too w/ Postal",
+        TechEffect::PostalSystem => "stop on opponents, 1 Yen each (free w/ Stagecoach)",
+        TechEffect::Station => "+1 Power for ALL there; teleport needs your pawn there",
         TechEffect::Gaslight => "+2 VP when you build a Shophouse",
         TechEffect::ElectricalLight => "+3 VP when you build a Trading House",
         TechEffect::MiningTechnology => "+1 Copper each time you gain Copper",
-        TechEffect::SpinningMill => "once a turn: 1 Silk for 2 Yen",
+        TechEffect::SpinningMill => "once a turn: discard 1 Silk, gain 2 Yen",
         TechEffect::Ball => "+2 VP when you complete an Order",
         TechEffect::LanguageSchool => "+1 Yen when you complete an Order",
         TechEffect::PatentSystem => "+2 VP per Technology bought after it",
         TechEffect::LetterPressPrinting => "+1 Yen per Technology bought after it",
         TechEffect::Winery => "+3 VP on the Church action with a pawn",
         TechEffect::Brickyard => "+4 VP on the Customs action with a pawn",
-        TechEffect::SystemOfStock => "turn start: up to 2 Yen if you hold 1",
+        TechEffect::SystemOfStock => "turn start: up to 2 Yen if you hold 0-1",
         TechEffect::University => "once a turn: 1 Yen takes a warehouse pawn",
         TechEffect::Newspaper => "Placement A may use 4 areas, not 3",
-        TechEffect::Telegram => "after 2 in an area, 1 adjacent; fee applies",
+        TechEffect::Telegram => "after 2 in an area, may place 1 adjacent; fee applies",
         TechEffect::Telephone => "Recovery: may leave 1 pawn in the area",
         TechEffect::Exposition => "+10 VP, taken when acquired",
     }
@@ -665,7 +699,7 @@ fn category_letter(c: AchievementCategory) -> &'static str {
 ///
 /// A TOTAL match, for the same reason [`tech_summary`] is one. It is the panel
 /// twin of [`describe::achievement_desc`], which stays the `goals` view's
-/// wording: that one runs to 45 columns on the mixed-category cards, which is
+/// wording: that one runs to 46 columns on the mixed-category cards, which is
 /// past what this line can spend before its VP column.
 fn achievement_requirement(a: AchievementType) -> &'static str {
     match a {
@@ -722,7 +756,7 @@ fn hand_lines(panel: &HandPanel) -> Vec<String> {
             let mut text = " ".repeat(INDENT);
             for (j, card) in cards.iter().enumerate() {
                 if j > 0 {
-                    text.push_str("  ");
+                    text.push_str(&" ".repeat(HAND_CARD_GAP));
                 }
                 text.push_str(&card[i]);
             }
@@ -1112,29 +1146,151 @@ mod tests {
     }
 
     /// Every technology in the registry has a summary, and every summary fits
-    /// the panel beside the longest card name there is. Sweeps the REGISTRY, so
-    /// a card whose name grows is caught here rather than on screen.
+    /// the panel beside ITS OWN card name. Sweeps the REGISTRY, so a card whose
+    /// name grows is caught here rather than on screen.
+    ///
+    /// **PER-CARD since the T3 review, and that is a correction rather than a
+    /// relaxation.** The bound used to charge every summary the width of
+    /// `Letterpress Printing` — 20 columns, the longest name in the set — which
+    /// is a true bound but not the one [`tech_lines`] applies: it writes each
+    /// summary beside its OWN name, so `Tram` has sixteen more columns to spend
+    /// than the conservative form ever admitted. That gap was not free. Three
+    /// summaries below carry a rules qualifier that only fits once the budget is
+    /// the real one, and the conservative bound is why they shipped without it.
+    /// What replaces it is the SAME arithmetic [`tech_lines`] lays out, per
+    /// card, which is exactly where [`line`] would clip.
+    ///
+    /// Clipping is also why the sweep RENDERS. A summary one column over comes
+    /// back from `line` clipped to exactly [`DASH_W`] with an ellipsis, so a
+    /// width assert on rendered output passes on the very line it should catch;
+    /// the rendered half therefore asserts the summary arrived INTACT, and the
+    /// arithmetic half names the budget the author has to write inside.
     #[test]
     fn every_technology_summary_fits_the_panel_beside_its_name() {
         let rules = Rules::standard();
-        let widest_name = rules
-            .techs
-            .iter()
-            .map(|c| c.name.chars().count())
-            .max()
-            .expect("a non-empty registry");
         for card in rules.techs.iter_sorted_by_id() {
             let summary = tech_summary(card.effect);
             assert!(!summary.is_empty(), "{} has no summary", card.name);
-            // `  Tech  ` + the widest name + ` — ` + this summary.
-            let worst = INDENT + "Tech  ".len() + widest_name + 3 + summary.chars().count();
+            // `  Tech  ` + THIS card's name + ` — ` + this summary.
+            let width =
+                INDENT + "Tech  ".len() + card.name.chars().count() + 3 + summary.chars().count();
             assert!(
-                worst <= DASH_W,
-                "{:?}'s summary would run to {worst} columns beside the widest card name \
-                 ({widest_name}), past DASH_W {DASH_W}: {summary:?}",
+                width <= DASH_W,
+                "{:?}'s line runs to {width} columns, past DASH_W {DASH_W}. Its summary may \
+                 spend {} columns and spends {}: {summary:?}",
                 card.name,
+                DASH_W - INDENT - "Tech  ".len() - card.name.chars().count() - 3,
+                summary.chars().count(),
             );
         }
+
+        // ...and the same sweep through the renderer, one card per distinct
+        // effect, checking that nothing was clipped on the way out.
+        let mut seen: std::collections::BTreeSet<String> = Default::default();
+        let mut ids = Vec::new();
+        for card in rules.techs.iter_sorted_by_id() {
+            if seen.insert(format!("{:?}", card.effect)) {
+                ids.push(card.id);
+            }
+        }
+        let (mut state, _) = state_np(2);
+        state.players[0].technologies = ids;
+        let seats = crate::screen_model::SeatFacts::all_open(2);
+        let panel = crate::screen_model::build_players(&state, &rules, &seats);
+        let rendered: Vec<String> = players_lines(
+            &panel,
+            &crate::screen_model::build_board(&state, &rules),
+            &colors_np(&state),
+        )
+        .iter()
+        .map(|l| strip_ansi(l))
+        .collect();
+        for card in rules.techs.iter_sorted_by_id() {
+            // Keyed on the whole `Tech  NAME —` label, not on the bare name: two
+            // summaries name each other's card (Postal System and Stagecoach),
+            // so a bare-name search finds the wrong row.
+            let head = format!("Tech  {} {}", card.name, glyph::SECTION_DASH);
+            let want = format!("{head} {}", tech_summary(card.effect));
+            let row = rendered
+                .iter()
+                .find(|l| l.contains(&head))
+                .unwrap_or_else(|| panic!("{:?} draws no line: {rendered:#?}", card.name));
+            assert!(
+                row.contains(&want),
+                "{:?}'s summary arrived clipped or altered; want {want:?} in {row:?}",
+                card.name,
+            );
+            assert!(
+                visible_width(row) <= DASH_W,
+                "{:?}'s rendered line is {} columns, past DASH_W {DASH_W}: {row:?}",
+                card.name,
+                visible_width(row),
+            );
+        }
+    }
+
+    /// The three summaries the T3 review sent back, plus the two it flagged as
+    /// SHOULD and the one NOTE — each pinned on the rules fact it was missing,
+    /// so a future re-cut for width cannot quietly drop the qualifier again.
+    ///
+    /// Every clause here is a rule the ENGINE implements, cited to the code that
+    /// implements it, and the pins are on MEANING rather than on the exact
+    /// wording: the assertions ask whether the fact survived, not whether the
+    /// sentence is the one written today.
+    #[test]
+    fn tech_summaries_carry_the_qualifiers_that_change_how_a_card_plays() {
+        // Station: the teleport exists only with one of YOUR OWN assistants on
+        // the Station area (`movement::can_teleport_to_station_with_tech`), and
+        // the +1 Power is for ALL players standing there, not for its owner.
+        let station = tech_summary(TechEffect::Station);
+        assert!(
+            station.contains("ALL"),
+            "Station's +1 Power is for every player in its area: {station:?}",
+        );
+        assert!(
+            station.contains("pawn") || station.contains("assistant"),
+            "Station's teleport needs one of your own pawns there: {station:?}",
+        );
+
+        // Textile Mill spends a Silk to gain Yen, and the direction is the whole
+        // card (`tech_effects`'s `UseSpinningMill`).
+        let mill = tech_summary(TechEffect::SpinningMill);
+        assert!(
+            mill.contains("discard 1 Silk") && mill.contains("gain 2 Yen"),
+            "Textile Mill discards Silk to GAIN Yen; a summary that reads the \
+             other way describes a card nobody would buy: {mill:?}",
+        );
+
+        // Stock Market tops up at 1 Yen OR LESS, so a broke player is the case
+        // it most matters for. A summary naming only "1" excludes zero.
+        let stock = tech_summary(TechEffect::SystemOfStock);
+        assert!(
+            stock.contains("0-1") || stock.contains("or less") || stock.contains("under 2"),
+            "Stock Market refills at 1 Yen or less, zero included: {stock:?}",
+        );
+
+        // The Postal System / Stagecoach interaction runs both ways
+        // (`movement::find_reachable_areas_with_tech` waives the president fee
+        // outright under Stagecoach), so each card's line names the other.
+        let postal = tech_summary(TechEffect::PostalSystem);
+        assert!(
+            postal.contains("Stagecoach"),
+            "Postal System's per-owner fee is WAIVED under Stagecoach, which is \
+             the difference between a card that costs Yen and one that does not: {postal:?}",
+        );
+        let stagecoach = tech_summary(TechEffect::Stagecoach);
+        assert!(
+            stagecoach.contains("Postal"),
+            "Stagecoach makes Postal System's stops free too: {stagecoach:?}",
+        );
+
+        // Telegram's bonus placement is a DECLINABLE queued choice, not an
+        // automatic one — the `may` is the difference.
+        let telegram = tech_summary(TechEffect::Telegram);
+        assert!(
+            telegram.contains("may"),
+            "Telegram's adjacent placement is a choice the player may decline: {telegram:?}",
+        );
     }
 
     /// The tracks panel draws every printed space, marks the 2-player dummy
@@ -1283,6 +1439,61 @@ mod tests {
             "exactly the shown cards are drawn:\n{text}"
         );
         assert!(text.contains("+3 more"), "{text}");
+    }
+
+    /// A row of hand cards fits the dashboard column — asserted, since the T3
+    /// review, at the two places it can stop being true.
+    ///
+    /// **This line is the panel's one unguarded width.** Every other content
+    /// line goes through [`line`] and is clipped at [`DASH_W`]; a card row is
+    /// built from fixed-width card slices and pushed raw, because clipping a
+    /// six-line box would shear it rather than shorten it. So the guard has to
+    /// live here, and until now it did not: the sweep in
+    /// `no_dashboard_line_exceeds_the_designed_width_at_any_count` measures an
+    /// OPENING hand, which holds one card and therefore one card per row, and
+    /// [`HAND_CARDS_SHOWN`] being 4 means the renderer already anticipates rows
+    /// it was never shown drawing. Set [`HAND_CARDS_PER_ROW`] to 3 and both
+    /// halves below fail at 78 columns against 74; the sweep alone did not
+    /// notice.
+    ///
+    /// The ARITHMETIC half names the budget — the width the renderer composes,
+    /// off the same three constants it composes from. The RENDERED half draws
+    /// a hand deep enough to fill a row and measures what actually came out, so
+    /// a row that grows by some route the arithmetic does not model still
+    /// fails.
+    #[test]
+    fn a_hand_row_of_cards_fits_the_dashboard_column() {
+        let n = HAND_CARDS_PER_ROW;
+        let row_w = INDENT + n * CARD_W + n.saturating_sub(1) * HAND_CARD_GAP;
+        assert!(
+            row_w <= DASH_W,
+            "{n} hand cards a row costs {row_w} columns \
+             (INDENT {INDENT} + {n}x CARD_W {CARD_W} + {}x HAND_CARD_GAP {HAND_CARD_GAP}), \
+             past DASH_W {DASH_W} — and nothing clips a card row",
+            n - 1,
+        );
+
+        let (state, rules) = state_np(2);
+        let mut panel = crate::screen_model::build_hand(&state, &rules, PlayerId::new(0), false)
+            .expect("seat 0");
+        // Enough cards to fill a full row and start another, whatever
+        // HAND_CARDS_PER_ROW is set to.
+        let card = panel.cards[0].clone();
+        panel.cards = vec![card; HAND_CARDS_PER_ROW + 1];
+        panel.card_count = panel.cards.len();
+        let rendered = hand_lines(&panel);
+        assert!(
+            rendered.iter().filter(|l| l.contains(glyph::BOX_TL)).count() >= 2,
+            "the fixture must actually draw more than one row of cards:\n{rendered:#?}",
+        );
+        for l in &rendered {
+            assert!(
+                visible_width(l) <= DASH_W,
+                "a hand row is {} columns, past DASH_W {DASH_W}: {:?}",
+                visible_width(l),
+                strip_ansi(l),
+            );
+        }
     }
 
     // -----------------------------------------------------------------------

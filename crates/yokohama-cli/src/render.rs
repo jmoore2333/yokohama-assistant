@@ -71,19 +71,13 @@ impl SeatDisplay {
     }
 }
 
-/// The panels' bot marker. Deliberately short: it rides the END of a player's
-/// name label, which the dashboard pads to a fixed column wide enough to hold
-/// the longest badged header there is — so a badged frame is exactly as wide as
-/// an unbadged one and guide §2's published widths do not move.
-/// `bot_badge_is_width_neutral_in_the_dashboard` is that claim's pin, and it
-/// measures the two widths rather than asserting a column budget (the budgets
-/// this doc used to quote were those of the panels T3 retired).
-const BOT_BADGE: &str = " [bot]";
-
-/// `BOT_BADGE` for a bot seat, nothing for a human one.
+/// [`panel_render::BOT_BADGE`] for a bot seat, nothing for a human one.
+///
+/// The string itself lives with the dashboard that pads a column to fit it —
+/// see its doc for why there is one const and not two.
 fn bot_badge(seats: &SeatDisplay, seat: PlayerId) -> &'static str {
     if seats.is_bot(seat) {
-        BOT_BADGE
+        panel_render::BOT_BADGE
     } else {
         ""
     }
@@ -1709,6 +1703,45 @@ mod tests {
                 widest(&badged),
                 "the badge widened the {n}P dashboard:\n{badged}"
             );
+        }
+    }
+
+    /// The dashboard and the `players` view mark a bot seat with the SAME
+    /// string — the T3 review's note, since the two used to hold separate
+    /// copies of it and agreed only by coincidence.
+    ///
+    /// Both halves are asserted against [`panel_render::BOT_BADGE`] rather than
+    /// against a literal, so the pin follows a deliberate change to the marker
+    /// instead of having to be re-typed alongside it; what it refuses is the two
+    /// surfaces DIVERGING. The first assert is anti-vacuity — a badge that
+    /// stopped rendering on either surface would satisfy any comparison between
+    /// them — and the second closes the substring hole the first leaves open,
+    /// since a surface that went back to spelling `" [bot 1]"` inline still
+    /// CONTAINS `" [bot"`. Every `[bot` a surface draws has to be the whole
+    /// badge and nothing else.
+    #[test]
+    fn the_bot_badge_is_one_string_on_every_surface() {
+        let rules = Rules::standard();
+        let state = test_state_np(2);
+        let seats = seats_all_bots(&state);
+
+        let dash = dashboard(&state, &rules, &seats, PlayerId::new(0));
+        let players = players_panel(&state, &rules, &seats);
+        let stem = panel_render::BOT_BADGE.trim_end_matches(']');
+        for (surface, text) in [("the dashboard", &dash), ("the `players` view", &players)] {
+            assert!(
+                text.contains(panel_render::BOT_BADGE),
+                "{surface} must draw the badge {:?}:\n{text}",
+                panel_render::BOT_BADGE,
+            );
+            for (i, _) in text.match_indices(stem) {
+                assert!(
+                    text[i..].starts_with(panel_render::BOT_BADGE),
+                    "{surface} draws a marker that only LOOKS like the badge at byte {i}; \
+                     every {stem:?} must be exactly {:?}:\n{text}",
+                    panel_render::BOT_BADGE,
+                );
+            }
         }
     }
 

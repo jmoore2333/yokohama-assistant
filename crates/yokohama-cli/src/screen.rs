@@ -192,6 +192,54 @@ const FRAME_HEIGHTS: [usize; 3] = [46, 76, 85];
 #[cfg(test)]
 const FLOOR_H: usize = 50;
 
+/// The tallest frame a real game walk DRAWS at each player count, indexed
+/// `players - 2` — the IN-PLAY height bound, and the height twin of what
+/// [`FRAME_MARGIN`] is for width.
+///
+/// **Added at the T3 review, which found the asymmetry that made it necessary.**
+/// Width had two bounds over a whole battery of positions — every constructed
+/// worst case plus a 250-move walk at each count — while HEIGHT had exactly one
+/// measurement, of the OPENING frame, and nothing at all past turn 1. So a frame
+/// that opens at 46 rows and reaches 66 in play broke no bound and printed no
+/// number: the 2P in-play maximum was 20 rows past its opening for the whole of
+/// T3 and nobody could have known, because nothing measured it.
+///
+/// **MEASURED, then set** — the same discipline as [`FRAME_MARGIN`], run over
+/// the same 250-move walk:
+///
+/// | count | opening | tallest in play | overshoot |
+/// |---|---|---|---|
+/// | 2 | 46 | 66 | +20 |
+/// | 3 | 76 | 96 | +20 |
+/// | 4 | 85 | 105 | +20 |
+///
+/// **These numbers RECORD the transitional overrun rather than bless it.** All
+/// three peaks are the same frame — the walk's move 7, an AreaAction on the
+/// Church whose 27 payment combinations page at 20 options — so the growth is
+/// the pre-redesign DECISION ZONE's option list, not the dashboard. That is why
+/// the overshoot is +20 at every count while the openings differ: one paged body
+/// under three different boards. T4 replaces that zone, and the honest thing at
+/// this task's boundary is to write the number down where the next task will
+/// see it, exactly as [`FRAME_HEIGHTS`] does for the 3P/4P openings.
+///
+/// A number that is recorded is not a number that is licensed: growth PAST these
+/// fails, and the fix is to re-measure the table deliberately, not to raise one
+/// entry until a run goes quiet.
+#[cfg(test)]
+const WALK_HEIGHTS: [usize; 3] = [66, 96, 105];
+
+/// Allowance over [`WALK_HEIGHTS`], and one row is all it is.
+///
+/// The walk is deterministic — fixed seed, and a move rotation keyed on the step
+/// index — so there is no run-to-run noise for a margin to absorb: the three
+/// figures above reproduced exactly across three consecutive runs. One row is
+/// therefore "just above the observed variation" rather than an allowance for
+/// anything in particular, and it keeps this a bound a growing frame can
+/// actually break: at 1 the first added panel row still passes and the second
+/// fails, which is the same grip [`FRAME_MARGIN`] has on width.
+#[cfg(test)]
+const WALK_HEIGHT_MARGIN: usize = 1;
+
 /// [`FRAME_WIDTHS`] for a `players`-player game (2..=4).
 ///
 /// A count outside that range gets the NARROWEST entry, which is the safe
@@ -524,9 +572,14 @@ mod tests {
         assert!(strip.contains("Y O K O H A M A"), "{strip}");
         assert!(strip.contains("simulation"), "a sim session says so: {strip}");
         assert!(strip.contains("seed 7"), "the game's identity seed: {strip}");
+        // Scoped to what this test EMITTED, since the T3 review: `f` is one
+        // composed frame, so a pass says the frame in front of us carries no
+        // `═` -- not that the crate spells U+2550 nowhere, which is a claim
+        // about source text that no rendering assert can make. style.rs's
+        // DEFERRED CONVERSIONS row states the source-level half separately.
         assert!(
             !f.contains('\u{2550}'),
-            "the redesigned strip draws no ═ anywhere in the frame:\n{f}",
+            "the redesigned strip draws no ═ anywhere in this composed frame:\n{f}",
         );
     }
 
@@ -829,21 +882,37 @@ mod tests {
     /// would leave the other two bounds resting entirely on constructed
     /// fixtures -- and it is this walk, not the fixtures, that reaches the 3P
     /// mid-game panel [`FRAME_MARGIN`] is sized off.
+    ///
+    /// **It measures HEIGHT too since the T3 review**, against
+    /// [`WALK_HEIGHTS`], which is why the name no longer says "the raised
+    /// floor". The review's finding was an asymmetry rather than a broken
+    /// bound: widths were held over this walk AND every constructed worst case,
+    /// while the only height ever measured was the OPENING frame's, so a 2P
+    /// frame reaching 66 rows in play against a 46-row opening was invisible by
+    /// construction. The same walk answers both questions and costs one
+    /// traversal, so the height bound rides here rather than in a second test
+    /// that would replay the identical 250 moves.
     #[test]
-    fn every_frame_of_a_real_game_walk_fits_the_raised_floor() {
+    fn every_frame_of_a_real_game_walk_fits_its_recorded_bounds() {
         let mut report = Vec::new();
         let mut widest = Vec::new();
+        let mut tallest = Vec::new();
         for n in [2u8, 3, 4] {
             let mut r = repl_np(n);
             force(true);
             let mut steps = 0usize;
             let mut worst = (0usize, String::new());
+            let mut worst_h = (0usize, String::new());
             while !r.session.is_over() && steps < 250 {
                 let frame = wrap(&r, &r.prompt());
                 let label = format!("move {steps}");
                 let w = measure_frame(n, &label, &frame, &mut report);
                 if w > worst.0 {
-                    worst = (w, label);
+                    worst = (w, label.clone());
+                }
+                let h = frame.lines().count();
+                if h > worst_h.0 {
+                    worst_h = (h, label);
                 }
                 let legal = r.session.legal();
                 if legal.is_empty() {
@@ -864,12 +933,44 @@ mod tests {
                 "the {n}P walk must actually reach mid-game positions, only got {steps} moves",
             );
             widest.push((n, worst.0, worst.1));
+            tallest.push((n, worst_h.0, worst_h.1));
         }
         assert!(
             report.is_empty(),
             "{}\nwidest line per count:\n{}",
             report.join("\n"),
             widest_report(&widest),
+        );
+
+        // Reported before asserted, for the reason `measure_frame` is: a run
+        // that stops at the first over-tall count cannot say whether the other
+        // two moved, and it is exactly "what did every count reach" that sets
+        // the table these bounds are read off.
+        let mut too_tall = Vec::new();
+        for (n, rows, label) in &tallest {
+            let recorded = WALK_HEIGHTS[usize::from(*n) - 2];
+            if *rows > recorded + WALK_HEIGHT_MARGIN {
+                too_tall.push(format!(
+                    "  {n}P reached {rows} rows at '{label}', past its recorded in-play maximum \
+                     {recorded} + WALK_HEIGHT_MARGIN {WALK_HEIGHT_MARGIN}",
+                ));
+            }
+        }
+        assert!(
+            too_tall.is_empty(),
+            "{}\ntallest frame per count:\n{}\nIf the growth is deliberate, RE-MEASURE the whole \
+             WALK_HEIGHTS table and state the new numbers there -- do not raise one constant to \
+             whatever silences this run",
+            too_tall.join("\n"),
+            tallest
+                .iter()
+                .map(|(n, rows, label)| format!(
+                    "  {n}P: tallest {rows} rows at '{label}', against a recorded {} (opening {})",
+                    WALK_HEIGHTS[usize::from(*n) - 2],
+                    FRAME_HEIGHTS[usize::from(*n) - 2],
+                ))
+                .collect::<Vec<_>>()
+                .join("\n"),
         );
     }
 
@@ -979,6 +1080,11 @@ mod capture {
     /// read in a diff. Regenerate with `UPDATE_T3_CAPTURE=1 cargo test -p
     /// yokohama-cli --lib the_committed_frame_capture` after a deliberate
     /// change, and LOOK AT THE DIFF before committing it.
+    ///
+    /// The variable is checked for PRESENCE, not for a value: `UPDATE_T3_CAPTURE=0`
+    /// and `UPDATE_T3_CAPTURE=` bless the capture exactly as `=1` does. That is
+    /// the usual shape for a one-shot regeneration switch and it is stated here
+    /// because `=0` looks like it would decline.
     #[test]
     fn the_committed_frame_capture_is_what_the_screen_renders() {
         let path = concat!(
