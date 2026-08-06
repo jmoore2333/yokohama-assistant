@@ -16,12 +16,24 @@
 //! prefix works wherever cards have names; a duplicate is refused BY NAME AND
 //! LOCATION; and the entry echoes the full card back before it commits.
 //!
-//! **Why a number is never ambiguous.** The two readings of a bare number —
-//! "card O14" and "the 14th card shown" — cannot both be on screen at once,
-//! because the index is a FULL-SCREEN surface: while it is open the prompt's
-//! own list is not visible, and while it is closed there are no selection
-//! numbers to mean. [`Numbering`] carries which of the two states the caller is
-//! in, and it is a parameter rather than a guess.
+//! **Why a number is never ambiguous — and it is NOT because only one list is
+//! ever on screen** (T7 review M2). The original argument here was that the two
+//! readings of a bare number, "card O14" and "the 14th card shown", cannot both
+//! be visible at once, because the index is a full-screen surface that replaces
+//! the prompt's own list. That holds in the REPL and is FALSE in the wizard,
+//! which is where three of the four registries are entered: there the index is
+//! printed INLINE, the question is re-asked underneath it, and everything
+//! already printed — including the achievement question's own four-card menu,
+//! and any earlier index — is still on the screen above.
+//!
+//! What actually makes the number unambiguous is two rules that hold in both
+//! places. [`Numbering`] decides the READING — id or selection — as a parameter
+//! rather than a guess, so no caller has to infer it from what is visible. And
+//! within the selection reading, a number means the same card however the screen
+//! was narrowed, because the surfaces that print numbers twice number over a
+//! fixed population (`SelectionNumbering::PerRegistry`) rather than over what
+//! survives a filter. A number the filter has taken off the screen is refused
+//! naming the range that IS on it, never re-used for a different card.
 //!
 //! **This module parses; it never decides what is legal.** [`resolve`] returns
 //! a named card or a refusal — the CALLER checks its own pool (the order deck,
@@ -34,7 +46,7 @@ use yokohama_core::{AchievementCategory, Country, OrderCardId, Rules, TechCardId
 
 use crate::describe;
 use crate::screen_model::{
-    menu_index, CardGood, CardLocation, CardRef, IndexFilter, IndexKind, IndexModel, NUMBER_BASE,
+    menu_index, CardGood, CardLocation, CardRef, IndexFilter, IndexKind, IndexModel,
 };
 
 /// How a bare number reads at this prompt.
@@ -352,12 +364,18 @@ pub(crate) fn card_tag(card: CardRef) -> String {
 ///
 /// An identity no registry holds draws nothing — the caller's own pool check is
 /// what refuses it, and there is no card here to show.
+///
+/// **Drawn in [`crate::card_render::CardContext::Echo`]**, which is what stops
+/// an achievement echo reporting `not in play — no progress to show` about the
+/// card the operator has just recorded as being in play (T7 review M1).
 pub(crate) fn echo(card: CardRef, rules: &Rules, colors: &[yokohama_core::PlayerColor]) -> String {
     let Some(drawn) = crate::screen_model::index_card_for(card, rules) else {
         return String::new();
     };
     let mut out = String::new();
-    for line in crate::card_render::index_card(&drawn, colors) {
+    for line in
+        crate::card_render::index_card(&drawn, colors, crate::card_render::CardContext::Echo)
+    {
         out.push_str(&line);
         out.push('\n');
     }
@@ -539,10 +557,30 @@ fn join_or(names: &[&str]) -> String {
 }
 
 /// The range message a selection number outside the screen gets.
+///
+/// **Both ends are read off the screen, and the low one has to be** (T7 review
+/// M2): the achievement index keeps a card's number when a filter drops it
+/// (`SelectionNumbering::PerRegistry`), so `f b` leaves `[5]`-`[8]` on screen
+/// and a message hard-coding `NUMBER_BASE` as the floor would send the player to
+/// a `1` that is not there. Every other index still compacts to the base, where
+/// the two readings coincide.
+///
+/// **And it no longer says what `?` does** (T7 review M3). This message used to
+/// end `or '?' to close it` — the literal sentence the finding names as
+/// contradicting the wizard prompt's own `'?' to redraw it`, printed two lines
+/// apart at the same caret. This module is reached from both the REPL, where
+/// the index really is an overlay `?` closes, and the wizard, where it is not,
+/// and it has no way to tell them apart; so it says the thing that is true in
+/// both — what is on the screen, and how to widen it — and leaves `?` to the
+/// surfaces that know which one they are ([`crate::index_render::IndexContext`]).
 fn selection_range_message(index: &IndexModel) -> String {
-    match index.cards().filter_map(|c| c.selection).max() {
-        Some(highest) => format!("pick a number {NUMBER_BASE}-{highest} from this screen, or '?' to close it"),
-        None => "nothing on this screen is selectable — Enter returns to your prompt".to_string(),
+    let lowest = index.cards().filter_map(|c| c.selection).min();
+    let highest = index.cards().filter_map(|c| c.selection).max();
+    match (lowest, highest) {
+        (Some(lo), Some(hi)) => format!(
+            "pick a number {lo}-{hi} — those are the cards this index is showing ('f' alone clears any filter)",
+        ),
+        _ => "nothing on this index is selectable — 'f' alone clears any filter".to_string(),
     }
 }
 
@@ -556,7 +594,7 @@ pub(crate) fn list_index(token: &str, len: usize) -> Option<usize> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::screen_model::{build_order_index, build_tech_index, RecordingTarget};
+    use crate::screen_model::{build_order_index, build_tech_index, RecordingTarget, NUMBER_BASE};
     use yokohama_core::PlayerId;
 
     const TARGET: RecordingTarget = RecordingTarget::PortSetup { board_b: false, slot: 0, of: 6 };
@@ -855,6 +893,56 @@ mod tests {
         assert_eq!(echo(CardRef::Site(99), &rules, &[]), "");
     }
 
+    /// **The achievement echo does not report progress it cannot have** (T7
+    /// review M1). Every echo is assembled from the REGISTRY, whose cards carry
+    /// no progress by construction, so the index's honest sentence for that
+    /// absence — `not in play — no progress to show` — reached the operator as a
+    /// statement about the card they had just finished recording as in play.
+    ///
+    /// The whole face is pinned rather than the missing line, because the fix
+    /// removes a row and a card that lost the wrong one would still pass a
+    /// `!contains` check.
+    #[test]
+    fn an_achievement_echo_states_the_card_and_not_a_progress_row_it_cannot_fill() {
+        let rules = Rules::standard();
+        let text = echo(
+            CardRef::Achievement(yokohama_core::AchievementType::Copper5),
+            &rules,
+            &[yokohama_core::PlayerColor::Red],
+        );
+        assert_eq!(
+            text.lines().collect::<Vec<_>>(),
+            vec![
+                "┌ Own 5 Copper ──────────────────────────────────────────────────┐",
+                "│ first ★8 VP  ·  later ★6 VP  ·  unclaimed                      │",
+                "└────────────────────────────────────────────────────────────────┘",
+            ],
+            "the echo is the condition and what it pays, with no progress row:\n{text}",
+        );
+        assert!(!text.contains("not in play"), "{text}");
+
+        // The INDEX's registry face is deliberately untouched: there the same
+        // empty list means "this card is not on the table", which is exactly
+        // what a setup screen showing all twelve has to say.
+        let all = crate::screen_model::achievement_registry();
+        let index = crate::screen_model::build_achievement_index(
+            &all,
+            &[],
+            Some(RecordingTarget::AchievementSetup {
+                category: yokohama_core::AchievementCategory::A,
+            }),
+            None,
+        );
+        assert!(
+            crate::style::strip_ansi(&crate::index_render::index_view(
+                &index,
+                &[],
+                crate::index_render::IndexContext::Overlay,
+            ))
+            .contains("not in play — no progress to show"),
+        );
+    }
+
     /// An achievement name is an ACCEPTED ALIAS at an achievement prompt (T7,
     /// the F1 menu's other door), under the same prefix discipline the goods,
     /// flags and technology titles follow: `prod` names three cards and is
@@ -1072,6 +1160,57 @@ mod tests {
             matches!(&out_of_range, CardEntry::Refused(m) if m.contains("1-20")),
             "{out_of_range:?}",
         );
+    }
+
+    /// **A number the filter took off the screen is refused with the range that
+    /// IS on it** (T7 review M2) — never reused for whatever card now sits in
+    /// that position, which is what the achievement index's stable numbering
+    /// buys, and never described as starting at 1, which is what the old
+    /// hard-coded floor claimed.
+    #[test]
+    fn a_number_off_a_narrowed_achievement_screen_is_refused_with_the_range_on_screen() {
+        let rules = Rules::standard();
+        let all = crate::screen_model::achievement_registry();
+        let target =
+            RecordingTarget::AchievementSetup { category: yokohama_core::AchievementCategory::A };
+        let category_b = crate::screen_model::build_achievement_index(
+            &all,
+            &[],
+            Some(target),
+            Some(IndexFilter::Category(yokohama_core::AchievementCategory::B)),
+        );
+        let goals = CardPrompt {
+            kind: IndexKind::Achievements,
+            candidates: None,
+            placed: &[],
+            numbering: Numbering::Selection(&category_b),
+        };
+
+        // `1` is a real number the still-visible category menu prints, for a
+        // card this screen has filtered away.
+        let refusal = resolve(&goals, "1", &rules);
+        assert!(
+            matches!(&refusal, CardEntry::Refused(m) if m.contains("pick a number 5-8")),
+            "the range is the one on screen, not 1-n: {refusal:?}",
+        );
+        // ...and it names the way to get the rest back, rather than what `?`
+        // does — which is not the same thing on the two surfaces this module
+        // serves (T7 review M3).
+        assert!(
+            matches!(&refusal, CardEntry::Refused(m)
+                if m.contains("'f' alone clears any filter") && !m.contains("close")),
+            "{refusal:?}",
+        );
+        // ...and the numbers that ARE on screen still name the cards the
+        // unfiltered screen numbered them with.
+        let full = crate::screen_model::build_achievement_index(&all, &[], Some(target), None);
+        for n in 5..=8 {
+            assert_eq!(
+                resolve(&goals, &n.to_string(), &rules),
+                CardEntry::Card(full.select(n).expect("the same card unfiltered")),
+                "{n} must name one card whether or not the screen is narrowed",
+            );
+        }
     }
 
     /// An id for a card the registry does not hold still resolves to a CARD —

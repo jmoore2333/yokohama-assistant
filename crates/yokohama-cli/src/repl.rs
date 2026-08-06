@@ -1347,7 +1347,11 @@ impl Repl {
     }
 
     pub(crate) fn index_text(&self, kind: IndexKind) -> String {
-        crate::index_render::index_view(&self.index_model(kind), &self.seat_colors())
+        crate::index_render::index_view(
+            &self.index_model(kind),
+            &self.seat_colors(),
+            crate::index_render::IndexContext::Overlay,
+        )
     }
 
     /// The seat color table every card and view renderer takes, in seat order.

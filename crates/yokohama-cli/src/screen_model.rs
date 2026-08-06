@@ -1053,16 +1053,41 @@ impl IndexModel {
 /// unaccounted for — see [`CardFaceModel::Tech`]).
 type FacedCard = (CardFaceModel, Option<CardLocation>);
 
+/// What a filter does to the numbers already on the cards.
+///
+/// **Two registries need two answers, and the difference is whether a SECOND
+/// surface prints the same numbers** (T7 review M2).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SelectionNumbering {
+    /// Numbers run `1..shown` over the cards this screen displays. The screen is
+    /// the only thing printing them, so a filter compacts them and no number a
+    /// player can currently see is missing.
+    PerScreen,
+    /// Numbers run `1..total` over the whole POPULATION, filtered or not: a card
+    /// the filter drops takes its number with it and nothing renumbers.
+    ///
+    /// This is the achievement index, and it is not a preference. The wizard's
+    /// category question prints its own four-card menu INLINE, from the same
+    /// model, and that menu is still on screen after a `f b` — so under
+    /// `PerScreen` the visible menu said `[1] Copper5` while the visible index
+    /// said `[1] Money10`, and one bare number meant two cards at once. That is
+    /// finding F3 verbatim, at the prompt F1 was found at. Stable numbers make
+    /// the two agree unconditionally, and a number whose card the filter dropped
+    /// is REFUSED with the range on screen rather than silently reused.
+    PerRegistry,
+}
+
 /// Number the displayed cards and pack them into non-empty groups.
 ///
 /// The one place selection numbers are assigned, shared by all four builders:
-/// they run 1..n over the cards actually SHOWN, in screen order, across group
-/// boundaries — so a filtered screen numbers from the base rather than carrying
-/// gaps, and no builder can invent its own numbering rule.
+/// they run from [`NUMBER_BASE`] in screen order, across group boundaries, so no
+/// builder can invent its own numbering rule. What a FILTER does to them is
+/// [`SelectionNumbering`], which is a per-registry choice with a reason.
 fn number_groups(
     faces: Vec<(IndexGroupKey, Vec<FacedCard>)>,
     target: Option<RecordingTarget>,
     filter: Option<IndexFilter>,
+    numbering: SelectionNumbering,
 ) -> (Vec<IndexGroup>, usize) {
     let mut next = NUMBER_BASE;
     let mut groups = Vec::new();
@@ -1070,7 +1095,8 @@ fn number_groups(
     for (key, faces) in faces {
         let mut cards = Vec::new();
         for (face, location) in faces {
-            if filter.is_some_and(|f| !f.admits(&face)) {
+            let admitted = filter.is_none_or(|f| f.admits(&face));
+            if !admitted && numbering == SelectionNumbering::PerScreen {
                 continue;
             }
             // A DIMMED card is numbered too, exactly as the approved mock draws
@@ -1082,6 +1108,12 @@ fn number_groups(
                 next += 1;
                 n
             });
+            // Under `PerRegistry` the number is spent whether or not the card is
+            // shown — that is what "nothing renumbers" costs, and it is the
+            // whole point.
+            if !admitted {
+                continue;
+            }
             cards.push(IndexCard { face, selection, location });
         }
         shown += cards.len();
@@ -1135,7 +1167,8 @@ pub fn build_order_index(
         })
         .collect();
 
-    let (groups, shown) = number_groups(faces, target, filter);
+    let (groups, shown) =
+        number_groups(faces, target, filter, SelectionNumbering::PerScreen);
     IndexModel { kind: IndexKind::Orders, total, shown, target, filter, groups }
 }
 
@@ -1208,7 +1241,8 @@ pub fn build_tech_index(
         })
         .collect();
 
-    let (groups, shown) = number_groups(faces, target, filter);
+    let (groups, shown) =
+        number_groups(faces, target, filter, SelectionNumbering::PerScreen);
     IndexModel { kind: IndexKind::Techs, total, shown, target, filter, groups }
 }
 
@@ -1220,6 +1254,11 @@ pub fn build_tech_index(
 /// `achievements_view`), while a setup prompt passes all twelve types so the
 /// operator can say which three are on the table. Deriving the population here
 /// would have forced one of those two to be a second screen.
+///
+/// **The one index whose numbers survive a filter** — see
+/// [`SelectionNumbering::PerRegistry`], and note that "the population" there
+/// means whatever the caller passed, which is what keeps the two jobs on one
+/// builder.
 pub fn build_achievement_index(
     cards: &[AchievementModel],
     placed: &[(AchievementType, CardLocation)],
@@ -1245,7 +1284,8 @@ pub fn build_achievement_index(
         })
         .collect();
 
-    let (groups, shown) = number_groups(faces, target, filter);
+    let (groups, shown) =
+        number_groups(faces, target, filter, SelectionNumbering::PerRegistry);
     IndexModel { kind: IndexKind::Achievements, total, shown, target, filter, groups }
 }
 
@@ -1274,7 +1314,12 @@ pub fn build_site_index(
         })
         .collect();
 
-    let (groups, shown) = number_groups(vec![(IndexGroupKey::All, cards)], target, filter);
+    let (groups, shown) = number_groups(
+        vec![(IndexGroupKey::All, cards)],
+        target,
+        filter,
+        SelectionNumbering::PerScreen,
+    );
     IndexModel { kind: IndexKind::Sites, total, shown, target, filter, groups }
 }
 
@@ -1716,9 +1761,10 @@ pub fn build_tracks(state: &GameState) -> TracksPanel {
 /// The roster is spelled here because core exposes no `AchievementType::ALL`
 /// (and a core edit is out of scope for this phase), so it is held the way
 /// `style`'s `AREA_TYPES` is held: named exhaustively, and pinned by
-/// `the_registry_names_every_achievement_type`, which counts the categories back
-/// out — four per category is the printed set, so a type dropped from this list
-/// fails there rather than quietly vanishing from a setup screen.
+/// `index_render::tests::the_achievement_index_also_renders_the_whole_registry_for_setup`,
+/// which counts the categories back out — twelve types, three groups, four per
+/// category is the printed set, so a type dropped from this list fails there
+/// rather than quietly vanishing from a setup screen.
 ///
 /// Claim state and progress are EMPTY: none of these is on a table yet, and
 /// zeros would read as "nobody has made progress" rather than "this card is not

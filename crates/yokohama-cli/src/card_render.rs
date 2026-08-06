@@ -195,6 +195,29 @@ fn push_selection(t: &mut Twin, face: &CardFace<'_>, tone: Tone) {
 // The other three registries (T6)
 // ---------------------------------------------------------------------------
 
+/// Which surface a card is being drawn onto.
+///
+/// **The two surfaces differ in what an ABSENCE means, which is the only thing
+/// this discriminates** (T7 review M1). On the index, a card carrying no
+/// per-seat progress is a card that is not on the table — the screen says so,
+/// and saying so is the whole reason the registry face exists. In the ECHO the
+/// same absence is an artifact of where the card came from: an echo is always
+/// assembled from the registry ([`crate::screen_model::index_card_for`]), so
+/// its progress list is empty by construction, and the index's sentence
+/// ("not in play") is then a statement about the card the operator has just
+/// finished recording as in play.
+///
+/// One parameter rather than a second entry point: this module's promise is
+/// that a card LOOKS the same wherever a player meets it, and two dispatchers
+/// differing by one flag is how that promise stops being true.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CardContext {
+    /// The full-screen index grid, or any surface drawing a card as it stands.
+    Index,
+    /// The card drawn back after an entry commits (`card_prompt::echo`).
+    Echo,
+}
+
 /// One card of ANY registry, at that registry's own width.
 ///
 /// The one entry point the index renderer draws through, so "which card shape"
@@ -204,7 +227,8 @@ fn push_selection(t: &mut Twin, face: &CardFace<'_>, tone: Tone) {
 ///
 /// `colors` is the seat color table, needed only by the faces that name a
 /// player (an achievement's claimants and progress). Everything else ignores it.
-pub fn index_card(card: &IndexCard, colors: &[PlayerColor]) -> Vec<String> {
+/// `context` is [`CardContext`] — read its doc before adding a second use of it.
+pub fn index_card(card: &IndexCard, colors: &[PlayerColor], context: CardContext) -> Vec<String> {
     match &card.face {
         CardFaceModel::Order { id, printed } => order_card(
             &CardFace::new(*id, printed.as_ref())
@@ -216,7 +240,7 @@ pub fn index_card(card: &IndexCard, colors: &[PlayerColor]) -> Vec<String> {
             tech_card(copies, printed, placed, card.selection, card.location.is_some())
         }
         CardFaceModel::Achievement(a) => {
-            achievement_card(a, card.selection, card.location.is_some(), colors)
+            achievement_card(a, card.selection, card.location.is_some(), colors, context)
         }
         CardFaceModel::Site { index, site } => {
             site_index_card(*index, site, card.selection, card.location, card.location.is_some())
@@ -319,11 +343,18 @@ fn copy_note(
 
 /// One achievement: its condition as a sentence, what it pays first and later,
 /// who has claimed it, and where every seat stands.
+///
+/// **The progress row is dropped in an ECHO with nothing to report** (T7 review
+/// M1) — see [`CardContext`] for why the same empty list means two different
+/// things on the two surfaces. The condition is the CONJUNCTION and not the
+/// context alone: an echo that did carry live progress would be worth printing,
+/// so what is suppressed is a row with nothing in it rather than a row.
 fn achievement_card(
     card: &AchievementModel,
     selection: Option<usize>,
     dim: bool,
     colors: &[PlayerColor],
+    context: CardContext,
 ) -> Vec<String> {
     let tone = |t: Tone| if dim { Tone::Dim } else { t };
 
@@ -369,6 +400,10 @@ fn achievement_card(
         n => {
             pay.raw(&format!("claimed by {n} players"));
         }
+    }
+
+    if card.progress.is_empty() && context == CardContext::Echo {
+        return vec![exact(&top, GOAL_W), interior(&pay, GOAL_W), bottom(GOAL_W)];
     }
 
     let mut progress = Twin::default();

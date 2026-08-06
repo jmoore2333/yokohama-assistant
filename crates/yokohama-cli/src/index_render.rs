@@ -48,11 +48,37 @@ fn cards_per_row(width: usize) -> usize {
     ((FLOOR_W + CARD_GAP) / (width + CARD_GAP)).max(1)
 }
 
+/// Where this screen is being drawn, which decides ONE line: how to leave it.
+///
+/// **Two surfaces, and only one of them is an overlay** (T7 review M3). In the
+/// REPL the index replaces the whole screen, so Enter really does close it and
+/// put the player back at the prompt underneath. In the WIZARD it is printed
+/// INLINE — `ask_screened` writes it to the transcript and re-asks the same
+/// question below it — so there is nothing to close, Enter is not a way out at
+/// all (`card_prompt` reads it as `Cancel`, which a setup question refuses), and
+/// `?` redraws rather than closes. A single line claiming both was the finding:
+/// it promised an overlay that did not exist and contradicted the prompt's own
+/// hint two lines below it.
+///
+/// One renderer, two contexts, rather than one line hedged to cover both: a
+/// sentence true of neither surface is how a player learns to stop reading the
+/// chrome.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum IndexContext {
+    /// Drawn full-screen over a prompt (the REPL's `orders`/`techs`/… views and
+    /// its reveal captures).
+    Overlay,
+    /// Printed inline above a question that is about to be asked again (the
+    /// setup wizard's `?`).
+    Inline,
+}
+
 /// The whole index screen: title, context, the groups, footer, caret.
 ///
 /// `colors` is the seat color table — needed only by the achievement cards,
-/// which name claimants and per-seat progress.
-pub fn index_view(index: &IndexModel, colors: &[PlayerColor]) -> String {
+/// which name claimants and per-seat progress. `context` decides the exit line
+/// only — see [`IndexContext`].
+pub fn index_view(index: &IndexModel, colors: &[PlayerColor], context: IndexContext) -> String {
     let mut out = String::new();
     out.push_str(&title_line(index));
     out.push('\n');
@@ -83,7 +109,7 @@ pub fn index_view(index: &IndexModel, colors: &[PlayerColor]) -> String {
 
     out.push_str(&footer_line(index));
     out.push('\n');
-    out.push_str(&exit_line());
+    out.push_str(&exit_line(context));
     out.push('\n');
     out.push_str(&paint(Tone::Prompt, "> "));
     out.push('\n');
@@ -202,12 +228,29 @@ fn filter_help(kind: IndexKind) -> String {
 /// ([`crate::card_prompt::resolve`]); on a full-screen VIEW it re-dispatches
 /// instead and undoes the last applied entry. One word, two surfaces, so the
 /// surface that closes on it says so rather than leaving it to be discovered.
-fn exit_line() -> String {
-    paint(
-        Tone::Chrome,
-        "Enter, '?', 'cancel' or 'back' closes this index and puts you back at the prompt underneath, \
-         exactly as you left it — nothing is entered and nothing there is cancelled.",
-    )
+///
+/// **And it says a DIFFERENT true thing inline** (T7 review M3). The overlay
+/// sentence names four ways to close a screen; at a wizard `?` there is no
+/// screen to close — the question is printed again underneath — so all four
+/// were wrong there at once. Worse, `Enter` and `cancel` are not even inert at
+/// a setup question: [`crate::card_prompt::resolve`] reads both as `Cancel`,
+/// and `ask_card` answers that with "this question needs an answer", so the
+/// line was advertising an exit the next keystroke would refuse. The inline
+/// wording states the two things that ARE true — the question continues below,
+/// and `abort` is the one way out of setup — and it agrees with the prompt's
+/// own hint (`'?' to redraw it`) instead of contradicting it one line later.
+fn exit_line(context: IndexContext) -> String {
+    let text = match context {
+        IndexContext::Overlay => {
+            "Enter, '?', 'cancel' or 'back' closes this index and puts you back at the prompt \
+             underneath, exactly as you left it — nothing is entered and nothing there is cancelled."
+        }
+        IndexContext::Inline => {
+            "Nothing here is entered yet and nothing you have already entered is lost — the \
+             question continues below, so answer it ('?' redraws this index). 'abort' leaves setup."
+        }
+    };
+    paint(Tone::Chrome, text)
 }
 
 /// `■ GERMANY  (7 cards)` in the flag's own tint, or `None` for a run that has
@@ -249,7 +292,10 @@ fn category_gloss(c: AchievementCategory) -> &'static str {
 /// text on every technology — and paying for `Gaslight`'s one-line effect as if
 /// it were `Telegram`'s three costs that screen five rows it does not have.
 fn card_row(cards: &[IndexCard], colors: &[PlayerColor]) -> Vec<String> {
-    let drawn: Vec<Vec<String>> = cards.iter().map(|c| card_render::index_card(c, colors)).collect();
+    let drawn: Vec<Vec<String>> = cards
+        .iter()
+        .map(|c| card_render::index_card(c, colors, card_render::CardContext::Index))
+        .collect();
     let height = drawn.iter().map(Vec::len).max().unwrap_or(0);
     (0..height)
         .map(|i| {
@@ -327,7 +373,7 @@ mod tests {
 
     fn view(target: Option<RecordingTarget>, filter: Option<IndexFilter>) -> String {
         let rules = Rules::standard();
-        index_view(&build_order_index(&rules, &[], target, filter), &[])
+        index_view(&build_order_index(&rules, &[], target, filter), &[], IndexContext::Overlay)
     }
 
     const A_TARGET: RecordingTarget =
@@ -335,45 +381,35 @@ mod tests {
 
     const TECH_TARGET: RecordingTarget = RecordingTarget::TechRefill { board_b: false };
 
+    /// ONE registry's model, at one of the two shapes — what the per-kind sweeps
+    /// build their screens from.
+    fn one_index(kind: IndexKind, target: Option<RecordingTarget>) -> IndexModel {
+        let rules = Rules::standard();
+        match kind {
+            IndexKind::Orders => build_order_index(&rules, &[], target, None),
+            IndexKind::Techs => crate::screen_model::build_tech_index(&rules, &[], target, None),
+            IndexKind::Achievements => crate::screen_model::build_achievement_index(
+                &crate::screen_model::build_achievements(&a_state()).cards,
+                &[],
+                target,
+                None,
+            ),
+            IndexKind::Sites => crate::screen_model::build_site_index(&rules, &[], target, None),
+        }
+    }
+
     /// Every registry's screen, at both of the shapes it can be opened in —
     /// what the per-kind sweeps below run over.
     fn every_index(target: Option<RecordingTarget>) -> Vec<(IndexKind, String)> {
-        let rules = Rules::standard();
         let state = a_state();
         let colors: Vec<yokohama_core::PlayerColor> =
             state.players.iter().map(|p| p.color).collect();
-        vec![
-            (
-                IndexKind::Orders,
-                index_view(&build_order_index(&rules, &[], target, None), &colors),
-            ),
-            (
-                IndexKind::Techs,
-                index_view(
-                    &crate::screen_model::build_tech_index(&rules, &[], target, None),
-                    &colors,
-                ),
-            ),
-            (
-                IndexKind::Achievements,
-                index_view(
-                    &crate::screen_model::build_achievement_index(
-                        &crate::screen_model::build_achievements(&state).cards,
-                        &[],
-                        target,
-                        None,
-                    ),
-                    &colors,
-                ),
-            ),
-            (
-                IndexKind::Sites,
-                index_view(
-                    &crate::screen_model::build_site_index(&rules, &[], target, None),
-                    &colors,
-                ),
-            ),
-        ]
+        IndexKind::ALL
+            .into_iter()
+            .map(|kind| {
+                (kind, index_view(&one_index(kind, target), &colors, IndexContext::Overlay))
+            })
+            .collect()
     }
 
     /// A real 2-player game, for the achievement index's live claim state and
@@ -424,7 +460,7 @@ mod tests {
         let rules = Rules::standard();
         let model = crate::screen_model::build_tech_index(&rules, &[], Some(TECH_TARGET), None);
         assert_eq!(model.total, 20, "twenty titles from thirty physical cards");
-        let text = strip_ansi(&index_view(&model, &[]));
+        let text = strip_ansi(&index_view(&model, &[], IndexContext::Overlay));
 
         let mut seen = std::collections::BTreeSet::new();
         for card in rules.techs.iter() {
@@ -485,7 +521,7 @@ mod tests {
             "and a selection resolves to the copy nobody has claimed",
         );
         assert!(
-            strip_ansi(&index_view(&half, &[])).contains("1 of 2 seen: Laboratory A slot 3"),
+            strip_ansi(&index_view(&half, &[], IndexContext::Overlay)).contains("1 of 2 seen: Laboratory A slot 3"),
             "the screen says which copy went where",
         );
 
@@ -504,7 +540,7 @@ mod tests {
             .expect("Telegram is on screen");
         assert!(card.location.is_some(), "both copies accounted for, so the card dims");
         assert!(
-            strip_ansi(&index_view(&both, &[])).contains("= Laboratory A slot 3 +1 more"),
+            strip_ansi(&index_view(&both, &[], IndexContext::Overlay)).contains("= Laboratory A slot 3 +1 more"),
             "and it says both are spoken for",
         );
     }
@@ -521,7 +557,7 @@ mod tests {
             state.players.iter().map(|p| p.color).collect();
         let panel = crate::screen_model::build_achievements(&state);
         let text =
-            strip_ansi(&index_view(&crate::screen_model::build_achievement_index(&panel.cards, &[], None, None), &colors));
+            strip_ansi(&index_view(&crate::screen_model::build_achievement_index(&panel.cards, &[], None, None), &colors, IndexContext::Overlay));
 
         assert_eq!(panel.cards.len(), 3, "one card per category is in play");
         for card in &panel.cards {
@@ -559,7 +595,7 @@ mod tests {
             state.players.iter().map(|p| p.color).collect();
         let panel = crate::screen_model::build_achievements(&state);
         let text =
-            strip_ansi(&index_view(&crate::screen_model::build_achievement_index(&panel.cards, &[], None, None), &colors));
+            strip_ansi(&index_view(&crate::screen_model::build_achievement_index(&panel.cards, &[], None, None), &colors, IndexContext::Overlay));
         assert!(text.contains("claimed by Blue"), "{text}");
     }
 
@@ -577,7 +613,7 @@ mod tests {
         for group in &model.groups {
             assert_eq!(group.cards.len(), 4, "four types per category");
         }
-        let text = strip_ansi(&index_view(&model, &[]));
+        let text = strip_ansi(&index_view(&model, &[], IndexContext::Overlay));
         assert!(text.contains("[1] "), "a recording screen numbers its cards");
         assert!(text.contains("[12] "), "through to the last one: {text:.300}");
         assert!(
@@ -595,7 +631,7 @@ mod tests {
         let model = crate::screen_model::build_site_index(&rules, &[], Some(A_TARGET), None);
         assert_eq!(model.total, 24, "twenty-four printed site cards");
         assert_eq!(model.groups.len(), 1, "one ungrouped run");
-        let text = strip_ansi(&index_view(&model, &[]));
+        let text = strip_ansi(&index_view(&model, &[], IndexContext::Overlay));
         for (i, site) in rules.building_sites.iter().enumerate() {
             assert!(text.contains(&format!("SITE {i}")), "card {i} is on screen: {text:.300}");
             assert!(
@@ -621,6 +657,7 @@ mod tests {
         let rendered = strip_ansi(&index_view(
             &crate::screen_model::build_tech_index(&rules, &[], None, None),
             &[],
+            IndexContext::Overlay,
         ));
         crate::view_render::tests::assert_capture("t6-tech-index.txt", &rendered);
     }
@@ -641,6 +678,62 @@ mod tests {
                 let lines: Vec<&str> = plain.lines().collect();
                 let caret = lines.iter().position(|l| l.trim() == ">").expect("the caret");
                 assert_eq!(lines[caret - 1], line, "{kind:?}: the way out sits above the prompt");
+            }
+        }
+    }
+
+    /// **The way out says the truth about the surface it is drawn on** (T7
+    /// review M3), at every registry and both shapes.
+    ///
+    /// The overlay sentence — four keys that close a screen and put you back at
+    /// the prompt underneath — was printed inline in the wizard too, where none
+    /// of the four closes anything: the index is written into the transcript and
+    /// the question is asked again below it. Two of the four are worse than
+    /// inert there, since `card_prompt` reads Enter and `cancel` as `Cancel` and
+    /// `ask_card` answers that with "this question needs an answer". And the
+    /// same screen's own prompt hint says `'?' to redraw it` one line later,
+    /// which the word `closes` directly contradicts.
+    ///
+    /// Both halves are asserted, in both directions: each context says its own
+    /// sentence AND does not say the other's, so a future edit that collapses
+    /// the two back into one line fails here rather than passing whichever half
+    /// it kept.
+    #[test]
+    fn the_way_out_is_the_truth_about_the_surface_it_is_drawn_on() {
+        for target in [None, Some(A_TARGET)] {
+            for (kind, _) in every_index(target) {
+                let model = one_index(kind, target);
+                let overlay = strip_ansi(&index_view(&model, &[], IndexContext::Overlay));
+                let inline = strip_ansi(&index_view(&model, &[], IndexContext::Inline));
+
+                assert!(
+                    overlay.contains("closes this index and puts you back at the prompt underneath"),
+                    "{kind:?} overlay:\n{overlay}",
+                );
+                assert!(
+                    !inline.contains("closes this index"),
+                    "{kind:?} inline must not promise to close a screen that is not there:\n{inline}",
+                );
+                assert!(
+                    inline.contains("the question continues below, so answer it ('?' redraws this index)"),
+                    "{kind:?} inline:\n{inline}",
+                );
+                assert!(
+                    inline.contains("'abort' leaves setup"),
+                    "{kind:?} inline must name the one exit a setup question has:\n{inline}",
+                );
+                assert!(
+                    !overlay.contains("'abort'"),
+                    "{kind:?} overlay has no setup to leave:\n{overlay}",
+                );
+                // The two differ in exactly one line, so nothing else moved with
+                // the wording.
+                let differing = overlay
+                    .lines()
+                    .zip(inline.lines())
+                    .filter(|(a, b)| a != b)
+                    .count();
+                assert_eq!(differing, 1, "{kind:?}: only the way-out line differs");
             }
         }
     }
@@ -734,6 +827,7 @@ mod tests {
         let text = strip_ansi(&index_view(
             &build_order_index(&rules, &placed, Some(A_TARGET), None),
             &[],
+            IndexContext::Overlay,
         ));
         assert!(text.contains("= Seat 0's deal"), "{text:.600}");
         assert!(text.contains("= Port A slot 1"), "{text:.600}");
@@ -874,6 +968,7 @@ mod tests {
                 None,
             ),
             &[],
+            IndexContext::Overlay,
         ));
 
         if std::env::var_os("UPDATE_T5_CAPTURE").is_some() {
@@ -896,7 +991,7 @@ mod tests {
         let rules = Rules::standard();
         let index =
             build_order_index(&rules, &[], Some(A_TARGET), Some(IndexFilter::Country(Country::Dutch)));
-        let text = strip_ansi(&index_view(&index, &[]));
+        let text = strip_ansi(&index_view(&index, &[], IndexContext::Overlay));
         assert_eq!(index.shown, 5, "the Dutch group is five cards");
         assert!(text.contains("5 of 36, from Netherlands"), "{text:.300}");
         assert!(text.contains("[1] "), "the filtered grid renumbers from the base");
@@ -905,5 +1000,88 @@ mod tests {
         let empty = strip_ansi(&view(Some(A_TARGET), Some(IndexFilter::MinVp(200))));
         assert!(empty.contains("no cards match that filter"), "{empty:.300}");
         assert!(empty.contains("'f' clears"), "the way out is named on the screen");
+    }
+
+    /// **The ACHIEVEMENT index does not renumber under a filter** (T7 review
+    /// M2), which is the exception the test above is the rule for.
+    ///
+    /// It is the one registry whose numbers are printed by a SECOND surface: the
+    /// wizard's category question draws its own four cards from this model and
+    /// leaves them on screen, so `f b` used to put `[1] Copper5` (the still
+    /// visible menu) and `[1] Money10` (the fresh index) in front of an operator
+    /// at once — F3 verbatim, at the prompt F1 was found at. Numbering over the
+    /// whole population makes one number mean one card whatever the screen shows.
+    ///
+    /// Asserted against the UNFILTERED model's own numbers rather than against
+    /// literals, so this pins the AGREEMENT rather than today's card order.
+    #[test]
+    fn the_achievement_index_keeps_its_numbers_when_a_filter_narrows_it() {
+        let all = crate::screen_model::achievement_registry();
+        let target = RecordingTarget::AchievementSetup { category: AchievementCategory::A };
+        let full = crate::screen_model::build_achievement_index(&all, &[], Some(target), None);
+        let numbers: Vec<(usize, crate::screen_model::CardRef)> = full
+            .cards()
+            .map(|c| (c.selection.expect("a recording screen numbers"), c.face.card_ref().unwrap()))
+            .collect();
+        assert_eq!(numbers.len(), 12);
+
+        const CATEGORIES: [AchievementCategory; 3] =
+            [AchievementCategory::A, AchievementCategory::B, AchievementCategory::C];
+        for (position, category) in CATEGORIES.into_iter().enumerate() {
+            let narrowed = crate::screen_model::build_achievement_index(
+                &all,
+                &[],
+                Some(target),
+                Some(IndexFilter::Category(category)),
+            );
+            assert_eq!(narrowed.shown, 4, "a category is four cards");
+            for card in narrowed.cards() {
+                let number = card.selection.expect("still numbered");
+                assert_eq!(
+                    (number, card.face.card_ref().unwrap()),
+                    *numbers.iter().find(|(n, _)| *n == number).expect("the same number"),
+                    "{category:?}: a number must name the same card filtered or not",
+                );
+                // ...through the model's own resolver, which is what a typed
+                // number actually goes through.
+                assert_eq!(narrowed.select(number), full.select(number));
+            }
+            // Category B is [5]-[8], so the screen is NOT numbered from the base
+            // — the deliberate contrast with every other registry.
+            let lowest = narrowed.cards().filter_map(|c| c.selection).min().unwrap();
+            assert_eq!(
+                lowest,
+                crate::screen_model::menu_number(position * 4),
+                "{category:?} keeps its slice of the twelve",
+            );
+        }
+    }
+
+    /// The ORDER index still compacts, which is the other half of the same
+    /// ruling: nothing else prints its numbers, so a filtered screen numbering
+    /// `[5]`-`[9]` would just be gaps with no second surface to agree with.
+    #[test]
+    fn the_other_registries_still_renumber_from_the_base_under_a_filter() {
+        let rules = Rules::standard();
+        for (kind, filter) in [
+            (IndexKind::Orders, IndexFilter::Country(Country::Dutch)),
+            (IndexKind::Techs, IndexFilter::Country(Country::Dutch)),
+        ] {
+            let narrowed = crate::screen_model::build_index(
+                kind,
+                &rules,
+                &[],
+                &crate::screen_model::achievement_registry(),
+                Some(A_TARGET),
+                Some(filter),
+            );
+            let numbers: Vec<usize> = narrowed.cards().filter_map(|c| c.selection).collect();
+            assert!(!numbers.is_empty(), "{kind:?}: the fixture must narrow to something");
+            assert_eq!(
+                numbers,
+                (0..numbers.len()).map(crate::screen_model::menu_number).collect::<Vec<_>>(),
+                "{kind:?} numbers its filtered screen from the base with no gaps",
+            );
+        }
     }
 }

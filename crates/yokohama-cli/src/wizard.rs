@@ -230,9 +230,17 @@ fn ask_card(
                     }
                     Err(reason) => Ask::Refused(reason),
                 },
+                // INLINE, never an overlay: `ask_screened` prints this into the
+                // transcript and asks the same question underneath it, so the
+                // screen's own way-out line has to say that rather than offer
+                // four keys that close nothing (T7 review M3).
                 CardEntry::OpenIndex => {
                     showing.set(numbered);
-                    Ask::Screen(crate::index_render::index_view(&model, ctx.colors))
+                    Ask::Screen(crate::index_render::index_view(
+                        &model,
+                        ctx.colors,
+                        crate::index_render::IndexContext::Inline,
+                    ))
                 }
                 CardEntry::Filter(narrowed) => {
                     filter.set(narrowed);
@@ -240,6 +248,7 @@ fn ask_card(
                     Ask::Screen(crate::index_render::index_view(
                         &ctx.index(kind, screen_target, narrowed),
                         ctx.colors,
+                        crate::index_render::IndexContext::Inline,
                     ))
                 }
                 // There is nothing to cancel BACK to inside the wizard: every
@@ -283,6 +292,13 @@ fn entry_hint(kind: IndexKind, showing: bool) -> &'static str {
     match kind {
         IndexKind::Orders => "a number, 'O14', or '?' for the card index",
         IndexKind::Techs => "a name, 'T07', or '?' for the card index",
+        // Unreachable, and for the mirror-image reason the `Sites` arm above is:
+        // the only achievement prompt is `ask_achievements`, which prints the
+        // category's four numbered cards WITH the question, so it passes
+        // `menu_on_screen: true` and `showing` is true before the first keypress
+        // and stays true. Both arms are kept so the match is total per registry
+        // and a second achievement prompt — one with no menu of its own — gets a
+        // hint rather than a compile error.
         IndexKind::Achievements => "a number, a name, or '?' for the card index",
         IndexKind::Sites => "a number, 'S12', or '?' for the card index",
     }
@@ -313,11 +329,11 @@ fn already_recorded_line(kind: IndexKind, ctx: &CardCtx<'_>) -> String {
     // Bounded by COLUMNS rather than by a count: the tags are three characters
     // for an order card and a whole title for a technology, so a fixed cap
     // would either clip the short list or overrun the long one.
-    let mut room = 60usize;
+    let mut room = TAG_BUDGET;
     let shown = tags
         .iter()
         .take_while(|tag| {
-            room = room.saturating_sub(tag.chars().count() + 1);
+            room = room.saturating_sub(tag.chars().count() + TAG_SEPARATOR.chars().count());
             room > 0
         })
         .count()
@@ -331,9 +347,24 @@ fn already_recorded_line(kind: IndexKind, ctx: &CardCtx<'_>) -> String {
     };
     format!(
         "  already recorded -- {total} {registry}: {}{more}  ('?' shows each one and where)\n",
-        tags.join(" "),
+        tags.join(TAG_SEPARATOR),
     )
 }
+
+/// Columns this line spends on tags before it starts counting instead
+/// ([`already_recorded_line`]).
+const TAG_BUDGET: usize = 60;
+
+/// What separates two already-recorded tags.
+///
+/// **A space is not enough once a tag has a space in it** (T7 review S2). An
+/// order tag is `O04`, so `O04 O17 O21` reads as three cards on sight; a
+/// TECHNOLOGY tag is the printed title, so the same join produced
+/// `Postal Service Textile Mill Telegram` — one string a reader has to already
+/// know the registry to cut up, on the line whose whole job is letting them see
+/// at a glance what is spoken for. The mid-dot is the separator this crate
+/// already uses between fields a person has to read apart.
+const TAG_SEPARATOR: &str = " · ";
 
 /// How the already-recorded line names one card: the thing the operator would
 /// recognize. A technology by its printed NAME, never its id (R8); everything
@@ -1336,6 +1367,7 @@ fn ask_tiles(
     let n: usize = rows.iter().map(|&l| l as usize).sum();
     out(&tile_entry_preamble(&rows, players));
 
+    let roster = tile_roster(legal_counts);
     let mut remaining = legal_counts.clone();
     let mut tiles: Vec<AreaType> = Vec::with_capacity(n);
     let mut row = 0usize;
@@ -1351,7 +1383,7 @@ fn ask_tiles(
         // change when an answer is taken, and that ends this question -- so the
         // menu is built once and rides in the prompt, where a re-ask reprints it
         // beside the question rather than leaving it scrolled away.
-        let offer = tile_offer(&remaining);
+        let offer = tile_offer(&roster, &remaining);
         let mut chosen: Option<AreaType> = None;
         ask(
             input,
@@ -1384,16 +1416,33 @@ fn ask_tiles(
     Ok(tiles)
 }
 
-/// The tile types still placeable, with how many of each is left — in
-/// `AREA_TYPE_ENTRY` order so a type's position only moves when another type
-/// runs out, never because the board is being filled in a different order.
-fn tile_offer(remaining: &HashMap<AreaType, u32>) -> Vec<(AreaType, u32)> {
+/// Every tile type THIS BOARD uses, in `AREA_TYPE_ENTRY` order — computed once
+/// before the pass and never recomputed.
+///
+/// **This is the numbering, and its being fixed is the point** (T7 review S1).
+/// The offer used to be the types with copies LEFT, so the numbers were assigned
+/// over a list that shrank: at 2 players, answering `1` for the single Copper
+/// Mine dropped that row and made `1` mean Silk Mill at the very next question,
+/// then Tea Plantation, and so on — ten questions, ten different meanings for
+/// the same key, at the one prompt an operator answers by rote. The roster is
+/// the whole legal set including the types that are used up, so a number names
+/// one tile type for the entire pass.
+fn tile_roster(legal_counts: &HashMap<AreaType, u32>) -> Vec<AreaType> {
     AREA_TYPE_ENTRY
         .iter()
-        .filter_map(|(area, _)| {
-            remaining.get(area).filter(|k| **k > 0).map(|k| (*area, *k))
-        })
+        .filter(|(area, _)| legal_counts.contains_key(area))
+        .map(|(area, _)| *area)
         .collect()
+}
+
+/// The roster with how many of each type is still to place — zeros included, so
+/// a position in this list is a stable answer number ([`tile_roster`]).
+///
+/// The COUNTS still shrink, which is F2's half of this prompt: the menu says
+/// what is left, and a type that has run out drops off the screen. What no
+/// longer moves is where the surviving rows are numbered.
+fn tile_offer(roster: &[AreaType], remaining: &HashMap<AreaType, u32>) -> Vec<(AreaType, u32)> {
+    roster.iter().map(|area| (*area, remaining.get(area).copied().unwrap_or(0))).collect()
 }
 
 /// The offer as a numbered menu — **finding F2, fixed at the surface where the
@@ -1408,27 +1457,45 @@ fn tile_offer(remaining: &HashMap<AreaType, u32>) -> Vec<(AreaType, u32)> {
 /// count still to place, shrinking as the board fills.
 ///
 /// Full names, with the short codes kept as accepted aliases (R1), and numbers
-/// that work (F3).
+/// that work (F3) and stay put ([`tile_roster`]).
+///
+/// A type with nothing left is DROPPED rather than shown at zero: the menu
+/// answers "what can I still place", and a row reading `Copper Mine x0` is a row
+/// whose number the next answer would refuse. Its number goes with it and is
+/// never handed to another tile.
 fn tile_menu(offer: &[(AreaType, u32)], players: u8) -> String {
     numbered_offer(
         &format!("  Tiles still to place on this {players}-player board:\n"),
-        offer.iter().map(|(area, left)| {
-            format!("{} x{left}", crate::describe::area_type_name(*area))
+        offer.iter().enumerate().filter(|(_, (_, left))| *left > 0).map(|(position, (area, left))| {
+            (
+                menu_number(position),
+                format!("{} x{left}", crate::describe::area_type_name(*area)),
+            )
         }),
     )
 }
 
 /// A numbered offer, three to a row — the layout both board-entry menus use.
 ///
-/// Numbered from [`menu_number`] like every other list in the driver, and 26
-/// columns to a cell: the widest either menu produces is `[10] Employment
-/// Agency x2` at 25, so three of those plus the indent clear 80.
-fn numbered_offer(header: &str, cells: impl Iterator<Item = String>) -> String {
+/// **The number is the CALLER's, not this list's position**, since S1: the tile
+/// menu numbers over a fixed roster and prints only the rows with copies left,
+/// so its third printed cell can legitimately be `[5]`. Rows still break three
+/// to a printed cell, which is what keeps the grid rectangular with gaps in it.
+///
+/// Numbered from [`menu_number`] by both callers, and 26 columns to a cell. The
+/// row fits 80 columns because only the FIRST TWO cells pay their padding — the
+/// third is trimmed to its own width — so a full row costs
+/// `3 + 26 + 26 + widest`, not `3 + 26 * 3`, which would be 81 and wrap.
+/// `numbered_offer_fits_three_cells_in_eighty_columns` measures `widest` over
+/// every menu both callers can produce rather than leaving the figure in prose;
+/// at today's data it is 25 (`[10] Employment Agency x2`), i.e. one column of
+/// headroom.
+fn numbered_offer(header: &str, cells: impl Iterator<Item = (usize, String)>) -> String {
     let mut out = header.to_string();
     let mut count = 0usize;
-    for (i, cell) in cells.enumerate() {
+    for (i, (number, cell)) in cells.enumerate() {
         count = i + 1;
-        let cell = format!("[{}] {cell}", menu_number(i));
+        let cell = format!("[{number}] {cell}");
         if i % 3 == 0 {
             out.push_str("   ");
         }
@@ -1446,9 +1513,16 @@ fn numbered_offer(header: &str, cells: impl Iterator<Item = String>) -> String {
 /// One tile answer: a menu number, a short code, or a name (any unambiguous
 /// start of one).
 ///
-/// The two refusals are the whole point of F2 and they say DIFFERENT things: a
+/// The three refusals say DIFFERENT things, which is the whole point of F2: a
 /// type this player count does not use is not a mistake about the board's
-/// progress, it is a tile that is in the box.
+/// progress, it is a tile that is in the box; a type whose copies are all placed
+/// is a real tile on this board with nothing left; and a number outside the
+/// roster is neither.
+///
+/// **The number indexes the ROSTER, not the visible rows** ([`tile_roster`]), so
+/// a number whose row has dropped off the menu reaches the exhausted-type
+/// refusal — by name, with the set size — rather than landing on whichever tile
+/// happens to sit in that print position now.
 fn parse_tile_entry(
     s: &str,
     offer: &[(AreaType, u32)],
@@ -1461,7 +1535,11 @@ fn parse_tile_entry(
     }
     if typed.chars().all(|c| c.is_ascii_digit()) {
         return match typed.parse::<usize>().ok().and_then(|k| menu_index(k, offer.len())) {
-            Some(k) => Ok(offer[k].0),
+            Some(k) if offer[k].1 > 0 => Ok(offer[k].0),
+            Some(k) => Err(exhausted_message(offer[k].0, legal_counts, players)),
+            // The roster is the player count's whole tile set, so it is empty
+            // only for a board with no tile types at all — which no `GameConfig`
+            // produces and only a hand-built fixture could.
             None => Err(match menu_range(offer.len()) {
                 Some((lo, hi)) => format!("'{typed}' is not on the list -- pick {lo}-{hi}"),
                 None => "no tiles are left to place".to_string(),
@@ -1469,7 +1547,7 @@ fn parse_tile_entry(
         };
     }
     let area = match_tile_name(typed, legal_counts)?;
-    match (legal_counts.get(&area), offer.iter().any(|(a, _)| *a == area)) {
+    match (legal_counts.get(&area), offer.iter().any(|(a, left)| *a == area && *left > 0)) {
         (_, true) => Ok(area),
         // In the game but not on THIS board: `canal` at 2 players, the finding
         // by name.
@@ -1477,10 +1555,28 @@ fn parse_tile_entry(
             "{} is not part of a {players}-player board -- that tile stays in the box",
             crate::describe::area_type_name(area),
         )),
-        (Some(total), false) => Err(format!(
+        (Some(_), false) => Err(exhausted_message(area, legal_counts, players)),
+    }
+}
+
+/// A tile whose copies are all placed, refused with the set size — the same
+/// sentence whether the operator named it or typed its still-valid number.
+fn exhausted_message(
+    area: AreaType,
+    legal_counts: &HashMap<AreaType, u32>,
+    players: u8,
+) -> String {
+    match legal_counts.get(&area) {
+        Some(total) => format!(
             "no more {} tiles for this board -- the {players}-player set has {total}",
             crate::describe::area_type_name(area),
-        )),
+        ),
+        // Not on this board at all: only reachable through a roster built from
+        // a different `legal_counts` than the one being checked against.
+        None => format!(
+            "{} is not part of a {players}-player board -- that tile stays in the box",
+            crate::describe::area_type_name(area),
+        ),
     }
 }
 
@@ -1667,7 +1763,15 @@ fn ask_tokens(
                 let effect = parse_token_entry(s, &offer)?;
                 match pool.iter().position(|p| *p == effect) {
                     Some(idx) => {
-                        pool.swap_remove(idx);
+                        // ORDER-PRESERVING, and it has to be: `token_offer`
+                        // reads the menu off this pool in first-seen order, so a
+                        // `swap_remove` here — which is what shipped — dropped
+                        // the pool's LAST face into the hole and put it at the
+                        // head of the next menu. Answering `1` on cell 0 gave
+                        // an imported good; answering `1` on cell 1 gave yen.
+                        // The rows moved, silently, mid-pass (T7 review S3,
+                        // found by the pin rather than by reading).
+                        pool.remove(idx);
                         chosen = Some(effect);
                         Ok(())
                     }
@@ -1707,8 +1811,8 @@ fn token_offer(pool: &[FivePowerEffect]) -> Vec<(FivePowerEffect, usize)> {
 fn token_menu(offer: &[(FivePowerEffect, usize)]) -> String {
     numbered_offer(
         "  Tokens still to place:\n",
-        offer.iter().map(|(face, left)| {
-            format!("{} x{left}", crate::describe::five_power_effect_label(*face))
+        offer.iter().enumerate().map(|(i, (face, left))| {
+            (menu_number(i), format!("{} x{left}", crate::describe::five_power_effect_label(*face)))
         }),
     )
 }
@@ -1892,12 +1996,18 @@ fn ask_achievements(
         let target = RecordingTarget::AchievementSetup { category };
         let card = {
             let ctx = CardCtx { rules, colors, placed: &placed };
-            out(&category_menu(&ctx.index(target.kind(), Some(target), None), category));
+            // The menu rides IN the question, exactly as the tile menu does and
+            // for the reason that prompt already states (T7 review S5): a re-ask
+            // reprints it beside the question rather than leaving the four cards
+            // scrolled away above an index screen or a refusal. It is fixed for
+            // the duration of this one question — `placed` only changes when an
+            // answer is taken, and that ends it.
+            let menu = category_menu(&ctx.index(target.kind(), Some(target), None), category);
             ask_card(
                 input,
                 out,
                 &ctx,
-                &format!("Which category {letter} card is in play?"),
+                &format!("{menu}Which category {letter} card is in play?"),
                 target,
                 // The four cards are printed directly above with their numbers,
                 // so a bare number is a selection from the moment the question
@@ -3443,9 +3553,11 @@ mod tests {
             "hidden".into(), "hidden".into(),
         ];
         // Cell 0: an ambiguous prefix (refused), then the full name. Cell 1: the
-        // menu number of Silk Mill, which is 1-based over the offer with Copper
-        // Mine gone — Silk Mill is then the first row. Cells 2-9: short codes.
-        lines.extend(["c", "Copper Mine", "1"].iter().map(|s| s.to_string()));
+        // menu number of Silk Mill, which is its position in the FIXED roster
+        // (S1) and so is still 2 with the single Copper Mine used up — under the
+        // old shrinking offer the same tile was `1` here and something else
+        // again at the next cell. Cells 2-9: short codes.
+        lines.extend(["c", "Copper Mine", "2"].iter().map(|s| s.to_string()));
         lines.extend(P2_TILES[2..].iter().map(|s| s.to_string()));
         lines.extend((0u8..10).map(|i| i.to_string()));
         lines.extend(token_letters_for_count(10));
@@ -3599,7 +3711,7 @@ mod tests {
             "the refusal must name the seat's deal (F6)\n{transcript}"
         );
         assert!(
-            transcript.contains("already recorded -- 2 order cards: O02 O04"),
+            transcript.contains("already recorded -- 2 order cards: O02 · O04"),
             "the running already-recorded line must ride the card questions\n{transcript}"
         );
         assert_eq!(repl.session.state().port_state.port_a.slots[0], Some(OrderCardId(1)));
@@ -3821,5 +3933,529 @@ mod tests {
             "the site index `S0` is the card's own identity\n{transcript}"
         );
         std::fs::remove_file("yokohama-game-641.json").ok();
+    }
+
+    // -------------------------------------------------------------------
+    // T7 review fix wave
+    // -------------------------------------------------------------------
+
+    /// **A tile type's number does not move for the whole pass** (T7 review S1).
+    ///
+    /// The offer was the types with copies LEFT, numbered over that shrinking
+    /// list — so at 2 players, where five of the ten types have exactly one
+    /// copy, answering `1` for the Copper Mine made `1` mean Silk Mill at the
+    /// very next question, then Tea Plantation, then Fishing Ground. Ten
+    /// questions asked back to back, one key, five different tiles. An operator
+    /// entering a board off a printed sheet is exactly the person who reads the
+    /// number once and then stops reading it.
+    ///
+    /// Pinned as the AGREEMENT between the printed menu and the roster, over
+    /// every menu the pass prints: whatever number a row carries at cell 0 it
+    /// still carries at cell 9, and the rows that vanish take their numbers with
+    /// them. The counts still shrink, which is F2 and is asserted here too so a
+    /// fix that froze the whole menu could not pass.
+    #[test]
+    fn a_tile_types_menu_number_is_the_same_at_every_cell_of_the_pass() {
+        let mut lines = live_2p_through_labs(646);
+        lines.push("confirm".into());
+        lines.push("yes".into());
+        let (repl, transcript) = feed_owned(lines);
+        repl.unwrap_or_else(|e| panic!("expected Ok, got Err({e}); transcript:\n{transcript}"));
+        std::fs::remove_file("yokohama-game-646.json").ok();
+
+        // Every tile menu in the transcript, as (number -> tile name) maps.
+        let menus: Vec<HashMap<usize, String>> = transcript
+            .split("Tiles still to place")
+            .skip(1)
+            .map(|block| {
+                block
+                    .lines()
+                    .take_while(|l| !l.starts_with("Cell "))
+                    .flat_map(|line| {
+                        line.split('[').skip(1).filter_map(|cell| {
+                            let (number, rest) = cell.split_once("] ")?;
+                            let (name, _) = rest.trim_end().rsplit_once(" x")?;
+                            Some((number.parse::<usize>().ok()?, name.trim().to_string()))
+                        })
+                    })
+                    .collect()
+            })
+            .collect();
+        assert_eq!(menus.len(), 10, "one menu per cell");
+        assert_eq!(menus[0].len(), 10, "the first cell offers every 2P type");
+        assert_eq!(menus[9].len(), 1, "the last offers the one type left");
+
+        // The number a type carries never moves, at any menu it appears in.
+        let first = &menus[0];
+        for (i, menu) in menus.iter().enumerate() {
+            for (number, name) in menu {
+                assert_eq!(
+                    first.get(number),
+                    Some(name),
+                    "cell {i}: [{number}] is {name:?} here and {:?} at the first menu\n{transcript}",
+                    first.get(number),
+                );
+            }
+        }
+        // ...and the numbers that vanish are never handed to another tile: the
+        // union of every menu's (number, name) pairs is exactly the first
+        // menu's, so nothing was renumbered into a freed slot.
+        let mut seen: HashMap<usize, String> = HashMap::new();
+        for menu in &menus {
+            seen.extend(menu.clone());
+        }
+        assert_eq!(&seen, first, "a freed number was reused\n{transcript}");
+    }
+
+    /// **A number whose row has dropped off the menu is refused BY NAME**, with
+    /// the set size — not silently bound to whatever tile now occupies that
+    /// print position (T7 review S1's other half). This is the failure mode the
+    /// fixed roster exists to make impossible, so it is asserted rather than
+    /// argued: `1` is the Copper Mine at every cell, and at 2 players there is
+    /// one of those.
+    #[test]
+    fn an_exhausted_tile_number_is_refused_by_name_not_bound_to_the_next_row() {
+        let mut lines: Vec<String> = vec![
+            "live".into(), "2".into(), "red".into(), "blue".into(), "0".into(), "647".into(), "".into(),
+            "hidden".into(), "hidden".into(),
+        ];
+        // Cell 0 takes the Copper Mine by number; cell 1 asks for it again by
+        // the SAME number, which must now be a refusal rather than a Silk Mill.
+        lines.extend(["1", "1", "sm"].iter().map(|s| s.to_string()));
+        lines.extend(P2_TILES[2..].iter().map(|s| s.to_string()));
+        lines.extend((0u8..10).map(|i| i.to_string()));
+        lines.extend(token_letters_for_count(10));
+        lines.extend(P2_ACHIEVEMENTS.iter().map(|s| s.to_string()));
+        lines.extend(["O1", "O2", "O3", "O4", "O5", "O6"].iter().map(|s| s.to_string()));
+        lines.extend(["T1", "T2", "T3", "T4", "T5", "T6"].iter().map(|s| s.to_string()));
+        lines.push("confirm".into());
+        lines.push("yes".into());
+        let (repl, transcript) = feed_owned(lines);
+        let repl = repl.unwrap_or_else(|e| panic!("expected Ok, got Err({e}); transcript:\n{transcript}"));
+
+        assert!(
+            transcript.contains(
+                "no more Copper Mine tiles for this board -- the 2-player set has 1"
+            ),
+            "the refusal names the tile the number still means\n{transcript}"
+        );
+        let areas = &repl.session.state().board_layout.areas;
+        assert_eq!(areas[&AreaId::new(0)].area_type, AreaType::CopperMine);
+        assert_eq!(
+            areas[&AreaId::new(1)].area_type,
+            AreaType::SilkMill,
+            "the second `1` entered nothing at all",
+        );
+        std::fs::remove_file("yokohama-game-647.json").ok();
+    }
+
+    /// **The category menu comes back with the question** (T7 review S5). The
+    /// tile prompt already states the rule this follows: a menu that rides in
+    /// the prompt is reprinted by a re-ask, and one printed once is scrolled
+    /// away by the first refusal or `?` screen — leaving the operator answering
+    /// "type the number beside a card" with no cards on screen.
+    #[test]
+    fn the_category_menu_is_reprinted_when_the_question_is_asked_again() {
+        let mut lines: Vec<String> = vec![
+            "live".into(), "2".into(), "red".into(), "blue".into(), "0".into(), "648".into(), "".into(),
+            "hidden".into(), "hidden".into(),
+        ];
+        lines.extend(P2_TILES.iter().map(|s| s.to_string()));
+        lines.extend((0u8..10).map(|i| i.to_string()));
+        lines.extend(token_letters_for_count(10));
+        // Category A: a wrong-category card (refused), then `?` (a screen), then
+        // the real answer. Three printings of the menu, one per ask.
+        lines.extend(["Money10", "?", "Copper5", "Money10", "Production4"].iter().map(|s| s.to_string()));
+        lines.extend(["O1", "O2", "O3", "O4", "O5", "O6"].iter().map(|s| s.to_string()));
+        lines.extend(["T1", "T2", "T3", "T4", "T5", "T6"].iter().map(|s| s.to_string()));
+        lines.push("confirm".into());
+        lines.push("yes".into());
+        let (repl, transcript) = feed_owned(lines);
+        repl.unwrap_or_else(|e| panic!("expected Ok, got Err({e}); transcript:\n{transcript}"));
+        std::fs::remove_file("yokohama-game-648.json").ok();
+
+        assert_eq!(
+            transcript.matches("Category A -- one of these four:").count(),
+            3,
+            "category A was asked three times, so its four cards were drawn three times\n{transcript}"
+        );
+        // ...and each printing really is above its own question, not batched.
+        for block in transcript.split("Category A -- one of these four:").skip(1) {
+            assert!(
+                block.lines().take(6).any(|l| l.contains("Which category A card is in play?")),
+                "the menu sits directly above the question it answers:\n{block:.400}"
+            );
+        }
+        assert_eq!(
+            transcript.matches("Category B -- one of these four:").count(),
+            1,
+            "a question answered first time is asked — and drawn — once\n{transcript}"
+        );
+    }
+
+    /// **The index the wizard prints says how to get back to the QUESTION**
+    /// (T7 review M3), because nothing there is an overlay: `ask_screened`
+    /// writes the screen into the transcript and asks again underneath it. The
+    /// overlay sentence promised four keys that close it, two of which the very
+    /// next prompt refuses, and contradicted the prompt's own `'?' to redraw it`
+    /// hint printed two lines later.
+    #[test]
+    fn a_wizard_index_states_the_inline_way_out_and_agrees_with_the_prompt_hint() {
+        let mut lines = live_2p_prefix(649);
+        lines.push("?".into());
+        lines.extend(["O1", "O2", "O3", "O4", "O5", "O6"].iter().map(|s| s.to_string()));
+        lines.extend(["T1", "T2", "T3", "T4", "T5", "T6"].iter().map(|s| s.to_string()));
+        lines.push("confirm".into());
+        lines.push("yes".into());
+        let (repl, transcript) = feed_owned(lines);
+        repl.unwrap_or_else(|e| panic!("expected Ok, got Err({e}); transcript:\n{transcript}"));
+        std::fs::remove_file("yokohama-game-649.json").ok();
+
+        assert!(transcript.contains("ORDER CARD INDEX"), "the index really was drawn\n{transcript}");
+        assert!(
+            transcript.contains("the question continues below, so answer it ('?' redraws this index)"),
+            "the inline way out\n{transcript}"
+        );
+        assert!(
+            !transcript.contains("closes this index"),
+            "no wizard screen may promise to close an overlay that is not there\n{transcript}"
+        );
+        // The two surfaces agree about `?`: the screen says it redraws, and so
+        // does the prompt printed under it.
+        assert!(entry_hint(IndexKind::Orders, true).contains("redraw"));
+        assert!(
+            transcript.contains("or '?' to redraw it"),
+            "the prompt's own hint is in the transcript beside the screen's\n{transcript}"
+        );
+    }
+
+    /// **The already-recorded line separates tags a person has to read apart**
+    /// (T7 review S2), and stops at a COLUMN budget with a count for the rest.
+    ///
+    /// Both halves in one test because they are one line's contract. The join
+    /// mattered as soon as T7 pointed this line at the technologies: an order
+    /// tag is `O04`, so a space read fine, while a tech tag is a printed title
+    /// and `Postal Service Textile Mill` is one string until you already know
+    /// the registry. The budget is the reason it is a column count and not a
+    /// card count — 60 columns is nine order tags or three tech titles.
+    #[test]
+    fn the_already_recorded_line_separates_its_tags_and_stops_at_a_column_budget() {
+        let rules = Rules::standard();
+
+        // Multi-word tags, which is what the separator is for.
+        let mut titles: Vec<(u8, String)> =
+            rules.techs.iter().map(|c| (c.id.0, c.name.clone())).collect();
+        titles.sort();
+        let two_word: Vec<TechCardId> = titles
+            .iter()
+            .filter(|(_, name)| name.contains(' '))
+            .map(|(id, _)| TechCardId(*id))
+            .take(2)
+            .collect();
+        assert_eq!(two_word.len(), 2, "fixture: at least two titles are two words");
+        let placed: Vec<(CardRef, CardLocation)> = two_word
+            .iter()
+            .enumerate()
+            .map(|(i, id)| {
+                (CardRef::Tech(*id), CardLocation::LabSlot { board_b: false, slot: i })
+            })
+            .collect();
+        let ctx = CardCtx { rules: &rules, colors: &[], placed: &placed };
+        let line = already_recorded_line(IndexKind::Techs, &ctx);
+        assert!(
+            line.contains(&format!(
+                "{} · {}",
+                tech_name(two_word[0], &rules.techs),
+                tech_name(two_word[1], &rules.techs),
+            )),
+            "two multi-word titles must be readable as two: {line}"
+        );
+
+        // The budget: order tags are `Oxx` at 3 columns + 3 for the separator,
+        // so 60 columns takes nine of them and the rest are counted.
+        let many: Vec<(CardRef, CardLocation)> = (1u8..=20)
+            .map(|n| {
+                (
+                    CardRef::Order(OrderCardId(n)),
+                    CardLocation::PortSlot { board_b: false, slot: 0 },
+                )
+            })
+            .collect();
+        let ctx = CardCtx { rules: &rules, colors: &[], placed: &many };
+        let line = already_recorded_line(IndexKind::Orders, &ctx);
+        let shown = line.matches("O0").count() + line.matches("O1").count() + line.matches("O2").count();
+        assert!(line.contains("20 order cards:"), "the TOTAL is stated in full: {line}");
+        assert!(shown < 20 && shown > 0, "the tags are cut to the budget: {line}");
+        assert!(
+            line.contains(&format!("+{} more", 20 - shown)),
+            "and what was cut is counted, not dropped: {line}"
+        );
+        // The tag run really does stay inside the budget it claims.
+        let tags = line
+            .split(": ")
+            .nth(1)
+            .and_then(|rest| rest.split("  ('?'").next())
+            .expect("a tag run");
+        let tags = tags.split(" +").next().expect("before the +n more");
+        assert!(
+            tags.chars().count() <= TAG_BUDGET,
+            "{} columns of tags against a {TAG_BUDGET}-column budget: {tags:?}",
+            tags.chars().count(),
+        );
+    }
+
+    /// **A card question with nothing to answer it with says so** (T7 review
+    /// S3). Enter, `cancel` and `back` all reach `CardEntry::Cancel`, and in the
+    /// wizard there is nothing to cancel BACK to — every question is one the
+    /// setup cannot be built without. The message has to name both the grammar
+    /// and the one real exit, or an operator who typed Enter to "skip this one"
+    /// learns nothing from the re-ask.
+    #[test]
+    fn an_empty_answer_at_a_card_question_names_the_grammar_and_the_way_out() {
+        let mut lines = live_2p_prefix(650);
+        lines.extend(["", "cancel", "back", "O1"].iter().map(|s| s.to_string()));
+        lines.extend(["O2", "O3", "O4", "O5", "O6"].iter().map(|s| s.to_string()));
+        lines.extend(["T1", "T2", "T3", "T4", "T5", "T6"].iter().map(|s| s.to_string()));
+        lines.push("confirm".into());
+        lines.push("yes".into());
+        let (repl, transcript) = feed_owned(lines);
+        repl.unwrap_or_else(|e| panic!("expected Ok, got Err({e}); transcript:\n{transcript}"));
+        std::fs::remove_file("yokohama-game-650.json").ok();
+
+        let want = format!(
+            "  ! this question needs an answer -- {}, or 'abort' to leave setup\n",
+            entry_hint(IndexKind::Orders, false),
+        );
+        assert_eq!(
+            transcript.matches(&want).count(),
+            3,
+            "all three ways of saying nothing get the same answer: {want:?}\n{transcript}"
+        );
+    }
+
+    /// **A prefix that names several tiles but only ONE on this board is not
+    /// ambiguous at this table** (T7 review S3). `match_tile_name` matches over
+    /// all fourteen types — which is what lets `canal` at 2 players reach the
+    /// message naming the finding — and then disambiguates against the player
+    /// count's own set, so the widened match cannot make the prompt worse.
+    ///
+    /// `ch` is the case: Church and Chinatown both start that way, Chinatown is
+    /// in the box at 2 players, and at 3+ the same prefix really is ambiguous.
+    #[test]
+    fn a_prefix_matching_several_types_resolves_when_only_one_is_on_this_board() {
+        let two = |types: &[(AreaType, u32)]| -> HashMap<AreaType, u32> {
+            types.iter().copied().collect()
+        };
+        // 2 players: no Port B, so `port` can only be Port A.
+        let p2 = two(&[(AreaType::PortA, 1), (AreaType::Church, 1), (AreaType::CopperMine, 1)]);
+        assert_eq!(match_tile_name("port", &p2), Ok(AreaType::PortA));
+        // 3+ players: both are on the board, so it is refused naming both — and
+        // naming only the ones the operator could be holding.
+        let p3 = two(&[
+            (AreaType::PortA, 1),
+            (AreaType::PortB, 1),
+            (AreaType::Church, 1),
+            (AreaType::CopperMine, 1),
+        ]);
+        let refusal = match_tile_name("port", &p3).expect_err("two tiles start with 'port' here");
+        assert!(refusal.contains("Port A") && refusal.contains("Port B"), "{refusal}");
+        assert!(!refusal.contains("Church"), "only the candidates, not the board: {refusal}");
+        // A type in the game but not on THIS board still matches by name, which
+        // is what routes it to the in-the-box refusal rather than "not a tile".
+        assert_eq!(match_tile_name("chinatown", &p2), Ok(AreaType::Chinatown));
+        // ...and a SHORT CODE is exact, so it never reaches either arm: `ch` is
+        // the Church's code even where Chinatown is on the board too.
+        let with_chinatown =
+            two(&[(AreaType::Church, 1), (AreaType::Chinatown, 1), (AreaType::CopperMine, 1)]);
+        assert_eq!(match_tile_name("ch", &with_chinatown), Ok(AreaType::Church));
+    }
+
+    /// **The token menu is in the canonical pool order** (T7 review S3), which
+    /// is the order the box lists the faces in and the order the letters
+    /// (`i/c/s/t/f/y`) were taught in.
+    ///
+    /// Pinned over the LIVE sequence rather than over one call, because the
+    /// menu is rebuilt from the shrinking pool at every cell and the order is a
+    /// property of that whole run: a pool edited in place can reorder itself
+    /// under the operator between two questions, which is worse than
+    /// renumbering — the rows move.
+    #[test]
+    fn every_token_menu_of_the_pass_is_in_the_canonical_pool_order() {
+        let canonical: Vec<FivePowerEffect> = {
+            let mut seen: Vec<FivePowerEffect> = Vec::new();
+            for face in canonical_five_power_tokens() {
+                if !seen.contains(&face) {
+                    seen.push(face);
+                }
+            }
+            seen
+        };
+        let labels: Vec<String> = canonical
+            .iter()
+            .map(|f| crate::describe::five_power_effect_label(*f).to_string())
+            .collect();
+
+        let mut lines = live_2p_through_labs(651);
+        lines.push("confirm".into());
+        lines.push("yes".into());
+        let (repl, transcript) = feed_owned(lines);
+        repl.unwrap_or_else(|e| panic!("expected Ok, got Err({e}); transcript:\n{transcript}"));
+        std::fs::remove_file("yokohama-game-651.json").ok();
+
+        let menus: Vec<Vec<String>> = transcript
+            .split("Tokens still to place")
+            .skip(1)
+            .map(|block| {
+                block
+                    .lines()
+                    .take_while(|l| !l.starts_with("Cell "))
+                    .flat_map(|line| {
+                        line.split('[').skip(1).filter_map(|cell| {
+                            let (_, rest) = cell.split_once("] ")?;
+                            let (name, _) = rest.trim_end().rsplit_once(" x")?;
+                            Some(name.trim().to_string())
+                        })
+                    })
+                    .collect()
+            })
+            .collect();
+        assert_eq!(menus.len(), 10, "one menu per cell");
+        for (i, menu) in menus.iter().enumerate() {
+            let expected: Vec<&String> =
+                labels.iter().filter(|label| menu.contains(label)).collect();
+            let got: Vec<&String> = menu.iter().collect();
+            assert_eq!(got, expected, "cell {i}'s menu is out of canonical order\n{transcript}");
+        }
+    }
+
+    /// **Both board-entry menus fit three cells on an 80-column terminal** (T7
+    /// review S3). The layout was prose in `numbered_offer`'s doc — 26-column
+    /// cells, three to a row, "the widest either menu produces is `[10]
+    /// Employment Agency x2` at 25, so three of those plus the indent clear 80"
+    /// — and nothing checked any of it against the menus that actually exist.
+    ///
+    /// The arithmetic is `INDENT + 2 * CELL_W + widest`, not `INDENT + 3 *
+    /// CELL_W`, and the difference is exactly the finding: at three padded cells
+    /// the row is 81 columns and wraps. It fits because the LAST cell on a row
+    /// is trimmed to its own width, so the row costs the two padded columns plus
+    /// the real width of whatever is in the third — which leaves precisely one
+    /// column of headroom at the widest cell this data produces. That is a
+    /// figure to MEASURE, not to restate: it is what a longer area name or a
+    /// two-digit count would spend.
+    #[test]
+    fn numbered_offer_fits_three_cells_in_eighty_columns() {
+        const CELL_W: usize = 26;
+        const INDENT: usize = 3;
+        const TERMINAL_W: usize = 80;
+
+        let rules = Rules::standard();
+        let mut widest = 0usize;
+        let mut widest_cell = 0usize;
+        for players in 2..=4u8 {
+            // The real per-count tile multiset, derived the way `run_live_tail`
+            // derives it — a throwaway seeded board — so this sweeps the menus
+            // the wizard actually prints rather than a hand-written roster.
+            let ghost = new_game(GameConfig::for_player_count(players), &rules, 1)
+                .expect("a standard board");
+            let mut legal: HashMap<AreaType, u32> = HashMap::new();
+            for area in ghost.state.board_layout.areas.values() {
+                *legal.entry(area.area_type).or_insert(0) += 1;
+            }
+            let roster = tile_roster(&legal);
+            // Every state the offer passes through: full, then one type at a
+            // time exhausted, so the two-digit numbers are exercised too.
+            let mut remaining = legal.clone();
+            loop {
+                let offer = tile_offer(&roster, &remaining);
+                measure(&tile_menu(&offer, players), &mut widest, &mut widest_cell);
+                match remaining.iter().find(|(_, k)| **k > 0).map(|(a, _)| *a) {
+                    Some(area) => {
+                        remaining.insert(area, 0);
+                    }
+                    None => break,
+                }
+            }
+        }
+        // The token menu's own, over the whole pool as it empties.
+        let mut pool = rules.five_power_tokens.clone();
+        while !pool.is_empty() {
+            measure(&token_menu(&token_offer(&pool)), &mut widest, &mut widest_cell);
+            pool.pop();
+        }
+
+        assert!(
+            widest_cell < CELL_W,
+            "a cell of {widest_cell} columns does not fit its {CELL_W}-column column",
+        );
+        assert!(
+            INDENT + 2 * CELL_W + widest_cell <= TERMINAL_W,
+            "a full row is {} columns, past the {TERMINAL_W} the layout claims",
+            INDENT + 2 * CELL_W + widest_cell,
+        );
+        assert_eq!(
+            widest,
+            INDENT + 2 * CELL_W + widest_cell,
+            "the widest drawn row is a full one, so the bound above is the real worst case",
+        );
+        // Anti-vacuity: the sweep really did draw full three-cell rows.
+        assert!(widest > 2 * CELL_W, "only {widest} columns were ever drawn");
+    }
+
+    /// The widest trimmed row and the widest cell of one menu.
+    fn measure(menu: &str, widest: &mut usize, widest_cell: &mut usize) {
+        for line in menu.lines().skip(1) {
+            let line = line.trim_end();
+            *widest = (*widest).max(line.chars().count());
+            // Cells are `[n] text` padded to a fixed column, so the raw cells
+            // are the row split back on the marker that starts each one.
+            for cell in line.split('[').skip(1) {
+                *widest_cell = (*widest_cell).max(format!("[{}", cell.trim_end()).chars().count());
+            }
+        }
+    }
+
+    /// **The Achievement card in play is located by its CATEGORY** (T7 review
+    /// S3), which is the whole of `CardLocation::AchievementSlot`'s design: the
+    /// three cards sit on the table for a game with no slot, shelf or board to
+    /// be in, so numbering them 1/2/3 would invent a position nothing prints.
+    ///
+    /// Pinned where it is READ — the duplicate refusal and the dim note on the
+    /// card face both word it through `describe::card_location`, and the wizard
+    /// is the only surface that produces the variant.
+    #[test]
+    fn an_achievement_already_in_play_is_refused_by_its_category() {
+        for (category, letter) in [
+            (AchievementCategory::A, "A"),
+            (AchievementCategory::B, "B"),
+            (AchievementCategory::C, "C"),
+        ] {
+            assert_eq!(
+                crate::describe::card_location(CardLocation::AchievementSlot { category }),
+                format!("category {letter} in play"),
+            );
+        }
+
+        // ...and it reaches the operator, at the question after the one that
+        // recorded it: category B asked for the card already in play for A.
+        let mut lines: Vec<String> = vec![
+            "live".into(), "2".into(), "red".into(), "blue".into(), "0".into(), "652".into(), "".into(),
+            "hidden".into(), "hidden".into(),
+        ];
+        lines.extend(P2_TILES.iter().map(|s| s.to_string()));
+        lines.extend((0u8..10).map(|i| i.to_string()));
+        lines.extend(token_letters_for_count(10));
+        lines.extend(["Copper5", "Copper5", "Money10", "Production4"].iter().map(|s| s.to_string()));
+        lines.extend(["O1", "O2", "O3", "O4", "O5", "O6"].iter().map(|s| s.to_string()));
+        lines.extend(["T1", "T2", "T3", "T4", "T5", "T6"].iter().map(|s| s.to_string()));
+        lines.push("confirm".into());
+        lines.push("yes".into());
+        let (repl, transcript) = feed_owned(lines);
+        repl.unwrap_or_else(|e| panic!("expected Ok, got Err({e}); transcript:\n{transcript}"));
+        std::fs::remove_file("yokohama-game-652.json").ok();
+
+        assert!(
+            transcript.contains("Own 5 Copper is category A in play — a card cannot be in two places."),
+            "the refusal names the category the card is already in\n{transcript}"
+        );
     }
 }
