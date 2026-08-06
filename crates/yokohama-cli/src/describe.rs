@@ -77,6 +77,18 @@ pub fn card_location(at: crate::screen_model::CardLocation) -> String {
         }
         CardLocation::OwnedBy { seat } => format!("owned by Seat {}", seat.0),
         CardLocation::OnArea { area } => format!("on area A{:02}", area.0),
+        CardLocation::AchievementSlot { category } => {
+            format!("category {} in play", category_letter(category))
+        }
+    }
+}
+
+/// `A` / `B` / `C` — an achievement category as the printed cards group them.
+pub fn category_letter(c: AchievementCategory) -> &'static str {
+    match c {
+        AchievementCategory::A => "A",
+        AchievementCategory::B => "B",
+        AchievementCategory::C => "C",
     }
 }
 
@@ -127,6 +139,21 @@ pub fn recording_target(target: crate::screen_model::RecordingTarget) -> String 
             seat.0,
             human_position(which),
         ),
+        RecordingTarget::LabSetup { board_b, slot, of } => format!(
+            "{} slot {} of {of}",
+            lab_board_name(board_b),
+            human_position(slot),
+        ),
+        // No `human_position` on either of the last two, and that is the point
+        // of them: an area id and a category are IDENTITIES the driver already
+        // names, so there is nothing to convert and nothing to be off by one
+        // about. See `RecordingTarget::SiteSetup`.
+        RecordingTarget::SiteSetup { area } => {
+            format!("the building-site card on area A{:02}", area.0)
+        }
+        RecordingTarget::AchievementSetup { category } => {
+            format!("the category {} Achievement card", category_letter(category))
+        }
     }
 }
 
@@ -146,6 +173,22 @@ pub fn registry_name(kind: crate::screen_model::IndexKind) -> &'static str {
     }
 }
 
+/// The same registry counted as ONE — for the running already-recorded line,
+/// which prints a number in front of it.
+///
+/// Spelled out rather than trimmed from the plural: `technologies` does not
+/// lose an `s`, and "1 technologie" is the kind of line that makes a tester
+/// wonder what else is approximate.
+pub fn registry_name_singular(kind: crate::screen_model::IndexKind) -> &'static str {
+    use crate::screen_model::IndexKind;
+    match kind {
+        IndexKind::Orders => "order card",
+        IndexKind::Techs => "technology",
+        IndexKind::Achievements => "achievement card",
+        IndexKind::Sites => "building-site card",
+    }
+}
+
 /// A 0-based model position as the screen prints it.
 ///
 /// Named rather than written `+ 1` at each site so the conversion is countable:
@@ -159,7 +202,7 @@ fn human_position(index: usize) -> usize {
 /// Port slot numbers are shown 1-based everywhere (`render::ports_view`'s own
 /// labeling and the live reveal prompt's), so the two helpers above and the
 /// prompts they feed all read the same board name.
-fn port_board_name(board_b: bool) -> &'static str {
+pub fn port_board_name(board_b: bool) -> &'static str {
     if board_b {
         "Port B"
     } else {
@@ -167,7 +210,7 @@ fn port_board_name(board_b: bool) -> &'static str {
     }
 }
 
-fn lab_board_name(board_b: bool) -> &'static str {
+pub fn lab_board_name(board_b: bool) -> &'static str {
     if board_b {
         "Laboratory B"
     } else {
@@ -913,6 +956,42 @@ mod tests {
             recording_target(T::DealSetup { seat: PlayerId::new(0), which: 1, of: 2 }),
             "Seat 0's dealt card 2 of 2",
         );
+        assert_eq!(
+            recording_target(T::LabSetup { board_b: false, slot: 5, of: 6 }),
+            "Laboratory A slot 6 of 6",
+        );
+        // The last two carry IDENTITIES rather than positions, so nothing on
+        // their lines is converted — an area id reads exactly as `A03` does
+        // everywhere else in the driver, and a category is a letter.
+        assert_eq!(
+            recording_target(T::SiteSetup { area: AreaId::new(3) }),
+            "the building-site card on area A03",
+        );
+        assert_eq!(
+            recording_target(T::AchievementSetup { category: AchievementCategory::B }),
+            "the category B Achievement card",
+        );
+    }
+
+    /// **Every target names the registry its prompt collects** (T7 moved this
+    /// off the REPL and onto the model, so two callers cannot file a variant
+    /// differently). Swept rather than spot-checked: a new variant defaulting
+    /// to the wrong registry draws a screen whose numbers cannot answer the
+    /// question, which is the T6-review defect this routing exists to prevent.
+    #[test]
+    fn every_recording_target_names_its_own_registry() {
+        use crate::screen_model::{IndexKind, RecordingTarget as T};
+        for (target, want) in [
+            (T::PortRefill { board_b: false, slot: 0, nth: 0, of: 1 }, IndexKind::Orders),
+            (T::PortSetup { board_b: true, slot: 0, of: 6 }, IndexKind::Orders),
+            (T::DealSetup { seat: PlayerId::new(1), which: 0, of: 2 }, IndexKind::Orders),
+            (T::TechRefill { board_b: false }, IndexKind::Techs),
+            (T::LabSetup { board_b: true, slot: 0, of: 6 }, IndexKind::Techs),
+            (T::SiteSetup { area: AreaId::new(0) }, IndexKind::Sites),
+            (T::AchievementSetup { category: AchievementCategory::A }, IndexKind::Achievements),
+        ] {
+            assert_eq!(target.kind(), want, "{target:?}");
+        }
     }
 
     /// **`slot 7 of 6` is unreachable from a valid target.** The pin above
@@ -935,6 +1014,7 @@ mod tests {
                     (T::PortSetup { board_b: false, slot: i, of }, 2),
                     (T::PortRefill { board_b: true, slot: i, nth: i, of }, 3),
                     (T::DealSetup { seat: PlayerId::new(0), which: i, of }, 2),
+                    (T::LabSetup { board_b: false, slot: i, of }, 2),
                 ];
                 for (target, positions) in cases {
                     let text = recording_target(target);

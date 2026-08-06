@@ -712,6 +712,13 @@ pub enum CardLocation {
     OwnedBy { seat: PlayerId },
     /// A building-site card already dealt onto an area of the board.
     OnArea { area: AreaId },
+    /// The Achievement card in play for a category. Three cards are on the
+    /// table for a whole game, one per category (KB §Achievement Cards), so the
+    /// CATEGORY is the location — there is no slot, shelf or board they sit on,
+    /// and numbering them 1/2/3 would invent a position nothing prints.
+    ///
+    /// Face-up from setup like every other variant here, so the fence holds.
+    AchievementSlot { category: AchievementCategory },
 }
 
 /// What a card prompt is recording, shown as the index's context header ("which
@@ -752,6 +759,46 @@ pub enum RecordingTarget {
     PortSetup { board_b: bool, slot: usize, of: usize },
     /// The wizard's setup entry for one seat's dealt card, `which` of `of`.
     DealSetup { seat: PlayerId, which: usize, of: usize },
+    /// The wizard's setup entry for one Laboratory display slot — a TECH
+    /// prompt, and the setup twin of [`Self::TechRefill`] (which is the
+    /// mid-game event).
+    LabSetup { board_b: bool, slot: usize, of: usize },
+    /// The wizard's setup entry for the building-site card dealt onto one area.
+    ///
+    /// **Addressed by AREA, not by a position in the entry run**, and that is
+    /// this variant's one design decision: an `AreaId` is an identity the whole
+    /// driver already names (`A03`), so it is exempt from [`NUMBER_BASE`] and
+    /// from the 0-based-position convention above — there is no `of` here to
+    /// convert against, and inventing "cell 4 of 10" would renumber the one
+    /// coordinate `wizard::cell_coords` deliberately keeps 0-based.
+    SiteSetup { area: AreaId },
+    /// The wizard's setup entry for the Achievement card in play for one
+    /// category. Category rather than position, on [`CardLocation::
+    /// AchievementSlot`]'s reasoning.
+    AchievementSetup { category: AchievementCategory },
+}
+
+impl RecordingTarget {
+    /// Which registry this target's prompt is collecting.
+    ///
+    /// **On the model rather than at a call site** because two now need it: the
+    /// REPL filters a live capture's target to the index actually on screen (T6
+    /// review M1), and the wizard picks the index a `?` opens from the target
+    /// its question carries. Two copies of this match would be two places for a
+    /// new variant to be mis-filed, and the failure — a screen numbering cards
+    /// that cannot answer the question — is the exact defect M1 fixed.
+    pub fn kind(&self) -> IndexKind {
+        match self {
+            RecordingTarget::TechRefill { .. } | RecordingTarget::LabSetup { .. } => {
+                IndexKind::Techs
+            }
+            RecordingTarget::PortRefill { .. }
+            | RecordingTarget::PortSetup { .. }
+            | RecordingTarget::DealSetup { .. } => IndexKind::Orders,
+            RecordingTarget::SiteSetup { .. } => IndexKind::Sites,
+            RecordingTarget::AchievementSetup { .. } => IndexKind::Achievements,
+        }
+    }
 }
 
 /// Which good a `f <term>` filter narrowed the index to.
@@ -1229,6 +1276,120 @@ pub fn build_site_index(
 
     let (groups, shown) = number_groups(vec![(IndexGroupKey::All, cards)], target, filter);
     IndexModel { kind: IndexKind::Sites, total, shown, target, filter, groups }
+}
+
+/// The index for ONE registry, from a MIXED placement list — the entry point
+/// both index-opening surfaces call.
+///
+/// The four builders below each take their own registry's placements, which is
+/// what keeps their signatures honest; every caller, though, holds one list of
+/// [`CardRef`]s and wants whichever registry is on screen. That split used to
+/// live at the call site as a four-arm match plus three filters, and a second
+/// caller (the wizard, T7) would have been a second copy of both — with the
+/// achievement POPULATION, the one genuinely per-caller input, as the thing
+/// most likely to drift. So it lives here once and the population is the
+/// parameter: the three cards in play for a live `goals`, the whole twelve-card
+/// registry for a setup prompt.
+pub fn build_index(
+    kind: IndexKind,
+    rules: &Rules,
+    placed: &[(CardRef, CardLocation)],
+    achievements: &[AchievementModel],
+    target: Option<RecordingTarget>,
+    filter: Option<IndexFilter>,
+) -> IndexModel {
+    match kind {
+        IndexKind::Orders => build_order_index(rules, &only_orders(placed), target, filter),
+        IndexKind::Techs => build_tech_index(rules, &only_techs(placed), target, filter),
+        IndexKind::Achievements => {
+            build_achievement_index(achievements, &only_achievements(placed), target, filter)
+        }
+        IndexKind::Sites => build_site_index(rules, &only_sites(placed), target, filter),
+    }
+}
+
+/// The order-card half of a mixed placement list, for the builder that takes
+/// order ids. Splitting here rather than storing four lists keeps ONE leak
+/// fence to audit at each caller (`Repl::index_placements`, the wizard's own
+/// entries) instead of four.
+fn only_orders(placed: &[(CardRef, CardLocation)]) -> Vec<(OrderCardId, CardLocation)> {
+    placed
+        .iter()
+        .filter_map(|(card, at)| match card {
+            CardRef::Order(id) => Some((*id, *at)),
+            _ => None,
+        })
+        .collect()
+}
+
+fn only_techs(placed: &[(CardRef, CardLocation)]) -> Vec<(TechCardId, CardLocation)> {
+    placed
+        .iter()
+        .filter_map(|(card, at)| match card {
+            CardRef::Tech(id) => Some((*id, *at)),
+            _ => None,
+        })
+        .collect()
+}
+
+fn only_sites(placed: &[(CardRef, CardLocation)]) -> Vec<(u8, CardLocation)> {
+    placed
+        .iter()
+        .filter_map(|(card, at)| match card {
+            CardRef::Site(index) => Some((*index, *at)),
+            _ => None,
+        })
+        .collect()
+}
+
+fn only_achievements(placed: &[(CardRef, CardLocation)]) -> Vec<(AchievementType, CardLocation)> {
+    placed
+        .iter()
+        .filter_map(|(card, at)| match card {
+            CardRef::Achievement(ty) => Some((*ty, *at)),
+            _ => None,
+        })
+        .collect()
+}
+
+/// ONE card, alone, in the shape the index draws it — the echo spec §0.6
+/// requires an entry to print back before it commits.
+///
+/// **Built here rather than at the prompt** so the echo and the index cannot
+/// draw the same card two ways: T5 shipped the echo for orders only, straight
+/// off `card_render::order_card`, and the other three registries had no echo at
+/// all because nothing assembled a face for them. This assembles all four from
+/// an identity, and the renderer it feeds is the one the index feeds.
+///
+/// Deliberately unnumbered and unplaced: an echo is a statement about the card
+/// just named, not a screen to select from (a `[1]` on it would be a number
+/// nothing accepts — F3 from the other side), and where it is going is what the
+/// prompt underneath is saying.
+///
+/// `None` for an identity no registry holds — a `T99` typed at a tech prompt.
+/// The caller's own pool check is what refuses that; this just has nothing to
+/// draw.
+pub fn index_card_for(card: CardRef, rules: &Rules) -> Option<IndexCard> {
+    let face = match card {
+        // An order id the registry does not know still draws: `CardFace` prints
+        // the unknown-card face for it, which is a truthful thing to echo.
+        CardRef::Order(id) => CardFaceModel::Order { id, printed: rules.orders.get(id).cloned() },
+        CardRef::Tech(id) => {
+            let printed = rules.techs.get(id)?.clone();
+            let mut copies: Vec<TechCardId> =
+                rules.techs.iter().filter(|c| c.name == printed.name).map(|c| c.id).collect();
+            copies.sort_unstable_by_key(|c| c.0);
+            CardFaceModel::Tech { copies, printed, placed: Vec::new() }
+        }
+        CardRef::Site(index) => CardFaceModel::Site {
+            index,
+            site: rules.building_sites.get(usize::from(index))?.clone(),
+        },
+        CardRef::Achievement(ty) => CardFaceModel::Achievement(
+            achievement_registry().into_iter().find(|a| a.achievement_type == ty)?,
+        ),
+    };
+    Some(IndexCard { face, selection: None, location: None })
 }
 
 // ---------------------------------------------------------------------------

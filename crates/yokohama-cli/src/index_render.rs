@@ -219,7 +219,7 @@ fn group_heading(key: IndexGroupKey, cards: usize) -> Option<String> {
         }
         IndexGroupKey::Category(cat) => (
             Tone::Strong,
-            format!("CATEGORY {} {} {}", card_render::category_letter(cat), glyph::SECTION_DASH, category_gloss(cat)),
+            format!("CATEGORY {} {} {}", describe::category_letter(cat), glyph::SECTION_DASH, category_gloss(cat)),
         ),
         IndexGroupKey::All => return None,
     };
@@ -311,7 +311,7 @@ fn filter_text(filter: IndexFilter) -> String {
         IndexFilter::MinVp(n) => format!("paying {}{n} VP or more", glyph::VP),
         IndexFilter::Country(c) => format!("from {}", describe::country_name(c)),
         IndexFilter::Category(cat) => {
-            format!("in category {}", card_render::category_letter(cat))
+            format!("in category {}", describe::category_letter(cat))
         }
     }
 }
@@ -798,7 +798,13 @@ mod tests {
     #[test]
     fn card_locations_fit_a_card_face() {
         let room = crate::card_render::CARD_INNER - 2; // the leading "= "
-        let mut locations = vec![CardLocation::OwnHand, CardLocation::ThisReveal];
+        let mut locations = vec![
+            CardLocation::OwnHand,
+            CardLocation::ThisReveal,
+            // T7's: the achievement in play for a category, which the wizard's
+            // own index dims while the next category is being asked.
+            CardLocation::AchievementSlot { category: AchievementCategory::A },
+        ];
         for seat in 0..4u8 {
             locations.push(CardLocation::Deal { seat: PlayerId::new(seat) });
         }

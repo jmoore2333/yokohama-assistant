@@ -12,12 +12,40 @@
 //! loop over a summary of every collected answer before handing off to
 //! `reconcile_setup` + `finalize_setup`.
 
-use std::collections::{BTreeSet, HashMap};
+use std::cell::Cell;
+use std::collections::HashMap;
 
-use crate::input::{parse_order_id, parse_tech_entry, tech_name, TechAmbiguity, TechEntryError};
-use crate::screen_model::{menu_index, menu_number};
+use crate::card_prompt::{self, CardEntry, CardPrompt, Numbering};
+use crate::input::tech_name;
+use crate::screen_model::{
+    achievement_registry, build_index, menu_index, menu_number, menu_range, CardLocation, CardRef,
+    IndexFilter, IndexKind, IndexModel, RecordingTarget,
+};
 use crate::session::Session;
 use yokohama_core::*;
+
+/// What one line at a wizard question turned out to be.
+///
+/// **The middle variant is T7's re-plumb, and it is the reason this enum
+/// exists.** A validator could previously only accept or refuse, so there was
+/// nowhere to put a full-screen surface: `?` at a setup prompt had no way to
+/// draw the card index and hand the same question back. That is the F5 gap at
+/// the exact place the owner hit it — *"not seeing the ID cards or having a
+/// lookup table in some way makes it hard to enter"* — since setup is where a
+/// player is holding physical cards and typing what is on them.
+///
+/// A screen is NOT a refusal and is deliberately not worded as one: nothing was
+/// wrong with the line, nothing is lost, and every answer already collected is
+/// still collected — the question simply comes round again with the surface
+/// above it.
+enum Ask {
+    /// The line answered the question; `ask` returns.
+    Taken,
+    /// The line asked to LOOK: print this, then ask the same question again.
+    Screen(String),
+    /// The line was not usable; print the reason and ask again.
+    Refused(String),
+}
 
 /// Ask one question, re-asking indefinitely on invalid input. `parse`
 /// reports success/failure only (`Ok(())`/`Err(reason)`) -- callers capture
@@ -27,19 +55,43 @@ use yokohama_core::*;
 /// it happens, so scripted tests can assert on the transcript and `main`
 /// can print interactively from the exact same code path.
 ///
-/// The only two exits are a valid answer, or the literal (case-insensitive)
-/// `abort`, checked BEFORE `parse` sees the line so it can never be shadowed
-/// by a question's own validation -- `Err("aborted")` is the sentinel every
-/// caller up to `run_wizard` propagates via `?` (design §5.5 item 2; this
-/// replaces the old 3-strikes give-up).
+/// The plain front door to [`ask_screened`]: a question with no surface to
+/// open answers `Ok`/`Err` and never has to name a third outcome.
 fn ask(
     input: &mut dyn Iterator<Item = String>,
     out: &mut dyn FnMut(&str),
     prompt: &str,
     parse: &mut dyn FnMut(&str) -> Result<(), String>,
 ) -> Result<(), String> {
+    ask_screened(input, out, &|| prompt.to_string(), &mut |line| match parse(line) {
+        Ok(()) => Ask::Taken,
+        Err(reason) => Ask::Refused(reason),
+    })
+}
+
+/// [`ask`], plus the arm that lets a validator answer with a SCREEN.
+///
+/// The only two exits are a valid answer, or the literal (case-insensitive)
+/// `abort`, checked BEFORE `parse` sees the line so it can never be shadowed
+/// by a question's own validation -- `Err("aborted")` is the sentinel every
+/// caller up to `run_wizard` propagates via `?` (design §5.5 item 2; this
+/// replaces the old 3-strikes give-up). A screen cannot shadow it either: the
+/// check is above the dispatch, not inside any one question's grammar.
+///
+/// **The prompt is a closure, not a string, because a screen can change what
+/// the next answer MEANS.** Opening a card index makes a bare number a pick
+/// from that screen rather than a card id, and a prompt fixed before the loop
+/// could not say so — it would still be offering the grammar that applied
+/// before the player looked something up. Re-worded each time round, the line
+/// above the caret always describes the state the caret is actually in.
+fn ask_screened(
+    input: &mut dyn Iterator<Item = String>,
+    out: &mut dyn FnMut(&str),
+    prompt: &dyn Fn() -> String,
+    parse: &mut dyn FnMut(&str) -> Ask,
+) -> Result<(), String> {
     loop {
-        out(prompt);
+        out(&prompt());
         out("\n");
         let line = input.next().ok_or("input ended mid-wizard")?;
         let line = line.trim();
@@ -47,9 +99,249 @@ fn ask(
             return Err("aborted".to_string());
         }
         match parse(line) {
-            Ok(()) => return Ok(()),
-            Err(e) => out(&format!("  ! {e}\n")),
+            Ask::Taken => return Ok(()),
+            // Printed as it stands, with no `!` and no indent: it is a screen,
+            // not a complaint about the line that opened it.
+            Ask::Screen(text) => out(&text),
+            Ask::Refused(e) => out(&format!("  ! {e}\n")),
         }
+    }
+}
+
+// ---------------------------------------------------------------------
+// Card entry (T7: spec §0.2/§0.6, findings F4/F5/F6)
+// ---------------------------------------------------------------------
+
+/// Everything a card question needs beyond the question itself.
+///
+/// **`placed` is the leak fence, and at setup it is trivially satisfied:**
+/// every entry in it is a card the OPERATOR typed off a face-up table, so the
+/// index can annotate all of it without knowing anything they do not. (The
+/// fence matters in the REPL, where the same list is assembled from public
+/// board state only — see `screen_model::build_order_index`.)
+struct CardCtx<'a> {
+    rules: &'a Rules,
+    /// Seat colors, for the one card face that names players.
+    colors: &'a [PlayerColor],
+    placed: &'a [(CardRef, CardLocation)],
+}
+
+impl CardCtx<'_> {
+    /// The index this question's `?` opens, at the current filter.
+    ///
+    /// The achievement population is the whole twelve-card REGISTRY rather than
+    /// the three in play: at setup, deciding which three are in play is the
+    /// question being asked.
+    ///
+    /// `target` is an `Option` because one registry opens its index as a
+    /// LOOK-UP rather than as a pick list — see [`numbered_screen`].
+    fn index(
+        &self,
+        kind: IndexKind,
+        target: Option<RecordingTarget>,
+        filter: Option<IndexFilter>,
+    ) -> IndexModel {
+        build_index(kind, self.rules, self.placed, &achievement_registry(), target, filter)
+    }
+}
+
+/// Whether this registry's index numbers its cards for PICKING at a wizard
+/// prompt.
+///
+/// **Everything but the building sites does.** A site card's number IS its
+/// identity — `S<n>`, 0-based, printed nowhere on the card but recorded in the
+/// save and named by every other CLI surface — so a screen that also numbered
+/// the cards by position would put TWO numbers on each one, differing by
+/// exactly one: `[1] SITE 0`, `[2] SITE 1`. That is the one collision this
+/// grammar must not have, because unlike an order card (where the id and the
+/// position differ wildly and a wrong pick is obvious in the echo) an
+/// off-by-one lands on a real, plausible, wrong card.
+///
+/// So the site index opens as what it actually is at that prompt: a look-up
+/// with no selection numbers, where a bare number keeps meaning the identity
+/// the question asked for. Nothing on screen is a number the prompt refuses,
+/// which is F3 read from the other side — the same reading the T6 review gave
+/// the REPL's cross-registry captures.
+fn numbered_screen(kind: IndexKind) -> bool {
+    !matches!(kind, IndexKind::Sites)
+}
+
+/// Ask for ONE card, in the crate's one card grammar (spec §0.2/§0.6).
+///
+/// **This is F4, F5 and F6 closed at the same place, because they were one
+/// defect.** Every card question in the wizard used to bring its own grammar —
+/// orders took a bare number, technologies refused one and wanted an id
+/// printed on no physical card, sites took `S<n>`, achievements took a name
+/// and refused the numbers they themselves printed. Now every one of them goes
+/// through `card_prompt::resolve`, so a number, an id, a name, `?` and a filter
+/// mean the same thing at all four; `?` draws the registry's own index; a
+/// duplicate is refused BY LOCATION; and what was entered echoes back as a
+/// drawn card before the next question.
+///
+/// `menu_on_screen` is the [`Numbering`] state, and it is a parameter rather
+/// than a guess for the reason `card_prompt`'s header gives: a bare number is a
+/// SELECTION only while something numbered is on screen. It starts true where
+/// the question prints its own menu (achievements) and false where the cards
+/// run to twenty or thirty-six and the player types an id or opens the index —
+/// after which it stays true, because in a scrolling wizard the index the
+/// player opened is still there above the prompt.
+///
+/// `validate` is the CALLER's pool check, run before the entry is taken: this
+/// helper knows the grammar and the duplicates, and nothing about which cards
+/// a given prompt can legitimately be told about.
+fn ask_card(
+    input: &mut dyn Iterator<Item = String>,
+    out: &mut dyn FnMut(&str),
+    ctx: &CardCtx<'_>,
+    question: &str,
+    target: RecordingTarget,
+    menu_on_screen: bool,
+    validate: &mut dyn FnMut(CardRef) -> Result<(), String>,
+) -> Result<CardRef, String> {
+    let kind = target.kind();
+    let numbered = numbered_screen(kind);
+    let showing = Cell::new(menu_on_screen && numbered);
+    let filter: Cell<Option<IndexFilter>> = Cell::new(None);
+    let mut chosen: Option<CardRef> = None;
+    let screen_target = numbered.then_some(target);
+
+    out(&already_recorded_line(kind, ctx));
+    ask_screened(
+        input,
+        out,
+        &|| format!("{question} ({})", entry_hint(kind, showing.get())),
+        &mut |line| {
+            let model = ctx.index(kind, screen_target, filter.get());
+            let prompt = CardPrompt {
+                kind,
+                candidates: None,
+                placed: ctx.placed,
+                numbering: if showing.get() {
+                    Numbering::Selection(&model)
+                } else {
+                    Numbering::Ids
+                },
+            };
+            match card_prompt::resolve(&prompt, line, ctx.rules) {
+                CardEntry::Card(card) => match validate(card) {
+                    Ok(()) => {
+                        chosen = Some(card);
+                        Ask::Taken
+                    }
+                    Err(reason) => Ask::Refused(reason),
+                },
+                CardEntry::OpenIndex => {
+                    showing.set(numbered);
+                    Ask::Screen(crate::index_render::index_view(&model, ctx.colors))
+                }
+                CardEntry::Filter(narrowed) => {
+                    filter.set(narrowed);
+                    showing.set(numbered);
+                    Ask::Screen(crate::index_render::index_view(
+                        &ctx.index(kind, screen_target, narrowed),
+                        ctx.colors,
+                    ))
+                }
+                // There is nothing to cancel BACK to inside the wizard: every
+                // question is one the setup cannot be built without, and the
+                // one way out has always been `abort`. Saying so beats an empty
+                // line silently re-asking with no explanation.
+                CardEntry::Cancel => Ask::Refused(format!(
+                    "this question needs an answer -- {}, or 'abort' to leave setup",
+                    entry_hint(kind, showing.get()),
+                )),
+                CardEntry::Refused(message) => Ask::Refused(message),
+            }
+        },
+    )?;
+    let card = chosen.expect("`ask_screened` returned Ok only after this was set");
+    // The card drawn back before the next question (spec §0.6). It is an echo,
+    // not a confirmation step: R6's minimum ceremony at the table means the
+    // operator reads it and keeps typing, and `edit <section>` is what a wrong
+    // one costs.
+    out(&card_prompt::echo(card, ctx.rules, ctx.colors));
+    Ok(card)
+}
+
+/// What names a card at this prompt, in the words the refusals use too.
+///
+/// `showing` is whether numbered cards are on screen right now, and it changes
+/// what "a number" means — a pick from the screen rather than a card id. The
+/// prompt says which, every time it is printed, because that is the one thing a
+/// player cannot infer from the line itself.
+fn entry_hint(kind: IndexKind, showing: bool) -> &'static str {
+    if showing {
+        return match kind {
+            IndexKind::Orders => "a number from the screen, 'O14', or '?' to redraw it",
+            IndexKind::Techs => "a number from the screen, a name, or '?' to redraw it",
+            IndexKind::Achievements => "a number from the list, a name, or '?' for all twelve",
+            // Unreachable: the site index is a look-up and never numbers its
+            // cards for picking (`numbered_screen`), so `showing` stays false.
+            IndexKind::Sites => "a number, 'S12', or '?' for the card index",
+        };
+    }
+    match kind {
+        IndexKind::Orders => "a number, 'O14', or '?' for the card index",
+        IndexKind::Techs => "a name, 'T07', or '?' for the card index",
+        IndexKind::Achievements => "a number, a name, or '?' for the card index",
+        IndexKind::Sites => "a number, 'S12', or '?' for the card index",
+    }
+}
+
+/// The running already-placed summary R8 asks setup screens to carry, on one
+/// line — and F6's other half.
+///
+/// The refusal names where ONE card already is; this says what is already
+/// recorded before the operator types anything, so a card that is going to be
+/// refused can be spotted rather than discovered. The full detail (every card,
+/// dimmed, with its location on the card face) is the index a keystroke away,
+/// which is where it fits and where it stays current.
+///
+/// Empty while nothing is recorded, so the first question of a section is not
+/// preceded by a line saying nothing.
+fn already_recorded_line(kind: IndexKind, ctx: &CardCtx<'_>) -> String {
+    let mut tags: Vec<String> = ctx
+        .placed
+        .iter()
+        .filter(|(card, _)| card.kind() == kind)
+        .map(|(card, _)| entry_tag(*card, ctx.rules))
+        .collect();
+    if tags.is_empty() {
+        return String::new();
+    }
+    let total = tags.len();
+    // Bounded by COLUMNS rather than by a count: the tags are three characters
+    // for an order card and a whole title for a technology, so a fixed cap
+    // would either clip the short list or overrun the long one.
+    let mut room = 60usize;
+    let shown = tags
+        .iter()
+        .take_while(|tag| {
+            room = room.saturating_sub(tag.chars().count() + 1);
+            room > 0
+        })
+        .count()
+        .max(1);
+    tags.truncate(shown);
+    let more = if shown < total { format!(" +{} more", total - shown) } else { String::new() };
+    let registry = if total == 1 {
+        crate::describe::registry_name_singular(kind)
+    } else {
+        crate::describe::registry_name(kind)
+    };
+    format!(
+        "  already recorded -- {total} {registry}: {}{more}  ('?' shows each one and where)\n",
+        tags.join(" "),
+    )
+}
+
+/// How the already-recorded line names one card: the thing the operator would
+/// recognize. A technology by its printed NAME, never its id (R8); everything
+/// else by the identity it is entered with.
+fn entry_tag(card: CardRef, rules: &Rules) -> String {
+    match card {
+        CardRef::Tech(id) => tech_name(id, &rules.techs),
+        other => card_prompt::card_tag(other),
     }
 }
 
@@ -292,12 +584,19 @@ fn ask_keep(input: &mut dyn Iterator<Item = String>, out: &mut dyn FnMut(&str), 
 
 /// Everything the live tail collects, bundled so the review/edit loop can
 /// dispatch `edit <section>` to a function taking `&mut LiveWizardState`
-/// instead of threading a dozen separate `&mut` locals around. `seen_*`
-/// are the cross-section duplicate trackers (design §5.5 item 1): order
-/// ids span the deals + Port A + Port B, tech ids span Lab A + Lab B --
-/// tiles and sites are each self-contained to their own section, so they
-/// don't need a persistent tracker (their `ask_*` functions start fresh
-/// every time, initial pass or edit alike).
+/// instead of threading a dozen separate `&mut` locals around.
+///
+/// **`placed` is the one duplicate tracker, and it replaced two id sets at T7**
+/// (design §5.5 item 1 kept, its representation changed). `seen_order_ids` and
+/// `seen_tech_ids` could say THAT a card was already entered and never WHERE,
+/// which is finding F6 exactly — the owner's Port entry refused `2`, `4` and
+/// `6` as "already entered" while they sat in the seats' recorded deals, and
+/// nothing on screen could say so. A location per card answers that, and it
+/// also feeds the index's dimming, so the refusal and the screen are one fact.
+///
+/// It covers sites as well as cards; the achievements are collected against
+/// their own local list, since a category answer cannot collide with anything
+/// outside its own question.
 struct LiveWizardState {
     players: u8,
     colors: Vec<PlayerColor>,
@@ -307,8 +606,7 @@ struct LiveWizardState {
     config: GameConfig,
     legal_tile_counts: HashMap<AreaType, u32>,
     all_tech_ids: Vec<TechCardId>,
-    seen_order_ids: BTreeSet<u8>,
-    seen_tech_ids: BTreeSet<u8>,
+    placed: Vec<(CardRef, CardLocation)>,
     known_deals: Vec<Option<[OrderCardId; 2]>>,
     deal_choices: Vec<StartingOrderChoice>,
     tiles: Vec<AreaType>,
@@ -349,31 +647,31 @@ fn run_live_tail(
     }
     let all_tech_ids: Vec<TechCardId> = rules.techs.iter().map(|c| c.id).collect();
 
-    let mut seen_order_ids: BTreeSet<u8> = BTreeSet::new();
-    let mut seen_tech_ids: BTreeSet<u8> = BTreeSet::new();
+    let mut placed: Vec<(CardRef, CardLocation)> = Vec::new();
     let mut known_deals: Vec<Option<[OrderCardId; 2]>> = vec![None; players as usize];
     let mut deal_choices: Vec<StartingOrderChoice> = vec![StartingOrderChoice::Unknown; players as usize];
     for seat in 0..players {
-        let (deal, choice) = ask_live_deal(input, out, seat, &rules, &mut seen_order_ids)?;
+        let (deal, choice) = ask_live_deal(input, out, seat, &rules, &colors, &mut placed)?;
         known_deals[seat as usize] = deal;
         deal_choices[seat as usize] = choice;
     }
 
     let tiles = ask_tiles(input, out, players, &legal_tile_counts)?;
-    let sites = ask_sites(input, out, &tiles, &rules, players)?;
+    let sites = ask_sites(input, out, &tiles, &rules, &colors, players, &mut placed)?;
     let tokens = ask_tokens(input, out, &tiles, &rules, players)?;
-    let achievements = ask_achievements(input, out)?;
+    let achievements = ask_achievements(input, out, &rules, &colors)?;
 
-    let port_a: [OrderCardId; 6] = ask_orders(input, out, "Port A", 6, &rules, &mut seen_order_ids)?.try_into().unwrap();
+    let port_a: [OrderCardId; 6] =
+        ask_orders(input, out, false, &rules, &colors, &mut placed)?.try_into().unwrap();
     let port_b: Option<[OrderCardId; 6]> = if config.has_port_b {
-        Some(ask_orders(input, out, "Port B", 6, &rules, &mut seen_order_ids)?.try_into().unwrap())
+        Some(ask_orders(input, out, true, &rules, &colors, &mut placed)?.try_into().unwrap())
     } else {
         None
     };
     let lab_a: [TechCardId; 6] =
-        ask_techs(input, out, "Laboratory A", 6, &rules, &all_tech_ids, &mut seen_tech_ids)?.try_into().unwrap();
+        ask_techs(input, out, false, &rules, &colors, &all_tech_ids, &mut placed)?.try_into().unwrap();
     let lab_b: Option<[TechCardId; 6]> = if config.has_lab_b {
-        Some(ask_techs(input, out, "Laboratory B", 6, &rules, &all_tech_ids, &mut seen_tech_ids)?.try_into().unwrap())
+        Some(ask_techs(input, out, true, &rules, &colors, &all_tech_ids, &mut placed)?.try_into().unwrap())
     } else {
         None
     };
@@ -387,8 +685,7 @@ fn run_live_tail(
         config,
         legal_tile_counts,
         all_tech_ids,
-        seen_order_ids,
-        seen_tech_ids,
+        placed,
         known_deals,
         deal_choices,
         tiles,
@@ -483,12 +780,18 @@ fn live_observations(ws: &LiveWizardState) -> SetupObservations {
 }
 
 /// Perform one `edit <section>` from the live review loop: retract the
-/// section's previous contribution from the cross-section `seen_*`
-/// trackers where applicable, then re-run exactly that section's ask-block
-/// (design §5.5 item 3). `start`/`mode`/`players` are deliberately NOT
-/// editable sections -- changing any of them would invalidate every
-/// question already answered (color count, grid size, Port B/Lab B
+/// section's previous contribution from `placed`, then re-run exactly that
+/// section's ask-block (design §5.5 item 3). `start`/`mode`/`players` are
+/// deliberately NOT editable sections -- changing any of them would invalidate
+/// every question already answered (color count, grid size, Port B/Lab B
 /// presence, ...); the wizard must be aborted and re-run for those.
+///
+/// **Retraction is by LOCATION now, and that is what the T7 representation
+/// buys.** Each section used to hand back its own ids one by one, which meant
+/// every section carried a bespoke retract step that had to stay in step with
+/// its ask step; a location IS the section, so `edit porta` drops exactly the
+/// cards recorded as Port A slots and nothing else, by the same predicate the
+/// re-ask then re-fills.
 fn perform_live_edit(
     ws: &mut LiveWizardState,
     section: &str,
@@ -517,12 +820,9 @@ fn perform_live_edit(
             if seat >= ws.players {
                 return Err(format!("seat must be 0-{}", ws.players - 1));
             }
-            if let Some(old) = ws.known_deals[seat as usize] {
-                for c in old {
-                    ws.seen_order_ids.remove(&c.0);
-                }
-            }
-            let (deal, choice) = ask_live_deal(input, out, seat, rules, &mut ws.seen_order_ids)?;
+            let seat_id = PlayerId::new(seat);
+            ws.placed.retain(|(_, at)| !matches!(at, CardLocation::Deal { seat } if *seat == seat_id));
+            let (deal, choice) = ask_live_deal(input, out, seat, rules, &ws.colors, &mut ws.placed)?;
             ws.known_deals[seat as usize] = deal;
             ws.deal_choices[seat as usize] = choice;
         }
@@ -535,47 +835,36 @@ fn perform_live_edit(
             ws.tiles = ask_tiles(input, out, ws.players, &ws.legal_tile_counts)?;
             out("  The building-site cards and 5-Power tokens sit on the tiles, so they move\n");
             out("  with them: re-entering the sites and tokens now as well.\n");
-            ws.sites = ask_sites(input, out, &ws.tiles, rules, ws.players)?;
+            ws.sites = ask_sites(input, out, &ws.tiles, rules, &ws.colors, ws.players, &mut ws.placed)?;
             ws.tokens = ask_tokens(input, out, &ws.tiles, rules, ws.players)?;
         }
         Some("sites") => {
-            ws.sites = ask_sites(input, out, &ws.tiles, rules, ws.players)?;
+            ws.sites = ask_sites(input, out, &ws.tiles, rules, &ws.colors, ws.players, &mut ws.placed)?;
         }
         Some("tokens") => {
             ws.tokens = ask_tokens(input, out, &ws.tiles, rules, ws.players)?;
         }
         Some("achievements") => {
-            ws.achievements = ask_achievements(input, out)?;
+            ws.achievements = ask_achievements(input, out, rules, &ws.colors)?;
         }
         Some("porta") => {
-            for c in ws.port_a {
-                ws.seen_order_ids.remove(&c.0);
-            }
-            ws.port_a = ask_orders(input, out, "Port A", 6, rules, &mut ws.seen_order_ids)?.try_into().unwrap();
+            ws.port_a =
+                ask_orders(input, out, false, rules, &ws.colors, &mut ws.placed)?.try_into().unwrap();
         }
         Some("portb") if ws.config.has_port_b => {
-            if let Some(old) = ws.port_b {
-                for c in old {
-                    ws.seen_order_ids.remove(&c.0);
-                }
-            }
-            ws.port_b = Some(ask_orders(input, out, "Port B", 6, rules, &mut ws.seen_order_ids)?.try_into().unwrap());
+            ws.port_b =
+                Some(ask_orders(input, out, true, rules, &ws.colors, &mut ws.placed)?.try_into().unwrap());
         }
         Some("laba") => {
-            for c in ws.lab_a {
-                ws.seen_tech_ids.remove(&c.0);
-            }
-            ws.lab_a =
-                ask_techs(input, out, "Laboratory A", 6, rules, &ws.all_tech_ids, &mut ws.seen_tech_ids)?.try_into().unwrap();
+            ws.lab_a = ask_techs(input, out, false, rules, &ws.colors, &ws.all_tech_ids, &mut ws.placed)?
+                .try_into()
+                .unwrap();
         }
         Some("labb") if ws.config.has_lab_b => {
-            if let Some(old) = ws.lab_b {
-                for c in old {
-                    ws.seen_tech_ids.remove(&c.0);
-                }
-            }
             ws.lab_b = Some(
-                ask_techs(input, out, "Laboratory B", 6, rules, &ws.all_tech_ids, &mut ws.seen_tech_ids)?.try_into().unwrap(),
+                ask_techs(input, out, true, rules, &ws.colors, &ws.all_tech_ids, &mut ws.placed)?
+                    .try_into()
+                    .unwrap(),
             );
         }
         _ => {
@@ -620,10 +909,17 @@ fn render_live_summary(ws: &LiveWizardState, rules: &Rules) -> String {
             token
         ));
     }
-    out.push_str(&format!(
-        "achievements: {}\n",
-        ws.achievements.iter().map(|a| format!("{a:?}")).collect::<Vec<_>>().join(", ")
-    ));
+    // One line per card, naming its CATEGORY: the three are one-per-category by
+    // construction now (F1), and a summary that listed three bare type names
+    // could not show that the rule had been honored.
+    out.push_str("achievements:\n");
+    for ty in ws.achievements {
+        out.push_str(&format!(
+            "  {}: {} ({ty:?})\n",
+            crate::describe::category_letter(ty.category()),
+            crate::describe::achievement_desc(ty),
+        ));
+    }
     out.push_str(&format!("Port A: {}\n", ws.port_a.iter().map(|c| format!("O{:02}", c.0)).collect::<Vec<_>>().join(", ")));
     if let Some(pb) = &ws.port_b {
         out.push_str(&format!("Port B: {}\n", pb.iter().map(|c| format!("O{:02}", c.0)).collect::<Vec<_>>().join(", ")));
@@ -642,7 +938,15 @@ fn render_live_summary(ws: &LiveWizardState, rules: &Rules) -> String {
                     StartingOrderChoice::Keep(k) => k,
                     StartingOrderChoice::Unknown => 0, // unreachable: a known deal always carries Keep
                 };
-                out.push_str(&format!("Seat {seat} deal: known O{:02}, O{:02} (keep {keep})\n", cards[0].0, cards[1].0));
+                // Echoed as the number the operator TYPED, not as the engine's
+                // 0-based index: they answered `keep card 1 or 2`, and a review
+                // that reads `keep 0` back is the F3 defect in a summary.
+                out.push_str(&format!(
+                    "Seat {seat} deal: known O{:02}, O{:02} (keep card {})\n",
+                    cards[0].0,
+                    cards[1].0,
+                    menu_number(keep as usize),
+                ));
             }
             None => out.push_str(&format!("Seat {seat} deal: hidden\n")),
         }
@@ -821,21 +1125,22 @@ fn render_sim_summary(ws: &SimWizardState) -> String {
     }
     for (seat, choice) in ws.choices.iter().enumerate() {
         if let StartingOrderChoice::Keep(k) = choice {
-            out.push_str(&format!("Seat {seat} keep: card {k}\n"));
+            // The typed number again, for the reason the live summary states.
+            out.push_str(&format!("Seat {seat} keep: card {}\n", menu_number(*k as usize)));
         }
     }
     out
 }
 
-/// One seat's live-observed deal: known (2 order-card tokens, validated
-/// against the registry and deduped against `seen_order_ids`, plus a keep
-/// choice) or hidden (nothing else asked).
+/// One seat's live-observed deal: known (2 order cards through the card
+/// grammar, plus a keep choice) or hidden (nothing else asked).
 fn ask_live_deal(
     input: &mut dyn Iterator<Item = String>,
     out: &mut dyn FnMut(&str),
     seat: u8,
     rules: &Rules,
-    seen_order_ids: &mut BTreeSet<u8>,
+    colors: &[PlayerColor],
+    placed: &mut Vec<(CardRef, CardLocation)>,
 ) -> Result<(Option<[OrderCardId; 2]>, StartingOrderChoice), String> {
     let mut known: Option<bool> = None;
     ask(input, out, &format!("Seat {seat}: deal known or hidden? (known/hidden)"), &mut |s: &str| -> Result<(), String> {
@@ -854,18 +1159,41 @@ fn ask_live_deal(
     if !known.unwrap() {
         return Ok((None, StartingOrderChoice::Unknown));
     }
-    let mut c1: Option<OrderCardId> = None;
-    ask(input, out, &format!("Seat {seat}: first dealt card? (O<id>)"), &mut |s: &str| -> Result<(), String> {
-        c1 = Some(ask_order_answer(s, rules, seen_order_ids)?);
-        Ok(())
-    })?;
-    let mut c2: Option<OrderCardId> = None;
-    ask(input, out, &format!("Seat {seat}: second dealt card? (O<id>)"), &mut |s: &str| -> Result<(), String> {
-        c2 = Some(ask_order_answer(s, rules, seen_order_ids)?);
-        Ok(())
-    })?;
+    let seat_id = PlayerId::new(seat);
+    let mut dealt: Vec<OrderCardId> = Vec::with_capacity(2);
+    for which in 0..2usize {
+        let ctx = CardCtx { rules, colors, placed };
+        let card = ask_card(
+            input,
+            out,
+            &ctx,
+            &format!("Seat {seat}: dealt card {} of 2?", menu_number(which)),
+            RecordingTarget::DealSetup { seat: seat_id, which, of: 2 },
+            false,
+            &mut |card| known_order(card, rules),
+        )?;
+        let CardRef::Order(id) = card else { unreachable!("an order prompt yields order cards") };
+        dealt.push(id);
+        placed.push((card, CardLocation::Deal { seat: seat_id }));
+    }
     let keep = ask_keep(input, out, seat)?;
-    Ok((Some([c1.unwrap(), c2.unwrap()]), StartingOrderChoice::Keep(keep)))
+    Ok((Some([dealt[0], dealt[1]]), StartingOrderChoice::Keep(keep)))
+}
+
+/// The order-card pool check every live entry point shares: the card has to be
+/// one of the 36 printed ones.
+///
+/// The grammar hands back an identity without judging it (`card_prompt`'s
+/// module doc: it parses, it does not decide what is legal), so this is the
+/// wizard's own answer to "is that a real card" — the same check the old
+/// `ask_order_answer` made, minus the duplicate half, which now lives with the
+/// locations that can explain it.
+fn known_order(card: CardRef, rules: &Rules) -> Result<(), String> {
+    match card {
+        CardRef::Order(id) if rules.orders.get(id).is_some() => Ok(()),
+        CardRef::Order(id) => Err(format!("O{:02} is not one of the 36 order cards", id.0)),
+        other => Err(format!("{} is not an order card", card_prompt::card_tag(other))),
+    }
 }
 
 /// One seat's sim-preview + keep choice: prints the actual seeded deal
@@ -914,45 +1242,6 @@ fn ask_sim_deal(
 /// the guide promises a 140-column window clears every layout.
 const KEEP_SCORE_NOTE: &str = "  (the Keep score is what the built-in bot would prefer, from the card's printed\n   \
      economics alone -- hand-set, unmeasured, and no substitute for your own read)\n";
-
-/// Validate one order-card answer: syntax (via the shared `parse_order_id`),
-/// registry membership, then not-already-entered -- inserting into
-/// `seen_order_ids` on success (design §5.5 item 1).
-fn ask_order_answer(s: &str, rules: &Rules, seen_order_ids: &mut BTreeSet<u8>) -> Result<OrderCardId, String> {
-    let n = parse_order_id(s).ok_or_else(|| format!("'{s}' is not a valid order-card code"))?;
-    let id = OrderCardId(n);
-    if rules.orders.get(id).is_none() {
-        return Err(format!("'{s}' is not a valid order card"));
-    }
-    if !seen_order_ids.insert(n) {
-        return Err(format!("'{s}' (O{n:02}) was already entered"));
-    }
-    Ok(id)
-}
-
-/// Validate one tech-card answer: the shared `parse_tech_entry` (registry
-/// membership folded into its candidate check, `TechAmbiguity::Reject` --
-/// the wizard records physical identity, so an ambiguous name prefix must
-/// be refused, not guessed), then not-already-entered. Renders its own
-/// wizard-flavored wording from `TechEntryError` (unchanged from before the
-/// fix wave) -- `reveal.rs`'s `parse_tech_reveal` renders its own
-/// deck-flavored wording from the SAME error type instead of sharing text.
-fn ask_tech_answer(
-    s: &str,
-    rules: &Rules,
-    all_tech_ids: &[TechCardId],
-    seen_tech_ids: &mut BTreeSet<u8>,
-) -> Result<TechCardId, String> {
-    let id = parse_tech_entry(s, &rules.techs, all_tech_ids, TechAmbiguity::Reject).map_err(|e| match e {
-        TechEntryError::NotInPool(_) => format!("'{s}' is not a valid tech card"),
-        TechEntryError::NoMatch => format!("'{s}' does not match any tech card"),
-        TechEntryError::Ambiguous => format!("'{s}' matches more than one tech card -- use T<id>"),
-    })?;
-    if !seen_tech_ids.insert(id.0) {
-        return Err(format!("'{s}' ({}) was already entered", tech_name(id, &rules.techs)));
-    }
-    Ok(id)
-}
 
 // ---------------------------------------------------------------------
 // Board entry (third review, finding I1)
@@ -1023,6 +1312,8 @@ fn tile_entry_preamble(rows: &[u8], players: u8) -> String {
          * The rulebook's p.3 diagram prints this pyramid THE OTHER WAY UP, narrowest row at\n\
          \x20 the top. Do not follow that picture's reading order: enter the widest row first.\n\
          \x20 The engine models the adjacency graph, not the printed picture.\n\
+         Each question lists the tiles still to place, with how many of each are left --\n\
+         \x20 type the number beside one, its full name, or its old short code (cm, sm, ...).\n\
          The finished board is drawn back for you to check before play begins.\n\n",
         if narrowest == 1 { "" } else { "s" }
     ));
@@ -1056,29 +1347,191 @@ fn ask_tiles(
             row_end += rows[row] as usize;
             out(&row_banner(row, &rows));
         }
+        // The offer is fixed for the duration of ONE cell -- the counts only
+        // change when an answer is taken, and that ends this question -- so the
+        // menu is built once and rides in the prompt, where a re-ask reprints it
+        // beside the question rather than leaving it scrolled away.
+        let offer = tile_offer(&remaining);
         let mut chosen: Option<AreaType> = None;
         ask(
             input,
             out,
             &format!(
-                "Cell {i}/{n} ({}) tile? (cm/sm/tp/fg/bank/pa/pb/la/lb/ea/ct/ch/cu/canal)",
+                "{}Cell {i}/{n} ({}) tile? (a number, a name, or its short code)",
+                tile_menu(&offer, players),
                 cell_coords(i, &rows)
             ),
             &mut |s: &str| -> Result<(), String> {
-                let area = parse_tile_abbrev(s)?;
+                let area = parse_tile_entry(s, &offer, legal_counts, players)?;
                 match remaining.get_mut(&area) {
                     Some(k) if *k > 0 => {
                         *k -= 1;
                         chosen = Some(area);
                         Ok(())
                     }
-                    _ => Err(format!("no {} tiles remaining for this board", s.to_lowercase())),
+                    // Unreachable from `parse_tile_entry`, which refuses an
+                    // exhausted type with the count it ran out of; kept total
+                    // rather than unwrapping on a map the caller supplied.
+                    _ => Err(format!(
+                        "no more {} tiles for this board",
+                        crate::describe::area_type_name(area)
+                    )),
                 }
             },
         )?;
         tiles.push(chosen.unwrap());
     }
     Ok(tiles)
+}
+
+/// The tile types still placeable, with how many of each is left — in
+/// `AREA_TYPE_ENTRY` order so a type's position only moves when another type
+/// runs out, never because the board is being filled in a different order.
+fn tile_offer(remaining: &HashMap<AreaType, u32>) -> Vec<(AreaType, u32)> {
+    AREA_TYPE_ENTRY
+        .iter()
+        .filter_map(|(area, _)| {
+            remaining.get(area).filter(|k| **k > 0).map(|k| (*area, *k))
+        })
+        .collect()
+}
+
+/// The offer as a numbered menu — **finding F2, fixed at the surface where the
+/// owner hit it.**
+///
+/// The prompt used to end `(cm/sm/tp/fg/bank/pa/pb/la/lb/ea/ct/ch/cu/canal)`:
+/// one static list of every abbreviation in the game, at every player count. So
+/// a 2-player setup offered `canal` — a tile that is *"Removed from the board
+/// entirely at 2 players"* — the operator typed it, and the validator refused
+/// it. The engine was right the whole time; the prompt was advertising an
+/// answer it would not take. This offers what is actually placeable, with the
+/// count still to place, shrinking as the board fills.
+///
+/// Full names, with the short codes kept as accepted aliases (R1), and numbers
+/// that work (F3).
+fn tile_menu(offer: &[(AreaType, u32)], players: u8) -> String {
+    numbered_offer(
+        &format!("  Tiles still to place on this {players}-player board:\n"),
+        offer.iter().map(|(area, left)| {
+            format!("{} x{left}", crate::describe::area_type_name(*area))
+        }),
+    )
+}
+
+/// A numbered offer, three to a row — the layout both board-entry menus use.
+///
+/// Numbered from [`menu_number`] like every other list in the driver, and 26
+/// columns to a cell: the widest either menu produces is `[10] Employment
+/// Agency x2` at 25, so three of those plus the indent clear 80.
+fn numbered_offer(header: &str, cells: impl Iterator<Item = String>) -> String {
+    let mut out = header.to_string();
+    let mut count = 0usize;
+    for (i, cell) in cells.enumerate() {
+        count = i + 1;
+        let cell = format!("[{}] {cell}", menu_number(i));
+        if i % 3 == 0 {
+            out.push_str("   ");
+        }
+        out.push_str(&format!("{cell:<26}"));
+        if i % 3 == 2 {
+            out.push('\n');
+        }
+    }
+    if !count.is_multiple_of(3) {
+        out.push('\n');
+    }
+    out
+}
+
+/// One tile answer: a menu number, a short code, or a name (any unambiguous
+/// start of one).
+///
+/// The two refusals are the whole point of F2 and they say DIFFERENT things: a
+/// type this player count does not use is not a mistake about the board's
+/// progress, it is a tile that is in the box.
+fn parse_tile_entry(
+    s: &str,
+    offer: &[(AreaType, u32)],
+    legal_counts: &HashMap<AreaType, u32>,
+    players: u8,
+) -> Result<AreaType, String> {
+    let typed = s.trim();
+    if typed.is_empty() {
+        return Err("type a number from the list, a tile name, or its short code".to_string());
+    }
+    if typed.chars().all(|c| c.is_ascii_digit()) {
+        return match typed.parse::<usize>().ok().and_then(|k| menu_index(k, offer.len())) {
+            Some(k) => Ok(offer[k].0),
+            None => Err(match menu_range(offer.len()) {
+                Some((lo, hi)) => format!("'{typed}' is not on the list -- pick {lo}-{hi}"),
+                None => "no tiles are left to place".to_string(),
+            }),
+        };
+    }
+    let area = match_tile_name(typed, legal_counts)?;
+    match (legal_counts.get(&area), offer.iter().any(|(a, _)| *a == area)) {
+        (_, true) => Ok(area),
+        // In the game but not on THIS board: `canal` at 2 players, the finding
+        // by name.
+        (None, _) => Err(format!(
+            "{} is not part of a {players}-player board -- that tile stays in the box",
+            crate::describe::area_type_name(area),
+        )),
+        (Some(total), false) => Err(format!(
+            "no more {} tiles for this board -- the {players}-player set has {total}",
+            crate::describe::area_type_name(area),
+        )),
+    }
+}
+
+/// A tile named by its short code or by any unambiguous start of its name.
+///
+/// Ambiguity is refused rather than guessed -- the same discipline
+/// `card_prompt` holds for goods, flags and technology titles, and it earns its
+/// keep here: `c` starts Copper Mine, Chinatown, Church, Customs and the Canal.
+///
+/// **Matched over all FOURTEEN types but disambiguated against THIS board.**
+/// Both halves are deliberate. Matching over all fourteen is what lets `canal`
+/// at 2 players reach the message that names the finding — a tile that is in
+/// the box, not a word the wizard has never heard of. Disambiguating against
+/// the player count's own set is what keeps that from making the prompt worse:
+/// a prefix matching several types of which only ONE is on this board is not
+/// ambiguous at this table, and one that is genuinely ambiguous lists only the
+/// tiles the operator could actually be holding.
+fn match_tile_name(
+    typed: &str,
+    legal_counts: &HashMap<AreaType, u32>,
+) -> Result<AreaType, String> {
+    let needle = typed.to_lowercase();
+    if let Some((area, _)) = AREA_TYPE_ENTRY.iter().find(|(_, code)| *code == needle) {
+        return Ok(*area);
+    }
+    let hits: Vec<AreaType> = AREA_TYPE_ENTRY
+        .iter()
+        .filter(|(area, _)| crate::describe::area_type_name(*area).to_lowercase().starts_with(&needle))
+        .map(|(area, _)| *area)
+        .collect();
+    if hits.is_empty() {
+        return Err(format!(
+            "'{typed}' is not a tile -- type a number from the list, a name, or a short code"
+        ));
+    }
+    let on_this_board: Vec<AreaType> =
+        hits.iter().copied().filter(|area| legal_counts.contains_key(area)).collect();
+    match (hits.as_slice(), on_this_board.as_slice()) {
+        ([only], _) => Ok(*only),
+        // Several types start this way, but only one of them is in the game at
+        // this player count -- so there is exactly one tile it can mean.
+        (_, [only]) => Ok(*only),
+        // Genuinely ambiguous. Name the candidates that are on this board; if
+        // none is, name them all rather than refusing with an empty list.
+        (all, some) => {
+            let candidates = if some.is_empty() { all } else { some };
+            let names: Vec<&str> =
+                candidates.iter().map(|a| crate::describe::area_type_name(*a)).collect();
+            Err(format!("'{typed}' could be {} -- type more of the name", names.join(", ")))
+        }
+    }
 }
 
 /// A building-site index for every non-Canal cell (Canal cells carry no
@@ -1093,16 +1546,22 @@ fn ask_sites(
     out: &mut dyn FnMut(&str),
     tiles: &[AreaType],
     rules: &Rules,
+    colors: &[PlayerColor],
     players: u8,
+    placed: &mut Vec<(CardRef, CardLocation)>,
 ) -> Result<Vec<Option<u8>>, String> {
     let rows = row_lengths(players);
     let n = tiles.len();
+    // Re-entrant like the port and lab passes: this walks every cell, so an
+    // `edit sites` (or the `edit tiles` that drags the sites with it) starts
+    // from the full registry rather than from its own previous answers.
+    placed.retain(|(card, _)| !matches!(card, CardRef::Site(_)));
     out("\n--- Building-site cards ---\n");
     out("Same cells in the same order as the tiles: the widest row first, left to right.\n");
     out("Each question names the tile you entered there. Canal cells carry no site and\n");
-    out("are skipped.\n");
+    out("are skipped. The cards print no number, so '?' draws all 24 with their spaces --\n");
+    out("the index number and the S<n> the wizard records are the same number.\n");
 
-    let mut seen_sites: BTreeSet<u8> = BTreeSet::new();
     let mut sites: Vec<Option<u8>> = Vec::with_capacity(n);
     let mut row = 0usize;
     let mut row_end = rows[0] as usize;
@@ -1117,28 +1576,33 @@ fn ask_sites(
             sites.push(None);
             continue;
         }
-        let mut chosen: Option<u8> = None;
-        ask(
+        let area = AreaId::new(i as u8);
+        let ctx = CardCtx { rules, colors, placed };
+        let card = ask_card(
             input,
             out,
+            &ctx,
             &format!(
-                "Cell {i}/{n} ({}) {} -- building-site index? (S<idx> or a number)",
+                "Cell {i}/{n} ({}) {} -- building-site card?",
                 cell_coords(i, &rows),
                 crate::describe::area_type_name(*tile)
             ),
-            &mut |s: &str| -> Result<(), String> {
-                let idx = parse_site_index(s)?;
-                if idx as usize >= rules.building_sites.len() {
-                    return Err(format!("'{s}' is not a valid building-site index"));
+            RecordingTarget::SiteSetup { area },
+            false,
+            &mut |card| match card {
+                CardRef::Site(index) if usize::from(index) < rules.building_sites.len() => Ok(()),
+                CardRef::Site(index) => Err(format!(
+                    "S{index} is not one of the {} building-site cards",
+                    rules.building_sites.len()
+                )),
+                other => {
+                    Err(format!("{} is not a building-site card", card_prompt::card_tag(other)))
                 }
-                if !seen_sites.insert(idx) {
-                    return Err(format!("'{s}' (site {idx}) was already entered"));
-                }
-                chosen = Some(idx);
-                Ok(())
             },
         )?;
-        sites.push(Some(chosen.unwrap()));
+        let CardRef::Site(index) = card else { unreachable!("a site prompt yields site cards") };
+        sites.push(Some(index));
+        placed.push((card, CardLocation::OnArea { area }));
     }
     Ok(sites)
 }
@@ -1169,9 +1633,8 @@ fn ask_tokens(
     out("\n--- 5-Power tokens ---\n");
     out("The 5-Power tokens are placed FACE-UP (rulebook p.3 step 5): enter the one you\n");
     out("see on each tile. Same cells in the same order as the tiles, each question naming\n");
-    out("the tile you entered there; Canal cells carry no token and are skipped. Letters:\n");
-    out("  i = 1 imported good   c = 2 copper   s = 2 silk\n");
-    out("  t = 3 tea   f = 3 seafood   y = 3 yen\n");
+    out("the tile you entered there; Canal cells carry no token and are skipped. The menu\n");
+    out("counts down as you go, and the old letters (i/c/s/t/f/y) still work.\n");
 
     let mut pool = rules.five_power_tokens.clone();
     let mut tokens: Vec<Option<FivePowerEffect>> = Vec::with_capacity(n);
@@ -1188,23 +1651,28 @@ fn ask_tokens(
             tokens.push(None);
             continue;
         }
+        // Fixed for this one question, exactly as the tile offer is.
+        let offer = token_offer(&pool);
         let mut chosen: Option<FivePowerEffect> = None;
         ask(
             input,
             out,
             &format!(
-                "Cell {i}/{n} ({}) {} -- 5-Power token? (i/c/s/t/f/y)",
+                "{}Cell {i}/{n} ({}) {} -- 5-Power token? (a number or its letter)",
+                token_menu(&offer),
                 cell_coords(i, &rows),
                 crate::describe::area_type_name(*tile)
             ),
             &mut |s: &str| -> Result<(), String> {
-                let effect = crate::reveal::parse_token_letter(&[s])?;
+                let effect = parse_token_entry(s, &offer)?;
                 match pool.iter().position(|p| *p == effect) {
                     Some(idx) => {
                         pool.swap_remove(idx);
                         chosen = Some(effect);
                         Ok(())
                     }
+                    // Unreachable from `parse_token_entry`, which refuses a face
+                    // the pool has run out of; kept total all the same.
                     None => Err(format!(
                         "no more {} tokens available for this board",
                         crate::describe::five_power_effect_label(effect)
@@ -1215,6 +1683,61 @@ fn ask_tokens(
         tokens.push(Some(chosen.unwrap()));
     }
     Ok(tokens)
+}
+
+/// The token faces still in the pool with their counts, in the canonical pool
+/// order (`rules.five_power_tokens`' own first-seen order, which is the order
+/// the box lists them).
+fn token_offer(pool: &[FivePowerEffect]) -> Vec<(FivePowerEffect, usize)> {
+    let mut offer: Vec<(FivePowerEffect, usize)> = Vec::new();
+    for face in pool {
+        match offer.iter_mut().find(|(f, _)| f == face) {
+            Some((_, count)) => *count += 1,
+            None => offer.push((*face, 1)),
+        }
+    }
+    offer
+}
+
+/// The token offer as a numbered menu, in plain words.
+///
+/// The same treatment the tile question gets and for the same reason (R1/F3):
+/// the prompt used to end `(i/c/s/t/f/y)` over a six-line legend, which is six
+/// letters to memorize for a question asked seventeen times.
+fn token_menu(offer: &[(FivePowerEffect, usize)]) -> String {
+    numbered_offer(
+        "  Tokens still to place:\n",
+        offer.iter().map(|(face, left)| {
+            format!("{} x{left}", crate::describe::five_power_effect_label(*face))
+        }),
+    )
+}
+
+/// One token answer: a menu number, or the face's letter (the alias the guide
+/// and every existing script use).
+fn parse_token_entry(
+    s: &str,
+    offer: &[(FivePowerEffect, usize)],
+) -> Result<FivePowerEffect, String> {
+    let typed = s.trim();
+    if typed.chars().all(|c| c.is_ascii_digit()) && !typed.is_empty() {
+        return match typed.parse::<usize>().ok().and_then(|k| menu_index(k, offer.len())) {
+            Some(k) => Ok(offer[k].0),
+            None => Err(match menu_range(offer.len()) {
+                Some((lo, hi)) => format!("'{typed}' is not on the list -- pick {lo}-{hi}"),
+                None => "no tokens are left to place".to_string(),
+            }),
+        };
+    }
+    let effect = crate::reveal::parse_token_letter(&[typed])?;
+    if offer.iter().any(|(face, _)| *face == effect) {
+        Ok(effect)
+    } else {
+        Err(format!(
+            "no more {} tokens available for this board",
+            crate::describe::five_power_effect_label(effect)
+        ))
+    }
 }
 
 /// The confirmation checkpoint the live gate turns on (required outcome 3):
@@ -1329,81 +1852,190 @@ fn dummy_placement_notice(state: &GameState) -> String {
     )
 }
 
-/// 3 distinct entries out of the 12 canonical achievement types.
-fn ask_achievements(input: &mut dyn Iterator<Item = String>, out: &mut dyn FnMut(&str)) -> Result<[AchievementType; 3], String> {
-    out("Achievements -- enter 3 distinct types (name is case-insensitive):\n");
-    for (i, ty) in ALL_ACHIEVEMENTS.iter().enumerate() {
-        out(&format!("  {}) {:?} -- {}\n", i + 1, ty, crate::describe::achievement_desc(*ty)));
+/// The three Achievement cards in play — **one from each category, asked one
+/// category at a time** (finding F1, spec §0.10).
+///
+/// **The rule is structural here, not a validation bolted onto a free-for-all.**
+/// The rulebook deals one card from each of the three categories (KB
+/// §Achievement Cards; `game::setup` does exactly that from `ACHIEVEMENTS_A/B/C`
+/// and the per-category VP tiers depend on it), and the old prompt accepted any
+/// three distinct types — so a live game could be set up with three category-A
+/// cards and nothing anywhere would say otherwise. Asking per category means
+/// the illegal setup cannot be typed rather than being caught: the only way to
+/// answer wrongly is to name a card from another category, and that refusal
+/// says which category the card belongs to and which one this question wants.
+///
+/// **Wizard-side only, and deliberately so.** The engine is already correct and
+/// this is a UI validation ahead of it, which is why it is rev-inert: nothing
+/// about `reconcile_setup`'s acceptance moves (spec §0.10 — a reconcile-side
+/// check is a separate, owner-gated question).
+///
+/// The numbers are the INDEX's own, over all twelve cards, so the four rows
+/// this question prints carry the same numbers the `?` screen does — a menu
+/// that shows numbers accepts those numbers (F3), and it accepts the ones the
+/// other screen shows too.
+fn ask_achievements(
+    input: &mut dyn Iterator<Item = String>,
+    out: &mut dyn FnMut(&str),
+    rules: &Rules,
+    colors: &[PlayerColor],
+) -> Result<[AchievementType; 3], String> {
+    out("\n--- Achievement cards ---\n");
+    out("Three cards are in play, ONE FROM EACH CATEGORY -- so the wizard asks for them\n");
+    out("one category at a time. Type the number beside a card, its name, or '?' for the\n");
+    out("full index of all twelve with their scoring.\n");
+
+    let mut chosen: Vec<AchievementType> = Vec::with_capacity(3);
+    let mut placed: Vec<(CardRef, CardLocation)> = Vec::new();
+    for category in [AchievementCategory::A, AchievementCategory::B, AchievementCategory::C] {
+        let letter = crate::describe::category_letter(category);
+        let target = RecordingTarget::AchievementSetup { category };
+        let card = {
+            let ctx = CardCtx { rules, colors, placed: &placed };
+            out(&category_menu(&ctx.index(target.kind(), Some(target), None), category));
+            ask_card(
+                input,
+                out,
+                &ctx,
+                &format!("Which category {letter} card is in play?"),
+                target,
+                // The four cards are printed directly above with their numbers,
+                // so a bare number is a selection from the moment the question
+                // appears rather than only after a `?`.
+                true,
+                &mut |card| match card {
+                    CardRef::Achievement(ty) if ty.category() == category => Ok(()),
+                    CardRef::Achievement(ty) => Err(format!(
+                        "{ty:?} is a category {} card -- this question is asking for the category {letter} one",
+                        crate::describe::category_letter(ty.category()),
+                    )),
+                    other => Err(format!(
+                        "{} is not an achievement card",
+                        card_prompt::card_tag(other)
+                    )),
+                },
+            )?
+        };
+        let CardRef::Achievement(ty) = card else {
+            unreachable!("an achievement prompt yields achievement cards")
+        };
+        chosen.push(ty);
+        placed.push((card, CardLocation::AchievementSlot { category }));
     }
-    let mut achievement_list: Vec<AchievementType> = Vec::new();
-    for slot in 0..3 {
-        let mut chosen: Option<AchievementType> = None;
-        ask(input, out, &format!("Achievement {} of 3?", slot + 1), &mut |s: &str| -> Result<(), String> {
-            let ty = parse_achievement(s)?;
-            if achievement_list.contains(&ty) {
-                return Err(format!("{ty:?} was already chosen"));
-            }
-            chosen = Some(ty);
-            Ok(())
-        })?;
-        achievement_list.push(chosen.unwrap());
-    }
-    Ok(achievement_list.try_into().unwrap())
+    Ok(chosen.try_into().expect("three categories, three cards"))
 }
 
-/// Ask `n` sequential order-card slots left-to-right (Port A/B contents),
-/// validated/deduped against `seen_order_ids` (design §5.5 item 1: shared
-/// across Port A + Port B + the deals).
+/// One category's four cards, numbered as the full index numbers them.
+fn category_menu(index: &IndexModel, category: AchievementCategory) -> String {
+    let mut out = format!(
+        "  Category {} -- one of these four:\n",
+        crate::describe::category_letter(category)
+    );
+    for card in index.cards() {
+        let crate::screen_model::CardFaceModel::Achievement(a) = &card.face else { continue };
+        if a.category != category {
+            continue;
+        }
+        let Some(number) = card.selection else { continue };
+        let desc = crate::describe::achievement_desc(a.achievement_type);
+        // The number field is padded, not just the description: `[12]` is a
+        // column wider than `[1]`, and padding only what follows it shears the
+        // VP column on exactly the rows category C occupies.
+        out.push_str(&format!(
+            "    {:<5}{desc:<46} {}/{} VP   '{:?}'\n",
+            format!("[{number}]"),
+            a.first_place_vp,
+            a.subsequent_vp,
+            a.achievement_type,
+        ));
+    }
+    out
+}
+
+/// One Port display's six order cards, left to right.
+///
+/// Duplicates are refused across the WHOLE tail — both seats' deals, Port A and
+/// Port B share `placed` (design §5.5 item 1) — and since T7 the refusal names
+/// which of those the card is already in, which is finding F6.
+///
+/// Re-entrant: an `edit porta` drops this board's previous six first, so the
+/// re-ask starts from the same pool the first pass did.
 fn ask_orders(
     input: &mut dyn Iterator<Item = String>,
     out: &mut dyn FnMut(&str),
-    label: &str,
-    n: usize,
+    board_b: bool,
     rules: &Rules,
-    seen_order_ids: &mut BTreeSet<u8>,
+    colors: &[PlayerColor],
+    placed: &mut Vec<(CardRef, CardLocation)>,
 ) -> Result<Vec<OrderCardId>, String> {
-    let mut cards = Vec::with_capacity(n);
-    for slot in 0..n {
-        let mut chosen: Option<OrderCardId> = None;
-        ask(
+    const N: usize = 6;
+    let board = crate::describe::port_board_name(board_b);
+    placed.retain(|(_, at)| !matches!(at, CardLocation::PortSlot { board_b: b, .. } if *b == board_b));
+    out(&format!("\n--- {board} ---\n"));
+    out("The six order cards on the display, left to right as you face the board.\n");
+
+    let mut cards = Vec::with_capacity(N);
+    for slot in 0..N {
+        let ctx = CardCtx { rules, colors, placed };
+        let card = ask_card(
             input,
             out,
-            &format!("{label} slot {} of {n}? (O<id>)", slot + 1),
-            &mut |s: &str| -> Result<(), String> {
-                chosen = Some(ask_order_answer(s, rules, seen_order_ids)?);
-                Ok(())
-            },
+            &ctx,
+            &format!("{board} slot {} of {N}?", menu_number(slot)),
+            RecordingTarget::PortSetup { board_b, slot, of: N },
+            false,
+            &mut |card| known_order(card, rules),
         )?;
-        cards.push(chosen.unwrap());
+        let CardRef::Order(id) = card else { unreachable!("an order prompt yields order cards") };
+        cards.push(id);
+        placed.push((card, CardLocation::PortSlot { board_b, slot }));
     }
     Ok(cards)
 }
 
-/// Ask `n` sequential tech-card slots left-to-right (Laboratory A/B
-/// contents), validated/deduped against `seen_tech_ids` (design §5.5 item
-/// 1: shared across Lab A + Lab B).
+/// One Laboratory display's six technology cards, left to right.
+///
+/// **Name-first, and `T<id>` is never required** (R8/F4): nothing is printed on
+/// a technology card to identify it but its NAME, so that is what the prompt
+/// takes — and the two copies of a title are one answer, resolved to whichever
+/// is still unrecorded (`card_prompt::free_copy`). The old prompt refused a
+/// name matching both copies and told the operator to use an id printed on
+/// neither card, which is the F4 defect in its purest form.
 fn ask_techs(
     input: &mut dyn Iterator<Item = String>,
     out: &mut dyn FnMut(&str),
-    label: &str,
-    n: usize,
+    board_b: bool,
     rules: &Rules,
+    colors: &[PlayerColor],
     all_tech_ids: &[TechCardId],
-    seen_tech_ids: &mut BTreeSet<u8>,
+    placed: &mut Vec<(CardRef, CardLocation)>,
 ) -> Result<Vec<TechCardId>, String> {
-    let mut cards = Vec::with_capacity(n);
-    for slot in 0..n {
-        let mut chosen: Option<TechCardId> = None;
-        ask(
+    const N: usize = 6;
+    let board = crate::describe::lab_board_name(board_b);
+    placed.retain(|(_, at)| !matches!(at, CardLocation::LabSlot { board_b: b, .. } if *b == board_b));
+    out(&format!("\n--- {board} ---\n"));
+    out("The six technology cards on the display, left to right. Type each card's NAME\n");
+    out("(any unambiguous start of it will do); '?' draws all twenty with their effects.\n");
+
+    let mut cards = Vec::with_capacity(N);
+    for slot in 0..N {
+        let ctx = CardCtx { rules, colors, placed };
+        let card = ask_card(
             input,
             out,
-            &format!("{label} slot {} of {n}? (T<id> or a name)", slot + 1),
-            &mut |s: &str| -> Result<(), String> {
-                chosen = Some(ask_tech_answer(s, rules, all_tech_ids, seen_tech_ids)?);
-                Ok(())
+            &ctx,
+            &format!("{board} slot {} of {N}?", menu_number(slot)),
+            RecordingTarget::LabSetup { board_b, slot, of: N },
+            false,
+            &mut |card| match card {
+                CardRef::Tech(id) if all_tech_ids.contains(&id) => Ok(()),
+                CardRef::Tech(id) => Err(format!("T{:02} is not one of the technology cards", id.0)),
+                other => Err(format!("{} is not a technology", card_prompt::card_tag(other))),
             },
         )?;
-        cards.push(chosen.unwrap());
+        let CardRef::Tech(id) = card else { unreachable!("a tech prompt yields tech cards") };
+        cards.push(id);
+        placed.push((card, CardLocation::LabSlot { board_b, slot }));
     }
     Ok(cards)
 }
@@ -1418,54 +2050,28 @@ fn parse_color(s: &str) -> Result<PlayerColor, String> {
     }
 }
 
-fn parse_tile_abbrev(s: &str) -> Result<AreaType, String> {
-    match s.to_lowercase().as_str() {
-        "cm" => Ok(AreaType::CopperMine),
-        "sm" => Ok(AreaType::SilkMill),
-        "tp" => Ok(AreaType::TeaPlantation),
-        "fg" => Ok(AreaType::FishingGround),
-        "bank" => Ok(AreaType::Bank),
-        "pa" => Ok(AreaType::PortA),
-        "pb" => Ok(AreaType::PortB),
-        "la" => Ok(AreaType::LaboratoryA),
-        "lb" => Ok(AreaType::LaboratoryB),
-        "ea" => Ok(AreaType::EmploymentAgency),
-        "ct" => Ok(AreaType::Chinatown),
-        "ch" => Ok(AreaType::Church),
-        "cu" => Ok(AreaType::Customs),
-        "canal" => Ok(AreaType::Canal),
-        _ => Err(format!("'{s}' is not a valid tile abbreviation (cm/sm/tp/fg/bank/pa/pb/la/lb/ea/ct/ch/cu/canal)")),
-    }
-}
-
-/// `S<idx>` or a bare integer.
-fn parse_site_index(s: &str) -> Result<u8, String> {
-    let rest = s.strip_prefix(['S', 's']).unwrap_or(s);
-    rest.parse::<u8>().map_err(|_| format!("'{s}' is not a valid building-site index"))
-}
-
-/// Match against the Debug-formatted variant name, case-insensitively.
-fn parse_achievement(s: &str) -> Result<AchievementType, String> {
-    ALL_ACHIEVEMENTS
-        .iter()
-        .copied()
-        .find(|ty| format!("{ty:?}").eq_ignore_ascii_case(s))
-        .ok_or_else(|| format!("'{s}' is not a valid achievement type"))
-}
-
-const ALL_ACHIEVEMENTS: [AchievementType; 12] = [
-    AchievementType::Copper5,
-    AchievementType::Silk6,
-    AchievementType::Tea7,
-    AchievementType::Seafood7,
-    AchievementType::Money10,
-    AchievementType::Tokens5,
-    AchievementType::Orders5,
-    AchievementType::Technologies4,
-    AchievementType::Production4,
-    AchievementType::Commercial4,
-    AchievementType::Prod3Comm2,
-    AchievementType::Prod2Comm3,
+/// The fourteen tile types and their short codes, in the order the tile menu
+/// lists them: the four production areas, then the commercial ones, then the
+/// Canal.
+///
+/// **The codes are ALIASES now, not the interface** (R1). They are what the
+/// prompt used to print and what every existing script types, so they keep
+/// working — but the menu shows full names, and the entry takes those too.
+const AREA_TYPE_ENTRY: [(AreaType, &str); 14] = [
+    (AreaType::CopperMine, "cm"),
+    (AreaType::SilkMill, "sm"),
+    (AreaType::TeaPlantation, "tp"),
+    (AreaType::FishingGround, "fg"),
+    (AreaType::Bank, "bank"),
+    (AreaType::PortA, "pa"),
+    (AreaType::PortB, "pb"),
+    (AreaType::LaboratoryA, "la"),
+    (AreaType::LaboratoryB, "lb"),
+    (AreaType::EmploymentAgency, "ea"),
+    (AreaType::Chinatown, "ct"),
+    (AreaType::Church, "ch"),
+    (AreaType::Customs, "cu"),
+    (AreaType::Canal, "canal"),
 ];
 
 #[cfg(test)]
@@ -1478,6 +2084,17 @@ mod tests {
     // precedent as `session::tests`/`repl::tests`).
     #[allow(unused_imports)]
     use yokohama_core::*;
+
+    /// The three achievement answers every scripted live test gives, **one per
+    /// category, in the A/B/C order the questions are asked** (F1).
+    ///
+    /// This exact trio is the one the owner's own live-gate attempt had on the
+    /// table (brief §1.1 F1: Copper5 = A, Money10 = B, Production4 = C) — the
+    /// setup that was legal all along while the wizard would equally have taken
+    /// three category-A cards. The scripts used to feed `Copper5 Silk6 Tea7`,
+    /// which is three of category A: an illegal table the old prompt accepted
+    /// without a word, and which is now untypeable.
+    const P2_ACHIEVEMENTS: [&str; 3] = ["Copper5", "Money10", "Production4"];
 
     fn feed(lines: &[&str]) -> (Result<crate::repl::Repl, String>, String) {
         let mut transcript = String::new();
@@ -1620,7 +2237,7 @@ mod tests {
         lines.extend(["cm", "sm", "tp", "fg", "bank", "pa", "la", "ea", "ch", "cu"].iter().map(|s| s.to_string()));
         lines.extend((0u8..10).map(|i| i.to_string()));
         lines.extend(token_letters_for_count(10)); // 5-Power tokens: 2P is 10 cells, no Canal
-        lines.extend(["Copper5", "Silk6", "Tea7"].iter().map(|s| s.to_string()));
+        lines.extend(P2_ACHIEVEMENTS.iter().map(|s| s.to_string()));
         lines
     }
 
@@ -1635,41 +2252,49 @@ mod tests {
     }
 
     /// (a) A duplicate order id in the live Port-A tail re-asks AT THAT
-    /// QUESTION with an "already entered" message -- no abort, no
-    /// deferral to the ~30-question reconcile_setup tail.
+    /// QUESTION -- no abort, no deferral to the ~30-question reconcile_setup
+    /// tail -- and since T7 the refusal NAMES WHERE the card already is, which
+    /// is finding F6: the owner's own Port entry refused `2`, `4` and `6` as
+    /// "already entered" while they sat in the seats' recorded deals, and
+    /// nothing on screen could say so. Here the earlier place is Port A slot 1,
+    /// and the message says exactly that.
     #[test]
-    fn duplicate_order_id_in_port_a_reasks_with_already_entered() {
+    fn duplicate_order_id_in_port_a_reasks_with_the_location_it_is_already_in() {
         let mut lines = live_2p_prefix(601);
         lines.extend(["O1", "O1", "O2", "O3", "O4", "O5", "O6"].iter().map(|s| s.to_string())); // O1 repeated
         lines.extend(["T1", "T2", "T3", "T4", "T5", "T6"].iter().map(|s| s.to_string()));
         lines.push("confirm".into());
         lines.push("yes".into()); // board check (third review I1)
         let (repl, transcript) = feed_owned(lines);
-        assert!(transcript.contains("already entered"), "{transcript}");
+        assert!(
+            transcript.contains("O01 is Port A slot 1 — a card cannot be in two places."),
+            "the refusal must name where the card already is (F6)\n{transcript}"
+        );
         let repl = repl.unwrap_or_else(|e| panic!("expected Ok, got Err({e}); transcript:\n{transcript}"));
         assert_eq!(repl.session.state().port_state.port_a.slots[0], Some(OrderCardId(1)));
         assert_eq!(repl.session.state().port_state.port_a.slots[1], Some(OrderCardId(2)));
         std::fs::remove_file("yokohama-game-601.json").ok();
     }
 
-    /// (b) An order id outside the 1-36 registry re-asks with "not a valid
-    /// order card".
+    /// (b) An order id outside the 1-36 registry re-asks, naming the registry
+    /// it is not in.
     #[test]
-    fn order_id_outside_registry_reasks_with_not_a_valid_order_card() {
+    fn order_id_outside_registry_reasks_naming_the_registry() {
         let mut lines = live_2p_prefix(602);
         lines.extend(["O99", "O1", "O2", "O3", "O4", "O5", "O6"].iter().map(|s| s.to_string())); // O99 not in registry
         lines.extend(["T1", "T2", "T3", "T4", "T5", "T6"].iter().map(|s| s.to_string()));
         lines.push("confirm".into());
         lines.push("yes".into()); // board check (third review I1)
         let (repl, transcript) = feed_owned(lines);
-        assert!(transcript.contains("not a valid order card"), "{transcript}");
+        assert!(transcript.contains("O99 is not one of the 36 order cards"), "{transcript}");
         assert!(repl.is_ok(), "{transcript}");
         std::fs::remove_file("yokohama-game-602.json").ok();
     }
 
-    /// (c) A tile answer that over-fills the player-count multiset re-asks
-    /// with "no cm tiles remaining for this board" -- 2p's legal multiset
-    /// has exactly 1 Copper Mine, so a second "cm" is rejected.
+    /// (c) A tile answer that over-fills the player-count multiset re-asks --
+    /// 2p's legal multiset has exactly 1 Copper Mine, so a second "cm" is
+    /// rejected, by the FULL NAME and with the set size that explains it (R1;
+    /// the short code is still what this script types, as an alias).
     #[test]
     fn tile_over_fill_reasks_with_no_tiles_remaining() {
         let mut lines: Vec<String> = vec![
@@ -1679,13 +2304,16 @@ mod tests {
         lines.extend(["cm", "cm", "sm", "tp", "fg", "bank", "pa", "la", "ea", "ch", "cu"].iter().map(|s| s.to_string())); // cell 1's first attempt repeats cell 0's "cm"
         lines.extend((0u8..10).map(|i| i.to_string()));
         lines.extend(token_letters_for_count(10)); // 5-Power tokens
-        lines.extend(["Copper5", "Silk6", "Tea7"].iter().map(|s| s.to_string()));
+        lines.extend(P2_ACHIEVEMENTS.iter().map(|s| s.to_string()));
         lines.extend(["O1", "O2", "O3", "O4", "O5", "O6"].iter().map(|s| s.to_string()));
         lines.extend(["T1", "T2", "T3", "T4", "T5", "T6"].iter().map(|s| s.to_string()));
         lines.push("confirm".into());
         lines.push("yes".into()); // board check (third review I1)
         let (repl, transcript) = feed_owned(lines);
-        assert!(transcript.contains("no cm tiles remaining for this board"), "{transcript}");
+        assert!(
+            transcript.contains("no more Copper Mine tiles for this board -- the 2-player set has 1"),
+            "{transcript}"
+        );
         assert!(repl.is_ok(), "{transcript}");
         std::fs::remove_file("yokohama-game-603.json").ok();
     }
@@ -1730,7 +2358,13 @@ mod tests {
         lines.push("yes".into()); // board check (third review I1)
         let (repl, transcript) = feed_owned(lines);
         assert!(transcript.contains("O01"), "summary must show the originally-entered Port A cards\n{transcript}");
-        assert!(transcript.contains("cm"), "summary must show the entered tiles\n{transcript}");
+        // The summary names tiles in FULL WORDS (R1) -- and it is the summary
+        // line that is asserted, not the substring `cm`, which the tile
+        // preamble's alias hint would satisfy without the summary existing.
+        assert!(
+            transcript.contains("cell 0 (row 1 of 4, tile 1 of 4): Copper Mine"),
+            "summary must show the entered tiles\n{transcript}"
+        );
         let repl = repl.unwrap_or_else(|e| panic!("expected Ok, got Err({e}); transcript:\n{transcript}"));
         for i in 0..6 {
             assert_eq!(
@@ -1863,7 +2497,7 @@ mod tests {
         lines.extend((0u8..10).map(|i| i.to_string())); // sites
         // A distinct, valid sub-multiset: 1c 1s 1t 1f 1y + 5 imports = 10.
         lines.extend(["c", "s", "t", "f", "y", "i", "i", "i", "i", "i"].iter().map(|s| s.to_string()));
-        lines.extend(["Copper5", "Silk6", "Tea7"].iter().map(|s| s.to_string()));
+        lines.extend(P2_ACHIEVEMENTS.iter().map(|s| s.to_string()));
         lines.extend(["O1", "O2", "O3", "O4", "O5", "O6"].iter().map(|s| s.to_string()));
         lines.extend(["T1", "T2", "T3", "T4", "T5", "T6"].iter().map(|s| s.to_string()));
         lines.push("confirm".into());
@@ -1908,7 +2542,7 @@ mod tests {
         // cells 0,1 copper; cell 2's first answer is a THIRD copper (rejected),
         // then 'i'; cells 3-9 import. 3 c-attempts (1 rejected) + 8 i = 11 lines.
         lines.extend(["c", "c", "c", "i", "i", "i", "i", "i", "i", "i", "i"].iter().map(|s| s.to_string()));
-        lines.extend(["Copper5", "Silk6", "Tea7"].iter().map(|s| s.to_string()));
+        lines.extend(P2_ACHIEVEMENTS.iter().map(|s| s.to_string()));
         lines.extend(["O1", "O2", "O3", "O4", "O5", "O6"].iter().map(|s| s.to_string()));
         lines.extend(["T1", "T2", "T3", "T4", "T5", "T6"].iter().map(|s| s.to_string()));
         lines.push("confirm".into());
@@ -1937,7 +2571,7 @@ mod tests {
         lines.extend(P2_TILES.iter().map(|s| s.to_string()));
         lines.extend((0u8..10).map(|i| i.to_string()));
         lines.extend(token_letters_for_count(10)); // initial: 10 imports
-        lines.extend(["Copper5", "Silk6", "Tea7"].iter().map(|s| s.to_string()));
+        lines.extend(P2_ACHIEVEMENTS.iter().map(|s| s.to_string()));
         lines.extend(["O1", "O2", "O3", "O4", "O5", "O6"].iter().map(|s| s.to_string()));
         lines.extend(["T1", "T2", "T3", "T4", "T5", "T6"].iter().map(|s| s.to_string()));
         lines.push("edit tokens".into());
@@ -2099,7 +2733,7 @@ mod tests {
         let (repl, transcript) = feed_owned(lines);
         repl.unwrap_or_else(|e| panic!("expected Ok, got Err({e}); transcript:\n{transcript}"));
         assert_eq!(
-            transcript.matches("building-site index?").count(),
+            transcript.matches("building-site card?").count(),
             20,
             "10 site questions in the initial pass + 10 more after `edit tiles`\n{transcript}"
         );
@@ -2546,5 +3180,646 @@ mod tests {
         assert_eq!(seats[0].controller, RolloutPolicy::FAMILY_WEIGHTED_DEFAULT.as_str());
         assert_eq!(seats[1].controller, yokohama_core::CONTROLLER_HUMAN);
         std::fs::remove_file("yokohama-game-803.json").ok();
+    }
+
+    // ---- Phase 3.5a T7: the wizard redesign (findings F1, F2, F5, F6) ----
+    //
+    // These pin the four things the owner hit at the live-gate attempt, at the
+    // exact prompts they were hit at. The brief's own words are in each test.
+
+    /// **F1, the structural half.** The rulebook puts ONE card from each of the
+    /// three categories in play (KB §Achievement Cards; `game::setup` deals from
+    /// `ACHIEVEMENTS_A/B/C`), and the old wizard took any three distinct types —
+    /// so `Copper5 Silk6 Tea7`, three category-A cards, built a live game nothing
+    /// would ever question. The question is now asked per category, in A/B/C
+    /// order, so the illegal table cannot be typed: a category-B card offered to
+    /// the category-A question is refused NAMING BOTH categories, and the
+    /// question comes round again.
+    #[test]
+    fn achievements_are_asked_one_category_at_a_time_and_a_wrong_category_is_refused() {
+        let mut lines: Vec<String> = vec![
+            "live".into(), "2".into(), "red".into(), "blue".into(), "0".into(), "630".into(), "".into(),
+            "hidden".into(), "hidden".into(),
+        ];
+        lines.extend(P2_TILES.iter().map(|s| s.to_string()));
+        lines.extend((0u8..10).map(|i| i.to_string()));
+        lines.extend(token_letters_for_count(10));
+        // Category A asked first: Money10 (a B card) and Tea7 (an A card) —
+        // the first refused, the second taken.
+        lines.extend(["Money10", "Tea7", "Tokens5", "Commercial4"].iter().map(|s| s.to_string()));
+        lines.extend(["O1", "O2", "O3", "O4", "O5", "O6"].iter().map(|s| s.to_string()));
+        lines.extend(["T1", "T2", "T3", "T4", "T5", "T6"].iter().map(|s| s.to_string()));
+        lines.push("confirm".into());
+        lines.push("yes".into());
+        let (repl, transcript) = feed_owned(lines);
+        let repl = repl.unwrap_or_else(|e| panic!("expected Ok, got Err({e}); transcript:\n{transcript}"));
+
+        assert!(
+            transcript.contains(
+                "Money10 is a category B card -- this question is asking for the category A one"
+            ),
+            "the refusal must name the card's category AND the question's\n{transcript}"
+        );
+        for (order, letter) in ["A", "B", "C"].iter().enumerate() {
+            let question = format!("Which category {letter} card is in play?");
+            let at = transcript.find(&question).unwrap_or_else(|| panic!("category {letter} asked\n{transcript}"));
+            if order > 0 {
+                let previous = format!("Which category {} card is in play?", ["A", "B", "C"][order - 1]);
+                assert!(
+                    transcript.find(&previous).expect("asked") < at,
+                    "the categories are asked in A/B/C order\n{transcript}"
+                );
+            }
+        }
+        // One card per category reached the built game, in that order — which is
+        // also the order `new_game` deals them, so a live setup and a seeded one
+        // describe their achievements the same way.
+        let in_play: Vec<AchievementCategory> = repl
+            .session
+            .state()
+            .achievements
+            .iter()
+            .map(|c| c.achievement_type.category())
+            .collect();
+        assert_eq!(
+            in_play,
+            vec![AchievementCategory::A, AchievementCategory::B, AchievementCategory::C],
+            "one card per category, A/B/C"
+        );
+        assert_eq!(repl.session.state().achievements[0].achievement_type, AchievementType::Tea7);
+        std::fs::remove_file("yokohama-game-630.json").ok();
+    }
+
+    /// The two-digit rows line up with the one-digit ones, and a count of one
+    /// reads as one. Both are cosmetic, and both were found by looking at the
+    /// real screen rather than at a string: `[10]` is a column wider than `[1]`,
+    /// so padding only the description sheared the VP column on exactly the
+    /// four rows category C occupies, and the running line said "1 achievement
+    /// cards".
+    #[test]
+    fn the_category_menu_and_the_recorded_line_read_as_written() {
+        let index = crate::screen_model::build_index(
+            IndexKind::Achievements,
+            &Rules::standard(),
+            &[],
+            &achievement_registry(),
+            Some(RecordingTarget::AchievementSetup { category: AchievementCategory::C }),
+            None,
+        );
+        let menu = category_menu(&index, AchievementCategory::C);
+        let vp_columns: Vec<usize> = menu
+            .lines()
+            .filter(|l| l.contains(" VP "))
+            .map(|l| l.find(" VP ").expect("checked"))
+            .collect();
+        assert_eq!(vp_columns.len(), 4, "category C has four cards: {menu}");
+        assert!(
+            vp_columns.windows(2).all(|w| w[0] == w[1]),
+            "every row's VP column lands in the same place: {menu}"
+        );
+
+        let rules = Rules::standard();
+        let one = [(CardRef::Order(OrderCardId(4)), CardLocation::Deal { seat: PlayerId::new(0) })];
+        let ctx = CardCtx { rules: &rules, colors: &[], placed: &one };
+        assert!(
+            already_recorded_line(IndexKind::Orders, &ctx).contains("1 order card:"),
+            "{}",
+            already_recorded_line(IndexKind::Orders, &ctx)
+        );
+        let two = [
+            one[0],
+            (CardRef::Order(OrderCardId(5)), CardLocation::PortSlot { board_b: false, slot: 0 }),
+        ];
+        let ctx = CardCtx { rules: &rules, colors: &[], placed: &two };
+        assert!(
+            already_recorded_line(IndexKind::Orders, &ctx).contains("2 order cards:"),
+            "{}",
+            already_recorded_line(IndexKind::Orders, &ctx)
+        );
+        // Nothing recorded in a registry says nothing at all.
+        assert_eq!(already_recorded_line(IndexKind::Techs, &ctx), "");
+    }
+
+    /// **F3 at the prompt that named it.** The owner's report is exact: the
+    /// achievements menu printed `1) Copper5 …` and typing `1` answered
+    /// *"'1' is not a valid achievement type"*. The menu's numbers are now the
+    /// card INDEX's own numbers, so the number on screen and the number the
+    /// question accepts are the same number by construction — and the same one
+    /// the `?` screen shows.
+    #[test]
+    fn the_achievements_menu_accepts_the_numbers_it_prints() {
+        // The numbers the menu will print, read off the model the menu is built
+        // from — not transcribed here, which would pin the test to today's
+        // ordering rather than to the agreement between screen and parser.
+        let index = crate::screen_model::build_index(
+            IndexKind::Achievements,
+            &Rules::standard(),
+            &[],
+            &achievement_registry(),
+            Some(RecordingTarget::AchievementSetup { category: AchievementCategory::A }),
+            None,
+        );
+        let pick = |category: AchievementCategory| -> (usize, AchievementType) {
+            let card = index
+                .cards()
+                .find(|c| match &c.face {
+                    crate::screen_model::CardFaceModel::Achievement(a) => a.category == category,
+                    _ => false,
+                })
+                .expect("a card in this category");
+            let crate::screen_model::CardFaceModel::Achievement(a) = &card.face else {
+                unreachable!()
+            };
+            (card.selection.expect("a recording screen numbers its cards"), a.achievement_type)
+        };
+        let (a_number, a_type) = pick(AchievementCategory::A);
+        let (b_number, b_type) = pick(AchievementCategory::B);
+        let (c_number, c_type) = pick(AchievementCategory::C);
+
+        let mut lines: Vec<String> = vec![
+            "live".into(), "2".into(), "red".into(), "blue".into(), "0".into(), "631".into(), "".into(),
+            "hidden".into(), "hidden".into(),
+        ];
+        lines.extend(P2_TILES.iter().map(|s| s.to_string()));
+        lines.extend((0u8..10).map(|i| i.to_string()));
+        lines.extend(token_letters_for_count(10));
+        lines.extend([a_number, b_number, c_number].iter().map(|n| n.to_string()));
+        lines.extend(["O1", "O2", "O3", "O4", "O5", "O6"].iter().map(|s| s.to_string()));
+        lines.extend(["T1", "T2", "T3", "T4", "T5", "T6"].iter().map(|s| s.to_string()));
+        lines.push("confirm".into());
+        lines.push("yes".into());
+        let (repl, transcript) = feed_owned(lines);
+        let repl = repl.unwrap_or_else(|e| panic!("expected Ok, got Err({e}); transcript:\n{transcript}"));
+
+        assert!(
+            transcript.contains(&format!("[{a_number}] ")),
+            "the menu must print the number it accepts\n{transcript}"
+        );
+        assert!(
+            !transcript.contains("is not a valid achievement type"),
+            "the F3 refusal must be gone\n{transcript}"
+        );
+        let got: Vec<AchievementType> =
+            repl.session.state().achievements.iter().map(|c| c.achievement_type).collect();
+        assert_eq!(got, vec![a_type, b_type, c_type], "each number picked the card beside it");
+        std::fs::remove_file("yokohama-game-631.json").ok();
+    }
+
+    /// **F2, by name.** The tile prompt used to end
+    /// `(cm/sm/tp/fg/bank/pa/pb/la/lb/ea/ct/ch/cu/canal)` at every player count,
+    /// so a 2-player setup advertised `canal` — a tile the 2-player game does not
+    /// have — and the validator then refused what the prompt had just offered.
+    /// The owner's summary: *"it's the CLI just not having a clean and clear UX
+    /// as opposed to the engine itself."* Now the menu offers only what is
+    /// placeable, and the Canal's refusal says where the tile actually is.
+    #[test]
+    fn the_tile_menu_never_offers_the_canal_at_two_players() {
+        let mut lines = live_2p_prefix(632);
+        // Replace the first tile answer with an attempt at the Canal, then the
+        // real one. (The prefix's own ten answers follow it.)
+        lines.insert(9, "canal".into());
+        lines.extend(["O1", "O2", "O3", "O4", "O5", "O6"].iter().map(|s| s.to_string()));
+        lines.extend(["T1", "T2", "T3", "T4", "T5", "T6"].iter().map(|s| s.to_string()));
+        lines.push("confirm".into());
+        lines.push("yes".into());
+        let (repl, transcript) = feed_owned(lines);
+        repl.unwrap_or_else(|e| panic!("expected Ok, got Err({e}); transcript:\n{transcript}"));
+
+        assert!(
+            transcript.contains("Canal is not part of a 2-player board -- that tile stays in the box"),
+            "the refusal must say where the tile is\n{transcript}"
+        );
+        let menu_lines: Vec<&str> =
+            transcript.lines().filter(|l| l.contains("Tiles still to place")).collect();
+        assert!(!menu_lines.is_empty(), "the menu must be printed\n{transcript}");
+        // Nothing in any tile menu row names the Canal. The menu rows are the
+        // ones carrying `x<count>`, which is the shape only an offer has.
+        for line in transcript.lines().filter(|l| l.contains("] ") && l.contains(" x")) {
+            assert!(!line.contains("Canal"), "the Canal must never be offered at 2P: {line}");
+        }
+    }
+
+    /// **F2, the live counts.** The offer shrinks as the board fills, which is
+    /// what makes it an answer to "what is left" rather than a static list: the
+    /// first cell is offered all ten of the 2-player types, the last is offered
+    /// one. Asserted as a monotone run over the menus in the transcript, so it
+    /// cannot pass by the menu being printed once.
+    #[test]
+    fn the_tile_offer_shrinks_as_the_board_fills() {
+        let mut lines = live_2p_through_labs(633);
+        lines.push("confirm".into());
+        lines.push("yes".into());
+        let (_repl, transcript) = feed_owned(lines);
+
+        // Menu blocks are `Tiles still to place…` followed by rows of offers;
+        // count the offers in each block by its `[n] Name xk` cells.
+        let counts: Vec<usize> = transcript
+            .split("Tiles still to place")
+            .skip(1)
+            .map(|block| {
+                block
+                    .lines()
+                    .take_while(|l| !l.starts_with("Cell "))
+                    .map(|l| l.matches(" x").count())
+                    .sum::<usize>()
+            })
+            .collect();
+        assert_eq!(counts.len(), 10, "one menu per cell: {counts:?}");
+        assert_eq!(counts[0], 10, "the first cell is offered every 2P type: {counts:?}");
+        assert_eq!(counts[9], 1, "the last cell is offered the one type left: {counts:?}");
+        for pair in counts.windows(2) {
+            assert!(pair[1] <= pair[0], "the offer never grows: {counts:?}");
+        }
+    }
+
+    /// **F2's other half: the answer grammar.** A menu number, the full name and
+    /// the old short code all name the same tile, and a prefix that names two
+    /// tiles is refused rather than guessed (`c` starts five of them). One
+    /// board, entered three ways, with the engine's own board as the check.
+    #[test]
+    fn a_tile_is_named_by_number_by_name_or_by_its_short_code() {
+        let mut lines: Vec<String> = vec![
+            "live".into(), "2".into(), "red".into(), "blue".into(), "0".into(), "634".into(), "".into(),
+            "hidden".into(), "hidden".into(),
+        ];
+        // Cell 0: an ambiguous prefix (refused), then the full name. Cell 1: the
+        // menu number of Silk Mill, which is 1-based over the offer with Copper
+        // Mine gone — Silk Mill is then the first row. Cells 2-9: short codes.
+        lines.extend(["c", "Copper Mine", "1"].iter().map(|s| s.to_string()));
+        lines.extend(P2_TILES[2..].iter().map(|s| s.to_string()));
+        lines.extend((0u8..10).map(|i| i.to_string()));
+        lines.extend(token_letters_for_count(10));
+        lines.extend(P2_ACHIEVEMENTS.iter().map(|s| s.to_string()));
+        lines.extend(["O1", "O2", "O3", "O4", "O5", "O6"].iter().map(|s| s.to_string()));
+        lines.extend(["T1", "T2", "T3", "T4", "T5", "T6"].iter().map(|s| s.to_string()));
+        lines.push("confirm".into());
+        lines.push("yes".into());
+        let (repl, transcript) = feed_owned(lines);
+        let repl = repl.unwrap_or_else(|e| panic!("expected Ok, got Err({e}); transcript:\n{transcript}"));
+
+        // The candidates named are the ones ON THIS BOARD: Chinatown and the
+        // Canal also start with `c` and are in the box at 2 players, so listing
+        // them would offer the operator tiles they cannot be holding.
+        assert!(
+            transcript.contains("'c' could be Copper Mine, Church, Customs -- type more of the name"),
+            "an ambiguous prefix is refused naming what it could mean HERE\n{transcript}"
+        );
+        let areas = &repl.session.state().board_layout.areas;
+        assert_eq!(areas[&AreaId::new(0)].area_type, AreaType::CopperMine, "entered by full name");
+        assert_eq!(areas[&AreaId::new(1)].area_type, AreaType::SilkMill, "entered by menu number");
+        assert_eq!(areas[&AreaId::new(2)].area_type, AreaType::TeaPlantation, "entered by short code");
+        std::fs::remove_file("yokohama-game-634.json").ok();
+    }
+
+    /// **F5, at every card prompt in the tail.** *"Not seeing the ID cards or
+    /// having a lookup table in some way makes it hard to enter — there should
+    /// be some kind of lookup mode."* `?` now draws the right registry's index
+    /// at the right question, and the question comes round again with everything
+    /// already entered still entered.
+    #[test]
+    fn a_question_mark_opens_the_right_index_at_every_card_prompt_and_returns() {
+        let mut lines: Vec<String> = vec![
+            "live".into(), "2".into(), "red".into(), "blue".into(), "0".into(), "635".into(), "".into(),
+            // Seat 0's deal: `?` at the first dealt card opens the ORDER index.
+            "known".into(), "?".into(), "O30".into(), "O31".into(), "1".into(),
+            "hidden".into(),
+        ];
+        lines.extend(P2_TILES.iter().map(|s| s.to_string()));
+        // Sites: `?` opens the BUILDING-SITE index.
+        lines.push("?".into());
+        lines.extend((0u8..10).map(|i| i.to_string()));
+        lines.extend(token_letters_for_count(10));
+        // Achievements: `?` opens the ACHIEVEMENTS index.
+        lines.push("?".into());
+        lines.extend(P2_ACHIEVEMENTS.iter().map(|s| s.to_string()));
+        lines.extend(["O1", "O2", "O3", "O4", "O5", "O6"].iter().map(|s| s.to_string()));
+        // Labs: `?` opens the TECHNOLOGY index.
+        lines.push("?".into());
+        lines.extend(["T1", "T2", "T3", "T4", "T5", "T6"].iter().map(|s| s.to_string()));
+        lines.push("confirm".into());
+        lines.push("yes".into());
+        let (repl, transcript) = feed_owned(lines);
+        let repl = repl.unwrap_or_else(|e| panic!("expected Ok, got Err({e}); transcript:\n{transcript}"));
+
+        for title in
+            ["ORDER CARD INDEX", "BUILDING-SITE CARD INDEX", "ACHIEVEMENTS", "TECHNOLOGY INDEX"]
+        {
+            assert!(transcript.contains(title), "'?' must open {title}\n{transcript}");
+        }
+        // The index is not a refusal: nothing was wrong with the line.
+        assert!(
+            !transcript.contains("! ORDER CARD INDEX"),
+            "a screen is not printed as an error\n{transcript}"
+        );
+        // ...and the prompt that comes back says what a bare number means NOW,
+        // which is the one thing opening a screen changes about the grammar.
+        assert!(
+            transcript.contains("dealt card 1 of 2? (a number from the screen, 'O14', or '?' to redraw it)"),
+            "the re-asked prompt must state the reading the index put it in\n{transcript}"
+        );
+        // And every answer given before a `?` survived it — the whole board and
+        // both dealt cards are in the built session.
+        assert_eq!(repl.session.state().players[0].starting_order, Some(OrderCardId(30)));
+        assert_eq!(
+            repl.session.state().board_layout.areas[&AreaId::new(0)].area_type,
+            AreaType::CopperMine,
+        );
+        std::fs::remove_file("yokohama-game-635.json").ok();
+    }
+
+    /// **F5's payoff: a number typed at an OPEN index selects from the screen.**
+    /// The card the index numbers `1` is not `O01` — the screen is grouped by
+    /// flag — so this is also the pin that the two readings of a bare number
+    /// never collide: an id before the index is open, a selection after.
+    #[test]
+    fn a_number_after_the_index_is_open_selects_the_card_on_screen() {
+        let rules = Rules::standard();
+        let first_shown = crate::screen_model::build_index(
+            IndexKind::Orders,
+            &rules,
+            &[],
+            &achievement_registry(),
+            Some(RecordingTarget::PortSetup { board_b: false, slot: 0, of: 6 }),
+            None,
+        )
+        .select(crate::screen_model::NUMBER_BASE)
+        .expect("a first card");
+        let CardRef::Order(shown) = first_shown else { panic!("an order screen") };
+
+        let mut lines = live_2p_prefix(636);
+        // Port A slot 1: open the index, then type 1 — which selects the FIRST
+        // CARD SHOWN, not O01. The other five slots are filled with ids chosen
+        // to avoid it, since a repeat would be refused as a duplicate and the
+        // script would run out mid-tail.
+        let fills: Vec<String> =
+            (1u8..=36).filter(|n| *n != shown.0).take(5).map(|n| format!("O{n}")).collect();
+        lines.push("?".into());
+        lines.push("1".into());
+        lines.extend(fills);
+        lines.extend(["T1", "T2", "T3", "T4", "T5", "T6"].iter().map(|s| s.to_string()));
+        lines.push("confirm".into());
+        lines.push("yes".into());
+        let (repl, transcript) = feed_owned(lines);
+        let repl = repl.unwrap_or_else(|e| panic!("expected Ok, got Err({e}); transcript:\n{transcript}"));
+        assert_eq!(
+            repl.session.state().port_state.port_a.slots[0],
+            Some(shown),
+            "the number picked the card the screen numbered\n{transcript}"
+        );
+        std::fs::remove_file("yokohama-game-636.json").ok();
+    }
+
+    /// **F6, both halves.** A duplicate refusal names WHERE the card already is
+    /// (pinned at Port A above), and the entry screens carry a running
+    /// already-recorded line so a card that is going to be refused can be seen
+    /// before it is typed. Here the earlier place is a SEAT'S DEAL — which is
+    /// the exact case that baffled the owner, since a dealt card is not on the
+    /// board anywhere.
+    #[test]
+    fn a_card_recorded_in_a_seats_deal_is_refused_by_name_at_the_port_question() {
+        let mut lines: Vec<String> = vec![
+            "live".into(), "2".into(), "red".into(), "blue".into(), "0".into(), "637".into(), "".into(),
+            "known".into(), "O2".into(), "O4".into(), "1".into(),
+            "hidden".into(),
+        ];
+        lines.extend(P2_TILES.iter().map(|s| s.to_string()));
+        lines.extend((0u8..10).map(|i| i.to_string()));
+        lines.extend(token_letters_for_count(10));
+        lines.extend(P2_ACHIEVEMENTS.iter().map(|s| s.to_string()));
+        // Port A slot 1: O02 is already Seat 0's dealt card.
+        lines.extend(["O2", "O1", "O3", "O5", "O6", "O7", "O8"].iter().map(|s| s.to_string()));
+        lines.extend(["T1", "T2", "T3", "T4", "T5", "T6"].iter().map(|s| s.to_string()));
+        lines.push("confirm".into());
+        lines.push("yes".into());
+        let (repl, transcript) = feed_owned(lines);
+        let repl = repl.unwrap_or_else(|e| panic!("expected Ok, got Err({e}); transcript:\n{transcript}"));
+
+        assert!(
+            transcript.contains("O02 is Seat 0's deal — a card cannot be in two places."),
+            "the refusal must name the seat's deal (F6)\n{transcript}"
+        );
+        assert!(
+            transcript.contains("already recorded -- 2 order cards: O02 O04"),
+            "the running already-recorded line must ride the card questions\n{transcript}"
+        );
+        assert_eq!(repl.session.state().port_state.port_a.slots[0], Some(OrderCardId(1)));
+        std::fs::remove_file("yokohama-game-637.json").ok();
+    }
+
+    /// **A technology is entered by its NAME, and a title's two copies are one
+    /// answer** (R8/F4, and the ruling that retired the wizard's old refusal).
+    /// Ten of the twenty titles circulate as two identical cards; the old prompt
+    /// refused the name as ambiguous and told the operator to type a `T<id>`
+    /// printed on neither card. Typing the same name twice now fills two slots
+    /// with the two copies, and a third time is refused BY LOCATION.
+    #[test]
+    fn a_tech_name_fills_both_copies_and_the_third_is_refused_by_location() {
+        let rules = Rules::standard();
+        // A title with two physical copies, read off the registry rather than
+        // hard-coded so a data change cannot make this test vacuous — and
+        // chosen by LOWEST ID rather than by iteration order, because
+        // `TechRegistry` is a `HashMap` and `iter()` is unordered. (Every
+        // shipped path that cares sorts: `card_prompt::tech_matches`,
+        // `build_tech_index`, `index_card_for`, `input::parse_tech_entry`.)
+        let mut titles: Vec<(u8, String)> =
+            rules.techs.iter().map(|c| (c.id.0, c.name.clone())).collect();
+        titles.sort();
+        let (_, title) = titles
+            .iter()
+            .find(|(_, name)| rules.techs.iter().filter(|o| o.name == *name).count() == 2)
+            .expect("ten titles circulate as two copies")
+            .clone();
+        let mut copies: Vec<u8> =
+            rules.techs.iter().filter(|c| c.name == title).map(|c| c.id.0).collect();
+        copies.sort_unstable();
+        assert_eq!(copies.len(), 2);
+
+        let mut lines = live_2p_prefix(638);
+        lines.extend(["O1", "O2", "O3", "O4", "O5", "O6"].iter().map(|s| s.to_string()));
+        // The same NAME three times: two copies exist, so the third is refused.
+        lines.extend([title.clone(), title.clone(), title.clone()]);
+        // ...and four more ids, none of them this title's own copies, which
+        // would be refused as the duplicates they are.
+        lines.extend(
+            (1u8..=30).filter(|n| !copies.contains(n)).take(4).map(|n| format!("T{n}")),
+        );
+        lines.push("confirm".into());
+        lines.push("yes".into());
+        let (repl, transcript) = feed_owned(lines);
+        let repl = repl.unwrap_or_else(|e| panic!("expected Ok, got Err({e}); transcript:\n{transcript}"));
+
+        assert!(
+            !transcript.contains("matches more than one tech card"),
+            "the retired refusal must not come back\n{transcript}"
+        );
+        assert!(
+            transcript.contains(&format!(
+                "T{:02} is Laboratory A slot 1 — a card cannot be in two places.",
+                copies[0]
+            )),
+            "the third attempt is refused by LOCATION\n{transcript}"
+        );
+        let slots = &repl.session.state().lab_state.lab_a.slots;
+        let named: Vec<String> = slots[..2]
+            .iter()
+            .map(|s| tech_name(s.expect("filled"), &rules.techs))
+            .collect();
+        assert_eq!(named, vec![title.clone(), title], "both copies of the title landed");
+        assert_ne!(slots[0], slots[1], "...and they are different physical cards");
+        std::fs::remove_file("yokohama-game-638.json").ok();
+    }
+
+    /// **The card echoes back before the next question** (spec §0.6). An id
+    /// typed one digit wrong is exactly the entry an operator wants to catch on
+    /// sight, and at a live table the card is in their hand to compare against.
+    #[test]
+    fn an_entered_card_echoes_the_whole_card_back() {
+        let mut lines = live_2p_prefix(639);
+        lines.extend(["O14", "O2", "O3", "O4", "O5", "O6"].iter().map(|s| s.to_string()));
+        lines.extend(["T1", "T2", "T3", "T4", "T5", "T6"].iter().map(|s| s.to_string()));
+        lines.push("confirm".into());
+        lines.push("yes".into());
+        let (repl, transcript) = feed_owned(lines);
+        repl.unwrap_or_else(|e| panic!("expected Ok, got Err({e}); transcript:\n{transcript}"));
+        // The whole card, exactly as `card_prompt::echo` draws it — not a line
+        // about it.
+        let echo = card_prompt::echo(
+            CardRef::Order(OrderCardId(14)),
+            &Rules::standard(),
+            &[PlayerColor::Red, PlayerColor::Blue],
+        );
+        assert!(!echo.is_empty());
+        assert!(transcript.contains(&echo), "the card must echo back in full\n{transcript}");
+        std::fs::remove_file("yokohama-game-639.json").ok();
+    }
+
+    /// **`abort` cannot be shadowed by a card grammar.** It is checked above the
+    /// dispatch, so it works at a card question exactly as it does at every
+    /// other — including with the index open, where every other line is being
+    /// read as a card.
+    #[test]
+    fn abort_still_works_at_a_card_question_with_the_index_open() {
+        let mut lines = live_2p_prefix(640);
+        lines.extend(["?", "abort"].iter().map(|s| s.to_string()));
+        let (repl, transcript) = feed_owned(lines);
+        assert!(transcript.contains("ORDER CARD INDEX"), "{transcript}");
+        match repl {
+            Err(e) => assert_eq!(e, "aborted"),
+            Ok(_) => panic!("expected Err(\"aborted\")"),
+        }
+    }
+
+    /// **The review echoes the answer the operator gave.** They were asked
+    /// `keep card 1 or 2` and answered `1`; the review used to read `keep 0`,
+    /// the engine's own index, which is the same off-by-one F3 is about wearing
+    /// a summary's clothes. Both tails, since both print a keep line.
+    #[test]
+    fn the_review_echoes_the_keep_answer_as_the_number_that_was_typed() {
+        let mut lines: Vec<String> = vec![
+            "live".into(), "2".into(), "red".into(), "blue".into(), "0".into(), "642".into(), "".into(),
+            "known".into(), "O14".into(), "O23".into(), "2".into(),
+            "hidden".into(),
+        ];
+        lines.extend(P2_TILES.iter().map(|s| s.to_string()));
+        lines.extend((0u8..10).map(|i| i.to_string()));
+        lines.extend(token_letters_for_count(10));
+        lines.extend(P2_ACHIEVEMENTS.iter().map(|s| s.to_string()));
+        lines.extend(["O1", "O2", "O3", "O4", "O5", "O6"].iter().map(|s| s.to_string()));
+        lines.extend(["T1", "T2", "T3", "T4", "T5", "T6"].iter().map(|s| s.to_string()));
+        lines.push("confirm".into());
+        lines.push("yes".into());
+        let (repl, transcript) = feed_owned(lines);
+        let repl = repl.unwrap_or_else(|e| panic!("expected Ok, got Err({e}); transcript:\n{transcript}"));
+        assert!(
+            transcript.contains("Seat 0 deal: known O14, O23 (keep card 2)"),
+            "the live review echoes the typed number\n{transcript}"
+        );
+        // ...and it is still the ENGINE's second card that was kept, so the
+        // display change moved a label and not a choice.
+        assert_eq!(repl.session.state().players[0].starting_order, Some(OrderCardId(23)));
+        std::fs::remove_file("yokohama-game-642.json").ok();
+
+        let (repl, transcript) =
+            feed(&["sim", "2", "red", "blue", "0", "643", "", "1", "2", "", "confirm"]);
+        repl.unwrap_or_else(|e| panic!("expected Ok, got Err({e}); transcript:\n{transcript}"));
+        assert!(transcript.contains("Seat 0 keep: card 1"), "{transcript}");
+        assert!(transcript.contains("Seat 1 keep: card 2"), "{transcript}");
+        std::fs::remove_file("yokohama-game-643.json").ok();
+    }
+
+    /// **The piped protocol stays byte-plain through the new surfaces**
+    /// (spec §0.12's honesty net). T7 is the first task to print full-screen
+    /// card indexes and drawn cards from inside the WIZARD, which runs before
+    /// the composed frame exists and writes straight to stdout — so a
+    /// hand-written escape here would reach a redirected transcript with
+    /// nothing above it to catch the difference. Color is FORCED ON in the same
+    /// test, so the check cannot pass by the wizard drawing nothing at all.
+    #[test]
+    fn the_wizard_is_escape_free_with_color_off_and_painted_with_it_on() {
+        let script = |seed: u64| {
+            let mut lines = live_2p_prefix(seed);
+            // A `?` at Port A slot 1, so an index screen is in the transcript.
+            lines.push("?".into());
+            lines.extend(["O1", "O2", "O3", "O4", "O5", "O6"].iter().map(|s| s.to_string()));
+            lines.extend(["T1", "T2", "T3", "T4", "T5", "T6"].iter().map(|s| s.to_string()));
+            lines.push("confirm".into());
+            lines.push("yes".into());
+            lines
+        };
+        let (repl, plain) = feed_owned(script(644));
+        repl.unwrap_or_else(|e| panic!("expected Ok, got Err({e}); transcript:\n{plain}"));
+        std::fs::remove_file("yokohama-game-644.json").ok();
+        assert!(plain.contains("ORDER CARD INDEX"), "the index really was drawn\n{plain}");
+        assert!(!plain.contains('\u{1b}'), "piped output must carry no escapes");
+
+        crate::style::force(true);
+        let (repl, painted) = feed_owned(script(645));
+        crate::style::force(false);
+        repl.unwrap_or_else(|e| panic!("expected Ok, got Err({e}); transcript:\n{painted}"));
+        std::fs::remove_file("yokohama-game-645.json").ok();
+        assert!(painted.contains('\u{1b}'), "a real terminal gets color");
+    }
+
+    /// **The numbering sweep reaches the wizard** (the T5 hand-off). Every
+    /// listing the wizard prints starts at `NUMBER_BASE`, nothing anywhere shows
+    /// a `[0]`, and the identities the ruling excludes are untouched: cell
+    /// numbers, area ids, seat numbers and the `S<n>` site index all still count
+    /// from zero, because they are printed on components or recorded in saves.
+    #[test]
+    fn wizard_listings_start_at_the_same_base_and_identities_are_left_alone() {
+        let first = format!("[{}]", crate::screen_model::NUMBER_BASE);
+        let mut lines = live_2p_through_labs(641);
+        lines.push("confirm".into());
+        lines.push("yes".into());
+        let (repl, transcript) = feed_owned(lines);
+        repl.unwrap_or_else(|e| panic!("expected Ok, got Err({e}); transcript:\n{transcript}"));
+
+        // Every listing: the tile menu, the token menu, the achievements menu,
+        // and the sim tail's keep menu (asserted in its own test).
+        for (surface, marker) in [
+            ("tile menu", "Tiles still to place"),
+            ("token menu", "Tokens still to place"),
+            ("achievements menu", "one of these four"),
+        ] {
+            let block = transcript
+                .split(marker)
+                .nth(1)
+                .unwrap_or_else(|| panic!("{surface} must be printed\n{transcript}"));
+            assert!(
+                block.lines().take(4).any(|l| l.contains(&first)),
+                "{surface} must start at {first}\n{block}"
+            );
+        }
+        assert!(!transcript.contains("[0]"), "a zero-based list survived\n{transcript}");
+
+        // ...and the identities, which are NOT menu numbers.
+        assert!(transcript.contains("Cell 0/10 "), "cell numbers are area ids\n{transcript}");
+        assert!(transcript.contains("A00"), "area ids start at A00\n{transcript}");
+        assert!(transcript.contains("Seat 0"), "seats count from 0\n{transcript}");
+        assert!(
+            transcript.contains("cell 0 (row 1 of 4, tile 1 of 4): Copper Mine S0"),
+            "the site index `S0` is the card's own identity\n{transcript}"
+        );
+        std::fs::remove_file("yokohama-game-641.json").ok();
     }
 }

@@ -38,7 +38,7 @@
 //! two-column form was drawn over the three shortest cards in the deck.
 
 use yokohama_core::{
-    AchievementCategory, AchievementType, AreaId, PlayerColor, PlayerId, PresidentLocation,
+    AchievementType, AreaId, PlayerColor, PlayerId, PresidentLocation,
     TechEffect,
 };
 
@@ -656,7 +656,7 @@ fn achievements_lines(panel: &AchievementsPanel, colors: &[PlayerColor]) -> Vec<
 
 fn achievement_line(card: &AchievementModel, colors: &[PlayerColor]) -> String {
     let mut t = indented();
-    t.tinted(Tone::Strong, category_letter(card.category));
+    t.tinted(Tone::Strong, describe::category_letter(card.category));
     t.raw(&format!(" {} ", glyph::SEPARATOR));
     t.raw(achievement_requirement(card.achievement_type));
     t.pad_to(INDENT + 4 + GOAL_TEXT_W);
@@ -687,14 +687,6 @@ fn achievement_line(card: &AchievementModel, colors: &[PlayerColor]) -> String {
         }
     }
     line(&t)
-}
-
-fn category_letter(c: AchievementCategory) -> &'static str {
-    match c {
-        AchievementCategory::A => "A",
-        AchievementCategory::B => "B",
-        AchievementCategory::C => "C",
-    }
 }
 
 /// An Achievement's condition in at most [`GOAL_TEXT_W`] - 1 columns.

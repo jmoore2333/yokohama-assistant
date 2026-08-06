@@ -5,7 +5,7 @@
 
 use yokohama_core::*;
 
-use crate::input::{parse_order_id, parse_tech_entry, TechAmbiguity, TechEntryError};
+use crate::input::{parse_order_id, parse_tech_entry, TechEntryError};
 use crate::repl::{Repl, StepOutput};
 use crate::style::{paint, Tone};
 
@@ -289,25 +289,23 @@ pub(crate) fn parse_order_reveal(
 /// case-insensitive name prefix, resolved to the LOWEST matching id
 /// currently in `deck` (some titles circulate as 2 physical copies) --
 /// thin wrapper over the shared `parse_tech_entry` (design 2026-07-18
-/// §5.5 riding item 4), which is why an ambiguous name here resolves
-/// (`TechAmbiguity::LowestId`) rather than being rejected the way the
-/// setup wizard's `parse_tech_entry` call does. Renders its OWN
+/// §5.5 riding item 4), whose lowest-id resolution is now the crate's one
+/// tech-name policy -- the wizard's old refusal was retired at T7 (see that
+/// module's header for why two identical cards are one answer). Renders its OWN
 /// deck-flavored wording from `TechEntryError` (fix wave, review of commit
 /// 0a01c95 finding 2: these exact messages regressed to the wizard's
 /// registry-flavored wording when the two were first unified -- "not
 /// currently in the tech deck" matters here because a card can be real but
 /// already drawn, a materially different fact from "not a valid tech
-/// card"). `Ambiguous` is unreachable under `LowestId` (kept as a safe,
-/// non-panicking fallback rather than `unreachable!()` in case that ever
-/// changes).
+/// card").
 pub(crate) fn parse_tech_reveal(words: &[&str], deck: &[TechCardId], techs: &TechRegistry) -> Result<TechCardId, String> {
     if words.len() != 1 {
         return Err("Enter exactly one tech code (e.g. 'T05' or a name), or 'cancel'.".to_string());
     }
     let tok = words[0];
-    parse_tech_entry(tok, techs, deck, TechAmbiguity::LowestId).map_err(|e| match e {
+    parse_tech_entry(tok, techs, deck).map_err(|e| match e {
         TechEntryError::NotInPool(n) => format!("T{n:02} is not currently in the tech deck."),
-        TechEntryError::NoMatch | TechEntryError::Ambiguous => {
+        TechEntryError::NoMatch => {
             format!("'{tok}' does not match any tech card currently in the deck.")
         }
     })

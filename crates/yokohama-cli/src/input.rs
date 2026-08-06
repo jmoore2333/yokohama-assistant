@@ -3,14 +3,19 @@
 //! extracted from the wizard's near-verbatim prefix-parse copies and the
 //! REPL's own order-token copy, plus the triplicated tech-name fallback.
 //!
-//! Tech-name ambiguity resolution deliberately keeps TWO policies rather
-//! than unifying them (§5.5 item 1, CRITICAL constraint): the setup wizard
-//! is recording which physical card sits where, so a genuine ambiguity
-//! must be refused rather than guessed (`TechAmbiguity::Reject`); the
-//! REPL's live-reveal collection is mid-game, where any same-named copy is
-//! interchangeable, so it resolves deterministically to the lowest id
-//! (`TechAmbiguity::LowestId`, matching `reveal.rs`'s pre-existing
-//! behavior). Do NOT collapse these into one policy.
+//! **Tech-name ambiguity resolves to the lowest matching id, once, for
+//! everyone — and that supersedes a rule this module used to state the other
+//! way.** Two policies lived here: the setup wizard REFUSED a name matching
+//! two candidates ("recording which physical card sits where"), the live
+//! reveal resolved it. Phase 3.5a ruled the refusal to be the defect: ten
+//! titles circulate as two IDENTICAL cards (R8, spec §0.6), so asking an
+//! operator which of two indistinguishable pieces of cardboard they are
+//! holding is a question with no answer — and the escape it offered, `T<id>`,
+//! is an engine invention printed on no card at all (F4/F5, the owner's own
+//! *"so I just guess through it"*). The wizard now names technologies through
+//! `card_prompt`, which collapses a title's copies and hands back the first
+//! one nothing has claimed; this module keeps the deck-facing half of the same
+//! rule.
 
 use yokohama_core::*;
 
@@ -19,18 +24,6 @@ use yokohama_core::*;
 /// applies (registry, deck, hand, ...).
 pub(crate) fn parse_order_id(tok: &str) -> Option<u8> {
     tok.strip_prefix(['O', 'o']).unwrap_or(tok).parse::<u8>().ok()
-}
-
-/// How to resolve a tech-name prefix that matches more than one candidate
-/// (some titles circulate as 2 physical copies under the same name).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum TechAmbiguity {
-    /// Setup wizard: recording physical identity, so a real ambiguity must
-    /// be refused rather than guessed.
-    Reject,
-    /// REPL live-reveal: any same-named copy is interchangeable mid-game,
-    /// so resolve deterministically to the lowest id.
-    LowestId,
 }
 
 /// Why `parse_tech_entry` rejected a token -- kept structured rather than a
@@ -51,22 +44,20 @@ pub(crate) enum TechEntryError {
     NotInPool(u8),
     /// A name prefix that matched zero candidates.
     NoMatch,
-    /// A name prefix that matched 2+ candidates under `TechAmbiguity::Reject`.
-    Ambiguous,
 }
 
 /// Parse a tech-card token ("T05"/"t05" or a case-insensitive name prefix)
-/// into one of `candidates` (the wizard passes every registry id; a live
-/// reveal passes only the ids currently in the deck). Numeric tokens are
-/// checked against `candidates` too, so both callers reject a real-but-
-/// unavailable card the same way they reject a name with no match. Returns
-/// a `TechEntryError` rather than a formatted message -- see its doc
-/// comment for why.
+/// into one of `candidates` -- the ids currently in the deck, for its one
+/// caller. Numeric tokens are checked against `candidates` too, so a
+/// real-but-unavailable card is rejected the same way a name with no match is.
+/// A name matching several candidates resolves to the LOWEST id (the copies of
+/// a title are interchangeable -- see the module header). Returns a
+/// `TechEntryError` rather than a formatted message -- see its doc comment for
+/// why.
 pub(crate) fn parse_tech_entry(
     tok: &str,
     techs: &TechRegistry,
     candidates: &[TechCardId],
-    ambiguity: TechAmbiguity,
 ) -> Result<TechCardId, TechEntryError> {
     if let Some(rest) = tok.strip_prefix(['T', 't']) {
         if let Ok(n) = rest.parse::<u8>() {
@@ -81,13 +72,9 @@ pub(crate) fn parse_tech_entry(
         .filter(|id| techs.get(*id).is_some_and(|c| c.name.to_lowercase().starts_with(&needle)))
         .collect();
     matches.sort_unstable_by_key(|id| id.0);
-    match matches.len() {
-        0 => Err(TechEntryError::NoMatch),
-        1 => Ok(matches[0]),
-        _ => match ambiguity {
-            TechAmbiguity::LowestId => Ok(matches[0]), // already sorted ascending
-            TechAmbiguity::Reject => Err(TechEntryError::Ambiguous),
-        },
+    match matches.first() {
+        Some(lowest) => Ok(*lowest), // sorted ascending above
+        None => Err(TechEntryError::NoMatch),
     }
 }
 
@@ -113,33 +100,37 @@ mod tests {
         assert_eq!(parse_order_id("O999999999999"), None); // overflows u8
     }
 
+    /// **One policy, and the T7 half of the ruling that made it one.** A name
+    /// matching both copies of a title resolves to the lowest id rather than
+    /// being refused: the two cards are identical, so there is no third answer
+    /// the operator could give. `T<id>` still works for anyone who has one.
     #[test]
-    fn parse_tech_entry_checks_numeric_against_candidates_and_resolves_names_by_policy() {
+    fn parse_tech_entry_checks_numeric_against_candidates_and_resolves_a_name_to_the_lowest_id() {
         let rules = Rules::standard();
         // TechCardId(11)/(12) are both "Ball" (data.rs) -- one of the 10
         // titles that circulate as 2 physical copies (per reveal.rs's
         // pre-existing fixture comment).
         let candidates = vec![TechCardId(11), TechCardId(12)];
-        assert_eq!(parse_tech_entry("T11", &rules.techs, &candidates, TechAmbiguity::Reject), Ok(TechCardId(11)));
+        assert_eq!(parse_tech_entry("T11", &rules.techs, &candidates), Ok(TechCardId(11)));
         assert_eq!(
-            parse_tech_entry("T99", &rules.techs, &candidates, TechAmbiguity::Reject),
+            parse_tech_entry("T99", &rules.techs, &candidates),
             Err(TechEntryError::NotInPool(99)),
             "not in candidates"
         );
         assert_eq!(
-            parse_tech_entry("zzz", &rules.techs, &candidates, TechAmbiguity::Reject),
+            parse_tech_entry("zzz", &rules.techs, &candidates),
             Err(TechEntryError::NoMatch),
             "no name match"
         );
         assert_eq!(
-            parse_tech_entry("ball", &rules.techs, &candidates, TechAmbiguity::Reject),
-            Err(TechEntryError::Ambiguous),
-            "ambiguous under Reject"
+            parse_tech_entry("ball", &rules.techs, &candidates),
+            Ok(TechCardId(11)),
+            "a title's two copies are one answer: the lowest id still in the pool"
         );
         assert_eq!(
-            parse_tech_entry("ball", &rules.techs, &candidates, TechAmbiguity::LowestId),
-            Ok(TechCardId(11)),
-            "ambiguous under LowestId resolves to the lowest id"
+            parse_tech_entry("ball", &rules.techs, &[TechCardId(12)]),
+            Ok(TechCardId(12)),
+            "...and the pool decides which, so a claimed copy is skipped by its absence"
         );
     }
 

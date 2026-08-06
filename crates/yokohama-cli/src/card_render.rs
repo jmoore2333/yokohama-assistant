@@ -38,7 +38,7 @@
 //! pins.
 
 use yokohama_core::{
-    AchievementCategory, OrderCard, OrderCardId, OrderRewards, PlayerColor, SpaceReward,
+    OrderCard, OrderCardId, OrderRewards, PlayerColor, SpaceReward,
     TradeGoodRequirement,
 };
 
@@ -513,15 +513,6 @@ pub fn card_width(kind: IndexKind) -> usize {
         IndexKind::Techs => TECH_W,
         IndexKind::Achievements => GOAL_W,
         IndexKind::Sites => SITE_W,
-    }
-}
-
-/// `A`, `B`, `C` — an achievement category as its card and heading name it.
-pub fn category_letter(c: AchievementCategory) -> &'static str {
-    match c {
-        AchievementCategory::A => "A",
-        AchievementCategory::B => "B",
-        AchievementCategory::C => "C",
     }
 }
 

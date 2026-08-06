@@ -226,50 +226,6 @@ fn index_command(word: &str) -> Option<IndexKind> {
     }
 }
 
-/// Which registry a recording target is asking about — the routing that puts
-/// `?` at a tech reveal in front of the TECHNOLOGY index (the T5 hand-off).
-fn target_kind(target: RecordingTarget) -> IndexKind {
-    match target {
-        RecordingTarget::TechRefill { .. } => IndexKind::Techs,
-        RecordingTarget::PortRefill { .. }
-        | RecordingTarget::PortSetup { .. }
-        | RecordingTarget::DealSetup { .. } => IndexKind::Orders,
-    }
-}
-
-/// The order-card half of a mixed placement list, for the builder that takes
-/// order ids. Splitting at the call site rather than storing four lists keeps
-/// ONE leak fence to audit (`Repl::index_placements`) instead of four.
-fn only_orders(placed: &[(CardRef, CardLocation)]) -> Vec<(OrderCardId, CardLocation)> {
-    placed
-        .iter()
-        .filter_map(|(card, at)| match card {
-            CardRef::Order(id) => Some((*id, *at)),
-            _ => None,
-        })
-        .collect()
-}
-
-fn only_techs(placed: &[(CardRef, CardLocation)]) -> Vec<(TechCardId, CardLocation)> {
-    placed
-        .iter()
-        .filter_map(|(card, at)| match card {
-            CardRef::Tech(id) => Some((*id, *at)),
-            _ => None,
-        })
-        .collect()
-}
-
-fn only_sites(placed: &[(CardRef, CardLocation)]) -> Vec<(u8, CardLocation)> {
-    placed
-        .iter()
-        .filter_map(|(card, at)| match card {
-            CardRef::Site(index) => Some((*index, *at)),
-            _ => None,
-        })
-        .collect()
-}
-
 /// What one `Session::apply` produced, before any prompt or pump is added --
 /// the shared currency of `Repl::apply_and_describe`'s two callers.
 enum ApplyOutcome {
@@ -513,7 +469,7 @@ impl Repl {
         // swallow the key (the reveal collector as a bad card, the sub-prompt
         // as "finish or cancel this prompt first").
         if matches!(words.as_slice(), ["?"] | ["index"]) {
-            return self.open_index(self.index_target().map_or(IndexKind::Orders, target_kind));
+            return self.open_index(self.index_target().map_or(IndexKind::Orders, |t| t.kind()));
         }
         // **The full-screen surfaces are reachable from inside a capture too**
         // (spec §0.5: "one action away"), and `sites` is the one that names the
@@ -1375,28 +1331,19 @@ impl Repl {
         // claiming to be collecting something it cannot collect. Filtered, that
         // screen becomes what it actually is: a read-only view, with no
         // selection numbers on it (F3 from the other side).
-        let target = self.index_target().filter(|t| target_kind(*t) == kind);
-        let rules = self.session.rules();
-        match kind {
-            IndexKind::Orders => crate::screen_model::build_order_index(
-                rules,
-                &only_orders(&placed),
-                target,
-                filter,
-            ),
-            IndexKind::Techs => {
-                crate::screen_model::build_tech_index(rules, &only_techs(&placed), target, filter)
-            }
-            IndexKind::Achievements => crate::screen_model::build_achievement_index(
-                &crate::screen_model::build_achievements(self.session.state()).cards,
-                &[],
-                target,
-                filter,
-            ),
-            IndexKind::Sites => {
-                crate::screen_model::build_site_index(rules, &only_sites(&placed), target, filter)
-            }
-        }
+        let target = self.index_target().filter(|t| t.kind() == kind);
+        // The achievement population is the three cards IN PLAY, with their
+        // live claim state and per-seat progress — the wizard's is the whole
+        // twelve-card registry, which is the same surface answering a different
+        // question (`build_achievement_index`).
+        crate::screen_model::build_index(
+            kind,
+            self.session.rules(),
+            &placed,
+            &crate::screen_model::build_achievements(self.session.state()).cards,
+            target,
+            filter,
+        )
     }
 
     pub(crate) fn index_text(&self, kind: IndexKind) -> String {
@@ -1555,7 +1502,7 @@ impl Repl {
     fn index_selection(&mut self, card: CardRef) -> StepOutput {
         match (card, &self.pending) {
             (CardRef::Order(id), Pending::OrderReveals { .. }) => {
-                let echo = card_prompt::echo(id, self.session.rules());
+                let echo = card_prompt::echo(CardRef::Order(id), self.session.rules(), &[]);
                 self.overlay = None;
                 let token = format!("O{:02}", id.0);
                 let out = self.collect_reveal(&[&token]);
@@ -1582,7 +1529,7 @@ impl Repl {
                     ),
                     Some(target) => format!(
                         "{tag} — this capture is asking about {}. 'cancel' closes the index.",
-                        describe::registry_name(target_kind(target)),
+                        describe::registry_name(target.kind()),
                     ),
                 };
                 self.out(message, false)
@@ -2509,7 +2456,7 @@ impl Repl {
         // The card echoed back in full before it commits (§0.6): a reveal is
         // recorded into the game record, and an id typed one digit wrong is
         // exactly the entry a player wants to catch on sight.
-        let echo = card_prompt::echo(card, self.session.rules());
+        let echo = card_prompt::echo(CardRef::Order(card), self.session.rules(), &[]);
         match self.session.apply_standalone(RecordedEvent::RevealStartingOrder { player: seat, card }) {
             Ok(delta) => {
                 // Surface the delta the same way `undo`/`apply` do (item 5,
@@ -6582,6 +6529,12 @@ mod tests {
     /// A `[0]` anywhere in one of these screens is the per-surface drift the
     /// ruling exists to prevent — a player who learns that the first option is
     /// `[1]` will type `1` into the next list too.
+    ///
+    /// **The WIZARD's listings are swept by its own half of this test**
+    /// (`wizard::tests::wizard_listings_start_at_the_same_base_and_identities_are_left_alone`,
+    /// T7): they need a scripted setup run to exist, which does not belong in a
+    /// REPL fixture, and the tile/token/achievement menus are the surfaces the
+    /// F3 report was actually about.
     #[test]
     fn every_numbered_surface_starts_at_the_same_base() {
         let first = format!("[{NUMBER_BASE}]");

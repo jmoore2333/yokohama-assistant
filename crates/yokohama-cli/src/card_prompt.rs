@@ -185,6 +185,26 @@ pub(crate) fn resolve(prompt: &CardPrompt<'_>, line: &str, rules: &Rules) -> Car
         };
     }
 
+    // An achievement is identified by its CONDITION, and the type name is the
+    // nearest thing to a handle for it — the same shape as a technology's, and
+    // the same discipline: an unambiguous prefix picks a card, an ambiguous one
+    // is refused naming what it could have meant (`prod` is three cards).
+    //
+    // The name is an ALIAS, never the required form (R8): every prompt that
+    // asks for one of these prints the cards with numbers, so a player who has
+    // never seen `Prod3Comm2` types a number instead.
+    if prompt.kind == IndexKind::Achievements {
+        return match achievement_matches(line).as_slice() {
+            [only] => named(prompt, CardRef::Achievement(*only)),
+            [] => CardEntry::Refused(format!("'{line}' is not an achievement. {}", how_to_name(prompt.kind))),
+            many => {
+                let names: Vec<String> = many.iter().map(|ty| format!("{ty:?}")).collect();
+                let names: Vec<&str> = names.iter().map(String::as_str).collect();
+                CardEntry::Refused(ambiguous_message(line, &names))
+            }
+        };
+    }
+
     // A country name or prefix. Orders carry a FLAG rather than a title, so a
     // country never identifies one card — it identifies a group, which is
     // exactly what the index filter is for, so that is what this becomes
@@ -205,7 +225,7 @@ fn how_to_name(kind: IndexKind) -> &'static str {
     match kind {
         IndexKind::Orders => "Type its number, its id (like 'O14'), or '?' for the index.",
         IndexKind::Techs => "Type its name, its id (like 'T07'), or '?' for the index.",
-        IndexKind::Achievements => "Press '?' and pick one from the index.",
+        IndexKind::Achievements => "Type its number, its name (like 'Copper5'), or '?' for the index.",
         IndexKind::Sites => "Type its number (like 'S12' or '12'), or '?' for the index.",
     }
 }
@@ -243,6 +263,24 @@ fn tech_matches(needle: &str, rules: &Rules) -> Vec<TechCardId> {
         }
     }
     hits
+}
+
+/// Every achievement type whose NAME `needle` prefixes, in registry order.
+///
+/// Over `screen_model::achievement_registry` rather than a second list of the
+/// twelve: that one is already the crate's roster (core exposes no
+/// `AchievementType::ALL`) and it is pinned to four-per-category, so a name
+/// typed here and a card on the index can never be drawn from different sets.
+fn achievement_matches(needle: &str) -> Vec<yokohama_core::AchievementType> {
+    let needle = needle.trim().to_lowercase();
+    if needle.is_empty() {
+        return Vec::new();
+    }
+    crate::screen_model::achievement_registry()
+        .into_iter()
+        .map(|a| a.achievement_type)
+        .filter(|ty| format!("{ty:?}").to_lowercase().starts_with(&needle))
+        .collect()
 }
 
 /// The first copy of `id`'s TITLE that nothing has claimed yet.
@@ -296,8 +334,8 @@ pub(crate) fn card_tag(card: CardRef) -> String {
     }
 }
 
-/// The full ORDER card, drawn, for the echo spec §0.6 requires before an entered
-/// id commits: *"entered ids echo the full card back before committing"*.
+/// The full card, drawn, for the echo spec §0.6 requires before an entered id
+/// commits: *"entered ids echo the full card back before committing"*.
 ///
 /// It is an ECHO rather than a confirmation step, and that is a ruling worth
 /// stating: R6 asks for minimum ceremony at the table, and a second keystroke
@@ -305,10 +343,21 @@ pub(crate) fn card_tag(card: CardRef) -> String {
 /// up. What the player gets is the card on screen, in the same shape they just
 /// saw it in the index, above the result of their entry — with `back` still
 /// there if it is the wrong one.
-pub(crate) fn echo(id: OrderCardId, rules: &Rules) -> String {
-    let printed = rules.orders.get(id);
+///
+/// **All four registries since T7**, through the same `index_card` the index
+/// draws with: a wizard that echoed an order card and said nothing back for a
+/// technology would be teaching that one of the two entries had been read and
+/// the other merely accepted. `colors` is needed only by an achievement's
+/// claimant line and is ignored by everything else.
+///
+/// An identity no registry holds draws nothing — the caller's own pool check is
+/// what refuses it, and there is no card here to show.
+pub(crate) fn echo(card: CardRef, rules: &Rules, colors: &[yokohama_core::PlayerColor]) -> String {
+    let Some(drawn) = crate::screen_model::index_card_for(card, rules) else {
+        return String::new();
+    };
     let mut out = String::new();
-    for line in crate::card_render::order_card(&crate::card_render::CardFace::new(id, printed)) {
+    for line in crate::card_render::index_card(&drawn, colors) {
         out.push_str(&line);
         out.push('\n');
     }
@@ -760,13 +809,90 @@ mod tests {
 
     /// The echo is the whole card, not a line about it — the difference
     /// between "you typed O14" and "you recorded THIS card".
+    ///
+    /// **And the order echo did not move when T7 generalized it to four
+    /// registries**: it is still exactly `card_render::order_card`'s plain
+    /// face, asserted line for line rather than by shape, because the REPL's
+    /// reveal path prints this string and a silently restyled card there would
+    /// be a change nobody asked for.
     #[test]
     fn the_echo_draws_the_whole_card() {
         let rules = Rules::standard();
-        let text = echo(OrderCardId(14), &rules);
+        let text = echo(CardRef::Order(OrderCardId(14)), &rules, &[]);
         assert_eq!(text.lines().count(), crate::card_render::CARD_H);
         assert!(text.contains("O14"), "{text}");
         assert!(text.contains("GERMANY"), "the flag a player would recognize: {text}");
+
+        let direct = crate::card_render::order_card(&crate::card_render::CardFace::new(
+            OrderCardId(14),
+            rules.orders.get(OrderCardId(14)),
+        ));
+        assert_eq!(text.lines().collect::<Vec<_>>(), direct, "the shipped order echo is unchanged");
+    }
+
+    /// **Every registry echoes** (T7). A wizard that drew the card back for an
+    /// order and said nothing for a technology would be telling the operator
+    /// that one entry had been read and the other merely swallowed — and the
+    /// tech and site cards are the two whose content a person cannot check
+    /// against a printed number, so they are the ones the echo is FOR.
+    #[test]
+    fn every_registry_echoes_its_own_card() {
+        let rules = Rules::standard();
+        let telegram = rules.techs.iter().find(|c| c.name == "Telegram").expect("a Telegram");
+        for (card, needle) in [
+            (CardRef::Tech(telegram.id), "TELEGRAM"),
+            (CardRef::Site(3), "SITE 3"),
+            (CardRef::Achievement(yokohama_core::AchievementType::Copper5), "Own 5 Copper"),
+        ] {
+            let text = echo(card, &rules, &[]);
+            assert!(text.contains(needle), "{card:?} must echo its own card: {text}");
+            assert!(!text.contains('['), "an echo carries no selection number: {text}");
+        }
+
+        // An identity no registry holds draws nothing rather than an invented
+        // card — the caller's pool check is what refuses it.
+        assert_eq!(echo(CardRef::Tech(TechCardId(99)), &rules, &[]), "");
+        assert_eq!(echo(CardRef::Site(99), &rules, &[]), "");
+    }
+
+    /// An achievement name is an ACCEPTED ALIAS at an achievement prompt (T7,
+    /// the F1 menu's other door), under the same prefix discipline the goods,
+    /// flags and technology titles follow: `prod` names three cards and is
+    /// refused rather than guessed.
+    #[test]
+    fn an_achievement_is_named_by_its_type_name_and_an_ambiguous_prefix_is_refused() {
+        let rules = Rules::standard();
+        let goals = CardPrompt {
+            kind: IndexKind::Achievements,
+            candidates: None,
+            placed: &[],
+            numbering: Numbering::Ids,
+        };
+        use yokohama_core::AchievementType;
+        for (typed, want) in [
+            ("Copper5", AchievementType::Copper5),
+            ("copper5", AchievementType::Copper5),
+            ("money", AchievementType::Money10),
+            ("tokens", AchievementType::Tokens5),
+        ] {
+            assert_eq!(
+                resolve(&goals, typed, &rules),
+                CardEntry::Card(CardRef::Achievement(want)),
+                "{typed:?}",
+            );
+        }
+        let ambiguous = resolve(&goals, "prod", &rules);
+        assert!(
+            matches!(&ambiguous, CardEntry::Refused(m)
+                if m.contains("Production4") && m.contains("Prod3Comm2") && m.contains("type more")),
+            "{ambiguous:?}",
+        );
+        // ...and a name that is nothing at all still says what would work.
+        let junk = resolve(&goals, "zzz", &rules);
+        assert!(
+            matches!(&junk, CardEntry::Refused(m) if m.contains("'?' for the index")),
+            "{junk:?}",
+        );
     }
 
     /// **A technology is named by its NAME**, because nothing is printed on the
