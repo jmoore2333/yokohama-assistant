@@ -1,4 +1,4 @@
-# 3.5a mock round 1 — two candidate surfaces at the raised floor (200×50)
+# 3.5a mocks — round 2 (round-1 rulings applied)
 
 Design artifacts for the CLI redesign (brief: `../2026-08-05-phase3.5a-cli-redesign-brief.md`).
 Both frames render the owner's actual 2026-08-05 live game (seed …964555000) at turn 1,
@@ -19,6 +19,11 @@ in a window at least 200 columns wide. **Browser review copy:** the round-1 arti
 **Regenerate / iterate:** `python3 docs/plans/2026-08-05-phase3.5a-mocks/mockgen.py` (from the repo
 root). Every emitted line is asserted ≤ 200 visible columns.
 
-**Status: round 1, awaiting the owner's rulings** on: the floor size · tile-box content · dashboard
-composition · the mini-card rendering and by-flag grouping · the decision zone. Rulings land in the
-3.5a spec §0; implementation starts only after mock sign-off.
+**Round-1 rulings (brief §3.1):** the order index APPROVED; main-frame deltas applied in round 2.
+**Round 2 adds:** `tracks-view.ans` (the `view` pattern — church + customs, every space as a card
+with cost/VP/rider/occupant, dummy visible, majority bonuses stated) and `frame-4p.ans` (4-player
+layout study: same 200-col floor, dashboard moves BELOW the board; illustrative tile arrangement,
+site numbers are placeholders). Main frame rev 2 carries building zones per player, track reward
+summaries with customs costed in IMPORTS (round 1's yen was wrong), and the visible undo/↑-history
+hints. **Awaiting round-2 rulings** on: building-zone split · the view pattern · 4P posture
+(dashboard-below vs wider per-count floor) · track-summary balance. Then the 3.5a spec §0.

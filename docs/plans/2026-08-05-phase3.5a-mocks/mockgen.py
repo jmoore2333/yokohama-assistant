@@ -161,24 +161,27 @@ def dashboard():
     L.append(f"{RED}{BOLD}▶ RED — your turn{R}        {YEN}¥3{R}   {VP}0 VP{R}")
     L.append(f"  Goods  {COPPER}1 Copper{R} · {WHITE}1 Silk{R} · {GREEN}1 Tea{R} · {CYAN}1 Seafood{R} · {DIM}0 Imports{R}")
     L.append(f"  Assistants  {BOLD}8{R} in hand · 0 on board · 12 in warehouse")
-    L.append(f"  Built  0 shophouses · 0 trading houses {GRAY}(next take costs ¥4){R}")
+    L.append(f"  Shophouses  {BOLD}2{R} in hand · 6 in warehouse · 0 built")
+    L.append(f"  Trade houses  0 in hand · 4 in warehouse · 0 built {GRAY}(next take ¥4){R}")
     L.append(f"  President {DIM}in hand{R} · 1 order in hand")
     L.append("")
     L.append(f"{BLUE}{BOLD}  BLUE{R}                    {YEN}¥4{R}   {VP}0 VP{R}")
     L.append(f"  Goods  {COPPER}1 Copper{R} · {WHITE}1 Silk{R} · {GREEN}1 Tea{R} · {CYAN}1 Seafood{R} · {DIM}0 Imports{R}")
     L.append(f"  Assistants  {BOLD}8{R} in hand · 0 on board · 12 in warehouse")
-    L.append(f"  Built  0 shophouses · 0 trading houses {GRAY}(next take costs ¥4){R}")
+    L.append(f"  Shophouses  {BOLD}2{R} in hand · 6 in warehouse · 0 built")
+    L.append(f"  Trade houses  0 in hand · 4 in warehouse · 0 built {GRAY}(next take ¥4){R}")
     L.append(f"  President {DIM}in hand{R} · 1 order in hand {GRAY}(hidden){R}")
     L.append("")
     L.append(hdr("TRACKS  (2-player: filled at 4 · D = neutral dummy)"))
     church = (f"  Church   faith "
               f"{DIM}[4]{R}{DIM}[5]{R}{DIM}[6]{R}{INV}[7 D]{R}{DIM}[8]{R}{DIM}[9]{R}{DIM}[10]{R}{DIM}[11]{R}"
-              f"   1/4 filled")
+              f" 1/4 · {VP}★3–14{R}+mv")
     L.append(church)
-    customs = (f"  Customs  cost  "
-               f"{DIM}[¥1]{R}{DIM}[¥1]{R}{DIM}[¥2]{R}{INV}[¥2 D]{R}{DIM}[¥3]{R}{DIM}[¥3]{R}{DIM}[¥4]{R}"
-               f"      1/4 filled")
+    customs = (f"  Customs  pay   "
+               f"{DIM}[1]{R}{DIM}[1]{R}{DIM}[2]{R}{INV}[2 D]{R}{DIM}[3]{R}{DIM}[3]{R}{DIM}[4]{R} imports"
+               f" 1/4 · {VP}★4–22{R}")
     L.append(customs)
+    L.append(f"  {GRAY}('tracks' renders every space: cost · VP · rider · occupant){R}")
     L.append("")
     L.append(hdr("ACHIEVEMENTS  (one per category — first / later VP)"))
     L.append(f"  {BOLD}A{R} · Copper 5      own 5 copper                {VP}8 / 6 VP{R}   {DIM}unclaimed{R}")
@@ -224,7 +227,7 @@ def main_frame():
     L.append("")
     L.append(f"{BOLD}YOU ARE DECIDING{R} · an additional action before Placement — you own no technologies yet, so there is nothing to use.")
     L.append(f"   {BOLD}[1]{R} End the additional-action phase and move on to {BOLD}Placement{R}")
-    L.append(f"{GRAY}(only option — press Enter to apply · 'back' undoes · 'view' opens any panel · '?' opens the card index){R}")
+    L.append(f"{GRAY}(only option — press Enter · nothing is final until you apply it · 'back' undoes the last applied entry · ↑ recalls what you typed · 'view' any surface · '?' the card index){R}")
     L.append(f"{BOLD}> {R}")
     return L
 
@@ -299,6 +302,133 @@ def emit(name, lines):
         f.write(ansi_to_html(lines))
     print(f"{name}: {len(lines)} rows, max width {max(vis(l) for l in lines)}")
 
+# ------------------------------------------------------------ tracks view ---
+SP_W = 23
+def space_card(top, lines, occupant, dummy=False):
+    l1 = pad(f"┌ {BOLD}{top}{R} ", SP_W - 1) + "┐"
+    body = [pad(f"│ {ln}", SP_W - 1) + "│" for ln in lines]
+    occ = (f"{INV} D · neutral dummy {R}" if dummy else f"{DIM}{occupant}{R}")
+    l4 = pad(f"│ {occ}", SP_W - 1) + "│"
+    l5 = "└" + "─" * (SP_W - 2) + "┘"
+    return [l1] + body + [l4, l5]
+
+CHURCH_SP = [(4,3,"+1 movement"),(5,4,"+1 movement"),(6,5,"+2 movement"),(7,6,"+2 movement"),
+             (8,7,"+2 movement"),(9,8,"+2 movement"),(10,11,"+3 movement"),(11,14,"+3 movement")]
+CUSTOMS_SP = [(1,1,5,"+2 warehouse takes"),(2,1,4,"+2 yen"),(3,2,10,"+1 warehouse take"),
+              (4,2,9,"+1 yen"),(5,3,16,""),(6,3,15,""),(7,4,22,"")]
+
+def tracks_view():
+    L = []
+    L.append(f"{BOLD}TRACKS — full view{R}   {GRAY}the 'view' pattern: every frame panel is a summary; its full surface renders like this (ports · labs · tracks · sites · goals · hand · log){R}")
+    L.append("")
+    L.append(f"{BOLD}CHURCH{R} — pay faith, place an assistant on a space, take its printed reward. {GRAY}Filled at 4 occupied (2-player) · game-end majority bonus 6 / 3 VP — the dummy competes.{R}")
+    cards = []
+    for f_, vp, rider in CHURCH_SP:
+        cards.append(space_card(f"faith {f_}", [f"{VP}★{vp} VP{R}", f"{GREEN}{rider}{R}"],
+                                "empty", dummy=(f_ == 7)))
+    for ln in row_of_cards_h(cards, 5):
+        L.append(ln)
+    L.append("")
+    L.append(f"{BOLD}CUSTOMS{R} — pay the space's printed cost in imported goods (power caps the payment), take its reward. {GRAY}Filled at 4 occupied (2-player) · majority bonus 8 / 4 VP — the dummy competes.{R}")
+    cards = []
+    for sp, cost, vp, rider in CUSTOMS_SP:
+        body = [f"{YELLOW}pay {cost} import{'s' if cost>1 else ''}{R}", f"{VP}★{vp} VP{R}"]
+        body.append(f"{GREEN}{rider}{R}" if rider else f"{DIM}—{R}")
+        cards.append(space_card(f"space {sp}", body, "empty", dummy=(sp == 4)))
+    for ln in row_of_cards_h(cards, 6):
+        L.append(ln)
+    L.append("")
+    L.append(f"{GRAY}A payment must EXACTLY match a space's printed cost; both spaces of a pair filled means that payment is unplaceable.{R}")
+    L.append(f"{BOLD}> {R}{GRAY}Enter returns to the game{R}")
+    return L
+
+def row_of_cards_h(cards, h):
+    lines = ["" for _ in range(h)]
+    for cl in cards:
+        cl = cl + [pad("", vis(cl[0]))] * (h - len(cl))
+        for i in range(h):
+            lines[i] += pad(cl[i], vis(cl[0])) + " "
+    return [l.rstrip() for l in lines]
+
+# -------------------------------------------------------------- 4P study ----
+YEL, GRN = c(93), c(92)
+N4 = {"B00":"COPPER MINE","B01":"BANK","B02":"PORT A","B03":"CHINATOWN","B04":"SILK MILL","B05":"LABORATORY A",
+      "B06":"FISHING GROUND","B07":"CUSTOMS","B08":"CANAL","B09":"EMPLOYMENT AGENCY","B10":"LABORATORY B",
+      "B11":"TEA PLANTATION","B12":"CHURCH","B13":"PORT B","B14":"SILK MILL","B15":"COPPER MINE",
+      "B16":"TEA PLANTATION","B17":"FISHING GROUND"}
+T4 = {"B00":"1 Import","B01":"3 Tea","B02":"1 Import","B03":"2 Copper","B04":"1 Import","B05":"3 Yen",
+      "B06":"3 Seafood","B07":"2 Silk","B09":"1 Import","B10":"3 Yen","B11":"3 Tea","B12":"1 Import",
+      "B13":"1 Import","B14":"2 Silk","B15":"2 Copper","B16":"3 Seafood","B17":"1 Import"}
+
+def tile4(aid):
+    name = N4[aid]
+    if name == "CANAL":
+        l1 = f"┌ {GRAY}{aid}{R} {BOLD}CANAL{R} " + "─" * (TILE_W - 5 - len(aid) - 5) + "┐"
+        return [l1,
+                f"│ {pad(f'{DIM}transit only — no pawns,{R}', TILE_W-4)} │",
+                f"│ {pad(f'{DIM}no tokens, no buildings{R}', TILE_W-4)} │",
+                f"│ {pad(f'{YEN}¥1{R} to the bank / crossing', TILE_W-4)} │",
+                f"│ {pad('', TILE_W-4)} │",
+                "└" + "─" * (TILE_W - 2) + "┘"]
+    tok = T4[aid]; tokc = TOKCOL[tok.split()[1]]
+    l1 = f"┌ {GRAY}{aid}{R} {BOLD}{name}{R} " + "─" * (TILE_W - 5 - len(aid) - len(name)) + "┐"
+    return [l1,
+            f"│ {pad(f'5-Power: {tokc}{tok}{R}  {GRAY}Site 12{R}', TILE_W-4)} │",
+            f"│ {pad(f'President: {DIM}none{R}', TILE_W-4)} │",
+            f"│ {pad(f'{RED}R0{R} {BLUE}B0{R} {YEL}Y0{R} {GRN}G0{R} assistants', TILE_W-4)} │",
+            f"│ {pad(f'Shophouses {DIM}····{R} Trade {DIM}·{R}', TILE_W-4)} │",
+            "└" + "─" * (TILE_W - 2) + "┘"]
+
+def player_col(color, name, lead, yen, hidden=True):
+    COLW = 48
+    mark = f"{color}{BOLD}▶ {name} — your turn{R}" if lead else f"{color}{BOLD}  {name}{R}"
+    return [pad(mark, COLW - 14) + f"{YEN}¥{yen}{R}   {VP}0 VP{R}" + " " * 2,
+            pad(f"  Goods  {COPPER}1 Copper{R} · {WHITE}1 Silk{R} · {GREEN}1 Tea{R}", COLW),
+            pad(f"         {CYAN}1 Seafood{R} · {DIM}0 Imports{R}", COLW),
+            pad(f"  Assistants  8 hand · 0 board · 12 warehouse", COLW),
+            pad(f"  Shophouses  2 hand · 6 warehouse · 0 built", COLW),
+            pad(f"  Trade houses 0 hand · 4 warehouse · 0 built", COLW),
+            pad(f"  President in hand · 1 order" + (" (hidden)" if hidden else ""), COLW)]
+
+def frame_4p():
+    L = []
+    t = f"{BOLD}Y O K O H A M A{R}   {GRAY}4-PLAYER LAYOUT STUDY — illustrative board · the dashboard moves BELOW the board at this count{R}"
+    L.append(pad("", max((FLOOR_W - vis(t)) // 2, 0)) + t)
+    L.append("")
+    rows = [["B00","B01","B02","B03","B04","B05"], ["B06","B07","B08","B09","B10"],
+            ["B11","B12","B13","B14"], ["B15","B16","B17"]]
+    for i, row in enumerate(rows):
+        offset = " " * (i * (TILE_W // 2))
+        tiles = [tile4(a) for a in row]
+        for li in range(6):
+            L.append(offset + "".join(tt[li] for tt in tiles))
+    L.append("")
+    L.append(hdr_wide("PLAYERS"))
+    cols = [player_col(RED, "RED", True, 3, hidden=False),
+            player_col(BLUE, "BLUE", False, 4),
+            player_col(YEL, "YELLOW", False, 4),
+            player_col(GRN, "GREEN", False, 4)]
+    for li in range(7):
+        L.append(" ".join(pad(col[li], 48) for col in cols).rstrip())
+    L.append("")
+    tr = (f"{GRAY}─ {R}{BOLD}TRACKS{R}  Church {DIM}[4][5][6][7][8][9][10][11]{R} 0/6 · "
+          f"Customs {DIM}[1][1][2][2][3][3][4]{R} imports 0/6 {GRAY}(no dummy at 4P · 'tracks' for rewards){R}"
+          f"   {BOLD}ACHIEVEMENTS{R} A·Silk 6 B·Orders 5 C·Prod 2+Comm 3 {GRAY}('goals'){R}")
+    L.append(tr)
+    L.append(f"{GRAY}{'─'*FLOOR_W}{R}")
+    phases = ["Additional", "Placement", "Movement", "Area Action", "5-Power", "Building", "Recovery", "Additional", "End"]
+    chain = f"{BOLD}TURN 1 · {RED}RED{R}{BOLD}'s turn{R}   "
+    for i, p in enumerate(phases):
+        chain += (f"{INV}{BOLD} {p.upper()} {R}" if i == 0 else f"{DIM}{p}{R}")
+        if i < len(phases) - 1: chain += f"{GRAY} ▸ {R}"
+    L.append(chain)
+    L.append(f"{BOLD}YOU ARE DECIDING{R} · an additional action before Placement.")
+    L.append(f"   {BOLD}[1]{R} End the additional-action phase and move on to {BOLD}Placement{R}")
+    L.append(f"{BOLD}> {R}")
+    return L
+
 if __name__ == "__main__":
     emit("main-frame", main_frame())
     emit("order-index", order_index())
+    emit("tracks-view", tracks_view())
+    emit("frame-4p", frame_4p())
