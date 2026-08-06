@@ -78,6 +78,46 @@ close_terminal   {id}
   scarce axis, not columns: everything below the board (option list, 20 per page; message zone)
   pushes the title and top board row off the top.
 
+## Standing PTY checks (properties no `cargo test` can reach)
+
+Almost every honesty property in this driver is pinned by a test. These are the ones that
+**cannot** be: they are about what a real terminal does with bytes, and the suite has no
+terminal. Re-run them in a PTY whenever `crates/yokohama-cli/src/input.rs` or the `rustyline`
+declaration in `crates/yokohama-cli/Cargo.toml` changes.
+
+- **Type-ahead survives.** The whole wizard in ONE write must consume every answer:
+
+  ```
+  write_terminal {id, input: "sim\r2\rred\rblue\r1\r31337\r"}
+  ```
+
+  Six answers, one write, no waiting between them — the session must reach the **save-path**
+  question. If it stops at an earlier question, the leftover bytes were dropped with the read
+  buffer and `rustyline`'s `buffer-redux` feature is off (T9 review, MUST-1). What the suite
+  *can* say about this is only that the feature is declared —
+  `input::the_editor_arm_keeps_its_read_buffer_between_lines` — because the type that changes
+  shape lives behind a private module in rustyline. The behaviour is this check.
+
+- **↑ recall, and Ctrl-C not resurrecting.** Type a line, Enter, then ↑ — the line comes back.
+  Type a second line, press **Ctrl-C** instead of Enter, then ↑ — the abandoned line must NOT
+  be offered, and the game must still be alive at its prompt. The queue-and-history logic
+  itself is pinned without a terminal
+  (`input::a_delivered_line_enters_the_history_and_an_abandoned_one_never_does`, which drives
+  the shipped loop through a scripted stand-in); what needs the PTY is that rustyline's key
+  bindings reach that logic at all.
+
+- **A multi-line paste is answered line by line.** Paste (⌘V, not a scripted write — bracketed
+  paste is what makes this different) a two-line block such as `sim` + `2` at the mode
+  question. Both questions must be answered, exactly as the same two lines behave in a pipe.
+  The SPLIT is pinned without a terminal
+  (`input::a_pasted_block_reaches_the_parser_the_way_a_pipe_would`); the PTY is what proves the
+  block arrives as one bracketed paste in the first place.
+
+- **The frame is undisturbed by editing.** Insert mid-line, backspace, and use ↑ across the
+  wizard→REPL boundary: the composed frame above the prompt must never repaint or shear (the
+  empty `EDIT_PROMPT` geometry, pinned at the frame end by
+  `input::the_editor_prompt_is_empty_because_the_frame_ends_at_column_zero`).
+
 ## Housekeeping rules
 
 - **Always `close_terminal` when done** (`close_group` by tag after a multi-terminal run).

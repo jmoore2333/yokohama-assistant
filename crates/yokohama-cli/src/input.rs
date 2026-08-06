@@ -29,11 +29,44 @@
 //!   over the lines entered this session.
 //!
 //! Which arm is a decision made ONCE, by `main`, from the process's own
-//! streams — see [`init_from_tty`] and [`editor_gate`]. Nothing downstream of
-//! the iterator can tell which arm produced a line, and that is the design:
-//! what reaches a parser is exactly the bytes a plain `read_line` would have
-//! delivered, so the line protocol, the REPL grammar and every recorded event
-//! are untouched by this module's existence.
+//! streams — see [`init_from_tty`] and [`editor_gate`]. The line PROTOCOL is
+//! identical on both: one `String` per answer, newline stripped, delivered in
+//! the order they were given, so the REPL grammar and every recorded event are
+//! untouched by this module's existence.
+//!
+//! # What the editor arm promises, exactly
+//!
+//! It is tempting to write "the editor delivers the same bytes a pipe would",
+//! and that sentence is FALSE — editing keys are the whole point of the arm,
+//! and a `Backspace` that reached a parser would be a bug rather than fidelity.
+//! The true contract is that **what reaches a parser is what the user
+//! ACCEPTED**, after ← → Backspace Delete Home End ↑ ↓ have done their work.
+//! Measured against raw-byte delivery, the divergences are these and no others:
+//!
+//! * **Tab is an editing key, and it is swallowed.** rustyline maps it to
+//!   `Cmd::Complete`, which does nothing without a completion helper, and this
+//!   driver installs none — there is nothing to complete over a grammar whose
+//!   options are already numbered on the screen. So `si<Tab>m` accepts as
+//!   `"sim"` here and arrives as `"si\tm"` through a pipe. This is the one
+//!   divergence, it is documented rather than fixed, and it costs nothing:
+//!   every parser in this crate splits on whitespace, so no answer a tester can
+//!   type NEEDS an interior tab.
+//!
+//! Two things that look like divergences and are not:
+//!
+//! * **A multi-line PASTE is split back into lines** by [`next_edited`], which
+//!   queues them and serves them one per `next()`. Bracketed paste hands the
+//!   editor the whole block as ONE string with embedded newlines, so unsplit it
+//!   would answer one question with several answers glued together.
+//! * **CR and CRLF become `\n`** — rustyline normalizes them inside a paste,
+//!   and the split then treats them exactly as `BufRead::lines()` does, which
+//!   is what the plain arm would have done with the same bytes.
+//!
+//! Type-ahead is preserved rather than diverging: bytes that arrive while the
+//! previous line is still being processed carry over into the next read
+//! (`Cargo.toml`'s `buffer-redux` feature, and
+//! [`tests::the_editor_arm_keeps_its_read_buffer_between_lines`] on why that is
+//! a dependency declaration rather than code here).
 //!
 //! # Why the editor prints no prompt of its own
 //!
@@ -96,6 +129,7 @@
 //! every surface on it is its own number + Enter, while the surfaces
 //! themselves keep the words `tracks`, `sites`, `hand`, `log`, `?`.
 
+use std::collections::VecDeque;
 use std::io::BufRead;
 use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -117,9 +151,15 @@ const EDIT_PROMPT: &str = "";
 /// test that merely observed "no editor was constructed" would also pass with
 /// the gate deleted whenever the suite happens to run without a terminal, which
 /// is to say it would pass in CI and stop catching the regression on a
-/// developer's laptop. `cargo test -- --nocapture` on a real terminal is that
-/// laptop: stdout IS a tty there, so a gate that asked the streams directly
-/// would arm itself inside the suite.
+/// developer's laptop.
+///
+/// **What separates the two is where the test process was STARTED, not how it
+/// was invoked.** libtest's output capture redirects the print macros; it does
+/// not redirect file descriptor 1, so `std::io::stdout().is_terminal()` answers
+/// TRUE inside the suite on any `cargo test` run launched from a terminal —
+/// with or without `--nocapture`. A gate that asked the streams directly would
+/// therefore arm itself on a developer's machine and stay disarmed in CI, which
+/// is exactly the wrong way round.
 static INTERACTIVE: AtomicBool = AtomicBool::new(false);
 
 /// Decide, once, whether this process's input may be edited. Called by `main`
@@ -190,8 +230,12 @@ enum Source {
     /// `BufRead::lines()` — pipes, redirects, CI, and any terminal the gate
     /// declined. Byte-for-byte the pre-T9 read path.
     Plain(std::io::Lines<Box<dyn BufRead>>),
-    /// rustyline. Boxed because an `Editor` is large next to a `Lines`.
-    Editor(Box<rustyline::DefaultEditor>),
+    /// rustyline, plus the lines a multi-line paste still owes the parser.
+    ///
+    /// The editor is boxed because an `Editor` is large next to a `Lines`. The
+    /// queue is normally empty: it holds content only between the `next()` that
+    /// accepted a pasted block and the ones that drain it — see [`next_edited`].
+    Editor { editor: Box<rustyline::DefaultEditor>, queued: VecDeque<String> },
 }
 
 impl LineReader {
@@ -201,7 +245,9 @@ impl LineReader {
     pub fn from_stdin() -> Self {
         if may_edit() {
             if let Some(editor) = new_editor() {
-                return Self { source: Source::Editor(Box::new(editor)) };
+                let source =
+                    Source::Editor { editor: Box::new(editor), queued: VecDeque::new() };
+                return Self { source };
             }
         }
         Self::plain(Box::new(std::io::stdin().lock()))
@@ -223,14 +269,78 @@ impl Iterator for LineReader {
             // `lines().map_while(Result::ok)` did before T9 — same iterator,
             // same stopping condition, including the UTF-8 decode error.
             Source::Plain(lines) => lines.next()?.ok(),
-            Source::Editor(editor) => loop {
-                match classify(editor.readline(EDIT_PROMPT)) {
-                    ReadOutcome::Line(line) => return Some(line),
-                    ReadOutcome::Retry => continue,
-                    ReadOutcome::End => return None,
-                }
-            },
+            Source::Editor { editor, queued } => next_edited(&mut **editor, queued),
         }
+    }
+}
+
+/// The two things the editor arm asks of rustyline, named as a trait so the
+/// LOOP around them is reachable from a test that has no terminal.
+///
+/// Everything the arm decides — the paste split, the history add, what an
+/// interrupt means — lives in [`next_edited`] above this seam rather than below
+/// it, which is what lets `ScriptedEditor` drive the shipped logic. Without it
+/// the only executable statement about any of that would be "a real terminal
+/// behaved correctly once", and the flag that made ↑ work could be flipped off
+/// with the whole suite still green (T9 review, SHOULD-3).
+trait Editing {
+    /// One accepted line, an interrupt, or the end of the stream.
+    fn read_line(&mut self) -> Result<String, ReadlineError>;
+    /// Put `line` where ↑ will find it.
+    fn remember(&mut self, line: &str);
+}
+
+impl Editing for rustyline::DefaultEditor {
+    fn read_line(&mut self) -> Result<String, ReadlineError> {
+        self.readline(EDIT_PROMPT)
+    }
+
+    fn remember(&mut self, line: &str) {
+        // Infallible for the in-memory history this editor carries (an empty
+        // line is REFUSED rather than erroring — see the test), and a history
+        // that failed to grow is no reason to interrupt a game either way.
+        let _ = self.add_history_entry(line);
+    }
+}
+
+/// One line off the editor arm: the queue first, then a fresh read.
+///
+/// The queue is drained BEFORE reading again because a pasted block's remaining
+/// lines are answers to the questions that follow — they must reach the parser
+/// ahead of anything typed after the paste.
+fn next_edited(editor: &mut impl Editing, queued: &mut VecDeque<String>) -> Option<String> {
+    loop {
+        if let Some(line) = queued.pop_front() {
+            return Some(line);
+        }
+        match classify(editor.read_line()) {
+            ReadOutcome::Line(accepted) => {
+                // Split FIRST, then remember: ↑ should offer the lines the
+                // parser saw, not a two-line blob that no prompt would accept.
+                for line in split_accepted(accepted) {
+                    editor.remember(&line);
+                    queued.push_back(line);
+                }
+            }
+            ReadOutcome::Retry => continue,
+            ReadOutcome::End => return None,
+        }
+    }
+}
+
+/// One accepted string as the lines a pipe would have delivered.
+///
+/// `str::lines()` is exactly `BufRead::lines()`'s rule — split on `\n`, drop a
+/// `\r` before it, no empty tail for a trailing newline — with ONE difference
+/// that matters here: it yields nothing at all for `""`. So a string with no
+/// newline in it is passed through untouched instead, because the empty line is
+/// the bare-Enter ceremony that applies a forced single option and losing it
+/// would make Enter do nothing.
+fn split_accepted(accepted: String) -> Vec<String> {
+    if accepted.contains('\n') {
+        accepted.lines().map(str::to_string).collect()
+    } else {
+        vec![accepted]
     }
 }
 
@@ -256,21 +366,33 @@ fn classify(result: Result<String, ReadlineError>) -> ReadOutcome {
         Err(ReadlineError::Interrupted) => ReadOutcome::Retry,
         // Ctrl-D on an empty line: the pre-T9 binary's EOF, unchanged.
         Err(ReadlineError::Eof) => ReadOutcome::End,
-        // A terminal fault (I/O, a syscall, a resize signal we do not handle)
-        // ends the stream the way an I/O error ends the plain arm. Nothing here
-        // is worth taking a live game's screen down over, and the session
-        // autosaves after every applied move.
+        // A terminal fault — an I/O failure, a syscall refusing, a decode
+        // error — ends the stream the way an I/O error ends the plain arm.
+        // Nothing here is worth taking a live game's screen down over, and the
+        // session autosaves after every applied move.
+        //
+        // A window RESIZE is deliberately NOT in that list: rustyline catches
+        // `Signal(Resize)` inside its own key loop (`edit.rs`'s `next_cmd`),
+        // re-measures the terminal, redraws the line and reads again, so it
+        // never surfaces as a `readline` result at all. Widening a window
+        // mid-game cannot end the input stream.
         Err(_) => ReadOutcome::End,
     }
 }
 
 /// Build the editor, or `None` if this terminal will not have one.
 ///
-/// `auto_add_history` is what makes ↑ recall anything; rustyline's in-memory
-/// history already drops empty lines, so the forced-option bare Enter never
-/// fills it.
+/// `auto_add_history` stays OFF and [`next_edited`] adds each DELIVERED line
+/// itself. That is not a preference: the flag is a config value no test without
+/// a terminal can observe, so with it on, ↑ recall — a promise both guide
+/// formats make in §2 — had no executable statement anywhere and flipping it
+/// off passed the whole suite. Owning the add moves it above the [`Editing`]
+/// seam, where
+/// [`tests::a_delivered_line_enters_the_history_and_an_abandoned_one_never_does`]
+/// can hold it. It also fixes what a paste puts in the history: the lines the
+/// parser saw, rather than the un-split blob.
 fn new_editor() -> Option<rustyline::DefaultEditor> {
-    let config = rustyline::Config::builder().auto_add_history(true).build();
+    let config = rustyline::Config::builder().auto_add_history(false).build();
     rustyline::DefaultEditor::with_config(config).ok()
 }
 
@@ -285,13 +407,14 @@ pub(crate) fn tech_name(id: TechCardId, techs: &TechRegistry) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use rustyline::history::History;
     use std::io::Cursor;
 
     fn plain_over(bytes: &'static [u8]) -> Vec<String> {
         LineReader::plain(Box::new(Cursor::new(bytes))).collect()
     }
 
-    fn bufread_lines(bytes: &'static [u8]) -> Vec<String> {
+    fn bufread_lines(bytes: &[u8]) -> Vec<String> {
         Cursor::new(bytes).lines().map_while(Result::ok).collect()
     }
 
@@ -301,6 +424,13 @@ mod tests {
     /// Measured against a live `lines()` call rather than against expected
     /// literals, so the two cannot drift apart even in the corners nobody
     /// thought to write down.
+    ///
+    /// **This is a statement about the PLAIN arm and nothing else.** The editor
+    /// arm delivers what the user accepted after line editing, which is a
+    /// different and weaker promise — the module doc's "What the editor arm
+    /// promises, exactly" states it, and
+    /// [`a_pasted_block_reaches_the_parser_the_way_a_pipe_would`] holds the one
+    /// clause of it that IS a byte-for-byte match with this arm.
     #[test]
     fn the_plain_arm_delivers_exactly_what_bufread_lines_delivers() {
         for case in [
@@ -379,8 +509,10 @@ mod tests {
         );
         // …and the switch is what `may_edit` reads, not the ambient streams:
         // deleting the atomic in favour of a direct `is_terminal()` pair would
-        // leave this half passing and the half above failing under
-        // `cargo test -- --nocapture` on a terminal.
+        // leave this half passing and the half above failing on any run STARTED
+        // FROM a terminal — capture or not, since libtest redirects the print
+        // macros and not fd 1 (see `INTERACTIVE`). That is a developer's laptop
+        // and never CI.
         INTERACTIVE.store(true, Ordering::Relaxed);
         assert!(may_edit(), "the atomic is the switch");
         INTERACTIVE.store(false, Ordering::Relaxed);
@@ -463,6 +595,162 @@ mod tests {
         assert!(
             EDIT_PROMPT.is_empty(),
             "the editor draws no prompt of its own: the frame above already did"
+        );
+    }
+
+    /// A scripted stand-in for the line editor.
+    ///
+    /// [`Editing`] is the WHOLE of what [`next_edited`] asks of rustyline, so a
+    /// list of outcomes drives the REAL loop — the paste split, the history
+    /// add, Ctrl-C, Ctrl-D — with no terminal anywhere. `remembered` records
+    /// the calls verbatim rather than imitating `MemHistory`'s own filtering,
+    /// so a failure here is always about THIS module's behaviour and never
+    /// about rustyline's.
+    struct ScriptedEditor {
+        reads: std::collections::VecDeque<Result<String, ReadlineError>>,
+        remembered: Vec<String>,
+    }
+
+    impl Editing for ScriptedEditor {
+        fn read_line(&mut self) -> Result<String, ReadlineError> {
+            self.reads.pop_front().unwrap_or(Err(ReadlineError::Eof))
+        }
+
+        fn remember(&mut self, line: &str) {
+            self.remembered.push(line.to_string());
+        }
+    }
+
+    /// Every line the editor arm delivers from `reads`, paired with everything
+    /// it handed the history along the way. The script runs dry as a Ctrl-D,
+    /// so the loop always terminates.
+    fn edited(reads: Vec<Result<String, ReadlineError>>) -> (Vec<String>, Vec<String>) {
+        let mut editor =
+            ScriptedEditor { reads: reads.into_iter().collect(), remembered: Vec::new() };
+        let mut queued = std::collections::VecDeque::new();
+        let mut delivered = Vec::new();
+        while let Some(line) = next_edited(&mut editor, &mut queued) {
+            delivered.push(line);
+        }
+        (delivered, editor.remembered)
+    }
+
+    /// A multi-line PASTE must reach the parser as the lines a PIPE would have
+    /// delivered — measured against a live `BufRead::lines()`, the same way the
+    /// plain arm is, so the two cannot drift apart.
+    ///
+    /// The editor gets a paste as ONE string with embedded newlines
+    /// (rustyline's `read_pasted_text` collects the bracketed-paste body and
+    /// rewrites `\r\n` and `\r` to `\n`), where a pipe delivers N lines. Left
+    /// unsplit, pasting `sim`+`2` into the wizard answers the mode question
+    /// with the two-line blob `"sim\n2"` and loses the second answer — while
+    /// the same two lines typed, or piped, work (T9 review, SHOULD-1a).
+    ///
+    /// Empty INTERIOR lines are delivered, deliberately: a pipe delivers them,
+    /// and the bare-Enter ceremony that applies a forced single option is an
+    /// empty line, so swallowing them would make a pasted block mean something
+    /// different from the same block typed.
+    #[test]
+    fn a_pasted_block_reaches_the_parser_the_way_a_pipe_would() {
+        for pasted in ["sim\n2", "sim\n", "a\n\nb", "crlf\r\nsecond", "\n", "\n\n"] {
+            let (delivered, _) = edited(vec![Ok(pasted.to_string())]);
+            assert_eq!(
+                delivered,
+                bufread_lines(pasted.as_bytes()),
+                "a paste of {pasted:?} must arrive as the lines a pipe would deliver"
+            );
+        }
+
+        // A line with NO newline in it is delivered exactly as accepted — the
+        // empty one included. `str::lines()` yields nothing at all for `""`,
+        // and losing that line would silently drop the bare-Enter ceremony.
+        for typed in ["O14", "", "  spaced  "] {
+            let (delivered, _) = edited(vec![Ok(typed.to_string())]);
+            assert_eq!(delivered, vec![typed.to_string()], "{typed:?} is not a paste");
+        }
+
+        // The queue DRAINS before the next read: a pasted block's remaining
+        // lines are answers to the questions that follow it, so they must reach
+        // the parser ahead of anything typed afterwards.
+        let (delivered, _) = edited(vec![Ok("sim\n2".to_string()), Ok("red".to_string())]);
+        assert_eq!(delivered, ["sim", "2", "red"]);
+    }
+
+    /// ↑ recall is this module's promise (both guide formats make it in §2, and
+    /// `guide_sync` holds them to it), so it is this module that adds each
+    /// DELIVERED line to the history — rather than rustyline's
+    /// `auto_add_history`, which is a config flag no test without a terminal
+    /// could ever observe. Flipping that flag off survived the whole suite
+    /// (T9 review, SHOULD-3); deleting the [`Editing::remember`] call in
+    /// [`next_edited`] fails this.
+    ///
+    /// **The Ctrl-C half is the load-bearing one.** An abandoned line must not
+    /// be resurrectable by ↑ and fed to a parser that would apply it. It cannot
+    /// be, and the reason is structural rather than careful: `Interrupted`
+    /// carries no text, and the history add lives on the `Line` arm alone — so
+    /// what this pins is that the count of remembered lines never exceeds the
+    /// count of delivered ones.
+    #[test]
+    fn a_delivered_line_enters_the_history_and_an_abandoned_one_never_does() {
+        let (delivered, remembered) = edited(vec![
+            Err(ReadlineError::Interrupted),
+            Ok("m a1 a2".to_string()),
+            Err(ReadlineError::Interrupted),
+            Ok("sim\n2".to_string()),
+        ]);
+        assert_eq!(delivered, ["m a1 a2", "sim", "2"], "two interrupts deliver nothing");
+        assert_eq!(
+            remembered, delivered,
+            "the history is exactly what the PARSER saw: every delivered line, the SPLIT lines of \
+             a paste rather than the blob, and nothing from an abandoned read"
+        );
+
+        // …and the forced-option bare Enter does not fill it, which is a fact
+        // about rustyline's in-memory history rather than about this module —
+        // asserted here because it is why `remember` can be unconditional.
+        let mut history = rustyline::history::MemHistory::new();
+        assert!(!history.add("").expect("MemHistory::add is infallible"), "an empty line is not history");
+        assert!(history.add("m a1 a2").expect("MemHistory::add is infallible"), "a typed line is");
+        assert_eq!(history.len(), 1);
+    }
+
+    /// **Type-ahead survives**, and the mechanism is a dependency FEATURE
+    /// rather than a line of code here — so the feature declaration is what
+    /// gets pinned.
+    ///
+    /// rustyline reads the terminal through a buffered reader and hands the
+    /// buffer back at the end of every `readline` call, to be handed in again
+    /// at the start of the next one. Without `buffer-redux` that handback
+    /// (`RawReader::unbuffer`) is compiled as `None`: the buffer dies with the
+    /// reader, and with it every byte that arrived while the previous line was
+    /// being processed. Answering the next wizard question before the question
+    /// is drawn then loses the answer silently — and the wizard is a dozen
+    /// questions in a row that the Forge recipe scripts in ONE write
+    /// (T9 review, MUST-1).
+    ///
+    /// **This pins the DECLARATION, not the behaviour, and the difference is
+    /// worth being plain about.** The type that changes shape,
+    /// `rustyline::tty::unix::PosixBuffer`, sits behind a private module and
+    /// `unbuffer` is a private trait method, so there is no
+    /// [`history_is_in_memory_by_construction`]-style compile-time proof to be
+    /// had; and the behaviour itself is bytes queued in a tty's own buffer, so
+    /// observing it needs a real terminal. The behavioural check is therefore
+    /// TERMINAL-ONLY and is written down as a standing PTY check in
+    /// `docs/forge-cli-testing.md`. What this test catches is the regression
+    /// that actually happens: somebody tidying an unused-LOOKING feature out of
+    /// `Cargo.toml`.
+    #[test]
+    fn the_editor_arm_keeps_its_read_buffer_between_lines() {
+        const MANIFEST: &str = include_str!("../Cargo.toml");
+        let declaration = MANIFEST
+            .lines()
+            .find(|l| l.trim_start().starts_with("rustyline ="))
+            .expect("the CLI crate declares rustyline in its own Cargo.toml");
+        assert!(
+            declaration.contains("\"buffer-redux\""),
+            "crates/yokohama-cli/Cargo.toml must take rustyline with the `buffer-redux` feature, \
+             or type-ahead is dropped one line at a time with no error anywhere; the declaration \
+             now reads {declaration:?}"
         );
     }
 

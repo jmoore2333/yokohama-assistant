@@ -504,11 +504,21 @@ fn section2_environment_promises_are_in_both_guides() {
             "{file} no longer states the game autosaves after every applied move -- §2 promises it \
              (authority: the REPL's post-apply autosave)."
         );
-        // The two T9 promises are here rather than in prose alone because both
-        // are guarantees a tester at a LIVE table would act on: one says their
+        // The T9 promises are here rather than in prose alone. Two of them are
+        // guarantees a tester at a LIVE table would act on: one says their
         // opponents' revealed cards do not outlive the game on disk, the other
         // says the key they reach for to abandon a mistyped line cannot play a
-        // move for them.
+        // move for them. The third is the FEATURE the guide sells hardest --
+        // recall -- and it is here because it was, until the T9 review, a claim
+        // no test held: flipping rustyline's `auto_add_history` off left the
+        // suite green and both guides promising a key that did nothing.
+        assert!(
+            text.contains("walk back through the lines you have already entered this session"),
+            "{file} no longer promises ↑/↓ recall over the session's own lines -- §2 sells that as \
+             the reason a long area id or card name need only be typed once (authority: \
+             input::next_edited hands every DELIVERED line to Editing::remember; pinned by \
+             input::tests::a_delivered_line_enters_the_history_and_an_abandoned_one_never_does)."
+        );
         assert!(
             text.contains("never written to a file"),
             "{file} no longer promises the input history stays off disk -- §2 makes that promise \
