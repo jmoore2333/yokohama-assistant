@@ -382,6 +382,18 @@ pub enum Tone {
     /// task that lands that row -- T2/T4 mark the tiles, T10 the higher
     /// counts -- is where this stops overlapping on screen.
     Reachable,
+    /// A printed building-site space that pays an ACTION rather than goods or
+    /// points: the assistants icon (`a`) and the shophouse-build icon (`⌂`),
+    /// the two tokens on a site strip with no resource of their own to take a
+    /// color from. White, which is the approved mocks' own value for both
+    /// entries of their site-slot token table (`mockgen.py`'s `TOKC`).
+    ///
+    /// Its own meaning rather than [`Tone::Strong`], which is what it shipped
+    /// as at T2 and what the T2 review sent back (N5): `Strong` is EMPHASIS,
+    /// the thing a line does to raise one token above its neighbours, and on a
+    /// site strip these two are not emphasised at all — they sit beside `★1`
+    /// and `t2` as equals, and bolding them said the opposite.
+    ActionIcon,
     /// Reverse video: the one lit item in a run of alternatives -- the
     /// current phase in the chain, the neutral dummy's occupied space.
     Highlight,
@@ -451,6 +463,7 @@ impl Tone {
         tones.extend([
             Tone::Vp,
             Tone::Reachable,
+            Tone::ActionIcon,
             Tone::Highlight,
             Tone::Strong,
             Tone::Chrome,
@@ -504,6 +517,7 @@ fn every_tone_is_accounted_for(tone: Tone) {
         ) => (),
         Tone::Vp => (),
         Tone::Reachable => (),
+        Tone::ActionIcon => (),
         Tone::Highlight => (),
         Tone::Strong => (),
         Tone::Chrome => (),
@@ -546,6 +560,19 @@ fn every_tone_is_accounted_for(tone: Tone) {
 /// identically, which the site strip would have shown on a single tile (a
 /// `*n` any-good space beside a `1 Import` token). Imports has moved to `93`
 /// and the two now read apart, which is what `Good(Any)` was added for.
+///
+/// **UNCONSUMED: the whole [`Tone::Tile`] family** (T2 review S1). It has
+/// fourteen entries below and, since T2, **zero call sites** -- V3 draws a
+/// tile's name in [`Tone::Strong`] and carries the area's identity in the tile
+/// BOX and its contents instead of in the name's hue, so nothing asks for an
+/// area-type tint any more. The family is deliberately kept rather than
+/// deleted in this fix wave: it costs nothing at runtime, [`Tone::all`] still
+/// sweeps it (so all fourteen stay identity-pinned and paint-pinned like every
+/// other tone), and T4's decision zone and T5's card index are both surfaces
+/// that may want an area tint back. **Removing it or re-using it is a T11/T12
+/// review call, not this wave's** -- what this note buys is that whoever gets
+/// there finds "unconsumed on purpose since T2" written down instead of
+/// inferring it from a grep that returns nothing.
 fn sgr(tone: Tone) -> &'static str {
     match tone {
         Tone::Player(PlayerColor::Red) => "31",
@@ -578,6 +605,7 @@ fn sgr(tone: Tone) -> &'static str {
         Tone::Flag(Country::Dutch) => "38;5;208",
         Tone::Vp => "38;5;75",
         Tone::Reachable => "32",
+        Tone::ActionIcon => "97",
         Tone::Highlight => "7",
         Tone::Strong => "1",
         Tone::Chrome => "90",

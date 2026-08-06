@@ -213,8 +213,15 @@ pub fn board_skeleton(player_count: u8) -> String {
 /// (`5-Power: 1 Import`), so that key described a board that no longer exists.
 /// The letters live on only where they are still drawn — the setup wizard's
 /// review summary, via [`five_power_face`].
-pub fn board_legend(state: &GameState, rules: &Rules) -> String {
-    board_render::board_legend(&screen_model::build_board(state, rules))
+///
+/// The Canal question is answered off `state.board_layout` directly. This used
+/// to build a whole second `BoardModel` — one per composed frame, on top of the
+/// one [`board_grid`] already builds — to scan its tiles for a single boolean
+/// (T2 review N3). `board_layout.areas` is where that fact lives, and asking it
+/// there costs a lookup instead of a board.
+pub fn board_legend(state: &GameState, _rules: &Rules) -> String {
+    let has_canal = state.board_layout.areas.values().any(|a| a.area_type == AreaType::Canal);
+    board_render::board_legend(has_canal)
 }
 
 /// Per Port board: slot number, zone, and the order card there via

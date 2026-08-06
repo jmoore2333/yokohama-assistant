@@ -375,9 +375,9 @@ fn push_reward(t: &mut Twin, r: &SpaceReward) {
         // The YAML's `assistants` icon; the engine calls the field `movement`
         // (rulebook p.10 — the icon MOVES an assistant), and the mocks' legend
         // words it back as `a=assistants`.
-        (r.movement, 'a', Tone::Strong),
+        (r.movement, 'a', Tone::ActionIcon),
         // The YAML's `shophouse_build` icon, `warehouse_tokens` in the engine.
-        (r.warehouse_tokens, glyph::BUILT, Tone::Strong),
+        (r.warehouse_tokens, glyph::BUILT, Tone::ActionIcon),
     ];
     let mut printed = false;
     for (n, mark, tone) in parts {
@@ -470,7 +470,13 @@ pub fn board_view(board: &BoardModel, colors: &[PlayerColor]) -> String {
 /// tokens, and a compact token nobody can decode is decoration. The site-slot
 /// half is the approved mock's own legend; the marks half is its companion,
 /// since the mocks explain the strip in the frame and the marks in prose.
-pub fn board_legend(board: &BoardModel) -> String {
+///
+/// `has_canal` is the ONE board fact this legend reads, so it is taken as that
+/// fact rather than as a whole [`BoardModel`] (T2 review N3). It used to take
+/// the model and scan its tiles, which meant every composed frame built a
+/// second full model — one for the board, one to answer a single yes/no — and a
+/// model built to be scanned once for a boolean is a cost with no reader.
+pub fn board_legend(has_canal: bool) -> String {
     let sep = format!(" {} ", glyph::SEPARATOR);
     let mut out = Twin::default();
     out.tinted(Tone::Chrome, "marks: ")
@@ -510,17 +516,20 @@ pub fn board_legend(board: &BoardModel) -> String {
         .tinted(Tone::Good(GoodKind::Any), "*n")
         .tinted(Tone::Chrome, " any good")
         .tinted(Tone::Chrome, &sep)
-        .tinted(Tone::Strong, "an")
+        // The KEY has to paint in the same tone as the token it keys, or the
+        // legend stops being a key -- so these two follow `push_reward` onto
+        // `ActionIcon` rather than staying bold beside a white `a1` on a tile.
+        .tinted(Tone::ActionIcon, "an")
         .tinted(Tone::Chrome, " assistants")
         .tinted(Tone::Chrome, &sep)
-        .tinted(Tone::Strong, &format!("{}n", glyph::BUILT))
+        .tinted(Tone::ActionIcon, &format!("{}n", glyph::BUILT))
         .tinted(Tone::Chrome, " build")
         .tinted(Tone::Chrome, &sep)
         .tinted(Tone::Chrome, "Tn trading-house VP")
         .tinted(Tone::Chrome, &format!(" {} 'sites' renders the full cards", glyph::SECTION_DASH));
 
     let mut text = format!("{}\n{}", out.painted, slots.painted);
-    if board.tiles.iter().any(|t| t.area_type == AreaType::Canal) {
+    if has_canal {
         let mut canal = Twin::default();
         canal.tinted(
             Tone::Chrome,
@@ -710,6 +719,117 @@ mod tests {
             strip_ansi(&lines[1]),
         );
         assert!(!lines[1].contains(glyph::ELLIPSIS), "it FITS; nothing should clip: {:?}", lines[1]);
+    }
+
+    /// **No card in the printed registry loses a token off its site strip** —
+    /// swept over all of `Rules::standard().building_sites` × every built-state
+    /// (T2 review N1).
+    ///
+    /// The gap this closes is that [`exact`] clips SILENTLY and by design: a
+    /// strip one column too wide comes back at exactly [`INNER`] columns with
+    /// its tail replaced by `…`, so it passes every width pin in this section
+    /// while having dropped a printed reward the player needs. Width tests
+    /// cannot see that. The margin is not comfortable either — the widest card
+    /// in the set renders at exactly 26 of 26 interior columns, so ONE more
+    /// token anywhere (a data fix, a new registry card, a wider mark in
+    /// [`push_reward`]) starts cutting rewards off the board with nothing
+    /// failing.
+    ///
+    /// The built-state axis matters even though building only ever makes a
+    /// strip NARROWER (a `⌂` replaces a reward that is at least as wide): it is
+    /// the trading-house owner and the per-slot builders that colour the line,
+    /// and a paint bug that added visible characters would show up here as a
+    /// clip. Every combination is swept rather than argued — 24 cards × 16
+    /// built-states × owned/unowned, which is cheap.
+    ///
+    /// Anti-vacuity is in the test, not in a comment: the same predicate is run
+    /// against a fabricated card carrying every token this renderer can print,
+    /// and it must SEE that one clip. A detector that cannot fail is not
+    /// evidence that nothing is wrong.
+    #[test]
+    fn no_registry_building_site_clips_its_slot_strip() {
+        let rules = Rules::standard();
+        assert!(!rules.building_sites.is_empty(), "fixture: the registry must have cards in it");
+
+        // The site strip is the tile's fourth line -- title, token, presence,
+        // sites, bottom edge. Pinned against TILE_LINES so a shape change
+        // cannot quietly point this sweep at a different row.
+        const SITE_LINE: usize = 3;
+
+        let strip_of = |site: crate::screen_model::SiteModel| -> String {
+            let mut tile = bare_tile();
+            tile.site = Some(site);
+            let lines = tile_lines(&tile, &TWO);
+            assert_eq!(lines.len(), TILE_LINES, "tile shape moved; SITE_LINE is stale");
+            assert_exact_width(&lines, TILE_W);
+            strip_ansi(&lines[SITE_LINE])
+        };
+
+        let mut widest = (0usize, String::new());
+        for (index, card) in rules.building_sites.iter().enumerate() {
+            for built in 0u8..16 {
+                for owner in [None, Some(PlayerId::new(1))] {
+                    let site = crate::screen_model::SiteModel {
+                        index: Some(index as u8),
+                        slots: std::array::from_fn(|i| {
+                            let builder = (built >> i) & 1 == 1;
+                            slot(card.spaces[i], builder.then(|| PlayerId::new(0)))
+                        }),
+                        trading_house_vp: card.trading_house_reward,
+                        trading_house_owner: owner,
+                    };
+                    let line = strip_of(site);
+                    assert!(
+                        !line.contains(glyph::ELLIPSIS),
+                        "card {index} (built mask {built:#06b}, owner {owner:?}) clips its site \
+                         strip -- a printed reward is being dropped off the board: {line:?}",
+                    );
+                    let content = line.trim_matches(glyph::BOX_V).trim().chars().count();
+                    if content > widest.0 {
+                        widest = (content, line);
+                    }
+                }
+            }
+        }
+        // Recorded, not asserted: how close the set actually runs to the
+        // interior budget is the fact that says whether this sweep is a
+        // formality or the only thing standing between the registry and a
+        // silent cut. It is not a formality.
+        assert!(
+            widest.0 <= INNER,
+            "the widest registry strip is {} columns against an interior of {INNER}: {:?}",
+            widest.0,
+            widest.1,
+        );
+
+        // ...and the detector fires on a card that really is too wide: every
+        // token `push_reward` can emit, on one space.
+        let loud = SpaceReward {
+            vp: 1,
+            yen: 1,
+            seafood: 1,
+            tea: 1,
+            silk: 1,
+            copper: 1,
+            any_good: 1,
+            movement: 1,
+            warehouse_tokens: 1,
+        };
+        let over = strip_of(crate::screen_model::SiteModel {
+            index: Some(0),
+            slots: [
+                slot(loud, None),
+                slot(SpaceReward::default(), None),
+                slot(SpaceReward::default(), None),
+                slot(SpaceReward::default(), None),
+            ],
+            trading_house_vp: 7,
+            trading_house_owner: None,
+        });
+        assert!(
+            over.contains(glyph::ELLIPSIS),
+            "the sweep's own clip detector must be able to fail: {over:?}",
+        );
     }
 
     /// The other end of the same budget: the longest area name, every seat's
@@ -965,7 +1085,8 @@ mod tests {
         let (state, rules) = state_np(2);
         let board = crate::screen_model::build_board(&state, &rules);
         let colors = colors_np(&state);
-        let rendered = format!("{}{}\n", board_view(&board, &colors), board_legend(&board));
+        let rendered =
+            format!("{}{}\n", board_view(&board, &colors), board_legend(has_canal(&board)));
 
         if std::env::var_os("UPDATE_T2_CAPTURE").is_some() {
             std::fs::create_dir_all(std::path::Path::new(path).parent().expect("a parent"))
@@ -979,12 +1100,20 @@ mod tests {
         );
     }
 
+    /// The legend takes the Canal fact rather than a board (N3), so the tests
+    /// that want it FROM a board ask the model the same question `render.rs`
+    /// asks `board_layout` -- one place, so a fixture and the shipped adapter
+    /// cannot answer it differently.
+    fn has_canal(board: &BoardModel) -> bool {
+        board.tiles.iter().any(|t| t.area_type == AreaType::Canal)
+    }
+
     /// The legend is the key to what the tiles draw: every mark and every
     /// site-slot token it can show.
     #[test]
     fn the_legend_names_every_mark_the_tiles_draw() {
         let (board, _) = model_np(2);
-        let legend = board_legend(&board);
+        let legend = board_legend(has_canal(&board));
         for needle in [
             &glyph::PRESIDENT.to_string()[..],
             &glyph::ASSISTANT.to_string(),
@@ -1000,6 +1129,7 @@ mod tests {
         assert!(!legend.contains("Canal"), "the 2P board has no Canal: {legend}");
 
         let (board4, _) = model_np(4);
-        assert!(board_legend(&board4).contains("Canal"), "a board with a Canal states its rule");
+        assert!(has_canal(&board4), "fixture: the 4P board is the one with a Canal on it");
+        assert!(board_legend(true).contains("Canal"), "a board with a Canal states its rule");
     }
 }

@@ -44,11 +44,21 @@
 //! **EVERY LINE FITS THE COMPOSED FRAME** (T10 review M1). `screen::wrap` sizes
 //! the game screen to its widest line, so a body wider than the frame shoves the
 //! board sideways for one command and back on the next. The budget is therefore
-//! per PLAYER COUNT, because the frame is — `screen::frame_width`, 162/157/180
-//! at 2/3/4 players — and it is not a formality: a placement naming three areas
-//! and their fee recipients renders at up to **135 columns**, which overflows
-//! all three (the earlier flat `<= 100` pin asserted a property this render did
-//! not have, on 2P fixtures that never reached one of those moves). Two
+//! per PLAYER COUNT, because the frame is — `screen::frame_width`, **164/163/180
+//! at 2/3/4 players**.
+//!
+//! **That budget no longer BINDS organically, and saying so is the point** (T2
+//! review M1). The widest thing real play hands this screen is a placement
+//! naming three areas and their fee recipients, about **135 columns**; against
+//! the pre-redesign frames (114/132/108) that overflowed two counts outright,
+//! and it is why the machinery below exists at all — the flat `<= 100` pin it
+//! replaced asserted a property this render did not have. T2's V3 board then
+//! widened every frame past 135, so no organic position reaches the bound any
+//! more. What the machinery is still for is stated rather than assumed: the
+//! explicit-budget seam ([`render_suggestion_within`], which is what the two
+//! pins that prove reflow and elision work now drive), and the guard if a frame
+//! ever narrows again — a body that measured itself against a frame it happens
+//! to fit today is a body that breaks silently the day the layout moves. Two
 //! treatments, chosen per line by what its tail is worth:
 //!
 //! * **The suggested move WRAPS.** It is the answer, and the tail a cut would
@@ -108,16 +118,17 @@ pub fn table_row(cells: [&str; 5]) -> String {
 /// It is not the width GUARANTEE: that is the composed frame's own width, held
 /// by [`Body`] over every line. This one binds first for rows at every player
 /// count (80 plus the widest row prefix is 94, inside the narrowest frame's
-/// 108), which is why the rows a reader sees are unchanged by the frame bound.
+/// 163), which is why the rows a reader sees are unchanged by the frame bound.
 const ROW_TEXT_WIDTH: usize = 80;
 
 /// The closing honesty note (spec §7: the explanation text states term
 /// contributions, it does not give play advice). Pre-wrapped as fixed lines
-/// rather than reflowed at render time: its longest line is 82 columns, inside
+/// rather than reflowed at render time: its longest line is 80 columns, inside
 /// the narrowest frame this driver composes, so re-flowing it per player count
 /// would move a sentence a reader may have been shown before to no purpose. The
-/// long CAVEATS below are the opposite case — they cannot be said in 108 columns
-/// at all, so they are wrapped ([`Body::prose`]).
+/// long CAVEATS below are the opposite case — at 169 and 238 characters neither
+/// can be said in one line of ANY frame this driver composes, so they are
+/// wrapped ([`Body::prose`]).
 const HONESTY_NOTE: [&str; 3] = [
     "This is the bot's arithmetic, not advice: each row is (your value − the best",
     "opponent's) × the weight for this stage, summed. It read ONE guess at the hidden",
@@ -355,8 +366,9 @@ fn ensure_offered_by_the_true_state(
 /// emits is measured against.
 ///
 /// **Why a type rather than `push_str` at each site.** The screen has to fit the
-/// composed frame line by line (module doc), and the widest thing it can print
-/// is 135 columns against a 4-player frame's 108 — so the bound has to hold at
+/// composed frame line by line (module doc), and the widest thing it can print —
+/// a 135-column placement — outran two of the three pre-redesign frames and
+/// would outrun any frame narrow enough, so the bound has to hold at
 /// every site, including the ones a later edit adds. Routing every line through
 /// here makes that a property of one type instead of a habit at fourteen call
 /// sites, and it keeps the paint on the OUTSIDE of the measurement, which is
@@ -990,12 +1002,13 @@ mod tests {
     /// count** (T10 review M1).
     ///
     /// What this replaced was asserting a property the render did not have. The
-    /// old pin measured against a flat `<= 100`, which is not any frame's width:
-    /// the composed frame is 114/132/108 columns at 2/3/4 players
-    /// (`screen::frame_width`), so 100 was simultaneously too strict for 2P/3P
-    /// and too slack for the case that actually breaks — 4P, where the frame is
-    /// NARROWEST while the board is widest. It also drove `repl_mid_game(4)`-style
-    /// 2P fixtures at every count, so the 4P screen was never rendered at all.
+    /// old pin measured against a flat `<= 100`, which was not any frame's width:
+    /// the composed frame was 114/132/108 columns at 2/3/4 players then (it is
+    /// 164/163/180 since T2 — `screen::frame_width` is the authority either
+    /// way), so 100 was simultaneously too strict for 2P/3P and too slack for
+    /// the case that actually broke — 4P, where the frame was NARROWEST while
+    /// the board was widest. It also drove `repl_mid_game(4)`-style 2P fixtures
+    /// at every count, so the 4P screen was never rendered at all.
     ///
     /// Measured per line with `screen::visible_width` (the escape-stripping
     /// measure), on a real mid-game position at each count. The plain half of the
@@ -1008,14 +1021,16 @@ mod tests {
     /// ANSWERING WITH THE WIDEST MOVE THE POSITION OFFERS, which is the case the
     /// bound exists for and a move a player could really be handed.
     ///
-    /// **Where the bound binds is uneven, and that is a fact about the frames,
-    /// not a gap here.** At 2 players the widest move runs to 120 columns against
-    /// a 114-column frame and at 4 players 128 against 108; at 3 players the frame
-    /// is the widest of the three (132, the panel sits beside a 90-column board)
-    /// and the widest move observed at this seed is 122, so nothing there is cut.
-    /// The tally below therefore does not demand that every count bind — it
-    /// demands that SOME count does, which is what stops the whole pin from
-    /// quietly becoming a no-op if move descriptions or frames change.
+    /// **The bound binds at every count, and since T2 it does so by
+    /// construction rather than by luck.** It used to depend on the frames: the
+    /// widest move at 2 players ran 120 columns against a 114-column frame and
+    /// 128 against 108 at 4, while the 3-player frame (132, the widest of the
+    /// three then) cut nothing at all — so the tally could only demand that SOME
+    /// count bind. Every frame is now wider than any move description real play
+    /// produces, so instead each count measures against the TIGHTER of its frame
+    /// and one column under the widest move the position offers. That budget is
+    /// below the widest move by construction, which is why the tally below can
+    /// demand all three.
     #[test]
     fn the_render_is_plain_and_fits_the_frame_at_every_player_count() {
         let mut counts_where_the_bound_binds = Vec::new();
@@ -1074,21 +1089,24 @@ mod tests {
         }
         assert!(
             counts_where_the_bound_binds.len() == 3,
-            "every player count must exercise a binding bound, or this pin proves nothing: \
+            "every player count must render its widest move against a budget that budget \
+             genuinely cuts -- that is the condition under which the lines above measure \
+             reflow and elision rather than a screen that happened to fit: \
              {counts_where_the_bound_binds:?}",
         );
     }
 
     /// **The width bound is load-bearing, not decoration** (T10 review M1(c)).
     ///
-    /// At 4 players the frame is at its narrowest (108) while the board is at its
-    /// widest, and a real legal list there offers moves whose description alone
-    /// runs past the WHOLE frame — a placement naming three areas plus every fee
-    /// recipient measures up to 135 columns. So the anti-vacuity case is organic:
-    /// the fixture walks until the position offers such a move, and the
-    /// suggestion is doctored to that move — one from the fixture's own legal
-    /// list, not an invented string, so the screen rendered is a screen a player
-    /// could really be shown.
+    /// A real 4-player legal list offers moves whose description alone runs to
+    /// 135 columns — a placement naming three areas plus every fee recipient.
+    /// That used to be past the WHOLE 4P frame, which was the narrowest at 108;
+    /// since T2 it is the widest at 180, so the cut is driven by an explicit
+    /// budget one column under the move. What did not change is where the move
+    /// comes from, and that is the anti-vacuity: the fixture walks until the
+    /// position offers such a move and the suggestion is doctored to it — one
+    /// from the fixture's own legal list, not an invented string, so the screen
+    /// rendered is a screen a player could really be shown.
     ///
     /// Both treatments are checked where each applies: the ANSWER must reflow
     /// (and lose no word — a cut answer is the failure this repair exists to

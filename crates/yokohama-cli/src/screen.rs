@@ -73,15 +73,22 @@ pub(crate) fn visible_width(s: &str) -> usize {
 /// the only honest signal is what the frame itself measures: the dashboard
 /// sits BESIDE the board while the two together fit the floor, and stacks
 /// BELOW it when they do not. On the V3 board that reproduces §0.1's ruling
-/// from the geometry rather than from a hard-wired player count — 120 + 2 + 74
-/// fits at 2 players (beside), 150 and 180 do not at 3 and 4 (below), which is
-/// exactly what the mocks show.
+/// from the geometry rather than from a hard-wired player count — 120 + 4 + 74
+/// = 198 fits at 2 players (beside), 150 and 180 do not at 3 and 4 (below),
+/// which is exactly what the mocks show. Widening [`PANEL_GAP`] to the mocks'
+/// four columns spent two of the four this arrangement had spare and flipped
+/// nothing: the 2P join clears the floor by 2, and the 3P board is 28 columns
+/// past it with the gap set to anything at all.
 /// `the_dashboard_sits_beside_the_board_only_while_both_fit_the_floor` is the
 /// pin.
 pub(crate) const FLOOR_W: usize = 200;
 
-/// Columns between the board and a dashboard joined beside it.
-const PANEL_GAP: usize = 2;
+/// Columns between the board and a dashboard joined beside it — the approved
+/// mocks' own gutter. `mockgen.py` pads the board block to 124 columns before
+/// appending the dashboard, and the V3 board is 120 wide at 2 players, so the
+/// designed gutter is four columns and this constant is that number rather than
+/// a value chosen here.
+const PANEL_GAP: usize = 4;
 
 /// The DESIGNED dashboard width — the approved mocks' `DASH_W`, which T3 cuts
 /// the panels over to.
@@ -128,13 +135,20 @@ const DASH_W: usize = 74;
 /// claim to argument.
 ///
 /// **T2 moved all three**, and the cause is the V3 board's 30-column tiles:
-/// the board alone went 72/90/108 to 120/150/180 columns. At 4 players the
-/// 180-column board is the widest thing on screen. At 2 and 3 it is not -- the
-/// site-slot LEGEND is, at 163 columns, the one row that keys the V3 tiles'
-/// compact tokens and the same length at every count (2P's board plus the
-/// panel joined beside it comes to 162, one column short of it). The
-/// pre-redesign numbers were 114/132/108.
-const FRAME_WIDTHS: [usize; 3] = [163, 163, 180];
+/// the board alone went 72/90/108 to 120/150/180 columns. A DIFFERENT element
+/// is the widest one at each count now, which is why the three numbers no
+/// longer track the board: at 4 players it is the 180-column board itself; at 3
+/// it is the site-slot LEGEND, at 163 columns the one row that keys the V3
+/// tiles' compact tokens and the same length at every count; at 2 it is the
+/// board with the panel joined beside it, at 120 + [`PANEL_GAP`] + the panel's
+/// own 40 = 164, one column past that legend. The pre-redesign numbers were
+/// 114/132/108.
+///
+/// The 2P entry moved again in the T2 review fix wave, 163 to 164, when
+/// [`PANEL_GAP`] took the approved mocks' four-column gutter in place of the
+/// two it had been carrying: that join was 162 at a gap of 2, a column short of
+/// the legend, and two more columns put it a column past.
+const FRAME_WIDTHS: [usize; 3] = [164, 163, 180];
 
 /// [`FRAME_WIDTHS`] for a `players`-player game (2..=4).
 ///
@@ -534,6 +548,102 @@ mod tests {
         out
     }
 
+    /// How far past its OPENING width ([`frame_width`]) a composed frame may
+    /// grow in play before the two width pins below call it a defect.
+    ///
+    /// **MEASURED, then set — and it came back SMALLER than the review that
+    /// ordered it expected, so this is one column rather than the double
+    /// figures a growing panel would have wanted.** [`FRAME_WIDTHS`] warns that
+    /// a mid-game players panel can leave a frame wider than its opening width,
+    /// and covering that is what this margin is for. Instrumented over both
+    /// pins below — every constructed worst case (turn 99, 199 money and VP, 15
+    /// of every good on every seat, all seven pending-choice banners, a
+    /// lockdown) and a real 250-move game walk, at each count — the overshoot
+    /// is nowhere above zero:
+    ///
+    /// | count | opening | widest measured | overshoot |
+    /// |---|---|---|---|
+    /// | 2 | 164 | 164 | 0 |
+    /// | 3 | 163 | 163 | 0 |
+    /// | 4 | 180 | 180 | 0 |
+    ///
+    /// A frame reaches its opening width and stops, because at no count is the
+    /// widest element one that play can grow: at 4 the 180-column board is
+    /// wider than anything stacked under it, at 3 the fixed site-slot legend
+    /// is, and at 2 the panel joined beside the board does set the width — but
+    /// the panel's own widest line is a fixed-width goods row that three-digit
+    /// money and VP still fit inside. Hence one column, just above the worst
+    /// measured overshoot.
+    ///
+    /// It is a MARGIN, not a second floor: what it has to stay is a bound a
+    /// growing line can actually break. [`FLOOR_W`] alone leaves 20 to 37
+    /// columns of slack depending on the count, which is more room than the two
+    /// lines the original pin caught (the 142-column Movement hint and the
+    /// 150-column choice status line) ever needed to hide in; at one column of
+    /// allowance that class of growth fails again. If T3's dashboard makes the
+    /// panel the widest element at a count play can then widen, this constant
+    /// gets RE-MEASURED — not raised to whatever silences it.
+    const FRAME_MARGIN: usize = 1;
+
+    /// Both width bounds on one composed frame, reported rather than asserted.
+    ///
+    /// Reported, because a run that stops at the first failing count cannot
+    /// tell you whether the other two also moved -- and when the bound is a
+    /// measured constant, "what did every count actually reach" is the fact
+    /// that sets it. Returns the frame's widest visible line and pushes one
+    /// message per broken bound onto `report`.
+    ///
+    /// The two bounds are checked SEPARATELY on purpose. [`FLOOR_W`] is the
+    /// design's hard cap and stays stated even while the per-count bound is the
+    /// tighter of the two at every count today; a MARGIN raised past the slack
+    /// a count has under the floor would start failing on the floor instead,
+    /// which is the right failure to get.
+    fn measure_frame(n: u8, label: &str, frame: &str, report: &mut Vec<String>) -> usize {
+        let opening = frame_width(usize::from(n));
+        let lines_past = |limit: usize| -> Vec<(usize, &str)> {
+            frame.lines().map(|l| (visible_width(l), l)).filter(|(w, _)| *w > limit).collect()
+        };
+
+        let over_floor = lines_past(FLOOR_W);
+        if !over_floor.is_empty() {
+            report.push(format!(
+                "the {n}P '{label}' frame has {} line(s) past the documented floor of \
+                 {FLOOR_W} columns: {over_floor:#?}",
+                over_floor.len(),
+            ));
+        }
+
+        let over_count = lines_past(opening + FRAME_MARGIN);
+        if !over_count.is_empty() {
+            report.push(format!(
+                "the {n}P '{label}' frame has {} line(s) past this count's opening width \
+                 {opening} + FRAME_MARGIN {FRAME_MARGIN} = {}: {over_count:#?}",
+                over_count.len(),
+                opening + FRAME_MARGIN,
+            ));
+        }
+
+        frame.lines().map(visible_width).max().unwrap_or(0)
+    }
+
+    /// One line per count naming what it actually reached, so a failure (and a
+    /// `--nocapture` run) hands over the numbers [`FRAME_MARGIN`]'s table is
+    /// set from instead of only the verdict.
+    fn widest_report(widest: &[(u8, usize, String)]) -> String {
+        widest
+            .iter()
+            .map(|(n, w, label)| {
+                let opening = frame_width(usize::from(*n));
+                format!(
+                    "  {n}P: widest {w} against an opening {opening} \
+                     (overshoot {}), at '{label}'",
+                    w.saturating_sub(opening),
+                )
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
     /// I6 (third review): the frame had a `<= 50` HEIGHT pin and nothing at
     /// all on WIDTH, so two runtime lines had quietly grown past the width
     /// guide §2 promises clears every layout -- the Movement prompt hint at
@@ -543,61 +653,98 @@ mod tests {
     /// the height pin measures, over the widest positions the driver can
     /// actually show.
     ///
-    /// The bound is [`FLOOR_W`] since T2, and it was 140 before. That is not
-    /// a relaxation to accommodate a wider board -- it is the redesign's own
-    /// raised floor (spec §0.1 designs the frame at 200x50), and the 4P board
-    /// at 180 columns leaves 140 unreachable at any tile size the mocks
-    /// approved. What the pin still buys is the thing it was written for: a
-    /// runtime line that outgrows the LAYOUT around it fails here.
+    /// **TWO bounds since the T2 review.** The absolute one is [`FLOOR_W`],
+    /// which replaced a flat 140 at T2 -- not a relaxation to accommodate a
+    /// wider board, but the redesign's own raised floor (spec §0.1 designs the
+    /// frame at 200x50), since the 4P board at 180 columns leaves 140
+    /// unreachable at any tile size the mocks approved. What that move cost was
+    /// the pin's GRIP: at 3 players it left 37 columns of slack where the
+    /// pre-T2 bound left 8, which is room enough for exactly the class of line
+    /// this test was written to catch. So each count now also holds
+    /// `frame_width(n) + FRAME_MARGIN` -- the width the layout says that count
+    /// composes at, plus a measured allowance for the panel growing in play.
+    ///
+    /// **The new bound binds where the floor does not, and that was checked
+    /// rather than argued.** Padding the discoverability strip to 190 columns
+    /// -- a line 26 columns past the widest frame the driver composes, and
+    /// still 10 clear of [`FLOOR_W`] -- fails the per-count bound at all three
+    /// counts and the floor at none of them. Reverted by inverse edit.
     #[test]
     fn frame_fits_the_raised_floor_at_every_player_count() {
+        let mut report = Vec::new();
+        let mut widest = Vec::new();
         for n in [2u8, 3, 4] {
+            let mut worst = (0usize, String::new());
             for (label, frame) in worst_case_frames(n) {
-                let over: Vec<(usize, &str)> = frame
-                    .lines()
-                    .map(|l| (visible_width(l), l))
-                    .filter(|(w, _)| *w > FLOOR_W)
-                    .collect();
-                assert!(
-                    over.is_empty(),
-                    "the {n}P '{label}' frame has {} line(s) past the documented {FLOOR_W} columns: {over:#?}",
-                    over.len()
-                );
+                let w = measure_frame(n, &label, &frame, &mut report);
+                if w > worst.0 {
+                    worst = (w, label);
+                }
             }
+            widest.push((n, worst.0, worst.1));
         }
+        assert!(
+            report.is_empty(),
+            "{}\nwidest line per count:\n{}",
+            report.join("\n"),
+            widest_report(&widest),
+        );
     }
 
     /// Organic companion to the constructed worst cases above: a constructed
-    /// state is only ever as wide as its author imagined, so walk a real
-    /// 4-player game and hold the same bound on every frame it draws. This is
-    /// what covers the OPTION lines real play produces -- movement routes
-    /// naming three fee recipients, build options carrying a site's printed
-    /// reward, the longest area labels -- none of which the fixtures force.
+    /// state is only ever as wide as its author imagined, so walk a real game
+    /// and hold the same two bounds on every frame it draws. This is what
+    /// covers the OPTION lines real play produces -- movement routes naming
+    /// three fee recipients, build options carrying a site's printed reward,
+    /// the longest area labels -- none of which the fixtures force.
+    ///
+    /// Walked at EVERY count since the T2 review, where it was 4P only. The
+    /// per-count bound is a different number at each count, so a 4P-only walk
+    /// would leave the other two bounds resting entirely on constructed
+    /// fixtures -- and it is this walk, not the fixtures, that reaches the 3P
+    /// mid-game panel [`FRAME_MARGIN`] is sized off.
     #[test]
     fn every_frame_of_a_real_game_walk_fits_the_raised_floor() {
-        let mut r = repl_np(4);
-        force(true);
-        let mut steps = 0usize;
-        while !r.session.is_over() && steps < 250 {
-            let frame = wrap(&r, &r.prompt());
-            let over: Vec<(usize, &str)> =
-                frame.lines().map(|l| (visible_width(l), l)).filter(|(w, _)| *w > FLOOR_W).collect();
-            assert!(over.is_empty(), "at move {steps} the frame ran past {FLOOR_W} columns: {over:#?}");
-            let legal = r.session.legal();
-            if legal.is_empty() {
-                break;
+        let mut report = Vec::new();
+        let mut widest = Vec::new();
+        for n in [2u8, 3, 4] {
+            let mut r = repl_np(n);
+            force(true);
+            let mut steps = 0usize;
+            let mut worst = (0usize, String::new());
+            while !r.session.is_over() && steps < 250 {
+                let frame = wrap(&r, &r.prompt());
+                let label = format!("move {steps}");
+                let w = measure_frame(n, &label, &frame, &mut report);
+                if w > worst.0 {
+                    worst = (w, label);
+                }
+                let legal = r.session.legal();
+                if legal.is_empty() {
+                    break;
+                }
+                // Rotate through the list rather than always taking [0], so the
+                // walk reaches positions with buildings, techs and orders in
+                // them instead of replaying one degenerate line.
+                let mv = legal[steps % legal.len()].clone();
+                if r.session.apply(mv, Vec::new()).is_err() {
+                    break;
+                }
+                steps += 1;
             }
-            // Rotate through the list rather than always taking [0], so the
-            // walk reaches positions with buildings, techs and orders in
-            // them instead of replaying one degenerate line.
-            let mv = legal[steps % legal.len()].clone();
-            if r.session.apply(mv, Vec::new()).is_err() {
-                break;
-            }
-            steps += 1;
+            force(false);
+            assert!(
+                steps > 100,
+                "the {n}P walk must actually reach mid-game positions, only got {steps} moves",
+            );
+            widest.push((n, worst.0, worst.1));
         }
-        force(false);
-        assert!(steps > 100, "the walk must actually reach mid-game positions, only got {steps} moves");
+        assert!(
+            report.is_empty(),
+            "{}\nwidest line per count:\n{}",
+            report.join("\n"),
+            widest_report(&widest),
+        );
     }
 
     /// `panel` hides/shows the players panel inside the frame; `screen`

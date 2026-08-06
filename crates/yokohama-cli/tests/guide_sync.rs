@@ -183,13 +183,14 @@ fn section2_board_widths_match_the_renderer() {
 }
 
 /// The composed frame's rendered width at the start of a game: `screen::wrap`
-/// sizes the frame to its widest element, which is never the board alone (the
-/// players panel joins it side by side at 2-3 players, and the game-info strip
-/// is 96 columns on its own), so this is the width a tester's terminal actually
-/// has to be -- the number §2 owes them. Measured off the real `screen::wrap`,
-/// so it can never be a copied literal. Frames are forced on (per-thread, so
-/// parallel measurements stay hermetic without any lock) and the frame comes
-/// back plain apart from its leading clear-screen, since color is off at rest.
+/// sizes the frame to its widest element, and WHICH element that is differs by
+/// player count -- at 2 the players panel joined beside the board (the only
+/// count where it is beside it at all), at 3 the site-slot legend, at 4 the
+/// board itself. So this is the width a tester's terminal actually has to be --
+/// the number §2 owes them. Measured off the real `screen::wrap`, so it can
+/// never be a copied literal. Frames are forced on (per-thread, so parallel
+/// measurements stay hermetic without any lock) and the frame comes back plain
+/// apart from its leading clear-screen, since color is off at rest.
 fn frame_width(players: u8) -> usize {
     let session = Session::new_sim(
         GameConfig::for_player_count(players),
@@ -251,11 +252,13 @@ fn section2_frame_heights_match_the_composed_screen() {
 }
 
 /// (f) The §2 width guidance states the width of the COMPOSED FRAME, not just
-/// the board's own grid. The frame is wider than the board at every player
-/// count (panel beside it, 96-column info strip below it), so board-only
-/// guidance under-states what the terminal needs and a tester on an 80-column
-/// window gets a wrapped screen with no warning (final whole-branch review,
-/// M-4). Derived from `screen::wrap`, never copied.
+/// the board's own grid. Board-only guidance under-states what the terminal
+/// needs and a tester on an 80-column window gets a wrapped screen with no
+/// warning (final whole-branch review, M-4). The frame is wider than the board
+/// at 2 and 3 players (the panel joins beside it at 2; the site-slot legend is
+/// wider than the board at 3); at 4 the 180-column board IS the widest element,
+/// so the two numbers are equal there and the guidance is the same number for a
+/// different reason. Derived from `screen::wrap`, never copied.
 #[test]
 fn section2_frame_widths_match_the_composed_screen() {
     let (f2, f3, f4) = (frame_width(2), frame_width(3), frame_width(4));
