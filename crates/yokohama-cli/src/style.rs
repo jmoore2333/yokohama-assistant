@@ -157,7 +157,7 @@ fn enabled() -> bool {
 ///
 /// | glyph | code point | live site | owing task |
 /// |---|---|---|---|
-/// | `═` | U+2550 | `screen.rs:145`, the title strip | T2 |
+/// | `═` | U+2550 | `screen.rs`, the title strip | T3 |
 /// | `§` | U+00A7 | `repl.rs:554`, `repl.rs:1881` (guide cross-references) | T4 / T11 |
 /// | `−` | U+2212 | `suggest.rs:122`, the honesty note's minus | T11 |
 /// | `×` | U+00D7 | `suggest.rs:123`, the honesty note's times | T11 |
@@ -166,6 +166,13 @@ fn enabled() -> bool {
 /// a vocabulary twin in [`RULE`](glyph::RULE) -- or admits it here with a row
 /// and a class. What it must not do is leave one spelled inline inside a
 /// surface the redesign has already claimed.
+///
+/// **The `═` row was re-routed from T2 to T3.** T2 cut over the BOARD region,
+/// and the title strip is not in it: the mocks' strip carries the session
+/// facts a [`crate::screen_model::TitleModel`] holds (mode, seed, autosave)
+/// and is centred over the whole frame, so it lands with the surface that
+/// plumbs that model rather than with the board underneath it. The row is
+/// moved rather than left pointing at a task that has closed.
 pub mod glyph {
     /// Declares the vocabulary ONCE. One source line per glyph carries its
     /// doc comment, its constant name, its character, the code point recorded
@@ -517,45 +524,40 @@ fn every_tone_is_accounted_for(tone: Tone) {
 /// either (Dutch orange `38;5;208`, French blue `38;5;69`); reachable green
 /// 32; highlight reverse-video 7; strong bold 1; chrome gray 90.
 ///
-/// **PALETTE REFRESH -- RECORDED HERE, DELIBERATELY NOT APPLIED.** The same
-/// mocks also re-color seven tones that already existed, and this table is
-/// the record of what they become, not of what they are:
+/// **PALETTE REFRESH -- ONE ROW LEFT.** The mocks also re-color tones that
+/// already existed, and this table records what is still owed:
 ///
 /// | tone | shipped | approved mock |
 /// |---|---|---|
-/// | `Good(Copper)` | `33` | `38;5;172` (ingot orange-brown) |
-/// | `Good(Silk)` | `37` | `97` |
-/// | `Good(Seafood)` | `36` | `96` |
-/// | `Good(Imports)` | `95` | `93` |
-/// | `Good(Yen)` | `93` | `38;5;220` (coin gold) |
-/// | `Vp` | `1;97` | `38;5;75` (star blue) |
 /// | `Player(_)` | `31/34/32/33` | `91/94/92/93` (bright) |
 ///
-/// Applying a row RECOLORS a live surface: every one of those tones has
-/// call sites in the pre-redesign frame, so a change here would repaint a
-/// region before the task that renders it has landed, which is what T1's
-/// "no existing output byte moves" forbids. The rows belong to the tasks
-/// that cut their consumers over -- goods and VP with the board and site
-/// strips (T2/T6), the player colors with the dashboard (T3) -- and each
-/// should move its own row and delete it from this table.
+/// Applying a row RECOLORS a live surface, so each belongs to the task that
+/// cuts its consumers over, and that task moves its own row and deletes it
+/// from this table. **T2 took the six it owed** -- `Good(Copper)` 33 ->
+/// `38;5;172`, `Good(Silk)` 37 -> `97`, `Good(Seafood)` 36 -> `96`,
+/// `Good(Imports)` 95 -> `93`, `Good(Yen)` 93 -> `38;5;220`, `Vp` 1;97 ->
+/// `38;5;75` -- because the V3 board's 5-Power tokens and site-slot strips
+/// are their densest consumer, and a board painted from one palette beside a
+/// panel painted from another is worse than either. The remaining row waits
+/// for T3's dashboard.
 ///
-/// One consequence is live in the meantime and worth knowing rather than
-/// discovering: `Good(Any)` ships at `95`, which is `Good(Imports)`'s
-/// current code, so the two paint identically until the Imports row moves
-/// to `93` as the mocks have it. The MEANINGS are already distinct; only
-/// the colors coincide, and only until then.
+/// That refresh also closed a collision this table used to warn about:
+/// `Good(Any)` and `Good(Imports)` both shipped at `95` and painted
+/// identically, which the site strip would have shown on a single tile (a
+/// `*n` any-good space beside a `1 Import` token). Imports has moved to `93`
+/// and the two now read apart, which is what `Good(Any)` was added for.
 fn sgr(tone: Tone) -> &'static str {
     match tone {
         Tone::Player(PlayerColor::Red) => "31",
         Tone::Player(PlayerColor::Blue) => "34",
         Tone::Player(PlayerColor::Green) => "32",
         Tone::Player(PlayerColor::Yellow) => "33",
-        Tone::Good(GoodKind::Copper) => "33",
-        Tone::Good(GoodKind::Silk) => "37",
+        Tone::Good(GoodKind::Copper) => "38;5;172",
+        Tone::Good(GoodKind::Silk) => "97",
         Tone::Good(GoodKind::Tea) => "32",
-        Tone::Good(GoodKind::Seafood) => "36",
-        Tone::Good(GoodKind::Yen) => "93",
-        Tone::Good(GoodKind::Imports) => "95",
+        Tone::Good(GoodKind::Seafood) => "96",
+        Tone::Good(GoodKind::Yen) => "38;5;220",
+        Tone::Good(GoodKind::Imports) => "93",
         Tone::Good(GoodKind::Any) => "95",
         Tone::Tile(AreaType::CopperMine) => "33",
         Tone::Tile(AreaType::SilkMill) => "37",
@@ -574,7 +576,7 @@ fn sgr(tone: Tone) -> &'static str {
         Tone::Flag(Country::French) => "38;5;69",
         Tone::Flag(Country::German) => "93",
         Tone::Flag(Country::Dutch) => "38;5;208",
-        Tone::Vp => "1;97",
+        Tone::Vp => "38;5;75",
         Tone::Reachable => "32",
         Tone::Highlight => "7",
         Tone::Strong => "1",

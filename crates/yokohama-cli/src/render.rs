@@ -11,8 +11,10 @@ use std::collections::{BTreeMap, HashSet};
 use yokohama_core::game::actions::resolve_acting_area;
 use yokohama_core::*;
 
+use crate::board_render;
 use crate::describe;
 use crate::input::tech_name;
+use crate::screen_model;
 use crate::style::{paint, GoodKind, Tone};
 
 /// Per-seat presentation the panels need from the REPL (Phase 3.2 Task 12):
@@ -98,13 +100,6 @@ pub(crate) fn masked_hand(cards: usize, is_bot: bool) -> String {
     }
 }
 
-/// Interior text width of one tile box; a full box adds 2 border columns.
-const TILE_W: usize = 16;
-/// Horizontal pitch between adjacent tile boxes in a row (boxes touch, so
-/// the pitch is the full box width). Rows below indent by HALF this pitch
-/// per row — the brick offset of the physical staggered layout.
-const TILE_PITCH: usize = TILE_W + 2;
-
 /// One-line turn/phase/resource summary, e.g.
 /// `"Turn 12 | Red | Placement | 5 yen 3 VP | c1 s2 t0 f1 i0 | hand 2"`.
 /// `phase_text` fills the third slot verbatim -- the normal phase name
@@ -150,77 +145,18 @@ pub(crate) fn section(title: &str) -> String {
     format!("{head}{}\n", "─".repeat(40usize.saturating_sub(head.chars().count())))
 }
 
-/// The staggered board: one independent bordered box per tile, positioned
-/// purely from `AreaConfig::grid_position` — row r's boxes indent by
-/// `r * TILE_PITCH/2` (the brick half-offset of the physical pyramid, widest
-/// row on top), rows stack top-first, boxes in a row touch (`┐┌` double
-/// wall, like tiles laid side by side on a table). No pyramid shape is
-/// assumed: any geometry the engine (or a test fixture) hands us renders.
-/// Every line pads to one total width so the frame composer can join a side
-/// panel line-by-line without shear. Content: header `A{id} {name} {*}`,
-/// presidents (+ `[St]` Station marker), assistants, build marks; the Canal
-/// tile renders as water with its printed toll instead.
-pub fn board_grid(state: &GameState) -> String {
-    let areas = &state.board_layout.areas;
-    if areas.is_empty() {
-        return String::new();
-    }
-
-    let mut rows: BTreeMap<u8, BTreeMap<u8, AreaId>> = BTreeMap::new();
-    for (&id, cfg) in areas.iter() {
-        rows.entry(cfg.grid_position.0).or_default().insert(cfg.grid_position.1, id);
-    }
-
-    let indent_of = |r: u8| (r as usize) * (TILE_PITCH / 2);
-    let total_width = rows
-        .iter()
-        .map(|(&r, cols)| indent_of(r) + (*cols.keys().max().unwrap() as usize + 1) * TILE_PITCH)
-        .max()
-        .unwrap();
-
-    let mut out = String::new();
-    for (&r, cols) in &rows {
-        let indent = " ".repeat(indent_of(r));
-        let max_col = *cols.keys().max().unwrap();
-        // 6 raw lines per row of boxes: top border, 4 content, bottom border.
-        // Each entry is (visible_width, painted_text) so painted content
-        // never distorts the trailing pad.
-        let mut lines: Vec<(usize, String)> = vec![(indent_of(r), indent.clone()); 6];
-        for col in 0..=max_col {
-            match cols.get(&col) {
-                Some(&id) => {
-                    let content = tile_content_lines(state, id);
-                    lines[0].1.push('┌');
-                    lines[0].1.push_str(&"─".repeat(TILE_W));
-                    lines[0].1.push('┐');
-                    lines[5].1.push('└');
-                    lines[5].1.push_str(&"─".repeat(TILE_W));
-                    lines[5].1.push('┘');
-                    for (i, cell) in content.iter().enumerate() {
-                        lines[i + 1].1.push('│');
-                        lines[i + 1].1.push_str(cell);
-                        lines[i + 1].1.push('│');
-                    }
-                    for line in lines.iter_mut() {
-                        line.0 += TILE_PITCH;
-                    }
-                }
-                None => {
-                    // A gap in this row (non-canonical fixture): hold the pitch.
-                    for line in lines.iter_mut() {
-                        line.1.push_str(&" ".repeat(TILE_PITCH));
-                        line.0 += TILE_PITCH;
-                    }
-                }
-            }
-        }
-        for (width, text) in lines {
-            out.push_str(&text);
-            out.push_str(&" ".repeat(total_width - width));
-            out.push('\n');
-        }
-    }
-    out
+/// The staggered board, V3 (Phase-3.5a T2). The ADAPTER: it is the one place
+/// that reads `&GameState` on the board's behalf, builds the screen model, and
+/// hands it to [`crate::board_render`] — which draws it without ever seeing a
+/// `GameState` at all (the R9 seam; read that module's import list).
+///
+/// Every caller inside this crate keeps calling this name, so the seam cost
+/// one parameter: `rules`, which the model needs to recover a building site's
+/// PRINTED index (a runtime site is a clone of the registry card and carries
+/// no index of its own).
+pub fn board_grid(state: &GameState, rules: &Rules) -> String {
+    let colors: Vec<PlayerColor> = state.players.iter().map(|p| p.color).collect();
+    board_render::board_view(&screen_model::build_board(state, rules), &colors)
 }
 
 /// Interior text width of one numbered skeleton cell; a full cell adds 2
@@ -267,20 +203,18 @@ pub fn board_skeleton(player_count: u8) -> String {
     out
 }
 
-/// Legend footer for the `board` view: the face-up 5-Power token letters, the
-/// `[St]` Station marker, the `·` empty build slot — plus the canal crossing
-/// rule, but ONLY on a board that actually has a Canal tile (2P boards never
-/// do). The REPL's `board` command appends this after the grid.
-pub fn board_legend(state: &GameState) -> String {
-    let mut out = String::from(
-        "5-Power tokens (face-up): i=import  c=copper  s=silk  t=tea  f=seafood  y=yen   [St]=Station  ·=empty slot",
-    );
-    if state.board_layout.areas.values().any(|c| c.area_type == AreaType::Canal) {
-        out.push_str(
-            "\n~ Canal: the President may cross shore to shore for 1 yen to the bank ('sites' lists the pairs)",
-        );
-    }
-    out
+/// Legend footer under the board: the marks a V3 tile draws, the site-slot
+/// token key, and the canal crossing rule on a board that has a Canal (2P
+/// boards never do). The REPL's `board` command appends this after the grid.
+///
+/// The ADAPTER for [`crate::board_render::board_legend`], for the same reason
+/// [`board_grid`] is one. The old legend keyed the 5-Power token LETTERS
+/// (`i=import c=copper …`); V3 spells the face out on the tile itself
+/// (`5-Power: 1 Import`), so that key described a board that no longer exists.
+/// The letters live on only where they are still drawn — the setup wizard's
+/// review summary, via [`five_power_face`].
+pub fn board_legend(state: &GameState, rules: &Rules) -> String {
+    board_render::board_legend(&screen_model::build_board(state, rules))
 }
 
 /// Per Port board: slot number, zone, and the order card there via
@@ -1343,122 +1277,15 @@ fn render_lab_board(label: &str, board: &LabBoard, rules: &Rules, out: &mut Stri
     }
 }
 
-/// The 4 fixed-width (painted) content lines for one tile box. President
-/// and assistant tokens are painted in their player's color, the tile name
-/// in its type tone; every line is built as (plain, painted) twins so
-/// `fit_cell_painted` can size the cell from the plain text and emit the
-/// painted one -- the alignment-trap rule from style.rs's module doc.
-fn tile_content_lines(state: &GameState, id: AreaId) -> [String; 4] {
-    let cfg = &state.board_layout.areas[&id];
-
-    if cfg.area_type == AreaType::Canal {
-        // Water tile: no site, no tokens, nothing can ever stand here.
-        let tone = Tone::Tile(AreaType::Canal);
-        let header = format!("A{:02} Canal", id.0);
-        let wave = "~".repeat(TILE_W);
-        let toll = "~~ toll 1 yen ~~"; // exactly TILE_W chars
-        return [
-            fit_cell_painted(&header, &paint(tone, &header)),
-            fit_cell_painted(&wave, &paint(tone, &wave)),
-            fit_cell_painted(toll, &paint(tone, toll)),
-            fit_cell_painted(&wave, &paint(tone, &wave)),
-        ];
-    }
-
-    // Face-up 5-Power token: show the good's letter in its color (rulebook p.3
-    // step 5). `Some(None)` = claimed, `None` = no token slot (Canal is handled
-    // above), both render nothing.
-    let token = match state.board_layout.five_power_tokens.get(&id) {
-        Some(Some(effect)) => Some(five_power_face(*effect)),
-        _ => None,
-    };
-    let name = tile_name(cfg.area_type);
-    let header_plain = format!(
-        "A{:02} {}{}",
-        id.0,
-        name,
-        token.map(|(c, _)| format!(" {c}")).unwrap_or_default(),
-    );
-    let header_painted = format!(
-        "A{:02} {}{}",
-        id.0,
-        paint(Tone::Tile(cfg.area_type), name),
-        token.map(|(c, k)| format!(" {}", paint(Tone::Good(k), &c.to_string()))).unwrap_or_default(),
-    );
-
-    let station = state.station_location == Some(id);
-    let pres_colors: Vec<PlayerColor> = state
-        .players
-        .iter()
-        .filter(|p| p.president_location == PresidentLocation::OnBoard(id))
-        .map(|p| p.color)
-        .collect();
-    let st_plain = if station { " [St]" } else { "" };
-    let st_painted = if station { format!(" {}", paint(Tone::Prompt, "[St]")) } else { String::new() };
-    let (pres_line, pres_line_painted) = if pres_colors.is_empty() {
-        (format!("P: -{st_plain}"), format!("P: -{st_painted}"))
-    } else {
-        let plain: String = pres_colors.iter().map(|&c| color_letter(c)).collect();
-        let painted: String =
-            pres_colors.iter().map(|&c| paint(Tone::Player(c), &color_letter(c).to_string())).collect();
-        (format!("P: {plain}{st_plain}"), format!("P: {painted}{st_painted}"))
-    };
-
-    let mut assist_parts: Vec<String> = Vec::new();
-    let mut assist_parts_painted: Vec<String> = Vec::new();
-    for p in &state.players {
-        let n = p.assistants.in_area(id);
-        if n > 0 {
-            let part = format!("{}{}", color_letter(p.color), n);
-            assist_parts_painted.push(paint(Tone::Player(p.color), &part));
-            assist_parts.push(part);
-        }
-    }
-    let (assist_line, assist_line_painted) = if assist_parts.is_empty() {
-        ("-".to_string(), "-".to_string())
-    } else {
-        (assist_parts.join(" "), assist_parts_painted.join(" "))
-    };
-
-    let (build_line, build_line_painted) = match state.board_layout.building_sites.get(&id) {
-        Some(site) => build_marks_pair(state, site),
-        None => ("no site".to_string(), "no site".to_string()),
-    };
-
-    [
-        fit_cell_painted(&header_plain, &header_painted),
-        fit_cell_painted(&pres_line, &pres_line_painted),
-        fit_cell_painted(&assist_line, &assist_line_painted),
-        fit_cell_painted(&build_line, &build_line_painted),
-    ]
-}
-
-/// Truncate/pad to `TILE_W` so tile content lines fill their box exactly.
-fn fit_cell(s: &str) -> String {
-    let truncated: String = s.chars().take(TILE_W).collect();
-    format!("{:<width$}", truncated, width = TILE_W)
-}
-
-/// `fit_cell` for a painted cell line: the pad is computed from `plain`
-/// (the same text minus escapes), never from `painted`, whose ANSI bytes
-/// have zero display width and would otherwise shrink the pad and shear
-/// the column. Falls back to the plain fit when the text overflows the
-/// cell -- an escape run can't be truncated safely, and a cut cell isn't
-/// worth painting. When color is disabled `painted == plain` and this is
-/// exactly `fit_cell`.
-fn fit_cell_painted(plain: &str, painted: &str) -> String {
-    let width = plain.chars().count();
-    if width > TILE_W {
-        return fit_cell(plain);
-    }
-    format!("{}{}", painted, " ".repeat(TILE_W - width))
-}
-
-/// The board glyph for a face-up 5-Power token: the good's one-letter code
-/// (matching the players-panel goods run and the wizard's token letters) and
-/// its `GoodKind` for color. Magnitude is fixed per kind, so the letter alone
-/// identifies the face; `board_legend` spells out the amounts. `pub(crate)` so
-/// the setup wizard's review summary prints the same letter the board shows.
+/// The one-letter code for a face-up 5-Power token (matching the
+/// players-panel goods run and the wizard's token letters) and its `GoodKind`
+/// for color. Magnitude is fixed per kind, so the letter alone identifies the
+/// face.
+///
+/// Since the V3 board (T2) this is the WIZARD's vocabulary, not the board's:
+/// a tile now spells its face out (`5-Power: 1 Import`, via
+/// `board_render`'s own token), and the setup wizard's review summary is the
+/// remaining caller — where a one-column code is what fits.
 pub(crate) fn five_power_face(e: FivePowerEffect) -> (char, GoodKind) {
     match e {
         FivePowerEffect::ImportedGoods(_) => ('i', GoodKind::Imports),
@@ -1467,28 +1294,6 @@ pub(crate) fn five_power_face(e: FivePowerEffect) -> (char, GoodKind) {
         FivePowerEffect::Tea(_) => ('t', GoodKind::Tea),
         FivePowerEffect::Seafood(_) => ('f', GoodKind::Seafood),
         FivePowerEffect::Money(_) => ('y', GoodKind::Yen),
-    }
-}
-
-/// Legible tile display name, sized to fit a `A00 {name} c` header inside
-/// `TILE_W` (name <= 10 chars; the trailing 1-char token face fits where the
-/// old `*` did).
-fn tile_name(t: AreaType) -> &'static str {
-    match t {
-        AreaType::CopperMine => "Copper Mn",
-        AreaType::SilkMill => "Silk Mill",
-        AreaType::TeaPlantation => "Tea Plant",
-        AreaType::FishingGround => "Fishing",
-        AreaType::Bank => "Bank",
-        AreaType::PortA => "Port A",
-        AreaType::PortB => "Port B",
-        AreaType::LaboratoryA => "Lab A",
-        AreaType::LaboratoryB => "Lab B",
-        AreaType::EmploymentAgency => "Employ Ag",
-        AreaType::Chinatown => "Chinatown",
-        AreaType::Church => "Church",
-        AreaType::Customs => "Customs",
-        AreaType::Canal => "Canal",
     }
 }
 
@@ -1574,27 +1379,31 @@ mod tests {
     #[test]
     fn board_grid_has_one_cell_per_area_with_ids() {
         let state = test_state_2p();
-        let g = board_grid(&state);
+        let g = board_grid(&state, &Rules::standard());
         for id in state.board_layout.areas.keys() {
             assert!(g.contains(&format!("A{:02}", id.0)), "missing A{:02} in\n{g}", id.0);
         }
     }
 
-    /// Task 6 redesign: the board renders the true staggered pyramid — one
-    /// bordered box per tile, rows top (widest) first, each row indented half
-    /// a box pitch relative to the row above (brick pattern), all derived
-    /// from `grid_position` alone. The real 2P board is rows 4/3/2/1.
+    /// This function is an ADAPTER since the V3 cutover (T2): it reads state,
+    /// builds the screen model, and delegates. So what it owes is that
+    /// delegation — that it passes the state's own seat colours and adds
+    /// nothing of its own. The board's GEOMETRY is pinned where the geometry
+    /// now lives, in `board_render`, across all three player counts.
     #[test]
-    fn board_grid_renders_the_staggered_pyramid() {
-        let state = test_state_2p();
-        let g = board_grid(&state);
-        let lines: Vec<&str> = g.lines().collect();
-        assert_eq!(lines.len(), 4 * 6, "4 rows x 6 lines (border+4 content+border):\n{g}");
-        for r in 0..4usize {
-            let top = lines[r * 6];
-            assert_eq!(top.matches('┌').count(), 4 - r, "row {r} box count: {top:?}");
-            let lead = top.chars().take_while(|c| *c == ' ').count();
-            assert_eq!(lead, r * 9, "row {r} must indent half a box per row down: {top:?}");
+    fn board_grid_delegates_the_model_to_the_v3_renderer() {
+        for n in [2u8, 3, 4] {
+            let state = test_state_np(n);
+            let rules = Rules::standard();
+            let colors: Vec<PlayerColor> = state.players.iter().map(|p| p.color).collect();
+            assert_eq!(
+                board_grid(&state, &rules),
+                crate::board_render::board_view(
+                    &crate::screen_model::build_board(&state, &rules),
+                    &colors,
+                ),
+                "{n}P: the adapter must add nothing to the renderer's output",
+            );
         }
     }
 
@@ -1668,38 +1477,42 @@ mod tests {
 
     /// Every line pads to ONE total width (the frame composer joins the board
     /// with the side panel line-by-line, so a ragged right edge would shear
-    /// it), and the 2P board's width is the documented 72 columns.
+    /// it), and the 2P board's width is the documented 120 columns — four
+    /// 30-column V3 tiles on its widest row (T2; the 16-column tiles it
+    /// replaced made it 72).
     #[test]
-    fn board_grid_lines_share_one_width_and_2p_is_72_cols() {
+    fn board_grid_lines_share_one_width_and_2p_is_120_cols() {
         let state = test_state_2p();
-        let g = board_grid(&state);
+        let g = board_grid(&state, &Rules::standard());
         for glyph in ['─', '│', '┌', '┐', '└', '┘'] {
             assert!(g.contains(glyph), "missing {glyph} in:\n{g}");
         }
         let widths: HashSet<usize> = g.lines().map(|l| l.chars().count()).collect();
         assert_eq!(widths.len(), 1, "all board lines must share one width:\n{g}");
-        assert_eq!(g.lines().next().unwrap().chars().count(), 72, "2P board width:\n{g}");
+        assert_eq!(g.lines().next().unwrap().chars().count(), 120, "2P board width:\n{g}");
     }
 
-    /// Tiles carry a legible name, not the old 3-5 letter code string.
+    /// V3 tiles carry the FULL area name, not the abbreviation the 16-column
+    /// tile had to squeeze into (`Employ Ag`, `Copper Mn`).
     #[test]
-    fn board_grid_names_tiles_legibly() {
+    fn board_grid_names_tiles_in_full() {
         let state = test_state_2p();
-        let g = board_grid(&state);
+        let g = board_grid(&state, &Rules::standard());
         // The 2P tile pool always includes these four (Chinatown/PortB/LabB/
-        // Canal are removed at 2P); their new display names must appear (the
-        // old codes CuM/Chrch/Cstms must not).
-        for name in ["Church", "Customs", "Bank", "Employ Ag"] {
+        // Canal are removed at 2P).
+        for name in ["CHURCH", "CUSTOMS", "BANK", "EMPLOYMENT AGENCY"] {
             assert!(g.contains(name), "missing tile name {name} in:\n{g}");
         }
-        assert!(!g.contains("Chrch") && !g.contains("Cstms"), "old code-strings must be gone:\n{g}");
+        for abbreviation in ["Employ Ag", "Copper Mn", "Tea Plant", "Chrch", "Cstms"] {
+            assert!(!g.contains(abbreviation), "squeezed name {abbreviation} must be gone:\n{g}");
+        }
     }
 
-    /// The Canal tile renders as water with its printed toll — no build
-    /// marks, no president/assistant lines (nothing can ever be there).
+    /// The Canal renders its transit-only shape — no 5-Power line, no
+    /// presence line, no site strip, because it has none of those things.
     /// The renderer keys on the tile TYPE, so a flipped fixture suffices.
     #[test]
-    fn board_grid_canal_tile_renders_as_water_with_toll() {
+    fn board_grid_canal_tile_renders_its_transit_only_shape() {
         let mut state = test_state_2p();
         let tip = *state
             .board_layout
@@ -1709,38 +1522,52 @@ mod tests {
             .expect("2P pyramid has a (3,0) tip tile")
             .0;
         state.board_layout.areas.get_mut(&tip).unwrap().area_type = AreaType::Canal;
-        let g = board_grid(&state);
-        assert!(g.contains("~~"), "canal water fill expected:\n{g}");
-        assert!(g.contains("toll 1 yen"), "canal toll label expected:\n{g}");
+        let g = board_grid(&state, &Rules::standard());
+        assert!(g.contains("CANAL"), "the canal tile must be named:\n{g}");
+        assert!(g.contains("transit only"), "canal transit note expected:\n{g}");
+        assert!(g.contains("to the bank / crossing"), "canal toll expected:\n{g}");
     }
 
-    /// The Station token's area is marked `[St]` on the board (it grants
+    /// The Station token's area is marked `[St]` on the tile title (it grants
     /// EVERY player +1 Power there, so it must be visible at a glance, not
     /// only in the `tracks` view).
     #[test]
     fn board_grid_marks_the_station_area() {
         let mut state = test_state_2p();
+        let rules = Rules::standard();
         let area = *state.board_layout.areas.keys().next().unwrap();
-        assert!(!board_grid(&state).contains("[St]"), "unplaced Station must not mark anything");
+        assert!(
+            !board_grid(&state, &rules).contains("[St]"),
+            "unplaced Station must not mark anything"
+        );
         state.station_location = Some(area);
-        assert!(board_grid(&state).contains("[St]"), "placed Station must mark its tile");
+        assert!(board_grid(&state, &rules).contains("[St]"), "placed Station must mark its tile");
     }
 
-    /// The legend documents the canal crossing rule ONLY on a board that has
-    /// a Canal (2P boards never do), and always documents `*`/`[St]`/`·`.
+    /// The legend keys what the V3 tiles actually draw — the marks and the
+    /// site-slot tokens — and adds the canal crossing rule ONLY on a board
+    /// that has a Canal (2P boards never do).
     #[test]
-    fn board_legend_documents_canal_only_when_present() {
+    fn board_legend_keys_the_tile_marks_and_names_the_canal_only_when_present() {
         let mut state = test_state_2p();
-        let without = board_legend(&state);
-        assert!(without.contains("5-Power tokens (face-up)"), "{without}");
+        let rules = Rules::standard();
+        let without = board_legend(&state, &rules);
+        assert!(without.contains("site slots"), "{without}");
         assert!(without.contains("[St]"), "{without}");
+        assert!(
+            !without.contains("5-Power tokens (face-up)"),
+            "the letter key described the 16-column tile; V3 spells the face out: {without}",
+        );
         assert!(!without.contains("Canal"), "no canal on this board: {without}");
 
         let tip = *state.board_layout.areas.keys().next().unwrap();
         state.board_layout.areas.get_mut(&tip).unwrap().area_type = AreaType::Canal;
-        let with = board_legend(&state);
+        let with = board_legend(&state, &rules);
         assert!(with.contains("Canal"), "{with}");
-        assert!(with.contains("1 yen"), "the toll and its recipient (bank) belong in the legend: {with}");
+        assert!(
+            with.contains("¥1 to the bank"),
+            "the toll and its recipient (bank) belong in the legend: {with}",
+        );
     }
 
     #[test]
@@ -1753,22 +1580,28 @@ mod tests {
         assert_eq!(five_power_face(FivePowerEffect::Money(3)), ('y', GoodKind::Yen));
     }
 
-    /// The board shows a face-up token's FACE (its good letter), not a boolean
-    /// `*` (rulebook p.3 step 5 — tokens are face-up). A claimed slot shows nothing.
+    /// The board shows a face-up token's FACE (rulebook p.3 step 5 — tokens
+    /// are face-up), and since V3 it shows it in WORDS rather than as the
+    /// one-letter code the 16-column tile had room for. A claimed slot says
+    /// `taken` rather than going blank, which the old tile could not
+    /// distinguish from a tile that never had one.
+    ///
+    /// The retired half of this test asserted no `*` appeared anywhere on the
+    /// board — the 2026-07-21 fix that replaced a boolean `*` token marker
+    /// with its face. V3 cannot regress that (a face is words, not a mark),
+    /// and `*` now MEANS something on a tile: an any-good site space.
     #[test]
-    fn board_tile_header_shows_the_token_face_letter_not_a_star() {
+    fn board_tiles_spell_out_the_five_power_face_and_say_when_it_is_taken() {
         let mut state = test_state_2p();
+        let rules = Rules::standard();
         let area = *state.board_layout.areas.keys().next().unwrap();
-        // Force a name with no 'c' so the assertion pins the token, not the name.
-        state.board_layout.areas.get_mut(&area).unwrap().area_type = AreaType::Bank;
         state.board_layout.five_power_tokens.insert(area, Some(FivePowerEffect::Copper(2)));
-        let header = tile_content_lines(&state, area)[0].clone();
-        assert!(header.contains(" c"), "a Copper token shows its 'c' face: {header:?}");
-        assert!(!header.contains('*'), "the boolean star is gone: {header:?}");
-        // A claimed slot (Some(None)) shows no face.
+        let g = board_grid(&state, &rules);
+        assert!(g.contains("5-Power: 2 Copper"), "a Copper token spells its face: {g}");
+
         state.board_layout.five_power_tokens.insert(area, None);
-        let claimed = tile_content_lines(&state, area)[0].clone();
-        assert!(!claimed.contains(" c") && !claimed.contains('*'), "a claimed token shows no face: {claimed:?}");
+        let claimed = board_grid(&state, &rules);
+        assert!(claimed.contains("5-Power: taken"), "a claimed token says so: {claimed}");
     }
 
     #[test]
@@ -2021,7 +1854,7 @@ mod tests {
             // The one-line fold is rendered ONLY under a board wider than 100
             // columns (`screen::wrap`) -- in practice the 4P board -- so that
             // is the width it must not push past, whatever count built it.
-            let stacking_board = board_grid(&test_state_np(4))
+            let stacking_board = board_grid(&test_state_np(4), &Rules::standard())
                 .lines()
                 .next()
                 .map(|l| l.chars().count())
@@ -2954,8 +2787,10 @@ mod tests {
     }
 
     /// Same alignment invariant for the board grid, whose president and
-    /// assistant tokens are painted INSIDE fixed-width `fit_cell` cells --
-    /// the exact spot where escape-inflated padding would shear the frame.
+    /// assistant marks are painted INSIDE fixed-width tile cells -- the exact
+    /// spot where escape-inflated padding would shear the frame. Held here at
+    /// the ADAPTER, over a real state, beside `board_render`'s own model-level
+    /// pin: they meet at different seams and a regression could sit in either.
     #[test]
     fn colored_board_grid_stays_aligned_with_plain_layout() {
         let mut state = test_state_2p();
@@ -2973,9 +2808,10 @@ mod tests {
         state.players[1].assistants.in_hand -= 1;
         state.players[1].assistants.on_board.insert(area, 1);
 
-        let plain = board_grid(&state);
+        let rules = Rules::standard();
+        let plain = board_grid(&state, &rules);
         crate::style::force(true);
-        let colored = board_grid(&state);
+        let colored = board_grid(&state, &rules);
         crate::style::force(false);
         assert_ne!(colored, plain, "forced mode must actually paint something");
         assert_eq!(strip_ansi(&colored), plain);

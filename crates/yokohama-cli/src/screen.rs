@@ -9,12 +9,16 @@
 //! color only); the in-app `screen` command does.
 //!
 //! Frame anatomy (top to bottom): title strip, the staggered board joined
-//! with the compact players panel (side-by-side while the board is <= 100
-//! columns wide, stacked below it on the 108-column 4P board -- std exposes
-//! no terminal size, so the board's own width is the only honest signal),
-//! the board legend, a rule, then the body (the step's delta/error lines
-//! plus the normal prompt block, unchanged from piped mode -- nothing
-//! exists only in the frame).
+//! with the players panel (BESIDE it while the board and the designed
+//! dashboard both fit `FLOOR_W`, which is 2 players on the V3 board; BELOW it
+//! at 3 and 4 -- std exposes no terminal size, so what the frame itself
+//! measures is the only honest signal), the board legend, a rule, then the
+//! body (the step's delta/error lines plus the normal prompt block, unchanged
+//! from piped mode -- nothing exists only in the frame).
+//!
+//! **Transitional between Phase-3.5a T2 and T4.** The board region is the
+//! redesigned V3 one; the players panel and the decision zone below it are
+//! still the pre-redesign surfaces, and T3 and T4 replace them in turn.
 
 use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -62,6 +66,37 @@ pub(crate) fn visible_width(s: &str) -> usize {
     strip_ansi(s).chars().count()
 }
 
+/// The redesign's raised layout FLOOR (Phase-3.5a spec §0.1): the frame is
+/// designed at 200x50, degrading below that rather than being built for it.
+///
+/// It is the arrangement decision, not a cap. std exposes no terminal size, so
+/// the only honest signal is what the frame itself measures: the dashboard
+/// sits BESIDE the board while the two together fit the floor, and stacks
+/// BELOW it when they do not. On the V3 board that reproduces §0.1's ruling
+/// from the geometry rather than from a hard-wired player count — 120 + 2 + 74
+/// fits at 2 players (beside), 150 and 180 do not at 3 and 4 (below), which is
+/// exactly what the mocks show.
+/// `the_dashboard_sits_beside_the_board_only_while_both_fit_the_floor` is the
+/// pin.
+pub(crate) const FLOOR_W: usize = 200;
+
+/// Columns between the board and a dashboard joined beside it.
+const PANEL_GAP: usize = 2;
+
+/// The DESIGNED dashboard width — the approved mocks' `DASH_W`, which T3 cuts
+/// the panels over to.
+///
+/// The arrangement is decided against this number rather than against whatever
+/// the panel beside the board happens to measure TODAY, and that is deliberate
+/// rather than premature. The frame is transitional between T2 and T4: the V3
+/// board has landed and the old 40-column compact panel has not yet been
+/// replaced. Measuring the live panel would put the 3-player board beside it
+/// at 192 columns now and stack it below the moment T3 widens the panel to its
+/// design — an arrangement that flips under a task that never touched layout.
+/// Sizing on the design instead gives spec §0.1's ruling immediately (2P
+/// beside, 3P and 4P below) and gives the same answer after T3.
+const DASH_W: usize = 74;
+
 /// The composed frame's width at each player count, indexed `players - 2` --
 /// the three numbers guide §2 states, and **the budget a BODY has to fit.**
 ///
@@ -83,16 +118,23 @@ pub(crate) fn visible_width(s: &str) -> usize {
 ///
 /// **These are OPENING widths.** The board, legend and info strip are fixed per
 /// count; the players panel is the one part play changes, and it can leave the
-/// frame WIDER later on (a 4P mid-game panel measures 115 against the board's
-/// 108). A body inside these numbers is therefore inside those frames too. The
-/// residual is the other direction -- a panel that rendered NARROWER than at the
-/// opening would drop a frame below this bound. Its content starts at its
-/// minimum (0 VP, no goods, a President in hand rather than a named area), so
-/// that is not expected, and repl.rs's
+/// frame WIDER later on. A body inside these numbers is therefore inside those
+/// frames too. The residual is the other direction -- a panel that rendered
+/// NARROWER than at the opening would drop a frame below this bound. Its
+/// content starts at its minimum (0 VP, no goods, a President in hand rather
+/// than a named area), so that is not expected, and repl.rs's
 /// `the_suggest_screen_fits_the_composed_frame_at_every_player_count` checks a
 /// real mid-game frame against this floor at each count rather than leaving the
 /// claim to argument.
-const FRAME_WIDTHS: [usize; 3] = [114, 132, 108];
+///
+/// **T2 moved all three**, and the cause is the V3 board's 30-column tiles:
+/// the board alone went 72/90/108 to 120/150/180 columns. At 4 players the
+/// 180-column board is the widest thing on screen. At 2 and 3 it is not -- the
+/// site-slot LEGEND is, at 163 columns, the one row that keys the V3 tiles'
+/// compact tokens and the same length at every count (2P's board plus the
+/// panel joined beside it comes to 162, one column short of it). The
+/// pre-redesign numbers were 114/132/108.
+const FRAME_WIDTHS: [usize; 3] = [163, 163, 180];
 
 /// [`FRAME_WIDTHS`] for a `players`-player game (2..=4).
 ///
@@ -101,8 +143,17 @@ const FRAME_WIDTHS: [usize; 3] = [114, 132, 108];
 /// of them. `GameConfig` admits only 2..=4, so the fallback is defence, not a
 /// path -- and it returns rather than panicking, since a width helper is no
 /// place to take a screen down over a rounding question.
+///
+/// The minimum is COMPUTED, not indexed. It used to read `FRAME_WIDTHS[2]`,
+/// which was the narrowest entry only because the 4-player frame happened to
+/// be -- and T2's board made it the widest, quietly turning "the safe
+/// direction" into the opposite one. A derived minimum cannot be wrong-footed
+/// by a layout change again.
 pub(crate) fn frame_width(players: usize) -> usize {
-    FRAME_WIDTHS.get(players.wrapping_sub(2)).copied().unwrap_or(FRAME_WIDTHS[2])
+    FRAME_WIDTHS
+        .get(players.wrapping_sub(2))
+        .copied()
+        .unwrap_or_else(|| FRAME_WIDTHS.iter().copied().min().expect("three entries"))
 }
 
 /// The one-time startup banner `main.rs` prints on a real terminal before
@@ -155,21 +206,19 @@ pub fn wrap(repl: &Repl, body: &str) -> String {
 /// re-derived by parsing a finished frame back apart.
 fn stage(repl: &Repl) -> String {
     let state = repl.session.state();
-    let board = render::board_grid(state);
+    let rules = repl.session.rules();
+    let board = render::board_grid(state, rules);
     let board_width = board.lines().next().map(visible_width).unwrap_or(0);
 
     let seats = repl.seat_display();
     let mut stage = if repl.show_panel {
-        if board_width <= 100 {
-            join_side_by_side(&board, &render::compact_panel(state, repl.session.rules(), &seats), 2)
+        if board_width + PANEL_GAP + DASH_W <= FLOOR_W {
+            join_side_by_side(&board, &render::compact_panel(state, rules, &seats), PANEL_GAP)
         } else {
             // Stacked below the board, VERTICAL space is the scarce
-            // resource, not horizontal: the frame is already >= 108 columns
-            // here, so the panel folds to one line per player (F3, Codex
-            // review of PR #4 -- the 5-line block cost 16 rows and pushed
-            // the 4P opening frame off a 140x50 terminal). The side-by-side
-            // branch above is untouched, so the 2P/3P screens are
-            // byte-identical to before.
+            // resource, not horizontal: the panel folds to one line per
+            // player (F3, Codex review of PR #4 -- the 5-line block cost 16
+            // rows and pushed the 4P opening frame off the screen).
             let mut s = board.clone();
             if !s.is_empty() && !s.ends_with('\n') {
                 s.push('\n');
@@ -183,7 +232,7 @@ fn stage(repl: &Repl) -> String {
     if !stage.is_empty() && !stage.ends_with('\n') {
         stage.push('\n');
     }
-    stage.push_str(&render::board_legend(state));
+    stage.push_str(&render::board_legend(state, rules));
     stage.push('\n');
     // Discoverability strip (owner scope item 10): every frame names the
     // game-info surfaces and the command that opens them, so a player who
@@ -307,7 +356,7 @@ mod tests {
         assert!(f.contains("Y O K O H A M A"), "{f}");
         assert!(f.contains("┌"), "board expected in frame: {f}");
         assert!(f.contains("Players"), "panel expected in frame: {f}");
-        assert!(f.contains("5-Power tokens (face-up)"), "legend expected: {f}");
+        assert!(f.contains("site slots"), "legend expected: {f}");
         assert!(
             f.contains("info: type 'view'"),
             "the discoverability strip must be in every frame (owner scope item 10): {f}"
@@ -315,24 +364,41 @@ mod tests {
         assert!(f.ends_with("BODY-MARKER\n> hint\n"), "body must close the frame: {f}");
     }
 
-    /// 2P (72-col board): the panel joins SIDE BY SIDE -- some line carries
-    /// both a board border and panel text. 4P (108-col board): the panel
-    /// stacks BELOW -- no line carries both.
+    /// Spec §0.1's arrangement ruling, reproduced from the geometry rather
+    /// than hard-wired: at 2 players the 120-column V3 board plus the panel
+    /// fits [`FLOOR_W`], so the dashboard joins SIDE BY SIDE -- some line
+    /// carries both a board border and panel text. At 3 and 4 players the
+    /// board alone is 150 and 180 columns, so it stacks BELOW and no line
+    /// carries both.
     #[test]
-    fn panel_joins_beside_narrow_boards_and_below_wide_ones() {
+    fn the_dashboard_sits_beside_the_board_only_while_both_fit_the_floor() {
         force(true);
-        // "President:" is panel-only text ("yen" also occurs INSIDE the 4P
-        // board's canal tile, which would fool this detector).
+        // A line carrying BOTH a tile edge and panel-only text is the join.
+        // Any of the four box characters counts, not `│` alone: V3 tiles are
+        // five lines, so a panel row lands on a tile's top or bottom BORDER as
+        // readily as on its interior.
+        let joined = |frame: &str| {
+            frame.lines().any(|l| {
+                l.contains("President:") && ['┌', '┐', '└', '┘', '│'].iter().any(|c| l.contains(*c))
+            })
+        };
+
         let r2 = repl_np(2);
         let f2 = wrap(&r2, "");
-        let side = f2.lines().any(|l| l.contains('│') && l.contains("President:"));
-        assert!(side, "2P panel must sit beside the board:\n{f2}");
+        assert!(joined(&f2), "2P panel must sit beside the board:\n{f2}");
+
+        for n in [3u8, 4] {
+            let r = repl_np(n);
+            let f = wrap(&r, "");
+            assert!(
+                !joined(&f),
+                "the {n}P panel must stack below a board wider than the floor allows beside it:\n{f}"
+            );
+            assert!(f.contains("Players"), "{n}P panel still present, just below:\n{f}");
+        }
 
         let r4 = repl_np(4);
         let f4 = wrap(&r4, "");
-        let side4 = f4.lines().any(|l| l.contains('│') && l.contains("President:"));
-        assert!(!side4, "4P panel must stack below the 108-col board:\n{f4}");
-        assert!(f4.contains("Players"), "4P panel still present, just below:\n{f4}");
         // ...and stacked, it is the ONE-LINE-per-player fold (F3), so the
         // panel costs 4 rows here, not 20: every player's President line is
         // the same line as their name.
@@ -469,25 +535,32 @@ mod tests {
     }
 
     /// I6 (third review): the frame had a `<= 50` HEIGHT pin and nothing at
-    /// all on WIDTH, so two runtime lines had quietly grown past the 140
-    /// columns guide §2 promises clears every layout -- the Movement prompt
-    /// hint at 142, and the pending-choice status line at 150, which split
-    /// the goods block mid-token (`i0` rendering as `i` with a stray
-    /// `0 | hand 1` below it, reading as corrupted state). Measured on the
-    /// same composed frame the height pin measures, over the widest
-    /// positions the driver can actually show.
+    /// all on WIDTH, so two runtime lines had quietly grown past the width
+    /// guide §2 promises clears every layout -- the Movement prompt hint at
+    /// 142, and the pending-choice status line at 150, which split the goods
+    /// block mid-token (`i0` rendering as `i` with a stray `0 | hand 1` below
+    /// it, reading as corrupted state). Measured on the same composed frame
+    /// the height pin measures, over the widest positions the driver can
+    /// actually show.
+    ///
+    /// The bound is [`FLOOR_W`] since T2, and it was 140 before. That is not
+    /// a relaxation to accommodate a wider board -- it is the redesign's own
+    /// raised floor (spec §0.1 designs the frame at 200x50), and the 4P board
+    /// at 180 columns leaves 140 unreachable at any tile size the mocks
+    /// approved. What the pin still buys is the thing it was written for: a
+    /// runtime line that outgrows the LAYOUT around it fails here.
     #[test]
-    fn frame_fits_one_hundred_forty_columns_at_every_player_count() {
+    fn frame_fits_the_raised_floor_at_every_player_count() {
         for n in [2u8, 3, 4] {
             for (label, frame) in worst_case_frames(n) {
                 let over: Vec<(usize, &str)> = frame
                     .lines()
                     .map(|l| (visible_width(l), l))
-                    .filter(|(w, _)| *w > 140)
+                    .filter(|(w, _)| *w > FLOOR_W)
                     .collect();
                 assert!(
                     over.is_empty(),
-                    "the {n}P '{label}' frame has {} line(s) past the documented 140 columns: {over:#?}",
+                    "the {n}P '{label}' frame has {} line(s) past the documented {FLOOR_W} columns: {over:#?}",
                     over.len()
                 );
             }
@@ -501,15 +574,15 @@ mod tests {
     /// naming three fee recipients, build options carrying a site's printed
     /// reward, the longest area labels -- none of which the fixtures force.
     #[test]
-    fn every_frame_of_a_real_game_walk_fits_one_hundred_forty_columns() {
+    fn every_frame_of_a_real_game_walk_fits_the_raised_floor() {
         let mut r = repl_np(4);
         force(true);
         let mut steps = 0usize;
         while !r.session.is_over() && steps < 250 {
             let frame = wrap(&r, &r.prompt());
             let over: Vec<(usize, &str)> =
-                frame.lines().map(|l| (visible_width(l), l)).filter(|(w, _)| *w > 140).collect();
-            assert!(over.is_empty(), "at move {steps} the frame ran past 140 columns: {over:#?}");
+                frame.lines().map(|l| (visible_width(l), l)).filter(|(w, _)| *w > FLOOR_W).collect();
+            assert!(over.is_empty(), "at move {steps} the frame ran past {FLOOR_W} columns: {over:#?}");
             let legal = r.session.legal();
             if legal.is_empty() {
                 break;

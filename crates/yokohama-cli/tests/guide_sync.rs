@@ -94,7 +94,7 @@ fn board_width(players: u8) -> usize {
         Rules::standard(),
     )
     .expect("new_sim over a standard board");
-    render::board_grid(session.state())
+    render::board_grid(session.state(), session.rules())
         .lines()
         .next()
         .map(|line| line.chars().count())

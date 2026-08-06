@@ -544,7 +544,7 @@ impl Repl {
     /// via the first row of the `view` menu. The width note still fires there
     /// (it is about the terminal, not about this command's output).
     fn board_cmd(&mut self) -> StepOutput {
-        let grid = render::board_grid(self.session.state());
+        let grid = render::board_grid(self.session.state(), self.session.rules());
         let width = grid.lines().next().map(|l| l.chars().count()).unwrap_or(0);
 
         let mut text = String::new();
@@ -559,7 +559,7 @@ impl Repl {
             text.push_str("(type 'screen' for plain scrolling output instead.)\n");
         } else {
             text.push_str(&grid);
-            text.push_str(&render::board_legend(self.session.state()));
+            text.push_str(&render::board_legend(self.session.state(), self.session.rules()));
             text.push('\n');
         }
         self.out_view(text)
@@ -2239,7 +2239,7 @@ mod tests {
     fn board_command_prints_a_one_time_width_note_on_a_wide_board() {
         let mut r = repl_np(4, 7);
         let width =
-            render::board_grid(r.session.state()).lines().next().map(|l| l.chars().count()).unwrap_or(0);
+            render::board_grid(r.session.state(), r.session.rules()).lines().next().map(|l| l.chars().count()).unwrap_or(0);
         assert!(width > 100, "4p board should exceed 100 columns, got {width}");
 
         let first = r.step("board");
@@ -2254,13 +2254,37 @@ mod tests {
         assert!(!second.text.contains("columns wide"), "note must print once per session: {}", second.text);
     }
 
-    /// S3: a narrow board (2 players = 72 columns, <= 100) never triggers the
-    /// note, on the first render or any later one.
+    /// S3, re-pointed at the V3 board (T2): the note keys on the board's OWN
+    /// rendered width, and 30-column tiles put EVERY player count past the
+    /// hundred-column threshold — 2 players is 120 now, where it was 72. So
+    /// the two-player game, which used to be the narrow case, is no longer
+    /// one, and the note fires there too. That is the note telling the truth
+    /// rather than the note breaking: a 120-column board on a 100-column
+    /// terminal really does shear.
+    ///
+    /// The other branch keeps its coverage from a board that is genuinely
+    /// narrow, which now takes a fixture rather than a player count — and
+    /// which doubles as a check that the renderer assumes no board shape.
     #[test]
-    fn board_command_omits_the_width_note_on_a_narrow_board() {
+    fn the_board_width_note_fires_on_the_v3_board_and_still_not_on_a_narrow_one() {
         let mut r = repl_2p(4);
-        let out = r.step("board");
-        assert!(!out.text.contains("columns wide"), "{}", out.text);
+        let first = r.step("board");
+        assert!(
+            first.text.contains("board is 120 columns wide"),
+            "the 2P V3 board is 120 columns and must say so: {}",
+            first.text
+        );
+        assert!(!r.step("board").text.contains("columns wide"), "the note prints once per session");
+
+        // A one-tile board: 30 columns, under the threshold, no note.
+        let rules = Rules::standard();
+        let pending = new_game(GameConfig::for_player_count(2), &rules, 4).unwrap();
+        let mut state =
+            finalize_setup(pending, &[StartingOrderChoice::Keep(0); 2]).expect("setup");
+        let keep = *state.board_layout.areas.keys().next().expect("an area");
+        state.board_layout.areas.retain(|&id, _| id == keep);
+        let mut narrow = Repl::new(Session::for_test_from_state(state, rules));
+        assert!(!narrow.step("board").text.contains("columns wide"), "a 30-column board is narrow");
     }
 
     /// I5 (third review): inside the composed frame the board is ALREADY on
@@ -2296,7 +2320,7 @@ mod tests {
         screen::force(false);
         let out = r.step("board");
         assert!(out.text.contains('┌'), "plain mode has no frame; `board` is the only board:\n{}", out.text);
-        assert!(out.text.contains("5-Power tokens (face-up)"), "{}", out.text);
+        assert!(out.text.contains("site slots"), "and its legend with it: {}", out.text);
 
         // Same in a composed session whose user turned the screen off.
         let mut r2 = repl_np(4, 7);
@@ -2324,13 +2348,16 @@ mod tests {
         }
     }
 
-    /// Item 7 (board connectivity): every `board` render carries a one-line
-    /// legend documenting the face-up 5-Power token letters.
+    /// Item 7 (board connectivity): every `board` render carries its legend.
+    /// Since V3 (T2) that legend keys the tile MARKS and the site-slot tokens
+    /// -- the compact vocabulary the tiles draw -- rather than the 5-Power
+    /// letters the 16-column tile used, which V3 spells out in words.
     #[test]
-    fn board_command_prints_the_five_power_legend() {
+    fn board_command_prints_the_tile_mark_and_site_slot_legend() {
         let mut r = repl_2p(4);
         let out = r.step("board");
-        assert!(out.text.contains("5-Power tokens (face-up)"), "{}", out.text);
+        assert!(out.text.contains("marks:"), "{}", out.text);
+        assert!(out.text.contains("site slots:"), "{}", out.text);
     }
 
     #[test]
