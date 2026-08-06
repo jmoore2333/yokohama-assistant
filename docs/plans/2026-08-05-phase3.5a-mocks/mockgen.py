@@ -122,6 +122,11 @@ def row_of_cards(cards):
     return [l.rstrip() for l in lines]
 
 # ------------------------------------------------------------- tile boxes ---
+def _tile_guard(rows, who):
+    for r in rows:
+        assert vis(r) == TILE_W, f"{who}: tile line {vis(r)} != {TILE_W}: {ANSI_RE.sub('', r)}"
+    return rows
+
 TILE_W = 30
 TOKENS = {"A00":"1 Import","A01":"3 Tea","A02":"3 Seafood","A03":"3 Yen","A04":"2 Copper",
           "A05":"2 Silk","A06":"1 Import","A07":"3 Tea","A08":"3 Seafood","A09":"3 Yen"}
@@ -139,7 +144,7 @@ def tile(aid):
     l4 = f"│ {pad(f'{RED}Red 0{R} · {BLUE}Blue 0{R} assistants', TILE_W-4)} │"
     l5 = f"│ {pad(f'Shophouses {DIM}····{R} Trade {DIM}·{R}', TILE_W-4)} │"
     l6 = "└" + "─" * (TILE_W - 2) + "┘"
-    return [l1, l2, l3, l4, l5, l6]
+    return _tile_guard([l1, l2, l3, l4, l5, l6], aid)
 
 def board_rows():
     rows = [["A00","A01","A02","A03"], ["A04","A05","A06"], ["A07","A08"], ["A09"]]
@@ -364,20 +369,20 @@ def tile4(aid):
     name = N4[aid]
     if name == "CANAL":
         l1 = f"┌ {GRAY}{aid}{R} {BOLD}CANAL{R} " + "─" * (TILE_W - 5 - len(aid) - 5) + "┐"
-        return [l1,
+        return _tile_guard([l1,
                 f"│ {pad(f'{DIM}transit only — no pawns,{R}', TILE_W-4)} │",
                 f"│ {pad(f'{DIM}no tokens, no buildings{R}', TILE_W-4)} │",
                 f"│ {pad(f'{YEN}¥1{R} to the bank / crossing', TILE_W-4)} │",
                 f"│ {pad('', TILE_W-4)} │",
-                "└" + "─" * (TILE_W - 2) + "┘"]
+                "└" + "─" * (TILE_W - 2) + "┘"], aid)
     tok = T4[aid]; tokc = TOKCOL[tok.split()[1]]
     l1 = f"┌ {GRAY}{aid}{R} {BOLD}{name}{R} " + "─" * (TILE_W - 5 - len(aid) - len(name)) + "┐"
-    return [l1,
-            f"│ {pad(f'5-Power: {tokc}{tok}{R}  {GRAY}Site 12{R}', TILE_W-4)} │",
+    return _tile_guard([l1,
+            f"│ {pad(f'5-Power: {tokc}{tok}{R} {GRAY}Site 12{R}', TILE_W-4)} │",
             f"│ {pad(f'President: {DIM}none{R}', TILE_W-4)} │",
             f"│ {pad(f'{RED}R0{R} {BLUE}B0{R} {YEL}Y0{R} {GRN}G0{R} assistants', TILE_W-4)} │",
             f"│ {pad(f'Shophouses {DIM}····{R} Trade {DIM}·{R}', TILE_W-4)} │",
-            "└" + "─" * (TILE_W - 2) + "┘"]
+            "└" + "─" * (TILE_W - 2) + "┘"], aid)
 
 def player_col(color, name, lead, yen, hidden=True):
     COLW = 48
@@ -482,7 +487,7 @@ def tile_mid(aid, style="v3"):
             slots.append(tok(t))
     l4 = f"│ {pad('sites ' + ' '.join(slots) + f'  {GRAY}│{R} T' + str(th), TILE_W-4)} │"
     l5 = "└" + "─" * (TILE_W - 2) + "┘"
-    return [l1, l2, l3, l4, l5]
+    return _tile_guard([l1, l2, l3, l4, l5], aid)
 
 def iconography_study():
     L = []
