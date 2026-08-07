@@ -754,6 +754,57 @@ fn describe_area_action(action: &AreaAction, state: &GameState, rules: &Rules) -
     }
 }
 
+/// What the MOVER's own technologies add to a completed order, on top of the
+/// reward printed on the card: `", +2 VP (Ball), +1 yen (Language School)"`,
+/// or empty for a player who owns neither.
+///
+/// **The card's printed reward is not what the player receives, and until this
+/// existed nothing in the driver said so.** `apply_fulfill_order` awards Ball's
+/// VP and Language School's Yen on EVERY completed order, so a player holding
+/// Ball fulfilled a 2 VP card, banked 4, and had no line of text anywhere --
+/// option preview or `log` -- connecting the two. A bonus you cannot see is a
+/// bonus you cannot plan around.
+///
+/// **The amounts come from the engine's own two functions rather than from a
+/// count written here**, which is the whole reason this can be trusted: they
+/// are the functions `apply_fulfill_order` calls, so the sentence is not a
+/// second opinion about the arithmetic that can drift from it -- including the
+/// per-copy stacking, which is theirs and not restated.
+///
+/// The NAMES come from the registry (`tech_name`) for the same reason: the
+/// printed titles are `gen-data`'s output, and a literal here would be a second
+/// copy of the card face.
+///
+/// Empty rather than "(no bonus)" so that every fulfil line a player without
+/// these cards reads is byte-identical to what it printed before -- which is
+/// most of them, most of the game.
+fn order_completion_bonus_note(state: &GameState, rules: &Rules) -> String {
+    let player = state.current_player;
+    let parts: Vec<String> = [
+        (TechEffect::Ball, ball_vp_bonus(state, player, &rules.techs), "VP"),
+        (TechEffect::LanguageSchool, language_school_yen_bonus(state, player, &rules.techs), "yen"),
+    ]
+    .into_iter()
+    .filter(|&(_, amount, _)| amount > 0)
+    .filter_map(|(effect, amount, unit)| {
+        // The name is looked up off a card the player actually holds, so a
+        // nonzero amount and a named card are the same fact rather than two
+        // that could disagree -- there is no "+2 VP (unknown)" to print.
+        let owned = state
+            .player(player)
+            .technologies
+            .iter()
+            .find(|&&id| rules.techs.get(id).is_some_and(|c| c.effect == effect))?;
+        Some(format!("+{amount} {unit} ({})", tech_name(*owned, &rules.techs)))
+    })
+    .collect();
+    if parts.is_empty() {
+        String::new()
+    } else {
+        format!(", {}", parts.join(", "))
+    }
+}
+
 /// One plain-words line describing a `Move` -- the CLI's option text.
 pub fn describe_move(mv: &Move, state: &GameState, rules: &Rules) -> String {
     match mv {
@@ -764,7 +815,11 @@ pub fn describe_move(mv: &Move, state: &GameState, rules: &Rules) -> String {
             format!("Claim achievement: {}", achievement_desc(*achievement))
         }
         Move::FulfillOrder { order_id } => match rules.orders.get(*order_id) {
-            Some(card) => format!("Fulfill {}", order_prompt_line(card)),
+            Some(card) => format!("Fulfill {}{}", order_prompt_line(card), order_completion_bonus_note(state, rules)),
+            // No printed reward clause to extend, because this arm is the
+            // "that id is not in the registry" fallback -- a corrupt record,
+            // never a move the engine would accept -- so it gains no bonus text
+            // either.
             None => format!("Fulfill order O{:02}", order_id.0),
         },
         Move::UseUniversity => "Use University: pay 1 yen, take an assistant from the warehouse".to_string(),
@@ -1147,6 +1202,123 @@ mod tests {
         let rules = Rules::standard();
         assert_eq!(tech_name(TechCardId(11), &rules.techs), "Ball");
         assert_eq!(tech_name(TechCardId(255), &rules.techs), "T255");
+    }
+
+    // ---- Order-completion technology bonuses on the fulfil line ----
+
+    /// The first technology in the registry carrying `effect`, found BY EFFECT
+    /// rather than by a literal card id: the ids are `gen-data`'s output, and a
+    /// test that hard-coded them would start testing the generator.
+    fn tech_with_effect(rules: &Rules, effect: TechEffect) -> TechCardId {
+        (0..=u8::MAX)
+            .map(TechCardId)
+            .find(|&id| rules.techs.get(id).is_some_and(|c| c.effect == effect))
+            .unwrap_or_else(|| panic!("the standard registry must carry a {effect:?} card"))
+    }
+
+    /// A 2P state whose CURRENT player owns exactly `effects`, and the
+    /// `FulfillOrder` move to describe against it. The move is described, never
+    /// applied, so it does not have to be legal here — what is under test is the
+    /// sentence, and the sentence is a function of the mover's technologies.
+    fn fulfil_fixture(effects: &[TechEffect]) -> (GameState, Rules, Move) {
+        let rules = Rules::standard();
+        let mut state = state_2p();
+        let seat = state.current_player;
+        for &effect in effects {
+            let id = tech_with_effect(&rules, effect);
+            state.player_mut(seat).technologies.push(id);
+        }
+        // The lowest-numbered order, so the fixture is the same card on every
+        // run: the registry hashes its cards, and `iter()` is in whatever order
+        // that leaves them.
+        let order_id = rules.orders.iter().map(|c| c.id).min_by_key(|id| id.0).expect("the registry carries orders");
+        (state, rules, Move::FulfillOrder { order_id })
+    }
+
+    /// **The line a player owning NEITHER technology reads is byte-identical to
+    /// what it was before the bonuses were ever printed** — the anti-regression
+    /// half of the pair, and the reason the note is empty rather than
+    /// "(no bonus)". Written as the composed literal it must equal, not as a
+    /// `!contains`, so a note that leaked in as whitespace still fails.
+    #[test]
+    fn the_fulfil_line_is_unchanged_for_a_player_owning_neither_bonus_technology() {
+        let (state, rules, mv) = fulfil_fixture(&[]);
+        let Move::FulfillOrder { order_id } = &mv else { unreachable!() };
+        let card = rules.orders.get(*order_id).expect("fixture picked a real order");
+
+        assert_eq!(describe_move(&mv, &state, &rules), format!("Fulfill {}", order_prompt_line(card)));
+    }
+
+    /// Ball's +2 VP is applied by `apply_fulfill_order` on every completed
+    /// order, and until this landed no CLI text anywhere named it — so a player
+    /// who owned Ball fulfilled an order, banked 4 VP for a 2 VP card, and had
+    /// to take the engine's word for the difference.
+    #[test]
+    fn the_fulfil_line_names_the_ball_victory_point_bonus() {
+        let (state, rules, mv) = fulfil_fixture(&[TechEffect::Ball]);
+        let text = describe_move(&mv, &state, &rules);
+        assert!(text.ends_with(", +2 VP (Ball)"), "{text}");
+    }
+
+    /// Language School's +1 Yen, the same defect on the other resource.
+    #[test]
+    fn the_fulfil_line_names_the_language_school_yen_bonus() {
+        let (state, rules, mv) = fulfil_fixture(&[TechEffect::LanguageSchool]);
+        let text = describe_move(&mv, &state, &rules);
+        assert!(text.ends_with(", +1 yen (Language School)"), "{text}");
+    }
+
+    /// Both owned: both named, in the order the engine applies them (VP then
+    /// Yen), each as its own clause rather than one summed figure — the player
+    /// is owed which CARD is paying, not just how much.
+    #[test]
+    fn the_fulfil_line_names_both_bonuses_when_both_are_owned() {
+        let (state, rules, mv) = fulfil_fixture(&[TechEffect::LanguageSchool, TechEffect::Ball]);
+        let text = describe_move(&mv, &state, &rules);
+        assert!(text.ends_with(", +2 VP (Ball), +1 yen (Language School)"), "{text}");
+    }
+
+    /// **Stacking per owned copy, which is the ENGINE's arithmetic and not a
+    /// second opinion about it** — `apply_fulfill_order` counts the mover's
+    /// copies (`ball_vp_bonus`), so a second copy is +4 VP there and must read
+    /// as +4 VP here. Two copies of one title is not reachable under the
+    /// one-per-name rule; `PlayerState::technologies` is a `Vec` that represents
+    /// it anyway, and the point of the test is that the two sides agree wherever
+    /// state can go, not that the position is legal.
+    #[test]
+    fn the_fulfil_bonus_stacks_per_owned_copy_exactly_as_the_engine_does() {
+        let (state, rules, mv) = fulfil_fixture(&[TechEffect::Ball, TechEffect::Ball]);
+        let text = describe_move(&mv, &state, &rules);
+        assert!(text.ends_with(", +4 VP (Ball)"), "{text}");
+        assert_eq!(
+            ball_vp_bonus(&state, state.current_player, &rules.techs),
+            4,
+            "and 4 is what the engine will actually award",
+        );
+    }
+
+    /// **The bonus reaches BOTH surfaces a player looks at, from one arm.** The
+    /// decision-option preview and the `log`/apply line are different renderers
+    /// with different prefixes, and both bottom out in `describe_move` — so this
+    /// pins the delegation rather than re-testing the wording: fix the option
+    /// text and the history text follows, which is why the defect could not have
+    /// been half-fixed.
+    #[test]
+    fn the_recorded_event_line_carries_the_bonus_too() {
+        let (state, rules, mv) = fulfil_fixture(&[TechEffect::Ball]);
+        let logged = describe_recorded_event(&RecordedEvent::Move(mv.clone()), &state, &rules);
+        assert!(logged.ends_with(", +2 VP (Ball)"), "{logged}");
+        assert!(logged.contains(&describe_move(&mv, &state, &rules)), "{logged}");
+    }
+
+    /// A technology that is neither of the two must not acquire a bonus clause:
+    /// the note is written off the two order-completion effects specifically,
+    /// not off "owns any technology".
+    #[test]
+    fn an_unrelated_technology_adds_no_bonus_clause() {
+        let (state, rules, mv) = fulfil_fixture(&[TechEffect::Tram]);
+        let (plain_state, plain_rules, plain_mv) = fulfil_fixture(&[]);
+        assert_eq!(describe_move(&mv, &state, &rules), describe_move(&plain_mv, &plain_state, &plain_rules));
     }
 
     /// **Every target says what just happened in plain words** (T8, requirement

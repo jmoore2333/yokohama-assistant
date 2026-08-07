@@ -431,6 +431,7 @@ The engine's canonical vocabulary differs from the rulebook's in places. **Diffe
 | `O01`–`O36` | ⚠ The rulebook has no card numbering. The number **is printed in the card's corner** — that corner index is the CLI's card identity. Find the corner number, type it. |
 | `BRITAIN          O27` (the card's title line) | Its country flag, and the corner number that is its identity. |
 | `2 Seafood 2 Copper` then `★1 VP ¥2` (the card's two interior blocks) | The goods it needs, then what it pays. An order is always drawn as a card — in `hand`, in the `?` index, and on the dashboard. |
+| ⚠ `Fulfill O01 [America]  needs 1 tea + 2 fish  ->  1 VP + 1 warehouse, +2 VP (Ball)` | ⚠ The clause after the comma is **not printed on the order card** — it is what your own **Ball** (+2 VP) and **Language School** (+1 Yen) technologies add to *every* order you complete (§8.2). It appears on the fulfil option and in `log`, naming the card that pays, and only for technologies you actually own; own neither and the line ends at the card's printed reward. Read the whole line before you fulfil: with Ball out, a 2 VP order banks 4. |
 
 ### 8.2 Technology cards
 
