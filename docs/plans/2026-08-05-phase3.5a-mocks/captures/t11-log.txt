@@ -1,9 +1,16 @@
 LOG — full view   what has happened so far, each line worded as it read at the moment it applied
 
-EVENTS — all 3 entries so far
-     0  Red: Place 1 assistant in Copper Mine (A00)
-     1  Red: Move President to Bank (A06) — pay 1 yen (1 to Blue)
-     2  Blue: End additional-action phase
+EVENTS — all 10 entries so far
+     0  Red: End additional-action phase
+     1  Red: Place 2 assistants in Tea Plantation (A09)
+     2  Red: Return President to hand, recovering 2 assistants (A09 x2)
+     3  Red: End additional-action phase
+     4  Blue: End additional-action phase
+     5  Blue: Place 2 assistants in Tea Plantation (A09)
+     6  Blue: Return President to hand, recovering 2 assistants (A09 x2)
+     7  Blue: End additional-action phase
+     8  Red: End additional-action phase
+     9  Red: Place 2 assistants in Tea Plantation (A09)
 
 Each line reads as it did when it applied, so an old entry still quotes the price it paid and the player it paid. 'back' takes the last one off.
 Enter or 'cancel' closes this view and puts you back at the prompt underneath, exactly as you left it — nothing is entered and nothing there is cancelled.

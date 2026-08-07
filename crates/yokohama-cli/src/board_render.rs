@@ -1125,6 +1125,77 @@ mod tests {
         );
     }
 
+    /// Two tiles and the legend, at the busiest state a tile can reach — the
+    /// fixture guide §8.5 is written from.
+    ///
+    /// A president, a Station, two seats' assistant runs with one over the
+    /// four-glyph cap, a built site slot, and the Canal beside them, because
+    /// §8.5 has to describe every one of those and a capture of an untouched
+    /// opening board shows none of them.
+    fn guide_tile_capture() -> String {
+        let rules = Rules::standard();
+        let pending = new_game(GameConfig::for_player_count(4), &rules, 7).expect("a board");
+        let mut state =
+            finalize_setup(pending, &[StartingOrderChoice::Keep(0); 4]).expect("setup");
+        state.players[0].assistants.on_board.insert(AreaId::new(3), 2);
+        state.players[1].assistants.on_board.insert(AreaId::new(3), 6);
+        state.players[0].president_location = PresidentLocation::OnBoard(AreaId::new(3));
+        state.station_location = Some(AreaId::new(3));
+        let site = state
+            .board_layout
+            .building_sites
+            .get_mut(&AreaId::new(3))
+            .expect("A03 carries a site");
+        site.shophouses_built[1] = Some(PlayerId::new(1));
+        site.trading_house_owner = Some(PlayerId::new(0));
+        let board = crate::screen_model::build_board(&state, &rules, &[]);
+        let colors = colors_np(&state);
+        let mut out = String::new();
+        for area in [AreaId::new(3), AreaId::new(10)] {
+            let tile = board.tiles.iter().find(|t| t.area == area).expect("the tile");
+            for line in tile_lines(tile, &colors) {
+                out.push_str(&strip_ansi(&line));
+                out.push('\n');
+            }
+        }
+        out.push_str(&strip_ansi(&board_legend(true)));
+        out.push('\n');
+        out
+    }
+
+    /// **Guide §8.5's captured tile IS what the renderer draws** (T11 review
+    /// F1), the regeneration discipline the guide's Movement, reveal, opening
+    /// and `suggest` blocks already hold, applied to the fifth.
+    ///
+    /// That section described a DEAD surface: a table of abbreviated tile names
+    /// (`Copper Mn`, `Tea Plant`) that this module's own tests assert must not
+    /// appear, and an anatomy — `A03 Copper Mn c`, a `P:` line, `R2 B1`, a `~`
+    /// water Canal — from before V3. Every word of it read plausibly. Nothing
+    /// but a regeneration check catches that, which is the same lesson the T4
+    /// review wrote against the Movement transcript.
+    ///
+    /// Regenerate by running this test and pasting the printed block into BOTH
+    /// formats; it fails with the current rendering in the message.
+    #[test]
+    fn the_guide_tile_anatomy_is_what_the_renderer_draws() {
+        const GUIDE_MD: &str = include_str!("../../../docs/cli-guide.md");
+        let rendered = guide_tile_capture();
+        let rendered = rendered.trim_end_matches('\n');
+        let opening = rendered.lines().next().expect("the title line");
+        let block = GUIDE_MD
+            .split("```")
+            .map(|part| part.trim_matches('\n'))
+            .find(|part| part.starts_with(opening))
+            .unwrap_or_else(|| panic!("cli-guide.md carries no captured tile block:\n{rendered}"));
+        assert_eq!(
+            block, rendered,
+            "docs/cli-guide.md's §8.5 tile capture no longer matches what `guide_tile_capture` \
+             renders. Re-capture it in BOTH formats from ONE run of this fixture — never by \
+             editing the block by hand. The rendered block is above; `guide_sync` pins the .html \
+             twin against the .md.",
+        );
+    }
+
     /// The legend takes the Canal fact rather than a board (N3), so the tests
     /// that want it FROM a board ask the model the same question `render.rs`
     /// asks `board_layout` -- one place, so a fixture and the shipped adapter

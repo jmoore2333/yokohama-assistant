@@ -1303,7 +1303,7 @@ fn ask_sim_deal(
 /// width in this driver is a fixed budget: std exposes no terminal size, and
 /// the guide promises a 140-column window clears every layout.
 const KEEP_SCORE_NOTE: &str = "  (the Keep score is what the built-in bot would prefer, from the card's printed\n   \
-     economics alone -- hand-set, unmeasured, and no substitute for your own read)\n";
+     economics alone — hand-set, unmeasured, and no substitute for your own read)\n";
 
 // ---------------------------------------------------------------------
 // Board entry (third review, finding I1)
@@ -1368,13 +1368,13 @@ fn tile_entry_preamble(rows: &[u8], players: u8) -> String {
          \x20 from you, and the narrowest row ({narrowest} tile{}) is the one NEAREST you.\n\
          * Cell 0 is the leftmost tile of that widest far row. Numbering runs left to right\n\
          \x20 along a row, then down to the next row, the way you read a page.\n\
-         * Read every row in the SAME direction. Which end you start from does not matter --\n\
-         \x20 a consistently mirrored board is the same board to the engine -- but switching\n\
+         * Read every row in the SAME direction. Which end you start from does not matter —\n\
+         \x20 a consistently mirrored board is the same board to the engine — but switching\n\
          \x20 direction partway is not, and nor is changing the row order.\n\
          * The rulebook's p.3 diagram prints this pyramid THE OTHER WAY UP, narrowest row at\n\
          \x20 the top. Do not follow that picture's reading order: enter the widest row first.\n\
          \x20 The engine models the adjacency graph, not the printed picture.\n\
-         Each question lists the tiles still to place, with how many of each are left --\n\
+         Each question lists the tiles still to place, with how many of each are left —\n\
          \x20 type the number beside one, its full name, or its old short code (cm, sm, ...).\n\
          The finished board is drawn back for you to check before play begins.\n\n",
         if narrowest == 1 { "" } else { "s" }
@@ -2304,6 +2304,12 @@ mod tests {
         assert_eq!(repl.session.record().seed, 42);
         assert!(repl.session.save_path.is_some());
         assert!(!repl.session.legal().is_empty());
+        // The sim tail's own prose, incl. the Keep-score note (T11 review F5).
+        assert!(transcript.contains("Keep score"), "the note is in this transcript: {transcript}");
+        crate::style::test_support::assert_no_ascii_prose_dash(
+            "the sim wizard transcript",
+            &transcript,
+        );
         std::fs::remove_file("yokohama-game-42.json").ok(); // in case autosave fired
     }
 
@@ -2865,6 +2871,15 @@ mod tests {
             "the check must draw the board with the same renderer play uses\n{transcript}"
         );
         assert!(transcript.contains("is not 'yes' or 'no'"), "a junk answer must re-ask\n{transcript}");
+        // The wizard is a rolling-text surface the redesign left alone, but its
+        // PROSE follows the same one-dash rule (T11 review F5); its `---` rules
+        // and `-- row n --` markers are decoration and do not match the
+        // space-flanked pattern. Checked on the fullest transcript there is,
+        // which is the one that walks the tile-entry preamble.
+        crate::style::test_support::assert_no_ascii_prose_dash(
+            "the live wizard transcript",
+            &transcript,
+        );
         std::fs::remove_file("yokohama-game-613.json").ok();
     }
 

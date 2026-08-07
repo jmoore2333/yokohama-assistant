@@ -209,7 +209,7 @@ impl BotSeats {
                     match (seed, seat.agent_seed) {
                         (Some(known), Some(s)) if known != s => warnings.push(format!(
                             "warning: seat {i} records bot stream seed {s}, but an earlier bot seat \
-                             records {known} -- this driver plays every bot seat off one stream, so \
+                             records {known} — this driver plays every bot seat off one stream, so \
                              it keeps {known} and seat {i} will not reproduce its recorded line",
                         )),
                         (None, Some(s)) => seed = Some(s),
@@ -220,7 +220,7 @@ impl BotSeats {
                 None => {
                     warnings.push(format!(
                         "warning: seat {i} was played by controller \"{}\", which this build does not \
-                         know how to run -- it resumes as a HUMAN seat, so you are now playing it",
+                         know how to run — it resumes as a HUMAN seat, so you are now playing it",
                         seat.controller,
                     ));
                     seats.push(None);
@@ -368,6 +368,12 @@ mod tests {
         assert_eq!(warnings.len(), 1);
         assert!(warnings[0].contains("mcts-2027"), "{}", warnings[0]);
         assert!(warnings[0].contains("HUMAN"), "{}", warnings[0]);
+        // Produced before there is a session to walk, so the REPL's dash sweep
+        // cannot reach it (T11 review F5).
+        crate::style::test_support::assert_no_ascii_prose_dash(
+            "the unknown-controller warning",
+            &warnings.join("\n"),
+        );
     }
 
     /// A 2P state at the first decision point offering MORE THAN ONE move --
@@ -410,6 +416,10 @@ mod tests {
         assert_eq!(bots.seed(), 11, "the first recorded stream wins");
         assert_eq!(warnings.len(), 1, "{warnings:?}");
         assert!(warnings[0].contains("22") && warnings[0].contains("11"), "{}", warnings[0]);
+        crate::style::test_support::assert_no_ascii_prose_dash(
+            "the conflicting-stream-seed warning",
+            &warnings.join("\n"),
+        );
     }
 
     /// `without_bots` keeps the seat COUNT (a table is still a table) and

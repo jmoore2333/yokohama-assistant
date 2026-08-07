@@ -1124,13 +1124,16 @@ fn reveal_hint(model: &crate::screen_model::RevealModel, players: u8) -> String 
         // a whole-line match on a surface's own name, intercepted ahead of the
         // capture — so the hint was under-selling four screens.
         //
-        // **It names the WORDS and not `view`, deliberately.** `view` opens a
-        // sub-prompt, and `Repl::step` routes every line to the reveal
-        // collector before it reaches the sub-prompt branch, so the menu is the
-        // one navigation surface that genuinely does NOT work here. Advertising
-        // it would have been the shorter clause and a false one — which is what
-        // `the_reveal_zone_words_every_live_target_and_fits_the_frame` asserts
-        // against, and it caught exactly that on the first attempt.
+        // **It names the WORDS and not `view`, deliberately.** The six surface
+        // names are intercepted by `Repl::step` AHEAD of the reveal collector,
+        // exactly as `?` is; the `view` menu is dispatched in the command match
+        // BELOW it, so the collector reaches every `view` line first and reads
+        // it as a bad card. That is a fact about dispatch ORDER — the menu is a
+        // full-screen overlay like the surfaces it lists, not a sub-prompt, and
+        // calling it one was the stale half of this note. Advertising it would
+        // have been the shorter clause and a false one, which
+        // `the_reveal_hint_never_offers_the_one_word_that_does_not_work_here`
+        // is the pin for.
         "'tracks', 'sites', 'ports', 'labs', 'hand' or 'log' to look around".to_string(),
     ];
     wrap_hint(&parts, crate::screen::frame_width(usize::from(players)))
@@ -1202,6 +1205,107 @@ mod tests {
         state.players.iter().map(|p| p.color).collect()
     }
 
+    /// **The pager measures the rows WITH their colour table** — the claim
+    /// `page_count`'s own comment makes, checked rather than stated (T11 review
+    /// F7).
+    ///
+    /// The table is a width input: a fee recipient reads `1 to Blue` where a
+    /// caller without it renders `1 to seat 1`, two columns wider per
+    /// recipient. Two columns is enough to cost an option row a packing column,
+    /// and a packing column is worth twelve options a page — so a `page_count`
+    /// called with `&[]` while `decision_zone` renders with the real table is
+    /// not an approximation, it is a different list.
+    ///
+    /// Held as a PARTITION over rendered output rather than as an arithmetic
+    /// identity: walking `0..page_count` and reading the option numbers off the
+    /// screens must yield every row exactly once. That catches a gap and a
+    /// repeat alike, which matters because the two failures look nothing like
+    /// each other — an under-count leaves rows unreachable, an over-count
+    /// clamps and redraws the last page under a footer promising a new one.
+    ///
+    /// The fixture is MEASURED, not guessed: at 3 players (frame 175) a row
+    /// paying both opponents plus one canal toll renders 83 columns with the
+    /// table and 85 without, which straddles the two-column boundary
+    /// (`3 + 2·85 + 2 > 175`), so 37 rows page 2 ways with it and 4 ways
+    /// without. Both figures are asserted, so a layout change that dissolves
+    /// the discrimination fails here instead of quietly making the test vacuous.
+    #[test]
+    fn the_pager_measures_its_rows_with_the_colour_table_it_is_handed() {
+        let (state, rules) = state_np(3);
+        let board = screen_model::build_board(&state, &rules, &[]);
+        let d = screen_model::build_decision(&state, &rules, &[]);
+        let colors = colors_np(&state);
+        let fee = FeeModel {
+            total: 3,
+            to_players: vec![(PlayerId::new(1), 1), (PlayerId::new(2), 1)],
+            canal_tolls: 1,
+        };
+        let dest = AreaId::new(0);
+        let walk = Move::MovePresident { path: vec![dest], destination: dest };
+        let rows: Vec<Row> =
+            (0..37).map(|_| Row::Move { mv: &walk, fee: Some(&fee), words: "fallback" }).collect();
+
+        // The measurement the fixture rests on, pinned so it cannot drift into
+        // a pair of widths that no longer straddles anything.
+        assert_eq!(option_text(0, &rows[0], &board, &colors).width(), 83);
+        assert_eq!(option_text(0, &rows[0], &board, &[]).width(), 85);
+
+        let with_table = page_count(&rows, &board, &colors);
+        let without_table = page_count(&rows, &board, &[]);
+        assert_eq!((with_table, without_table), (2, 4), "the fixture must discriminate");
+
+        // (a) The pages the renderer draws, under the count the renderer's own
+        // colour table produces, partition the list. SORTED, because options
+        // fill down their columns rather than across, so the reading order of a
+        // packed page is column-major and says nothing about coverage.
+        let mut drawn = numbers_over_pages(&d, &rows, &board, &colors, with_table);
+        assert_eq!(drawn.len(), 37, "every row drawn exactly once: {drawn:?}");
+        drawn.sort_unstable();
+        assert_eq!(drawn, (1..=37).collect::<Vec<_>>(), "and every row drawn");
+
+        // (b) The same walk under the count a colourless caller would compute
+        // is NOT a partition — `Page::of` clamps past the end, so pages 3 and 4
+        // redraw page 2 and the player is told there are four.
+        let mis_paged = numbers_over_pages(&d, &rows, &board, &colors, without_table);
+        assert!(
+            mis_paged.len() > 37,
+            "the over-count repeats the last page rather than dropping rows: {} numbers",
+            mis_paged.len(),
+        );
+    }
+
+    /// Every option number the zone draws over pages `0..pages`, in order —
+    /// the readback the partition check above is built on. `[n]` is the option
+    /// number cell and nothing else in the zone writes a bracketed integer,
+    /// which the round-trip against a known list is itself evidence for.
+    fn numbers_over_pages(
+        d: &screen_model::DecisionModel,
+        rows: &[Row<'_>],
+        board: &BoardModel,
+        colors: &[PlayerColor],
+        pages: usize,
+    ) -> Vec<usize> {
+        let mut seen = Vec::new();
+        for page in 0..pages {
+            let zone = crate::style::strip_ansi(&decision_zone(
+                d,
+                rows,
+                board,
+                colors,
+                &ZoneContext { page, ..ctx() },
+            ));
+            let mut rest = zone.as_str();
+            while let Some(open) = rest.find('[') {
+                rest = &rest[open + 1..];
+                let Some(close) = rest.find(']') else { break };
+                if let Ok(n) = rest[..close].trim().parse::<usize>() {
+                    seen.push(n);
+                }
+            }
+        }
+        seen
+    }
+
     fn ctx() -> ZoneContext<'static> {
         ZoneContext { page: 0, expert: "", game_over: false, recall: false }
     }
@@ -1243,11 +1347,11 @@ mod tests {
                     text.contains(describe::registry_name_singular(target.kind())),
                     "{players}P: and the registry the answer comes from: {text}",
                 );
-                // The two clauses of the decision zone's hint that would be FALSE
-                // here: nothing has been applied to take back, and `view` is a
-                // command the capture branch of `Repl::step` never reaches.
+                // The decision zone's `back` clause would be FALSE here:
+                // nothing has been applied to take back. (`view` is the other
+                // false clause, and it has its own line-specific pin below —
+                // this whole-text form could not catch it.)
                 assert!(!text.contains("'back' undoes"), "{players}P: {text}");
-                assert!(!text.contains("'view' any surface"), "{players}P: {text}");
                 assert!(text.contains("'?' for the card index"), "{players}P: {text}");
                 // Every line inside THIS count's frame, hint wrap included.
                 for line in text.lines() {
@@ -1283,6 +1387,46 @@ mod tests {
         let text = crate::style::strip_ansi(&reveal_zone(&standalone, 2));
         assert!(text.contains("'cancel' backs out"), "{text}");
         assert!(!text.contains("drops the move"), "nothing is parked behind this one: {text}");
+    }
+
+    /// **The reveal hint never offers `view`** — the one navigation word that
+    /// genuinely does not work mid-capture, and the pin is on the HINT LINE
+    /// rather than on the zone's whole text (T11 review F8).
+    ///
+    /// **The overlapping-text lesson, FOURTH recurrence** (T7 first named it;
+    /// T8's F2 refusal pin and T10's per-seat `(hidden)` sweep were the second
+    /// and third). The old guard read `!text.contains("'view' any surface")` —
+    /// the DECISION zone's phrasing, which this zone was never going to write
+    /// anyway. It was satisfied by a string from a different surface, so it was
+    /// green before the clause existed and would have stayed green if the hint
+    /// started offering `view` in its own words. What has to be false is the
+    /// OFFER, and the offer lives on one line, so that line is what is read.
+    ///
+    /// Mutation: append `"'view' any surface"` to `reveal_hint`'s clause list
+    /// and this must fail; under the old guard it passed.
+    #[test]
+    fn the_reveal_hint_never_offers_the_one_word_that_does_not_work_here() {
+        use crate::screen_model::{RecordingTarget, RevealModel};
+        for players in [2u8, 3, 4] {
+            for target in [
+                RecordingTarget::PortRefill { board_b: false, slot: 5, nth: 0, of: 2 },
+                RecordingTarget::TechRefill { board_b: true },
+                RecordingTarget::StartingOrder { seat: PlayerId::new(1) },
+            ] {
+                let model = RevealModel { target, collected: Vec::new() };
+                let hint = crate::style::strip_ansi(&reveal_hint(&model, players));
+                // Anti-vacuity: this IS the hint, and it does advertise the
+                // surfaces that work — so a `view`-free result means the clause
+                // set omits it, not that the fixture read the wrong line.
+                assert!(hint.starts_with('('), "the hint block: {hint:?}");
+                assert!(hint.contains("'sites'"), "it names the surfaces that DO work: {hint}");
+                assert!(
+                    !hint.contains("view"),
+                    "{players}P: the hint offers `view`, which the reveal collector swallows \
+                     before the command match ever sees it: {hint}",
+                );
+            }
+        }
     }
 
     /// Every `PendingChoice` variant words a deciding line, and every one of
@@ -1876,6 +2020,14 @@ mod tests {
         let without =
             option_text(0, &Row::Move { mv: &walk, fee: None, words: "fallback" }, &plain, &colors)
                 .painted();
+        // Painted INSIDE the forced window with the rows themselves. Outside it
+        // `paint` is the identity, so `bold` would be the bare `"COPPER MINE"`
+        // and the two assertions below would degenerate into plain `contains` —
+        // passing just as happily against a row that had dropped the tone
+        // entirely, which is the whole thing they exist to catch (T11 review
+        // F4). The mutation that proves it: delete `Tone::Strong` from the area
+        // name in `option_text` and this test must fail.
+        let bold = crate::style::paint(Tone::Strong, "COPPER MINE");
         crate::style::force(false);
 
         assert!(with_mark.contains(glyph::REACHABLE), "the marked row draws its mark");
@@ -1895,7 +2047,7 @@ mod tests {
         );
 
         // The area name is bold on both, which is the other half of the pass.
-        let bold = crate::style::paint(Tone::Strong, "COPPER MINE");
+        assert!(bold.contains('\u{1b}'), "anti-vacuity: `bold` must carry its escape");
         assert!(with_mark.contains(&bold), "the area name leads in bold: {with_mark:?}");
         assert!(without.contains(&bold), "on both rows: {without:?}");
     }

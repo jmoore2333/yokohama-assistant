@@ -205,7 +205,7 @@ impl Session {
             Some(rev) => {
                 return Err(format!(
                     "this save was recorded under game-semantics revision {rev}, but this build \
-                     plays revision {} -- the rules and board semantics changed in between, so \
+                     plays revision {} — the rules and board semantics changed in between, so \
                      replaying it would silently rebuild the game under semantics it was never \
                      played under. Start a new game; a save from an older revision cannot be \
                      resumed against the corrected board.",
@@ -332,7 +332,7 @@ impl Session {
             if &actual_digest != expected_digest {
                 return Err(format!(
                     "this save records terminal-state digest {expected_digest}, but its own seed, \
-                     setup and {} recorded event(s) replay to {actual_digest} -- the file has been \
+                     setup and {} recorded event(s) replay to {actual_digest} — the file has been \
                      edited or corrupted since it was written, so resuming it would continue the \
                      game from a position (and possibly a board) it never recorded. Start a new \
                      game; a save that cannot reproduce its own recorded state cannot be resumed.",
@@ -489,7 +489,19 @@ impl Session {
         // printed price, a movement fee's recipient, and any other
         // state-dependent wording would otherwise go stale the moment state
         // moves on).
-        let move_description = crate::describe::describe_move(&mv, &staged, &self.rules);
+        //
+        // Through `describe_recorded_event`, not `describe_move`, and the clone
+        // is what that costs: this line and `load`'s fold must produce the SAME
+        // string for the same event, and the way to guarantee that is one
+        // function rather than two that happen to agree. They stopped agreeing
+        // the moment the log gained its actor prefix (T11 review F3) —
+        // `load_of_a_saved_session_reproduces_event_descriptions_exactly` is
+        // the test that catches it, and it caught it.
+        let move_description = crate::describe::describe_recorded_event(
+            &RecordedEvent::Move(mv.clone()),
+            &staged,
+            &self.rules,
+        );
         // apply_move_unchecked: the gate just above already proved
         // membership in get_legal_moves on this same staged state, so
         // routing through checked apply_move would double-enumerate
@@ -1104,6 +1116,11 @@ mod tests {
             err.to_lowercase().contains("start a new game"),
             "the refusal must say WHAT to do next: {err}"
         );
+        // The load refusals are the messages the REPL's own dash sweep cannot
+        // reach — they are produced before there is a session to walk (T11
+        // review F5), so the rule is checked where the fixture already holds
+        // the string.
+        crate::style::test_support::assert_no_ascii_prose_dash("the semantics_rev refusal", &err);
     }
 
     /// I-1, the unknown-provenance half: a record with no `semantics_rev` at
@@ -1131,6 +1148,7 @@ mod tests {
             err.to_lowercase().contains("start a new game"),
             "the refusal must say WHAT to do next: {err}"
         );
+        crate::style::test_support::assert_no_ascii_prose_dash("the missing-provenance refusal", &err);
     }
 
     /// I2 (third review). `save` stamps a `terminal_digest` of the state its
@@ -1162,6 +1180,7 @@ mod tests {
             err.to_lowercase().contains("start a new game"),
             "the refusal must say WHAT to do next, like the semantics_rev one: {err}"
         );
+        crate::style::test_support::assert_no_ascii_prose_dash("the digest refusal", &err);
     }
 
     /// The digest check must not become a load-refusal machine: a save this

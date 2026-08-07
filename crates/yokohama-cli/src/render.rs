@@ -1219,10 +1219,6 @@ mod tests {
         assert!(claimed.contains("5-Power: taken"), "a claimed token says so: {claimed}");
     }
 
-
-
-
-
     /// Item 7 (third review), carried over the T3 cutover: every panel labels
     /// each player with its SEAT number -- the `reveal <seat>` key, which used
     /// to appear nowhere on the game screen (learnable only from the wizard

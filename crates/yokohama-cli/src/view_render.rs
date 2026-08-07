@@ -857,8 +857,26 @@ pub fn hand_view(hand: &HandPanel, color: Option<PlayerColor>, is_bot: bool) -> 
                 .iter()
                 .map(|c| {
                     card_render::order_card(
+                        // **`your starting order`, byte for byte the dashboard's
+                        // own note for the same card** (T11 review N5): one
+                        // wording, so a player who learns the panel's phrase
+                        // meets it again here instead of a second phrase for
+                        // one fact.
+                        //
+                        // The leading `= ` the review asked to keep is dropped
+                        // with it, on a MEASUREMENT: `= your starting order` is
+                        // 21 columns against a 20-column card interior
+                        // ([`card_render::CARD_INNER`]) and clips to
+                        // `= your starting ord…`. Keeping the prefix and the
+                        // words was not available, and dropping the prefix is
+                        // the better half to lose — `= ` is the LOCATION
+                        // annotation's mark (`= Port A slot 1`, `= Seat 0's
+                        // deal`), which answers where a card already is. This
+                        // note answers what the card IS, and losing the prefix
+                        // makes the two surfaces identical rather than merely
+                        // word-identical.
                         &card_render::CardFace::new(c.id, c.printed.as_ref()).note(
-                            c.is_starting_order.then(|| "= starting order".to_string()),
+                            c.is_starting_order.then(|| "your starting order".to_string()),
                         ),
                     )
                 })
@@ -1013,9 +1031,15 @@ fn log_rule(log: &LogPanel) -> String {
 /// renderer holding a `&mut Repl`.
 pub fn view_menu(labels: &[&str]) -> String {
     let mut out = String::new();
+    // **Two families, said as two** (T11 review N3). The old gloss read "each
+    // row here is its full surface", which is true of ten of the thirteen: the
+    // six views and the four card indexes replace the frame. Board, Players and
+    // Score do not — they ARE the frame's own panels at full size, so they
+    // print back into it. A player who took the promise literally would expect
+    // three screens that never arrive.
     out.push_str(&view_title(
         "GAME INFO",
-        "the 'view' pattern: every panel on the frame is a summary, and each row here is its full surface",
+        "the 'view' pattern: every panel on the frame is a summary, and most rows here open its full surface — Board, Players and Score redraw the frame instead",
     ));
     for (i, label) in labels.iter().enumerate() {
         let mut t = Twin::default();
@@ -1252,19 +1276,45 @@ pub(crate) mod tests {
             ("ports", ports_view(&crate::screen_model::build_ports(&state, &rules))),
             ("labs", labs_view(&crate::screen_model::build_labs(&state, &rules))),
             ("hand", hand_view(&hand, color, false)),
-            (
-                "log",
-                log_view(&crate::screen_model::build_log(
-                    3,
-                    vec![
-                        (0, "Red: Place 1 assistant in Copper Mine (A00)".to_string()),
-                        (1, "Red: Move President to Bank (A06) — pay 1 yen (1 to Blue)".to_string()),
-                        (2, "Blue: End additional-action phase".to_string()),
-                    ],
-                )),
-            ),
+            ("log", crate::repl::Repl::new(walked_session(players)).log_text()),
             ("view menu", view_menu(&["Port offer — the cards on display", "Log — the trail"])),
         ]
+    }
+
+    /// A REAL session, walked far enough that the log carries entries from more
+    /// than one seat.
+    ///
+    /// **The fixture the T11 review found fabricated** (F3): the `log` capture
+    /// was built from a hand-written vector of strings, which is a surface that
+    /// can say anything at all — and did, carrying `Red:`/`Blue:` prefixes and
+    /// phrasings the driver never emitted. A committed capture is only worth
+    /// what its input is worth, so this one comes from `Session::apply` and is
+    /// rendered by `Repl::log_text`, the same call the `log` command makes.
+    ///
+    /// Ten moves is what it takes at every count for the walk to cross a seat
+    /// boundary, which is what makes the actor prefix visible in the capture at
+    /// all; `entries_are_driver_shaped` asserts the crossing rather than
+    /// trusting it. The three offer/hand views above deliberately stay at their
+    /// OPENING state — they are captures of different surfaces, not of one
+    /// moment, and re-shooting them mid-walk would churn three goldens to say
+    /// nothing new.
+    fn walked_session(players: u8) -> crate::session::Session {
+        let mut s = crate::session::Session::new_sim(
+            GameConfig::for_player_count(players),
+            1,
+            vec![StartingOrderChoice::Keep(0); players as usize],
+            Rules::standard(),
+        )
+        .expect("a standard board");
+        while s.record().events.len() < 10 {
+            // The LAST legal move rather than the first: `legal[0]` is the
+            // declining end of every list, so a walk down it logs ten lines of
+            // `Place no assistants` and shows nothing about how a long entry
+            // sits in the column. This end places, moves and pays.
+            let mv = s.legal().pop().expect("a legal move at every step");
+            s.apply(mv, Vec::new()).expect("the last legal move applies");
+        }
+        s
     }
 
     /// **Every line of every T11 surface fits the design floor, at every player
@@ -1609,12 +1659,16 @@ pub(crate) mod tests {
         assert_eq!(starting.len(), 1, "fixture: exactly one kept starting order");
 
         let text = strip_ansi(&hand_view(&hand, Some(PlayerColor::Red), false));
-        assert!(text.contains("= starting order"), "{text}");
+        // The dashboard's note, verbatim — one wording for one fact (T11 N5),
+        // and short enough to draw whole on a 20-column card interior, which
+        // `= your starting order` was not.
+        assert!(text.contains("your starting order"), "{text}");
         assert_eq!(
-            text.matches("= starting order").count(),
+            text.matches("your starting order").count(),
             1,
             "and only on the one card it belongs to: {text}",
         );
+        assert!(!text.contains('\u{2026}'), "and it is not clipped: {text}");
         for card in &hand.cards {
             assert!(text.contains(&format!("O{:02}", card.id.0)), "every card is drawn: {text}");
         }
@@ -1653,6 +1707,59 @@ pub(crate) mod tests {
         // And an empty one does not draw a blank screen.
         let empty = strip_ansi(&log_view(&crate::screen_model::build_log(0, Vec::new())));
         assert!(empty.contains("nothing has been applied yet"), "{empty}");
+    }
+
+    /// **The committed `log` capture's entries are DRIVER-SHAPED, and the
+    /// capture shows more than one actor** (T11 review F3).
+    ///
+    /// The renderer above is deliberately verbatim, which means the capture is
+    /// only as truthful as whatever produced its strings — and what produced
+    /// them was a hand-written vector carrying prefixes and phrasings the
+    /// driver never emitted. The capture now comes from `Session::apply` via
+    /// `Repl::log_text`, so the shape is a consequence rather than a claim, and
+    /// this test pins the two things that make the capture worth committing:
+    /// every entry reads as `<Colour>: <what happened>` off the record, and
+    /// the walk really did cross a seat boundary, so the capture DEMONSTRATES
+    /// attribution rather than merely allowing it.
+    #[test]
+    fn the_captured_log_entries_are_driver_shaped_and_name_more_than_one_actor() {
+        for players in [2u8, 3, 4] {
+            let session = walked_session(players);
+            let text = strip_ansi(&crate::repl::Repl::new(session).log_text());
+            let colours: std::collections::BTreeSet<String> = text
+                .lines()
+                .filter_map(|line| {
+                    let line = line.trim_start();
+                    let (head, _) = line.split_once("  ")?;
+                    let index: usize = head.parse().ok()?;
+                    let entry = line.split_once("  ")?.1.trim_start();
+                    let (colour, rest) = entry.split_once(": ")?;
+                    assert!(
+                        !rest.is_empty() && index < 10,
+                        "{players}P entry {index} is not `<Colour>: <what happened>`: {entry:?}",
+                    );
+                    Some(colour.to_string())
+                })
+                .collect();
+            assert!(
+                colours.len() >= 2,
+                "{players}P: the walk must cross a seat boundary or the capture proves nothing \
+                 about attribution — saw {colours:?}",
+            );
+            for colour in &colours {
+                assert!(
+                    [
+                        PlayerColor::Red,
+                        PlayerColor::Blue,
+                        PlayerColor::Yellow,
+                        PlayerColor::Green
+                    ]
+                    .iter()
+                    .any(|c| crate::render::color_name(*c) == colour),
+                    "{colour:?} is not a seat colour this driver names",
+                );
+            }
+        }
     }
 
     /// **The view menu numbers from [`NUMBER_BASE`]** — T5's ruling, on the

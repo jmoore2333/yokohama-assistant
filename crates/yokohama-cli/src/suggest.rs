@@ -184,7 +184,7 @@ impl std::fmt::Display for SuggestError {
             Self::Inconsistent(mv) => write!(
                 f,
                 "the bot chose a move this position does not offer, so there is nothing safe to\n\
-                 show you. That is an inconsistency between the sampled world and the engine --\n\
+                 show you. That is an inconsistency between the sampled world and the engine —\n\
                  a bug worth reporting, not something you did. The game is untouched.\n\
                  Move: {mv}"
             ),
@@ -1467,4 +1467,3 @@ mod tests {
         assert!(shown.contains("EndAdditionalPhase"), "with the move itself: {shown}");
     }
 }
-

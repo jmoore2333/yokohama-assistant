@@ -256,6 +256,55 @@ fn view_surface(word: &str) -> Option<ViewSurface> {
     }
 }
 
+/// `There is no Seat 3 in this game — 2 players are seated, Seat 0 to Seat 1.`
+///
+/// One function rather than one string per caller: the `reveal` alias and the
+/// guided menu both refuse this, and a player who reads two wordings for one
+/// fact has to work out whether they are one fact.
+fn no_such_seat(seat: u8, seated: usize) -> String {
+    format!(
+        "There is no Seat {seat} in this game — {seated} players are seated, Seat 0 to Seat {}.\n",
+        seated.saturating_sub(1),
+    )
+}
+
+/// `Seat 0's starting order is not hidden — nothing to reveal there.` The other
+/// half of the pair above, and a DIFFERENT fact from it (T8 review NOTE-6a).
+fn seat_not_hidden(seat: PlayerId) -> String {
+    format!("Seat {}'s starting order is not hidden — nothing to reveal there.\n", seat.0)
+}
+
+/// The seat a token names at the guided reveal menu, or the refusal to print.
+///
+/// **IDENTITY numbering, T7's stable-numbering class** (T11 review N6). The
+/// menu prints `[2] Seat 2`, so the number beside a row IS the seat and `2`
+/// here means what `reveal 2` means at the prompt. It used to be a list
+/// POSITION, which reads identically at a table where the hidden seats happen
+/// to start at seat 1 and silently selects the wrong seat everywhere else.
+///
+/// Seat ids are identities rather than menu entries, so they are 0-based and
+/// deliberately outside `NUMBER_BASE` — the exclusion T5's numbering ruling
+/// names explicitly.
+///
+/// Refuses in three ways because there are three different things wrong, and a
+/// player can only act on the one that applies: a number that is not a seat at
+/// this table, a seat whose order is already public, and a token that is not a
+/// seat number at all.
+fn reveal_seat_choice(tok: &str, seats: &[PlayerId], seated: usize) -> Result<PlayerId, String> {
+    let Some(n) = tok.parse::<u8>().ok() else {
+        return Err("! pick a seat number from the list, or 'cancel'".to_string());
+    };
+    if usize::from(n) >= seated {
+        return Err(no_such_seat(n, seated));
+    }
+    let seat = PlayerId::try_new(n)
+        .map_err(|_| no_such_seat(n, seated))?;
+    if !seats.contains(&seat) {
+        return Err(seat_not_hidden(seat));
+    }
+    Ok(seat)
+}
+
 /// The card INDEX a command word opens, if any.
 ///
 /// `goals` opens the achievement index rather than a separate view, which is
@@ -293,10 +342,13 @@ const PUMP_MOVE_CAP: usize = 200;
 const BOT_LINE_CAP: usize = 10;
 
 /// Events the `log` VIEW carries. The view is full-screen, so what sizes this
-/// is the design floor: 50 rows less the nine this surface spends on its title,
-/// its section rule, the two rules under the list and the two-line exit clause
-/// plus its caret, with one row of slack — pinned by
-/// `view_render`'s `both_offer_views_and_the_hand_and_log_fit_the_design_floor`.
+/// is the design floor: 50 rows less the EIGHT this surface spends on chrome —
+/// the title and the blank under it, the section rule, the blank under the
+/// list, the "each line reads as it did" note, the two-line exit clause and the
+/// caret. Forty entries therefore draw 48 rows, leaving TWO of slack against
+/// the floor, which is what `view_render`'s `LOG_VIEW_ROWS` records and
+/// `the_t11_views_fit_the_fifty_row_design_floor` pins. (The arithmetic here
+/// read "nine … with one row of slack" until T11 review N2 counted it.)
 pub(crate) const LOG_VIEW_TAIL: usize = 40;
 
 /// Events the lockdown POSTMORTEM dump carries, which is a different surface
@@ -331,7 +383,7 @@ impl Repl {
             if !dropped.is_empty() {
                 warnings.push(format!(
                     "warning: this LIVE save names bot seat(s) {dropped:?}, which live tracking does not \
-                     support -- they resume as HUMAN seats, so you are playing them",
+                     support — they resume as HUMAN seats, so you are playing them",
                 ));
             }
             bots = without;
@@ -2184,14 +2236,17 @@ impl Repl {
                 ),
                 None => {
                     let mut out = String::from("Whose starting order just became public?\n");
-                    for (i, seat) in seats.iter().enumerate() {
+                    for seat in seats.iter() {
                         let color = state
                             .players
                             .iter()
                             .find(|p| p.id == *seat)
                             .map(|p| render::color_name(p.color))
                             .unwrap_or("that seat");
-                        out.push_str(&format!("[{}] Seat {} — {color}\n", menu_number(i), seat.0));
+                        // Numbered by the seat's OWN identity, not by its
+                        // position in this list (T11 review N6) — see
+                        // [`reveal_seat_choice`], which is the other half.
+                        out.push_str(&format!("[{}] Seat {} — {color}\n", seat.0, seat.0));
                     }
                     out.push_str("> pick a number, or 'cancel'\n");
                     out
@@ -2576,7 +2631,7 @@ impl Repl {
                 "`suggest` is simulation-only.\n\
                  A live-tracked game's hidden cards are a model reconciled from the table, not\n\
                  the engine's own deck, so the bot would be searching a position nobody is\n\
-                 playing. (Bot seats are sim-only for the same family of reason -- see guide §4.)"
+                 playing. (Bot seats are sim-only for the same family of reason — see guide §4.)"
                     .to_string(),
             );
         }
@@ -2636,14 +2691,7 @@ impl Repl {
         let seated = self.session.state().players.len();
         if let Some(seat) = seat {
             if usize::from(seat.0) >= seated {
-                return self.out(
-                    format!(
-                        "There is no Seat {} in this game — {seated} players are seated, Seat 0 to Seat {}.\n",
-                        seat.0,
-                        seated.saturating_sub(1),
-                    ),
-                    false,
-                );
+                return self.out(no_such_seat(seat.0, seated), false);
             }
         }
         let seats = self.revealable_seats();
@@ -2656,10 +2704,7 @@ impl Repl {
         }
         if let Some(seat) = seat {
             if !seats.contains(&seat) {
-                return self.out(
-                    format!("Seat {}'s starting order is not hidden — nothing to reveal there.\n", seat.0),
-                    false,
-                );
+                return self.out(seat_not_hidden(seat), false);
             }
         }
         // A single candidate still shows its menu rather than auto-picking: a
@@ -2686,12 +2731,15 @@ impl Repl {
             _ => {}
         }
         let Some(seat) = seat else {
+            let seated = self.session.state().players.len();
             let [tok] = words else {
-                return self.out("! pick a numbered seat, or 'cancel'".to_string(), false);
+                return self.out("! pick a seat number from the list, or 'cancel'".to_string(), false);
             };
-            let Some(picked) = card_prompt::list_index(tok, seats.len()).map(|k| seats[k]) else {
-                return self
-                    .out(format!("! pick a number {}, or 'cancel'", range_text(seats.len())), false);
+            // The refusal keeps the menu OPEN and re-asks, exactly as the card
+            // question below does: a mistyped seat costs one line, not the flow.
+            let picked = match reveal_seat_choice(tok, &seats, seated) {
+                Ok(seat) => seat,
+                Err(refusal) => return self.out(refusal, false),
             };
             self.sub = SubPrompt::Reveal { seats, seat: Some(picked) };
             return self.out(String::new(), false);
@@ -2971,7 +3019,7 @@ impl Repl {
     /// where there is no frame to replace and the seed and turn number are
     /// printed above it. The fold cache, the tail length and the global indexes
     /// are the same in both, so they can differ in styling and never in fact.
-    fn log_text(&self) -> String {
+    pub(crate) fn log_text(&self) -> String {
         let n = self.session.record().events.len();
         let start = n.saturating_sub(LOG_VIEW_TAIL);
         let described = (start..n)
@@ -3074,7 +3122,7 @@ Commands:
   b <id> t <adj>  Placement Option B with the Telegram bonus: +1 assistant in an adjacent area
   m <from> <to>   resolve a pending assistant-move choice (<from> is 'hand' or an area id)
   r [id[:n]]...   Movement Option B: retreat the President, recovering all (bare id) or n assistants per area ('r' alone recovers none)
-  board           show the area grid and its legend (5-Power token faces, [St] Station, · empty build slot, ~ Canal toll)
+  board           show the area grid and its legend (▲ president, ● assistants, ◈ a Movement destination, [St] Station, site-slot tokens)
   players         show each player's resources, hand, tech, tokens, President
   ports           open the PORT OFFER view: every slot's order card, and the power its zone takes
   labs            open the LABORATORY OFFER view: every slot's technology, what it does, and what it costs
@@ -3137,6 +3185,7 @@ fn range_text(n: usize) -> String {
 mod tests {
     use super::*;
     use crate::session::Session;
+    use crate::style::test_support::assert_no_ascii_prose_dash;
     // `repl`'s own top-level already glob-imports yokohama_core (needed by
     // the impl code), and `super::*` carries that into this module too --
     // this second import is the brief's Step-1 test text verbatim, kept
@@ -3350,10 +3399,16 @@ mod tests {
             let opening = screen::wrap(&r, &r.prompt()).lines().count();
             r.step("view");
             let menu = r.overlay_text();
+            // A NUMBERED row, not merely a line mentioning the word: the
+            // menu's own gloss names Board too (it is one of the three rows
+            // that redraw the frame instead of opening a surface), and a
+            // first-match scan finds the title.
             let board_idx = menu
                 .lines()
+                .map(|l| l.trim())
+                .filter(|l| l.starts_with('['))
                 .find(|l| l.contains("Board"))
-                .and_then(|l| l.trim().strip_prefix('[')?.split(']').next()?.parse::<usize>().ok())
+                .and_then(|l| l.strip_prefix('[')?.split(']').next()?.parse::<usize>().ok())
                 .expect("the Board entry carries its number");
             let out = r.step(&board_idx.to_string());
             let rows = screen::wrap(&r, &out.text).lines().count();
@@ -3997,6 +4052,17 @@ mod tests {
     ///
     /// Swept over real driver output rather than over the source, so it is a
     /// property of what a player sees.
+    ///
+    /// **A WALK ONLY REACHES WHAT A PLAYABLE SESSION SHOWS**, which the T11
+    /// review demonstrated by injecting a `--` into the lockdown refusal and
+    /// watching the suite stay green (F5). The three surfaces below sit outside
+    /// any walk by construction — a locked session refuses the loop, a load
+    /// warning is produced before the loop starts, and `suggest` refuses only
+    /// in live mode — so each is reached through its own producer and checked
+    /// with the same rule. They are named, not folded into one blob, because a
+    /// fixture that silently stops producing text is the failure mode this
+    /// whole test exists to avoid; [`assert_no_ascii_prose_dash`] refuses an
+    /// empty one.
     #[test]
     fn no_driver_message_writes_a_prose_dash_in_ascii() {
         let mut r = repl_2p(4);
@@ -4015,12 +4081,38 @@ mod tests {
         }
         assert!(seen.len() > 20_000, "the walk must actually produce output: {}", seen.len());
         assert!(seen.contains('—'), "anti-vacuity: the surface does use em dashes");
-        for (n, line) in seen.lines().enumerate() {
-            assert!(
-                !line.contains(" -- "),
-                "line {n} writes an ASCII prose dash: {line:?}",
-            );
-        }
+        assert_no_ascii_prose_dash("the opening walk", &seen);
+
+        // (1) The LOCKDOWN refusal — the line the review's injected `--` sat
+        // on. A locked session answers everything but save/log/quit with it,
+        // so no walk over a playable session can ever print it.
+        let mut locked = repl_2p(4);
+        locked.locked = true;
+        assert_no_ascii_prose_dash("the lockdown refusal", &locked.step("board").text);
+
+        // (2) A LOAD WARNING — produced by `Repl::new` before any step runs,
+        // and shown by `main` above the opening frame rather than returned from
+        // the loop. The live-record-names-a-bot demotion is the one this
+        // driver can construct without a file on disk.
+        let bots = BotSeats::new(vec![None, Some(RolloutPolicy::FAMILY_WEIGHTED_DEFAULT)], 3);
+        let mut session = Session::new_live(
+            GameConfig::for_player_count(2),
+            21,
+            SetupObservations::default(),
+            vec![StartingOrderChoice::Keep(0), StartingOrderChoice::Keep(0)],
+            Rules::standard(),
+        )
+        .unwrap();
+        session.set_run_seats(bots.seat_provenance());
+        let warned = Repl::new(session);
+        assert_no_ascii_prose_dash("a load warning", &warned.session.load_warnings.join("\n"));
+
+        // (3) The `suggest` LIVE-MODE refusal, which a simulation session
+        // structurally cannot reach.
+        let (mut live, _) = repl_live_hidden(21);
+        let refusal = live.step("suggest");
+        assert!(refusal.text.contains("simulation-only"), "the refusal fired: {}", refusal.text);
+        assert_no_ascii_prose_dash("the suggest live-mode refusal", &refusal.text);
     }
 
     /// **The `view` MENU is a full-screen overlay, like every surface it
@@ -4103,6 +4195,41 @@ mod tests {
             );
             assert!(r.overlay.is_none(), "'{cmd}' must not open an overlay while locked");
         }
+    }
+
+    /// **The postmortem dump carries the LAST [`LOG_DUMP_TAIL`] entries**, and
+    /// says how many of how many it is showing (T11 review N1).
+    ///
+    /// The two tails are deliberately different lengths — the view is sized by
+    /// the design floor, the dump by what a bug report can carry without being
+    /// scrolled past — and only the view's had a pin. An unpinned constant on
+    /// the direction that matters here is one nobody notices going wrong: a
+    /// dump that quietly showed the FIRST ten would look identical in shape and
+    /// be useless for exactly the fault it exists to describe.
+    #[test]
+    fn the_postmortem_dump_carries_the_last_ten_entries_and_says_so() {
+        let mut r = repl_2p(4);
+        for _ in 0..(LOG_DUMP_TAIL + 5) {
+            step_one_move(&mut r);
+        }
+        let total = r.session.record().events.len();
+        assert!(total > LOG_DUMP_TAIL, "fixture: more events than the dump shows ({total})");
+        r.engage_lockdown("a synthetic fault".to_string());
+
+        let dump = r.step("log").text;
+        assert!(
+            dump.contains(&format!("Log ({LOG_DUMP_TAIL} of {total} event(s))")),
+            "the dump states its own window: {dump}",
+        );
+        // The LAST ten, by their global indexes — the direction the whole
+        // surface is for.
+        for i in (total - LOG_DUMP_TAIL)..total {
+            assert!(dump.contains(&format!("  {i}: ")), "entry {i} is in the dump: {dump}");
+        }
+        assert!(
+            !dump.contains(&format!("  {}: ", total - LOG_DUMP_TAIL - 1)),
+            "and the entry just before the window is not: {dump}",
+        );
     }
 
     /// Task 16 (T2.5): the lockdown status line's `[locked]` marker is
@@ -4578,7 +4705,8 @@ mod tests {
         assert!(p.contains("copper"), "{p}");
         assert!(p.contains("silk"), "{p}");
         assert!(p.contains("tea"), "{p}");
-        assert!(p.contains("fish"), "{p}");
+        // `seafood`, the one word for this good on every surface (T11 N4).
+        assert!(p.contains("seafood"), "{p}");
         assert!(p.contains("(any-good reward)"), "{p}");
     }
 
@@ -4940,6 +5068,51 @@ mod tests {
     // is held at 20 by draining the warehouse to match the 6 placed on board.
     fn movement_grouping_fixture() -> Repl {
         movement_grouping_fixture_with(1)
+    }
+
+    /// **Guide §4's captured guided-retreat screens are what this fixture
+    /// renders** — the fifth and sixth blocks held to the regeneration
+    /// discipline (T11 review F2).
+    ///
+    /// The guide printed `recovering 2 assistant(s)` with an elision in the
+    /// middle: a wording this driver has never emitted (the confirm line has
+    /// spoken real plurals since T11) inside a transcript nothing checked. Same
+    /// class as the Movement block the T4 review found spliced, and the same
+    /// answer — the two prompts a player actually meets, captured whole from
+    /// one run, with prose rather than a `...` standing in for the lines
+    /// between them.
+    ///
+    /// Regenerate by pasting both blocks into BOTH formats from ONE run of
+    /// this fixture.
+    #[test]
+    fn the_guide_guided_retreat_captures_are_what_the_fixture_renders() {
+        const GUIDE_MD: &str = include_str!("../../../docs/cli-guide.md");
+        let mut r = movement_grouping_fixture();
+        r.step("3");
+        let question = crate::style::strip_ansi(&r.sub_prompt_text());
+        for answer in ["2", "1", "1", "1"] {
+            r.step(answer);
+        }
+        let confirm = crate::style::strip_ansi(&r.sub_prompt_text());
+
+        for (what, rendered) in [("the first question", &question), ("the confirm", &confirm)] {
+            let rendered = rendered.trim_end_matches('\n');
+            let opening = rendered.lines().next().expect("a first line");
+            let block = GUIDE_MD
+                .split("```")
+                .map(|part| part.trim_matches('\n'))
+                .find(|part| part.starts_with(opening))
+                .unwrap_or_else(|| {
+                    panic!("cli-guide.md carries no captured guided retreat ({what}):\n{rendered}")
+                });
+            assert_eq!(
+                block, rendered,
+                "docs/cli-guide.md's captured guided retreat ({what}) no longer matches what \
+                 `movement_grouping_fixture` renders. Re-capture BOTH blocks in BOTH formats from \
+                 ONE run of this fixture — never by editing them by hand, and never with an \
+                 elision standing in for a line nobody ran (that is what T11 review F2 found).",
+            );
+        }
     }
 
     /// An applied move puts the option list back on its FIRST page.
@@ -6890,6 +7063,114 @@ mod tests {
         (Repl::new(session), hidden)
     }
 
+    /// A live 4-player table whose seats 2 AND 3 kept hidden starting orders —
+    /// the shape where a seat's list POSITION and its NUMBER genuinely
+    /// disagree, which is the only shape that can catch the trap N6 names.
+    fn live_4p_two_hidden(seed: u64) -> (Repl, Vec<(PlayerId, OrderCardId)>) {
+        let rules = Rules::standard();
+        let config = GameConfig::for_player_count(4);
+        let table = new_game(config.clone(), &rules, seed).unwrap();
+        let hidden =
+            vec![(PlayerId::new(2), table.deals[2][0]), (PlayerId::new(3), table.deals[3][0])];
+        let session = Session::new_live(
+            config,
+            seed,
+            SetupObservations::default(),
+            vec![
+                StartingOrderChoice::Keep(0),
+                StartingOrderChoice::Keep(0),
+                StartingOrderChoice::Unknown,
+                StartingOrderChoice::Unknown,
+            ],
+            rules,
+        )
+        .unwrap();
+        (Repl::new(session), hidden)
+    }
+
+    /// **The guided seat menu numbers a seat by its own identity** (T11 review
+    /// N6, fixing a defect that shipped at T8).
+    ///
+    /// The menu numbered its rows by LIST POSITION, so at a table where the
+    /// first two seats had kept their dealt cards the screen read `[1] Seat 2`
+    /// and `[2] Seat 3` — and typing `2`, the number printed beside Seat 2,
+    /// selected Seat 3. Every other stable-numbering surface in this driver
+    /// (T7's class) numbers by the identity the thing already has, and a seat
+    /// has one: `reveal 2` at the prompt and `2` at this menu now name the same
+    /// seat, which is the whole content of "one grammar everywhere".
+    ///
+    /// Held at 4P with the first two seats visible, because that is the only
+    /// arrangement where position and identity disagree — at 3P with seats 1
+    /// and 2 hidden the old numbering was accidentally right, which is why the
+    /// T8 tests never saw it.
+    #[test]
+    fn the_guided_reveal_menu_numbers_seats_by_identity_not_by_list_position() {
+        let (mut r, hidden) = live_4p_two_hidden(21);
+        let menu = r.step("reveal");
+        assert!(menu.text.contains("[2] Seat 2"), "the number IS the seat: {}", menu.text);
+        assert!(menu.text.contains("[3] Seat 3"), "{}", menu.text);
+        assert!(
+            !menu.text.contains("[1]") && !menu.text.contains("[0]"),
+            "no row is numbered by its position in the list: {}",
+            menu.text,
+        );
+
+        // And typing that number reaches THAT seat.
+        r.step("2");
+        let asked = crate::style::strip_ansi(&r.sub_prompt_text());
+        assert!(asked.contains("Seat 2's hidden starting order"), "{asked}");
+        let (seat, card) = hidden[0];
+        assert_eq!(seat, PlayerId::new(2), "fixture");
+        let out = r.step(&format!("O{:02}", card.0));
+        assert!(out.text.contains("Seat 2 revealed"), "{}", out.text);
+    }
+
+    /// **The menu's refusals name the SEAT, in the words the `reveal` alias
+    /// uses** — pinned on the parser itself and not only on the screen (T7's
+    /// standing lesson: a byte-identical backstop refusal makes every wrong
+    /// resolver an equivalent mutant, so the contract needs an inner pin).
+    #[test]
+    fn the_guided_reveal_menu_refuses_a_wrong_seat_number_by_name() {
+        let seats = vec![PlayerId::new(2), PlayerId::new(3)];
+
+        assert_eq!(reveal_seat_choice("2", &seats, 4), Ok(PlayerId::new(2)));
+        assert_eq!(reveal_seat_choice("3", &seats, 4), Ok(PlayerId::new(3)));
+
+        // A real seat whose order is already public, and a seat the table does
+        // not have, are DIFFERENT facts and say so — the T8 review's NOTE-6a
+        // distinction, now held on this path too.
+        assert_eq!(reveal_seat_choice("1", &seats, 4), Err(seat_not_hidden(PlayerId::new(1))));
+        assert_eq!(reveal_seat_choice("9", &seats, 4), Err(no_such_seat(9, 4)));
+        assert!(reveal_seat_choice("9", &seats, 4).unwrap_err().contains("no Seat 9"));
+        assert!(
+            reveal_seat_choice("1", &seats, 4).unwrap_err().contains("Seat 1's starting order is not hidden"),
+        );
+
+        // Anything that is not a seat number at all gets the usage line, which
+        // names what the menu takes.
+        for tok in ["x", "", "-1", "2.0", "seat 2"] {
+            let refusal = reveal_seat_choice(tok, &seats, 4).unwrap_err();
+            assert!(refusal.contains("seat number"), "{tok:?}: {refusal}");
+        }
+    }
+
+    /// The same refusals reach the SCREEN and leave the menu open, so a
+    /// mistyped seat costs one line rather than the whole flow.
+    #[test]
+    fn a_wrong_seat_number_keeps_the_guided_reveal_menu_open() {
+        let (mut r, _) = live_4p_two_hidden(21);
+        r.step("reveal");
+        let out = r.step("1");
+        assert!(out.text.contains("Seat 1's starting order is not hidden"), "{}", out.text);
+        assert!(
+            matches!(r.sub, SubPrompt::Reveal { seat: None, .. }),
+            "the menu is still up, still asking",
+        );
+        let out = r.step("9");
+        assert!(out.text.contains("no Seat 9"), "{}", out.text);
+        assert!(matches!(r.sub, SubPrompt::Reveal { seat: None, .. }));
+    }
+
     /// **`reveal` on its own opens a numbered seat menu, and the menu path
     /// records exactly what the alias records** (spec §0.2: every decision
     /// reachable by numbered menu; today's grammars survive as expert aliases).
@@ -6917,13 +7198,12 @@ mod tests {
         let menu = r_menu.step("reveal");
         assert!(menu.text.contains("Whose starting order just became public?"), "{}", menu.text);
         assert!(
-            menu.text.contains(&format!("[{}] Seat 1", NUMBER_BASE))
-                && menu.text.contains(&format!("[{}] Seat 2", NUMBER_BASE + 1)),
-            "both hidden seats are numbered from the crate's base: {}",
+            menu.text.contains("[1] Seat 1") && menu.text.contains("[2] Seat 2"),
+            "both hidden seats are numbered by their own identity (T11 N6): {}",
             menu.text,
         );
         assert!(!menu.text.contains("Seat 0"), "seat 0 kept its dealt card and is not hidden");
-        r_menu.step(&(NUMBER_BASE + 1).to_string());
+        r_menu.step(&seat.0.to_string());
         // The card question is the SAME composed zone the bound captures draw,
         // and it names the seat that was picked rather than the first one.
         let asked = crate::style::strip_ansi(&r_menu.sub_prompt_text());

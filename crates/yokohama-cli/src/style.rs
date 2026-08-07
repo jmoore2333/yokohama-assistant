@@ -708,6 +708,33 @@ pub(crate) mod test_support {
     /// Test alias for the crate-internal `strip_ansi` (kept so existing
     /// test imports read unchanged).
     pub(crate) use super::strip_ansi;
+
+    /// **One dash, everywhere the player reads prose** — T11's editorial rule,
+    /// as an assertion any surface can point at itself.
+    ///
+    /// It lives here because `style` owns the crate's typography, and it is a
+    /// FUNCTION because the rule's reach is the thing that keeps failing: the
+    /// T11 sweep walked the REPL, which never visits a locked session, never
+    /// loads a doctored save and never refuses `suggest` in live mode — so
+    /// three whole message surfaces were outside every check, and the review
+    /// proved it by injecting a `--` into the lockdown refusal and watching the
+    /// suite stay green. Each of those surfaces now calls this where its own
+    /// fixture already has the string, which is cheaper than teaching one walk
+    /// to reach every corner of the driver.
+    ///
+    /// `--- Board check ---` and `-- row 1 of 4 --` are DECORATION, a
+    /// horizontal rule rather than a dash, and are deliberately not matched:
+    /// the pattern is a space-flanked `--`, which no rule of that shape writes.
+    pub(crate) fn assert_no_ascii_prose_dash(what: &str, text: &str) {
+        assert!(!text.is_empty(), "{what}: nothing to check — the fixture produced no text");
+        for (n, line) in text.lines().enumerate() {
+            assert!(
+                !line.contains(" -- "),
+                "{what} line {n} writes an ASCII prose dash where the surface speaks em dashes: \
+                 {line:?}",
+            );
+        }
+    }
 }
 
 #[cfg(test)]

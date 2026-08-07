@@ -5,7 +5,7 @@ ORDER CARDS — 1 card
 │ 2 Seafood 2 Copper   │
 │                      │
 │ ★1 VP ¥2             │
-│ = starting order     │
+│ your starting order  │
 └──────────────────────┘
 
 An order is fulfilled as an additional action: hand over the goods it needs, take what it pays, and the card goes to your completed pile.

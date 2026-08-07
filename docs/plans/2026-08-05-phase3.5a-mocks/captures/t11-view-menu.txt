@@ -1,4 +1,4 @@
-GAME INFO — full view   the 'view' pattern: every panel on the frame is a summary, and each row here is its full surface
+GAME INFO — full view   the 'view' pattern: every panel on the frame is a summary, and most rows here open its full surface — Board, Players and Score redraw the frame instead
 
   [1]  Port offer — the cards on display
   [2]  Log — the trail

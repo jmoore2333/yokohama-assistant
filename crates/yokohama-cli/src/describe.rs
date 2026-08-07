@@ -276,8 +276,9 @@ fn human_position(index: usize) -> usize {
     index + 1
 }
 
-/// Port slot numbers are shown 1-based everywhere (`render::ports_view`'s own
-/// labeling and the live reveal prompt's), so the two helpers above and the
+/// Port slot numbers are shown 1-based everywhere — the `ports` view's own
+/// slot labels ([`crate::view_render::ports_view`], which replaced `render`'s
+/// at T11) and the live reveal prompt's — so the two helpers above and the
 /// prompts they feed all read the same board name.
 pub fn port_board_name(board_b: bool) -> &'static str {
     if board_b {
@@ -392,9 +393,16 @@ pub fn achievement_desc(a: AchievementType) -> String {
 /// line. The CLI guide's §8.2 lists card NAMES only, not per-effect wording,
 /// so these are the SINGLE display source for what a tech does -- the `labs`
 /// view exists precisely so a player can choose without an external
-/// reference. ASCII only, to stay terminal-safe, and short enough that the
-/// composed lab line clears 140 columns
-/// (`labs_view_lines_fit_the_documented_terminal_width`).
+/// reference. ASCII only, to stay terminal-safe.
+///
+/// **These lines are never clipped, and that is deliberate**: a qualifier is
+/// exactly what changes a purchase decision, so the `labs` view sizes its card
+/// to the longest effect text in the registry rather than the other way round
+/// (`every_lab_card_is_the_same_height_across_the_whole_registry` sweeps the
+/// registry; `every_t11_view_line_fits_the_design_floor` holds the result
+/// inside the 200-column floor). The old note here promised a 140-column
+/// window and named a test that went with `render`'s pre-T11 lab lines — both
+/// gone: the surface is full-screen now, at the floor.
 ///
 /// AUTHORING RULE (F2, Codex adversarial review of PR #4): each line is
 /// authored from the RULES sources -- rulebook pp. 15-16, the KB reference
@@ -438,12 +446,19 @@ pub fn tech_effect_text(effect: TechEffect) -> &'static str {
 }
 
 /// Plain-words name of a trade good, for `Move::ChooseAnyGood`.
+///
+/// **`seafood`, never `fish`** (T11 review N4). The engine's good is
+/// `TradeGood::Seafood`, the card index filters by `seafood`, the dashboard
+/// counts `Seafood` and the 5-Power token face reads `3 Seafood` — one good
+/// spoken of in two words is one a player has to learn twice. `fish` survives
+/// as an INPUT alias at the index filter, where accepting more than one word
+/// costs nothing; what is unified is what the tool SAYS.
 fn trade_good_name(g: TradeGood) -> &'static str {
     match g {
         TradeGood::Copper => "copper",
         TradeGood::Silk => "silk",
         TradeGood::Tea => "tea",
-        TradeGood::Seafood => "fish",
+        TradeGood::Seafood => "seafood",
     }
 }
 
@@ -476,11 +491,11 @@ fn chinatown_exchange_text(exchange: ChinatownExchange) -> &'static str {
         ChinatownExchange::CopperToYen => "1 copper -> 2 yen",
         ChinatownExchange::SilkToYen => "1 silk -> 2 yen",
         ChinatownExchange::TeaToYen => "1 tea -> 1 yen",
-        ChinatownExchange::SeafoodToYen => "1 fish -> 1 yen",
+        ChinatownExchange::SeafoodToYen => "1 seafood -> 1 yen",
         ChinatownExchange::YenToCopper => "2 yen -> 1 copper",
         ChinatownExchange::YenToSilk => "2 yen -> 1 silk",
         ChinatownExchange::YenToTea => "1 yen -> 1 tea",
-        ChinatownExchange::YenToSeafood => "1 yen -> 1 fish",
+        ChinatownExchange::YenToSeafood => "1 yen -> 1 seafood",
         ChinatownExchange::YenToImported => "4 yen -> 1 imported good",
     }
 }
@@ -676,7 +691,7 @@ fn describe_area_action(action: &AreaAction, state: &GameState, rules: &Rules) -
                 parts.push("tea");
             }
             if *seafood {
-                parts.push("fish");
+                parts.push("seafood");
             }
             if *yen {
                 parts.push("yen");
@@ -939,9 +954,28 @@ fn join_order_ids(cards: &[OrderCardId]) -> String {
     if ids.is_empty() { "(none)".to_string() } else { ids.join(", ") }
 }
 
+/// One logged event in the words it read at the moment it applied — the string
+/// `Session` caches per event and the `log` view and lockdown dump both print.
+///
+/// **A MOVE is prefixed with the acting player's colour; a REVEAL is not**
+/// (T11 review F3). The log is read long after the fact, so an entry saying
+/// only what happened leaves two identically-worded turns — `End
+/// additional-action phase` twice running — impossible to tell apart, and at
+/// 3P/4P impossible to attribute at all. The naming rule the rest of the
+/// surface follows settles the wording: a PLAYER is named by their colour, and
+/// `state` is the historical state this event ran against, so
+/// `current_player` IS the actor. Nothing about the record changes; this is
+/// presentation, computed where the fold already knows the state.
+///
+/// The three reveal variants stay bare on purpose. They are the operator
+/// recording a face-up table fact rather than a player acting, and
+/// `RevealStartingOrder` already names its subject seat — a prefix would
+/// either invent an actor or name the same seat twice.
 pub fn describe_recorded_event(ev: &RecordedEvent, state: &GameState, rules: &Rules) -> String {
     match ev {
-        RecordedEvent::Move(mv) => describe_move(mv, state, rules),
+        RecordedEvent::Move(mv) => {
+            format!("{}: {}", render::color_name(state.current_player().color), describe_move(mv, state, rules))
+        }
         // Carry the card ids, not just a count, so the `log` view is an audit
         // trail: an operator can read back exactly which physical cards were
         // recorded and catch a mis-entry the desync guard structurally cannot
@@ -972,7 +1006,7 @@ pub fn describe_recorded_event(ev: &RecordedEvent, state: &GameState, rules: &Ru
 /// fields alone.
 pub fn describe_pending_choice(head: &PendingChoice, state: &GameState, _rules: &Rules) -> String {
     match head {
-        PendingChoice::AnyGood => "any-good reward: choose 1 of copper/silk/tea/fish".to_string(),
+        PendingChoice::AnyGood => "any-good reward: choose 1 of copper/silk/tea/seafood".to_string(),
         PendingChoice::WarehouseTake => {
             let p = state.current_player();
             let parts: Vec<String> = warehouse_take_options(p)
@@ -1260,6 +1294,50 @@ mod tests {
             &rules,
         );
         assert_eq!(techs, "reveal techs: T03", "{techs}");
+    }
+
+    /// **A logged MOVE names who made it; a logged REVEAL does not** (T11
+    /// review F3).
+    ///
+    /// The `log` view is read long after the fact and at every player count, so
+    /// a line that says only what happened leaves two identically-worded turns
+    /// — `End additional-action phase` twice in a row — indistinguishable. The
+    /// naming rule the rest of the surface follows answers it: a PLAYER is
+    /// named by their colour, so the entry carries the colour of whoever was to
+    /// move at that event.
+    ///
+    /// The three reveal variants are deliberately bare. They are operator
+    /// recordings of face-up table facts rather than a player's action, and the
+    /// one with a subject seat already names it — prefixing them would either
+    /// invent an actor or say the same seat twice.
+    #[test]
+    fn a_logged_move_names_its_actor_and_a_logged_reveal_does_not() {
+        let mut state = state_2p();
+        let rules = Rules::standard();
+        let mv = Move::PlaceThreeAreas { placements: vec![] };
+
+        state.current_player = PlayerId::new(0);
+        let red = describe_recorded_event(&RecordedEvent::Move(mv.clone()), &state, &rules);
+        assert_eq!(red, "Red: Place no assistants", "{red}");
+
+        // The SAME move by the other seat is a different line, which is the
+        // whole point: without the prefix these two are one string.
+        state.current_player = PlayerId::new(1);
+        let blue = describe_recorded_event(&RecordedEvent::Move(mv.clone()), &state, &rules);
+        assert_eq!(blue, "Blue: Place no assistants", "{blue}");
+        assert_ne!(red, blue);
+
+        for ev in [
+            RecordedEvent::RevealOrders(vec![OrderCardId(5)]),
+            RecordedEvent::RevealTechs(vec![TechCardId(3)]),
+            RecordedEvent::RevealStartingOrder { player: PlayerId::new(1), card: OrderCardId(7) },
+        ] {
+            let line = describe_recorded_event(&ev, &state, &rules);
+            assert!(
+                line.starts_with("reveal "),
+                "a reveal is worded as a recording, unprefixed: {line}",
+            );
+        }
     }
 
     #[test]

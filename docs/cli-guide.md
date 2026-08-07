@@ -29,7 +29,7 @@ cargo run -p yokohama-cli -- save.json # resume a saved game
 
 **Resuming.** `cargo run -p yokohama-cli -- <save.json>` replays a saved game deterministically to exactly where you left off. The game autosaves after **every** applied move once a save path is set, and the wizard sets one by default — `yokohama-game-<seed>.json` in the current directory unless you gave a path — so a crash loses at most the move you were typing; just rerun with the save file.
 
-**The composed screen (terminal only).** On a real terminal the tool is a full game screen, redrawn after every input: a title strip, the board (one bordered tile box per area, laid out as the physical staggered pyramid — widest row on top, each row below offset half a tile), a live dashboard (a PLAYERS panel — current player marked `▶`, then each seat's yen/VP, goods, assistant/shophouse/trade-house zones with the next trading-house take price, one line per technology owned, mercenaries, President location by area name, orders in hand, and the seat number the `reveal <seat>` command uses — then a TRACKS panel, an ACHIEVEMENTS panel, and YOUR HAND drawn as a card) — beside the board at 2 players, where the board legend follows both. At 3 and 4 the board is too wide to leave room beside it, so the legend comes first, directly under the board it explains, and the dashboard is laid out below in **one column per seat** — the same fields in the mock's shorter wording (`8 hand · 0 board · 12 warehouse`), technologies named rather than explained, and the orders/locked-pawns/next-take figures on a tail line under each seat (`next take ¥4` is the **Employment Agency price of that seat's next trading house** — the printed 4/5/6/7 progression; the beside layout prints it on the Trade houses line itself, where the noun is right there) — with the TRACKS, ACHIEVEMENTS and YOUR HAND panels each compressed onto one titled row (your hand named there rather than drawn; `hand` draws the cards). Then a game-info strip naming every view, then the message zone (what the last move changed) and the prompt. `panel` hides/shows the dashboard; `screen` turns the whole composed mode off and back on (plain rolling text, same content). Piped or redirected output is always plain rolling text with zero escape codes — the composed screen and all color exist only on a terminal.
+**The composed screen (terminal only).** On a real terminal the tool is a full game screen, redrawn after every input: a title strip, the board (one bordered tile box per area, laid out as the physical staggered pyramid — widest row on top, each row below offset half a tile), a live dashboard (a PLAYERS panel — current player marked `▶`, then each seat's yen/VP, goods, assistant/shophouse/trade-house zones with the next trading-house take price, one line per technology owned, mercenaries, President location by area name, orders in hand, and the seat number the `reveal <seat>` command uses — then a TRACKS panel, an ACHIEVEMENTS panel, and YOUR HAND drawn as a card) — beside the board at 2 players, where the board legend follows both. At 3 and 4 the board is too wide to leave room beside it, so the legend comes first, directly under the board it explains, and the dashboard is laid out below in **one column per seat** — the same fields in the mock's shorter wording (`8 hand · 0 board · 12 warehouse`), technologies named rather than explained, and the orders/locked-pawns/next-take figures on a tail line under each seat (`next take ¥4` is the **Employment Agency price of that seat's next trading house** — the printed 4/5/6/7 progression; the beside layout prints it on the Trade houses line itself, where the noun is right there) — with the TRACKS, ACHIEVEMENTS and YOUR HAND panels each compressed onto one titled row (your hand named there rather than drawn; `hand` draws the cards). Then a game-info strip naming every view, then the message zone (what the last move changed) and the prompt. `panel` hides/shows the dashboard; `screen` turns the whole composed mode off and back on (plain rolling text, same content). Piped or redirected output is always plain rolling text with zero escape codes — the composed screen and all color exist only on a terminal. (Every captured screen in this guide is that plain form, taken through a pipe: on a real terminal the same screen is coloured, and its standing hint carries one extra clause — `↑ recalls what you typed` — that only appears where the line editor is live.)
 
 **Color and width.** The tool colors what matters — player names and their pieces in their colors, tile names in bold, site-slot tokens and goods letters in resource tones, VP, warnings, the phase line — and setting the standard `NO_COLOR` environment variable turns color off in a terminal too (the composed screen stays; `screen` turns that off). The composed screen is wide, and at most counts wider than the board alone: the board grid is 120 columns at 2 players, 150 at 3, and 180 at 4, and a different part of the screen sets the total at each count — the dashboard joined beside the board at 2, and the dashboard stacked below it at 3 and 4 — so the whole frame is 198 columns at 2 players, 175 at 3, and 200 at 4. At 3 players that width is what it takes to write every legal state out in full words: the widest achievements row a game can show is 171 columns, so the block is held open to 175 rather than to the 163 the board and its legend would have set. It stays there: a test walks whole games at every player count and the frame never grows past those widths, so what you size the window to at the start is what the game needs at the end. The composed frame does no terminal-size detection, so size the window before you start: **200 columns** clears every layout's width — a test now pins every line the driver *lays out* (board, panel, option lists, prompts and hints, the choice banner, a lockdown notice) at or under 200 columns, so none of them wraps mid-token; the one thing that can still wrap is a message quoting something you typed, such as an autosave warning naming a long save path — and the screen opens 48 rows at 2 players, 49 at 3, and 48 at 4 — so a **200x50** window shows the whole opening screen at **every** player count. The column layout is what makes the higher counts fit, and it fits them for the whole game rather than only at the start: at 3 and 4 players a seat column is a fixed block of rows whatever that seat owns, so nothing a player collects can make the dashboard taller. What can still add rows is the part below it: the decision zone budgets twelve rows for its option list (`more` pages the rest, packing short options into columns to fit more of them into those twelve), and a big message zone pushes the title and the top board row off the top. In play the screen reaches 60 rows at 3 and 4 players, measured over whole-game walks and held there by a test. **Two players is the one count that keeps growing.** Its dashboard sits beside the board rather than below it, and that shape is ragged: it gains a line for each technology a seat owns, so a long 2-player game gets a slowly taller screen rather than a fixed one — 67 rows on the deepest walk the tests run, and higher on a longer game. That is a property of the side-by-side layout, not a bound. `panel` (hide the dashboard) and `screen` (plain rolling text) buy those rows back. The `board` command's one-time reminder covers only the board grid's own width (and only when that grid is wider than 100 columns), which every player count now is. **The card index is the one surface that does measure the terminal** (§3, §4): it asks how wide the window is and lays its card grid out to fit — five cards to a row at 148 columns rather than the eight it draws at 200 — so a card is never split down the middle, and the wizard says so once, above the first index it draws, when the window is under 200. Piped output measures nothing and is unchanged.
 
@@ -198,13 +198,17 @@ Routes to Fishing Ground (A05):
 > pick a number, or 'cancel'
 ```
 
-Selecting the collapsed retreat entry opens a **guided retreat**: for each area holding your assistants (ascending area id) it asks `recover how many from <Area> [0-n]?`, then shows the assembled move for a final `confirm`:
+Selecting the collapsed retreat entry opens a **guided retreat**: for each area holding your assistants, in ascending area id, it asks how many to bring back. Captured from a position with assistants in four areas, the first question reads:
 
 ```
-recover how many from Tea Plantation (A02) [0-1]?
+recover how many from Bank (A00) [0-2]?
 > enter a number, or 'cancel'
-...
-Return President to hand, recovering 2 assistant(s) (A02 x1, A09 x1)
+```
+
+Answer each in turn — a number in range, or `0` to leave that area alone — and after the last one the assembled move is shown for a final `confirm`:
+
+```
+Return President to hand, recovering 5 assistants (A00 x2, A01 x1, A02 x1, A03 x1)
 > confirm / cancel
 ```
 
@@ -219,7 +223,7 @@ YOU ARE DECIDING · which good to take — the reward is yours whichever you pic
    [1] Take 1 copper (any-good reward)
    [2] Take 1 silk (any-good reward)
    [3] Take 1 tea (any-good reward)
-   [4] Take 1 fish (any-good reward)
+   [4] Take 1 seafood (any-good reward)
 (pick a number · 'back' undoes the last applied entry · 'view' any surface · '?' the card index · 'help' for commands)
 > 
 ```
@@ -322,7 +326,7 @@ b <id>          Placement Option B: place 2 assistants in one area
 b <id> t <adj>  Placement Option B with the Telegram bonus: +1 assistant in an adjacent area
 m <from> <to>   resolve a pending assistant-move choice (<from> is 'hand' or an area id)
 r [id[:n]]...   Movement Option B: retreat the President, recovering all (bare id) or n assistants per area ('r' alone recovers none)
-board           show the area grid and its legend (5-Power token faces, [St] Station, · empty build slot, ~ Canal toll)
+board           show the area grid and its legend (▲ president, ● assistants, ◈ a Movement destination, [St] Station, site-slot tokens)
 players         show each player's resources, hand, tech, tokens, President
 ports           open the PORT OFFER view: every slot's order card, and the power its zone takes
 labs            open the LABORATORY OFFER view: every slot's technology, what it does, and what it costs
@@ -425,8 +429,8 @@ The engine's canonical vocabulary differs from the rulebook's in places. **Diffe
 | CLI | Physical card / rulebook |
 |---|---|
 | `O01`–`O36` | ⚠ The rulebook has no card numbering. The number **is printed in the card's corner** — that corner index is the CLI's card identity. Find the corner number, type it. |
-| `O17 GB  2cop 1fish -> 8vp 1imp` (compact) | The card's country flag, required goods, and rewards. |
-| `O17 [Britain]  needs 2 copper + 1 fish  ->  8 VP + 1 import` (long form) | Same, in words. |
+| `BRITAIN          O27` (the card's title line) | Its country flag, and the corner number that is its identity. |
+| `2 Seafood 2 Copper` then `★1 VP ¥2` (the card's two interior blocks) | The goods it needs, then what it pays. An order is always drawn as a card — in `hand`, in the `?` index, and on the dashboard. |
 
 ### 8.2 Technology cards
 
@@ -473,24 +477,35 @@ Turn phases as the CLI names them, against the rulebook's turn structure:
 
 ### 8.5 Areas, boards, and tracks
 
-The board draws one bordered tile box per area, positioned as the physical staggered pyramid (widest row on top, each row below offset half a tile). Tile display names and wizard entry codes:
+The board draws one bordered tile box per area, positioned as the physical staggered pyramid (widest row on top, each row below offset half a tile). An ordinary tile and the Canal, captured from a real board, with the legend that sits under them:
 
-| Area | Tile name | Wizard |
-|---|---|---|
-| Copper Mine | `Copper Mn` | `cm` |
-| Silk Mill | `Silk Mill` | `sm` |
-| Tea Plantation | `Tea Plant` | `tp` |
-| Fishing Ground | `Fishing` | `fg` |
-| Bank | `Bank` | `bank` |
-| Port A / B | `Port A`/`Port B` | `pa`/`pb` |
-| Laboratory A / B | `Lab A`/`Lab B` | `la`/`lb` |
-| Employment Agency | `Employ Ag` | `ea` |
-| Chinatown | `Chinatown` | `ct` |
-| Church | `Church` | `ch` |
-| Customs | `Customs` | `cu` |
-| Canal | water tile (`~` fill, `toll 1 yen`) | `canal` |
+```
+┌ A03 COPPER MINE ▲ [St] ────┐
+│ 5-Power: 1 Import Site 2   │
+│ ●●  ●●●●+2                 │
+│ sites ★1 ⌂ — t2  │ T7      │
+└────────────────────────────┘
+┌ A10 CANAL ─────────────────┐
+│ transit only — no pawns,   │
+│ no tokens, no buildings    │
+│ ¥1 to the bank / crossing  │
+└────────────────────────────┘
+marks: ▲ president (owner color) · ● assistants (4, then +n) · ◈ a Movement destination the engine offers · [St] Station (+1 Power for everyone)
+site slots: ⌂ built (owner color) · ★n VP · ¥n yen · f/t/s/cn goods · *n any good · an assistants · ⌂n build · Tn trading-house VP — 'sites' renders the full cards
+Canal: the President may cross shore to shore for ¥1 to the bank ('sites' lists the pairs)
+```
 
-Each tile box shows: a header `A03 Copper Mn c` (area id, name in its type color, then the face-up 5-Power token's good letter — `i/c/s/t/f/y` = import/copper/silk/tea/seafood/yen, blank once the token is taken), a `P:` line (Presidents present by color letter, plus `[St]` when the Station token sits here), assistants (`R2 B1` = 2 red, 1 blue), and buildings (`sh R·B· | th Y` = one mark per shophouse space in printed order — owner color letter, `·` = empty — then the trading house owner). The Canal tile draws as water with its printed toll instead — nothing can ever stand or build there. Under the board a legend documents the token letters, `[St]`, and `·` marks, plus the canal crossing rule whenever this board has a Canal.
+The **title** carries the area id, the area's FULL name in capitals, and then every mark standing on that tile: `▲` for a President in its owner's colour, `[St]` where the Station token sits, and `◈` during Movement on every tile the engine offers you as a destination (§4). One sweep along the top row answers "where is everybody" — which is what the marks are on the title for rather than on a line of their own.
+
+The **5-Power line** names the face-up token in words and colour (`1 Import`, `3 Seafood`, `2 Copper`, `3 Yen`) and then the building-site card sitting on the area (`Site 2` — the number setup entry takes; nothing is printed on the physical card). Once somebody has collected the token the word reads `taken`. The tokens are face-up open information you enter at setup, never a reveal (§8.6).
+
+The **pawn line** draws each seat's assistants as a run of `●` in that seat's colour, up to four, then `+n` for the rest — so `●●  ●●●●+2` is two of one colour and six of another. An area nobody is standing on says `no pawns` rather than drawing an empty line. On a genuinely crowded tile, where four seats' runs would not fit the box, the line falls back to the compact letter-and-count form (`R12 B3`): a pawn the board cannot draw is a pawn you would not know about, so the tile tells the whole truth in less space instead of clipping.
+
+The **site-slot strip** is the area's building site in miniature: its four Shophouse spaces in printed order, then `│` and the trading house's VP. A *built* space shows `⌂` in its builder's colour; an *empty* one shows what it still pays, in the compact tokens the legend keys (`★n` VP, `¥n` yen, `f/t/s/c` plus a count for seafood/tea/silk/copper, `*n` any good, `an` assistant moves, `⌂n` warehouse takes); a space with nothing printed on it is an em dash. The trading-house `Tn` is tinted in its owner's colour once somebody has built it. This strip is a summary — `sites` (below) draws the same site as a full card with every reward in words.
+
+The **Canal** gets none of that, because nothing can ever stand, sit or be built there: its box says so in words and prints the crossing toll. 2-player games have no Canal tile at all. The legend under the board keys every mark and every site-slot token, and adds the Canal line whenever this board has one.
+
+**Naming a tile to the wizard** (§3) takes the full name, any unambiguous start of it, or the menu number beside it. The old two-letter codes still work as aliases: `cm` Copper Mine, `sm` Silk Mill, `tp` Tea Plantation, `fg` Fishing Ground, `bank`, `pa`/`pb` Port A/B, `la`/`lb` Laboratory A/B, `ea` Employment Agency, `ct` Chinatown, `ch` Church, `cu` Customs, `canal`.
 
 Building sites (`sites` view): a full-screen surface of **one card per area holding a site** — the Movement companion, since what is still unbuilt on an area is often the reason to pay a canal toll to reach it. Each card names its site-card number (`SITE 7`, the number setup entry takes — nothing is printed on the physical card) and the area it sits on, then its four Shophouse spaces in **full words**, one per line, in printed order (top-left, top-right, mid-left, mid-right; `blank` where nothing is printed; the icon rewards from §8.3 read as `1 assistant move` / `2 warehouse takes` / `2 any goods`, and are real choice prompts when taken). Beside each space: `open`, or `⌂` and the **builder's name**. Then the trading house with its VP and its owner, and last the area's own id plus any **canal tolls** from it (`A03 · canal toll to A06`) — which tiles simply touch is legible from the board itself, but a tolled crossing is not, so each card names its own. Building options during the Building phase print this same printed-reward text instead of a bare space number: you get one `Build a Shophouse` option per **empty** space — you choose the space — each named with its space number and printed reward, e.g. `Build a Shophouse (space 2: 2vp+1yen)`, so two blank spaces stay tellable apart; `Build a Trading House (7vp)` shows the site's TH value.
 
@@ -502,7 +517,7 @@ Laboratory offer (`labs` view): both Laboratory boards, every slot's technology 
 
 Your hand (`hand` view): the current player's order cards drawn full size, the kept starting order marked `= starting order`. In live mode, or for a bot seat, it shows the count and says why the contents are hidden rather than showing nothing (§2, *Privacy*).
 
-Log (`log` view): the move and reveal trail with each entry's global index — the number `undo` counts in and a bug report quotes — and each line worded **as it read at the moment it applied**, so an old trading-house take still quotes the price it actually paid and an old movement fee still names the player who actually received it. The view carries the last 40 entries and says how many earlier ones it left out; the whole record is in the save file. (A locked session shows a shorter postmortem block of the last 10 instead — §6.)
+Log (`log` view): the move and reveal trail with each entry's global index — the number `undo` counts in and a bug report quotes — and each line worded **as it read at the moment it applied**, so an old trading-house take still quotes the price it actually paid and an old movement fee still names the player who actually received it. **A move names the player who made it, by colour** (`Red: End additional-action phase`), which is what tells two identically-worded turns apart; a reveal is a recording rather than somebody's action and carries no such prefix. The view carries the last 40 entries and says how many earlier ones it left out; the whole record is in the save file. (A locked session shows a shorter postmortem block of the last 10 instead — §6.)
 
 **Leaving a view — read this before you type a number at one.** `Enter` or `cancel` closes the view and *only* closes it: you land back at the prompt you left, exactly as you left it, with nothing entered there and nothing there cancelled. **Any other line closes the view and then runs at that prompt underneath** — so `score` prints the score, `back` undoes your last applied entry, and **a number applies that numbered option**, which is the one to know about, because a view is a screen you opened to read and a stray `2` at one is a move. (The `?` card index behaves differently on purpose: it is an input surface whose numbers select cards, so it keeps the screen up and refuses anything that is not a card — and there `back` closes it rather than undoing.) Every view says all of this on its own last two lines.
 
@@ -512,7 +527,7 @@ Log (`log` view): the move and reveal trail with each entry's global index — t
 
 Every reward the rulebook lets you decide is a real prompt now (§4's "YOU ARE DECIDING" line words it, and says how many more are queued behind it), not an automatic pick. What queues, and how each resolves:
 
-1. **Any-good reward** (`any` in the compact reward text, §8.3): exactly 4 options — 1 copper, 1 silk, 1 tea, or 1 fish. No decline; only which good is optional, not the gain itself. Two any-good icons on the same reward queue and resolve separately, so you can pick a different good for each.
+1. **Any-good reward** (`any` in the compact reward text, §8.3): exactly 4 options — 1 copper, 1 silk, 1 tea, or 1 seafood. No decline; only which good is optional, not the gain itself. Two any-good icons on the same reward queue and resolve separately, so you can pick a different good for each.
 2. **Warehouse-icon reward** (`wh`): up to 3 options — an assistant (free), a shophouse (2 yen), or a trading house (the printed 4/5/6/7 take price, whichever is next) — filtered to what's actually in your warehouse and what you can currently afford, plus an always-available `Decline the warehouse take`. The banner prices them live, e.g. `warehouse take (assistant free / shophouse 2¥ / TH 4¥)` once you can afford all three — the start player's own 3 starting yen is one short of that pictured 4¥ TH option. When nothing in your warehouse is available or affordable, the icon auto-declines silently — no prompt, no banner — same as a table player who has nothing to take either.
 3. **Movement-icon reward** (`move`): move one of your own assistants from hand or an on-board area to any other (non-Canal) area — resolve via the numbered list or the `m <from> <to>` shorthand (§4/§5) — or `Decline the assistant move`. One prompt per Movement icon; multiple icons on the same reward resolve independently, same as multiple any-good icons. When you have no assistant anywhere the icon could draw from — nothing in hand, nothing on the board — it auto-declines silently the same way: no prompt appears, same as a table player with nothing to move either.
 4. **Church and Customs space choice**: after paying, if 2 or more spaces are legally open (Church: at your computed total faith; Customs: at the matching printed-cost pair), you pick which one — numbered by faith/space number and its printed VP and rider (the same `3vp 1move` / `5vp 2wh` reward text the `tracks` view prints, §8.5). (The Church *payment* options themselves already preview the faith each would produce — §4's previews — so you know what you're buying before you pay.) When only ONE space is open, the tool places you there automatically without a prompt — same as a table player who has no real choice either. A Church placement then queues its space's movement rider(s) as their own assistant-move choice(s), so a single Church visit can cascade through several stacked prompts (the `— N choice(s) pending` count tracks how many are left); a Customs space-1/space-3 placement similarly queues its warehouse-take rider(s).
