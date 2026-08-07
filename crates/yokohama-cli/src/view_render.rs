@@ -1151,25 +1151,40 @@ pub fn bot_review(narrative: &str) -> String {
     );
     out.push_str(narrative.trim_end_matches('\n'));
     out.push_str("\n\n");
-    // Honest about what this screen is: `main` reads one line and throws it
-    // away, so promising that a command typed here RUNS -- the way a view
-    // promises it -- would be a promise this surface cannot keep.
     out.push_str(&paint(
         Tone::Chrome,
         "Take your time: the board, the dashboard and your options are all one keypress away, and \
          nothing here is waiting on you.",
     ));
     out.push('\n');
-    out.push_str(&paint(
-        Tone::Chrome,
-        "This screen is a pause, not a prompt — press Enter to go on to your turn. Anything else \
-         you type here is discarded, and 'log' will still have every line of it.",
-    ));
+    out.push_str(&paint(Tone::Chrome, REVIEW_ENTER_LINE));
     out.push('\n');
-    out.push_str(&paint(Tone::Prompt, "> "));
+    out.push_str(&paint(Tone::Chrome, REVIEW_DISCLOSURE_LINE));
     out.push('\n');
+    // NO input caret, unlike every other surface in this module (review
+    // SHOULD-3b). The others end in one because they take input that MEANS
+    // something; this screen reads a line only to throw it away, and its own
+    // text says as much -- a caret under that sentence contradicts it.
     out
 }
+
+/// **What `log` actually keeps, said accurately** (review MUST-2). The retired
+/// wording promised "'log' will still have every line of it", which reads as
+/// "this screen is recoverable" and is false in both of its parts: `log`
+/// re-describes each move against the state of the time (so no review line
+/// survives verbatim) and carries neither the aggregate delta nor the hand-over
+/// marker at all. Every MOVE is there, which is what this claims and what
+/// `the_reviews_promise_about_log_is_true_of_the_moves_and_no_more` checks
+/// against `log` itself.
+pub(crate) const REVIEW_ENTER_LINE: &str =
+    "Press Enter to go on to your turn — `log` keeps every move it made.";
+
+/// The disclosure, matching what a typed line now DOES (review SHOULD-2): the
+/// dismissal honours the quit word exactly as every other prompt does, so a
+/// screen still claiming to discard everything would be lying about the one
+/// input a player might reach for to leave.
+pub(crate) const REVIEW_DISCLOSURE_LINE: &str =
+    "This screen is a pause, not a prompt: 'quit' quits, and anything else you type here is discarded.";
 
 /// [`exact`] without the PADDING half: clip a line that overruns `width`, and
 /// leave a short one short.

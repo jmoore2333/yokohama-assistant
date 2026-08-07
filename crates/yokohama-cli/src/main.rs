@@ -52,7 +52,20 @@ fn main() {
     if let Some(review) = &opening.review {
         print!("{review}");
         std::io::stdout().flush().ok();
-        lines.next();
+        // THE ONE LINE READ OUTSIDE THE LOOP, and what it can mean is decided
+        // in the library (`repl::dismissal`) rather than here: `quit` leaves,
+        // exactly as it does at every other prompt, and everything else -- the
+        // bare Enter this screen asks for included -- goes on to the frame. A
+        // screen that swallowed `quit` would be the one screen in the driver
+        // you cannot leave the way you leave all the others. EOF falls through
+        // to the frame and the loop then ends on its own.
+        if let Some(line) = lines.next() {
+            if yokohama_cli::repl::dismissal(&line) == yokohama_cli::repl::Dismissal::Quit {
+                print!("{}", yokohama_cli::repl::QUIT_TEXT);
+                std::io::stdout().flush().ok();
+                return;
+            }
+        }
     }
     print!("{}", opening.frame);
     std::io::stdout().flush().ok();

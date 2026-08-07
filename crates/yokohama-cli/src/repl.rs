@@ -380,6 +380,53 @@ pub struct Opening {
     pub frame: String,
 }
 
+/// What the one line a bot-turn review reads turns out to mean.
+///
+/// Two arms and no third: this screen offers no choices, so everything that is
+/// not the quit word is the same nothing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Dismissal {
+    /// The player asked to leave the program, and the review honours it exactly
+    /// as every other prompt does.
+    Quit,
+    /// Anything else, including the bare Enter this screen is asking for.
+    Discard,
+}
+
+/// Classify the line that dismissed a bot-turn review.
+///
+/// **A pure function in the library rather than a condition in `main`, which is
+/// the point of it** (review SHOULD-2/SHOULD-3). The dismissal is the one input
+/// path outside the REPL loop, and the loop is where every other line is judged;
+/// leaving its semantics in `main` put an untestable decision on the one screen
+/// a player meets before they have typed anything. Here it is a two-arm match
+/// `main` cannot get wrong on its own, and the arms are pinned.
+///
+/// **Tokenized to agree with [`Repl::step`]** — `split_whitespace`, then the
+/// same `["quit"] | ["q"]` pattern — so the review and the prompt underneath it
+/// cannot disagree about what the quit word is. `step` trims first and this does
+/// not, which is not a divergence: `split_whitespace` already discards exactly
+/// the surrounding whitespace that trim would have, and the padded cells in
+/// `a_dismissal_is_quit_for_exactly_the_words_the_prompt_calls_quit` are what
+/// hold the two to the same answer. Case-sensitive for the same reason: `QUIT`
+/// is not the quit word at any other prompt either.
+pub fn dismissal(line: &str) -> Dismissal {
+    let words: Vec<&str> = line.split_whitespace().collect();
+    match words.as_slice() {
+        ["quit"] | ["q"] => Dismissal::Quit,
+        _ => Dismissal::Discard,
+    }
+}
+
+/// What quitting prints, so the review's quit is the SAME event as the REPL's
+/// rather than a lookalike.
+///
+/// The REPL's own eight arms still spell these bytes inline; this constant is
+/// welded to them by `the_reviews_quit_prints_what_every_other_quit_prints`
+/// rather than by a refactor of call sites this fix wave has no business
+/// touching.
+pub const QUIT_TEXT: &str = "bye\n";
+
 impl Repl {
     pub fn new(session: crate::session::Session) -> Repl {
         // Restore a persisted lockdown (review §3): a session saved after a
@@ -6427,15 +6474,22 @@ mod tests {
     /// -- so every fixture here exercises the SAME restoration path a resumed
     /// save does, rather than a test-only constructor that could drift from it.
     fn repl_2p_bots(seed: u64, bot_seats: &[u8]) -> Repl {
-        let mut seats = vec![None; 2];
+        repl_np_bots(2, seed, bot_seats)
+    }
+
+    /// [`repl_2p_bots`] at any player count — the shape a review surface needs
+    /// to be measured at its ceiling, since only several consecutive bot seats
+    /// reach the pump's display cap.
+    fn repl_np_bots(players: u8, seed: u64, bot_seats: &[u8]) -> Repl {
+        let mut seats = vec![None; players as usize];
         for s in bot_seats {
             seats[*s as usize] = Some(RolloutPolicy::FAMILY_WEIGHTED_DEFAULT);
         }
         let bots = BotSeats::new(seats, 0x5A17_3B0C_9E44_D218);
         let mut session = Session::new_sim(
-            GameConfig::for_player_count(2),
+            GameConfig::for_player_count(players),
             seed,
-            vec![StartingOrderChoice::Keep(0), StartingOrderChoice::Keep(0)],
+            vec![StartingOrderChoice::Keep(0); players as usize],
             Rules::standard(),
         )
         .unwrap();
@@ -6668,6 +6722,21 @@ mod tests {
         let unframed = repl_2p_bots(4, &[0]).opening();
         crate::input::force_pause(false);
         assert!(unframed.review.is_none(), "no frame to replace means no full-screen surface");
+
+        // **And the FIRST half on its own, which is the arm this test shipped
+        // without** (review MUST-1). The piped case above exercises neither
+        // conjunct in isolation: `screen::enabled()` is false in every test
+        // process, so it was satisfied by the frame clause alone and deleting
+        // `may_pause()` left the whole suite green — an unpinned gate guarding
+        // the one thing a pipe must never do.
+        screen::force(true);
+        crate::input::force_pause(false);
+        let no_human = repl_2p_bots(4, &[0]).opening();
+        screen::force(false);
+        assert!(
+            no_human.review.is_none(),
+            "frames on but stdin not a terminal: a pause would eat the next command"
+        );
     }
 
     /// **The review carries what the player missed** — the bot's described
@@ -6687,7 +6756,14 @@ mod tests {
             narrative.lines().any(|l| l.starts_with("Red:") || l.starts_with("Blue:")),
             "fixture: the pump ends with delta_summary lines:\n{narrative}",
         );
-        assert!(review.contains("press Enter"), "and it says how to leave:\n{review}");
+        // The WHOLE sentence, not `contains("press Enter")` (review NOTE-1):
+        // that needle was also satisfied by the decision zone's "only option —
+        // press Enter to apply", so it would have passed on a review whose
+        // footer had been replaced by a different screen's text entirely.
+        assert!(
+            review.contains(crate::view_render::REVIEW_ENTER_LINE),
+            "and it says how to leave:\n{review}"
+        );
         // A surface that REPLACES the frame, the way every other full-screen
         // surface does — the clear-and-home prefix `screen::wrap` gives them.
         assert!(review.starts_with("\u{1b}[2J\u{1b}[H"), "the review is a full-screen surface");
@@ -6747,8 +6823,17 @@ mod tests {
     }
 
     /// The review is a full-screen surface and owes the design floor what every
-    /// other one owes it: a bot turn at the pump's own display cap has to FIT,
-    /// or the fix for a screen that scrolled is a screen that scrolls.
+    /// other one owes it: the TALLEST bot run the pump will ever DISPLAY has to
+    /// fit, or the fix for a screen that scrolled is a screen that scrolls.
+    ///
+    /// **Two shapes, because the 2P cells alone were not measuring the tall
+    /// case** (review SHOULD-1). One bot turn at 2P never reaches
+    /// [`BOT_LINE_CAP`], so those cells left the pump's own display ceiling
+    /// untested; three consecutive bot seats at 4P reach it, and the cap plus
+    /// its `…N more` pointer plus the aggregate delta IS the ceiling — past that
+    /// point more bot moves add no rows. The cap is asserted REACHED at the 4P
+    /// cells, so the claim in this doc comment is a fact about what runs rather
+    /// than a hope about the seeds.
     #[test]
     fn the_review_fits_the_fifty_row_design_floor() {
         for seed in [4u64, 7, 11, 19, 23] {
@@ -6756,8 +6841,131 @@ mod tests {
                 .review
                 .unwrap_or_else(|| panic!("seed {seed} must open on a bot turn — a skipped cell measures nothing"));
             let rows = review.lines().count();
-            assert!(rows <= 50, "the review at seed {seed} draws {rows} rows against the 50-row floor");
+            assert!(rows <= 50, "the review at 2P seed {seed} draws {rows} rows against the 50-row floor");
         }
+
+        let mut capped = 0;
+        for seed in [4u64, 7, 11, 19, 23, 31, 47] {
+            let review = at_a_terminal(|| repl_np_bots(4, seed, &[0, 1, 2]).opening())
+                .review
+                .unwrap_or_else(|| panic!("4P seed {seed} must open on three bot turns"));
+            let rows = review.lines().count();
+            assert!(rows <= 50, "the review at 4P seed {seed} draws {rows} rows against the 50-row floor");
+            if review.contains("more — type `log`") {
+                capped += 1;
+            }
+        }
+        assert!(
+            capped > 0,
+            "anti-vacuity: no 4P cell reached BOT_LINE_CAP, so nothing here measured the display ceiling \
+             this test claims to measure"
+        );
+    }
+
+    /// **The footer's promise about `log` was FALSE and is now checked against
+    /// `log` itself** (review MUST-2). It read "'log' will still have every line
+    /// of it", which a player would read as: the screen you just dismissed is
+    /// recoverable. It is not — `log` re-describes each move against the state
+    /// of the time and carries neither the aggregate delta nor the hand-over
+    /// marker, so not one line of the review appears in it verbatim.
+    ///
+    /// What IS true is that every MOVE is there, and that is what the new
+    /// sentence claims. Pinned by finding each move's own description — the part
+    /// `describe_move` produced, which the pump prefixes with a seat and `log`
+    /// prefixes with a colour — inside the log text.
+    #[test]
+    fn the_reviews_promise_about_log_is_true_of_the_moves_and_no_more() {
+        let mut r = repl_2p_bots(4, &[0]);
+        let narrative = r.pump_bots();
+        let log = r.log_text();
+
+        let move_lines: Vec<&str> = narrative.lines().filter(|l| l.starts_with("Seat 0 (Red) ")).collect();
+        assert!(move_lines.len() >= 3, "fixture: the bot's turn is several moves:\n{narrative}");
+        for line in &move_lines {
+            let described = line.split_once(" \u{2014} ").expect("a pump move line carries its description").1;
+            assert!(
+                log.contains(described),
+                "the footer promises `log` keeps every move it made, so {described:?} must be in it:\n{log}"
+            );
+        }
+
+        // The other half of the claim, stated as the measurement that condemned
+        // the old wording: NO review line survives verbatim, which is exactly
+        // why the promise may not be about lines.
+        let verbatim = narrative.lines().filter(|l| !l.is_empty() && log.contains(*l)).count();
+        assert_eq!(
+            verbatim, 0,
+            "if review lines DO start appearing in `log`, this test's premise changed and the \
+             footer wording should be revisited deliberately"
+        );
+    }
+
+    /// The footer says the true thing and no longer says the false one.
+    ///
+    /// The needle is a WHOLE SENTENCE rather than `contains("press Enter")`
+    /// (review NOTE-1): the short needle was also satisfied by the decision
+    /// zone's "only option — press Enter to apply", which is the repo's
+    /// overlapping-text defect for the seventh time.
+    #[test]
+    fn the_review_footer_states_what_log_keeps_and_what_a_typed_line_does() {
+        let review = at_a_terminal(|| repl_2p_bots(4, &[0]).opening()).review.expect("a bot run");
+
+        assert!(
+            review.contains(crate::view_render::REVIEW_ENTER_LINE),
+            "the footer must carry its whole sentence:\n{review}"
+        );
+        assert!(
+            review.contains(crate::view_render::REVIEW_DISCLOSURE_LINE),
+            "and its disclosure:\n{review}"
+        );
+        assert!(
+            !review.contains("will still have every line"),
+            "the retired false promise must not come back:\n{review}"
+        );
+    }
+
+    /// **`quit` works here, and the screen says so** (review SHOULD-2/SHOULD-3).
+    /// The dismissal used to swallow every line including `quit`, which meant a
+    /// player quitting at the review got their board back instead — and the
+    /// screen's own text told them anything typed was discarded, which was then
+    /// true of `quit` too. The classification is a pure function so the
+    /// dangerous direction lives in the library rather than in `main`.
+    #[test]
+    fn a_dismissal_is_quit_for_exactly_the_words_the_prompt_calls_quit() {
+        for line in ["quit", "q", "  quit  ", "\tq\t"] {
+            assert!(matches!(dismissal(line), Dismissal::Quit), "{line:?} quits at every other prompt");
+        }
+        for line in ["", " ", "log", "score", "quitter", "q q", "QUIT", "Q", "1"] {
+            assert!(
+                matches!(dismissal(line), Dismissal::Discard),
+                "{line:?} is not the quit word — the review discards it"
+            );
+        }
+    }
+
+    /// The weld: quitting at the review is the SAME event as quitting anywhere
+    /// else, down to the bytes. [`QUIT_TEXT`] is what `main` prints there, and
+    /// this is what stops it drifting from the eight arms that still spell those
+    /// bytes inline.
+    #[test]
+    fn the_reviews_quit_prints_what_every_other_quit_prints() {
+        let mut r = repl_2p_bots(4, &[1]);
+        let out = r.step("quit");
+        assert!(out.quit, "fixture: `quit` at an ordinary prompt quits");
+        assert_eq!(out.text, QUIT_TEXT);
+    }
+
+    /// A pause is not a prompt, and must not draw the caret that claims it is
+    /// (review SHOULD-3b). Every other full-screen surface ends in one because
+    /// every other one takes input that MEANS something; this one reads a line
+    /// only to throw it away.
+    #[test]
+    fn the_review_draws_no_input_caret() {
+        let review = at_a_terminal(|| repl_2p_bots(4, &[0]).opening()).review.expect("a bot run");
+        assert!(
+            !review.trim_end().ends_with('>'),
+            "the review must not end in the prompt caret — its own text says it is not a prompt:\n{review}"
+        );
     }
 
     /// The `hand:` line of the players view for `seat`.
