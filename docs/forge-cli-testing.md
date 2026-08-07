@@ -94,6 +94,34 @@ close_terminal   {id}
   underneath — and note that any OTHER line closes the view and then RUNS, so a stray digit
   applies an option.
 
+## Capturing a session to a file (the T12 visual-pass recipe)
+
+`read_screen` is for *looking*. When the output has to become a committed
+artifact, do not transcribe it — run the binary under `script` INSIDE the Forge
+PTY, so the CLI still sees a real terminal and every byte is logged:
+
+```
+write_terminal {id, input: "script -q <scratch>/raw.log cargo run -q -p yokohama-cli"}
+# ...drive the session as usual...
+write_terminal {id, input: "quit"}
+```
+
+Then split the log on the frame boundary and strip the escapes. Every composed
+frame opens with `ESC[2J ESC[H`, so that pair is the split point and each piece
+is one screen; `docs/plans/2026-08-05-phase3.5a-mocks/captures/t12-*.txt` were
+cut exactly this way. Measure widths on the EMITTED lines rather than on the
+viewport: `script` records what the program wrote, before the terminal wrapped
+it, which is the only way to see an overflow instead of its symptom.
+
+**Sizing surprises worth knowing before you conclude anything from a wide run.**
+The card indexes adapt above the floor through `screen::index_width`, but the
+shipped card data hides it at the obvious test size: at **240** columns nothing
+repacks, because a 49-column tech/site card fits 4 per row at both 200 and 240,
+and the order index — which would take 9 — has no flag group larger than 8. The
+discriminating cell is the **site index at 250**, where the 24-card ungrouped
+run goes 4 per row to 5. A wide run that "looks identical" is arithmetic, not a
+broken measurement.
+
 ## Standing PTY checks (properties no `cargo test` can reach)
 
 Almost every honesty property in this driver is pinned by a test. These are the ones that

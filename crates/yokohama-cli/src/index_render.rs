@@ -1093,10 +1093,6 @@ mod tests {
     /// change, and LOOK AT THE DIFF before committing it.
     #[test]
     fn the_committed_index_capture_is_what_the_renderer_draws() {
-        let path = concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/../../docs/plans/2026-08-05-phase3.5a-mocks/captures/t5-order-index.txt",
-        );
         let rules = Rules::standard();
         let placed = [
             (OrderCardId(4), CardLocation::Deal { seat: PlayerId::new(0) }),
@@ -1113,17 +1109,7 @@ mod tests {
             IndexContext::Overlay,
             FLOOR_W,
         ));
-
-        if std::env::var_os("UPDATE_T5_CAPTURE").is_some() {
-            std::fs::create_dir_all(std::path::Path::new(path).parent().expect("a parent"))
-                .expect("the captures directory");
-            std::fs::write(path, &rendered).expect("write the capture");
-        }
-        let committed = std::fs::read_to_string(path).expect("the committed capture");
-        assert_eq!(
-            committed, rendered,
-            "the committed order-index capture is stale; regenerate it with UPDATE_T5_CAPTURE=1",
-        );
+        crate::view_render::tests::assert_capture("t5-order-index.txt", &rendered);
     }
 
     /// A filter narrows the grid, renumbers it from the base, and says what it

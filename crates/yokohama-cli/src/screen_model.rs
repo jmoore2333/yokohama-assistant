@@ -1071,8 +1071,11 @@ pub enum CardFaceModel {
     Tech {
         /// Every registry id printing this title, ascending.
         copies: Vec<TechCardId>,
-        /// The printed card (all copies of a title are identical apart from id,
-        /// which `tech_titles_are_identical_across_copies` pins).
+        /// The printed card (all copies of a title are identical apart from
+        /// id, which is why one `printed` can stand for the whole title --
+        /// `index_render`'s `a_tech_title_dims_only_once_every_copy_is_accounted_for`
+        /// and `wizard`'s `a_tech_name_fills_both_copies_and_the_third_is_refused_by_location`
+        /// are the pins that depend on it).
         printed: TechCard,
         /// Where copies of this title already are, in `copies` order. Shorter
         /// than `copies` while any copy is still unaccounted for.

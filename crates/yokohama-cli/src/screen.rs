@@ -1482,10 +1482,6 @@ mod capture {
     /// because `=0` looks like it would decline.
     #[test]
     fn the_committed_frame_capture_is_what_the_screen_renders() {
-        let path = concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/../../docs/plans/2026-08-05-phase3.5a-mocks/captures/t3-frame-2p.txt",
-        );
         let repl = Repl::new(
             Session::new_sim(
                 GameConfig::for_player_count(2),
@@ -1501,17 +1497,7 @@ mod capture {
         // The clear-screen + cursor-home prefix is a control sequence, not
         // content: it would render as mojibake in a file meant to be read.
         let rendered = format!("{}\n", frame.trim_start_matches("\u{1b}[2J\u{1b}[H"));
-
-        if std::env::var_os("UPDATE_T3_CAPTURE").is_some() {
-            std::fs::create_dir_all(std::path::Path::new(path).parent().expect("a parent"))
-                .expect("the captures directory");
-            std::fs::write(path, &rendered).expect("write the capture");
-        }
-        let committed = std::fs::read_to_string(path).expect("the committed capture");
-        assert_eq!(
-            committed, rendered,
-            "the committed 2P frame capture is stale; regenerate it with UPDATE_T3_CAPTURE=1",
-        );
+        crate::view_render::tests::assert_capture("t3-frame-2p.txt", &rendered);
     }
 
     /// The BELOW arrangement's committed captures (T10), one per count that
@@ -1533,10 +1519,6 @@ mod capture {
     #[test]
     fn the_committed_below_frame_captures_are_what_the_screen_renders() {
         for n in [3u8, 4] {
-            let path = format!(
-                "{}/../../docs/plans/2026-08-05-phase3.5a-mocks/captures/t10-frame-{n}p.txt",
-                env!("CARGO_MANIFEST_DIR"),
-            );
             let repl = Repl::new(
                 Session::new_sim(
                     GameConfig::for_player_count(n),
@@ -1552,20 +1534,7 @@ mod capture {
             // The clear-screen + cursor-home prefix is a control sequence, not
             // content: it would render as mojibake in a file meant to be read.
             let rendered = format!("{}\n", frame.trim_start_matches("\u{1b}[2J\u{1b}[H"));
-
-            if std::env::var_os("UPDATE_T10_CAPTURE").is_some() {
-                std::fs::create_dir_all(
-                    std::path::Path::new(&path).parent().expect("a parent"),
-                )
-                .expect("the captures directory");
-                std::fs::write(&path, &rendered).expect("write the capture");
-            }
-            let committed = std::fs::read_to_string(&path).expect("the committed capture");
-            assert_eq!(
-                committed, rendered,
-                "the committed {n}P frame capture is stale; regenerate it with \
-                 UPDATE_T10_CAPTURE=1",
-            );
+            crate::view_render::tests::assert_capture(&format!("t10-frame-{n}p.txt"), &rendered);
         }
     }
 

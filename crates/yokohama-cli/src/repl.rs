@@ -6948,7 +6948,11 @@ mod tests {
         // The leak fence, on the tech half: the locations on screen are the
         // face-up ones the caller supplied (Lab slots, owned techs) and nothing
         // is derived from the tech DECK.
-        for id in r.session.state().lab_state.lab_a.slots.iter().flatten() {
+        let filled: Vec<_> = r.session.state().lab_state.lab_a.slots.iter().flatten().collect();
+        // Anti-vacuity: an empty board would make the sweep below assert
+        // nothing at all, and a fresh game deals six.
+        assert_eq!(filled.len(), 6, "a fresh Laboratory A is full; the sweep needs cards to check");
+        for id in filled {
             let name = r.session.rules().techs.get(*id).map(|c| c.name.clone()).expect("a card");
             assert!(out.text.contains(&name.to_uppercase()), "{name} is on screen");
         }
@@ -7525,8 +7529,14 @@ mod tests {
             "the view is gone from the frame: {}",
             out.text,
         );
+        // Anchored to the WHOLE delta line, not to the bare word: the phase
+        // chain prints a dim title-case `Placement` on every frame where
+        // Placement is not the current phase, so `contains("Placement")` alone
+        // would survive the delta line disappearing entirely -- the
+        // overlapping-text trap this branch has hit repeatedly. It passes today
+        // only because the chain uppercases the CURRENT phase.
         assert!(
-            out.text.contains("Placement"),
+            out.text.contains("Phase: Additional actions (before) -> Placement"),
             "and the frame that comes back shows the delta: {}",
             out.text,
         );

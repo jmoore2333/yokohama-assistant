@@ -821,8 +821,11 @@ fn church_customs_lines(lines: &mut Vec<String>, b: &PlayerState, a: &PlayerStat
 
 /// "gained mercenary (Country)" / "spent mercenary (Country)" / "gained
 /// 5-Power token" lines. A per-move gain above 1 (not reachable under
-/// current rules -- `award_mercenaries_for_country_icons` awards at most 1
-/// per country per call) is suffixed `x{n}` rather than pluralized, so the
+/// current rules -- the engine's fulfil-order path awards one mercenary at
+/// every SECOND completed order of a country, so at most 1 per country per
+/// move; pinned in core by
+/// `test_fulfill_order_awards_mercenary_at_every_second_completed_order_of_a_country`)
+/// is suffixed `x{n}` rather than pluralized, so the
 /// line still contains the literal substring "gained mercenary" regardless.
 ///
 /// GAINS are detected on `available + used` (a gain raises the total),
@@ -1493,16 +1496,42 @@ mod tests {
         );
     }
 
-    /// Reviewer-check per the Task 12 brief: `render.rs` must single-source
-    /// the Customs cost progression through `CustomsTrack::space_cost`
-    /// rather than a hardcoded array literal. Built via `format!` from bare
-    /// numbers (not typed as the bracketed literal itself) so this
-    /// assertion doesn't quine against its own source text.
+    /// No CLI module may hardcode the Customs cost progression; it comes from
+    /// `CustomsTrack::space_cost`. Built via `format!` from bare numbers (not
+    /// typed as the bracketed literal itself) so the assertion doesn't quine
+    /// against its own source text.
+    ///
+    /// **Swept over every module, not just this one.** It was written when
+    /// `render.rs` drew the track, and stayed pointed here after the redesign
+    /// moved that job to `screen_model::track_panel` -- guarding a room its
+    /// subject had left, where the forbidden literal could no longer appear at
+    /// all. Anti-vacuity: the sweep asserts it actually read the module that
+    /// holds the live caller, so a renamed file cannot empty the list silently.
     #[test]
-    fn render_source_no_longer_hardcodes_customs_costs() {
+    fn no_module_hardcodes_the_customs_cost_progression() {
         let forbidden = format!("[{}, {}, {}, {}, {}, {}, {}]", 1, 1, 2, 2, 3, 3, 4);
-        let src = include_str!("render.rs");
-        assert!(!src.contains(&forbidden), "customs costs must be single-sourced via CustomsTrack::space_cost");
+        let modules: [(&str, &str); 5] = [
+            ("render.rs", include_str!("render.rs")),
+            ("screen_model.rs", include_str!("screen_model.rs")),
+            ("panel_render.rs", include_str!("panel_render.rs")),
+            ("view_render.rs", include_str!("view_render.rs")),
+            ("describe.rs", include_str!("describe.rs")),
+        ];
+        let live = modules
+            .iter()
+            .find(|(name, _)| *name == "screen_model.rs")
+            .expect("the module holding the live space_cost caller is in the sweep");
+        assert!(
+            live.1.contains("CustomsTrack::space_cost"),
+            "screen_model.rs no longer calls CustomsTrack::space_cost -- this sweep is aimed at \
+             whichever module builds the Customs track, so re-aim it before trusting a pass",
+        );
+        for (name, src) in modules {
+            assert!(
+                !src.contains(&forbidden),
+                "{name} hardcodes the Customs costs; single-source them via CustomsTrack::space_cost",
+            );
+        }
     }
 
     #[test]

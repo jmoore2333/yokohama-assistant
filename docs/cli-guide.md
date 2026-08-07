@@ -140,7 +140,7 @@ On a real terminal the hint also names **`↑ recalls what you typed`** — the 
 
 **Finding information: the view pattern.** Every panel on the game screen is a *summary*. The tracks panel prints eight bracketed faith numbers, which is enough to see that faith 7 is taken and not enough to decide whether to take faith 9. Each of those summaries has a **full surface** behind it, and that surface is one word away: it replaces the whole screen, draws the same facts card by card, and `Enter` puts you back at the prompt you left with nothing entered and nothing there cancelled.
 
-Seven surfaces render that way, plus four card indexes:
+Six surfaces render that way, plus four card indexes:
 
 | Word | Surface |
 |---|---|
@@ -148,7 +148,7 @@ Seven surfaces render that way, plus four card indexes:
 | `labs` | **Laboratory offer** — every Laboratory slot's technology, its country, its whole effect text in full words, and the **industry it costs in that slot** (the card's printed cost plus the slot's own surcharge, already added). |
 | `tracks` | **Tracks** — every Church faith space and Customs space as a card, with its printed rewards, its occupant, and (at 2 players) the neutral dummy. |
 | `sites` | **Building sites** — every area's site card: the four printed space rewards in full words, who has built on each, the trading house's VP, and the area's tolled canal crossings. |
-| `goals` | **Achievements** — the three cards in play, what each pays first and later, who has claimed it, and every seat's progress. |
+| `goals` | **Achievements** — the three cards in play, what each pays first and later, who has claimed it, and every seat's progress. ⚠ This one is a card *index* wearing a word of its own, so it leaves like an index (below), not like a view. |
 | `hand` | **Your hand** — the current player's order cards drawn full size, the kept starting order marked. |
 | `log` | **Log** — the move and reveal trail, each line worded as it read at the moment it applied. |
 | `orders` `techs` `sitecards` `?` | the **card indexes** (below). |
@@ -157,7 +157,7 @@ Seven surfaces render that way, plus four card indexes:
 
 **Leaving a view — read this before you type a number at one.** `Enter` or `cancel` closes it and *only* closes it. **Any other line closes the view and then runs at the prompt underneath** — so `score` prints the score, `back` undoes your last applied entry, and **a number applies that numbered option**, which is the one to know about, because a view is a screen you opened to read and a stray `2` at one is a move. Every view says all of this on its own last two lines. (The card index behaves differently on purpose: it is an *input* surface whose numbers select cards, so it keeps the screen up and refuses anything that is not a card — and there `back` closes it rather than undoing.)
 
-**`?` is the card index** (also `orders`, or row 1 of the `view` menu). It is a full-screen picture of all 36 order cards, grouped by flag, each drawn as the card you are holding — country, its goods requirement, what it pays — with its engine id (`O14`) as a small grey tag in the corner. **You never have to know an id.** The index is the bridge: find the card by what you can see, type the number printed on it, done. Three things it does beyond looking things up:
+**`?` is the card index** (also `orders`, or row 11 of the `view` menu). It is a full-screen picture of all 36 order cards, grouped by flag, each drawn as the card you are holding — country, its goods requirement, what it pays — with its engine id (`O14`) as a small grey tag in the corner. **You never have to know an id.** The index is the bridge: find the card by what you can see, type the number printed on it, done. Three things it does beyond looking things up:
 
 - **It opens from anywhere, including mid-question.** `?` works at the main prompt, inside a Movement sub-prompt, and — where it matters most — in the middle of a live reveal, when the tool is asking which card physically refilled a Port slot. Pressing `?` there shows the index with a header naming the exact slot being recorded; typing a card's number answers the question; `?` again (or Enter, or `cancel`) closes it and puts you back on the same question, with everything you had already typed still collected.
 - **It shows what is already recorded.** A card the tool can already see — sitting on a Port display, or in your own hand while it is unmasked — is drawn dimmed with a note saying where it is (`= Port A slot 1`). Type one anyway and the refusal names the same place, so "already entered" is never a mystery.
@@ -443,18 +443,31 @@ The engine's canonical vocabulary differs from the rulebook's in places. **Diffe
 
 ### 8.3 Goods and resources
 
-| CLI (compact / header letter) | Rulebook term |
-|---|---|
-| `cop` / `c` | Copper |
-| `silk` / `s` | Silk |
-| `tea` / `t` | Tea |
-| ⚠ `fish` / `f` | **Seafood** (the Fishing Ground good — the CLI abbreviates it "fish") |
-| `imp` / `i` | Imported Goods |
-| `yen` | Yen (money) — shown spelled out in the status header (`3 yen`); it has **no** single-letter header code (the header goods letters are only `c s t f i`). |
-| `vp` | Victory Points |
-| ⚠ `wh` | The **Warehouse icon** (take 1 token from your Warehouse tile to hand, paying the Employment Agency cost). A real choice prompt — see §8.6. |
-| ⚠ `any` | An "any good of your choice" reward. A real choice prompt — see §8.6. |
-| ⚠ `move` | The **Movement icon** (move an assistant). A real choice prompt (`m <from> <to>`, §4/§5) — see §8.6. |
+Goods are written three ways, and which one you see depends on the surface. Cards, the dashboard and the full-screen views spell them out in **full words**. The rolling `players` panel (§5) uses **single letters**. Option rows use **compact tokens**, because a whole reward has to fit beside a menu number.
+
+| Rulebook term | Full words (cards, dashboard, views) | `players` panel | Compact token (option rows) |
+|---|---|---|---|
+| Copper | `1 Copper` | `c1` | `2cop` |
+| Silk | `1 Silk` | `s1` | `2silk` |
+| Tea | `1 Tea` | `t1` | `2tea` |
+| ⚠ Seafood | `1 Seafood` | `f1` | ⚠ `3fish` |
+| Imported Goods | `0 Imports` | `imports 0` — spelled out, **no letter** | not abbreviated (no space pays imports) |
+| Yen (money) | `¥3` | `3 yen` — spelled out, **no letter** | `1yen` |
+| Victory Points | `★4 VP` | `0 VP` | `2vp` |
+
+So the `players` panel's goods letters are exactly `c s t f`: imports and yen are spelled out there, and neither has a letter of its own.
+
+> ⚠ **"fish" vs "Seafood".** The good is **Seafood** on the cardboard, and every surface this redesign draws says so. Two strings still read `fish`, because the engine builds them rather than the display layer: the order line `needs 2 copper + 1 fish` (seen on Fulfil options, in `log`, in `suggest`, and on the wizard's dealt cards) and the compact space reward inside `Build a Shophouse (space 4: 3fish)`. Typing `fish` is still accepted wherever a good is named, and so are `seafood` and `f`.
+
+The three icon rewards are each a real choice prompt — see §8.6:
+
+| Compact token | Full words on a card | What it is |
+|---|---|---|
+| ⚠ `2wh` | `2 warehouse takes` | The **Warehouse icon**: take 1 token from your Warehouse tile to hand, paying the Employment Agency cost. |
+| ⚠ `1any` | `1 any good` | An "any good of your choice" reward. |
+| ⚠ `1move` | `1 assistant move` | The **Movement icon**: move an assistant (`m <from> <to>`, §4/§5). |
+
+The board's site-slot strip uses a fourth and tighter set again (`★n ¥n fn tn sn cn *n an ⌂n Tn`); its legend sits under the board and §8.5 keys it.
 
 ### 8.4 Countries and turn phases
 
@@ -464,7 +477,7 @@ Turn phases as the CLI names them, against the rulebook's turn structure:
 
 | CLI phase | Rulebook |
 |---|---|
-| `Additional actions (before)` / `(after)` | ⚠ Not a rulebook step name — the windows in which an Additional Action (fulfilling orders, mercenary use, achievement claims) may be taken before/after the main turn. |
+| `Additional actions (before)` / `Additional actions (after)` | ⚠ Not a rulebook step name — the windows in which an Additional Action (fulfilling orders, mercenary use, achievement claims) may be taken before/after the main turn. |
 | `Placement` | Step 1 — place assistants (Option A / Option B). |
 | `Movement` | Step 2 — move the President (Option A / Option B). |
 | `Area action` | Step 3 — carry out the action of the President's area. |
@@ -473,7 +486,7 @@ Turn phases as the CLI names them, against the rulebook's turn structure:
 | `Recovery` | Step 6 — automatic; the CLI performs it without asking. |
 | `Turn end` | Bookkeeping between turns. |
 
-> ⚠ **`Skip` option:** in the six "may"-worded areas (Port, Laboratory, Employment Agency, Chinatown, Church, Customs) the CLI offers an explicit `Skip` move = carry out the area action declining its optional parts. The rulebook has no named "skip" — it's the engine's encoding of "you may". Note v1's conservative reading: taking `Skip` at a 5-power Port forgoes the +3 VP bonus.
+> ⚠ **The "skip" option:** in the six "may"-worded areas (Port, Laboratory, Employment Agency, Chinatown, Church, Customs) the CLI offers an explicit option reading **`Take the area action, declining all optional parts`**. The rulebook has no named "skip" — it's the engine's encoding of "you may". Two other options do say the word (`Skip the 5-Power token`, `Skip the building`), so look for the sentence rather than the word on an area list. Note v1's conservative reading: declining at a 5-power Port forgoes the +3 VP bonus.
 
 ### 8.5 Areas, boards, and tracks
 
@@ -507,7 +520,7 @@ The **Canal** gets none of that, because nothing can ever stand, sit or be built
 
 **Naming a tile to the wizard** (§3) takes the full name, any unambiguous start of it, or the menu number beside it. The old two-letter codes still work as aliases: `cm` Copper Mine, `sm` Silk Mill, `tp` Tea Plantation, `fg` Fishing Ground, `bank`, `pa`/`pb` Port A/B, `la`/`lb` Laboratory A/B, `ea` Employment Agency, `ct` Chinatown, `ch` Church, `cu` Customs, `canal`.
 
-Building sites (`sites` view): a full-screen surface of **one card per area holding a site** — the Movement companion, since what is still unbuilt on an area is often the reason to pay a canal toll to reach it. Each card names its site-card number (`SITE 7`, the number setup entry takes — nothing is printed on the physical card) and the area it sits on, then its four Shophouse spaces in **full words**, one per line, in printed order (top-left, top-right, mid-left, mid-right; `blank` where nothing is printed; the icon rewards from §8.3 read as `1 assistant move` / `2 warehouse takes` / `2 any goods`, and are real choice prompts when taken). Beside each space: `open`, or `⌂` and the **builder's name**. Then the trading house with its VP and its owner, and last the area's own id plus any **canal tolls** from it (`A03 · canal toll to A06`) — which tiles simply touch is legible from the board itself, but a tolled crossing is not, so each card names its own. Building options during the Building phase print this same printed-reward text instead of a bare space number: you get one `Build a Shophouse` option per **empty** space — you choose the space — each named with its space number and printed reward, e.g. `Build a Shophouse (space 2: 2vp+1yen)`, so two blank spaces stay tellable apart; `Build a Trading House (7vp)` shows the site's TH value.
+Building sites (`sites` view): a full-screen surface of **one card per area holding a site** — the Movement companion, since what is still unbuilt on an area is often the reason to pay a canal toll to reach it. Each card names its site-card number (`SITE 7`, the number setup entry takes — nothing is printed on the physical card) and the area it sits on, then its four Shophouse spaces in **full words**, one per line, in printed order (top-left, top-right, mid-left, mid-right; `blank` where nothing is printed; the icon rewards from §8.3 read as `1 assistant move` / `2 warehouse takes` / `2 any goods`, and are real choice prompts when taken). Beside each space: `open`, or `⌂` and the **builder's name**. Then the trading house with its VP and its owner, and last the area's own id plus any **canal tolls** from it (`A03 · canal toll to A06`) — which tiles simply touch is legible from the board itself, but a tolled crossing is not, so each card names its own. Building options during the Building phase print this same printed-reward text instead of a bare space number: you get one `Build a Shophouse` option per **empty** space — you choose the space — each named with its space number and printed reward, e.g. `Build a Shophouse (space 2: 2vp+1yen)`, so two blank spaces stay tellable apart; `Build a Trading House (7 VP)` shows the site's TH value.
 
 Tracks (`tracks` view): a full-screen surface with **every space as a card**. Church faith 4–11, each card showing its printed VP and its movement rider (`★3 VP`, `+1 assistant moves`); Customs spaces 1–7, each showing the printed cost you must pay in imported goods (`pay 2 imports`, printed costs `[1,1,2,2,3,3,4]`), its VP, and its warehouse/yen rider (spaces 5–7 carry no rider). Under each card sits its occupant: `empty`, or the player's name in their colour. In 2-player games a neutral **dummy** holds Church faith-7 and Customs space-4, drawn as `D · neutral dummy`; it occupies the space and **competes** in that track's majority scoring, but it is **not** counted towards the end-game trigger — so each section rule states the fill as `n of 4 REAL assistants placed`. Below the two tracks a line reports where the **Station** token sits (`Station: A03 — all players read +1 Power there`, or `not placed`) and the public per-country **mercenary supply** (`GB`/`US`/`FR`/`DE`/`NL`, §8.4's codes).
 
@@ -528,14 +541,14 @@ Log (`log` view): the move and reveal trail with each entry's global index — t
 Every reward the rulebook lets you decide is a real prompt now (§4's "YOU ARE DECIDING" line words it, and says how many more are queued behind it), not an automatic pick. What queues, and how each resolves:
 
 1. **Any-good reward** (`any` in the compact reward text, §8.3): exactly 4 options — 1 copper, 1 silk, 1 tea, or 1 seafood. No decline; only which good is optional, not the gain itself. Two any-good icons on the same reward queue and resolve separately, so you can pick a different good for each.
-2. **Warehouse-icon reward** (`wh`): up to 3 options — an assistant (free), a shophouse (2 yen), or a trading house (the printed 4/5/6/7 take price, whichever is next) — filtered to what's actually in your warehouse and what you can currently afford, plus an always-available `Decline the warehouse take`. The banner prices them live, e.g. `warehouse take (assistant free / shophouse 2¥ / TH 4¥)` once you can afford all three — the start player's own 3 starting yen is one short of that pictured 4¥ TH option. When nothing in your warehouse is available or affordable, the icon auto-declines silently — no prompt, no banner — same as a table player who has nothing to take either.
+2. **Warehouse-icon reward** (`wh`): up to 3 options — an assistant (free), a shophouse (2 yen), or a trading house (the printed 4/5/6/7 take price, whichever is next) — filtered to what's actually in your warehouse and what you can currently afford, plus an always-available `Decline the warehouse take`. The banner prices them live, e.g. `warehouse take (assistant free / shophouse ¥2 / trading house ¥4)` once you can afford all three — the start player's own 3 starting yen is one short of that pictured 4¥ TH option. When nothing in your warehouse is available or affordable, the icon auto-declines silently — no prompt, no banner — same as a table player who has nothing to take either.
 3. **Movement-icon reward** (`move`): move one of your own assistants from hand or an on-board area to any other (non-Canal) area — resolve via the numbered list or the `m <from> <to>` shorthand (§4/§5) — or `Decline the assistant move`. One prompt per Movement icon; multiple icons on the same reward resolve independently, same as multiple any-good icons. When you have no assistant anywhere the icon could draw from — nothing in hand, nothing on the board — it auto-declines silently the same way: no prompt appears, same as a table player with nothing to move either.
-4. **Church and Customs space choice**: after paying, if 2 or more spaces are legally open (Church: at your computed total faith; Customs: at the matching printed-cost pair), you pick which one — numbered by faith/space number and its printed VP and rider (the same `3vp 1move` / `5vp 2wh` reward text the `tracks` view prints, §8.5). (The Church *payment* options themselves already preview the faith each would produce — §4's previews — so you know what you're buying before you pay.) When only ONE space is open, the tool places you there automatically without a prompt — same as a table player who has no real choice either. A Church placement then queues its space's movement rider(s) as their own assistant-move choice(s), so a single Church visit can cascade through several stacked prompts (the `— N choice(s) pending` count tracks how many are left); a Customs space-1/space-3 placement similarly queues its warehouse-take rider(s).
+4. **Church and Customs space choice**: after paying, if 2 or more spaces are legally open (Church: at your computed total faith; Customs: at the matching printed-cost pair), you pick which one — numbered by faith/space number and its printed VP and rider, in the compact option tokens of §8.3 (`3vp 1move`, `5vp 2wh`). The `tracks` view draws those same two engine numbers as a card instead, in full words (`★3 VP`, `+1 assistant moves`, §8.5) — an option row and a card are different budgets, so the renderings differ on purpose while the source does not. (The Church *payment* options themselves already preview the faith each would produce — §4's previews — so you know what you're buying before you pay.) When only ONE space is open, the tool places you there automatically without a prompt — same as a table player who has no real choice either. A Church placement then queues its space's movement rider(s) as their own assistant-move choice(s), so a single Church visit can cascade through several stacked prompts (the deciding line's `(N more to resolve after this one)` tail tracks how many are left); a Customs space-1/space-3 placement similarly queues its warehouse-take rider(s).
 5. **Telephone's Recovery choice**: owning Telephone with ≥1 of your own assistants in the just-finished action's area pauses Recovery and asks whether to leave exactly 1 assistant there (`Leave 1 assistant behind (Telephone)`) or recover everyone as usual (`Recover all assistants from the action area`). Without Telephone — or with nothing there to leave — Recovery stays fully automatic, same as always.
 6. **Station placement** (after taking the Station technology): you choose which area the Station token goes in — every non-Canal area is eligible, so on a full board this is a long numbered list. There is NO decline option: the token is going somewhere. Once placed, `tracks` (§5) shows where it sits, and **every** player — not just its owner — gets +1 Power when acting in that area, so it is worth reconciling against the physical board. If only one area were ever eligible the tool would place it inline without asking; that can't happen on a real board, but it makes Station the one choice whose automatic resolution *does* something rather than nothing.
 7. **University and Textile Mill ("Spinning Mill")**: no longer queued choices — they're standing options offered directly in both Additional-Action windows (§8.4), like any other move (`Use University: pay 1 yen, take an assistant from the warehouse`; `Use Textile Mill: discard 1 silk, gain 2 yen`), each usable once per turn.
 
-None of this touches the 5-Power tokens: they are face-up open information you enter once at setup (§3, step 4) and read off the board (§8.5), not a play-time choice or reveal. (The physical box check found the 20 tokens are only Import/Copper/Silk/Seafood/Tea/Yen faces — there's no "Movement" token in the real game, so the board letters stay exactly `i/c/s/t/f/y`.)
+None of this touches the 5-Power tokens: they are face-up open information you enter once at setup (§3, step 4) and read off the board (§8.5), not a play-time choice or reveal. (The physical box check found the 20 tokens are only Import/Copper/Silk/Seafood/Tea/Yen faces — there's no "Movement" token in the real game, so the **setup token letters** stay exactly `i/c/s/t/f/y`. Those letters are the wizard's vocabulary, not the board's: a tile spells its face out in words, `5-Power: 1 Import`.)
 
 ## 9. Reporting problems
 

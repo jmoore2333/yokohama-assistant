@@ -1,0 +1,32 @@
+BUILDING-SITE CARD INDEX — all 24, in card order  · SITE n is the number setup entry takes; nothing is printed on the card
+Open as a view — this screen is recording nothing. Pick by number; this index takes no filters.
+
+┌ SITE 0 ───────────────────────────────────────┐ ┌ SITE 1 ───────────────────────────────────────┐ ┌ SITE 2 ───────────────────────────────────────┐ ┌ SITE 3 ───────────────────────────────────────┐ ┌ SITE 4 ───────────────────────────────────────┐
+│ TL 1 VP               TR 3 VP                 │ │ TL 1 VP               TR 3 Seafood            │ │ TL 1 VP               TR 4 VP                 │ │ TL 1 VP               TR 2 warehouse takes    │ │ TL 1 VP               TR 2 Silk               │
+│ ML blank              MR 3 Seafood            │ │ ML blank              MR 2 Seafood            │ │ ML blank              MR 2 Tea                │ │ ML blank              MR 2 Tea                │ │ ML blank              MR 1 Copper             │
+│ trading house  ★7 VP                          │ │ trading house  ★7 VP                          │ │ trading house  ★7 VP  = on area A09           │ │ trading house  ★8 VP                          │ │ trading house  ★9 VP                          │
+└───────────────────────────────────────────────┘ └───────────────────────────────────────────────┘ └───────────────────────────────────────────────┘ └───────────────────────────────────────────────┘ └───────────────────────────────────────────────┘
+┌ SITE 5 ───────────────────────────────────────┐ ┌ SITE 6 ───────────────────────────────────────┐ ┌ SITE 7 ───────────────────────────────────────┐ ┌ SITE 8 ───────────────────────────────────────┐ ┌ SITE 9 ───────────────────────────────────────┐
+│ TL 1 VP               TR 2 Copper             │ │ TL 1 VP               TR 2 any goods          │ │ TL 1 VP               TR 2 any goods          │ │ TL 1 VP               TR 4 VP                 │ │ TL 1 VP               TR 2 warehouse takes    │
+│ ML blank              MR 2 Silk               │ │ ML blank              MR 1 any good           │ │ ML blank              MR 1 any good           │ │ ML blank              MR 2 assistant moves    │ │ ML blank              MR 2 assistant moves    │
+│ trading house  ★9 VP                          │ │ trading house  ★7 VP                          │ │ trading house  ★6 VP  = on area A08           │ │ trading house  ★8 VP                          │ │ trading house  ★6 VP                          │
+└───────────────────────────────────────────────┘ └───────────────────────────────────────────────┘ └───────────────────────────────────────────────┘ └───────────────────────────────────────────────┘ └───────────────────────────────────────────────┘
+┌ SITE 10 ──────────────────────────────────────┐ ┌ SITE 11 ──────────────────────────────────────┐ ┌ SITE 12 ──────────────────────────────────────┐ ┌ SITE 13 ──────────────────────────────────────┐ ┌ SITE 14 ──────────────────────────────────────┐
+│ TL 1 VP               TR 2 warehouse takes    │ │ TL 1 VP               TR 2 warehouse takes    │ │ TL 1 VP               TR 3 VP + 1 yen         │ │ TL 1 VP               TR 3 warehouse takes    │ │ TL 1 VP               TR 3 VP                 │
+│ ML blank              MR 2 assistant moves    │ │ ML blank              MR 2 assistant moves    │ │ ML blank              MR 2 assistant moves    │ │ ML blank              MR 2 warehouse takes    │ │ ML blank              MR 2 warehouse takes    │
+│ trading house  ★7 VP                          │ │ trading house  ★5 VP  = on area A05           │ │ trading house  ★6 VP  = on area A04           │ │ trading house  ★5 VP                          │ │ trading house  ★8 VP                          │
+└───────────────────────────────────────────────┘ └───────────────────────────────────────────────┘ └───────────────────────────────────────────────┘ └───────────────────────────────────────────────┘ └───────────────────────────────────────────────┘
+┌ SITE 15 ──────────────────────────────────────┐ ┌ SITE 16 ──────────────────────────────────────┐ ┌ SITE 17 ──────────────────────────────────────┐ ┌ SITE 18 ──────────────────────────────────────┐ ┌ SITE 19 ──────────────────────────────────────┐
+│ TL 1 VP               TR 2 VP + 1 yen         │ │ TL 1 VP               TR 2 VP + 1 yen         │ │ TL 1 VP               TR 2 VP + 1 yen         │ │ TL 1 VP               TR 4 VP                 │ │ TL 1 VP               TR 4 VP                 │
+│ ML blank              MR 2 warehouse takes    │ │ ML blank              MR 1 VP + 1 yen         │ │ ML blank              MR 2 VP                 │ │ ML blank              MR 2 yen                │ │ ML blank              MR 2 yen                │
+│ trading house  ★8 VP  = on area A02           │ │ trading house  ★9 VP                          │ │ trading house  ★8 VP  = on area A00           │ │ trading house  ★9 VP                          │ │ trading house  ★6 VP                          │
+└───────────────────────────────────────────────┘ └───────────────────────────────────────────────┘ └───────────────────────────────────────────────┘ └───────────────────────────────────────────────┘ └───────────────────────────────────────────────┘
+┌ SITE 20 ──────────────────────────────────────┐ ┌ SITE 21 ──────────────────────────────────────┐ ┌ SITE 22 ──────────────────────────────────────┐ ┌ SITE 23 ──────────────────────────────────────┐
+│ TL 1 VP               TR 3 VP                 │ │ TL 1 VP               TR 4 VP                 │ │ TL 1 VP               TR 4 VP                 │ │ TL 1 VP               TR 3 VP                 │
+│ ML blank              MR 1 VP + 2 yen         │ │ ML blank              MR 1 VP + 2 yen         │ │ ML blank              MR 3 VP                 │ │ ML blank              MR 2 VP                 │
+│ trading house  ★5 VP  = on area A07           │ │ trading house  ★5 VP  = on area A01           │ │ trading house  ★9 VP  = on area A03           │ │ trading house  ★6 VP  = on area A06           │
+└───────────────────────────────────────────────┘ └───────────────────────────────────────────────┘ └───────────────────────────────────────────────┘ └───────────────────────────────────────────────┘
+
+Dimmed cards are already recorded elsewhere and cannot be entered twice — each says where it is.
+Enter, '?', 'cancel' or 'back' closes this index and puts you back at the prompt underneath, exactly as you left it — nothing is entered and nothing there is cancelled.
+>

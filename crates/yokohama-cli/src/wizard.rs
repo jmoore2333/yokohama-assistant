@@ -3068,8 +3068,8 @@ mod tests {
     }
 
     /// Tile abbreviation for the scripted live tests -- the inverse of
-    /// `parse_tile_abbrev`, shared by the tests that drive a generated table
-    /// back through the wizard.
+    /// [`match_tile_name`] over [`AREA_TYPE_ENTRY`], shared by the tests that
+    /// drive a generated table back through the wizard.
     fn tile_abbrev_for_test(t: AreaType) -> &'static str {
         match t {
             AreaType::CopperMine => "cm", AreaType::SilkMill => "sm",
@@ -3821,7 +3821,7 @@ mod tests {
         // chosen by LOWEST ID rather than by iteration order, because
         // `TechRegistry` is a `HashMap` and `iter()` is unordered. (Every
         // shipped path that cares sorts: `card_prompt::tech_matches`,
-        // `build_tech_index`, `index_card_for`, `input::parse_tech_entry`.)
+        // `build_tech_index`, `index_card_for`.)
         let mut titles: Vec<(u8, String)> =
             rules.techs.iter().map(|c| (c.id.0, c.name.clone())).collect();
         titles.sort();

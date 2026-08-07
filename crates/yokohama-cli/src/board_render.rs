@@ -1098,31 +1098,19 @@ mod tests {
     /// decision zone around it. Plain text, because a capture full of escapes
     /// is a capture nobody can read in a diff.
     ///
-    /// Regenerate with `UPDATE_T2_CAPTURE=1 cargo test -p yokohama-cli --lib
+    /// Regenerate with `UPDATE_CAPTURES=1 cargo test -p yokohama-cli --lib
     /// the_committed_capture` after a deliberate board change, and look at the
-    /// diff before committing it.
+    /// diff before committing it. (`UPDATE_T2_CAPTURE` still works — see
+    /// `view_render::tests::blessing_captures`, which owns the blessing rule
+    /// for every capture in the crate.)
     #[test]
     fn the_committed_capture_is_what_the_board_renders() {
-        let path = concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/../../docs/plans/2026-08-05-phase3.5a-mocks/captures/t2-board-2p.txt",
-        );
         let (state, rules) = state_np(2);
         let board = crate::screen_model::build_board(&state, &rules, &[]);
         let colors = colors_np(&state);
         let rendered =
             format!("{}{}\n", board_view(&board, &colors), board_legend(has_canal(&board)));
-
-        if std::env::var_os("UPDATE_T2_CAPTURE").is_some() {
-            std::fs::create_dir_all(std::path::Path::new(path).parent().expect("a parent"))
-                .expect("the captures directory");
-            std::fs::write(path, &rendered).expect("write the capture");
-        }
-        let committed = std::fs::read_to_string(path).expect("the committed capture");
-        assert_eq!(
-            committed, rendered,
-            "the committed 2P board capture is stale; regenerate it with UPDATE_T2_CAPTURE=1",
-        );
+        crate::view_render::tests::assert_capture("t2-board-2p.txt", &rendered);
     }
 
     /// Two tiles and the legend, at the busiest state a tile can reach — the

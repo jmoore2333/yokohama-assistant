@@ -773,8 +773,8 @@ fn option_text(
 /// A re-worded move row as TINTED SEGMENTS, in reading order.
 ///
 /// **Segments rather than the old prefix/marked pair, because T11 is the
-/// deliberate palette pass the T4 review deferred** ([`WordedMove::with_tail`]
-/// records the deferral). Two fields could express "everything before the mark
+/// deliberate palette pass the T4 review deferred.** Two fields could express
+/// "everything before the mark
 /// is plain, everything from the mark on is green", which is not what the
 /// approved `main-frame-mid.ans` draws: it BOLDS the area name, tints the `◈`
 /// alone, and leaves the ` — 1 step · free` tail plain. Three treatments need

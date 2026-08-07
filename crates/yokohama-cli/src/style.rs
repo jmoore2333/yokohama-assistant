@@ -13,7 +13,9 @@
 //!
 //! Alignment rule for callers: escapes add bytes with zero display width,
 //! so any fixed-width padding must be computed on the PLAIN text first and
-//! `paint` applied to the finished token (see `render::fit_cell_painted`).
+//! `paint` applied to the finished token (see [`crate::board_render::exact`],
+//! which is the helper that does it -- it measures a `Twin`'s plain half and
+//! pads the painted one to match).
 
 use std::sync::atomic::{AtomicBool, Ordering};
 

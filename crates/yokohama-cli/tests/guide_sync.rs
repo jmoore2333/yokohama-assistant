@@ -167,9 +167,9 @@ fn move_grammar_and_subprompt_strings_appear_in_both_guides() {
 }
 
 /// (c) The §2 board-width sentence states the widths the real renderer
-/// produces. If the grid geometry changes (e.g. `CELL_WIDTH`, or a board's
-/// column count), the computed widths move and the guide must follow -- the
-/// numbers are derived here, never copied.
+/// produces. If the grid geometry changes (e.g. `board_render::TILE_W`, or a
+/// board's row lengths), the computed widths move and the guide must follow --
+/// the numbers are derived here, never copied.
 #[test]
 fn section2_board_widths_match_the_renderer() {
     let (w2, w3, w4) = (board_width(2), board_width(3), board_width(4));
@@ -531,6 +531,172 @@ fn section2_environment_promises_are_in_both_guides() {
             "{file} no longer states what Ctrl-C does -- §2 promises it abandons the typed line \
              without applying anything (authority: input::classify maps Interrupted to a re-read, \
              deliberately NOT to an empty line, which would be the forced-option bare Enter)."
+        );
+    }
+}
+
+// ---------------------------------------------------------------------------
+// §5 and §8 pins (T12). The T12 audit found SIX stale claims in §8 and one
+// unpinned-by-luck agreement in §5; nothing in this file read either section.
+// These four close the drift sites the audit actually found, rather than §8 in
+// general -- a section of running prose is not mechanically pinnable, and a
+// test pretending otherwise would rot into noise.
+// ---------------------------------------------------------------------------
+
+/// Command lines on ONE footing: `HELP_TEXT` opens with a `Commands:` banner
+/// and indents its lines two spaces, the guide's fenced block does neither.
+/// Both are normalized here — banner and blank lines dropped, one leading two-
+/// space indent removed — and nothing further, so the INTERIOR column
+/// alignment every line carries is still compared.
+fn section5_lines(block: &str) -> Vec<String> {
+    block
+        .lines()
+        .map(|l| l.strip_prefix("  ").unwrap_or(l).trim_end().to_string())
+        .filter(|l| !l.is_empty() && l != "Commands:")
+        .collect()
+}
+
+/// (l) §5 is `HELP_TEXT` VERBATIM, description text included.
+///
+/// (a) above compares only the first token of each line, and (d) compares the
+/// two formats against each other -- so between them a reworded `HELP_TEXT`
+/// description could drift away from the guide with the suite green. The T12
+/// audit found the two still agreeing on all 35 lines by luck; this makes it a
+/// property. Authority is `repl::HELP_TEXT`.
+#[test]
+fn section5_is_help_text_verbatim() {
+    let help = section5_lines(HELP_TEXT);
+    let guide = section5_lines(&md_code_block_after("## 5. Commands"));
+    assert!(help.len() > 15, "HELP_TEXT parse produced only {} lines", help.len());
+    assert_eq!(
+        guide, help,
+        "cli-guide.md §5 is no longer HELP_TEXT verbatim -- the guide's command block is a \
+         transcript of the in-app `help`, so a reworded description in repl.rs::HELP_TEXT is \
+         carried into the guide in the same commit (authority: repl::HELP_TEXT)."
+    );
+}
+
+/// The slice of a guide between one heading and the next, so a §8.4 assertion
+/// cannot be satisfied by §4 prose that happens to use the same words.
+fn section_slice<'a>(text: &'a str, start: &str, end: &str) -> &'a str {
+    let from = text
+        .find(start)
+        .unwrap_or_else(|| panic!("a guide is missing the heading {start:?}"));
+    let rest = &text[from..];
+    let to = rest[start.len()..]
+        .find(end)
+        .map(|i| i + start.len())
+        .unwrap_or(rest.len());
+    &rest[..to]
+}
+
+/// (m) §8.4's phase table names every phase exactly as `describe::phase_name`
+/// does. The table is what a tester maps the rulebook's turn structure onto, so
+/// a renamed phase that lands only in code makes it a lie. Swept over the whole
+/// `PHASE_CHAIN` rather than a copied list, so a tenth phase cannot slip past.
+///
+/// **Matched as a WHOLE table cell, inside §8.4 only.** A bare `contains(name)`
+/// over the document passes on a renamed phase whenever the old name is a
+/// PREFIX of the new one -- `"5-Power bonus"` is still found inside
+/// `"5-Power bonuses"` -- which is this branch's recurring overlapping-text
+/// defect, and it survived this test's own first mutation. The closing
+/// delimiter is what makes the match exact.
+#[test]
+fn section8_phase_names_match_the_describer() {
+    let chain = yokohama_cli::screen_model::PHASE_CHAIN;
+    assert_eq!(chain.len(), 9, "PHASE_CHAIN changed length; §8.4's table is sized to it");
+    let md = section_slice(GUIDE_MD, "### 8.4", "### 8.5");
+    let html = section_slice(GUIDE_HTML, "<h3>8.4", "<h3>8.5");
+    for phase in chain {
+        let name = yokohama_cli::describe::phase_name(phase);
+        for (file, text, cell) in [
+            ("cli-guide.md", md, format!("`{name}`")),
+            ("cli-guide.html", html, format!("<code>{name}</code>")),
+        ] {
+            assert!(
+                text.contains(&cell),
+                "{file} §8.4 no longer names the phase {name:?} as a whole table cell -- the \
+                 table maps the CLI's phase names onto the rulebook's turn structure (authority: \
+                 describe::phase_name)."
+            );
+        }
+    }
+}
+
+/// (n) The choice-option strings §8.6 QUOTES are strings `describe_move`
+/// actually produces. Every one of these is a constant arm -- no state reaches
+/// its wording -- so a fresh session is enough to render them, and an editorial
+/// pass over `describe.rs` that forgets the guide trips here. The T12 audit
+/// found §8.6 quoting a warehouse banner two rewrites out of date.
+#[test]
+fn section8_choice_options_are_what_the_describer_says() {
+    use yokohama_core::Move;
+    let session = Session::new_sim(
+        GameConfig::for_player_count(2),
+        0,
+        vec![StartingOrderChoice::Keep(0); 2],
+        Rules::standard(),
+    )
+    .expect("new_sim over a standard board");
+
+    for mv in [
+        Move::DeclineWarehouseTake,
+        Move::DeclineAssistantMove,
+        Move::ChooseRecoveryLeave { leave_one: true },
+        Move::ChooseRecoveryLeave { leave_one: false },
+        Move::UseUniversity,
+        Move::UseSpinningMill,
+    ] {
+        let words = yokohama_cli::describe::describe_move(&mv, session.state(), session.rules());
+        for (file, text) in [("cli-guide.md", GUIDE_MD), ("cli-guide.html", GUIDE_HTML)] {
+            assert!(
+                unescape_html(text).contains(&words),
+                "{file} §8.6 no longer quotes {words:?} -- §8.6 lists what each queued choice \
+                 offers, in the tool's own words (authority: describe::describe_move)."
+            );
+        }
+    }
+}
+
+/// (o) §8.3's claim about the `players` panel's goods letters is the panel's
+/// real vocabulary.
+///
+/// The audit found the table selling a letter (`i` for imports) that the panel
+/// has never printed, alongside `imp`, a token no shipped call site emits. Both
+/// survived because nothing read §8.3. Rather than re-transcribe the format
+/// string, this renders the panel and asserts the shape the guide describes:
+/// the four goods carry letters, and imports and yen are spelled out instead.
+#[test]
+fn section8_goods_letters_are_what_the_players_panel_prints() {
+    let session = Session::new_sim(
+        GameConfig::for_player_count(2),
+        0,
+        vec![StartingOrderChoice::Keep(0); 2],
+        Rules::standard(),
+    )
+    .expect("new_sim over a standard board");
+    let seats = render::SeatDisplay::open(session.state().players.len());
+    let panel = render::players_panel(session.state(), session.rules(), &seats);
+
+    for letter in ["c1", "s1", "t1", "f1"] {
+        assert!(
+            panel.contains(letter),
+            "the players panel no longer prints {letter:?}; §8.3's letter column states the set \
+             c/s/t/f (authority: render::players_panel): {panel}"
+        );
+    }
+    assert!(
+        panel.contains("imports 0") && !panel.contains("i0"),
+        "the players panel spells imports out and gives it NO letter, which is exactly what \
+         §8.3 says after the T12 audit found the guide claiming an `i` (authority: \
+         render::players_panel): {panel}"
+    );
+    for (file, text) in [("cli-guide.md", GUIDE_MD), ("cli-guide.html", GUIDE_HTML)] {
+        assert!(
+            text.contains("goods letters are exactly `c s t f`")
+                || text.contains("goods letters are exactly <code>c s t f</code>"),
+            "{file} §8.3 no longer states the panel's letter set (authority: \
+             render::players_panel)."
         );
     }
 }

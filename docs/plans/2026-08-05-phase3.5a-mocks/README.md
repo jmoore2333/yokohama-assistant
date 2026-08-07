@@ -1,4 +1,21 @@
-# 3.5a mocks — round 2 (round-1 rulings applied)
+# 3.5a mocks — round 3.2 (the approved set)
+
+> **Two kinds of file live here.** The `.ans`/`.html.frag` pairs are the
+> owner-approved DESIGN MOCKS, drawn by `mockgen.py` and touching no CLI code —
+> the authority a surface is judged against. `captures/` holds RENDERS OF THE
+> SHIPPED BINARY: `t2`–`t11` are checked goldens the test suite regenerates
+> (`UPDATE_CAPTURES=1 cargo test -p yokohama-cli --lib`, then look at the diff),
+> and `t12-*.txt` are the T12 visual pass — the real binary driven through a
+> real PTY at the 200×50 floor, cut from a `script` log per
+> `docs/forge-cli-testing.md`. A mock is what was asked for; a capture is what
+> shipped.
+>
+> **Where the two deliberately differ:** the opening `main-frame.ans` and
+> `frame-4p.ans` carry the PRE-V3 tile body (`President: none` on its own line).
+> V3 — president as `▲` on the tile title, `●` runs, and the freed line
+> carrying the site-slot strip — is spec §0.4 and is drawn in
+> `main-frame-mid.ans`, which is the tile the shipped board matches. The
+> per-task deviations are recorded in the execution ledger's task rows.
 
 Design artifacts for the CLI redesign (brief: `../2026-08-05-phase3.5a-cli-redesign-brief.md`).
 Both frames render the owner's actual 2026-08-05 live game (seed …964555000) at turn 1,

@@ -895,9 +895,13 @@ pub fn describe_move(mv: &Move, state: &GameState, rules: &Rules) -> String {
         }
         Move::DeclineAssistantMove => "Decline the assistant move".to_string(),
         // Show the space's FULL printed reward -- VP plus its movement rider
-        // (Church) or warehouse/yen rider (Customs) -- in the SAME vocabulary
-        // the `tracks` view prints, single-sourced from `render`'s reward-text
-        // helpers so the choice can never disagree with `tracks`. The rider is
+        // (Church) or warehouse/yen rider (Customs) -- in the COMPACT option
+        // vocabulary, single-sourced from `render`'s reward-text helpers. NOT
+        // the `tracks` view's wording, which draws the same two engine numbers
+        // as a card in full words; what the two share is the `ChurchTrack` /
+        // `CustomsTrack` source, which is the parity that matters. See
+        // `render::church_reward_text`'s doc, which states this from the other
+        // side. The rider is
         // decision-relevant when the choice offers more than one space (Church
         // faith 4/5 = 1move vs 6 = 2move; Customs cost-1 space 1 = 2wh vs
         // space 2 = 2yen), and each space's placement queues that rider next

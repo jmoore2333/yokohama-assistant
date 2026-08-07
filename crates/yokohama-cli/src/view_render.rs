@@ -1293,8 +1293,9 @@ pub(crate) mod tests {
     ///
     /// Ten moves is what it takes at every count for the walk to cross a seat
     /// boundary, which is what makes the actor prefix visible in the capture at
-    /// all; `entries_are_driver_shaped` asserts the crossing rather than
-    /// trusting it. The three offer/hand views above deliberately stay at their
+    /// all; `the_captured_log_entries_are_driver_shaped_and_name_more_than_one_actor`
+    /// asserts the crossing rather than trusting it. The three offer/hand views
+    /// above deliberately stay at their
     /// OPENING state — they are captures of different surfaces, not of one
     /// moment, and re-shooting them mid-walk would churn three goldens to say
     /// nothing new.
@@ -2342,12 +2343,19 @@ pub(crate) mod tests {
     }
 
     /// Compare `rendered` against the committed capture of that name, or
-    /// rewrite it under `UPDATE_T6_CAPTURE`.
+    /// rewrite it when blessed.
+    ///
+    /// **THE one capture helper for the whole crate.** Four other modules had
+    /// hand-copied this read-compare-or-rewrite block, each behind its own
+    /// task-numbered variable, so a "regenerate the captures" sweep driven off
+    /// any one doc comment left the other goldens unblessed and the next diff
+    /// mixed a real change with a stale one. `board_render`, `screen`,
+    /// `index_render` and this module all call THIS now (T12).
     pub(crate) fn assert_capture(name: &str, rendered: &str) {
         let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("../../docs/plans/2026-08-05-phase3.5a-mocks/captures")
             .join(name);
-        if std::env::var_os("UPDATE_T6_CAPTURE").is_some() {
+        if blessing_captures() {
             std::fs::create_dir_all(path.parent().expect("a parent"))
                 .expect("the captures directory");
             std::fs::write(&path, rendered).expect("write the capture");
@@ -2356,8 +2364,30 @@ pub(crate) mod tests {
             .unwrap_or_else(|e| panic!("the committed capture {name}: {e}"));
         assert_eq!(
             committed, rendered,
-            "the committed {name} capture is stale; regenerate it with UPDATE_T6_CAPTURE=1",
+            "the committed {name} capture is stale; regenerate it with UPDATE_CAPTURES=1 and LOOK \
+             AT THE DIFF before committing",
         );
+    }
+
+    /// Whether this run may rewrite the committed captures.
+    ///
+    /// Checked for PRESENCE, not for a value: `UPDATE_CAPTURES=0` and
+    /// `UPDATE_CAPTURES=` bless exactly as `=1` does — the variable is a
+    /// deliberate act, and a shell that exports it empty still meant it. The
+    /// per-task names are kept as aliases so the task-numbered doc comments
+    /// scattered through the crate stay true; `UPDATE_CAPTURES` is the one that
+    /// blesses every capture at once.
+    fn blessing_captures() -> bool {
+        [
+            "UPDATE_CAPTURES",
+            "UPDATE_T2_CAPTURE",
+            "UPDATE_T3_CAPTURE",
+            "UPDATE_T5_CAPTURE",
+            "UPDATE_T6_CAPTURE",
+            "UPDATE_T10_CAPTURE",
+        ]
+        .iter()
+        .any(|key| std::env::var_os(key).is_some())
     }
 
     /// The widest printed reward in FULL WORDS still fits its column on both

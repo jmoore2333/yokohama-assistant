@@ -1,0 +1,49 @@
+TECHNOLOGY INDEX — all 20, grouped by flag  · small tag = engine id, one per physical copy (never required; no number is printed on the card)
+Open as a view — this screen is recording nothing. Type a name or any prefix of one ('tele' is ambiguous, 'telegram' is not) · 'f france' filters by flag · 'f' clears.
+
+■ BRITAIN  (6 cards)
+┌ BALL  industry 3                     T11/T12 ┐  ┌ STATION  industry 4                      T15 ┐  ┌ UNIVERSITY  industry 3               T16/T17 ┐  ┌ POSTAL SYSTEM  industry 3            T20/T21 ┐
+│ +2 VP when you complete an Order              │ │ Place the Station token: +1 Power for all     │ │ Once per turn: pay 1 Yen to take an assistant │ │ May stop and act where opponent Presidents    │
+│ 2 copies in the deck                          │ │ there; free teleport, no President fee; your  │ │ from the Warehouse                            │ │ stand; pay each owner 1 Yen unless you own    │
+└───────────────────────────────────────────────┘ │ assistant needed                              │ │ 2 copies in the deck                          │ │ Stagecoach                                    │
+                                                  │ 1 copy in the deck                            │ └───────────────────────────────────────────────┘ │ 2 copies in the deck                          │
+                                                  └───────────────────────────────────────────────┘                                                   └───────────────────────────────────────────────┘
+┌ TEXTILE MILL  industry 4                 T25 ┐  ┌ STAGECOACH  industry 3                   T27 ┐
+│ Once per turn: discard 1 Silk to gain 2 Yen   │ │ Move through opponent Presidents fee-free;    │
+│ 1 copy in the deck                            │ │ with Postal System, stopping on one is free   │
+└───────────────────────────────────────────────┘ │ too                                           │
+                                                  │ 1 copy in the deck                            │
+                                                  └───────────────────────────────────────────────┘
+
+■ AMERICA  (4 cards)
+┌ LANGUAGE SCHOOL  industry 3          T01/T02 ┐  ┌ TELEGRAM  industry 6                 T03/T04 ┐  ┌ TELEPHONE  industry 6                T05/T06 ┐  ┌ TRAM  industry 5                         T28 ┐
+│ +1 Yen when you complete an Order             │ │ After placing 2 assistants in one area, may   │ │ During Recovery, may leave 1 assistant in the │ │ Teleport the President to any area without an │
+│ 2 copies in the deck                          │ │ place 1 in an adjacent area (normal placement │ │ action area                                   │ │ opponent President                            │
+└───────────────────────────────────────────────┘ │ fee applies)                                  │ │ 1 of 2 seen: Laboratory A slot 2              │ │ 1 copy in the deck                            │
+                                                  │ 2 copies in the deck                          │ └───────────────────────────────────────────────┘ └───────────────────────────────────────────────┘
+                                                  └───────────────────────────────────────────────┘
+
+■ FRANCE  (4 cards)
+┌ GASLIGHT  industry 3                 T13/T14 ┐  ┌ WINERY  industry 3                       T22 ┐  ┌ ELECTRICAL LIGHT  industry 4             T23 ┐  ┌ PATENT SYSTEM  industry 3                T26 ┐
+│ +2 VP when you build a Shophouse              │ │ +3 VP when you carry out the Church action    │ │ +3 VP when you build a Trading House          │ │ +2 VP for each Technology you acquire after   │
+│ 1 of 2 seen: Laboratory A slot 4              │ │ and place an assistant                        │ │ 1 copy in the deck                            │ │ this one (never for this card itself)         │
+└───────────────────────────────────────────────┘ │ 1 copy in the deck                            │ └───────────────────────────────────────────────┘ │ = Laboratory A slot 6                         │
+                                                  └───────────────────────────────────────────────┘                                                   └───────────────────────────────────────────────┘
+
+■ GERMANY  (3 cards)
+┌ EXPOSITION  industry 5               T09/T10 ┐  ┌ MINING TECHNOLOGY  industry 3            T24 ┐  ┌ BRICKYARD  industry 3                    T29 ┐
+│ Immediately gain 10 VP when acquired          │ │ +1 Copper each time you receive 1 or more     │ │ +4 VP when you carry out the Customs action   │
+│ 2 copies in the deck                          │ │ Copper (once per gain, not per token)         │ │ and place an assistant                        │
+└───────────────────────────────────────────────┘ │ = Laboratory A slot 1                         │ │ 1 copy in the deck                            │
+                                                  └───────────────────────────────────────────────┘ └───────────────────────────────────────────────┘
+
+■ NETHERLANDS  (3 cards)
+┌ NEWSPAPER  industry 5                T07/T08 ┐  ┌ LETTERPRESS PRINTING  industry 3     T18/T19 ┐  ┌ STOCK MARKET  industry 3                 T30 ┐
+│ Placement Option A may use 4 different areas  │ │ +1 Yen for each Technology you acquire after  │ │ At turn start, if you have 1 Yen or less,     │
+│ instead of 3                                  │ │ this one (never for this card itself)         │ │ refill to 2 Yen                               │
+│ 2 copies in the deck                          │ │ 1 of 2 seen: Laboratory A slot 5              │ │ = Laboratory A slot 3                         │
+└───────────────────────────────────────────────┘ └───────────────────────────────────────────────┘ └───────────────────────────────────────────────┘
+
+Dimmed cards are already recorded elsewhere and cannot be entered twice — each says where it is.
+Enter, '?', 'cancel' or 'back' closes this index and puts you back at the prompt underneath, exactly as you left it — nothing is entered and nothing there is cancelled.
+>
