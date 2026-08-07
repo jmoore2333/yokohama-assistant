@@ -358,6 +358,28 @@ pub(crate) const LOG_VIEW_TAIL: usize = 40;
 /// pre-T11 value deliberately — the view changed shape, the dump did not.
 const LOG_DUMP_TAIL: usize = 10;
 
+/// The screens a LOAD puts up before the REPL reads its first line.
+///
+/// **A type rather than eleven lines in `main`, because the interesting rule is
+/// a relation between the two fields and `main` is the one place a test cannot
+/// reach.** The rule is: a line is consumed from the reader if and only if
+/// `review` is `Some`, and `review` is `Some` only where a human is at a
+/// terminal to press it ([`crate::input::may_pause`]). With the composition
+/// here, that reduces `main` to a `if let Some` whose one extra `next()` is
+/// visibly inside it — and everything a piped run promises becomes a property
+/// the suite can hold.
+pub struct Opening {
+    /// The bot-turn review surface to show and wait on, or `None` when there is
+    /// nothing to review or nobody to wait for. A full-screen surface, prefix
+    /// and all — print it as-is.
+    pub review: Option<String>,
+    /// The composed frame the player types into. When `review` is `Some` this is
+    /// the ordinary opening frame for the position, byte-identical to what the
+    /// same load would have drawn with no bot run in it; when it is `None` this
+    /// is the whole opening exactly as it has always been.
+    pub frame: String,
+}
+
 impl Repl {
     pub fn new(session: crate::session::Session) -> Repl {
         // Restore a persisted lockdown (review §3): a session saved after a
@@ -402,6 +424,50 @@ impl Repl {
             bots,
             overlay: None,
         }
+    }
+
+    /// Play out any bot turn this load opens on, and compose the screens that
+    /// go in front of the player before the REPL loop starts.
+    ///
+    /// **The bot pump is call site A (spec §9) and has to run here whatever else
+    /// this does**: a bot on the start seat moves before the human ever sees a
+    /// prompt, because nothing else in the REPL runs until the human types. What
+    /// changed at the 3.5a fix wave is only where its NARRATIVE goes.
+    ///
+    /// Two shapes, and the split is the whole fix:
+    ///
+    /// * At a terminal with a bot run to show, the narrative becomes its own
+    ///   full-screen review ([`crate::view_render::bot_review`]) and the frame
+    ///   behind it is the ordinary opening — which then FITS, because the thing
+    ///   that overran it is on the other screen.
+    /// * Otherwise — a pipe, or nothing to review — the frame is the single
+    ///   composed body this has always produced, in the same order, and no
+    ///   pause is introduced for a reader that cannot press a key.
+    ///
+    /// Load WARNINGS go with the frame in both shapes, not with the review. They
+    /// are provenance for the game about to be played rather than a report of
+    /// what the bot did, and keeping them on the frame is what lets the reviewed
+    /// frame be byte-identical to an unreviewed one.
+    pub fn opening(&mut self) -> Opening {
+        let mut warnings = String::new();
+        for warning in &self.session.load_warnings {
+            warnings.push_str(warning);
+            warnings.push('\n');
+        }
+        let narrative = self.pump_bots();
+
+        // `frame_active` rather than `screen::enabled()`: the question is
+        // whether `wrap` is about to compose a frame for this session at all,
+        // and that predicate is the single source of truth for it — so the
+        // review can never be put up over a body that was never going to be
+        // framed.
+        if crate::input::may_pause() && screen::frame_active(self) && !narrative.is_empty() {
+            let review = screen::full_screen(&crate::view_render::bot_review(&narrative));
+            let frame = screen::wrap(self, &format!("{warnings}{}", self.prompt()));
+            return Opening { review: Some(review), frame };
+        }
+        let body = format!("{warnings}{narrative}{}", self.prompt());
+        Opening { review: None, frame: screen::wrap(self, &body) }
     }
 
     /// Per-seat panel presentation: a bot's hand is masked whatever `privacy`
@@ -6520,6 +6586,178 @@ mod tests {
             "the same decision seeds must replay the same opening turn"
         );
         assert_eq!(r.session.state().current_player.0, 1, "and the human is still the one to move");
+    }
+
+    // ---- The load-time bot-turn review (Phase-3.5a fix wave, finding A) ----
+
+    /// A process that looks like a real terminal on BOTH streams — which is
+    /// what [`Opening`] asks about, and the only configuration in which it puts
+    /// a pause on the screen. Both switches are thread-local test hooks, so
+    /// this stays hermetic under a parallel run.
+    fn at_a_terminal<T>(body: impl FnOnce() -> T) -> T {
+        screen::force(true);
+        crate::input::force_pause(true);
+        let out = body();
+        crate::input::force_pause(false);
+        screen::force(false);
+        out
+    }
+
+    /// **The defect, measured.** `main.rs` composed ONE frame out of the bot's
+    /// whole opening turn plus the decision prompt, and `screen::wrap` leads
+    /// with clear-screen + home — so on a load with a bot on the start seat the
+    /// board's top rows were pushed off a 50-row terminal before the player
+    /// could read them, and the only way back to them was to scroll.
+    ///
+    /// This pins the two heights the fix is FOR, so the fix cannot be undone
+    /// without a failing number: the composed-everything frame overruns
+    /// `screen`'s recorded 2P opening height (48 rows, `FRAME_HEIGHTS`) and the
+    /// design floor with it, while the frame the player actually lands on after
+    /// the review is back at that recorded height exactly.
+    #[test]
+    fn the_bot_narrative_overran_the_design_floor_and_the_reviewed_frame_does_not() {
+        let mut r = repl_2p_bots(4, &[0]);
+        let (all_in_one, opening) = at_a_terminal(|| {
+            // Exactly what `main.rs` built before this fix: warnings, the whole
+            // pump, the prompt, one `wrap`.
+            let mut probe = repl_2p_bots(4, &[0]);
+            let mut body = String::new();
+            body.push_str(&probe.pump_bots());
+            body.push_str(&probe.prompt());
+            let all_in_one = screen::wrap(&probe, &body).lines().count();
+            (all_in_one, r.opening())
+        });
+
+        assert!(
+            all_in_one > 50,
+            "fixture: the composed-everything opening must actually overrun the 50-row floor \
+             (it drew {all_in_one} rows) — otherwise this test is measuring nothing",
+        );
+        let reviewed = opening.frame.lines().count();
+        assert_eq!(
+            reviewed, 48,
+            "and the frame behind the review is the ordinary 2P opening frame, at the height \
+             `screen::FRAME_HEIGHTS` records for it — it drew {reviewed} rows",
+        );
+    }
+
+    /// The review appears on EXACTLY the loads that have a bot turn to review,
+    /// and only where there is a human at a terminal to press Enter.
+    #[test]
+    fn the_review_appears_only_with_a_bot_run_to_review_and_only_at_a_terminal() {
+        let with_bot = at_a_terminal(|| repl_2p_bots(4, &[0]).opening());
+        assert!(with_bot.review.is_some(), "a bot on the start seat plays a turn the player has not seen");
+
+        // The human is to move: the pump applies nothing, so there is nothing
+        // to review and no reason to make anyone press a key.
+        let human_to_move = at_a_terminal(|| repl_2p_bots(4, &[1]).opening());
+        assert!(human_to_move.review.is_none(), "no bot run means no review screen");
+
+        // The same bot load under a pipe: no pause, whatever else is true.
+        let piped = repl_2p_bots(4, &[0]).opening();
+        assert!(piped.review.is_none(), "a piped run must never be asked to press Enter");
+
+        // And the second half of the gate on its own: the review is a surface
+        // built out of clear-screen escapes, so it needs the FRAME to be on and
+        // not merely a keyboard to be attached. Production cannot separate the
+        // two (a pausable process has a terminal on stdout, which is what turns
+        // frames on) — this is the arm that keeps the conjunct from rotting into
+        // a line nothing exercises.
+        screen::force(false);
+        crate::input::force_pause(true);
+        let unframed = repl_2p_bots(4, &[0]).opening();
+        crate::input::force_pause(false);
+        assert!(unframed.review.is_none(), "no frame to replace means no full-screen surface");
+    }
+
+    /// **The review carries what the player missed** — the bot's described
+    /// moves and the aggregate delta the pump summarizes them with — plus the
+    /// one instruction for leaving it. Asserted against the pump's OWN text
+    /// rather than against re-typed wording, so the two cannot drift.
+    #[test]
+    fn the_review_carries_the_bot_narrative_and_its_delta_summary() {
+        let narrative = repl_2p_bots(4, &[0]).pump_bots();
+        let review = at_a_terminal(|| repl_2p_bots(4, &[0]).opening()).review.expect("a bot run");
+
+        for line in narrative.lines() {
+            assert!(review.contains(line), "the review must carry every pump line; missing {line:?}:\n{review}");
+        }
+        assert!(narrative.contains("Seat 0"), "fixture: the narrative describes the bot's moves");
+        assert!(
+            narrative.lines().any(|l| l.starts_with("Red:") || l.starts_with("Blue:")),
+            "fixture: the pump ends with delta_summary lines:\n{narrative}",
+        );
+        assert!(review.contains("press Enter"), "and it says how to leave:\n{review}");
+        // A surface that REPLACES the frame, the way every other full-screen
+        // surface does — the clear-and-home prefix `screen::wrap` gives them.
+        assert!(review.starts_with("\u{1b}[2J\u{1b}[H"), "the review is a full-screen surface");
+    }
+
+    /// **The frame behind the review is the frame this position would have
+    /// drawn if there had been nothing to review** — byte for byte, so the
+    /// review is a pause in front of the ordinary opening and not a second
+    /// rendering path that can drift from it.
+    ///
+    /// The comparison frame is reached by an INDEPENDENT route: the reviewed
+    /// session is saved and re-loaded, and the resumed load has a human to move,
+    /// so its own `opening` pumps nothing and reviews nothing. The two runs
+    /// therefore differ in exactly one thing — whether a bot run happened inside
+    /// this process — which is the difference under test.
+    #[test]
+    fn the_frame_behind_the_review_is_byte_identical_to_a_load_with_nothing_to_review() {
+        let mut r = repl_2p_bots(4, &[0]);
+        let reviewed = at_a_terminal(|| r.opening());
+        assert!(reviewed.review.is_some(), "fixture: there was a bot turn to review");
+
+        let path = std::env::temp_dir().join(format!("yokohama_review_frame_{}.json", std::process::id()));
+        r.session.save(&path).expect("save");
+        let mut resumed = Repl::new(Session::load(&path, Rules::standard()).expect("load"));
+        // The title strip states whether the session autosaves, and a LOADED
+        // session has a save path where a wizard-built one does not. Clearing it
+        // holds the two routes to their one intended difference; it is not part
+        // of what the fix does.
+        resumed.session.save_path = None;
+        let plain = at_a_terminal(|| resumed.opening());
+        std::fs::remove_file(&path).ok();
+
+        assert!(plain.review.is_none(), "fixture: the resumed load has the human to move");
+        assert_eq!(reviewed.frame, plain.frame);
+    }
+
+    /// **A piped load is byte-for-byte what it was before the review existed.**
+    /// The expectation is not re-typed wording — it is the exact expression
+    /// `main.rs` used to evaluate, run against a second `Repl` at the same seed,
+    /// so this fails on any change of SHAPE (an added pause, a moved warning, a
+    /// dropped narrative) rather than on any change of content.
+    #[test]
+    fn a_piped_load_is_the_same_stream_it_was_before_the_review_existed() {
+        let opening = repl_2p_bots(4, &[0]).opening();
+
+        let mut before = repl_2p_bots(4, &[0]);
+        let mut body = String::new();
+        for warning in &before.session.load_warnings {
+            body.push_str(warning);
+            body.push('\n');
+        }
+        body.push_str(&before.pump_bots());
+        body.push_str(&before.prompt());
+
+        assert!(opening.review.is_none(), "no pause under a pipe — and so no line consumed");
+        assert_eq!(opening.frame, screen::wrap(&before, &body));
+    }
+
+    /// The review is a full-screen surface and owes the design floor what every
+    /// other one owes it: a bot turn at the pump's own display cap has to FIT,
+    /// or the fix for a screen that scrolled is a screen that scrolls.
+    #[test]
+    fn the_review_fits_the_fifty_row_design_floor() {
+        for seed in [4u64, 7, 11, 19, 23] {
+            let review = at_a_terminal(|| repl_2p_bots(seed, &[0]).opening())
+                .review
+                .unwrap_or_else(|| panic!("seed {seed} must open on a bot turn — a skipped cell measures nothing"));
+            let rows = review.lines().count();
+            assert!(rows <= 50, "the review at seed {seed} draws {rows} rows against the 50-row floor");
+        }
     }
 
     /// The `hand:` line of the players view for `seat`.

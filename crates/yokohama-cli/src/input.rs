@@ -161,18 +161,73 @@ const EDIT_PROMPT: &str = "";
 /// is exactly the wrong way round.
 static INTERACTIVE: AtomicBool = AtomicBool::new(false);
 
-/// Decide, once, whether this process's input may be edited. Called by `main`
-/// and by nothing else.
+/// Set by [`init_from_tty`] and read by [`may_pause`]; `false` until then.
+///
+/// A SECOND switch beside [`INTERACTIVE`] rather than a reuse of it, because
+/// the two answer different questions and only one of them is about rustyline.
+/// `INTERACTIVE` is "may this process put a line EDITOR on its input", which is
+/// why it consults `TERM`; this one is "is there a person at a screen", which a
+/// terminal rustyline declines to put in raw mode still is. Folding them would
+/// have made a `TERM=dumb` session silently keep the very defect the pause
+/// exists to fix.
+static PAUSABLE: AtomicBool = AtomicBool::new(false);
+
+thread_local! {
+    /// Per-thread override of [`PAUSABLE`], for the reason `screen::FORCED`
+    /// exists and is unconditionally thread-local: an integration test links
+    /// this library without `cfg(test)`, and a process-wide override would let
+    /// parallel tests race over what kind of process this is. Production never
+    /// calls [`force_pause`], so this stays `None` on the main thread and
+    /// [`may_pause`] falls through to the atomic.
+    static FORCED_PAUSE: std::cell::Cell<Option<bool>> = const { std::cell::Cell::new(None) };
+}
+
+/// Decide, once, whether this process's input may be edited and whether it may
+/// be PAUSED. Called by `main` and by nothing else.
 pub fn init_from_tty() {
     use std::io::IsTerminal;
+    let stdin_is_terminal = std::io::stdin().is_terminal();
+    let stdout_is_terminal = std::io::stdout().is_terminal();
     INTERACTIVE.store(
-        editor_gate(
-            std::io::stdin().is_terminal(),
-            std::io::stdout().is_terminal(),
-            std::env::var("TERM").ok().as_deref(),
-        ),
+        editor_gate(stdin_is_terminal, stdout_is_terminal, std::env::var("TERM").ok().as_deref()),
         Ordering::Relaxed,
     );
+    PAUSABLE.store(pause_gate(stdin_is_terminal, stdout_is_terminal), Ordering::Relaxed);
+}
+
+/// Test hook: report this process as one that may (or may not) pause. Per-thread,
+/// for the reason `screen::force` is; production never calls it.
+pub fn force_pause(enabled: bool) {
+    FORCED_PAUSE.with(|f| f.set(Some(enabled)));
+}
+
+/// Whether this process may put a full-screen PAUSE in front of the player and
+/// wait for them to press Enter.
+///
+/// **Two clauses, and neither is about taste.**
+///
+/// 1. stdin being a terminal is what makes "press Enter" a HUMAN action. Under
+///    a pipe the next line is the next game COMMAND, so a pause there pauses
+///    nothing and silently eats a move.
+/// 2. stdout being a terminal is what makes the pause worth having. What it
+///    introduces is a full-screen surface replacing a composed frame, and a
+///    pipe has no frame to replace — a piped transcript would gain a screen of
+///    chrome and lose nothing, breaking "piped output is byte-plain"
+///    (spec §0.12) at the one moment a developer is capturing a run.
+///
+/// Its own function so the fence can be ASSERTED rather than inferred, exactly
+/// as [`may_edit`]'s is.
+pub fn may_pause() -> bool {
+    if let Some(forced) = FORCED_PAUSE.with(|f| f.get()) {
+        return forced;
+    }
+    PAUSABLE.load(Ordering::Relaxed)
+}
+
+/// The two clauses [`may_pause`] documents, as a pure function of the streams —
+/// so the decision is testable without a terminal and without arming anything.
+fn pause_gate(stdin_is_terminal: bool, stdout_is_terminal: bool) -> bool {
+    stdin_is_terminal && stdout_is_terminal
 }
 
 /// Terminals rustyline will not put in raw mode — its own `UNSUPPORTED_TERM`
@@ -501,6 +556,41 @@ mod tests {
                  `BufRead::lines()`; the plain arm has to win instead"
             );
         }
+    }
+
+    /// [`pause_gate`]'s whole truth table, and each `false` is a different way
+    /// a pause would be a lie.
+    #[test]
+    fn a_pause_needs_a_human_on_one_end_and_a_screen_on_the_other() {
+        assert!(pause_gate(true, true), "a real terminal on both streams is the only case that pauses");
+        assert!(
+            !pause_gate(false, true),
+            "stdin on a pipe: the next line is the next game command, so 'press Enter' would eat a move"
+        );
+        assert!(
+            !pause_gate(true, false),
+            "stdout on a pipe: there is no frame to replace, so the capture would gain a screen of chrome"
+        );
+        assert!(!pause_gate(false, false), "and neither end, which is CI");
+    }
+
+    /// The same fence [`only_main_can_arm_the_editor`] holds for the editor,
+    /// held for the pause: no test can reach the pausing arm by accident, and
+    /// it is the ATOMIC that answers rather than the ambient streams — which is
+    /// what keeps the suite's answer the same on a laptop and in CI.
+    #[test]
+    fn only_main_can_arm_the_pause() {
+        assert!(!may_pause(), "no test calls init_from_tty, so the switch must still be off");
+        PAUSABLE.store(true, Ordering::Relaxed);
+        assert!(may_pause(), "the atomic is the switch");
+        PAUSABLE.store(false, Ordering::Relaxed);
+        assert!(!may_pause(), "and it is restored");
+        // The test hook overrides it per THREAD, so a test that wants a
+        // terminal can have one without telling every other test it has one.
+        force_pause(true);
+        assert!(may_pause(), "the forced answer wins on this thread");
+        force_pause(false);
+        assert!(!may_pause());
     }
 
     /// The fence: the editor arm is unreachable until `main` arms it, so no

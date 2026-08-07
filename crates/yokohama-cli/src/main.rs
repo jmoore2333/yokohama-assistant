@@ -38,23 +38,23 @@ fn main() {
         }
     };
 
-    // Provenance warnings from a resumed save open the first frame's BODY
-    // rather than going to stderr before it: the frame leads with
-    // clear-screen + home (screen::wrap), so anything printed ahead of it is
-    // erased before it can be read (I-1, final whole-branch review).
-    let mut opening = String::new();
-    for warning in &repl.session.load_warnings {
-        opening.push_str(warning);
-        opening.push('\n');
+    // Everything a load puts on screen before the loop reads a line: the bot
+    // pump (call site A, spec §9 -- a bot on the START seat has to move before
+    // the human ever sees a prompt, since nothing else in the REPL runs until
+    // the human types), the provenance warnings from a resumed save, and the
+    // opening frame. Composed in the library so the relation between the two
+    // screens is testable; see `Opening`.
+    let opening = repl.opening();
+    // THE ONE PLACE A LINE IS CONSUMED OUTSIDE THE LOOP, and it is inside the
+    // `if`: no review, no read. A review is offered only where `input::may_pause`
+    // says a human is at a terminal, so a piped run reaches the loop with its
+    // stream untouched and its first command still its first command.
+    if let Some(review) = &opening.review {
+        print!("{review}");
+        std::io::stdout().flush().ok();
+        lines.next();
     }
-    // Bot pump, call site A (spec §9): a bot on the START seat has to move
-    // before the human ever sees a prompt -- nothing else in the REPL runs
-    // until the human types, so without this it would never move at all. A
-    // no-op with no bots, and on a resumed save mid-bot-turn it finishes that
-    // turn before handing over.
-    opening.push_str(&repl.pump_bots());
-    opening.push_str(&repl.prompt());
-    print!("{}", yokohama_cli::screen::wrap(&repl, &opening));
+    print!("{}", opening.frame);
     std::io::stdout().flush().ok();
     for line in lines {
         let out = repl.step(&line);

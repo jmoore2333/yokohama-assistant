@@ -481,7 +481,7 @@ pub fn wrap(repl: &Repl, body: &str) -> String {
     // prefix still leads, so the surface arrives on a clean screen exactly as
     // a framed body does.
     if repl.full_screen_surface() {
-        return format!("\u{1b}[2J\u{1b}[H{body}");
+        return full_screen(body);
     }
     let stage = stage(repl);
     let width = stage_width(&stage);
@@ -493,6 +493,19 @@ pub fn wrap(repl: &Repl, body: &str) -> String {
         "\u{1b}[2J\u{1b}[H{strip}\n\n{stage}{}\n{body}",
         String::from(crate::style::glyph::RULE).repeat(width),
     )
+}
+
+/// A body that REPLACES the frame instead of sitting under it: the clear-and-
+/// home prefix, and nothing else.
+///
+/// Extracted from [`wrap`]'s overlay branch when the load-time bot-turn review
+/// became a second caller. The review is not an [`crate::repl::Overlay`] — it is
+/// put up before the REPL loop starts and taken down by one keypress, so it
+/// never passes through `wrap` at all — but it has to arrive on a cleared screen
+/// exactly as an overlay does, and one function knowing the prefix is what keeps
+/// the two from drifting into different kinds of "full screen".
+pub(crate) fn full_screen(body: &str) -> String {
+    format!("\u{1b}[2J\u{1b}[H{body}")
 }
 
 /// The session facts the title strip states, mapped out of the `Session` HERE

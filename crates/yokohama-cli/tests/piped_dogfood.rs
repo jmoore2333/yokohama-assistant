@@ -184,6 +184,63 @@ fn full_piped_2p_human_vs_bot_game_runs_plain_to_winner() {
     );
 }
 
+/// **A piped load with a bot on the START seat does not eat the first command**
+/// — the one clause of the 3.5a review-screen fix that lives in `main.rs` and
+/// therefore in no library test.
+///
+/// At a terminal, a load that opens on a bot turn shows that turn as its own
+/// full-screen review and reads ONE line to dismiss it. Under a pipe there is no
+/// review and no read, and the two facts have to stay welded: move that
+/// `lines.next()` out of its `if` and the whole library suite still passes while
+/// every piped run silently loses its first command. So this drives the shipped
+/// binary with a bot on seat 0 and sends exactly one command — `quit` — whose
+/// arrival is observable: the REPL answers it with `bye`. A consumed line means
+/// no `bye`, because the process would instead run out of input and stop.
+///
+/// **Per-edit tier, unlike its two neighbours here**: it is a wizard, one bot
+/// turn and a quit rather than a full game (~0.3s), and a release-only pin on a
+/// five-line branch in `main` is a pin that rots between phase closes.
+#[test]
+fn a_piped_load_with_a_bot_on_the_start_seat_still_reads_the_first_command() {
+    let mut child = Command::new(env!("CARGO_BIN_EXE_yokohama-cli"))
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("spawn the real binary");
+    let save = std::env::temp_dir().join(format!("yokohama_dogfood_start_bot_{}.json", std::process::id()));
+    {
+        let mut stdin = child.stdin.take().expect("child stdin is piped");
+        // The same wizard script the full games use, with the bot on seat 0 --
+        // the seat that moves BEFORE the first prompt -- and then one command.
+        for line in [
+            "sim", "2", "red", "blue", "0", "20260721",
+            &save.display().to_string(), "1", "1", "0", "confirm", "quit",
+        ] {
+            stdin.write_all(line.as_bytes()).expect("write stdin");
+            stdin.write_all(b"\n").expect("write newline");
+        }
+        stdin.flush().expect("flush stdin");
+    }
+    let out = child.wait_with_output().expect("the child exits");
+    std::fs::remove_file(&save).ok();
+    let transcript = String::from_utf8_lossy(&out.stdout).to_string();
+
+    assert!(
+        transcript.contains("Seat 0 (Red) \u{2014}"),
+        "fixture: the start-seat bot must have played before the first prompt:\n{transcript}"
+    );
+    assert!(
+        transcript.trim_end().ends_with("bye"),
+        "the `quit` we sent must have reached the REPL — a pause under a pipe would have eaten it:\n{}",
+        &transcript[transcript.len().saturating_sub(1500)..]
+    );
+    assert!(
+        !out.stdout.contains(&0x1b),
+        "and the piped stream stays byte-plain: no review surface, no clear-screen"
+    );
+}
+
 /// One full piped 2P game to a winner. `bots` is the wizard's bot-seats answer
 /// (`""` for none); `label` keeps the two runs' save files apart, since both
 /// tests share one process id.

@@ -1109,11 +1109,66 @@ pub fn view_menu(labels: &[&str]) -> String {
 /// each surface's own (which is what makes it worth reading). The pattern
 /// itself is taught where the roster is — the `view` menu's own gloss.
 fn view_title(name: &str, gloss: &str) -> String {
-    format!(
-        "{}   {}\n\n",
-        paint(Tone::Strong, &format!("{name} {} full view", glyph::SECTION_DASH)),
-        paint(Tone::Chrome, gloss),
-    )
+    titled(&format!("{name} {} full view", glyph::SECTION_DASH), gloss)
+}
+
+/// [`view_title`] with the headline supplied whole, for the one full-screen
+/// surface that is not on the `view` roster.
+///
+/// The `… — full view` tail is a promise about the ROSTER — it names a screen
+/// you reached by typing a word and can reach again — and [`bot_review`] is not
+/// one of those: nothing opens it, it arrives on its own and leaves on a
+/// keypress. So it shares the SHAPE (which is what makes the surfaces read as
+/// one system) and states its own headline (which is what keeps the tail from
+/// promising a word that does not exist).
+fn titled(headline: &str, gloss: &str) -> String {
+    format!("{}   {}\n\n", paint(Tone::Strong, headline), paint(Tone::Chrome, gloss))
+}
+
+/// The bot-turn REVIEW: what the opponent did while the player was not looking,
+/// on a screen of its own, waiting for one keypress.
+///
+/// **It exists because the alternative was a frame that did not fit.** On a load
+/// with a bot to move, `main` used to compose the pump's whole narrative and the
+/// decision prompt into ONE frame; `screen::wrap` leads with clear-screen, so
+/// the board's top rows went off a 50-row terminal before they could be read and
+/// the only way back to them was to scroll. The narrative is what overflows, so
+/// the narrative is what moves — and it turns out to be the half a player wants
+/// to read on its own anyway.
+///
+/// `narrative` arrives already rendered (`Repl::pump_bots`): the described moves
+/// and the one aggregate delta that summarizes them. Nothing here re-describes
+/// a move, so the review and the `log` cannot disagree about what happened.
+///
+/// **Scoped to LOAD, deliberately.** Mid-game the same narrative rides the reply
+/// to the player's own move, where it belongs — a pause between every turn would
+/// be a keypress tax on the ordinary case, and the ordinary case is not the one
+/// that broke.
+pub fn bot_review(narrative: &str) -> String {
+    let mut out = titled(
+        &format!("WHILE YOU WERE AWAY {} the bot's turn", glyph::SECTION_DASH),
+        "everything the bot did before handing back to you, and what it changed",
+    );
+    out.push_str(narrative.trim_end_matches('\n'));
+    out.push_str("\n\n");
+    // Honest about what this screen is: `main` reads one line and throws it
+    // away, so promising that a command typed here RUNS -- the way a view
+    // promises it -- would be a promise this surface cannot keep.
+    out.push_str(&paint(
+        Tone::Chrome,
+        "Take your time: the board, the dashboard and your options are all one keypress away, and \
+         nothing here is waiting on you.",
+    ));
+    out.push('\n');
+    out.push_str(&paint(
+        Tone::Chrome,
+        "This screen is a pause, not a prompt — press Enter to go on to your turn. Anything else \
+         you type here is discarded, and 'log' will still have every line of it.",
+    ));
+    out.push('\n');
+    out.push_str(&paint(Tone::Prompt, "> "));
+    out.push('\n');
+    out
 }
 
 /// [`exact`] without the PADDING half: clip a line that overruns `width`, and
