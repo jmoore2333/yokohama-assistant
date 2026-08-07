@@ -628,6 +628,15 @@ fn section8_phase_names_match_the_describer() {
 /// its wording -- so a fresh session is enough to render them, and an editorial
 /// pass over `describe.rs` that forgets the guide trips here. The T12 audit
 /// found §8.6 quoting a warehouse banner two rewrites out of date.
+///
+/// **Scoped to §8.6, and it has to be** (six-lens F6). This searched the WHOLE
+/// document while its failure message spoke about §8.6, so any needle with a
+/// twin elsewhere was unpinned: deleting `Decline the assistant move` from
+/// §8.6 item 3 left the guide's own inventory wrong and the suite green,
+/// because §4's cross-reference to the same option satisfied the `contains`.
+/// That is the branch's NAMED CHECK -- an assertion a DIFFERENT line satisfies
+/// -- landing in the test written to close it, and the slicing helper the
+/// sibling test uses was already three tests up.
 #[test]
 fn section8_choice_options_are_what_the_describer_says() {
     use yokohama_core::Move;
@@ -648,7 +657,13 @@ fn section8_choice_options_are_what_the_describer_says() {
         Move::UseSpinningMill,
     ] {
         let words = yokohama_cli::describe::describe_move(&mv, session.state(), session.rules());
-        for (file, text) in [("cli-guide.md", GUIDE_MD), ("cli-guide.html", GUIDE_HTML)] {
+        // §8.6 is the LAST subsection, so the delimiter is §9's heading --
+        // `section_slice` falling back to end-of-document would put §9 inside
+        // the slice and re-open exactly the hole this scoping closes.
+        for (file, text) in [
+            ("cli-guide.md", section_slice(GUIDE_MD, "### 8.6", "## 9.")),
+            ("cli-guide.html", section_slice(GUIDE_HTML, "<h3>8.6", "<h2>9.")),
+        ] {
             assert!(
                 unescape_html(text).contains(&words),
                 "{file} §8.6 no longer quotes {words:?} -- §8.6 lists what each queued choice \
@@ -699,4 +714,76 @@ fn section8_goods_letters_are_what_the_players_panel_prints() {
              render::players_panel)."
         );
     }
+}
+
+/// (p) **§2's quick-start sequence actually starts a game** (six-lens F4).
+///
+/// §2 advertises a fastest path and gives the answers in order. It had been
+/// missing one — the sim tail's `Bot seats?` question, which the wizard asks
+/// after the keeps — so following the guide literally fed `confirm` to that
+/// question, got `! 'confirm' is not a seat number`, ran out of input and
+/// printed `setup aborted: input ended mid-wizard`. No game, on the guide's own
+/// advertised fastest path, in a sentence this branch had already edited once.
+///
+/// Two halves, and neither alone is the property. The guide is checked to
+/// QUOTE these answers in this ORDER, so a rewritten sentence that drops one
+/// trips here rather than in a tester's terminal; and the sequence is then
+/// PIPED INTO THE SHIPPED BINARY, so a wizard that grows, drops or reorders a
+/// question trips here too. The blanks are the three Enters the sentence
+/// describes in prose (seed, save path, bot seats).
+#[test]
+fn the_quick_start_sequence_in_section2_starts_a_game() {
+    use std::io::Write;
+    use std::process::{Command, Stdio};
+
+    /// Exactly what §2 tells a tester to type, blanks included.
+    const ANSWERS: &[&str] = &["sim", "2", "red", "blue", "0", "", "", "1", "1", "", "confirm"];
+
+    // (1) The guide quotes the typed answers, in order, in its own §2 sentence.
+    let sentence = section_slice(GUIDE_MD, "**First run.**", "\n\n");
+    let mut at = 0usize;
+    for answer in ANSWERS.iter().filter(|a| !a.is_empty()) {
+        let quoted = format!("`{answer}`");
+        let found = sentence[at..].find(&quoted).unwrap_or_else(|| {
+            panic!(
+                "cli-guide.md §2's first-run sentence no longer quotes {quoted} in the order a \
+                 tester types it (authority: the wizard's question order in wizard.rs):\n{sentence}"
+            )
+        });
+        at += found + quoted.len();
+    }
+    assert!(
+        sentence.contains("bot seats"),
+        "cli-guide.md §2 must account for the sim tail's `Bot seats?` question — leaving it out \
+         is what made this sequence abort the wizard:\n{sentence}"
+    );
+
+    // (2) And the sequence starts a game in the shipped binary. Run in a temp
+    // directory, because a blank save-path answer writes the default save file
+    // into the current one.
+    let dir = std::env::temp_dir().join(format!("yokohama_quickstart_{}", std::process::id()));
+    std::fs::create_dir_all(&dir).expect("a scratch directory");
+    let mut child = Command::new(env!("CARGO_BIN_EXE_yokohama-cli"))
+        .current_dir(&dir)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("the shipped binary runs");
+    let mut script: String = ANSWERS.join("\n");
+    script.push_str("\nquit\n");
+    child.stdin.take().expect("piped stdin").write_all(script.as_bytes()).expect("write");
+    let out = child.wait_with_output().expect("the child finishes");
+    let text = String::from_utf8_lossy(&out.stdout).into_owned();
+    std::fs::remove_dir_all(&dir).ok();
+
+    assert!(
+        !text.contains("setup aborted"),
+        "§2's quick-start sequence aborts the wizard — the guide's fastest path must reach a \
+         game:\n{text}"
+    );
+    assert!(
+        text.contains("--- Setup review ---") && text.contains("TURN 1"),
+        "§2's quick-start sequence must reach the setup review and then the first prompt:\n{text}"
+    );
 }

@@ -41,7 +41,9 @@ use yokohama_core::{AchievementCategory, PlayerColor};
 use crate::board_render::Twin;
 use crate::card_render;
 use crate::describe;
-use crate::screen_model::{IndexCard, IndexFilter, IndexGroupKey, IndexKind, IndexModel};
+use crate::screen_model::{
+    IndexCard, IndexFilter, IndexGroupKey, IndexKind, IndexModel, RecordingTarget,
+};
 use crate::style::{glyph, paint, Tone};
 
 /// Columns between two cards on the same row — the mock's own single-space
@@ -79,14 +81,45 @@ fn cards_per_row(card: usize, screen: usize) -> usize {
 /// One renderer, two contexts, rather than one line hedged to cover both: a
 /// sentence true of neither surface is how a player learns to stop reading the
 /// chrome.
+///
+/// **`Inline` carries the question it is helping with, and the site index is
+/// why** (six-lens F8). [`IndexModel::target`] is the model's answer to "are
+/// these cards SELECTABLE", and at the wizard's site question the answer is
+/// deliberately no — a site card's number IS its identity, so a second,
+/// off-by-one selection number on the same card is the one collision this
+/// grammar must not have. One boolean was carrying that AND "is anything being
+/// recorded", so the screen a live setup question opens with `?` announced
+/// itself as "recording nothing" while being the helper for an active
+/// recording, and contradicted its own footer two lines down. The two facts are
+/// separate fields now.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum IndexContext {
     /// Drawn full-screen over a prompt (the REPL's `orders`/`techs`/… views and
     /// its reveal captures).
+    ///
+    /// It carries no recording target: what the REPL is capturing is already in
+    /// the model (`Repl::index_model` puts it there, filtered to the registry on
+    /// screen — the T6 cross-registry rule), and a second channel for the same
+    /// fact could disagree with it.
     Overlay,
     /// Printed inline above a question that is about to be asked again (the
-    /// setup wizard's `?`).
-    Inline,
+    /// setup wizard's `?`), and what that question is recording.
+    Inline { recording: Option<RecordingTarget> },
+}
+
+impl IndexContext {
+    /// The wizard's inline `?` with no recording context — the standing
+    /// look-up form, and what tests of the inline exit line want.
+    pub const INLINE_LOOKUP: IndexContext = IndexContext::Inline { recording: None };
+
+    /// What this screen is being drawn to answer, from whichever of the two
+    /// carriers has it.
+    fn recording(self, index: &IndexModel) -> Option<RecordingTarget> {
+        match self {
+            IndexContext::Overlay => index.target,
+            IndexContext::Inline { recording } => index.target.or(recording),
+        }
+    }
 }
 
 /// The whole index screen: title, context, the groups, footer, and — on an
@@ -107,7 +140,7 @@ pub fn index_view(
     let mut out = String::new();
     out.push_str(&title_line(index));
     out.push('\n');
-    out.push_str(&context_line(index));
+    out.push_str(&context_line(index, context));
     out.push('\n');
     out.push('\n');
 
@@ -207,10 +240,23 @@ fn id_note(kind: IndexKind) -> &'static str {
 /// second case, which is the sentence M1 named. "This screen is recording
 /// nothing" is true in both, and the refusal a pick gets is where the live
 /// capture's own registry is named.
-fn context_line(index: &IndexModel) -> String {
-    let text = match index.target {
-        Some(target) => format!(
+///
+/// **A recording screen whose cards carry no selection numbers gets its own
+/// wording** (six-lens F8). "Type its [number]" points at the bracketed
+/// selection number the grid draws; the site index draws none, because there a
+/// bare number is the card's IDENTITY and the card prints it in the corner as
+/// `SITE n`. So the site form points at that instead — and neither form says
+/// "this screen is recording nothing" while a question is waiting for it.
+fn context_line(index: &IndexModel, context: IndexContext) -> String {
+    let text = match context.recording(index) {
+        Some(target) if index.target.is_some() => format!(
             "Recording: {} {} which card is physically there? Type its [number]. {}",
+            describe::recording_target(target),
+            glyph::SECTION_DASH,
+            filter_help(index.kind),
+        ),
+        Some(target) => format!(
+            "Recording: {} {} which card is physically there? Type the number on its corner. {}",
             describe::recording_target(target),
             glyph::SECTION_DASH,
             filter_help(index.kind),
@@ -280,7 +326,7 @@ fn exit_line(context: IndexContext) -> String {
             "Enter, '?', 'cancel' or 'back' closes this index and puts you back at the prompt \
              underneath, exactly as you left it — nothing is entered and nothing there is cancelled."
         }
-        IndexContext::Inline => {
+        IndexContext::Inline { .. } => {
             "Nothing here is entered yet and nothing you have already entered is lost — the \
              question continues below, so answer it ('?' redraws this index). 'abort' leaves setup."
         }
@@ -740,7 +786,7 @@ mod tests {
             for (kind, _) in every_index(target) {
                 let model = one_index(kind, target);
                 let overlay = strip_ansi(&index_view(&model, &[], IndexContext::Overlay, FLOOR_W));
-                let inline = strip_ansi(&index_view(&model, &[], IndexContext::Inline, FLOOR_W));
+                let inline = strip_ansi(&index_view(&model, &[], IndexContext::INLINE_LOOKUP, FLOOR_W));
 
                 assert!(
                     overlay.contains("closes this index and puts you back at the prompt underneath"),
@@ -932,6 +978,67 @@ mod tests {
         // Scoped to the screen, because a live capture asking about a DIFFERENT
         // registry reaches this same branch (T6 review M1 — see `context_line`).
         assert!(standing.contains("this screen is recording nothing"), "{standing:.400}");
+    }
+
+    /// **The site index says it is recording when it IS** (six-lens F8), and
+    /// still draws no selection numbers.
+    ///
+    /// The two facts had been one boolean, so the helper a live setup question
+    /// opens with `?` denied being part of a recording — 10 to 18 times in the
+    /// gate game's setup — while its own footer two lines down said the question
+    /// continues below, and typing a number recorded a card.
+    ///
+    /// Written per CONTEXT and per LINE: the header row is picked out of the
+    /// screen by its position rather than searched for anywhere in it, and the
+    /// standing form is asserted from the same helper so this is a statement
+    /// about the context and not about the sentence existing somewhere.
+    #[test]
+    fn the_site_index_states_its_recording_context_without_numbering_its_cards() {
+        let target = RecordingTarget::SiteSetup { area: yokohama_core::AreaId::new(0) };
+        let header = |context| {
+            let text = strip_ansi(&index_view(
+                &one_index(IndexKind::Sites, None),
+                &[],
+                context,
+                FLOOR_W,
+            ));
+            text.lines().nth(1).expect("the context line is the second row").to_string()
+        };
+
+        let inline = header(IndexContext::Inline { recording: Some(target) });
+        assert!(
+            inline.starts_with("Recording: the building-site card on area A00"),
+            "the wizard's `?` names the question it is helping with: {inline:?}",
+        );
+        assert!(
+            !inline.contains("recording nothing"),
+            "and does not deny it in the same breath: {inline:?}",
+        );
+        // It points at the number the CARD prints, not at a bracketed selection
+        // number this screen deliberately draws none of.
+        assert!(inline.contains("Type the number on its corner"), "{inline:?}");
+        assert!(!inline.contains("Type its [number]"), "{inline:?}");
+
+        // The cards themselves are unchanged: no selection numbers, because a
+        // site's number is its identity (`wizard::numbered_screen`).
+        let screen = strip_ansi(&index_view(
+            &one_index(IndexKind::Sites, None),
+            &[],
+            IndexContext::Inline { recording: Some(target) },
+            FLOOR_W,
+        ));
+        assert!(!screen.contains("[1] "), "no second number on a site card: {screen:.400}");
+        assert!(screen.contains("SITE 0"), "the identity is the one number on it: {screen:.400}");
+
+        // And the standing forms still say what they said: an inline look-up
+        // with nothing behind it, and the REPL overlay.
+        for context in [IndexContext::INLINE_LOOKUP, IndexContext::Overlay] {
+            let standing = header(context);
+            assert!(
+                standing.contains("this screen is recording nothing"),
+                "{context:?}: {standing:?}",
+            );
+        }
     }
 
     /// The whole point of the dim treatment: an already-recorded card says

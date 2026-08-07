@@ -166,6 +166,40 @@ fn numbered_screen(kind: IndexKind) -> bool {
     !matches!(kind, IndexKind::Sites)
 }
 
+/// The numbered screen a RUN of consecutive card questions has left standing,
+/// and the filter it was drawn at.
+///
+/// **The wizard prints its indexes INLINE, so a screen outlives the question
+/// that drew it** — and that is the whole reason this type exists (six-lens F3).
+/// [`ask_card`] used to rebuild the numbering state per call, so the question
+/// AFTER a `?` reset to the id reading while the numbered cards were still on
+/// the screen the player was reading them off: the same keystroke recorded a
+/// different, real, plausible card, with no refusal and nothing but the echoed
+/// face to show for it. The reading now follows the SCREEN, which is what
+/// `card_prompt`'s module doc says decides it.
+///
+/// The `filter` travels with the `kind` because a filtered index is a different
+/// screen with different numbers on it: carrying the reading without the filter
+/// would resolve a number against a grid the player is not looking at, which is
+/// the same defect one layer down.
+///
+/// **Scoped to one run by construction.** Each category loop owns one of these
+/// cells ([`ask_orders`], [`ask_techs`], [`ask_sites`], [`ask_live_deal`],
+/// [`ask_achievements`]), so "the same run of questions" is a lifetime rather
+/// than a rule anyone has to remember: when the loop ends, the carried screen
+/// goes with it and the next registry starts from the id reading again.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct ScreenIndex {
+    kind: IndexKind,
+    filter: Option<IndexFilter>,
+}
+
+/// A run of card questions that has nothing numbered on screen yet — what every
+/// category loop starts from.
+fn fresh_screen() -> Cell<Option<ScreenIndex>> {
+    Cell::new(None)
+}
+
 /// Ask for ONE card, in the crate's one card grammar (spec §0.2/§0.6).
 ///
 /// **This is F4, F5 and F6 closed at the same place, because they were one
@@ -178,13 +212,14 @@ fn numbered_screen(kind: IndexKind) -> bool {
 /// duplicate is refused BY LOCATION; and what was entered echoes back as a
 /// drawn card before the next question.
 ///
-/// `menu_on_screen` is the [`Numbering`] state, and it is a parameter rather
-/// than a guess for the reason `card_prompt`'s header gives: a bare number is a
-/// SELECTION only while something numbered is on screen. It starts true where
-/// the question prints its own menu (achievements) and false where the cards
-/// run to twenty or thirty-six and the player types an id or opens the index —
-/// after which it stays true, because in a scrolling wizard the index the
-/// player opened is still there above the prompt.
+/// `screen` is the [`Numbering`] state, and it is a parameter rather than a
+/// guess for the reason `card_prompt`'s header gives: a bare number is a
+/// SELECTION only while something numbered is on screen. It is a shared cell
+/// rather than a `bool` because in a scrolling wizard the index the player
+/// opened is still there above the NEXT question too — see [`ScreenIndex`],
+/// which is where the rule and its scope are stated. A question whose own menu
+/// rides in the prompt (achievements) seeds it before asking; every other run
+/// starts empty and fills it the first time a `?` or a filter draws a screen.
 ///
 /// `validate` is the CALLER's pool check, run before the entry is taken: this
 /// helper knows the grammar and the duplicates, and nothing about which cards
@@ -195,13 +230,22 @@ fn ask_card(
     ctx: &CardCtx<'_>,
     question: &str,
     target: RecordingTarget,
-    menu_on_screen: bool,
+    screen: &Cell<Option<ScreenIndex>>,
     validate: &mut dyn FnMut(CardRef) -> Result<(), String>,
 ) -> Result<CardRef, String> {
     let kind = target.kind();
     let numbered = numbered_screen(kind);
-    let showing = Cell::new(menu_on_screen && numbered);
-    let filter: Cell<Option<IndexFilter>> = Cell::new(None);
+    // What the run before this question left standing, and only if it is THIS
+    // registry's screen: an order index above a technology question numbers
+    // nothing a technology answer could name.
+    let carried = screen.get().filter(|s| s.kind == kind);
+    let showing = Cell::new(carried.is_some() && numbered);
+    let filter: Cell<Option<IndexFilter>> = Cell::new(carried.and_then(|s| s.filter));
+    // Every screen this question draws replaces the carried one, so the reading
+    // and the grid on screen are the same fact recorded in one place.
+    let drew = |narrowed: Option<IndexFilter>| {
+        screen.set(Some(ScreenIndex { kind, filter: narrowed }));
+    };
     let mut chosen: Option<CardRef> = None;
     let screen_target = numbered.then_some(target);
 
@@ -240,12 +284,14 @@ fn ask_card(
                 // (T7 review M3).
                 CardEntry::OpenIndex => {
                     showing.set(numbered);
-                    Ask::Screen(inline_index(&model, ctx))
+                    drew(filter.get());
+                    Ask::Screen(inline_index(&model, ctx, target))
                 }
                 CardEntry::Filter(narrowed) => {
                     filter.set(narrowed);
                     showing.set(numbered);
-                    Ask::Screen(inline_index(&ctx.index(kind, screen_target, narrowed), ctx))
+                    drew(narrowed);
+                    Ask::Screen(inline_index(&ctx.index(kind, screen_target, narrowed), ctx, target))
                 }
                 // There is nothing to cancel BACK to inside the wizard: every
                 // question is one the setup cannot be built without, and the
@@ -282,7 +328,16 @@ fn ask_card(
 ///
 /// Once per wizard RUN rather than per index: three registries are entered in a
 /// live setup and the terminal does not change size between them.
-fn inline_index(model: &IndexModel, ctx: &CardCtx<'_>) -> String {
+/// `recording` is the question the index was opened FROM, passed separately
+/// because the model's own `target` cannot always carry it: at the site index
+/// the model deliberately has none (see [`numbered_screen`]) while a live setup
+/// question is very much waiting for an answer — the six-lens F8 defect, where
+/// the helper for an active recording announced itself as recording nothing.
+fn inline_index(
+    model: &IndexModel,
+    ctx: &CardCtx<'_>,
+    recording: RecordingTarget,
+) -> String {
     let width = crate::screen::index_width();
     format!(
         "{}{}",
@@ -290,7 +345,7 @@ fn inline_index(model: &IndexModel, ctx: &CardCtx<'_>) -> String {
         crate::index_render::index_view(
             model,
             ctx.colors,
-            crate::index_render::IndexContext::Inline,
+            crate::index_render::IndexContext::Inline { recording: Some(recording) },
             width,
         ),
     )
@@ -1232,6 +1287,7 @@ fn ask_live_deal(
     }
     let seat_id = PlayerId::new(seat);
     let mut dealt: Vec<OrderCardId> = Vec::with_capacity(2);
+    let screen = fresh_screen();
     for which in 0..2usize {
         let ctx = CardCtx { rules, colors, placed };
         let card = ask_card(
@@ -1240,7 +1296,7 @@ fn ask_live_deal(
             &ctx,
             &format!("Seat {seat}: dealt card {} of 2?", menu_number(which)),
             RecordingTarget::DealSetup { seat: seat_id, which, of: 2 },
-            false,
+            &screen,
             &mut |card| known_order(card, rules),
         )?;
         let CardRef::Order(id) = card else { unreachable!("an order prompt yields order cards") };
@@ -1699,6 +1755,7 @@ fn ask_sites(
     out("the index number and the S<n> the wizard records are the same number.\n");
 
     let mut sites: Vec<Option<u8>> = Vec::with_capacity(n);
+    let screen = fresh_screen();
     let mut row = 0usize;
     let mut row_end = rows[0] as usize;
     out(&row_banner(0, &rows));
@@ -1724,7 +1781,7 @@ fn ask_sites(
                 crate::describe::area_type_name(*tile)
             ),
             RecordingTarget::SiteSetup { area },
-            false,
+            &screen,
             &mut |card| match card {
                 CardRef::Site(index) if usize::from(index) < rules.building_sites.len() => Ok(()),
                 CardRef::Site(index) => Err(format!(
@@ -2074,6 +2131,7 @@ fn ask_achievements(
 
     let mut chosen: Vec<AchievementType> = Vec::with_capacity(3);
     let mut placed: Vec<(CardRef, CardLocation)> = Vec::new();
+    let screen = fresh_screen();
     for category in [AchievementCategory::A, AchievementCategory::B, AchievementCategory::C] {
         let letter = crate::describe::category_letter(category);
         let target = RecordingTarget::AchievementSetup { category };
@@ -2086,16 +2144,19 @@ fn ask_achievements(
             // the duration of this one question — `placed` only changes when an
             // answer is taken, and that ends it.
             let menu = category_menu(&ctx.index(target.kind(), Some(target), None), category);
+            // The four cards are printed directly above with their numbers, so
+            // a bare number is a selection from the moment the question appears
+            // rather than only after a `?`. Seeded per question, and UNFILTERED
+            // because that is how the menu beside the question is built: a `f b`
+            // at the previous category narrowed a screen this one has replaced.
+            screen.set(Some(ScreenIndex { kind: target.kind(), filter: None }));
             ask_card(
                 input,
                 out,
                 &ctx,
                 &format!("{menu}Which category {letter} card is in play?"),
                 target,
-                // The four cards are printed directly above with their numbers,
-                // so a bare number is a selection from the moment the question
-                // appears rather than only after a `?`.
-                true,
+                &screen,
                 &mut |card| match card {
                     CardRef::Achievement(ty) if ty.category() == category => Ok(()),
                     CardRef::Achievement(ty) => Err(format!(
@@ -2168,6 +2229,7 @@ fn ask_orders(
     out("The six order cards on the display, left to right as you face the board.\n");
 
     let mut cards = Vec::with_capacity(N);
+    let screen = fresh_screen();
     for slot in 0..N {
         let ctx = CardCtx { rules, colors, placed };
         let card = ask_card(
@@ -2176,7 +2238,7 @@ fn ask_orders(
             &ctx,
             &format!("{board} slot {} of {N}?", menu_number(slot)),
             RecordingTarget::PortSetup { board_b, slot, of: N },
-            false,
+            &screen,
             &mut |card| known_order(card, rules),
         )?;
         let CardRef::Order(id) = card else { unreachable!("an order prompt yields order cards") };
@@ -2211,6 +2273,7 @@ fn ask_techs(
     out("(any unambiguous start of it will do); '?' draws all twenty with their effects.\n");
 
     let mut cards = Vec::with_capacity(N);
+    let screen = fresh_screen();
     for slot in 0..N {
         let ctx = CardCtx { rules, colors, placed };
         let card = ask_card(
@@ -2219,7 +2282,7 @@ fn ask_techs(
             &ctx,
             &format!("{board} slot {} of {N}?", menu_number(slot)),
             RecordingTarget::LabSetup { board_b, slot, of: N },
-            false,
+            &screen,
             &mut |card| match card {
                 CardRef::Tech(id) if all_tech_ids.contains(&id) => Ok(()),
                 CardRef::Tech(id) => Err(format!("T{:02} is not one of the technology cards", id.0)),
@@ -3841,6 +3904,27 @@ mod tests {
         let (repl, transcript) = feed_owned(lines);
         let repl = repl.unwrap_or_else(|e| panic!("expected Ok, got Err({e}); transcript:\n{transcript}"));
 
+        // **Every one of those four screens states the question it was opened
+        // from** (six-lens F8). The site index used to say the opposite — "this
+        // screen is recording nothing" — because one boolean carried both
+        // "cards are selectable here" (false for sites, correctly) and "a
+        // recording is live" (true, and the header read the wrong one).
+        for recording in [
+            "Recording: Seat 0's dealt card 1 of 2",
+            "Recording: the building-site card on area A00",
+            "Recording: the category A Achievement card",
+            "Recording: Laboratory A slot 1 of 6",
+        ] {
+            assert!(
+                transcript.contains(recording),
+                "an index opened from a live question says so: {recording:?}\n{transcript}",
+            );
+        }
+        assert!(
+            !transcript.contains("this screen is recording nothing"),
+            "no index drawn from a setup question may deny being part of it\n{transcript}",
+        );
+
         for title in
             ["ORDER CARD INDEX", "BUILDING-SITE CARD INDEX", "ACHIEVEMENTS", "TECHNOLOGY INDEX"]
         {
@@ -3907,6 +3991,188 @@ mod tests {
             "the number picked the card the screen numbered\n{transcript}"
         );
         std::fs::remove_file("yokohama-game-636.json").ok();
+    }
+
+    /// **The reading a number has does not FLIP between two questions asked
+    /// under one index** (six-lens F3).
+    ///
+    /// The index is drawn INLINE into a scrolling transcript, so the screen a
+    /// player reads a number off outlives the question that drew it. Numbering
+    /// used to be rebuilt per `ask_card` call, so the very next question — with
+    /// those numbered cards still on screen, and its own hint saying only "a
+    /// number" — read the same keystroke as an ENGINE ID and recorded a
+    /// different, real, plausible card with no refusal. This drives the exact
+    /// reported script: `?`, `2`, `2` at seat 0's two dealt cards.
+    ///
+    /// Both halves are asserted, because either alone would pass a wrong fix:
+    /// the second question's HINT states the reading it is in, and the second
+    /// `2` resolves to the SAME card the first one did — which, that card
+    /// having just been recorded, is the duplicate refusal naming where it went.
+    #[test]
+    fn a_selection_number_keeps_its_meaning_at_the_next_question_under_one_index() {
+        let rules = Rules::standard();
+        let screen = crate::screen_model::build_index(
+            IndexKind::Orders,
+            &rules,
+            &[],
+            &achievement_registry(),
+            Some(RecordingTarget::DealSetup { seat: PlayerId::new(0), which: 0, of: 2 }),
+            None,
+        );
+        let CardRef::Order(second) =
+            screen.select(crate::screen_model::NUMBER_BASE + 1).expect("a second card")
+        else {
+            panic!("an order screen")
+        };
+
+        let mut lines: Vec<String> = vec![
+            "live".into(), "2".into(), "red".into(), "blue".into(), "0".into(), "637".into(), "".into(),
+            "known".into(),
+            "?".into(), // draw the index at dealt card 1
+            "2".into(), // [2] on that screen
+            "2".into(), // the SAME [2], at dealt card 2 — refused as a duplicate
+            "O36".into(), // a real second card, so the tail continues
+            "1".into(),   // keep
+            "hidden".into(),
+        ];
+        lines.extend(["cm", "sm", "tp", "fg", "bank", "pa", "la", "ea", "ch", "cu"].iter().map(|s| s.to_string()));
+        lines.extend((0u8..10).map(|i| i.to_string()));
+        lines.extend(token_letters_for_count(10));
+        lines.extend(P2_ACHIEVEMENTS.iter().map(|s| s.to_string()));
+        // Six Port A cards that avoid both dealt cards, then the technologies.
+        let fills: Vec<String> = (1u8..=36)
+            .filter(|n| *n != second.0 && *n != 36)
+            .take(6)
+            .map(|n| format!("O{n}"))
+            .collect();
+        lines.extend(fills);
+        lines.extend(["T1", "T2", "T3", "T4", "T5", "T6"].iter().map(|s| s.to_string()));
+        lines.push("confirm".into());
+        lines.push("yes".into());
+        let (repl, transcript) = feed_owned(lines);
+        let repl = repl
+            .unwrap_or_else(|e| panic!("expected Ok, got Err({e}); transcript:\n{transcript}"));
+
+        assert!(
+            transcript.contains(
+                "Seat 0: dealt card 2 of 2? (a number from the screen, 'O14', or '?' to redraw it)"
+            ),
+            "the NEXT question must say which numbering is live, the index being still on screen\n{transcript}"
+        );
+        assert!(
+            transcript.contains(&format!(
+                "O{:02} is Seat 0's deal — a card cannot be in two places.",
+                second.0
+            )),
+            "the second `2` must name the card the screen numbers [2], which is already recorded\n{transcript}"
+        );
+        // And the dealt pair is what the screen said, never the id reading.
+        assert_eq!(
+            repl.session.state().players[0].starting_order,
+            Some(second),
+            "seat 0 kept the card the index numbered [2]\n{transcript}"
+        );
+        std::fs::remove_file("yokohama-game-637.json").ok();
+    }
+
+    /// The other half of the rule: the carried reading is scoped to ONE RUN of
+    /// consecutive questions, so leaving the registry resets it.
+    ///
+    /// Seat 0's deal opens the order index; ten tile questions, ten site
+    /// questions, the tokens and the achievements then run before Port A asks
+    /// for order cards again — by which time that index is long gone off the
+    /// screen. Port A slot 1 must be back to the id reading, and say so.
+    #[test]
+    fn the_carried_reading_does_not_survive_the_run_it_was_opened_in() {
+        let mut lines: Vec<String> = vec![
+            "live".into(), "2".into(), "red".into(), "blue".into(), "0".into(), "638".into(), "".into(),
+            "known".into(),
+            "?".into(),
+            "2".into(),
+            "O36".into(),
+            "1".into(),
+            "hidden".into(),
+        ];
+        lines.extend(["cm", "sm", "tp", "fg", "bank", "pa", "la", "ea", "ch", "cu"].iter().map(|s| s.to_string()));
+        lines.extend((0u8..10).map(|i| i.to_string()));
+        lines.extend(token_letters_for_count(10));
+        lines.extend(P2_ACHIEVEMENTS.iter().map(|s| s.to_string()));
+        lines.extend(["O1", "O2", "O3", "O4", "O5", "O6"].iter().map(|s| s.to_string()));
+        lines.extend(["T1", "T2", "T3", "T4", "T5", "T6"].iter().map(|s| s.to_string()));
+        lines.push("confirm".into());
+        lines.push("yes".into());
+        let (repl, transcript) = feed_owned(lines);
+        let repl = repl
+            .unwrap_or_else(|e| panic!("expected Ok, got Err({e}); transcript:\n{transcript}"));
+        assert!(
+            transcript.contains("Port A slot 1 of 6? (a number, 'O14', or '?' for the card index)"),
+            "a new run starts from the id reading again\n{transcript}"
+        );
+        // And it means it: `O1` went in as O01 rather than as a selection.
+        assert_eq!(
+            repl.session.state().port_state.port_a.slots[0],
+            Some(OrderCardId(1)),
+            "{transcript}"
+        );
+        std::fs::remove_file("yokohama-game-638.json").ok();
+    }
+
+    /// A NEW index inside the run replaces the one the reading is carried
+    /// from — the filtered screen a `f france` draws is the screen the next
+    /// question's numbers are read off.
+    #[test]
+    fn a_filter_inside_the_run_carries_its_own_screen_to_the_next_question() {
+        let rules = Rules::standard();
+        let french = crate::screen_model::build_index(
+            IndexKind::Orders,
+            &rules,
+            &[],
+            &achievement_registry(),
+            Some(RecordingTarget::DealSetup { seat: PlayerId::new(0), which: 0, of: 2 }),
+            Some(crate::screen_model::IndexFilter::Country(yokohama_core::Country::French)),
+        );
+        let CardRef::Order(first_french) =
+            french.select(crate::screen_model::NUMBER_BASE).expect("a French card")
+        else {
+            panic!("an order screen")
+        };
+        let CardRef::Order(second_french) =
+            french.select(crate::screen_model::NUMBER_BASE + 1).expect("a second French card")
+        else {
+            panic!("an order screen")
+        };
+
+        let mut lines: Vec<String> = vec![
+            "live".into(), "2".into(), "red".into(), "blue".into(), "0".into(), "639".into(), "".into(),
+            "known".into(),
+            "f france".into(), // draws the FRANCE screen
+            "1".into(),        // [1] on it
+            "2".into(),        // [2] on the SAME screen, at the next question
+            "1".into(),        // keep
+            "hidden".into(),
+        ];
+        lines.extend(["cm", "sm", "tp", "fg", "bank", "pa", "la", "ea", "ch", "cu"].iter().map(|s| s.to_string()));
+        lines.extend((0u8..10).map(|i| i.to_string()));
+        lines.extend(token_letters_for_count(10));
+        lines.extend(P2_ACHIEVEMENTS.iter().map(|s| s.to_string()));
+        let fills: Vec<String> = (1u8..=36)
+            .filter(|n| *n != first_french.0 && *n != second_french.0)
+            .take(6)
+            .map(|n| format!("O{n}"))
+            .collect();
+        lines.extend(fills);
+        lines.extend(["T1", "T2", "T3", "T4", "T5", "T6"].iter().map(|s| s.to_string()));
+        lines.push("confirm".into());
+        lines.push("yes".into());
+        let (repl, transcript) = feed_owned(lines);
+        let repl = repl
+            .unwrap_or_else(|e| panic!("expected Ok, got Err({e}); transcript:\n{transcript}"));
+        assert_eq!(
+            repl.session.state().players[0].starting_order,
+            Some(first_french),
+            "{transcript}"
+        );
+        std::fs::remove_file("yokohama-game-639.json").ok();
     }
 
     /// **F6, both halves.** A duplicate refusal names WHERE the card already is

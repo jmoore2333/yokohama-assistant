@@ -392,13 +392,22 @@ fn classify(result: Result<String, ReadlineError>) -> ReadOutcome {
 ///
 /// `auto_add_history` stays OFF and [`next_edited`] adds each DELIVERED line
 /// itself. That is not a preference: the flag is a config value no test without
-/// a terminal can observe, so with it on, ↑ recall — a promise both guide
-/// formats make in §2 — had no executable statement anywhere and flipping it
-/// off passed the whole suite. Owning the add moves it above the [`Editing`]
-/// seam, where
+/// a terminal can observe, so with it on, WHICH lines are remembered had no
+/// executable statement anywhere and flipping it off passed the whole suite.
+/// Owning the add moves that question above the [`Editing`] seam, where
 /// [`tests::a_delivered_line_enters_the_history_and_an_abandoned_one_never_does`]
 /// can hold it. It also fixes what a paste puts in the history: the lines the
 /// parser saw, rather than the un-split blob.
+///
+/// **What this MOVED rather than eliminated, said plainly** (six-lens note): the
+/// un-observable line is now `<rustyline::DefaultEditor as Editing>::remember`,
+/// whose `add_history_entry` call is the one that actually populates the history
+/// a real terminal recalls — and it is exactly as unobservable as the flag was,
+/// because `ScriptedEditor` brings its own. Replacing its body with `let _ =
+/// line;` leaves the whole suite green and ↑ recall silently dead. That the
+/// PROMISE is kept is a terminal-only check, indexed under "Standing PTY checks"
+/// in `docs/forge-cli-testing.md`; what this restructure buys, and pins, is the
+/// split-then-remember ordering and the non-resurrection of an abandoned line.
 fn new_editor() -> Option<rustyline::DefaultEditor> {
     let config = rustyline::Config::builder().auto_add_history(false).build();
     rustyline::DefaultEditor::with_config(config).ok()

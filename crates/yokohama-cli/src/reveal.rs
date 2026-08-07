@@ -1054,6 +1054,67 @@ mod tests {
         assert!(text.contains("(reveal 2 of 2)"), "and the run position: {text}");
     }
 
+    /// **And the same clause is false ONE KEYSTROKE AWAY, on every full-screen
+    /// view the capture's own hint offers** (six-lens F1).
+    ///
+    /// The prompt above is careful not to say `back` undoes; the six surfaces
+    /// reachable from it were saying it anyway, in a footer written for the
+    /// decision zone — "a NUMBER applies that option, and 'back' undoes your
+    /// last move" — over a question where a number is an ORDER-CARD IDENTITY
+    /// that records a reveal and commits the parked move. This walks the hint's
+    /// whole roster at a real capture and holds each one to the capture wording.
+    ///
+    /// The assertions are LINE-SPECIFIC: the two footers share their first line
+    /// verbatim, so a whole-screen `contains` proves nothing about the row that
+    /// varies (the NAMED CHECK, six-lens F2).
+    #[test]
+    fn every_view_reachable_from_a_capture_carries_the_capture_exit_line() {
+        // The roster the capture's own hint advertises, verbatim.
+        let hint = crate::style::strip_ansi(&live_repl_at_a_port_refill().0.reveal_prompt());
+        for word in ["tracks", "sites", "ports", "labs", "hand", "log"] {
+            assert!(hint.contains(&format!("'{word}'")), "the hint offers {word}: {hint}");
+
+            let (mut r, _) = live_repl_at_a_port_refill();
+            let events = r.session.record().events.len();
+            let screen = crate::style::strip_ansi(&r.step(word).text);
+            let rows: Vec<&str> = screen.lines().filter(|l| l.contains("Any other line")).collect();
+            assert_eq!(rows.len(), 1, "{word}: one exit clause on the screen\n{screen}");
+            assert!(
+                rows[0].contains("names the CARD"),
+                "{word}: the footer must say what a number does HERE\n{rows:?}",
+            );
+            assert!(
+                !rows[0].contains("applies that option"),
+                "{word}: the decision-zone claim is FALSE over a capture\n{rows:?}",
+            );
+            assert!(
+                !screen.contains("'back' undoes your last move"),
+                "{word}: nor does `back` undo anything while a reveal waits\n{screen}",
+            );
+            // Opening a view records nothing — the capture is untouched
+            // underneath it, which is what makes the return contract structural.
+            assert_eq!(r.session.record().events.len(), events, "{word}");
+            assert!(!matches!(r.pending, Pending::None), "{word}: still capturing");
+        }
+    }
+
+    /// The same six words at the MAIN prompt keep the decision wording — the
+    /// control that makes the test above a statement about context rather than
+    /// about the string being gone from the crate.
+    #[test]
+    fn the_same_views_keep_the_decision_exit_line_at_a_normal_prompt() {
+        for word in ["tracks", "sites", "ports", "labs", "hand", "log"] {
+            let (mut r, _) = live_repl();
+            let screen = crate::style::strip_ansi(&r.step(word).text);
+            let rows: Vec<&str> = screen.lines().filter(|l| l.contains("Any other line")).collect();
+            assert_eq!(rows.len(), 1, "{word}: one exit clause\n{screen}");
+            assert!(
+                rows[0].contains("NUMBER applies that option"),
+                "{word}: with options underneath, a digit really does apply one\n{rows:?}",
+            );
+        }
+    }
+
     #[test]
     fn live_port_take_collects_reveals_then_applies_them() {
         let (mut r, others) = live_repl();
@@ -1128,7 +1189,13 @@ mod tests {
         let out = r.step(&format!("O{}", boxed.0));
         // Accepted (not refused), applied without a desync lock, and the boxed
         // card the operator revealed is now physically on the Port A board.
-        assert!(!out.text.to_lowercase().contains("not currently in the order deck"),
+        // The needle is the refusal `check_order_reveal` really emits (T8
+        // replaced the inline pool check and its wording with it). It had been
+        // left as a fragment of the PRE-T8 sentence, which no longer exists
+        // anywhere in the crate — so the assertion written to catch a narrowed
+        // pool could not fire, and the regression would have been reported two
+        // lines down by a generic event count instead (six-lens note).
+        assert!(!out.text.contains("is not an unrevealed order card"),
             "truthful reveal of a boxed card was refused: {}", out.text);
         assert!(!out.text.contains("CRITICAL"), "{}", out.text);
         assert_eq!(r.session.record().events.len(), events_before + 2, "RevealOrders + Move: {}", out.text);

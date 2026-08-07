@@ -37,6 +37,12 @@
 //! floor ([`crate::screen::FLOOR_W`]) rather than any one count's frame width —
 //! T5's precedent, and the reason the site grid holds four cards to a row at
 //! every player count instead of re-flowing per count.
+//!
+//! **A view says how to leave in words that depend on what it covered up** —
+//! [`ViewContext`], the six-lens F1 fix. Everything else here renders from its
+//! model alone; the exit clause is the one line whose truth is a fact about the
+//! PROMPT UNDERNEATH, so it is the one thing a caller has to tell these
+//! functions.
 
 use yokohama_core::{AreaId, PlayerColor, PlayerId, PortZone};
 
@@ -139,7 +145,11 @@ const VIEW_ROW_MARGIN: usize = 1;
 /// ([`TracksPanel::church_filled`]); it is stated on screen because a player who
 /// counts occupied spaces and gets a different number deserves to know which
 /// count the game is played on.
-pub fn tracks_view(tracks: &TracksPanel, colors: &[PlayerColor]) -> String {
+pub fn tracks_view(
+    tracks: &TracksPanel,
+    colors: &[PlayerColor],
+    context: ViewContext,
+) -> String {
     let mut out = String::new();
     out.push_str(&view_title(
         "TRACKS",
@@ -171,7 +181,7 @@ pub fn tracks_view(tracks: &TracksPanel, colors: &[PlayerColor]) -> String {
     out.push('\n');
     out.push_str(&board_state_line(tracks));
     out.push('\n');
-    out.push_str(&exit_line());
+    out.push_str(&exit_line(context));
     out.push('\n');
     out.push_str(&paint(Tone::Prompt, "> "));
     out.push('\n');
@@ -379,7 +389,11 @@ fn board_state_line(tracks: &TracksPanel) -> String {
 /// on the card, not on the board. The tile strip shows the same four rewards as
 /// compact tokens; this shows them in words, with the builder's NAME rather than
 /// a color letter, which is the mock's own instruction.
-pub fn sites_view(board: &BoardModel, colors: &[PlayerColor]) -> String {
+pub fn sites_view(
+    board: &BoardModel,
+    colors: &[PlayerColor],
+    context: ViewContext,
+) -> String {
     let mut out = String::new();
     out.push_str(&view_title(
         "BUILDING SITES",
@@ -415,7 +429,7 @@ pub fn sites_view(board: &BoardModel, colors: &[PlayerColor]) -> String {
         "Which tiles touch which is on the board itself; the tolled canal crossings are not, so each card names its own.",
     ));
     out.push('\n');
-    out.push_str(&exit_line());
+    out.push_str(&exit_line(context));
     out.push('\n');
     out.push_str(&paint(Tone::Prompt, "> "));
     out.push('\n');
@@ -565,7 +579,7 @@ const LOG_VIEW_ROWS: usize = 48;
 /// can I reach this turn" — and the answer is printed on the slot label, from
 /// the engine's own gate ([`crate::screen_model::port_zone_min_power`]) rather
 /// than from a table in this file.
-pub fn ports_view(ports: &PortsPanel) -> String {
+pub fn ports_view(ports: &PortsPanel, context: ViewContext) -> String {
     let mut out = String::new();
     out.push_str(&view_title(
         "PORT OFFER",
@@ -609,7 +623,7 @@ pub fn ports_view(ports: &PortsPanel) -> String {
     out.push('\n');
     out.push_str(&deck_line("Order deck", ports.deck_remaining));
     out.push('\n');
-    out.push_str(&exit_line());
+    out.push_str(&exit_line(context));
     out.push('\n');
     out.push_str(&paint(Tone::Prompt, "> "));
     out.push('\n');
@@ -697,7 +711,7 @@ fn port_zone_name(zone: PortZone) -> &'static str {
 /// this?" over all twenty titles; this one answers "what can I buy right now,
 /// and what does it cost" over the at-most-twelve on the table — which is why
 /// the price is here and the copy accounting is not.
-pub fn labs_view(labs: &LabsPanel) -> String {
+pub fn labs_view(labs: &LabsPanel, context: ViewContext) -> String {
     let mut out = String::new();
     out.push_str(&view_title(
         "LABORATORY OFFER",
@@ -730,7 +744,7 @@ pub fn labs_view(labs: &LabsPanel) -> String {
     out.push('\n');
     out.push_str(&deck_line("Technology deck", labs.deck_remaining));
     out.push('\n');
-    out.push_str(&exit_line());
+    out.push_str(&exit_line(context));
     out.push('\n');
     out.push_str(&paint(Tone::Prompt, "> "));
     out.push('\n');
@@ -836,7 +850,12 @@ const LAB_CARD_H: usize = 6;
 /// **The mask is the MODEL's** ([`HandPanel::cards`] is empty whenever
 /// `hidden`), so this renderer cannot leak a hidden hand even if it tried to
 /// draw one — the leak fence T5 made structural, holding on one more surface.
-pub fn hand_view(hand: &HandPanel, color: Option<PlayerColor>, is_bot: bool) -> String {
+pub fn hand_view(
+    hand: &HandPanel,
+    color: Option<PlayerColor>,
+    is_bot: bool,
+    context: ViewContext,
+) -> String {
     let mut out = String::new();
     let who = match color {
         Some(c) => crate::render::color_name(c).to_uppercase(),
@@ -894,7 +913,7 @@ pub fn hand_view(hand: &HandPanel, color: Option<PlayerColor>, is_bot: bool) -> 
         "An order is fulfilled as an additional action: hand over the goods it needs, take what it pays, and the card goes to your completed pile.",
     ));
     out.push('\n');
-    out.push_str(&exit_line());
+    out.push_str(&exit_line(context));
     out.push('\n');
     out.push_str(&paint(Tone::Prompt, "> "));
     out.push('\n');
@@ -944,7 +963,7 @@ fn hand_rule(hand: &HandPanel, is_bot: bool) -> String {
 /// take still quotes the price it actually paid and a movement fee still names
 /// the President owner who actually received it. This renderer arranges; the
 /// history is already written.
-pub fn log_view(log: &LogPanel) -> String {
+pub fn log_view(log: &LogPanel, context: ViewContext) -> String {
     let mut out = String::new();
     out.push_str(&view_title(
         "LOG",
@@ -972,12 +991,19 @@ pub fn log_view(log: &LogPanel) -> String {
     }
     out.push('\n');
 
+    // The `back` clause is this view's own second claim about the prompt
+    // underneath, so it branches with the exit line for the reason
+    // [`exit_line`] gives: mid-capture nothing has been applied to take off,
+    // and `back` there is answered with "this reveal is waiting for an answer".
     out.push_str(&paint(
         Tone::Chrome,
-        "Each line reads as it did when it applied, so an old entry still quotes the price it paid and the player it paid. 'back' takes the last one off.",
+        match context {
+            ViewContext::Decision => "Each line reads as it did when it applied, so an old entry still quotes the price it paid and the player it paid. 'back' takes the last one off.",
+            ViewContext::Capture => "Each line reads as it did when it applied, so an old entry still quotes the price it paid and the player it paid.",
+        },
     ));
     out.push('\n');
-    out.push_str(&exit_line());
+    out.push_str(&exit_line(context));
     out.push('\n');
     out.push_str(&paint(Tone::Prompt, "> "));
     out.push('\n');
@@ -1191,6 +1217,28 @@ fn card_row(cards: &[Vec<String>]) -> Vec<String> {
         .collect()
 }
 
+/// What kind of prompt a view was opened OVER — the one thing about the screen
+/// underneath that a view has to be told (six-lens F1).
+///
+/// The sibling surface has had this since T7 ([`crate::index_render::
+/// IndexContext`]) and for the same reason: a full-screen overlay makes
+/// promises about a prompt it has covered up, and those promises are not the
+/// same at every prompt. The two enums are deliberately NOT one type — the
+/// index's distinction is overlay-versus-inline (whether there is a screen to
+/// close at all), and this one is about what a re-dispatched LINE does, which
+/// is a question the index never has to answer because it re-dispatches
+/// nothing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ViewContext {
+    /// Over a prompt whose list is numbered options — the main decision zone,
+    /// and every sub-prompt reached from it.
+    Decision,
+    /// Over a live reveal capture, where a bare number is a CARD IDENTITY that
+    /// records a reveal (and, on the answer that completes a group, applies the
+    /// move parked behind it).
+    Capture,
+}
+
 /// How to leave, on every view — the clause T5's review made standing for the
 /// index (M2) and which every full-screen surface owes for the same reason: it
 /// has replaced the prompt the player was in the middle of.
@@ -1205,10 +1253,34 @@ fn card_row(cards: &[Vec<String>]) -> Vec<String> {
 /// `back` — the one word whose meaning differs from the index's, where it
 /// closes — says what it does here.
 ///
+/// **The second half is CONTEXT-DEPENDENT, and was false at a capture until the
+/// six-lens fix wave** (F1). Both of its clauses are claims about the prompt a
+/// re-dispatched line lands on, and at a live reveal that prompt is not a
+/// numbered option list: a digit is an ORDER-CARD IDENTITY that records a
+/// reveal and commits the move parked behind it, and `back` undoes nothing
+/// while a group is waiting for an answer. The views are reachable from inside
+/// a capture on purpose (`Repl::step` intercepts their six words ahead of the
+/// collector, and the capture's own hint advertises them), so a player one
+/// keystroke away was being told to type a number — an instruction whose result
+/// is a wrong card in `GameRecord.events`, silently. The FIRST half is true in
+/// both contexts and does not branch: `cancel` typed HERE closes the view and
+/// nothing else, which is exactly the distinction a player who has just learned
+/// the capture's `cancel` needs drawn.
+///
 /// The two halves would not fit one line inside [`crate::screen::FLOOR_W`]; the
 /// row they cost is recorded in `both_views_fit_the_fifty_row_design_floor`'s
 /// measured table rather than absorbed.
-fn exit_line() -> String {
+fn exit_line(context: ViewContext) -> String {
+    let second = match context {
+        ViewContext::Decision => {
+            "Any other line closes the view and then RUNS at that prompt — a NUMBER applies that option, \
+             and 'back' undoes your last move."
+        }
+        ViewContext::Capture => {
+            "Any other line closes the view and then ANSWERS the reveal underneath — a NUMBER there names the CARD \
+             it is recording, and 'back' is not an undo while it waits."
+        }
+    };
     // Painted per line rather than as one string with a newline in it, so
     // neither line carries a tint across the row break.
     format!(
@@ -1218,11 +1290,7 @@ fn exit_line() -> String {
             "Enter or 'cancel' closes this view and puts you back at the prompt underneath, exactly as you left it — \
              nothing is entered and nothing there is cancelled.",
         ),
-        paint(
-            Tone::Chrome,
-            "Any other line closes the view and then RUNS at that prompt — a NUMBER applies that option, \
-             and 'back' undoes your last move.",
-        ),
+        paint(Tone::Chrome, second),
     )
 }
 
@@ -1273,9 +1341,9 @@ pub(crate) mod tests {
         let hand = crate::screen_model::build_hand(&state, &rules, seat, false).expect("a seat");
         let color = state.players.iter().find(|p| p.id == seat).map(|p| p.color);
         vec![
-            ("ports", ports_view(&crate::screen_model::build_ports(&state, &rules))),
-            ("labs", labs_view(&crate::screen_model::build_labs(&state, &rules))),
-            ("hand", hand_view(&hand, color, false)),
+            ("ports", ports_view(&crate::screen_model::build_ports(&state, &rules), ViewContext::Decision)),
+            ("labs", labs_view(&crate::screen_model::build_labs(&state, &rules), ViewContext::Decision)),
+            ("hand", hand_view(&hand, color, false, ViewContext::Decision)),
             ("log", crate::repl::Repl::new(walked_session(players)).log_text()),
             ("view menu", view_menu(&["Port offer — the cards on display", "Log — the trail"])),
         ]
@@ -1423,7 +1491,7 @@ pub(crate) mod tests {
     fn the_port_zone_labels_state_the_engines_own_power_gate() {
         let (state, rules) = game(4);
         let ports = crate::screen_model::build_ports(&state, &rules);
-        let text = strip_ansi(&ports_view(&ports));
+        let text = strip_ansi(&ports_view(&ports, ViewContext::Decision));
         for board in &ports.boards {
             for slot in &board.slots {
                 let gate = slot.min_power;
@@ -1474,7 +1542,7 @@ pub(crate) mod tests {
         ports.boards[0].slots[3].card = None;
         ports.boards[0].slots[3].printed = None;
 
-        let text = strip_ansi(&ports_view(&ports));
+        let text = strip_ansi(&ports_view(&ports, ViewContext::Decision));
         assert!(text.contains("empty"), "the hole says so: {text}");
         assert!(
             !text.contains(&format!("O{:02}", taken.0)),
@@ -1497,7 +1565,7 @@ pub(crate) mod tests {
     fn a_lab_card_prices_the_slot_surcharge_into_its_industry_figure() {
         let (state, rules) = game(4);
         let labs = crate::screen_model::build_labs(&state, &rules);
-        let text = strip_ansi(&labs_view(&labs));
+        let text = strip_ansi(&labs_view(&labs, ViewContext::Decision));
         let mut surcharged = 0usize;
         for board in &labs.boards {
             for slot in &board.slots {
@@ -1585,22 +1653,22 @@ pub(crate) mod tests {
         assert_eq!(ports.deck_remaining, state.order_deck.len());
         assert_eq!(labs.deck_remaining, state.tech_deck.len());
         assert!(
-            strip_ansi(&ports_view(&ports))
+            strip_ansi(&ports_view(&ports, ViewContext::Decision))
                 .contains(&format!("Order deck: {} cards left", state.order_deck.len())),
         );
         assert!(
-            strip_ansi(&labs_view(&labs))
+            strip_ansi(&labs_view(&labs, ViewContext::Decision))
                 .contains(&format!("Technology deck: {} cards left", state.tech_deck.len())),
         );
         // Both boards are named, and the second one only where it exists: a 2P
         // table has no Port B and no Laboratory B, and a screen claiming one
         // would send an operator looking for a board that is in the box.
-        let four = strip_ansi(&ports_view(&ports));
+        let four = strip_ansi(&ports_view(&ports, ViewContext::Decision));
         assert!(four.contains("PORT A") && four.contains("PORT B"), "{four}");
         let (two, two_rules) = game(2);
-        let small = strip_ansi(&ports_view(&crate::screen_model::build_ports(&two, &two_rules)));
+        let small = strip_ansi(&ports_view(&crate::screen_model::build_ports(&two, &two_rules), ViewContext::Decision));
         assert!(small.contains("PORT A") && !small.contains("PORT B"), "{small}");
-        let small_labs = strip_ansi(&labs_view(&crate::screen_model::build_labs(&two, &two_rules)));
+        let small_labs = strip_ansi(&labs_view(&crate::screen_model::build_labs(&two, &two_rules), ViewContext::Decision));
         assert!(
             small_labs.contains("LABORATORY A") && !small_labs.contains("LABORATORY B"),
             "{small_labs}",
@@ -1608,7 +1676,7 @@ pub(crate) mod tests {
         // An exhausted deck says so rather than printing a bare zero.
         let mut drained = ports.clone();
         drained.deck_remaining = 0;
-        assert!(strip_ansi(&ports_view(&drained)).contains("nothing refills from here again"));
+        assert!(strip_ansi(&ports_view(&drained, ViewContext::Decision)).contains("nothing refills from here again"));
     }
 
     /// **A hidden hand renders as a count and nothing else** — the leak fence
@@ -1630,7 +1698,7 @@ pub(crate) mod tests {
 
         let hidden = crate::screen_model::build_hand(&state, &rules, seat, true).expect("a seat");
         assert!(hidden.cards.is_empty(), "the MODEL masks, not the renderer");
-        let text = strip_ansi(&hand_view(&hidden, Some(PlayerColor::Red), false));
+        let text = strip_ansi(&hand_view(&hidden, Some(PlayerColor::Red), false, ViewContext::Decision));
         for id in &held {
             assert!(
                 !text.contains(&format!("O{:02}", id.0)),
@@ -1643,7 +1711,7 @@ pub(crate) mod tests {
 
         // A BOT's hand says the different true thing: 'privacy' will not open
         // it, so telling the player to press it would be a dead instruction.
-        let bot = strip_ansi(&hand_view(&hidden, Some(PlayerColor::Red), true));
+        let bot = strip_ansi(&hand_view(&hidden, Some(PlayerColor::Red), true, ViewContext::Decision));
         assert!(bot.contains("bot seat"), "{bot}");
         assert!(!bot.contains("'privacy' shows them"), "{bot}");
     }
@@ -1659,7 +1727,7 @@ pub(crate) mod tests {
         let starting: Vec<_> = hand.cards.iter().filter(|c| c.is_starting_order).collect();
         assert_eq!(starting.len(), 1, "fixture: exactly one kept starting order");
 
-        let text = strip_ansi(&hand_view(&hand, Some(PlayerColor::Red), false));
+        let text = strip_ansi(&hand_view(&hand, Some(PlayerColor::Red), false, ViewContext::Decision));
         // The dashboard's note, verbatim — one wording for one fact (T11 N5),
         // and short enough to draw whole on a 20-column card interior, which
         // `= your starting order` was not.
@@ -1684,7 +1752,7 @@ pub(crate) mod tests {
             (7, "Red: Employment Agency — take a trading house for 4 yen".to_string()),
             (8, "Blue: Move President to Bank (A06) — pay 1 yen (1 to Red)".to_string()),
         ];
-        let text = strip_ansi(&log_view(&crate::screen_model::build_log(41, entries.clone())));
+        let text = strip_ansi(&log_view(&crate::screen_model::build_log(41, entries.clone()), ViewContext::Decision));
         for (index, description) in &entries {
             assert!(text.contains(description), "verbatim: {text}");
             assert!(
@@ -1701,12 +1769,12 @@ pub(crate) mod tests {
         let all = strip_ansi(&log_view(&crate::screen_model::build_log(2, vec![
             (0, "Red: End additional-action phase".to_string()),
             (1, "Red: Place no assistants".to_string()),
-        ])));
+        ]), ViewContext::Decision));
         assert!(all.contains("all 2 entries so far"), "{all}");
         assert!(!all.contains("shown"), "{all}");
 
         // And an empty one does not draw a blank screen.
-        let empty = strip_ansi(&log_view(&crate::screen_model::build_log(0, Vec::new())));
+        let empty = strip_ansi(&log_view(&crate::screen_model::build_log(0, Vec::new()), ViewContext::Decision));
         assert!(empty.contains("nothing has been applied yet"), "{empty}");
     }
 
@@ -1816,15 +1884,15 @@ pub(crate) mod tests {
             for (what, text, recorded) in [
                 (
                     "ports",
-                    ports_view(&crate::screen_model::build_ports(&state, &rules)),
+                    ports_view(&crate::screen_model::build_ports(&state, &rules), ViewContext::Decision),
                     PORTS_VIEW_ROWS[usize::from(players - 2)],
                 ),
                 (
                     "labs",
-                    labs_view(&crate::screen_model::build_labs(&state, &rules)),
+                    labs_view(&crate::screen_model::build_labs(&state, &rules), ViewContext::Decision),
                     LABS_VIEW_ROWS[usize::from(players - 2)],
                 ),
-                ("hand", hand_view(&hand, Some(PlayerColor::Red), false), HAND_VIEW_ROWS),
+                ("hand", hand_view(&hand, Some(PlayerColor::Red), false, ViewContext::Decision), HAND_VIEW_ROWS),
                 (
                     "log",
                     log_view(&crate::screen_model::build_log(
@@ -1832,7 +1900,7 @@ pub(crate) mod tests {
                         (0..crate::repl::LOG_VIEW_TAIL)
                             .map(|i| (i, format!("Red: a described event {i}")))
                             .collect(),
-                    )),
+                    ), ViewContext::Decision),
                     LOG_VIEW_ROWS,
                 ),
             ] {
@@ -1864,8 +1932,8 @@ pub(crate) mod tests {
     fn every_full_screen_surface_opens_with_the_standing_title_shape() {
         let (tracks, board, colors) = view_models(2);
         let mut surfaces = vec![
-            ("tracks", tracks_view(&tracks, &colors)),
-            ("sites", sites_view(&board, &colors)),
+            ("tracks", tracks_view(&tracks, &colors, ViewContext::Decision)),
+            ("sites", sites_view(&board, &colors, ViewContext::Decision)),
         ];
         surfaces.extend(t11_views(2));
         let mut glosses: Vec<String> = Vec::new();
@@ -1905,7 +1973,7 @@ pub(crate) mod tests {
     /// an option, and re-dispatch is not what it does.
     #[test]
     fn every_t11_view_carries_the_standing_exit_clause_above_its_caret() {
-        let last = strip_ansi(&exit_line());
+        let last = strip_ansi(&exit_line(ViewContext::Decision));
         let last = last.lines().next_back().expect("a last line").to_string();
         for (what, text) in t11_views(2) {
             let text = strip_ansi(&text);
@@ -1937,7 +2005,7 @@ pub(crate) mod tests {
         for players in [2u8, 3, 4] {
             let (tracks, board, colors) = view_models(players);
             for (what, text) in
-                [("tracks", tracks_view(&tracks, &colors)), ("sites", sites_view(&board, &colors))]
+                [("tracks", tracks_view(&tracks, &colors, ViewContext::Decision)), ("sites", sites_view(&board, &colors, ViewContext::Decision))]
             {
                 for line in text.lines() {
                     assert!(
@@ -1982,7 +2050,7 @@ pub(crate) mod tests {
     #[test]
     fn the_tracks_view_carries_every_printed_reward_and_the_board_state() {
         let (mut tracks, _, colors) = view_models(2);
-        let text = strip_ansi(&tracks_view(&tracks, &colors));
+        let text = strip_ansi(&tracks_view(&tracks, &colors, ViewContext::Decision));
 
         for space in &tracks.church {
             assert!(text.contains(&format!("faith {}", space.faith)), "{text}");
@@ -2006,7 +2074,7 @@ pub(crate) mod tests {
         assert!(text.contains(&format!("GB {}", tracks.mercenary_supply.english)), "{text}");
 
         tracks.station = Some(yokohama_core::AreaId::new(3));
-        let placed = strip_ansi(&tracks_view(&tracks, &colors));
+        let placed = strip_ansi(&tracks_view(&tracks, &colors, ViewContext::Decision));
         assert!(placed.contains("Station: A03"), "{placed}");
         assert!(placed.contains("+1 Power"), "and what it does there: {placed}");
     }
@@ -2018,7 +2086,7 @@ pub(crate) mod tests {
     #[test]
     fn the_dummy_is_named_on_its_space_and_excluded_from_the_fill_count() {
         let (tracks, _, colors) = view_models(2);
-        let text = strip_ansi(&tracks_view(&tracks, &colors));
+        let text = strip_ansi(&tracks_view(&tracks, &colors, ViewContext::Decision));
 
         // The engine seats the 2P dummy on Church faith 7 and Customs space 4.
         assert_eq!(
@@ -2038,7 +2106,7 @@ pub(crate) mod tests {
         // a legend for a treatment nothing on screen uses teaches a rule the
         // player then looks for and cannot find.
         let (three, _, colors) = view_models(3);
-        let text = strip_ansi(&tracks_view(&three, &colors));
+        let text = strip_ansi(&tracks_view(&three, &colors, ViewContext::Decision));
         assert!(!text.contains("dummy"), "no dummy at 3P, no dummy clause: {text}");
     }
 
@@ -2051,7 +2119,7 @@ pub(crate) mod tests {
     #[test]
     fn the_sites_view_draws_one_card_per_sited_area_with_its_id_and_rewards() {
         let (_, board, colors) = view_models(2);
-        let text = strip_ansi(&sites_view(&board, &colors));
+        let text = strip_ansi(&sites_view(&board, &colors, ViewContext::Decision));
 
         let sited: Vec<&TileModel> = board.tiles.iter().filter(|t| t.site.is_some()).collect();
         assert!(sited.len() >= 9, "fixture: a 2P board deals nine or ten sites");
@@ -2110,7 +2178,7 @@ pub(crate) mod tests {
         site.trading_house_owner = Some(seat);
         let area = tile.area;
 
-        let text = strip_ansi(&sites_view(&board, &colors));
+        let text = strip_ansi(&sites_view(&board, &colors, ViewContext::Decision));
         let card: Vec<&str> = text
             .lines()
             .skip_while(|l| !l.contains(&format!("A{:02}", area.0)))
@@ -2149,7 +2217,7 @@ pub(crate) mod tests {
             }
         }
 
-        let text = strip_ansi(&sites_view(&board, &colors));
+        let text = strip_ansi(&sites_view(&board, &colors, ViewContext::Decision));
         for (from, to) in [(a, b), (b, a)] {
             let line = text
                 .lines()
@@ -2205,15 +2273,15 @@ pub(crate) mod tests {
     fn the_views_are_escape_free_with_color_off_and_painted_with_it_on() {
         let (tracks, board, colors) = view_models(2);
         for (what, plain, painted) in [
-            ("tracks", tracks_view(&tracks, &colors), {
+            ("tracks", tracks_view(&tracks, &colors, ViewContext::Decision), {
                 crate::style::force(true);
-                let p = tracks_view(&tracks, &colors);
+                let p = tracks_view(&tracks, &colors, ViewContext::Decision);
                 crate::style::force(false);
                 p
             }),
-            ("sites", sites_view(&board, &colors), {
+            ("sites", sites_view(&board, &colors, ViewContext::Decision), {
                 crate::style::force(true);
-                let p = sites_view(&board, &colors);
+                let p = sites_view(&board, &colors, ViewContext::Decision);
                 crate::style::force(false);
                 p
             }),
@@ -2242,8 +2310,8 @@ pub(crate) mod tests {
         for players in [2u8, 3, 4] {
             let (tracks, board, colors) = view_models(players);
             for (what, text, recorded) in [
-                ("tracks", tracks_view(&tracks, &colors), TRACKS_VIEW_ROWS),
-                ("sites", sites_view(&board, &colors), SITES_VIEW_ROWS[usize::from(players - 2)]),
+                ("tracks", tracks_view(&tracks, &colors, ViewContext::Decision), TRACKS_VIEW_ROWS),
+                ("sites", sites_view(&board, &colors, ViewContext::Decision), SITES_VIEW_ROWS[usize::from(players - 2)]),
             ] {
                 let rows = text.lines().count();
                 assert!(
@@ -2276,27 +2344,36 @@ pub(crate) mod tests {
     /// one outcome a player opening a read-only screen is not expecting. So the
     /// line says it, in the words `a_number_typed_at_a_view_closes_it_and_
     /// applies_that_option` pins the behavior with.
+    ///
+    /// **Every assertion here names a ROW, not the two-line string** (six-lens
+    /// F2's NAMED CHECK, and the seventh recurrence of the overlapping-text
+    /// class): the two contexts share their first line word for word, so a
+    /// `contains` over the whole footer is satisfied by the half that never
+    /// varies, and the sibling test below — which is the one that has to bite —
+    /// would have been pinning nothing.
     #[test]
     fn the_exit_line_says_a_number_applies_the_option_underneath() {
-        let plain = strip_ansi(&exit_line());
-        assert!(plain.contains("Enter") && plain.contains("'cancel'"), "{plain}");
+        let plain = strip_ansi(&exit_line(ViewContext::Decision));
+        let rows: Vec<&str> = plain.lines().collect();
+        assert_eq!(rows.len(), 2, "two lines: {plain:?}");
+        assert!(rows[0].contains("Enter") && rows[0].contains("'cancel'"), "{plain}");
         assert!(
-            plain.contains("Any other line") && plain.contains("RUNS"),
+            rows[1].contains("Any other line") && rows[1].contains("RUNS"),
             "the re-dispatch rule is stated as a rule about LINES, not commands: {plain}",
         );
         assert!(
-            plain.contains("NUMBER applies that option"),
+            rows[1].contains("NUMBER applies that option"),
             "and the consequence a player would not expect is named: {plain}",
         );
         // `back` is the one word whose meaning differs from the index's, so the
         // view says what it does here rather than leaving it to be discovered.
-        assert!(plain.contains("'back'"), "{plain}");
+        assert!(rows[1].contains("'back' undoes your last move"), "{plain}");
 
         // Each row is tinted on its own, so neither carries a colour across the
         // break — the reason `exit_line` paints twice instead of painting one
         // string with a newline in it.
         crate::style::force(true);
-        let painted = exit_line();
+        let painted = exit_line(ViewContext::Decision);
         crate::style::force(false);
         let rows: Vec<&str> = painted.lines().collect();
         assert_eq!(rows.len(), 2, "two lines: {painted:?}");
@@ -2309,13 +2386,79 @@ pub(crate) mod tests {
         // way out — the placement the index's own exit line holds.
         let (tracks, board, colors) = view_models(2);
         for (what, text) in
-            [("tracks", tracks_view(&tracks, &colors)), ("sites", sites_view(&board, &colors))]
+            [("tracks", tracks_view(&tracks, &colors, ViewContext::Decision)), ("sites", sites_view(&board, &colors, ViewContext::Decision))]
         {
             let text = strip_ansi(&text);
             let lines: Vec<&str> = text.lines().collect();
             let caret = lines.iter().position(|l| l.trim() == ">").expect("the caret");
             let last = plain.lines().next_back().expect("a last line");
             assert_eq!(lines[caret - 1], last, "{what}: the way out sits above the prompt");
+        }
+    }
+
+    /// **Over a reveal capture the second line says what a number does THERE**
+    /// (six-lens F1).
+    ///
+    /// Both of the decision wording's clauses are false at a capture — a digit
+    /// is an order-card identity that records a reveal and commits the parked
+    /// move, and `back` undoes nothing while a group waits — and the views are
+    /// reachable from inside one by design, so following the footer wrote a
+    /// wrong card into `GameRecord.events` with no refusal and no echo.
+    ///
+    /// **Written row by row, and the discriminating assertion is the LAST one**:
+    /// a fix that took the context and ignored it would keep every positive
+    /// clause here true, so the capture footer is also asserted NOT to carry the
+    /// decision sentence. The shared first line is asserted equal on purpose —
+    /// `cancel` typed at the view closes the view in both contexts, and a
+    /// capture-flavoured rewording of that half would be a second lie.
+    #[test]
+    fn the_capture_exit_line_names_the_card_question_and_not_an_option() {
+        let decision = strip_ansi(&exit_line(ViewContext::Decision));
+        let capture = strip_ansi(&exit_line(ViewContext::Capture));
+        let d: Vec<&str> = decision.lines().collect();
+        let c: Vec<&str> = capture.lines().collect();
+        assert_eq!(c.len(), 2, "two lines here too: {capture:?}");
+        assert_eq!(c[0], d[0], "the close-this-view half does not vary: {capture:?}");
+
+        assert!(c[1].contains("names the CARD"), "the number's real meaning: {capture}");
+        assert!(
+            c[1].contains("'back' is not an undo"),
+            "and the other false clause is corrected, not dropped: {capture}",
+        );
+        assert!(
+            !c[1].contains("applies that option"),
+            "the sentence that is false at a capture must be GONE from the row that carries it — \
+             a context the renderer accepts and ignores would pass every check above: {capture}",
+        );
+        assert!(!c[1].contains("undoes your last move"), "{capture}");
+
+        // Width: the footer is drawn full-screen, so it owes the design floor
+        // the same as every other line on these surfaces.
+        for row in c.iter().chain(d.iter()) {
+            assert!(
+                crate::screen::visible_width(row) <= FLOOR_W,
+                "the exit line fits the design floor: {} columns\n{row}",
+                crate::screen::visible_width(row),
+            );
+        }
+    }
+
+    /// The `log` view's own `back` clause branches with the footer, because it
+    /// is the same claim about the same prompt underneath.
+    #[test]
+    fn the_log_view_only_promises_back_where_back_takes_something_off() {
+        let entries = vec![(0, "Red: Place no assistants".to_string())];
+        let panel = crate::screen_model::build_log(1, entries);
+        let decision = strip_ansi(&log_view(&panel, ViewContext::Decision));
+        let capture = strip_ansi(&log_view(&panel, ViewContext::Capture));
+        assert!(decision.contains("'back' takes the last one off"), "{decision}");
+        assert!(
+            !capture.contains("'back' takes the last one off"),
+            "nothing has been applied to take off while a reveal is waiting: {capture}",
+        );
+        // The half that is true in both survives the branch.
+        for text in [&decision, &capture] {
+            assert!(text.contains("Each line reads as it did when it applied"), "{text}");
         }
     }
 
@@ -2332,14 +2475,14 @@ pub(crate) mod tests {
     #[test]
     fn the_committed_tracks_capture_is_what_the_renderer_draws() {
         let (tracks, _, colors) = view_models(2);
-        assert_capture("t6-tracks-view.txt", &strip_ansi(&tracks_view(&tracks, &colors)));
+        assert_capture("t6-tracks-view.txt", &strip_ansi(&tracks_view(&tracks, &colors, ViewContext::Decision)));
     }
 
     /// The `sites` view's golden, at the same count and on the same terms.
     #[test]
     fn the_committed_sites_capture_is_what_the_renderer_draws() {
         let (_, board, colors) = view_models(2);
-        assert_capture("t6-sites-view.txt", &strip_ansi(&sites_view(&board, &colors)));
+        assert_capture("t6-sites-view.txt", &strip_ansi(&sites_view(&board, &colors, ViewContext::Decision)));
     }
 
     /// Compare `rendered` against the committed capture of that name, or

@@ -223,12 +223,9 @@ pub fn decision_zone(
     rows: &[DisplayRow],
     ctx: &decision_render::ZoneContext<'_>,
 ) -> String {
-    let colors: Vec<PlayerColor> = state.players.iter().map(|p| p.color).collect();
-    let board = screen_model::build_board(state, rules, legal);
+    let (board, fees, colors) = zone_inputs(state, rules, legal, rows);
     let model = screen_model::build_decision(state, rules, legal);
-    let fees = price_rows(state, rules, rows);
-    let zone_rows = zone_rows(rows, &fees);
-    decision_render::decision_zone(&model, &zone_rows, &board, &colors, ctx)
+    decision_render::decision_zone(&model, &zone_rows(rows, &fees), &board, &colors, ctx)
 }
 
 /// How many pages [`decision_zone`] will draw this list in — what the `more`
@@ -245,10 +242,34 @@ pub fn decision_pages(
     legal: &[Move],
     rows: &[DisplayRow],
 ) -> usize {
-    let board = screen_model::build_board(state, rules, legal);
-    let fees = price_rows(state, rules, rows);
-    let colors: Vec<PlayerColor> = state.players.iter().map(|p| p.color).collect();
+    let (board, fees, colors) = zone_inputs(state, rules, legal, rows);
     decision_render::page_count(&zone_rows(rows, &fees), &board, &colors)
+}
+
+/// The three inputs the zone and its pager MUST agree on, built once.
+///
+/// **Shared rather than spelled twice, and the colour table is why** (six-lens
+/// note). `page_count` measures the rows it is handed with the table it is
+/// handed — `decision_render`'s own doc says a call with `&[]` "is not an
+/// approximation, it is a different list", because a fee recipient named by
+/// seat number is two columns wider than one named by colour. Yet the two
+/// functions above each assembled their own arguments, so nothing but their
+/// prose stopped the pager's table from drifting from the renderer's: handing
+/// `&[]` to one of them left the whole suite green while the footer advertised
+/// four pages the zone draws in two, and `more` cycled twice through the last
+/// one. One tuple, one call site each, and the class is closed by construction
+/// rather than by a test that has to imagine the state where it bites.
+fn zone_inputs(
+    state: &GameState,
+    rules: &Rules,
+    legal: &[Move],
+    rows: &[DisplayRow],
+) -> (screen_model::BoardModel, Vec<Option<screen_model::FeeModel>>, Vec<PlayerColor>) {
+    (
+        screen_model::build_board(state, rules, legal),
+        price_rows(state, rules, rows),
+        state.players.iter().map(|p| p.color).collect(),
+    )
 }
 
 /// Every row's fee, priced ONCE by the model: `screen_model` owns the
@@ -1274,11 +1295,54 @@ mod tests {
         assert!(text.contains("1 order in hand"), "the count still shows: {text}");
         assert!(text.contains("(hidden)"), "a masked seat says so: {text}");
         // Seat 1's kept starting order must not appear anywhere on the panel.
+        //
+        // **Every WAY the card could be named, not just its flag** (six-lens
+        // note). The country word alone is a weak fence twice over: it
+        // discriminates only because this fixture's two seats happen to hold
+        // different-country cards, and the string it tests is drawn by the
+        // VIEWING seat's own hand rather than by anything about seat 1 — so a
+        // leak that printed the id, or a card face with `printed` cleared,
+        // satisfied it. The id is the sharpest of these: it is what an
+        // unfaced card still shows.
         let hidden_card = state.players[1].order_cards_in_hand[0];
         let printed = rules.orders.get(hidden_card).expect("a known card");
-        assert!(
-            !text.contains(&describe::country_name(printed.country).to_uppercase()),
-            "seat 1's card country leaked into the dashboard: {text}",
+        for token in [
+            describe::country_name(printed.country).to_uppercase(),
+            format!("O{:02}", hidden_card.0),
+        ] {
+            assert!(
+                !text.contains(&token),
+                "seat 1's card is named on the dashboard by {token:?}: {text}",
+            );
+        }
+    }
+
+    /// **The pager and the renderer measure with the SAME colour table**
+    /// (six-lens note), which is what [`zone_inputs`] exists to guarantee.
+    ///
+    /// The structural half is the shared tuple; this is the executable half,
+    /// and it is deliberately modest about what it proves. It cannot construct
+    /// the state where the two tables give different page counts — that takes
+    /// ~37 Movement rows each paying two opponents plus a canal toll, and a
+    /// 6,400-decision walk finds no organic disagreement — so what it holds is
+    /// the precondition that makes the table matter at all: it is NOT empty,
+    /// and the pager's answer is the one `page_count` gives for the renderer's
+    /// own inputs.
+    #[test]
+    fn the_pager_and_the_zone_are_handed_one_colour_table() {
+        let state = test_state_2p();
+        let rules = Rules::standard();
+        let legal: Vec<Move> = Vec::new();
+        let rows: Vec<DisplayRow> = Vec::new();
+        let (board, fees, colors) = zone_inputs(&state, &rules, &legal, &rows);
+        assert_eq!(
+            colors.len(),
+            state.players.len(),
+            "an empty table is the mutation this guards against, not a legitimate state",
+        );
+        assert_eq!(
+            decision_pages(&state, &rules, &legal, &rows),
+            decision_render::page_count(&zone_rows(&rows, &fees), &board, &colors),
         );
     }
 

@@ -157,23 +157,33 @@ fn enabled() -> bool {
 /// owns its region, so the call gets made once, with the surface, instead of
 /// being forgotten (sites are as of T1).
 ///
-/// **The `§` row was T4's or T11's and is now T11's alone.** It was routed
-/// conditionally, on "T4 if it touches those lines". T4 replaced the decision
-/// zone and neither of the two live sites is in it — one is the `board`
-/// command's terminal-width note, the other the live-mode bot warning — so the
-/// row moves whole to T11 rather than being half-converted by a task that never
-/// went near it:
+/// **All three surviving rows are DEFERRED TO 3.5b, ruled at the six-lens
+/// close (2026-08-07), and that is a decision rather than the rot it would
+/// otherwise read as.** They were owed to T11, which closed without them; the
+/// review re-checked what they cost and the answer is nothing measurable —
+/// every one is East-Asian-Width Ambiguous, so a single column each, and no
+/// layout moves whether they convert or not. What they DO cost is exactness:
+/// `§` is the one code point the live frame emits that the closed vocabulary
+/// does not contain (the census is emitted-minus-vocabulary = {U+00A7}), so
+/// "the emitted set is the vocabulary" is true of nineteen of twenty glyphs
+/// and stated here about the twentieth. Converting three prose characters in
+/// the same wave that rewrote two footers and the wizard's numbering was the
+/// scope call; the rows stay, with their owing task moved, so a reader meets a
+/// judgement and not an oversight.
 ///
 /// | glyph | code point | live site | owing task |
 /// |---|---|---|---|
 /// | `═` | U+2550 | ~~`screen.rs`, the title strip~~ | **DONE (T3)** |
-/// | `§` | U+00A7 | `repl.rs`'s two guide cross-references (the board width note, the live-bot warning) | T11 |
-/// | `−` | U+2212 | `suggest.rs:122`, the honesty note's minus | T11 |
-/// | `×` | U+00D7 | `suggest.rs:123`, the honesty note's times | T11 |
+/// | `§` | U+00A7 | `repl.rs`'s two guide cross-references (the board width note, the live-bot warning) | 3.5b |
+/// | `−` | U+2212 | [`crate::suggest`]'s honesty note, the minus | 3.5b |
+/// | `×` | U+00D7 | [`crate::suggest`]'s honesty note, the times | 3.5b |
 ///
 /// The owing task either replaces the character or admits it here with a row
 /// and a class. What it must not do is leave one spelled inline inside a
-/// surface the redesign has already claimed.
+/// surface the redesign has already claimed. (The two `suggest` rows carried
+/// line numbers — `:122`/`:123` — which had drifted by fifteen lines by the
+/// six-lens close, so they name the module now: a citation that rots is worse
+/// than one that is coarse.)
 ///
 /// **The `═` row is discharged, and by a third answer neither option
 /// anticipated: the character is GONE rather than converted.** It was re-routed

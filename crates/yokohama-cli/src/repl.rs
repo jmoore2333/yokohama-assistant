@@ -1295,7 +1295,15 @@ impl Repl {
             r.open_view(ViewSurface::Log)
         }),
         ("Board — tiles, presidents, assistants, buildings", |r| r.board_cmd()),
-        ("Players — every player's public holdings in full", |r| {
+        // **"public" was doing work it cannot do** (six-lens leak-fence note).
+        // A seat this row hides is never disclosed and says `(hidden)`; a seat
+        // it does not hide prints its hand CONTENTS, which are public at the
+        // table this driver is describing but are not what "public holdings"
+        // brings to mind next to a dashboard that shows the same seats as a
+        // bare count. The rule is that the label states which it is, so it
+        // does: the fence is in `SeatDisplay`, and the label now points at it
+        // rather than claiming the surface never shows a hand.
+        ("Players — every seat in full: holdings, and any hand not hidden", |r| {
             let t = render::players_panel(r.session.state(), r.session.rules(), &r.seat_display());
             r.out_view(t)
         }),
@@ -1552,16 +1560,40 @@ impl Repl {
         }
     }
 
+    /// What a line typed at an open view will land on when the view closes and
+    /// re-dispatches it — the one thing [`crate::view_render`] has to be told
+    /// (six-lens F1).
+    ///
+    /// **Re-derived per render rather than captured when the view opened**, on
+    /// the rule [`Overlay`]'s own doc states for the index's recording target:
+    /// a field remembered at open time can describe a prompt that has since
+    /// moved, and there is nothing to gain by remembering one here. Nothing can
+    /// change `pending` while a view is up in any case — `step_view` clears the
+    /// overlay BEFORE re-dispatching, so no input path runs underneath one.
+    ///
+    /// `pending` alone is the test: a bound reveal is the state in which a bare
+    /// number is a card identity. The guided `reveal` flow is a `SubPrompt`
+    /// asking the same kind of question, and it reaches the same branch through
+    /// [`Repl::index_target`] — which is why that is what this reads.
+    fn view_context(&self) -> crate::view_render::ViewContext {
+        match self.index_target() {
+            Some(_) => crate::view_render::ViewContext::Capture,
+            None => crate::view_render::ViewContext::Decision,
+        }
+    }
+
     /// One of spec §0.5's full-screen views, built from the SAME models the
     /// dashboard panels are — so a panel summary and its full surface can never
     /// disagree about a fact.
     fn view_text(&self, surface: ViewSurface) -> String {
         let state = self.session.state();
         let colors = self.seat_colors();
+        let context = self.view_context();
         match surface {
             ViewSurface::Tracks => crate::view_render::tracks_view(
                 &crate::screen_model::build_tracks(state),
                 &colors,
+                context,
             ),
             ViewSurface::Sites => crate::view_render::sites_view(
                 // No legal list: this surface draws no `◈` marks, and asking
@@ -1569,12 +1601,15 @@ impl Repl {
                 // here reads.
                 &crate::screen_model::build_board(state, self.session.rules(), &[]),
                 &colors,
+                context,
             ),
             ViewSurface::Ports => crate::view_render::ports_view(
                 &crate::screen_model::build_ports(state, self.session.rules()),
+                context,
             ),
             ViewSurface::Labs => crate::view_render::labs_view(
                 &crate::screen_model::build_labs(state, self.session.rules()),
+                context,
             ),
             ViewSurface::Hand => self.hand_text(),
             ViewSurface::Log => self.log_text(),
@@ -2940,6 +2975,7 @@ impl Repl {
                 &hand,
                 crate::board_render::color_of(&self.seat_colors(), p.id),
                 seats.is_bot(p.id),
+                self.view_context(),
             ),
             // Unreachable: `current_player()` came out of `state.players`.
             // Total anyway, on the rule every emitter in this crate holds.
@@ -3025,7 +3061,10 @@ impl Repl {
         let described = (start..n)
             .map(|i| (i, self.session.event_description(i).to_string()))
             .collect::<Vec<_>>();
-        crate::view_render::log_view(&crate::screen_model::build_log(n, described))
+        crate::view_render::log_view(
+            &crate::screen_model::build_log(n, described),
+            self.view_context(),
+        )
     }
 
     fn lockdown_dump(&self) -> String {
@@ -3044,6 +3083,19 @@ impl Repl {
 /// `describe_move`'s fee preview). In the composed TTY frame the full board
 /// sits right above this; the directory keeps the piped/rolling view
 /// self-sufficient.
+///
+/// **Labelled `Copper Mine (A00)`, which is the driver's ONE area label**
+/// (six-lens note). This wrote `A00 Copper Mine` while Option B — the other
+/// half of the same decision, one keystroke away — wrote `Copper Mine (A00)`
+/// through [`describe::area_label`], the form every other surface uses: the
+/// guided retreat's questions, the routes title, a President's location, the
+/// log. Two orders for one fact on two screens of one decision is the sort of
+/// difference a player has to stop and parse, and the T11 pass ("every surface
+/// speaks the same language") is the rule it was on the wrong side of.
+///
+/// The column width is MEASURED off the cells rather than set to a literal:
+/// the label got longer when it flipped, and a hard-coded pad is how a future
+/// long area name silently starts colliding with its neighbour.
 fn placement_area_directory(state: &GameState) -> String {
     let me = state.current_player;
     let mut cells: Vec<String> = Vec::new();
@@ -3056,17 +3108,17 @@ fn placement_area_directory(state: &GameState) -> String {
             .iter()
             .any(|p| p.id != me && p.president_location == PresidentLocation::OnBoard(id));
         cells.push(format!(
-            "A{:02} {}{}",
-            id.0,
-            describe::area_type_name(cfg.area_type),
+            "{}{}",
+            describe::area_label(state, id),
             if fee { " (fee)" } else { "" }
         ));
     }
+    let column = cells.iter().map(|c| c.chars().count()).max().unwrap_or(0) + 2;
     let mut out = String::new();
     for chunk in cells.chunks(3) {
         out.push(' ');
         for c in chunk {
-            out.push_str(&format!(" {:<27}", c));
+            out.push_str(&format!(" {c:<column$}"));
         }
         while out.ends_with(' ') {
             out.pop();
@@ -3133,7 +3185,7 @@ Commands:
   techs           open the TECHNOLOGY INDEX: all 20 titles by flag, each with its full purchase text
   goals           open the ACHIEVEMENTS index: the cards in play by category, with claim VP and progress
   sitecards       open the SITE CARD INDEX: all 24 printed cards, for setup entry
-  ?               open the card index for whatever is being asked — works mid-reveal and mid-sub-prompt, and returns you to it
+  ?               open the card index for whatever is being asked ('index' also works) — works mid-reveal and mid-sub-prompt, and returns you to it
   score           show current VP/money (or the final scores once the game is over)
   log             open the LOG view: the move and reveal trail, each line as it read when it applied
   view            open the numbered game-info menu over all of the views and indexes above ('views' also works)
@@ -3147,7 +3199,7 @@ Commands:
   save [path]     save to path (or to the last-used path if omitted)
   reveal          live mode: pick the seat whose hidden starting order just became public from a numbered menu, then name the card
   reveal <seat> <O..>  the same thing in one line, for anyone who knows both halves
-  cancel          back out of any sub-prompt or full-screen surface: reveal collection (live), guided reveal, view menu, card index, any full-screen view, numbered pick, either Placement picker, guided retreat
+  cancel          back out of whatever is open: either reveal (live), the view menu, a card index, a full-screen view, a numbered pick, a Placement picker, guided retreat
   help            show this text
   quit            exit the REPL ('q' also works)
 ";
@@ -3548,6 +3600,39 @@ mod tests {
         // Same command, same refusal when there is nothing left.
         assert!(r.step("back").text.contains("Cannot undo"), "{}", r.step("back").text);
         assert!(HELP_TEXT.contains("'back' also works"), "and it is documented");
+    }
+
+    /// **Every line of `help` fits the design floor** (six-lens F7).
+    ///
+    /// The `cancel` row had grown to 209 visible columns — the ONE line the
+    /// whole driver emitted over 200 — so `help` on the 200-column window the
+    /// guide tells testers to size sheared mid-word ("…either Placement picker,
+    /// guide" / "d retreat"). Nothing covered it: `screen`'s width guard
+    /// measures composed FRAMES (`worst_case_frames`), and this text is not one
+    /// — it is a `out_view` body — while `guide_sync` checks HELP_TEXT for
+    /// command coverage and §5 parity but never for width.
+    ///
+    /// Written over EVERY line rather than over the one that was long, so the
+    /// class is closed: the next row somebody extends is measured on the way in.
+    /// The widest is reported on failure so a deliberate rewrap has the number
+    /// it needs.
+    #[test]
+    fn every_help_line_fits_the_design_floor() {
+        let over: Vec<(usize, &str)> = HELP_TEXT
+            .lines()
+            .map(|l| (crate::screen::visible_width(l), l))
+            .filter(|(w, _)| *w > crate::screen::FLOOR_W)
+            .collect();
+        assert!(
+            over.is_empty(),
+            "help rows past the {}-column design floor — a terminal at the floor shears them \
+             mid-word: {over:#?}",
+            crate::screen::FLOOR_W,
+        );
+        // Anti-vacuity: the text is really being measured, and the assertion
+        // has something to bite on rather than a list of empty strings.
+        let widest = HELP_TEXT.lines().map(crate::screen::visible_width).max().expect("rows");
+        assert!(widest > 100, "the rows are long enough for this to be a real check: {widest}");
     }
 
     /// Ceremony reduction (Task 6): bare Enter on a forced single-option
@@ -4559,6 +4644,87 @@ mod tests {
         assert!(matches!(r.pending, Pending::None));
     }
 
+    /// The refusal a locked session gives, verbatim from `step`'s gate.
+    ///
+    /// **`contains("locked")` is NOT this test** (six-lens F2). Every screen a
+    /// locked session draws ends in `lockdown_status()`, which paints the word
+    /// `[locked]` — on ACCEPTED commands as much as refused ones, which
+    /// `the_log_still_reads_under_a_lockdown` demonstrates from the other side.
+    /// So the needle has to be the refusal SENTENCE, and it has to be matched as
+    /// a whole LINE: this is the NAMED CHECK's sixth recurrence in this branch's
+    /// review record (T7, T8, T10, T11, T12, here), and the one place it lands
+    /// on the mechanism that keeps a desynced live game from being driven
+    /// further.
+    const LOCK_REFUSAL: &str = "session locked after a driver/engine fault — only save/log/quit";
+
+    /// Whether `out` is the lockdown refusal — the sentence on its own line,
+    /// which the status line beneath it cannot satisfy.
+    fn is_lock_refusal(out: &StepOutput) -> bool {
+        crate::style::strip_ansi(&out.text).lines().any(|l| l.trim() == LOCK_REFUSAL)
+    }
+
+    /// A locked 2P session with ONE applied move behind it — so a command that
+    /// slipped through the allow-list and rewound the record shows up as a
+    /// number, not only as a missing sentence.
+    fn locked_after_one_move() -> Repl {
+        let mut r = repl_2p(4);
+        r.step("1");
+        assert_eq!(r.session.record().events.len(), 1, "one move to take back");
+        r.locked = true;
+        r
+    }
+
+    /// **Everything outside the allow-list is refused IN THE REFUSAL'S OWN
+    /// WORDS, and does not run** (six-lens F2).
+    ///
+    /// The allow-list at `step`'s gate is the desync guard's only door, and its
+    /// previous pins asserted `contains("locked")` — a needle every locked
+    /// screen satisfies. Widening the list with `undo` (the command that rewinds
+    /// the record) left the whole package green, and the locked session
+    /// happily undid a move while the screen printing that fact still claimed
+    /// only save/log/quit were available.
+    ///
+    /// Two assertions per word, and neither is redundant: the refusal LINE
+    /// (a screen that accepted the command cannot produce it) and the
+    /// non-execution of the command's own effect — the record length for the
+    /// two that rewind it, the overlay for the ones that would open a screen,
+    /// the sub-prompt and capture fields for the ones that would open a
+    /// question, and whole-state equality for everything.
+    #[test]
+    fn every_command_outside_the_lockdown_allow_list_is_refused_and_does_nothing() {
+        // The whole dispatch surface a locked prompt could be handed: the two
+        // spellings of undo, every view word and index word, the menu, the
+        // toggles, the pagers, `suggest`, `reveal`, a bare number, and one of
+        // each move grammar.
+        for line in [
+            "undo", "back", "board", "players", "score", "help", "view", "views", "more", "list",
+            "suggest", "privacy", "panel", "screen", "tracks", "sites", "ports", "labs", "hand",
+            "goals", "orders", "techs", "sitecards", "?", "index", "reveal", "reveal 1", "1", "2",
+            "a 0", "b 0", "m 0", "r 0:1", "", "wat",
+        ] {
+            let mut r = locked_after_one_move();
+            let state_before = r.session.state().clone();
+            let out = r.step(line);
+            assert!(
+                is_lock_refusal(&out),
+                "{line:?} must be refused in the lockdown's own sentence — the status line's \
+                 `[locked]` rides on accepted commands too:\n{}",
+                out.text,
+            );
+            assert!(!out.quit, "{line:?} must not quit");
+            assert_eq!(
+                r.session.record().events.len(),
+                1,
+                "{line:?} changed the record under lockdown:\n{}",
+                out.text,
+            );
+            assert_eq!(*r.session.state(), state_before, "{line:?} changed the state");
+            assert!(r.overlay.is_none(), "{line:?} opened a screen under lockdown");
+            assert!(matches!(r.sub, SubPrompt::None), "{line:?} opened a sub-prompt");
+            assert!(matches!(r.pending, Pending::None), "{line:?} opened a capture");
+        }
+    }
+
     /// Lockdown restricts to exactly `save`/`log`/`quit` (and the `q` alias
     /// the normal dispatch already honors) -- view commands and numeric
     /// picks are rejected and change nothing, while `log`/`save` still work.
@@ -4570,16 +4736,17 @@ mod tests {
         let state_before = r.session.state().clone();
 
         let out = r.step("board");
-        assert!(out.text.contains("locked"), "{}", out.text);
+        assert!(is_lock_refusal(&out), "{}", out.text);
         assert_eq!(*r.session.state(), state_before);
         assert_eq!(r.session.record().events.len(), events_before);
 
         let out = r.step("1");
-        assert!(out.text.contains("locked"), "{}", out.text);
+        assert!(is_lock_refusal(&out), "{}", out.text);
         assert_eq!(*r.session.state(), state_before);
         assert_eq!(r.session.record().events.len(), events_before);
 
         let out = r.step("log");
+        assert!(!is_lock_refusal(&out), "{}", out.text);
         assert!(!out.text.contains("only save/log/quit"), "{}", out.text);
 
         let path = std::env::temp_dir().join(format!("yokohama_repl_locked_{}.json", std::process::id()));
@@ -5551,13 +5718,16 @@ mod tests {
 
     /// Lockdown wins over an in-progress sub-prompt: once locked, even
     /// sub-prompt input is refused the same way moves are (only save/log/quit).
+    ///
+    /// The needle is the refusal sentence rather than the word `locked`, for
+    /// the reason [`LOCK_REFUSAL`] states.
     #[test]
     fn subprompt_refused_under_lockdown() {
         let mut r = movement_grouping_fixture();
         r.step("3"); // enter the guided retreat
         r.locked = true;
         let out = r.step("2"); // would be an answer, but lockdown refuses it
-        assert!(out.text.contains("locked"), "{}", out.text);
+        assert!(is_lock_refusal(&out), "{}", out.text);
         assert!(r.session.record().events.is_empty());
     }
 
@@ -5601,6 +5771,40 @@ mod tests {
         assert!(!p.contains("[4]"), "exactly three entries: {p}");
         assert!(!p.contains("page 1/"), "no pagination on the grouped list: {p}");
         assert!(p.contains("'a' grammar works too") && p.contains("'b' grammar works too"), "{p}");
+    }
+
+    /// **Both Placement pickers label an area the same way** (six-lens note),
+    /// and that way is [`describe::area_label`] — the form the routes title,
+    /// the guided retreat, a President's location and the log all use.
+    ///
+    /// They are the two halves of ONE decision, reached from options [1] and
+    /// [2] of the same list, and they used to disagree about which end the id
+    /// goes on: `A00 Copper Mine` against `Copper Mine (A00)`.
+    #[test]
+    fn both_placement_pickers_name_an_area_in_the_drivers_one_label() {
+        let area = AreaId::new(3);
+        let label = {
+            let r = repl_2p(4);
+            describe::area_label(r.session.state(), area)
+        };
+        assert!(label.ends_with(&format!("(A{:02})", area.0)), "fixture: {label:?}");
+        let name = label.split(" (A").next().expect("a name before the id").to_string();
+
+        for enter in ["1", "2"] {
+            let mut r = repl_2p(4);
+            r.step("1"); // -> Placement
+            let out = r.step(enter);
+            assert!(
+                out.text.contains(&label),
+                "picker [{enter}] must list areas as {label:?}:\n{}",
+                out.text,
+            );
+            assert!(
+                !out.text.contains(&format!("A{:02} {name}", area.0)),
+                "picker [{enter}] still carries the id-first form:\n{}",
+                out.text,
+            );
+        }
     }
 
     /// Option-A picker: toggling two areas assembles the exact 2-area
