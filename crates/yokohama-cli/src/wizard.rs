@@ -562,9 +562,13 @@ fn ask_save_path(input: &mut dyn Iterator<Item = String>, out: &mut dyn FnMut(&s
 /// seat, and reveal choreography would deadlock on a card a bot cannot read).
 ///
 /// Blank is the default and means "none", so the answer costs an Enter for
-/// anyone who does not want a bot. At least one seat must stay human: a
-/// bot-vs-bot spectator mode is explicitly out of scope for v1, and a wizard
-/// that let you build one would produce a game with no one to prompt.
+/// anyone who does not want a bot -- and the literal word `none` is the same
+/// answer, because a prompt that says "none" is read as offering it. At least
+/// one seat must stay human: a bot-vs-bot spectator mode is explicitly out of
+/// scope for v1, and a wizard that let you build one would produce a game with
+/// no one to prompt. That same rule is why the EXAMPLE is count-aware: the
+/// space-separated form needs two seats that can both be bots, which a
+/// 2-player table does not have.
 ///
 /// The bot seed is DRAWN, not asked: it is a full-`u64` stream key, which is
 /// not something to type at a prompt, and it is echoed + recorded in the
@@ -578,16 +582,21 @@ fn ask_bots(
     players: u8,
 ) -> Result<crate::bot::BotSeats, String> {
     let mut seats: Option<Vec<Option<RolloutPolicy>>> = None;
+    let example = if players > 2 { "'1' or '0 2'" } else { "'1' or '0'" };
     ask(
         input,
         out,
         &format!(
-            "Bot seats? (blank for none, or seat numbers 0-{} e.g. '1' or '0 2' — sim only, one seat must stay human)",
+            "Bot seats? (blank or 'none' for no bots, or seat numbers 0-{} e.g. {example} — sim only, one seat must stay human)",
             players - 1
         ),
         &mut |s: &str| -> Result<(), String> {
             let mut chosen = vec![None; players as usize];
-            for tok in s.split_whitespace() {
+            // `none` is a way of saying blank, so it answers the WHOLE
+            // question and is never a token inside a seat list -- there it
+            // gets the same refusal any other non-number does.
+            let listed = if s.eq_ignore_ascii_case("none") { "" } else { s };
+            for tok in listed.split_whitespace() {
                 let seat: u8 = tok.parse().map_err(|_| format!("'{tok}' is not a seat number"))?;
                 if seat >= players {
                     return Err(format!("seat must be 0-{}", players - 1));
@@ -3379,6 +3388,136 @@ mod tests {
         assert_eq!(seats[0].controller, RolloutPolicy::FAMILY_WEIGHTED_DEFAULT.as_str());
         assert_eq!(seats[1].controller, yokohama_core::CONTROLLER_HUMAN);
         std::fs::remove_file("yokohama-game-803.json").ok();
+    }
+
+    // ---- Phase 3.5a close: the bots question answers its own vocabulary ----
+    //
+    // Both of these are things the owner hit playing the redesigned wizard: a
+    // prompt that taught a word it then refused, and an example that named a
+    // seat the table did not have. They are pinned at `ask_bots` itself rather
+    // than through a wizard transcript -- the T7 lesson (`f25ace0`): a
+    // transcript assertion is satisfied by more than one parser, so a claim
+    // about what an ANSWER does belongs at the function that takes it.
+
+    /// Drive [`ask_bots`] alone, with no wizard around it. Returns whatever the
+    /// question built plus everything it printed getting there.
+    fn ask_bots_directly(players: u8, lines: &[&str]) -> (Result<crate::bot::BotSeats, String>, String) {
+        let mut transcript = String::new();
+        let mut it = lines.iter().map(|s| s.to_string());
+        let result = {
+            let mut sink = |s: &str| transcript.push_str(s);
+            ask_bots(&mut it, &mut sink, players)
+        };
+        (result, transcript)
+    }
+
+    /// The `e.g. '…' or '…'` groups the prompt offers at `players`, verbatim
+    /// and in order, taken off the printed question rather than restated here
+    /// -- a test that hard-coded them would pass against the prompt it was
+    /// written for and say nothing about the one that ships.
+    fn bots_prompt_examples(players: u8) -> (String, Vec<String>) {
+        let (_seats, transcript) = ask_bots_directly(players, &[""]);
+        let example = transcript
+            .split("e.g. ")
+            .nth(1)
+            .unwrap_or_else(|| panic!("the {players}P prompt must carry an example: {transcript}"))
+            .split('—')
+            .next()
+            .expect("split always yields a first piece")
+            .trim()
+            .to_string();
+        // `'1' or '0 2'` splits to ["", "1", " or ", "0 2", ""] -- the quoted
+        // groups are the odd positions.
+        let groups = example.split('\'').skip(1).step_by(2).map(str::to_string).collect();
+        (transcript, groups)
+    }
+
+    /// **The question refused the word it teaches.** The prompt read `blank for
+    /// none`, so a reader types `none` -- and got `! 'none' is not a seat
+    /// number` back. `none` now answers the question in any casing, blank still
+    /// does, and both build the same all-human table with no stream drawn.
+    #[test]
+    fn the_bots_question_takes_the_word_none_it_offers() {
+        for answer in ["", "none", "None", "NONE", "nOnE"] {
+            let (seats, transcript) = ask_bots_directly(2, &[answer]);
+            let seats = seats.unwrap_or_else(|e| {
+                panic!("{answer:?} must answer the question, got Err({e}); transcript:\n{transcript}")
+            });
+            assert!(!seats.any(), "{answer:?} must build an all-human table, got {:?}", seats.flags());
+            assert_eq!(seats.seed(), 0, "{answer:?} has no bot, so no stream may be drawn");
+            assert!(
+                !transcript.contains(" ! "),
+                "{answer:?} must be taken, not refused and re-asked: {transcript}"
+            );
+        }
+        let (_seats, transcript) = ask_bots_directly(2, &[""]);
+        assert!(
+            transcript.contains("'none'"),
+            "the prompt must OFFER the word it accepts -- accepting it silently leaves the reader \
+             typing the thing that was refused: {transcript}"
+        );
+    }
+
+    /// `none` is a way of saying blank, not a seat token, so it cannot be
+    /// smuggled into a list. The refusal is the same one any other non-number
+    /// gets, which keeps the alias from quietly widening the seat grammar.
+    #[test]
+    fn none_is_the_whole_answer_or_it_is_not_an_answer() {
+        for answer in ["none 1", "1 none"] {
+            let (seats, transcript) = ask_bots_directly(3, &[answer, ""]);
+            seats.unwrap_or_else(|e| panic!("the blank second line should have answered: Err({e})"));
+            assert!(
+                transcript.contains("'none' is not a seat number"),
+                "{answer:?} must be refused as a seat list: {transcript}"
+            );
+        }
+    }
+
+    /// **The example named a seat that does not exist.** `e.g. '1' or '0 2'`
+    /// printed at EVERY count, so a 2-player table offered seat 2 -- which the
+    /// very next line then refuses with `seat must be 0-1`. Every seat the
+    /// example names is now a seat this table has, and every group it prints is
+    /// an answer the question itself takes.
+    #[test]
+    fn the_bots_questions_example_only_names_seats_that_exist() {
+        for players in [2u8, 3, 4] {
+            let (transcript, groups) = bots_prompt_examples(players);
+            assert!(!groups.is_empty(), "the {players}P example must name seats: {transcript}");
+            for group in &groups {
+                let named: Vec<u8> = group
+                    .split_whitespace()
+                    .map(|t| t.parse().unwrap_or_else(|_| panic!("{group:?} is not seat numbers: {transcript}")))
+                    .collect();
+                assert!(!named.is_empty(), "{group:?} names no seat: {transcript}");
+                for seat in &named {
+                    assert!(
+                        *seat < players,
+                        "the {players}P example offers seat {seat}, a seat this table does not have: {transcript}"
+                    );
+                }
+                // The end of the loop: what the prompt prints, the prompt takes.
+                let (built, t) = ask_bots_directly(players, &[group]);
+                let built = built
+                    .unwrap_or_else(|e| panic!("the {players}P example {group:?} must be accepted, got Err({e}); {t}"));
+                for seat in 0..players {
+                    assert_eq!(
+                        built.is_bot(PlayerId(seat)),
+                        named.contains(&seat),
+                        "{group:?} at {players}P must bot exactly the seats it names, got {:?}",
+                        built.flags()
+                    );
+                }
+            }
+            // The space-separated form is the whole reason the example has two
+            // groups -- but it is untypable at 2 players, where the only
+            // multi-seat answer is the all-bot table the question refuses.
+            let teaches_a_list = groups.iter().any(|g| g.split_whitespace().count() > 1);
+            assert_eq!(
+                teaches_a_list,
+                players > 2,
+                "at {players}P the example {groups:?} must teach the space-separated form iff a legal one exists"
+            );
+        }
     }
 
     // ---- Phase 3.5a T7: the wizard redesign (findings F1, F2, F5, F6) ----
