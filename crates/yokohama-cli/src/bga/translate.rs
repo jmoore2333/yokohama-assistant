@@ -119,10 +119,25 @@ pub struct Translator<'a> {
     /// engine PASSED THROUGH a matching state, in order.
     state_snapshots: Vec<Vec<BTreeMap<String, i64>>>,
     snap_cursor: usize,
+    /// BGA move ids INSIDE a spanning composite — a BGA-move boundary that
+    /// falls between the facts of ONE engine-atomic action (first observed at
+    /// m169/m170: a two-card Port take split across two BGA moves, applied as
+    /// one engine `AreaAction::Port`). A checkpoint at such a boundary
+    /// describes a state the engine never passes through BY GRANULARITY, not
+    /// by divergence; `run_checkpoints_below` skips it WITH A NAMED NOTE
+    /// instead of stopping — the composite's outcome is still pinned by the
+    /// next checkpoint at or past its final move.
+    mid_composite_moves: BTreeSet<u64>,
     pub report: ReplayReport,
     max_move_seen: u64,
     /// A checkpoint STOP found inside `consume_drive` (surfaced by `step`).
     pending_checkpoint_error: Option<ImportError>,
+    /// The fact stream carries BGA's own end-of-game markers (`finalScoring` /
+    /// "End of game"). Only when BGA itself declared the game over may the
+    /// translator close out the final turn's absence arms after the last
+    /// drive fact (see `close_out_final_turn`); a bounded `--through` replay
+    /// drops the markers with the facts and stays honestly mid-turn.
+    stream_declares_game_end: bool,
 }
 
 impl<'a> Translator<'a> {
@@ -185,6 +200,10 @@ impl<'a> Translator<'a> {
         port_observations.sort_by_key(|(a, _)| *a);
 
         let pc = answers.player_count;
+        let stream_declares_game_end = stream
+            .facts
+            .iter()
+            .any(|tf| matches!(tf.fact, Fact::EndGameMarker | Fact::FinalScoringMarker));
         Ok(Translator {
             session,
             resolved,
@@ -202,6 +221,7 @@ impl<'a> Translator<'a> {
             next_checkpoint: 0,
             state_snapshots: Vec::new(),
             snap_cursor: 0,
+            mid_composite_moves: BTreeSet::new(),
             // The deliberately-unchecked list rides the report from
             // CONSTRUCTION so every return path — the STOPPED runs included —
             // carries it (H2 review SHOULD-2: T9's "listed explicitly with
@@ -217,6 +237,7 @@ impl<'a> Translator<'a> {
             },
             max_move_seen: 0,
             pending_checkpoint_error: None,
+            stream_declares_game_end,
         })
     }
 
@@ -228,11 +249,6 @@ impl<'a> Translator<'a> {
 
     fn peek_drive(&self) -> Option<&TimedFact> {
         self.next_drive_index(self.cursor).map(|i| &self.facts[i])
-    }
-
-    fn second_drive(&self) -> Option<&TimedFact> {
-        let first = self.next_drive_index(self.cursor)?;
-        self.next_drive_index(first + 1).map(|i| &self.facts[i])
     }
 
     /// Consume through the next drive fact (notes before it consumed freely).
@@ -426,7 +442,24 @@ impl<'a> Translator<'a> {
             "copper" => p.copper as i64,
             "yens" => p.money as i64,
             "imports" => p.imported_goods as i64,
-            "vps" => p.victory_points as i64,
+            // BGA's endgame checkpoint (m194 here) carries the FINAL total —
+            // its finalScoring folds every bonus into `vps` — while the
+            // engine's `victory_points` stays incremental and the bonuses live
+            // in `final_result`. Mirror BGA's convention exactly when (and
+            // only when) the game is over, so the terminal checkpoint compares
+            // final against final; every earlier snapshot is incremental on
+            // both sides.
+            "vps" => {
+                if self.session.is_over() {
+                    self.session
+                        .final_scores()
+                        .iter()
+                        .find(|(p, _)| p.0 == seat)
+                        .map(|(_, s)| *s as i64)?
+                } else {
+                    p.victory_points as i64
+                }
+            }
             "orders_done" => p.completed_orders.len() as i64,
             "orders_hand" => {
                 p.order_cards_in_hand.len() as i64 + if p.starting_order_hidden { 1 } else { 0 }
@@ -529,6 +562,20 @@ impl<'a> Translator<'a> {
                     self.snap_cursor = i;
                     self.report.checkpoints_passed += 1;
                 }
+                None if self.mid_composite_moves.contains(&cp.move_id) => {
+                    // A BGA-move boundary INSIDE one engine-atomic action
+                    // (see `mid_composite_moves`): the state its counters
+                    // describe exists in BGA's finer move granularity only.
+                    // Skipped WITH ITS NAME — never counted as green, and the
+                    // composite's end state is still pinned by the next
+                    // checkpoint at or past its final move.
+                    self.report.notes.push(format!(
+                        "checkpoint m{}: describes the state inside an engine-atomic action \
+                         (a composite spanning BGA moves); skipped by granularity, the \
+                         composite's outcome is checked at the next checkpoint",
+                        cp.move_id
+                    ));
+                }
                 None => {
                     let last = self
                         .state_snapshots
@@ -596,7 +643,14 @@ impl<'a> Translator<'a> {
             return Ok(false);
         }
         let Some(next) = self.peek_drive().cloned() else {
-            // Stream exhausted with the game still open — a bounded replay.
+            // Stream exhausted. When BGA itself declared the game over (the
+            // m194-class endgame markers rode the stream), the final turn's
+            // absence arms close out — stream end past the markers is the same
+            // absence evidence a later-move fact provides mid-stream. Without
+            // the markers this is a bounded replay and stays honestly mid-turn.
+            if self.stream_declares_game_end && !self.session.is_over() {
+                self.close_out_final_turn()?;
+            }
             return Ok(false);
         };
         let move_id = next.move_id;
@@ -671,10 +725,37 @@ impl<'a> Translator<'a> {
                             }
                             [] => return Err(rerr(move_id, format!("no legal mercenary use at {tile:?}"))),
                             several => {
-                                return Err(rerr(
-                                    move_id,
-                                    format!("ambiguous mercenary country at {tile:?}: {several:?}"),
-                                ))
+                                // BGA does not model WHICH country's agent is
+                                // spent — its `fa_tokens`/`fa_used` counters
+                                // and the "uses a foreign agent" notification
+                                // are country-less, while the engine tracks
+                                // per-country tokens (the reveal-fed faces).
+                                // The choice is provably SCORE-INERT: the
+                                // remainder bonus and Tokens5 count agents,
+                                // and the country set bonus reads completed
+                                // orders + technologies only (scoring.rs
+                                // `calculate_country_bonus`) — never agent
+                                // tokens. Pick DETERMINISTICALLY (the smallest
+                                // by `Country` order, so batch and follow stay
+                                // byte-identical) and DECLARE it; the one way
+                                // the pick could matter — a later use needing
+                                // the exact country this spent — refuses at
+                                // that move and STOPs the replay, the designed
+                                // backstop.
+                                let mut sorted = several.to_vec();
+                                sorted.sort();
+                                let pick = sorted[0];
+                                self.report.notes.push(format!(
+                                    "move {move_id}: ASSUMPTION (declared inert) — BGA's foreign \
+                                     agents are country-less counters, so which of the engine's \
+                                     {sorted:?} tokens was spent at {tile:?} is unknowable from \
+                                     the capture; spent {pick:?} (smallest by Country order, \
+                                     deterministic). Score-inert: agents score by COUNT and the \
+                                     country set bonus reads orders+techs only; a later \
+                                     country-specific use this pick broke would STOP the replay."
+                                ));
+                                let mv = Move::UseMercenary { country: pick, target_area: target };
+                                self.apply(mv, vec![], move_id)?;
                             }
                         }
                     }
@@ -862,39 +943,23 @@ impl<'a> Translator<'a> {
                     self.apply(Move::ChooseAssistantMove { from, to }, vec![], move_id)?;
                 }
                 Fact::AssistMove { seat: s, from: Some(from), to: None } if *s == seat => {
-                    // BGA's board→hand icon leg. If the NEXT move is the
-                    // hand→area leg, the pair composes to one engine icon
-                    // (state-equivalent; the second icon then declines). A leg
-                    // with no continuation is the census §4.2 rules gap.
+                    // BGA's board→hand icon leg, translated DIRECTLY since
+                    // rev 6 (owner ruling D3, 2026-08-08): the engine's
+                    // movement icon offers `MoveTarget::Hand` for an on-board
+                    // source. This retires BOTH rev-5 shapes — the two-leg
+                    // composition (m106+107, area → hand → area collapsed into
+                    // one icon + decline; the second leg now replays as its own
+                    // icon with `MoveSource::Hand`) and the m154 one-leg STOP
+                    // (census §4.2), which was exactly a to-hand move with no
+                    // continuation.
                     let from = *from;
-                    if let Some(TimedFact {
-                        fact: Fact::AssistMove { seat: s2, from: None, to: Some(to2) },
-                        ..
-                    }) = self.second_drive().cloned()
-                    {
-                        if s2 == seat {
-                            self.consume_drive();
-                            self.consume_drive_uncheckpointed();
-                            let from = MoveSource::Area(self.area_id(from, move_id)?);
-                            let to = MoveTarget::Area(self.area_id(to2, move_id)?);
-                            self.report.notes.push(format!(
-                                "move {move_id}: composed BGA's two-leg assistant move \
-                                 ({from:?} → hand → {to2:?}) into one engine icon + decline"
-                            ));
-                            self.apply(Move::ChooseAssistantMove { from, to }, vec![], move_id)?;
-                            return Ok(());
-                        }
-                    }
-                    return Err(rerr(
+                    self.consume_drive();
+                    let from = MoveSource::Area(self.area_id(from, move_id)?);
+                    self.apply(
+                        Move::ChooseAssistantMove { from, to: MoveTarget::Hand },
+                        vec![],
                         move_id,
-                        format!(
-                            "ENGINE-RULES divergence (census §4.2): BGA moved an assistant from \
-                             {from:?} to the player's HAND via a movement icon and it stays there; \
-                             the engine's ChooseAssistantMove targets areas only \
-                             (types/choices.rs MoveSource→AreaId). Owner ruling needed on \
-                             movement-icon targets; not translatable without widening the engine."
-                        ),
-                    ));
+                    )?;
                 }
                 _ => self.apply(Move::DeclineAssistantMove, vec![], move_id)?,
             },
@@ -1094,6 +1159,18 @@ impl<'a> Translator<'a> {
                 _ => self.apply(Move::ExecuteAreaAction { action: AreaAction::Skip }, vec![], move_id),
             };
         }
+        // A tech refusal at a Laboratory where the engine offers NO take (none
+        // affordable) reaches here with `has_lab` false — the legal list is
+        // [Skip] alone (first observed at m176: power 3, no affordable card).
+        // BGA prints the same refusal whether the take was declined or
+        // impossible; Skip is the translation either way, and the checkpoints
+        // keep pinning the resulting state.
+        if let Fact::LabDeclined { seat: s } = &next.fact {
+            if *s == seat {
+                self.consume_drive();
+                return self.apply(Move::ExecuteAreaAction { action: AreaAction::Skip }, vec![], move_id);
+            }
+        }
         // Imperative production/Bank action: exactly one legal move.
         match imperative.len() {
             1 => self.apply(imperative.remove(0), vec![], move_id),
@@ -1115,15 +1192,24 @@ impl<'a> Translator<'a> {
         let mut card2: Option<Option<yokohama_core::OrderCardId>> = None;
         let mut payment: Option<SecondPayment> = None;
         match self.peek_drive().cloned() {
-            Some(TimedFact { fact: Fact::PortTake { seat: s, card, second: Some(pay) }, .. })
+            Some(TimedFact { fact: Fact::PortTake { seat: s, card, second: Some(pay) }, move_id: m2, .. })
                 if s == seat =>
             {
                 self.consume_drive_uncheckpointed();
                 card2 = Some(card);
                 payment = Some(pay);
+                // The pair can SPAN BGA moves (measured at m169/m170) — every
+                // boundary strictly inside the span carries counters for a
+                // state the atomic engine Port move steps over.
+                for interior in first.move_id..m2 {
+                    self.mid_composite_moves.insert(interior);
+                }
             }
-            Some(TimedFact { fact: Fact::PortSecondDeclined { seat: s }, .. }) if s == seat => {
+            Some(TimedFact { fact: Fact::PortSecondDeclined { seat: s }, move_id: m2, .. }) if s == seat => {
                 self.consume_drive_uncheckpointed();
+                for interior in first.move_id..m2 {
+                    self.mid_composite_moves.insert(interior);
+                }
             }
             _ => {}
         }
@@ -1172,8 +1258,31 @@ impl<'a> Translator<'a> {
             SecondPayment::TwoYen => PortPayment::TwoYen,
             SecondPayment::OneImport => PortPayment::OneImportedGood,
         });
+        // The semantic identity of a Port take is the card SET plus the
+        // second-card payment; the engine enumerates ONE canonical order per
+        // set, and BGA's notification order need not match it (first observed
+        // at m169: BGA named [O02, O08], the engine's move carries [O08, O02]).
+        // Match the legal list by set, falling back to the constructed order
+        // (whose refusal carries the diagnostic) when no set-match exists.
+        let mut cards_taken = cards.clone();
+        let set = |v: &[yokohama_core::OrderCardId]| {
+            let mut s = v.to_vec();
+            s.sort_by_key(|c| c.0);
+            s
+        };
+        let want = set(&cards);
+        if let Some(canonical) = self.session.legal().into_iter().find_map(|m| match m {
+            Move::ExecuteAreaAction { action: AreaAction::Port { cards_taken: ct, second_card_payment: p } }
+                if p == second_card_payment && set(&ct) == want =>
+            {
+                Some(ct)
+            }
+            _ => None,
+        }) {
+            cards_taken = canonical;
+        }
         let mv = Move::ExecuteAreaAction {
-            action: AreaAction::Port { cards_taken: cards, second_card_payment },
+            action: AreaAction::Port { cards_taken, second_card_payment },
         };
         let reveals = self.reveals_for(&mv, move_id)?;
         self.apply(mv, reveals, move_id)
@@ -1288,6 +1397,60 @@ impl<'a> Translator<'a> {
         Ok(())
     }
 
+    /// Close out the final turn after the last drive fact, gated on BGA's own
+    /// end-of-game markers (`stream_declares_game_end`): apply exactly the
+    /// absence arms the translator applies mid-stream when the next fact
+    /// belongs to a later decision — declines for declinable choices,
+    /// Skip/EndAdditionalPhase for the phase closers — until the engine
+    /// reaches game end. Anything that is NOT an absence arm (a real
+    /// Placement/Movement decision, a choice with no decline) is a STOP: BGA
+    /// said the game ended, the engine disagrees, and that divergence is owner
+    /// territory, never a guess.
+    fn close_out_final_turn(&mut self) -> Result<(), ImportError> {
+        let move_id = self.max_move_seen;
+        for _ in 0..64 {
+            if self.session.is_over() {
+                return Ok(());
+            }
+            if let Some(choice) = self.state().pending_choices.first().cloned() {
+                let decline = match choice {
+                    PendingChoice::AssistantMove => Move::DeclineAssistantMove,
+                    PendingChoice::WarehouseTake => Move::DeclineWarehouseTake,
+                    other => {
+                        return Err(rerr(
+                            move_id,
+                            format!(
+                                "BGA declared the game over but the engine still holds a \
+                                 non-declinable pending choice {other:?} — cannot close out"
+                            ),
+                        ))
+                    }
+                };
+                self.apply(decline, vec![], move_id)?;
+                continue;
+            }
+            let closer = match self.state().turn_phase {
+                TurnPhase::AdditionalActionFirst | TurnPhase::AdditionalActionSecond => {
+                    Move::EndAdditionalPhase
+                }
+                TurnPhase::FivePowerBonus => Move::Skip5PowerBonus,
+                TurnPhase::Building => Move::SkipBuilding,
+                TurnPhase::AreaAction => Move::ExecuteAreaAction { action: AreaAction::Skip },
+                phase => {
+                    return Err(rerr(
+                        move_id,
+                        format!(
+                            "BGA declared the game over but the engine still expects a real \
+                             {phase:?} decision — cannot close out"
+                        ),
+                    ))
+                }
+            };
+            self.apply(closer, vec![], move_id)?;
+        }
+        Err(rerr(move_id, "final-turn close-out did not reach game end within 64 moves"))
+    }
+
     /// Drive the whole stream. Returns the report; the session is available
     /// via [`Translator::into_session`].
     pub fn run(&mut self) -> Result<(), ImportError> {
@@ -1303,6 +1466,19 @@ impl<'a> Translator<'a> {
         // (`unchecked_counters` is populated at construction, not here — a
         // STOPPED run's report lists them too.)
         self.run_checkpoints_below(u64::MAX)?;
+        // With the game over, the remaining facts are all NOTE facts (the
+        // m194-class recover-none corroboration and the endgame markers —
+        // every remaining DRIVE fact was either consumed by the is_over
+        // cleanup arm or errored there). The tail checkpoint above verified
+        // the state they describe, so their move ids join the progress figure:
+        // "progressed through BGA move 194" means m194's content was checked,
+        // not merely that a drive fact carried that id.
+        if self.session.is_over() {
+            while self.cursor < self.facts.len() {
+                self.max_move_seen = self.max_move_seen.max(self.facts[self.cursor].move_id);
+                self.cursor += 1;
+            }
+        }
         self.report.last_move_id = self.max_move_seen;
         Ok(())
     }

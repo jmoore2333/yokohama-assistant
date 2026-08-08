@@ -117,16 +117,19 @@ fn the_corpus_sheet_synthesizes_with_the_measured_facts() {
 // H2: the acceptance replay (census + T8/T9/T10)
 // ---------------------------------------------------------------------------
 
-/// The H2 acceptance replay of the full corpus: the thin half and the socket
-/// half replay engine-legal through BGA move 153 with every socket checkpoint
-/// green, the hypothesis loop resolves the two claimed achievements to
-/// Seafood7/Tokens5 (the other three candidates REFUSE at their claim moves),
-/// and the run STOPs at m154 on the census §4.2 ENGINE-RULES divergence (a
-/// movement icon moving an assistant to the player's hand, which the engine's
-/// `ChooseAssistantMove` cannot express). This pin is the honest bound: if an
-/// owner ruling later widens the engine, THIS test is the one that moves.
+/// The acceptance replay of the full corpus, at rev 6 run to the TRUE END:
+/// all 194 BGA moves replay engine-legal from move 1 — the m154 one-leg
+/// to-hand assistant move that bounded rev 5 now translates to the engine's
+/// `MoveTarget::Hand` (owner ruling D3) — the hypothesis loop resolves the two
+/// claimed achievements to Seafood7/Tokens5 (the other three candidates REFUSE
+/// at their claim moves), the engine reaches game end, and the finalScoring
+/// cross-check MATCHES per seat (BGA: 154 / 41; the Dummy's 9, its D5
+/// tech-majority 5 included, is BGA-only context — the engine reports seat
+/// scores). Any NEW divergence this replay surfaces is a STOP-AND-DOCUMENT
+/// owner item, never a translator fudge — which is why every assertion here is
+/// exact.
 #[test]
-fn the_acceptance_replay_reaches_m153_and_stops_on_the_documented_rules_gap() {
+fn the_acceptance_replay_completes_all_194_moves_and_the_final_scores_match() {
     let Some(_) = corpus_text() else { return };
     let path = concat!(
         env!("CARGO_MANIFEST_DIR"),
@@ -135,15 +138,30 @@ fn the_acceptance_replay_reaches_m153_and_stops_on_the_documented_rules_gap() {
     let args = yokohama_cli::bga::import::parse_args(&[path.to_string()]).unwrap();
     let outcome = yokohama_cli::bga::import::run(&args, Rules::standard()).unwrap();
     assert!(outcome.session_built, "{}", outcome.text);
-    assert!(!outcome.replay_complete, "the m154 rules gap bounds this corpus");
     assert!(
-        outcome.text.contains("progressed through BGA move 153"),
-        "{}",
+        outcome.replay_complete,
+        "the rev-6 replay must run the whole corpus to the engine's game end: {}",
         outcome.text
     );
     assert!(
-        outcome.text.contains("ENGINE-RULES divergence (census §4.2)"),
+        outcome.text.contains("progressed through BGA move 194"),
         "{}",
+        outcome.text
+    );
+    // The final-score cross-check, per seat, exact (the honesty dividend).
+    assert!(
+        outcome.text.contains(": 154 == BGA 154 ✓"),
+        "seat 0 must match BGA's 154: {}",
+        outcome.text
+    );
+    assert!(
+        outcome.text.contains(": 41 == BGA 41 ✓"),
+        "seat 1 must match BGA's 41: {}",
+        outcome.text
+    );
+    assert!(
+        !outcome.text.contains("MISMATCH"),
+        "no seat may mismatch: {}",
         outcome.text
     );
     // The hypothesis loop's survivors-by-elimination: the wrong candidates
@@ -277,17 +295,19 @@ fn a_perturbed_checkpoint_counter_stops_the_replay_nothing_absorbs_it() {
     assert!(detail.contains("yens"), "the STOP names the diverging counter: {detail}");
 }
 
-/// H3's CORPUS-STREAMED-AS-LIVE proof (plan §6 / the H3 brief, requirement 4):
-/// the real corpus appended to a temp file in raw byte chunks — boundaries
-/// cutting JSON lines wherever they fall — while the follower polls, with a
-/// KILL-AND-RESTART in the middle, must reach a record BYTE-IDENTICAL to the
-/// batch import of the same file, including the same m154 hold: the documented
-/// D3 engine-rules divergence is printed exactly ONCE by the follower that
-/// reaches it, the follower keeps tailing — post-hold appends REFRESH the feed
-/// header (F5) while the divergence text stays print-once — and it never exits
-/// on its own.
+/// H3's CORPUS-STREAMED-AS-LIVE proof (plan §6 / the H3 brief, requirement 4),
+/// at rev 6 run to COMPLETION: the real corpus appended to a temp file in raw
+/// byte chunks — boundaries cutting JSON lines wherever they fall — while the
+/// follower polls, with a KILL-AND-RESTART in the middle, must reach a record
+/// BYTE-IDENTICAL to the batch import of the same file, and must EXIT on its
+/// own at game end (the one spontaneous exit the design allows) with the
+/// final-score cross-check in the completion frame. The rev-5 ancestor pinned
+/// the m154 hold instead; the D3 ruling landed, so no ENGINE-RULES divergence
+/// may print anywhere in the stream. Transient mid-stream HOLDs (an ingested
+/// prefix ending inside a turn window — H3 review N2) remain legitimate; what
+/// is asserted is completion, not hold-freedom.
 #[test]
-fn the_follower_streams_the_corpus_to_the_batch_state_and_holds_at_m154() {
+fn the_follower_streams_the_corpus_to_completion_and_matches_the_batch() {
     use yokohama_cli::bga::follow::{FollowOptions, Follower};
     let Some(_) = corpus_text() else { return };
     let corpus = concat!(
@@ -297,7 +317,7 @@ fn the_follower_streams_the_corpus_to_the_batch_state_and_holds_at_m154() {
     let dir = std::env::temp_dir().join(format!("bga-h3-stream-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
 
-    // The batch reference: the full-corpus import, stopped at m154, saved.
+    // The batch reference: the full-corpus import, complete, saved.
     let batch_out = dir.join("batch.json");
     let args = yokohama_cli::bga::import::parse_args(&[
         corpus.to_string(),
@@ -306,7 +326,8 @@ fn the_follower_streams_the_corpus_to_the_batch_state_and_holds_at_m154() {
     ])
     .unwrap();
     let outcome = yokohama_cli::bga::import::run(&args, Rules::standard()).unwrap();
-    assert!(outcome.text.contains("progressed through BGA move 153"), "{}", outcome.text);
+    assert!(outcome.replay_complete, "{}", outcome.text);
+    assert!(outcome.text.contains("progressed through BGA move 194"), "{}", outcome.text);
 
     // The live stream: raw 80KB chunks, a restart after chunk 10.
     let live = dir.join("live.ndjson");
@@ -339,44 +360,20 @@ fn the_follower_streams_the_corpus_to_the_batch_state_and_holds_at_m154() {
         }
         completed |= p.complete;
     }
-    assert!(!completed, "the m154 hold must never read as completion");
+    assert!(completed, "the completed corpus must read as completion");
 
-    // The hold: rendered exactly once by the follower that reached it, and a
-    // post-hold quiet poll re-renders nothing (it keeps tailing silently).
-    let holds: Vec<&String> = frames_after_restart
-        .iter()
-        .filter(|f| f.contains("ENGINE-RULES divergence (census §4.2)"))
-        .collect();
-    assert_eq!(holds.len(), 1, "the documented divergence must print exactly once");
-    assert!(holds[0].contains("replayed through BGA move 153"), "{}", holds[0]);
-    assert!(holds[0].contains("still tailing"), "{}", holds[0]);
-
-    // F5: the feed header REFRESHES after the hold. The hold frame was rendered
-    // when the ingested prefix first reached m154; later chunks grow the feed
-    // toward the full 194 moves, and because the feed counts ride the render
-    // fingerprint the header updates — while the divergence above stayed
-    // print-once (holds.len() == 1). Before F5 the fingerprint held only the
-    // frozen replay counts, so no post-hold frame rendered and this would fail.
-    let feed_moves = |frame: &str| -> usize {
-        frame
-            .lines()
-            .find_map(|l| {
-                l.split_once(" BGA moves captured")
-                    .and_then(|(head, _)| head.rsplit(' ').next())
-                    .and_then(|n| n.parse().ok())
-            })
-            .unwrap_or(0)
-    };
-    let hold_moves = feed_moves(holds[0]);
-    let latest_moves = frames_after_restart.iter().map(|f| feed_moves(f)).max().unwrap_or(0);
+    // No frame anywhere may print the retired rules-gap divergence.
     assert!(
-        latest_moves > hold_moves,
-        "the feed header must refresh after the hold: hold showed {hold_moves} moves, \
-         the latest frame {latest_moves}"
+        frames_after_restart.iter().all(|f| !f.contains("ENGINE-RULES divergence")),
+        "the D3 ruling landed — no rules-gap hold may print"
     );
 
-    let quiet = follower.poll();
-    assert!(quiet.frame.is_none() && quiet.lines.is_empty() && !quiet.complete);
+    // The completion frame: the final-score cross-check rides the exit.
+    let last = frames_after_restart.last().expect("a completion frame rendered");
+    assert!(last.contains("replayed through BGA move 194"), "{last}");
+    assert!(last.contains(": 154 == BGA 154 ✓"), "{last}");
+    assert!(last.contains(": 41 == BGA 41 ✓"), "{last}");
+    assert!(last.contains("game complete"), "{last}");
 
     // The byte-identity: streamed-as-live == batch, record and digest alike.
     assert_eq!(
