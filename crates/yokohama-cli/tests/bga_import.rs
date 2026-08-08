@@ -257,7 +257,15 @@ fn the_bounded_replay_emits_a_record_that_reloads_clean() {
     .unwrap();
     let outcome = yokohama_cli::bga::import::run(&args, Rules::standard()).unwrap();
     assert!(outcome.text.contains("ran to the end of the captured stream"), "{}", outcome.text);
-    assert!(outcome.text.contains("32 checkpoints green"), "{}", outcome.text);
+    // Left-ANCHORED on ", 32": a bare `contains("32 checkpoints green")` is
+    // satisfied by a mutated "132 checkpoints green" (import.rs's
+    // `checkpoints_passed + 100`), so the count is anchored to the surrounding
+    // line instead (F2 / lens-2's substring-vacuity recurrence class).
+    assert!(
+        outcome.text.contains("reveal events, 32 checkpoints green"),
+        "{}",
+        outcome.text
+    );
     let session = yokohama_cli::session::Session::load(&out, Rules::standard())
         .expect("the emitted record replays clean on load");
     let record = session.record();

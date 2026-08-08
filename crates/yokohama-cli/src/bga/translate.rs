@@ -1480,14 +1480,70 @@ mod tests {
         let resolved = super::super::resolve::resolve(answers, &feed, &stream, &rules).unwrap();
         let session = super::super::setup::build_session(&resolved.answers, rules).unwrap();
         let t = Translator::new(session, &resolved, stream, &feed).unwrap();
+        // F2/V7 (lens-2): the pin is the EXACT key SET, not `.len()` against the
+        // very constants that build it. Comparing the report's length to
+        // `UNCHECKED_COUNTERS.len() + UNCHECKED_EXTRA.len()` is self-referential
+        // — it can never disagree — so silently GROWING the unchecked list (a
+        // counter dropped from the T9 cross-check) passed the whole suite. A
+        // literal set makes adding or removing a key a failing test that forces
+        // a review of WHY that counter is no longer cross-checked.
+        let keys: Vec<&str> = t.report.unchecked_counters.iter().map(|(k, _)| k.as_str()).collect();
         assert_eq!(
-            t.report.unchecked_counters.len(),
-            UNCHECKED_COUNTERS.len() + UNCHECKED_EXTRA.len(),
-            "every deliberately-unchecked key is listed before a single fact is consumed"
+            keys,
+            [
+                "player_id", "gears", "prod_count", "comm_count",
+                "flags_gb", "flags_us", "flags_fr", "flags_ge", "flags_ne",
+            ],
+            "the deliberately-unchecked key set is EXACTLY these, in this order"
         );
-        assert!(
-            t.report.unchecked_counters.iter().any(|(k, _)| k == "gears"),
-            "the listed keys are the real ones"
-        );
+    }
+
+    /// F2 (lens-2 MUST): the T9 counter cross-check gets its NEGATIVE pin. A
+    /// checkpoint whose counters no engine state can satisfy must produce the
+    /// typed `T9 counter divergence` STOP naming the field-level diff. Before
+    /// this test the whole comparison could be disabled — `if bga != engine` →
+    /// `if false && bga != engine`, every checkpoint then trivially "green" —
+    /// with the ENTIRE suite still passing and the shipped report byte-identical
+    /// (lens-2's escaped mutation). The excerpt carries no socket counters, so
+    /// the cross-check ran on nothing across the always-run tier; this injects
+    /// the one checkpoint it lacked, at an early move with a `yens` value the
+    /// engine never holds. Re-run under that mutation, THIS test goes red.
+    #[test]
+    fn a_checkpoint_no_state_satisfies_stops_with_its_field_level_diff() {
+        let text = std::fs::read_to_string(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../yokohama-bridge/tests/data/excerpt-895724349.ndjson"
+        ))
+        .unwrap();
+        let rules = Rules::standard();
+        let feed = yokohama_bridge::feed::read_and_collapse(&text, None).unwrap();
+        let answers = super::super::setup::synthesize(&feed, &rules).unwrap();
+        let mapper = super::super::orders::OrderMapper::from_rules(&rules).unwrap();
+        let seats = answers.seats.clone();
+        let mut stream = super::super::facts::extract(
+            &feed,
+            &|pid| seats.iter().find(|s| s.bga_player_id == pid).map(|s| s.seat),
+            &mapper,
+        )
+        .unwrap();
+        // Read seat 0's real player id before `resolve` consumes `answers`.
+        // The excerpt's own checkpoints sit at moves 116-119 (`counters` nested
+        // in the socket frames' body_text); the replay never reaches them across
+        // the redacted gap. Replace the set with ONE checkpoint at an early
+        // move whose `yens` no engine state holds — `consume_drive` checks it
+        // when the next drive fact past move 2 lands, so the STOP is this
+        // checkpoint's, not the gap's.
+        let pid = answers.seats[0].bga_player_id.clone();
+        stream.checkpoints = vec![super::super::facts::CounterCheckpoint {
+            move_id: 2,
+            per_player: BTreeMap::from([(pid, serde_json::json!({ "yens": 9999 }))]),
+        }];
+        let resolved = super::super::resolve::resolve(answers, &feed, &stream, &rules).unwrap();
+        let session = super::super::setup::build_session(&resolved.answers, rules).unwrap();
+        let mut t = Translator::new(session, &resolved, stream, &feed).unwrap();
+        let detail = t.run().expect_err("a checkpoint no engine state satisfies must STOP").to_string();
+        assert!(detail.contains("T9 counter divergence"), "{detail}");
+        assert!(detail.contains("`yens`"), "the diff names the counter: {detail}");
+        assert!(detail.contains("BGA 9999"), "the diff carries BGA's value: {detail}");
     }
 }
