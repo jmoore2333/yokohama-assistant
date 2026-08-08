@@ -287,10 +287,15 @@ pub fn extract(
             };
             match n.kind.as_str() {
                 // ---- chrome (inventory §7.3) -------------------------------
+                // gameStateMultipleActiveUpdate: the framework's multi-active
+                // state update from the SIMULTANEOUS opening placement —
+                // measured live at the gate game (table 896153951, move 1);
+                // the proving corpus's socket joined mid-game and never saw it.
                 "gameStateChange" | "yourturnack" | "updateReflexionTime" | "wakeupPlayers"
                 | "tableWindow" | "resultsAvailable" | "tableInfosChanged"
                 | "updatePlayerNotifCount" | "updatePlayerTableStatus" | "chat"
-                | "playerstatus" | "undoRestorePoint" | "simpleNode" => {}
+                | "playerstatus" | "undoRestorePoint" | "simpleNode"
+                | "gameStateMultipleActiveUpdate" => {}
 
                 "orderDiscarded" => push(Fact::Discard { seat: seat("orderDiscarded")? }),
 
