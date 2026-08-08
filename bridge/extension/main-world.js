@@ -95,7 +95,19 @@
       let url = "";
       try {
         const [resource] = args;
-        url = typeof resource === "string" ? resource : (resource && resource.url) || "";
+        // Three shapes, and the third is not decoration: `fetch` accepts a
+        // string, a `Request` (which has `.url`), and a `URL` instance - and a
+        // URL instance has `.href`, NOT `.url`, so the first two arms miss it
+        // entirely and the capture is silently skipped. `String()` covers URL
+        // and anything else with a sane `toString`; an object without one
+        // stringifies to something that simply never matches.
+        if (typeof resource === "string") {
+          url = resource;
+        } else if (resource && typeof resource.url === "string") {
+          url = resource.url;
+        } else {
+          url = String(resource || "");
+        }
       } catch (_) {
         url = "";
       }
@@ -142,9 +154,18 @@
 
     NativeXHR.prototype.send = function (...args) {
       try {
-        if (shouldCapture(this.__yokohamaBridgeUrl)) {
+        // ONCE per instance, and the URL is checked when the listener FIRES
+        // rather than when it is registered. An XHR object is reusable - the
+        // same one can be opened and sent repeatedly, which BGA's transport
+        // does - so registering per `send()` made the second response capture
+        // twice and the third three times. Checking at fire time is the other
+        // half: an object first used for the notification log and then reused
+        // for something else must stop capturing.
+        if (!this.__yokohamaBridgeHooked) {
+          this.__yokohamaBridgeHooked = true;
           this.addEventListener("load", () => {
             try {
+              if (!shouldCapture(this.__yokohamaBridgeUrl)) return;
               // `responseText` throws unless the response type is text-ish, so
               // it is guarded rather than assumed.
               const textual = this.responseType === "" || this.responseType === "text";

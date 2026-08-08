@@ -101,6 +101,21 @@ outbox, so order a replay by the capture time, not the receive time.
 
 ---
 
+## Verifying a change to the bridge
+
+Both halves have their own suite, and neither runs the other's:
+
+```bash
+cargo test -p yokohama-bridge                                             # the relay
+node bridge/tests/outbox_race.js && node bridge/tests/wrapper_transparency.js   # the extension
+```
+
+The `node` pair needs no dependencies and exits nonzero on failure. It covers
+the outbox's behaviour when the relay is down, and that the page cannot tell its
+`fetch`/`XMLHttpRequest` have been wrapped.
+
+---
+
 ## Troubleshooting
 
 **The toolbar badge shows a number.** That many captures are parked because the

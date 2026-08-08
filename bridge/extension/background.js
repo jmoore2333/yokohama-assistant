@@ -209,13 +209,20 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (!message || message.type !== "capture") return undefined;
 
   const item = { table: message.table, kind: message.kind, payload: message.payload };
-  const work =
+
+  // A THUNK, not a promise. Handing `serialize` an already-started promise
+  // would leave the chain nothing to hold back: the delivery's read of the
+  // outbox would have happened before its turn came, so a burst arriving in one
+  // tick would read the same array N times over and keep only the last write.
+  // `bridge/tests/outbox_race.js` is the regression - it reported 1/5 survived
+  // against that shape.
+  const work = () =>
     item.kind === "snapshot" ? deliverSnapshot(item, sender) : deliverPackets(item);
 
   // `return true` keeps the message port open, and an open port keeps this
   // service worker alive until the delivery finishes. Without it Chrome may
   // recycle the worker mid-POST.
-  serialize(() => work)
+  serialize(work)
     .then(() => sendResponse({ ok: true }))
     .catch((e) => {
       console.error("[yokohama-bridge] delivery failed:", e);
