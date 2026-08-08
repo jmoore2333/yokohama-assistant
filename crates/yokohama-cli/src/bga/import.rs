@@ -21,6 +21,7 @@ use super::translate::{ReplayReport, Translator};
 use super::ImportError;
 use std::path::PathBuf;
 use yokohama_bridge::feed::{read_and_collapse, CollapsedFeed};
+use yokohama_bridge::sanitize::sanitize;
 use yokohama_core::Rules;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -317,20 +318,23 @@ pub(crate) fn final_check_text(
                 final_check.push_str("  final-score cross-check (engine vs BGA):\n");
                 for (pid, score) in &engine_scores {
                     let seat = pid.0 as usize;
+                    // The seat name is a captured display name; the lookup keys
+                    // on the raw value but the DISPLAYED name is escaped (F1).
                     let name = &resolved.answers.seats[seat].name;
+                    let shown = sanitize(name);
                     let bga_total = bga.iter().find(|(n, _)| n == name).map(|(_, t)| *t);
                     match bga_total {
                         Some(t) if t == *score as i64 => {
                             final_check
-                                .push_str(&format!("    seat {seat} ({name}): {score} == BGA {t} ✓\n"));
+                                .push_str(&format!("    seat {seat} ({shown}): {score} == BGA {t} ✓\n"));
                         }
                         Some(t) => {
                             final_check.push_str(&format!(
-                                "    seat {seat} ({name}): engine {score} vs BGA {t} — MISMATCH\n"
+                                "    seat {seat} ({shown}): engine {score} vs BGA {t} — MISMATCH\n"
                             ));
                         }
                         None => final_check
-                            .push_str(&format!("    seat {seat} ({name}): no BGA column found\n")),
+                            .push_str(&format!("    seat {seat} ({shown}): no BGA column found\n")),
                     }
                 }
             }
@@ -364,7 +368,9 @@ fn render_report(
         ));
     }
     for n in &r.notes {
-        s.push_str(&format!("  note: {n}\n"));
+        // A note can embed a captured notification `kind` (the post-game
+        // cleanup note), so it is escaped at the display boundary (F1).
+        s.push_str(&format!("  note: {}\n", sanitize(n)));
     }
     s.push_str(final_check);
     if !resolved.assumptions.is_empty() {
@@ -543,6 +549,38 @@ mod tests {
             run(&args, Rules::standard()).unwrap_err(),
             ImportError::Io { .. }
         ));
+    }
+
+    /// F1 (lens-1 MUST), the BATCH end-to-end: a capture whose `payload.source`
+    /// carries terminal control bytes is untrusted input that reaches the
+    /// terminal on the normal error path (`main.rs`'s `eprintln!`). The file →
+    /// feed → `ImportError::Feed` → Display chain must scrub it: the run refuses
+    /// (unknown source) and the refusal string carries ZERO ESC bytes.
+    #[test]
+    fn a_hostile_payload_source_reaches_the_error_path_with_no_escape_bytes() {
+        let dir = std::env::temp_dir().join(format!(
+            "bga-hostile-source-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let cap = dir.join("hostile.ndjson");
+        // The ESC/BEL are JSON-escaped in the FILE (``), so JSON parsing
+        // decodes them into a source value that genuinely carries the control
+        // bytes — the real attack shape, reaching the source switch (and OUR
+        // sanitizer) rather than being rejected as a raw control byte at parse
+        // time. body_text present so the parser reaches the source switch.
+        let line = "{\"received_at_ms\":1,\"kind\":\"packets\",\"payload\":\
+                    {\"source\":\"\\u001b[2J\\u0007pwn\",\"body_text\":\"{}\"}}\n";
+        std::fs::write(&cap, line).unwrap();
+        let args = parse_args(&strs(&[&cap.display().to_string()])).unwrap();
+        let err = run(&args, Rules::standard()).unwrap_err();
+        let shown = err.to_string();
+        assert!(!shown.contains('\u{1b}'), "no raw ESC byte on the error path: {shown:?}");
+        assert!(!shown.contains('\u{07}'), "no raw BEL byte on the error path: {shown:?}");
+        assert!(shown.contains("unknown payload source"), "it is the source refusal: {shown:?}");
+        assert!(shown.contains("\\u{1b}"), "the ESC shows as a visible escape: {shown:?}");
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]

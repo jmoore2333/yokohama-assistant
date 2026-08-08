@@ -460,6 +460,34 @@ mod tests {
         std::fs::remove_dir_all(&dir).ok();
     }
 
+    /// F1 (lens-1 MUST), the FOLLOW end-to-end: the spectator path prints
+    /// captured error text through `hold` just as the batch path does through
+    /// `eprintln!`. A capture whose `payload.source` carries terminal control
+    /// bytes must reach the HOLD line scrubbed — zero ESC/BEL — since the follow
+    /// frame is exactly the surface a runthrough operator watches live.
+    #[test]
+    fn a_hostile_payload_source_holds_with_no_escape_bytes() {
+        let dir = temp_dir("hostile");
+        let live = dir.join("live.ndjson");
+        // ESC/BEL JSON-escaped in the FILE, so the parsed source value carries
+        // the real control bytes and reaches OUR sanitizer (see the batch twin).
+        let line = "{\"received_at_ms\":1,\"kind\":\"packets\",\"payload\":\
+                    {\"source\":\"\\u001b[2J\\u0007pwn\",\"body_text\":\"{}\"}}\n";
+        append(&live, line.as_bytes());
+        let mut follower = Follower::new(
+            FollowOptions { path: live.clone(), table: None, out: None },
+            Rules::standard(),
+        );
+        let p = follower.poll();
+        assert_eq!(p.lines.len(), 1, "the feed refusal holds once: {:?}", p.lines);
+        let hold = &p.lines[0];
+        assert!(!hold.contains('\u{1b}'), "no raw ESC byte in the hold: {hold:?}");
+        assert!(!hold.contains('\u{07}'), "no raw BEL byte in the hold: {hold:?}");
+        assert!(hold.contains("unknown payload source"), "it is the source refusal: {hold:?}");
+        assert!(hold.contains("\\u{1b}"), "the ESC shows as a visible escape: {hold:?}");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
     /// The hold arm's print-once discipline on a PIPELINE-level refusal: a
     /// capture with packets but no snapshot holds with the NoSnapshot story
     /// exactly once however many polls pass, then resumes ON ITS OWN when the

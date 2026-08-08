@@ -44,6 +44,7 @@ pub mod capture;
 pub mod feed;
 pub mod http;
 pub mod router;
+pub mod sanitize;
 pub mod server;
 
 /// Default TCP port. Nothing sacred about the number, but it is pinned in FOUR

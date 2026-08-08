@@ -50,6 +50,7 @@ use super::{require_u64, require_u8, BgaMapError, ImportError};
 use serde_json::Value;
 use std::collections::BTreeMap;
 use yokohama_bridge::feed::{flex_u64, CollapsedFeed};
+use yokohama_bridge::sanitize::sanitize;
 use yokohama_core::{
     row_lengths, AchievementType, AreaType, FivePowerEffect, GameConfig, OrderCardId, PlayerColor,
     PlayerId, Rules, SetupObservations, StartingOrderChoice, TechCardId,
@@ -905,11 +906,14 @@ pub fn render_sheet(a: &SetupAnswers) -> String {
     line(format!("BGA setup answer sheet — table {}", a.table_id));
     line(format!("  players: {}", a.player_count));
     for s in &a.seats {
+        // The seat name and player id are the SOFTEST captured strings — an
+        // opponent chooses their own BGA display name — so they are escaped
+        // here at the point they become sheet text (F1 / lens-1 MUST).
         line(format!(
             "  seat {}: {} (BGA id {}) — color {}",
             s.seat,
-            s.name,
-            s.bga_player_id,
+            sanitize(&s.name),
+            sanitize(&s.bga_player_id),
             fmt_evidence(&s.color)
         ));
     }
@@ -988,6 +992,27 @@ mod tests {
         assert_eq!(a.start_player.value(), Some(&0));
         // The /player/p11111111 channel names the capturing session.
         assert_eq!(a.own_seat.value(), Some(&0));
+    }
+
+    /// F1 (lens-1 MUST): a captured seat name carrying terminal control bytes —
+    /// an opponent chooses their own BGA display name — is ESCAPED before it
+    /// reaches the answer sheet a tester reads in their terminal. The importer
+    /// never rejects a name (design: hard-error on identity, not on cosmetics),
+    /// so the hostile name survives synthesis but renders with zero ESC/BEL.
+    #[test]
+    fn a_hostile_seat_name_is_escaped_in_the_rendered_sheet() {
+        let mut feed = excerpt_feed();
+        // ESC[2J (clear) · ESC[31m (red) · PWN · BEL — Player_A is seat 0.
+        let hostile = "\u{1b}[2J\u{1b}[31mPWN\u{07}";
+        feed.snapshots[0].gamedatas["players"]["11111111"]["name"] =
+            serde_json::json!(hostile);
+        let a = synthesize(&feed, &Rules::standard()).expect("a hostile name still synthesizes");
+        assert!(a.seats.iter().any(|s| s.name == hostile), "the raw name is carried in state");
+        let sheet = render_sheet(&a);
+        assert!(!sheet.contains('\u{1b}'), "no raw ESC byte may reach the sheet");
+        assert!(!sheet.contains('\u{07}'), "no raw BEL byte may reach the sheet");
+        assert!(sheet.contains("\\u{1b}"), "the ESC shows as a visible escape");
+        assert!(sheet.contains("PWN"), "the printable part of the name survives");
     }
 
     #[test]

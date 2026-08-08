@@ -124,6 +124,13 @@ pub enum FeedError {
 }
 
 impl fmt::Display for FeedError {
+    // Several arms interpolate verbatim wire strings (`kind`, `source`,
+    // `packet_type`, `excerpt`, serde `detail`) with `{}`. This impl is NOT a
+    // sanitization boundary — it is inside the relay crate, which never prints
+    // a `FeedError` to a terminal. The one consumer that does is the importer,
+    // which surfaces every `FeedError` wrapped in `ImportError::Feed`, whose
+    // Display scrubs control bytes at that single choke point (see
+    // `crate::sanitize`). A future terminal caller must sanitize likewise.
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             FeedError::MalformedLine { line, detail } => {

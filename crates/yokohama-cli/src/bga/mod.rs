@@ -89,6 +89,11 @@ pub enum BgaMapError {
 }
 
 impl fmt::Display for BgaMapError {
+    // Several arms interpolate verbatim wire strings (`name`, `title`, `value`)
+    // with `{}`. This impl is NOT the sanitization boundary: a `BgaMapError`
+    // reaches the terminal only wrapped in [`ImportError::Map`], whose Display
+    // scrubs the whole composed message (F1 choke point). A future caller that
+    // prints a `BgaMapError` DIRECTLY to a terminal must sanitize it itself.
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             BgaMapError::MissingField { context, field } => {
@@ -170,23 +175,37 @@ pub enum ImportError {
 
 impl fmt::Display for ImportError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        // THE display-boundary choke point for captured text (F1 / lens-1 MUST).
+        // `Feed`, `Map`, and every `detail` here can carry verbatim wire fields
+        // — a `payload.source`, a tile name, a checkpoint player id — and every
+        // import error reaches the terminal THROUGH this impl (`FeedError` and
+        // `BgaMapError` surface only wrapped in `Feed`/`Map`; their own Display
+        // impls note that terminal callers sanitize here). So the whole
+        // composed inner string is scrubbed of control bytes at exactly one
+        // auditable place; `sanitize` leaves the message structure — backticks,
+        // brackets, the expected-set hints — untouched, only escaping controls.
+        use yokohama_bridge::sanitize::sanitize;
         match self {
             ImportError::Io { path, detail } => write!(f, "cannot read {path}: {detail}"),
-            ImportError::Feed(e) => write!(f, "capture feed: {e}"),
-            ImportError::Map(e) => write!(f, "card mapping: {e}"),
+            ImportError::Feed(e) => write!(f, "capture feed: {}", sanitize(&e.to_string())),
+            ImportError::Map(e) => write!(f, "card mapping: {}", sanitize(&e.to_string())),
             ImportError::NoSnapshot => write!(
                 f,
                 "the capture carries no gamedatas snapshot — setup synthesis needs one \
                  (take one at table open via the extension's snapshot action)"
             ),
-            ImportError::Sheet { detail } => write!(f, "gamedatas contradiction: {detail}"),
-            ImportError::Incomplete { missing } => {
-                write!(f, "cannot build a Session yet — the wizard would still ask: {}", missing.join("; "))
+            ImportError::Sheet { detail } => {
+                write!(f, "gamedatas contradiction: {}", sanitize(detail))
             }
-            ImportError::Session { detail } => write!(f, "session construction refused: {detail}"),
-            ImportError::Usage { detail } => write!(f, "usage: {detail}"),
+            ImportError::Incomplete { missing } => {
+                write!(f, "cannot build a Session yet — the wizard would still ask: {}", sanitize(&missing.join("; ")))
+            }
+            ImportError::Session { detail } => {
+                write!(f, "session construction refused: {}", sanitize(detail))
+            }
+            ImportError::Usage { detail } => write!(f, "usage: {}", sanitize(detail)),
             ImportError::NotImplemented { flag } => {
-                write!(f, "`{flag}` is the catch-up translator's flag (H2) — not implemented yet")
+                write!(f, "`{}` is the catch-up translator's flag (H2) — not implemented yet", sanitize(flag))
             }
         }
     }
@@ -237,4 +256,53 @@ pub(crate) fn require_u8(
         field: field.to_string(),
         value: n.to_string(),
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// F1 (lens-1 MUST): `ImportError`'s Display is the ONE choke point where
+    /// captured wire strings become terminal text, and it escapes control bytes
+    /// for every arm that can carry them — the `FeedError` source, the
+    /// `BgaMapError` tile name, and a `Sheet` detail (a translate STOP that
+    /// embeds a captured player id). A hostile string reaches the terminal only
+    /// through this impl (both the batch `eprintln!` and the follow HOLD line),
+    /// so proving it clean here proves every error path clean.
+    #[test]
+    fn import_error_display_escapes_captured_control_bytes() {
+        // A screen clear, an OSC title set, a bell — the finding's vocabulary.
+        let esc = "\u{1b}[2J\u{1b}]0;pwn\u{07}end";
+        let cases = [
+            ImportError::Feed(yokohama_bridge::feed::FeedError::UnknownSource {
+                line: 1,
+                source: esc.to_string(),
+            }),
+            ImportError::Map(BgaMapError::UnknownTileName { name: esc.to_string() }),
+            ImportError::Sheet { detail: format!("checkpoint counters for unknown player {esc}") },
+            ImportError::Session { detail: esc.to_string() },
+            ImportError::Usage { detail: esc.to_string() },
+        ];
+        for e in &cases {
+            let shown = e.to_string();
+            assert!(!shown.contains('\u{1b}'), "no raw ESC byte may survive: {shown:?}");
+            assert!(!shown.contains('\u{07}'), "no raw BEL byte may survive: {shown:?}");
+            assert!(shown.contains("\\u{1b}"), "the ESC shows as a visible escape: {shown:?}");
+            assert!(shown.contains("end"), "the printable tail survives: {shown:?}");
+        }
+    }
+
+    /// Mutation guard: the choke point must ESCAPE, not merely pass through a
+    /// clean string — a sanitizer that returned its input unchanged would pass
+    /// the escaping test only because nothing hostile was present. A clean tile
+    /// name renders byte-for-byte as before, so the two tests together pin
+    /// "transforms exactly the control bytes, nothing else".
+    #[test]
+    fn a_clean_import_error_message_is_unchanged() {
+        let e = ImportError::Map(BgaMapError::UnknownTileName { name: "PortA".to_string() });
+        assert_eq!(
+            e.to_string(),
+            "card mapping: BGA tile name `PortA` is outside the evidenced table"
+        );
+    }
 }
