@@ -18,9 +18,12 @@
 //!   the evidence suffices, a live-mode `Session`.
 //! - [`import`] — the `yokohama-cli import` entry point (plan T6).
 
+pub mod facts;
 pub mod import;
+pub mod keys;
 pub mod names;
 pub mod orders;
+pub mod resolve;
 pub mod setup;
 
 use std::fmt;

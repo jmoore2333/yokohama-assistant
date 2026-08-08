@@ -316,6 +316,34 @@ const CATEGORY_TYPES: [(u64, [AchievementType; 4]); 3] = [
     (3, [AchievementType::Production4, AchievementType::Commercial4, AchievementType::Prod3Comm2, AchievementType::Prod2Comm3]),
 ];
 
+/// The candidate engine types one BGA achievement row can be, under both
+/// field-order hypotheses (the qty_1↔production correspondence is
+/// unevidenced — module doc). Exposed for H2's resolver, which turns a
+/// claimed-category ambiguity into a replay-filtered hypothesis and an
+/// unclaimed one into a declared assumption.
+pub(crate) fn achievement_candidates(row: &Value) -> Result<(u64, Vec<AchievementType>), ImportError> {
+    let class = require_u64(row, "achievement_class", "achievement row").map_err(ImportError::Map)?;
+    let qty_1 = require_u8(row, "qty_1", "achievement row").map_err(ImportError::Map)?;
+    let qty_2 = require_u8(row, "qty_2", "achievement row").map_err(ImportError::Map)?;
+    let types = CATEGORY_TYPES
+        .iter()
+        .find(|(c, _)| *c == class)
+        .map(|(_, t)| t)
+        .ok_or_else(|| ImportError::Sheet {
+            detail: format!("achievement_class {class} outside the pinned 1..=3 table"),
+        })?;
+    let mut candidates: Vec<AchievementType> = types
+        .iter()
+        .copied()
+        .filter(|ty| {
+            let (a, b) = achievement_quantities(*ty);
+            (a, b) == (qty_1, qty_2) || (a, b) == (qty_2, qty_1)
+        })
+        .collect();
+    candidates.dedup();
+    Ok((class, candidates))
+}
+
 fn match_achievement(row: &Value) -> Result<Evidence<AchievementType>, ImportError> {
     let class = require_u64(row, "achievement_class", "achievement row").map_err(ImportError::Map)?;
     // require_u8, not `as u8` (NOTE-1, H1 review): a silent truncation at
