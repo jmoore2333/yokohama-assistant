@@ -463,14 +463,21 @@ pub fn synthesize(feed: &CollapsedFeed, rules: &Rules) -> Result<SetupAnswers, I
             detail: "player `no` fields do not form a 1..=N sequence".to_string(),
         });
     }
-    // Cross-check the independent seat-order source.
+    // Cross-check the independent seat-order source. `playerorder` is
+    // VIEWER-ROTATED — BGA serves it starting from the client's own seat
+    // (measured live at the gate game, table 896157897: the viewer sat second,
+    // so playerorder began with them while the `no` fields held the absolute
+    // order; the proving corpus's viewer happened to sit where the two agreed
+    // as a plain rotation too). The honest cross-check is therefore ROTATION
+    // equality: same players, same cyclic order. A non-rotation permutation
+    // is still a seat-order STOP.
     if let Some(order) = gd.get("playerorder").and_then(|o| o.as_array()) {
         let from_order: Vec<String> = order.iter().filter_map(|v| flex_u64(v).map(|n| n.to_string())).collect();
         let from_no: Vec<String> = seats.iter().map(|s| s.bga_player_id.clone()).collect();
-        if from_order != from_no {
+        if !is_rotation_of(&from_order, &from_no) {
             return Err(ImportError::Sheet {
                 detail: format!(
-                    "playerorder {from_order:?} disagrees with the `no` fields' {from_no:?} — seat-order STOP"
+                    "playerorder {from_order:?} is not a rotation of the `no` fields' {from_no:?} — seat-order STOP"
                 ),
             });
         }
@@ -958,6 +965,18 @@ pub fn render_sheet(a: &SetupAnswers) -> String {
     out
 }
 
+
+/// Cyclic-order equality: `a` is `b` rotated by some shift. `playerorder` is
+/// the `no` order rotated to start at the viewing client's seat, so equality
+/// up to rotation is the honest cross-check; a NON-rotation permutation means
+/// the two sources genuinely disagree. At 2 players every permutation is a
+/// rotation, so this check has teeth only at 3+ — pinned directly below.
+fn is_rotation_of(a: &[String], b: &[String]) -> bool {
+    a.len() == b.len()
+        && !b.is_empty()
+        && (0..b.len()).any(|shift| (0..b.len()).all(|i| a[i] == b[(i + shift) % b.len()]))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -978,6 +997,32 @@ mod tests {
 
     fn sheet() -> SetupAnswers {
         synthesize(&excerpt_feed(), &Rules::standard()).expect("sheet synthesizes")
+    }
+
+
+    /// The live gate-game regression (table 896157897): `playerorder` arrives
+    /// VIEWER-ROTATED — the client's own seat first — so a viewer sitting
+    /// second produces a rotation of the `no` order, not equality. The sheet
+    /// must synthesize; seats stay derived from `no`.
+    #[test]
+    fn a_viewer_rotated_playerorder_is_accepted_and_seats_come_from_no() {
+        let mut feed = excerpt_feed();
+        let po = feed.snapshots[0].gamedatas["playerorder"].clone();
+        let rotated: Vec<serde_json::Value> = po.as_array().expect("playerorder array").iter().rev().cloned().collect();
+        feed.snapshots[0].gamedatas["playerorder"] = serde_json::json!(rotated);
+        let a = synthesize(&feed, &Rules::standard()).expect("a rotation is the viewer's perspective, not a disagreement");
+        assert_eq!(a.seats[0].name, "Player_A", "seat order comes from the `no` fields, not from playerorder");
+    }
+
+    /// The teeth (unreachable at 2P where every permutation is a rotation): a
+    /// 3P non-rotation permutation is a genuine source disagreement.
+    #[test]
+    fn a_non_rotation_playerorder_still_stops() {
+        let a = ["1".to_string(), "2".to_string(), "3".to_string()];
+        assert!(is_rotation_of(&["2".into(), "3".into(), "1".into()], &a));
+        assert!(is_rotation_of(&["3".into(), "1".into(), "2".into()], &a));
+        assert!(!is_rotation_of(&["1".into(), "3".into(), "2".into()], &a), "a swap of two among three is not a rotation");
+        assert!(!is_rotation_of(&["1".into(), "2".into()], &a), "length mismatch is never a rotation");
     }
 
     #[test]
