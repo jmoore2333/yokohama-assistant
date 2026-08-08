@@ -2750,7 +2750,7 @@ mod tests {
         state.players[0].silk = 1;
         state.players[0].tea = 1;
         state.players[0].seafood = 1;
-        state.players[0].money = 1;
+        state.players[0].money = 2; // D1 (2026-08-08): the yen payment type costs 2 Yen
         state.players[0].imported_goods = 1;
         state.players[0].assistants.in_hand = 1;
         let rules = Rules::empty_for_tests();

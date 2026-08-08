@@ -694,7 +694,10 @@ fn describe_area_action(action: &AreaAction, state: &GameState, rules: &Rules) -
                 parts.push("seafood");
             }
             if *yen {
-                parts.push("yen");
+                // D1 (2026-08-08): the yen payment type costs 2 Yen (rulebook
+                // p.12 printed church board), so the label carries the price —
+                // "yen" alone would under-state what the option spends.
+                parts.push("2 yen");
             }
             if *imported_good {
                 parts.push("imported good");
@@ -2280,6 +2283,9 @@ mod tests {
         let text = describe_move(&mv, &state, &rules);
         assert!(text.contains("-> faith 4"), "{text}");
         assert!(text.contains("power 1 + 3 kinds"), "{text}");
+        // D1 (2026-08-08): the yen payment type is priced at 2 Yen (rulebook
+        // p.12), and the option label must say so.
+        assert!(text.contains("2 yen"), "{text}");
 
         let after = apply_move_unchecked(&state, &mv, &rules).expect("church action applies");
         match after.pending_choices.first() {

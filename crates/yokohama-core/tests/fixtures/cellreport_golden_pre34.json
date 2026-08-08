@@ -1,10 +1,10 @@
 {
-  "spec_echo": "cell=t0-pre34-golden-ra-vs-fw players=2 x=retreat-averse@v1 y=family-weighted@v1{recovery_min_of=5,retreat_ppm=166667} units=4 unit=pair (2 seatings) games=8 master=diagnostic:0xa3e1202608040001 bootstrap_B=10000 resample_seed=0x1006e550e082e9f4 single-threaded=yes fixed-N=yes setup-identical=yes",
+  "spec_echo": "cell=t0-pre34-golden-ra-vs-fw players=2 x=retreat-averse@v1 y=family-weighted@v1{recovery_min_of=5,retreat_ppm=166667} units=4 unit=pair (2 seatings) games=8 master=diagnostic:0xa3e1202608040005 bootstrap_B=10000 resample_seed=0xff0a5dac9f7856b2 single-threaded=yes fixed-N=yes setup-identical=yes",
   "games": 8,
   "x_unit_shares": [
+    0.5,
+    0.5,
     0.0,
-    0.5,
-    0.5,
     0.5
   ],
   "theta_hat": 0.375,
@@ -13,7 +13,7 @@
       "lo": 0.125,
       "hi": 0.5,
       "b": 10000,
-      "resample_seed": 1154862489993931252
+      "resample_seed": 18377604225429952178
     }
   },
   "cross_checks": [
@@ -23,17 +23,25 @@
     "top-VP ties: 0/8 games (0.0000), 0 decided for seat 0 — `final_result` is a total order and never reports a tie, so this is how often the clockwise tie-break DECIDED the game; at 2P seat 0 takes every tie, so its award is half this rate (spec §4's +0.63pp at the bracket rate of 1.26%)",
     "NEAR-BOUNDARY CAVEAT: interval endpoint saturated at 0/1 or unit vector has only 2 distinct value(s) — percentile-bootstrap coverage degrades toward the boundary (measured 0.39-0.87 at theta=0.99 for N=50-200); read this interval as directional, not calibrated"
   ],
-  "seat0_wins": 3,
+  "seat0_wins": 5,
   "ties_to_seat0": 0,
-  "vp_margin_mean": -7.0,
+  "vp_margin_mean": -9.5,
   "applied_by_seat": [
-    2787,
-    2929
+    3054,
+    2936
   ],
-  "x_applied_moves": 2809,
+  "x_applied_moves": 2958,
   "x_explanations": null,
   "x_ply_cap_hits": null,
   "x_free_cap_hits": null,
+  "x_candidates_scored": null,
+  "x_root_scored": null,
+  "x_budget_binds": null,
+  "x_budget_starved_decisions": null,
+  "y_candidates_scored": null,
+  "y_root_scored": null,
+  "y_budget_binds": null,
+  "y_budget_starved_decisions": null,
   "trigger": {
     "counts": {
       "ChurchTrackFull": 6,
@@ -41,5 +49,5 @@
     },
     "games": 8
   },
-  "master": 11808755045657477121
+  "master": 11808755045657477125
 }

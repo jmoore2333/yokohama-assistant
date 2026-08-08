@@ -2,38 +2,46 @@
   "spec_echo": "cell=t0-pre34-golden-ra-vs-fw-4p players=4 x=retreat-averse@v1 y=family-weighted@v1{recovery_min_of=5,retreat_ppm=166667} units=2 unit=rotation block (4 seatings) games=8 master=diagnostic:0xa3e1202608040002 bootstrap_B=10000 resample_seed=0x431cd91b435125d7 single-threaded=yes fixed-N=yes setup-identical=yes",
   "games": 8,
   "x_unit_shares": [
-    0.25,
-    0.0
+    0.75,
+    0.25
   ],
-  "theta_hat": 0.125,
+  "theta_hat": 0.5,
   "interval": {
     "Bootstrap": {
-      "lo": 0.0,
-      "hi": 0.25,
+      "lo": 0.25,
+      "hi": 0.75,
       "b": 10000,
       "resample_seed": 4835978811005806039
     }
   },
   "cross_checks": [
     "null reference for this cell: 1/4 = 0.250000 (ONE X against 3 Y seats — the single-champion shape; 0.5 is the null only at 2P)",
-    "unit-t 95% cross-check: [-1.287515, 1.537515] (n=2 units, sd=0.176777, t(0.975, 1)≈11.3001) — printed, never primary; asymptotic expansion, ~11% narrow at df=1 and unreliable below df≈10 (T7 review F5)",
-    "Wilson-on-pooled-games 95% cross-check: [0.022417, 0.470888] (1/8 games) — CROSS-CHECK ONLY and NEVER primary at 3-4P: games within a unit are clustered (E2 measured 4P rho=+0.051, dragging a nominal 95% interval to ~93.2% true coverage), so this row understates the width the unit bootstrap reports",
-    "top-VP ties: 1/8 games (0.1250), 1 decided for seat 0 — `final_result` is a total order and never reports a tie, so this is how often the clockwise tie-break DECIDED the game; at 3-4P the award depends on which seats tied (the recorded seat-0 count above is the realized figure — the 2P half-the-rate derivation does not apply)",
+    "unit-t 95% cross-check: [-2.325029, 3.325029] (n=2 units, sd=0.353553, t(0.975, 1)≈11.3001) — printed, never primary; asymptotic expansion, ~11% narrow at df=1 and unreliable below df≈10 (T7 review F5)",
+    "Wilson-on-pooled-games 95% cross-check: [0.215216, 0.784784] (4/8 games) — CROSS-CHECK ONLY and NEVER primary at 3-4P: games within a unit are clustered (E2 measured 4P rho=+0.051, dragging a nominal 95% interval to ~93.2% true coverage), so this row understates the width the unit bootstrap reports",
+    "top-VP ties: 0/8 games (0.0000), 0 decided for seat 0 — `final_result` is a total order and never reports a tie, so this is how often the clockwise tie-break DECIDED the game; at 3-4P the award depends on which seats tied (the recorded seat-0 count above is the realized figure — the 2P half-the-rate derivation does not apply)",
     "NEAR-BOUNDARY CAVEAT: interval endpoint saturated at 0/1 or unit vector has only 2 distinct value(s) — percentile-bootstrap coverage degrades toward the boundary (measured 0.39-0.87 at theta=0.99 for N=50-200); read this interval as directional, not calibrated"
   ],
-  "seat0_wins": 2,
-  "ties_to_seat0": 1,
-  "vp_margin_mean": -7.333333333333331,
+  "seat0_wins": 4,
+  "ties_to_seat0": 0,
+  "vp_margin_mean": 5.583333333333333,
   "applied_by_seat": [
-    3253,
-    3332,
-    3307,
-    3511
+    3151,
+    3243,
+    3182,
+    3356
   ],
-  "x_applied_moves": 3396,
+  "x_applied_moves": 3232,
   "x_explanations": null,
   "x_ply_cap_hits": null,
   "x_free_cap_hits": null,
+  "x_candidates_scored": null,
+  "x_root_scored": null,
+  "x_budget_binds": null,
+  "x_budget_starved_decisions": null,
+  "y_candidates_scored": null,
+  "y_root_scored": null,
+  "y_budget_binds": null,
+  "y_budget_starved_decisions": null,
   "trigger": {
     "counts": {
       "OrderDeckEmpty": 8

@@ -120,7 +120,33 @@ use crate::types::GameState;
 /// one user-visible consequence is the usual one: rev-4 saves stop resuming —
 /// and at the time of the bump none exist beyond hours-old dev state (the live
 /// gate game has not been played; no training corpus exists).
-pub const SEMANTICS_REV: u32 = 5;
+///
+/// Rev 6 (2026-08-08, rules-parity fix wave — FOUR owner rulings, branch
+/// `rules-parity-rev6`): unlike revs 4/5, these are REACHABLE-STATE
+/// behaviour changes — legality and scoring SETS move BY OWNER RULING, which
+/// is the point, not a hazard. The four, all dated 2026-08-08 in
+/// guidingpath's decision log:
+///
+/// - D1 CHURCH YEN COST: the Church action's yen payment type charges 2 Yen
+///   (the printed church board, rulebook p.12, confirmed on Jeremy's set);
+///   the engine charged 1. Faith arithmetic unchanged.
+/// - D2 EXTRA-TECH SURCHARGE FROM THE 4TH CARD: rulebook p.14 verbatim —
+///   "Starting with your 4th card, each technology card requires an
+///   additional cost of 2 yen or 1 import." The engine started at the 5th
+///   (a KB misreading). The `fifth_tech_*` identifiers are renamed
+///   `extra_tech_*` accordingly.
+/// - D3 MOVEMENT-ICON TO HAND: a movement-icon assistant move may return an
+///   on-board assistant to the owner's hand (`MoveTarget::Hand` on
+///   `ChooseAssistantMove` — a serde-visible widening). BGA-parity ruling;
+///   the rulebook is ambiguous here.
+/// - D5 2P DUMMY IN THE TECH MAJORITY: the 2-player dummy competes in the
+///   Technology majority bonus at industry value EXACTLY 7.5 (rulebook p.9
+///   final-scoring NOTE), compared via doubled integers — extending the
+///   2026-07-21 church/customs dummy modeling.
+///
+/// The usual consequence: rev-5 saves stop resuming (records do not cross
+/// revs — which is also why D3's `Move` serde change is safe).
+pub const SEMANTICS_REV: u32 = 6;
 
 /// FNV-1a 64 over `bytes`, seeded with the standard offset basis. Hand-rolled
 /// for the same reason `Rules::content_hash` hand-rolls it: `std::hash` is not
