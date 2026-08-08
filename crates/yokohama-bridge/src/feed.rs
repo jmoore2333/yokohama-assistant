@@ -796,6 +796,13 @@ pub fn collapse(feed: &RawFeed, table: Option<u64>) -> Result<CollapsedFeed, Fee
         }
         let prev = pk.prevpacket.as_deref().unwrap_or(&[]);
         let is_undo = match prev {
+            // The stream's GENESIS: the first packet of a from-table-open
+            // capture has nothing before it and BGA sends an empty prevpacket
+            // (measured live at the gate game, table 896153951 — the proving
+            // corpus never exhibited this because its socket joined mid-game
+            // at packet 100+). Empty ANYWHERE ELSE stays an unmeasured shape
+            // and refuses below.
+            [] if pk.packet_id == 1 => false,
             [p] if *p + 1 == pk.packet_id => false,
             [p] if *p + 1 < pk.packet_id => true,
             _ => {
@@ -992,6 +999,36 @@ mod tests {
 
     fn notif(uid: &str, kind: &str) -> Value {
         serde_json::json!({"uid": uid, "type": kind, "log": "", "args": {}})
+    }
+
+    /// The GENESIS shape measured live at the gate game (table 896153951): a
+    /// from-table-open capture's FIRST socket packet has an empty `prevpacket`
+    /// — nothing precedes it. The proving corpus never showed this (its socket
+    /// joined mid-game), so the collapse refused it as unmeasured and the
+    /// follower held at packet 1 of a brand-new game.
+    #[test]
+    fn the_first_socket_packet_may_have_no_predecessor() {
+        let mut pk = socket_packet(1, Some(1), 0, serde_json::json!([notif("u1", "assistantPlacement")]));
+        pk["prevpacket"] = serde_json::json!([]);
+        let out = read_and_collapse(&socket_line(pk), Some(42)).expect("an empty prevpacket at packet 1 is the stream's genesis, not an undo");
+        assert_eq!(out.report.moves, 1, "the genesis packet's move must survive the collapse");
+    }
+
+    /// The narrowness that keeps the genesis arm honest: an empty prevpacket
+    /// ANYWHERE ELSE is still the unmeasured shape it always was — accepting it
+    /// broadly could mask a rewind whose marker we never saw.
+    #[test]
+    fn an_empty_prevpacket_after_the_first_packet_still_refuses() {
+        let p1 = socket_packet(1, Some(1), 0, serde_json::json!([notif("u1", "assistantPlacement")]));
+        let mut p1 = p1; p1["prevpacket"] = serde_json::json!([]);
+        let mut p2 = socket_packet(2, Some(2), 1, serde_json::json!([notif("u2", "assistantPlacement")]));
+        p2["prevpacket"] = serde_json::json!([]);
+        let input = format!("{}\n{}", socket_line(p1).trim_end(), socket_line(p2).trim_end());
+        let err = read_and_collapse(&input, Some(42)).expect_err("packet 2 with an empty prevpacket is not a genesis");
+        assert!(
+            matches!(err, FeedError::UnexpectedPrevpacket { packet_id: 2, .. }),
+            "the refusal must name packet 2's unmeasured shape: {err}"
+        );
     }
 
     // ---- reader arms -------------------------------------------------------
