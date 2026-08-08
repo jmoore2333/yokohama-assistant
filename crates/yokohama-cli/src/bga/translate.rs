@@ -73,6 +73,25 @@ const UNCHECKED_COUNTERS: [(&str, &str); 8] = [
 const UNCHECKED_EXTRA: [(&str, &str); 1] =
     [("flags_ne", "country-icon aggregation semantics unverified against engine sets")];
 
+/// The deck keys a k-slot Port refill reveals, in DRAW order.
+///
+/// Two measured facts meet here and the direction is their consequence, not a
+/// convention: (1) the ENGINE refills rightmost-empty-first from the deck's
+/// top (`refill_port`'s `Vec::pop`; pinned by this module's
+/// `port_refill_reveal_list_is_draw_order_first_named_card_lands_rightmost`),
+/// so `reveals[0]` lands in the RIGHTMOST refilled slot; (2) BGA's display
+/// mechanics (census §1: slide-left, then ascending keys refill the vacated
+/// right end — the order `port_shadow`'s ascending append mirrors) put the
+/// LOWEST new key leftmost. Ascending keys landing in ascending slots
+/// therefore requires the draw list DESCENDING. Reversing it is invisible to
+/// the corpus checkpoints (the escaped mutation M4, H2 review SHOULD-1) but
+/// mis-arranges the engine's display, whose slots carry LOW/MID/HIGH
+/// take-power gating — pinned by
+/// `refill_draw_keys_descend_so_ascending_keys_land_left_to_right`.
+fn refill_draw_keys(next_key: u64, k: usize) -> Vec<u64> {
+    (0..k).map(|i| next_key + (k - 1 - i) as u64).collect()
+}
+
 pub struct Translator<'a> {
     session: Session,
     resolved: &'a Resolved,
@@ -190,7 +209,19 @@ impl<'a> Translator<'a> {
             next_checkpoint: 0,
             state_snapshots: Vec::new(),
             snap_cursor: 0,
-            report: ReplayReport::default(),
+            // The deliberately-unchecked list rides the report from
+            // CONSTRUCTION so every return path — the STOPPED runs included —
+            // carries it (H2 review SHOULD-2: T9's "listed explicitly with
+            // its reason" has to hold on exactly the run whose report
+            // matters most, and the headline acceptance run stops at m154).
+            report: ReplayReport {
+                unchecked_counters: UNCHECKED_COUNTERS
+                    .iter()
+                    .chain(UNCHECKED_EXTRA.iter())
+                    .map(|(k, r)| (k.to_string(), r.to_string()))
+                    .collect(),
+                ..ReplayReport::default()
+            },
             max_move_seen: 0,
             pending_checkpoint_error: None,
         })
@@ -337,10 +368,10 @@ impl<'a> Translator<'a> {
                 return Err(rerr(move_id, "port B refill in a 2P game"));
             }
             // Ascending deck keys land in ascending slots; draw order is
-            // rightmost-first, so the reveal list is keys DESCENDING.
+            // rightmost-first, so the reveal list is keys DESCENDING (the
+            // derivation and its pins live on `refill_draw_keys`).
             let k = slots.len();
-            let keys: Vec<u64> =
-                (0..k).map(|i| self.next_order_deck_key + (k - 1 - i) as u64).collect();
+            let keys: Vec<u64> = refill_draw_keys(self.next_order_deck_key, k);
             let mut cards = Vec::with_capacity(k);
             for key in &keys {
                 cards.push(self.resolved.key_model.order_card(*key)?);
@@ -1320,13 +1351,10 @@ impl<'a> Translator<'a> {
             }
         }
         // The tail: checkpoints after the last consumed fact.
+        // (`unchecked_counters` is populated at construction, not here — a
+        // STOPPED run's report lists them too.)
         self.run_checkpoints_below(u64::MAX)?;
         self.report.last_move_id = self.max_move_seen;
-        self.report.unchecked_counters = UNCHECKED_COUNTERS
-            .iter()
-            .chain(UNCHECKED_EXTRA.iter())
-            .map(|(k, r)| (k.to_string(), r.to_string()))
-            .collect();
         Ok(())
     }
 
@@ -1336,5 +1364,130 @@ impl<'a> Translator<'a> {
 
     pub fn session(&self) -> &Session {
         &self.session
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use yokohama_core::{GameConfig, Rules, StartingOrderChoice};
+
+    fn sim_2p(seed: u64) -> Session {
+        Session::new_sim(
+            GameConfig::for_player_count(2),
+            seed,
+            vec![StartingOrderChoice::Keep(0), StartingOrderChoice::Keep(0)],
+            Rules::standard(),
+        )
+        .unwrap()
+    }
+
+    /// The ENGINE half of the refill-order pin (H2 review SHOULD-1, escaped
+    /// mutation M4): the reveal list `Session::apply` consumes is in DRAW
+    /// order (`arrange_orders_on_top` puts `reveals[0]` on the deck top), and
+    /// `refill_port` fills rightmost-empty-first via `Vec::pop` — so the
+    /// FIRST named card must land in the RIGHTMOST refilled slot. This is the
+    /// measured fact `refill_draw_keys` derives its direction from; if this
+    /// test ever fails, that function's doc comment is wrong before its code
+    /// is.
+    #[test]
+    fn port_refill_reveal_list_is_draw_order_first_named_card_lands_rightmost() {
+        let mut s = sim_2p(900);
+        let port = *s
+            .state()
+            .board_layout
+            .areas
+            .iter()
+            .find(|(_, c)| c.area_type == AreaType::PortA)
+            .unwrap()
+            .0;
+        s.apply(Move::EndAdditionalPhase, vec![]).unwrap();
+        s.apply(Move::PlaceThreeAreas { placements: vec![port] }, vec![]).unwrap();
+        s.apply(Move::PlacePresident { destination: port }, vec![]).unwrap();
+        let take = s
+            .legal()
+            .into_iter()
+            .find(|m| {
+                matches!(
+                    m,
+                    Move::ExecuteAreaAction { action: AreaAction::Port { cards_taken, .. } }
+                        if cards_taken.len() == 2
+                )
+            })
+            .expect("a 2-card port take is available at power 2");
+        let before = s.state().clone();
+        let n = before.order_deck.len();
+        // Draw order: the deck's LAST element is the next `Vec::pop` draw
+        // (an identity arrangement, so only the LANDING is under test).
+        let (first_draw, second_draw) = (before.order_deck[n - 1], before.order_deck[n - 2]);
+        s.apply(take, vec![RecordedEvent::RevealOrders(vec![first_draw, second_draw])]).unwrap();
+        let (slots, board_b) = crate::reveal::refilled_port_slots(&before, s.state());
+        assert!(!board_b, "2P game refills Port A");
+        assert_eq!(slots.len(), 2, "the 2-card take vacates two slots");
+        assert!(slots[0] > slots[1], "refilled_port_slots reports draw order: rightmost first");
+        assert_eq!(
+            s.state().port_state.port_a.slots[slots[0]],
+            Some(first_draw),
+            "the FIRST revealed card lands in the RIGHTMOST refilled slot"
+        );
+        assert_eq!(
+            s.state().port_state.port_a.slots[slots[1]],
+            Some(second_draw),
+            "the SECOND revealed card lands in the slot left of it"
+        );
+    }
+
+    /// The TRANSLATOR half of the same pin: given the engine fact above
+    /// (`reveals[0]` lands rightmost) and BGA's display mechanics (census §1:
+    /// slide-left, then ascending keys refill the vacated right end — the
+    /// order `port_shadow`'s ascending append mirrors), only a DESCENDING
+    /// draw list puts ascending keys in ascending slots. Reversing this list
+    /// changes nothing the corpus checkpoints can see — the escaped mutation
+    /// M4 — but silently mis-arranges the engine's display, and slot
+    /// arrangement carries LOW/MID/HIGH zone take-power gating, so a wrong
+    /// order could flip a take's legality in a future corpus.
+    #[test]
+    fn refill_draw_keys_descend_so_ascending_keys_land_left_to_right() {
+        assert_eq!(refill_draw_keys(38, 2), vec![39, 38]);
+        assert_eq!(refill_draw_keys(7, 3), vec![9, 8, 7]);
+        assert_eq!(refill_draw_keys(13, 1), vec![13]);
+        assert!(refill_draw_keys(1, 0).is_empty());
+    }
+
+    /// H2 review SHOULD-2: `unchecked_counters` must ride the report from
+    /// CONSTRUCTION, not only `run()`'s Ok tail — the headline acceptance run
+    /// STOPS at m154, and T9's rule ("a key we deliberately do not model is
+    /// listed explicitly with its reason") has to hold on exactly the run
+    /// whose report matters most.
+    #[test]
+    fn unchecked_counters_ride_the_report_from_construction_not_only_the_ok_path() {
+        let text = std::fs::read_to_string(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../yokohama-bridge/tests/data/excerpt-895724349.ndjson"
+        ))
+        .unwrap();
+        let rules = Rules::standard();
+        let feed = yokohama_bridge::feed::read_and_collapse(&text, None).unwrap();
+        let answers = super::super::setup::synthesize(&feed, &rules).unwrap();
+        let mapper = super::super::orders::OrderMapper::from_rules(&rules).unwrap();
+        let seats = answers.seats.clone();
+        let stream = super::super::facts::extract(
+            &feed,
+            &|pid| seats.iter().find(|s| s.bga_player_id == pid).map(|s| s.seat),
+            &mapper,
+        )
+        .unwrap();
+        let resolved = super::super::resolve::resolve(answers, &feed, &stream, &rules).unwrap();
+        let session = super::super::setup::build_session(&resolved.answers, rules).unwrap();
+        let t = Translator::new(session, &resolved, stream, &feed).unwrap();
+        assert_eq!(
+            t.report.unchecked_counters.len(),
+            UNCHECKED_COUNTERS.len() + UNCHECKED_EXTRA.len(),
+            "every deliberately-unchecked key is listed before a single fact is consumed"
+        );
+        assert!(
+            t.report.unchecked_counters.iter().any(|(k, _)| k == "gears"),
+            "the listed keys are the real ones"
+        );
     }
 }
