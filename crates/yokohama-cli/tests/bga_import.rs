@@ -97,3 +97,87 @@ fn the_corpus_sheet_synthesizes_with_the_measured_facts() {
     // The fence in numbers: the snapshot's 8 undrawn orders are a count.
     assert_eq!(a.deck_order_count, 8);
 }
+
+// ---------------------------------------------------------------------------
+// H2: the acceptance replay (census + T8/T9/T10)
+// ---------------------------------------------------------------------------
+
+/// The H2 acceptance replay of the full corpus: the thin half and the socket
+/// half replay engine-legal through BGA move 153 with every socket checkpoint
+/// green, the hypothesis loop resolves the two claimed achievements to
+/// Seafood7/Tokens5 (the other three candidates REFUSE at their claim moves),
+/// and the run STOPs at m154 on the census §4.2 ENGINE-RULES divergence (a
+/// movement icon moving an assistant to the player's hand, which the engine's
+/// `ChooseAssistantMove` cannot express). This pin is the honest bound: if an
+/// owner ruling later widens the engine, THIS test is the one that moves.
+#[test]
+fn the_acceptance_replay_reaches_m153_and_stops_on_the_documented_rules_gap() {
+    let Some(_) = corpus_text() else { return };
+    let path = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../bridge-captures/895724349.ndjson"
+    );
+    let args = yokohama_cli::bga::import::parse_args(&[path.to_string()]).unwrap();
+    let outcome = yokohama_cli::bga::import::run(&args, Rules::standard()).unwrap();
+    assert!(outcome.session_built, "{}", outcome.text);
+    assert!(!outcome.replay_complete, "the m154 rules gap bounds this corpus");
+    assert!(
+        outcome.text.contains("progressed through BGA move 153"),
+        "{}",
+        outcome.text
+    );
+    assert!(
+        outcome.text.contains("ENGINE-RULES divergence (census §4.2)"),
+        "{}",
+        outcome.text
+    );
+    // The hypothesis loop's survivors-by-elimination: the wrong candidates
+    // refuse at their claim moves (m43 / m90).
+    assert!(outcome.text.contains("[A=Seafood7, B=Tokens5]"), "{}", outcome.text);
+    assert!(
+        outcome.text.contains("could not be fulfilled as Tea7"),
+        "{}",
+        outcome.text
+    );
+    assert!(
+        outcome.text.contains("could not be fulfilled as Orders5"),
+        "{}",
+        outcome.text
+    );
+    // The two open rules questions ride the report as tracked offsets.
+    assert!(outcome.text.contains("church yen payment"), "{}", outcome.text);
+    assert!(outcome.text.contains("4TH tech"), "{}", outcome.text);
+}
+
+/// The bounded run (`--through 153`) completes cleanly — 32 checkpoints green
+/// on exactly one surviving hypothesis — and its emitted record LOADS, which
+/// is a full replay + invariants + terminal-digest verification in
+/// `Session::load`.
+#[test]
+fn the_bounded_replay_emits_a_record_that_reloads_clean() {
+    let Some(_) = corpus_text() else { return };
+    let path = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../bridge-captures/895724349.ndjson"
+    );
+    let dir = std::env::temp_dir().join(format!("bga-h2-test-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let out = dir.join("bga-895724349-through153.json");
+    let args = yokohama_cli::bga::import::parse_args(&[
+        path.to_string(),
+        "--through".to_string(),
+        "153".to_string(),
+        "--out".to_string(),
+        out.display().to_string(),
+    ])
+    .unwrap();
+    let outcome = yokohama_cli::bga::import::run(&args, Rules::standard()).unwrap();
+    assert!(outcome.text.contains("ran to the end of the captured stream"), "{}", outcome.text);
+    assert!(outcome.text.contains("32 checkpoints green"), "{}", outcome.text);
+    let session = yokohama_cli::session::Session::load(&out, Rules::standard())
+        .expect("the emitted record replays clean on load");
+    let record = session.record();
+    assert_eq!(record.run.as_ref().unwrap().run_id.as_deref(), Some("bga-import/895724349"));
+    assert!(record.events.len() > 240, "241 moves + reveals expected");
+    std::fs::remove_dir_all(&dir).ok();
+}

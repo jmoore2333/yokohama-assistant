@@ -25,6 +25,7 @@ pub mod names;
 pub mod orders;
 pub mod resolve;
 pub mod setup;
+pub mod translate;
 
 use std::fmt;
 

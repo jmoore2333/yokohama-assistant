@@ -193,57 +193,91 @@ fn resolve_tokens(
             }
         }
     }
-    // Remaining pool after the mapped codes' board copies.
-    let mut pool = yokohama_core::canonical_five_power_tokens();
-    for (area, code) in &code_by_area {
-        if let Some(face) = face_by_code.get(code) {
-            let idx = pool.iter().position(|p| p == face).ok_or_else(|| ImportError::Sheet {
-                detail: format!(
-                    "token faces exceed the canonical pool at {area:?} (code {code}, face {face:?})"
-                ),
-            })?;
-            pool.swap_remove(idx);
-        }
-    }
-    // Fill: mapped codes directly; unmapped codes get a declared assumption.
-    let mut out = Vec::with_capacity(answers.board_tiles.value().map(|v| v.len()).unwrap_or(0));
+    // Board demand per code, and the canonical pool as a multiset.
     let board = answers.board_tiles.value().ok_or_else(|| ImportError::Sheet {
         detail: "token resolution needs the evidenced board tiles".to_string(),
     })?;
-    let mut assumed_codes: BTreeMap<u64, FivePowerEffect> = BTreeMap::new();
+    let mut code_count: BTreeMap<u64, u8> = BTreeMap::new();
     for area in board {
         if *area == AreaType::Canal {
-            out.push(None);
             continue;
         }
         let code = code_of(*area).ok_or_else(|| ImportError::Sheet {
             detail: format!("no snapshot tile row for board area {area:?}"),
         })?;
-        let face = match face_by_code.get(&code).or_else(|| assumed_codes.get(&code)) {
-            Some(f) => *f,
-            None => {
-                // Deterministic canonical pick from the remaining pool.
-                let pick = *pool.first().ok_or_else(|| ImportError::Sheet {
-                    detail: format!("token pool exhausted resolving code {code}"),
-                })?;
-                let candidates: BTreeSet<String> = pool.iter().map(|p| format!("{p:?}")).collect();
-                assumptions.push(Assumption {
-                    what: format!("5-Power token face on {area:?} (BGA code {code})"),
-                    candidates: candidates.into_iter().collect::<Vec<_>>().join(" | "),
-                    picked: format!("{pick:?}"),
-                    why_inert: "this token was never taken in the capture — its face grants \
-                                nothing and scores nothing"
-                        .to_string(),
-                });
-                assumed_codes.insert(code, pick);
-                pick
-            }
-        };
-        // Keep the pool honest for repeated codes.
-        if let Some(idx) = pool.iter().position(|p| *p == face) {
-            pool.swap_remove(idx);
+        *code_count.entry(code).or_insert(0) += 1;
+    }
+    let mut pool: Vec<(FivePowerEffect, u8)> = Vec::new();
+    for face in yokohama_core::canonical_five_power_tokens() {
+        match pool.iter_mut().find(|(f, _)| *f == face) {
+            Some((_, n)) => *n += 1,
+            None => pool.push((face, 1)),
         }
-        out.push(Some(face));
+    }
+    let take = |pool: &mut Vec<(FivePowerEffect, u8)>, face: FivePowerEffect, n: u8| -> bool {
+        match pool.iter_mut().find(|(f, c)| *f == face && *c >= n) {
+            Some((_, c)) => {
+                *c -= n;
+                true
+            }
+            None => false,
+        }
+    };
+    // Mapped codes consume their board copies first.
+    let mut face_of_code: BTreeMap<u64, FivePowerEffect> = BTreeMap::new();
+    for (code, n) in &code_count {
+        if let Some(face) = face_by_code.get(code) {
+            if !take(&mut pool, *face, *n) {
+                return Err(ImportError::Sheet {
+                    detail: format!(
+                        "code {code} needs {n} copies of {face:?} but the canonical pool cannot \
+                         supply them — token resolution inconsistent"
+                    ),
+                });
+            }
+            face_of_code.insert(*code, *face);
+        }
+    }
+    // Unmapped codes: distinct codes are distinct printed faces, so the pick
+    // must be a face no other code uses, with enough pool copies. The
+    // candidate list is declared; the pick is the first candidate in
+    // canonical pool order (deterministic).
+    // Descending demand, so a high-multiplicity code (only Import can cover
+    // five board copies) claims its face before a single-copy code does.
+    let mut unmapped: Vec<(u64, u8)> = code_count
+        .iter()
+        .filter(|(c, _)| !face_of_code.contains_key(c))
+        .map(|(c, n)| (*c, *n))
+        .collect();
+    unmapped.sort_by_key(|(c, n)| (std::cmp::Reverse(*n), *c));
+    for (code, n) in &unmapped {
+        let candidates: Vec<FivePowerEffect> = pool
+            .iter()
+            .filter(|(f, c)| *c >= *n && !face_of_code.values().any(|used| used == f))
+            .map(|(f, _)| *f)
+            .collect();
+        let pick = *candidates.first().ok_or_else(|| ImportError::Sheet {
+            detail: format!("no pool face can cover code {code} (needs {n} copies)"),
+        })?;
+        assert!(take(&mut pool, pick, *n), "candidate filter guaranteed supply");
+        assumptions.push(Assumption {
+            what: format!("5-Power token face for BGA code {code} ({n} tile(s))"),
+            candidates: candidates.iter().map(|f| format!("{f:?}")).collect::<Vec<_>>().join(" | "),
+            picked: format!("{pick:?}"),
+            why_inert: "no token of this code was ever taken in the capture — its face grants \
+                        nothing and scores nothing"
+                .to_string(),
+        });
+        face_of_code.insert(*code, pick);
+    }
+    let mut out = Vec::with_capacity(board.len());
+    for area in board {
+        if *area == AreaType::Canal {
+            out.push(None);
+            continue;
+        }
+        let code = code_of(*area).expect("checked above");
+        out.push(Some(face_of_code[&code]));
     }
     Ok(out)
 }
@@ -275,7 +309,7 @@ fn resolve_sites(
                     });
                 }
                 Some(_) => {}
-                None => built.push((*tile, reward.clone())),
+                None => built.push((*tile, *reward)),
             }
         }
     }

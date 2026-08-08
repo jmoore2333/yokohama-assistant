@@ -520,11 +520,24 @@ pub fn extract(
                 "customsPlacement" => {
                     let s = seat("customsPlacement")?;
                     let count = require_u8(args, "import_count", "customsPlacement").map_err(ImportError::Map)?;
+                    // gain_list: "22 VP(s)" or "10 VP(s),1 warehouse pull(s)" —
+                    // the VP names the space; riders (spaces with printed
+                    // warehouse/yen bonuses) are the engine's own cascade.
                     let gain = args.get("gain_list").and_then(|g| g.as_str()).unwrap_or("");
-                    let vp = gain
-                        .strip_suffix(" VP(s)")
-                        .and_then(|v| v.parse::<u8>().ok())
-                        .ok_or_else(|| err_template(mid, "customsPlacement gain_list", gain))?;
+                    let mut vp: Option<u8> = None;
+                    for item in gain.split(',') {
+                        let item = item.trim();
+                        if let Some(v) = item.strip_suffix(" VP(s)") {
+                            vp = Some(v.parse::<u8>().map_err(|_| {
+                                err_template(mid, "customsPlacement gain_list", gain)
+                            })?);
+                        } else if item.ends_with(" warehouse pull(s)") || item.ends_with(" yen(s)") {
+                            // pinned rider vocabulary — the engine queues these
+                        } else {
+                            return Err(err_template(mid, "customsPlacement gain_list", gain));
+                        }
+                    }
+                    let vp = vp.ok_or_else(|| err_template(mid, "customsPlacement gain_list", gain))?;
                     push(Fact::Customs { seat: s, count, vp });
                 }
 
