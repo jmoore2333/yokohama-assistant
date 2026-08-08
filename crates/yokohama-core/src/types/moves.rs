@@ -150,7 +150,7 @@ pub enum AreaAction {
         /// Extra Imported Goods paid for industry value.
         extra_imported: u8,
         /// Extra payment for 5th+ tech: Some(true) = 2 Yen, Some(false) = 1 Imported Good
-        fifth_tech_payment: Option<bool>,
+        extra_tech_payment: Option<bool>,
     },
 
     // Employment Agency - choose which tokens to take

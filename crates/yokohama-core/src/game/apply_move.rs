@@ -721,9 +721,9 @@ fn apply_area_action(state: &mut GameState, action: &AreaAction, rules: &Rules) 
             execute_port_action(state, player, cards_taken, *second_card_payment, power)
                 .map_err(MoveError::RuleViolation)?;
         }
-        AreaAction::Laboratory { card_id, extra_yen, extra_imported, fifth_tech_payment } => {
+        AreaAction::Laboratory { card_id, extra_yen, extra_imported, extra_tech_payment } => {
             execute_lab_action(
-                state, player, *card_id, *extra_yen, *extra_imported, *fifth_tech_payment,
+                state, player, *card_id, *extra_yen, *extra_imported, *extra_tech_payment,
                 power, &rules.techs,
             )?;
             apply_lab_acquisition_bonuses(state, player, *card_id, &rules.techs, &rules.orders);
@@ -3961,7 +3961,7 @@ mod tests {
 
         let mv = Move::ExecuteAreaAction {
             action: AreaAction::Laboratory {
-                card_id: TechCardId(24), extra_yen: 0, extra_imported: 0, fifth_tech_payment: None,
+                card_id: TechCardId(24), extra_yen: 0, extra_imported: 0, extra_tech_payment: None,
             },
         };
         let next = apply_move(&state, &mv, &rules).unwrap();
@@ -3993,7 +3993,7 @@ mod tests {
 
         let mv = Move::ExecuteAreaAction {
             action: AreaAction::Laboratory {
-                card_id: TechCardId(24), extra_yen: 0, extra_imported: 0, fifth_tech_payment: None,
+                card_id: TechCardId(24), extra_yen: 0, extra_imported: 0, extra_tech_payment: None,
             },
         };
         let next = apply_move(&state, &mv, &rules).unwrap();
@@ -4016,7 +4016,7 @@ mod tests {
 
         let mv = Move::ExecuteAreaAction {
             action: AreaAction::Laboratory {
-                card_id: TechCardId(24), extra_yen: 0, extra_imported: 0, fifth_tech_payment: None,
+                card_id: TechCardId(24), extra_yen: 0, extra_imported: 0, extra_tech_payment: None,
             },
         };
         // apply_move_unchecked: get_legal_moves only enumerates Laboratory
@@ -4041,7 +4041,7 @@ mod tests {
 
         let mv = Move::ExecuteAreaAction {
             action: AreaAction::Laboratory {
-                card_id: TechCardId(24), extra_yen: 0, extra_imported: 0, fifth_tech_payment: None,
+                card_id: TechCardId(24), extra_yen: 0, extra_imported: 0, extra_tech_payment: None,
             },
         };
         let next = apply_move(&state, &mv, &rules).unwrap();
@@ -4064,7 +4064,7 @@ mod tests {
 
         let mv = Move::ExecuteAreaAction {
             action: AreaAction::Laboratory {
-                card_id: TechCardId(24), extra_yen: 0, extra_imported: 0, fifth_tech_payment: None,
+                card_id: TechCardId(24), extra_yen: 0, extra_imported: 0, extra_tech_payment: None,
             },
         };
         let next = apply_move(&state, &mv, &rules).unwrap();
@@ -4087,7 +4087,7 @@ mod tests {
 
         let mv = Move::ExecuteAreaAction {
             action: AreaAction::Laboratory {
-                card_id: TechCardId(9), extra_yen: 0, extra_imported: 0, fifth_tech_payment: None,
+                card_id: TechCardId(9), extra_yen: 0, extra_imported: 0, extra_tech_payment: None,
             },
         };
         let next = apply_move(&state, &mv, &rules).unwrap();
@@ -4110,7 +4110,7 @@ mod tests {
 
         let mv = Move::ExecuteAreaAction {
             action: AreaAction::Laboratory {
-                card_id: TechCardId(24), extra_yen: 0, extra_imported: 0, fifth_tech_payment: None,
+                card_id: TechCardId(24), extra_yen: 0, extra_imported: 0, extra_tech_payment: None,
             },
         };
         let next = apply_move(&state, &mv, &rules).unwrap();
@@ -4120,7 +4120,7 @@ mod tests {
     }
 
     #[test]
-    fn lab_action_wires_fifth_tech_payment() {
+    fn lab_action_wires_extra_tech_payment() {
         let rules = Rules::standard();
         let mut state = create_test_game_state(2);
         place_president_at_lab_a(&mut state);
@@ -4135,7 +4135,7 @@ mod tests {
         let mv = Move::ExecuteAreaAction {
             action: AreaAction::Laboratory {
                 card_id: TechCardId(24), extra_yen: 0, extra_imported: 0,
-                fifth_tech_payment: Some(true), // pay 2 Yen
+                extra_tech_payment: Some(true), // pay 2 Yen
             },
         };
         let next = apply_move(&state, &mv, &rules).unwrap();

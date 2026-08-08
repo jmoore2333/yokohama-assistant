@@ -177,7 +177,7 @@ pub(crate) fn laboratory_moves(
                             card_id,
                             extra_yen,
                             extra_imported,
-                            fifth_tech_payment: fifth,
+                            extra_tech_payment: fifth,
                         },
                     });
                 }
@@ -407,7 +407,7 @@ mod tests {
             card_id,
             extra_yen: yen,
             extra_imported: imported,
-            fifth_tech_payment: fifth,
+            extra_tech_payment: fifth,
         }
     }
 
@@ -549,7 +549,7 @@ mod tests {
     #[test]
     fn lab_under_four_techs_no_penalty() {
         // [RB p.12 Note] penalty binds from the 5th acquisition only: with 3
-        // owned techs, `fifth_tech_payment` is None.
+        // owned techs, `extra_tech_payment` is None.
         let rules = Rules::standard();
         let ball = tech_by_effect(&rules, TechEffect::Ball);
         let mut s = lab_state();

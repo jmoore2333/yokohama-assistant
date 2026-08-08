@@ -21,16 +21,16 @@
     "top-VP ties: 0/8 games (0.0000), 0 decided for seat 0 — `final_result` is a total order and never reports a tie, so this is how often the clockwise tie-break DECIDED the game; at 3-4P the award depends on which seats tied (the recorded seat-0 count above is the realized figure — the 2P half-the-rate derivation does not apply)",
     "NEAR-BOUNDARY CAVEAT: interval endpoint saturated at 0/1 or unit vector has only 2 distinct value(s) — percentile-bootstrap coverage degrades toward the boundary (measured 0.39-0.87 at theta=0.99 for N=50-200); read this interval as directional, not calibrated"
   ],
-  "seat0_wins": 1,
+  "seat0_wins": 2,
   "ties_to_seat0": 0,
-  "vp_margin_mean": 4.33333333333333,
+  "vp_margin_mean": 6.499999999999999,
   "applied_by_seat": [
-    3530,
-    3569,
-    3560,
-    3583
+    3384,
+    3400,
+    3403,
+    3426
   ],
-  "x_applied_moves": 3446,
+  "x_applied_moves": 3314,
   "x_explanations": null,
   "x_ply_cap_hits": null,
   "x_free_cap_hits": null,
@@ -44,7 +44,8 @@
   "y_budget_starved_decisions": null,
   "trigger": {
     "counts": {
-      "OrderDeckEmpty": 8
+      "ChurchTrackFull": 1,
+      "OrderDeckEmpty": 7
     },
     "games": 8
   },

@@ -4177,9 +4177,10 @@ mod tests {
         let rules = Rules::standard();
         // `back` is fixture-derived, not principled: it must land on a point
         // whose bounded search actually reaches finished games. Re-derived 2
-        // -> 4 at SEMANTICS_REV 6 (the D1 church-cost ruling moved the seeded
-        // greedy walk); probe adjacent values if a future rev drifts it again.
-        let (world, seat) = point_before_the_end(&rules, 4);
+        // -> 3 across the SEMANTICS_REV-6 ruling set (each rules-parity
+        // ruling moves the seeded greedy walk); probe adjacent values if a
+        // future rev drifts it again.
+        let (world, seat) = point_before_the_end(&rules, 3);
 
         // Simulations bounded ONLY by the budget — the contestant shape.
         let mut c = ctx(&rules, &WeightTable::V1, u32::MAX, 0xE7D);

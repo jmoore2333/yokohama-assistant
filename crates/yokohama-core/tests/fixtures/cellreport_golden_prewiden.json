@@ -24,12 +24,12 @@
   ],
   "seat0_wins": 4,
   "ties_to_seat0": 0,
-  "vp_margin_mean": 11.375,
+  "vp_margin_mean": 2.375,
   "applied_by_seat": [
-    2433,
-    2438
+    2401,
+    2430
   ],
-  "x_applied_moves": 2440,
+  "x_applied_moves": 2408,
   "x_explanations": null,
   "x_ply_cap_hits": null,
   "x_free_cap_hits": null,
