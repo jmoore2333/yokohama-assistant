@@ -65,11 +65,16 @@ impl std::error::Error for CaptureError {}
 /// The allowlist is the enforcement; the named traversal cases are just what
 /// it happens to exclude.
 pub fn safe_table_id(raw: &str) -> Result<&str, CaptureError> {
-    let ok = !raw.is_empty()
+    // The FIRST character must be alphanumeric, which is a separate rule from
+    // the allowlist and does separate work. An id of `-rf` or `--dir` reads as
+    // an option the moment the filename is pasted into a shell command, and
+    // `.ssh` is a dotfile the owner will never see in a listing. It also
+    // subsumes `.` and `..` without naming them. Every BGA table id is a
+    // number, so nothing legitimate is excluded.
+    let starts_well = raw.chars().next().is_some_and(|c| c.is_ascii_alphanumeric());
+    let ok = starts_well
         && raw.len() <= MAX_TABLE_ID
-        && raw.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-'))
-        && raw != "."
-        && raw != "..";
+        && raw.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-'));
     if ok {
         Ok(raw)
     } else {
@@ -210,6 +215,14 @@ mod tests {
     #[test]
     fn table_ids_that_could_escape_the_capture_directory_are_refused() {
         for hostile in ["..", ".", "", "../secrets", "a/b", "a\\b", "a b", "tab\tid"] {
+            assert!(safe_table_id(hostile).is_err(), "{hostile:?} must be refused");
+        }
+        // A leading `-` or `.` passes a character allowlist but is still a
+        // hazard: the first becomes an option when the filename is pasted into
+        // a shell command, and the second is a dotfile the owner will not see
+        // in a directory listing. Requiring an alphanumeric first character
+        // costs nothing - every BGA table id is a number.
+        for hostile in ["-rf", "-", ".ssh", ".bashrc", "_private", "--dir"] {
             assert!(safe_table_id(hostile).is_err(), "{hostile:?} must be refused");
         }
         for fine in ["895608640", "table-1", "table_1", "unknown", "a.b"] {

@@ -219,7 +219,34 @@ fn a_successful_capture_reflects_the_extension_origin_back() {
 }
 
 #[test]
-fn a_post_from_a_non_extension_origin_is_refused_and_appends_nothing() {
+fn a_request_carrying_a_foreign_host_header_is_refused() {
+    // The DNS-rebinding shape, over a real socket: a page on the attacker's
+    // domain resolved to 127.0.0.1 sends its own Host.
+    let h = start();
+    let response = request(
+        h.addr,
+        "GET /health HTTP/1.1\r\nHost: evil.example\r\n\r\n",
+    );
+    assert!(
+        status_line(&response).starts_with("HTTP/1.1 403"),
+        "got: {}",
+        status_line(&response)
+    );
+    assert!(
+        !body_of(&response).contains("dir"),
+        "and it is never told where captures are written"
+    );
+
+    let response = post(h.addr, "/capture/895608640", None, r#"{"kind":"snapshot","payload":{}}"#);
+    assert!(
+        status_line(&response).starts_with("HTTP/1.1 200"),
+        "the local Host the other helpers send still works: {}",
+        status_line(&response)
+    );
+}
+
+#[test]
+fn a_post_from_a_non_extension_origin_is_refused_before_the_body_is_parsed_or_stored() {
     let h = start();
     let response = post(
         h.addr,

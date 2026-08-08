@@ -27,9 +27,43 @@ use crate::server::Relay;
 fn is_extension_origin(origin: &str) -> bool {
     match origin.strip_prefix("chrome-extension://") {
         // A non-empty host with no path: `chrome-extension://<id>` exactly.
-        Some(rest) => !rest.is_empty() && !rest.contains('/'),
+        //
+        // `is_ascii_graphic` excludes space, CR, LF, NUL and DEL, and it is
+        // load-bearing rather than tidy: this value is REFLECTED into an
+        // `Access-Control-Allow-Origin` response header, so a CR/LF inside it
+        // would let the caller write headers of its own.
+        Some(rest) => {
+            !rest.is_empty() && !rest.contains('/') && rest.chars().all(|c| c.is_ascii_graphic())
+        }
         None => false,
     }
+}
+
+/// Is this `Host` header one of ours?
+///
+/// The DNS-rebinding guard. An attacker's page at `evil.example`, whose DNS
+/// answers `127.0.0.1`, reaches this listener with the browser making the
+/// request — the loopback bind does not stop it, because the browser really is
+/// on loopback. What gives it away is the `Host` header, which carries the name
+/// the browser dialled rather than the address it reached.
+///
+/// A name is accepted only if it is literally `localhost`; anything else must
+/// parse as a loopback IP, which no domain name does. An ABSENT `Host` is
+/// allowed: a browser always sends one, so its absence means a local
+/// non-browser client — the same posture as an absent `Origin`, and what the
+/// setup sheet's `curl` verification relies on.
+fn host_is_local(host: &str) -> bool {
+    // Strip the port. An IPv6 literal is bracketed (`[::1]:8787`), so its
+    // colons must not be mistaken for the port separator.
+    let bare = match host.strip_prefix('[') {
+        Some(rest) => match rest.split_once(']') {
+            Some((inner, _)) => inner,
+            None => return false,
+        },
+        None => host.split(':').next().unwrap_or(host),
+    };
+    bare.eq_ignore_ascii_case("localhost")
+        || bare.parse::<std::net::IpAddr>().map(|ip| ip.is_loopback()).unwrap_or(false)
 }
 
 /// Attach the CORS grant when, and only when, the caller earned it.
@@ -47,6 +81,18 @@ fn with_cors(response: Response, origin: Option<&str>) -> Response {
 /// Answer one request.
 pub fn route(request: &Request, relay: &Relay) -> Response {
     let origin = request.origin.as_deref();
+
+    // Before ANY route, including `/health` — which would otherwise confirm to
+    // a rebound page that the relay exists and tell it where captures are kept.
+    if let Some(host) = request.host.as_deref() {
+        if !host_is_local(host) {
+            return Response::error(
+                403,
+                "Forbidden",
+                "this relay answers requests addressed to localhost only",
+            );
+        }
+    }
 
     match (request.method.as_str(), request.path.as_str()) {
         ("GET", "/health") => with_cors(health(relay), origin),
@@ -137,7 +183,18 @@ mod tests {
             method: method.to_string(),
             path: path.to_string(),
             origin: origin.map(str::to_string),
+            host: None,
             body: body.as_bytes().to_vec(),
+        }
+    }
+
+    fn req_from_host(host: Option<&str>, path: &str) -> Request {
+        Request {
+            method: "GET".to_string(),
+            path: path.to_string(),
+            origin: None,
+            host: host.map(str::to_string),
+            body: Vec::new(),
         }
     }
 
@@ -226,7 +283,7 @@ mod tests {
     }
 
     #[test]
-    fn a_foreign_origin_is_refused_before_the_body_is_read() {
+    fn a_foreign_origin_is_refused_before_the_body_is_parsed_or_stored() {
         let (relay, dir) = relay();
         // Body is deliberately valid: the refusal must come from the origin, so
         // a passing test here cannot be explained by the body being bad.
@@ -265,6 +322,68 @@ mod tests {
             header_value(&response, "access-control-allow-headers").as_deref(),
             Some("Content-Type")
         );
+    }
+
+    #[test]
+    fn an_origin_carrying_control_characters_is_refused() {
+        // These would be REFLECTED into a response header if accepted, so a CR
+        // or LF is header injection and a NUL is a parser surprise. The scheme
+        // check alone does not exclude them.
+        for hostile in [
+            "chrome-extension://abc\r\nX-Injected: yes",
+            "chrome-extension://abc\ndrop",
+            "chrome-extension://abc\0",
+            "chrome-extension://ab c",
+            "chrome-extension://abc\t",
+        ] {
+            assert!(!is_extension_origin(hostile), "{hostile:?} must not earn a grant");
+            let response = route(
+                &req("POST", "/capture/895608640", Some(hostile), r#"{"kind":"snapshot","payload":{}}"#),
+                &relay().0,
+            );
+            assert_eq!(response.status, 403, "and the request itself is refused");
+            assert!(
+                response
+                    .headers
+                    .iter()
+                    .all(|(n, _)| !n.eq_ignore_ascii_case("access-control-allow-origin")),
+                "nothing hostile is ever echoed back into a header"
+            );
+        }
+    }
+
+    #[test]
+    fn a_foreign_host_header_is_refused() {
+        // DNS rebinding: a page on the attacker's domain, resolved to
+        // 127.0.0.1, reaches this listener with the browser's own credentials.
+        // The Origin check covers the capture route; this covers every route,
+        // including the /health read that would otherwise confirm the relay
+        // exists and name the owner's capture directory.
+        for hostile in ["evil.example", "evil.example:8787", "boardgamearena.com"] {
+            for path in ["/health", "/capture/895608640"] {
+                let response = route(&req_from_host(Some(hostile), path), &relay().0);
+                assert_eq!(response.status, 403, "Host {hostile:?} on {path}");
+            }
+        }
+    }
+
+    #[test]
+    fn loopback_hosts_and_an_absent_host_are_allowed() {
+        // A browser always sends Host, so its ABSENCE is a local non-browser
+        // client - the same posture as an absent Origin, and the one the setup
+        // sheet's `curl` verification relies on.
+        for ok in [
+            Some("127.0.0.1"),
+            Some("127.0.0.1:8787"),
+            Some("localhost"),
+            Some("localhost:8787"),
+            Some("[::1]:8787"),
+            Some("[::1]"),
+            None,
+        ] {
+            let response = route(&req_from_host(ok, "/health"), &relay().0);
+            assert_eq!(response.status, 200, "Host {ok:?} should be served");
+        }
     }
 
     #[test]

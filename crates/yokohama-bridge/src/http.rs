@@ -30,6 +30,9 @@ pub struct Request {
     /// The `Origin` header, if the client sent one. Absent for `curl` and for
     /// the tests; present for anything a browser sends cross-origin.
     pub origin: Option<String>,
+    /// The `Host` header. A browser always sends one, which is what makes it
+    /// usable as a DNS-rebinding check — see `router::host_is_local`.
+    pub host: Option<String>,
     pub body: Vec<u8>,
 }
 
@@ -58,11 +61,21 @@ impl From<std::io::Error> for ParseError {
 }
 
 /// Read one request off a stream.
+///
+/// Every line is read through a `take` against a budget that spans the WHOLE
+/// header block. Without that, `read_line` grows its string until it finds a
+/// newline, so a client that simply never sends one decides how much memory
+/// the relay allocates.
 pub fn read_request<R: Read>(stream: R) -> Result<Request, ParseError> {
     let mut reader = BufReader::new(stream);
+    let mut budget = MAX_HEADER_BYTES as u64;
 
     let mut request_line = String::new();
-    reader.read_line(&mut request_line)?;
+    let read = (&mut reader).take(budget).read_line(&mut request_line)?;
+    budget -= read as u64;
+    if read > 0 && !request_line.ends_with('\n') {
+        return Err(ParseError::Malformed("request line exceeded the header ceiling"));
+    }
     let mut parts = request_line.split_whitespace();
     let method = parts.next().ok_or(ParseError::Malformed("no method"))?.to_string();
     let target = parts.next().ok_or(ParseError::Malformed("no request target"))?;
@@ -80,24 +93,37 @@ pub fn read_request<R: Read>(stream: R) -> Result<Request, ParseError> {
     let path = target.split('?').next().unwrap_or(target).to_string();
 
     let mut origin = None;
+    let mut host = None;
     let mut content_length = 0usize;
-    let mut header_bytes = request_line.len();
     loop {
-        let mut line = String::new();
-        let read = reader.read_line(&mut line)?;
-        if read == 0 || line == "\r\n" || line == "\n" {
-            break;
-        }
-        header_bytes += read;
-        if header_bytes > MAX_HEADER_BYTES {
+        if budget == 0 {
             return Err(ParseError::Malformed("header block too large"));
+        }
+        let mut line = String::new();
+        let read = (&mut reader).take(budget).read_line(&mut line)?;
+        if read == 0 {
+            break; // EOF
+        }
+        budget -= read as u64;
+        if !line.ends_with('\n') {
+            return Err(ParseError::Malformed("header block too large"));
+        }
+        if line == "\r\n" || line == "\n" {
+            break;
         }
         let Some((name, value)) = line.split_once(':') else {
             return Err(ParseError::Malformed("header line without a colon"));
         };
         let value = value.trim();
+        // RECORDED, not fixed: a repeated header simply overwrites, so a
+        // duplicate `Content-Length` is last-wins, and `Transfer-Encoding` is
+        // not implemented at all (a chunked body would be read as zero bytes).
+        // Both are request-smuggling shapes, and both are harmless only because
+        // nothing sits in front of this listener — it is bound to loopback and
+        // spoken to directly. Putting ANY proxy in front of it makes these bugs.
         match name.trim().to_ascii_lowercase().as_str() {
             "origin" => origin = Some(value.to_string()),
+            "host" => host = Some(value.to_string()),
             "content-length" => {
                 content_length =
                     value.parse().map_err(|_| ParseError::Malformed("content-length is not a number"))?;
@@ -114,7 +140,7 @@ pub fn read_request<R: Read>(stream: R) -> Result<Request, ParseError> {
         reader.read_exact(&mut body)?;
     }
 
-    Ok(Request { method, path, origin, body })
+    Ok(Request { method, path, origin, host, body })
 }
 
 /// A response, held as data so the router can be unit-tested without a socket.
@@ -231,6 +257,75 @@ mod tests {
         let err = read_request("GET /health HTTP/1.1 trailing\r\n\r\n".as_bytes())
             .expect_err("trailing token");
         assert!(matches!(err, ParseError::Malformed("request target contains whitespace")), "{err}");
+    }
+
+    /// A reader that serves `A` forever (up to `remaining`) and never a
+    /// newline, counting what it actually gave out.
+    struct Flood {
+        remaining: usize,
+        consumed: std::rc::Rc<std::cell::Cell<usize>>,
+    }
+
+    impl Read for Flood {
+        fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+            let n = buf.len().min(self.remaining);
+            buf[..n].fill(b'A');
+            self.remaining -= n;
+            self.consumed.set(self.consumed.get() + n);
+            Ok(n)
+        }
+    }
+
+    #[test]
+    fn a_newlineless_flood_is_bounded_by_the_header_ceiling() {
+        // The property is ALLOCATION, not the error: `read_line` grows its
+        // string until it finds a newline, so a client that never sends one
+        // could make the relay buffer as much as it cares to send. Asserting on
+        // the error message would pass even unbounded, because a flood also
+        // fails to parse as a request line - so this measures how many bytes
+        // were actually taken off the reader.
+        let consumed = std::rc::Rc::new(std::cell::Cell::new(0usize));
+        let flood = Flood { remaining: MAX_HEADER_BYTES * 4, consumed: std::rc::Rc::clone(&consumed) };
+
+        assert!(read_request(flood).is_err(), "a headerless flood is not a request");
+
+        // The slack is one BufReader refill (8 KiB by default): the bound stops
+        // the LINE from growing, it does not stop the buffer that was already
+        // being filled underneath it.
+        let ceiling = MAX_HEADER_BYTES + 8192 + 64;
+        assert!(
+            consumed.get() <= ceiling,
+            "read {} bytes off a {}-byte flood; expected to stop by {}",
+            consumed.get(),
+            MAX_HEADER_BYTES * 4,
+            ceiling
+        );
+    }
+
+    #[test]
+    fn the_header_budget_spans_the_whole_block_not_each_line() {
+        // A valid request line followed by an endless header line: the budget
+        // must already be partly spent, so this still stops at the ceiling.
+        let consumed = std::rc::Rc::new(std::cell::Cell::new(0usize));
+        let raw = b"GET /health HTTP/1.1\r\n";
+        let flood = Flood { remaining: MAX_HEADER_BYTES * 4, consumed: std::rc::Rc::clone(&consumed) };
+        assert!(read_request(raw.chain(flood)).is_err());
+        assert!(
+            consumed.get() <= MAX_HEADER_BYTES + 8192 + 64,
+            "read {} bytes after a valid request line",
+            consumed.get()
+        );
+    }
+
+    #[test]
+    fn the_host_header_is_parsed() {
+        let raw = "GET /health HTTP/1.1\r\nHost: 127.0.0.1:8787\r\n\r\n";
+        assert_eq!(
+            read_request(raw.as_bytes()).expect("parses").host.as_deref(),
+            Some("127.0.0.1:8787")
+        );
+        let raw = "GET /health HTTP/1.1\r\n\r\n";
+        assert_eq!(read_request(raw.as_bytes()).expect("parses").host, None);
     }
 
     #[test]
