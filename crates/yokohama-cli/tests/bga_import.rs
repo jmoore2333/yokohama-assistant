@@ -149,6 +149,90 @@ fn the_acceptance_replay_reaches_m153_and_stops_on_the_documented_rules_gap() {
     assert!(outcome.text.contains("4TH tech"), "{}", outcome.text);
 }
 
+/// H3's CORPUS-STREAMED-AS-LIVE proof (plan §6 / the H3 brief, requirement 4):
+/// the real corpus appended to a temp file in raw byte chunks — boundaries
+/// cutting JSON lines wherever they fall — while the follower polls, with a
+/// KILL-AND-RESTART in the middle, must reach a record BYTE-IDENTICAL to the
+/// batch import of the same file, including the same m154 hold: the documented
+/// D3 engine-rules divergence is printed exactly ONCE by the follower that
+/// reaches it, the follower keeps tailing (post-hold appends change nothing),
+/// and it never exits on its own.
+#[test]
+fn the_follower_streams_the_corpus_to_the_batch_state_and_holds_at_m154() {
+    use yokohama_cli::bga::follow::{FollowOptions, Follower};
+    let Some(_) = corpus_text() else { return };
+    let corpus = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../bridge-captures/895724349.ndjson"
+    );
+    let dir = std::env::temp_dir().join(format!("bga-h3-stream-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+
+    // The batch reference: the full-corpus import, stopped at m154, saved.
+    let batch_out = dir.join("batch.json");
+    let args = yokohama_cli::bga::import::parse_args(&[
+        corpus.to_string(),
+        "--out".to_string(),
+        batch_out.display().to_string(),
+    ])
+    .unwrap();
+    let outcome = yokohama_cli::bga::import::run(&args, Rules::standard()).unwrap();
+    assert!(outcome.text.contains("progressed through BGA move 153"), "{}", outcome.text);
+
+    // The live stream: raw 80KB chunks, a restart after chunk 10.
+    let live = dir.join("live.ndjson");
+    let follow_out = dir.join("follow.json");
+    let mk = || {
+        Follower::new(
+            FollowOptions { path: live.clone(), table: None, out: Some(follow_out.clone()) },
+            Rules::standard(),
+        )
+    };
+    let bytes = std::fs::read(corpus).unwrap();
+    let mut follower = mk();
+    let mut frames_after_restart: Vec<String> = Vec::new();
+    let mut completed = false;
+    for (i, chunk) in bytes.chunks(80_000).enumerate() {
+        use std::io::Write;
+        if i == 10 {
+            // The kill: a fresh follower re-ingests the same file (dedupe
+            // makes that idempotent) and continues where the game is.
+            follower = mk();
+        }
+        let mut f = std::fs::OpenOptions::new().create(true).append(true).open(&live).unwrap();
+        f.write_all(chunk).unwrap();
+        drop(f);
+        let p = follower.poll();
+        if let Some(frame) = p.frame {
+            if i >= 10 {
+                frames_after_restart.push(frame);
+            }
+        }
+        completed |= p.complete;
+    }
+    assert!(!completed, "the m154 hold must never read as completion");
+
+    // The hold: rendered exactly once by the follower that reached it, and a
+    // post-hold quiet poll re-renders nothing (it keeps tailing silently).
+    let holds: Vec<&String> = frames_after_restart
+        .iter()
+        .filter(|f| f.contains("ENGINE-RULES divergence (census §4.2)"))
+        .collect();
+    assert_eq!(holds.len(), 1, "the documented divergence must print exactly once");
+    assert!(holds[0].contains("replayed through BGA move 153"), "{}", holds[0]);
+    assert!(holds[0].contains("still tailing"), "{}", holds[0]);
+    let quiet = follower.poll();
+    assert!(quiet.frame.is_none() && quiet.lines.is_empty() && !quiet.complete);
+
+    // The byte-identity: streamed-as-live == batch, record and digest alike.
+    assert_eq!(
+        std::fs::read(&batch_out).unwrap(),
+        std::fs::read(&follow_out).unwrap(),
+        "the streamed follower's record differs from the batch import's"
+    );
+    std::fs::remove_dir_all(&dir).ok();
+}
+
 /// The bounded run (`--through 153`) completes cleanly — 32 checkpoints green
 /// on exactly one surviving hypothesis — and its emitted record LOADS, which
 /// is a full replay + invariants + terminal-digest verification in

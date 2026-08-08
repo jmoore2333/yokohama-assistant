@@ -31,21 +31,29 @@ pub struct ImportArgs {
     pub through: Option<u64>,
     pub out: Option<PathBuf>,
     pub report: Option<PathBuf>,
+    /// H3: tail the capture as the relay appends, re-replaying and re-rendering
+    /// as state advances (`follow.rs`). A flag on `import` rather than its own
+    /// keyword because design §2.3 makes catch-up and live-follow the SAME
+    /// translator on two feeds — one entry point, one place that knows how a
+    /// `Session` is built.
+    pub follow: bool,
 }
 
 /// Parse everything after the `import` keyword.
 pub fn parse_args(args: &[String]) -> Result<ImportArgs, ImportError> {
     let usage = "import <capture.ndjson> [--table <id>] [--answers] [--through <move_id>] \
-                 [--out <record.json>] [--report <path>]";
+                 [--out <record.json>] [--report <path>] [--follow]";
     let mut path: Option<PathBuf> = None;
     let mut table: Option<u64> = None;
     let mut answers_only = false;
     let mut through: Option<u64> = None;
     let mut out: Option<PathBuf> = None;
     let mut report: Option<PathBuf> = None;
+    let mut follow = false;
     let mut it = args.iter();
     while let Some(arg) = it.next() {
         match arg.as_str() {
+            "--follow" => follow = true,
             "--table" => {
                 let v = it.next().ok_or_else(|| ImportError::Usage {
                     detail: format!("--table needs a value; {usage}"),
@@ -89,6 +97,25 @@ pub fn parse_args(args: &[String]) -> Result<ImportArgs, ImportError> {
             }
         }
     }
+    if follow {
+        // The batch-only flags name products of a run that ENDS; the follower
+        // does not end on its own, so combining them would silently mean
+        // something other than what was typed. Refused, never reinterpreted.
+        for (flag, set) in [
+            ("--answers", answers_only),
+            ("--through", through.is_some()),
+            ("--report", report.is_some()),
+        ] {
+            if set {
+                return Err(ImportError::Usage {
+                    detail: format!(
+                        "`--follow` cannot be combined with `{flag}` — the follower tails the \
+                         live capture and has no batch bound or one-shot report; {usage}"
+                    ),
+                });
+            }
+        }
+    }
     Ok(ImportArgs {
         path: path.ok_or_else(|| ImportError::Usage {
             detail: format!("missing capture path; {usage}"),
@@ -98,6 +125,7 @@ pub fn parse_args(args: &[String]) -> Result<ImportArgs, ImportError> {
         through,
         out,
         report,
+        follow,
     })
 }
 
@@ -154,18 +182,18 @@ fn bga_final_totals(feed: &CollapsedFeed) -> Option<Vec<(String, i64)>> {
     None
 }
 
-struct AttemptOutcome {
-    label: String,
-    report: ReplayReport,
-    session: crate::session::Session,
-    stop: Option<String>,
+pub(crate) struct AttemptOutcome {
+    pub(crate) label: String,
+    pub(crate) report: ReplayReport,
+    pub(crate) session: crate::session::Session,
+    pub(crate) stop: Option<String>,
 }
 
 fn run_replay_attempt(
     resolved: &Resolved,
     answers: &super::setup::SetupAnswers,
     feed: &CollapsedFeed,
-    args: &ImportArgs,
+    through: Option<u64>,
     rules: &Rules,
     label: String,
 ) -> Result<AttemptOutcome, ImportError> {
@@ -177,7 +205,7 @@ fn run_replay_attempt(
         &|pid| seats.iter().find(|s| s.bga_player_id == pid).map(|s| s.seat),
         &mapper,
     )?;
-    if let Some(bound) = args.through {
+    if let Some(bound) = through {
         stream.facts.retain(|tf| tf.move_id <= bound);
         stream.checkpoints.retain(|cp| cp.move_id <= bound);
     }
@@ -188,6 +216,128 @@ fn run_replay_attempt(
     };
     let (session, report) = translator.into_session();
     Ok(AttemptOutcome { label, report, session, stop })
+}
+
+/// The whole hypothesis-looped replay over an already-collapsed feed — the
+/// shared core of the batch `run` and the H3 follower. `best` is the attempt a
+/// caller should look at: the first SURVIVOR when any attempt ran the whole
+/// stream clean, else the best-progress attempt (whose `stop` carries the
+/// honest STOP story). Batch and follow differ only in what they do with
+/// MULTIPLE survivors: batch refuses (an ended capture that does not
+/// discriminate needs owner input), the follower keeps tailing (mid-game,
+/// undiscriminated hypotheses are the EXPECTED state until the claims arrive).
+pub(crate) struct Replays {
+    pub(crate) resolved: Resolved,
+    pub(crate) attempts: Vec<AttemptOutcome>,
+    pub(crate) survivors: Vec<usize>,
+    pub(crate) best: usize,
+}
+
+pub(crate) fn replay_attempts(
+    answers: super::setup::SetupAnswers,
+    feed: &CollapsedFeed,
+    rules: &Rules,
+    through: Option<u64>,
+) -> Result<Replays, ImportError> {
+    let resolved = {
+        let seats = answers.seats.clone();
+        let mapper = super::orders::OrderMapper::from_rules(rules)?;
+        let stream = super::facts::extract(
+            feed,
+            &|pid| seats.iter().find(|s| s.bga_player_id == pid).map(|s| s.seat),
+            &mapper,
+        )?;
+        resolve(answers, feed, &stream, rules)?
+    };
+
+    // Hypothesis combinations: the cartesian product over the (small) list.
+    let mut combos: Vec<Vec<(usize, yokohama_core::AchievementType)>> = vec![Vec::new()];
+    for h in &resolved.hypotheses {
+        let mut next = Vec::new();
+        for combo in &combos {
+            for cand in &h.candidates {
+                let mut c = combo.clone();
+                c.push((h.category, *cand));
+                next.push(c);
+            }
+        }
+        combos = next;
+    }
+
+    let mut attempts: Vec<AttemptOutcome> = Vec::new();
+    for combo in &combos {
+        let mut answers = resolved.answers.clone();
+        let mut label_parts = Vec::new();
+        for (cat, ty) in combo {
+            answers.achievements[*cat] = Evidence::Evidenced {
+                value: *ty,
+                provenance: format!("hypothesis candidate for claimed category {cat}"),
+            };
+            label_parts.push(format!("{}={:?}", ["A", "B", "C"][*cat], ty));
+        }
+        let label = if label_parts.is_empty() {
+            "no hypotheses".to_string()
+        } else {
+            label_parts.join(", ")
+        };
+        attempts.push(run_replay_attempt(&resolved, &answers, feed, through, rules, label)?);
+    }
+
+    let survivors: Vec<usize> = attempts
+        .iter()
+        .enumerate()
+        .filter(|(_, a)| a.stop.is_none())
+        .map(|(i, _)| i)
+        .collect();
+    let best = match survivors.first() {
+        Some(&first) => first,
+        None => attempts
+            .iter()
+            .enumerate()
+            .max_by_key(|(_, a)| a.report.last_move_id)
+            .map(|(i, _)| i)
+            .expect("at least one attempt ran"),
+    };
+    Ok(Replays { resolved, attempts, survivors, best })
+}
+
+/// The terminal cross-check text (the honesty dividend): engine final scores
+/// against BGA's own `finalScoring` totals, per seat. Empty when the engine
+/// state is not at game end.
+pub(crate) fn final_check_text(
+    session: &crate::session::Session,
+    resolved: &Resolved,
+    feed: &CollapsedFeed,
+) -> String {
+    let mut final_check = String::new();
+    if session.is_over() {
+        let engine_scores = session.final_scores();
+        match bga_final_totals(feed) {
+            Some(bga) => {
+                final_check.push_str("  final-score cross-check (engine vs BGA):\n");
+                for (pid, score) in &engine_scores {
+                    let seat = pid.0 as usize;
+                    let name = &resolved.answers.seats[seat].name;
+                    let bga_total = bga.iter().find(|(n, _)| n == name).map(|(_, t)| *t);
+                    match bga_total {
+                        Some(t) if t == *score as i64 => {
+                            final_check
+                                .push_str(&format!("    seat {seat} ({name}): {score} == BGA {t} ✓\n"));
+                        }
+                        Some(t) => {
+                            final_check.push_str(&format!(
+                                "    seat {seat} ({name}): engine {score} vs BGA {t} — MISMATCH\n"
+                            ));
+                        }
+                        None => final_check
+                            .push_str(&format!("    seat {seat} ({name}): no BGA column found\n")),
+                    }
+                }
+            }
+            None => final_check.push_str("  no BGA finalScoring table in the capture\n"),
+        }
+    }
+    final_check
 }
 
 fn render_report(
@@ -254,65 +404,11 @@ pub fn run(args: &ImportArgs, rules: Rules) -> Result<RunOutcome, ImportError> {
     }
 
     // ---- H2: resolution + the hypothesis-looped replay ---------------------
-    let seats = answers.seats.clone();
-    let mapper = super::orders::OrderMapper::from_rules(&rules)?;
-    let stream = super::facts::extract(
-        &feed,
-        &|pid| seats.iter().find(|s| s.bga_player_id == pid).map(|s| s.seat),
-        &mapper,
-    )?;
-    let resolved = resolve(answers, &feed, &stream, &rules)?;
-
-    // Hypothesis combinations: the cartesian product over the (small) list.
-    let mut combos: Vec<Vec<(usize, yokohama_core::AchievementType)>> = vec![Vec::new()];
-    for h in &resolved.hypotheses {
-        let mut next = Vec::new();
-        for combo in &combos {
-            for cand in &h.candidates {
-                let mut c = combo.clone();
-                c.push((h.category, *cand));
-                next.push(c);
-            }
-        }
-        combos = next;
-    }
-
-    let mut attempts: Vec<AttemptOutcome> = Vec::new();
-    for combo in &combos {
-        let mut answers = resolved.answers.clone();
-        let mut label_parts = Vec::new();
-        for (cat, ty) in combo {
-            answers.achievements[*cat] = Evidence::Evidenced {
-                value: *ty,
-                provenance: format!("hypothesis candidate for claimed category {cat}"),
-            };
-            label_parts.push(format!("{}={:?}", ["A", "B", "C"][*cat], ty));
-        }
-        let label = if label_parts.is_empty() {
-            "no hypotheses".to_string()
-        } else {
-            label_parts.join(", ")
-        };
-        attempts.push(run_replay_attempt(&resolved, &answers, &feed, args, &rules, label)?);
-    }
-
-    let survivors: Vec<usize> = attempts
-        .iter()
-        .enumerate()
-        .filter(|(_, a)| a.stop.is_none())
-        .map(|(i, _)| i)
-        .collect();
+    let reps = replay_attempts(answers, &feed, &rules, args.through)?;
+    let Replays { resolved, attempts, survivors, best } = &reps;
     let chosen = match survivors.as_slice() {
         [one] => *one,
-        [] => {
-            // Best progress carries the honest STOP story.
-            attempts
-                .iter()
-                .enumerate()
-                .max_by_key(|(_, a)| a.report.last_move_id)
-                .map(|(i, _)| i)
-                .expect("at least one attempt ran")
-        }
+        [] => *best, // Best progress carries the honest STOP story.
         several => {
             // Distinguishable only if their final states differ; with our
             // constraint translation every survivor replayed the same moves,
@@ -330,42 +426,13 @@ pub fn run(args: &ImportArgs, rules: Rules) -> Result<RunOutcome, ImportError> {
     let outcome = &attempts[chosen];
 
     // ---- terminal cross-check (the honesty dividend) -----------------------
-    let mut final_check = String::new();
     let replay_complete = outcome.stop.is_none() && outcome.session.is_over();
-    if outcome.session.is_over() {
-        let engine_scores = outcome.session.final_scores();
-        match bga_final_totals(&feed) {
-            Some(bga) => {
-                final_check.push_str("  final-score cross-check (engine vs BGA):\n");
-                for (pid, score) in &engine_scores {
-                    let seat = pid.0 as usize;
-                    let name = &resolved.answers.seats[seat].name;
-                    let bga_total = bga
-                        .iter()
-                        .find(|(n, _)| n == name)
-                        .map(|(_, t)| *t);
-                    match bga_total {
-                        Some(t) if t == *score as i64 => {
-                            final_check.push_str(&format!("    seat {seat} ({name}): {score} == BGA {t} ✓\n"));
-                        }
-                        Some(t) => {
-                            final_check.push_str(&format!(
-                                "    seat {seat} ({name}): engine {score} vs BGA {t} — MISMATCH\n"
-                            ));
-                        }
-                        None => final_check
-                            .push_str(&format!("    seat {seat} ({name}): no BGA column found\n")),
-                    }
-                }
-            }
-            None => final_check.push_str("  no BGA finalScoring table in the capture\n"),
-        }
-    }
+    let final_check = final_check_text(&outcome.session, resolved, &feed);
 
-    out_text.push_str(&render_report(outcome, &resolved, &feed, &final_check));
+    out_text.push_str(&render_report(outcome, resolved, &feed, &final_check));
     if attempts.len() > 1 {
         out_text.push_str("  hypothesis attempts:\n");
-        for a in &attempts {
+        for a in attempts {
             out_text.push_str(&format!(
                 "    [{}] → {}\n",
                 a.label,
@@ -446,6 +513,37 @@ mod tests {
         assert!(!outcome.session_built);
         assert!(outcome.text.contains("BGA setup answer sheet — table 895724349"));
         assert!(outcome.text.contains("the wizard would still ask"));
+    }
+
+    /// Two imports of one capture must produce byte-identical records — the
+    /// property H3's follow-vs-batch pins ride on, and one that was FALSE
+    /// before the H3 branch: `resolve_tech_id` picked assumption-resolved tech
+    /// identities off `TechRegistry`'s HashMap iteration order, which is
+    /// seeded per hasher instance, so two `Rules::standard()` constructions
+    /// could (and did, flakily) disagree on a lab reveal's card. Each run here
+    /// gets its OWN `Rules` construction so the test discriminates exactly
+    /// that.
+    #[test]
+    fn two_imports_of_one_capture_emit_byte_identical_records() {
+        let path = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../yokohama-bridge/tests/data/excerpt-895724349.ndjson"
+        );
+        let dir = std::env::temp_dir().join(format!(
+            "bga-import-det-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut records = Vec::new();
+        for i in 0..2 {
+            let out = dir.join(format!("det-{i}.json"));
+            let args = parse_args(&strs(&[path, "--out", &out.display().to_string()])).unwrap();
+            run(&args, Rules::standard()).unwrap();
+            records.push(std::fs::read(&out).unwrap());
+        }
+        assert_eq!(records[0], records[1], "two imports of one capture disagreed");
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]

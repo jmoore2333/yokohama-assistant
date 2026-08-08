@@ -77,8 +77,15 @@ fn resolve_tech_id(
             ),
         }
     })?;
-    // Engine cards in this class, excluding copies already used.
-    let class_cards: Vec<&yokohama_core::TechCard> = rules
+    // Engine cards in this class, excluding copies already used. SORTED by
+    // card id, because `TechRegistry` is a `HashMap` whose iteration order is
+    // process-seeded (the same fact wizard.rs pins for its tile roster) — an
+    // unsorted `.first()` here picked a PROCESS-RANDOM card for every
+    // assumption-resolved class, which is what made two imports of one capture
+    // disagree on a lab reveal's identity (caught by H3's follow-vs-batch
+    // byte-identity pin). The sort is also what makes the documented rule
+    // literal: "the LOWEST engine copy among class candidates".
+    let mut class_cards: Vec<&yokohama_core::TechCard> = rules
         .techs
         .iter()
         .filter(|c| {
@@ -87,6 +94,7 @@ fn resolve_tech_id(
                 && !used.contains(&c.id.0)
         })
         .collect();
+    class_cards.sort_by_key(|c| c.id.0);
     let titles: BTreeSet<&str> = class_cards.iter().map(|c| c.name.as_str()).collect();
     match class_cards.first() {
         None => Err(ImportError::Sheet {

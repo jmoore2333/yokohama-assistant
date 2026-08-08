@@ -17,8 +17,11 @@
 //!   snapshot + collapsed feed → an evidence-carrying answer sheet and, where
 //!   the evidence suffices, a live-mode `Session`.
 //! - [`import`] — the `yokohama-cli import` entry point (plan T6).
+//! - [`follow`] — H3 live-follow: the read-only spectator that tails a
+//!   growing capture, recomputing the checked replay as the relay appends.
 
 pub mod facts;
+pub mod follow;
 pub mod import;
 pub mod keys;
 pub mod names;

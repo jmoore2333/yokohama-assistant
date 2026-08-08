@@ -134,6 +134,60 @@ re-send by construction.
 
 ---
 
+## 6. Live-game runsheet (H3 — the sheet a gate run follows)
+
+Everything above, in the order a real game needs it, plus the three
+disciplines the captured corpus proved matter. The plan's measured reason for
+step 3 (plan §0.5 / §6a): a snapshot taken mid-game cannot recover the initial
+Port and Laboratory cards backwards, so **a snapshot before move 1 is what
+makes a move-1 replay possible at all**.
+
+1. **Before sitting down**: start the relay (§1). Load — or if it was already
+   loaded, **reload** — the extension in `chrome://extensions` (§2). Reloading
+   the extension invalidates any BGA tab that was already open, so do it
+   before the table tab exists, not after.
+2. **Open the table tab** (§3), *after* the extension is loaded. If in any
+   doubt about the ordering, reload the tab: the wrapper installs at page load
+   and can never attach to a page already running. Confirm capture lines are
+   arriving (`tail -f bridge-captures/<table>.ndjson`, or the relay console).
+3. **Snapshot at table open, BEFORE move 1** (§4): click the toolbar button
+   while the table is still in setup. This banks the initial Port A six and
+   Lab A six — the one observation the notification feeds never repeat. A
+   game whose first snapshot is mid-game imports as a bounded replay, not a
+   move-1 replay.
+4. **Start the follower** in a repo terminal:
+
+   ```bash
+   cargo run -p yokohama-cli -- import bridge-captures/<table>.ndjson --follow --out bga-<table>.json
+   ```
+
+   It renders the game as a read-only screen and redraws as moves land. A
+   `HOLD` line is not a crash: it names what the pipeline cannot yet pass
+   (snapshot not yet arrived, evidence pending, a documented rules
+   divergence), prints once, and the follower resumes on its own when the
+   capture provides more. Leave it running; Ctrl-C and re-running it later
+   reaches the identical state from the same file.
+5. **Extension reload discipline, mid-game**: do not reload the extension
+   during play unless something is broken. If you must (or Chrome updates
+   it), **reload the BGA tab immediately after** — an extension reload
+   orphans the page's wrapper ("Extension context invalidated"), and until
+   the tab reloads, nothing is being captured. After any tab reload, take a
+   fresh snapshot (a free checkpoint anchor; the reload also re-banks the
+   cumulative history, covering whatever the gap missed).
+6. **The reload-at-end ritual**: when the game ends, reload the tab **once**
+   and take a final snapshot. The history endpoint is cumulative, so the
+   reload re-banks the entire game in one response — the belt to the socket's
+   braces — and the end-of-game snapshot plus BGA's `finalScoring` table are
+   what the final-score cross-check reads. The follower prints that
+   cross-check (engine total vs BGA total, per seat) when the replay reaches
+   game end, and exits.
+7. **Afterwards**: the capture file is the irreplaceable artifact — it stays
+   in `bridge-captures/` (gitignored). The follower's `--out` record is a
+   normal live-mode save: `cargo run -p yokohama-cli -- bga-<table>.json`
+   opens it in the driver.
+
+---
+
 ## Verifying a change to the bridge
 
 Both halves have their own suite, and neither runs the other's:
@@ -176,8 +230,9 @@ capture the move log; that is what the extension is for.
 
 ## Status of this sheet
 
-The relay half is verified: routes, refusals, and the NDJSON output were
-exercised against the running binary (2026-08-07). **The extension half has not
-yet been loaded in Chrome against a live table** — that is H0's owner-in-the-loop
-step, and the first run should confirm that captures appear for table
-#895608640 before anything downstream is built on them.
+The relay half was verified against the running binary (2026-08-07). The
+extension half was proven live on 2026-08-08 against table #895724349: the
+fetch/XHR, snapshot, and WebSocket paths all banked a complete real game end
+to end (execution ledger, H0 rows). §6's runsheet is the H3 procedure the
+gate run follows; its snapshot-before-move-1 step is the one thing no later
+diligence can recover.
