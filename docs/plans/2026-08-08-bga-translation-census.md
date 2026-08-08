@@ -16,7 +16,7 @@ Measured, across all three snapshots and every socket-era card map:
 - **Displays slide left and refill at the right with strictly ascending keys.** Port display: snapshot@A keys 7–12 (positions 1–6), snapshot@B keys 9–14, snapshot@C keys 14–19. Lab display: keys 2–7 → {2,5,6,7,8,9} → {2,6,7,8,9,10} — in every case the surviving keys keep their relative order and each refill is the LOWEST key not yet seen outside the deck.
 - **The deck depletes in ascending key order**: order deck keys 13–20 → 15–20 → {20}; tech deck keys 8–30 → 10–30 → 11–30. Zero violations anywhere in the corpus.
 - Working the mechanism backward: **initial Port A = `order_key` 5–10** (keys 5,6 are the two LOW-zone takes at m13/m14 — power 2 gave "access to Low", and the takes' identities sit at `location 4` in snapshot@A; keys 7–10 are snapshot@A display positions 1–4; keys 11,12 are the m14 refill pair at positions 5,6), and **initial Lab A = `tech_key` 1–6** (key 1 is the m6 University take, held at `location 4`; keys 2–6 are snapshot@A display positions 1–5; key 7 is the m6 refill at position 6).
-- **Order keys 1–4 are the four dealt starting orders**, two consecutive keys per seat: key 1 = XeroxMan's discard (m2), key 2 = his kept card (`order_id 27`, the card inventory §7.2 proved he held all game), key 3 = acmuriel's discard (m3), key 4 = her kept card (revealed by completion at m18).
+- **Order keys 1–4 are the four dealt starting orders**, two consecutive keys per seat: key 1 = Player_A's discard (m2), key 2 = his kept card (`order_id 27`, the card inventory §7.2 proved he held all game), key 3 = Player_B's discard (m3), key 4 = her kept card (revealed by completion at m18).
 
 **The §8.3 deck fence is honored by construction**: no `location "1"` row's identity is ever read. Every identity above is taken from a row at location 2/4/5 — the moments our model calls reveals — and the key arithmetic uses only the KEY (a slot number), never an identity field. Refill reveals during the replay take each card's identity from the earliest snapshot/notification where that key sits at location 2/4.
 
@@ -60,7 +60,7 @@ Class totals (per-move, classes are compound):
 | 3 | UNIVERSITY (m15, m44, m98 — all thin) |
 | 1 | PORT-SECOND-DECLINED (m129, sock) · 1 RETURN-PRESIDENT (m193) · 1 RETURN-RECOVER-NONE+FINAL-SCORING (m194) · 1 EOG-TRIGGER (m183) · 1 LAST-ROUND (m185) |
 
-Mercenary uses: 3 `resourceChange` mercenary-variant notifications (`fa_used` ends at 2 for XeroxMan, 1 for acmuriel). Every class is nonempty where the game exercised it; `stationPlacement`/`buildHouse`/`removeAssistants` never fired (inventory §7.4 — hard-error arms).
+Mercenary uses: 3 `resourceChange` mercenary-variant notifications (`fa_used` ends at 2 for Player_A, 1 for Player_B). Every class is nonempty where the game exercised it; `stationPlacement`/`buildHouse`/`removeAssistants` never fired (inventory §7.4 — hard-error arms).
 
 Evidence-ladder placement per class (plan T7's four classes):
 
@@ -74,7 +74,7 @@ Evidence-ladder placement per class (plan T7's four classes):
 1. **m82 — church yen payment price.** BGA: `res_list "1 tea,1 fish,1 silk,1 copper,2 yens"`, `added_faith 5` — the yen TYPE cost **2 yen** for its +1 faith. Engine (`validate_church_action`/`apply`): the yen type costs **1 yen**. Faith agrees (5 types = +5); the yens counter diverges by 1 from m82 on. If real, this is an owner-gated RULES question (engine vs BGA church yen price), surfacing at the first yen-sensitive checkpoint after m82 — NOT an engine edit, NOT a translator hack.
 2. **m106/m107, m154 — movement icon TO HAND.** BGA moves an assistant "from ⟨area⟩ to their hand" (m106 Customs→hand, m154 Bank→hand). Engine `ChooseAssistantMove{from, to: AreaId}` cannot target the hand. m106+m107 compose to a state-equivalent pair (Customs→hand, hand→EA ≡ Customs→EA + decline) — translatable with a stated composition rule. **m154 has no second leg** (the assistant PARKS in hand): state-inequivalent, untranslatable without widening the engine → candidate STOP at m154 (79% of the game) pending an owner rules ruling on movement-icon targets.
 3. **m88 — 5-power take after movement-icon resolutions.** BGA fired `powerBonus` (Church token, 3 Fish) after three assistant-move icons resolved. Engine order (choices resolve before the FivePowerBonus phase) reaches the same evaluation point; whether Church still counts ≥5 power there is decided by the replayed state. If BGA grants where the engine does not, that is a phase-timing rules question.
-4. **`power_tokens` counter ≠ take count — RESOLVED, no risk.** BGA's counter hit 5 by m90 on 4 board takes; the engine's `Tokens5` progress counts five-power tokens PLUS mercenaries, and XeroxMan held 1 mercenary — 4+1=5, both models agree.
+4. **`power_tokens` counter ≠ take count — RESOLVED, no risk.** BGA's counter hit 5 by m90 on 4 board takes; the engine's `Tokens5` progress counts five-power tokens PLUS mercenaries, and Player_A held 1 mercenary — 4+1=5, both models agree.
 5. **Snapshot `move_nbr` LAGS truth** (snapshot "99" contains m102's take; snapshot "16" contains m18's completion). Checkpoint anchoring must match on CONTENT (counters/card locations), never on `move_nbr`.
 
 ## 5. What T8/T9 build on this

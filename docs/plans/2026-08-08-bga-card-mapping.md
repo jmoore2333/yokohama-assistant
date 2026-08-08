@@ -2,7 +2,7 @@
 
 **Date:** 2026-08-08 · **Status:** EVIDENCE, not a shipped table. Every row below is derived from ONE captured game and carries its provenance; nothing here is a guess, and every gap is written down as a gap. H1's card mapper is built from this, but the mapper's own checked table is a source file with its own tests — this document is the argument for what that table may legally contain.
 
-**Corpus:** `bridge-captures/895724349.ndjson` (gitignored, **491 non-empty lines measured at this HEAD** — 488 `packets` + 3 `snapshot`; the ledger's live-run row reads "490 captures", a one-line difference left unreconciled here because nothing below depends on it — 1.85 MB) — BGA table **#895724349**, a COMPLETE 2-player game, **XeroxMan** `88889596` (the capturing session's own seat) vs **acmuriel** `88368036`. Three `gamedatas` snapshots (two mid-game, one end-of-game), four `notificationHistory` XHR responses (fullest: 187 packets), 484 WebSocket frames. Duplicates are normal (at-least-once, two sockets); everything below deduped on payload identity, never on `received_at_ms` (ledger N-4).
+**Corpus:** `bridge-captures/895724349.ndjson` (gitignored, **491 non-empty lines measured at this HEAD** — 488 `packets` + 3 `snapshot`; the ledger's live-run row reads "490 captures", a one-line difference left unreconciled here because nothing below depends on it — 1.85 MB) — BGA table **#895724349**, a COMPLETE 2-player game, **Player_A** `88889596` (the capturing session's own seat) vs **Player_B** `88368036`. Three `gamedatas` snapshots (two mid-game, one end-of-game), four `notificationHistory` XHR responses (fullest: 187 packets), 484 WebSocket frames. Duplicates are normal (at-least-once, two sockets); everything below deduped on payload identity, never on `received_at_ms` (ledger N-4).
 
 **Engine reference:** `crates/yokohama-core/src/game/data.rs` at branch `phase3.5b-bga-bridge`. **The engine was not touched to produce this** — the fence held; this is a read-only analysis.
 
@@ -102,8 +102,8 @@ Derived from the 20 matched pairs, then corroborated twice independently.
 
 | Player | source events | predicted | `counters` at end | agree |
 |---|---|---|---|---|
-| XeroxMan | orders c5×3, c2×1, c3×1, c4×1 + techs c5×2, c2×2 | gb 5, ge 3, fr 1, ne 1, us 0 | `flags_gb 5, flags_ge 3, flags_fr 1, flags_ne 1, flags_us 0` | ✅ |
-| acmuriel | orders c3×2, c5×1, c2×1 | fr 2, gb 1, ge 1, ne 0, us 0 | `flags_fr 2, flags_gb 1, flags_ge 1, flags_ne 0, flags_us 0` | ✅ |
+| Player_A | orders c5×3, c2×1, c3×1, c4×1 + techs c5×2, c2×2 | gb 5, ge 3, fr 1, ne 1, us 0 | `flags_gb 5, flags_ge 3, flags_fr 1, flags_ne 1, flags_us 0` | ✅ |
+| Player_B | orders c3×2, c5×1, c2×1 | fr 2, gb 1, ge 1, ne 0, us 0 | `flags_fr 2, flags_gb 1, flags_ge 1, flags_ne 0, flags_us 0` | ✅ |
 
 **Honest scope of code 1 = American.** No order or tech of BGA country 1 was ever completed or acquired in this game, so there is **no flag-noun evidence** for it. It rests on (a) elimination — codes 2–5 are pinned by name *and* by arithmetic, and the counter suffix set is exactly `{us, gb, ge, fr, ne}`; (b) the one matched pair BGA 13 → O31, whose engine country is American; (c) the tech-class multiset agreement of §4.2, which fails unless 1 = American. That is three independent supports and no contradicting evidence — but it is **derived, not directly named**, and H1's table should carry that annotation.
 
@@ -140,7 +140,7 @@ Grouping BGA's 30 tech observations by `(mapped country, req_gears)` and the eng
 
 ### 4.3 Direct name evidence
 
-Only four `techAcquisition` notifications occurred, all by XeroxMan, and only one of them carries `tech_card` alongside `tech_name`:
+Only four `techAcquisition` notifications occurred, all by Player_A, and only one of them carries `tech_card` alongside `tech_name`:
 
 | packet | move | `tech_name` | `tech_card` present? | flag gained (log) |
 |---|---|---|---|---|
@@ -149,7 +149,7 @@ Only four `techAcquisition` notifications occurred, all by XeroxMan, and only on
 | 107 | 102 | **Exposition** | ❌ | Germany |
 | 127 | 120 | **Mining Technology** | ✅ `tech_id: "2", country: "2", req_gears: "3"` | Germany |
 
-(A fifth tech event, packet 191, is `techRefusal` by acmuriel — no card. acmuriel acquired **zero** techs all game, confirmed by `tech_count: "0"` in the end snapshot; so these four acquisitions are the complete set and the four owned `tech_key`s account for all of them.)
+(A fifth tech event, packet 191, is `techRefusal` by Player_B — no card. Player_B acquired **zero** techs all game, confirmed by `tech_count: "0"` in the end snapshot; so these four acquisitions are the complete set and the four owned `tech_key`s account for all of them.)
 
 **The ownership-timeline chain** closes two more. Owned techs (`location: "4"`) accumulate across the three snapshots:
 
@@ -254,9 +254,9 @@ Three things in `gamedatas` are visible to the capturing client that a seated pl
 
 **7.1 The order deck is fully identified, IN DRAW ORDER.** The first snapshot lists 8 cards at `location: "1"` (keys 13..20 = ids 30, 34, 13, 26, 29, 5, 10, 2). The subsequent refills arrived in **exactly ascending `order_key` order** — 30, 34, then 13 (pkt 119), 26 (pkt 138), 29 (pkt 155), 5 and 10 (pkt 184) — leaving id 2 as the single card matching `deck_count: "1"` at the end. So `order_key` is the deck position and BGA hands the client the whole future deck. The engine's own `GameState.order_deck` is the same information (CLAUDE.md's hidden-information paragraph), so populating it from the capture is *representationally* fine and makes replay faithful — **but it must never be routed into a `PlayerView`, and the decision to use it has to be explicit in H1's design rather than a side effect of copying the snapshot.**
 
-**7.2 The opponent's DISCARDED setup order is revealed.** `orderDiscarded` at packet 3 carries acmuriel's full card (`order_id 25` → O27) in the history XeroxMan's client fetched. In the physical game that card goes back unseen. Combined with 7.1, the opponent's *kept* starting order becomes derivable by elimination. **The importer must not derive it.** The engine's live-tracking model is `starting_order_hidden = true` with both dealt cards in `orders_removed`, and that is the model the record must carry — `StartingOrderChoice::Unknown` for the opponent seat, regardless of what the capture would permit.
+**7.2 The opponent's DISCARDED setup order is revealed.** `orderDiscarded` at packet 3 carries Player_B's full card (`order_id 25` → O27) in the history Player_A's client fetched. In the physical game that card goes back unseen. Combined with 7.1, the opponent's *kept* starting order becomes derivable by elimination. **The importer must not derive it.** The engine's live-tracking model is `starting_order_hidden = true` with both dealt cards in `orders_removed`, and that is the model the record must carry — `StartingOrderChoice::Unknown` for the opponent seat, regardless of what the capture would permit.
 
-**7.3 The opponent's held order was visible at the end-of-game snapshot** (`order_key 12`, id 28, `completed: "0"`, `player_id` acmuriel, matching his `orders_hand: "1"`). This is almost certainly ordinary end-of-game reveal — **the corpus cannot distinguish that from a mid-game leak**, because at both mid-game snapshots acmuriel's `orders_hand` was `0` and the question never arose. **Design §6's private-info check is therefore NOT settled by this corpus.** The test that settles it: a mid-game snapshot taken while the opponent holds an uncompleted order. Until then, treat opponent hand contents as hidden by policy, and note that everything the opponent acquired in this game came from the **face-up** port display — publicly known at the table too, so no `orderAcquisition` observed here is evidence of a leak.
+**7.3 The opponent's held order was visible at the end-of-game snapshot** (`order_key 12`, id 28, `completed: "0"`, `player_id` Player_B, matching his `orders_hand: "1"`). This is almost certainly ordinary end-of-game reveal — **the corpus cannot distinguish that from a mid-game leak**, because at both mid-game snapshots Player_B's `orders_hand` was `0` and the question never arose. **Design §6's private-info check is therefore NOT settled by this corpus.** The test that settles it: a mid-game snapshot taken while the opponent holds an uncompleted order. Until then, treat opponent hand contents as hidden by policy, and note that everything the opponent acquired in this game came from the **face-up** port display — publicly known at the table too, so no `orderAcquisition` observed here is evidence of a leak.
 
 ---
 

@@ -17,7 +17,7 @@ Every number below was **measured** from one corpus, by parsing it. Nothing here
 | Bytes | 1,897,569 (1.81 MiB) |
 | Wall span | `received_at_ms` 1786155213076 → 1786158337587 = **3,124.5 s** (~52 min) |
 | Table | **#895724349**, 2 players, complete game to `finalScoring` |
-| Seats | XeroxMan `88889596` (**the capturing session's own seat**, seat no. 1) · acmuriel `88368036` (seat no. 2) |
+| Seats | Player_A `88889596` (**the capturing session's own seat**, seat no. 1) · Player_B `88368036` (seat no. 2) |
 | BGA build | `gameversion 260109-1022`, `siteversion 260807-1629`, `gameserver 11` (from `tableInfosChanged`) |
 | Companion artifact | `bridge-captures/895724349-notif-handlers.json` — 24 `notif_*` handler names enumerated from the live client |
 
@@ -137,7 +137,7 @@ Two equivalent detectors, and the stronger one is the structural one:
 {"packet_id": 124, "packet_type": "sequence", "channel": "/table/t895724349", "id": 0,
  "data": [{"uid": "6a7697cbaefd6", "type": "undoRestorePoint",
            "log": "${player_name} takes back his move",
-           "args": {"player_name": "XeroxMan"},
+           "args": {"player_name": "Player_A"},
            "lock_uuid": "a6caf967-3ef5-40f5-8449-9576a2516288", "h": "48a99c"}],
  "move_id": 117, "table_id": 895724349, "prevpacket": ["121"],
  "gamename": "yokohama", "time": 1786157003}
@@ -186,10 +186,10 @@ Same notification, both feeds:
 
 ```
 socket : {"uid":"6a7696e29f60b","type":"moveAssistant", "args":{"player_id":"88368036",
-          "player_name":"acmuriel","workers":{…24 entries…},"counters":{…},
+          "player_name":"Player_B","workers":{…24 entries…},"counters":{…},
           "from_id":"0","to_id":"3","to_loc":"Employment Agency"}}
 history: {"uid":"6a7696e29f60b","type":"moveAssistant", "args":{"player_id":"88368036",
-          "player_name":"acmuriel","to_loc":"Employment Agency"}, "h":"027ab9"}
+          "player_name":"Player_B","to_loc":"Employment Agency"}, "h":"027ab9"}
 ```
 
 ```
@@ -408,7 +408,7 @@ socket args: `player_id, player_name, res_count, res_name, tile{full tile record
 **`orderDiscarded`** — raw 4 / uniq 2 / **surv 2** — history-only, **CARRIES A REVEAL**, see §8
 args: `player_id, player_name, order{full card, location "5"}`
 log: `${player_name} selects the initial order card`
-→ the setup starting-order choice. **The log text is misleading: the card in `args.order` is the DISCARDED one, not the kept one.** Proof: XeroxMan's `orderDiscarded` names `order_key 1 / order_id 24`; the card he actually held all game is `order_key 2 / order_id 27`. Type name right, log text wrong. → feeds `StartingOrderChoice` and the boxed pile.
+→ the setup starting-order choice. **The log text is misleading: the card in `args.order` is the DISCARDED one, not the kept one.** Proof: Player_A's `orderDiscarded` names `order_key 1 / order_id 24`; the card he actually held all game is `order_key 2 / order_id 27`. Type name right, log text wrong. → feeds `StartingOrderChoice` and the boxed pile.
 
 **`achievementClaimed`** — raw 4 / uniq 2 / **surv 2** — history-only
 args: `player_id, player_name, achievement_class ("A"), vp_count`
@@ -485,7 +485,7 @@ Our live model's reveals (`reveal.rs`) are: **port refill** (`Pending::OrderReve
 
 The design asked whether `privateinc=1` carries the owner's own hand events while the opponent's stay hidden. **It does, and the mechanism is not the query parameter — it is Yokohama's own rules.**
 
-- **The opponent's kept starting order stays hidden.** `order_key 4` (acmuriel's) appears **nowhere** in the corpus until packet 18, and then only via `orderCompletion` — i.e. at the moment the rules make it public. Before that it is absent from every `orders` map in every notification and from both mid-game `gamedatas` snapshots.
+- **The opponent's kept starting order stays hidden.** `order_key 4` (Player_B's) appears **nowhere** in the corpus until packet 18, and then only via `orderCompletion` — i.e. at the moment the rules make it public. Before that it is absent from every `orders` map in every notification and from both mid-game `gamedatas` snapshots.
 - **Orders acquired from the Port are public by the rules**, and BGA publishes them accordingly: the opponent's freshly-taken, uncompleted `order_key 10` is fully visible at packet 119, well before `endGame` at packet 198. This is **not** a leak — Port cards are taken face-up.
 - Mid-game snapshots show the opponent at `orders_hand: 0` in both, so the snapshot path is not independent evidence; the socket-feed evidence above is.
 
@@ -521,7 +521,7 @@ Tech cards carry only `tech_id`, `country`, `req_gears` on the socket and only `
 **Final score.** `tableWindow` (`id: "finalScoring"`) carries BGA's own scoring table verbatim:
 
 ```
-                    XeroxMan  acmuriel  Dummy player
+                    Player_A  Player_B  Dummy player
 In game VP             115        33
 Flag sets               12         4
 Yens                     0         0

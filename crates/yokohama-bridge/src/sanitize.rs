@@ -50,7 +50,7 @@ mod tests {
 
     #[test]
     fn clean_text_including_unicode_letters_passes_through_verbatim() {
-        for s in ["XeroxMan", "acmuriel", "Table 895724349", "café — ünïcode ok", ""] {
+        for s in ["Player_A", "Player_B", "Table 895724349", "café — ünïcode ok", ""] {
             assert_eq!(sanitize(s), s, "clean text must be untouched");
         }
     }

@@ -93,9 +93,13 @@ fn the_corpus_sheet_synthesizes_with_the_measured_facts() {
     let a = synthesize(&feed, &Rules::standard()).unwrap();
     assert_eq!(a.table_id, 895_724_349);
     assert_eq!(a.player_count, 2);
-    assert_eq!(a.seats[0].name, "XeroxMan");
-    assert_eq!(a.seats[1].name, "acmuriel");
-    // Start player: first assistantPlacement (move 4) is XeroxMan's.
+    // Redaction rule (owner ruling, 2026-08-08): tracked files never carry the
+    // real BGA display names — the corpus is the source of truth for them, and
+    // what a tracked pin may assert is SHAPE: two distinct, non-empty names.
+    // (The committed excerpt fixture uses the Player_A/Player_B placeholders.)
+    assert!(!a.seats[0].name.is_empty() && !a.seats[1].name.is_empty());
+    assert_ne!(a.seats[0].name, a.seats[1].name);
+    // Start player: the first assistantPlacement (move 4) is seat 0's.
     assert_eq!(a.start_player.value(), Some(&0));
     // Own seat: the socket /player/p88889596 channel.
     assert_eq!(a.own_seat.value(), Some(&0));
@@ -253,7 +257,7 @@ fn a_perturbed_checkpoint_counter_stops_the_replay_nothing_absorbs_it() {
         &mapper,
     )
     .unwrap();
-    // Perturb XeroxMan's (seat 0) yens at the m120 checkpoint by +5. Its yens
+    // Perturb Player_A's (seat 0) yens at the m120 checkpoint by +5. Its yens
     // matched before (rev 6 agrees with BGA raw), so this manufactures a
     // divergence no engine state in the turn window can satisfy.
     let cp = stream
