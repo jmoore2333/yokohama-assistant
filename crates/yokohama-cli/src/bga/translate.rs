@@ -1705,12 +1705,17 @@ mod tests {
         // The excerpt's own checkpoints sit at moves 116-119 (`counters` nested
         // in the socket frames' body_text); the replay never reaches them across
         // the redacted gap. Replace the set with ONE checkpoint at an early
-        // move whose `yens` no engine state holds — `consume_drive` checks it
-        // when the next drive fact past move 2 lands, so the STOP is this
-        // checkpoint's, not the gap's.
+        // REAL-TURN move whose `yens` no engine state holds — `consume_drive`
+        // checks it when the next drive fact past it lands, so the STOP is
+        // this checkpoint's, not the gap's. The move id sits AT the first
+        // Placement (m4) — the live gate game taught the translator that
+        // checkpoints BELOW it are setup-era named skips (BGA sequences the
+        // starting-order discards finalize_setup atomizes), and the excerpt's
+        // redaction gap begins at m6, so m4 is the one move that is both
+        // real-turn-era and inside the excerpt's clean window.
         let pid = answers.seats[0].bga_player_id.clone();
         stream.checkpoints = vec![super::super::facts::CounterCheckpoint {
-            move_id: 2,
+            move_id: 4,
             per_player: BTreeMap::from([(pid, serde_json::json!({ "yens": 9999 }))]),
         }];
         let resolved = super::super::resolve::resolve(answers, &feed, &stream, &rules).unwrap();
