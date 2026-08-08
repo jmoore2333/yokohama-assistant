@@ -271,6 +271,13 @@ impl Follower {
             }
             None => {}
         }
+        // The declared-honesty sections (F4 / lens-4): the same notes,
+        // assumptions and deliberately-unchecked counters the batch report
+        // prints, reused verbatim so the spectate frame can never drift from the
+        // batch surface. This is the live-gate surface — the operator reads
+        // these to know why a panel count differs from the BGA screen (the D1
+        // church-yen and D2 extra-tech offsets declare themselves here).
+        body.push_str(&import::render_report_sections(r, &resolved));
 
         let attempt = attempts.swap_remove(best);
         if let Some(out_path) = &self.opts.out {
@@ -457,6 +464,32 @@ mod tests {
         assert!(second.lines.is_empty(), "a duplicate delivery held: {:?}", second.lines);
         let state_after = serde_json::to_string(follower.session().unwrap().record()).unwrap();
         assert_eq!(state_before, state_after);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// F4 (lens-4): the spectate frame renders the report's declared-honesty
+    /// sections — notes, assumptions, and the deliberately-unchecked T9 counters
+    /// — reusing the batch report's own formatter (`render_report_sections`) so
+    /// the two surfaces cannot drift. Before this the follow frame named none of
+    /// the three, so a runthrough operator could see a panel count disagree with
+    /// the BGA screen and have no artifact explaining why. The unchecked-counter
+    /// list rides every report from construction, so even the early excerpt
+    /// frame carries it. Mutation-proven: dropping the append reddens this.
+    #[test]
+    fn the_spectate_frame_carries_the_declared_honesty_sections() {
+        let dir = temp_dir("sections");
+        let live = dir.join("live.ndjson");
+        append(&live, &std::fs::read(EXCERPT).unwrap());
+        let mut follower = Follower::new(
+            FollowOptions { path: live.clone(), table: None, out: None },
+            Rules::standard(),
+        );
+        let frame = follower.poll().frame.expect("the excerpt reaches a rendered state");
+        assert!(
+            frame.contains("deliberately-unchecked counters (T9)"),
+            "the follow frame must carry the unchecked-counter section: {frame}"
+        );
+        assert!(frame.contains("gears"), "and name a counter it does not model: {frame}");
         std::fs::remove_dir_all(&dir).ok();
     }
 

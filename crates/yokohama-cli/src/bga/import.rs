@@ -367,26 +367,43 @@ fn render_report(
             d.move_id, d.seat, d.counter, d.bga, d.engine
         ));
     }
-    for n in &r.notes {
+    s.push_str(final_check);
+    s.push_str(&render_report_sections(r, resolved));
+    let _ = feed;
+    s
+}
+
+/// The report's three DECLARED-HONESTY sections — the notes (including the D1
+/// church / D2 extra-tech open-rules declarations), the declared assumptions,
+/// and the deliberately-unchecked T9 counters. Shared by the batch report
+/// (`render_report`) and the live-follow frame (`follow::recompute`) so the two
+/// surfaces cannot drift (F4 / lens-4): the runthrough operator watching the
+/// spectate frame must see WHY the panel's counts differ from BGA's screen, and
+/// that explanation lives in exactly these lines. Every captured-derived string
+/// is escaped at this display boundary (F1).
+pub(crate) fn render_report_sections(report: &ReplayReport, resolved: &Resolved) -> String {
+    let mut s = String::new();
+    for n in &report.notes {
         // A note can embed a captured notification `kind` (the post-game
-        // cleanup note), so it is escaped at the display boundary (F1).
+        // cleanup note), so it is escaped here.
         s.push_str(&format!("  note: {}\n", sanitize(n)));
     }
-    s.push_str(final_check);
     if !resolved.assumptions.is_empty() {
         s.push_str("  declared assumptions (census §2):\n");
         for a in &resolved.assumptions {
             s.push_str(&format!(
                 "    - {}: picked {} from [{}] — inert because {}\n",
-                a.what, a.picked, a.candidates, a.why_inert
+                sanitize(&a.what),
+                sanitize(&a.picked),
+                sanitize(&a.candidates),
+                sanitize(&a.why_inert),
             ));
         }
     }
     s.push_str("  deliberately-unchecked counters (T9):\n");
-    for (k, why) in &r.unchecked_counters {
+    for (k, why) in &report.unchecked_counters {
         s.push_str(&format!("    - {k}: {why}\n"));
     }
-    let _ = feed;
     s
 }
 
