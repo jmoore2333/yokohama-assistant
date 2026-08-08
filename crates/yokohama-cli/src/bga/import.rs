@@ -149,8 +149,43 @@ pub struct RunOutcome {
     pub replay_complete: bool,
 }
 
+/// Per-column `(player_name, total)` pairs from a finalScoring `table` value,
+/// aligned BY COLUMN INDEX: column `i`'s name comes from `header[i]` and its
+/// total from `total_row[i]`, and a column missing either is dropped WITHOUT
+/// shifting its neighbours. The rev-5 ancestor zipped two independently
+/// FILTERED lists, which stayed aligned only because every header cell in the
+/// corpus (the Dummy's included) carries `player_name` — H2 review NOTE-3's
+/// "align by column index before trusting the cross-check", owed before the
+/// endgame cross-check became reachable at rev 6.
+fn totals_from_table(table: &[serde_json::Value]) -> Option<Vec<(String, i64)>> {
+    let header = table.first()?.as_array()?;
+    let total_row = table.iter().find_map(|row| {
+        let row = row.as_array()?;
+        (row.first()?.as_str()? == "Total").then_some(row.clone())
+    })?;
+    let mut out = Vec::new();
+    for (i, cell) in header.iter().enumerate().skip(1) {
+        let Some(name) = cell
+            .get("args")
+            .and_then(|a| a.get("player_name"))
+            .and_then(|p| p.as_str())
+        else {
+            continue;
+        };
+        let total = match total_row.get(i) {
+            Some(serde_json::Value::Number(x)) => x.as_i64(),
+            Some(serde_json::Value::String(s)) => s.parse().ok(),
+            _ => None,
+        };
+        if let Some(t) = total {
+            out.push((name.to_string(), t));
+        }
+    }
+    Some(out)
+}
+
 /// BGA's own final-scoring table, parsed from the `tableWindow` notification:
-/// per-column totals keyed by the header names.
+/// per-column totals keyed by the header names (see [`totals_from_table`]).
 fn bga_final_totals(feed: &CollapsedFeed) -> Option<Vec<(String, i64)>> {
     for mv in feed.moves.iter().rev() {
         for pk in [mv.socket.as_ref(), mv.history.as_ref()].into_iter().flatten() {
@@ -161,31 +196,7 @@ fn bga_final_totals(feed: &CollapsedFeed) -> Option<Vec<(String, i64)>> {
                     continue;
                 }
                 let table = n.args.get("table")?.as_array()?;
-                let header = table.first()?.as_array()?;
-                let names: Vec<String> = header
-                    .iter()
-                    .skip(1)
-                    .filter_map(|cell| {
-                        cell.get("args")
-                            .and_then(|a| a.get("player_name"))
-                            .and_then(|p| p.as_str())
-                            .map(|s| s.to_string())
-                    })
-                    .collect();
-                let total_row = table.iter().find_map(|row| {
-                    let row = row.as_array()?;
-                    (row.first()?.as_str()? == "Total").then_some(row.clone())
-                })?;
-                let totals: Vec<i64> = total_row
-                    .iter()
-                    .skip(1)
-                    .filter_map(|c| match c {
-                        serde_json::Value::Number(x) => x.as_i64(),
-                        serde_json::Value::String(s) => s.parse().ok(),
-                        _ => None,
-                    })
-                    .collect();
-                return Some(names.into_iter().zip(totals).collect());
+                return totals_from_table(table);
             }
         }
     }
@@ -495,6 +506,55 @@ mod tests {
 
     fn strs(v: &[&str]) -> Vec<String> {
         v.iter().map(|s| s.to_string()).collect()
+    }
+
+    /// H2 review NOTE-3, discharged at rev 6 before the endgame cross-check
+    /// became reachable: finalScoring names and totals align BY COLUMN INDEX.
+    /// The middle "spacer" column here has no `player_name`; the rev-5
+    /// zip-of-filtered-lists paired Player_B with the spacer's total 99 and
+    /// the Dummy with Player_B's 41 — this pin fails against that shape.
+    #[test]
+    fn final_totals_align_by_column_index_across_an_unnamed_column() {
+        let table: Vec<serde_json::Value> = serde_json::from_value(serde_json::json!([
+            [
+                "",
+                { "str": "${player_name}", "args": { "player_name": "Player_A" }, "type": "header" },
+                { "str": "spacer, no player_name", "args": {}, "type": "header" },
+                { "str": "${player_name}", "args": { "player_name": "Player_B" }, "type": "header" },
+                { "str": "${player_name}", "args": { "player_name": "Dummy player" }, "type": "header" }
+            ],
+            ["Total", 154, 99, 41, 9]
+        ]))
+        .unwrap();
+        assert_eq!(
+            totals_from_table(&table).unwrap(),
+            vec![
+                ("Player_A".to_string(), 154),
+                ("Player_B".to_string(), 41),
+                ("Dummy player".to_string(), 9),
+            ],
+            "a column missing player_name must be dropped without shifting its neighbours"
+        );
+    }
+
+    /// The corpus's actual shape: every column named, totals numeric, string
+    /// totals accepted.
+    #[test]
+    fn final_totals_read_the_corpus_shape_and_string_numbers() {
+        let table: Vec<serde_json::Value> = serde_json::from_value(serde_json::json!([
+            [
+                "",
+                { "str": "${player_name}", "args": { "player_name": "Player_A" }, "type": "header" },
+                { "str": "${player_name}", "args": { "player_name": "Player_B" }, "type": "header" }
+            ],
+            ["Points", 10, 20],
+            ["Total", "154", 41]
+        ]))
+        .unwrap();
+        assert_eq!(
+            totals_from_table(&table).unwrap(),
+            vec![("Player_A".to_string(), 154), ("Player_B".to_string(), 41)]
+        );
     }
 
     #[test]
