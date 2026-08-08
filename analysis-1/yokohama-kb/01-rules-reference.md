@@ -297,7 +297,9 @@ Slots 1-2 carry no surcharge; +1 on the 3rd and 4th spaces, +2 on the 5th and 6t
 | 2 Yen | 1 |
 | 1 Imported Good | 1 |
 
-**5th+ Technology penalty:** Each Technology card after your 4th costs an additional 2 Yen OR 1 Imported Good.
+**Extra-Technology surcharge (rulebook p.14 verbatim):** "Starting with your 4th card, each technology card requires an additional cost of 2 yen or 1 import" — EVERY card from the 4th onward pays it.
+
+**Correction (owner-ruled 2026-08-08, D2):** this line previously read "Each Technology card after your 4th costs an additional 2 Yen OR 1 Imported Good" — a MISREADING that started the surcharge at the 5th card. The verbatim p.14 sentence above is the rule: the 4th card itself already pays. See `guidingpath.md` decision log 2026-08-08.
 
 **Replenishment:** Slide cards left, refill from deck to rightmost space.
 
@@ -357,10 +359,12 @@ Contribute Faith value to advance on Church Management Board.
 | 1 Raw Silk | 1 | Max 1 per turn |
 | 1 Tea | 1 | Max 1 per turn |
 | 1 Seafood | 1 | Max 1 per turn |
-| 1 Yen | 1 | Max 1 per turn |
+| 2 Yen | 1 | Max 1 per turn |
 | 1 Imported Good | 1 | Max 1 per turn |
 
 **Correction (Jeremy-adjudicated 2026-07-17):** Faith from Power scales linearly (1,2,3,4,5). An earlier version of this table read "2 Power: 1 Faith" — that is a rulebook text typo, not the actual rule; see `guidingpath.md` decision log.
+
+**Correction (owner-ruled 2026-08-08, D1):** the Yen payment type costs **2 Yen** for its 1 Faith — the printed church board shows 2 yen (rulebook p.12), confirmed on Jeremy's physical set. This table previously read "1 Yen | 1"; only the COST was wrong, the Faith contribution was always 1. See `guidingpath.md` decision log 2026-08-08.
 
 **Process:**
 1. Calculate total Faith value
@@ -545,6 +549,7 @@ Compare total Industry value on Technology cards:
 - 1st place: 10 VP
 - 2nd place: 5 VP
 - Ties: Closest to Start Player (clockwise) wins
+- **2-player games (owner-ruled 2026-08-08, D5):** the dummy player competes in THIS majority too, at an industry value of **exactly 7.5** — rulebook p.9 final-scoring NOTE (**Jeremy's edition**, same NOTE as the church/customs competition): "the dummy player ends the game with an industry value of 7.5". Observed on BGA: owner 1st (10 VP), the dummy's 7.5 beat the opponent for 2nd, which was awarded to nobody. The half is exact — an IV-7 player loses to the dummy, an IV-8 player beats it; it can never tie a real player (whole-number totals). A place the dummy takes is consumed and awarded to nobody, exactly as on the church/customs tracks. See `guidingpath.md` decision log 2026-08-08.
 
 ### 4. Country Bonus
 Form sets of different Country icons from completed Orders and Technologies:
@@ -690,6 +695,10 @@ cards/site spaces is a separate, real mechanic — see the icon glossary.)
 - **Warehouse:** Must use Employment Agency to retrieve
 - **Board:** On areas, returned to hand during Recovery
 - **Locked:** On Management Boards (Church/Customs/Achievement), never returned
+
+### Movement Icon (rulebook p.10) — the to-hand return
+- The Movement icon reads "Move an Assistant pawn from your hand or from an Area to another Area", one move per icon, no President fees.
+- **Owner-ruled 2026-08-08 (D3, BGA parity):** the icon may ALSO return one of your on-board assistants to your hand, where it simply stays. The printed text is AMBIGUOUS on this (and there are disagreements online); BGA's engine allows it, and the owner ruled to include it for parity with BGA while noting he generally believes the original area-to-area reading is accurate. Hand-to-hand is not a move (it would change nothing — decline instead). See `guidingpath.md` decision log 2026-08-08 for the verbatim rationale.
 
 ### Building Sites
 - Each area has one Building Site card (randomly assigned at setup)
