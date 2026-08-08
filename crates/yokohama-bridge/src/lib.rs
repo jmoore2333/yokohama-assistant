@@ -41,6 +41,7 @@
 
 pub mod bind;
 pub mod capture;
+pub mod feed;
 pub mod http;
 pub mod router;
 pub mod server;
