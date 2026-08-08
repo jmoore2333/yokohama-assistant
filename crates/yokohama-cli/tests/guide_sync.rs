@@ -787,3 +787,61 @@ fn the_quick_start_sequence_in_section2_starts_a_game() {
         "§2's quick-start sequence must reach the setup review and then the first prompt:\n{text}"
     );
 }
+
+/// Every `--flag` token in a guide body — `--` followed by an ASCII letter,
+/// then flag characters. A bare `--` (cargo's argument separator) does not
+/// match, and the em-dash `—` the guides use as prose punctuation is multi-byte
+/// and never `0x2d`, so it is not mistaken for a flag.
+fn flag_tokens(s: &str) -> Vec<String> {
+    let b = s.as_bytes();
+    let mut out = Vec::new();
+    let mut i = 0;
+    while i + 2 < b.len() {
+        if b[i] == b'-' && b[i + 1] == b'-' && b[i + 2].is_ascii_alphabetic() {
+            let start = i;
+            i += 2;
+            while i < b.len() && (b[i].is_ascii_alphanumeric() || b[i] == b'-') {
+                i += 1;
+            }
+            out.push(s[start..i].to_string());
+        } else {
+            i += 1;
+        }
+    }
+    out
+}
+
+/// F7 (lens-4): the bridge `import` argv surface is INSIDE guide_sync's slice.
+/// The guide pair is authoritative and guide_sync enforces the mechanical
+/// slice, but that slice covered REPL commands and never the argv flags — so
+/// the guide could document a `--flag` the parser lacks, or omit one it has,
+/// with the whole suite green. Both directions are pinned from the single
+/// exported `import::FLAGS`. `import` is the CLI's ONLY `--flag` surface (the
+/// REPL takes bare words), so every `--word` token in the guide BODY must be a
+/// real import flag.
+#[test]
+fn the_import_argv_flags_match_the_guides() {
+    use yokohama_cli::bga::import::FLAGS;
+
+    // (a) every real flag is documented in BOTH formats.
+    for flag in FLAGS {
+        assert!(GUIDE_MD.contains(flag), "cli-guide.md omits the import flag {flag}");
+        assert!(GUIDE_HTML.contains(flag), "cli-guide.html omits the import flag {flag}");
+    }
+
+    // (b) every `--flag` token the guides carry is a real import flag. Strip the
+    // HTML `<style>` block first — its CSS custom properties (`--accent`, …) are
+    // `--word` tokens that are not CLI flags and live only there.
+    let html_body = GUIDE_HTML
+        .find("</style>")
+        .map(|i| &GUIDE_HTML[i + "</style>".len()..])
+        .unwrap_or(GUIDE_HTML);
+    for (name, body) in [("cli-guide.md", GUIDE_MD), ("cli-guide.html", html_body)] {
+        for tok in flag_tokens(body) {
+            assert!(
+                FLAGS.contains(&tok.as_str()),
+                "{name} documents `{tok}`, which import::parse_args does not accept as a flag"
+            );
+        }
+    }
+}

@@ -40,6 +40,15 @@ pub struct ImportArgs {
     pub follow: bool,
 }
 
+/// The full `import` flag surface, in the order the usage string lists them.
+/// EXPORTED so `guide_sync` can pin the guide pair against it both ways (every
+/// flag documented in both formats, every `--flag` the guides carry parses) —
+/// the argv surface was outside guide_sync's slice, so the guide could document
+/// a flag the parser lacks with the whole suite green (F7 / lens-4). Kept in
+/// step with `parse_args`'s match arms and the `usage` string below; the unit
+/// test `every_documented_flag_is_a_real_parser_flag` pins that coupling.
+pub const FLAGS: &[&str] = &["--table", "--answers", "--through", "--out", "--report", "--follow"];
+
 /// Parse everything after the `import` keyword.
 pub fn parse_args(args: &[String]) -> Result<ImportArgs, ImportError> {
     let usage = "import <capture.ndjson> [--table <id>] [--answers] [--through <move_id>] \
@@ -544,6 +553,27 @@ mod tests {
             parse_args(&strs(&["cap.ndjson", "--answers", "--follow"])).unwrap_err(),
             ImportError::Usage { .. }
         ));
+    }
+
+    /// F7 (lens-4): the exported `FLAGS` set is what `guide_sync` pins the guide
+    /// pair against, so it must equal the parser's REAL flags — every one is
+    /// accepted (never an "unknown flag") when given with a plausible value.
+    /// This is the coupling that lets guide_sync trust `FLAGS`; a flag added to
+    /// the parser but not to `FLAGS` (or vice versa) is caught here or there.
+    #[test]
+    fn every_documented_flag_is_a_real_parser_flag() {
+        for flag in FLAGS {
+            let argv = match *flag {
+                "--table" | "--through" => vec!["c.ndjson", flag, "1"],
+                "--out" | "--report" => vec!["c.ndjson", flag, "x"],
+                _ => vec!["c.ndjson", flag], // valueless: --answers, --follow
+            };
+            let parsed = parse_args(&strs(&argv));
+            assert!(
+                !matches!(&parsed, Err(ImportError::Usage { detail }) if detail.contains("unknown flag")),
+                "FLAGS lists `{flag}` but the parser rejects it as unknown: {parsed:?}"
+            );
+        }
     }
 
     #[test]
