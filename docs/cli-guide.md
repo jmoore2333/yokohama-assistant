@@ -273,40 +273,41 @@ The first two lines are your own move's summary; the four `Seat 1` lines are the
 ─ Suggest ──────────────────────────────
 Seat 0 (Red) · lookahead-v1 · beam 4, K=1, M=8, evaluator impl 2 · stream 0x7199df924be0e320
 Suggested move:
-  Place 1 assistant in each of: Port A (A00), Laboratory A (A01), Employment Agency (A07)
+  Place 1 assistant in each of: Port A (A00), Bank (A06), Church (A08)
 
-The line it searched, 6 move(s) to the hand-over (the move above is step 1):
-  1. Place 1 assistant in each of: Port A (A00), Laboratory A (A01), Employment Agen…
-  2. Place President from hand in Laboratory A (A01)
-  3. Laboratory: acquire Postal System, +2 yen
-  4. Skip the 5-Power token
-  5. Skip the building
-  6. End additional-action phase
+The line it searched, 7 move(s) to the hand-over (the move above is step 1):
+  1. Place 1 assistant in each of: Port A (A00), Bank (A06), Church (A08)
+  2. Place President from hand in Church (A08)
+  3. Church: pay copper, silk -> faith 4 (power 2 + 2 kinds)
+  4. Move an assistant from hand to Port A (A00) (reward move)
+  5. Skip the 5-Power token
+  6. Skip the building
+  7. End additional-action phase
 
-Score at that point: 80   ·   stage 0/1000000 ppm (0 = opening, 1000000 = end trigger)
+Score at that point: 77   ·   stage 250000/1000000 ppm (0 = opening, 1000000 = end trigger)
   feature                        you   best opp   weight     product
-  victory_points                   0          0       10           0
-  country_bonus_now                0          0       12           0
-  tech_bonus_now                  10          0        6          60
-  church_bonus_now                 0          0       -4           0
-  customs_bonus_now                0          0        3           0
-  assistants_in_hand_core          2          2       30           0
-  assistants_in_hand_excess        4          6        4          -8
-  assistants_in_warehouse         12         12      -10           0
-  assistants_on_board              2          0       14          28
-  shophouses_built                 0          0       12           0
-  trading_houses_built             0          0       15           0
+  victory_points                   3          0       17          51
+  country_bonus_now                0          0       16           0
+  tech_bonus_now                   0          0        9           0
+  church_bonus_now                 3          0        1           3
+  customs_bonus_now                0          0        7           0
+  assistants_in_hand_core          2          2       28           0
+  assistants_in_hand_excess        2          6        4         -16
+  assistants_in_warehouse         12         12       -9           0
+  assistants_on_board              3          0       13          39
+  shophouses_built                 0          0       14           0
+  trading_houses_built             0          0       17           0
   five_power_tokens                0          0        8           0
   imported_goods                   0          0        5           0
   achievement_progress_sum         1          1        2           0
   mercenaries_total                0          0        3           0
   hand_size                        1          1       -3           0
-  TOTAL                                                           80
+  TOTAL                                                           77
 
 Runner-ups (margin against the suggestion, so 0 means tied) — 186 candidate(s) ranked:
-           0  Place 1 assistant in each of: Port A (A00), Laboratory A (A01), Tea Plantation …
-           0  Place 1 assistant in each of: Port A (A00), Laboratory A (A01), Fishing Ground …
-           0  Place 1 assistant in each of: Port A (A00), Laboratory A (A01), Silk Mill (A04)
+           0  Place 1 assistant in each of: Port A (A00), Laboratory A (A01), Church (A08)
+           0  Place 1 assistant in each of: Port A (A00), Tea Plantation (A02), Church (A08)
+           0  Place 1 assistant in each of: Port A (A00), Fishing Ground (A03), Church (A08)
   36 candidates tie at the top; which one you see is this position's own
   keyed draw, so a second press will not change it.
 This is the bot's arithmetic, not advice: each row is (your value − the best

@@ -207,8 +207,15 @@ use yokohama_core::{
     SeedScheduleKind,
 };
 
-/// The 2P cell's committed diagnostic master. See the module doc.
-const MASTER_2P: u64 = 0xA3E1_2026_0726_0033;
+/// The 2P cell's committed diagnostic master. See the module doc. Originally
+/// serial `0033` (the 3.3 capture); RE-PROBED at the SEMANTICS_REV-6
+/// re-capture (module doc, "Rev-6 re-capture"): under rev-6 play `0033`
+/// degenerates to a constant unit vector, which the anti-vacuity guard
+/// refuses. `0037` is the family's next free serial (`0034`/`0035` were
+/// burned at the 3.3 capture, `0036` is the 4P cell's) and its FIRST probe
+/// gave distinct shares (1×0.0 · 3×0.5) with a real bootstrap interval — no
+/// serial burned.
+const MASTER_2P: u64 = 0xA3E1_2026_0726_0037;
 /// The 4P rotation-block cell's committed diagnostic master.
 const MASTER_4P: u64 = 0xA3E1_2026_0726_0036;
 

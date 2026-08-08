@@ -4176,11 +4176,11 @@ mod tests {
     fn a_search_whose_tree_runs_out_of_game_still_terminates() {
         let rules = Rules::standard();
         // `back` is fixture-derived, not principled: it must land on a point
-        // whose bounded search actually reaches finished games. Re-derived 2
-        // -> 3 across the SEMANTICS_REV-6 ruling set (each rules-parity
-        // ruling moves the seeded greedy walk); probe adjacent values if a
-        // future rev drifts it again.
-        let (world, seat) = point_before_the_end(&rules, 3);
+        // whose bounded search actually reaches finished games. Re-probed at
+        // each SEMANTICS_REV-6 rules-parity ruling (every one moves the
+        // seeded greedy walk; it drifted 2 -> 4 -> 3 -> 2 across the set);
+        // probe adjacent values if a future rev drifts it again.
+        let (world, seat) = point_before_the_end(&rules, 2);
 
         // Simulations bounded ONLY by the budget — the contestant shape.
         let mut c = ctx(&rules, &WeightTable::V1, u32::MAX, 0xE7D);
