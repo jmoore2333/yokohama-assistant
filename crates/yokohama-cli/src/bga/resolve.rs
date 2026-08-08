@@ -290,10 +290,38 @@ fn resolve_tokens(
     Ok(out)
 }
 
+/// True when every observed reward can claim its OWN space on the site — the
+/// multiset embedding a multi-build tile demands (two builds never share a
+/// space). n ≤ 4 on both sides, so plain backtracking is exact and cheap.
+fn rewards_fit_distinct_spaces(
+    rewards: &[SpaceReward],
+    spaces: &[SpaceReward],
+    used: &mut Vec<bool>,
+) -> bool {
+    let Some((first, rest)) = rewards.split_first() else {
+        return true;
+    };
+    for (i, sp) in spaces.iter().enumerate() {
+        if !used[i] && sp == first {
+            used[i] = true;
+            if rewards_fit_distinct_spaces(rest, spaces, used) {
+                return true;
+            }
+            used[i] = false;
+        }
+    }
+    false
+}
+
 /// Resolve the building-site assignment: constrained cells (built tiles whose
-/// granted reward names candidate sites) take the lowest matching unused
+/// granted rewards name candidate sites) take the lowest matching unused
 /// index; free cells take the lowest unused index. Multi-candidate picks are
-/// declared.
+/// declared. A tile built MORE than once (measured live at table 896157897:
+/// Church takes seat 1's copper-1 build at m56 and seat 0's silk-2 build at
+/// m87) constrains its site to one hosting the whole reward MULTISET on
+/// distinct spaces — which typically NARROWS the candidate set (the live pair
+/// names site_005 uniquely, where copper-1 alone matched it plus nothing else
+/// but silk-2 alone matched several).
 fn resolve_sites(
     answers: &SetupAnswers,
     stream: &FactStream,
@@ -303,30 +331,25 @@ fn resolve_sites(
     let board = answers.board_tiles.value().ok_or_else(|| ImportError::Sheet {
         detail: "site resolution needs the evidenced board tiles".to_string(),
     })?;
-    // Built tiles and their observed rewards.
-    let mut built: Vec<(AreaType, SpaceReward)> = Vec::new();
+    // Built tiles and their observed reward multisets, one entry per build.
+    let mut built: Vec<(AreaType, Vec<SpaceReward>)> = Vec::new();
     for tf in &stream.facts {
         if let Fact::BuildShop { tile, reward, .. } = &tf.fact {
-            match built.iter().find(|(a, _)| a == tile) {
-                Some((_, prev)) if prev != reward => {
-                    return Err(ImportError::Sheet {
-                        detail: format!(
-                            "two builds on {tile:?} with different rewards ({prev:?} vs {reward:?}) \
-                             — multi-build site constraint not implemented; extend resolve_sites"
-                        ),
-                    });
-                }
-                Some(_) => {}
-                None => built.push((*tile, *reward)),
+            match built.iter_mut().find(|(a, _)| a == tile) {
+                Some((_, rewards)) => rewards.push(*reward),
+                None => built.push((*tile, vec![*reward])),
             }
         }
     }
-    let candidates_for = |reward: &SpaceReward| -> Vec<u8> {
+    let candidates_for = |rewards: &[SpaceReward]| -> Vec<u8> {
         rules
             .building_sites
             .iter()
             .enumerate()
-            .filter(|(_, site)| site.spaces.iter().any(|sp| sp == reward))
+            .filter(|(_, site)| {
+                let mut used = vec![false; site.spaces.len()];
+                rewards_fit_distinct_spaces(rewards, &site.spaces, &mut used)
+            })
             .map(|(i, _)| i as u8)
             .collect()
     };
@@ -334,12 +357,12 @@ fn resolve_sites(
     let mut out: Vec<Option<u8>> = vec![None; board.len()];
     // Constrained cells first.
     for (i, area) in board.iter().enumerate() {
-        if let Some((_, reward)) = built.iter().find(|(a, _)| a == area) {
-            let cands: Vec<u8> = candidates_for(reward).into_iter().filter(|c| !used.contains(c)).collect();
+        if let Some((_, rewards)) = built.iter().find(|(a, _)| a == area) {
+            let cands: Vec<u8> = candidates_for(rewards).into_iter().filter(|c| !used.contains(c)).collect();
             let pick = *cands.first().ok_or_else(|| ImportError::Sheet {
                 detail: format!(
-                    "no engine building site carries a space rewarding {reward:?} — the build on \
-                     {area:?} is unexplainable (drift STOP)"
+                    "no engine building site carries distinct spaces for all observed build \
+                     rewards {rewards:?} — the build(s) on {area:?} are unexplainable (drift STOP)"
                 ),
             })?;
             used.insert(pick);
@@ -349,7 +372,7 @@ fn resolve_sites(
                     candidates: cands.iter().map(|c| format!("site index {c}")).collect::<Vec<_>>().join(" | "),
                     picked: format!("site index {pick}"),
                     why_inert: format!(
-                        "constrained by the observed build reward {reward:?}; the candidates \
+                        "constrained by the observed build reward(s) {rewards:?}; the candidates \
                          differ only in spaces never built in this capture"
                     ),
                 });
@@ -573,6 +596,74 @@ mod tests {
         // tech_keys 1..=6 are ids 12,4,26,14,2,27 — all in the committed ledger.
         let tids: Vec<u64> = (1..=6).map(|k| resolved.key_model.tech_ids[&k]).collect();
         assert_eq!(tids, vec![12, 4, 26, 14, 2, 27]);
+    }
+
+    /// The multi-build site constraint (live gate table 896157897, the
+    /// resolve-time STOP that blocked the whole import once the capture grew
+    /// past m87): TWO builds land on Church — m56 grants 1 copper (seat 1),
+    /// m87 grants 2 silk (seat 0) — so the tile's site must host BOTH rewards
+    /// on DISTINCT spaces. In the verified site data exactly one card does
+    /// (site_005: TR silk-2, MR copper-1), so the constrained pick is exact
+    /// and no assumption is declared for the tile. Before this fix
+    /// `resolve_sites` hard-errored on the second distinct reward
+    /// ("multi-build site constraint not implemented").
+    #[test]
+    fn two_builds_on_one_tile_resolve_to_the_site_hosting_both_rewards() {
+        let (feed, answers, mut stream) = excerpt();
+        let rules = Rules::standard();
+        let copper1 = SpaceReward { copper: 1, ..SpaceReward::default() };
+        let silk2 = SpaceReward { silk: 2, ..SpaceReward::default() };
+        stream.facts.push(super::super::facts::TimedFact {
+            move_id: 56,
+            kind: "buildShop".to_string(),
+            fact: Fact::BuildShop { seat: 1, tile: AreaType::Church, reward: copper1 },
+        });
+        stream.facts.push(super::super::facts::TimedFact {
+            move_id: 87,
+            kind: "buildShop".to_string(),
+            fact: Fact::BuildShop { seat: 0, tile: AreaType::Church, reward: silk2 },
+        });
+        let resolved = resolve(answers, &feed, &stream, &rules).expect("multi-build resolves");
+        let board = resolved.answers.board_tiles.value().expect("tiles evidenced");
+        let sites = resolved.answers.board_sites.value().expect("sites evidenced");
+        let idx = board.iter().position(|a| *a == AreaType::Church).expect("Church on board");
+        let site = &rules.building_sites[sites[idx].expect("Church site assigned") as usize];
+        assert!(site.spaces.contains(&copper1), "site hosts the copper-1 space");
+        assert!(site.spaces.contains(&silk2), "site hosts the silk-2 space");
+        assert!(
+            !resolved.assumptions.iter().any(|a| a.what.contains("building site on Church")),
+            "a single-candidate constrained pick is evidence, not an assumption"
+        );
+    }
+
+    /// The negative half: the multiset constraint demands DISTINCT spaces, so
+    /// two builds granting the same reward need two spaces printing it — and
+    /// no site card in the verified data duplicates a space reward (copper-1
+    /// exists on exactly one space across all 24 sites). Two copper-1 builds
+    /// on one tile are therefore unexplainable and must STOP as drift, not
+    /// resolve to the single-space site.
+    #[test]
+    fn a_reward_multiset_no_site_hosts_is_a_drift_stop() {
+        let (feed, answers, mut stream) = excerpt();
+        let rules = Rules::standard();
+        let copper1 = SpaceReward { copper: 1, ..SpaceReward::default() };
+        for (mid, seat) in [(56u64, 1u8), (87, 0)] {
+            stream.facts.push(super::super::facts::TimedFact {
+                move_id: mid,
+                kind: "buildShop".to_string(),
+                fact: Fact::BuildShop { seat, tile: AreaType::Church, reward: copper1 },
+            });
+        }
+        let Err(err) = resolve(answers, &feed, &stream, &rules) else {
+            panic!("an unhostable reward multiset must STOP");
+        };
+        match err {
+            ImportError::Sheet { detail } => {
+                assert!(detail.contains("Church"), "{detail}");
+                assert!(detail.contains("drift STOP"), "{detail}");
+            }
+            other => panic!("expected Sheet drift STOP, got {other:?}"),
+        }
     }
 
     #[test]

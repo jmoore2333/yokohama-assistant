@@ -372,6 +372,15 @@ pub fn extract(
                         push(Fact::PassFee { seat: s });
                     } else if log.contains("gains: access to") {
                         push(Fact::PortAccess { seat: s });
+                    } else if log == "${player_name}'s Stock Market sets yens to 2" {
+                        // The SystemOfStock turn-start top-up (measured live at
+                        // table 896157897, m95/m109). The engine applies the
+                        // same effect at turn start (`apply_turn_start_effects`)
+                        // so this is corroboration; the T9 `yens` checkpoints
+                        // arbitrate agreement. The "2" is literal wire text —
+                        // a different amount is a different template and stays
+                        // a hard error until measured.
+                        push(Fact::Gain { seat: s, text: "Stock Market sets yens to 2".to_string() });
                     } else if let Some(rest) = log.split("gains: ").nth(1) {
                         push(Fact::Gain { seat: s, text: strip_bold(rest) });
                     } else {
@@ -712,6 +721,40 @@ mod tests {
             stream.facts[0].fact,
             Fact::AssistMove { seat: 0, from: Some(AreaType::Bank), to: None }
         );
+    }
+
+    /// The Stock Market turn-start template (measured live at gate table
+    /// 896157897, m95 and m109): BGA renders the SystemOfStock tech's
+    /// turn-start top-up as a `resourceChange` whose log matches none of the
+    /// pinned prefixes, so extraction hard-errored on the whole capture. The
+    /// engine models the same effect (`apply_turn_start_effects`: money ≤ 1
+    /// → 2 at turn start), so the notification is pure corroboration — a
+    /// NOTE fact, with the T9 `yens` checkpoints arbitrating whether the two
+    /// implementations actually agree. The "2" in the template is literal
+    /// wire text; a different amount is a different template and stays a
+    /// hard error until measured.
+    #[test]
+    fn the_stock_market_turn_start_template_is_a_pinned_note_fact() {
+        let line = serde_json::json!({
+            "received_at_ms": 1, "kind": "packets",
+            "payload": {"source": "xhr", "body_text": serde_json::json!({
+                "status": 1, "data": {"valid": 1, "data": [{
+                    "packet_type": "history", "table_id": 42, "packet_id": "1", "move_id": "95",
+                    "data": [{"uid": "u1", "type": "resourceChange",
+                        "log": "${player_name}'s Stock Market sets yens to 2",
+                        "args": {"player_id": "11", "player_name": "P"}}]
+                }]}
+            }).to_string()}
+        })
+        .to_string();
+        let feed = yokohama_bridge::feed::read_and_collapse(&line, None).unwrap();
+        let mapper = OrderMapper::from_rules(&yokohama_core::Rules::standard()).unwrap();
+        let stream = extract(&feed, &|pid| (pid == "11").then_some(1), &mapper).unwrap();
+        assert_eq!(
+            stream.facts[0].fact,
+            Fact::Gain { seat: 1, text: "Stock Market sets yens to 2".to_string() }
+        );
+        assert!(!stream.facts[0].fact.is_drive(), "corroboration, not a demanded engine move");
     }
 
     #[test]
