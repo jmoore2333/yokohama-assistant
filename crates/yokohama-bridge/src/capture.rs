@@ -141,6 +141,26 @@ pub fn append(dir: &Path, table_id: &str, line: &str) -> Result<u64, CaptureErro
     let table_id = safe_table_id(table_id)?;
     std::fs::create_dir_all(dir).map_err(CaptureError::Io)?;
     let path = capture_path(dir, table_id);
+    // Refuse a SYMLINKED capture path (F9 / six-lens lens-6). `safe_table_id`
+    // stops the id from NAMING a path outside the directory, but a symlink
+    // planted in the capture dir under a valid `<id>.ndjson` name would still
+    // redirect this create-or-append OUTSIDE it (the append follows the link,
+    // and a dangling link even CREATES the outside file). An `lstat` on the path
+    // before opening closes that: the threat is a pre-placed symlink, not a
+    // check-then-open race, so a stat-then-open is sufficient and needs no new
+    // dependency (`O_NOFOLLOW` would want `libc`). A regular file or an absent
+    // path proceeds; only a symlink is refused.
+    if let Ok(meta) = std::fs::symlink_metadata(&path) {
+        if meta.file_type().is_symlink() {
+            return Err(CaptureError::Io(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                format!(
+                    "capture path {} is a symlink — refusing to follow it out of the capture directory",
+                    path.display()
+                ),
+            )));
+        }
+    }
     let mut file = OpenOptions::new()
         .create(true)
         .append(true)
@@ -247,6 +267,32 @@ mod tests {
         assert_eq!(text.len() as u64, size, "the reported size is the file's size");
         assert!(text.ends_with('\n'), "every line is terminated, so an append never merges lines");
 
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// F9 (six-lens lens-6): a symlink planted in the capture directory under a
+    /// valid `<id>.ndjson` name must NOT redirect the append out of the
+    /// directory. Uses a DANGLING symlink (target absent) — the strongest case,
+    /// since a create-or-append would otherwise CREATE the outside file — and
+    /// asserts the append is refused and the target is never written. Mutation:
+    /// removing the lstat guard makes this test create the outside file and fail.
+    #[cfg(unix)]
+    #[test]
+    fn a_symlinked_capture_path_is_refused_and_its_target_is_untouched() {
+        let dir = std::env::temp_dir().join(format!("yokohama-bridge-symlink-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let outside = dir.join("OUTSIDE.txt"); // absent -> a dangling symlink
+        let inside = capture_path(&dir, "895724349");
+        std::os::unix::fs::symlink(&outside, &inside).unwrap();
+
+        let err = append(&dir, "895724349", r#"{"received_at_ms":1,"kind":"snapshot","payload":1}"#)
+            .expect_err("an append through a planted symlink must be refused");
+        assert!(matches!(err, CaptureError::Io(_)), "{err}");
+        assert!(
+            !outside.exists(),
+            "the append must not have followed the symlink to create/write its target"
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

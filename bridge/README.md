@@ -33,7 +33,7 @@ The extension's JavaScript is not covered by any `cargo` command, so it gets its
 own. Plain `node`, no dependencies, nonzero exit on failure:
 
 ```bash
-node bridge/tests/outbox_race.js && node bridge/tests/wrapper_transparency.js
+node bridge/tests/outbox_race.js && node bridge/tests/wrapper_transparency.js && node bridge/tests/safe_table_parity.js
 ```
 
 - `outbox_race.js` — the H0 review's **M-1** regression: several captures
@@ -48,6 +48,10 @@ node bridge/tests/outbox_race.js && node bridge/tests/wrapper_transparency.js
   **H0.1**'s socket pins — verbatim text frames, the stated (never decoded)
   binary stub, non-BGA and lookalike hostnames capturing nothing, and the volume
   guard.
+- `safe_table_parity.js` — that `safeTable` is "in step" with the relay's
+  `capture::safe_table_id` as its comment claims: every id the relay refuses
+  (leading `-`/`.`/`_`, path separators) maps to one the relay accepts, so no
+  capture the extension emits is silently 400'd and dropped from the outbox.
 
 Both load the shipped file in a stubbed environment — a stub models only what
 the wrapper touches, so a green run is evidence about this logic, not proof the

@@ -52,11 +52,19 @@ function serialize(task) {
 // Keep this in step with `capture::safe_table_id` in the relay. Sanitizing here
 // rather than percent-encoding is deliberate: an id the relay would refuse
 // costs us a capture, and a capture is worth more than a faithful table name.
+//
+// "In step" is the load-bearing word (six-lens lens-6). The relay's rule is the
+// allowlist PLUS a leading-alphanumeric requirement (`-rf`, `.ssh`, `_private`
+// all refused there), so an id that only satisfies the allowlist here — leading
+// `-`/`.`/`_` — would be emitted, refused 400 by the relay, and DROPPED from the
+// outbox silently. The leading-alphanumeric check closes that divergence; the
+// `"unknown"` fallback is a value the relay accepts. Real BGA table ids are
+// numeric, so nothing legitimate is excluded.
 function safeTable(raw) {
   const cleaned = String(raw || "")
     .replace(/[^A-Za-z0-9._-]/g, "-")
     .slice(0, 64);
-  return cleaned && cleaned !== "." && cleaned !== ".." ? cleaned : "unknown";
+  return /^[A-Za-z0-9]/.test(cleaned) ? cleaned : "unknown";
 }
 
 async function withTimeout(url, options) {
