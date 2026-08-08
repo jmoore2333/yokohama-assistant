@@ -1,0 +1,19 @@
+[package]
+name = "yokohama-bridge"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "Phase-3.5b BGA bridge relay: a localhost-only capture sink that appends what the browser extension observes to a per-table NDJSON file. Capture only - it knows nothing about Yokohama's rules and depends on no engine crate."
+
+# NO new third-party dependency enters the tree for this crate. `serde_json` is
+# already a workspace dependency (core/cli/oracle/difftest all use it); the HTTP
+# and TCP work is plain `std`. That is deliberate: the relay is a listener the
+# owner runs on their own machine while logged into their own game, so its
+# supply chain should be as short as the job allows.
+[dependencies]
+serde_json = { workspace = true }
+
+[[bin]]
+name = "bridge-relay"
+path = "src/bin/bridge-relay.rs"
