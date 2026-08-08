@@ -108,7 +108,15 @@ pub struct Translator<'a> {
     /// Display observations `(anchor_move, keys)` for thin-take pruning.
     port_observations: Vec<(u64, BTreeSet<u64>)>,
     /// Kept starting-order card per seat (key model), for reveal timing.
-    kept_card_by_seat: BTreeMap<u8, yokohama_core::OrderCardId>,
+    /// CANDIDATE kept starting orders per seat — every deal-pair key the key
+    /// model saw held by that seat. A MID-GAME snapshot (the proving corpus)
+    /// leaves exactly one candidate; a TABLE-OPEN snapshot (the H3 procedure,
+    /// measured live at gate table 896157897) shows BOTH dealt cards still
+    /// held, so the kept identity stays a two-candidate set until the discard
+    /// or the completion itself disambiguates. A single-value map here silently
+    /// overwrote candidate 1 with candidate 2 — the discarded card — and the
+    /// completion's reveal-then-fulfil path never fired.
+    kept_card_by_seat: BTreeMap<u8, Vec<yokohama_core::OrderCardId>>,
     /// Stashed customs VP for the space choice that follows the action.
     stash_customs_vp: Option<u8>,
     checkpoints: Vec<super::facts::CounterCheckpoint>,
@@ -128,6 +136,15 @@ pub struct Translator<'a> {
     /// instead of stopping — the composite's outcome is still pinned by the
     /// next checkpoint at or past its final move.
     mid_composite_moves: BTreeSet<u64>,
+    /// The first `assistantPlacement` move — BGA moves BELOW this are the
+    /// SETUP ERA (the two starting-order discards BGA sequences as moves 2..3
+    /// while the engine atomizes both inside `finalize_setup`), so no engine
+    /// state can match their asymmetric mid-discard counters. Measured live at
+    /// the gate game (table 896157897, the first table whose capture ever
+    /// carried setup-era checkpoints — the proving corpus's socket joined at
+    /// move 107). Checkpoints below it are named skips, same discipline as
+    /// `mid_composite_moves`.
+    first_placement_move: u64,
     pub report: ReplayReport,
     max_move_seen: u64,
     /// A checkpoint STOP found inside `consume_drive` (surfaced by `step`).
@@ -158,7 +175,10 @@ impl<'a> Translator<'a> {
                 if resolved.key_model.order_owner.get(&k).map(|p| p.as_str())
                     == Some(pid_of_seat[seat as usize].as_str())
                 {
-                    kept_card_by_seat.insert(seat, resolved.key_model.order_card(k)?);
+                    kept_card_by_seat
+                        .entry(seat)
+                        .or_insert_with(Vec::new)
+                        .push(resolved.key_model.order_card(k)?);
                 }
             }
         }
@@ -207,6 +227,13 @@ impl<'a> Translator<'a> {
         Ok(Translator {
             session,
             resolved,
+            first_placement_move: stream
+                .facts
+                .iter()
+                .filter(|f| f.kind == "assistantPlacement")
+                .map(|f| f.move_id)
+                .min()
+                .unwrap_or(0),
             facts: stream.facts,
             cursor: 0,
             pid_of_seat,
@@ -562,6 +589,21 @@ impl<'a> Translator<'a> {
                     self.snap_cursor = i;
                     self.report.checkpoints_passed += 1;
                 }
+                None if cp.move_id < self.first_placement_move => {
+                    // SETUP ERA (see `first_placement_move`): BGA sequences the
+                    // starting-order discards as moves; the engine's
+                    // `finalize_setup` atomizes them, so the asymmetric
+                    // mid-discard state exists in BGA's granularity only. The
+                    // post-setup state is pinned by the first real-turn
+                    // checkpoint at or past the first Placement.
+                    self.report.notes.push(format!(
+                        "checkpoint m{}: setup-era (before the first Placement at m{}) — BGA \
+                         sequences the starting-order discards the engine atomizes in \
+                         finalize_setup; skipped by granularity, the post-setup state is \
+                         checked from the first Placement on",
+                        cp.move_id, self.first_placement_move
+                    ));
+                }
                 None if self.mid_composite_moves.contains(&cp.move_id) => {
                     // A BGA-move boundary INSIDE one engine-atomic action
                     // (see `mid_composite_moves`): the state its counters
@@ -675,7 +717,7 @@ impl<'a> Translator<'a> {
                         // A hidden starting order reveals at its completion —
                         // the live model's normal path.
                         if self.state().players[seat as usize].starting_order_hidden
-                            && self.kept_card_by_seat.get(&seat) == Some(&card)
+                            && self.kept_card_by_seat.get(&seat).is_some_and(|c| c.contains(&card))
                         {
                             self.session
                                 .apply_standalone(RecordedEvent::RevealStartingOrder {
