@@ -236,3 +236,27 @@ fetch/XHR, snapshot, and WebSocket paths all banked a complete real game end
 to end (execution ledger, H0 rows). §6's runsheet is the H3 procedure the
 gate run follows; its snapshot-before-move-1 step is the one thing no later
 diligence can recover.
+
+## Recording future games (the steady-state process, owner-ruled 2026-08-08)
+
+Per game, any number of sittings (async-friendly — every table-page load banks a full
+cumulative history fetch):
+
+1. Relay up: `cargo run -p yokohama-bridge --bin bridge-relay` (leave running while playing).
+2. Open the table; **snapshot (toolbar button) before move 1** — the game-start anchor.
+3. Play. Realtime moves ride the socket; async sittings re-bank history on every open.
+4. At the final score screen: snapshot again, then reload the tab once (belt-and-braces
+   cumulative copy). Each table auto-writes its own `bridge-captures/<table>.ndjson`.
+5. Later, in any session: `yokohama-cli import bridge-captures/<table>.ndjson`. Whatever the
+   translator cannot express **holds with a named refusal** — that named list IS the
+   "updates required for future inspection" report; bring it in and the holds become the
+   next fix list, exactly as the 2026-08-08 gate games' seven discoveries did.
+
+Caveat: with the relay DOWN, the extension's outbox parks at most 400 items / 6 MB
+(drop-newest) — enough for a sitting's history fetches, not days of socket traffic. If in
+doubt, reload the tab once with the relay up: cumulative history recovers everything for
+turn-based play.
+
+TODO (owner-requested, deferred to a future wave): a CONNECTED indicator on the extension —
+badge state showing relay reachability, click revealing the current table number and
+snapshot/capture counts — so recording state is visible at a glance without checking files.
