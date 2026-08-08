@@ -376,28 +376,30 @@ impl<'a> Translator<'a> {
         self.state().current_player.0
     }
 
-    /// The m49 divergence RECORDER (live gate table 896157897; D3-class owner
-    /// question). A Church/Customs take consumes one track pawn, and the
-    /// rulebook (p.13/p.14) lets the player source it "from the
-    /// [Church/Customs] Area or your hand". Core collapsed that choice to
-    /// HAND-FIRST (`take_church_or_customs_assistant`, tracks.rs — reasoned
-    /// net-inert because the same-turn Recovery reconverges the totals),
-    /// while every BGA observation to date sources AREA-first: 896157897
-    /// m49's workers list moves a Church-AREA pawn onto the track with the
-    /// hand untouched (hand was 1), and the proving corpus's checkpointed
-    /// takes (m153/m180) do the same at hand 0, where the two rules
-    /// coincide. A both-sources take is therefore POTENTIALLY divergent —
-    /// but not provably: the corpus's m82 both-sources take replays green
-    /// because no checkpoint observes its window, and stopping there would
-    /// kill a legitimately-green replay. So the take is RECORDED, not
-    /// stopped, and when a later T9 checkpoint fails with exactly the
-    /// source-rule signature (engine board_assists one HIGH and hand_assists
-    /// one LOW — hand-sourcing counts the track pawn as board on top of an
-    /// untouched area) the STOP carries the named story instead of a bare
-    /// counter mystery (the shape that mis-aimed the first m49 diagnosis
-    /// toward recovery semantics). Never an offset, never silence — the
-    /// engine-side rule is an owner question (align the source or queue a
-    /// real choice; the D1/D2 pattern).
+    /// The m49 divergence RECORDER (live gate table 896157897; divergence
+    /// D6). A Church/Customs take consumes one track pawn, and the rulebook
+    /// (p.13/p.14) lets the player source it "from the [Church/Customs] Area
+    /// or your hand". Core collapsed that choice to HAND-FIRST
+    /// (`take_church_or_customs_assistant`, tracks.rs — reasoned net-inert
+    /// because the same-turn Recovery reconverges the totals), while every
+    /// BGA observation to date sources AREA-first: 896157897 m49's workers
+    /// list moves a Church-AREA pawn onto the track with the hand untouched
+    /// (hand was 1), and the proving corpus's checkpointed takes (m153/m180)
+    /// do the same at hand 0, where the two rules coincide. **The owner
+    /// RULED D6 area-first (2026-08-08), matching BGA; the engine flip lands
+    /// in the separate rules-parity rev-7 pipeline** — until it does, a
+    /// both-sources take is POTENTIALLY divergent, but not provably: the
+    /// corpus's m82 both-sources take replays green because no checkpoint
+    /// observes its window, and stopping there would kill a
+    /// legitimately-green replay. So the take is RECORDED, not stopped, and
+    /// when a later T9 checkpoint fails with exactly the source-rule
+    /// signature (engine board_assists one HIGH and hand_assists one LOW —
+    /// hand-sourcing counts the track pawn as board on top of an untouched
+    /// area) the STOP carries the named story instead of a bare counter
+    /// mystery (the shape that mis-aimed the first m49 diagnosis toward
+    /// recovery semantics). Never an offset, never silence — and once rev 7
+    /// lands the signature simply stops arising, at which point this
+    /// recorder is dead weight to retire.
     fn record_ambiguous_track_take(&mut self, action: &'static str, move_id: u64) {
         if let Some((hand, area)) = both_track_pawn_sources(self.state()) {
             self.ambiguous_track_takes.push(AmbiguousTrackTake {
@@ -750,8 +752,9 @@ impl<'a> Translator<'a> {
                                  observation to date consumes from the AREA (896157897 m49 \
                                  workers; corpus m153/m180 at hand 0), so the engine runs one \
                                  board-assistant HIGH and one hand-assistant LOW until Recovery \
-                                 reconverges them; the engine-side source rule needs an owner \
-                                 ruling, not a translator guess",
+                                 reconverges them; this is divergence D6, RULED area-first \
+                                 (owner, 2026-08-08) — the engine flip lands at rules-parity \
+                                 rev 7, and this replay passes once it does",
                                 t.action, t.move_id, t.hand, t.area
                             ),
                             None => String::new(),
@@ -1902,7 +1905,8 @@ mod tests {
         assert!(detail.contains("SOURCE-RULE signature"), "the story is named: {detail}");
         assert!(detail.contains("m6 take"), "the take is located: {detail}");
         assert!(detail.contains("hand-first"), "the engine's rule is named: {detail}");
-        assert!(detail.contains("owner ruling"), "the routing is named: {detail}");
+        assert!(detail.contains("D6, RULED area-first"), "the ruling is carried: {detail}");
+        assert!(detail.contains("rev 7"), "the resolution vehicle is named: {detail}");
     }
 
     /// The guard's CONDITION, pinned exactly: it reads the acting seat's hand
