@@ -8,8 +8,40 @@ fn main() {
     // before the reader is built, and only `main` may call it -- that is what
     // keeps the line editor out of every test and every pipe.
     yokohama_cli::input::init_from_tty();
-    let rules = yokohama_core::Rules::standard();
     let args: Vec<String> = std::env::args().collect();
+
+    // Phase-3.5b bridge importer (plan §1): `import` is an EXACT argv keyword
+    // -- every other `args[1]` keeps its resume-this-save meaning, so the
+    // documented argv contract is unchanged. The whole branch exits: the
+    // importer is a batch command, not a REPL mode.
+    if args.get(1).map(String::as_str) == Some("import") {
+        let rules = yokohama_core::Rules::standard();
+        match yokohama_cli::bga::import::parse_args(&args[2..]) {
+            Ok(parsed) => match yokohama_cli::bga::import::run(&parsed, rules) {
+                Ok(outcome) => {
+                    print!("{}", outcome.text);
+                    std::io::stdout().flush().ok();
+                    // Exit 0 when the run delivered what was asked (the sheet,
+                    // or a built session); 2 when a session was wanted but the
+                    // evidence does not yet cover it -- distinct from 1, the
+                    // hard errors, so a script can tell "ask the wizard" from
+                    // "the capture is bad".
+                    let code = if outcome.session_built || parsed.answers_only { 0 } else { 2 };
+                    std::process::exit(code);
+                }
+                Err(e) => {
+                    eprintln!("import failed: {e}");
+                    std::process::exit(1);
+                }
+            },
+            Err(e) => {
+                eprintln!("{e}");
+                std::process::exit(1);
+            }
+        }
+    }
+
+    let rules = yokohama_core::Rules::standard();
     let mut lines = yokohama_cli::input::LineReader::from_stdin();
 
     if yokohama_cli::screen::enabled() {
