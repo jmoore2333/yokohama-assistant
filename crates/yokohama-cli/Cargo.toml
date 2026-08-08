@@ -7,6 +7,10 @@ authors.workspace = true
 
 [dependencies]
 yokohama-core = { path = "../yokohama-core" }
+# Phase-3.5b H1: the BGA importer reads relay capture files through the
+# bridge's `feed` module (parse + dedupe + supersession collapse). Workspace
+# crate, std + serde_json only -- no third-party addition rides this line.
+yokohama-bridge = { path = "../yokohama-bridge" }
 serde.workspace = true
 serde_json.workspace = true
 # Promoted from dev-dependencies at Phase 3.2 Task 12: the sim-mode bot seats

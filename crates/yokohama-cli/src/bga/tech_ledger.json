@@ -1,0 +1,17 @@
+{
+  "comment": "BGA tech_id -> engine title ledger (Phase 3.5b plan T4). One row per PROVEN identity; each row carries its evidence and its basis strength per the card-mapping doc (docs/plans/2026-08-08-bga-card-mapping.md §4.4). country_code is BGA's (1=American 2=German 3=French 4=Dutch 5=English). The 18 UNOBSERVED tech_ids are DELIBERATELY absent: an absent row is Unknown at lookup, and shipping a plausible row would be the one place a default silently corrupts a record (§8 MAY NOT). Rows accumulate as future socket-covered games carry techAcquisition with tech_card+tech_name together (§4.6).",
+  "rows": [
+    { "tech_id": 2,  "title": "Mining Technology", "country_code": 2, "req_gears": 3, "basis": "DIRECT",   "evidence": "table 895724349 pkt 127 move 120: techAcquisition carrying tech_name AND tech_card {tech_id 2, country 2, req_gears 3}" },
+    { "tech_id": 12, "title": "University",        "country_code": 5, "req_gears": 3, "basis": "DERIVED",  "evidence": "table 895724349: ownership timeline — sole owned tech_key between pkt 6 (University acquired) and pkt 31 (Ball acquired)" },
+    { "tech_id": 26, "title": "Ball",              "country_code": 5, "req_gears": 3, "basis": "DERIVED",  "evidence": "table 895724349: ownership timeline + elimination over the four named acquisitions" },
+    { "tech_id": 9,  "title": "Brickyard",         "country_code": 2, "req_gears": 3, "basis": "FORCED",   "evidence": "table 895724349: German/3 class = {Mining Technology, Brickyard}; tech_id 2 is Mining Technology by DIRECT evidence" },
+    { "tech_id": 14, "title": "Exposition",        "country_code": 2, "req_gears": 5, "basis": "FORCED",   "evidence": "table 895724349: German/5 class is uniformly Exposition (x2)" },
+    { "tech_id": 24, "title": "Exposition",        "country_code": 2, "req_gears": 5, "basis": "FORCED",   "evidence": "table 895724349: German/5 class is uniformly Exposition (x2)" },
+    { "tech_id": 3,  "title": "Electrical Light",  "country_code": 3, "req_gears": 4, "basis": "FORCED",   "evidence": "table 895724349: French/4 is a singleton class" },
+    { "tech_id": 4,  "title": "Tram",              "country_code": 1, "req_gears": 5, "basis": "FORCED",   "evidence": "table 895724349: American/5 is a singleton class" },
+    { "tech_id": 11, "title": "Language School",   "country_code": 1, "req_gears": 3, "basis": "FORCED",   "evidence": "table 895724349: American/3 class is uniformly Language School (x2)" },
+    { "tech_id": 21, "title": "Language School",   "country_code": 1, "req_gears": 3, "basis": "FORCED",   "evidence": "table 895724349: American/3 class is uniformly Language School (x2)" },
+    { "tech_id": 17, "title": "Newspaper",         "country_code": 4, "req_gears": 5, "basis": "FORCED",   "evidence": "table 895724349: Dutch/5 class is uniformly Newspaper (x2)" },
+    { "tech_id": 27, "title": "Newspaper",         "country_code": 4, "req_gears": 5, "basis": "FORCED",   "evidence": "table 895724349: Dutch/5 class is uniformly Newspaper (x2)" }
+  ]
+}

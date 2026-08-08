@@ -338,6 +338,7 @@ dependencies = [
  "rustyline",
  "serde",
  "serde_json",
+ "yokohama-bridge",
  "yokohama-core",
 ]
 
