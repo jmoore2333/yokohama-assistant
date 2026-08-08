@@ -159,27 +159,69 @@ fn the_acceptance_replay_reaches_m153_and_stops_on_the_documented_rules_gap() {
         "{}",
         outcome.text
     );
-    // The two open rules questions ride the report as tracked offsets. D2 now
-    // carries its BOUND in the note (F3): the offset is one penalty unit, and
-    // the vocabulary it will absorb is stated where the owner reads it.
-    assert!(outcome.text.contains("church yen payment"), "{}", outcome.text);
-    assert!(outcome.text.contains("4TH tech"), "{}", outcome.text);
+    // The rev-5 D1/D2 offset notes are GONE at rev 6 — the zero-offsets pin
+    // (`the_rev6_corpus_replays_with_zero_declared_offsets`) owns that claim.
+}
+
+/// THE REV-6 PROOF (2026-08-08 follow-up): the engine now agrees with BGA on
+/// D1 (church yen price 2) and D2 (extra-tech surcharge from the 4th card), so
+/// the corpus checkpoints MUST pass RAW — zero declared offsets, zero OPEN
+/// RULES QUESTION notes, zero T9 counter divergences. This passing is the
+/// executable proof the rev-6 rulings landed: before the offset machinery was
+/// deleted, the same run either absorbed the divergences into declared offsets
+/// (rev 5) or STOPPED at the first checkpoint the now-wrong offset broke
+/// (rev 6 with the machinery still present — measured: m107).
+#[test]
+fn the_rev6_corpus_replays_with_zero_declared_offsets() {
+    let Some(_) = corpus_text() else { return };
+    let path = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../bridge-captures/895724349.ndjson"
+    );
+    let args = yokohama_cli::bga::import::parse_args(&[path.to_string()]).unwrap();
+    let outcome = yokohama_cli::bga::import::run(&args, Rules::standard()).unwrap();
+    assert!(outcome.session_built, "{}", outcome.text);
     assert!(
-        outcome.text.contains("outside {+1 imports, +2 yens} STOPs instead"),
-        "the D2 note states the absorber's bound: {}",
+        !outcome.text.contains("OPEN RULES QUESTION"),
+        "rev 6 retires the D1/D2 rules questions — no note may declare one: {}",
+        outcome.text
+    );
+    assert!(
+        !outcome.text.contains("offset tracked") && !outcome.text.contains("engine-side offset"),
+        "no offset may be declared on the rev-6 run: {}",
+        outcome.text
+    );
+    assert!(
+        !outcome.text.contains("T9 counter divergence"),
+        "every checkpoint must pass RAW (no offset applied, none needed): {}",
+        outcome.text
+    );
+    let progressed: u64 = outcome
+        .text
+        .lines()
+        .find_map(|l| {
+            l.trim()
+                .strip_prefix("progressed through BGA move ")
+                .and_then(|rest| rest.split_whitespace().next())
+                .and_then(|n| n.parse().ok())
+        })
+        .expect("the report states its progress");
+    assert!(
+        progressed >= 153,
+        "the raw-checkpoint replay must get at least as far as rev 5's offset-assisted one: {}",
         outcome.text
     );
 }
 
-/// F3 (lens-3 MUST), the corpus negative: at the real 4th-tech move (m120,
-/// XeroxMan) the honest divergence is +1 imports. Perturb that move's socket
-/// `yens` counter by an out-of-vocabulary amount and the D2 arm must STOP
-/// naming the shape, NOT quietly bank it as the rules question. Driven through
-/// the low-level translator so the perturbation lands on the exact checkpoint;
-/// mutation-proven — reverting the bound to `if delta != 0 { absorb }` turns
-/// this STOP back into a silent second offset and the `expect_err` fails.
+/// The corpus negative behind the zero-offsets proof: perturb the m120 socket
+/// checkpoint's `yens` counter and the replay must STOP on the T9 counter
+/// divergence — with the D1/D2 offset machinery deleted there is NOTHING left
+/// that could absorb a counter divergence, at the 4th-tech move or anywhere
+/// else. (This test's rev-5 ancestor pinned the F3 vocabulary bound of the
+/// then-live D2 absorber; the absorber is gone, so the pin is now simply that
+/// divergence means STOP.)
 #[test]
-fn an_out_of_vocabulary_4th_tech_divergence_stops_instead_of_being_absorbed() {
+fn a_perturbed_checkpoint_counter_stops_the_replay_nothing_absorbs_it() {
     use yokohama_cli::bga::facts;
     let Some(text) = corpus_text() else { return };
     let rules = Rules::standard();
@@ -194,9 +236,8 @@ fn an_out_of_vocabulary_4th_tech_divergence_stops_instead_of_being_absorbed() {
     )
     .unwrap();
     // Perturb XeroxMan's (seat 0) yens at the m120 checkpoint by +5. Its yens
-    // matched before, so this manufactures a yens_delta of -5 alongside the
-    // real imports_delta of +1 — two currencies diverging, squarely out of the
-    // {+1 imports, +2 yens}-single-currency vocabulary.
+    // matched before (rev 6 agrees with BGA raw), so this manufactures a
+    // divergence no engine state in the turn window can satisfy.
     let cp = stream
         .checkpoints
         .iter_mut()
@@ -227,12 +268,13 @@ fn an_out_of_vocabulary_4th_tech_divergence_stops_instead_of_being_absorbed() {
     let mut t = yokohama_cli::bga::translate::Translator::new(session, &resolved, stream, &feed).unwrap();
     let detail = t
         .run()
-        .expect_err("an out-of-vocabulary 4th-tech divergence must STOP, not be absorbed")
+        .expect_err("a perturbed checkpoint counter must STOP the replay, not be absorbed")
         .to_string();
     assert!(
-        detail.contains("not the extra-tech penalty's shape"),
-        "the STOP names the D2 bound: {detail}"
+        detail.contains("T9 counter divergence"),
+        "the STOP is the T9 checkpoint cross-check: {detail}"
     );
+    assert!(detail.contains("yens"), "the STOP names the diverging counter: {detail}");
 }
 
 /// H3's CORPUS-STREAMED-AS-LIVE proof (plan §6 / the H3 brief, requirement 4):

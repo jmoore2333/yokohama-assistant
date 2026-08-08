@@ -302,8 +302,10 @@ impl Follower {
         // assumptions and deliberately-unchecked counters the batch report
         // prints, reused verbatim so the spectate frame can never drift from the
         // batch surface. This is the live-gate surface — the operator reads
-        // these to know why a panel count differs from the BGA screen (the D1
-        // church-yen and D2 extra-tech offsets declare themselves here).
+        // these to know why a panel count differs from the BGA screen (since
+        // rev 6 there are no declared offsets left — D1/D2 were engine rulings
+        // that landed — so what remains here is assumptions and the
+        // deliberately-unchecked counter list).
         body.push_str(&import::render_report_sections(r, &resolved));
 
         let attempt = attempts.swap_remove(best);

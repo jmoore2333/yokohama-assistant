@@ -73,41 +73,6 @@ const UNCHECKED_COUNTERS: [(&str, &str); 8] = [
 const UNCHECKED_EXTRA: [(&str, &str); 1] =
     [("flags_ne", "country-icon aggregation semantics unverified against engine sets")];
 
-/// The classification of a 4th-tech move's (imports, yens) engine-minus-BGA
-/// deltas against the D2 penalty vocabulary — see [`classify_extra_tech_delta`].
-#[derive(Debug, PartialEq, Eq)]
-enum ExtraTechDelta {
-    /// No divergence at the 4th-tech move — nothing to absorb.
-    None,
-    /// The penalty's shape: absorb `delta` into `key`'s offset.
-    Penalty { key: &'static str, delta: i64 },
-    /// Out of the penalty's vocabulary — STOP naming the observed shape.
-    Unexpected,
-}
-
-/// Classify the 4th-tech (imports, yens) deltas against D2's MEASURED
-/// vocabulary (census §4.2). BGA charges ONE extra-tech penalty unit at a
-/// player's 4th tech that the engine defers to the 5th
-/// (`fifth_tech_penalty_required`, KB "after your 4th"), so at the 4th tech the
-/// engine pays nothing extra and ends up richer by exactly one unit in exactly
-/// ONE currency — +1 imported good OR +2 yen, the engine's own fifth-tech
-/// payment fork (`legal_moves.rs` prices it `Some(true)` = 2 yen /
-/// `Some(false)` = 1 import). A single positive currency at its own penalty
-/// magnitude is the D2 offset; every OTHER shape (a negative delta, a wrong
-/// magnitude, both currencies diverging at once) is NOT the penalty and is
-/// `Unexpected`, so the caller STOPs rather than absorbing it. That bound is
-/// the whole point: without it (`if delta != 0 { absorb }`) the arm was a
-/// residual sink that quietly banked ANY unrelated yens/imports divergence at
-/// the 4th-tech move and mislabelled it the rules question (F3 / lens-3 MUST).
-fn classify_extra_tech_delta(imports_delta: i64, yens_delta: i64) -> ExtraTechDelta {
-    match (imports_delta, yens_delta) {
-        (0, 0) => ExtraTechDelta::None,
-        (1, 0) => ExtraTechDelta::Penalty { key: "imports", delta: 1 },
-        (0, 2) => ExtraTechDelta::Penalty { key: "yens", delta: 2 },
-        _ => ExtraTechDelta::Unexpected,
-    }
-}
-
 /// The deck keys a k-slot Port refill reveals, in DRAW order.
 ///
 /// Two measured facts meet here and the direction is their consequence, not a
@@ -146,15 +111,6 @@ pub struct Translator<'a> {
     kept_card_by_seat: BTreeMap<u8, yokohama_core::OrderCardId>,
     /// Stashed customs VP for the space choice that follows the action.
     stash_customs_vp: Option<u8>,
-    /// Per-seat expected engine-minus-BGA counter offsets from ACKNOWLEDGED
-    /// rules divergences (census §4.1's church yen price, derived from BGA's own
-    /// stated charge; the 4th-tech surcharge found at m120, bounded to the
-    /// penalty's vocabulary by `classify_extra_tech_delta`). Each contribution
-    /// is recorded as an open rules question in the report, and BOTH arms are
-    /// measurements, not sinks: a divergence outside the acknowledged shape
-    /// STOPs with its diff rather than being absorbed (F3 — the D2 arm's bound
-    /// is +1 imports OR +2 yens in a single currency, everything else STOPs).
-    offsets: Vec<BTreeMap<String, i64>>,
     checkpoints: Vec<super::facts::CounterCheckpoint>,
     next_checkpoint: usize,
     /// Engine counter snapshots after every apply since the last checkpoint
@@ -242,7 +198,6 @@ impl<'a> Translator<'a> {
             port_observations,
             kept_card_by_seat,
             stash_customs_vp: None,
-            offsets: vec![BTreeMap::new(); answers.player_count as usize],
             checkpoints: stream.checkpoints,
             next_checkpoint: 0,
             state_snapshots: Vec::new(),
@@ -505,8 +460,10 @@ impl<'a> Translator<'a> {
         Some(v)
     }
 
-    /// Does snapshot `snap` satisfy checkpoint `cp` (with acknowledged
-    /// offsets)? Returns the diffs when it does not.
+    /// Does snapshot `snap` satisfy checkpoint `cp`? Returns the diffs when it
+    /// does not. Counters compare RAW — since rev 6 (D1 church yen price 2,
+    /// D2 surcharge from the 4th tech) the engine agrees with BGA and there is
+    /// no offset machinery left to acknowledge a divergence: any diff is a STOP.
     fn checkpoint_diffs(
         &self,
         cp: &super::facts::CounterCheckpoint,
@@ -533,7 +490,6 @@ impl<'a> Translator<'a> {
                         format!("counter key `{key}` is neither checked nor deliberately listed — T9 refuses silent ignores"),
                     )
                 })?;
-                let bga = bga + self.offsets[seat].get(key).copied().unwrap_or(0);
                 if bga != engine {
                     diffs.push(CounterDiff {
                         move_id: cp.move_id,
@@ -1052,17 +1008,11 @@ impl<'a> Translator<'a> {
                 Fact::ChurchPay { seat: s, pays, .. } if *s == seat => {
                     let pays = *pays;
                     self.consume_drive();
-                    if pays.yen && pays.yen_amount != 1 {
-                        *self.offsets[seat as usize].entry("yens".to_string()).or_insert(0) +=
-                            pays.yen_amount as i64 - 1;
-                        self.report.notes.push(format!(
-                            "move {move_id}: OPEN RULES QUESTION (census §4.1) — BGA charged {} \
-                             yen for the church yen payment, the engine charges 1; seat {seat}'s \
-                             yens are tracked with a +{} engine-side offset from here on",
-                            pays.yen_amount,
-                            pays.yen_amount as i64 - 1
-                        ));
-                    }
+                    // The rev-5 D1 offset arm lived here (BGA charged 2 yen,
+                    // the engine 1). Since rev 6 the engine's church yen price
+                    // IS 2 (owner ruling D1, 2026-08-08) — nothing to
+                    // acknowledge, and a wrong charge surfaces at the next
+                    // checkpoint as a hard STOP.
                     let mv = Move::ExecuteAreaAction {
                         action: AreaAction::Church {
                             copper: pays.copper,
@@ -1328,71 +1278,13 @@ impl<'a> Translator<'a> {
                 ))
             }
         };
-        let seat = self.current_seat();
-        let tech_count_before = self.state().players[seat as usize].technologies.len();
         let reveals = self.reveals_for(&mv, move_id)?;
         self.apply(mv, reveals, move_id)?;
-        // OPEN RULES QUESTION #2 (found at m120): BGA charges the extra-tech
-        // penalty from the FOURTH tech (`add_cost 1`, paid as 1 import there);
-        // the engine's `fifth_tech_penalty_required` starts at the FIFTH (the
-        // KB reads "after your 4th"). The engine therefore pays less on a 4th
-        // tech. Acknowledge with MEASURED data only, BOUNDED to the penalty's
-        // vocabulary: the offset is +1 imports OR +2 yens in a SINGLE currency
-        // (`classify_extra_tech_delta`), and any 4th-tech divergence outside
-        // that vocabulary STOPs rather than being absorbed — the D2 arm is a
-        // measurement, not a residual sink (F3 / lens-3 MUST; contrast the D1
-        // church arm, which reads BGA's own declared charge).
-        if tech_count_before == 3 {
-            if let Some(cp) = self.checkpoints.iter().find(|c| c.move_id == move_id).cloned() {
-                let pid = &self.pid_of_seat[seat as usize];
-                if let Some(counters) = cp.per_player.get(pid) {
-                    // engine-minus-BGA per penalty currency; a counter the
-                    // checkpoint omits contributes 0 (no divergence), exactly as
-                    // the pre-bound arm skipped it.
-                    let mut deltas = [0i64; 2]; // [imports, yens]
-                    for (i, key) in ["imports", "yens"].iter().enumerate() {
-                        if let (Some(bga), Some(engine)) = (
-                            counters.get(*key).and_then(yokohama_bridge::feed::flex_u64),
-                            self.engine_counter(seat, key),
-                        ) {
-                            let already = self.offsets[seat as usize].get(*key).copied().unwrap_or(0);
-                            deltas[i] = engine - (bga as i64 + already);
-                        }
-                    }
-                    let (imports_delta, yens_delta) = (deltas[0], deltas[1]);
-                    match classify_extra_tech_delta(imports_delta, yens_delta) {
-                        ExtraTechDelta::None => {}
-                        ExtraTechDelta::Penalty { key, delta } => {
-                            *self.offsets[seat as usize].entry(key.to_string()).or_insert(0) += delta;
-                            self.report.notes.push(format!(
-                                "move {move_id}: OPEN RULES QUESTION — BGA charged the extra-tech \
-                                 penalty on the 4TH tech (one unit the engine keeps: +{delta} \
-                                 {key}); the engine charges from the 5th \
-                                 (`fifth_tech_penalty_required`, KB 'after your 4th'). Engine-side \
-                                 +{delta} {key} offset tracked for seat {seat}; any 4th-tech \
-                                 divergence outside {{+1 imports, +2 yens}} STOPs instead."
-                            ));
-                        }
-                        ExtraTechDelta::Unexpected => {
-                            return Err(rerr(
-                                move_id,
-                                format!(
-                                    "4th-tech divergence is not the extra-tech penalty's shape \
-                                     (expected +1 imports or +2 yens in a single currency; saw \
-                                     imports {imports_delta:+} / yens {yens_delta:+}) — refusing \
-                                     to absorb an unrelated divergence as the D2 rules question"
-                                ),
-                            ));
-                        }
-                    }
-                }
-            } else {
-                self.report.notes.push(format!(
-                    "move {move_id}: 4th-tech acquisition with no socket counters — if BGA \
-                     charged its 4th-tech penalty here the next checkpoint will show it"
-                ));
-            }
-        }
+        // The rev-5 D2 offset arm lived here (BGA charged the extra-tech
+        // penalty from the 4TH tech, the engine from the 5th). Since rev 6 the
+        // engine's surcharge starts at the 4th card too (owner ruling D2,
+        // 2026-08-08 — `extra_tech_payment` from the 4th), so the counters
+        // agree raw and any 4th-tech divergence is an ordinary checkpoint STOP.
         Ok(())
     }
 
@@ -1555,44 +1447,13 @@ mod tests {
         );
     }
 
-    /// F3 (lens-3 MUST): the D2 extra-tech offset admits ONLY the penalty's
-    /// measured vocabulary — a single positive currency at +1 imports OR +2
-    /// yens — and everything else is `Unexpected`, which the arm turns into a
-    /// STOP rather than absorbing. This is the executable form of the bound
-    /// that stops the arm being a residual sink; the exhaustive off-vocabulary
-    /// battery (wrong magnitude, negative, both currencies) is what a reverted
-    /// `if delta != 0 { absorb }` would fail.
-    #[test]
-    fn the_extra_tech_delta_classifier_admits_only_the_penalty_vocabulary() {
-        use ExtraTechDelta::{None as N, Penalty, Unexpected};
-        assert_eq!(classify_extra_tech_delta(0, 0), N, "no divergence is nothing to absorb");
-        assert_eq!(
-            classify_extra_tech_delta(1, 0),
-            Penalty { key: "imports", delta: 1 },
-            "BGA paid the penalty in one import"
-        );
-        assert_eq!(
-            classify_extra_tech_delta(0, 2),
-            Penalty { key: "yens", delta: 2 },
-            "BGA paid the penalty in two yen"
-        );
-        for (im, ye) in [
-            (5, 0),   // wrong import magnitude — the residual-sink probe
-            (2, 0),   // wrong import magnitude
-            (0, 1),   // wrong yen magnitude
-            (0, 3),   // wrong yen magnitude
-            (-1, 0),  // negative — engine POORER, not a deferred penalty
-            (0, -2),  // negative
-            (1, 2),   // both currencies at once
-            (1, -2),  // one right, one wrong
-        ] {
-            assert_eq!(
-                classify_extra_tech_delta(im, ye),
-                Unexpected,
-                "imports {im} / yens {ye} is out of the penalty vocabulary and must STOP"
-            );
-        }
-    }
+    // The F3 classifier test (`the_extra_tech_delta_classifier_admits_only_the_
+    // penalty_vocabulary`) died with the D2 offset machinery at rev 6: the
+    // engine now charges the surcharge from the 4th card itself, so there is
+    // no absorber left whose vocabulary needed bounding. The corpus-level
+    // negative (`a_perturbed_checkpoint_counter_stops_the_replay_nothing_
+    // absorbs_it` in tests/bga_import.rs) pins that a counter divergence at
+    // the 4th-tech move — or anywhere else — is now a plain T9 STOP.
 
     /// F2 (lens-2 MUST): the T9 counter cross-check gets its NEGATIVE pin. A
     /// checkpoint whose counters no engine state can satisfy must produce the
