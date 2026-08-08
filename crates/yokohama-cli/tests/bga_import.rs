@@ -144,9 +144,80 @@ fn the_acceptance_replay_reaches_m153_and_stops_on_the_documented_rules_gap() {
         "{}",
         outcome.text
     );
-    // The two open rules questions ride the report as tracked offsets.
+    // The two open rules questions ride the report as tracked offsets. D2 now
+    // carries its BOUND in the note (F3): the offset is one penalty unit, and
+    // the vocabulary it will absorb is stated where the owner reads it.
     assert!(outcome.text.contains("church yen payment"), "{}", outcome.text);
     assert!(outcome.text.contains("4TH tech"), "{}", outcome.text);
+    assert!(
+        outcome.text.contains("outside {+1 imports, +2 yens} STOPs instead"),
+        "the D2 note states the absorber's bound: {}",
+        outcome.text
+    );
+}
+
+/// F3 (lens-3 MUST), the corpus negative: at the real 4th-tech move (m120,
+/// XeroxMan) the honest divergence is +1 imports. Perturb that move's socket
+/// `yens` counter by an out-of-vocabulary amount and the D2 arm must STOP
+/// naming the shape, NOT quietly bank it as the rules question. Driven through
+/// the low-level translator so the perturbation lands on the exact checkpoint;
+/// mutation-proven — reverting the bound to `if delta != 0 { absorb }` turns
+/// this STOP back into a silent second offset and the `expect_err` fails.
+#[test]
+fn an_out_of_vocabulary_4th_tech_divergence_stops_instead_of_being_absorbed() {
+    use yokohama_cli::bga::facts;
+    let Some(text) = corpus_text() else { return };
+    let rules = Rules::standard();
+    let feed = read_and_collapse(&text, None).unwrap();
+    let answers = synthesize(&feed, &rules).unwrap();
+    let mapper = OrderMapper::from_rules(&rules).unwrap();
+    let seats = answers.seats.clone();
+    let mut stream = facts::extract(
+        &feed,
+        &|pid| seats.iter().find(|s| s.bga_player_id == pid).map(|s| s.seat),
+        &mapper,
+    )
+    .unwrap();
+    // Perturb XeroxMan's (seat 0) yens at the m120 checkpoint by +5. Its yens
+    // matched before, so this manufactures a yens_delta of -5 alongside the
+    // real imports_delta of +1 — two currencies diverging, squarely out of the
+    // {+1 imports, +2 yens}-single-currency vocabulary.
+    let cp = stream
+        .checkpoints
+        .iter_mut()
+        .find(|c| c.move_id == 120)
+        .expect("the corpus has a socket checkpoint at m120");
+    let pid = answers.seats[0].bga_player_id.clone();
+    let counters = cp.per_player.get_mut(&pid).expect("seat 0 counters at m120");
+    let obj = counters.as_object_mut().expect("counters object");
+    let bga_yens = obj.get("yens").and_then(yokohama_bridge::feed::flex_u64).expect("yens present");
+    obj.insert("yens".to_string(), serde_json::json!(bga_yens + 5));
+
+    let mut resolved = yokohama_cli::bga::resolve::resolve(answers, &feed, &stream, &rules).unwrap();
+    // Pin the acceptance's SURVIVING hypothesis assignment (A=Seafood7,
+    // B=Tokens5) so the replay clears m43/m90 and actually REACHES the m120
+    // 4th-tech move — otherwise it STOPs on the wrong candidate long before D2.
+    // (`replay_attempts` finds this by elimination; the corpus makes it fixed.)
+    use yokohama_cli::bga::setup::Evidence;
+    use yokohama_core::AchievementType;
+    resolved.answers.achievements[0] = Evidence::Evidenced {
+        value: AchievementType::Seafood7,
+        provenance: "test: the acceptance's surviving hypothesis A".to_string(),
+    };
+    resolved.answers.achievements[1] = Evidence::Evidenced {
+        value: AchievementType::Tokens5,
+        provenance: "test: the acceptance's surviving hypothesis B".to_string(),
+    };
+    let session = yokohama_cli::bga::setup::build_session(&resolved.answers, rules).unwrap();
+    let mut t = yokohama_cli::bga::translate::Translator::new(session, &resolved, stream, &feed).unwrap();
+    let detail = t
+        .run()
+        .expect_err("an out-of-vocabulary 4th-tech divergence must STOP, not be absorbed")
+        .to_string();
+    assert!(
+        detail.contains("not the extra-tech penalty's shape"),
+        "the STOP names the D2 bound: {detail}"
+    );
 }
 
 /// H3's CORPUS-STREAMED-AS-LIVE proof (plan §6 / the H3 brief, requirement 4):
