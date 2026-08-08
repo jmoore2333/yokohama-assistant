@@ -817,8 +817,40 @@ pub fn build_session(answers: &SetupAnswers, rules: Rules) -> Result<crate::sess
         .iter()
         .map(|e| e.value().copied().unwrap_or(StartingOrderChoice::Unknown))
         .collect();
-    crate::session::Session::new_live(config, answers.table_id, obs, choices, rules)
-        .map_err(|e| ImportError::Session { detail: e })
+    let mut session = crate::session::Session::new_live(config, answers.table_id, obs, choices, rules)
+        .map_err(|e| ImportError::Session { detail: e })?;
+
+    // MUST-1 (H1 review): stamp the comparison-only provenance the plan §1
+    // promises — without it a record saved through `--out` is
+    // indistinguishable from a typed live game, and the map §1.5/§1.6 fence
+    // has nothing to ride. Per seat: the `bga-human` controller (the seat was
+    // played by a human ON BGA, not at this keyboard), the importer version,
+    // and the BGA player id in params. `observation` is `OBSERVATION_VIEW`:
+    // BGA's client is own-perspective — the same seat-relative visibility
+    // class that constant names — and the record itself is live-mode with the
+    // opponent's hand hidden.
+    let seats: Result<Vec<yokohama_core::SeatProvenance>, ImportError> = answers
+        .seats
+        .iter()
+        .map(|s| {
+            let pid: i64 = s.bga_player_id.parse().map_err(|_| ImportError::Sheet {
+                detail: format!(
+                    "seat {}: BGA player id `{}` is not numeric — cannot stamp provenance params",
+                    s.seat, s.bga_player_id
+                ),
+            })?;
+            Ok(yokohama_core::SeatProvenance {
+                controller: super::CONTROLLER_BGA_HUMAN.to_string(),
+                version: super::BGA_IMPORT_VERSION,
+                params: std::iter::once(("bga_player_id".to_string(), pid)).collect(),
+                agent_seed: None,
+                observation: yokohama_core::OBSERVATION_VIEW.to_string(),
+            })
+        })
+        .collect();
+    session.set_run_seats(seats?);
+    session.set_run_id(&format!("bga-import/{}", answers.table_id));
+    Ok(session)
 }
 
 // ---------------------------------------------------------------------------
@@ -1107,6 +1139,31 @@ mod tests {
         // Port A holds exactly the observed six.
         let port: Vec<OrderCardId> = state.port_state.port_a.slots.iter().flatten().copied().collect();
         assert_eq!(port, [1, 2, 3, 4, 5, 6].map(OrderCardId).to_vec());
+    }
+
+    /// MUST-1 (H1 review): the promised comparison-only provenance is REAL —
+    /// a record this importer emits is distinguishable from a typed live game
+    /// by its `run` stamp, which is the hook the map §1.5/§1.6 fence rides.
+    #[test]
+    fn the_built_session_carries_comparison_only_bga_provenance() {
+        let a = complete_sheet();
+        let session = build_session(&a, Rules::standard()).expect("session builds");
+        let run = session.record().run.as_ref().expect("provenance stamped");
+        assert_eq!(
+            run.run_id.as_deref(),
+            Some("bga-import/895724349"),
+            "the comparison-only fence rides the run_id prefix (plan §1)"
+        );
+        assert_eq!(run.master_seed, None, "no seed schedule above an import — honest absence");
+        assert_eq!(run.seats.len(), 2);
+        for seat in &run.seats {
+            assert_eq!(seat.controller, super::super::CONTROLLER_BGA_HUMAN);
+            assert_eq!(seat.version, super::super::BGA_IMPORT_VERSION);
+            assert_eq!(seat.observation, yokohama_core::OBSERVATION_VIEW);
+            assert_eq!(seat.agent_seed, None, "a BGA human has no RNG stream of ours");
+        }
+        assert_eq!(run.seats[0].params.get("bga_player_id"), Some(&11_111_111i64));
+        assert_eq!(run.seats[1].params.get("bga_player_id"), Some(&22_222_222i64));
     }
 
     #[test]

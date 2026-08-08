@@ -25,11 +25,6 @@ use std::path::PathBuf;
 use yokohama_bridge::feed::read_and_collapse;
 use yokohama_core::Rules;
 
-/// Provenance stamp for bridge-imported records (plan §1: the map §1.5/§1.6
-/// comparison-only fence rides the run-id prefix — these records are
-/// comparison corpus, never a tuning input).
-pub const BGA_IMPORT_VERSION: &str = "bga-import-v1";
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ImportArgs {
     pub path: PathBuf,

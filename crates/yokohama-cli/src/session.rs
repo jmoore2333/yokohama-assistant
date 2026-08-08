@@ -414,6 +414,23 @@ impl Session {
         self.record.set_run_seats(seats);
     }
 
+    /// Name the RUN this record belongs to when there is no seed-schedule
+    /// master above it — the BGA importer's case (`bga-import/<table_id>`,
+    /// the prefix the map §1.5/§1.6 comparison-only fence rides). Mirrors
+    /// core's `set_run_context` but leaves `master_seed` an honest `None`:
+    /// an imported game has no schedule, and inventing one would claim
+    /// provenance nobody has. Same ordering contract as core's, loud in
+    /// debug: seats must be stamped first or the id has nowhere to land.
+    pub fn set_run_id(&mut self, run_id: &str) {
+        debug_assert!(
+            self.record.run.is_some(),
+            "set_run_id before set_run_seats: the id has no provenance to land in",
+        );
+        if let Some(run) = &mut self.record.run {
+            run.run_id = Some(run_id.to_string());
+        }
+    }
+
     /// The cached plain-words description of `record().events[i]`, computed
     /// against the state as of when that event happened (see the
     /// `event_descriptions` field doc comment) -- `Repl::log_tail` is the

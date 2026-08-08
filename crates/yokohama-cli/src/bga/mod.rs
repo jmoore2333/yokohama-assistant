@@ -25,6 +25,19 @@ pub mod setup;
 
 use std::fmt;
 
+/// Importer implementation version, stamped as `SeatProvenance.version` on
+/// every record this importer emits (plan §1). Bumped when records written
+/// under the `bga-human` controller name stop being comparable.
+pub const BGA_IMPORT_VERSION: u32 = 1;
+
+/// The controller name for a seat a human played ON BGA — distinct from
+/// [`yokohama_core::CONTROLLER_HUMAN`] (a seat typed at THIS keyboard) so a
+/// reader of the file can tell an imported game from a typed one. With the
+/// `bga-import/<table_id>` run id this is the hook the map §1.5/§1.6
+/// comparison-only fence rides: these records are comparison corpus, never a
+/// tuning input.
+pub const CONTROLLER_BGA_HUMAN: &str = "bga-human";
+
 /// Typed mapping errors. Every variant names what was seen — these are the
 /// bridge's schema-drift alarms, so a generic message would defeat them.
 #[derive(Debug, Clone, PartialEq, Eq)]
