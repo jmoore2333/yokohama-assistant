@@ -714,6 +714,11 @@ fn all_kind_pairs(pk: &Packet) -> Vec<(String, String)> {
 ///     attaches as enrichment, and the two forms of one move must agree on
 ///     their `(kind, uid)` sequence after socket-only filtering.
 pub fn collapse(feed: &RawFeed, table: Option<u64>) -> Result<CollapsedFeed, FeedError> {
+    // The table filter selects PACKETS only — a Snapshot carries no table id,
+    // so every snapshot in the file rides through regardless (NOTE-5, H1
+    // review). Harmless while the relay writes per-table capture files; if a
+    // multi-table capture ever becomes real, snapshots need their own
+    // attribution before this filter can honestly cover them.
     let tables: BTreeSet<u64> = feed.packets.iter().map(|p| p.table_id).collect();
     let table_id = match table {
         Some(t) => {

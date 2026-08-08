@@ -26,9 +26,15 @@
 //! **Title vs copy** (mapping doc §4.5): for a duplicated title the corpus can
 //! never say WHICH engine `TechCardId` a `tech_id` is; the copies are
 //! rules-identical, so the choice is free but must be deterministic and
-//! stated. The rule: ledger rows in ascending `tech_id` order each take the
-//! LOWEST engine `TechCardId` of their title not yet taken. Two importer runs
-//! therefore produce identical records.
+//! stated. The rule, in two halves: COMMITTED rows in ascending `tech_id`
+//! order each take the LOWEST engine `TechCardId` of their title not yet
+//! taken (so two loads of the same ledger produce identical assignments), and
+//! a LEARNED row takes the lowest copy unclaimed AT LEARN TIME — a resolution
+//! once handed out is FROZEN and never reassigned (SHOULD-2, H1 review):
+//! H3's live path resolves ids across learn boundaries, and a record written
+//! between learns must agree with one written after. Determinism across runs
+//! therefore holds for the same committed ledger plus the same learn
+//! sequence, which is what an importer run is.
 
 use super::BgaMapError;
 use std::collections::BTreeMap;
@@ -327,6 +333,23 @@ impl TechLedger {
             return Ok(());
         }
         self.check_row(tech_id, tech_name, country_code, req_gears)?;
+        // FROZEN incremental assignment (SHOULD-2, module doc): the newcomer
+        // takes the lowest engine copy of its title not already handed out —
+        // never `recompute_assignment`, which reruns the ascending-`tech_id`
+        // rule over ALL rows and would steal an existing id's card whenever
+        // the learned id sorts below it.
+        let (ids, _, _) = self
+            .engine_titles
+            .get(tech_name)
+            .ok_or_else(|| BgaMapError::UnknownTechTitle { title: tech_name.to_string() })?;
+        let card = ids
+            .iter()
+            .copied()
+            .find(|id| !self.assignment.values().any(|c| c == id))
+            .ok_or_else(|| BgaMapError::TitleCapacityExceeded {
+                title: tech_name.to_string(),
+                capacity: ids.len(),
+            })?;
         self.rows.insert(
             tech_id,
             LedgerRow {
@@ -338,7 +361,8 @@ impl TechLedger {
                 evidence: "learned live from a socket techAcquisition".to_string(),
             },
         );
-        self.recompute_assignment()
+        self.assignment.insert(tech_id, card);
+        Ok(())
     }
 }
 
@@ -395,6 +419,35 @@ mod tests {
             TechLookup::Known(r) => assert_eq!(r.title, "Station"),
             other => panic!("expected Known, got {other:?}"),
         }
+    }
+
+    /// SHOULD-2 (H1 review): a resolution once handed out never changes.
+    /// University is a duplicated title with one committed row (tech_id 12,
+    /// holding the LOWER engine copy); learning a NEW LOWER tech_id of the
+    /// same title must give the newcomer the REMAINING copy, not rerun the
+    /// ascending-id rule and steal 12's — H3's live path resolves ids across
+    /// learn boundaries, and a record written between learns must agree with
+    /// one written after.
+    #[test]
+    fn learning_never_reassigns_an_already_resolved_identity() {
+        let mut l = ledger();
+        let before = match l.lookup(12) {
+            TechLookup::Known(r) => r.card,
+            other => panic!("tech_id 12 must be known, got {other:?}"),
+        };
+        // English/3 University, at a tech_id BELOW 12.
+        l.learn_from(5, "University", 5, 3).unwrap();
+        let after = match l.lookup(12) {
+            TechLookup::Known(r) => r.card,
+            other => panic!("tech_id 12 must still be known, got {other:?}"),
+        };
+        assert_eq!(before, after, "tech_id 12's resolution moved across a learn boundary");
+        let learned = match l.lookup(5) {
+            TechLookup::Known(r) => r,
+            other => panic!("the learned id must resolve, got {other:?}"),
+        };
+        assert_eq!(learned.title, "University");
+        assert_ne!(learned.card, after, "the two copies must stay distinct cards");
     }
 
     #[test]

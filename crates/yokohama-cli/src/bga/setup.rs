@@ -46,7 +46,7 @@
 
 use super::names::{self, TechLedger, TechLookup};
 use super::orders::OrderMapper;
-use super::{require_u64, BgaMapError, ImportError};
+use super::{require_u64, require_u8, BgaMapError, ImportError};
 use serde_json::Value;
 use std::collections::BTreeMap;
 use yokohama_bridge::feed::{flex_u64, CollapsedFeed};
@@ -318,10 +318,12 @@ const CATEGORY_TYPES: [(u64, [AchievementType; 4]); 3] = [
 
 fn match_achievement(row: &Value) -> Result<Evidence<AchievementType>, ImportError> {
     let class = require_u64(row, "achievement_class", "achievement row").map_err(ImportError::Map)?;
-    let qty_1 = require_u64(row, "qty_1", "achievement row").map_err(ImportError::Map)? as u8;
-    let qty_2 = require_u64(row, "qty_2", "achievement row").map_err(ImportError::Map)? as u8;
-    let bonus_1 = require_u64(row, "bonus_1_vps", "achievement row").map_err(ImportError::Map)? as u8;
-    let bonus_2 = require_u64(row, "bonus_2_vps", "achievement row").map_err(ImportError::Map)? as u8;
+    // require_u8, not `as u8` (NOTE-1, H1 review): a silent truncation at
+    // >= 256 could false-match a drifted quantity instead of erroring.
+    let qty_1 = require_u8(row, "qty_1", "achievement row").map_err(ImportError::Map)?;
+    let qty_2 = require_u8(row, "qty_2", "achievement row").map_err(ImportError::Map)?;
+    let bonus_1 = require_u8(row, "bonus_1_vps", "achievement row").map_err(ImportError::Map)?;
+    let bonus_2 = require_u8(row, "bonus_2_vps", "achievement row").map_err(ImportError::Map)?;
 
     let types = CATEGORY_TYPES
         .iter()
@@ -989,11 +991,35 @@ mod tests {
     fn a_corrupted_tile_link_is_a_board_topology_stop() {
         let mut feed = excerpt_feed();
         // Break one link in the snapshot: tile_key 1's side_right 2 -> 3.
+        // The row WALK trips on this one (row shape comes out wrong).
         let gd = &mut feed.snapshots[0].gamedatas;
         gd["tiles"]["1"]["side_right"] = serde_json::json!("3");
         match synthesize(&feed, &Rules::standard()).unwrap_err() {
             ImportError::Sheet { detail } => {
                 assert!(detail.contains("STOP"), "{detail}");
+            }
+            other => panic!("expected Sheet STOP, got {other:?}"),
+        }
+    }
+
+    /// SHOULD-1 (H1 review, escaped mutation M8): the six-link differential
+    /// must be discriminated by a fixture the row WALK cannot catch. Tile 6's
+    /// `up_left` is a link the walk never reads (top detection survives — the
+    /// field stays nonzero — and the walk chains only `side_right` plus the
+    /// row heads' down links), so ONLY the full differential trips here:
+    /// deleting it leaves the walk green and this test red.
+    #[test]
+    fn a_corrupted_up_link_is_caught_by_the_six_link_differential() {
+        let mut feed = excerpt_feed();
+        // Tile 6 sits at row 1 col 1; its true up_left is tile_key 2.
+        let gd = &mut feed.snapshots[0].gamedatas;
+        gd["tiles"]["6"]["up_left"] = serde_json::json!("3");
+        match synthesize(&feed, &Rules::standard()).unwrap_err() {
+            ImportError::Sheet { detail } => {
+                assert!(
+                    detail.contains("brick-offset pyramid"),
+                    "the differential, not the walk, must name this STOP: {detail}"
+                );
             }
             other => panic!("expected Sheet STOP, got {other:?}"),
         }
@@ -1126,12 +1152,18 @@ mod tests {
         assert_eq!(session.mode, crate::session::TrackingMode::Live);
         let state = session.state();
         // The observed board came through reconcile: the areas are the
-        // sheet's, row-major.
-        let mut areas: Vec<AreaType> = state.board_layout.areas.values().map(|a| a.area_type).collect();
-        let mut expected = a.board_tiles.value().unwrap().clone();
-        areas.sort_by_key(|t| format!("{t:?}"));
-        expected.sort_by_key(|t| format!("{t:?}"));
-        assert_eq!(areas, expected);
+        // sheet's, IN ROW-MAJOR POSITION — compare via grid_position ordering
+        // (SHOULD-3, H1 review: a Debug-string sort checks only the SET, so a
+        // scrambled row-major order would have passed it).
+        let mut cells: Vec<((u8, u8), AreaType)> = state
+            .board_layout
+            .areas
+            .values()
+            .map(|c| (c.grid_position, c.area_type))
+            .collect();
+        cells.sort_by_key(|(pos, _)| *pos);
+        let areas: Vec<AreaType> = cells.into_iter().map(|(_, t)| t).collect();
+        assert_eq!(&areas, a.board_tiles.value().unwrap());
         // Both seats Unknown: hidden starting orders, four boxed fiction deals.
         assert!(state.players.iter().all(|p| p.starting_order_hidden));
         // The record is live-mode: setup observations present.
