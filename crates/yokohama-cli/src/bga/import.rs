@@ -478,6 +478,49 @@ mod tests {
         assert_eq!(a.through, Some(50));
         assert_eq!(a.out, Some(PathBuf::from("rec.json")));
         assert_eq!(a.report, Some(PathBuf::from("rep.txt")));
+        assert!(!a.follow, "a batch invocation must not read as a follow");
+    }
+
+    /// H3 review SHOULD-2: `--follow` parsing and its refusal set were
+    /// user-visible, guide-documented, and untested. `--follow` composes with
+    /// the flags that make sense for a run that never ends on its own
+    /// (`--table`, `--out`) and is REFUSED — with the offending flag named in
+    /// the error — alongside each batch-only flag (`--answers`, `--through`,
+    /// `--report`). Discrimination verified by mutation: deleting the refusal
+    /// loop in `parse_args` fails the three refusal assertions here.
+    #[test]
+    fn follow_parses_with_its_allowed_flags_and_refuses_the_batch_only_ones() {
+        let a = parse_args(&strs(&[
+            "cap.ndjson", "--follow", "--table", "895724349", "--out", "rec.json",
+        ]))
+        .unwrap();
+        assert!(a.follow);
+        assert_eq!(a.table, Some(895_724_349));
+        assert_eq!(a.out, Some(PathBuf::from("rec.json")));
+        assert!(!a.answers_only);
+        assert_eq!(a.through, None);
+        assert_eq!(a.report, None);
+
+        for (extra, named) in [
+            (vec!["--answers"], "--answers"),
+            (vec!["--through", "50"], "--through"),
+            (vec!["--report", "rep.txt"], "--report"),
+        ] {
+            let mut argv = vec!["cap.ndjson", "--follow"];
+            argv.extend(extra);
+            match parse_args(&strs(&argv)).unwrap_err() {
+                ImportError::Usage { detail } => assert!(
+                    detail.contains(named) && detail.contains("--follow"),
+                    "refusal for {named} does not name the conflict: {detail}"
+                ),
+                other => panic!("expected a Usage refusal for {named}, got {other:?}"),
+            }
+        }
+        // Flag order must not matter to the refusal: `--follow` last.
+        assert!(matches!(
+            parse_args(&strs(&["cap.ndjson", "--answers", "--follow"])).unwrap_err(),
+            ImportError::Usage { .. }
+        ));
     }
 
     #[test]

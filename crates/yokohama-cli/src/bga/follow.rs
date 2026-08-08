@@ -199,12 +199,24 @@ impl Follower {
         let a = &attempts[best];
 
         // Everything replay-observable about the reached state — INCLUDING
-        // the record itself, not just its counts: later input can re-resolve
-        // an EARLIER event's identity without moving any counter (measured on
-        // the excerpt: a later `techAcquisition` teaches the ledger a lab
-        // refill's true card, so the reveal in event 4 changes while every
-        // progress figure stays put). New input that moves none of this
-        // (post-STOP chatter, duplicate deliveries) is silent.
+        // the record itself, not just its counts. Honest scope (H3 review,
+        // SHOULD-1, per the S-2/M5 claim-precision precedent): the record
+        // component is belt-and-braces for an ENRICHMENT-ONLY arrival — a
+        // socket frame for a move the history spine already covers, whose
+        // extra detail re-resolves an EARLIER event's identity (the ledger
+        // learning a lab refill's true card) while every counter stays put.
+        // NO COMMITTED TEST DISCRIMINATES it: on this corpus, every arrival
+        // that changes the record also moves `last_move_id` (the reviewer's
+        // counts-only-fingerprint mutation passed the entire suite, and the
+        // full corpus streamed line by line renders identically either way),
+        // and the committed excerpt cannot exhibit the case — its only socket
+        // frames sit past the fixture's history spine, while the corpus's
+        // first socket `techAcquisition` is at m120, so a real-data pin would
+        // need the whole 1..120 spine committed. The component stays because
+        // a LIVE socket can deliver exactly that arrival, and without it the
+        // follower would silently keep rendering (and saving) a stale
+        // identity. New input that moves none of this (post-STOP chatter,
+        // duplicate deliveries) is silent.
         let record_json =
             serde_json::to_string(a.session.record()).expect("a GameRecord serializes");
         let fp = format!(
