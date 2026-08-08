@@ -1,0 +1,46 @@
+ORDER CARD INDEX — all 36, grouped by flag  · small tag = engine id (for saves & reports; never required)
+Open as a view — this screen is recording nothing. 'f silk' filters by a good · 'f 8vp' by reward · 'f france' by flag · 'f' clears.
+
+■ BRITAIN  (8 cards)
+┌ BRITAIN          O03 ┐ ┌ BRITAIN          O10 ┐ ┌ BRITAIN          O13 ┐ ┌ BRITAIN          O15 ┐ ┌ BRITAIN          O20 ┐ ┌ BRITAIN          O24 ┐ ┌ BRITAIN          O27 ┐ ┌ BRITAIN          O32 ┐
+│ 1 Seafood 2 Copper   │ │ 1 Seafood 1 Tea      │ │ 2 Seafood 1 Silk     │ │ 1 Tea 1 Silk         │ │ 2 Tea 1 Silk         │ │ 2 Seafood 1 Silk     │ │ 2 Seafood 2 Copper   │ │ 1 Seafood 1 Tea      │
+│                      │ │ 2 Copper             │ │ 2 Copper             │ │ 3 Copper             │ │ 2 Copper             │ │ 3 Copper             │ │                      │ │ 2 Copper             │
+│ ★4 VP ¥1             │ │ ★4 VP 2 move         │ │ ★8 VP 1 Import       │ │ ★9 VP 1 Import       │ │ ★8 VP 1 Import       │ │ ★7 VP ¥2             │ │ ★1 VP ¥2             │ │ ★5 VP 1 Import       │
+│ = Port A slot 2      │ │                      │ │                      │ │                      │ │                      │ │ 1 Import             │ │ ⌂1                   │ │                      │
+└──────────────────────┘ └──────────────────────┘ └──────────────────────┘ └──────────────────────┘ └──────────────────────┘ └──────────────────────┘ └──────────────────────┘ └──────────────────────┘
+
+■ AMERICA  (8 cards)
+┌ AMERICA          O01 ┐ ┌ AMERICA          O12 ┐ ┌ AMERICA          O16 ┐ ┌ AMERICA          O18 ┐ ┌ AMERICA          O22 ┐ ┌ AMERICA          O28 ┐ ┌ AMERICA          O31 ┐ ┌ AMERICA          O35 ┐
+│ 2 Seafood 1 Tea      │ │ 3 Seafood 1 Tea      │ │ 3 Seafood 2 Tea      │ │ 3 Seafood 2 Copper   │ │ 4 Seafood 1 Copper   │ │ 4 Seafood 1 Silk     │ │ 3 Seafood 1 Copper   │ │ 4 Seafood 2 Silk     │
+│                      │ │ 2 Silk               │ │ 1 Copper             │ │                      │ │                      │ │                      │ │                      │ │                      │
+│ ★1 VP ⌂1             │ │ ★9 VP ¥1             │ │ ★8 VP 1 Import       │ │ ★6 VP 1 Import       │ │ ★8 VP                │ │ ★3 VP 1 Import       │ │ ★2 VP 2 move         │ │ ★7 VP ¥2             │
+│                      │ │                      │ │                      │ │                      │ │                      │ │ ⌂1                   │ │                      │ │                      │
+└──────────────────────┘ └──────────────────────┘ └──────────────────────┘ └──────────────────────┘ └──────────────────────┘ └──────────────────────┘ └──────────────────────┘ └──────────────────────┘
+
+■ FRANCE  (8 cards)
+┌ FRANCE           O02 ┐ ┌ FRANCE           O05 ┐ ┌ FRANCE           O07 ┐ ┌ FRANCE           O23 ┐ ┌ FRANCE           O26 ┐ ┌ FRANCE           O29 ┐ ┌ FRANCE           O30 ┐ ┌ FRANCE           O34 ┐
+│ 1 Seafood 2 Tea      │ │ 2 Tea 1 Copper       │ │ 3 Tea 1 Copper       │ │ 3 Tea 2 Silk         │ │ 1 Seafood 3 Tea      │ │ 4 Tea 1 Silk         │ │ 3 Tea 2 Silk         │ │ 3 Tea 2 Copper       │
+│                      │ │                      │ │                      │ │ 1 Copper             │ │                      │ │                      │ │                      │ │                      │
+│ ★3 VP                │ │ ★1 VP 1 Import       │ │ ★3 VP 1 Import       │ │ ★9 VP 1 Import       │ │ ★1 VP ¥2             │ │ ★8 VP                │ │ ★4 VP ¥2             │ │ ★9 VP 1 Import       │
+│                      │ │                      │ │                      │ │                      │ │ = Port A slot 3      │ │                      │ │ = in your hand       │ │                      │
+└──────────────────────┘ └──────────────────────┘ └──────────────────────┘ └──────────────────────┘ └──────────────────────┘ └──────────────────────┘ └──────────────────────┘ └──────────────────────┘
+
+■ GERMANY  (7 cards)
+┌ GERMANY          O04 ┐ ┌ GERMANY          O09 ┐ ┌ GERMANY          O14 ┐ ┌ GERMANY          O17 ┐ ┌ GERMANY          O25 ┐ ┌ GERMANY          O33 ┐ ┌ GERMANY          O36 ┐
+│ 1 Seafood 1 Tea      │ │ 1 Seafood 3 Silk     │ │ 2 Tea 2 Silk         │ │ 2 Seafood 2 Silk     │ │ 1 Tea 3 Silk         │ │ 3 Tea 3 Silk         │ │ 2 Tea 4 Silk         │
+│ 2 Silk               │ │                      │ │ 1 Copper             │ │ 1 Copper             │ │                      │ │                      │ │                      │
+│ ★5 VP ⌂1             │ │ ★2 VP ¥1             │ │ ★6 VP ¥2             │ │ ★8 VP ¥1             │ │ ★4 VP 1 Import       │ │ ★11 VP               │ │ ★5 VP ¥2             │
+│                      │ │ 1 Import             │ │                      │ │                      │ │                      │ │ = Port A slot 6      │ │ = Port A slot 1      │
+└──────────────────────┘ └──────────────────────┘ └──────────────────────┘ └──────────────────────┘ └──────────────────────┘ └──────────────────────┘ └──────────────────────┘
+
+■ NETHERLANDS  (5 cards)
+┌ NETHERLANDS      O06 ┐ ┌ NETHERLANDS      O08 ┐ ┌ NETHERLANDS      O11 ┐ ┌ NETHERLANDS      O19 ┐ ┌ NETHERLANDS      O21 ┐
+│ 2 Seafood 1 Tea      │ │ 1 Tea 1 Silk         │ │ 1 Seafood 1 Tea      │ │ 1 Seafood 1 Tea      │ │ 2 Seafood 2 Tea      │
+│ 1 Copper             │ │ 1 Copper             │ │ 1 Silk               │ │ 1 Silk 1 Copper      │ │ 2 Silk               │
+│ ★2 VP ¥1             │ │ ★3 VP 1 Import       │ │ ★5 VP                │ │ ★8 VP                │ │ ★11 VP               │
+│ = Port A slot 5      │ │                      │ │                      │ │ = Port A slot 4      │ │                      │
+└──────────────────────┘ └──────────────────────┘ └──────────────────────┘ └──────────────────────┘ └──────────────────────┘
+
+Dimmed cards are already recorded elsewhere and cannot be entered twice — each says where it is.
+Enter, '?', 'cancel' or 'back' closes this index and puts you back at the prompt underneath, exactly as you left it — nothing is entered and nothing there is cancelled.
+>

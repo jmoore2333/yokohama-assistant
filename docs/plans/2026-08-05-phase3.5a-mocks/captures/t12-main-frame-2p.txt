@@ -1,0 +1,49 @@
+                                                                          Y O K O H A M A   simulation · seed 42 · autosaved
+
+┌ A00 COPPER MINE ───────────┐┌ A01 FISHING GROUND ────────┐┌ A02 LABORATORY A ──────────┐┌ A03 CUSTOMS ───────────────┐    ─ PLAYERS ────────────────────────────────────────────────────────────────
+│ 5-Power: 2 Copper Site 17  ││ 5-Power: 1 Import Site 21  ││ 5-Power: 2 Copper Site 15  ││ 5-Power: 1 Import Site 22  │      RED                       ¥4    0 VP    seat 0
+│ no pawns                   ││ no pawns                   ││ no pawns                   ││ no pawns                   │      Goods  1 Copper · 1 Silk · 1 Tea · 1 Seafood · 0 Imports
+│ sites ★1 ★2¥1 — ★2  │ T8   ││ sites ★1 ★4 — ★1¥2  │ T5   ││ sites ★1 ★2¥1 — ⌂2  │ T8   ││ sites ★1 ★4 — ★3  │ T9     │      Assistants  8 in hand · 0 on board · 12 in warehouse
+└────────────────────────────┘└────────────────────────────┘└────────────────────────────┘└────────────────────────────┘      Shophouses  2 in hand · 6 in warehouse · 0 built
+               ┌ A04 PORT A ────────────────┐┌ A05 BANK ──────────────────┐┌ A06 CHURCH ────────────────┐                     Trade houses  0 in hand · 4 in warehouse · 0 built (next take ¥4)
+               │ 5-Power: 3 Yen Site 12     ││ 5-Power: 3 Seafood Site 11 ││ 5-Power: 2 Silk Site 23    │                     Tech  none yet
+               │ no pawns                   ││ no pawns                   ││ no pawns                   │                     Mercenaries  0 unused · 0 used
+               │ sites ★1 ★3¥1 — a2  │ T6   ││ sites ★1 ⌂2 — a2  │ T5     ││ sites ★1 ★3 — ★2  │ T6     │                     President in hand · 1 order in hand
+               └────────────────────────────┘└────────────────────────────┘└────────────────────────────┘
+                              ┌ A07 TEA PLANTATION ────────┐┌ A08 SILK MILL ─────────────┐                                  ▶ BLUE — your turn          ¥3    0 VP    seat 1
+                              │ 5-Power: 3 Seafood Site 20 ││ 5-Power: 3 Yen Site 7      │                                    Goods  1 Copper · 1 Silk · 1 Tea · 1 Seafood · 0 Imports
+                              │ no pawns                   ││ no pawns                   │                                    Assistants  8 in hand · 0 on board · 12 in warehouse
+                              │ sites ★1 ★3 — ★1¥2  │ T5   ││ sites ★1 *2 — *1  │ T6     │                                    Shophouses  2 in hand · 6 in warehouse · 0 built
+                              └────────────────────────────┘└────────────────────────────┘                                    Trade houses  0 in hand · 4 in warehouse · 0 built (next take ¥4)
+                                             ┌ A09 EMPLOYMENT AGENCY ─────┐                                                   Tech  none yet
+                                             │ 5-Power: 1 Import Site 2   │                                                   Mercenaries  0 unused · 0 used
+                                             │ no pawns                   │                                                   President in hand · 1 order in hand
+                                             │ sites ★1 ★4 — t2  │ T7     │
+                                             └────────────────────────────┘                                                 ─ TRACKS  (ends at 4 of YOUR pawns · D = dummy, not counted) ─────────────
+                                                                                                                              Church   faith [4][5][6][7 D][8][9][10][11] 0/4 · ★3–14+mv
+                                                                                                                              Customs  pay   [1][1][2][2 D][3][3][4] imports 0/4 · ★4–22
+                                                                                                                              Mercenary supply: 10 left · ('tracks' renders every space)
+
+                                                                                                                            ─ ACHIEVEMENTS  (one per category — first / later VP) ────────────────────
+                                                                                                                              A · own 7 seafood                 8 / 6 VP   unclaimed
+                                                                                                                              B · own 5 tokens (5-Power + merc) 9 / 7 VP   unclaimed
+                                                                                                                              C · buildings in 2 prod + 3 comm  10 / 8 VP  unclaimed
+
+                                                                                                                            ─ YOUR HAND  ('hand' expands · 'privacy' hides) ──────────────────────────
+                                                                                                                              ┌ FRANCE           O30 ┐
+                                                                                                                              │ 3 Tea 2 Silk         │
+                                                                                                                              │                      │
+                                                                                                                              │ ★4 VP ¥2             │
+                                                                                                                              │ your starting order  │
+                                                                                                                              └──────────────────────┘
+marks: ▲ president (owner color) · ● assistants (4, then +n) · ◈ a Movement destination the engine offers · [St] Station (+1 Power for everyone)
+site slots: ⌂ built (owner color) · ★n VP · ¥n yen · f/t/s/cn goods · *n any good · an assistants · ⌂n build · Tn trading-house VP — 'sites' renders the full cards
+info: type 'view' — board · players · ports · labs · tracks · sites · goals · hand · score · log   ·   '?' — the card index
+──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+TURN 1 · BLUE's turn    ADDITIONAL  ▸ Placement ▸ Movement ▸ Area Action ▸ 5-Power ▸ Building ▸ Recovery ▸ Additional ▸ End
+
+YOU ARE DECIDING · whether to use an additional action before Placement, or to move on.
+   [1] End additional-action phase
+(only option — press Enter to apply · nothing is final until you apply it · ↑ recalls what you typed · 'back' undoes the last applied entry · 'view' any surface · '?' the card index ·
+ 'help' for commands)
+>

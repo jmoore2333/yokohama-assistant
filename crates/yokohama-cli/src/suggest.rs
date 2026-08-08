@@ -44,11 +44,24 @@
 //! **EVERY LINE FITS THE COMPOSED FRAME** (T10 review M1). `screen::wrap` sizes
 //! the game screen to its widest line, so a body wider than the frame shoves the
 //! board sideways for one command and back on the next. The budget is therefore
-//! per PLAYER COUNT, because the frame is — `screen::frame_width`, 114/132/108
-//! at 2/3/4 players — and it is not a formality: a placement naming three areas
-//! and their fee recipients renders at up to **135 columns**, which overflows
-//! all three (the earlier flat `<= 100` pin asserted a property this render did
-//! not have, on 2P fixtures that never reached one of those moves). Two
+//! per PLAYER COUNT, because the frame is — `screen::frame_width`, **198/175/200
+//! at 2/3/4 players** (the 2P entry moved at T3, when the designed dashboard
+//! joined beside the board; the 4P one at T10, when it stacked below in seat
+//! columns; the 3P one at the T10 review, when the block was widened to hold
+//! its own compressed rows).
+//!
+//! **That budget no longer BINDS organically, and saying so is the point** (T2
+//! review M1). The widest thing real play hands this screen is a placement
+//! naming three areas and their fee recipients, about **135 columns**; against
+//! the pre-redesign frames (114/132/108) that overflowed two counts outright,
+//! and it is why the machinery below exists at all — the flat `<= 100` pin it
+//! replaced asserted a property this render did not have. T2's V3 board then
+//! widened every frame past 135 and T3 widened the 2P one further, so no
+//! organic position reaches the bound any more. What the machinery is still for is stated rather than assumed: the
+//! explicit-budget seam ([`render_suggestion_within`], which is what the two
+//! pins that prove reflow and elision work now drive), and the guard if a frame
+//! ever narrows again — a body that measured itself against a frame it happens
+//! to fit today is a body that breaks silently the day the layout moves. Two
 //! treatments, chosen per line by what its tail is worth:
 //!
 //! * **The suggested move WRAPS.** It is the answer, and the tail a cut would
@@ -108,16 +121,18 @@ pub fn table_row(cells: [&str; 5]) -> String {
 /// It is not the width GUARANTEE: that is the composed frame's own width, held
 /// by [`Body`] over every line. This one binds first for rows at every player
 /// count (80 plus the widest row prefix is 94, inside the narrowest frame's
-/// 108), which is why the rows a reader sees are unchanged by the frame bound.
+/// 175 — still the 3P one), which is why the rows a reader sees are
+/// unchanged by the frame bound.
 const ROW_TEXT_WIDTH: usize = 80;
 
 /// The closing honesty note (spec §7: the explanation text states term
 /// contributions, it does not give play advice). Pre-wrapped as fixed lines
-/// rather than reflowed at render time: its longest line is 82 columns, inside
+/// rather than reflowed at render time: its longest line is 80 columns, inside
 /// the narrowest frame this driver composes, so re-flowing it per player count
 /// would move a sentence a reader may have been shown before to no purpose. The
-/// long CAVEATS below are the opposite case — they cannot be said in 108 columns
-/// at all, so they are wrapped ([`Body::prose`]).
+/// long CAVEATS below are the opposite case — at 169 and 238 characters neither
+/// can be said in one line of ANY frame this driver composes, so they are
+/// wrapped ([`Body::prose`]).
 const HONESTY_NOTE: [&str; 3] = [
     "This is the bot's arithmetic, not advice: each row is (your value − the best",
     "opponent's) × the weight for this stage, summed. It read ONE guess at the hidden",
@@ -169,7 +184,7 @@ impl std::fmt::Display for SuggestError {
             Self::Inconsistent(mv) => write!(
                 f,
                 "the bot chose a move this position does not offer, so there is nothing safe to\n\
-                 show you. That is an inconsistency between the sampled world and the engine --\n\
+                 show you. That is an inconsistency between the sampled world and the engine —\n\
                  a bug worth reporting, not something you did. The game is untouched.\n\
                  Move: {mv}"
             ),
@@ -355,8 +370,9 @@ fn ensure_offered_by_the_true_state(
 /// emits is measured against.
 ///
 /// **Why a type rather than `push_str` at each site.** The screen has to fit the
-/// composed frame line by line (module doc), and the widest thing it can print
-/// is 135 columns against a 4-player frame's 108 — so the bound has to hold at
+/// composed frame line by line (module doc), and the widest thing it can print —
+/// a 135-column placement — outran two of the three pre-redesign frames and
+/// would outrun any frame narrow enough, so the bound has to hold at
 /// every site, including the ones a later edit adds. Routing every line through
 /// here makes that a property of one type instead of a habit at fourteen call
 /// sites, and it keeps the paint on the OUTSIDE of the measurement, which is
@@ -436,20 +452,49 @@ impl Body {
 /// composed frame this body will be wrapped in is sized per count, and the body
 /// cannot measure a frame that does not exist yet.
 pub fn render_suggestion(s: &Suggestion, state: &GameState, rules: &Rules) -> String {
-    let mut body = Body::new(crate::screen::frame_width(state.players.len()));
+    render_suggestion_within(s, state, rules, crate::screen::frame_width(state.players.len()))
+}
+
+/// [`render_suggestion`] at an explicit column budget.
+///
+/// The seam exists because the budget stopped BINDING. Phase-3.5a T2's V3 board
+/// widened every frame (108 to 180 at four players), which carried them past
+/// the widest move description real play produces — about 135 columns, a
+/// placement naming three areas and every fee recipient. The reflow-and-elide
+/// machinery below is still correct and still the guard against a move name
+/// outgrowing its screen; what changed is that no ORGANIC position reaches it
+/// any more, so the two pins that prove it works drive the budget here rather
+/// than depending on a frame width that happens to be narrow. They said so
+/// themselves when it stopped being true, which is why this seam is a repair
+/// and not a convenience.
+fn render_suggestion_within(
+    s: &Suggestion,
+    state: &GameState,
+    rules: &Rules,
+    budget: usize,
+) -> String {
+    let mut body = Body::new(budget);
     body.line(render::section("Suggest").trim_end_matches('\n'));
 
     let color = state.player(s.seat).color;
     // Every knob printed comes from the const the agent itself reads, so this
-    // line cannot describe a rung the press did not run. `eval v{}` is
-    // `EVAL_IMPL_VERSION` — the evaluator IMPLEMENTATION, which is what a
-    // reader needs to know two suggestions are comparable; the weight table's
-    // own identity is a 64-bit digest and belongs in provenance, not on screen.
+    // line cannot describe a rung the press did not run.
+    //
+    // **`evaluator impl {}` is `EVAL_IMPL_VERSION`, and it used to read
+    // `eval v{}`, which was the wrong words for the right number** (T11). The
+    // rung on the same line is `lookahead-v1` and the weights it runs are the
+    // frozen `WeightTable::V1`, so a header reading `lookahead-v1 … eval v2`
+    // invited exactly one reading — that some newer evaluator had replaced the
+    // v1 everything else names — and that reading is false. `2` is the
+    // evaluator MODULE's implementation revision (the T4 freeze bumped it
+    // without moving a single weight), which is what a reader needs to know two
+    // suggestions are comparable. Saying "impl" says so; the weight table's own
+    // identity is a 64-bit digest and belongs in provenance, not on screen.
     body.painted_head(
         Tone::Player(color),
         &format!("Seat {} ({})", s.seat.0, render::color_name(color)),
         &format!(
-            " · {} · beam {}, K={}, M={}, eval v{} · stream {:#018x}",
+            " · {} · beam {}, K={}, M={}, evaluator impl {} · stream {:#018x}",
             lookahead::LOOKAHEAD_CONTROLLER,
             lookahead::DEFAULT_BEAM,
             lookahead::DEFAULT_WORLDS,
@@ -667,6 +712,83 @@ fn wrap_words(text: &str, width: usize) -> Vec<String> {
 
 #[cfg(test)]
 mod tests {
+    /// The 2-player simulation the guide's captured `suggest` screen is taken
+    /// from: a fresh game at a fixed seed, walked to its first Placement
+    /// decision, where `suggest` has a real list to rank.
+    ///
+    /// **A named fixture rather than a remembered set of keystrokes**, so the
+    /// guide's block can be REGENERATED from one run instead of edited by hand
+    /// — the discipline `repl`'s Movement captures and `reveal`'s reveal
+    /// captures already hold, extended at T11 to the third block a tester reads
+    /// line by line. Until now the suggest capture had no regeneration pin at
+    /// all: `guide_sync` checked four strings inside it and nothing checked the
+    /// other forty lines.
+    pub(crate) fn guide_capture_fixture() -> crate::repl::Repl {
+        let session = crate::session::Session::new_sim(
+            yokohama_core::GameConfig::for_player_count(2),
+            4,
+            vec![yokohama_core::StartingOrderChoice::Keep(0); 2],
+            yokohama_core::Rules::standard(),
+        )
+        .expect("a standard 2-player simulation");
+        let mut r = crate::repl::Repl::new(session);
+        // The opening ceremony: bare Enter applies each forced single option
+        // until a real decision arrives.
+        while !r.prompt().contains("PLACEMENT") {
+            r.step("");
+        }
+        r
+    }
+
+    /// The screen that fixture's `suggest` draws, plain — what the guide block
+    /// must be, byte for byte.
+    ///
+    /// The SCREEN, not the step's whole output: `out_view` appends the standing
+    /// input hint under every view, and the hint is documented in §4 on its own
+    /// rather than reprinted under a capture of something else.
+    pub(crate) fn guide_capture(r: &crate::repl::Repl) -> String {
+        crate::style::force(false);
+        let seat = r.session.state().current_player;
+        let seed = super::stream_seed(r.session.record(), seat);
+        let s = super::suggest(r.session.state(), r.session.rules(), seat, seed)
+            .expect("the fixture sits at a decision with a legal list");
+        super::render_suggestion(&s, r.session.state(), r.session.rules())
+            .trim_end_matches('\n')
+            .to_string()
+    }
+
+    /// **The guide's captured `suggest` screen IS what the fixture renders**
+    /// (T11), the third block held to this discipline after `repl`'s Movement
+    /// captures and `reveal`'s reveal captures.
+    ///
+    /// It closes the gap those two were written for: before this, a reviewer's
+    /// memory was the only thing standing between the guide and a hand-edited
+    /// forty-line screen, and `guide_sync`'s four string checks would have
+    /// passed a block whose every number was invented. That is the exact defect
+    /// the T4 review found in the Movement transcript.
+    ///
+    /// Re-capture by running `guide_capture(&guide_capture_fixture())` and
+    /// pasting the whole block into BOTH formats — never by editing it, and
+    /// never by splicing two runs together.
+    #[test]
+    fn the_guide_suggest_capture_is_what_the_fixture_renders() {
+        const GUIDE_MD: &str = include_str!("../../../docs/cli-guide.md");
+        let rendered = guide_capture(&guide_capture_fixture());
+        let opening = rendered.lines().next().expect("the screen's rule header");
+        let block = GUIDE_MD
+            .split("```")
+            .map(|part| part.trim_matches('\n'))
+            .find(|part| part.starts_with(opening))
+            .unwrap_or_else(|| panic!("cli-guide.md carries no captured suggest screen"));
+        assert_eq!(
+            block, rendered,
+            "docs/cli-guide.md's captured suggest screen no longer matches what \
+             `guide_capture_fixture()` renders. Re-capture it in BOTH formats from ONE run of \
+             that fixture — never by editing the block by hand. The rendered screen is above; \
+             `guide_sync` pins the .html twin against the .md.",
+        );
+    }
+
     use super::*;
     use crate::session::Session;
     use yokohama_core::eval::TerminalStanding;
@@ -783,7 +905,7 @@ mod tests {
         assert_ne!(
             stream_seed(&base, seat),
             stream_seed(&advanced, seat),
-            "the event index keys it -- otherwise every press of a whole game shares one draw",
+            "the event index keys it — otherwise every press of a whole game shares one draw",
         );
     }
 
@@ -969,12 +1091,13 @@ mod tests {
     /// count** (T10 review M1).
     ///
     /// What this replaced was asserting a property the render did not have. The
-    /// old pin measured against a flat `<= 100`, which is not any frame's width:
-    /// the composed frame is 114/132/108 columns at 2/3/4 players
-    /// (`screen::frame_width`), so 100 was simultaneously too strict for 2P/3P
-    /// and too slack for the case that actually breaks — 4P, where the frame is
-    /// NARROWEST while the board is widest. It also drove `repl_mid_game(4)`-style
-    /// 2P fixtures at every count, so the 4P screen was never rendered at all.
+    /// old pin measured against a flat `<= 100`, which was not any frame's width:
+    /// the composed frame was 114/132/108 columns at 2/3/4 players then (it is
+    /// 198/175/200 since the T10 review — `screen::frame_width` is the authority either
+    /// way), so 100 was simultaneously too strict for 2P/3P and too slack for
+    /// the case that actually broke — 4P, where the frame was NARROWEST while
+    /// the board was widest. It also drove `repl_mid_game(4)`-style 2P fixtures
+    /// at every count, so the 4P screen was never rendered at all.
     ///
     /// Measured per line with `screen::visible_width` (the escape-stripping
     /// measure), on a real mid-game position at each count. The plain half of the
@@ -987,24 +1110,31 @@ mod tests {
     /// ANSWERING WITH THE WIDEST MOVE THE POSITION OFFERS, which is the case the
     /// bound exists for and a move a player could really be handed.
     ///
-    /// **Where the bound binds is uneven, and that is a fact about the frames,
-    /// not a gap here.** At 2 players the widest move runs to 120 columns against
-    /// a 114-column frame and at 4 players 128 against 108; at 3 players the frame
-    /// is the widest of the three (132, the panel sits beside a 90-column board)
-    /// and the widest move observed at this seed is 122, so nothing there is cut.
-    /// The tally below therefore does not demand that every count bind — it
-    /// demands that SOME count does, which is what stops the whole pin from
-    /// quietly becoming a no-op if move descriptions or frames change.
+    /// **The bound binds at every count, and since T2 it does so by
+    /// construction rather than by luck.** It used to depend on the frames: the
+    /// widest move at 2 players ran 120 columns against a 114-column frame and
+    /// 128 against 108 at 4, while the 3-player frame (132, the widest of the
+    /// three then) cut nothing at all — so the tally could only demand that SOME
+    /// count bind. Every frame is now wider than any move description real play
+    /// produces, so instead each count measures against the TIGHTER of its frame
+    /// and one column under the widest move the position offers. That budget is
+    /// below the widest move by construction, which is why the tally below can
+    /// demand all three.
     #[test]
     fn the_render_is_plain_and_fits_the_frame_at_every_player_count() {
         let mut counts_where_the_bound_binds = Vec::new();
         for players in [2u8, 3, 4] {
-            let budget = crate::screen::frame_width(players as usize);
+            // The frame's own budget is what the shipped path uses; the
+            // fixture then measures against the TIGHTER of it and the widest
+            // move the position offers, so the bound still binds somewhere
+            // (see `render_suggestion_within` on why the frame stopped
+            // binding on its own at T2).
+            let frame = crate::screen::frame_width(players as usize);
             // Prefer a position that offers an over-wide move to a merely deep
             // one: the risky position is the one worth pinning.
             let session = sim_mid_game(players, 4, |s| {
                 s.legal().len() > 1
-                    && (widest_legal_move(s).1 > budget || s.record().events.len() > 25)
+                    && (widest_legal_move(s).1 > frame || s.record().events.len() > 25)
             });
             let mut s = suggestion_for(&session);
             // The shipped path's own answer, at every count, is a move the ENGINE
@@ -1016,42 +1146,57 @@ mod tests {
             );
 
             let (widest, width) = widest_legal_move(&session);
+            // A budget the widest move here genuinely outruns, so the render
+            // has to DO something about it rather than fitting by luck.
+            let budget = frame.min(width.saturating_sub(1)).max(40);
             if width > budget {
                 counts_where_the_bound_binds.push((players, width, budget));
             }
             for answer in [s.mv.clone(), widest] {
                 s.mv = answer;
-                let text = render_suggestion(&s, session.state(), session.rules());
-                assert!(
-                    !text.contains('\u{1b}'),
-                    "{players}P piped output must carry no ANSI:\n{text}",
-                );
-                for line in text.lines() {
-                    let w = crate::screen::visible_width(line);
+                for (label, text) in [
+                    ("shipped", render_suggestion(&s, session.state(), session.rules())),
+                    (
+                        "bound",
+                        render_suggestion_within(&s, session.state(), session.rules(), budget),
+                    ),
+                ] {
                     assert!(
-                        w <= budget,
-                        "{players}P: a line is {w} columns against the frame's {budget}: {line:?}",
+                        !text.contains('\u{1b}'),
+                        "{players}P {label} piped output must carry no ANSI:\n{text}",
                     );
+                    let limit = if label == "bound" { budget } else { frame };
+                    for line in text.lines() {
+                        let w = crate::screen::visible_width(line);
+                        assert!(
+                            w <= limit,
+                            "{players}P {label}: a line is {w} columns against {limit}: {line:?}",
+                        );
+                    }
                 }
             }
         }
         assert!(
-            !counts_where_the_bound_binds.is_empty(),
-            "no player count offered a move wider than its own frame, so this pin proved nothing \
-             -- re-measure the widest move description against screen::FRAME_WIDTHS",
+            counts_where_the_bound_binds.len() == 3,
+            "every player count must render its widest move against a budget that budget \
+             genuinely cuts -- that is the condition under which the lines above measure \
+             reflow and elision rather than a screen that happened to fit: \
+             {counts_where_the_bound_binds:?}",
         );
     }
 
     /// **The width bound is load-bearing, not decoration** (T10 review M1(c)).
     ///
-    /// At 4 players the frame is at its narrowest (108) while the board is at its
-    /// widest, and a real legal list there offers moves whose description alone
-    /// runs past the WHOLE frame — a placement naming three areas plus every fee
-    /// recipient measures up to 135 columns. So the anti-vacuity case is organic:
-    /// the fixture walks until the position offers such a move, and the
-    /// suggestion is doctored to that move — one from the fixture's own legal
-    /// list, not an invented string, so the screen rendered is a screen a player
-    /// could really be shown.
+    /// A real 4-player legal list offers moves whose description alone runs to
+    /// 135 columns — a placement naming three areas plus every fee recipient.
+    /// That used to be past the WHOLE 4P frame, which was the narrowest at 108;
+    /// since T2 it is the widest, at 180 and then 200 from T10, so the cut is
+    /// driven by an explicit
+    /// budget one column under the move. What did not change is where the move
+    /// comes from, and that is the anti-vacuity: the fixture walks until the
+    /// position offers such a move and the suggestion is doctored to it — one
+    /// from the fixture's own legal list, not an invented string, so the screen
+    /// rendered is a screen a player could really be shown.
     ///
     /// Both treatments are checked where each applies: the ANSWER must reflow
     /// (and lose no word — a cut answer is the failure this repair exists to
@@ -1061,12 +1206,17 @@ mod tests {
     /// columns.
     #[test]
     fn a_move_too_wide_for_the_frame_is_reflowed_and_rows_are_elided() {
-        let budget = crate::screen::frame_width(4);
-        let session = sim_mid_game(4, 4, |s| s.legal().len() > 1 && widest_legal_move(s).1 > budget);
+        // The 4P frame was the NARROWEST (108) until T2's V3 board made it the
+        // widest (180, and 200 since T10), which put it past the ~135 columns a real move
+        // description reaches — so the position no longer offers a move wider
+        // than its own frame, and the fixture drives the budget instead. See
+        // `render_suggestion_within`.
+        let session = sim_mid_game(4, 4, |s| s.legal().len() > 1 && widest_legal_move(s).1 > 120);
         let (widest, width) = widest_legal_move(&session);
+        let budget = width - 1;
         assert!(
             width > budget,
-            "fixture: the position must offer a move wider than the 4P frame ({width} vs {budget})",
+            "fixture: the position must offer a move wider than the budget ({width} vs {budget})",
         );
         let widest_text = describe::describe_move(&widest, session.state(), session.rules());
 
@@ -1076,7 +1226,7 @@ mod tests {
         // A runner-up that is NOT the suggestion, so the row actually prints.
         let other = s.ranking.iter_mut().find(|r| r.mv != widest).expect("a second candidate");
         other.mv = widest.clone();
-        let text = render_suggestion(&s, session.state(), session.rules());
+        let text = render_suggestion_within(&s, session.state(), session.rules(), budget);
 
         for line in text.lines() {
             let w = crate::screen::visible_width(line);

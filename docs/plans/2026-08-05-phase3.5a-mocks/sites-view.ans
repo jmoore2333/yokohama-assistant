@@ -1,0 +1,12 @@
+[1mBUILDING SITES — full view[0m   [90mevery area's site card: each space's printed reward, what is built, and by whom ('sites')[0m
+
+┌ [1mSITE 2[0m [90m— on COPPER MINE[0m                  ┐  ┌ [1mSITE 8[0m [90m— on SILK MILL[0m                    ┐  ┌ [1mSITE 9[0m [90m— on CHURCH[0m                       ┐
+│ top-left   1 VP             [94m⌂ built[0m      │  │ top-left   1 VP             [2mempty[0m        │  │ top-left   1 VP             [2mempty[0m        │
+│ top-right  3 Seafood        [2mempty[0m        │  │ top-right  2 any goods      [2mempty[0m        │  │ top-right  4 VP             [2mempty[0m        │
+│ mid-left   — blank          [2mempty[0m        │  │ mid-left   — blank          [2mempty[0m        │  │ mid-left   — blank          [2mempty[0m        │
+│ mid-right  2 Seafood        [2mempty[0m        │  │ mid-right  1 any good       [2mempty[0m        │  │ mid-right  2 assistants     [2mempty[0m        │
+│ trading house  [38;5;75m★7 VP[0m  [2mopen[0m               │  │ trading house  [38;5;75m★6 VP[0m  [2mopen[0m               │  │ trading house  [38;5;75m★8 VP[0m  [2mopen[0m               │
+└──────────────────────────────────────────┘  └──────────────────────────────────────────┘  └──────────────────────────────────────────┘
+
+[90mA shophouse built on a space takes that space's printed reward once; the trading house builds FREE from hand and scores its VP. Seven more cards page with n / p.[0m
+[1m> [0m[90mEnter returns to the game[0m

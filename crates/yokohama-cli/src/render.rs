@@ -11,8 +11,12 @@ use std::collections::{BTreeMap, HashSet};
 use yokohama_core::game::actions::resolve_acting_area;
 use yokohama_core::*;
 
+use crate::board_render;
+use crate::decision_render;
 use crate::describe;
-use crate::input::tech_name;
+use crate::describe::tech_name;
+use crate::panel_render;
+use crate::screen_model;
 use crate::style::{paint, GoodKind, Tone};
 
 /// Per-seat presentation the panels need from the REPL (Phase 3.2 Task 12):
@@ -68,18 +72,13 @@ impl SeatDisplay {
     }
 }
 
-/// The panels' bot marker. Deliberately short: appended to the END of a
-/// player's name line it costs 6 columns on a line with 11 columns of slack in
-/// `compact_panel` (23 used of 40) and 9 in `compact_panel_oneline` (99 used of
-/// the 108-column 4P board it stacks under), so a badged frame is exactly as
-/// wide as an unbadged one and guide §2's published widths do not move.
-/// `bot_badge_is_width_neutral_in_every_panel` is that claim's pin.
-const BOT_BADGE: &str = " [bot]";
-
-/// `BOT_BADGE` for a bot seat, nothing for a human one.
+/// [`panel_render::BOT_BADGE`] for a bot seat, nothing for a human one.
+///
+/// The string itself lives with the dashboard that pads a column to fit it —
+/// see its doc for why there is one const and not two.
 fn bot_badge(seats: &SeatDisplay, seat: PlayerId) -> &'static str {
     if seats.is_bot(seat) {
-        BOT_BADGE
+        panel_render::BOT_BADGE
     } else {
         ""
     }
@@ -98,48 +97,6 @@ pub(crate) fn masked_hand(cards: usize, is_bot: bool) -> String {
     }
 }
 
-/// Interior text width of one tile box; a full box adds 2 border columns.
-const TILE_W: usize = 16;
-/// Horizontal pitch between adjacent tile boxes in a row (boxes touch, so
-/// the pitch is the full box width). Rows below indent by HALF this pitch
-/// per row — the brick offset of the physical staggered layout.
-const TILE_PITCH: usize = TILE_W + 2;
-
-/// One-line turn/phase/resource summary, e.g.
-/// `"Turn 12 | Red | Placement | 5 yen 3 VP | c1 s2 t0 f1 i0 | hand 2"`.
-/// `phase_text` fills the third slot verbatim -- the normal phase name
-/// (`describe::phase_name`) most of the time, or the pending-choice banner
-/// text when `Repl::prompt` (Task 11, design §5.4) detects a queued choice.
-/// Deciding WHICH text that is stays the caller's job; this function only
-/// formats.
-pub fn prompt_header(state: &GameState, phase_text: &str) -> String {
-    let p = state.current_player();
-    format!(
-        "Turn {} | {} | {} | {} {} | {} | hand {}",
-        state.turn_number,
-        paint(Tone::Player(p.color), color_name(p.color)),
-        paint(Tone::Prompt, phase_text),
-        paint(Tone::Good(GoodKind::Yen), &format!("{} yen", p.money)),
-        paint(Tone::Vp, &format!("{} VP", p.victory_points)),
-        goods_run(p),
-        p.order_cards_in_hand.len(),
-    )
-}
-
-/// The `c1 s2 t0 f1 i0` goods run, each token painted in its good's color
-/// (Task 6 full-color treatment). Space-joined AFTER painting, so the plain
-/// render is byte-identical to the old inline format string.
-fn goods_run(p: &PlayerState) -> String {
-    [
-        paint(Tone::Good(GoodKind::Copper), &format!("c{}", p.copper)),
-        paint(Tone::Good(GoodKind::Silk), &format!("s{}", p.silk)),
-        paint(Tone::Good(GoodKind::Tea), &format!("t{}", p.tea)),
-        paint(Tone::Good(GoodKind::Seafood), &format!("f{}", p.seafood)),
-        paint(Tone::Good(GoodKind::Imports), &format!("i{}", p.imported_goods)),
-    ]
-    .join(" ")
-}
-
 /// A `─ Title ─────...` rule header opening every state view (Task 6, one
 /// design language across views). 40 columns total. `pub(crate)` so the
 /// repl-side views (`score`/`log`/`final_score`/`hand`) share the exact same
@@ -150,77 +107,205 @@ pub(crate) fn section(title: &str) -> String {
     format!("{head}{}\n", "─".repeat(40usize.saturating_sub(head.chars().count())))
 }
 
-/// The staggered board: one independent bordered box per tile, positioned
-/// purely from `AreaConfig::grid_position` — row r's boxes indent by
-/// `r * TILE_PITCH/2` (the brick half-offset of the physical pyramid, widest
-/// row on top), rows stack top-first, boxes in a row touch (`┐┌` double
-/// wall, like tiles laid side by side on a table). No pyramid shape is
-/// assumed: any geometry the engine (or a test fixture) hands us renders.
-/// Every line pads to one total width so the frame composer can join a side
-/// panel line-by-line without shear. Content: header `A{id} {name} {*}`,
-/// presidents (+ `[St]` Station marker), assistants, build marks; the Canal
-/// tile renders as water with its printed toll instead.
-pub fn board_grid(state: &GameState) -> String {
-    let areas = &state.board_layout.areas;
-    if areas.is_empty() {
-        return String::new();
-    }
+/// The staggered board, V3 (Phase-3.5a T2). The ADAPTER: it is the one place
+/// that reads `&GameState` on the board's behalf, builds the screen model, and
+/// hands it to [`crate::board_render`] — which draws it without ever seeing a
+/// `GameState` at all (the R9 seam; read that module's import list).
+///
+/// Every caller inside this crate keeps calling this name, so the seam cost
+/// one parameter: `rules`, which the model needs to recover a building site's
+/// PRINTED index (a runtime site is a clone of the registry card and carries
+/// no index of its own).
+///
+/// `legal` is the ENGINE's current legal list, and it is what tints the `◈`
+/// destination marks (spec §0.7, added at T4). It is a PARAMETER rather than
+/// something derived here for the reason the mark exists at all: the CLI
+/// computes no legality, so the board can only show what the engine is already
+/// offering. A caller drawing a board outside a decision passes `&[]` and gets
+/// an unmarked one.
+pub fn board_grid(state: &GameState, rules: &Rules, legal: &[Move]) -> String {
+    let colors: Vec<PlayerColor> = state.players.iter().map(|p| p.color).collect();
+    board_render::board_view(&screen_model::build_board(state, rules, legal), &colors)
+}
 
-    let mut rows: BTreeMap<u8, BTreeMap<u8, AreaId>> = BTreeMap::new();
-    for (&id, cfg) in areas.iter() {
-        rows.entry(cfg.grid_position.0).or_default().insert(cfg.grid_position.1, id);
-    }
+/// The composed frame's DASHBOARD (Phase-3.5a T3): the players, tracks,
+/// achievements and hand panels. [`board_grid`]'s twin, and the same ADAPTER
+/// shape — it is the one place that reads `&GameState` on the dashboard's
+/// behalf, builds the screen models, and hands them to
+/// [`crate::panel_render`], which draws them without ever seeing a `GameState`
+/// (the R9 seam; read that module's import list).
+///
+/// It replaces `compact_panel` and `compact_panel_oneline`, which built their
+/// text straight out of `PlayerState` — the weld R9 exists to remove. `seat` is
+/// the seat whose own hand the panel shows; `seats` carries the per-seat
+/// privacy and bot policy, already folded by the REPL.
+pub fn dashboard(state: &GameState, rules: &Rules, seats: &SeatDisplay, seat: PlayerId) -> String {
+    let (panels, board, colors) = dashboard_inputs(state, rules, seats, seat);
+    panel_render::dashboard(&panels, &board, &colors)
+}
 
-    let indent_of = |r: u8| (r as usize) * (TILE_PITCH / 2);
-    let total_width = rows
+/// The composed frame's dashboard STACKED BELOW the board (Phase-3.5a T10), at
+/// 3 and 4 players — [`dashboard`]'s twin over the same models and the same
+/// adapter shape, differing only in which `panel_render` entry point draws
+/// them.
+///
+/// `width` is the block the frame gives it, which [`crate::screen`] computes
+/// from what is already on screen above it. It is a parameter rather than a
+/// constant here because the answer is a fact about the composed frame — the
+/// board's own width and the site-slot legend's — and this module cannot see a
+/// frame.
+pub fn dashboard_below(
+    state: &GameState,
+    rules: &Rules,
+    seats: &SeatDisplay,
+    seat: PlayerId,
+    width: usize,
+) -> String {
+    let (panels, board, colors) = dashboard_inputs(state, rules, seats, seat);
+    panel_render::dashboard_below(&panels, &board, &colors, width)
+}
+
+/// The three things both dashboard arrangements are drawn from. Shared rather
+/// than built twice: the per-seat privacy and bot policy is the one input a
+/// second copy could get wrong, and getting it wrong leaks a hand.
+fn dashboard_inputs(
+    state: &GameState,
+    rules: &Rules,
+    seats: &SeatDisplay,
+    seat: PlayerId,
+) -> (Vec<screen_model::Panel>, screen_model::BoardModel, Vec<PlayerColor>) {
+    let colors: Vec<PlayerColor> = state.players.iter().map(|p| p.color).collect();
+    // `SeatDisplay` and `SeatFacts` hold the same two facts in two modules on
+    // purpose (screen_model may not depend on the renderer), so the adapter is
+    // where they meet.
+    let facts: Vec<screen_model::SeatFacts> = state
+        .players
         .iter()
-        .map(|(&r, cols)| indent_of(r) + (*cols.keys().max().unwrap() as usize + 1) * TILE_PITCH)
-        .max()
-        .unwrap();
+        .map(|p| screen_model::SeatFacts {
+            is_bot: seats.is_bot(p.id),
+            hand_hidden: seats.hides_hand(p.id),
+        })
+        .collect();
 
-    let mut out = String::new();
-    for (&r, cols) in &rows {
-        let indent = " ".repeat(indent_of(r));
-        let max_col = *cols.keys().max().unwrap();
-        // 6 raw lines per row of boxes: top border, 4 content, bottom border.
-        // Each entry is (visible_width, painted_text) so painted content
-        // never distorts the trailing pad.
-        let mut lines: Vec<(usize, String)> = vec![(indent_of(r), indent.clone()); 6];
-        for col in 0..=max_col {
-            match cols.get(&col) {
-                Some(&id) => {
-                    let content = tile_content_lines(state, id);
-                    lines[0].1.push('┌');
-                    lines[0].1.push_str(&"─".repeat(TILE_W));
-                    lines[0].1.push('┐');
-                    lines[5].1.push('└');
-                    lines[5].1.push_str(&"─".repeat(TILE_W));
-                    lines[5].1.push('┘');
-                    for (i, cell) in content.iter().enumerate() {
-                        lines[i + 1].1.push('│');
-                        lines[i + 1].1.push_str(cell);
-                        lines[i + 1].1.push('│');
-                    }
-                    for line in lines.iter_mut() {
-                        line.0 += TILE_PITCH;
-                    }
-                }
-                None => {
-                    // A gap in this row (non-canonical fixture): hold the pitch.
-                    for line in lines.iter_mut() {
-                        line.1.push_str(&" ".repeat(TILE_PITCH));
-                        line.0 += TILE_PITCH;
-                    }
-                }
-            }
-        }
-        for (width, text) in lines {
-            out.push_str(&text);
-            out.push_str(&" ".repeat(total_width - width));
-            out.push('\n');
-        }
-    }
-    out
+    // Unmarked (`&[]`): the dashboard reads this model for AREA NAMES alone —
+    // where a President stands, which area a track occupant sits in — and none
+    // of its panels draws a `◈`. Handing it the legal list would build a
+    // marked board nothing looks at.
+    let board = screen_model::build_board(state, rules, &[]);
+    let panels = screen_model::build_dashboard(state, rules, &facts, seat);
+    (panels, board, colors)
+}
+
+/// The composed frame's DECISION ZONE (Phase-3.5a T4): the phase chain, the
+/// deciding line, the numbered options, the near-miss rows and the standing
+/// hint. [`board_grid`]'s and [`dashboard`]'s third sibling, and the same
+/// ADAPTER shape — the one place that reads `&GameState` on the zone's behalf,
+/// builds the model, words the options, and hands both to
+/// [`crate::decision_render`], which draws them without ever seeing a
+/// `GameState` (the R9 seam; read that module's import list).
+///
+/// `rows` is the caller's DISPLAY list, not the legal list: the REPL collapses
+/// a Movement family into one entry per destination, the retreat family into
+/// one line, Placement into its two options. That grouping stays with the
+/// pickers it feeds (`Repl::display_options`), so this takes the entries and
+/// their words already assembled and supplies the two things only the model
+/// knows — the per-move fee, and whether the board marks a destination
+/// reachable.
+///
+/// `legal` is the ENGINE's list, used for the `◈` marks and the near-miss
+/// rows; it is the SAME list the caller grouped `rows` from, passed rather
+/// than regenerated so the zone and the board cannot disagree about what is
+/// offered.
+pub fn decision_zone(
+    state: &GameState,
+    rules: &Rules,
+    legal: &[Move],
+    rows: &[DisplayRow],
+    ctx: &decision_render::ZoneContext<'_>,
+) -> String {
+    let (board, fees, colors) = zone_inputs(state, rules, legal, rows);
+    let model = screen_model::build_decision(state, rules, legal);
+    decision_render::decision_zone(&model, &zone_rows(rows, &fees), &board, &colors, ctx)
+}
+
+/// How many pages [`decision_zone`] will draw this list in — what the `more`
+/// command wraps on.
+///
+/// A separate entry point rather than a number the REPL could compute, because
+/// a page is a budget of ROWS in the zone and how many options fill it depends
+/// on how wide they render. Both functions build the same rows through the same
+/// two helpers, so the pager and the footer cannot disagree about where page
+/// two starts.
+pub fn decision_pages(
+    state: &GameState,
+    rules: &Rules,
+    legal: &[Move],
+    rows: &[DisplayRow],
+) -> usize {
+    let (board, fees, colors) = zone_inputs(state, rules, legal, rows);
+    decision_render::page_count(&zone_rows(rows, &fees), &board, &colors)
+}
+
+/// The three inputs the zone and its pager MUST agree on, built once.
+///
+/// **Shared rather than spelled twice, and the colour table is why** (six-lens
+/// note). `page_count` measures the rows it is handed with the table it is
+/// handed — `decision_render`'s own doc says a call with `&[]` "is not an
+/// approximation, it is a different list", because a fee recipient named by
+/// seat number is two columns wider than one named by colour. Yet the two
+/// functions above each assembled their own arguments, so nothing but their
+/// prose stopped the pager's table from drifting from the renderer's: handing
+/// `&[]` to one of them left the whole suite green while the footer advertised
+/// four pages the zone draws in two, and `more` cycled twice through the last
+/// one. One tuple, one call site each, and the class is closed by construction
+/// rather than by a test that has to imagine the state where it bites.
+fn zone_inputs(
+    state: &GameState,
+    rules: &Rules,
+    legal: &[Move],
+    rows: &[DisplayRow],
+) -> (screen_model::BoardModel, Vec<Option<screen_model::FeeModel>>, Vec<PlayerColor>) {
+    (
+        screen_model::build_board(state, rules, legal),
+        price_rows(state, rules, rows),
+        state.players.iter().map(|p| p.color).collect(),
+    )
+}
+
+/// Every row's fee, priced ONCE by the model: `screen_model` owns the
+/// arithmetic (including the placement half T0-review MF1 named), so neither
+/// this adapter nor the renderer re-derives a price.
+fn price_rows(
+    state: &GameState,
+    rules: &Rules,
+    rows: &[DisplayRow],
+) -> Vec<Option<screen_model::FeeModel>> {
+    rows.iter()
+        .map(|row| row.mv.as_ref().and_then(|mv| screen_model::option_fee(state, rules, mv)))
+        .collect()
+}
+
+fn zone_rows<'a>(
+    rows: &'a [DisplayRow],
+    fees: &'a [Option<screen_model::FeeModel>],
+) -> Vec<decision_render::Row<'a>> {
+    rows.iter()
+        .zip(fees.iter())
+        .map(|(row, fee)| match &row.mv {
+            Some(mv) => decision_render::Row::Move { mv, fee: fee.as_ref(), words: &row.words },
+            None => decision_render::Row::Family { words: &row.words },
+        })
+        .collect()
+}
+
+/// One entry of the REPL's display list, handed to [`decision_zone`].
+///
+/// `mv` is `Some` for an entry that IS a single legal move and `None` for a
+/// collapsed family — the distinction the bare-Enter ceremony turns on, carried
+/// as data rather than re-derived from the words.
+pub struct DisplayRow {
+    pub mv: Option<Move>,
+    pub words: String,
 }
 
 /// Interior text width of one numbered skeleton cell; a full cell adds 2
@@ -267,194 +352,42 @@ pub fn board_skeleton(player_count: u8) -> String {
     out
 }
 
-/// Legend footer for the `board` view: the face-up 5-Power token letters, the
-/// `[St]` Station marker, the `·` empty build slot — plus the canal crossing
-/// rule, but ONLY on a board that actually has a Canal tile (2P boards never
-/// do). The REPL's `board` command appends this after the grid.
-pub fn board_legend(state: &GameState) -> String {
-    let mut out = String::from(
-        "5-Power tokens (face-up): i=import  c=copper  s=silk  t=tea  f=seafood  y=yen   [St]=Station  ·=empty slot",
-    );
-    if state.board_layout.areas.values().any(|c| c.area_type == AreaType::Canal) {
-        out.push_str(
-            "\n~ Canal: the President may cross shore to shore for 1 yen to the bank ('sites' lists the pairs)",
-        );
-    }
-    out
-}
-
-/// Per Port board: slot number, zone, and the order card there via
-/// `order_compact_line` (or `-` when empty), then the shared order-deck size.
-pub fn ports_view(state: &GameState, rules: &Rules) -> String {
-    let mut out = section("Ports");
-    render_port_board(describe::area_type_name(AreaType::PortA), &state.port_state.port_a, rules, &mut out);
-    if let Some(port_b) = &state.port_state.port_b {
-        render_port_board(describe::area_type_name(AreaType::PortB), port_b, rules, &mut out);
-    }
-    out.push_str(&format!("order deck: {}\n", state.order_deck.len()));
-    out
-}
-
-/// Per Laboratory board: slot number, position surcharge, and the tech card
-/// there (name + industry cost), or `-`, then the shared tech-deck size.
-pub fn labs_view(state: &GameState, rules: &Rules) -> String {
-    let mut out = section("Laboratories");
-    render_lab_board(describe::area_type_name(AreaType::LaboratoryA), &state.lab_state.lab_a, rules, &mut out);
-    if let Some(lab_b) = &state.lab_state.lab_b {
-        render_lab_board(describe::area_type_name(AreaType::LaboratoryB), lab_b, rules, &mut out);
-    }
-    out.push_str(&format!("tech deck: {}\n", state.tech_deck.len()));
-    out
-}
-
-/// The composed frame's compact players box (Task 6, design note §2): the
-/// at-a-glance PUBLIC picture -- current-player marker (`>`), yen/VP, goods,
-/// assistant zones (with a `locked N` tally when any pawns sit on goals or
-/// tracks, so the visible numbers still reconcile), built counts + the next
-/// TH take cost, and the President's location. Hand CONTENTS never appear
-/// here (only the count), so the panel is safe to show while the laptop is
-/// passed around a live table regardless of the privacy flag; the full
-/// `players` view carries the detail. Player names paint in their colors
-/// after layout (plain twin is the width authority).
-pub fn compact_panel(state: &GameState, _rules: &Rules, seats: &SeatDisplay) -> String {
-    let mut lines: Vec<(String, String)> = Vec::new();
-    lines.push(("─ Players ".to_string(), "─ Players ".to_string()));
-    for p in &state.players {
-        let marker = if p.id == state.current_player { ">" } else { " " };
-        let name = color_name(p.color);
-        // The digit after the marker is the player's SEAT number -- the
-        // `reveal <seat>` key (item 7, third review). Width-neutral: the name
-        // field drops from 7 to 6 to make room, so the panel width (and the
-        // 140-column frame budget) is unchanged. Pad from the PLAIN name length
-        // -- the painted twin's escapes have zero display width (style.rs).
-        let name_pad = " ".repeat(6usize.saturating_sub(name.chars().count()));
-        // The bot badge closes the line rather than sitting mid-row, so a
-        // badged seat cannot shift the yen/VP columns out of line with an
-        // unbadged one.
-        let badge = bot_badge(seats, p.id);
-        lines.push((
-            format!("{marker}{} {name}{name_pad} {:>2} yen  {:>2} VP{badge}", p.id.0, p.money, p.victory_points),
-            format!(
-                "{marker}{} {}{name_pad} {:>2} yen  {:>2} VP{badge}",
-                p.id.0,
-                paint(Tone::Player(p.color), name),
-                p.money,
-                p.victory_points
-            ),
-        ));
-        let goods = format!(
-            "   c{} s{} t{} f{} i{}   hand {}",
-            p.copper, p.silk, p.tea, p.seafood, p.imported_goods,
-            p.order_cards_in_hand.len()
-        );
-        lines.push((goods.clone(), goods));
-        let assistants_on_board: u32 = p.assistants.on_board.values().map(|&c| c as u32).sum();
-        let locked =
-            p.assistants.on_achievements + p.assistants.on_church + p.assistants.on_customs;
-        let mut asst = format!(
-            "   asst: hand {} board {} wh {}",
-            p.assistants.in_hand, assistants_on_board, p.assistants.in_warehouse
-        );
-        if locked > 0 {
-            asst.push_str(&format!(" locked {locked}"));
-        }
-        lines.push((asst.clone(), asst));
-        let build = format!(
-            "   built: sh {} th {}   next TH take {} yen",
-            p.shophouses.built.len(),
-            p.trading_houses.built.len(),
-            p.trading_houses.next_cost()
-        );
-        lines.push((build.clone(), build));
-        let pres = match p.president_location {
-            PresidentLocation::InHand => "in hand".to_string(),
-            PresidentLocation::OnBoard(area) => describe::area_label(state, area),
-        };
-        let pres_line = format!("   President: {pres}");
-        lines.push((pres_line.clone(), pres_line));
-    }
-    let width = lines.iter().map(|(plain, _)| plain.chars().count()).max().unwrap_or(0);
-    let mut out = String::new();
-    for (i, (plain, painted)) in lines.iter().enumerate() {
-        if i == 0 {
-            out.push_str(painted);
-            out.push_str(&"─".repeat(width.saturating_sub(plain.chars().count())));
-        } else {
-            out.push_str(painted);
-        }
-        out.push('\n');
-    }
-    out
-}
-
-/// The compact panel folded to ONE LINE PER PLAYER, for the frame layout
-/// that stacks the panel BELOW the board instead of beside it (F3, Codex
-/// adversarial review of PR #4).
+/// Legend footer under the board: the marks a V3 tile draws, the site-slot
+/// token key, and the canal crossing rule on a board that has a Canal (2P
+/// boards never do). The REPL's `board` command appends this after the grid.
 ///
-/// Same public fields as [`compact_panel`] -- current-player marker, money,
-/// VP, goods, hand COUNT (never contents), assistant zones with the `locked`
-/// tally, built counts, President location -- just laid out horizontally.
-/// The stacking branch only runs on the 4P board, which is already 108
-/// columns wide, so a wide line costs nothing there, while the 5 lines per
-/// player it replaces cost 16 rows: enough to push the opening frame past
-/// 50 rows, scrolling the title and the top board row off a 140x50
-/// terminal before the player could read them. The one field dropped
-/// against the multi-line form is the next trading-house take price (the
-/// `players` view carries it, and it is the only per-player number that is
-/// not a state reading).
+/// The ADAPTER for [`crate::board_render::board_legend`], for the same reason
+/// [`board_grid`] is one. The old legend keyed the 5-Power token LETTERS
+/// (`i=import c=copper …`); V3 spells the face out on the tile itself
+/// (`5-Power: 1 Import`), so that key described a board that no longer exists.
+/// The letters live on only where they are still drawn — the setup wizard's
+/// review summary, via [`five_power_face`].
 ///
-/// Player names paint in their colors after layout, from the PLAIN name's
-/// length (style.rs's alignment rule), exactly as [`compact_panel`] does.
-pub fn compact_panel_oneline(state: &GameState, seats: &SeatDisplay) -> String {
-    let mut lines: Vec<(String, String)> = Vec::new();
-    lines.push(("─ Players ".to_string(), "─ Players ".to_string()));
-    for p in &state.players {
-        let marker = if p.id == state.current_player { ">" } else { " " };
-        let name = color_name(p.color);
-        // Seat digit after the marker (item 7); width-neutral name field 7->6.
-        let name_pad = " ".repeat(6usize.saturating_sub(name.chars().count()));
-        let assistants_on_board: u32 = p.assistants.on_board.values().map(|&c| c as u32).sum();
-        let locked = p.assistants.on_achievements + p.assistants.on_church + p.assistants.on_customs;
-        let locked_text = if locked > 0 { format!(" locked {locked}") } else { String::new() };
-        let pres = match p.president_location {
-            PresidentLocation::InHand => "in hand".to_string(),
-            PresidentLocation::OnBoard(area) => describe::area_label(state, area),
-        };
-        let badge = bot_badge(seats, p.id);
-        let tail = format!(
-            " {:>2} yen {:>2} VP  c{} s{} t{} f{} i{}  hand {}  asst h{} b{} w{}{}  built sh {} th {}  President: {}{badge}",
-            p.money,
-            p.victory_points,
-            p.copper,
-            p.silk,
-            p.tea,
-            p.seafood,
-            p.imported_goods,
-            p.order_cards_in_hand.len(),
-            p.assistants.in_hand,
-            assistants_on_board,
-            p.assistants.in_warehouse,
-            locked_text,
-            p.shophouses.built.len(),
-            p.trading_houses.built.len(),
-            pres,
-        );
-        lines.push((
-            format!("{marker}{} {name}{name_pad}{tail}", p.id.0),
-            format!("{marker}{} {}{name_pad}{tail}", p.id.0, paint(Tone::Player(p.color), name)),
-        ));
-    }
-    let width = lines.iter().map(|(plain, _)| plain.chars().count()).max().unwrap_or(0);
-    let mut out = String::new();
-    for (i, (plain, painted)) in lines.iter().enumerate() {
-        out.push_str(painted);
-        if i == 0 {
-            out.push_str(&"─".repeat(width.saturating_sub(plain.chars().count())));
-        }
-        out.push('\n');
-    }
-    out
+/// The Canal question is answered off `state.board_layout` directly. This used
+/// to build a whole second `BoardModel` — one per composed frame, on top of the
+/// one [`board_grid`] already builds — to scan its tiles for a single boolean
+/// (T2 review N3). `board_layout.areas` is where that fact lives, and asking it
+/// there costs a lookup instead of a board.
+pub fn board_legend(state: &GameState, _rules: &Rules) -> String {
+    let has_canal = state.board_layout.areas.values().any(|a| a.area_type == AreaType::Canal);
+    board_render::board_legend(has_canal)
 }
+
+// The `ports` and `labs` views RETIRED at T11 and moved to `view_render` as
+// full-screen card surfaces, the way `tracks`/`sites`/`goals` moved at T6 —
+// spec §0.5's whole roster now renders card-like, from typed models, over the
+// same `card_render` emitter every other card on the screen is drawn by.
+//
+// The four properties their tests held travelled with them and are named at
+// their new sites rather than left implied: the six slots and the deck count
+// (`the_port_zone_labels_state_the_engines_own_power_gate` and
+// `both_offers_state_their_shared_deck`), the per-slot surcharge
+// (`a_lab_card_prices_the_slot_surcharge_into_its_industry_figure`), the
+// country and one-line effect per card (`a_lab_card_shows_its_country_and_its
+// _whole_effect_text`), and F2's width sweep over EVERY registry card — which
+// is now a HEIGHT equality, since a card that is `exact()`-bounded cannot
+// exceed its width and the thing a longer effect text costs is a wrapped line
+// (`every_lab_card_is_the_same_height_across_the_whole_registry`).
 
 /// Per player: color, money, VP, goods, imports, hand order codes, completed
 /// order count, technology names, tokens/mercenaries, assistant/shophouse/
@@ -548,170 +481,32 @@ pub fn players_panel(state: &GameState, rules: &Rules, seats: &SeatDisplay) -> S
     out
 }
 
-/// One `site_compact_line` per area holding a `BuildingSite`, in `AreaId`
-/// order (`state.board_layout.building_sites`'s own `BTreeMap` iteration
-/// order), each prefixed by the area label (`describe::area_label`'s
-/// type-name + `(A00)` convention) and suffixed by the same `sh .. | th ..`
-/// build/ownership marks the `board` grid's per-cell line shows
-/// (`build_marks`, shared with `area_cell_lines` below so the two views
-/// can never drift). The `S<n>` number `site_compact_line` prints is the
-/// AREA's id, not the physical site card's printed index -- the
-/// wizard-entered card number is used only to validate setup entry and
-/// isn't persisted onto the runtime `BuildingSite` (Task 12, T2.2a;
-/// docs/cli-guide.md §8.5 documents this). `rules` is accepted for
-/// interface symmetry with the file's other `*_view` functions (same
-/// precedent as `describe::describe_pending_choice`'s `_rules`) but
-/// currently unused: site data lives entirely in `state`.
-pub fn sites_view(state: &GameState, _rules: &Rules) -> String {
-    let mut out = section("Building sites");
-    for (&area, site) in &state.board_layout.building_sites {
-        out.push_str(&format!(
-            "{}  {}  {}  {}\n",
-            describe::area_label(state, area),
-            site_compact_line(area.0 as usize, site),
-            build_marks(state, site),
-            adjacency_suffix(state, area),
-        ));
-    }
-    out
-}
-
-/// The `adj: ...` board-connectivity suffix for a `sites_view` line
-/// (item 7), in TWO honestly separated categories: `adj:` = the ordinary
-/// FREE movement neighbors ascending, then each tolled canal-crossing
-/// partner as `canal-><id>`.
+/// A Church faith space's printed reward in the COMPACT option vocabulary
+/// (`3vp 1move`). Single-sourced from the `ChurchTrack` tables -- the same
+/// `vp_reward` `delta_summary` prints after a placement, plus the
+/// `movement_rider` the engine queues as assistant-move choices. Every faith
+/// 4-11 carries a movement rider, so it is always shown.
 ///
-/// Both come straight off `board_layout` -- `adjacent_areas` (the
-/// `adjacency` graph) and `canal_crossings` -- never re-derived from
-/// geometry, so this can't disagree with what movement actually offers.
-/// But `adjacency` is NOT the free-neighbor set on its own: since the
-/// staggered-topology work it also carries every derived canal-crossing
-/// edge AND the brick edges to the Canal tile itself. Printing it raw
-/// (Codex review of PR #4, F1) showed a tolled crossing twice -- once
-/// disguised as free adjacency -- and offered the Canal as a destination,
-/// which it never is: it holds no assistant, so a President can never step
-/// onto it and Telegram's adjacent bonus can never target it. `adj:` is
-/// therefore derived by SUBTRACTION here: adjacency minus the crossing
-/// partners minus the Canal tile(s). The Canal needs no line of its own --
-/// its shore relationships are exactly the `canal->` entries, and the board
-/// render draws it as water.
+/// `pub(crate)`: the Church space-choice option text
+/// (`describe::describe_move`) reuses it, so the two option surfaces agree.
 ///
-/// Each crossing pair is scanned in both orders so it shows on both
-/// members' lines. `adj: -` is a defensive fallback for an area with no
-/// ordinary neighbor left; the staggered geometry never produces it — every
-/// non-Canal tile keeps at least one free brick-offset neighbor (a tip tile
-/// still has two brick neighbors, at most one of them the Canal).
-fn adjacency_suffix(state: &GameState, area: AreaId) -> String {
-    let mut crossings: Vec<AreaId> = state
-        .board_layout
-        .canal_crossings
-        .iter()
-        .filter_map(|&(a, b)| {
-            if a == area {
-                Some(b)
-            } else if b == area {
-                Some(a)
-            } else {
-                None
-            }
-        })
-        .collect();
-    crossings.sort_unstable_by_key(|a| a.0);
-    crossings.dedup();
-
-    let is_canal = |id: &AreaId| {
-        state.board_layout.areas.get(id).map(|c| c.area_type == AreaType::Canal).unwrap_or(false)
-    };
-    let mut ids: Vec<u8> = state
-        .board_layout
-        .adjacent_areas(area)
-        .iter()
-        .filter(|a| !crossings.contains(a) && !is_canal(a))
-        .map(|a| a.0)
-        .collect();
-    ids.sort_unstable();
-    ids.dedup();
-    let adj = if ids.is_empty() {
-        "-".to_string()
-    } else {
-        ids.iter().map(|n| format!("A{:02}", n)).collect::<Vec<_>>().join(", ")
-    };
-
-    let mut out = format!("adj: {adj}");
-    for a in crossings {
-        out.push_str(&format!("  canal->A{:02}", a.0));
-    }
-    out
-}
-
-/// POSITIONAL per-slot marks (Phase-2.9 per-slot enumeration fix). The
-/// engine offers one `BuildShophouse` per EMPTY slot, so `shophouses_built`
-/// carries gaps and a packed owners-only string would attribute owners to
-/// the wrong printed rewards -- `sites_view` prints the four DIFFERENT
-/// rewards positionally right beside these marks (`[1vp 4vp - 2yen]
-/// sh ·B·R`). One mark per slot in printed order: the owner's color letter,
-/// or `·` for an empty slot. `build_marks_attribute_each_built_slot_to_its_
-/// owner_positionally` pins the attribution (this replaced the old
-/// prefix-packing pin, whose premise the engine fix deliberately broke).
-///
-/// "sh ·B·R | th Y" build/ownership marks for one site: one mark per
-/// shophouse slot in printed order (owner color letter or `·`), then the
-/// trading-house owner's letter or `·`. Shared by `tile_content_lines`'s
-/// board-grid cell and `sites_view`'s per-site line (Task 12) so the two
-/// views can't drift on the convention documented at docs/cli-guide.md §8.5.
-fn build_marks(state: &GameState, site: &BuildingSite) -> String {
-    build_marks_pair(state, site).0
-}
-
-/// `(plain, painted)` twins of `build_marks`: owner letters paint in their
-/// player's color (a who-owns-what surface), empty slots stay a plain `·`.
-/// The plain twin is the layout/width authority per style.rs's rule.
-fn build_marks_pair(state: &GameState, site: &BuildingSite) -> (String, String) {
-    let mut sh = String::new();
-    let mut sh_painted = String::new();
-    for o in &site.shophouses_built {
-        match o {
-            Some(pid) => {
-                let c = state.player(*pid).color;
-                sh.push(color_letter(c));
-                sh_painted.push_str(&paint(Tone::Player(c), &color_letter(c).to_string()));
-            }
-            None => {
-                sh.push('·');
-                sh_painted.push('·');
-            }
-        }
-    }
-    let (th, th_painted) = match site.trading_house_owner {
-        Some(pid) => {
-            let c = state.player(pid).color;
-            (
-                color_letter(c).to_string(),
-                paint(Tone::Player(c), &color_letter(c).to_string()),
-            )
-        }
-        None => ("·".to_string(), "·".to_string()),
-    };
-    (format!("sh {sh} | th {th}"), format!("sh {sh_painted} | th {th_painted}"))
-}
-
-/// A Church faith space's printed reward: VP plus its movement rider, in
-/// `sites_view`'s reward vocabulary (`3vp 1move`). Single-sourced from the
-/// `ChurchTrack` tables -- the same `vp_reward` `delta_summary` prints after a
-/// placement, plus the `movement_rider` the engine queues as assistant-move
-/// choices. Every faith 4-11 carries a movement rider, so it is always shown.
-/// `pub(crate)`: the Church space-choice option text (`describe::describe_move`)
-/// reuses this so the choice shows the SAME VP+rider as the `tracks` view.
+/// **It is NOT the `tracks` view's wording, and this doc used to claim it
+/// was** (T11). The full-screen view has drawn `★3 VP` and `+1 assistant
+/// moves` in full words since T6; a decision ROW is a different budget from a
+/// card, so the two are deliberately different renderings of the same two
+/// engine numbers. What they share is the SOURCE — `ChurchTrack` — which is
+/// the parity that actually matters and the one a reader should check.
 pub(crate) fn church_reward_text(faith: u8) -> String {
     format!("{}vp {}move", ChurchTrack::vp_reward(faith), ChurchTrack::movement_rider(faith))
 }
 
-/// A Customs space's printed reward: VP plus its rider, in `sites_view`'s
-/// vocabulary. `CustomsTrack::rider` returns `(warehouse_takes, yen)` --
-/// rendered `Nwh`/`Nyen` -- and spaces 5-7 carry no rider, so those lines show
-/// VP alone. Single-sourced from the `CustomsTrack` tables.
-/// `pub(crate)`: the Customs space-choice option text (`describe::describe_move`)
-/// reuses this so the choice shows the SAME VP+rider as the `tracks` view.
+/// A Customs space's printed reward in the same compact option vocabulary.
+/// `CustomsTrack::rider` returns `(warehouse_takes, yen)` -- rendered
+/// `Nwh`/`Nyen` -- and spaces 5-7 carry no rider, so those lines show VP
+/// alone. Single-sourced from the `CustomsTrack` tables.
+///
+/// `pub(crate)` and NOT the `tracks` view's wording, for the reasons
+/// [`church_reward_text`] states.
 pub(crate) fn customs_reward_text(space: u8) -> String {
     let mut s = format!("{}vp", CustomsTrack::vp_reward(space));
     let (warehouse_takes, yen) = CustomsTrack::rider(space);
@@ -722,156 +517,6 @@ pub(crate) fn customs_reward_text(space: u8) -> String {
         s.push_str(&format!(" {yen}yen"));
     }
     s
-}
-
-/// One track slot's occupant marker: a real player as their color letter
-/// painted in their color (S4), or the 2-player setup dummy
-/// ([`PlayerId::DUMMY`], finding D1) as a dim `D` — a named occupant that
-/// holds the space AND competes in that track's majority bonus, not the bare
-/// `X` void it used to render as.
-fn track_occupant(state: &GameState, player: PlayerId) -> String {
-    if player.is_dummy() {
-        paint(Tone::Dim, "D")
-    } else {
-        let c = state.player(player).color;
-        paint(Tone::Player(c), &color_letter(c).to_string())
-    }
-}
-
-/// Church Management Board (faith values 4-11, occupant marker or `-`) and
-/// Customs Management Board (printed cost via `CustomsTrack::space_cost` --
-/// single source, Task 12 -- occupant marker or `-`). In 2-player games the
-/// setup dummy holds Church faith-7 and Customs space-4, shown as a dim `D`
-/// (`track_occupant`). Each space line also prints its printed VP + rider
-/// (`church_reward_text`/`customs_reward_text`, S5) after the occupant.
-pub fn tracks_view(state: &GameState) -> String {
-    let mut out = section("Tracks");
-
-    // Finding D1 (named-sentinel display): when the 2P dummy holds any track
-    // space, a legend names it and states that it competes in the majority
-    // bonus -- the `D` in the occupant column is a scoring occupant, not
-    // decoration.
-    let dummy_present = state.church_track.slots.iter().flatten().any(|s| s.player.is_dummy())
-        || state.customs_track.slots.iter().flatten().any(|s| s.player.is_dummy());
-    if dummy_present {
-        out.push_str(&format!(
-            "{} = Dummy — the 2P neutral marker; it holds its space and competes in each track's majority bonus\n",
-            paint(Tone::Dim, "D"),
-        ));
-    }
-
-    out.push_str("Church:\n");
-    for i in 0..8 {
-        let faith = ChurchTrack::index_to_faith(i);
-        let occ = match state.church_track.slots[i] {
-            Some(slot) => track_occupant(state, slot.player),
-            None => "-".to_string(),
-        };
-        out.push_str(&format!("  faith {:2}: {}  {}\n", faith, occ, church_reward_text(faith)));
-    }
-
-    out.push_str("Customs:\n");
-    for i in 0..7 {
-        let space = CustomsTrack::index_to_space(i);
-        let occ = match state.customs_track.slots[i] {
-            Some(slot) => track_occupant(state, slot.player),
-            None => "-".to_string(),
-        };
-        out.push_str(&format!(
-            "  space {} (cost {}): {}  {}\n",
-            space,
-            CustomsTrack::space_cost(space),
-            occ,
-            customs_reward_text(space),
-        ));
-    }
-
-    // The Station token is board-level shared state like the two tracks
-    // above -- it grants EVERY player +1 Power in its area
-    // (`game::power::calculate_power`) -- so a live-tracking operator needs
-    // to be able to read its position back and reconcile it against the
-    // physical board. Before this line it was unrenderable anywhere in the
-    // CLI, and placing it produced an empty delta (I4, external review
-    // 2026-07-20).
-    out.push_str("Station:\n");
-    match state.station_location {
-        Some(area) => out.push_str(&format!("  {} (all players +1 Power there)\n", describe::area_label(state, area))),
-        None => out.push_str("  not placed\n"),
-    }
-
-    // The shared mercenary SUPPLY piles are public table state (owner scope
-    // item 10 sufficiency gap) -- board-level like the Station, so they live
-    // here. Country codes match §8.4's GB/US/FR/DE/NL vocabulary.
-    let s = &state.mercenary_supply;
-    out.push_str(&format!(
-        "Mercenary supply:  GB {}  US {}  FR {}  DE {}  NL {}\n",
-        s.english, s.american, s.french, s.german, s.dutch,
-    ));
-
-    out
-}
-
-/// Achievement cards in play (`state.achievements`'s fixed 3-card array,
-/// `G0`-`G2`): the printed condition (`describe::achievement_desc`), claim
-/// state (`open`, or `claimed by` the claiming color(s) in claim order --
-/// MORE than one player can claim the same achievement, first claimant at
-/// `first_place_vp`, each later one at `subsequent_vp`, so every name in
-/// `claimed_by` is listed, not just the first), then one indented line per
-/// player with their live progress (`achievement_progress`, Task 14/T2.3)
-/// as `cur/need` -- the SAME arithmetic `can_claim_achievement` gates the
-/// actual claim on, so the printed `cur/need` numbers themselves can never
-/// disagree with the engine's. That arithmetic is not the WHOLE gate,
-/// though: `achievement_progress` deliberately excludes
-/// `can_claim_achievement`'s other two checks (already claimed by THIS
-/// player, and having no assistant in hand to place) -- so a player can
-/// still show `cur >= need` ("ready" by the numbers) here while an actual
-/// claim attempt is refused for one of those two reasons instead.
-/// `rules` is accepted for interface symmetry with the file's other
-/// `*_view` functions (same precedent as `sites_view`'s `_rules`) but
-/// unused: everything here comes from `state` alone.
-pub fn achievements_view(state: &GameState, _rules: &Rules) -> String {
-    let mut out = section("Goals");
-    for (i, card) in state.achievements.iter().enumerate() {
-        let claim_state = if card.claimed_by.is_empty() {
-            "open".to_string()
-        } else {
-            // S4: each claimant's color name paints in that player's color.
-            let names: Vec<String> = card
-                .claimed_by
-                .iter()
-                .map(|&pid| {
-                    let c = state.player(pid).color;
-                    paint(Tone::Player(c), color_name(c))
-                })
-                .collect();
-            format!("claimed by {}", names.join(", "))
-        };
-        // Item 6: the card's first/subsequent claim VP from the registry --
-        // the same `first_place_vp`/`subsequent_vp` `vp_for_player` scores
-        // with -- so claim value is visible before committing an assistant.
-        out.push_str(&format!(
-            "G{i}: {} ({}/{} VP) — {}\n",
-            describe::achievement_desc(card.achievement_type),
-            card.achievement_type.first_place_vp(),
-            card.achievement_type.subsequent_vp(),
-            claim_state,
-        ));
-        for p in &state.players {
-            let (cur, need) = achievement_progress(state, p.id, card.achievement_type);
-            // S6: a player already in `claimed_by` is marked, so a maxed-out
-            // `cur/need` under `claimed by <them>` no longer reads as an
-            // invitation to claim again. S4: the color prefix paints.
-            let claimed = if card.claimed_by.contains(&p.id) { " (claimed)" } else { "" };
-            out.push_str(&format!(
-                "   {}: {}/{}{}\n",
-                paint(Tone::Player(p.color), color_name(p.color)),
-                cur,
-                need,
-                claimed,
-            ));
-        }
-    }
-    out
 }
 
 /// Human-readable lines summarizing everything that changed between `before`
@@ -1197,8 +842,11 @@ fn church_customs_lines(lines: &mut Vec<String>, b: &PlayerState, a: &PlayerStat
 
 /// "gained mercenary (Country)" / "spent mercenary (Country)" / "gained
 /// 5-Power token" lines. A per-move gain above 1 (not reachable under
-/// current rules -- `award_mercenaries_for_country_icons` awards at most 1
-/// per country per call) is suffixed `x{n}` rather than pluralized, so the
+/// current rules -- the engine's fulfil-order path awards one mercenary at
+/// every SECOND completed order of a country, so at most 1 per country per
+/// move; pinned in core by
+/// `test_fulfill_order_awards_mercenary_at_every_second_completed_order_of_a_country`)
+/// is suffixed `x{n}` rather than pluralized, so the
 /// line still contains the literal substring "gained mercenary" regardless.
 ///
 /// GAINS are detected on `available + used` (a gain raises the total),
@@ -1264,7 +912,7 @@ fn achievement_lines(lines: &mut Vec<String>, before: &GameState, after: &GameSt
         let before_claims = before.achievements.get(i).map(|c| c.claimed_by.len()).unwrap_or(0);
         for &claimant in after_card.claimed_by.iter().skip(before_claims) {
             lines.push(format!(
-                "{}: claimed achievement G{} ({}) -- 1 assistant locked onto the card",
+                "{}: claimed achievement G{} ({}) — 1 assistant locked onto the card",
                 player_prefix(after.player(claimant).color),
                 i,
                 describe::achievement_desc(after_card.achievement_type),
@@ -1299,166 +947,15 @@ fn building_lines(lines: &mut Vec<String>, before: &GameState, after: &GameState
     }
 }
 
-fn render_port_board(label: &str, board: &PortBoard, rules: &Rules, out: &mut String) {
-    out.push_str(label);
-    out.push('\n');
-    for i in 0..6 {
-        let zone = match PortBoard::zone_of(i) {
-            PortZone::Low => "Low",
-            PortZone::Mid => "Mid",
-            PortZone::High => "High",
-        };
-        let line = match board.slots[i] {
-            Some(card_id) => {
-                rules.orders.get(card_id).map(order_compact_line).unwrap_or_else(|| format!("O{:02}", card_id.0))
-            }
-            None => "-".to_string(),
-        };
-        out.push_str(&format!("{}. {}  {}\n", i + 1, zone, line));
-    }
-}
-
-fn render_lab_board(label: &str, board: &LabBoard, rules: &Rules, out: &mut String) {
-    out.push_str(label);
-    out.push('\n');
-    for i in 0..6 {
-        let surcharge = LabBoard::position_modifier(i);
-        let line = match board.slots[i] {
-            Some(tech_id) => match rules.techs.get(tech_id) {
-                // Country + one-line effect (item 5): single-sourced from the
-                // card's own `country`/`effect` via `describe`, so a player
-                // weighs a tech without cross-referencing a table.
-                Some(card) => format!(
-                    "{} [{}] (cost {}) — {}",
-                    card.name,
-                    describe::country_name(card.country),
-                    card.industry_cost,
-                    describe::tech_effect_text(card.effect),
-                ),
-                None => format!("T{:02}", tech_id.0),
-            },
-            None => "-".to_string(),
-        };
-        out.push_str(&format!("{}. +{}  {}\n", i + 1, surcharge, line));
-    }
-}
-
-/// The 4 fixed-width (painted) content lines for one tile box. President
-/// and assistant tokens are painted in their player's color, the tile name
-/// in its type tone; every line is built as (plain, painted) twins so
-/// `fit_cell_painted` can size the cell from the plain text and emit the
-/// painted one -- the alignment-trap rule from style.rs's module doc.
-fn tile_content_lines(state: &GameState, id: AreaId) -> [String; 4] {
-    let cfg = &state.board_layout.areas[&id];
-
-    if cfg.area_type == AreaType::Canal {
-        // Water tile: no site, no tokens, nothing can ever stand here.
-        let tone = Tone::Tile(AreaType::Canal);
-        let header = format!("A{:02} Canal", id.0);
-        let wave = "~".repeat(TILE_W);
-        let toll = "~~ toll 1 yen ~~"; // exactly TILE_W chars
-        return [
-            fit_cell_painted(&header, &paint(tone, &header)),
-            fit_cell_painted(&wave, &paint(tone, &wave)),
-            fit_cell_painted(toll, &paint(tone, toll)),
-            fit_cell_painted(&wave, &paint(tone, &wave)),
-        ];
-    }
-
-    // Face-up 5-Power token: show the good's letter in its color (rulebook p.3
-    // step 5). `Some(None)` = claimed, `None` = no token slot (Canal is handled
-    // above), both render nothing.
-    let token = match state.board_layout.five_power_tokens.get(&id) {
-        Some(Some(effect)) => Some(five_power_face(*effect)),
-        _ => None,
-    };
-    let name = tile_name(cfg.area_type);
-    let header_plain = format!(
-        "A{:02} {}{}",
-        id.0,
-        name,
-        token.map(|(c, _)| format!(" {c}")).unwrap_or_default(),
-    );
-    let header_painted = format!(
-        "A{:02} {}{}",
-        id.0,
-        paint(Tone::Tile(cfg.area_type), name),
-        token.map(|(c, k)| format!(" {}", paint(Tone::Good(k), &c.to_string()))).unwrap_or_default(),
-    );
-
-    let station = state.station_location == Some(id);
-    let pres_colors: Vec<PlayerColor> = state
-        .players
-        .iter()
-        .filter(|p| p.president_location == PresidentLocation::OnBoard(id))
-        .map(|p| p.color)
-        .collect();
-    let st_plain = if station { " [St]" } else { "" };
-    let st_painted = if station { format!(" {}", paint(Tone::Prompt, "[St]")) } else { String::new() };
-    let (pres_line, pres_line_painted) = if pres_colors.is_empty() {
-        (format!("P: -{st_plain}"), format!("P: -{st_painted}"))
-    } else {
-        let plain: String = pres_colors.iter().map(|&c| color_letter(c)).collect();
-        let painted: String =
-            pres_colors.iter().map(|&c| paint(Tone::Player(c), &color_letter(c).to_string())).collect();
-        (format!("P: {plain}{st_plain}"), format!("P: {painted}{st_painted}"))
-    };
-
-    let mut assist_parts: Vec<String> = Vec::new();
-    let mut assist_parts_painted: Vec<String> = Vec::new();
-    for p in &state.players {
-        let n = p.assistants.in_area(id);
-        if n > 0 {
-            let part = format!("{}{}", color_letter(p.color), n);
-            assist_parts_painted.push(paint(Tone::Player(p.color), &part));
-            assist_parts.push(part);
-        }
-    }
-    let (assist_line, assist_line_painted) = if assist_parts.is_empty() {
-        ("-".to_string(), "-".to_string())
-    } else {
-        (assist_parts.join(" "), assist_parts_painted.join(" "))
-    };
-
-    let (build_line, build_line_painted) = match state.board_layout.building_sites.get(&id) {
-        Some(site) => build_marks_pair(state, site),
-        None => ("no site".to_string(), "no site".to_string()),
-    };
-
-    [
-        fit_cell_painted(&header_plain, &header_painted),
-        fit_cell_painted(&pres_line, &pres_line_painted),
-        fit_cell_painted(&assist_line, &assist_line_painted),
-        fit_cell_painted(&build_line, &build_line_painted),
-    ]
-}
-
-/// Truncate/pad to `TILE_W` so tile content lines fill their box exactly.
-fn fit_cell(s: &str) -> String {
-    let truncated: String = s.chars().take(TILE_W).collect();
-    format!("{:<width$}", truncated, width = TILE_W)
-}
-
-/// `fit_cell` for a painted cell line: the pad is computed from `plain`
-/// (the same text minus escapes), never from `painted`, whose ANSI bytes
-/// have zero display width and would otherwise shrink the pad and shear
-/// the column. Falls back to the plain fit when the text overflows the
-/// cell -- an escape run can't be truncated safely, and a cut cell isn't
-/// worth painting. When color is disabled `painted == plain` and this is
-/// exactly `fit_cell`.
-fn fit_cell_painted(plain: &str, painted: &str) -> String {
-    let width = plain.chars().count();
-    if width > TILE_W {
-        return fit_cell(plain);
-    }
-    format!("{}{}", painted, " ".repeat(TILE_W - width))
-}
-
-/// The board glyph for a face-up 5-Power token: the good's one-letter code
-/// (matching the players-panel goods run and the wizard's token letters) and
-/// its `GoodKind` for color. Magnitude is fixed per kind, so the letter alone
-/// identifies the face; `board_legend` spells out the amounts. `pub(crate)` so
-/// the setup wizard's review summary prints the same letter the board shows.
+/// The one-letter code for a face-up 5-Power token (matching the
+/// players-panel goods run and the wizard's token letters) and its `GoodKind`
+/// for color. Magnitude is fixed per kind, so the letter alone identifies the
+/// face.
+///
+/// Since the V3 board (T2) this is the WIZARD's vocabulary, not the board's:
+/// a tile now spells its face out (`5-Power: 1 Import`, via
+/// `board_render`'s own token), and the setup wizard's review summary is the
+/// remaining caller — where a one-column code is what fits.
 pub(crate) fn five_power_face(e: FivePowerEffect) -> (char, GoodKind) {
     match e {
         FivePowerEffect::ImportedGoods(_) => ('i', GoodKind::Imports),
@@ -1467,28 +964,6 @@ pub(crate) fn five_power_face(e: FivePowerEffect) -> (char, GoodKind) {
         FivePowerEffect::Tea(_) => ('t', GoodKind::Tea),
         FivePowerEffect::Seafood(_) => ('f', GoodKind::Seafood),
         FivePowerEffect::Money(_) => ('y', GoodKind::Yen),
-    }
-}
-
-/// Legible tile display name, sized to fit a `A00 {name} c` header inside
-/// `TILE_W` (name <= 10 chars; the trailing 1-char token face fits where the
-/// old `*` did).
-fn tile_name(t: AreaType) -> &'static str {
-    match t {
-        AreaType::CopperMine => "Copper Mn",
-        AreaType::SilkMill => "Silk Mill",
-        AreaType::TeaPlantation => "Tea Plant",
-        AreaType::FishingGround => "Fishing",
-        AreaType::Bank => "Bank",
-        AreaType::PortA => "Port A",
-        AreaType::PortB => "Port B",
-        AreaType::LaboratoryA => "Lab A",
-        AreaType::LaboratoryB => "Lab B",
-        AreaType::EmploymentAgency => "Employ Ag",
-        AreaType::Chinatown => "Chinatown",
-        AreaType::Church => "Church",
-        AreaType::Customs => "Customs",
-        AreaType::Canal => "Canal",
     }
 }
 
@@ -1509,10 +984,6 @@ pub fn color_name(c: PlayerColor) -> &'static str {
         PlayerColor::Yellow => "Yellow",
         PlayerColor::Green => "Green",
     }
-}
-
-fn color_letter(c: PlayerColor) -> char {
-    color_name(c).chars().next().unwrap()
 }
 
 #[cfg(test)]
@@ -1545,56 +1016,33 @@ mod tests {
     }
 
     #[test]
-    fn prompt_header_shows_turn_color_phase_and_money() {
-        let state = test_state_2p();
-        let h = prompt_header(&state, describe::phase_name(state.turn_phase));
-        assert!(h.contains("Turn 1"), "{h}");
-        assert!(h.contains("Red"), "{h}");
-        assert!(h.contains("Additional actions (before)"), "{h}");
-        assert!(h.contains("3 yen"), "{h}");
-    }
-
-    /// S4 (pre-gate view batch): the header's current-player name is a
-    /// who-is-where surface and paints in that player's color, alongside the
-    /// phase text that already paints. The plain (disabled) header is
-    /// unchanged -- so the existing `prompt_header_*` plain-text tests keep
-    /// passing -- and `strip_ansi` round-trips the painted header to it.
-    #[test]
-    fn prompt_header_paints_the_current_player_name() {
-        let state = test_state_2p(); // Red is the start/current player
-        crate::style::force(true);
-        let colored = prompt_header(&state, "Placement");
-        let painted_name = paint(Tone::Player(PlayerColor::Red), "Red");
-        crate::style::force(false);
-        let plain = prompt_header(&state, "Placement");
-        assert!(colored.contains(&painted_name), "current-player name must paint: {colored:?}");
-        assert_eq!(strip_ansi(&colored), plain);
-    }
-
-    #[test]
     fn board_grid_has_one_cell_per_area_with_ids() {
         let state = test_state_2p();
-        let g = board_grid(&state);
+        let g = board_grid(&state, &Rules::standard(), &[]);
         for id in state.board_layout.areas.keys() {
             assert!(g.contains(&format!("A{:02}", id.0)), "missing A{:02} in\n{g}", id.0);
         }
     }
 
-    /// Task 6 redesign: the board renders the true staggered pyramid — one
-    /// bordered box per tile, rows top (widest) first, each row indented half
-    /// a box pitch relative to the row above (brick pattern), all derived
-    /// from `grid_position` alone. The real 2P board is rows 4/3/2/1.
+    /// This function is an ADAPTER since the V3 cutover (T2): it reads state,
+    /// builds the screen model, and delegates. So what it owes is that
+    /// delegation — that it passes the state's own seat colours and adds
+    /// nothing of its own. The board's GEOMETRY is pinned where the geometry
+    /// now lives, in `board_render`, across all three player counts.
     #[test]
-    fn board_grid_renders_the_staggered_pyramid() {
-        let state = test_state_2p();
-        let g = board_grid(&state);
-        let lines: Vec<&str> = g.lines().collect();
-        assert_eq!(lines.len(), 4 * 6, "4 rows x 6 lines (border+4 content+border):\n{g}");
-        for r in 0..4usize {
-            let top = lines[r * 6];
-            assert_eq!(top.matches('┌').count(), 4 - r, "row {r} box count: {top:?}");
-            let lead = top.chars().take_while(|c| *c == ' ').count();
-            assert_eq!(lead, r * 9, "row {r} must indent half a box per row down: {top:?}");
+    fn board_grid_delegates_the_model_to_the_v3_renderer() {
+        for n in [2u8, 3, 4] {
+            let state = test_state_np(n);
+            let rules = Rules::standard();
+            let colors: Vec<PlayerColor> = state.players.iter().map(|p| p.color).collect();
+            assert_eq!(
+                board_grid(&state, &rules, &[]),
+                crate::board_render::board_view(
+                    &crate::screen_model::build_board(&state, &rules, &[]),
+                    &colors,
+                ),
+                "{n}P: the adapter must add nothing to the renderer's output",
+            );
         }
     }
 
@@ -1668,38 +1116,42 @@ mod tests {
 
     /// Every line pads to ONE total width (the frame composer joins the board
     /// with the side panel line-by-line, so a ragged right edge would shear
-    /// it), and the 2P board's width is the documented 72 columns.
+    /// it), and the 2P board's width is the documented 120 columns — four
+    /// 30-column V3 tiles on its widest row (T2; the 16-column tiles it
+    /// replaced made it 72).
     #[test]
-    fn board_grid_lines_share_one_width_and_2p_is_72_cols() {
+    fn board_grid_lines_share_one_width_and_2p_is_120_cols() {
         let state = test_state_2p();
-        let g = board_grid(&state);
+        let g = board_grid(&state, &Rules::standard(), &[]);
         for glyph in ['─', '│', '┌', '┐', '└', '┘'] {
             assert!(g.contains(glyph), "missing {glyph} in:\n{g}");
         }
         let widths: HashSet<usize> = g.lines().map(|l| l.chars().count()).collect();
         assert_eq!(widths.len(), 1, "all board lines must share one width:\n{g}");
-        assert_eq!(g.lines().next().unwrap().chars().count(), 72, "2P board width:\n{g}");
+        assert_eq!(g.lines().next().unwrap().chars().count(), 120, "2P board width:\n{g}");
     }
 
-    /// Tiles carry a legible name, not the old 3-5 letter code string.
+    /// V3 tiles carry the FULL area name, not the abbreviation the 16-column
+    /// tile had to squeeze into (`Employ Ag`, `Copper Mn`).
     #[test]
-    fn board_grid_names_tiles_legibly() {
+    fn board_grid_names_tiles_in_full() {
         let state = test_state_2p();
-        let g = board_grid(&state);
+        let g = board_grid(&state, &Rules::standard(), &[]);
         // The 2P tile pool always includes these four (Chinatown/PortB/LabB/
-        // Canal are removed at 2P); their new display names must appear (the
-        // old codes CuM/Chrch/Cstms must not).
-        for name in ["Church", "Customs", "Bank", "Employ Ag"] {
+        // Canal are removed at 2P).
+        for name in ["CHURCH", "CUSTOMS", "BANK", "EMPLOYMENT AGENCY"] {
             assert!(g.contains(name), "missing tile name {name} in:\n{g}");
         }
-        assert!(!g.contains("Chrch") && !g.contains("Cstms"), "old code-strings must be gone:\n{g}");
+        for abbreviation in ["Employ Ag", "Copper Mn", "Tea Plant", "Chrch", "Cstms"] {
+            assert!(!g.contains(abbreviation), "squeezed name {abbreviation} must be gone:\n{g}");
+        }
     }
 
-    /// The Canal tile renders as water with its printed toll — no build
-    /// marks, no president/assistant lines (nothing can ever be there).
+    /// The Canal renders its transit-only shape — no 5-Power line, no
+    /// presence line, no site strip, because it has none of those things.
     /// The renderer keys on the tile TYPE, so a flipped fixture suffices.
     #[test]
-    fn board_grid_canal_tile_renders_as_water_with_toll() {
+    fn board_grid_canal_tile_renders_its_transit_only_shape() {
         let mut state = test_state_2p();
         let tip = *state
             .board_layout
@@ -1709,38 +1161,52 @@ mod tests {
             .expect("2P pyramid has a (3,0) tip tile")
             .0;
         state.board_layout.areas.get_mut(&tip).unwrap().area_type = AreaType::Canal;
-        let g = board_grid(&state);
-        assert!(g.contains("~~"), "canal water fill expected:\n{g}");
-        assert!(g.contains("toll 1 yen"), "canal toll label expected:\n{g}");
+        let g = board_grid(&state, &Rules::standard(), &[]);
+        assert!(g.contains("CANAL"), "the canal tile must be named:\n{g}");
+        assert!(g.contains("transit only"), "canal transit note expected:\n{g}");
+        assert!(g.contains("to the bank / crossing"), "canal toll expected:\n{g}");
     }
 
-    /// The Station token's area is marked `[St]` on the board (it grants
+    /// The Station token's area is marked `[St]` on the tile title (it grants
     /// EVERY player +1 Power there, so it must be visible at a glance, not
     /// only in the `tracks` view).
     #[test]
     fn board_grid_marks_the_station_area() {
         let mut state = test_state_2p();
+        let rules = Rules::standard();
         let area = *state.board_layout.areas.keys().next().unwrap();
-        assert!(!board_grid(&state).contains("[St]"), "unplaced Station must not mark anything");
+        assert!(
+            !board_grid(&state, &rules, &[]).contains("[St]"),
+            "unplaced Station must not mark anything"
+        );
         state.station_location = Some(area);
-        assert!(board_grid(&state).contains("[St]"), "placed Station must mark its tile");
+        assert!(board_grid(&state, &rules, &[]).contains("[St]"), "placed Station must mark its tile");
     }
 
-    /// The legend documents the canal crossing rule ONLY on a board that has
-    /// a Canal (2P boards never do), and always documents `*`/`[St]`/`·`.
+    /// The legend keys what the V3 tiles actually draw — the marks and the
+    /// site-slot tokens — and adds the canal crossing rule ONLY on a board
+    /// that has a Canal (2P boards never do).
     #[test]
-    fn board_legend_documents_canal_only_when_present() {
+    fn board_legend_keys_the_tile_marks_and_names_the_canal_only_when_present() {
         let mut state = test_state_2p();
-        let without = board_legend(&state);
-        assert!(without.contains("5-Power tokens (face-up)"), "{without}");
+        let rules = Rules::standard();
+        let without = board_legend(&state, &rules);
+        assert!(without.contains("site slots"), "{without}");
         assert!(without.contains("[St]"), "{without}");
+        assert!(
+            !without.contains("5-Power tokens (face-up)"),
+            "the letter key described the 16-column tile; V3 spells the face out: {without}",
+        );
         assert!(!without.contains("Canal"), "no canal on this board: {without}");
 
         let tip = *state.board_layout.areas.keys().next().unwrap();
         state.board_layout.areas.get_mut(&tip).unwrap().area_type = AreaType::Canal;
-        let with = board_legend(&state);
+        let with = board_legend(&state, &rules);
         assert!(with.contains("Canal"), "{with}");
-        assert!(with.contains("1 yen"), "the toll and its recipient (bank) belong in the legend: {with}");
+        assert!(
+            with.contains("¥1 to the bank"),
+            "the toll and its recipient (bank) belong in the legend: {with}",
+        );
     }
 
     #[test]
@@ -1753,120 +1219,40 @@ mod tests {
         assert_eq!(five_power_face(FivePowerEffect::Money(3)), ('y', GoodKind::Yen));
     }
 
-    /// The board shows a face-up token's FACE (its good letter), not a boolean
-    /// `*` (rulebook p.3 step 5 — tokens are face-up). A claimed slot shows nothing.
+    /// The board shows a face-up token's FACE (rulebook p.3 step 5 — tokens
+    /// are face-up), and since V3 it shows it in WORDS rather than as the
+    /// one-letter code the 16-column tile had room for. A claimed slot says
+    /// `taken` rather than going blank, which the old tile could not
+    /// distinguish from a tile that never had one.
+    ///
+    /// The retired half of this test asserted no `*` appeared anywhere on the
+    /// board — the 2026-07-21 fix that replaced a boolean `*` token marker
+    /// with its face. V3 cannot regress that (a face is words, not a mark),
+    /// and `*` now MEANS something on a tile: an any-good site space.
     #[test]
-    fn board_tile_header_shows_the_token_face_letter_not_a_star() {
+    fn board_tiles_spell_out_the_five_power_face_and_say_when_it_is_taken() {
         let mut state = test_state_2p();
+        let rules = Rules::standard();
         let area = *state.board_layout.areas.keys().next().unwrap();
-        // Force a name with no 'c' so the assertion pins the token, not the name.
-        state.board_layout.areas.get_mut(&area).unwrap().area_type = AreaType::Bank;
         state.board_layout.five_power_tokens.insert(area, Some(FivePowerEffect::Copper(2)));
-        let header = tile_content_lines(&state, area)[0].clone();
-        assert!(header.contains(" c"), "a Copper token shows its 'c' face: {header:?}");
-        assert!(!header.contains('*'), "the boolean star is gone: {header:?}");
-        // A claimed slot (Some(None)) shows no face.
+        let g = board_grid(&state, &rules, &[]);
+        assert!(g.contains("5-Power: 2 Copper"), "a Copper token spells its face: {g}");
+
         state.board_layout.five_power_tokens.insert(area, None);
-        let claimed = tile_content_lines(&state, area)[0].clone();
-        assert!(!claimed.contains(" c") && !claimed.contains('*'), "a claimed token shows no face: {claimed:?}");
+        let claimed = board_grid(&state, &rules, &[]);
+        assert!(claimed.contains("5-Power: taken"), "a claimed token says so: {claimed}");
     }
 
-    #[test]
-    fn ports_view_lists_six_slots_and_deck_count() {
-        let state = test_state_2p();
-        let rules = Rules::standard();
-        let v = ports_view(&state, &rules);
-        assert!(v.contains("Port A"), "{v}");
-        for zone in ["Low", "Mid", "High"] {
-            assert!(v.contains(zone), "{v}");
-        }
-        assert!(v.contains(&format!("order deck: {}", state.order_deck.len())), "{v}");
-    }
-
-    #[test]
-    fn labs_view_lists_surcharges_and_deck_count() {
-        let state = test_state_2p();
-        let rules = Rules::standard();
-        let v = labs_view(&state, &rules);
-        assert!(v.contains("Laboratory A"), "{v}");
-        assert!(v.contains("+0"), "{v}");
-        assert!(v.contains("+1"), "{v}");
-        assert!(v.contains("+2"), "{v}");
-        assert!(v.contains(&format!("tech deck: {}", state.tech_deck.len())), "{v}");
-    }
-
-    /// Labs country + effect (pre-gate view batch item 5): each populated lab
-    /// slot line shows the tech's country (`[Country]`) and its one-line
-    /// effect (`describe::tech_effect_text`), single-sourced from the card
-    /// data -- so a player can weigh a tech without cross-referencing a table.
-    #[test]
-    fn labs_view_shows_country_and_effect_per_card() {
-        let state = test_state_2p();
-        let rules = Rules::standard();
-        let text = labs_view(&state, &rules);
-        let mut checked = 0;
-        for slot in state.lab_state.lab_a.slots.iter().flatten() {
-            let card = rules.techs.get(*slot).expect("a lab card is in the registry");
-            assert!(
-                text.contains(&format!("[{}]", describe::country_name(card.country))),
-                "want country of {} in\n{text}",
-                card.name
-            );
-            assert!(text.contains(describe::tech_effect_text(card.effect)), "want effect of {} in\n{text}", card.name);
-            checked += 1;
-        }
-        assert!(checked > 0, "fixture must populate at least one lab slot:\n{text}");
-    }
-
-    /// F2 (Codex adversarial review of PR #4) lengthened five tech effect
-    /// one-liners to carry the qualifiers that change a purchase decision,
-    /// which lengthens the `labs` lines that print them. §2 of the guide
-    /// promises a 140-column terminal clears every screen, so no lab line
-    /// may exceed that. Measured over EVERY card in the registry (each
-    /// slotted into a real lab board and run through the real `labs_view`,
-    /// never a copy of its format string), so a future wording edit that
-    /// would wrap on a tester's terminal fails here.
-    #[test]
-    fn labs_view_lines_fit_the_documented_terminal_width() {
-        let mut state = test_state_2p();
-        let rules = Rules::standard();
-        let mut worst = (0usize, String::new());
-        for card in rules.techs.iter() {
-            state.lab_state.lab_a.slots[0] = Some(card.id);
-            for line in labs_view(&state, &rules).lines() {
-                let w = crate::screen::visible_width(line);
-                if w > worst.0 {
-                    worst = (w, line.to_string());
-                }
-            }
-        }
-        assert!(worst.0 <= 140, "a labs line is {} columns wide (140 max): {}", worst.0, worst.1);
-    }
-
-    /// Task 6 (composed frame): the compact panel shows each player's
-    /// public at-a-glance line set -- current marker, yen/VP, goods, hand
-    /// COUNT (never contents -- the panel is privacy-safe by construction),
-    /// assistant zones, built counts + next TH take, President location.
-    #[test]
-    fn compact_panel_shows_public_info_and_marks_the_current_player() {
-        let state = test_state_2p();
-        let rules = Rules::standard();
-        let text = compact_panel(&state, &rules, &seats_open(&state));
-        assert!(text.starts_with("─ Players ─"), "{text}");
-        assert!(text.contains(">0 Red"), "current player marked, seat 0: {text}");
-        assert!(text.contains(" 1 Blue"), "other players unmarked, seat 1: {text}");
-        assert!(text.contains("yen"), "{text}");
-        assert!(text.contains("hand 1"), "hand renders as a COUNT: {text}");
-        assert!(!text.contains("O0") && !text.contains("O1"), "hand contents never appear: {text}");
-        assert!(text.contains("next TH take 4 yen"), "{text}");
-        assert!(text.contains("President: in hand"), "{text}");
-    }
-
-    /// Item 7 (third review): every panel labels each player with its SEAT
-    /// number -- the `reveal <seat>` key, which used to appear nowhere on the
-    /// game screen (learnable only from the wizard transcript and the players
-    /// ordering). The full `players` view spells it out; the compact frame
-    /// panels carry the digit right after the current-player marker.
+    /// Item 7 (third review), carried over the T3 cutover: every panel labels
+    /// each player with its SEAT number -- the `reveal <seat>` key, which used
+    /// to appear nowhere on the game screen (learnable only from the wizard
+    /// transcript and the players ordering). The full `players` view spells it
+    /// out; the dashboard carries it as a chrome annotation at the right of the
+    /// player's header line.
+    ///
+    /// The compact/one-line halves of this test moved with the panels they
+    /// measured: `compact_panel` and `compact_panel_oneline` are gone, and the
+    /// property they pinned is pinned here against [`dashboard`] instead.
     #[test]
     fn panels_show_the_seat_number_for_the_reveal_key() {
         let state = test_state_2p(); // Red = seat 0 (current), Blue = seat 1
@@ -1876,80 +1262,101 @@ mod tests {
         assert!(full.contains("(seat 0)"), "players view labels seat 0: {full}");
         assert!(full.contains("(seat 1)"), "players view labels seat 1: {full}");
 
-        let compact = compact_panel(&state, &rules, &seats_open(&state));
-        assert!(compact.contains(">0 Red"), "compact: current player Red is seat 0: {compact}");
-        assert!(compact.contains(" 1 Blue"), "compact: Blue is seat 1: {compact}");
-
-        let oneline = compact_panel_oneline(&state, &seats_open(&state));
-        assert!(oneline.contains(">0 Red"), "oneline: seat 0 Red: {oneline}");
-        assert!(oneline.contains(" 1 Blue"), "oneline: seat 1 Blue: {oneline}");
+        let dash = dashboard(&state, &rules, &seats_open(&state), PlayerId::new(0));
+        let red = dash.lines().find(|l| l.contains("RED")).expect("a RED line");
+        let blue = dash.lines().find(|l| l.contains("BLUE")).expect("a BLUE line");
+        assert!(red.contains("seat 0"), "dashboard: current player RED is seat 0: {red}");
+        assert!(blue.contains("seat 1"), "dashboard: BLUE is seat 1: {blue}");
     }
 
-    /// Locked pawns (goals/church/customs) surface as a `locked N` tally so
-    /// the compact numbers still reconcile to the 20-pawn total.
+    /// Locked pawns (goals/church/customs) surface as a `locked N` tally so the
+    /// panel's numbers still reconcile to the 20-pawn total. Re-pointed from
+    /// `compact_panel` to its replacement; the assertion is unchanged.
     #[test]
-    fn compact_panel_tallies_locked_assistants() {
+    fn the_dashboard_tallies_locked_assistants() {
         let mut state = test_state_2p();
         let rules = Rules::standard();
         state.players[0].assistants.on_church = 2;
         state.players[0].assistants.on_achievements = 1;
-        let text = compact_panel(&state, &rules, &seats_open(&state));
-        assert!(text.contains("locked 3"), "{text}");
+        let text = dashboard(&state, &rules, &seats_open(&state), PlayerId::new(0));
+        assert!(text.contains("3 locked"), "{text}");
     }
 
-    /// F3 (Codex adversarial review of PR #4): the stacked-below layout's
-    /// panel is ONE LINE PER PLAYER -- that fold is what brings the 4P
-    /// composed screen back inside a 50-row terminal. It must stay
-    /// genuinely useful (every public at-a-glance field of the multi-line
-    /// form except the next TH take) and just as privacy-safe: hand is a
-    /// COUNT, never contents.
+    /// The dashboard is privacy-safe BY CONSTRUCTION at every seat but the
+    /// viewing one: a player's hand appears as a COUNT on their President line
+    /// and card identities live only in the hand panel, which empties itself
+    /// when masked. Re-pointed from `compact_panel`'s equivalent assertions.
     #[test]
-    fn compact_panel_oneline_is_one_row_per_player_with_the_public_fields() {
-        let state = test_state_np(4);
-        let text = compact_panel_oneline(&state, &seats_open(&state));
-        assert!(text.starts_with("─ Players ─"), "{text}");
-        assert_eq!(
-            text.lines().count(),
-            state.players.len() + 1,
-            "one header + exactly one line per player:\n{text}"
-        );
-        let red = text.lines().find(|l| l.contains("Red")).expect("a Red line");
-        assert!(red.starts_with(">0 Red"), "current player marked, seat 0: {red}");
-        for field in ["yen", "VP", "c1", "hand 1", "asst h", "built sh", "President: in hand"] {
-            assert!(red.contains(field), "want {field:?} in the one-line form: {red}");
+    fn the_dashboard_never_prints_another_seats_cards() {
+        let state = test_state_2p();
+        let rules = Rules::standard();
+        let seats = SeatDisplay::new(vec![false, true], vec![false, false]);
+        let text = dashboard(&state, &rules, &seats, PlayerId::new(0));
+        assert!(text.contains("1 order in hand"), "the count still shows: {text}");
+        assert!(text.contains("(hidden)"), "a masked seat says so: {text}");
+        // Seat 1's kept starting order must not appear anywhere on the panel.
+        //
+        // **Every WAY the card could be named, not just its flag** (six-lens
+        // note). The country word alone is a weak fence twice over: it
+        // discriminates only because this fixture's two seats happen to hold
+        // different-country cards, and the string it tests is drawn by the
+        // VIEWING seat's own hand rather than by anything about seat 1 — so a
+        // leak that printed the id, or a card face with `printed` cleared,
+        // satisfied it. The id is the sharpest of these: it is what an
+        // unfaced card still shows.
+        let hidden_card = state.players[1].order_cards_in_hand[0];
+        let printed = rules.orders.get(hidden_card).expect("a known card");
+        for token in [
+            describe::country_name(printed.country).to_uppercase(),
+            format!("O{:02}", hidden_card.0),
+        ] {
+            assert!(
+                !text.contains(&token),
+                "seat 1's card is named on the dashboard by {token:?}: {text}",
+            );
         }
-        assert!(!text.contains("O0") && !text.contains("O1"), "hand contents never appear: {text}");
-        // Locked pawns still reconcile the visible assistant numbers.
-        let mut locked_state = state.clone();
-        locked_state.players[0].assistants.on_church = 2;
-        locked_state.players[0].assistants.on_achievements = 1;
-        assert!(
-            compact_panel_oneline(&locked_state, &seats_open(&locked_state)).contains("locked 3"),
-            "{text}"
+    }
+
+    /// **The pager and the renderer measure with the SAME colour table**
+    /// (six-lens note), which is what [`zone_inputs`] exists to guarantee.
+    ///
+    /// The structural half is the shared tuple; this is the executable half,
+    /// and it is deliberately modest about what it proves. It cannot construct
+    /// the state where the two tables give different page counts — that takes
+    /// ~37 Movement rows each paying two opponents plus a canal toll, and a
+    /// 6,400-decision walk finds no organic disagreement — so what it holds is
+    /// the precondition that makes the table matter at all: it is NOT empty,
+    /// and the pager's answer is the one `page_count` gives for the renderer's
+    /// own inputs.
+    #[test]
+    fn the_pager_and_the_zone_are_handed_one_colour_table() {
+        let state = test_state_2p();
+        let rules = Rules::standard();
+        let legal: Vec<Move> = Vec::new();
+        let rows: Vec<DisplayRow> = Vec::new();
+        let (board, fees, colors) = zone_inputs(&state, &rules, &legal, &rows);
+        assert_eq!(
+            colors.len(),
+            state.players.len(),
+            "an empty table is the mutation this guards against, not a legitimate state",
+        );
+        assert_eq!(
+            decision_pages(&state, &rules, &legal, &rows),
+            decision_render::page_count(&zone_rows(&rows, &fees), &board, &colors),
         );
     }
 
-    /// The one-line panel paints names after layout, like its taller twin.
+    /// The dashboard paints after layout (strip-equality pin). Re-pointed from
+    /// the two `colored_compact_panel*` tests, which measured the same property
+    /// on the two retired panels.
     #[test]
-    fn colored_compact_panel_oneline_strips_back_to_plain() {
-        let state = test_state_np(4);
-        crate::style::force(true);
-        let colored = compact_panel_oneline(&state, &seats_open(&state));
-        crate::style::force(false);
-        let plain = compact_panel_oneline(&state, &seats_open(&state));
-        assert_ne!(colored, plain, "forced mode must actually paint something");
-        assert_eq!(strip_ansi(&colored), plain);
-    }
-
-    /// The panel paints player names after layout (strip-equality pin).
-    #[test]
-    fn colored_compact_panel_strips_back_to_plain() {
+    fn a_painted_dashboard_strips_back_to_plain() {
         let state = test_state_2p();
         let rules = Rules::standard();
         crate::style::force(true);
-        let colored = compact_panel(&state, &rules, &seats_open(&state));
+        let colored = dashboard(&state, &rules, &seats_open(&state), PlayerId::new(0));
         crate::style::force(false);
-        let plain = compact_panel(&state, &rules, &seats_open(&state));
+        let plain = dashboard(&state, &rules, &seats_open(&state), PlayerId::new(0));
         assert_ne!(colored, plain, "forced mode must actually paint something");
         assert_eq!(strip_ansi(&colored), plain);
     }
@@ -1994,123 +1401,107 @@ mod tests {
         assert!(!seat0.contains("[bot]"), "the human seat is not badged: {seat0}");
     }
 
-    /// T12 (SHOULD item): the bot badge is WIDTH-NEUTRAL in both compact
-    /// panels -- it rides the end of a player's name line, which has slack in
-    /// both layouts (23 of 40 columns used in `compact_panel`; 99 of the 4P
-    /// board's 108 in `compact_panel_oneline`). This is what keeps guide §2's
-    /// published frame widths true of a game with bots in it, and keeps
-    /// `guide_sync`'s frame pins -- which measure a bot-free `Repl` -- from
-    /// having to be re-derived every time the badge changes. Measured on the
-    /// widest case (every seat badged) at every player count.
+    /// T12 (SHOULD item), re-pointed at the T3 cutover: the bot badge is
+    /// WIDTH-NEUTRAL in the dashboard -- it rides the end of a player's name
+    /// label, which is padded to a fixed column ([`panel_render`]'s `NAME_COL`,
+    /// sized off the longest badged header the line can carry). This is what
+    /// keeps guide §2's published frame widths true of a game with bots in it,
+    /// and keeps `guide_sync`'s frame pins -- which measure a bot-free `Repl` --
+    /// from having to be re-derived every time the badge changes.
+    ///
+    /// It used to measure the two retired panels, whose slack it stated in
+    /// columns (23 of 40; 99 of a 108-column 4P board -- a figure T2's V3 board
+    /// had already made stale at 180). Measured rather than stated now: the
+    /// widest badged panel line must equal the widest unbadged one, at every
+    /// player count, with every seat badged.
     #[test]
-    fn bot_badge_is_width_neutral_in_every_panel() {
+    fn bot_badge_is_width_neutral_in_the_dashboard() {
         let rules = Rules::standard();
         for n in [2u8, 3, 4] {
             let state = test_state_np(n);
             let widest = |s: &str| s.lines().map(|l| l.chars().count()).max().unwrap_or(0);
 
-            let plain = compact_panel(&state, &rules, &seats_open(&state));
-            let badged = compact_panel(&state, &rules, &seats_all_bots(&state));
+            let plain = dashboard(&state, &rules, &seats_open(&state), PlayerId::new(0));
+            let badged = dashboard(&state, &rules, &seats_all_bots(&state), PlayerId::new(0));
             assert!(badged.contains("[bot]"), "the badge must actually render at {n}P: {badged}");
             assert_eq!(
                 widest(&plain),
                 widest(&badged),
-                "the badge widened the {n}P compact panel:\n{badged}"
+                "the badge widened the {n}P dashboard:\n{badged}"
             );
+        }
+    }
 
-            // The one-line fold is rendered ONLY under a board wider than 100
-            // columns (`screen::wrap`) -- in practice the 4P board -- so that
-            // is the width it must not push past, whatever count built it.
-            let stacking_board = board_grid(&test_state_np(4))
-                .lines()
-                .next()
-                .map(|l| l.chars().count())
-                .unwrap_or(0);
-            let badged1 = compact_panel_oneline(&state, &seats_all_bots(&state));
-            assert!(badged1.contains("[bot]"), "{badged1}");
+    /// The dashboard and the `players` view mark a bot seat with the SAME
+    /// string — the T3 review's note, since the two used to hold separate
+    /// copies of it and agreed only by coincidence.
+    ///
+    /// Both halves are asserted against [`panel_render::BOT_BADGE`] rather than
+    /// against a literal, so the pin follows a deliberate change to the marker
+    /// instead of having to be re-typed alongside it; what it refuses is the two
+    /// surfaces DIVERGING. The first assert is anti-vacuity — a badge that
+    /// stopped rendering on either surface would satisfy any comparison between
+    /// them — and the second closes the substring hole the first leaves open,
+    /// since a surface that went back to spelling `" [bot 1]"` inline still
+    /// CONTAINS `" [bot"`. Every `[bot` a surface draws has to be the whole
+    /// badge and nothing else.
+    #[test]
+    fn the_bot_badge_is_one_string_on_every_surface() {
+        let rules = Rules::standard();
+        let state = test_state_np(2);
+        let seats = seats_all_bots(&state);
+
+        let dash = dashboard(&state, &rules, &seats, PlayerId::new(0));
+        let players = players_panel(&state, &rules, &seats);
+        let stem = panel_render::BOT_BADGE.trim_end_matches(']');
+        for (surface, text) in [("the dashboard", &dash), ("the `players` view", &players)] {
             assert!(
-                widest(&badged1) <= stacking_board,
-                "the badged one-line panel ({}) must not push past the {stacking_board}-column board it \
-                 stacks under ({n}P seats):\n{badged1}",
-                widest(&badged1),
+                text.contains(panel_render::BOT_BADGE),
+                "{surface} must draw the badge {:?}:\n{text}",
+                panel_render::BOT_BADGE,
             );
+            for (i, _) in text.match_indices(stem) {
+                assert!(
+                    text[i..].starts_with(panel_render::BOT_BADGE),
+                    "{surface} draws a marker that only LOOKS like the badge at byte {i}; \
+                     every {stem:?} must be exactly {:?}:\n{text}",
+                    panel_render::BOT_BADGE,
+                );
+            }
         }
-    }
-
-    /// Owner scope item 10 (sufficiency): the shared mercenary SUPPLY piles
-    /// are public table state and must be readable -- `tracks` (the
-    /// board-level-shared-state view, same precedent as the Station line)
-    /// shows one count per country.
-    #[test]
-    fn tracks_view_shows_the_mercenary_supply() {
-        let mut state = test_state_2p();
-        state.mercenary_supply.french = 9; // sentinel: proves counts are live
-        let v = tracks_view(&state);
-        let line = v.lines().find(|l| l.contains("Mercenary supply")).expect("supply line present");
-        let s = &state.mercenary_supply;
-        for (code, n) in
-            [("GB", s.english), ("US", s.american), ("FR", s.french), ("DE", s.german), ("NL", s.dutch)]
-        {
-            assert!(line.contains(&format!("{code} {n}")), "want {code} {n} in: {line}");
-        }
-    }
-
-    /// Finding D1, redesigned display: the 2P dummy is a NAMED occupant --
-    /// the `D` mark stays in the occupant column, and a legend line explains
-    /// what it is and that it competes in the majority bonus. No dummy on
-    /// the board (a 3P/4P game, or an injected clean track) = no legend.
-    #[test]
-    fn tracks_view_names_the_dummy_in_a_legend() {
-        let state = test_state_2p();
-        let v = tracks_view(&state);
-        assert!(v.contains("D = Dummy"), "{v}");
-        assert!(v.contains("majorit"), "the legend must state it competes in majorities: {v}");
-
-        let mut clean = test_state_2p();
-        clean.church_track.slots = Default::default();
-        clean.customs_track.slots = Default::default();
-        let v2 = tracks_view(&clean);
-        assert!(!v2.contains("D = Dummy"), "no dummy, no legend: {v2}");
     }
 
     /// Task 6 restyle: the state views share one design language -- a
-    /// `─ Title ─...` rule header opens each of them. This covers the six views
+    /// `─ Title ─...` rule header opens each of them. This covers the views
     /// that live HERE as free functions; the four that live in repl.rs
     /// (`score`/`log`/`final_score`/`hand`) are held to the same header by
     /// `repl::tests::all_state_views_share_the_rule_header_style`, which drives
     /// every `VIEW_MENU` row plus `final_score` (item 4, third review -- this
     /// test alone structurally could not see those four).
+    ///
+    /// **FIVE of the six left this file across T6 and T11** and none lost a
+    /// property by going: `tracks`, `sites`, `ports` and `labs` became
+    /// full-screen CARD surfaces in `view_render` and `goals` became the
+    /// achievement index in `index_render`, none of which opens with a rule
+    /// header because none of them sits under a frame -- they replace it
+    /// (spec §0.5/§0.6). Their own modules hold the width, height and content
+    /// pins; what this row of the design language still covers is the views
+    /// that print INTO a frame, which after T11 is `players` and `score`.
+    ///
+    /// One entry is not a vacuous sweep: `players` is the widest surface still
+    /// drawn under a frame, and the cross-surface half of this property is
+    /// `repl::tests::all_state_views_share_the_rule_header_style`, which drives
+    /// every `VIEW_MENU` row and asserts each opens in exactly ONE of the three
+    /// recognized families.
     #[test]
     fn views_share_the_rule_header_style() {
         let state = test_state_2p();
         let rules = Rules::standard();
-        for (name, text) in [
-            ("ports", ports_view(&state, &rules)),
-            ("labs", labs_view(&state, &rules)),
-            ("tracks", tracks_view(&state)),
-            ("sites", sites_view(&state, &rules)),
-            ("goals", achievements_view(&state, &rules)),
-            ("players", players_panel(&state, &rules, &seats_open(&state))),
-        ] {
-            assert!(text.starts_with("─ "), "view '{name}' must open with a rule header: {text}");
-        }
-    }
-
-    /// Task 6 full color: the prompt header's goods/yen/VP tokens paint
-    /// (strip-equality keeps the plain text authoritative).
-    #[test]
-    fn prompt_header_paints_goods_and_yen() {
-        let state = test_state_2p();
-        crate::style::force(true);
-        let colored = prompt_header(&state, "Placement");
-        crate::style::force(false);
-        let plain = prompt_header(&state, "Placement");
-        assert_eq!(strip_ansi(&colored), plain);
-        // The goods run itself must carry paint, not just the earlier
-        // player/phase tokens: escapes must appear AFTER the first goods
-        // token (its own close, and the later goods' opens).
-        let goods_start = colored.find("c1").expect("goods token present");
-        assert!(colored[goods_start..].contains('\u{1b}'), "goods tokens must paint: {colored:?}");
+        let players = players_panel(&state, &rules, &seats_open(&state));
+        assert!(
+            players.starts_with("─ "),
+            "the 'players' view must open with a rule header: {players}",
+        );
     }
 
     /// Task 11 (T2.1): the panel must show assistant/shophouse/trading-house
@@ -2146,222 +1537,6 @@ mod tests {
         assert!(text.contains("  trading:    hand 1  warehouse 3  built 0  (next take 5 yen)"), "{text}");
     }
 
-    /// Task 12 (T2.2a): `site_compact_line` exists in core with zero
-    /// non-test callers before this task -- `sites_view` wires it up, one
-    /// line per area holding a `BuildingSite`.
-    #[test]
-    fn sites_view_renders_a_compact_line_per_sited_area() {
-        let state = test_state_2p();
-        let rules = Rules::standard();
-        let text = sites_view(&state, &rules);
-        assert!(text.contains('S'), "{text}");
-        assert!(text.lines().count() >= 1);
-    }
-
-    /// Each line is prefixed by the area label and suffixed by the same
-    /// `sh .. | th ..` build/ownership marks the `board` grid shows, so a
-    /// build recorded on the site is visible from `sites` too.
-    #[test]
-    fn sites_view_labels_the_area_and_shows_build_marks() {
-        let mut state = test_state_2p();
-        let rules = Rules::standard();
-        let area = *state.board_layout.building_sites.keys().next().expect("a building site exists");
-        state.board_layout.building_sites.get_mut(&area).unwrap().shophouses_built[0] = Some(PlayerId::new(0));
-
-        let text = sites_view(&state, &rules);
-        let label = describe::area_label(&state, area);
-        let line = text.lines().find(|l| l.starts_with(&label)).unwrap_or_else(|| panic!("missing {label} in {text}"));
-        assert!(line.contains("sh R···"), "{line}"); // Red is players[0]; positional marks
-    }
-
-    /// Board connectivity (pre-gate view batch item 7): each `sites` line
-    /// gains an `adj:` suffix listing its adjacent area ids ascending, sourced
-    /// from `board_layout.adjacency` (never re-derived) so a state inventory
-    /// reads as a navigable board. On the 2P board raw adjacency IS the
-    /// free-neighbor set (no Canal tile exists, hence no crossings), so
-    /// comparing against it directly is sound here; the three-category
-    /// separation the 3P/4P boards need is pinned by
-    /// `sites_view_separates_free_neighbors_from_crossings_and_the_canal_tile`.
-    #[test]
-    fn sites_view_lists_adjacent_area_ids_ascending() {
-        let state = test_state_2p();
-        let rules = Rules::standard();
-        let text = sites_view(&state, &rules);
-
-        let (&area, _) = state.board_layout.building_sites.iter().next().expect("a building site exists");
-        let mut ids: Vec<u8> = state.board_layout.adjacent_areas(area).iter().map(|a| a.0).collect();
-        ids.sort_unstable();
-        ids.dedup();
-        let expected = format!("adj: {}", ids.iter().map(|n| format!("A{:02}", n)).collect::<Vec<_>>().join(", "));
-
-        let label = describe::area_label(&state, area);
-        let line = text.lines().find(|l| l.starts_with(&label)).unwrap_or_else(|| panic!("{label} line in\n{text}"));
-        assert!(line.contains(&expected), "want '{expected}' in '{line}'");
-    }
-
-    /// Board connectivity item 7: a canal-crossing pair shows as `canal-><id>`
-    /// on BOTH members' lines (crossings are bidirectional), sourced from
-    /// `board_layout.canal_crossings`. Injected directly here -- the renderer
-    /// only reads the pair list, so geometry is irrelevant to this display.
-    #[test]
-    fn sites_view_shows_canal_crossings_bidirectionally() {
-        let mut state = test_state_2p();
-        let rules = Rules::standard();
-        let sited: Vec<AreaId> = state.board_layout.building_sites.keys().copied().collect();
-        let (area, other) = (sited[0], sited[1]);
-        state.board_layout.canal_crossings.push((area, other));
-
-        let text = sites_view(&state, &rules);
-        let label = describe::area_label(&state, area);
-        let line = text.lines().find(|l| l.starts_with(&label)).unwrap_or_else(|| panic!("{label} line in\n{text}"));
-        assert!(line.contains(&format!("canal->A{:02}", other.0)), "want forward crossing in '{line}'");
-
-        let other_label = describe::area_label(&state, other);
-        let other_line =
-            text.lines().find(|l| l.starts_with(&other_label)).unwrap_or_else(|| panic!("{other_label} line"));
-        assert!(other_line.contains(&format!("canal->A{:02}", area.0)), "want reverse crossing in '{other_line}'");
-    }
-
-    /// The two connectivity categories a `sites` line prints, parsed back
-    /// off the rendered text: the `adj:` ids and the `canal->` ids.
-    fn connectivity_of(line: &str) -> (Vec<u8>, Vec<u8>) {
-        let tail = line.split("adj: ").nth(1).unwrap_or_else(|| panic!("no adj: suffix in '{line}'"));
-        let mut parts = tail.split("  canal->");
-        let adj_text = parts.next().unwrap_or("").trim();
-        let parse = |t: &str| {
-            t.trim().trim_start_matches('A').parse::<u8>().unwrap_or_else(|_| panic!("area id in '{line}'"))
-        };
-        let adj: Vec<u8> =
-            if adj_text == "-" { Vec::new() } else { adj_text.split(", ").map(parse).collect() };
-        (adj, parts.map(parse).collect())
-    }
-
-    /// F1 (Codex adversarial review of PR #4): `adj:` must be the
-    /// President's ORDINARY free-neighbor list and nothing else. Since the
-    /// staggered-topology work `board_layout.adjacency` carries three
-    /// different relationships at once -- brick edges, edges to the
-    /// unplaceable Canal tile, and the derived canal-crossing edges -- so
-    /// printing it raw showed a TOLLED crossing as if it were free (and
-    /// again as `canal->`), and offered the Canal itself, which can never
-    /// hold a President and is never a legal Telegram bonus target. The
-    /// three categories are separated by SUBTRACTION off the authoritative
-    /// layout (geometry is never re-derived here): `adj:` = adjacency minus
-    /// crossing partners minus Canal; `canal->` = exactly the crossing
-    /// partners. Run on REAL generated 3P and 4P boards -- the ones that
-    /// carry a Canal.
-    #[test]
-    fn sites_view_separates_free_neighbors_from_crossings_and_the_canal_tile() {
-        for players in [3u8, 4] {
-            let state = test_state_np(players);
-            let rules = Rules::standard();
-            let canal: Vec<AreaId> = state
-                .board_layout
-                .areas
-                .iter()
-                .filter(|(_, cfg)| cfg.area_type == AreaType::Canal)
-                .map(|(&id, _)| id)
-                .collect();
-            assert!(!canal.is_empty(), "the {players}P board must carry a Canal tile");
-            let text = sites_view(&state, &rules);
-
-            let mut shores_checked = 0usize;
-            let mut subtraction_was_load_bearing = false;
-            for &area in state.board_layout.building_sites.keys() {
-                let label = describe::area_label(&state, area);
-                let line = text
-                    .lines()
-                    .find(|l| l.starts_with(&label))
-                    .unwrap_or_else(|| panic!("{label} line in\n{text}"));
-                let (adj, crossings) = connectivity_of(line);
-
-                let mut want_crossings: Vec<u8> = state
-                    .board_layout
-                    .canal_crossings
-                    .iter()
-                    .filter_map(|&(a, b)| match () {
-                        _ if a == area => Some(b.0),
-                        _ if b == area => Some(a.0),
-                        _ => None,
-                    })
-                    .collect();
-                want_crossings.sort_unstable();
-                want_crossings.dedup();
-
-                let raw: Vec<u8> =
-                    state.board_layout.adjacent_areas(area).iter().map(|a| a.0).collect();
-                let mut want_adj: Vec<u8> = raw
-                    .iter()
-                    .copied()
-                    .filter(|n| !want_crossings.contains(n) && !canal.iter().any(|c| c.0 == *n))
-                    .collect();
-                want_adj.sort_unstable();
-                want_adj.dedup();
-                if want_adj.len() != raw.len() {
-                    subtraction_was_load_bearing = true;
-                }
-
-                assert_eq!(crossings, want_crossings, "canal-> list on '{line}'");
-                assert_eq!(adj, want_adj, "adj: list on '{line}'");
-                for c in &canal {
-                    assert!(!adj.contains(&c.0), "the Canal tile A{:02} must never be an adj: entry: {line}", c.0);
-                }
-                for c in &want_crossings {
-                    assert!(!adj.contains(c), "tolled crossing A{c:02} must not read as free adjacency: {line}");
-                }
-                if !want_crossings.is_empty() {
-                    shores_checked += 1;
-                }
-            }
-            assert!(shores_checked > 0, "the {players}P board must have shore areas with crossings");
-            assert!(
-                subtraction_was_load_bearing,
-                "the {players}P board must actually exercise the subtraction (raw adjacency \
-                 containing a Canal id or a crossing partner)"
-            );
-        }
-    }
-
-    #[test]
-    fn tracks_view_shows_church_and_customs_with_2p_block() {
-        let state = test_state_2p();
-        let v = tracks_view(&state);
-        assert!(v.contains("Church"), "{v}");
-        assert!(v.contains("Customs"), "{v}");
-        // Finding D1: the 2P dummy holds Church faith-7 and Customs space-4,
-        // shown as a named `D` occupant (not the old bare `X` void).
-        let church7 = v.lines().find(|l| l.contains("faith  7:")).expect("faith-7 line");
-        assert!(church7.contains("faith  7: D"), "{church7}");
-        let customs4 = v.lines().find(|l| l.contains("space 4 ")).expect("space-4 line");
-        assert!(customs4.contains(": D "), "{customs4}");
-    }
-
-    /// I4 (external review 2026-07-20): the Station token grants EVERY
-    /// player +1 Power in its area, but was rendered by no view at all, so a
-    /// live-tracking operator could not read it back to reconcile against the
-    /// physical board. Both states must be legible -- unplaced and placed.
-    #[test]
-    fn tracks_view_shows_the_station_token_location() {
-        let mut state = test_state_2p();
-        assert_eq!(state.station_location, None, "fixture starts with the Station unplaced");
-
-        let unplaced = tracks_view(&state);
-        let station_line = unplaced
-            .lines()
-            .skip_while(|l| !l.starts_with("Station:"))
-            .nth(1)
-            .expect("a Station section with a value line");
-        assert!(station_line.contains("not placed"), "{unplaced}");
-
-        let area = *state.board_layout.areas.keys().next().expect("board has areas");
-        state.station_location = Some(area);
-        let placed = tracks_view(&state);
-        assert!(
-            placed.contains(&describe::area_label(&state, area)),
-            "placed Station must name its area: {placed}"
-        );
-        assert!(!placed.contains("not placed"), "{placed}");
-    }
-
     /// I4 companion: resolving `PendingChoice::StationPlace` must not produce
     /// an EMPTY delta window. `delta_summary` is a hand-maintained
     /// field-by-field diff and simply had no `station_location` arm, so the
@@ -2385,203 +1560,42 @@ mod tests {
         );
     }
 
-    /// Finding D1 (rulebook p.9 NOTE, Jeremy's edition -- not the bundled PDF; see guidingpath's 2026-07-21 DL rows): in 2p games the setup dummy holds
-    /// Church faith-7, so `tracks_view` renders it as a named `D` occupant
-    /// (which competes in the majority bonus), not the bare `X` it used to be.
+    /// No CLI module may hardcode the Customs cost progression; it comes from
+    /// `CustomsTrack::space_cost`. Built via `format!` from bare numbers (not
+    /// typed as the bracketed literal itself) so the assertion doesn't quine
+    /// against its own source text.
+    ///
+    /// **Swept over every module, not just this one.** It was written when
+    /// `render.rs` drew the track, and stayed pointed here after the redesign
+    /// moved that job to `screen_model::track_panel` -- guarding a room its
+    /// subject had left, where the forbidden literal could no longer appear at
+    /// all. Anti-vacuity: the sweep asserts it actually read the module that
+    /// holds the live caller, so a renamed file cannot empty the list silently.
     #[test]
-    fn tracks_view_marks_church_faith_7_dummy_at_2p() {
-        let state = test_state_2p();
-        let v = tracks_view(&state);
-        // Computed via the same `{:2}` width the SUT formats with, so this
-        // assertion doesn't hardcode a specific padding guess. The occupant
-        // now sits directly after the colon (S5 appends the printed VP/rider
-        // after it), so the marker is checked there rather than at line-end.
-        let needle = format!("faith {:2}:", 7);
-        let line = v.lines().find(|l| l.contains(&needle)).expect("faith-7 line present");
-        assert!(line.contains(&format!("{needle} D")), "{line}");
-    }
-
-    /// S5 (pre-gate view batch): every track space line must show its PRINTED
-    /// VP and rider icon(s), single-sourced from the engine's `ChurchTrack`/
-    /// `CustomsTrack` tables -- the same tables `delta_summary` reads after a
-    /// placement. Church carries a movement rider (`Nmove`); Customs a
-    /// warehouse/yen rider (`Nwh`/`Nyen`, absent on spaces 5-7). Vocabulary
-    /// matches `sites_view` (`Nvp`, `Nmove`, `Nwh`, `Nyen`).
-    #[test]
-    fn tracks_view_shows_printed_vp_and_riders() {
-        let state = test_state_2p();
-        let v = tracks_view(&state);
-
-        for faith in 4u8..=11 {
-            let needle = format!("faith {:2}:", faith);
-            let line = v.lines().find(|l| l.contains(&needle)).unwrap_or_else(|| panic!("faith {faith} line in\n{v}"));
-            let expected = format!("{}vp {}move", ChurchTrack::vp_reward(faith), ChurchTrack::movement_rider(faith));
-            assert!(line.contains(&expected), "faith {faith}: want '{expected}' in '{line}'");
-        }
-
-        for space in 1u8..=7 {
-            let needle = format!("space {} (cost {}):", space, CustomsTrack::space_cost(space));
-            let line = v.lines().find(|l| l.contains(&needle)).unwrap_or_else(|| panic!("space {space} line in\n{v}"));
-            assert!(line.contains(&format!("{}vp", CustomsTrack::vp_reward(space))), "space {space} vp in '{line}'");
-            let (wh, yen) = CustomsTrack::rider(space);
-            if wh > 0 {
-                assert!(line.contains(&format!("{wh}wh")), "space {space} wh in '{line}'");
-            }
-            if yen > 0 {
-                assert!(line.contains(&format!("{yen}yen")), "space {space} yen in '{line}'");
-            }
-            if wh == 0 && yen == 0 {
-                assert!(!line.contains("wh") && !line.contains("yen"), "space {space} must be riderless: '{line}'");
-            }
-        }
-    }
-
-    /// S4 (pre-gate view batch): `tracks_view` occupant color letters are a
-    /// who-is-where surface and must paint in the player's color -- painted
-    /// AFTER any layout, so the alignment invariant `strip_ansi(colored) ==
-    /// plain` still holds (the players_panel/board_grid precedent). Occupants
-    /// injected on both tracks so painting has something to do.
-    #[test]
-    fn colored_tracks_view_still_contains_the_plain_text() {
-        let mut state = test_state_2p();
-        state.church_track.slots[0] = Some(ChurchSlot { player: PlayerId::new(0), arrival_order: 0 });
-        state.customs_track.slots[2] = Some(CustomsSlot { player: PlayerId::new(1), arrival_order: 0 });
-        crate::style::force(true);
-        let colored = tracks_view(&state);
-        crate::style::force(false);
-        let plain = tracks_view(&state);
-        assert_ne!(colored, plain, "forced mode must actually paint something");
-        assert_eq!(strip_ansi(&colored), plain);
-    }
-
-    /// Task 14 (T2.3) brief Step 1: one `G{i}` line per achievement card
-    /// (`state.achievements` is always a fixed 3-card array -- one per
-    /// category), and progress shown as `cur/need` somewhere in the text.
-    #[test]
-    fn achievements_view_lists_condition_claim_state_and_progress() {
-        let state = test_state_2p();
-        let rules = Rules::standard();
-        let text = achievements_view(&state, &rules);
-        assert_eq!(text.lines().filter(|l| l.starts_with("G")).count(), 3, "{text}");
-        assert!(text.contains("/"), "progress as cur/need expected: {text}");
-    }
-
-    /// Claim state must name the ACTUAL claimant and stay "open" for a
-    /// still-unclaimed card -- the Step-1 test above only pins line COUNT
-    /// and that SOME "/" appears, not the words themselves.
-    #[test]
-    fn achievements_view_shows_open_then_names_the_claimant_once_claimed() {
-        let mut state = test_state_2p();
-        let rules = Rules::standard();
-
-        let before = achievements_view(&state, &rules);
-        let g0_before = before.lines().find(|l| l.starts_with("G0")).expect("a G0 line exists");
-        assert!(g0_before.contains("open"), "{g0_before}");
-
-        // State-inject a claim directly onto the card (mirrors
-        // achievements.rs's own claim tests) rather than driving
-        // `claim_achievement` through a full legal-move sequence -- this
-        // view only reads `claimed_by`, so a direct injection exercises
-        // exactly the field it reads.
-        state.achievements[0].claimed_by.push(PlayerId::new(0));
-        let after = achievements_view(&state, &rules);
-        let g0_after = after.lines().find(|l| l.starts_with("G0")).expect("a G0 line exists");
-        assert!(!g0_after.contains("open"), "{g0_after}");
-        assert!(g0_after.contains("claimed by Red"), "{g0_after}"); // Red is players[0]
-    }
-
-    /// The numbers shown are exactly what `achievement_progress` computes,
-    /// not just "some digits with a slash" (the Step-1 test's `contains
-    /// ("/")` check would pass even for a stub like "0/0" on every line) --
-    /// checked for every card x player without depending on which 3
-    /// achievements this seed happened to draw.
-    #[test]
-    fn achievements_view_progress_numbers_match_achievement_progress() {
-        let state = test_state_2p();
-        let rules = Rules::standard();
-        let text = achievements_view(&state, &rules);
-        for card in &state.achievements {
-            for p in &state.players {
-                let (cur, need) = achievement_progress(&state, p.id, card.achievement_type);
-                let expected = format!("{}: {}/{}", color_name(p.color), cur, need);
-                assert!(text.contains(&expected), "missing '{expected}' in:\n{text}");
-            }
-        }
-    }
-
-    /// Goals show claim VP (pre-gate view batch item 6): each `G{i}` line must
-    /// print the card's first/subsequent claim VP from the registry
-    /// (`AchievementType::first_place_vp`/`subsequent_vp`), so claim value is
-    /// visible before committing an assistant. Single-sourced -- computed from
-    /// the same methods `AchievementCard::vp_for_player` scores with.
-    #[test]
-    fn achievements_view_shows_claim_vp_from_registry() {
-        let state = test_state_2p();
-        let rules = Rules::standard();
-        let text = achievements_view(&state, &rules);
-        for (i, card) in state.achievements.iter().enumerate() {
-            let g_line = text
-                .lines()
-                .find(|l| l.starts_with(&format!("G{i}:")))
-                .unwrap_or_else(|| panic!("G{i} line in\n{text}"));
-            let expected =
-                format!("{}/{} VP", card.achievement_type.first_place_vp(), card.achievement_type.subsequent_vp());
-            assert!(g_line.contains(&expected), "G{i}: want '{expected}' in '{g_line}'");
-        }
-    }
-
-    /// S6 (pre-gate view batch): a player already in `claimed_by` gets an
-    /// explicit ` (claimed)` marker on their progress line, so a maxed-out
-    /// `Red: 7/7` under `claimed by Red` no longer reads as an invitation to
-    /// claim again. A player who has NOT claimed keeps a bare `cur/need`.
-    #[test]
-    fn achievements_view_marks_a_claimant_progress_line() {
-        let mut state = test_state_2p();
-        let rules = Rules::standard();
-        state.achievements[0].claimed_by.push(PlayerId::new(0)); // Red claims G0
-
-        let text = achievements_view(&state, &rules);
-        // The G0 block: from its `G0:` header up to (not including) `G1:`.
-        let g0_block: Vec<&str> = text
-            .lines()
-            .skip_while(|l| !l.starts_with("G0:"))
-            .skip(1)
-            .take_while(|l| !l.starts_with("G1:"))
-            .collect();
-        let red_line = g0_block.iter().find(|l| l.trim_start().starts_with("Red:")).expect("a Red progress line");
-        assert!(red_line.contains("(claimed)"), "claimant must be marked: {red_line}");
-        let blue_line = g0_block.iter().find(|l| l.trim_start().starts_with("Blue:")).expect("a Blue progress line");
-        assert!(!blue_line.contains("(claimed)"), "non-claimant must NOT be marked: {blue_line}");
-    }
-
-    /// S4 (pre-gate view batch): `achievements_view` color names -- both the
-    /// `claimed by <names>` list and each per-player progress prefix -- are a
-    /// who-is-where surface and paint in the player's color. The alignment
-    /// invariant `strip_ansi(colored) == plain` still holds (there is no
-    /// fixed-width layout here, but the equality is the paint-discipline pin).
-    #[test]
-    fn colored_achievements_view_still_contains_the_plain_text() {
-        let mut state = test_state_2p();
-        let rules = Rules::standard();
-        state.achievements[0].claimed_by.push(PlayerId::new(0)); // paint the claimed-by list too
-        crate::style::force(true);
-        let colored = achievements_view(&state, &rules);
-        crate::style::force(false);
-        let plain = achievements_view(&state, &rules);
-        assert_ne!(colored, plain, "forced mode must actually paint something");
-        assert_eq!(strip_ansi(&colored), plain);
-    }
-
-    /// Reviewer-check per the Task 12 brief: `render.rs` must single-source
-    /// the Customs cost progression through `CustomsTrack::space_cost`
-    /// rather than a hardcoded array literal. Built via `format!` from bare
-    /// numbers (not typed as the bracketed literal itself) so this
-    /// assertion doesn't quine against its own source text.
-    #[test]
-    fn render_source_no_longer_hardcodes_customs_costs() {
+    fn no_module_hardcodes_the_customs_cost_progression() {
         let forbidden = format!("[{}, {}, {}, {}, {}, {}, {}]", 1, 1, 2, 2, 3, 3, 4);
-        let src = include_str!("render.rs");
-        assert!(!src.contains(&forbidden), "customs costs must be single-sourced via CustomsTrack::space_cost");
+        let modules: [(&str, &str); 5] = [
+            ("render.rs", include_str!("render.rs")),
+            ("screen_model.rs", include_str!("screen_model.rs")),
+            ("panel_render.rs", include_str!("panel_render.rs")),
+            ("view_render.rs", include_str!("view_render.rs")),
+            ("describe.rs", include_str!("describe.rs")),
+        ];
+        let live = modules
+            .iter()
+            .find(|(name, _)| *name == "screen_model.rs")
+            .expect("the module holding the live space_cost caller is in the sweep");
+        assert!(
+            live.1.contains("CustomsTrack::space_cost"),
+            "screen_model.rs no longer calls CustomsTrack::space_cost -- this sweep is aimed at \
+             whichever module builds the Customs track, so re-aim it before trusting a pass",
+        );
+        for (name, src) in modules {
+            assert!(
+                !src.contains(&forbidden),
+                "{name} hardcodes the Customs costs; single-source them via CustomsTrack::space_cost",
+            );
+        }
     }
 
     #[test]
@@ -2659,40 +1673,6 @@ mod tests {
             lines.iter().any(|l| l.contains("Britain")),
             "the line must name WHICH country's tile to flip: {lines:?}"
         );
-    }
-
-    /// Phase-2.9 per-slot enumeration fix: the engine now offers one
-    /// `BuildShophouse` per EMPTY slot, so `shophouses_built` is no longer
-    /// prefix-packed -- gaps are ordinary. `build_marks` must therefore be
-    /// POSITIONAL: one mark per slot in printed order (owner color letter or
-    /// `·`), so each built slot is attributed to the reward printed right
-    /// beside it in `sites_view` (`[1vp 4vp - 2yen]  sh ·B·R`). This replaces
-    /// the old `shophouse_slots_fill_prefix_packed_so_build_marks_stay_
-    /// unambiguous` pin, whose premise the engine fix deliberately broke.
-    #[test]
-    fn build_marks_attribute_each_built_slot_to_its_owner_positionally() {
-        let state = test_state_2p(); // players[0] = Red, players[1] = Blue
-        let mut site = BuildingSite::new([1, 4, 0, 2], 8);
-        site.shophouses_built = [None, Some(PlayerId::new(1)), None, Some(PlayerId::new(0))];
-
-        // Slot 1 (printed reward "4vp") is Blue's, slot 3 ("2yen") is Red's;
-        // slots 0 and 2 are open. A packed "sh BR" would attribute Blue to
-        // "1vp" and Red to "4vp" -- rewards neither of them took.
-        assert_eq!(build_marks(&state, &site), "sh ·B·R | th ·");
-    }
-
-    /// Positional-marks companion: an untouched site shows one `-` per slot
-    /// (never a collapsed single dash, which would break the slot<->reward
-    /// column correspondence), and the trading-house mark still carries the
-    /// owner's color letter independently of the shophouse slots.
-    #[test]
-    fn build_marks_show_a_dot_per_empty_slot_and_the_th_owner() {
-        let state = test_state_2p();
-        let mut site = BuildingSite::new([1, 4, 0, 2], 8);
-        assert_eq!(build_marks(&state, &site), "sh ···· | th ·");
-
-        site.trading_house_owner = Some(PlayerId::new(0));
-        assert_eq!(build_marks(&state, &site), "sh ···· | th R");
     }
 
     /// S1 (render.rs deep audit, 2026-07-20): the track-placement reservation
@@ -2954,8 +1934,10 @@ mod tests {
     }
 
     /// Same alignment invariant for the board grid, whose president and
-    /// assistant tokens are painted INSIDE fixed-width `fit_cell` cells --
-    /// the exact spot where escape-inflated padding would shear the frame.
+    /// assistant marks are painted INSIDE fixed-width tile cells -- the exact
+    /// spot where escape-inflated padding would shear the frame. Held here at
+    /// the ADAPTER, over a real state, beside `board_render`'s own model-level
+    /// pin: they meet at different seams and a regression could sit in either.
     #[test]
     fn colored_board_grid_stays_aligned_with_plain_layout() {
         let mut state = test_state_2p();
@@ -2973,9 +1955,10 @@ mod tests {
         state.players[1].assistants.in_hand -= 1;
         state.players[1].assistants.on_board.insert(area, 1);
 
-        let plain = board_grid(&state);
+        let rules = Rules::standard();
+        let plain = board_grid(&state, &rules, &[]);
         crate::style::force(true);
-        let colored = board_grid(&state);
+        let colored = board_grid(&state, &rules, &[]);
         crate::style::force(false);
         assert_ne!(colored, plain, "forced mode must actually paint something");
         assert_eq!(strip_ansi(&colored), plain);

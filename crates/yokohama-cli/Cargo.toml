@@ -15,3 +15,33 @@ serde_json.workspace = true
 # CLI's tests -- no new crate enters the tree.
 rand.workspace = true
 rand_chacha.workspace = true
+# Phase-3.5a T9, spec §0.9: THE one new dependency, and it is the CLI crate's
+# alone -- core/oracle/difftest/gen-data keep the dependency lists they had.
+# MIT, matching this workspace's own license. See `src/input.rs` for the seam.
+#
+# `default-features = false` is load-bearing twice over, not tidiness:
+#   * it drops `with-file-history`, and THAT is what makes rustyline's
+#     `DefaultHistory` the in-memory `MemHistory` rather than the file-backed
+#     one -- the "history never touches disk" rule of T9 becomes a fact about
+#     which type exists rather than a discipline about which method we call
+#     (`input::history_is_in_memory_by_construction` fails to COMPILE if the
+#     feature comes back);
+#   * it drops `custom-bindings` (and `with-dirs`), neither of which this
+#     driver uses -- see `input.rs` on why single-KEYPRESS toggles are not
+#     what this editor buys cheaply.
+#
+# `buffer-redux` is NOT decoration and NOT optional for this driver (T9 review,
+# MUST-1). rustyline reads the tty through a buffered reader that it hands back
+# at the end of every `readline` call; WITHOUT this feature the handback --
+# `RawReader::unbuffer` -- is compiled as `None`, so every byte that arrived
+# while the previous line was being processed is DROPPED with the buffer. That
+# is type-ahead, and this driver invites it: the wizard asks a dozen questions
+# in a row and the whole of it is meant to script in one write (see
+# `wizard::the_whole_live_wizard_still_scripts_in_a_single_write_at_3p` and the
+# Forge recipe in docs/forge-cli-testing.md). With the feature on, the leftover
+# bytes carry into the next call and a typist -- or a paste, or a Forge write --
+# who runs ahead of the prompt is answered rather than ignored. It adds ONE
+# crate, buffer-redux 1.1.0 (MIT OR Apache-2.0), unix-only.
+# `input::the_editor_arm_keeps_its_read_buffer_between_lines` pins the
+# declaration; the BEHAVIOUR is terminal-only and is verified in a PTY.
+rustyline = { version = "18.0.1", default-features = false, features = ["buffer-redux"] }

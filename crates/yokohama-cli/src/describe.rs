@@ -8,6 +8,7 @@ use yokohama_core::game::actions::{
 };
 
 use crate::render;
+use crate::style::glyph;
 
 pub fn area_type_name(t: AreaType) -> &'static str {
     match t {
@@ -38,6 +39,263 @@ pub fn country_name(c: Country) -> &'static str {
     }
 }
 
+/// A good's name as a card index filter states it.
+pub fn card_good_name(g: crate::screen_model::CardGood) -> &'static str {
+    use crate::screen_model::CardGood;
+    match g {
+        CardGood::Seafood => "seafood",
+        CardGood::Tea => "tea",
+        CardGood::Silk => "silk",
+        CardGood::Copper => "copper",
+    }
+}
+
+/// Where a card already sits, in the words BOTH surfaces that name a location
+/// use: the dim note on an index card, and the refusal a card prompt prints
+/// when the operator types that card again (finding F6 — every duplicate
+/// refusal names WHERE the card already is).
+///
+/// One function rather than two strings kept in step: a player who reads
+/// `= Port A slot 1` on a card and then `O01 is Port A slot 1` in a refusal is
+/// reading the same fact twice, which is what makes a refusal something to act
+/// on rather than argue with.
+///
+/// **Every one of these fits a card's interior**, because the index prints them
+/// ON the card, two columns in behind a `= `. `card_locations_fit_a_card_face`
+/// is the pin, and it is why these read `Seat 0's deal` (the approved mock's
+/// own wording) rather than the longer phrasings that would clip.
+///
+/// **`colors` is the seat table, and the two seat-shaped arms use it
+/// differently on purpose** (T11's seat-naming rule). `OwnedBy` is a fact about
+/// a PLAYER — who holds this technology — so it is worded with the colour that
+/// is on the table, matching the panel, the board and every fee clause. `Deal`
+/// is a fact about a SEAT: it names a setup slot the wizard is collecting for,
+/// before anybody has played, and the approved mock words it `Seat 0's deal`.
+/// A caller with no table (`&[]`) gets the seat number in both, which is the
+/// honest fallback rather than an invented colour.
+pub fn card_location(
+    at: crate::screen_model::CardLocation,
+    colors: &[PlayerColor],
+) -> String {
+    use crate::screen_model::CardLocation;
+    match at {
+        CardLocation::Deal { seat } => format!("Seat {}'s deal", seat.0),
+        CardLocation::PortSlot { board_b, slot } => {
+            format!("{} slot {}", port_board_name(board_b), slot + 1)
+        }
+        CardLocation::OwnHand => "in your hand".to_string(),
+        CardLocation::ThisReveal => "in this reveal".to_string(),
+        CardLocation::LabSlot { board_b, slot } => {
+            format!("{} slot {}", lab_board_name(board_b), slot + 1)
+        }
+        CardLocation::OwnedBy { seat } => match crate::board_render::color_of(colors, seat) {
+            Some(c) => format!("owned by {}", render::color_name(c)),
+            None => format!("owned by Seat {}", seat.0),
+        },
+        CardLocation::OnArea { area } => format!("on area A{:02}", area.0),
+        CardLocation::AchievementSlot { category } => {
+            format!("category {} in play", category_letter(category))
+        }
+    }
+}
+
+/// A Technology card's display NAME, or a `T<id>` fallback for an id the
+/// registry does not know — which keeps every display path panic-free against a
+/// corrupt or foreign record.
+///
+/// **Moved here at T11, from `input`.** It had lived beside the line reader
+/// since it was first de-duplicated out of `render` and `describe`, which put a
+/// display-name lookup in the module that owns rustyline and the stdin
+/// protocol — nothing to do with each other, and the reason a reader looking for
+/// where card words come from would not find it. This module is where words for
+/// engine values live ([`area_type_name`], [`country_name`], [`phase_name`]);
+/// this is one of those, so it lives with them.
+pub fn tech_name(id: TechCardId, techs: &TechRegistry) -> String {
+    techs.get(id).map(|c| c.name.clone()).unwrap_or_else(|| format!("T{:02}", id.0))
+}
+
+/// `A` / `B` / `C` — an achievement category as the printed cards group them.
+pub fn category_letter(c: AchievementCategory) -> &'static str {
+    match c {
+        AchievementCategory::A => "A",
+        AchievementCategory::B => "B",
+        AchievementCategory::C => "C",
+    }
+}
+
+/// One of a building site's four Shophouse spaces, in the words the printed
+/// card lays them out in (`09-building-sites.yaml`'s TL/TR/ML/MR keys). Named
+/// rather than abbreviated because the `sites` view exists to be read at the
+/// table beside the physical card: `top-left` finds the space, `TL` does not.
+pub fn site_space_name(slot: usize) -> &'static str {
+    match slot {
+        0 => "top-left",
+        1 => "top-right",
+        2 => "mid-left",
+        3 => "mid-right",
+        // `SPACES_PER_SITE` is 4 and the arrays are fixed-size, so this arm is
+        // unreachable from any real card; it names the slot rather than
+        // panicking, on the same totality rule every other renderer here holds.
+        _ => "space",
+    }
+}
+
+
+/// What a card prompt is recording, as the index's context header states it.
+///
+/// **The one place [`crate::screen_model::RecordingTarget`]'s 0-based positions
+/// become the numbers a person reads** (T5 review S3), and it converts all of
+/// them the same way: `nth`, `slot` and `which` each get [`human_position`], so
+/// no variant can be a special case and no caller has to pre-increment. Totals
+/// (`of`) are printed as they are — they are counts, not positions.
+pub fn recording_target(target: crate::screen_model::RecordingTarget) -> String {
+    use crate::screen_model::RecordingTarget;
+    match target {
+        RecordingTarget::PortRefill { board_b, slot, nth, of } => format!(
+            "{} slot {} (reveal {} of {of})",
+            port_board_name(board_b),
+            human_position(slot),
+            human_position(nth),
+        ),
+        RecordingTarget::TechRefill { board_b } => {
+            format!("the card that refilled {}", lab_board_name(board_b))
+        }
+        RecordingTarget::PortSetup { board_b, slot, of } => format!(
+            "{} slot {} of {of}",
+            port_board_name(board_b),
+            human_position(slot),
+        ),
+        RecordingTarget::DealSetup { seat, which, of } => format!(
+            "Seat {}'s dealt card {} of {of}",
+            seat.0,
+            human_position(which),
+        ),
+        RecordingTarget::LabSetup { board_b, slot, of } => format!(
+            "{} slot {} of {of}",
+            lab_board_name(board_b),
+            human_position(slot),
+        ),
+        // No `human_position` on either of the last two, and that is the point
+        // of them: an area id and a category are IDENTITIES the driver already
+        // names, so there is nothing to convert and nothing to be off by one
+        // about. See `RecordingTarget::SiteSetup`.
+        RecordingTarget::SiteSetup { area } => {
+            format!("the building-site card on area A{:02}", area.0)
+        }
+        RecordingTarget::AchievementSetup { category } => {
+            format!("the category {} Achievement card", category_letter(category))
+        }
+        RecordingTarget::StartingOrder { seat } => {
+            format!("Seat {}'s hidden starting order", seat.0)
+        }
+    }
+}
+
+/// What a live capture just did, as the prompt above the question states it —
+/// the plain-words sentence R1 asks for, in place of the abbreviations the
+/// pre-redesign one-liner packed together.
+///
+/// Worded here rather than in the renderer for the reason every other sentence
+/// in this crate is: the renderer draws, `describe` speaks. The two setup
+/// targets are unreachable from the REPL's capture (the wizard asks those
+/// inline, with its own question text) and are worded anyway, because a
+/// `RecordingTarget` that could reach this function with nothing to say would be
+/// a hole waiting for the next variant.
+pub fn reveal_event(target: crate::screen_model::RecordingTarget) -> String {
+    use crate::screen_model::RecordingTarget;
+    match target {
+        RecordingTarget::PortRefill { board_b, of, .. } => format!(
+            "{} refilled {} from the order deck.",
+            port_board_name(board_b),
+            crate::card_render::plural(of, "slot"),
+        ),
+        RecordingTarget::TechRefill { board_b } => {
+            format!("{} refilled from the technology deck.", lab_board_name(board_b))
+        }
+        RecordingTarget::StartingOrder { seat } => {
+            format!("Seat {}'s starting order is face up at the table.", seat.0)
+        }
+        RecordingTarget::PortSetup { board_b, .. } => {
+            format!("{}'s display is being recorded.", port_board_name(board_b))
+        }
+        RecordingTarget::LabSetup { board_b, .. } => {
+            format!("{}'s display is being recorded.", lab_board_name(board_b))
+        }
+        RecordingTarget::DealSetup { seat, .. } => {
+            format!("Seat {}'s dealt cards are being recorded.", seat.0)
+        }
+        RecordingTarget::SiteSetup { area } => {
+            format!("Area A{:02}'s building-site card is being recorded.", area.0)
+        }
+        RecordingTarget::AchievementSetup { category } => format!(
+            "The category {} Achievement card is being recorded.",
+            category_letter(category),
+        ),
+    }
+}
+
+/// A registry as a sentence names it — "order cards", "technologies".
+///
+/// Worded here rather than at the call site for the reason every other word in
+/// this crate is: one registry, one name, wherever it is said. Its first caller
+/// is the refusal a cross-registry index pick gets, which has to say which
+/// registry the live capture is actually asking about (T6 review M1).
+pub fn registry_name(kind: crate::screen_model::IndexKind) -> &'static str {
+    use crate::screen_model::IndexKind;
+    match kind {
+        IndexKind::Orders => "order cards",
+        IndexKind::Techs => "technologies",
+        IndexKind::Achievements => "achievement cards",
+        IndexKind::Sites => "building-site cards",
+    }
+}
+
+/// The same registry counted as ONE — for the running already-recorded line,
+/// which prints a number in front of it.
+///
+/// Spelled out rather than trimmed from the plural: `technologies` does not
+/// lose an `s`, and "1 technologie" is the kind of line that makes a tester
+/// wonder what else is approximate.
+pub fn registry_name_singular(kind: crate::screen_model::IndexKind) -> &'static str {
+    use crate::screen_model::IndexKind;
+    match kind {
+        IndexKind::Orders => "order card",
+        IndexKind::Techs => "technology",
+        IndexKind::Achievements => "achievement card",
+        IndexKind::Sites => "building-site card",
+    }
+}
+
+/// A 0-based model position as the screen prints it.
+///
+/// Named rather than written `+ 1` at each site so the conversion is countable:
+/// a variant that renders a position WITHOUT calling this is visible at a
+/// glance, which is the whole content of the one-convention rule
+/// [`crate::screen_model::RecordingTarget`] states.
+fn human_position(index: usize) -> usize {
+    index + 1
+}
+
+/// Port slot numbers are shown 1-based everywhere — the `ports` view's own
+/// slot labels ([`crate::view_render::ports_view`], which replaced `render`'s
+/// at T11) and the live reveal prompt's — so the two helpers above and the
+/// prompts they feed all read the same board name.
+pub fn port_board_name(board_b: bool) -> &'static str {
+    if board_b {
+        "Port B"
+    } else {
+        "Port A"
+    }
+}
+
+pub fn lab_board_name(board_b: bool) -> &'static str {
+    if board_b {
+        "Laboratory B"
+    } else {
+        "Laboratory A"
+    }
+}
+
 pub fn phase_name(p: TurnPhase) -> &'static str {
     match p {
         TurnPhase::AdditionalActionFirst => "Additional actions (before)",
@@ -52,6 +310,31 @@ pub fn phase_name(p: TurnPhase) -> &'static str {
     }
 }
 
+/// The SHORT name a phase carries in the decision zone's chain, where all nine
+/// sit on one line together (3.5a §0.8; the approved mocks' own list).
+///
+/// A second table rather than a shortening of [`phase_name`], because the two
+/// answer different questions and the difference is not mechanical: the chain
+/// distinguishes its two `Additional` steps by POSITION — they are the first
+/// and last links of a line the player reads left to right — while
+/// [`phase_name`] has to name one on its own, out of context, and so spells
+/// "Additional actions (before)". Deriving one from the other would mean
+/// trimming a parenthetical and hoping, and would put the chain's width at the
+/// mercy of a wording change made for a different surface.
+pub fn phase_chain_name(p: TurnPhase) -> &'static str {
+    match p {
+        TurnPhase::AdditionalActionFirst => "Additional",
+        TurnPhase::Placement => "Placement",
+        TurnPhase::Movement => "Movement",
+        TurnPhase::AreaAction => "Area Action",
+        TurnPhase::FivePowerBonus => "5-Power",
+        TurnPhase::Building => "Building",
+        TurnPhase::Recovery => "Recovery",
+        TurnPhase::AdditionalActionSecond => "Additional",
+        TurnPhase::TurnEnd => "End",
+    }
+}
+
 pub fn area_label(state: &GameState, area: AreaId) -> String {
     let name = state
         .board_layout
@@ -60,6 +343,30 @@ pub fn area_label(state: &GameState, area: AreaId) -> String {
         .map(|a| area_type_name(a.area_type))
         .unwrap_or("Unknown area");
     format!("{name} (A{:02})", area.0)
+}
+
+/// An area's name in the redesigned frame's vocabulary: the NAME in caps, as
+/// the board tiles and the dashboard already spell it.
+///
+/// The frame has TWO name resolvers by design, not by accident: the renderers
+/// resolve an [`AreaId`] against the board MODEL (they may not open a
+/// `GameState` — the R9 seam), and this resolves it against the state, for the
+/// call sites that already hold one. They must agree, and they do because both
+/// spell the name with [`area_type_name`]; what they cannot share is the
+/// lookup.
+pub fn area_name_upper(state: &GameState, area: AreaId) -> String {
+    state
+        .board_layout
+        .areas
+        .get(&area)
+        .map(|a| area_type_name(a.area_type).to_uppercase())
+        .unwrap_or_else(|| format!("A{:02}", area.0))
+}
+
+/// [`area_name_upper`] plus the printed id, for a row naming an area the
+/// player may have to TYPE (the `a`/`b`/`m`/`r` grammars address areas by id).
+pub fn area_label_upper(state: &GameState, area: AreaId) -> String {
+    format!("{} (A{:02})", area_name_upper(state, area), area.0)
 }
 
 /// Plain-words statement of an achievement's fulfillment condition.
@@ -86,9 +393,16 @@ pub fn achievement_desc(a: AchievementType) -> String {
 /// line. The CLI guide's §8.2 lists card NAMES only, not per-effect wording,
 /// so these are the SINGLE display source for what a tech does -- the `labs`
 /// view exists precisely so a player can choose without an external
-/// reference. ASCII only, to stay terminal-safe, and short enough that the
-/// composed lab line clears 140 columns
-/// (`labs_view_lines_fit_the_documented_terminal_width`).
+/// reference. ASCII only, to stay terminal-safe.
+///
+/// **These lines are never clipped, and that is deliberate**: a qualifier is
+/// exactly what changes a purchase decision, so the `labs` view sizes its card
+/// to the longest effect text in the registry rather than the other way round
+/// (`every_lab_card_is_the_same_height_across_the_whole_registry` sweeps the
+/// registry; `every_t11_view_line_fits_the_design_floor` holds the result
+/// inside the 200-column floor). The old note here promised a 140-column
+/// window and named a test that went with `render`'s pre-T11 lab lines — both
+/// gone: the surface is full-screen now, at the floor.
 ///
 /// AUTHORING RULE (F2, Codex adversarial review of PR #4): each line is
 /// authored from the RULES sources -- rulebook pp. 15-16, the KB reference
@@ -132,12 +446,19 @@ pub fn tech_effect_text(effect: TechEffect) -> &'static str {
 }
 
 /// Plain-words name of a trade good, for `Move::ChooseAnyGood`.
+///
+/// **`seafood`, never `fish`** (T11 review N4). The engine's good is
+/// `TradeGood::Seafood`, the card index filters by `seafood`, the dashboard
+/// counts `Seafood` and the 5-Power token face reads `3 Seafood` — one good
+/// spoken of in two words is one a player has to learn twice. `fish` survives
+/// as an INPUT alias at the index filter, where accepting more than one word
+/// costs nothing; what is unified is what the tool SAYS.
 fn trade_good_name(g: TradeGood) -> &'static str {
     match g {
         TradeGood::Copper => "copper",
         TradeGood::Silk => "silk",
         TradeGood::Tea => "tea",
-        TradeGood::Seafood => "fish",
+        TradeGood::Seafood => "seafood",
     }
 }
 
@@ -170,11 +491,11 @@ fn chinatown_exchange_text(exchange: ChinatownExchange) -> &'static str {
         ChinatownExchange::CopperToYen => "1 copper -> 2 yen",
         ChinatownExchange::SilkToYen => "1 silk -> 2 yen",
         ChinatownExchange::TeaToYen => "1 tea -> 1 yen",
-        ChinatownExchange::SeafoodToYen => "1 fish -> 1 yen",
+        ChinatownExchange::SeafoodToYen => "1 seafood -> 1 yen",
         ChinatownExchange::YenToCopper => "2 yen -> 1 copper",
         ChinatownExchange::YenToSilk => "2 yen -> 1 silk",
         ChinatownExchange::YenToTea => "1 yen -> 1 tea",
-        ChinatownExchange::YenToSeafood => "1 yen -> 1 fish",
+        ChinatownExchange::YenToSeafood => "1 yen -> 1 seafood",
         ChinatownExchange::YenToImported => "4 yen -> 1 imported good",
     }
 }
@@ -234,36 +555,32 @@ fn production_preview(state: &GameState, verb: &str, good: TradeGood, reward_fn:
 }
 
 /// Fee preview suffix for a placement option (Task 6): ` — fee N yen (1 to
-/// Blue, ...)`, or empty when free. One yen per assistant placed into an
-/// area holding an opponent President, credited per owner -- the same
-/// public-state read the engine's `calculate_placement_cost` /
-/// `credit_placement_fees` pair makes. That engine fn is `pub(crate)` to
-/// yokohama-core (checked at the T6 review, 2026-07-21) and this crate may
-/// not widen it, so the mirror here plus the scratch-apply pin
-/// (`placement_fee_preview_matches_the_engine_charge`) IS the sourcing:
-/// drift from the engine's charge fails the test. `placements` lists one
-/// entry PER ASSISTANT (Option B passes its area twice, plus the Telegram
-/// bonus area). `pub(crate)`: the Option-B picker reuses it for per-area
-/// fee marks so the picker and the option text can never disagree.
+/// Blue, ...)`, or empty when free.
+///
+/// **The arithmetic is [`crate::screen_model::placement_fee`]; this function is
+/// only its wording** (T0-review MF1, discharged at T4). It used to hold the
+/// per-owner tally itself, which left the decision zone's typed `FeeModel` with
+/// no placement half and would have meant two copies of the same rule the
+/// moment the zone printed one. The engine's `calculate_placement_cost` /
+/// `credit_placement_fees` pair is `pub(crate)` to yokohama-core and this crate
+/// may not widen it, so the sourcing is unchanged in kind: the mirror plus the
+/// scratch-apply pin (`placement_fee_preview_matches_the_engine_charge`), which
+/// now covers both the model and this string because one is computed from the
+/// other.
+///
+/// `placements` lists one entry PER ASSISTANT (Option B passes its area twice,
+/// plus the Telegram bonus area). `pub(crate)`: the Option-B picker reuses it
+/// for per-area fee marks so the picker and the option text can never disagree.
 pub(crate) fn placement_fee_note(state: &GameState, placements: &[AreaId]) -> String {
-    let me = state.current_player;
-    let mut per_owner: std::collections::BTreeMap<PlayerId, u32> = std::collections::BTreeMap::new();
-    for &area in placements {
-        for p in &state.players {
-            if p.id != me && p.president_location == PresidentLocation::OnBoard(area) {
-                *per_owner.entry(p.id).or_insert(0) += 1;
-            }
-        }
-    }
-    if per_owner.is_empty() {
+    let Some(fee) = crate::screen_model::placement_fee(state, placements) else {
         return String::new();
-    }
-    let total: u32 = per_owner.values().sum();
-    let parts: Vec<String> = per_owner
+    };
+    let parts: Vec<String> = fee
+        .to_players
         .iter()
-        .map(|(&owner, &n)| format!("{n} to {}", render::color_name(state.player(owner).color)))
+        .map(|&(owner, n)| format!("{n} to {}", render::color_name(state.player(owner).color)))
         .collect();
-    format!(" — fee {total} yen ({})", parts.join(", "))
+    format!(" — fee {} yen ({})", fee.total, parts.join(", "))
 }
 
 /// One plain-words line describing an `AreaAction` (called from
@@ -310,7 +627,7 @@ fn describe_area_action(action: &AreaAction, state: &GameState, rules: &Rules) -
             s
         }
         AreaAction::Laboratory { card_id, extra_yen, extra_imported, fifth_tech_payment } => {
-            let name = crate::input::tech_name(*card_id, &rules.techs);
+            let name = tech_name(*card_id, &rules.techs);
             let mut s = format!("Laboratory: acquire {name}");
             if *extra_yen > 0 {
                 s.push_str(&format!(", +{extra_yen} yen"));
@@ -374,7 +691,7 @@ fn describe_area_action(action: &AreaAction, state: &GameState, rules: &Rules) -
                 parts.push("tea");
             }
             if *seafood {
-                parts.push("fish");
+                parts.push("seafood");
             }
             if *yen {
                 parts.push("yen");
@@ -437,6 +754,57 @@ fn describe_area_action(action: &AreaAction, state: &GameState, rules: &Rules) -
     }
 }
 
+/// What the MOVER's own technologies add to a completed order, on top of the
+/// reward printed on the card: `", +2 VP (Ball), +1 yen (Language School)"`,
+/// or empty for a player who owns neither.
+///
+/// **The card's printed reward is not what the player receives, and until this
+/// existed nothing in the driver said so.** `apply_fulfill_order` awards Ball's
+/// VP and Language School's Yen on EVERY completed order, so a player holding
+/// Ball fulfilled a 2 VP card, banked 4, and had no line of text anywhere --
+/// option preview or `log` -- connecting the two. A bonus you cannot see is a
+/// bonus you cannot plan around.
+///
+/// **The amounts come from the engine's own two functions rather than from a
+/// count written here**, which is the whole reason this can be trusted: they
+/// are the functions `apply_fulfill_order` calls, so the sentence is not a
+/// second opinion about the arithmetic that can drift from it -- including the
+/// per-copy stacking, which is theirs and not restated.
+///
+/// The NAMES come from the registry (`tech_name`) for the same reason: the
+/// printed titles are `gen-data`'s output, and a literal here would be a second
+/// copy of the card face.
+///
+/// Empty rather than "(no bonus)" so that every fulfil line a player without
+/// these cards reads is byte-identical to what it printed before -- which is
+/// most of them, most of the game.
+fn order_completion_bonus_note(state: &GameState, rules: &Rules) -> String {
+    let player = state.current_player;
+    let parts: Vec<String> = [
+        (TechEffect::Ball, ball_vp_bonus(state, player, &rules.techs), "VP"),
+        (TechEffect::LanguageSchool, language_school_yen_bonus(state, player, &rules.techs), "yen"),
+    ]
+    .into_iter()
+    .filter(|&(_, amount, _)| amount > 0)
+    .filter_map(|(effect, amount, unit)| {
+        // The name is looked up off a card the player actually holds, so a
+        // nonzero amount and a named card are the same fact rather than two
+        // that could disagree -- there is no "+2 VP (unknown)" to print.
+        let owned = state
+            .player(player)
+            .technologies
+            .iter()
+            .find(|&&id| rules.techs.get(id).is_some_and(|c| c.effect == effect))?;
+        Some(format!("+{amount} {unit} ({})", tech_name(*owned, &rules.techs)))
+    })
+    .collect();
+    if parts.is_empty() {
+        String::new()
+    } else {
+        format!(", {}", parts.join(", "))
+    }
+}
+
 /// One plain-words line describing a `Move` -- the CLI's option text.
 pub fn describe_move(mv: &Move, state: &GameState, rules: &Rules) -> String {
     match mv {
@@ -447,7 +815,11 @@ pub fn describe_move(mv: &Move, state: &GameState, rules: &Rules) -> String {
             format!("Claim achievement: {}", achievement_desc(*achievement))
         }
         Move::FulfillOrder { order_id } => match rules.orders.get(*order_id) {
-            Some(card) => format!("Fulfill {}", order_prompt_line(card)),
+            Some(card) => format!("Fulfill {}{}", order_prompt_line(card), order_completion_bonus_note(state, rules)),
+            // No printed reward clause to extend, because this arm is the
+            // "that id is not in the registry" fallback -- a corrupt record,
+            // never a move the engine would accept -- so it gains no bonus text
+            // either.
             None => format!("Fulfill order O{:02}", order_id.0),
         },
         Move::UseUniversity => "Use University: pay 1 yen, take an assistant from the warehouse".to_string(),
@@ -473,7 +845,11 @@ pub fn describe_move(mv: &Move, state: &GameState, rules: &Rules) -> String {
             s
         }
         Move::MovePresident { path, destination } if path.is_empty() => {
-            format!("Move President directly to {} (free teleport)", area_label(state, *destination))
+            format!(
+                "Move President directly to {} {} free teleport",
+                area_label(state, *destination),
+                glyph::SECTION_DASH,
+            )
         }
         Move::MovePresident { path, destination } => {
             // `path` already carries the destination as its last element --
@@ -518,7 +894,10 @@ pub fn describe_move(mv: &Move, state: &GameState, rules: &Rules) -> String {
                     .map(|(a, c)| format!("A{:02} x{}", a.0, c))
                     .collect::<Vec<_>>()
                     .join(", ");
-                format!("Return President to hand, recovering {total} assistant(s) ({parts})")
+                format!(
+                    "Return President to hand, recovering {total} {} ({parts})",
+                    if total == 1 { "assistant" } else { "assistants" },
+                )
             }
         }
         Move::PlacePresident { destination } => {
@@ -550,11 +929,11 @@ pub fn describe_move(mv: &Move, state: &GameState, rules: &Rules) -> String {
         Move::BuildTradingHouse => {
             let reward = acting_area(state).and_then(|a| state.board_layout.building_sites.get(&a));
             match reward {
-                Some(site) => format!("Build a Trading House ({}vp)", site.trading_house_reward),
+                Some(site) => format!("Build a Trading House ({} VP)", site.trading_house_reward),
                 None => "Build a Trading House".to_string(),
             }
         }
-        Move::SkipBuilding => "Skip building".to_string(),
+        Move::SkipBuilding => "Skip the building".to_string(),
         Move::ChooseAnyGood { good } => format!("Take 1 {} (any-good reward)", trade_good_name(*good)),
         Move::ChooseWarehouseTake { item } => {
             let cost = warehouse_item_cost(state.current_player(), *item);
@@ -571,15 +950,19 @@ pub fn describe_move(mv: &Move, state: &GameState, rules: &Rules) -> String {
         }
         Move::DeclineAssistantMove => "Decline the assistant move".to_string(),
         // Show the space's FULL printed reward -- VP plus its movement rider
-        // (Church) or warehouse/yen rider (Customs) -- in the SAME vocabulary
-        // the `tracks` view prints, single-sourced from `render`'s reward-text
-        // helpers so the choice can never disagree with `tracks`. The rider is
+        // (Church) or warehouse/yen rider (Customs) -- in the COMPACT option
+        // vocabulary, single-sourced from `render`'s reward-text helpers. NOT
+        // the `tracks` view's wording, which draws the same two engine numbers
+        // as a card in full words; what the two share is the `ChurchTrack` /
+        // `CustomsTrack` source, which is the parity that matters. See
+        // `render::church_reward_text`'s doc, which states this from the other
+        // side. The rider is
         // decision-relevant when the choice offers more than one space (Church
         // faith 4/5 = 1move vs 6 = 2move; Customs cost-1 space 1 = 2wh vs
         // space 2 = 2yen), and each space's placement queues that rider next
         // (rulebook p.13/p.14).
         Move::ChooseChurchSpace { space } => {
-            format!("Place on Church faith-{space} space ({})", render::church_reward_text(*space))
+            format!("Place on Church faith {space} ({})", render::church_reward_text(*space))
         }
         Move::ChooseCustomsSpace { space } => {
             format!("Place on Customs space {space} ({})", render::customs_reward_text(*space))
@@ -630,9 +1013,28 @@ fn join_order_ids(cards: &[OrderCardId]) -> String {
     if ids.is_empty() { "(none)".to_string() } else { ids.join(", ") }
 }
 
+/// One logged event in the words it read at the moment it applied — the string
+/// `Session` caches per event and the `log` view and lockdown dump both print.
+///
+/// **A MOVE is prefixed with the acting player's colour; a REVEAL is not**
+/// (T11 review F3). The log is read long after the fact, so an entry saying
+/// only what happened leaves two identically-worded turns — `End
+/// additional-action phase` twice running — impossible to tell apart, and at
+/// 3P/4P impossible to attribute at all. The naming rule the rest of the
+/// surface follows settles the wording: a PLAYER is named by their colour, and
+/// `state` is the historical state this event ran against, so
+/// `current_player` IS the actor. Nothing about the record changes; this is
+/// presentation, computed where the fold already knows the state.
+///
+/// The three reveal variants stay bare on purpose. They are the operator
+/// recording a face-up table fact rather than a player acting, and
+/// `RevealStartingOrder` already names its subject seat — a prefix would
+/// either invent an actor or name the same seat twice.
 pub fn describe_recorded_event(ev: &RecordedEvent, state: &GameState, rules: &Rules) -> String {
     match ev {
-        RecordedEvent::Move(mv) => describe_move(mv, state, rules),
+        RecordedEvent::Move(mv) => {
+            format!("{}: {}", render::color_name(state.current_player().color), describe_move(mv, state, rules))
+        }
         // Carry the card ids, not just a count, so the `log` view is an audit
         // trail: an operator can read back exactly which physical cards were
         // recorded and catch a mis-entry the desync guard structurally cannot
@@ -663,7 +1065,7 @@ pub fn describe_recorded_event(ev: &RecordedEvent, state: &GameState, rules: &Ru
 /// fields alone.
 pub fn describe_pending_choice(head: &PendingChoice, state: &GameState, _rules: &Rules) -> String {
     match head {
-        PendingChoice::AnyGood => "any-good reward: choose 1 of copper/silk/tea/fish".to_string(),
+        PendingChoice::AnyGood => "any-good reward: choose 1 of copper/silk/tea/seafood".to_string(),
         PendingChoice::WarehouseTake => {
             let p = state.current_player();
             let parts: Vec<String> = warehouse_take_options(p)
@@ -673,9 +1075,13 @@ pub fn describe_pending_choice(head: &PendingChoice, state: &GameState, _rules: 
                     let label = match item {
                         WarehouseItem::Assistant => "assistant",
                         WarehouseItem::Shophouse => "shophouse",
-                        WarehouseItem::TradingHouse => "TH",
+                        WarehouseItem::TradingHouse => "trading house",
                     };
-                    if cost == 0 { format!("{label} free") } else { format!("{label} {cost}¥") }
+                    if cost == 0 {
+                        format!("{label} free")
+                    } else {
+                        format!("{label} {}{cost}", glyph::YEN)
+                    }
                 })
                 .collect();
             format!("warehouse take ({})", parts.join(" / "))
@@ -707,6 +1113,334 @@ mod tests {
         assert!(label.contains(&format!("(A{:02})", some_area.0)), "{label}");
     }
 
+    /// **Every `RecordingTarget` variant's rendered shape, pinned** (T5 review
+    /// S3) — the header a person reads while entering a card, at the LAST
+    /// position of each run, which is where an off-by-one shows up as a board
+    /// that does not exist.
+    #[test]
+    fn recording_targets_render_their_positions() {
+        use crate::screen_model::RecordingTarget as T;
+        assert_eq!(
+            recording_target(T::PortSetup { board_b: false, slot: 5, of: 6 }),
+            "Port A slot 6 of 6",
+        );
+        assert_eq!(
+            recording_target(T::PortSetup { board_b: true, slot: 0, of: 6 }),
+            "Port B slot 1 of 6",
+        );
+        assert_eq!(
+            recording_target(T::PortRefill { board_b: false, slot: 5, nth: 2, of: 3 }),
+            "Port A slot 6 (reveal 3 of 3)",
+        );
+        assert_eq!(recording_target(T::TechRefill { board_b: true }), "the card that refilled Laboratory B");
+        assert_eq!(
+            recording_target(T::DealSetup { seat: PlayerId::new(0), which: 1, of: 2 }),
+            "Seat 0's dealt card 2 of 2",
+        );
+        assert_eq!(
+            recording_target(T::LabSetup { board_b: false, slot: 5, of: 6 }),
+            "Laboratory A slot 6 of 6",
+        );
+        // The last two carry IDENTITIES rather than positions, so nothing on
+        // their lines is converted — an area id reads exactly as `A03` does
+        // everywhere else in the driver, and a category is a letter.
+        assert_eq!(
+            recording_target(T::SiteSetup { area: AreaId::new(3) }),
+            "the building-site card on area A03",
+        );
+        assert_eq!(
+            recording_target(T::AchievementSetup { category: AchievementCategory::B }),
+            "the category B Achievement card",
+        );
+        // T8's, on the same identity side: a seat, and nothing to convert.
+        assert_eq!(
+            recording_target(T::StartingOrder { seat: PlayerId::new(1) }),
+            "Seat 1's hidden starting order",
+        );
+    }
+
+    /// **The words a duplicate refusal ends in, pinned directly** (T8 review,
+    /// mutation M13).
+    ///
+    /// [`card_location`] is the whole content of the F6 refusal `card_prompt`
+    /// builds ("O10 is <this> — a card cannot be in two places."), and nothing
+    /// pinned its strings: the index sweep
+    /// (`index_render::card_locations_fit_a_card_face`) measures their WIDTH and
+    /// is satisfied by any short phrase, so a refusal that named the wrong place
+    /// was a compiling, passing, silently-lying screen. `ThisReveal` is the one
+    /// the reveal capture depends on, so it is the one with a wording pin;
+    /// the others ride along, because a location that reads as another
+    /// location's words is the same defect wherever it happens.
+    #[test]
+    fn the_this_reveal_location_says_in_this_reveal() {
+        use crate::screen_model::CardLocation as L;
+        assert_eq!(card_location(L::ThisReveal, &[]), "in this reveal");
+        // The neighbours it must not be confusable with — the two other places
+        // an order card the operator can see already sits.
+        assert_eq!(card_location(L::OwnHand, &[]), "in your hand");
+        assert_eq!(card_location(L::PortSlot { board_b: false, slot: 0 }, &[]), "Port A slot 1");
+        // The seat-naming rule, both ways: a PLAYER takes their colour where
+        // the caller has a table, and their seat number where it does not.
+        assert_eq!(
+            card_location(L::OwnedBy { seat: PlayerId::new(1) }, &[PlayerColor::Red, PlayerColor::Blue]),
+            "owned by Blue",
+        );
+        assert_eq!(card_location(L::OwnedBy { seat: PlayerId::new(1) }, &[]), "owned by Seat 1");
+        // A DEAL is a setup slot, not a player, and keeps its seat number
+        // whatever table it is handed.
+        assert_eq!(
+            card_location(L::Deal { seat: PlayerId::new(0) }, &[PlayerColor::Red, PlayerColor::Blue]),
+            "Seat 0's deal",
+        );
+    }
+
+    /// [`tech_name`] looks the registry up and falls back to the id — moved
+    /// here with the function at T11, from `input`, where a display-name lookup
+    /// had been living beside the line editor.
+    #[test]
+    fn tech_name_looks_up_the_registry_and_falls_back_for_unknown_ids() {
+        let rules = Rules::standard();
+        assert_eq!(tech_name(TechCardId(11), &rules.techs), "Ball");
+        assert_eq!(tech_name(TechCardId(255), &rules.techs), "T255");
+    }
+
+    // ---- Order-completion technology bonuses on the fulfil line ----
+
+    /// The first technology in the registry carrying `effect`, found BY EFFECT
+    /// rather than by a literal card id: the ids are `gen-data`'s output, and a
+    /// test that hard-coded them would start testing the generator.
+    fn tech_with_effect(rules: &Rules, effect: TechEffect) -> TechCardId {
+        (0..=u8::MAX)
+            .map(TechCardId)
+            .find(|&id| rules.techs.get(id).is_some_and(|c| c.effect == effect))
+            .unwrap_or_else(|| panic!("the standard registry must carry a {effect:?} card"))
+    }
+
+    /// A 2P state whose CURRENT player owns exactly `effects`, and the
+    /// `FulfillOrder` move to describe against it. The move is described, never
+    /// applied, so it does not have to be legal here — what is under test is the
+    /// sentence, and the sentence is a function of the mover's technologies.
+    fn fulfil_fixture(effects: &[TechEffect]) -> (GameState, Rules, Move) {
+        let rules = Rules::standard();
+        let mut state = state_2p();
+        let seat = state.current_player;
+        for &effect in effects {
+            let id = tech_with_effect(&rules, effect);
+            state.player_mut(seat).technologies.push(id);
+        }
+        // The lowest-numbered order, so the fixture is the same card on every
+        // run: the registry hashes its cards, and `iter()` is in whatever order
+        // that leaves them.
+        let order_id = rules.orders.iter().map(|c| c.id).min_by_key(|id| id.0).expect("the registry carries orders");
+        (state, rules, Move::FulfillOrder { order_id })
+    }
+
+    /// **The line a player owning NEITHER technology reads is byte-identical to
+    /// what it was before the bonuses were ever printed** — the anti-regression
+    /// half of the pair, and the reason the note is empty rather than
+    /// "(no bonus)". Written as the composed literal it must equal, not as a
+    /// `!contains`, so a note that leaked in as whitespace still fails.
+    #[test]
+    fn the_fulfil_line_is_unchanged_for_a_player_owning_neither_bonus_technology() {
+        let (state, rules, mv) = fulfil_fixture(&[]);
+        let Move::FulfillOrder { order_id } = &mv else { unreachable!() };
+        let card = rules.orders.get(*order_id).expect("fixture picked a real order");
+
+        assert_eq!(describe_move(&mv, &state, &rules), format!("Fulfill {}", order_prompt_line(card)));
+    }
+
+    /// Ball's +2 VP is applied by `apply_fulfill_order` on every completed
+    /// order, and until this landed no CLI text anywhere named it — so a player
+    /// who owned Ball fulfilled an order, banked 4 VP for a 2 VP card, and had
+    /// to take the engine's word for the difference.
+    #[test]
+    fn the_fulfil_line_names_the_ball_victory_point_bonus() {
+        let (state, rules, mv) = fulfil_fixture(&[TechEffect::Ball]);
+        let text = describe_move(&mv, &state, &rules);
+        assert!(text.ends_with(", +2 VP (Ball)"), "{text}");
+    }
+
+    /// Language School's +1 Yen, the same defect on the other resource.
+    #[test]
+    fn the_fulfil_line_names_the_language_school_yen_bonus() {
+        let (state, rules, mv) = fulfil_fixture(&[TechEffect::LanguageSchool]);
+        let text = describe_move(&mv, &state, &rules);
+        assert!(text.ends_with(", +1 yen (Language School)"), "{text}");
+    }
+
+    /// Both owned: both named, in the order the engine applies them (VP then
+    /// Yen), each as its own clause rather than one summed figure — the player
+    /// is owed which CARD is paying, not just how much.
+    #[test]
+    fn the_fulfil_line_names_both_bonuses_when_both_are_owned() {
+        let (state, rules, mv) = fulfil_fixture(&[TechEffect::LanguageSchool, TechEffect::Ball]);
+        let text = describe_move(&mv, &state, &rules);
+        assert!(text.ends_with(", +2 VP (Ball), +1 yen (Language School)"), "{text}");
+    }
+
+    /// **Stacking per owned copy, which is the ENGINE's arithmetic and not a
+    /// second opinion about it** — `apply_fulfill_order` counts the mover's
+    /// copies (`ball_vp_bonus`), so a second copy is +4 VP there and must read
+    /// as +4 VP here. Two copies of one title is not reachable under the
+    /// one-per-name rule; `PlayerState::technologies` is a `Vec` that represents
+    /// it anyway, and the point of the test is that the two sides agree wherever
+    /// state can go, not that the position is legal.
+    #[test]
+    fn the_fulfil_bonus_stacks_per_owned_copy_exactly_as_the_engine_does() {
+        let (state, rules, mv) = fulfil_fixture(&[TechEffect::Ball, TechEffect::Ball]);
+        let text = describe_move(&mv, &state, &rules);
+        assert!(text.ends_with(", +4 VP (Ball)"), "{text}");
+        assert_eq!(
+            ball_vp_bonus(&state, state.current_player, &rules.techs),
+            4,
+            "and 4 is what the engine will actually award",
+        );
+    }
+
+    /// **The bonus reaches BOTH surfaces a player looks at, from one arm.** The
+    /// decision-option preview and the `log`/apply line are different renderers
+    /// with different prefixes, and both bottom out in `describe_move` — so this
+    /// pins the delegation rather than re-testing the wording: fix the option
+    /// text and the history text follows, which is why the defect could not have
+    /// been half-fixed.
+    #[test]
+    fn the_recorded_event_line_carries_the_bonus_too() {
+        let (state, rules, mv) = fulfil_fixture(&[TechEffect::Ball]);
+        let logged = describe_recorded_event(&RecordedEvent::Move(mv.clone()), &state, &rules);
+        assert!(logged.ends_with(", +2 VP (Ball)"), "{logged}");
+        assert!(logged.contains(&describe_move(&mv, &state, &rules)), "{logged}");
+    }
+
+    /// A technology that is neither of the two must not acquire a bonus clause:
+    /// the note is written off the two order-completion effects specifically,
+    /// not off "owns any technology".
+    #[test]
+    fn an_unrelated_technology_adds_no_bonus_clause() {
+        let (state, rules, mv) = fulfil_fixture(&[TechEffect::Tram]);
+        let (plain_state, plain_rules, plain_mv) = fulfil_fixture(&[]);
+        assert_eq!(describe_move(&mv, &state, &rules), describe_move(&plain_mv, &plain_state, &plain_rules));
+    }
+
+    /// **Every target says what just happened in plain words** (T8, requirement
+    /// R1) — the sentence above the question, which the pre-redesign prompt
+    /// packed into the question itself.
+    ///
+    /// Swept over every variant rather than spot-checked, and asserting a SHAPE
+    /// rather than a wording, because the failure this catches is a variant
+    /// added with nothing to say: an empty banner line reads as a rendering bug
+    /// on the one screen an operator meets while looking at the table.
+    #[test]
+    fn every_recording_target_states_its_event_as_a_sentence() {
+        use crate::screen_model::RecordingTarget as T;
+        for target in [
+            T::PortRefill { board_b: false, slot: 0, nth: 0, of: 2 },
+            T::TechRefill { board_b: true },
+            T::PortSetup { board_b: true, slot: 0, of: 6 },
+            T::DealSetup { seat: PlayerId::new(1), which: 0, of: 2 },
+            T::LabSetup { board_b: false, slot: 0, of: 6 },
+            T::SiteSetup { area: AreaId::new(3) },
+            T::AchievementSetup { category: AchievementCategory::A },
+            T::StartingOrder { seat: PlayerId::new(1) },
+        ] {
+            let text = reveal_event(target);
+            assert!(text.ends_with('.'), "{target:?} must read as a sentence: {text:?}");
+            assert!(text.len() > 20, "{target:?} said almost nothing: {text:?}");
+        }
+        // The two the live capture actually reaches, pinned verbatim — the
+        // count is pluralized rather than printed as "1 slot(s)", which is the
+        // abbreviation-shaped wording R1 exists to retire.
+        assert_eq!(
+            reveal_event(T::PortRefill { board_b: false, slot: 0, nth: 0, of: 1 }),
+            "Port A refilled 1 slot from the order deck.",
+        );
+        assert_eq!(
+            reveal_event(T::PortRefill { board_b: true, slot: 0, nth: 0, of: 2 }),
+            "Port B refilled 2 slots from the order deck.",
+        );
+        assert_eq!(
+            reveal_event(T::TechRefill { board_b: false }),
+            "Laboratory A refilled from the technology deck.",
+        );
+    }
+
+    /// **Every target names the registry its prompt collects** (T7 moved this
+    /// off the REPL and onto the model, so two callers cannot file a variant
+    /// differently). Swept rather than spot-checked: a new variant defaulting
+    /// to the wrong registry draws a screen whose numbers cannot answer the
+    /// question, which is the T6-review defect this routing exists to prevent.
+    #[test]
+    fn every_recording_target_names_its_own_registry() {
+        use crate::screen_model::{IndexKind, RecordingTarget as T};
+        for (target, want) in [
+            (T::PortRefill { board_b: false, slot: 0, nth: 0, of: 1 }, IndexKind::Orders),
+            (T::PortSetup { board_b: true, slot: 0, of: 6 }, IndexKind::Orders),
+            (T::DealSetup { seat: PlayerId::new(1), which: 0, of: 2 }, IndexKind::Orders),
+            (T::TechRefill { board_b: false }, IndexKind::Techs),
+            (T::LabSetup { board_b: true, slot: 0, of: 6 }, IndexKind::Techs),
+            (T::SiteSetup { area: AreaId::new(0) }, IndexKind::Sites),
+            (T::AchievementSetup { category: AchievementCategory::A }, IndexKind::Achievements),
+            (T::StartingOrder { seat: PlayerId::new(1) }, IndexKind::Orders),
+        ] {
+            assert_eq!(target.kind(), want, "{target:?}");
+        }
+    }
+
+    /// **`slot 7 of 6` is unreachable from a valid target.** The pin above
+    /// states four shapes; this one states the PROPERTY behind them, swept over
+    /// every variant and every position in range: a rendered position is
+    /// between 1 and its own total, never past it. A T6/T7 prompt that passes a
+    /// count where a position goes — or pre-increments the way `PortRefill`'s
+    /// `nth` used to be passed — fails here rather than on the owner's screen.
+    #[test]
+    fn recording_targets_render_positions_in_range() {
+        use crate::screen_model::RecordingTarget as T;
+        for of in 1..=6usize {
+            for i in 0..of {
+                // Seat 0, so the only numbers on the line are positions and
+                // totals — a seat index is neither, and would muddy the sweep.
+                // The count beside each case is how many POSITIONS it renders,
+                // total included: 2 for a "slot N of M", 3 once a reveal number
+                // joins them.
+                let cases = [
+                    (T::PortSetup { board_b: false, slot: i, of }, 2),
+                    (T::PortRefill { board_b: true, slot: i, nth: i, of }, 3),
+                    (T::DealSetup { seat: PlayerId::new(0), which: i, of }, 2),
+                    (T::LabSetup { board_b: false, slot: i, of }, 2),
+                ];
+                for (target, positions) in cases {
+                    let text = recording_target(target);
+                    // Every number the header prints, in order.
+                    let numbers: Vec<usize> = text
+                        .split(|c: char| !c.is_ascii_digit())
+                        .filter(|s| !s.is_empty())
+                        .map(|s| s.parse::<usize>().expect("a number"))
+                        .collect();
+                    assert!(!numbers.is_empty(), "{target:?} printed no position: {text}");
+                    // Anti-vacuity: the run's total must actually be stated, so
+                    // a header that dropped its "of N" cannot pass by silence.
+                    assert!(numbers.contains(&of), "{target:?} must state its total: {text}");
+                    // Nothing on the line may exceed the run's own total —
+                    // `slot 7 of 6` is a sentence about a board that does not
+                    // exist, and it is what a count passed as a position prints.
+                    for &n in &numbers {
+                        assert!(n <= of, "{target:?} printed {n}, past its total of {of}: {text}");
+                    }
+                    // ...and at the LAST position of a run, every position on
+                    // the line reads as the total. This is the clause that makes
+                    // the 1-based conversion load-bearing: a position rendered
+                    // straight from the 0-based field prints `of - 1` here.
+                    if i + 1 == of {
+                        assert_eq!(
+                            numbers.iter().filter(|&&n| n == of).count(),
+                            positions,
+                            "{target:?} must read every position as {of}: {text}",
+                        );
+                    }
+                }
+            }
+        }
+    }
+
     #[test]
     fn five_power_effect_label_reads_as_plain_goods() {
         // One label per token face; the amounts match parse_token_letter's map.
@@ -736,6 +1470,50 @@ mod tests {
             &rules,
         );
         assert_eq!(techs, "reveal techs: T03", "{techs}");
+    }
+
+    /// **A logged MOVE names who made it; a logged REVEAL does not** (T11
+    /// review F3).
+    ///
+    /// The `log` view is read long after the fact and at every player count, so
+    /// a line that says only what happened leaves two identically-worded turns
+    /// — `End additional-action phase` twice in a row — indistinguishable. The
+    /// naming rule the rest of the surface follows answers it: a PLAYER is
+    /// named by their colour, so the entry carries the colour of whoever was to
+    /// move at that event.
+    ///
+    /// The three reveal variants are deliberately bare. They are operator
+    /// recordings of face-up table facts rather than a player's action, and the
+    /// one with a subject seat already names it — prefixing them would either
+    /// invent an actor or say the same seat twice.
+    #[test]
+    fn a_logged_move_names_its_actor_and_a_logged_reveal_does_not() {
+        let mut state = state_2p();
+        let rules = Rules::standard();
+        let mv = Move::PlaceThreeAreas { placements: vec![] };
+
+        state.current_player = PlayerId::new(0);
+        let red = describe_recorded_event(&RecordedEvent::Move(mv.clone()), &state, &rules);
+        assert_eq!(red, "Red: Place no assistants", "{red}");
+
+        // The SAME move by the other seat is a different line, which is the
+        // whole point: without the prefix these two are one string.
+        state.current_player = PlayerId::new(1);
+        let blue = describe_recorded_event(&RecordedEvent::Move(mv.clone()), &state, &rules);
+        assert_eq!(blue, "Blue: Place no assistants", "{blue}");
+        assert_ne!(red, blue);
+
+        for ev in [
+            RecordedEvent::RevealOrders(vec![OrderCardId(5)]),
+            RecordedEvent::RevealTechs(vec![TechCardId(3)]),
+            RecordedEvent::RevealStartingOrder { player: PlayerId::new(1), card: OrderCardId(7) },
+        ] {
+            let line = describe_recorded_event(&ev, &state, &rules);
+            assert!(
+                line.starts_with("reveal "),
+                "a reveal is worded as a recording, unprefixed: {line}",
+            );
+        }
     }
 
     #[test]
@@ -860,11 +1638,11 @@ mod tests {
         let rules = Rules::standard();
         assert_eq!(
             describe_move(&Move::ChooseChurchSpace { space: 6 }, &state, &rules),
-            format!("Place on Church faith-6 space ({})", render::church_reward_text(6))
+            format!("Place on Church faith 6 ({})", render::church_reward_text(6))
         );
         assert_eq!(
             describe_move(&Move::ChooseChurchSpace { space: 6 }, &state, &rules),
-            "Place on Church faith-6 space (5vp 2move)"
+            "Place on Church faith 6 (5vp 2move)"
         );
         // The rider varies across the offered spaces, so it must appear.
         assert!(describe_move(&Move::ChooseChurchSpace { space: 4 }, &state, &rules).contains("1move"));
@@ -912,7 +1690,7 @@ mod tests {
         recover.insert(AreaId::new(0), 2);
         recover.insert(AreaId::new(3), 1);
         let some = describe_move(&Move::ReturnPresidentToHand { recover }, &state, &rules);
-        assert_eq!(some, "Return President to hand, recovering 3 assistant(s) (A00 x2, A03 x1)");
+        assert_eq!(some, "Return President to hand, recovering 3 assistants (A00 x2, A03 x1)");
     }
 
     #[test]
@@ -955,8 +1733,11 @@ mod tests {
 
         let warehouse = describe_pending_choice(&PendingChoice::WarehouseTake, &state, &rules);
         assert!(warehouse.contains("assistant free"), "{warehouse}");
-        assert!(warehouse.contains("shophouse 2¥"), "{warehouse}");
-        assert!(warehouse.contains("TH 4¥"), "{warehouse}");
+        // Full words and a leading ¥, as every other priced surface writes
+        // them (T11's editorial pass over the option arms).
+        assert!(warehouse.contains("shophouse ¥2"), "{warehouse}");
+        assert!(warehouse.contains("trading house ¥4"), "{warehouse}");
+        assert!(!warehouse.contains("TH"), "no abbreviations: {warehouse}");
 
         let assistant_move = describe_pending_choice(&PendingChoice::AssistantMove, &state, &rules);
         assert!(assistant_move.contains("assistant move"), "{assistant_move}");
@@ -1077,7 +1858,7 @@ mod tests {
         state.players[cp.0 as usize].president_location = PresidentLocation::OnBoard(area);
 
         let text = describe_move(&Move::BuildTradingHouse, &state, &rules);
-        assert!(text.contains(&format!("{}vp", site.trading_house_reward)), "{text}");
+        assert!(text.contains(&format!("{} VP", site.trading_house_reward)), "{text}");
     }
 
     /// Task 12 (T2.2a): production-area action options must preview the

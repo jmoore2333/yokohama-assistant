@@ -94,7 +94,9 @@ fn board_width(players: u8) -> usize {
         Rules::standard(),
     )
     .expect("new_sim over a standard board");
-    render::board_grid(session.state())
+    // No legal list: a board's WIDTH does not depend on which tiles carry a
+    // `◈`, and this measurement is about geometry alone.
+    render::board_grid(session.state(), session.rules(), &[])
         .lines()
         .next()
         .map(|line| line.chars().count())
@@ -165,9 +167,9 @@ fn move_grammar_and_subprompt_strings_appear_in_both_guides() {
 }
 
 /// (c) The §2 board-width sentence states the widths the real renderer
-/// produces. If the grid geometry changes (e.g. `CELL_WIDTH`, or a board's
-/// column count), the computed widths move and the guide must follow -- the
-/// numbers are derived here, never copied.
+/// produces. If the grid geometry changes (e.g. `board_render::TILE_W`, or a
+/// board's row lengths), the computed widths move and the guide must follow --
+/// the numbers are derived here, never copied.
 #[test]
 fn section2_board_widths_match_the_renderer() {
     let (w2, w3, w4) = (board_width(2), board_width(3), board_width(4));
@@ -183,13 +185,14 @@ fn section2_board_widths_match_the_renderer() {
 }
 
 /// The composed frame's rendered width at the start of a game: `screen::wrap`
-/// sizes the frame to its widest element, which is never the board alone (the
-/// players panel joins it side by side at 2-3 players, and the game-info strip
-/// is 96 columns on its own), so this is the width a tester's terminal actually
-/// has to be -- the number §2 owes them. Measured off the real `screen::wrap`,
-/// so it can never be a copied literal. Frames are forced on (per-thread, so
-/// parallel measurements stay hermetic without any lock) and the frame comes
-/// back plain apart from its leading clear-screen, since color is off at rest.
+/// sizes the frame to its widest element, and WHICH element that is differs by
+/// player count -- at 2 the players panel joined beside the board (the only
+/// count where it is beside it at all), at 3 the site-slot legend, at 4 the
+/// board itself. So this is the width a tester's terminal actually has to be --
+/// the number §2 owes them. Measured off the real `screen::wrap`, so it can
+/// never be a copied literal. Frames are forced on (per-thread, so parallel
+/// measurements stay hermetic without any lock) and the frame comes back plain
+/// apart from its leading clear-screen, since color is off at rest.
 fn frame_width(players: u8) -> usize {
     let session = Session::new_sim(
         GameConfig::for_player_count(players),
@@ -251,11 +254,13 @@ fn section2_frame_heights_match_the_composed_screen() {
 }
 
 /// (f) The §2 width guidance states the width of the COMPOSED FRAME, not just
-/// the board's own grid. The frame is wider than the board at every player
-/// count (panel beside it, 96-column info strip below it), so board-only
-/// guidance under-states what the terminal needs and a tester on an 80-column
-/// window gets a wrapped screen with no warning (final whole-branch review,
-/// M-4). Derived from `screen::wrap`, never copied.
+/// the board's own grid. Board-only guidance under-states what the terminal
+/// needs and a tester on an 80-column window gets a wrapped screen with no
+/// warning (final whole-branch review, M-4). The frame is wider than the board
+/// at 2 and 3 players (the panel joins beside it at 2; the site-slot legend is
+/// wider than the board at 3); at 4 the 180-column board IS the widest element,
+/// so the two numbers are equal there and the guidance is the same number for a
+/// different reason. Derived from `screen::wrap`, never copied.
 #[test]
 fn section2_frame_widths_match_the_composed_screen() {
     let (f2, f3, f4) = (frame_width(2), frame_width(3), frame_width(4));
@@ -333,7 +338,7 @@ fn the_captured_suggest_screen_matches_the_renderers_own_strings() {
     // The knob line, DERIVED from the same consts `render_suggestion` reads, so
     // a rung/version/default change forces the capture to be retaken.
     let knobs = format!(
-        " · {} · beam {}, K={}, M={}, eval v{} · stream ",
+        " · {} · beam {}, K={}, M={}, evaluator impl {} · stream ",
         lookahead::LOOKAHEAD_CONTROLLER,
         lookahead::DEFAULT_BEAM,
         lookahead::DEFAULT_WORLDS,
@@ -376,8 +381,116 @@ fn the_suggest_block_is_identical_across_formats() {
     );
 }
 
+/// The opening line of §4's two captured Movement screens — the phase chain
+/// with `MOVEMENT` lit, which no other captured block in either guide carries.
+const MOVEMENT_BLOCK_OPENING: &str = "TURN 1 · RED's turn   Additional ▸ Placement ▸  MOVEMENT";
+
+/// (j) §4's captured Movement screens are text-identical between the two
+/// formats — §5's and the suggest block's parity pin, applied to the third
+/// block a tester reads line by line.
+///
+/// The CONTENT half lives elsewhere on purpose: `repl.rs`'s
+/// `the_guide_movement_captures_are_what_the_fixtures_render` regenerates both
+/// blocks from the fixtures that produce them, which needs a crate-private test
+/// fixture this integration test cannot reach. Together they are the same
+/// two-part shape the suggest capture has — one test says the words are the
+/// driver's, this one says both formats carry the same words.
+#[test]
+fn the_movement_blocks_are_identical_across_formats() {
+    let md: Vec<String> = GUIDE_MD
+        .split("```")
+        .map(|part| part.trim_matches('\n').to_string())
+        .filter(|part| part.starts_with(MOVEMENT_BLOCK_OPENING))
+        .collect();
+    let html: Vec<String> = GUIDE_HTML
+        .match_indices("<pre><code>")
+        .filter_map(|(at, tag)| {
+            let open = at + tag.len();
+            let close = GUIDE_HTML[open..].find("</code></pre>")? + open;
+            let block = unescape_html(&GUIDE_HTML[open..close]).trim_matches('\n').to_string();
+            block.starts_with(MOVEMENT_BLOCK_OPENING).then_some(block)
+        })
+        .collect();
+    assert_eq!(
+        md.len(),
+        2,
+        "cli-guide.md must carry §4's TWO captured Movement screens (one per fixture)",
+    );
+    assert_eq!(
+        md, html,
+        "cli-guide.md and cli-guide.html §4 Movement captures diverged. They must stay \
+         byte-identical (modulo the HTML <pre><code> wrapper + entity escaping); re-capture BOTH \
+         from the fixture runs that produce them -- never by splicing."
+    );
+}
+
+/// The opening line of §6's captured reveal screens — the live-capture banner,
+/// which no other block in either guide carries.
+const REVEAL_BLOCK_OPENING: &str = "LIVE TRACKING ";
+
+/// The opening line of §6's THIRD captured screen, the guided reveal's seat
+/// menu. It carries no `LIVE TRACKING` banner — it is the question asked before
+/// there is a capture to banner — so it needs its own key, and without one it
+/// sat outside the parity pin entirely (T8 review, NOTE-3).
+const SEAT_MENU_BLOCK_OPENING: &str = "Whose starting order just became public?";
+
+/// (k) §6's captured reveal screens are text-identical between the two formats
+/// — §5's and the Movement captures' parity pin, applied to the screens a
+/// tester meets on their first live game (plan T8).
+///
+/// **All THREE of them.** §6 captures the bound Port refill, the guided seat
+/// menu and the guided card question; the first and third share the live-capture
+/// banner, and keying on that alone left the seat menu — a screen a tester reads
+/// line by line like any other — unpinned in the format they are most likely to
+/// read.
+///
+/// The CONTENT half lives in `reveal.rs`'s
+/// `the_guide_reveal_captures_are_what_the_fixtures_render`, which regenerates
+/// each block from the fixture that produces it — the same two-part shape the
+/// Movement captures have, and for the same reason: one test says the words are
+/// the driver's, this one says both formats carry the same words.
+#[test]
+fn the_reveal_blocks_are_identical_across_formats() {
+    let md: Vec<String> = GUIDE_MD
+        .split("```")
+        .map(|part| part.trim_matches('\n').to_string())
+        .filter(|part| part.starts_with(REVEAL_BLOCK_OPENING))
+        .collect();
+    let html: Vec<String> = GUIDE_HTML
+        .match_indices("<pre><code>")
+        .filter_map(|(at, tag)| {
+            let open = at + tag.len();
+            let close = GUIDE_HTML[open..].find("</code></pre>")? + open;
+            let block = unescape_html(&GUIDE_HTML[open..close]).trim_matches('\n').to_string();
+            block.starts_with(REVEAL_BLOCK_OPENING).then_some(block)
+        })
+        .collect();
+    assert_eq!(
+        md.len(),
+        2,
+        "cli-guide.md must carry §6's TWO captured reveal screens (the bound Port refill and \
+         the guided starting-order question)",
+    );
+    assert_eq!(
+        md, html,
+        "cli-guide.md and cli-guide.html §6 reveal captures diverged. They must stay \
+         byte-identical (modulo the HTML <pre><code> wrapper + entity escaping); re-capture BOTH \
+         from the fixture runs that produce them -- never by splicing."
+    );
+
+    // The third screen, which carries no banner to be found by.
+    let (menu_md, menu_html) = captured_block_starting_with(SEAT_MENU_BLOCK_OPENING);
+    assert_eq!(
+        menu_md, menu_html,
+        "cli-guide.md and cli-guide.html §6 seat-menu captures diverged. They must stay \
+         byte-identical (modulo the HTML <pre><code> wrapper + entity escaping); re-capture BOTH \
+         from the fixture run that produces them -- never by splicing."
+    );
+}
+
 /// (e) The environment/persistence promises §2 makes a tester -- the `NO_COLOR`
-/// switch and per-move autosave -- are present in BOTH formats.
+/// switch, per-move autosave, and (T9) the two the line editor adds -- are
+/// present in BOTH formats.
 #[test]
 fn section2_environment_promises_are_in_both_guides() {
     for (file, text) in [("cli-guide.md", GUIDE_MD), ("cli-guide.html", GUIDE_HTML)] {
@@ -391,5 +504,286 @@ fn section2_environment_promises_are_in_both_guides() {
             "{file} no longer states the game autosaves after every applied move -- §2 promises it \
              (authority: the REPL's post-apply autosave)."
         );
+        // The T9 promises are here rather than in prose alone. Two of them are
+        // guarantees a tester at a LIVE table would act on: one says their
+        // opponents' revealed cards do not outlive the game on disk, the other
+        // says the key they reach for to abandon a mistyped line cannot play a
+        // move for them. The third is the FEATURE the guide sells hardest --
+        // recall -- and it is here because it was, until the T9 review, a claim
+        // no test held: flipping rustyline's `auto_add_history` off left the
+        // suite green and both guides promising a key that did nothing.
+        assert!(
+            text.contains("walk back through the lines you have already entered this session"),
+            "{file} no longer promises ↑/↓ recall over the session's own lines -- §2 sells that as \
+             the reason a long area id or card name need only be typed once (authority: \
+             input::next_edited hands every DELIVERED line to Editing::remember; pinned by \
+             input::tests::a_delivered_line_enters_the_history_and_an_abandoned_one_never_does)."
+        );
+        assert!(
+            text.contains("never written to a file"),
+            "{file} no longer promises the input history stays off disk -- §2 makes that promise \
+             to live-table testers, whose typed lines name hidden cards (authority: the CLI takes \
+             rustyline with default-features off, so `DefaultHistory` IS `MemHistory`; pinned by \
+             input::tests::history_is_in_memory_by_construction)."
+        );
+        assert!(
+            text.contains("it does not quit, and it never applies anything"),
+            "{file} no longer states what Ctrl-C does -- §2 promises it abandons the typed line \
+             without applying anything (authority: input::classify maps Interrupted to a re-read, \
+             deliberately NOT to an empty line, which would be the forced-option bare Enter)."
+        );
     }
+}
+
+// ---------------------------------------------------------------------------
+// §5 and §8 pins (T12). The T12 audit found SIX stale claims in §8 and one
+// unpinned-by-luck agreement in §5; nothing in this file read either section.
+// These four close the drift sites the audit actually found, rather than §8 in
+// general -- a section of running prose is not mechanically pinnable, and a
+// test pretending otherwise would rot into noise.
+// ---------------------------------------------------------------------------
+
+/// Command lines on ONE footing: `HELP_TEXT` opens with a `Commands:` banner
+/// and indents its lines two spaces, the guide's fenced block does neither.
+/// Both are normalized here — banner and blank lines dropped, one leading two-
+/// space indent removed — and nothing further, so the INTERIOR column
+/// alignment every line carries is still compared.
+fn section5_lines(block: &str) -> Vec<String> {
+    block
+        .lines()
+        .map(|l| l.strip_prefix("  ").unwrap_or(l).trim_end().to_string())
+        .filter(|l| !l.is_empty() && l != "Commands:")
+        .collect()
+}
+
+/// (l) §5 is `HELP_TEXT` VERBATIM, description text included.
+///
+/// (a) above compares only the first token of each line, and (d) compares the
+/// two formats against each other -- so between them a reworded `HELP_TEXT`
+/// description could drift away from the guide with the suite green. The T12
+/// audit found the two still agreeing on all 35 lines by luck; this makes it a
+/// property. Authority is `repl::HELP_TEXT`.
+#[test]
+fn section5_is_help_text_verbatim() {
+    let help = section5_lines(HELP_TEXT);
+    let guide = section5_lines(&md_code_block_after("## 5. Commands"));
+    assert!(help.len() > 15, "HELP_TEXT parse produced only {} lines", help.len());
+    assert_eq!(
+        guide, help,
+        "cli-guide.md §5 is no longer HELP_TEXT verbatim -- the guide's command block is a \
+         transcript of the in-app `help`, so a reworded description in repl.rs::HELP_TEXT is \
+         carried into the guide in the same commit (authority: repl::HELP_TEXT)."
+    );
+}
+
+/// The slice of a guide between one heading and the next, so a §8.4 assertion
+/// cannot be satisfied by §4 prose that happens to use the same words.
+fn section_slice<'a>(text: &'a str, start: &str, end: &str) -> &'a str {
+    let from = text
+        .find(start)
+        .unwrap_or_else(|| panic!("a guide is missing the heading {start:?}"));
+    let rest = &text[from..];
+    let to = rest[start.len()..]
+        .find(end)
+        .map(|i| i + start.len())
+        .unwrap_or(rest.len());
+    &rest[..to]
+}
+
+/// (m) §8.4's phase table names every phase exactly as `describe::phase_name`
+/// does. The table is what a tester maps the rulebook's turn structure onto, so
+/// a renamed phase that lands only in code makes it a lie. Swept over the whole
+/// `PHASE_CHAIN` rather than a copied list, so a tenth phase cannot slip past.
+///
+/// **Matched as a WHOLE table cell, inside §8.4 only.** A bare `contains(name)`
+/// over the document passes on a renamed phase whenever the old name is a
+/// PREFIX of the new one -- `"5-Power bonus"` is still found inside
+/// `"5-Power bonuses"` -- which is this branch's recurring overlapping-text
+/// defect, and it survived this test's own first mutation. The closing
+/// delimiter is what makes the match exact.
+#[test]
+fn section8_phase_names_match_the_describer() {
+    let chain = yokohama_cli::screen_model::PHASE_CHAIN;
+    assert_eq!(chain.len(), 9, "PHASE_CHAIN changed length; §8.4's table is sized to it");
+    let md = section_slice(GUIDE_MD, "### 8.4", "### 8.5");
+    let html = section_slice(GUIDE_HTML, "<h3>8.4", "<h3>8.5");
+    for phase in chain {
+        let name = yokohama_cli::describe::phase_name(phase);
+        for (file, text, cell) in [
+            ("cli-guide.md", md, format!("`{name}`")),
+            ("cli-guide.html", html, format!("<code>{name}</code>")),
+        ] {
+            assert!(
+                text.contains(&cell),
+                "{file} §8.4 no longer names the phase {name:?} as a whole table cell -- the \
+                 table maps the CLI's phase names onto the rulebook's turn structure (authority: \
+                 describe::phase_name)."
+            );
+        }
+    }
+}
+
+/// (n) The choice-option strings §8.6 QUOTES are strings `describe_move`
+/// actually produces. Every one of these is a constant arm -- no state reaches
+/// its wording -- so a fresh session is enough to render them, and an editorial
+/// pass over `describe.rs` that forgets the guide trips here. The T12 audit
+/// found §8.6 quoting a warehouse banner two rewrites out of date.
+///
+/// **Scoped to §8.6, and it has to be** (six-lens F6). This searched the WHOLE
+/// document while its failure message spoke about §8.6, so any needle with a
+/// twin elsewhere was unpinned: deleting `Decline the assistant move` from
+/// §8.6 item 3 left the guide's own inventory wrong and the suite green,
+/// because §4's cross-reference to the same option satisfied the `contains`.
+/// That is the branch's NAMED CHECK -- an assertion a DIFFERENT line satisfies
+/// -- landing in the test written to close it, and the slicing helper the
+/// sibling test uses was already three tests up.
+#[test]
+fn section8_choice_options_are_what_the_describer_says() {
+    use yokohama_core::Move;
+    let session = Session::new_sim(
+        GameConfig::for_player_count(2),
+        0,
+        vec![StartingOrderChoice::Keep(0); 2],
+        Rules::standard(),
+    )
+    .expect("new_sim over a standard board");
+
+    for mv in [
+        Move::DeclineWarehouseTake,
+        Move::DeclineAssistantMove,
+        Move::ChooseRecoveryLeave { leave_one: true },
+        Move::ChooseRecoveryLeave { leave_one: false },
+        Move::UseUniversity,
+        Move::UseSpinningMill,
+    ] {
+        let words = yokohama_cli::describe::describe_move(&mv, session.state(), session.rules());
+        // §8.6 is the LAST subsection, so the delimiter is §9's heading --
+        // `section_slice` falling back to end-of-document would put §9 inside
+        // the slice and re-open exactly the hole this scoping closes.
+        for (file, text) in [
+            ("cli-guide.md", section_slice(GUIDE_MD, "### 8.6", "## 9.")),
+            ("cli-guide.html", section_slice(GUIDE_HTML, "<h3>8.6", "<h2>9.")),
+        ] {
+            assert!(
+                unescape_html(text).contains(&words),
+                "{file} §8.6 no longer quotes {words:?} -- §8.6 lists what each queued choice \
+                 offers, in the tool's own words (authority: describe::describe_move)."
+            );
+        }
+    }
+}
+
+/// (o) §8.3's claim about the `players` panel's goods letters is the panel's
+/// real vocabulary.
+///
+/// The audit found the table selling a letter (`i` for imports) that the panel
+/// has never printed, alongside `imp`, a token no shipped call site emits. Both
+/// survived because nothing read §8.3. Rather than re-transcribe the format
+/// string, this renders the panel and asserts the shape the guide describes:
+/// the four goods carry letters, and imports and yen are spelled out instead.
+#[test]
+fn section8_goods_letters_are_what_the_players_panel_prints() {
+    let session = Session::new_sim(
+        GameConfig::for_player_count(2),
+        0,
+        vec![StartingOrderChoice::Keep(0); 2],
+        Rules::standard(),
+    )
+    .expect("new_sim over a standard board");
+    let seats = render::SeatDisplay::open(session.state().players.len());
+    let panel = render::players_panel(session.state(), session.rules(), &seats);
+
+    for letter in ["c1", "s1", "t1", "f1"] {
+        assert!(
+            panel.contains(letter),
+            "the players panel no longer prints {letter:?}; §8.3's letter column states the set \
+             c/s/t/f (authority: render::players_panel): {panel}"
+        );
+    }
+    assert!(
+        panel.contains("imports 0") && !panel.contains("i0"),
+        "the players panel spells imports out and gives it NO letter, which is exactly what \
+         §8.3 says after the T12 audit found the guide claiming an `i` (authority: \
+         render::players_panel): {panel}"
+    );
+    for (file, text) in [("cli-guide.md", GUIDE_MD), ("cli-guide.html", GUIDE_HTML)] {
+        assert!(
+            text.contains("goods letters are exactly `c s t f`")
+                || text.contains("goods letters are exactly <code>c s t f</code>"),
+            "{file} §8.3 no longer states the panel's letter set (authority: \
+             render::players_panel)."
+        );
+    }
+}
+
+/// (p) **§2's quick-start sequence actually starts a game** (six-lens F4).
+///
+/// §2 advertises a fastest path and gives the answers in order. It had been
+/// missing one — the sim tail's `Bot seats?` question, which the wizard asks
+/// after the keeps — so following the guide literally fed `confirm` to that
+/// question, got `! 'confirm' is not a seat number`, ran out of input and
+/// printed `setup aborted: input ended mid-wizard`. No game, on the guide's own
+/// advertised fastest path, in a sentence this branch had already edited once.
+///
+/// Two halves, and neither alone is the property. The guide is checked to
+/// QUOTE these answers in this ORDER, so a rewritten sentence that drops one
+/// trips here rather than in a tester's terminal; and the sequence is then
+/// PIPED INTO THE SHIPPED BINARY, so a wizard that grows, drops or reorders a
+/// question trips here too. The blanks are the three Enters the sentence
+/// describes in prose (seed, save path, bot seats).
+#[test]
+fn the_quick_start_sequence_in_section2_starts_a_game() {
+    use std::io::Write;
+    use std::process::{Command, Stdio};
+
+    /// Exactly what §2 tells a tester to type, blanks included.
+    const ANSWERS: &[&str] = &["sim", "2", "red", "blue", "0", "", "", "1", "1", "", "confirm"];
+
+    // (1) The guide quotes the typed answers, in order, in its own §2 sentence.
+    let sentence = section_slice(GUIDE_MD, "**First run.**", "\n\n");
+    let mut at = 0usize;
+    for answer in ANSWERS.iter().filter(|a| !a.is_empty()) {
+        let quoted = format!("`{answer}`");
+        let found = sentence[at..].find(&quoted).unwrap_or_else(|| {
+            panic!(
+                "cli-guide.md §2's first-run sentence no longer quotes {quoted} in the order a \
+                 tester types it (authority: the wizard's question order in wizard.rs):\n{sentence}"
+            )
+        });
+        at += found + quoted.len();
+    }
+    assert!(
+        sentence.contains("bot seats"),
+        "cli-guide.md §2 must account for the sim tail's `Bot seats?` question — leaving it out \
+         is what made this sequence abort the wizard:\n{sentence}"
+    );
+
+    // (2) And the sequence starts a game in the shipped binary. Run in a temp
+    // directory, because a blank save-path answer writes the default save file
+    // into the current one.
+    let dir = std::env::temp_dir().join(format!("yokohama_quickstart_{}", std::process::id()));
+    std::fs::create_dir_all(&dir).expect("a scratch directory");
+    let mut child = Command::new(env!("CARGO_BIN_EXE_yokohama-cli"))
+        .current_dir(&dir)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("the shipped binary runs");
+    let mut script: String = ANSWERS.join("\n");
+    script.push_str("\nquit\n");
+    child.stdin.take().expect("piped stdin").write_all(script.as_bytes()).expect("write");
+    let out = child.wait_with_output().expect("the child finishes");
+    let text = String::from_utf8_lossy(&out.stdout).into_owned();
+    std::fs::remove_dir_all(&dir).ok();
+
+    assert!(
+        !text.contains("setup aborted"),
+        "§2's quick-start sequence aborts the wizard — the guide's fastest path must reach a \
+         game:\n{text}"
+    );
+    assert!(
+        text.contains("--- Setup review ---") && text.contains("TURN 1"),
+        "§2's quick-start sequence must reach the setup review and then the first prompt:\n{text}"
+    );
 }

@@ -1,0 +1,24 @@
+ACHIEVEMENTS — all 3, grouped by category  · achievement cards print no number — pick them by what they ask
+Open as a view — this screen is recording nothing. 'f a' filters to one category · 'f' clears.
+
+■ CATEGORY A — trade goods you own  (1 card)
+┌ Own 7 Seafood ─────────────────────────────────────────────────┐
+│ first ★8 VP  ·  later ★6 VP  ·  unclaimed                      │
+│ Red 1/7  ·  Blue 1/7                                           │
+└────────────────────────────────────────────────────────────────┘
+
+■ CATEGORY B — collections you have gathered  (1 card)
+┌ Own 5 tokens (5-Power + mercenaries) ──────────────────────────┐
+│ first ★9 VP  ·  later ★7 VP  ·  unclaimed                      │
+│ Red 0/5  ·  Blue 0/5                                           │
+└────────────────────────────────────────────────────────────────┘
+
+■ CATEGORY C — where you have built  (1 card)
+┌ Buildings in 2 production + 3 commercial areas ────────────────┐
+│ first ★10 VP  ·  later ★8 VP  ·  unclaimed                     │
+│ Red 0/5  ·  Blue 0/5                                           │
+└────────────────────────────────────────────────────────────────┘
+
+No card here is recorded anywhere else yet — any of them can be entered.
+Enter, '?', 'cancel' or 'back' closes this index and puts you back at the prompt underneath, exactly as you left it — nothing is entered and nothing there is cancelled.
+>

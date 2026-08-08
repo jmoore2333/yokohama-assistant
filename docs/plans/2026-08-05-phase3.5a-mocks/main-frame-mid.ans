@@ -1,0 +1,48 @@
+                                                       [1mY O K O H A M A[0m   [90mMID-GAME STUDY (illustrative state, turn 9) · live tracking · autosaved[0m
+
+┌ [90mA00[0m [1mCOPPER MINE[0m ───────────┐┌ [90mA01[0m [1mBANK[0m [94m▲[0m ────────────────┐┌ [90mA02[0m [1mPORT A[0m [32m◈[0m ──────────────┐┌ [90mA03[0m [1mLABORATORY A[0m ──────────┐    [90m─ [0m[1mPLAYERS[0m [90m───────────────────────────────────────────────────────────────[0m
+│ 5-Power: [93m1 Import[0m  [90mSite 2[0m  ││ 5-Power: [32m3 Tea[0m  [90mSite 3[0m     ││ 5-Power: [96m3 Seafood[0m  [90mSite 4[0m ││ 5-Power: [38;5;220m3 Yen[0m  [90mSite 5[0m     │    [91m[1m▶ RED — your turn[0m        [38;5;220m¥6[0m   [38;5;75m11 VP[0m
+│ [94m●[0m                          ││ [94m●●[0m                         ││ [91m●[0m                          ││ [2mno pawns[0m                   │      Goods  [38;5;172m0 Copper[0m · [97m2 Silk[0m · [32m1 Tea[0m · [96m0 Seafood[0m · [93m1 Import[0m
+│ sites [94m⌂[0m [96mf3[0m [90m—[0m [96mf2[0m  [90m│[0m T7      ││ sites [38;5;75m★1[0m [38;5;75m★4[0m [90m—[0m [32mt2[0m  [90m│[0m T7     ││ sites [38;5;75m★1[0m [97m⌂2[0m [90m—[0m [32mt2[0m  [90m│[0m T8     ││ sites [38;5;75m★1[0m [97ms2[0m [90m—[0m [38;5;172mc1[0m  [90m│[0m T9     │      Assistants  2 hand · [1m5 on board[0m · 13 warehouse
+└────────────────────────────┘└────────────────────────────┘└────────────────────────────┘└────────────────────────────┘      Shophouses  2 in hand · 5 in warehouse · 1 built
+               ┌ [90mA04[0m [1mEMPLOYMENT AGENCY[0m ─────┐┌ [90mA05[0m [1mCUSTOMS[0m [32m◈[0m ─────────────┐┌ [90mA06[0m [1mSILK MILL[0m [91m▲[0m ───────────┐                     Trade houses  0 in hand · 4 in warehouse · 0 built [90m(next take ¥4)[0m
+               │ 5-Power: [38;5;172m2 Copper[0m  [90mSite 6[0m  ││ 5-Power: [97m2 Silk[0m  [90mSite 7[0m    ││ 5-Power: [93m1 Import[0m  [90mSite 8[0m  │                     Tech  [1mTelegram[0m · Mercenaries [1m1 unused[0m · 0 used
+               │ [2mno pawns[0m                   ││ [91m●●[0m  [94m●[0m                      ││ [91m●●[0m  [94m●[0m                      │                     President [91m▲[0m on SILK MILL · 1 order in hand
+               │ sites [38;5;75m★1[0m [38;5;172mc2[0m [90m—[0m [97ms2[0m  [90m│[0m T9     ││ sites [38;5;75m★1[0m [95m*2[0m [90m—[0m [95m*1[0m  [90m│[0m T7     ││ sites [38;5;75m★1[0m [95m*2[0m [90m—[0m [95m*1[0m  [90m│[0m T6     │                   
+               └────────────────────────────┘└────────────────────────────┘└────────────────────────────┘                   [94m[1m  BLUE[0m                    [38;5;220m¥3[0m   [38;5;75m8 VP[0m
+                              ┌ [90mA07[0m [1mCHURCH[0m ────────────────┐┌ [90mA08[0m [1mTEA PLANTATION[0m ────────┐                                    Goods  [38;5;172m1 Copper[0m · [97m0 Silk[0m · [32m2 Tea[0m · [96m1 Seafood[0m · [2m0 Imports[0m
+                              │ 5-Power: [32m3 Tea[0m  [90mSite 9[0m     ││ 5-Power: [96m3 Seafood[0m  [90mSite 0[0m │                                    Assistants  4 hand · 4 on board · 12 warehouse
+                              │ [94m●●[0m                         ││ [2mno pawns[0m                   │                                    Shophouses  1 in hand · 6 in warehouse · 1 built
+                              │ sites [38;5;75m★1[0m [38;5;75m★4[0m [90m—[0m [97ma2[0m  [90m│[0m T8     ││ sites [38;5;75m★1[0m [96mf3[0m [90m—[0m [96mf2[0m  [90m│[0m T7     │                                    Trade houses  0 in hand · 4 in warehouse · 0 built [90m(next take ¥4)[0m
+                              └────────────────────────────┘└────────────────────────────┘                                    Tech  [2mnone yet[0m · Mercenaries 0 unused · 0 used
+                                             ┌ [90mA09[0m [1mFISHING GROUND[0m ────────┐                                                   President [94m▲[0m on BANK · 1 order in hand [90m(hidden)[0m
+                                             │ 5-Power: [38;5;220m3 Yen[0m  [90mSite 23[0m    │                                                 
+                                             │ [2mno pawns[0m                   │                                                 [90m─ [0m[1mTRACKS  (ends at 4 of YOUR pawns · D = dummy, not counted)[0m [90m────────────[0m
+                                             │ sites [38;5;75m★1[0m [38;5;75m★4[0m [90m—[0m [38;5;75m★3[0m  [90m│[0m T9     │                                                   Church   faith [2m[4][0m[94m[5●][0m[2m[6][0m[7m[7 D][0m[2m[8][0m[2m[9][0m[2m[10][0m[2m[11][0m 1/4 · [38;5;75m★3–14[0m+mv
+                                             └────────────────────────────┘                                                   Customs  pay   [2m[1][0m[2m[1][0m[2m[2][0m[7m[2 D][0m[2m[3][0m[2m[3][0m[2m[4][0m imports 0/4 · [38;5;75m★4–22[0m
+                                                                                                                              [90mMercenary supply: 5 tiles left · ('tracks' renders every space)[0m
+                                                                                                                            
+                                                                                                                            [90m─ [0m[1mACHIEVEMENTS  (one per category)[0m [90m──────────────────────────────────────[0m
+                                                                                                                              [1mA[0m · Copper 5      own 5 copper                [38;5;75m8 / 6 VP[0m   [2munclaimed[0m
+                                                                                                                              [1mB[0m · Money 10      own 10 yen                  [38;5;75m9 / 7 VP[0m   [2munclaimed[0m
+                                                                                                                              [1mC[0m · Production 4  buildings in 4 production   [38;5;75m10 / 8 VP[0m  [2munclaimed[0m
+                                                                                                                            
+                                                                                                                            [90m─ [0m[1mYOUR HAND  ('hand' expands · 'privacy' hides)[0m [90m─────────────────────────[0m
+                                                                                                                              ┌ [38;5;69m[1mFRANCE[0m           [90mO02[0m ┐[0m
+                                                                                                                              │ [96m1 Seafood[0m [32m2 Tea[0m      │[0m
+                                                                                                                              │                      │[0m
+                                                                                                                              │ [38;5;75m★3 VP[0m                │[0m
+                                                                                                                              │ your starting order  │[0m
+                                                                                                                              └──────────────────────┘[0m
+[90msite slots: [0m[97m⌂[0m[90m built (owner color) · [0m[38;5;75m★n[0m[90m VP · [0m[96mf[0m[32mt[0m[97ms[0m[38;5;172mc[0m[90m=goods · [0m[95m*[0m[90m=any good · a=assistants · T=trading-house VP — 'sites' renders the full cards[0m
+
+[90m────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────[0m
+[1mTURN 9 · [91mRED[0m[1m's turn[0m   [2mAdditional[0m[90m ▸ [0m[2mPlacement[0m[90m ▸ [0m[7m[1m MOVEMENT [0m[90m ▸ [0m[2mArea Action[0m[90m ▸ [0m[2m5-Power[0m[90m ▸ [0m[2mBuilding[0m[90m ▸ [0m[2mRecovery[0m[90m ▸ [0m[2mAdditional[0m[90m ▸ [0m[2mEnd[0m
+
+[1mYOU ARE DECIDING[0m · where your President moves — destinations need one of your assistants to stop on ([32m◈[0m on the board).
+   [1m[1][0m Move to [1mCUSTOMS[0m [32m◈[0m — 1 step · free
+   [1m[2][0m Move to [1mPORT A[0m [32m◈[0m — 1 step · free
+   [1m[3][0m Return the President to your hand
+   [2m(not offered: TEA PLANTATION — you have no assistant there to stop on)[0m
+[90m(pick a number · 'back' undoes the last applied entry · ↑ recalls what you typed · 'view' any surface · '?' the card index)[0m
+[1m> [0m

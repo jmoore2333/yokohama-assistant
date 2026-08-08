@@ -1,0 +1,16 @@
+PORT OFFER — full view   the order cards on display, the zone each sits in, and the action power that zone takes
+
+PORT A — take ONE card; LOW needs power 2, MID 3, HIGH 4.  6 of 6 slots filled
+slot 1 · LOW             slot 2 · LOW             slot 3 · MID             slot 4 · MID             slot 5 · HIGH            slot 6 · HIGH
+┌ FRANCE           O34 ┐ ┌ FRANCE           O30 ┐ ┌ GERMANY          O17 ┐ ┌ FRANCE           O29 ┐ ┌ AMERICA          O22 ┐ ┌ NETHERLANDS      O11 ┐
+│ 3 Tea 2 Copper       │ │ 3 Tea 2 Silk         │ │ 2 Seafood 2 Silk     │ │ 4 Tea 1 Silk         │ │ 4 Seafood 1 Copper   │ │ 1 Seafood 1 Tea      │
+│                      │ │                      │ │ 1 Copper             │ │                      │ │                      │ │ 1 Silk               │
+│ ★9 VP 1 Import       │ │ ★4 VP ¥2             │ │ ★8 VP ¥1             │ │ ★8 VP                │ │ ★8 VP                │ │ ★5 VP                │
+│                      │ │                      │ │                      │ │                      │ │                      │ │                      │
+└──────────────────────┘ └──────────────────────┘ └──────────────────────┘ └──────────────────────┘ └──────────────────────┘ └──────────────────────┘
+
+A take slides the remaining cards LEFT to close the gap, then refills from the RIGHT — so slot 1 always holds the card that has been out longest.
+Order deck: 10 cards left
+Enter or 'cancel' closes this view and puts you back at the prompt underneath, exactly as you left it — nothing is entered and nothing there is cancelled.
+Any other line closes the view and then RUNS at that prompt — a NUMBER applies that option, and 'back' undoes your last move.
+> 

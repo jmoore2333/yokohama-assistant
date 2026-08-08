@@ -2,11 +2,32 @@
 //! docs/plans/2026-07-18-phase2-cli-driver-design.md): the `Pending` state
 //! `Repl::commit` parks a move in while the operator answers reveal
 //! prompts, the prompt/collection loop, and the post-apply desync guard.
+//!
+//! **Phase-3.5a T8 changed the SURFACE and nothing underneath it.** The prompt
+//! is now the composed reveal zone ([`crate::decision_render::reveal_zone`],
+//! from a pure [`RevealModel`]) and the answer goes through the crate's one card
+//! grammar ([`crate::card_prompt::resolve`]) instead of a parser of this
+//! module's own — so a bare number, `O14`, a technology's NAME, `?` and a filter
+//! mean here exactly what they mean at every other card prompt in the driver
+//! (spec §0.2, finding F4). What did NOT move: the group is still collected
+//! answer by answer with nothing recorded until it completes; the completed
+//! group still commits as ONE `Session::apply` (move + reveals, atomic); the
+//! reveal events still precede the move in the record; and the post-apply desync
+//! guards below are untouched. No record event kind was added, removed or
+//! reordered.
+//!
+//! **The split this module keeps: the grammar identifies, the CALLER validates.**
+//! `card_prompt` knows how a card is named and where a card already is; it knows
+//! nothing about this prompt's pool, which is "cards not yet revealed" — the
+//! order deck PLUS the boxed pile, a rule that exists only here (see
+//! [`check_order_reveal`]). So the grammar hands back an identity and the
+//! functions below rule on it.
 
 use yokohama_core::*;
 
-use crate::input::{parse_order_id, parse_tech_entry, TechAmbiguity, TechEntryError};
+use crate::card_prompt::{self, CardEntry, CardPrompt, Numbering};
 use crate::repl::{Repl, StepOutput};
+use crate::screen_model::{CardRef, IndexKind, RecordingTarget, RevealModel};
 use crate::style::{paint, Tone};
 
 /// Live-mode reveal-collection state: while a group is being collected,
@@ -38,88 +59,220 @@ pub(crate) enum Pending {
 }
 
 impl Repl {
-    /// The complete message for whatever reveal is currently pending: what
-    /// changed and exactly what to type (or an empty string when nothing
-    /// is pending). Slots are always shown 1-based; Port slots also carry
-    /// their zone, matching `render::ports_view`'s labeling. Prompts walk
-    /// `OrderReveals`' `slots` in the order they're stored (DESCENDING --
-    /// `commit` sorted them that way), one per `collected.len()`.
-    pub(crate) fn reveal_prompt(&self) -> String {
+    /// What the pending capture is asking for, as pure model data — or `None`
+    /// when nothing is pending.
+    ///
+    /// Every position it hands over is 0-based, which is the one convention
+    /// `RecordingTarget` states: `collected.len()` is both the index of the slot
+    /// being filled next and the index of this reveal in the run.
+    pub(crate) fn reveal_model(&self) -> Option<RevealModel> {
         match &self.pending {
-            Pending::None => String::new(),
-            Pending::OrderReveals { slots, board_b, collected, .. } => {
-                let board_name = if *board_b { "Port B" } else { "Port A" };
-                let next_slot = slots[collected.len()];
-                let zone = match PortBoard::zone_of(next_slot) {
-                    PortZone::Low => "Low",
-                    PortZone::Mid => "Mid",
-                    PortZone::High => "High",
-                };
-                format!(
-                    "LIVE: {board_name} refilled {} slot(s) from the order deck -- reveal {} of {}. \
-                     What card is now in slot {} ({zone})? Enter as 'O<id>' or '<id>' (or 'cancel'):\n",
-                    slots.len(), collected.len() + 1, slots.len(), next_slot + 1,
-                )
-            }
-            Pending::TechReveal { board_b, .. } => {
-                let board_name = if *board_b { "Laboratory B" } else { "Laboratory A" };
-                format!(
-                    "LIVE: {board_name} refilled from the tech deck. \
-                     What tech card is now there? Enter as 'T<id>' or a name (or 'cancel'):\n"
-                )
-            }
+            Pending::None => None,
+            Pending::OrderReveals { slots, board_b, collected, .. } => Some(RevealModel {
+                target: RecordingTarget::PortRefill {
+                    board_b: *board_b,
+                    slot: slots[collected.len()],
+                    nth: collected.len(),
+                    of: slots.len(),
+                },
+                collected: collected.iter().map(|&id| CardRef::Order(id)).collect(),
+            }),
+            Pending::TechReveal { board_b, .. } => Some(RevealModel {
+                target: RecordingTarget::TechRefill { board_b: *board_b },
+                collected: Vec::new(),
+            }),
+        }
+    }
+
+    /// The complete screen for whatever reveal is currently pending (or an
+    /// empty string when nothing is pending) — the composed reveal zone, drawn
+    /// from [`Repl::reveal_model`].
+    ///
+    /// It stays a COMPLETE, self-describing message that its callers pass to
+    /// `out` as `text` rather than something `out` appends, which is the return
+    /// contract every overlay in `repl.rs` honors: closing the index mid-capture
+    /// prints this again and the operator is back on the same question.
+    pub(crate) fn reveal_prompt(&self) -> String {
+        match self.reveal_model() {
+            None => String::new(),
+            Some(model) => crate::decision_render::reveal_zone(
+                &model,
+                self.session.state().config.player_count,
+            ),
         }
     }
 
     /// Feed one line of input into the in-progress reveal collection.
     /// Extracts `self.pending` (leaving `Pending::None` behind) so each arm
     /// owns its fields outright; every non-terminal path restores
-    /// `self.pending` before returning. Never panics -- each parser rejects
-    /// malformed/unknown input as an `Err` re-prompt rather than unwrapping.
+    /// `self.pending` before returning. Never panics -- the grammar returns a
+    /// typed refusal for malformed/unknown input rather than unwrapping.
+    ///
+    /// **Two steps, and keeping them apart is the design** (T8): the crate's one
+    /// card grammar says WHICH CARD the line names, then this module's own pool
+    /// check says whether that card can be the answer here. A grammar that also
+    /// knew the pool would be a second opinion about the game state, and the pool
+    /// rule is genuinely local — "still unrevealed" means the deck OR the boxed
+    /// pile, which is true at no other prompt in the driver.
     pub(crate) fn collect_reveal(&mut self, words: &[&str]) -> StepOutput {
+        // Computed BEFORE the `mem::replace` below, because `index_placements`
+        // reads `self.pending` for this group's own `ThisReveal` entries.
+        let placed = self.index_placements();
+        let line = words.join(" ");
         match std::mem::replace(&mut self.pending, Pending::None) {
             // Unreachable in practice: `step` only calls this when
             // `self.pending` just matched `!= Pending::None`. Handled
             // gracefully (not `unreachable!()`) rather than risk a panic.
             Pending::None => self.out(String::new(), false),
             Pending::OrderReveals { mv, slots, board_b, mut collected } => {
-                match parse_order_reveal(
-                    words,
-                    &self.session.state().order_deck,
-                    &self.session.state().orders_removed,
-                    &collected,
-                ) {
-                    Ok(card) => {
-                        collected.push(card);
-                        if collected.len() == slots.len() {
-                            let (out, applied) =
-                                self.finish_apply_ex(mv, vec![RecordedEvent::RevealOrders(collected.clone())]);
-                            self.lock_on_order_desync(&slots, &collected, board_b, out, applied)
-                        } else {
-                            self.pending = Pending::OrderReveals { mv, slots, board_b, collected };
-                            self.out(self.reveal_prompt(), false)
+                let entry = self.read_card(IndexKind::Orders, &placed, &line);
+                match entry {
+                    Answer::Card(CardRef::Order(card)) => {
+                        match check_order_reveal(
+                            card,
+                            &self.session.state().order_deck,
+                            &self.session.state().orders_removed,
+                        ) {
+                            Ok(()) => {
+                                collected.push(card);
+                                if collected.len() == slots.len() {
+                                    let (out, applied) = self.finish_apply_ex(
+                                        mv,
+                                        vec![RecordedEvent::RevealOrders(collected.clone())],
+                                    );
+                                    self.lock_on_order_desync(&slots, &collected, board_b, out, applied)
+                                } else {
+                                    self.pending =
+                                        Pending::OrderReveals { mv, slots, board_b, collected };
+                                    self.out(self.reveal_prompt(), false)
+                                }
+                            }
+                            Err(msg) => {
+                                self.pending = Pending::OrderReveals { mv, slots, board_b, collected };
+                                self.reask(msg)
+                            }
                         }
                     }
-                    Err(msg) => {
+                    other => {
                         self.pending = Pending::OrderReveals { mv, slots, board_b, collected };
-                        self.out(format!("{msg}\n{}", self.reveal_prompt()), false)
+                        self.after_non_answer(other, IndexKind::Orders)
                     }
                 }
             }
             Pending::TechReveal { mv, board_b } => {
-                match parse_tech_reveal(words, &self.session.state().tech_deck, &self.session.rules().techs) {
-                    Ok(card) => {
-                        let (out, applied) =
-                            self.finish_apply_ex(mv, vec![RecordedEvent::RevealTechs(vec![card])]);
-                        self.lock_on_tech_desync(card, board_b, out, applied)
+                let entry = self.read_card(IndexKind::Techs, &placed, &line);
+                match entry {
+                    Answer::Card(CardRef::Tech(card)) => {
+                        match check_tech_reveal(card, &self.session.state().tech_deck) {
+                            Ok(()) => {
+                                let (out, applied) = self
+                                    .finish_apply_ex(mv, vec![RecordedEvent::RevealTechs(vec![card])]);
+                                self.lock_on_tech_desync(card, board_b, out, applied)
+                            }
+                            Err(msg) => {
+                                self.pending = Pending::TechReveal { mv, board_b };
+                                self.reask(msg)
+                            }
+                        }
                     }
-                    Err(msg) => {
+                    other => {
                         self.pending = Pending::TechReveal { mv, board_b };
-                        self.out(format!("{msg}\n{}", self.reveal_prompt()), false)
+                        self.after_non_answer(other, IndexKind::Techs)
                     }
                 }
             }
         }
+    }
+
+    /// One line at a card prompt, in the crate's one grammar, reduced to what
+    /// THIS module can act on.
+    ///
+    /// **The location check runs ahead of the pool check, and the ordering is
+    /// safe for a reason that has to be stated in TWO halves** — the same
+    /// argument `Repl::reveal_cmd` makes for the standalone reveal, made again
+    /// here because the pool is different.
+    ///
+    /// `index_placements` reports a card in a Port or Laboratory display slot, in
+    /// the viewing seat's own visible hand, in a seat's face-up technologies, on
+    /// an area — and, reachable only here, already named in the group being
+    /// collected.
+    ///
+    /// **Half one, the DISJOINT locations.** A card that just came off a deck is
+    /// in none of the face-up places above: the thirty-six order cards and thirty
+    /// technologies are each partitioned across the piles, so `deck ∪ removed` is
+    /// disjoint from every one of them. The only entries the location check turns
+    /// away there are ones the pool check would refuse anyway — with a worse
+    /// message, since the pool cannot say where the operator has already seen the
+    /// card.
+    ///
+    /// **Half two, `CardLocation::ThisReveal`, which is the DELIBERATE
+    /// intersection and the whole reason the location check runs first.** A card
+    /// this group has already collected is still sitting in `order_deck` —
+    /// nothing is applied until the group completes — so the pool would happily
+    /// accept it a second time. `ThisReveal` is the one location that meets the
+    /// pool, it meets it in exactly the cards already collected, and that overlap
+    /// IS the duplicate refusal (F6). Read the disjointness invariant as a claim
+    /// about the other locations; stated over all of them it would be false, and
+    /// the rule it protects would be gone.
+    ///
+    /// `the_location_check_can_never_pre_empt_a_truthful_reveal` sweeps both
+    /// halves rather than leaving either as an argument.
+    fn read_card(&self, kind: IndexKind, placed: &[(CardRef, crate::screen_model::CardLocation)], line: &str) -> Answer {
+        let prompt = CardPrompt {
+            kind,
+            candidates: None,
+            placed,
+            numbering: Numbering::Ids,
+            colors: &self.seat_colors(),
+        };
+        match card_prompt::resolve(&prompt, line, self.session.rules()) {
+            CardEntry::Card(card) => Answer::Card(card),
+            CardEntry::OpenIndex => Answer::OpenIndex(None),
+            CardEntry::Filter(filter) => Answer::OpenIndex(filter),
+            CardEntry::Cancel => Answer::Nothing,
+            CardEntry::Refused(message) => Answer::Refused(message),
+        }
+    }
+
+    /// Everything a capture does with a line that was not a usable card.
+    ///
+    /// **A blank line and `back` re-ask; they never drop the group** — the one
+    /// behaviour worth stating outright, because the shared grammar reads both as
+    /// `Cancel` and the obvious wiring would have made bare Enter throw away a
+    /// parked move with no confirmation. `cancel` still discards, and it still
+    /// does so in `Repl::step`, one layer above this function, which is why the
+    /// word never reaches here.
+    fn after_non_answer(&mut self, answer: Answer, kind: IndexKind) -> StepOutput {
+        match answer {
+            Answer::OpenIndex(filter) => self.open_index_filtered(kind, filter),
+            Answer::Refused(message) => self.reask(message),
+            Answer::Nothing => self.reask(format!(
+                "this reveal is waiting for an answer — {}, or 'cancel' to drop the move",
+                card_prompt::entry_hint(kind, false),
+            )),
+            // A card from a registry this capture is not asking about.
+            //
+            // **Unreachable today, and kept because "today" is doing work in
+            // that sentence.** `card_prompt::resolve` reads an id in the
+            // PROMPT's own registry, so an order capture cannot be handed a
+            // technology: `T07` there is not a cross-registry card, it is not a
+            // card at all, and the grammar refuses it with the forms that would
+            // have worked. This arm exists so that a registry which ever DOES
+            // resolve across kinds meets a message rather than a silent
+            // acceptance of the wrong card — the failure the T6 review found
+            // when the same collision was reachable through the index.
+            Answer::Card(card) => self.reask(format!(
+                "{} is not one of this reveal's {} — it is asking about {}.",
+                card_prompt::card_tag(card),
+                crate::describe::registry_name(card.kind()),
+                crate::describe::registry_name(kind),
+            )),
+        }
+    }
+
+    /// Re-ask the pending capture, with `message` above the question.
+    fn reask(&self, message: String) -> StepOutput {
+        self.out(format!("{message}\n{}", self.reveal_prompt()), false)
     }
 
     /// Post-apply desync assertion (design 2026-07-18 §5.2): once a
@@ -204,6 +357,17 @@ impl Repl {
     }
 }
 
+/// What one line at a capture prompt turned out to be, once the shared grammar
+/// has read it. A narrowing of [`CardEntry`]: a filter and a `?` both end up
+/// opening the index here, so they arrive as one thing.
+enum Answer {
+    Card(CardRef),
+    OpenIndex(Option<crate::screen_model::IndexFilter>),
+    /// A blank line, or `back`. Never a discard — see [`Repl::after_non_answer`].
+    Nothing,
+    Refused(String),
+}
+
 /// Assemble a desync-lockdown message: the prior output, the CRITICAL banner,
 /// the lockdown status line, and a persist-autosave-failure warning if the
 /// lockdown couldn't be written to disk (review §3: the lockdown is persisted
@@ -220,7 +384,7 @@ fn lockdown_text(prior: &str, status: &str, persist_warning: Option<String>) -> 
 /// Shared by both desync guards -- one banner, painted `Warn` as a unit so
 /// the whole sentence lands in bold red on a color terminal.
 const DESYNC_BANNER: &str =
-    "CRITICAL: desync detected -- the revealed card(s) do not match the board after applying the move. Session locked.";
+    "CRITICAL: desync detected — the revealed card(s) do not match the board after applying the move. Session locked.";
 
 /// Which Port board changed, and which of ITS slots now hold a card that
 /// wasn't in `before.order_deck` a moment ago -- an identity-independent
@@ -252,65 +416,52 @@ pub(crate) fn lab_b_changed(before: &GameState, after: &GameState) -> bool {
     }
 }
 
-/// Parse one order-reveal answer: a real numeric id, still UNREVEALED (in the
-/// live deck OR the boxed/removed pile), and not already in `collected` (a card
-/// can't be drawn twice in one refill). The removed pile counts because at
+/// This prompt's POOL check for an order card: still UNREVEALED, i.e. in the
+/// live deck OR the boxed/removed pile. The removed pile counts because at
 /// 2p/3p the seeded deck/removed split among the ~18 boxed cards is fiction --
 /// the true top-of-deck card can be one the seeded guess parked in
 /// `orders_removed`; `GameState::arrange_orders_on_top` exchanges it into the
 /// deck on apply (conservation-by-exchange; see its doc), so the operator must
 /// be allowed to name it here. Only a card in NEITHER pile is a genuine desync.
-pub(crate) fn parse_order_reveal(
-    words: &[&str],
+///
+/// **The "already recorded for this reveal" half moved out at T8** and is not
+/// gone: a card the group has already collected reaches the grammar as a
+/// `CardLocation::ThisReveal` placement, so it is refused BY LOCATION with every
+/// other duplicate rather than by a rule this prompt kept to itself (F6). What
+/// is left here is the one rule that is genuinely local — no other prompt in the
+/// driver has a pool of "cards nobody has seen yet".
+pub(crate) fn check_order_reveal(
+    card: OrderCardId,
     deck: &[OrderCardId],
     removed: &[OrderCardId],
-    collected: &[OrderCardId],
-) -> Result<OrderCardId, String> {
-    if words.len() != 1 {
-        return Err("Enter exactly one order-card code (e.g. 'O17' or '17'), or 'cancel'.".to_string());
-    }
-    let n = match parse_order_id(words[0]) {
-        Some(n) => n,
-        None => return Err(format!("'{}' is not a valid order-card code.", words[0])),
-    };
-    let card = OrderCardId(n);
-    if collected.contains(&card) {
-        return Err(format!("O{n:02} was already recorded for this reveal."));
-    }
+) -> Result<(), String> {
     if !deck.contains(&card) && !removed.contains(&card) {
         return Err(format!(
-            "O{n:02} is not an unrevealed order card (not in the deck or the boxed/removed pile)."
+            "O{:02} is not an unrevealed order card (not in the deck or the boxed/removed pile).",
+            card.0,
         ));
     }
-    Ok(card)
+    Ok(())
 }
 
-/// Parse one tech-reveal answer: `T<id>` (validated against `deck`) or a
-/// case-insensitive name prefix, resolved to the LOWEST matching id
-/// currently in `deck` (some titles circulate as 2 physical copies) --
-/// thin wrapper over the shared `parse_tech_entry` (design 2026-07-18
-/// §5.5 riding item 4), which is why an ambiguous name here resolves
-/// (`TechAmbiguity::LowestId`) rather than being rejected the way the
-/// setup wizard's `parse_tech_entry` call does. Renders its OWN
-/// deck-flavored wording from `TechEntryError` (fix wave, review of commit
-/// 0a01c95 finding 2: these exact messages regressed to the wizard's
-/// registry-flavored wording when the two were first unified -- "not
-/// currently in the tech deck" matters here because a card can be real but
-/// already drawn, a materially different fact from "not a valid tech
-/// card"). `Ambiguous` is unreachable under `LowestId` (kept as a safe,
-/// non-panicking fallback rather than `unreachable!()` in case that ever
-/// changes).
-pub(crate) fn parse_tech_reveal(words: &[&str], deck: &[TechCardId], techs: &TechRegistry) -> Result<TechCardId, String> {
-    if words.len() != 1 {
-        return Err("Enter exactly one tech code (e.g. 'T05' or a name), or 'cancel'.".to_string());
+/// The same check for a technology: the named card must still be in the tech
+/// deck. Techs are never boxed at setup, so unlike an order card there is no
+/// second pile to allow and a card that is not in the deck is a real mismatch.
+///
+/// Its own DECK-FLAVORED wording, kept verbatim through T8 (fix wave, review of
+/// commit 0a01c95 finding 2: these exact messages regressed to the wizard's
+/// registry-flavored wording when the two were first unified -- "not currently
+/// in the tech deck" matters here because a card can be real but already drawn,
+/// a materially different fact from "not a valid tech card"). Reached with an id
+/// the grammar has ALREADY resolved — from a bare number, a `T07`, or a name —
+/// so the only fact left for this function to state is the pool one. A spelling
+/// that named no card never arrives here at all; that refusal is `card_prompt`'s,
+/// in `card_prompt`'s words.
+pub(crate) fn check_tech_reveal(card: TechCardId, deck: &[TechCardId]) -> Result<(), String> {
+    if !deck.contains(&card) {
+        return Err(format!("T{:02} is not currently in the tech deck.", card.0));
     }
-    let tok = words[0];
-    parse_tech_entry(tok, techs, deck, TechAmbiguity::LowestId).map_err(|e| match e {
-        TechEntryError::NotInPool(n) => format!("T{n:02} is not currently in the tech deck."),
-        TechEntryError::NoMatch | TechEntryError::Ambiguous => {
-            format!("'{tok}' does not match any tech card currently in the deck.")
-        }
-    })
+    Ok(())
 }
 
 /// Parse a 5-Power token-effect letter into the canonical pool's fixed
@@ -340,6 +491,7 @@ pub(crate) fn parse_token_letter(words: &[&str]) -> Result<FivePowerEffect, Stri
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::screen_model::menu_number;
     use crate::session::Session;
 
     fn live_repl() -> (Repl, Vec<OrderCardId>) {
@@ -361,6 +513,608 @@ mod tests {
         (Repl::new(session), deck_bottom)
     }
 
+    /// A live 2P session parked at a one-card Port-A refill question, plus a
+    /// card genuinely in the unrevealed deck.
+    ///
+    /// The walk is `live_port_take_collects_reveals_then_applies_them`'s,
+    /// factored out for T8's tests rather than copied into each of them; that
+    /// test keeps its own inline copy, comment and all, because its assertions
+    /// are the pinned Step-1 choreography and it should not start depending on
+    /// a helper a later task could quietly change.
+    fn live_repl_at_a_port_refill() -> (Repl, OrderCardId) {
+        let (mut r, others) = live_repl();
+        let port_area = *r
+            .session
+            .state()
+            .board_layout
+            .areas
+            .iter()
+            .find(|(_, c)| c.area_type == AreaType::PortA)
+            .unwrap()
+            .0;
+        r.step("1");
+        r.step(&format!("a {}", port_area.0));
+        let k = r
+            .session
+            .legal()
+            .iter()
+            .position(|m| matches!(m, Move::PlacePresident { destination } if *destination == port_area))
+            .expect("PlacePresident at Port A is legal from hand at game start");
+        r.step(&menu_number(k).to_string());
+        let take = r
+            .session
+            .legal()
+            .iter()
+            .position(|m| matches!(
+                m,
+                Move::ExecuteAreaAction { action: AreaAction::Port { cards_taken, .. } }
+                    if cards_taken.len() == 1
+            ))
+            .expect("1-card port take available");
+        r.step(&menu_number(take).to_string());
+        assert!(matches!(r.pending, Pending::OrderReveals { .. }), "parked at a reveal");
+        (r, others[0])
+    }
+
+    /// The same walk parked at a TWO-slot Port refill, so the group has a second
+    /// question — the only shape in the driver where a card can already be
+    /// `CardLocation::ThisReveal` while still sitting in the deck.
+    fn live_repl_at_a_two_slot_port_refill() -> Repl {
+        let (mut r, _) = live_repl();
+        let port_area = *r
+            .session
+            .state()
+            .board_layout
+            .areas
+            .iter()
+            .find(|(_, c)| c.area_type == AreaType::PortA)
+            .unwrap()
+            .0;
+        r.step("1");
+        r.step(&format!("a {}", port_area.0));
+        let k = r
+            .session
+            .legal()
+            .iter()
+            .position(|m| matches!(m, Move::PlacePresident { destination } if *destination == port_area))
+            .expect("PlacePresident at Port A");
+        r.step(&menu_number(k).to_string());
+        let take = r
+            .session
+            .legal()
+            .iter()
+            .position(|m| matches!(
+                m,
+                Move::ExecuteAreaAction { action: AreaAction::Port { cards_taken, .. } }
+                    if cards_taken.len() == 2
+            ))
+            .expect("a 2-card port take is available");
+        r.step(&menu_number(take).to_string());
+        assert!(matches!(r.pending, Pending::OrderReveals { .. }), "parked at a 2-slot reveal");
+        r
+    }
+
+    /// **The capture takes the crate's ONE card grammar** (spec §0.2, finding
+    /// F4) — the T8 requirement, exercised at the prompt rather than at the
+    /// parser. Every spelling that names a card at any other prompt in the
+    /// driver names one here, and every non-card line does what it does
+    /// everywhere else.
+    ///
+    /// Before T8 this prompt had a grammar of its own: `?` reached it as a bad
+    /// card, `f silk` as a bad card, and a technology id as a bad card — three
+    /// different things, one message.
+    #[test]
+    fn the_capture_takes_the_crates_one_card_grammar() {
+        // Every spelling of the same id reaches the same card, from a fresh
+        // capture each time so the group state cannot carry between them.
+        for spelling in ["O{n}", "o{n}", "{n}"] {
+            let (mut r, deck_card) = live_repl_at_a_port_refill();
+            let events_before = r.session.record().events.len();
+            let out = r.step(&spelling.replace("{n}", &deck_card.0.to_string()));
+            assert!(!out.text.contains("CRITICAL"), "{spelling}: {}", out.text);
+            assert_eq!(
+                r.session.record().events.len(),
+                events_before + 2,
+                "{spelling} must record RevealOrders + Move: {}",
+                out.text,
+            );
+            assert!(
+                r.session.state().port_state.port_a.slots.contains(&Some(deck_card)),
+                "{spelling} must name the same card",
+            );
+        }
+
+        // `?` opens the index over the capture (T5's contract, re-verified from
+        // the grammar's side), and `f silk` opens it already narrowed rather
+        // than being read as a bad card.
+        let (mut r, _) = live_repl_at_a_port_refill();
+        let out = r.step("f silk");
+        assert!(out.text.contains("ORDER CARD INDEX"), "{}", out.text);
+        assert!(matches!(r.pending, Pending::OrderReveals { .. }), "the capture is untouched");
+        assert!(
+            matches!(
+                r.overlay,
+                Some(crate::repl::Overlay::Index {
+                    filter: Some(crate::screen_model::IndexFilter::Good(
+                        crate::screen_model::CardGood::Silk
+                    )),
+                    ..
+                })
+            ),
+            "the filter the player typed is the one on screen",
+        );
+
+        // A technology's spelling names NOTHING at an order capture — it is not
+        // silently read as `O07`, which is the wrong-card acceptance the shared
+        // grammar exists to refuse (`card_prompt`'s
+        // `a_bare_id_reads_in_the_prompts_own_registry`, at this prompt).
+        let (mut r, _) = live_repl_at_a_port_refill();
+        let events_before = r.session.record().events.len();
+        let out = r.step("T07");
+        assert!(out.text.contains("is not a card"), "{}", out.text);
+        assert!(out.text.contains("like 'O14'"), "and says what would have worked: {}", out.text);
+        assert_eq!(r.session.record().events.len(), events_before, "nothing was recorded");
+        assert!(matches!(r.pending, Pending::OrderReveals { .. }), "nothing was collected");
+
+        // And junk says what would have worked, which is the half of F4 the old
+        // prompt's "'x' is not a valid order-card code" left out.
+        let (mut r, _) = live_repl_at_a_port_refill();
+        let out = r.step("wat");
+        assert!(out.text.contains("'?' for the index"), "{}", out.text);
+    }
+
+    /// **A card the operator can SEE somewhere else is refused by location**
+    /// (F6), through the same rule every other card prompt uses. The pre-T8
+    /// capture refused it as "not an unrevealed order card", which is true and
+    /// tells a person at a table nothing.
+    #[test]
+    fn a_capture_refusal_names_where_the_card_already_is() {
+        let (mut r, _) = live_repl_at_a_port_refill();
+        let on_display = r.session.state().port_state.port_a.slots[0].expect("Port A slot 1 is dealt");
+        let events_before = r.session.record().events.len();
+        let out = r.step(&format!("O{:02}", on_display.0));
+        assert!(out.text.contains("Port A slot 1"), "the refusal names the place: {}", out.text);
+        assert!(out.text.contains("cannot be in two places"), "{}", out.text);
+        assert_eq!(r.session.record().events.len(), events_before, "nothing was recorded");
+        assert!(matches!(r.pending, Pending::OrderReveals { .. }), "the capture is still waiting");
+    }
+
+    /// The same rule for a card already named IN THIS GROUP: the check that
+    /// used to live in this module's own parser now arrives as a
+    /// `CardLocation::ThisReveal` placement, so a two-slot refill still cannot
+    /// be told the same card twice — and now says where it already is.
+    ///
+    /// **The assertion is aimed at the REFUSAL LINE, not at the screen** (T8
+    /// review, mutation M13). A screen-wide `contains("in this reveal")` is
+    /// satisfied by the prompt's own `already recorded in this reveal — O10`
+    /// status line, which is drawn from `collected` and says nothing about which
+    /// `CardLocation` the duplicate was refused by: pointing `index_placements`
+    /// at `OwnHand` instead left the refusal reading "O10 is in your hand" and
+    /// the test still passed. So the line under test is picked out by the phrase
+    /// only the refusal carries, and BOTH halves of it are then read off that one
+    /// line. This is the T7 lesson recurring — two byte-identical text blocks on
+    /// one screen blind a transcript assertion — and the answer is the same:
+    /// assert on the line that carries the fact, and unit-pin the string it is
+    /// built from (`describe`'s `the_this_reveal_location_says_in_this_reveal`).
+    #[test]
+    fn a_card_already_named_in_this_group_is_refused_by_location() {
+        let mut r = live_repl_at_a_two_slot_port_refill();
+        let first = *r.session.state().order_deck.first().expect("an unrevealed card");
+        r.step(&format!("O{:02}", first.0));
+        let events_before = r.session.record().events.len();
+        let out = r.step(&format!("O{:02}", first.0));
+        let plain = crate::style::strip_ansi(&out.text);
+        let refusal = plain
+            .lines()
+            .find(|l| l.contains("cannot be in two places"))
+            .unwrap_or_else(|| panic!("no duplicate refusal on the screen:\n{plain}"));
+        assert!(
+            refusal.contains(&format!("O{:02}", first.0)),
+            "the refusal names the card that was refused: {refusal}",
+        );
+        assert!(
+            refusal.contains("in this reveal"),
+            "and names WHERE it already is, on that same line — the prompt's own \
+             'already recorded in this reveal' status line does not count: {refusal}",
+        );
+        assert_eq!(r.session.record().events.len(), events_before, "nothing applied");
+        assert!(
+            matches!(&r.pending, Pending::OrderReveals { collected, .. } if collected.len() == 1),
+            "the group still holds exactly the one answer it had",
+        );
+    }
+
+    /// **The location check runs ahead of the pool check, and can never
+    /// pre-empt a truthful reveal** — the conservation argument
+    /// [`Repl::read_card`] makes, swept instead of asserted, in the two halves
+    /// that argument has.
+    ///
+    /// **Half one, the disjoint locations.** For BOTH registries: no card the
+    /// pool would accept has a location the grammar could refuse it by. The order
+    /// side is the one that matters at a live table (the boxed pile is ~18 cards
+    /// at 2P and every one of them is a legitimate answer); the tech side is what
+    /// makes name resolution safe, since `card_prompt` resolves a title to the
+    /// copy nothing has CLAIMED while this prompt's pool is the copies still in
+    /// the DECK — two rules that agree only because the placements and the deck
+    /// partition the registry.
+    ///
+    /// **Half two, the one deliberate intersection** (T8 review, SHOULD-1). The
+    /// first two blocks run on an EMPTY `collected`, so `CardLocation::ThisReveal`
+    /// — the one location that does meet the pool, and the one the duplicate
+    /// refusal is built on — was outside the sweep by construction. Mid-group the
+    /// intersection must be non-empty and must be EXACTLY the collected cards:
+    /// smaller and a duplicate slips through, larger and a truthful reveal is
+    /// pre-empted after all.
+    #[test]
+    fn the_location_check_can_never_pre_empt_a_truthful_reveal() {
+        let (r, _) = live_repl_at_a_port_refill();
+        let placed = r.index_placements();
+        let state = r.session.state();
+
+        let pool: Vec<OrderCardId> =
+            state.order_deck.iter().chain(state.orders_removed.iter()).copied().collect();
+        assert!(pool.len() > 10, "fixture: a 2P live game leaves a large unrevealed pool");
+        for card in &pool {
+            assert!(
+                !placed.iter().any(|(c, _)| *c == CardRef::Order(*card)),
+                "O{:02} is in the unrevealed pool AND carries a location — the refusal would \
+                 pre-empt a truthful reveal",
+                card.0,
+            );
+        }
+
+        // The tech partition, stated the other way round as well: every physical
+        // technology is either in the deck or placed, never both and never
+        // neither — which is exactly what makes "the copy nothing has claimed"
+        // and "the lowest copy still in the deck" the same card.
+        let deck: Vec<TechCardId> = state.tech_deck.clone();
+        let placed_techs: Vec<TechCardId> = placed
+            .iter()
+            .filter_map(|(c, _)| match c {
+                CardRef::Tech(id) => Some(*id),
+                _ => None,
+            })
+            .collect();
+        for id in &deck {
+            assert!(!placed_techs.contains(id), "T{:02} is in the deck AND placed", id.0);
+        }
+        let total = r.session.rules().techs.iter().count();
+        assert_eq!(
+            deck.len() + placed_techs.len(),
+            total,
+            "the {total} physical technologies must be exactly deck + placed",
+        );
+
+        // Half two: one answer collected at a two-slot refill, which is the only
+        // state in the driver where a card is both in the pool and placed.
+        let mut r = live_repl_at_a_two_slot_port_refill();
+        let collected = *r.session.state().order_deck.first().expect("an unrevealed card");
+        r.step(&format!("O{:02}", collected.0));
+        assert!(
+            matches!(&r.pending, Pending::OrderReveals { collected, .. } if collected.len() == 1),
+            "fixture: the group holds exactly one answer and is still asking",
+        );
+        let placed = r.index_placements();
+        let state = r.session.state();
+        let pool: Vec<OrderCardId> =
+            state.order_deck.iter().chain(state.orders_removed.iter()).copied().collect();
+        let intersection: Vec<(OrderCardId, crate::screen_model::CardLocation)> = pool
+            .iter()
+            .filter_map(|card| {
+                placed
+                    .iter()
+                    .find(|(placed, _)| *placed == CardRef::Order(*card))
+                    .map(|(_, at)| (*card, *at))
+            })
+            .collect();
+        assert_eq!(
+            intersection,
+            vec![(collected, crate::screen_model::CardLocation::ThisReveal)],
+            "mid-group, the pool must meet the placements in exactly the collected card, as a \
+             ThisReveal entry — anything more pre-empts a truthful reveal, anything less lets the \
+             same card be recorded twice",
+        );
+    }
+
+    /// **A blank line, and `back`, RE-ASK — they never drop the parked move.**
+    ///
+    /// The shared grammar reads both as `Cancel`, and the obvious wiring would
+    /// have made bare Enter throw a parked move away with no confirmation, which
+    /// is the quietest destructive act a prompt can perform. `cancel` still
+    /// discards, and the message names it as the way to.
+    #[test]
+    fn an_empty_line_or_back_re_asks_and_never_drops_the_parked_move() {
+        for line in ["", "back", "   "] {
+            let (mut r, _) = live_repl_at_a_port_refill();
+            let out = r.step(line);
+            assert!(
+                matches!(r.pending, Pending::OrderReveals { .. }),
+                "{line:?} must leave the move parked",
+            );
+            assert!(out.text.contains("waiting for an answer"), "{line:?}: {}", out.text);
+            assert!(out.text.contains("'cancel'"), "and names the way out: {}", out.text);
+        }
+        // ...and the word that DOES discard still discards, unchanged.
+        let (mut r, _) = live_repl_at_a_port_refill();
+        let out = r.step("cancel");
+        assert!(matches!(r.pending, Pending::None), "cancel drops the group");
+        assert!(out.text.contains("no move was applied"), "{}", out.text);
+    }
+
+    /// A live 2P session parked at the Laboratory's one-slot tech-refill
+    /// question, reached by the walk `live_lab_action_collects_tech_reveal_then_
+    /// applies_it` uses (that test keeps its own inline copy for the same reason
+    /// the Port one does — its assertions are the pinned choreography).
+    ///
+    /// A REAL parked move, not a hand-set `Pending::TechReveal`, because what the
+    /// tests below assert is that an answer REACHES THE RECORD: a synthetic
+    /// pending carrying a move the position does not allow completes the group
+    /// and then fails the apply, so nothing is recorded and every positive
+    /// assertion about the answer has to be weakened back into a negative.
+    fn live_repl_at_a_tech_refill() -> Repl {
+        let (mut r, _) = live_repl();
+        let lab_area = *r
+            .session
+            .state()
+            .board_layout
+            .areas
+            .iter()
+            .find(|(_, c)| c.area_type == AreaType::LaboratoryA)
+            .unwrap()
+            .0;
+        r.step("1");
+        r.step(&format!("a {}", lab_area.0));
+        let k = r
+            .session
+            .legal()
+            .iter()
+            .position(|m| matches!(m, Move::PlacePresident { destination } if *destination == lab_area))
+            .expect("PlacePresident at Laboratory A is legal from hand at game start");
+        r.step(&menu_number(k).to_string());
+        let take = r
+            .session
+            .legal()
+            .iter()
+            .position(|m| matches!(m, Move::ExecuteAreaAction { action: AreaAction::Laboratory { .. } }))
+            .expect("a Laboratory acquisition is available");
+        r.step(&menu_number(take).to_string());
+        assert!(matches!(r.pending, Pending::TechReveal { .. }), "parked at a tech reveal");
+        r
+    }
+
+    /// The tech capture through the one grammar: a NAME names the card (R8 —
+    /// nothing is printed on a technology to identify it by), and the pool
+    /// refusal still talks about the deck.
+    ///
+    /// **The first half asserts what the name RESOLVED TO, not merely that one
+    /// message did not appear** (T8 review, mutation M1). It used to read
+    /// `!contains("not currently in the tech deck")`, which is satisfied by any
+    /// other outcome — including the total grammar failure the review injected by
+    /// making `tech_matches` return nothing, whose refusal is worded "'…' is not
+    /// a technology" and sailed straight through. A negative assertion about one
+    /// string is not evidence that names work; the recorded event is.
+    ///
+    /// The TITLE is chosen rather than taken off the deck's top, because
+    /// `card_prompt` resolves a name to the lowest-id copy NOTHING HAS CLAIMED
+    /// and the old fixture named whatever card happened to be on top — so the
+    /// comment claiming the resolved copy was "genuinely the one we are naming"
+    /// was describing a coincidence. Here the title is picked with both copies
+    /// still in the deck and its resolution asserted up front, so the id the
+    /// record must carry is known before the answer is typed.
+    #[test]
+    fn the_tech_capture_takes_a_name_and_keeps_its_deck_flavored_refusal() {
+        let mut r = live_repl_at_a_tech_refill();
+        let rules = r.session.rules().clone();
+        let deck = r.session.state().tech_deck.clone();
+        // A title every copy of which is still in the deck: the grammar's
+        // free-copy rule then resolves the name to the LOWEST-id copy, and this
+        // prompt's pool accepts it.
+        let (name, expected) = rules
+            .techs
+            .iter()
+            .map(|c| c.name.clone())
+            .collect::<std::collections::BTreeSet<_>>()
+            .into_iter()
+            .find_map(|name| {
+                let mut copies: Vec<TechCardId> =
+                    rules.techs.iter().filter(|c| c.name == name).map(|c| c.id).collect();
+                copies.sort_unstable_by_key(|c| c.0);
+                copies.iter().all(|c| deck.contains(c)).then(|| (name, copies[0]))
+            })
+            .expect("some title has every copy still in the deck at game start");
+        // The fixture's own precondition, asserted rather than assumed: the name
+        // is unambiguous and resolves to exactly the id the record is checked for.
+        let placed = r.index_placements();
+        assert!(
+            !placed.iter().any(|(c, _)| *c == CardRef::Tech(expected)),
+            "fixture: the copy the name resolves to must be unclaimed",
+        );
+        let events_before = r.session.record().events.len();
+
+        let out = r.step(&name);
+
+        assert!(
+            r.session.record().events.iter().any(|e| matches!(
+                e, RecordedEvent::RevealTechs(cards) if cards == &vec![expected]
+            )),
+            "the title {name:?} must have named T{:02} and reached the record as the reveal: {}",
+            expected.0,
+            out.text,
+        );
+        assert_eq!(
+            r.session.record().events.len(),
+            events_before + 2,
+            "RevealTechs + the parked move, as one group: {}",
+            out.text,
+        );
+        assert!(
+            r.session.state().lab_state.lab_a.slots.contains(&Some(expected)),
+            "and the named card is physically on the board: {}",
+            out.text,
+        );
+        assert!(matches!(r.pending, Pending::None), "the group completed: {}", out.text);
+
+        // A technology that is real but already OFF the deck is refused, never
+        // accepted. Which of the two refusals it meets is decided by
+        // conservation, not by preference: every non-deck technology is placed
+        // SOMEWHERE (the tech half of
+        // `the_location_check_can_never_pre_empt_a_truthful_reveal`), so through
+        // the REPL it is the location that speaks and `check_tech_reveal`'s
+        // deck-flavored wording is pinned directly instead, by
+        // `the_tech_pool_is_the_deck_alone_and_says_so_in_deck_words`.
+        let mut r = live_repl_at_a_tech_refill();
+        let on_board = r.session.state().lab_state.lab_a.slots[0].expect("Lab A slot 1 is dealt");
+        let events_before = r.session.record().events.len();
+        let out = r.step(&format!("T{:02}", on_board.0));
+        assert!(matches!(r.pending, Pending::TechReveal { .. }), "still waiting: {}", out.text);
+        assert_eq!(r.session.record().events.len(), events_before, "nothing was recorded");
+        assert!(
+            out.text.contains("Laboratory A slot 1") || out.text.contains("not currently in the tech deck"),
+            "refused by location or by pool, never accepted: {}",
+            out.text,
+        );
+    }
+
+    /// **The guide's §6 captures are what these fixtures actually render** —
+    /// the T4-review rule, applied to T8's three screens.
+    ///
+    /// That review found a FABRICATED transcript in the guide: a splice that
+    /// printed a row the code refuses to print. The answer then was to
+    /// regenerate the block from the fixture and pin it byte-exact, so the guide
+    /// cannot drift and cannot be written by hand. Same here, for the reveal
+    /// screens a tester reads before their first live game. `guide_sync` pins
+    /// the `.html` twin against the `.md`; this test says the `.md` is the
+    /// driver's own output.
+    #[test]
+
+    fn the_guide_reveal_captures_are_what_the_fixtures_render() {
+        const GUIDE_MD: &str = include_str!("../../../docs/cli-guide.md");
+        let blocks: Vec<&str> =
+            GUIDE_MD.split("```").map(|part| part.trim_matches('\n')).collect();
+        let has = |text: &str| {
+            blocks.iter().any(|b| *b == text.trim_end_matches('\n'))
+        };
+
+        // (1) A bound Port refill, from the walk that produces one.
+        let (r, _) = live_repl_at_a_port_refill();
+        let port = crate::style::strip_ansi(&r.reveal_prompt());
+        assert!(
+            has(&port),
+            "docs/cli-guide.md §6's captured Port-refill screen is not what \
+             `live_repl_at_a_port_refill` renders. Re-capture it in BOTH formats from ONE run of \
+             this fixture -- never by editing the block by hand (T4 review M1). Rendered:\n{port}",
+        );
+
+        // (2) and (3) The guided reveal: the seat menu, then the card question.
+        let (mut r, _) = live_repl();
+        let menu = crate::style::strip_ansi(&r.step("reveal").text);
+        assert!(
+            has(&menu),
+            "docs/cli-guide.md §6's captured seat menu is not what `reveal` renders. \
+             Rendered:\n{menu}",
+        );
+        let card = crate::style::strip_ansi(&r.step("1").text);
+        assert!(
+            has(&card),
+            "docs/cli-guide.md §6's captured starting-order question is not what the guided \
+             reveal renders. Rendered:\n{card}",
+        );
+    }
+
+    /// **The prompt is the composed reveal zone** (T8's surface half): the
+    /// banner sentence, the question naming the exact slot, and a hint whose
+    /// clauses are all true HERE — no `back`, no `view`, both of which the
+    /// capture branch of `step` never reaches.
+    #[test]
+    fn the_capture_prompt_is_the_composed_reveal_zone() {
+        let (mut r, _) = live_repl_at_a_port_refill();
+        let text = crate::style::strip_ansi(&r.reveal_prompt());
+        assert!(text.contains("LIVE TRACKING"), "{text}");
+        assert!(text.contains("refilled 1 slot from the order deck."), "{text}");
+        assert!(text.contains("YOU ARE RECORDING"), "{text}");
+        assert!(text.contains("Port A slot"), "{text}");
+        assert!(text.contains("which order card is it?"), "{text}");
+        assert!(text.contains("'?' for the card index"), "the grammar is on screen: {text}");
+        assert!(text.contains("'cancel' drops the move"), "{text}");
+        assert!(!text.contains("'back' undoes"), "the decision zone's hint is FALSE here: {text}");
+        assert!(text.trim_end().ends_with('>'), "the caret is the last thing on it: {text:?}");
+
+        // The already-recorded line appears only once the group holds something,
+        // and names what it holds.
+        assert!(!text.contains("already recorded"), "nothing collected yet: {text}");
+        r.pending = Pending::OrderReveals {
+            mv: Move::EndAdditionalPhase,
+            slots: vec![3, 1],
+            board_b: false,
+            collected: vec![OrderCardId(4)],
+        };
+        let text = crate::style::strip_ansi(&r.reveal_prompt());
+        assert!(text.contains("already recorded in this reveal"), "{text}");
+        assert!(text.contains("O04"), "{text}");
+        assert!(text.contains("(reveal 2 of 2)"), "and the run position: {text}");
+    }
+
+    /// **And the same clause is false ONE KEYSTROKE AWAY, on every full-screen
+    /// view the capture's own hint offers** (six-lens F1).
+    ///
+    /// The prompt above is careful not to say `back` undoes; the six surfaces
+    /// reachable from it were saying it anyway, in a footer written for the
+    /// decision zone — "a NUMBER applies that option, and 'back' undoes your
+    /// last move" — over a question where a number is an ORDER-CARD IDENTITY
+    /// that records a reveal and commits the parked move. This walks the hint's
+    /// whole roster at a real capture and holds each one to the capture wording.
+    ///
+    /// The assertions are LINE-SPECIFIC: the two footers share their first line
+    /// verbatim, so a whole-screen `contains` proves nothing about the row that
+    /// varies (the NAMED CHECK, six-lens F2).
+    #[test]
+    fn every_view_reachable_from_a_capture_carries_the_capture_exit_line() {
+        // The roster the capture's own hint advertises, verbatim.
+        let hint = crate::style::strip_ansi(&live_repl_at_a_port_refill().0.reveal_prompt());
+        for word in ["tracks", "sites", "ports", "labs", "hand", "log"] {
+            assert!(hint.contains(&format!("'{word}'")), "the hint offers {word}: {hint}");
+
+            let (mut r, _) = live_repl_at_a_port_refill();
+            let events = r.session.record().events.len();
+            let screen = crate::style::strip_ansi(&r.step(word).text);
+            let rows: Vec<&str> = screen.lines().filter(|l| l.contains("Any other line")).collect();
+            assert_eq!(rows.len(), 1, "{word}: one exit clause on the screen\n{screen}");
+            assert!(
+                rows[0].contains("names the CARD"),
+                "{word}: the footer must say what a number does HERE\n{rows:?}",
+            );
+            assert!(
+                !rows[0].contains("applies that option"),
+                "{word}: the decision-zone claim is FALSE over a capture\n{rows:?}",
+            );
+            assert!(
+                !screen.contains("'back' undoes your last move"),
+                "{word}: nor does `back` undo anything while a reveal waits\n{screen}",
+            );
+            // Opening a view records nothing — the capture is untouched
+            // underneath it, which is what makes the return contract structural.
+            assert_eq!(r.session.record().events.len(), events, "{word}");
+            assert!(!matches!(r.pending, Pending::None), "{word}: still capturing");
+        }
+    }
+
+    /// The same six words at the MAIN prompt keep the decision wording — the
+    /// control that makes the test above a statement about context rather than
+    /// about the string being gone from the crate.
+    #[test]
+    fn the_same_views_keep_the_decision_exit_line_at_a_normal_prompt() {
+        for word in ["tracks", "sites", "ports", "labs", "hand", "log"] {
+            let (mut r, _) = live_repl();
+            let screen = crate::style::strip_ansi(&r.step(word).text);
+            let rows: Vec<&str> = screen.lines().filter(|l| l.contains("Any other line")).collect();
+            assert_eq!(rows.len(), 1, "{word}: one exit clause\n{screen}");
+            assert!(
+                rows[0].contains("NUMBER applies that option"),
+                "{word}: with options underneath, a digit really does apply one\n{rows:?}",
+            );
+        }
+    }
+
     #[test]
     fn live_port_take_collects_reveals_then_applies_them() {
         let (mut r, others) = live_repl();
@@ -377,17 +1131,17 @@ mod tests {
         // President directly at Port A via the numbered list.
         let port_area = *r.session.state().board_layout.areas.iter()
             .find(|(_, c)| c.area_type == AreaType::PortA).unwrap().0;
-        r.step("0");        // EndAdditionalPhase
+        r.step("1");        // EndAdditionalPhase
         r.step(&format!("a {}", port_area.0)); // place 1 assistant at Port A
         let k = r.session.legal().iter().position(|m| matches!(
             m, Move::PlacePresident { destination } if *destination == port_area
         )).expect("PlacePresident at Port A is legal from hand at game start");
-        r.step(&k.to_string());
+        r.step(&menu_number(k).to_string());
         // Pick a 1-card port take.
         let take = r.session.legal().iter().position(|m| matches!(
             m, Move::ExecuteAreaAction { action: AreaAction::Port { cards_taken, .. } } if cards_taken.len() == 1
         )).expect("1-card port take available");
-        let out = r.step(&take.to_string());
+        let out = r.step(&menu_number(take).to_string());
         // Live mode must now be ASKING for the refill card, not applied yet.
         assert!(out.text.to_lowercase().contains("slot"), "{}", out.text);
         let events_before = r.session.record().events.len();
@@ -414,16 +1168,16 @@ mod tests {
         // Same walk to a Port-A take as live_port_take_...; see its comment.
         let port_area = *r.session.state().board_layout.areas.iter()
             .find(|(_, c)| c.area_type == AreaType::PortA).unwrap().0;
-        r.step("0");
+        r.step("1");
         r.step(&format!("a {}", port_area.0));
         let k = r.session.legal().iter().position(|m| matches!(
             m, Move::PlacePresident { destination } if *destination == port_area
         )).expect("PlacePresident at Port A is legal from hand at game start");
-        r.step(&k.to_string());
+        r.step(&menu_number(k).to_string());
         let take = r.session.legal().iter().position(|m| matches!(
             m, Move::ExecuteAreaAction { action: AreaAction::Port { cards_taken, .. } } if cards_taken.len() == 1
         )).expect("1-card port take available");
-        let out = r.step(&take.to_string());
+        let out = r.step(&menu_number(take).to_string());
         assert!(out.text.to_lowercase().contains("slot"), "{}", out.text);
         // A physically-real order card the seeded setup boxed: in orders_removed,
         // never in the deck (conservation makes the two piles disjoint).
@@ -435,7 +1189,13 @@ mod tests {
         let out = r.step(&format!("O{}", boxed.0));
         // Accepted (not refused), applied without a desync lock, and the boxed
         // card the operator revealed is now physically on the Port A board.
-        assert!(!out.text.to_lowercase().contains("not currently in the order deck"),
+        // The needle is the refusal `check_order_reveal` really emits (T8
+        // replaced the inline pool check and its wording with it). It had been
+        // left as a fragment of the PRE-T8 sentence, which no longer exists
+        // anywhere in the crate — so the assertion written to catch a narrowed
+        // pool could not fire, and the regression would have been reported two
+        // lines down by a generic event count instead (six-lens note).
+        assert!(!out.text.contains("is not an unrevealed order card"),
             "truthful reveal of a boxed card was refused: {}", out.text);
         assert!(!out.text.contains("CRITICAL"), "{}", out.text);
         assert_eq!(r.session.record().events.len(), events_before + 2, "RevealOrders + Move: {}", out.text);
@@ -523,18 +1283,18 @@ mod tests {
         // an assistant must land at Port A before PlacePresident can target it.
         let port_area = *r.session.state().board_layout.areas.iter()
             .find(|(_, c)| c.area_type == AreaType::PortA).unwrap().0;
-        r.step("0");
+        r.step("1");
         r.step(&format!("a {}", port_area.0));
         let k = r.session.legal().iter().position(|m| matches!(
             m, Move::PlacePresident { destination } if *destination == port_area
         )).unwrap();
-        r.step(&k.to_string());
+        r.step(&menu_number(k).to_string());
         let before = r.session.state().clone();
         let events_before = r.session.record().events.len();
         let take = r.session.legal().iter().position(|m| matches!(
             m, Move::ExecuteAreaAction { action: AreaAction::Port { cards_taken, .. } } if cards_taken.len() == 1
         )).unwrap();
-        r.step(&take.to_string());
+        r.step(&menu_number(take).to_string());
         r.step(&format!("O{}", others[0].0));
         r.step("undo");
         assert_eq!(*r.session.state(), before);
@@ -551,16 +1311,16 @@ mod tests {
         let (mut r, _others) = live_repl();
         let lab_area = *r.session.state().board_layout.areas.iter()
             .find(|(_, c)| c.area_type == AreaType::LaboratoryA).unwrap().0;
-        r.step("0");
+        r.step("1");
         r.step(&format!("a {}", lab_area.0));
         let k = r.session.legal().iter().position(|m| matches!(
             m, Move::PlacePresident { destination } if *destination == lab_area
         )).expect("PlacePresident at Laboratory A is legal from hand at game start");
-        r.step(&k.to_string());
+        r.step(&menu_number(k).to_string());
         let take = r.session.legal().iter().position(|m| matches!(
             m, Move::ExecuteAreaAction { action: AreaAction::Laboratory { .. } }
         )).expect("a Laboratory acquisition is available");
-        let out = r.step(&take.to_string());
+        let out = r.step(&menu_number(take).to_string());
         // Live mode must now be ASKING for the refilled tech card, not applied yet.
         assert!(out.text.to_lowercase().contains("tech"), "{}", out.text);
         let events_before = r.session.record().events.len();
@@ -575,52 +1335,45 @@ mod tests {
         assert_eq!(replay(r.session.record(), r.session.rules()).unwrap(), *r.session.state());
     }
 
-    // The three reveal-answer parsers below are pure functions, so their
-    // junk-input handling is tested directly rather than through a full
-    // Repl/Session (cheaper, and pins the exact rejection/resolution rules
-    // rather than just "the REPL didn't crash").
+    // The pool checks below are pure functions, so their rules are pinned
+    // directly rather than through a full Repl/Session (cheaper, and pins the
+    // exact rule rather than just "the REPL didn't crash"). What they no longer
+    // pin is the GRAMMAR -- junk input, spellings, name prefixes and duplicates
+    // are `card_prompt`'s, tested in its own matrix and exercised end-to-end by
+    // `the_capture_takes_the_crates_one_card_grammar` below.
 
+    /// **The pool rule, and the one thing about it that matters at a live
+    /// table:** a card the seeded setup BOXED is a legitimate reveal, because at
+    /// 2-3 players most of the 36-card deck is never seen and the engine's split
+    /// between deck and boxed pile is a guess (`arrange_orders_on_top`
+    /// exchanges on apply). Only a card in neither pile is a real mismatch.
     #[test]
-    fn parse_order_reveal_never_panics_on_junk_and_rejects_correctly() {
+    fn the_order_pool_admits_the_deck_and_the_boxed_pile_and_nothing_else() {
         let deck = vec![OrderCardId(5), OrderCardId(9)];
         let boxed = vec![OrderCardId(30)]; // physically real, boxed at setup
-        let none: Vec<OrderCardId> = vec![];
-        assert!(parse_order_reveal(&[], &deck, &boxed, &none).is_err()); // empty input line
-        assert!(parse_order_reveal(&["O"], &deck, &boxed, &none).is_err());
-        assert!(parse_order_reveal(&["O99999"], &deck, &boxed, &none).is_err()); // overflows u8
-        assert!(parse_order_reveal(&["🎉"], &deck, &boxed, &none).is_err());
-        assert!(parse_order_reveal(&["O1"], &deck, &boxed, &none).is_err()); // valid code, in neither pile
-        assert!(parse_order_reveal(&["O5", "O9"], &deck, &boxed, &none).is_err()); // too many tokens
-        assert_eq!(parse_order_reveal(&["O5"], &deck, &boxed, &none), Ok(OrderCardId(5)));
-        assert_eq!(parse_order_reveal(&["9"], &deck, &boxed, &none), Ok(OrderCardId(9))); // bare digits, no 'O'
-        // A boxed/removed card is a valid reveal (conservation-by-exchange):
-        assert_eq!(parse_order_reveal(&["O30"], &deck, &boxed, &none), Ok(OrderCardId(30)));
-        let already = vec![OrderCardId(5)];
-        assert!(parse_order_reveal(&["O5"], &deck, &boxed, &already).is_err(), "a card can't be drawn twice");
+        assert_eq!(check_order_reveal(OrderCardId(5), &deck, &boxed), Ok(()));
+        assert_eq!(check_order_reveal(OrderCardId(30), &deck, &boxed), Ok(()));
+        let refusal = check_order_reveal(OrderCardId(1), &deck, &boxed)
+            .expect_err("in neither pile");
+        assert_eq!(
+            refusal,
+            "O01 is not an unrevealed order card (not in the deck or the boxed/removed pile).",
+        );
     }
 
+    /// The tech half, and its wording, which is NOT the registry's (fix wave,
+    /// review of commit 0a01c95 finding 2): a live-reveal rejection must talk
+    /// about the DECK, because a card can be real but already drawn -- a
+    /// materially different fact from "not a valid tech card". Techs are never
+    /// boxed at setup, so there is no second pile to admit.
     #[test]
-    fn parse_tech_reveal_never_panics_on_junk_and_resolves_name_prefix_to_lowest_id() {
-        let rules = Rules::standard();
-        // TechCardId(11) and (12) are both named "Ball" (data.rs) -- one of
-        // the 10 titles that circulate as 2 physical copies.
+    fn the_tech_pool_is_the_deck_alone_and_says_so_in_deck_words() {
         let ball_deck = vec![TechCardId(11), TechCardId(12)];
-        assert!(parse_tech_reveal(&[], &ball_deck, &rules.techs).is_err()); // empty input line
-        assert!(parse_tech_reveal(&["T"], &ball_deck, &rules.techs).is_err()); // no T-named card in THIS deck
-        assert!(parse_tech_reveal(&["🎉"], &ball_deck, &rules.techs).is_err());
-        assert!(parse_tech_reveal(&["Zzzz"], &ball_deck, &rules.techs).is_err()); // no name match
-        assert_eq!(parse_tech_reveal(&["ball"], &ball_deck, &rules.techs), Ok(TechCardId(11)), "ambiguous name resolves to the LOWEST id");
-        assert_eq!(parse_tech_reveal(&["T12"], &ball_deck, &rules.techs), Ok(TechCardId(12)));
-
-        // Message texts pinned (fix wave, review of commit 0a01c95 finding
-        // 2): a live-reveal rejection must talk about the DECK, not the
-        // registry -- a card can be real but already drawn, which is a
-        // different fact from "not a valid tech card" (the wizard's
-        // registry-flavored wording, which must NOT leak in here).
-        let not_in_deck = parse_tech_reveal(&["T99"], &ball_deck, &rules.techs).unwrap_err(); // valid code, not in deck
+        assert_eq!(check_tech_reveal(TechCardId(11), &ball_deck), Ok(()));
+        let not_in_deck =
+            check_tech_reveal(TechCardId(99), &ball_deck).expect_err("valid code, not in deck");
         assert_eq!(not_in_deck, "T99 is not currently in the tech deck.", "{not_in_deck}");
-        let no_match = parse_tech_reveal(&["Zzzz"], &ball_deck, &rules.techs).unwrap_err();
-        assert_eq!(no_match, "'Zzzz' does not match any tech card currently in the deck.", "{no_match}");
+        assert!(!not_in_deck.contains("valid tech card"), "the registry's wording must not leak in");
     }
 
     #[test]

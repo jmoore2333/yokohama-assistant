@@ -6,7 +6,8 @@ running the CLI through ordinary shell tools is blind to the render layer it is 
 **Forge MCP** (github.com/ferodrigop/forge) fixes that: it spawns real PTY sessions the agent
 can type into and read back — colors on, layout exact, wizard scriptable.
 
-Everything below was live-verified 2026-07-21 against Forge v0.9.0 on this machine.
+Everything below was live-verified 2026-07-21 against Forge v0.9.0 on this machine; the
+recipe and the sizing were re-verified against the shipped binary 2026-08-06 (Phase-3.5a T11).
 
 ## Setup facts (this machine)
 
@@ -47,11 +48,12 @@ good for asserting "the width warning printed" without re-reading everything.
 ## Verified session recipe
 
 ```
-create_terminal  {command: "/bin/zsh", cwd: <repo root>, cols: 140, rows: 50,
+create_terminal  {command: "/bin/zsh", cwd: <repo root>, cols: 200, rows: 50,
                   name: "yokohama-cli", tags: ["yokohama"]}
 write_terminal   {id, input: "cargo run -p yokohama-cli"}     # prebuild first — see notes
 wait_for         {id, pattern: "Mode\\? \\(sim/live\\)"}
-write_terminal   {id, input: "sim\n2\nred\nblue\n0\n42\n<scratchpad>/game.json\n0\n0\n"}
+write_terminal   {id, input: "sim\n2\nred\nblue\n0\n42\n<scratchpad>/game.json\n1\n1\n\n"}
+                  # keep answers are 1 or 2 (T5's 1-based ruling), one per seat;
                   # the trailing blank answers the "Bot seats?" question (3.2) — blank = none
 wait_for         {id, pattern: "confirm / edit"}
 write_terminal   {id, input: "confirm"}
@@ -63,20 +65,102 @@ close_terminal   {id}
 
 - **The whole setup wizard scripts in one multi-line write** (answers queue in the PTY line
   buffer; the wizard consumes them one question at a time). Sim 2P answer order: mode, players,
-  color×seats, start seat, seed, save path, keep×seats. 4P: same with 4 colors / 4 keeps.
-  Batching REPL moves (`"0\n0\n0"`) works the same way — but only batch moves whose prompts you
-  can predict; when unsure, one write per read.
+  color×seats, start seat, seed, save path, keep×seats, bot seats. 4P: same with 4 colors / 4
+  keeps. Batching REPL moves (`"1\n1\n1"`) works the same way — but only batch moves whose
+  prompts you can predict; when unsure, one write per read.
+- **Every numbered list starts at `[1]`** (T5's ruling, `screen_model::NUMBER_BASE`), so a
+  scripted answer of `0` is now out of range everywhere except the guided retreat's `[0-n]`,
+  which asks for a QUANTITY and where `0` legitimately means "recover none".
+- **Tile, token and achievement rosters carry STABLE numbers** (T7): a type's number is its
+  place in the whole set, fixed for the pass, and it does NOT close up as the list shrinks. A
+  script that repeated the same number to walk down a menu was reading the pre-T7 behaviour —
+  repeating `1` now re-picks the same type until its copies run out, and is then refused by
+  name. Script the numbers you actually want, or type names.
 - **Point the save path at the session scratchpad**, never the repo root (autosave writes after
   every move; a blank answer would drop `yokohama-game-<seed>.json` into the repo).
 - **`cargo build -p yokohama-cli` (plain Bash) before the session** so `cargo run` inside the
   PTY starts in ~0.1s instead of compiling; every `wait_for` above then returns instantly.
-- Sizing (measured on the staggered renderer, 2026-07-21, and pinned by `guide_sync`'s
+- Sizing (re-measured 2026-08-06 against the redesigned frame, and pinned by `guide_sync`'s
   `section2_frame_widths_match_the_composed_screen` / `..._heights_...`): the COMPOSED FRAME —
-  not the board alone — is 114 cols × 32 rows at 2 players, 132 × 33 at 3, and 108 × 38 at 4
-  (the board grids themselves are 72 / 90 / 108 cols). So **140×50 fits every player count with
-  room to spare**, and 140×40 is the true floor for seeing a whole opening screen. Rows are the
-  scarce axis, not columns: everything below the board (option list, 20 per page; message zone)
-  pushes the title and top board row off the top.
+  not the board alone — is **198 cols × 48 rows at 2 players, 175 × 49 at 3, and 200 × 48 at 4**
+  (the board grids themselves are 120 / 150 / 180 cols). So **create terminals at 200×50**,
+  which is the design floor the whole redesign is drawn to; the 140×50 earlier revisions of this
+  file recommended shears every count. In play the 3- and 4-player frames hold at 60 rows by
+  construction, while the 2-player one is ragged and keeps growing (67 rows on the deepest walk
+  the tests run) — `panel` and `screen` buy those rows back.
+- **The full-screen surfaces replace the frame rather than sitting under it**, so `read_screen`
+  after `ports` / `labs` / `tracks` / `sites` / `goals` / `hand` / `log` / `?` shows that
+  surface alone on a cleared screen. Press Enter (or `cancel`) to come back to the prompt
+  underneath — and note that any OTHER line closes the view and then RUNS, so a stray digit
+  applies an option.
+
+## Capturing a session to a file (the T12 visual-pass recipe)
+
+`read_screen` is for *looking*. When the output has to become a committed
+artifact, do not transcribe it — run the binary under `script` INSIDE the Forge
+PTY, so the CLI still sees a real terminal and every byte is logged:
+
+```
+write_terminal {id, input: "script -q <scratch>/raw.log cargo run -q -p yokohama-cli"}
+# ...drive the session as usual...
+write_terminal {id, input: "quit"}
+```
+
+Then split the log on the frame boundary and strip the escapes. Every composed
+frame opens with `ESC[2J ESC[H`, so that pair is the split point and each piece
+is one screen; `docs/plans/2026-08-05-phase3.5a-mocks/captures/t12-*.txt` were
+cut exactly this way. Measure widths on the EMITTED lines rather than on the
+viewport: `script` records what the program wrote, before the terminal wrapped
+it, which is the only way to see an overflow instead of its symptom.
+
+**Sizing surprises worth knowing before you conclude anything from a wide run.**
+The card indexes adapt above the floor through `screen::index_width`, but the
+shipped card data hides it at the obvious test size: at **240** columns nothing
+repacks, because a 49-column tech/site card fits 4 per row at both 200 and 240,
+and the order index — which would take 9 — has no flag group larger than 8. The
+discriminating cell is the **site index at 250**, where the 24-card ungrouped
+run goes 4 per row to 5. A wide run that "looks identical" is arithmetic, not a
+broken measurement.
+
+## Standing PTY checks (properties no `cargo test` can reach)
+
+Almost every honesty property in this driver is pinned by a test. These are the ones that
+**cannot** be: they are about what a real terminal does with bytes, and the suite has no
+terminal. Re-run them in a PTY whenever `crates/yokohama-cli/src/input.rs` or the `rustyline`
+declaration in `crates/yokohama-cli/Cargo.toml` changes.
+
+- **Type-ahead survives.** The whole wizard in ONE write must consume every answer:
+
+  ```
+  write_terminal {id, input: "sim\r2\rred\rblue\r1\r31337\r"}
+  ```
+
+  Six answers, one write, no waiting between them — the session must reach the **save-path**
+  question. If it stops at an earlier question, the leftover bytes were dropped with the read
+  buffer and `rustyline`'s `buffer-redux` feature is off (T9 review, MUST-1). What the suite
+  *can* say about this is only that the feature is declared —
+  `input::the_editor_arm_keeps_its_read_buffer_between_lines` — because the type that changes
+  shape lives behind a private module in rustyline. The behaviour is this check.
+
+- **↑ recall, and Ctrl-C not resurrecting.** Type a line, Enter, then ↑ — the line comes back.
+  Type a second line, press **Ctrl-C** instead of Enter, then ↑ — the abandoned line must NOT
+  be offered, and the game must still be alive at its prompt. The queue-and-history logic
+  itself is pinned without a terminal
+  (`input::a_delivered_line_enters_the_history_and_an_abandoned_one_never_does`, which drives
+  the shipped loop through a scripted stand-in); what needs the PTY is that rustyline's key
+  bindings reach that logic at all.
+
+- **A multi-line paste is answered line by line.** Paste (⌘V, not a scripted write — bracketed
+  paste is what makes this different) a two-line block such as `sim` + `2` at the mode
+  question. Both questions must be answered, exactly as the same two lines behave in a pipe.
+  The SPLIT is pinned without a terminal
+  (`input::a_pasted_block_reaches_the_parser_the_way_a_pipe_would`); the PTY is what proves the
+  block arrives as one bracketed paste in the first place.
+
+- **The frame is undisturbed by editing.** Insert mid-line, backspace, and use ↑ across the
+  wizard→REPL boundary: the composed frame above the prompt must never repaint or shear (the
+  empty `EDIT_PROMPT` geometry, pinned at the frame end by
+  `input::the_editor_prompt_is_empty_because_the_frame_ends_at_column_zero`).
 
 ## Housekeeping rules
 

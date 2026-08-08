@@ -1,0 +1,12 @@
+<span style="font-weight:bold">BUILDING SITES — full view</span>   <span style="color:#5c6773">every area&#x27;s site card: each space&#x27;s printed reward, what is built, and by whom (&#x27;sites&#x27;)</span>
+
+┌ <span style="font-weight:bold">SITE 2</span> <span style="color:#5c6773">— on COPPER MINE</span>                  ┐  ┌ <span style="font-weight:bold">SITE 8</span> <span style="color:#5c6773">— on SILK MILL</span>                    ┐  ┌ <span style="font-weight:bold">SITE 9</span> <span style="color:#5c6773">— on CHURCH</span>                       ┐
+│ top-left   1 VP             <span style="color:#6f9bff">⌂ built</span>      │  │ top-left   1 VP             <span style="opacity:.45">empty</span>        │  │ top-left   1 VP             <span style="opacity:.45">empty</span>        │
+│ top-right  3 Seafood        <span style="opacity:.45">empty</span>        │  │ top-right  2 any goods      <span style="opacity:.45">empty</span>        │  │ top-right  4 VP             <span style="opacity:.45">empty</span>        │
+│ mid-left   — blank          <span style="opacity:.45">empty</span>        │  │ mid-left   — blank          <span style="opacity:.45">empty</span>        │  │ mid-left   — blank          <span style="opacity:.45">empty</span>        │
+│ mid-right  2 Seafood        <span style="opacity:.45">empty</span>        │  │ mid-right  1 any good       <span style="opacity:.45">empty</span>        │  │ mid-right  2 assistants     <span style="opacity:.45">empty</span>        │
+│ trading house  <span style="color:#5fa8ff">★7 VP</span>  <span style="opacity:.45">open</span>               │  │ trading house  <span style="color:#5fa8ff">★6 VP</span>  <span style="opacity:.45">open</span>               │  │ trading house  <span style="color:#5fa8ff">★8 VP</span>  <span style="opacity:.45">open</span>               │
+└──────────────────────────────────────────┘  └──────────────────────────────────────────┘  └──────────────────────────────────────────┘
+
+<span style="color:#5c6773">A shophouse built on a space takes that space&#x27;s printed reward once; the trading house builds FREE from hand and scores its VP. Seven more cards page with n / p.</span>
+<span style="font-weight:bold">&gt; </span><span style="color:#5c6773">Enter returns to the game</span>

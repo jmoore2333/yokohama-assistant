@@ -209,7 +209,7 @@ impl BotSeats {
                     match (seed, seat.agent_seed) {
                         (Some(known), Some(s)) if known != s => warnings.push(format!(
                             "warning: seat {i} records bot stream seed {s}, but an earlier bot seat \
-                             records {known} -- this driver plays every bot seat off one stream, so \
+                             records {known} — this driver plays every bot seat off one stream, so \
                              it keeps {known} and seat {i} will not reproduce its recorded line",
                         )),
                         (None, Some(s)) => seed = Some(s),
@@ -220,7 +220,7 @@ impl BotSeats {
                 None => {
                     warnings.push(format!(
                         "warning: seat {i} was played by controller \"{}\", which this build does not \
-                         know how to run -- it resumes as a HUMAN seat, so you are now playing it",
+                         know how to run — it resumes as a HUMAN seat, so you are now playing it",
                         seat.controller,
                     ));
                     seats.push(None);
@@ -314,10 +314,19 @@ mod tests {
     /// The decision seed is a pure function of `(recorded seed, event count)`:
     /// the same pair always re-derives the same draw (what makes undo and
     /// resume replay the bot's own line), and different counts diverge.
+    ///
+    /// **The first assertion is a VALUE, not a self-comparison.** It used to
+    /// read `decision_seed(7) == decision_seed(7)`, which cannot fail:
+    /// `decision_seed` takes `&self` over a plain `u64` with no interior
+    /// mutability, so its purity is a type-system fact rather than a testable
+    /// one. What is genuinely worth pinning is the DERIVATION -- a changed
+    /// SplitMix64 mix would silently replay a resumed or undone game down a
+    /// different line, and nothing else in the crate holds it. Recorded from
+    /// the shipped function, not chosen.
     #[test]
     fn decision_seeds_are_pure_and_move_with_the_event_count() {
         let bots = BotSeats::new(vec![Some(fw())], 0xDEAD_BEEF_1234_5678);
-        assert_eq!(bots.decision_seed(7), bots.decision_seed(7));
+        assert_eq!(bots.decision_seed(7), 0xAC19_410F_8F80_1469);
         assert_ne!(bots.decision_seed(7), bots.decision_seed(8));
         let other = BotSeats::new(vec![Some(fw())], 1);
         assert_ne!(bots.decision_seed(7), other.decision_seed(7), "the recorded seed keys the stream");
@@ -368,6 +377,12 @@ mod tests {
         assert_eq!(warnings.len(), 1);
         assert!(warnings[0].contains("mcts-2027"), "{}", warnings[0]);
         assert!(warnings[0].contains("HUMAN"), "{}", warnings[0]);
+        // Produced before there is a session to walk, so the REPL's dash sweep
+        // cannot reach it (T11 review F5).
+        crate::style::test_support::assert_no_ascii_prose_dash(
+            "the unknown-controller warning",
+            &warnings.join("\n"),
+        );
     }
 
     /// A 2P state at the first decision point offering MORE THAN ONE move --
@@ -410,6 +425,10 @@ mod tests {
         assert_eq!(bots.seed(), 11, "the first recorded stream wins");
         assert_eq!(warnings.len(), 1, "{warnings:?}");
         assert!(warnings[0].contains("22") && warnings[0].contains("11"), "{}", warnings[0]);
+        crate::style::test_support::assert_no_ascii_prose_dash(
+            "the conflicting-stream-seed warning",
+            &warnings.join("\n"),
+        );
     }
 
     /// `without_bots` keeps the seat COUNT (a table is still a table) and

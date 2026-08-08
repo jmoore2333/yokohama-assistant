@@ -205,7 +205,7 @@ impl Session {
             Some(rev) => {
                 return Err(format!(
                     "this save was recorded under game-semantics revision {rev}, but this build \
-                     plays revision {} -- the rules and board semantics changed in between, so \
+                     plays revision {} — the rules and board semantics changed in between, so \
                      replaying it would silently rebuild the game under semantics it was never \
                      played under. Start a new game; a save from an older revision cannot be \
                      resumed against the corrected board.",
@@ -214,7 +214,7 @@ impl Session {
             }
             None => {
                 return Err(format!(
-                    "this save carries no semantics provenance (no semantics_rev -- a \
+                    "this save carries no semantics provenance (no semantics_rev — a \
                      pre-Phase-2.9 record), so there is no way to tell whether it was recorded \
                      under this build's game semantics (revision {}), and the rules and board \
                      semantics have changed since such records were written. Start a new game; \
@@ -247,14 +247,14 @@ impl Session {
         let running_version = env!("CARGO_PKG_VERSION");
         if record.engine_version != running_version {
             load_warnings.push(format!(
-                "warning: GameRecord.engine_version=\"{}\" does not match running engine version \"{running_version}\" -- replaying anyway (v1 does not refuse on a version mismatch)",
+                "warning: GameRecord.engine_version=\"{}\" does not match running engine version \"{running_version}\" — replaying anyway (v1 does not refuse on a version mismatch)",
                 record.engine_version,
             ));
         }
         let running_rules_hash = rules.content_hash();
         if record.rules_hash != running_rules_hash {
             load_warnings.push(format!(
-                "warning: GameRecord.rules_hash=\"{}\" does not match running rules content hash \"{running_rules_hash}\" -- replaying anyway (v1 does not refuse on a rules_hash mismatch)",
+                "warning: GameRecord.rules_hash=\"{}\" does not match running rules content hash \"{running_rules_hash}\" — replaying anyway (v1 does not refuse on a rules_hash mismatch)",
                 record.rules_hash,
             ));
         }
@@ -332,7 +332,7 @@ impl Session {
             if &actual_digest != expected_digest {
                 return Err(format!(
                     "this save records terminal-state digest {expected_digest}, but its own seed, \
-                     setup and {} recorded event(s) replay to {actual_digest} -- the file has been \
+                     setup and {} recorded event(s) replay to {actual_digest} — the file has been \
                      edited or corrupted since it was written, so resuming it would continue the \
                      game from a position (and possibly a board) it never recorded. Start a new \
                      game; a save that cannot reproduce its own recorded state cannot be resumed.",
@@ -489,7 +489,19 @@ impl Session {
         // printed price, a movement fee's recipient, and any other
         // state-dependent wording would otherwise go stale the moment state
         // moves on).
-        let move_description = crate::describe::describe_move(&mv, &staged, &self.rules);
+        //
+        // Through `describe_recorded_event`, not `describe_move`, and the clone
+        // is what that costs: this line and `load`'s fold must produce the SAME
+        // string for the same event, and the way to guarantee that is one
+        // function rather than two that happen to agree. They stopped agreeing
+        // the moment the log gained its actor prefix (T11 review F3) —
+        // `load_of_a_saved_session_reproduces_event_descriptions_exactly` is
+        // the test that catches it, and it caught it.
+        let move_description = crate::describe::describe_recorded_event(
+            &RecordedEvent::Move(mv.clone()),
+            &staged,
+            &self.rules,
+        );
         // apply_move_unchecked: the gate just above already proved
         // membership in get_legal_moves on this same staged state, so
         // routing through checked apply_move would double-enumerate
@@ -874,7 +886,7 @@ mod tests {
 
         assert_eq!(
             s.state().pending_choices, vec![PendingChoice::ChurchSpace { total_faith: 6 }],
-            "setup recipe drifted -- re-derive against the current engine before trusting this fixture"
+            "setup recipe drifted — re-derive against the current engine before trusting this fixture"
         );
         s
     }
@@ -1104,6 +1116,11 @@ mod tests {
             err.to_lowercase().contains("start a new game"),
             "the refusal must say WHAT to do next: {err}"
         );
+        // The load refusals are the messages the REPL's own dash sweep cannot
+        // reach — they are produced before there is a session to walk (T11
+        // review F5), so the rule is checked where the fixture already holds
+        // the string.
+        crate::style::test_support::assert_no_ascii_prose_dash("the semantics_rev refusal", &err);
     }
 
     /// I-1, the unknown-provenance half: a record with no `semantics_rev` at
@@ -1131,6 +1148,7 @@ mod tests {
             err.to_lowercase().contains("start a new game"),
             "the refusal must say WHAT to do next: {err}"
         );
+        crate::style::test_support::assert_no_ascii_prose_dash("the missing-provenance refusal", &err);
     }
 
     /// I2 (third review). `save` stamps a `terminal_digest` of the state its
@@ -1162,6 +1180,7 @@ mod tests {
             err.to_lowercase().contains("start a new game"),
             "the refusal must say WHAT to do next, like the semantics_rev one: {err}"
         );
+        crate::style::test_support::assert_no_ascii_prose_dash("the digest refusal", &err);
     }
 
     /// The digest check must not become a load-refusal machine: a save this
@@ -1534,7 +1553,7 @@ mod tests {
         }
         assert!(
             saw_move_president,
-            "fixture must exercise at least one MovePresident event -- re-derive the step count/seed if the engine's move ordering drifted"
+            "fixture must exercise at least one MovePresident event — re-derive the step count/seed if the engine's move ordering drifted"
         );
 
         let path = std::env::temp_dir().join(format!("yokohama_test_descs_{}.json", std::process::id()));

@@ -1,0 +1,42 @@
+                                            [1mY O K O H A M A[0m   [90m4-PLAYER LAYOUT STUDY — illustrative board · the dashboard moves BELOW the board at this count[0m
+
+┌ [90mB00[0m [1mCOPPER MINE[0m ───────────┐┌ [90mB01[0m [1mBANK[0m ──────────────────┐┌ [90mB02[0m [1mPORT A[0m ────────────────┐┌ [90mB03[0m [1mCHINATOWN[0m ─────────────┐┌ [90mB04[0m [1mSILK MILL[0m ─────────────┐┌ [90mB05[0m [1mLABORATORY A[0m ──────────┐
+│ 5-Power: [93m1 Import[0m [90mSite 12[0m  ││ 5-Power: [32m3 Tea[0m [90mSite 12[0m     ││ 5-Power: [93m1 Import[0m [90mSite 12[0m  ││ 5-Power: [38;5;172m2 Copper[0m [90mSite 12[0m  ││ 5-Power: [93m1 Import[0m [90mSite 12[0m  ││ 5-Power: [38;5;220m3 Yen[0m [90mSite 12[0m     │
+│ President: [2mnone[0m            ││ President: [2mnone[0m            ││ President: [2mnone[0m            ││ President: [2mnone[0m            ││ President: [2mnone[0m            ││ President: [2mnone[0m            │
+│ [91mR0[0m [94mB0[0m [93mY0[0m [92mG0[0m assistants     ││ [91mR0[0m [94mB0[0m [93mY0[0m [92mG0[0m assistants     ││ [91mR0[0m [94mB0[0m [93mY0[0m [92mG0[0m assistants     ││ [91mR0[0m [94mB0[0m [93mY0[0m [92mG0[0m assistants     ││ [91mR0[0m [94mB0[0m [93mY0[0m [92mG0[0m assistants     ││ [91mR0[0m [94mB0[0m [93mY0[0m [92mG0[0m assistants     │
+│ Shophouses [2m····[0m Trade [2m·[0m    ││ Shophouses [2m····[0m Trade [2m·[0m    ││ Shophouses [2m····[0m Trade [2m·[0m    ││ Shophouses [2m····[0m Trade [2m·[0m    ││ Shophouses [2m····[0m Trade [2m·[0m    ││ Shophouses [2m····[0m Trade [2m·[0m    │
+└────────────────────────────┘└────────────────────────────┘└────────────────────────────┘└────────────────────────────┘└────────────────────────────┘└────────────────────────────┘
+               ┌ [90mB06[0m [1mFISHING GROUND[0m ────────┐┌ [90mB07[0m [1mCUSTOMS[0m ───────────────┐┌ [90mB08[0m [1mCANAL[0m ─────────────────┐┌ [90mB09[0m [1mEMPLOYMENT AGENCY[0m ─────┐┌ [90mB10[0m [1mLABORATORY B[0m ──────────┐
+               │ 5-Power: [96m3 Seafood[0m [90mSite 12[0m ││ 5-Power: [97m2 Silk[0m [90mSite 12[0m    ││ [2mtransit only — no pawns,[0m   ││ 5-Power: [93m1 Import[0m [90mSite 12[0m  ││ 5-Power: [38;5;220m3 Yen[0m [90mSite 12[0m     │
+               │ President: [2mnone[0m            ││ President: [2mnone[0m            ││ [2mno tokens, no buildings[0m    ││ President: [2mnone[0m            ││ President: [2mnone[0m            │
+               │ [91mR0[0m [94mB0[0m [93mY0[0m [92mG0[0m assistants     ││ [91mR0[0m [94mB0[0m [93mY0[0m [92mG0[0m assistants     ││ [38;5;220m¥1[0m to the bank / crossing  ││ [91mR0[0m [94mB0[0m [93mY0[0m [92mG0[0m assistants     ││ [91mR0[0m [94mB0[0m [93mY0[0m [92mG0[0m assistants     │
+               │ Shophouses [2m····[0m Trade [2m·[0m    ││ Shophouses [2m····[0m Trade [2m·[0m    ││                            ││ Shophouses [2m····[0m Trade [2m·[0m    ││ Shophouses [2m····[0m Trade [2m·[0m    │
+               └────────────────────────────┘└────────────────────────────┘└────────────────────────────┘└────────────────────────────┘└────────────────────────────┘
+                              ┌ [90mB11[0m [1mTEA PLANTATION[0m ────────┐┌ [90mB12[0m [1mCHURCH[0m ────────────────┐┌ [90mB13[0m [1mPORT B[0m ────────────────┐┌ [90mB14[0m [1mSILK MILL[0m ─────────────┐
+                              │ 5-Power: [32m3 Tea[0m [90mSite 12[0m     ││ 5-Power: [93m1 Import[0m [90mSite 12[0m  ││ 5-Power: [93m1 Import[0m [90mSite 12[0m  ││ 5-Power: [97m2 Silk[0m [90mSite 12[0m    │
+                              │ President: [2mnone[0m            ││ President: [2mnone[0m            ││ President: [2mnone[0m            ││ President: [2mnone[0m            │
+                              │ [91mR0[0m [94mB0[0m [93mY0[0m [92mG0[0m assistants     ││ [91mR0[0m [94mB0[0m [93mY0[0m [92mG0[0m assistants     ││ [91mR0[0m [94mB0[0m [93mY0[0m [92mG0[0m assistants     ││ [91mR0[0m [94mB0[0m [93mY0[0m [92mG0[0m assistants     │
+                              │ Shophouses [2m····[0m Trade [2m·[0m    ││ Shophouses [2m····[0m Trade [2m·[0m    ││ Shophouses [2m····[0m Trade [2m·[0m    ││ Shophouses [2m····[0m Trade [2m·[0m    │
+                              └────────────────────────────┘└────────────────────────────┘└────────────────────────────┘└────────────────────────────┘
+                                             ┌ [90mB15[0m [1mCOPPER MINE[0m ───────────┐┌ [90mB16[0m [1mTEA PLANTATION[0m ────────┐┌ [90mB17[0m [1mFISHING GROUND[0m ────────┐
+                                             │ 5-Power: [38;5;172m2 Copper[0m [90mSite 12[0m  ││ 5-Power: [96m3 Seafood[0m [90mSite 12[0m ││ 5-Power: [93m1 Import[0m [90mSite 12[0m  │
+                                             │ President: [2mnone[0m            ││ President: [2mnone[0m            ││ President: [2mnone[0m            │
+                                             │ [91mR0[0m [94mB0[0m [93mY0[0m [92mG0[0m assistants     ││ [91mR0[0m [94mB0[0m [93mY0[0m [92mG0[0m assistants     ││ [91mR0[0m [94mB0[0m [93mY0[0m [92mG0[0m assistants     │
+                                             │ Shophouses [2m····[0m Trade [2m·[0m    ││ Shophouses [2m····[0m Trade [2m·[0m    ││ Shophouses [2m····[0m Trade [2m·[0m    │
+                                             └────────────────────────────┘└────────────────────────────┘└────────────────────────────┘
+
+[90m─ [0m[1mPLAYERS[0m [90m─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────[0m 
+[91m[1m▶ RED — your turn[0m                 [38;5;220m¥3[0m   [38;5;75m0 VP[0m      [94m[1m  BLUE[0m                            [38;5;220m¥4[0m   [38;5;75m0 VP[0m      [93m[1m  YELLOW[0m                          [38;5;220m¥4[0m   [38;5;75m0 VP[0m      [92m[1m  GREEN[0m                           [38;5;220m¥4[0m   [38;5;75m0 VP[0m
+  Goods  [38;5;172m1 Copper[0m · [97m1 Silk[0m · [32m1 Tea[0m                 Goods  [38;5;172m1 Copper[0m · [97m1 Silk[0m · [32m1 Tea[0m                 Goods  [38;5;172m1 Copper[0m · [97m1 Silk[0m · [32m1 Tea[0m                 Goods  [38;5;172m1 Copper[0m · [97m1 Silk[0m · [32m1 Tea[0m
+         [96m1 Seafood[0m · [2m0 Imports[0m                            [96m1 Seafood[0m · [2m0 Imports[0m                            [96m1 Seafood[0m · [2m0 Imports[0m                            [96m1 Seafood[0m · [2m0 Imports[0m
+  Assistants  8 hand · 0 board · 12 warehouse      Assistants  8 hand · 0 board · 12 warehouse      Assistants  8 hand · 0 board · 12 warehouse      Assistants  8 hand · 0 board · 12 warehouse
+  Shophouses  2 hand · 6 warehouse · 0 built       Shophouses  2 hand · 6 warehouse · 0 built       Shophouses  2 hand · 6 warehouse · 0 built       Shophouses  2 hand · 6 warehouse · 0 built
+  Trade houses 0 hand · 4 warehouse · 0 built      Trade houses 0 hand · 4 warehouse · 0 built      Trade houses 0 hand · 4 warehouse · 0 built      Trade houses 0 hand · 4 warehouse · 0 built
+  President in hand · 1 order                      President in hand · 1 order (hidden)             President in hand · 1 order (hidden)             President in hand · 1 order (hidden)
+
+[90m─ [0m[1mTRACKS[0m  Church [2m[4][5][6][7][8][9][10][11][0m 0/6 · Customs [2m[1][1][2][2][3][3][4][0m imports 0/6 [90m(no dummy at 4P · 'tracks' for rewards)[0m   [1mACHIEVEMENTS[0m A·Silk 6 B·Orders 5 C·Prod 2+Comm 3 [90m('goals')[0m
+[90m────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────[0m
+[1mTURN 1 · [91mRED[0m[1m's turn[0m   [7m[1m ADDITIONAL [0m[90m ▸ [0m[2mPlacement[0m[90m ▸ [0m[2mMovement[0m[90m ▸ [0m[2mArea Action[0m[90m ▸ [0m[2m5-Power[0m[90m ▸ [0m[2mBuilding[0m[90m ▸ [0m[2mRecovery[0m[90m ▸ [0m[2mAdditional[0m[90m ▸ [0m[2mEnd[0m
+[1mYOU ARE DECIDING[0m · an additional action before Placement.
+   [1m[1][0m End the additional-action phase and move on to [1mPlacement[0m
+[1m> [0m

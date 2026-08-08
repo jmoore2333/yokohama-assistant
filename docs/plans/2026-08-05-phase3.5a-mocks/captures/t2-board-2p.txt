@@ -1,0 +1,22 @@
+┌ A00 SILK MILL ─────────────┐┌ A01 FISHING GROUND ────────┐┌ A02 PORT A ────────────────┐┌ A03 COPPER MINE ───────────┐
+│ 5-Power: 1 Import Site 22  ││ 5-Power: 1 Import Site 6   ││ 5-Power: 3 Yen Site 14     ││ 5-Power: 3 Tea Site 10     │
+│ no pawns                   ││ no pawns                   ││ no pawns                   ││ no pawns                   │
+│ sites ★1 ★4 — ★3  │ T9     ││ sites ★1 *2 — *1  │ T7     ││ sites ★1 ★3 — ⌂2  │ T8     ││ sites ★1 ⌂2 — a2  │ T7     │
+└────────────────────────────┘└────────────────────────────┘└────────────────────────────┘└────────────────────────────┘
+               ┌ A04 CHURCH ────────────────┐┌ A05 BANK ──────────────────┐┌ A06 LABORATORY A ──────────┐               
+               │ 5-Power: 2 Copper Site 9   ││ 5-Power: 1 Import Site 7   ││ 5-Power: 3 Tea Site 21     │               
+               │ no pawns                   ││ no pawns                   ││ no pawns                   │               
+               │ sites ★1 ⌂2 — a2  │ T6     ││ sites ★1 *2 — *1  │ T6     ││ sites ★1 ★4 — ★1¥2  │ T5   │               
+               └────────────────────────────┘└────────────────────────────┘└────────────────────────────┘               
+                              ┌ A07 CUSTOMS ───────────────┐┌ A08 EMPLOYMENT AGENCY ─────┐                              
+                              │ 5-Power: 3 Seafood Site 16 ││ 5-Power: 2 Silk Site 17    │                              
+                              │ no pawns                   ││ no pawns                   │                              
+                              │ sites ★1 ★2¥1 — ★1¥1  │ T9 ││ sites ★1 ★2¥1 — ★2  │ T8   │                              
+                              └────────────────────────────┘└────────────────────────────┘                              
+                                             ┌ A09 TEA PLANTATION ────────┐                                             
+                                             │ 5-Power: 2 Copper Site 13  │                                             
+                                             │ no pawns                   │                                             
+                                             │ sites ★1 ⌂3 — ⌂2  │ T5     │                                             
+                                             └────────────────────────────┘                                             
+marks: ▲ president (owner color) · ● assistants (4, then +n) · ◈ a Movement destination the engine offers · [St] Station (+1 Power for everyone)
+site slots: ⌂ built (owner color) · ★n VP · ¥n yen · f/t/s/cn goods · *n any good · an assistants · ⌂n build · Tn trading-house VP — 'sites' renders the full cards

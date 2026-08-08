@@ -1,0 +1,19 @@
+GAME INFO — full view   the 'view' pattern: every panel on the frame is a summary, and most rows here open its full surface — Board, Players and Score redraw the frame instead
+
+  [1]  Port offer — the order cards on display, and the power each zone takes
+  [2]  Laboratory offer — the technologies on display, with what each costs
+  [3]  Tracks — every Church and Customs space as a card, with who is on it
+  [4]  Building sites — every area's site card: rewards, builders, canal tolls
+  [5]  Goals — the achievement cards, claim VP, and per-player progress
+  [6]  Your hand — the current player's order cards, drawn in full
+  [7]  Log — the move and reveal trail, each line as it read when it applied
+  [8]  Board — tiles, presidents, assistants, buildings
+  [9]  Players — every player's public holdings in full
+  [10] Score — current victory points and money
+  [11] Order card index — all 36 cards, grouped by flag ('?' anywhere)
+  [12] Technology index — all 20 titles by flag, with what each one does
+  [13] Site card index — all 24 printed cards and their four spaces
+
+Every row here is also a word you can type at the prompt, and the two run the same code — so this menu is a reminder, never a second way to be wrong.
+Pick a number to open a surface, or 'cancel' to go back to the prompt underneath with nothing entered.
+>

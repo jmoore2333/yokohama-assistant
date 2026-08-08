@@ -1,0 +1,22 @@
+LABORATORY OFFER — full view   the technologies on display, what each one does, and the industry it costs in its slot
+
+LABORATORY A — acquire ONE card by paying its industry; the slot's own surcharge is already in the figure.  6 of 6 slots filled
+┌ slot 1 · surcharge +0 ─────────────────────────────────────────┐ ┌ slot 2 · surcharge +0 ─────────────────────────────────────────┐ ┌ slot 3 · surcharge +1 ─────────────────────────────────────────┐
+│ MINING TECHNOLOGY               Germany                        │ │ TELEPHONE                       America                        │ │ STOCK MARKET                    Netherlands                    │
+│ industry 3    card 3 + slot 0 · pay the rest in yen or imports │ │ industry 6    card 6 + slot 0 · pay the rest in yen or imports │ │ industry 4    card 3 + slot 1 · pay the rest in yen or imports │
+│ +1 Copper each time you receive 1 or more Copper (once per     │ │ During Recovery, may leave 1 assistant in the action area      │ │ At turn start, if you have 1 Yen or less, refill to 2 Yen      │
+│ gain, not per token)                                           │ │                                                                │ │                                                                │
+└────────────────────────────────────────────────────────────────┘ └────────────────────────────────────────────────────────────────┘ └────────────────────────────────────────────────────────────────┘
+┌ slot 4 · surcharge +1 ─────────────────────────────────────────┐ ┌ slot 5 · surcharge +2 ─────────────────────────────────────────┐ ┌ slot 6 · surcharge +2 ─────────────────────────────────────────┐
+│ GASLIGHT                        France                         │ │ LETTERPRESS PRINTING            Netherlands                    │ │ PATENT SYSTEM                   France                         │
+│ industry 4    card 3 + slot 1 · pay the rest in yen or imports │ │ industry 5    card 3 + slot 2 · pay the rest in yen or imports │ │ industry 5    card 3 + slot 2 · pay the rest in yen or imports │
+│ +2 VP when you build a Shophouse                               │ │ +1 Yen for each Technology you acquire after this one (never   │ │ +2 VP for each Technology you acquire after this one (never    │
+│                                                                │ │ for this card itself)                                          │ │ for this card itself)                                          │
+└────────────────────────────────────────────────────────────────┘ └────────────────────────────────────────────────────────────────┘ └────────────────────────────────────────────────────────────────┘
+
+Industry comes from your action power, plus 2 yen or 1 imported good per point — so a card one point out of reach costs 2 yen more, not a turn.
+You may own only ONE technology of a given name; ten of the twenty titles are in the box twice, so two players can each hold one.
+Technology deck: 24 cards left
+Enter or 'cancel' closes this view and puts you back at the prompt underneath, exactly as you left it — nothing is entered and nothing there is cancelled.
+Any other line closes the view and then RUNS at that prompt — a NUMBER applies that option, and 'back' undoes your last move.
+>

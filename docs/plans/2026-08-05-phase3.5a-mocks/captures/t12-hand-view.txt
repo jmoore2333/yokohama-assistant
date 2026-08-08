@@ -1,0 +1,14 @@
+BLUE'S HAND — full view   your order cards at full size: the goods each one needs, and what it pays when you fulfil it
+
+ORDER CARDS — 1 card
+┌ FRANCE           O30 ┐
+│ 3 Tea 2 Silk         │
+│                      │
+│ ★4 VP ¥2             │
+│ your starting order  │
+└──────────────────────┘
+
+An order is fulfilled as an additional action: hand over the goods it needs, take what it pays, and the card goes to your completed pile.
+Enter or 'cancel' closes this view and puts you back at the prompt underneath, exactly as you left it — nothing is entered and nothing there is cancelled.
+Any other line closes the view and then RUNS at that prompt — a NUMBER applies that option, and 'back' undoes your last move.
+>

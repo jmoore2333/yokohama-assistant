@@ -41,7 +41,7 @@ That link is a hosted copy, so it opens and renders in a browser. The source of 
 repo — GitHub shows `.html` as source rather than rendering it, so read that one by opening the
 file locally.
 
-## Status (2026-08-05)
+## Status (2026-08-07)
 
 The engine plays complete, rules-correct games at 2–4 players and has been verified
 **differentially**: an independently-authored rules oracle — written from the rulebook and
@@ -56,7 +56,7 @@ surfaced with owner rulings. Full report:
 
 **The computer player ladder (Phase 3) is five sub-phases in**, governed by the accepted map
 [`docs/plans/2026-07-25-phase3-map.md`](docs/plans/2026-07-25-phase3-map.md), every one of them
-with `SEMANTICS_REV` unmoved at 5 (3.0–3.3 merged; 3.4 sits on its branch as this is written):
+with `SEMANTICS_REV` unmoved at 5 (all merged to master):
 
 - **3.0 — honest observation** (PRs #6–#7): a seat-relative `PlayerView` masking the five-member
   hidden set, plus a conservation-consistent belief sampler — a bot takes a view, never a raw
@@ -88,9 +88,18 @@ with `SEMANTICS_REV` unmoved at 5 (3.0–3.3 merged; 3.4 sits on its branch as t
   close report:
   [`docs/plans/2026-08-05-phase3.4-close-report.md`](docs/plans/2026-08-05-phase3.4-close-report.md).
 
-**Next:** the Phase-2 live gate game (track a physical game start to finish — awaiting
-scheduling; every pre-rev-5 save is unresumable, start fresh) and Phase 3.5 — the bar (the
-retained architecture productionized, evaluator v2, and the acceptance play).
+**3.5a — the CLI redesign** (PR #16, merged 2026-08-07) rebuilt the driver into the v2 frontend:
+a 200×50 raised-floor frame with a persistent dashboard, full words, a visual card index as the
+canonical identification mechanism, guided pickers and menus everywhere, readline editing, and
+full-screen views — with the piped protocol byte-identical and the engine crates untouched.
+
+**Next (renumbered by owner ruling, 2026-08-07):** **3.5b is the BGA→CLI bridge** — a dev-mode
+Chrome extension + local relay + importer that turns the owner's own BoardGameArena games into
+engine-validated live-tracked records (cards identified by their unique requirement/reward
+vectors), with the re-scoped Phase-2 live-tracking gate claimed by finishing a real BGA table
+tracked end-to-end (design: [`docs/plans/2026-08-07-bga-bridge-design.md`](docs/plans/2026-08-07-bga-bridge-design.md)).
+**3.5c is the strength/automation lane** formerly called 3.5b (evaluator v2, tuning, the
+five-rung experiment, productionized bot seats, acceptance play, the bar declaration).
 The CLI is tester-ready; start with the linked HTML guide and report any table/CLI mismatch.
 
 Releases now track completed phases (**v0.3.3** ↔ Phase 3.3; the first version bump in the

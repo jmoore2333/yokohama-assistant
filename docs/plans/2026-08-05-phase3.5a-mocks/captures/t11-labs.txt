@@ -1,0 +1,22 @@
+LABORATORY OFFER — full view   the technologies on display, what each one does, and the industry it costs in its slot
+
+LABORATORY A — acquire ONE card by paying its industry; the slot's own surcharge is already in the figure.  6 of 6 slots filled
+┌ slot 1 · surcharge +0 ─────────────────────────────────────────┐ ┌ slot 2 · surcharge +0 ─────────────────────────────────────────┐ ┌ slot 3 · surcharge +1 ─────────────────────────────────────────┐
+│ LETTERPRESS PRINTING            Netherlands                    │ │ UNIVERSITY                      Britain                        │ │ BALL                            Britain                        │
+│ industry 3    card 3 + slot 0 · pay the rest in yen or imports │ │ industry 3    card 3 + slot 0 · pay the rest in yen or imports │ │ industry 4    card 3 + slot 1 · pay the rest in yen or imports │
+│ +1 Yen for each Technology you acquire after this one (never   │ │ Once per turn: pay 1 Yen to take an assistant from the         │ │ +2 VP when you complete an Order                               │
+│ for this card itself)                                          │ │ Warehouse                                                      │ │                                                                │
+└────────────────────────────────────────────────────────────────┘ └────────────────────────────────────────────────────────────────┘ └────────────────────────────────────────────────────────────────┘
+┌ slot 4 · surcharge +1 ─────────────────────────────────────────┐ ┌ slot 5 · surcharge +2 ─────────────────────────────────────────┐ ┌ slot 6 · surcharge +2 ─────────────────────────────────────────┐
+│ NEWSPAPER                       Netherlands                    │ │ TEXTILE MILL                    Britain                        │ │ POSTAL SYSTEM                   Britain                        │
+│ industry 6    card 5 + slot 1 · pay the rest in yen or imports │ │ industry 6    card 4 + slot 2 · pay the rest in yen or imports │ │ industry 5    card 3 + slot 2 · pay the rest in yen or imports │
+│ Placement Option A may use 4 different areas instead of 3      │ │ Once per turn: discard 1 Silk to gain 2 Yen                    │ │ May stop and act where opponent Presidents stand; pay each     │
+│                                                                │ │                                                                │ │ owner 1 Yen unless you own Stagecoach                          │
+└────────────────────────────────────────────────────────────────┘ └────────────────────────────────────────────────────────────────┘ └────────────────────────────────────────────────────────────────┘
+
+Industry comes from your action power, plus 2 yen or 1 imported good per point — so a card one point out of reach costs 2 yen more, not a turn.
+You may own only ONE technology of a given name; ten of the twenty titles are in the box twice, so two players can each hold one.
+Technology deck: 24 cards left
+Enter or 'cancel' closes this view and puts you back at the prompt underneath, exactly as you left it — nothing is entered and nothing there is cancelled.
+Any other line closes the view and then RUNS at that prompt — a NUMBER applies that option, and 'back' undoes your last move.
+> 
