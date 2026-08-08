@@ -1,11 +1,20 @@
 //! BGA importer integration pins against the REAL corpus (Phase 3.5b H1).
 //!
 //! These tests read the gitignored capture `bridge-captures/895724349.ndjson`
-//! by path and SKIP with a printed notice when it is absent (the always-run
-//! tier lives in the `bga` module's unit tests against the committed redacted
-//! excerpt — the split the plan §5 states). What only the full corpus can
-//! pin: the mapper covering every card the game surfaced, and the sheet
-//! synthesizing from the true 194-move feed.
+//! by path (the always-run tier lives in the `bga` module's unit tests against
+//! the committed redacted excerpt — the split the plan §5 states). What only
+//! the full corpus can pin: the mapper covering every card the game surfaced,
+//! the sheet synthesizing from the true 194-move feed, the m153 acceptance
+//! replay, and the follower matching the batch byte-for-byte.
+//!
+//! Absence of the corpus is a LOUD failure by default (F6 / six-lens lens-4+6):
+//! `corpus_text` PANICS with a named, actionable message, because a
+//! `libtest`-swallowed `eprintln!` on a passing test made a corpus-less run
+//! report these pins as `ok` while they asserted nothing — indistinguishable
+//! from a real pass, so the reported gate figures carried no information about
+//! whether the tier ran. Set `YOKOHAMA_BGA_CORPUS_OPTIONAL=1` to turn absence
+//! back into a quiet skip (the documented opt-out for a fresh clone / CI
+//! without the owner's capture; named in the 3.5b ledger's gates row).
 
 use yokohama_bridge::feed::read_and_collapse;
 use yokohama_cli::bga::orders::OrderMapper;
@@ -19,10 +28,16 @@ fn corpus_text() -> Option<String> {
     );
     match std::fs::read_to_string(path) {
         Ok(t) => Some(t),
-        Err(_) => {
-            eprintln!("SKIPPED: gitignored corpus not present at {path}");
+        Err(_) if std::env::var_os("YOKOHAMA_BGA_CORPUS_OPTIONAL").is_some() => {
+            eprintln!("SKIPPED (YOKOHAMA_BGA_CORPUS_OPTIONAL set): corpus not present at {path}");
             None
         }
+        Err(e) => panic!(
+            "the gitignored corpus is not present at {path} ({e}).\n\
+             These pins verify the phase's headline acceptance figures against the real 194-move \
+             capture; a silent skip would make 'verified' indistinguishable from 'file missing'. \
+             Provide the capture, or set YOKOHAMA_BGA_CORPUS_OPTIONAL=1 to skip this tier deliberately."
+        ),
     }
 }
 

@@ -11,17 +11,25 @@
 //!   fresh clone without the gitignored corpus still exercises the parser on
 //!   real wire shapes.
 //! - **The full corpus** (`bridge-captures/895724349.ndjson`, gitignored):
-//!   the complete 194-move game. Tests against it SKIP with a printed notice
-//!   when the file is absent — they are the distributional pins (194-move
-//!   spine, all five supersessions, dedupe rates) that only the full file can
-//!   provide, and silently passing without it would be vacuous, hence the
-//!   loud skip.
+//!   the complete 194-move game. Tests against it are the distributional pins
+//!   (194-move spine, all five supersessions, dedupe rates) that only the full
+//!   file can provide. Absence is a LOUD failure by default — `corpus_text`
+//!   PANICS with a named, actionable message, because a `libtest`-swallowed
+//!   `eprintln!` on a passing test made a corpus-less run report these pins as
+//!   `ok` while they asserted nothing, indistinguishable from a real pass. Set
+//!   `YOKOHAMA_BGA_CORPUS_OPTIONAL=1` to turn absence back into a quiet skip
+//!   (the documented opt-out for a fresh clone / CI without the owner's
+//!   capture; named in the 3.5b ledger's gates row).
 
 use yokohama_bridge::feed::{read_and_collapse, read_captures, Transport};
 
 const EXCERPT: &str = include_str!("data/excerpt-895724349.ndjson");
 const TABLE: u64 = 895_724_349;
 
+/// The gitignored full-corpus capture. Absence PANICS with a named, actionable
+/// message by default (F6 / lens-4+6), so a corpus-less run reports these pins
+/// as FAILED rather than a swallowed-`eprintln!` `ok`. `YOKOHAMA_BGA_CORPUS_OPTIONAL=1`
+/// turns absence back into a quiet skip for a fresh clone / CI.
 fn corpus_text() -> Option<String> {
     let path = concat!(
         env!("CARGO_MANIFEST_DIR"),
@@ -29,10 +37,16 @@ fn corpus_text() -> Option<String> {
     );
     match std::fs::read_to_string(path) {
         Ok(t) => Some(t),
-        Err(_) => {
-            eprintln!("SKIPPED: gitignored corpus not present at {path}");
+        Err(_) if std::env::var_os("YOKOHAMA_BGA_CORPUS_OPTIONAL").is_some() => {
+            eprintln!("SKIPPED (YOKOHAMA_BGA_CORPUS_OPTIONAL set): corpus not present at {path}");
             None
         }
+        Err(e) => panic!(
+            "the gitignored corpus is not present at {path} ({e}).\n\
+             These pins verify the phase's headline acceptance figures against the real 194-move \
+             capture; a silent skip would make 'verified' indistinguishable from 'file missing'. \
+             Provide the capture, or set YOKOHAMA_BGA_CORPUS_OPTIONAL=1 to skip this tier deliberately."
+        ),
     }
 }
 
