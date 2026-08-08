@@ -373,6 +373,36 @@ pub fn board_legend(state: &GameState, _rules: &Rules) -> String {
     board_render::board_legend(has_canal)
 }
 
+/// The end-trigger strip (owner request 2026-08-08): one compact, always-plain
+/// line for the composed frame stating every end-game trigger's proximity —
+/// order deck remaining (PUBLIC count only, never contents: the strip must be
+/// blind to hidden information, pinned by the leak test), church and customs
+/// fill against the player-count threshold, and the best seat's shophouse/8
+/// and trading-house/4 progress (the engine's triggers are any-player maxima,
+/// `end_game.rs`). The church/customs counts are REAL pawns — the engine's
+/// `total_assistants` excludes the 2P dummy, whose faith-7/space-4 seats sit
+/// OUTSIDE the count (the threshold is 4 real pawns at 2P; the guide states
+/// this). Once a trigger has fired the strip announces the final round instead
+/// of pretending the race is still on. (The deck trigger also needs an
+/// unfillable Port slot — rulebook: deck empty AND a Port slot stays empty —
+/// so a "deck 0" reading is necessary, not sufficient; the guide carries that
+/// nuance rather than the strip.)
+pub fn end_trigger_line(state: &GameState) -> String {
+    let thr = state.config.track_trigger();
+    let shops = state.players.iter().map(|p| p.shophouses.total_built()).max().unwrap_or(0);
+    let houses = state.players.iter().map(|p| p.trading_houses.total_built()).max().unwrap_or(0);
+    let mut line = format!(
+        "end triggers: deck {} · church {}/{thr} · customs {}/{thr} · shophouses {shops}/8 · trade houses {houses}/4",
+        state.order_deck.len(),
+        state.church_track.total_assistants(),
+        state.customs_track.total_assistants(),
+    );
+    if state.end_game_triggered {
+        line.push_str(" · FINAL ROUND");
+    }
+    line
+}
+
 // The `ports` and `labs` views RETIRED at T11 and moved to `view_render` as
 // full-screen card surfaces, the way `tracks`/`sites`/`goals` moved at T6 —
 // spec §0.5's whole roster now renders card-like, from typed models, over the
@@ -1038,6 +1068,80 @@ mod tests {
         let rules = Rules::standard();
         let pending = new_game(GameConfig::for_player_count(n), &rules, 1).unwrap();
         finalize_setup(pending, &vec![StartingOrderChoice::Keep(0); n as usize]).unwrap()
+    }
+
+    /// The end-trigger strip (owner request 2026-08-08): one compact line per
+    /// frame stating every end-game trigger's proximity. The 2P church/customs
+    /// thresholds are 4 REAL pawns — the engine's dummy-exclusion encoding
+    /// (`total_assistants` filters `is_dummy`) means the fresh 2P state reads
+    /// 0/4 even though the dummy already sits on church faith-7 and customs
+    /// space-4; the guide states that the dummy sits outside the count.
+    #[test]
+    fn end_trigger_line_states_every_trigger_with_dummy_excluded_counts() {
+        let state = test_state_2p();
+        let line = end_trigger_line(&state);
+        assert_eq!(
+            line,
+            format!(
+                "end triggers: deck {} · church 0/4 · customs 0/4 · shophouses 0/8 · trade houses 0/4",
+                state.order_deck.len()
+            )
+        );
+        // 3P/4P thresholds move with the config (5, 6).
+        for (n, thr) in [(3u8, 5u8), (4, 6)] {
+            let s = test_state_np(n);
+            let l = end_trigger_line(&s);
+            assert!(l.contains(&format!("church 0/{thr}")), "{l}");
+            assert!(l.contains(&format!("customs 0/{thr}")), "{l}");
+        }
+    }
+
+    /// The leak fence: the strip may state the deck's COUNT, never anything a
+    /// seated player cannot see — so it must be byte-identical across states
+    /// differing only in hidden information (deck ORDER here, the largest
+    /// hidden channel the line touches).
+    #[test]
+    fn end_trigger_line_is_blind_to_hidden_deck_contents() {
+        let state = test_state_2p();
+        let mut reordered = state.clone();
+        reordered.order_deck.reverse();
+        assert_ne!(state.order_deck, reordered.order_deck, "the mutation must bite");
+        assert_eq!(end_trigger_line(&state), end_trigger_line(&reordered));
+    }
+
+    /// Counts move with state, and a fired trigger announces the final round.
+    #[test]
+    fn end_trigger_line_tracks_progress_and_announces_the_final_round() {
+        let mut state = test_state_2p();
+        let areas: Vec<yokohama_core::AreaId> =
+            state.board_layout.areas.keys().copied().collect();
+        for (i, a) in areas.iter().take(3).enumerate() {
+            state.players[0].shophouses.built.insert(*a, i as u8);
+        }
+        state.players[1].trading_houses.built.push(areas[4]);
+        let line = end_trigger_line(&state);
+        assert!(line.contains("shophouses 3/8"), "{line}");
+        assert!(line.contains("trade houses 1/4"), "{line}");
+        assert!(!line.contains("FINAL ROUND"), "{line}");
+        state.end_game_triggered = true;
+        assert!(end_trigger_line(&state).contains("FINAL ROUND"));
+    }
+
+    /// Width sweep: the strip fits every composed frame width (it is measured
+    /// with `visible_width`'s plain-text rule — no escapes in the line at all).
+    #[test]
+    fn end_trigger_line_fits_every_frame_width() {
+        for n in [2u8, 3, 4] {
+            let state = test_state_np(n);
+            let line = end_trigger_line(&state);
+            assert!(!line.contains('\u{1b}'), "the strip is plain text");
+            assert!(!line.contains('\n'), "one line, no wrap");
+            let w = crate::screen::visible_width(&line);
+            assert!(
+                w <= crate::screen::frame_width(n as usize),
+                "{n}P end-trigger strip is {w} wide, over that count's frame width"
+            );
+        }
     }
 
     #[test]
