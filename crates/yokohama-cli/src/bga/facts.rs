@@ -295,6 +295,12 @@ pub fn extract(
                 | "tableWindow" | "resultsAvailable" | "tableInfosChanged"
                 | "updatePlayerNotifCount" | "updatePlayerTableStatus" | "chat"
                 | "playerstatus" | "undoRestorePoint" | "simpleNode"
+                // simpleNote: BGA's standard framework notice, measured live at
+                // the gate game (table 896157897, move 1) — the proving corpus
+                // never carried one. (The pre-existing "simpleNode" entry above
+                // is retained but suspect: never observed on any wire; possibly
+                // an inventory transcription of this very kind.)
+                | "simpleNote"
                 | "gameStateMultipleActiveUpdate" => {}
 
                 "orderDiscarded" => push(Fact::Discard { seat: seat("orderDiscarded")? }),
