@@ -36,11 +36,17 @@ impl Relay {
 
     /// Append one already-built line to a table's capture file.
     ///
-    /// The lock is held across the whole append. `O_APPEND` makes the offset
-    /// update atomic but does not promise that a multi-kilobyte write lands in
-    /// one piece, and two interleaved snapshots would produce two lines that
-    /// no NDJSON reader can parse — which is precisely the corruption the
-    /// capture file exists to be free of.
+    /// The lock is held across the whole append, and the H0 review measured
+    /// what it is actually worth: with the mutex REMOVED, single-`write_all`
+    /// `O_APPEND` appends on macOS/APFS stayed atomic from 40 KB all the way to
+    /// 32 MiB, so on this machine the lock changes nothing. It stays because
+    /// that atomicity is a property of the filesystem, not of POSIX — NFS in
+    /// particular does not promise it — and the failure it prevents is silent
+    /// corruption of the one artifact the whole phase is built on.
+    ///
+    /// Read `concurrent_appends_never_interleave` accordingly: it pins the
+    /// OUTCOME (16 concurrent appends, 16 parseable lines) and does not
+    /// discriminate the lock, since it passes without it here.
     pub fn append(&self, table_id: &str, line: &str) -> Result<u64, CaptureError> {
         let _guard = self.append_lock.lock().unwrap_or_else(|poisoned| {
             // A panic in another handler must not take the capture path down
@@ -97,8 +103,12 @@ mod tests {
 
     #[test]
     fn concurrent_appends_never_interleave() {
-        // The lock's reason to exist, made executable: sixteen threads writing
-        // long lines at once must still produce sixteen parseable lines.
+        // Sixteen threads writing long lines at once produce sixteen parseable
+        // lines. That is the OUTCOME this pins, and it is worth stating what it
+        // does NOT pin: the H0 review removed the mutex and this still passed,
+        // because macOS/APFS keeps a single-`write_all` `O_APPEND` write atomic
+        // at these sizes. So a green run here is evidence about the file, not
+        // proof the lock is load-bearing — see `Relay::append` for why it stays.
         let dir = std::env::temp_dir()
             .join(format!("yokohama-bridge-concurrent-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);

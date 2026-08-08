@@ -27,10 +27,20 @@ bridge-relay listening on http://127.0.0.1:8787
   read-only: this process never talks to Board Game Arena.
 ```
 
-Leave it running. Options: `--dir <path>` to write elsewhere, `--port <n>` to
-move the port (change `RELAY_ORIGIN` in `bridge/extension/background.js` to
-match), `--help` for the rest. It binds loopback only and refuses to do
-otherwise.
+Leave it running. Options: `--dir <path>` to write elsewhere, `--port <n>`,
+`--help` for the rest. It binds loopback only and refuses to do otherwise.
+
+**Changing the port means changing it in three more places**, and missing any
+one leaves the extension silently unable to reach a relay that is running fine:
+
+| Where | What |
+|---|---|
+| `bridge/extension/background.js` | `RELAY_ORIGIN` — the address it POSTs to |
+| `bridge/extension/manifest.json` | the `http://127.0.0.1:8787/*` host permission |
+| `crates/yokohama-bridge/src/lib.rs` | `DEFAULT_PORT`, so the flag is not needed next time |
+
+After editing the extension files, reload it in `chrome://extensions` **and**
+reload the BGA tab.
 
 Confirm it is alive:
 
@@ -98,6 +108,13 @@ One JSON object per line:
 `received_at_ms` is when the relay took delivery; `payload.captured_at_ms` is
 when the page saw it. They differ when a capture waited in the extension's
 outbox, so order a replay by the capture time, not the receive time.
+
+**Delivery is at-least-once, so the file may contain duplicates.** The extension
+re-sends anything it is not sure landed, and Chrome can recycle its service
+worker mid-send. This is deliberate — losing a capture is unrecoverable, sending
+one twice is not — but it means anything reading the file must dedupe on the
+payload's own identity, never on `received_at_ms`, which differs across a
+re-send by construction.
 
 ---
 
