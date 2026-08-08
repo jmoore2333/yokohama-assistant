@@ -8,7 +8,8 @@
 //! the count.
 
 use yokohama_core::{
-    GameState, Move, MoveSource, PendingChoice, Rules, TradeGood, TradingHouseState, WarehouseItem,
+    GameState, Move, MoveSource, MoveTarget, PendingChoice, Rules, TradeGood, TradingHouseState,
+    WarehouseItem,
 };
 
 use crate::area_actions_tracks::{eligible_church_spaces, eligible_customs_spaces};
@@ -77,7 +78,7 @@ pub(crate) fn head_choice_moves(state: &GameState, rules: &Rules) -> Vec<Move> {
                     if matches!(from, MoveSource::Area(a) if a == to) {
                         continue;
                     }
-                    moves.push(Move::ChooseAssistantMove { from, to });
+                    moves.push(Move::ChooseAssistantMove { from, to: MoveTarget::Area(to) });
                 }
             }
             moves.push(Move::DeclineAssistantMove);
@@ -114,6 +115,7 @@ mod tests {
     use super::*;
     use crate::test_support::two_player_state;
     use yokohama_core::{AreaId, PendingChoice, Rules};
+    use yokohama_core::MoveTarget;
 
     fn rules() -> Rules {
         Rules::empty_for_tests()
@@ -183,12 +185,12 @@ mod tests {
         for id in [0, 1, 2, 3] {
             assert!(moves.contains(&Move::ChooseAssistantMove {
                 from: MoveSource::Hand,
-                to: AreaId::new(id),
+                to: MoveTarget::Area(AreaId::new(id)),
             }));
         }
         assert!(!moves.contains(&Move::ChooseAssistantMove {
             from: MoveSource::Hand,
-            to: AreaId::new(4), // Canal
+            to: MoveTarget::Area(AreaId::new(4)), // Canal
         }));
         assert!(moves.contains(&Move::DeclineAssistantMove));
     }
@@ -202,15 +204,15 @@ mod tests {
         let moves = head_choice_moves(&s, &rules());
         assert!(moves.contains(&Move::ChooseAssistantMove {
             from: MoveSource::Area(AreaId::new(1)),
-            to: AreaId::new(0),
+            to: MoveTarget::Area(AreaId::new(0)),
         }));
         assert!(!moves.contains(&Move::ChooseAssistantMove {
             from: MoveSource::Area(AreaId::new(1)),
-            to: AreaId::new(1), // to ≠ from
+            to: MoveTarget::Area(AreaId::new(1)), // to ≠ from
         }));
         assert!(!moves.contains(&Move::ChooseAssistantMove {
             from: MoveSource::Area(AreaId::new(1)),
-            to: AreaId::new(4), // Canal
+            to: MoveTarget::Area(AreaId::new(4)), // Canal
         }));
         // Hand is empty ⇒ no from-Hand options.
         assert!(!moves

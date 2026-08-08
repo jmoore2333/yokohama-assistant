@@ -950,7 +950,13 @@ pub fn describe_move(mv: &Move, state: &GameState, rules: &Rules) -> String {
                 MoveSource::Hand => "hand".to_string(),
                 MoveSource::Area(a) => area_label(state, *a),
             };
-            format!("Move an assistant from {from_label} to {} (reward move)", area_label(state, *to))
+            let to_label = match to {
+                // D3 (2026-08-08): the icon may return an on-board assistant
+                // to the owner's hand — full words, per the CLI's vocabulary.
+                MoveTarget::Hand => "your hand".to_string(),
+                MoveTarget::Area(a) => area_label(state, *a),
+            };
+            format!("Move an assistant from {from_label} to {to_label} (reward move)")
         }
         Move::DeclineAssistantMove => "Decline the assistant move".to_string(),
         // Show the space's FULL printed reward -- VP plus its movement rider
@@ -1619,13 +1625,17 @@ mod tests {
         let rules = Rules::standard();
         let some_area = *state.board_layout.areas.keys().next().unwrap();
 
-        let from_hand = describe_move(&Move::ChooseAssistantMove { from: MoveSource::Hand, to: some_area }, &state, &rules);
+        let from_hand = describe_move(&Move::ChooseAssistantMove { from: MoveSource::Hand, to: MoveTarget::Area(some_area) }, &state, &rules);
         assert!(from_hand.starts_with("Move an assistant from hand to "), "{from_hand}");
         assert!(from_hand.ends_with("(reward move)"), "{from_hand}");
 
-        let from_area = describe_move(&Move::ChooseAssistantMove { from: MoveSource::Area(some_area), to: some_area }, &state, &rules);
+        let from_area = describe_move(&Move::ChooseAssistantMove { from: MoveSource::Area(some_area), to: MoveTarget::Area(some_area) }, &state, &rules);
         assert!(from_area.contains(&format!("(A{:02})", some_area.0)), "{from_area}");
         assert!(!from_area.contains("hand"), "{from_area}");
+
+        // D3 (2026-08-08): the to-hand return reads in full words.
+        let to_hand = describe_move(&Move::ChooseAssistantMove { from: MoveSource::Area(some_area), to: MoveTarget::Hand }, &state, &rules);
+        assert!(to_hand.ends_with("to your hand (reward move)"), "{to_hand}");
 
         assert_eq!(describe_move(&Move::DeclineAssistantMove, &state, &rules), "Decline the assistant move");
     }

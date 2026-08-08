@@ -1417,7 +1417,7 @@ mod tests {
 
         let mut s = Session::for_test_from_state(state, Rules::standard());
         let delta = s
-            .apply(Move::ChooseAssistantMove { from: MoveSource::Area(from_area), to: to_area }, vec![])
+            .apply(Move::ChooseAssistantMove { from: MoveSource::Area(from_area), to: MoveTarget::Area(to_area) }, vec![])
             .unwrap();
         assert!(delta.iter().any(|l| l.contains("assistant moved")), "{delta:?}");
     }

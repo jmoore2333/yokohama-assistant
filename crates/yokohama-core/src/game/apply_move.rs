@@ -3226,7 +3226,7 @@ mod tests {
 
         let after_first = apply_move(
             &mid,
-            &Move::ChooseAssistantMove { from: MoveSource::Area(AreaId::new(0)), to: AreaId::new(1) },
+            &Move::ChooseAssistantMove { from: MoveSource::Area(AreaId::new(0)), to: MoveTarget::Area(AreaId::new(1)) },
             &rules,
         ).unwrap();
         assert_eq!(after_first.pending_choices, vec![PendingChoice::AssistantMove]);
@@ -3240,12 +3240,15 @@ mod tests {
     #[test]
     fn test_fulfill_order_movement_with_no_destinations_auto_declines() {
         // Degenerate case: create_minimal_state's default board has no areas
-        // at all, so AssistantMove has zero valid destinations and each icon
-        // auto-declines instead of queuing (design §5.1 singleton rule) --
-        // apply_fulfill_order must still succeed and leave assistants intact.
+        // at all, so a HAND-sourced AssistantMove has zero valid destinations
+        // and each icon auto-declines instead of queuing (design §5.1
+        // singleton rule) -- apply_fulfill_order must still succeed and leave
+        // assistants intact. Since D3 (2026-08-08) the fixture must hold its
+        // assistants in HAND only: an on-board pawn now always carries the
+        // to-hand return as a real resolution, so an on-board source would
+        // queue a genuine choice here rather than auto-declining.
         let mut state = create_minimal_state(2);
         state.turn_phase = TurnPhase::AdditionalActionFirst;
-        state.players[0].assistants.on_board.insert(AreaId::new(0), 2);
 
         let order_id = OrderCardId(42);
         state.players[0].order_cards_in_hand.push(order_id);
