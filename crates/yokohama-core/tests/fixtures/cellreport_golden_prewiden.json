@@ -1,36 +1,53 @@
 {
-  "spec_echo": "cell=t0-prewiden-golden-ra-vs-fw players=2 x=retreat-averse@v1 y=family-weighted@v1{recovery_min_of=5,retreat_ppm=166667} units=4 unit=pair (2 seatings) games=8 master=diagnostic:0xa3e1202607260033 bootstrap_B=10000 resample_seed=0xae3bbd7ea9af4289 single-threaded=yes fixed-N=yes",
+  "spec_echo": "cell=t0-prewiden-golden-ra-vs-fw players=2 x=retreat-averse@v1 y=family-weighted@v1{recovery_min_of=5,retreat_ppm=166667} units=4 unit=pair (2 seatings) games=8 master=diagnostic:0xa3e1202607260037 bootstrap_B=10000 resample_seed=0xc91ce84392c6d822 single-threaded=yes fixed-N=yes setup-identical=yes",
   "games": 8,
   "x_unit_shares": [
-    1.0,
     0.5,
     0.5,
-    0.5
+    0.5,
+    0.0
   ],
-  "theta_hat": 0.625,
+  "theta_hat": 0.375,
   "interval": {
     "Bootstrap": {
-      "lo": 0.5,
-      "hi": 0.875,
+      "lo": 0.125,
+      "hi": 0.5,
       "b": 10000,
-      "resample_seed": 12554836737935753865
+      "resample_seed": 14491713077894371362
     }
   },
   "cross_checks": [
     "null reference for this cell: 1/2 = 0.500000 (ONE X against 1 Y seats — the single-champion shape; 0.5 is the null only at 2P)",
-    "unit-t 95% cross-check: [0.227673, 1.022327] (n=4 units, sd=0.250000, t(0.975, 3)≈3.1786) — printed, never primary; asymptotic expansion, ~11% narrow at df=1 and unreliable below df≈10 (T7 review F5)",
-    "Wilson-on-pooled-games 95% cross-check: [0.305742, 0.863156] (5/8 games) — CROSS-CHECK ONLY and NEVER primary at 3-4P: games within a unit are clustered (E2 measured 4P rho=+0.051, dragging a nominal 95% interval to ~93.2% true coverage), so this row understates the width the unit bootstrap reports",
+    "unit-t 95% cross-check: [-0.022327, 0.772327] (n=4 units, sd=0.250000, t(0.975, 3)≈3.1786) — printed, never primary; asymptotic expansion, ~11% narrow at df=1 and unreliable below df≈10 (T7 review F5)",
+    "Wilson-on-pooled-games 95% cross-check: [0.136844, 0.694258] (3/8 games) — CROSS-CHECK ONLY and NEVER primary at 3-4P: games within a unit are clustered (E2 measured 4P rho=+0.051, dragging a nominal 95% interval to ~93.2% true coverage), so this row understates the width the unit bootstrap reports",
     "top-VP ties: 0/8 games (0.0000), 0 decided for seat 0 — `final_result` is a total order and never reports a tie, so this is how often the clockwise tie-break DECIDED the game; at 2P seat 0 takes every tie, so its award is half this rate (spec §4's +0.63pp at the bracket rate of 1.26%)",
     "NEAR-BOUNDARY CAVEAT: interval endpoint saturated at 0/1 or unit vector has only 2 distinct value(s) — percentile-bootstrap coverage degrades toward the boundary (measured 0.39-0.87 at theta=0.99 for N=50-200); read this interval as directional, not calibrated"
   ],
   "seat0_wins": 5,
   "ties_to_seat0": 0,
-  "vp_margin_mean": 7.125,
+  "vp_margin_mean": -3.625,
+  "applied_by_seat": [
+    2876,
+    2897
+  ],
+  "x_applied_moves": 2860,
+  "x_explanations": null,
+  "x_ply_cap_hits": null,
+  "x_free_cap_hits": null,
+  "x_candidates_scored": null,
+  "x_root_scored": null,
+  "x_budget_binds": null,
+  "x_budget_starved_decisions": null,
+  "y_candidates_scored": null,
+  "y_root_scored": null,
+  "y_budget_binds": null,
+  "y_budget_starved_decisions": null,
   "trigger": {
     "counts": {
-      "ChurchTrackFull": 8
+      "ChurchTrackFull": 6,
+      "OrderDeckEmpty": 2
     },
     "games": 8
   },
-  "master": 11808755045642928179
+  "master": 11808755045642928183
 }

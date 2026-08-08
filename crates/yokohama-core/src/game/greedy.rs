@@ -852,17 +852,30 @@ mod tests {
     /// default, `examples/eval_probe`'s `DEFAULT_MASTER`).
     const FREEZE_MASTER: u64 = 0xE7A1_2026_0727_0001;
 
-    /// How many games of that corpus the falsifier replays. Eight is the
-    /// smallest prefix carrying more than one nonzero-recovery event at a
-    /// comfortable margin over the floor (3 events, 2.1×) — see the test's doc
-    /// for the sizing and its debug cost.
-    const RECOVERY_SAMPLE_GAMES: u32 = 8;
+    /// How many games of that corpus the falsifier replays. RE-SIZED 8 → 64
+    /// at `SEMANTICS_REV` 6 (2026-08-08 rules-parity rulings): the rev-6
+    /// corpus share is ~20× rarer than T4's (see the floor below), so an
+    /// 8-game prefix's expected event count fell to ~0.16 and the test's
+    /// literal `> 0` clause needs a prefix that actually CONTAINS events —
+    /// 64 games carry 2 (share 0.000061, 6.1× the floor). Debug cost ~20 s;
+    /// see the test's doc for the sizing discipline.
+    const RECOVERY_SAMPLE_GAMES: u32 = 64;
 
-    /// **MEASURED, THEN HALVED.** Half of T4's frozen-table 2P corpus share
-    /// (739 / 1,051,752 = 0.000703), rounded DOWN to one significant figure —
-    /// `policy_diversity`'s coverage-floor pattern exactly. Never invented, and
-    /// never raised without a fresh corpus measurement to raise it from.
-    const RECOVERY_SHARE_FLOOR_2P: f64 = 0.0003;
+    /// **MEASURED, THEN HALVED.** Half the frozen-table 2P corpus share,
+    /// rounded DOWN to one significant figure — `policy_diversity`'s
+    /// coverage-floor pattern exactly. Never invented, and never raised
+    /// without a fresh corpus measurement to raise it from.
+    ///
+    /// RE-MEASURED at `SEMANTICS_REV` 6 (2026-08-08, the rules-parity ruling
+    /// set — reachable-state behaviour changes, so the corpus trajectories
+    /// legitimately moved): `cargo run --release -p yokohama-core --example
+    /// eval_probe -- run 2 2000 --master 0xE7A1202607270001` read **36
+    /// nonzero-recovery picks in 1,087,155 applied moves, share 0.000033**
+    /// (T4's rev-5 reading was 739 / 1,051,752 = 0.000703 — a ~20× drop:
+    /// rev-6 economics make recovery-positive retreats far rarer for this
+    /// agent, recorded here and in the branch close-out, not hidden). Half,
+    /// rounded down to one significant figure: 0.00001.
+    const RECOVERY_SHARE_FLOOR_2P: f64 = 0.00001;
 
     // -- fixtures -------------------------------------------------------------
 
@@ -1720,21 +1733,27 @@ mod tests {
     ///
     /// # The floor is MEASURED, then halved (the house pattern)
     ///
-    /// T4's frozen-table corpus — 2,000 games, 1,051,752 applied moves,
+    /// The rev-6 frozen-table corpus — 2,000 games, 1,087,155 applied moves,
     /// `cargo run --release -p yokohama-core --example eval_probe -- run 2 2000
-    /// --master 0xE7A1202607270001` — read **739 nonzero-recovery picks, share
-    /// 0.000703**. [`RECOVERY_SHARE_FLOOR_2P`] is half of that, rounded down to
-    /// one significant figure, exactly as `policy_diversity`'s coverage floors
-    /// are set. The sample here is the FIRST EIGHT GAMES OF THAT SAME CORPUS
-    /// (same master, same schedule, same agent keying; only the per-move
-    /// invariant check is off, which does not touch play), so its share is a
-    /// prefix of the published figure rather than a second measurement:
-    /// **3 picks in 4,703 applied moves, share 0.000638 — 2.1× the floor.**
+    /// --master 0xE7A1202607270001`, re-run 2026-08-08 at `SEMANTICS_REV` 6 —
+    /// read **36 nonzero-recovery picks, share 0.000033** (T4's rev-5 reading
+    /// was 739 / 1,051,752 = 0.000703; the ~20× drop is the rules-parity
+    /// rulings moving the economics, recorded not hidden).
+    /// [`RECOVERY_SHARE_FLOOR_2P`] is half of the rev-6 share, rounded down
+    /// to one significant figure, exactly as `policy_diversity`'s coverage
+    /// floors are set. The sample here is the FIRST SIXTY-FOUR GAMES OF THAT
+    /// SAME CORPUS (same master, same schedule, same agent keying; only the
+    /// per-move invariant check is off, which does not touch play), so its
+    /// share is a prefix of the published figure rather than a second
+    /// measurement: **2 picks in 32,787 applied moves, share 0.000061 —
+    /// 6.1× the floor.**
     ///
-    /// Three events is a thin sample and this doc says so rather than dressing
+    /// Two events is a thin sample and this doc says so rather than dressing
     /// it up. The CORPUS is the measurement; this is the per-edit tripwire that
-    /// the behaviour still exists, sized by what a debug build can afford
-    /// (~3 s). A red here means "re-run the probe", not "the number moved".
+    /// the behaviour still exists, sized by the smallest seeded prefix that
+    /// contains events at all (~20 s debug — the rev-6 rarity is what forced
+    /// the growth from 8 games). A red here means "re-run the probe", not
+    /// "the number moved".
     ///
     /// # SCOPED TO 2P, deliberately
     ///

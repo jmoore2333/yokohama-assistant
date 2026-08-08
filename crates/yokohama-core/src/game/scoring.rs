@@ -211,8 +211,21 @@ fn calculate_customs_bonus(state: &GameState) -> Vec<(PlayerId, u32)> {
 
 /// Technology total industry value bonus: 1st = 10 VP, 2nd = 5 VP.
 /// Tiebreaker: closest to start player (clockwise).
+///
+/// D5 (owner ruling 2026-08-08, rulebook p.9 final-scoring NOTE): in
+/// 2-player games the setup dummy competes in this majority too, at an
+/// industry value of EXACTLY 7.5 — "the dummy player ends the game with an
+/// industry value of 7.5". Observed on BGA: owner 1st (10 VP), the dummy's
+/// 7.5 beat the opponent's lower total for 2nd, which was then awarded to
+/// nobody. Industry values are compared as DOUBLED integers so the half is
+/// exact (the dummy is 15; real totals are even, so a tie against the dummy
+/// is unrepresentable and the clockwise tiebreak can never involve it — the
+/// dummy's `distance` entry below is a placeholder, not a reachable key).
+/// This extends the 2026-07-21 finding-D1 church/customs modeling: the dummy
+/// can TAKE a place, and a taken place is awarded to nobody
+/// (`award_top_two`'s semantics, restated here over the doubled-IV ranking).
 fn calculate_technology_bonus(state: &GameState, tech_registry: &TechRegistry) -> Vec<(PlayerId, u32)> {
-    // Calculate total industry value for each player
+    // Total industry value per player, DOUBLED (see the doc above).
     let mut totals: Vec<(PlayerId, u32, u8)> = state
         .players
         .iter()
@@ -225,11 +238,20 @@ fn calculate_technology_bonus(state: &GameState, tech_registry: &TechRegistry) -
             // Distance from start player (for tiebreaker - lower is better)
             let distance = (p.id.0 + state.config.player_count - state.config.start_player.0)
                 % state.config.player_count;
-            (p.id, total_iv, distance)
+            (p.id, 2 * total_iv, distance)
         })
         .collect();
 
-    // Sort by industry value (desc), then by distance from start player (asc)
+    // D5: the 2P dummy contender at doubled-IV 15 (= 7.5 exactly). Presence
+    // is keyed on the player count, matching invariant I9 ("2P state ⟹ the
+    // setup dummy is on the board") — the dummy's industry value is a rule
+    // about 2-player final scoring, not a function of any track pawn.
+    if state.config.player_count == 2 {
+        totals.push((PlayerId::DUMMY, 15, u8::MAX));
+    }
+
+    // Sort by doubled industry value (desc), then by distance from start
+    // player (asc).
     totals.sort_by(|a, b| {
         b.1.cmp(&a.1).then(a.2.cmp(&b.2))
     });
@@ -240,15 +262,14 @@ fn calculate_technology_bonus(state: &GameState, tech_registry: &TechRegistry) -
     // (08-tech-cards.yaml min is 3). The rulebook's literal gate is
     // ownership; if a zero-industry tech is ever added, this must become an
     // ownership check or a 0-iv owner would wrongly be excluded (Stage-2
-    // differential review note, 2026-07-20).
-    if let Some((player, iv, _)) = totals.first() {
-        if *iv > 0 {
-            bonuses.push((*player, 10));
-        }
-    }
-    if let Some((player, iv, _)) = totals.get(1) {
-        if *iv > 0 {
-            bonuses.push((*player, 5));
+    // differential review note, 2026-07-20). The dummy (15 > 0) always
+    // participates at 2P; like the church/customs rankings, a place it takes
+    // is CONSUMED and awarded to nobody.
+    for (place_vp, entry) in [(10u32, totals.first()), (5u32, totals.get(1))] {
+        if let Some((player, doubled_iv, _)) = entry {
+            if *doubled_iv > 0 && !player.is_dummy() {
+                bonuses.push((*player, place_vp));
+            }
         }
     }
 
@@ -665,6 +686,110 @@ mod tests {
         assert_eq!(bonuses.len(), 2);
         assert_eq!(bonuses[0], (PlayerId::new(1), 10), "clockwise-nearest of the tie -> 1st = 10");
         assert_eq!(bonuses[1], (PlayerId::new(2), 5), "2nd = 5");
+    }
+
+    // --- D5 (owner ruling 2026-08-08): the 2P dummy in the TECHNOLOGY majority ---
+
+    /// Registry of test techs with chosen industry costs, ids 1..=n.
+    fn tech_registry_with_costs(costs: &[u8]) -> TechRegistry {
+        let mut reg = TechRegistry::new();
+        for (i, &cost) in costs.iter().enumerate() {
+            let id = (i + 1) as u8;
+            reg.insert(
+                TechCard {
+                    id: TechCardId(id),
+                    name: format!("Test Tech {id}"),
+                    country: Country::English,
+                    industry_cost: cost,
+                    effect: TechEffect::Tram,
+                },
+                "tech_test",
+            );
+        }
+        reg
+    }
+
+    /// D5 (rulebook p.9 final-scoring NOTE, owner ruling 2026-08-08): the 2P
+    /// dummy competes in the Technology majority at industry value EXACTLY
+    /// 7.5. The BGA-observed shape: owner 1st (10 VP), the dummy's 7.5 beats
+    /// the opponent for 2nd — awarded to nobody — so the opponent gets
+    /// NOTHING. RED before D5: the opponent's 5 collected the 5-VP second
+    /// place.
+    #[test]
+    fn tech_majority_2p_dummy_takes_second_at_seven_and_a_half() {
+        let reg = tech_registry_with_costs(&[10, 5]);
+        let mut state = create_test_game_state(2);
+        state.config.start_player = PlayerId::new(0);
+        state.players[0].technologies = vec![TechCardId(1)]; // IV 10
+        state.players[1].technologies = vec![TechCardId(2)]; // IV 5 < 7.5
+
+        let bonuses = calculate_technology_bonus(&state, &reg);
+        assert_eq!(
+            bonuses,
+            vec![(PlayerId::new(0), 10)],
+            "dummy at 7.5 takes 2nd (awarded to nobody); IV-5 opponent gets nothing"
+        );
+    }
+
+    /// D5 exactness: the half is load-bearing. IV 8 BEATS the dummy's 7.5
+    /// (2nd place, 5 VP); IV 7 LOSES to it (nothing). A model that rounded
+    /// 7.5 to 7 or 8 fails one of these two halves.
+    #[test]
+    fn tech_majority_2p_dummy_industry_is_exactly_seven_and_a_half() {
+        let reg = tech_registry_with_costs(&[10, 8]);
+        let mut state = create_test_game_state(2);
+        state.config.start_player = PlayerId::new(0);
+        state.players[0].technologies = vec![TechCardId(1)]; // IV 10
+        state.players[1].technologies = vec![TechCardId(2)]; // IV 8 > 7.5
+
+        let bonuses = calculate_technology_bonus(&state, &reg);
+        assert_eq!(
+            bonuses,
+            vec![(PlayerId::new(0), 10), (PlayerId::new(1), 5)],
+            "IV 8 beats 7.5 — the dummy places third and changes nothing"
+        );
+
+        let reg = tech_registry_with_costs(&[10, 7]);
+        state.players[1].technologies = vec![TechCardId(2)]; // IV 7 < 7.5
+        let bonuses = calculate_technology_bonus(&state, &reg);
+        assert_eq!(
+            bonuses,
+            vec![(PlayerId::new(0), 10)],
+            "IV 7 loses to 7.5 — the dummy consumes 2nd"
+        );
+    }
+
+    /// D5: the dummy can take FIRST — both real players below 7.5 leaves the
+    /// 10-VP place awarded to nobody and the better real player on 2nd.
+    #[test]
+    fn tech_majority_2p_dummy_takes_first_when_both_players_are_below_it() {
+        let reg = tech_registry_with_costs(&[5, 3]);
+        let mut state = create_test_game_state(2);
+        state.config.start_player = PlayerId::new(0);
+        state.players[0].technologies = vec![TechCardId(1)]; // IV 5
+        state.players[1].technologies = vec![TechCardId(2)]; // IV 3
+
+        let bonuses = calculate_technology_bonus(&state, &reg);
+        assert_eq!(
+            bonuses,
+            vec![(PlayerId::new(0), 5)],
+            "dummy 1st (awarded to nobody), P0 2nd for 5 VP, P1 nothing"
+        );
+    }
+
+    /// D5 scope guard: the dummy exists at 2 players only — a 3P ranking is
+    /// exactly what it was (this fixture is the shipped clockwise-tiebreak
+    /// test's shape, re-asserted post-D5).
+    #[test]
+    fn tech_majority_3p_has_no_dummy_contender() {
+        let reg = tech_registry_with_costs(&[3, 3]);
+        let mut state = create_test_game_state(3);
+        state.config.start_player = PlayerId::new(0);
+        state.players[1].technologies = vec![TechCardId(1)];
+        state.players[2].technologies = vec![TechCardId(2)];
+
+        let bonuses = calculate_technology_bonus(&state, &reg);
+        assert_eq!(bonuses, vec![(PlayerId::new(1), 10), (PlayerId::new(2), 5)]);
     }
 
     /// Item-6: a remainder test whose MERCENARY leg is nonzero (both shipped

@@ -666,9 +666,15 @@ fn president_label(state: &GameState, loc: PresidentLocation) -> String {
 /// "moved"/"recovered" lines. Board-to-board pairs are matched first: only
 /// the `ChooseAssistantMove` reward ever moves an assistant area-to-area,
 /// so pairing a unit of board-loss at one area with a unit of board-gain at
-/// another is unambiguous. Any board loss left unpaired is Recovery (the
-/// only other way an on-board assistant leaves); any board gain left
-/// unpaired came from hand -- during the Placement phase that's a
+/// another is unambiguous. A board loss left unpaired is one of TWO things
+/// since the D3 ruling (2026-08-08): the movement-icon TO-HAND return
+/// (`ChooseAssistantMove { to: Hand }`) when `before` has
+/// `PendingChoice::AssistantMove` at the head of the queue and the acting
+/// player's hand grew -- the choice resolution is the only move that
+/// applies in that state, and it moves exactly one pawn, so exactly one
+/// unit is attributed to it -- and Recovery otherwise (the only other way
+/// an on-board assistant leaves). Any board gain left unpaired came from
+/// hand -- during the Placement phase that's a
 /// `PlaceThreeAreas`/`PlaceTwoSameArea` placement (the only moves legal in
 /// that phase), everywhere else it's a hand-sourced `ChooseAssistantMove`
 /// (Placement never queues a reward, so `before.turn_phase` cleanly
@@ -744,7 +750,26 @@ fn assistant_lines(lines: &mut Vec<String>, before: &GameState, after: &GameStat
         if positives[pi].1 == 0 { pi += 1; }
     }
 
+    // D3 to-hand return: `ChooseAssistantMove { to: Hand }` only ever
+    // applies with `AssistantMove` at the head of the pending queue, and it
+    // moves exactly one pawn board->hand -- so with that head in `before`
+    // and a hand GAIN for the acting player, one unit of unpaired board
+    // loss is the chosen return, not Recovery (see the fn doc).
+    let mut hand_return = i64::from(
+        matches!(before.pending_choices.first(), Some(PendingChoice::AssistantMove))
+            && before.current_player == a.id
+            && a.assistants.in_hand > b.assistants.in_hand,
+    );
     for &(area, n) in &negatives[ni..] {
+        let mut n = n;
+        if n > 0 && hand_return > 0 {
+            lines.push(format!(
+                "{}: assistant moved from {} to hand",
+                player_prefix(a.color), describe::area_label(after, area),
+            ));
+            hand_return = 0;
+            n -= 1;
+        }
         if n > 0 {
             lines.push(format!(
                 "{}: {} assistant{} recovered from {}",
@@ -1880,6 +1905,45 @@ mod tests {
         *after.players[0].assistants.on_board.entry(area).or_insert(0) += 1;
         let lines = delta_summary(&before, &after, &rules);
         assert!(lines.iter().any(|l| l.contains("placed in")), "{lines:?}");
+    }
+
+    /// S1 (rules-parity-rev6 review, 2026-08-08): a D3 movement-icon
+    /// to-hand return (`ChooseAssistantMove { to: Hand }`) produces the same
+    /// board-loss/hand-gain diff shape as Recovery, and before this fix the
+    /// delta line borrowed Recovery's vocabulary ("recovered from"). The
+    /// pre-move state disambiguates: the choice resolution only ever applies
+    /// with `PendingChoice::AssistantMove` at the head of the queue, and
+    /// Recovery never runs with one there (queue-first `get_legal_moves`
+    /// blocks every phase move until the queue drains).
+    #[test]
+    fn delta_summary_reports_a_to_hand_return_as_a_move_not_recovery() {
+        let rules = Rules::standard();
+        let mut before = test_state_2p();
+        let area = *before
+            .board_layout
+            .areas
+            .iter()
+            .find(|(_, cfg)| cfg.area_type != AreaType::Canal)
+            .expect("a non-Canal area exists")
+            .0;
+        before.current_player = before.players[0].id;
+        before.players[0].assistants.in_hand -= 1;
+        before.players[0].assistants.on_board.insert(area, 1);
+        before.pending_choices.push(PendingChoice::AssistantMove);
+        let mut after = before.clone();
+        after.pending_choices.clear();
+        after.players[0].assistants.on_board.remove(&area);
+        after.players[0].assistants.in_hand += 1;
+        let lines = delta_summary(&before, &after, &rules);
+        let expected = format!("assistant moved from {} to hand", describe::area_label(&after, area));
+        assert!(
+            lines.iter().any(|l| l.contains(&expected)),
+            "a to-hand return reads as a move, mirroring the hand-source line: {lines:?}"
+        );
+        assert!(
+            !lines.iter().any(|l| l.contains("recovered from")),
+            "the player chose a return, not Recovery: {lines:?}"
+        );
     }
 
     #[test]

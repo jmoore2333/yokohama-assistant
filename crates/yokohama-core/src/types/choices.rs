@@ -35,6 +35,17 @@ impl WarehouseItem {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum MoveSource { Hand, Area(AreaId) }
 
+/// Where the movement-icon reward moves the Assistant pawn TO: a (non-Canal)
+/// Area, or — since the D3 owner ruling of 2026-08-08 — back to the owner's
+/// HAND, where it simply stays. The rulebook p.10 text ("from your hand or
+/// from an Area to another Area") is ambiguous on the to-hand return;
+/// BGA's engine allows it, and the owner ruled for BGA parity while noting
+/// the disagreement (guidingpath decision log, 2026-08-08). `Hand` is only
+/// ever offered for an on-board source: hand-to-hand would be a structural
+/// no-op indistinguishable from Decline, so the generator never emits it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum MoveTarget { Hand, Area(AreaId) }
+
 /// Unresolved choice for the current player. Length of the queue is bounded
 /// by one reward bundle's icon count plus its cascades (always small).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

@@ -132,7 +132,10 @@ pub fn validate_church_action(
     if seafood && p.seafood < 1 {
         return Err("Not enough seafood");
     }
-    if yen && p.money < 1 {
+    // D1 owner ruling 2026-08-08: the yen payment type costs 2 Yen — the
+    // printed church board shows 2 yen (rulebook p.12, confirmed against
+    // Jeremy's physical set). It still contributes exactly 1 Faith.
+    if yen && p.money < 2 {
         return Err("Not enough money");
     }
     if imported_good && p.imported_goods < 1 {
@@ -219,7 +222,7 @@ pub fn execute_church_action(
     if silk { p.silk -= 1; }
     if tea { p.tea -= 1; }
     if seafood { p.seafood -= 1; }
-    if yen { p.money -= 1; }
+    if yen { p.money -= 2; } // D1: 2 Yen for the yen payment type (p.12)
     if imported_good { p.imported_goods -= 1; }
 
     match spaces.len() {
@@ -659,6 +662,45 @@ mod tests {
             state.church_track.slots[ChurchTrack::faith_to_index(5).unwrap()].unwrap().player,
             PlayerId::new(0)
         );
+    }
+
+    #[test]
+    fn church_yen_payment_costs_two_yen() {
+        // D1 owner ruling 2026-08-08: the printed church board (rulebook
+        // p.12, confirmed against Jeremy's physical set) prices the Yen
+        // payment type at 2 Yen — the engine charged 1. Faith arithmetic is
+        // unchanged: the yen contribution still buys exactly 1 Faith.
+        let rules = Rules::empty_for_tests();
+        let mut state = create_test_state();
+        place_president_at_church(&mut state);
+        state.players[0].money = 2;
+
+        // Power 3 + yen = faith 4 -> single eligible space (4) on a fresh
+        // track at faith 4 -> places inline.
+        let result = execute_church_action(
+            &mut state, PlayerId::new(0), 3, false, false, false, false, true, false, &rules,
+        );
+        assert!(result.is_ok());
+        assert_eq!(state.players[0].money, 0, "the yen payment type costs 2 Yen (rulebook p.12)");
+        assert_eq!(state.players[0].church_positions, vec![4], "faith unchanged: yen still buys 1 Faith");
+    }
+
+    #[test]
+    fn church_yen_payment_rejected_with_one_yen() {
+        // D1 companion: 1 Yen can no longer afford the yen payment type, so
+        // validation (and therefore the legal-move generator, which reuses
+        // `validate_church_action`) must reject it with zero mutation.
+        let rules = Rules::empty_for_tests();
+        let mut state = create_test_state();
+        place_president_at_church(&mut state);
+        state.players[0].money = 1;
+
+        let result = execute_church_action(
+            &mut state, PlayerId::new(0), 3, false, false, false, false, true, false, &rules,
+        );
+        assert!(result.is_err());
+        assert_eq!(state.players[0].money, 1, "nothing paid on rejection");
+        assert_eq!(state.church_track.total_assistants(), 0);
     }
 
     #[test]

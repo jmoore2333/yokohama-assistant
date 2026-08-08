@@ -51,6 +51,11 @@ const ALLOWED_CORE_IMPORTS: &[&str] = &[
     "MercenarySupply",
     "Move",
     "MoveSource",
+    // D3 (SEMANTICS_REV 6, 2026-08-08): `ChooseAssistantMove.to` widened to
+    // the new `MoveTarget { Hand, Area }` enum — a pure serde data type in
+    // types/choices.rs beside `MoveSource`, which the oracle must name to
+    // construct the Move at all. Type, not logic.
+    "MoveTarget",
     "OrderCardId",
     "PendingChoice",
     "PlayerColor",

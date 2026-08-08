@@ -548,13 +548,15 @@ fn generate_port_actions(state: &GameState, player: PlayerId, power: u8, port: &
 /// each filled slot, emits every exact-cover payment mix for the Industry
 /// Value deficit (no overpays: `extra_imported = k`, `extra_yen =
 /// 2*(deficit-k)` for every affordable `k` in `0..=deficit`), forking into
-/// affordable `fifth_tech_payment` variants once the player owns 4+
-/// technologies (a mix with neither payment affordable emits nothing). Skip
-/// is always legal and always offered (Task 16 / decision-log optionality
-/// ruling).
+/// affordable `extra_tech_payment` variants whenever the acquisition would be
+/// the player's 4th-or-later technology (rulebook p.14, D2 owner ruling
+/// 2026-08-08 — single-sourced in `extra_tech_surcharge_required` so the
+/// generator cannot drift from the validator; a mix with neither payment
+/// affordable emits nothing). Skip is always legal and always offered (Task
+/// 16 / decision-log optionality ruling).
 fn generate_lab_actions(state: &GameState, player: PlayerId, power: u8, lab: &LabBoard, rules: &Rules) -> Vec<Move> {
     let p = state.player(player);
-    let needs_fifth_payment = p.technologies.len() >= 4;
+    let needs_surcharge = extra_tech_surcharge_required(p.technologies.len());
 
     let mut moves = Vec::new();
 
@@ -584,25 +586,25 @@ fn generate_lab_actions(state: &GameState, player: PlayerId, power: u8, lab: &La
                 continue;
             }
 
-            if needs_fifth_payment {
+            if needs_surcharge {
                 if p.money >= extra_yen as u32 + 2 {
                     moves.push(Move::ExecuteAreaAction {
                         action: AreaAction::Laboratory {
-                            card_id, extra_yen, extra_imported: k, fifth_tech_payment: Some(true),
+                            card_id, extra_yen, extra_imported: k, extra_tech_payment: Some(true),
                         },
                     });
                 }
                 if p.imported_goods > k as u32 {
                     moves.push(Move::ExecuteAreaAction {
                         action: AreaAction::Laboratory {
-                            card_id, extra_yen, extra_imported: k, fifth_tech_payment: Some(false),
+                            card_id, extra_yen, extra_imported: k, extra_tech_payment: Some(false),
                         },
                     });
                 }
             } else {
                 moves.push(Move::ExecuteAreaAction {
                     action: AreaAction::Laboratory {
-                        card_id, extra_yen, extra_imported: k, fifth_tech_payment: None,
+                        card_id, extra_yen, extra_imported: k, extra_tech_payment: None,
                     },
                 });
             }
@@ -2561,7 +2563,7 @@ mod tests {
         // Power 3: slot0 cost 3 (deficit 0) -> 1 move; slot2 cost 3 +
         // surcharge 1 = required 4 (deficit 1) -> 2 exact-cover moves
         // ({extra_yen:2},{extra_imported:1}); + 1 Skip = 4. <4 techs owned,
-        // so fifth_tech_payment stays None throughout.
+        // so extra_tech_payment stays None throughout.
         let mut state = create_lab_area_state(3);
         state.lab_state.lab_a.slots[0] = Some(TechCardId(1));
         state.lab_state.lab_a.slots[2] = Some(TechCardId(2));
@@ -2750,7 +2752,7 @@ mod tests {
         state.players[0].silk = 1;
         state.players[0].tea = 1;
         state.players[0].seafood = 1;
-        state.players[0].money = 1;
+        state.players[0].money = 2; // D1 (2026-08-08): the yen payment type costs 2 Yen
         state.players[0].imported_goods = 1;
         state.players[0].assistants.in_hand = 1;
         let rules = Rules::empty_for_tests();

@@ -81,10 +81,14 @@ pub fn warehouse_take_options(p: &PlayerState) -> Vec<WarehouseItem> {
 /// other President pawns." Sources are the player's hand (if it holds any
 /// assistants) plus every Area currently holding >=1 of the player's own
 /// on-board assistants -- warehouse/management-board assistants are never a
-/// source, since they aren't tracked in `on_board`. Destinations are every
-/// non-Canal Area other than the source Area itself (Hand has no exclusion).
-/// No fees apply, even into an Area occupied by another player's President.
-pub fn assistant_move_options(state: &GameState) -> Vec<(MoveSource, AreaId)> {
+/// source, since they aren't tracked in `on_board`. Targets for a hand source
+/// are every non-Canal Area; an on-board source additionally offers the
+/// TO-HAND return (`MoveTarget::Hand` -- D3 owner ruling 2026-08-08: the
+/// p.10 text is ambiguous, BGA allows it, ruled for BGA parity; the pawn
+/// simply stays in hand) and excludes its own source Area. Hand-to-hand is
+/// never emitted (a structural no-op indistinguishable from Decline). No
+/// fees apply, even into an Area occupied by another player's President.
+pub fn assistant_move_options(state: &GameState) -> Vec<(MoveSource, MoveTarget)> {
     let p = state.current_player();
     let non_canal_areas: Vec<AreaId> = state.board_layout.areas.iter()
         .filter(|(_, cfg)| cfg.area_type != AreaType::Canal)
@@ -93,15 +97,21 @@ pub fn assistant_move_options(state: &GameState) -> Vec<(MoveSource, AreaId)> {
 
     let mut options = Vec::new();
     if p.assistants.in_hand >= 1 {
-        options.extend(non_canal_areas.iter().map(|&to| (MoveSource::Hand, to)));
+        options.extend(non_canal_areas.iter().map(|&to| (MoveSource::Hand, MoveTarget::Area(to))));
     }
     for (&area, &count) in &p.assistants.on_board {
         if count == 0 {
             continue;
         }
         options.extend(
-            non_canal_areas.iter().filter(|&&to| to != area).map(|&to| (MoveSource::Area(area), to)),
+            non_canal_areas
+                .iter()
+                .filter(|&&to| to != area)
+                .map(|&to| (MoveSource::Area(area), MoveTarget::Area(to))),
         );
+        // D3: the to-hand return, after the area targets so each source's
+        // options list its board destinations first and the return last.
+        options.push((MoveSource::Area(area), MoveTarget::Hand));
     }
     options
 }
@@ -167,7 +177,12 @@ pub fn resolve_choice_move(state: &mut GameState, mv: &Move, rules: &Rules) -> R
     // `assistant_move_options` already filters the Canal out — which is why the
     // guard is what makes "no assistant can ever stand on the Canal" a checked
     // property of this file instead of an argued one.
-    if let (PendingChoice::AssistantMove, Move::ChooseAssistantMove { to, .. }) = (&head, mv) {
+    // A `MoveTarget::Hand` return (D3, 2026-08-08) has no area to check —
+    // the pawn leaves the board entirely, so the guard below applies only to
+    // Area-targeted resolutions.
+    if let (PendingChoice::AssistantMove, Move::ChooseAssistantMove { to: MoveTarget::Area(to), .. }) =
+        (&head, mv)
+    {
         // Two causes, two messages, mirroring `require_placeable_area`
         // (apply_move.rs) — a ghost id must not be reported as a Canal
         // violation (PR #10 review).
@@ -257,7 +272,14 @@ pub fn resolve_choice_move(state: &mut GameState, mv: &Move, rules: &Rules) -> R
                     }
                 }
             }
-            *p.assistants.on_board.entry(*to).or_insert(0) += 1;
+            match to {
+                // D3 (owner ruling 2026-08-08): the icon may return an
+                // on-board assistant to the owner's hand, where it stays.
+                MoveTarget::Hand => p.assistants.in_hand += 1,
+                MoveTarget::Area(to) => {
+                    *p.assistants.on_board.entry(*to).or_insert(0) += 1;
+                }
+            }
         }
         (PendingChoice::AssistantMove, Move::DeclineAssistantMove) => {}
         (PendingChoice::ChurchSpace { .. }, Move::ChooseChurchSpace { space }) => {
@@ -497,9 +519,9 @@ mod tests {
         let (state, rules) = assistant_move_fixture();
         let legal = get_legal_moves(&state, &rules); // AssistantMove head queued
         // sources: Hand + Area(A); dests: every non-Canal area != source. Decline included.
-        assert!(legal.contains(&Move::ChooseAssistantMove { from: MoveSource::Hand, to: area_b() })); // opp president dest OK, free
+        assert!(legal.contains(&Move::ChooseAssistantMove { from: MoveSource::Hand, to: MoveTarget::Area(area_b()) })); // opp president dest OK, free
         assert!(legal.iter().all(|m| match m {
-            Move::ChooseAssistantMove { to, .. } => *to != canal_area(),
+            Move::ChooseAssistantMove { to, .. } => *to != MoveTarget::Area(canal_area()),
             _ => true,
         }));
         assert!(legal.contains(&Move::DeclineAssistantMove));
@@ -509,10 +531,42 @@ mod tests {
     fn assistant_move_is_free_and_conserves_pawns() {
         let (state, rules) = assistant_move_fixture();
         let money = state.current_player().money;
-        let s = apply_move(&state, &Move::ChooseAssistantMove { from: MoveSource::Area(area_a()), to: area_b() }, &rules).unwrap();
+        let s = apply_move(&state, &Move::ChooseAssistantMove { from: MoveSource::Area(area_a()), to: MoveTarget::Area(area_b()) }, &rules).unwrap();
         assert_eq!(s.current_player().money, money); // no fees, even into an opponent-president area
         assert_eq!(s.current_player().assistants.on_board.get(&area_a()), None); // cleaned up at 0
         assert_eq!(s.current_player().assistants.on_board[&area_b()], 1);
+    }
+
+    #[test]
+    fn assistant_move_offers_and_applies_a_to_hand_return() {
+        // D3 owner ruling 2026-08-08: a movement icon may return an on-board
+        // assistant to the owner's hand, where it stays. The rulebook p.10
+        // text is ambiguous; BGA's engine allows it, and the owner ruled for
+        // BGA parity (guidingpath decision log, 2026-08-08).
+        let (state, rules) = assistant_move_fixture();
+        let legal = get_legal_moves(&state, &rules);
+        assert!(
+            legal.contains(&Move::ChooseAssistantMove {
+                from: MoveSource::Area(area_a()),
+                to: MoveTarget::Hand,
+            }),
+            "an on-board source must offer the to-hand return: {legal:?}"
+        );
+        // Hand-to-hand would be a structural no-op indistinguishable from
+        // Decline — never offered.
+        assert!(!legal.contains(&Move::ChooseAssistantMove {
+            from: MoveSource::Hand,
+            to: MoveTarget::Hand,
+        }));
+
+        let s = apply_move(
+            &state,
+            &Move::ChooseAssistantMove { from: MoveSource::Area(area_a()), to: MoveTarget::Hand },
+            &rules,
+        )
+        .unwrap();
+        assert_eq!(s.current_player().assistants.in_hand, 2, "1 already in hand + the returned pawn");
+        assert_eq!(s.current_player().assistants.on_board.get(&area_a()), None, "cleaned up at 0");
     }
 
     #[test]
@@ -586,7 +640,7 @@ mod tests {
 
         let result = resolve_choice_move(
             &mut state,
-            &Move::ChooseAssistantMove { from: MoveSource::Hand, to: canal_area() },
+            &Move::ChooseAssistantMove { from: MoveSource::Hand, to: MoveTarget::Area(canal_area()) },
             &rules,
         );
         assert!(
@@ -599,7 +653,7 @@ mod tests {
         let mut ok = before.clone();
         resolve_choice_move(
             &mut ok,
-            &Move::ChooseAssistantMove { from: MoveSource::Hand, to: area_b() },
+            &Move::ChooseAssistantMove { from: MoveSource::Hand, to: MoveTarget::Area(area_b()) },
             &rules,
         )
         .expect("a non-Canal destination is a genuine resolution");

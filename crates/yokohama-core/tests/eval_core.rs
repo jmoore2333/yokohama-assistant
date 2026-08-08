@@ -856,9 +856,17 @@ fn explain_reconstructs_score_exactly_over_organic_views() {
 /// `HAND_CORE_RESERVE` and fires on 267. The excess arm being ~5x rarer is the
 /// measurement, not a weakness: a hand over the reserve is what a placement
 /// spends, and a seat holding one is the position the split exists to price.
+///
+/// `five_power_tokens` RE-MEASURED at `SEMANTICS_REV` 6 (2026-08-08, the
+/// rules-parity ruling set — reachable-state behaviour changes, so the swept
+/// trajectories legitimately moved): observed 54 on the rev-6 sweep against
+/// the old floor of 55 (from T3's observed 110), re-halved to 27 by the same
+/// measure-then-halve discipline. Still a genuinely rare event, same reason
+/// as before. Every other arm stayed above its standing floor at rev 6, so
+/// only this entry moved.
 //     [vp,  ctry, tech, chur, cust, hCORE, hEXC, ware, brd, shop, trad, 5pw, imp, achv, merc, hnd#]
 const FEATURE_NONZERO_FLOORS: [usize; Feature::COUNT] =
-    [689, 489, 375, 387, 84, 634, 133, 855, 835, 431, 30, 55, 120, 809, 317, 823];
+    [689, 489, 375, 387, 84, 634, 133, 855, 835, 431, 30, 27, 120, 809, 317, 823];
 
 // ---------------------------------------------------------------------------
 // §2.2 — the D1 dummy, constructed

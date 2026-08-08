@@ -170,6 +170,21 @@
 //!   The compare parses both sides to `serde_json::Value`, so file-edge bytes
 //!   (trailing newline) are irrelevant.
 //!
+//! ## Rev-6 re-capture (2026-08-08, branch `rules-parity-rev6`)
+//!
+//! ALL FIVE fixtures were re-captured at `SEMANTICS_REV` 6 — the owner-visible
+//! ruling the mismatch message demands is the 2026-08-08 rules-parity ruling
+//! set (guidingpath decision log, four rows dated 2026-08-08): D1 church yen
+//! cost 2, D2 extra-tech surcharge from the 4th card, D3 movement-icon
+//! to-hand, D5 2P dummy in the tech majority. Those are REACHABLE-STATE
+//! behaviour changes by design, so every self-play trajectory these cells
+//! freeze legitimately moved; the goldens now pin the rev-6 arms. The claim
+//! these fixtures carry is unchanged in KIND — "the contestant-seam plumbing
+//! does not move play" — but its baseline is now the rev-6 tree. The 2P
+//! pre-3.4 cell additionally moved master (serial `0001` → `0005`, see
+//! [`MASTER_2P_34`]): its old master degenerates to a constant unit vector
+//! under rev-6 play, which the anti-vacuity guard refuses by design.
+//!
 //! ## On `compose_echo`
 //!
 //! `compose_echo` mirrors `stats.rs`'s private `policy_echo` body — it is a
@@ -192,8 +207,15 @@ use yokohama_core::{
     SeedScheduleKind,
 };
 
-/// The 2P cell's committed diagnostic master. See the module doc.
-const MASTER_2P: u64 = 0xA3E1_2026_0726_0033;
+/// The 2P cell's committed diagnostic master. See the module doc. Originally
+/// serial `0033` (the 3.3 capture); RE-PROBED at the SEMANTICS_REV-6
+/// re-capture (module doc, "Rev-6 re-capture"): under rev-6 play `0033`
+/// degenerates to a constant unit vector, which the anti-vacuity guard
+/// refuses. `0037` is the family's next free serial (`0034`/`0035` were
+/// burned at the 3.3 capture, `0036` is the 4P cell's) and its FIRST probe
+/// gave distinct shares (1×0.0 · 3×0.5) with a real bootstrap interval — no
+/// serial burned.
+const MASTER_2P: u64 = 0xA3E1_2026_0726_0037;
 /// The 4P rotation-block cell's committed diagnostic master.
 const MASTER_4P: u64 = 0xA3E1_2026_0726_0036;
 
@@ -209,9 +231,16 @@ const GOLDEN_4P: &str = include_str!("fixtures/cellreport_golden_prewiden_4p.jso
 // ---------------------------------------------------------------------------
 
 /// The 3.4 2P Policy pair cell's committed diagnostic master — `A3E1` family,
-/// date field `2026_0804` (capture date), serial `0001`. First probe: distinct
-/// unit shares and a real bootstrap interval, so no serial was burned.
-const MASTER_2P_34: u64 = 0xA3E1_2026_0804_0001;
+/// date field `2026_0804` (capture date). Originally serial `0001` (first
+/// probe at the 3.4 capture). RE-PROBED at the SEMANTICS_REV-6 re-capture
+/// (2026-08-08, rules-parity owner rulings — see the module doc's "Rev-6
+/// re-capture" section): under rev-6 play serial `0001` degenerates to a
+/// constant unit vector (all 0.5), which the anti-vacuity guard rightly
+/// refuses, so the cell moved to the next free serial. `0002`–`0003` stay
+/// with the other two cells and `0004` is `architecture_gate`'s; `0005` was
+/// the first probe at rev 6 and gave distinct shares (1×0.0 · 3×0.5) with a
+/// real bootstrap interval — no serial burned.
+const MASTER_2P_34: u64 = 0xA3E1_2026_0804_0005;
 /// The 3.4 4P rotation-block cell's master — same family/date, serial `0002`.
 /// First probe: distinct shares and a real interval; no serial burned.
 const MASTER_4P_34: u64 = 0xA3E1_2026_0804_0002;
