@@ -81,6 +81,45 @@ class FakeXHR {
   }
 }
 
+/**
+ * A WebSocket whose listener list is observable, which can deliver a frame on
+ * demand, and which counts `send` — nothing in this extension may ever send.
+ */
+class FakeWebSocket {
+  constructor(url, protocols) {
+    this.url = url;
+    this.protocols = protocols;
+    this._listeners = [];
+    FakeWebSocket.instances.push(this);
+  }
+  addEventListener(type, fn) {
+    if (type === "message") this._listeners.push(fn);
+  }
+  send() {
+    FakeWebSocket.sendCalls += 1;
+  }
+  /** Deliver one frame to every registered listener, in registration order. */
+  _fire(data) {
+    this._listeners.slice().forEach((fn) => fn.call(this, { data }));
+  }
+  /** Deliver a frame whose `data` accessor blows up. */
+  _fireHostile() {
+    const event = {};
+    Object.defineProperty(event, "data", {
+      get() {
+        throw new Error("reading data blew up");
+      },
+    });
+    this._listeners.slice().forEach((fn) => fn.call(this, event));
+  }
+}
+FakeWebSocket.instances = [];
+FakeWebSocket.sendCalls = 0;
+FakeWebSocket.CONNECTING = 0;
+FakeWebSocket.OPEN = 1;
+FakeWebSocket.CLOSING = 2;
+FakeWebSocket.CLOSED = 3;
+
 let nativeFetchImpl = null;
 const sandboxWindow = {
   location: {
@@ -92,15 +131,19 @@ const sandboxWindow = {
   addEventListener: () => {},
   gameui: null,
   XMLHttpRequest: FakeXHR,
+  WebSocket: FakeWebSocket,
 };
 
 const context = {
   window: sandboxWindow,
   console: { ...console, warn: () => {}, debug: () => {} },
   URLSearchParams,
+  URL,
   Date,
   JSON,
   Promise,
+  Proxy,
+  Reflect,
   String,
   Object,
   setTimeout,
@@ -231,6 +274,136 @@ const settle = () => new Promise((resolve) => setTimeout(resolve, 10));
     afterMatching === 1 && posted.length === 1,
     `${afterMatching} then ${posted.length}`
   );
+
+  console.log("\n--- WebSocket: the realtime feed (H0.1) ---");
+
+  // H0.1's reason to exist: the 2026-08-08 live run proved that during realtime
+  // play BGA streams moves over a WebSocket and NO fetch/XHR fires per move, so
+  // a completed turn produced zero captures. The wrapper below is what makes a
+  // live game bank continuously.
+  const WS_URL = "wss://r2-do1.boardgamearena.net/socket.io/?EIO=4&transport=websocket";
+  const WrappedWebSocket = context.window.WebSocket;
+
+  posted.length = 0;
+  const seenByPage = [];
+  const socket = new WrappedWebSocket(WS_URL, ["proto-1"]);
+  socket.addEventListener("message", (event) => seenByPage.push(event.data));
+
+  check(
+    "(a) the page gets the REAL socket back, not a stand-in",
+    socket === FakeWebSocket.instances[FakeWebSocket.instances.length - 1] &&
+      socket instanceof FakeWebSocket,
+    `identity ${socket === FakeWebSocket.instances.at(-1)}, instanceof ${socket instanceof FakeWebSocket}`
+  );
+  check(
+    "(a) the constructor's own arguments arrive untouched",
+    socket.url === WS_URL && socket.protocols[0] === "proto-1"
+  );
+  check(
+    "(a) the static constants survive the wrap",
+    WrappedWebSocket.OPEN === 1 && WrappedWebSocket.CLOSED === 3,
+    `OPEN=${WrappedWebSocket.OPEN} CLOSED=${WrappedWebSocket.CLOSED}`
+  );
+
+  // A frame with the awkward characters a verbatim claim has to survive.
+  const FRAME = '42["notify",{"type":"playerTurn","args":{"n":"a\\"quoted\\" \\n line"}}]';
+  socket.ateFired = true;
+  socket._fire(FRAME);
+  await settle();
+
+  check("(a) the page's own listener still fires", seenByPage.length === 1 && seenByPage[0] === FRAME);
+
+  const wsCaptures = posted.filter((m) => m.payload && m.payload.source === "websocket");
+  check("(b) a text frame is captured", wsCaptures.length === 1, `${wsCaptures.length} capture(s)`);
+  if (wsCaptures.length === 1) {
+    const payload = wsCaptures[0].payload;
+    check("(b) the frame is recorded VERBATIM", payload.body_text === FRAME);
+    check("(b) the observed socket url is recorded", payload.url === WS_URL, `url: ${payload.url}`);
+    check("(b) it rides the packets envelope", wsCaptures[0].kind === "packets");
+    check("(b) it carries a capture timestamp", typeof payload.captured_at_ms === "number");
+  }
+
+  // (c) Non-text frames are STATED, never decoded — verbatim-or-stated.
+  posted.length = 0;
+  socket._fire(new ArrayBuffer(64));
+  await settle();
+  const binary = posted.filter((m) => m.payload && m.payload.source === "websocket");
+  check("(c) a non-text frame produces exactly one stub", binary.length === 1);
+  if (binary.length === 1) {
+    check(
+      "(c) the stub states what it is and how big, and decodes nothing",
+      binary[0].payload.note === "non-text frame" &&
+        binary[0].payload.byte_length === 64 &&
+        binary[0].payload.body_text === null,
+      JSON.stringify(binary[0].payload)
+    );
+  }
+
+  // (d) Sockets that are not BGA's are not our business.
+  posted.length = 0;
+  const seenByOtherPage = [];
+  const foreign = new WrappedWebSocket("wss://chat.example.com/socket");
+  foreign.addEventListener("message", (event) => seenByOtherPage.push(event.data));
+  foreign._fire("something private");
+  await settle();
+  check("(d) a non-BGA socket produces zero captures", posted.length === 0, `${posted.length} posted`);
+  check("(d) ...and that page's own listener still fires", seenByOtherPage.length === 1);
+
+  // A hostname that merely CONTAINS the domain must not pass as a suffix.
+  posted.length = 0;
+  const lookalike = new WrappedWebSocket("wss://boardgamearena.net.evil.example/socket");
+  lookalike._fire("nope");
+  await settle();
+  check("(d) a lookalike hostname does not match", posted.length === 0, `${posted.length} posted`);
+
+  // (e) Our failure is never the page's failure.
+  //
+  // A FRESH socket, whose only page listener guards its own read of the
+  // hostile accessor — so the one thing that can break this dispatch is OUR
+  // handler letting the throw out. Our handler is registered first (at
+  // construction), so if it does not swallow, `_fire` unwinds and the page
+  // listener below never runs at all.
+  posted.length = 0;
+  const hostileSocket = new WrappedWebSocket(WS_URL);
+  const seenAfterThrow = [];
+  hostileSocket.addEventListener("message", (event) => {
+    try {
+      seenAfterThrow.push(event.data);
+    } catch (_) {
+      seenAfterThrow.push("(page read it and threw, which is the page's business)");
+    }
+  });
+  let escaped = null;
+  try {
+    hostileSocket._fireHostile();
+  } catch (e) {
+    escaped = e;
+  }
+  check(
+    "(e) a throw in the capture path does not escape to the page",
+    escaped === null,
+    escaped ? `escaped: ${escaped.message}` : ""
+  );
+  check("(e) ...and the page's listener still ran", seenAfterThrow.length === 1);
+
+  // The volume guard: BGA sockets also carry heartbeats and chat. Content is
+  // NOT filtered (H2 dedupes and filters — fidelity first), but a runaway is
+  // capped, and the cap announces itself rather than going quiet.
+  posted.length = 0;
+  const chatty = new WrappedWebSocket(WS_URL);
+  for (let i = 0; i < 260; i += 1) chatty._fire(`frame-${i}`);
+  await settle();
+  const captured = posted.filter((m) => m.payload && m.payload.source === "websocket");
+  const notes = captured.filter((m) => m.payload.note === "volume guard tripped");
+  check(
+    "the volume guard caps a runaway burst",
+    captured.length < 260 && captured.length > 100,
+    `${captured.length} captures from 260 frames`
+  );
+  check("the guard says so, exactly once", notes.length === 1, `${notes.length} note(s)`);
+
+  check("NOTHING was ever sent on any socket", FakeWebSocket.sendCalls === 0,
+    `${FakeWebSocket.sendCalls} send call(s)`);
 
   console.log(`\n${failures === 0 ? "PASS" : "FAIL"} - ${failures} failing check(s)`);
   process.exit(failures === 0 ? 0 : 1);

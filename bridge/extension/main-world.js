@@ -1,11 +1,11 @@
 // main-world.js - runs in the PAGE's JavaScript world, at document_start, in
 // every frame of boardgamearena.com.
 //
-// Two jobs, both read-only:
+// Three jobs, all read-only:
 //
-//   1. WRAP AND CAPTURE. `fetch` and `XMLHttpRequest` are wrapped so that a
-//      response the page *already* asked for can be copied on its way past.
-//      This extension issues ZERO requests to BGA of its own.
+//   1. WRAP AND CAPTURE (history). `fetch` and `XMLHttpRequest` are wrapped so
+//      that a response the page *already* asked for can be copied on its way
+//      past. This extension issues ZERO requests to BGA of its own.
 //
 //      Why wrapping instead of fetching the log ourselves: the notification
 //      history endpoint is session-token guarded, and a bare page-context fetch
@@ -16,7 +16,14 @@
 //      politer posture: no extra load on BGA, and nothing that looks like a
 //      scraper.
 //
-//   2. SNAPSHOT. Serialize `gameui.gamedatas` on request. That object is a
+//   2. WRAP AND CAPTURE (realtime). The `WebSocket` constructor is wrapped the
+//      same way, because the two feeds are NOT interchangeable: fetch/XHR
+//      carries the history when the page loads, and the socket carries moves as
+//      they happen. The 2026-08-08 live run measured a completed turn producing
+//      zero fetch/XHR captures, which is what H0.1 exists to fix. Incoming
+//      messages only — nothing is ever sent.
+//
+//   3. SNAPSHOT. Serialize `gameui.gamedatas` on request. That object is a
 //      MAIN-world global, so an isolated-world content script cannot see it at
 //      all - which is the whole reason this file exists separately from
 //      `bridge.js`.
@@ -187,6 +194,126 @@
       }
       return nativeSend.apply(this, args);
     };
+  }
+
+  // ------------------------------------------------------------ WebSocket ---
+
+  // H0.1, and it is what makes a LIVE game bank continuously. The 2026-08-08
+  // live run against table #895724349 proved the rest of the pipeline works —
+  // the initial history fetch, the cumulative re-fetch on reload, and the
+  // snapshot all landed verbatim — and proved this gap in the same run: during
+  // realtime play BGA streams moves over a WebSocket, and a completed turn
+  // produced ZERO fetch/XHR captures. Same discipline as above: the real socket
+  // is constructed and returned untouched, we only add a listener, and every
+  // exception on our side is swallowed.
+
+  // The volume guard. BGA's socket also carries heartbeats, chat and table
+  // chatter, and we deliberately do NOT filter by content — H2 dedupes and
+  // filters, and fidelity comes first. What IS bounded is a runaway: past
+  // SOCKET_BURST_LIMIT frames inside SOCKET_BURST_WINDOW_MS, capture pauses for
+  // the remainder of that window and says so with a single note capture rather
+  // than going quiet. A turn is a handful of frames, so ordinary play is orders
+  // of magnitude below this and only a malfunction reaches it. Counters are PER
+  // SOCKET, so one chatty connection cannot mute the game's.
+  const SOCKET_BURST_LIMIT = 200;
+  const SOCKET_BURST_WINDOW_MS = 10000;
+
+  // Only ever called with a `WebSocket` constructor argument, so the scheme is
+  // ws:/wss: by construction (or relative, which resolves against the page).
+  // The HOSTNAME is therefore the whole question — and it is checked as a
+  // proper suffix, so `boardgamearena.net.evil.example` does not pass.
+  //
+  // Permissive within the two domains on purpose: the realtime host has looked
+  // like `r2-do1.boardgamearena.net`, but the shard naming is not ours to
+  // predict, so the OBSERVED url rides in every payload and H2 learns the real
+  // shape from data rather than from a guess made here.
+  const isBgaSocketUrl = (raw) => {
+    try {
+      const { hostname } = new URL(raw, window.location.href);
+      return ["boardgamearena.net", "boardgamearena.com"].some(
+        (domain) => hostname === domain || hostname.endsWith("." + domain)
+      );
+    } catch (_) {
+      return false;
+    }
+  };
+
+  /** Attach a passive message listener. Never sends, never touches handlers. */
+  const watchSocket = (socket, requestedUrl) => {
+    if (!isBgaSocketUrl(requestedUrl)) return;
+    const url = String(requestedUrl);
+    let windowStart = 0;
+    let inWindow = 0;
+    let pausedUntil = 0;
+
+    // `addEventListener`, never `onmessage`: assigning the latter would
+    // overwrite whatever the page had put there.
+    socket.addEventListener("message", (event) => {
+      try {
+        const now = Date.now();
+        if (now < pausedUntil) return;
+        if (now - windowStart >= SOCKET_BURST_WINDOW_MS) {
+          windowStart = now;
+          inWindow = 0;
+        }
+        inWindow += 1;
+        if (inWindow > SOCKET_BURST_LIMIT) {
+          pausedUntil = windowStart + SOCKET_BURST_WINDOW_MS;
+          emitPackets({
+            source: "websocket",
+            url,
+            note: "volume guard tripped",
+            body_text: null,
+            frames_before_pause: SOCKET_BURST_LIMIT,
+            window_ms: SOCKET_BURST_WINDOW_MS,
+          });
+          return;
+        }
+
+        const data = event.data;
+        if (typeof data === "string") {
+          emitPackets({ source: "websocket", url, body_text: data });
+          return;
+        }
+        // Verbatim or STATED, never guessed. A binary frame is recorded as a
+        // stub with its size; decoding it here would mean assuming an encoding
+        // nobody has verified, and a wrong guess is worse than a known gap.
+        const byteLength =
+          data && typeof data.byteLength === "number"
+            ? data.byteLength
+            : data && typeof data.size === "number"
+              ? data.size
+              : null;
+        emitPackets({
+          source: "websocket",
+          url,
+          note: "non-text frame",
+          body_text: null,
+          byte_length: byteLength,
+        });
+      } catch (e) {
+        console.warn("[yokohama-bridge] websocket capture failed:", e);
+      }
+    });
+  };
+
+  const NativeWebSocket = window.WebSocket;
+  if (typeof NativeWebSocket === "function") {
+    // A Proxy rather than a wrapper function, because transparency here is
+    // total for free: `WebSocket.OPEN`, the prototype, `instanceof`, `name`,
+    // and the TypeError on a call without `new` all forward to the real
+    // constructor, and the page receives the genuine socket instance.
+    window.WebSocket = new Proxy(NativeWebSocket, {
+      construct(target, args, newTarget) {
+        const socket = Reflect.construct(target, args, newTarget);
+        try {
+          watchSocket(socket, args[0]);
+        } catch (e) {
+          console.warn("[yokohama-bridge] websocket wrap failed:", e);
+        }
+        return socket;
+      },
+    });
   }
 
   // ------------------------------------------------------------- snapshot ---

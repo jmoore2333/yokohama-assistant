@@ -67,7 +67,18 @@ and enter the game. **If the tab was already open, reload it**: the capture
 wrapper installs at page load and cannot attach to a page that is already
 running.
 
-Captures start as soon as the page fetches its move log. Watch them arrive:
+Captures start as soon as the page fetches its move log, **and live moves then
+bank continuously as they happen** — the extension watches BGA's realtime socket
+as well as the history fetch, so you do not need to sit reloading during play.
+
+Both of those depend on the same thing: **the tab must have been loaded after the
+extension was**. The wrapper installs at page load and cannot attach to a page
+already running. Reloading is also still worth doing **once at game end** — the
+history endpoint is cumulative, so a final reload re-banks the whole game and
+covers anything the socket missed. Cheap, and it is the belt to the socket's
+braces.
+
+Watch captures arrive:
 
 ```bash
 tail -f bridge-captures/895608640.ndjson
@@ -102,8 +113,13 @@ One JSON object per line:
 
 - `kind: "snapshot"` — `payload.gamedatas` is the page's game state, plus
   `captured_at_ms` and `href`.
-- `kind: "packets"` — `payload.body_text` is a notification response **verbatim,
-  as a string**, plus its `url`, `status` and `captured_at_ms`.
+- `kind: "packets"` — `payload.body_text` is a notification response or a
+  realtime socket frame **verbatim, as a string**, plus its `url` and
+  `captured_at_ms`. `payload.source` says which transport it came from:
+  `"fetch"` / `"xhr"` for the history, `"websocket"` for live moves. A binary
+  socket frame is recorded as a stub (`note: "non-text frame"` with a
+  `byte_length`) rather than decoded, and a runaway socket parks one
+  `note: "volume guard tripped"` line and pauses for ten seconds.
 
 `received_at_ms` is when the relay took delivery; `payload.captured_at_ms` is
 when the page saw it. They differ when a capture waited in the extension's
