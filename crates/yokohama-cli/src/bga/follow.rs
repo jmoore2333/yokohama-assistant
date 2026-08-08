@@ -82,9 +82,20 @@ pub struct Follower {
     last_file_len: u64,
     /// Last HOLD message printed, for print-once dedupe.
     last_hold: Option<String>,
+    /// Last replay-STOP string emitted INSIDE a rendered frame, for print-once
+    /// dedupe of the hold text (F5). The feed header refreshes on a post-hold
+    /// append (the feed counts ride the fingerprint), but the "HOLD at the
+    /// replay bound" text is written only the first time a given stop is
+    /// reached, so the divergence never re-prints while the follower keeps
+    /// tailing — distinct from `last_hold`, which dedupes the `Poll.lines`
+    /// pipeline holds that carry no renderable state.
+    last_stop_rendered: Option<String>,
     /// Fingerprint of the last RENDERED state, for render-once dedupe: new
     /// input that changes nothing replay-observable (post-STOP chatter,
-    /// duplicate deliveries) re-renders nothing and re-prints nothing.
+    /// duplicate deliveries) re-renders nothing and re-prints nothing. Includes
+    /// the FEED figures (moves/enriched/superseded) so a post-hold append that
+    /// grows the feed but not the replay refreshes the frozen header (F5); the
+    /// snapshot count is deliberately excluded (it is not re-append-idempotent).
     fingerprint: Option<String>,
     /// The latest rendered state, held as the `Repl` the frame was composed
     /// from — the read-only reuse of the CLI's own render machinery.
@@ -99,6 +110,7 @@ impl Follower {
             text: String::new(),
             last_file_len: LEN_UNSEEN,
             last_hold: None,
+            last_stop_rendered: None,
             fingerprint: None,
             latest: None,
         }
@@ -220,7 +232,7 @@ impl Follower {
         let record_json =
             serde_json::to_string(a.session.record()).expect("a GameRecord serializes");
         let fp = format!(
-            "{}|{}|{}|{}|{:?}|{:?}|{}|{record_json}",
+            "{}|{}|{}|{}|{:?}|{:?}|{}|{}|{}|{}|{record_json}",
             a.report.last_move_id,
             a.report.engine_moves,
             a.report.reveal_events,
@@ -228,6 +240,9 @@ impl Follower {
             a.stop,
             survivor_labels,
             a.session.is_over(),
+            feed.report.moves,
+            feed.report.enriched,
+            feed.report.superseded.len(),
         );
         if self.fingerprint.as_deref() == Some(fp.as_str()) {
             return;
@@ -260,16 +275,28 @@ impl Follower {
             ));
         }
         match &a.stop {
-            Some(stop) => body.push_str(&format!(
-                "HOLD at the replay bound: {stop}\n  still tailing — the follower resumes on \
-                 its own if later input makes progress possible\n"
-            )),
+            // Print-once on the stop STRING (F5): the frame re-renders when the
+            // feed grows (its counts ride the fingerprint), refreshing the
+            // header, but the hold text is written only the first time a given
+            // stop is reached — so a post-hold append updates the header while
+            // the divergence prints exactly once and `holds.len() == 1` holds.
+            Some(stop) => {
+                if self.last_stop_rendered.as_deref() != Some(stop.as_str()) {
+                    body.push_str(&format!(
+                        "HOLD at the replay bound: {stop}\n  still tailing — the follower resumes \
+                         on its own if later input makes progress possible\n"
+                    ));
+                    self.last_stop_rendered = Some(stop.clone());
+                }
+            }
             None if a.session.is_over() => {
                 body.push_str(&import::final_check_text(&a.session, &resolved, &feed));
                 body.push_str("game complete — follower exiting\n");
                 out.complete = true;
+                self.last_stop_rendered = None;
             }
-            None => {}
+            // Advanced past any prior hold; a future stop deserves to print again.
+            None => self.last_stop_rendered = None,
         }
         // The declared-honesty sections (F4 / lens-4): the same notes,
         // assumptions and deliberately-unchecked counters the batch report

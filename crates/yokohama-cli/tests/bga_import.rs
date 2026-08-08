@@ -226,8 +226,9 @@ fn an_out_of_vocabulary_4th_tech_divergence_stops_instead_of_being_absorbed() {
 /// KILL-AND-RESTART in the middle, must reach a record BYTE-IDENTICAL to the
 /// batch import of the same file, including the same m154 hold: the documented
 /// D3 engine-rules divergence is printed exactly ONCE by the follower that
-/// reaches it, the follower keeps tailing (post-hold appends change nothing),
-/// and it never exits on its own.
+/// reaches it, the follower keeps tailing — post-hold appends REFRESH the feed
+/// header (F5) while the divergence text stays print-once — and it never exits
+/// on its own.
 #[test]
 fn the_follower_streams_the_corpus_to_the_batch_state_and_holds_at_m154() {
     use yokohama_cli::bga::follow::{FollowOptions, Follower};
@@ -292,6 +293,31 @@ fn the_follower_streams_the_corpus_to_the_batch_state_and_holds_at_m154() {
     assert_eq!(holds.len(), 1, "the documented divergence must print exactly once");
     assert!(holds[0].contains("replayed through BGA move 153"), "{}", holds[0]);
     assert!(holds[0].contains("still tailing"), "{}", holds[0]);
+
+    // F5: the feed header REFRESHES after the hold. The hold frame was rendered
+    // when the ingested prefix first reached m154; later chunks grow the feed
+    // toward the full 194 moves, and because the feed counts ride the render
+    // fingerprint the header updates — while the divergence above stayed
+    // print-once (holds.len() == 1). Before F5 the fingerprint held only the
+    // frozen replay counts, so no post-hold frame rendered and this would fail.
+    let feed_moves = |frame: &str| -> usize {
+        frame
+            .lines()
+            .find_map(|l| {
+                l.split_once(" BGA moves captured")
+                    .and_then(|(head, _)| head.rsplit(' ').next())
+                    .and_then(|n| n.parse().ok())
+            })
+            .unwrap_or(0)
+    };
+    let hold_moves = feed_moves(holds[0]);
+    let latest_moves = frames_after_restart.iter().map(|f| feed_moves(f)).max().unwrap_or(0);
+    assert!(
+        latest_moves > hold_moves,
+        "the feed header must refresh after the hold: hold showed {hold_moves} moves, \
+         the latest frame {latest_moves}"
+    );
+
     let quiet = follower.poll();
     assert!(quiet.frame.is_none() && quiet.lines.is_empty() && !quiet.complete);
 
