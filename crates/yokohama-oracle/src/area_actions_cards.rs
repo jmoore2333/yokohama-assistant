@@ -107,8 +107,9 @@ pub(crate) fn port_moves(
 }
 
 /// §3.4 Laboratory A/B: tech acquisitions with the one-per-title gate, industry
-/// cover enumeration, and the 5th-tech penalty variants. `area_type` selects
-/// Lab A vs Lab B state.
+/// cover enumeration, and the extra-technology surcharge variants (from the
+/// 4th card, RB p.14; D2 DL 2026-08-08). `area_type` selects Lab A vs Lab B
+/// state.
 pub(crate) fn laboratory_moves(
     state: &GameState,
     rules: &Rules,
@@ -126,11 +127,15 @@ pub(crate) fn laboratory_moves(
     };
     let p = state.current_player();
 
-    // 5th-tech penalty [RB p.12 Note]: owning >=4 techs makes each further
-    // acquisition cost an ADDITIONAL 2 Yen or 1 Imported Good — enumerate
-    // Some(true) (2 Yen) and Some(false) (1 Imported) as separately affordable
-    // variants; under 4 owned techs the only form is None (spec §3.4).
-    let fifth_variants: &[Option<bool>] = if p.technologies.len() >= 4 {
+    // Extra-technology surcharge [RB p.14 verbatim: "Starting with your 4th
+    // card, each technology card requires an additional cost of 2 yen or
+    // 1 import" — EVERY card from the 4th onward pays it; D2, DL 2026-08-08]:
+    // owning >=3 techs makes this acquisition the 4th-or-later card, costing
+    // an ADDITIONAL 2 Yen or 1 Imported Good — enumerate Some(true) (2 Yen)
+    // and Some(false) (1 Imported) as separately affordable variants; under 3
+    // owned techs the only form is None (spec §3.4). The old >=4 threshold
+    // came from the KB's "after your 4th" misreading of that sentence.
+    let surcharge_variants: &[Option<bool>] = if p.technologies.len() >= 3 {
         &[Some(true), Some(false)]
     } else {
         &[None]
@@ -164,20 +169,20 @@ pub(crate) fn laboratory_moves(
         let max_imported = u32::from(deficit).min(p.imported_goods) as u8;
         for extra_imported in 0..=max_imported {
             let extra_yen = 2 * (deficit - extra_imported);
-            for &fifth in fifth_variants {
+            for &surcharge in surcharge_variants {
                 // Full affordability arithmetic (spec §3.4): the surcharge
                 // stacks on the cover's outlay.
                 let yen_needed =
-                    u32::from(extra_yen) + if fifth == Some(true) { 2 } else { 0 };
+                    u32::from(extra_yen) + if surcharge == Some(true) { 2 } else { 0 };
                 let imported_needed =
-                    u32::from(extra_imported) + if fifth == Some(false) { 1 } else { 0 };
+                    u32::from(extra_imported) + if surcharge == Some(false) { 1 } else { 0 };
                 if p.money >= yen_needed && p.imported_goods >= imported_needed {
                     moves.push(Move::ExecuteAreaAction {
                         action: AreaAction::Laboratory {
                             card_id,
                             extra_yen,
                             extra_imported,
-                            extra_tech_payment: fifth,
+                            extra_tech_payment: surcharge,
                         },
                     });
                 }
@@ -402,12 +407,17 @@ mod tests {
             .unwrap_or_else(|| panic!("standard data carries {effect:?}"))
     }
 
-    fn lab_action(card_id: TechCardId, yen: u8, imported: u8, fifth: Option<bool>) -> AreaAction {
+    fn lab_action(
+        card_id: TechCardId,
+        yen: u8,
+        imported: u8,
+        surcharge: Option<bool>,
+    ) -> AreaAction {
         AreaAction::Laboratory {
             card_id,
             extra_yen: yen,
             extra_imported: imported,
-            extra_tech_payment: fifth,
+            extra_tech_payment: surcharge,
         }
     }
 
@@ -495,7 +505,8 @@ mod tests {
         assert!(laboratory_moves(&s, &rules, AreaType::LaboratoryA, 3).is_empty());
     }
 
-    /// Four distinct-title techs to trigger the 5th-tech penalty.
+    /// Four distinct-title techs — slice to taste for surcharge fixtures
+    /// (the surcharge binds from the 4th card, i.e. at >=3 owned; D2).
     fn four_owned_techs(rules: &Rules) -> Vec<TechCardId> {
         [
             TechEffect::LanguageSchool,
@@ -509,9 +520,10 @@ mod tests {
     }
 
     #[test]
-    fn lab_fifth_tech_penalty_variants() {
-        // [RB p.12 Note]: with >=4 techs owned, each acquisition costs an
-        // ADDITIONAL 2 Yen or 1 Imported Good — Some(true)/Some(false) each
+    fn lab_surcharge_persists_at_the_fifth_card_and_beyond() {
+        // D2 [RB p.14]: EVERY card from the 4th onward pays — with 4 techs
+        // owned (the 5th acquisition), the surcharge still binds: an
+        // ADDITIONAL 2 Yen or 1 Imported Good, Some(true)/Some(false) each
         // enumerated iff separately affordable, never None.
         let rules = Rules::standard();
         let ball = tech_by_effect(&rules, TechEffect::Ball);
@@ -547,20 +559,42 @@ mod tests {
     }
 
     #[test]
-    fn lab_under_four_techs_no_penalty() {
-        // [RB p.12 Note] penalty binds from the 5th acquisition only: with 3
-        // owned techs, `extra_tech_payment` is None.
+    fn lab_surcharge_starts_at_the_fourth_card() {
+        // D2 [RB p.14 verbatim: "Starting with your 4th card, each technology
+        // card requires an additional cost of 2 yen or 1 import"; DL
+        // 2026-08-08]: with 3 techs owned the acquisition IS the 4th card, so
+        // it already pays — Some(true)/Some(false) only, never None. The old
+        // "after your 4th" reading (surcharge from the 5th) was a KB
+        // misreading of that sentence.
         let rules = Rules::standard();
         let ball = tech_by_effect(&rules, TechEffect::Ball);
         let mut s = lab_state();
         s.players[0].technologies = four_owned_techs(&rules)[..3].to_vec();
+        s.lab_state.lab_a.slots[0] = Some(ball.id); // required 3; power 3 => d=0
+        s.players[0].money = 2;
+        s.players[0].imported_goods = 1;
+        let got = actions(&laboratory_moves(&s, &rules, AreaType::LaboratoryA, 3));
+        assert_same_set(
+            &got,
+            &[lab_action(ball.id, 0, 0, Some(true)), lab_action(ball.id, 0, 0, Some(false))],
+        );
+    }
+
+    #[test]
+    fn lab_no_surcharge_below_the_fourth_card() {
+        // D2 [RB p.14]: the 1st-3rd cards carry no surcharge — with 2 owned
+        // techs the acquisition is the 3rd card, `extra_tech_payment` is None.
+        let rules = Rules::standard();
+        let ball = tech_by_effect(&rules, TechEffect::Ball);
+        let mut s = lab_state();
+        s.players[0].technologies = four_owned_techs(&rules)[..2].to_vec();
         s.lab_state.lab_a.slots[0] = Some(ball.id);
         let got = actions(&laboratory_moves(&s, &rules, AreaType::LaboratoryA, 3));
         assert_same_set(&got, &[lab_action(ball.id, 0, 0, None)]);
     }
 
     #[test]
-    fn lab_fifth_penalty_interacts_with_deficit_cover() {
+    fn lab_surcharge_interacts_with_deficit_cover() {
         // Full affordability arithmetic (spec §3.4): Telegram at slot 0
         // (required 6), power 5 => d=1; 4 techs owned; money 2, imported 1.
         // (yen-cover 2, Some(true)) needs 4 Yen: OUT. (yen-cover, Some(false))
