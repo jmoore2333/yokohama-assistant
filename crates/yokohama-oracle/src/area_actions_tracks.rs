@@ -33,14 +33,16 @@ pub(crate) fn church_moves(state: &GameState, power: u8, acting: AreaId) -> Vec<
         let seafood = bits & 8 != 0;
         let yen = bits & 16 != 0;
         let imported_good = bits & 32 != 0;
-        // Every true flag must be backed by >= 1 of that resource — combos
-        // failing validation are ILLEGAL, not no-ops [RB p.13; DL 2026-07-17
-        // "Church executor v1 semantic"].
+        // Every true flag must be backed by its full cost — combos failing
+        // validation are ILLEGAL, not no-ops [RB p.13; DL 2026-07-17 "Church
+        // executor v1 semantic"]. The yen payment type costs 2 YEN for its
+        // 1 Faith [D1, DL 2026-08-08: "Confirmed the printed church board
+        // shows 2 yen (page 12 of rulebook)"]; every goods type costs 1.
         if (copper && p.copper < 1)
             || (silk && p.silk < 1)
             || (tea && p.tea < 1)
             || (seafood && p.seafood < 1)
-            || (yen && p.money < 1)
+            || (yen && p.money < 2)
             || (imported_good && p.imported_goods < 1)
         {
             continue;
@@ -295,6 +297,21 @@ mod tests {
         s.players[0].imported_goods = 1;
         assert!(church_moves(&s, 5, church_area())
             .contains(&church(false, false, false, false, false, true)));
+    }
+
+    #[test]
+    fn church_yen_payment_costs_two_yen() {
+        // D1 [DL 2026-08-08; RB p.12 printed church board]: the yen payment
+        // type costs 2 Yen for its 1 Faith — "Confirmed the printed church
+        // board shows 2 yen (page 12 of rulebook)". Money 1 cannot back the
+        // yen flag; money 2 can. Faith arithmetic is unchanged: the yen flag
+        // still buys exactly 1 Faith, max 1 per turn.
+        let mut s = two_player_state();
+        s.players[0].money = 1;
+        let yen_only = church(false, false, false, false, true, false);
+        assert!(!church_moves(&s, 5, church_area()).contains(&yen_only));
+        s.players[0].money = 2;
+        assert!(church_moves(&s, 5, church_area()).contains(&yen_only));
     }
 
     #[test]

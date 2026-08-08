@@ -626,7 +626,7 @@ fn describe_area_action(action: &AreaAction, state: &GameState, rules: &Rules) -
             }
             s
         }
-        AreaAction::Laboratory { card_id, extra_yen, extra_imported, fifth_tech_payment } => {
+        AreaAction::Laboratory { card_id, extra_yen, extra_imported, extra_tech_payment } => {
             let name = tech_name(*card_id, &rules.techs);
             let mut s = format!("Laboratory: acquire {name}");
             if *extra_yen > 0 {
@@ -635,14 +635,15 @@ fn describe_area_action(action: &AreaAction, state: &GameState, rules: &Rules) -
             if *extra_imported > 0 {
                 s.push_str(&format!(", +{extra_imported} imported"));
             }
-            // Rulebook p.12: "the 5th Technology card and later each cost
-            // either an extra 2 Yen or 1 Imported Good token" -- the penalty
-            // fires for the 5th AND every later acquisition (engine:
-            // `fifth_tech_penalty_required`, owns 4+), so the label reads
-            // "5th+" rather than a fixed "5th" that misnames a 6th/7th buy.
-            match fifth_tech_payment {
-                Some(true) => s.push_str(", 5th+ tech fee: 2 yen"),
-                Some(false) => s.push_str(", 5th+ tech fee: 1 imported good"),
+            // Rulebook p.14 verbatim (D2 owner ruling 2026-08-08): "Starting
+            // with your 4th card, each technology card requires an additional
+            // cost of 2 yen or 1 import" -- the surcharge fires for the 4th
+            // AND every later acquisition (engine:
+            // `extra_tech_surcharge_required`, owns 3+), so the label reads
+            // "4th+" rather than a fixed ordinal that misnames a later buy.
+            match extra_tech_payment {
+                Some(true) => s.push_str(", 4th+ tech fee: 2 yen"),
+                Some(false) => s.push_str(", 4th+ tech fee: 1 imported good"),
                 None => {}
             }
             s
@@ -694,7 +695,10 @@ fn describe_area_action(action: &AreaAction, state: &GameState, rules: &Rules) -
                 parts.push("seafood");
             }
             if *yen {
-                parts.push("yen");
+                // D1 (2026-08-08): the yen payment type costs 2 Yen (rulebook
+                // p.12 printed church board), so the label carries the price —
+                // "yen" alone would under-state what the option spends.
+                parts.push("2 yen");
             }
             if *imported_good {
                 parts.push("imported good");
@@ -946,7 +950,13 @@ pub fn describe_move(mv: &Move, state: &GameState, rules: &Rules) -> String {
                 MoveSource::Hand => "hand".to_string(),
                 MoveSource::Area(a) => area_label(state, *a),
             };
-            format!("Move an assistant from {from_label} to {} (reward move)", area_label(state, *to))
+            let to_label = match to {
+                // D3 (2026-08-08): the icon may return an on-board assistant
+                // to the owner's hand — full words, per the CLI's vocabulary.
+                MoveTarget::Hand => "your hand".to_string(),
+                MoveTarget::Area(a) => area_label(state, *a),
+            };
+            format!("Move an assistant from {from_label} to {to_label} (reward move)")
         }
         Move::DeclineAssistantMove => "Decline the assistant move".to_string(),
         // Show the space's FULL printed reward -- VP plus its movement rider
@@ -1553,39 +1563,40 @@ mod tests {
         assert!(ch.contains("1 copper -> 2 yen"), "{ch}");
     }
 
-    /// The Laboratory acquisition's `fifth_tech_payment` surcharge is the
-    /// rulebook p.12 penalty on "the 5th Technology card AND LATER" (engine:
-    /// `fifth_tech_penalty_required` fires once the player owns 4+ techs), so
-    /// it applies unchanged to the 6th, 7th, ... acquisition too. The label
-    /// must not hard-code the ordinal "5th" (which is false for a 6th/7th
-    /// buy) -- "5th+" names the surcharge accurately. NOTE: this is a
-    /// different surcharge from the board-position surcharge (`extra_yen`/
-    /// `extra_imported`, slots 3-6 = +1,+1,+2,+2); this test pins only the
-    /// 5th+ tech-CARD penalty label.
+    /// The Laboratory acquisition's `extra_tech_payment` surcharge is the
+    /// rulebook p.14 cost "Starting with your 4th card, each technology card
+    /// requires an additional cost of 2 yen or 1 import" (D2 owner ruling
+    /// 2026-08-08; engine: `extra_tech_surcharge_required` fires once the
+    /// player owns 3+ techs), so it applies unchanged to the 5th, 6th, ...
+    /// acquisition too. The label must not hard-code the ordinal "4th"
+    /// (which is false for a 5th/6th buy) -- "4th+" names the surcharge
+    /// accurately. NOTE: this is a different surcharge from the
+    /// board-position surcharge (`extra_yen`/`extra_imported`, slots 3-6 =
+    /// +1,+1,+2,+2); this test pins only the 4th+ tech-CARD surcharge label.
     #[test]
-    fn laboratory_fifth_plus_tech_fee_is_not_hard_coded_to_the_fifth() {
+    fn laboratory_fourth_plus_tech_fee_is_not_hard_coded_to_the_fourth() {
         let state = state_2p();
         let rules = Rules::standard();
         let yen = describe_move(
             &Move::ExecuteAreaAction {
                 action: AreaAction::Laboratory {
-                    card_id: TechCardId(20), extra_yen: 0, extra_imported: 0, fifth_tech_payment: Some(true),
+                    card_id: TechCardId(20), extra_yen: 0, extra_imported: 0, extra_tech_payment: Some(true),
                 },
             },
             &state,
             &rules,
         );
-        assert!(yen.contains("5th+ tech fee: 2 yen"), "{yen}");
+        assert!(yen.contains("4th+ tech fee: 2 yen"), "{yen}");
         let imported = describe_move(
             &Move::ExecuteAreaAction {
                 action: AreaAction::Laboratory {
-                    card_id: TechCardId(20), extra_yen: 0, extra_imported: 0, fifth_tech_payment: Some(false),
+                    card_id: TechCardId(20), extra_yen: 0, extra_imported: 0, extra_tech_payment: Some(false),
                 },
             },
             &state,
             &rules,
         );
-        assert!(imported.contains("5th+ tech fee: 1 imported good"), "{imported}");
+        assert!(imported.contains("4th+ tech fee: 1 imported good"), "{imported}");
     }
 
     #[test]
@@ -1614,13 +1625,17 @@ mod tests {
         let rules = Rules::standard();
         let some_area = *state.board_layout.areas.keys().next().unwrap();
 
-        let from_hand = describe_move(&Move::ChooseAssistantMove { from: MoveSource::Hand, to: some_area }, &state, &rules);
+        let from_hand = describe_move(&Move::ChooseAssistantMove { from: MoveSource::Hand, to: MoveTarget::Area(some_area) }, &state, &rules);
         assert!(from_hand.starts_with("Move an assistant from hand to "), "{from_hand}");
         assert!(from_hand.ends_with("(reward move)"), "{from_hand}");
 
-        let from_area = describe_move(&Move::ChooseAssistantMove { from: MoveSource::Area(some_area), to: some_area }, &state, &rules);
+        let from_area = describe_move(&Move::ChooseAssistantMove { from: MoveSource::Area(some_area), to: MoveTarget::Area(some_area) }, &state, &rules);
         assert!(from_area.contains(&format!("(A{:02})", some_area.0)), "{from_area}");
         assert!(!from_area.contains("hand"), "{from_area}");
+
+        // D3 (2026-08-08): the to-hand return reads in full words.
+        let to_hand = describe_move(&Move::ChooseAssistantMove { from: MoveSource::Area(some_area), to: MoveTarget::Hand }, &state, &rules);
+        assert!(to_hand.ends_with("to your hand (reward move)"), "{to_hand}");
 
         assert_eq!(describe_move(&Move::DeclineAssistantMove, &state, &rules), "Decline the assistant move");
     }
@@ -2280,6 +2295,9 @@ mod tests {
         let text = describe_move(&mv, &state, &rules);
         assert!(text.contains("-> faith 4"), "{text}");
         assert!(text.contains("power 1 + 3 kinds"), "{text}");
+        // D1 (2026-08-08): the yen payment type is priced at 2 Yen (rulebook
+        // p.12), and the option label must say so.
+        assert!(text.contains("2 yen"), "{text}");
 
         let after = apply_move_unchecked(&state, &mv, &rules).expect("church action applies");
         match after.pending_choices.first() {

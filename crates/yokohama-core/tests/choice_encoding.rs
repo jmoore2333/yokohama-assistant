@@ -34,7 +34,8 @@ use std::collections::BTreeSet;
 
 use yokohama_core::{
     apply_move, create_test_game_state, get_legal_moves, push_choice, replay_from, AreaConfig,
-    AreaAction, AreaId, AreaType, Country, GameRecord, GameState, Move, MoveSource, OrderCard,
+    AreaAction, AreaId, AreaType, Country, GameRecord, GameState, Move, MoveSource, MoveTarget,
+    OrderCard,
     OrderCardId, OrderRewards, PendingChoice, PresidentLocation, RecordedEvent, Rules,
     StartingOrderChoice, TechCard, TechCardId, TechEffect, TradeGood, TradeGoodRequirement,
     TurnPhase, WarehouseItem,
@@ -128,11 +129,11 @@ fn assistant_move_choice_resolves_via_public_api() {
     let mid = apply_move(&state, &Move::FulfillOrder { order_id }, &rules).unwrap();
     assert_eq!(mid.pending_choices, vec![PendingChoice::AssistantMove]);
     assert!(get_legal_moves(&mid, &rules)
-        .contains(&Move::ChooseAssistantMove { from: MoveSource::Hand, to: area0() }));
+        .contains(&Move::ChooseAssistantMove { from: MoveSource::Hand, to: MoveTarget::Area(area0()) }));
 
     let done = apply_move(
         &mid,
-        &Move::ChooseAssistantMove { from: MoveSource::Hand, to: area0() },
+        &Move::ChooseAssistantMove { from: MoveSource::Hand, to: MoveTarget::Area(area0()) },
         &rules,
     )
     .unwrap();
@@ -201,7 +202,7 @@ fn church_space_choice_places_and_cascades_into_movement_riders() {
     // Drain both riders through the public API: one real move, one decline.
     let after_r1 = apply_move(
         &after_space,
-        &Move::ChooseAssistantMove { from: MoveSource::Hand, to: area0() },
+        &Move::ChooseAssistantMove { from: MoveSource::Hand, to: MoveTarget::Area(area0()) },
         &rules,
     )
     .unwrap();
@@ -402,7 +403,7 @@ fn order_movement_reward_of_two_queues_two_assistant_move_choices() {
 
     let after_first = apply_move(
         &mid,
-        &Move::ChooseAssistantMove { from: MoveSource::Hand, to: area0() },
+        &Move::ChooseAssistantMove { from: MoveSource::Hand, to: MoveTarget::Area(area0()) },
         &rules,
     )
     .unwrap();

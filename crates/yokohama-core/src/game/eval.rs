@@ -1023,16 +1023,40 @@ fn country_set_bonus(player: &VisiblePlayer, rules: &Rules) -> i64 {
 /// the second, ties broken CLOCKWISE from the start player (nearest wins) and
 /// a player owning no technology never places (its industry value is 0, so it
 /// sorts below every owner and the award is withheld).
+///
+/// D5 (owner ruling 2026-08-08, rulebook p.9 final-scoring NOTE): at two
+/// players the setup dummy competes here too, at industry value EXACTLY 7.5 —
+/// mirrored from `scoring::calculate_technology_bonus`, same doubled-integer
+/// comparison (the dummy is 15; real doubled totals are even, so a tie
+/// against the dummy is unrepresentable and its distance key is a
+/// placeholder). A place the dummy takes is consumed and awarded to nobody —
+/// `majority_bonus`'s finding-D1 semantics, restated over industry values.
 fn technology_majority(view: &PlayerView, rules: &Rules, out: &mut [i64; MAX_SEATS]) {
     let seats = i32::from(view.config.player_count);
     if seats <= 0 {
         return;
     }
-    // (seat, industry value, clockwise distance). Distance is unique per seat,
-    // so the ordering below is total and no third key is needed.
+    /// Sentinel "seat" for the 2P dummy contender: never a real index, so the
+    /// award loop below can consume its place without crediting anyone.
+    const DUMMY_SEAT: usize = usize::MAX;
+    // (seat, DOUBLED industry value, clockwise distance). Distance is unique
+    // per real seat and unreachable for the dummy, so the ordering below is
+    // total and no third key is needed.
     let mut first: Option<(usize, u32, i32)> = None;
     let mut second: Option<(usize, u32, i32)> = None;
     let better = |a: (usize, u32, i32), b: (usize, u32, i32)| a.1 > b.1 || (a.1 == b.1 && a.2 < b.2);
+    let mut consider = |candidate: (usize, u32, i32)| {
+        match first {
+            Some(f) if !better(candidate, f) => match second {
+                Some(s) if !better(candidate, s) => {}
+                _ => second = Some(candidate),
+            },
+            _ => {
+                second = first;
+                first = Some(candidate);
+            }
+        }
+    };
 
     for player in &view.players {
         let Some(i) = seat_index(player) else { continue };
@@ -1045,24 +1069,21 @@ fn technology_majority(view: &PlayerView, rules: &Rules, out: &mut [i64; MAX_SEA
         if industry == 0 {
             continue;
         }
-        let candidate = (i, industry, clockwise_distance(view, player.id));
-        match first {
-            Some(f) if !better(candidate, f) => match second {
-                Some(s) if !better(candidate, s) => {}
-                _ => second = Some(candidate),
-            },
-            _ => {
-                second = first;
-                first = Some(candidate);
-            }
-        }
+        consider((i, 2 * industry, clockwise_distance(view, player.id)));
+    }
+    if view.config.player_count == 2 {
+        consider((DUMMY_SEAT, 15, i32::MAX));
     }
 
     if let Some((i, _, _)) = first {
-        out[i] += 10;
+        if i != DUMMY_SEAT {
+            out[i] += 10;
+        }
     }
     if let Some((i, _, _)) = second {
-        out[i] += 5;
+        if i != DUMMY_SEAT {
+            out[i] += 5;
+        }
     }
 }
 

@@ -8,7 +8,8 @@
 //! the count.
 
 use yokohama_core::{
-    GameState, Move, MoveSource, PendingChoice, Rules, TradeGood, TradingHouseState, WarehouseItem,
+    GameState, Move, MoveSource, MoveTarget, PendingChoice, Rules, TradeGood, TradingHouseState,
+    WarehouseItem,
 };
 
 use crate::area_actions_tracks::{eligible_church_spaces, eligible_customs_spaces};
@@ -57,7 +58,8 @@ pub(crate) fn head_choice_moves(state: &GameState, rules: &Rules) -> Vec<Move> {
             moves
         }
         // §2.3 AssistantMove: from hand or any own-assistant area, to any
-        // non-Canal area (to ≠ from for an area source); Decline always offered.
+        // non-Canal area (to ≠ from for an area source) OR — for an on-board
+        // source only — back to the owner's hand; Decline always offered.
         PendingChoice::AssistantMove => {
             let mut froms = Vec::new();
             if p.assistants.in_hand >= 1 {
@@ -71,13 +73,23 @@ pub(crate) fn head_choice_moves(state: &GameState, rules: &Rules) -> Vec<Move> {
             let targets = placeable_areas(state);
             let mut moves = Vec::new();
             for from in froms {
+                // D3 [DL 2026-08-08, owner-ruled for BGA PARITY]: every
+                // ON-BOARD source may return the assistant to the owner's
+                // hand, where it stays. The p.10 text is ambiguous and BGA
+                // allows it; the owner adopted the return for parity while
+                // holding the original area-to-area reading probably
+                // accurate. Hand-to-hand is never emitted — a structural
+                // no-op indistinguishable from Decline.
+                if matches!(from, MoveSource::Area(_)) {
+                    moves.push(Move::ChooseAssistantMove { from, to: MoveTarget::Hand });
+                }
                 for &to in &targets {
                     // "Move … to another Area" (RB p.10): a from-Area source
                     // may not target its own area.
                     if matches!(from, MoveSource::Area(a) if a == to) {
                         continue;
                     }
-                    moves.push(Move::ChooseAssistantMove { from, to });
+                    moves.push(Move::ChooseAssistantMove { from, to: MoveTarget::Area(to) });
                 }
             }
             moves.push(Move::DeclineAssistantMove);
@@ -114,6 +126,7 @@ mod tests {
     use super::*;
     use crate::test_support::two_player_state;
     use yokohama_core::{AreaId, PendingChoice, Rules};
+    use yokohama_core::MoveTarget;
 
     fn rules() -> Rules {
         Rules::empty_for_tests()
@@ -183,12 +196,12 @@ mod tests {
         for id in [0, 1, 2, 3] {
             assert!(moves.contains(&Move::ChooseAssistantMove {
                 from: MoveSource::Hand,
-                to: AreaId::new(id),
+                to: MoveTarget::Area(AreaId::new(id)),
             }));
         }
         assert!(!moves.contains(&Move::ChooseAssistantMove {
             from: MoveSource::Hand,
-            to: AreaId::new(4), // Canal
+            to: MoveTarget::Area(AreaId::new(4)), // Canal
         }));
         assert!(moves.contains(&Move::DeclineAssistantMove));
     }
@@ -202,20 +215,43 @@ mod tests {
         let moves = head_choice_moves(&s, &rules());
         assert!(moves.contains(&Move::ChooseAssistantMove {
             from: MoveSource::Area(AreaId::new(1)),
-            to: AreaId::new(0),
+            to: MoveTarget::Area(AreaId::new(0)),
         }));
         assert!(!moves.contains(&Move::ChooseAssistantMove {
             from: MoveSource::Area(AreaId::new(1)),
-            to: AreaId::new(1), // to ≠ from
+            to: MoveTarget::Area(AreaId::new(1)), // to ≠ from
         }));
         assert!(!moves.contains(&Move::ChooseAssistantMove {
             from: MoveSource::Area(AreaId::new(1)),
-            to: AreaId::new(4), // Canal
+            to: MoveTarget::Area(AreaId::new(4)), // Canal
         }));
         // Hand is empty ⇒ no from-Hand options.
         assert!(!moves
             .iter()
             .any(|m| matches!(m, Move::ChooseAssistantMove { from: MoveSource::Hand, .. })));
+    }
+
+    #[test]
+    fn assistant_move_area_source_offers_the_hand_return_hand_source_does_not() {
+        // D3 [DL 2026-08-08, owner-ruled for BGA PARITY]: a movement icon may
+        // return one of the mover's ON-BOARD assistants to the owner's hand,
+        // where it simply stays — BGA's engine allows it, the printed p.10
+        // text is ambiguous, and the owner adopted the return for parity
+        // while recording that he holds the original area-to-area reading is
+        // probably accurate. Hand-to-hand is NEVER emitted: it would change
+        // nothing (a structural no-op indistinguishable from Decline).
+        let mut s = two_player_state();
+        s.pending_choices = vec![PendingChoice::AssistantMove];
+        s.players[0].assistants.on_board.insert(AreaId::new(1), 1);
+        let moves = head_choice_moves(&s, &rules());
+        assert!(moves.contains(&Move::ChooseAssistantMove {
+            from: MoveSource::Area(AreaId::new(1)),
+            to: MoveTarget::Hand,
+        }));
+        assert!(!moves.contains(&Move::ChooseAssistantMove {
+            from: MoveSource::Hand,
+            to: MoveTarget::Hand, // hand-to-hand is not a move
+        }));
     }
 
     #[test]

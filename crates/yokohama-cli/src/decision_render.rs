@@ -34,7 +34,7 @@
 //! already gives it, carried in on [`Row::Move::words`]. That is not a
 //! shortcut. `describe_move` holds forty arms of engine-pinned preview text —
 //! the Church's faith arithmetic, a production area's real yield at the current
-//! power, the Customs spaces a payment reaches, a fifth technology's surcharge
+//! power, the Customs spaces a payment reaches, an extra technology's surcharge
 //! — and re-authoring those here would be a rewrite of tested wording that no
 //! mock asks for. Spec §0.2's editorial pass over that vocabulary is T11's.
 //!

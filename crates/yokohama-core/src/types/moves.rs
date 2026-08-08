@@ -3,7 +3,8 @@
 use serde::{Deserialize, Serialize};
 
 use crate::types::{
-    AchievementType, AreaId, Country, MoveSource, OrderCardId, TechCardId, TradeGood, WarehouseItem,
+    AchievementType, AreaId, Country, MoveSource, MoveTarget, OrderCardId, TechCardId, TradeGood,
+    WarehouseItem,
 };
 
 /// Turn phases in order of execution.
@@ -113,7 +114,7 @@ pub enum Move {
     ChooseAnyGood { good: TradeGood },
     ChooseWarehouseTake { item: WarehouseItem },
     DeclineWarehouseTake,
-    ChooseAssistantMove { from: MoveSource, to: AreaId },
+    ChooseAssistantMove { from: MoveSource, to: MoveTarget },
     DeclineAssistantMove,
     ChooseChurchSpace { space: u8 },
     ChooseCustomsSpace { space: u8 },
@@ -149,8 +150,8 @@ pub enum AreaAction {
         extra_yen: u8,
         /// Extra Imported Goods paid for industry value.
         extra_imported: u8,
-        /// Extra payment for 5th+ tech: Some(true) = 2 Yen, Some(false) = 1 Imported Good
-        fifth_tech_payment: Option<bool>,
+        /// Extra payment for the 4th+ tech (D2, 2026-08-08): Some(true) = 2 Yen, Some(false) = 1 Imported Good
+        extra_tech_payment: Option<bool>,
     },
 
     // Employment Agency - choose which tokens to take

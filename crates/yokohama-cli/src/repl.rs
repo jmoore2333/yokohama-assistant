@@ -1296,9 +1296,17 @@ impl Repl {
                 Err(e) => return self.out(format!("{e}\n"), false),
             }
         };
-        let to = match parse_raw_area_token(dst) {
-            Ok(id) => id,
-            Err(e) => return self.out(format!("{e}\n"), false),
+        // D3 (2026-08-08): `m <area> hand` returns the assistant to your
+        // hand. `m hand hand` assembles a candidate no legal list ever
+        // contains (hand-to-hand is never offered), so it falls through to
+        // the same rejection any other unoffered combination gets.
+        let to = if dst == "hand" {
+            MoveTarget::Hand
+        } else {
+            match parse_raw_area_token(dst) {
+                Ok(id) => MoveTarget::Area(id),
+                Err(e) => return self.out(format!("{e}\n"), false),
+            }
         };
         let candidate = Move::ChooseAssistantMove { from, to };
         match self.find_placement_match(&candidate) {
@@ -3285,7 +3293,7 @@ Commands:
   a [id id id]    Placement Option A: place 1 assistant in each of 0-3 areas (4 with Newspaper)
   b <id>          Placement Option B: place 2 assistants in one area
   b <id> t <adj>  Placement Option B with the Telegram bonus: +1 assistant in an adjacent area
-  m <from> <to>   resolve a pending assistant-move choice (<from> is 'hand' or an area id)
+  m <from> <to>   resolve a pending assistant-move choice (<from> is 'hand' or an area id; <to> is an area id, or 'hand' to return the pawn)
   r [id[:n]]...   Movement Option B: retreat the President, recovering all (bare id) or n assistants per area ('r' alone recovers none)
   board           show the area grid and its legend (▲ president, ● assistants, ◈ a Movement destination, [St] Station, site-slot tokens)
   players         show each player's resources, hand, tech, tokens, President
@@ -5157,6 +5165,37 @@ mod tests {
         assert!(!out.text.to_lowercase().contains("illegal"), "{}", out.text);
         assert_eq!(r.session.record().events.len(), events_before + 2);
         assert!(r.session.state().pending_choices.is_empty());
+    }
+
+    #[test]
+    fn assistant_move_m_grammar_returns_an_on_board_assistant_to_hand() {
+        // D3 (owner ruling 2026-08-08): `m <area> hand` returns an on-board
+        // assistant to your hand, where it stays; `m hand hand` assembles a
+        // candidate no legal list ever contains and gets the standard
+        // rejection.
+        let mut r = repl_2p(4);
+        let church_area = drive_to_double_assistant_move_cascade(&mut r);
+        let events_before = r.session.record().events.len();
+        let hand_before = r.session.state().current_player().assistants.in_hand;
+        let on_board_before = r.session.state().current_player().assistants.in_area(church_area);
+        assert!(on_board_before >= 1, "fixture premise: an own assistant sits on the Church area");
+
+        let out = r.step(&format!("m {} hand", church_area.0));
+        assert!(!out.text.to_lowercase().contains("illegal"), "{}", out.text);
+        assert_eq!(r.session.record().events.len(), events_before + 1);
+        assert_eq!(
+            r.session.state().current_player().assistants.in_hand,
+            hand_before + 1,
+            "the pawn is back in hand"
+        );
+        assert_eq!(
+            r.session.state().current_player().assistants.in_area(church_area),
+            on_board_before - 1,
+        );
+
+        // hand-to-hand is never offered.
+        let out = r.step("m hand hand");
+        assert!(out.text.contains("not one of the legal assistant moves"), "{}", out.text);
     }
 
     #[test]

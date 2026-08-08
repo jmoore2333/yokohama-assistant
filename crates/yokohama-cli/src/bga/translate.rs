@@ -24,7 +24,7 @@ use crate::session::Session;
 use std::collections::{BTreeMap, BTreeSet};
 use yokohama_core::{
     apply_move_unchecked, AreaAction, AreaId, AreaType, ChurchTrack, CustomsTrack, Move,
-    MoveSource, PendingChoice, PlayerId, PortPayment, PresidentLocation, RecordedEvent,
+    MoveSource, MoveTarget, PendingChoice, PlayerId, PortPayment, PresidentLocation, RecordedEvent,
     TurnPhase, WarehouseItem,
 };
 
@@ -902,7 +902,7 @@ impl<'a> Translator<'a> {
                         None => MoveSource::Hand,
                         Some(a) => MoveSource::Area(self.area_id(a, move_id)?),
                     };
-                    let to = self.area_id(to, move_id)?;
+                    let to = MoveTarget::Area(self.area_id(to, move_id)?);
                     self.apply(Move::ChooseAssistantMove { from, to }, vec![], move_id)?;
                 }
                 Fact::AssistMove { seat: s, from: Some(from), to: None } if *s == seat => {
@@ -920,7 +920,7 @@ impl<'a> Translator<'a> {
                             self.consume_drive();
                             self.consume_drive_uncheckpointed();
                             let from = MoveSource::Area(self.area_id(from, move_id)?);
-                            let to = self.area_id(to2, move_id)?;
+                            let to = MoveTarget::Area(self.area_id(to2, move_id)?);
                             self.report.notes.push(format!(
                                 "move {move_id}: composed BGA's two-leg assistant move \
                                  ({from:?} → hand → {to2:?}) into one engine icon + decline"

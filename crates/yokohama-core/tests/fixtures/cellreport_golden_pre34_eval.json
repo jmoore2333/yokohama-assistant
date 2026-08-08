@@ -21,15 +21,23 @@
   ],
   "seat0_wins": 2,
   "ties_to_seat0": 0,
-  "vp_margin_mean": 76.25,
+  "vp_margin_mean": 59.0,
   "applied_by_seat": [
-    708,
-    745
+    606,
+    660
   ],
-  "x_applied_moves": 801,
-  "x_explanations": 801,
+  "x_applied_moves": 684,
+  "x_explanations": 684,
   "x_ply_cap_hits": 0,
   "x_free_cap_hits": 0,
+  "x_candidates_scored": 454862,
+  "x_root_scored": 14575,
+  "x_budget_binds": 0,
+  "x_budget_starved_decisions": 0,
+  "y_candidates_scored": 15453,
+  "y_root_scored": null,
+  "y_budget_binds": null,
+  "y_budget_starved_decisions": null,
   "trigger": {
     "counts": {
       "ChurchTrackFull": 4

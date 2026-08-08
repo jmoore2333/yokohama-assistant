@@ -206,9 +206,15 @@ pub fn calculate_industry_value(
     from_power + from_yen + from_imported
 }
 
-/// Cost for 5th+ technology card (penalty).
-pub fn fifth_tech_penalty_required(tech_count: usize) -> bool {
-    tech_count >= 4
+/// Whether the NEXT technology acquisition owes the extra-technology
+/// surcharge (+2 Yen or 1 import), given how many the player already owns.
+/// Rulebook p.14 verbatim (D2 owner ruling 2026-08-08): "Starting with your
+/// 4th card, each technology card requires an additional cost of 2 yen or 1
+/// import" — owning 3 or more means the next card is the 4th or later, so
+/// EVERY card from the 4th onward pays it. (The engine started at the 5th
+/// until SEMANTICS_REV 6; the KB's "after your 4th" was a misreading.)
+pub fn extra_tech_surcharge_required(tech_count: usize) -> bool {
+    tech_count >= 3
 }
 
 /// Lab position surcharge: positions 0-1 are free, 2-3 cost +1, 4-5 cost +2
@@ -230,7 +236,7 @@ pub fn lab_position_surcharge(slot_index: usize) -> u8 {
 /// Returns the priced `(yen_cost, imported_cost)` the purchase will charge —
 /// since Phase 2.9 Stage 4 the executor deducts EXACTLY these validated
 /// amounts, so no arithmetic on unvalidated payload fields exists in the
-/// execute path (census gap 1: the old executor re-derived the fifth-tech
+/// execute path (census gap 1: the old executor re-derived the extra-tech
 /// surcharge itself and could charge a +2 Yen validation never priced,
 /// underflowing `money`).
 #[allow(clippy::too_many_arguments)]
@@ -241,7 +247,7 @@ pub fn validate_lab_action(
     slot_index: usize,
     extra_yen: u8,
     extra_imported: u8,
-    fifth_tech_payment: Option<bool>,
+    extra_tech_payment: Option<bool>,
     power: u8,
     tech_registry: &TechRegistry,
 ) -> Result<(u32, u32), &'static str> {
@@ -296,23 +302,23 @@ pub fn validate_lab_action(
     // Calculate total Yen cost
     let mut yen_cost = extra_yen as u32;
 
-    // Check fifth tech penalty
-    if fifth_tech_penalty_required(p.technologies.len()) {
-        match fifth_tech_payment {
-            None => return Err("Must pay fifth tech penalty"),
+    // Check the extra-technology surcharge (4th card onward, rulebook p.14)
+    if extra_tech_surcharge_required(p.technologies.len()) {
+        match extra_tech_payment {
+            None => return Err("Must pay the extra-technology surcharge (4th card onward)"),
             Some(true) => yen_cost += 2, // Pay 2 Yen
             Some(false) => {
                 // Pay 1 Imported Good - validate below
                 if p.imported_goods < extra_imported as u32 + 1 {
-                    return Err("Not enough imported goods for fifth tech penalty");
+                    return Err("Not enough imported goods for the extra-technology surcharge");
                 }
             }
         }
-    } else if fifth_tech_payment.is_some() {
-        // Census gap 1: a supplied payment for a penalty that is not due
+    } else if extra_tech_payment.is_some() {
+        // Census gap 1: a supplied payment for a surcharge that is not due
         // must be rejected here — the old validation ignored it while the
         // executor still charged it (money underflow for Some(true)).
-        return Err("Fifth tech payment supplied but no penalty is due");
+        return Err("Extra-technology payment supplied but no surcharge is due");
     }
 
     // Validate payment
@@ -320,7 +326,7 @@ pub fn validate_lab_action(
         return Err("Not enough Yen");
     }
 
-    let imported_cost = extra_imported as u32 + if fifth_tech_payment == Some(false) { 1 } else { 0 };
+    let imported_cost = extra_imported as u32 + if extra_tech_payment == Some(false) { 1 } else { 0 };
     if p.imported_goods < imported_cost {
         return Err("Not enough imported goods");
     }
@@ -341,7 +347,7 @@ pub fn execute_lab_action(
     card_id: TechCardId,
     extra_yen: u8,
     extra_imported: u8,
-    fifth_tech_payment: Option<bool>,
+    extra_tech_payment: Option<bool>,
     power: u8,
     tech_registry: &TechRegistry,
 ) -> Result<(), MoveError> {
@@ -382,7 +388,7 @@ pub fn execute_lab_action(
     // impossible.
     let (yen_cost, imported_cost) = validate_lab_action(
         state, player, lab_ref, slot_index, extra_yen, extra_imported,
-        fifth_tech_payment, power, tech_registry,
+        extra_tech_payment, power, tech_registry,
     ).map_err(MoveError::RuleViolation)?;
 
     // Take the card, slide the remainder left, and refill from the
@@ -940,11 +946,83 @@ mod tests {
     }
 
     #[test]
-    fn test_fifth_tech_penalty() {
-        assert!(!fifth_tech_penalty_required(0));
-        assert!(!fifth_tech_penalty_required(3));
-        assert!(fifth_tech_penalty_required(4)); // 5th card
-        assert!(fifth_tech_penalty_required(5)); // 6th card
+    fn test_extra_tech_surcharge_threshold() {
+        assert!(!extra_tech_surcharge_required(0));
+        assert!(!extra_tech_surcharge_required(2)); // 3rd card: free
+        assert!(extra_tech_surcharge_required(3)); // 4th card pays (p.14, D2)
+        assert!(extra_tech_surcharge_required(4)); // 5th card
+        assert!(extra_tech_surcharge_required(5)); // 6th card
+    }
+
+    #[test]
+    fn the_fourth_tech_card_pays_the_extra_tech_surcharge() {
+        // D2 owner ruling 2026-08-08, rulebook p.14 verbatim: "Starting with
+        // your 4th card, each technology card requires an additional cost of
+        // 2 yen or 1 import." Owning 3 means the NEXT acquisition is the 4th
+        // card, so the surcharge is due; the engine started it at the 5th
+        // (the KB's "after your 4th" was a misreading).
+        let mut state = create_test_state();
+        let player = PlayerId::new(0);
+        state.players[0].money = 10;
+        state.players[0].imported_goods = 5;
+        state.players[0].technologies = vec![TechCardId(10), TechCardId(11), TechCardId(12)];
+
+        let mut tech_registry = TechRegistry::new();
+        tech_registry.insert(TechCard {
+            id: TechCardId(1),
+            name: "Test Tech".to_string(),
+            country: Country::English,
+            industry_cost: 2,
+            effect: TechEffect::Tram,
+        }, "tech_test");
+        state.lab_state.lab_a.slots[0] = Some(TechCardId(1));
+
+        // The 4th card with no surcharge payment supplied must be rejected.
+        let result = validate_lab_action(
+            &state, player, &state.lab_state.lab_a, 0, 0, 0, None, 3, &tech_registry,
+        );
+        assert!(result.is_err(), "the 4th card owes the surcharge (p.14)");
+
+        // Paying 2 Yen prices the whole purchase at exactly 2 Yen extra.
+        let result = validate_lab_action(
+            &state, player, &state.lab_state.lab_a, 0, 0, 0, Some(true), 3, &tech_registry,
+        );
+        assert_eq!(result, Ok((2, 0)));
+
+        // Paying 1 import prices 1 imported good.
+        let result = validate_lab_action(
+            &state, player, &state.lab_state.lab_a, 0, 0, 0, Some(false), 3, &tech_registry,
+        );
+        assert_eq!(result, Ok((0, 1)));
+    }
+
+    #[test]
+    fn the_third_tech_card_pays_no_surcharge() {
+        // D2 companion: owning 2 means the next acquisition is the 3rd card —
+        // below the p.14 threshold, so a supplied payment must be rejected
+        // (census gap 1 discipline: never charge what is not due).
+        let mut state = create_test_state();
+        let player = PlayerId::new(0);
+        state.players[0].money = 10;
+        state.players[0].imported_goods = 5;
+        state.players[0].technologies = vec![TechCardId(10), TechCardId(11)];
+
+        let mut tech_registry = TechRegistry::new();
+        tech_registry.insert(TechCard {
+            id: TechCardId(1),
+            name: "Test Tech".to_string(),
+            country: Country::English,
+            industry_cost: 2,
+            effect: TechEffect::Tram,
+        }, "tech_test");
+        state.lab_state.lab_a.slots[0] = Some(TechCardId(1));
+
+        assert_eq!(validate_lab_action(
+            &state, player, &state.lab_state.lab_a, 0, 0, 0, None, 3, &tech_registry,
+        ), Ok((0, 0)));
+        assert!(validate_lab_action(
+            &state, player, &state.lab_state.lab_a, 0, 0, 0, Some(true), 3, &tech_registry,
+        ).is_err(), "no surcharge is due on the 3rd card, so a supplied payment is rejected");
     }
 
     #[test]
@@ -1000,7 +1078,7 @@ mod tests {
     }
 
     #[test]
-    fn test_lab_fifth_tech_penalty() {
+    fn test_lab_extra_tech_surcharge() {
         let mut state = create_test_state();
         let player = PlayerId::new(0);
         state.players[0].money = 10;
@@ -1024,12 +1102,12 @@ mod tests {
 
         state.lab_state.lab_a.slots[0] = Some(TechCardId(1));
 
-        // Without fifth tech payment - should fail
+        // Without the surcharge payment - should fail
         let result = validate_lab_action(
             &state, player, &state.lab_state.lab_a, 0, 0, 0, None, 3, &tech_registry,
         );
         assert!(result.is_err());
-        assert!(result.unwrap_err().contains("fifth tech penalty"));
+        assert!(result.unwrap_err().contains("extra-technology surcharge"));
 
         // With 2 Yen payment - should succeed
         let result = validate_lab_action(
@@ -1088,7 +1166,7 @@ mod tests {
             TechCardId(1),
             0,    // extra yen
             0,    // extra imported
-            None, // fifth tech payment
+            None, // extra tech payment
             3,    // power
             &tech_registry,
         );
@@ -1143,7 +1221,7 @@ mod tests {
                     card_id: TechCardId(15),
                     extra_yen: 0,
                     extra_imported: 0,
-                    fifth_tech_payment: None,
+                    extra_tech_payment: None,
                 },
             },
             &rules,
@@ -1282,10 +1360,10 @@ mod tests {
     // --- Phase 2.9 Stage 4: raw-arm self-defense (census gaps 1-2) ---
 
     #[test]
-    fn lab_fifth_tech_yen_payment_without_penalty_due_is_rejected_no_underflow() {
+    fn lab_extra_tech_yen_payment_without_penalty_due_is_rejected_no_underflow() {
         // Census gap 1 probe: 0 techs owned (penalty NOT required), money 0,
         // cost fully covered by power. Supplying Some(true) slipped past
-        // validation (which only inspects fifth_tech_payment when the
+        // validation (which only inspects extra_tech_payment when the
         // penalty is due) and the executor then charged the unvalidated
         // +2 Yen: debug underflow panic, release wrap to ~4.29e9 Yen.
         let mut state = create_test_state();
@@ -1306,7 +1384,7 @@ mod tests {
     }
 
     #[test]
-    fn lab_fifth_tech_imported_payment_without_penalty_due_is_rejected() {
+    fn lab_extra_tech_imported_payment_without_penalty_due_is_rejected() {
         // Some(false) sibling of the probe above: with imported_goods >= 1
         // the old validation ACCEPTED the spurious penalty payment and the
         // executor charged 1 imported good for a penalty that was not due.

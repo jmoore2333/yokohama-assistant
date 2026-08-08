@@ -38,7 +38,12 @@
 //!    printed Industry value on owned Technology cards: 10 VP, second: 5 VP.
 //!    Only players who own at least one Technology card participate. Ties
 //!    break by closeness clockwise to the Start player, "the Start player
-//!    himself is considered to be the closest" [RB p.9].
+//!    himself is considered to be the closest" [RB p.9]. In a 2-player game
+//!    the setup dummy competes in THIS majority too, at an industry value of
+//!    EXACTLY 7.5 [RB p.9 NOTE, Jeremy's edition: "the dummy player ends the
+//!    game with an industry value of 7.5"; D5, DL 2026-08-08] — compared via
+//!    doubled integers so beats-and-ties hinge on the half, ranked but never
+//!    itself awarded (see `technology_awards`).
 //! 5. **Country bonus** [RB p.10 §4; KB §Final Scoring 4] — unfulfilled orders
 //!    return to the box (score nothing); Country icons on COMPLETED Order
 //!    cards and owned Technology cards divide into sets of DIFFERENT icons:
@@ -94,7 +99,10 @@ pub struct PlayerStanding {
 pub fn final_standings(state: &GameState, rules: &Rules) -> Vec<PlayerStanding> {
     let n = state.players.len();
 
-    // The 2-player setup dummy competes in BOTH majority bonuses [RB p.9 NOTE
+    // The 2-player setup dummy competes in ALL THREE majority bonuses — the
+    // two track bonuses via its pawns (below) and the Technology bonus at
+    // industry value exactly 7.5 (inside `technology_awards`; D5, DL
+    // 2026-08-08) [RB p.9 NOTE
     // (Jeremy's edition — NOT in the bundled `analysis-1/` PDF, so the DL row
     // is the citable source), via decision log 2026-07-21 D1: "The dummy
     // player's assistants are taken
@@ -223,32 +231,52 @@ fn track_awards(
 /// owned Technology cards takes 10 VP, second 5 VP; only owners of at least
 /// one Technology card participate; ties break by clockwise closeness to the
 /// Start player (Start player closest). Returns per-seat awards.
+///
+/// In a 2-PLAYER game the setup dummy competes in this majority too, at an
+/// industry value of EXACTLY 7.5 [RB p.9 final-scoring NOTE, Jeremy's
+/// edition: "the dummy player ends the game with an industry value of 7.5";
+/// D5, DL 2026-08-08 — the same NOTE that puts the dummy's pawns in the
+/// church/customs majorities]. Industry is compared DOUBLED so the half is
+/// exact (dummy = 15): a real player's doubled total is always even, so a
+/// tie against the dummy is unrepresentable — IV 7 loses to it, IV 8 beats
+/// it, and 7.5 never rounds to either. A place the dummy takes is consumed
+/// and awarded to nobody, exactly as on the church/customs tracks. Derived
+/// BY RULE from the player count, never from an engine dummy field.
 fn technology_awards(state: &GameState, rules: &Rules) -> Vec<u32> {
     let n = state.players.len();
-    let industry: Vec<u32> = state
+    let doubled_industry: Vec<u64> = state
         .players
         .iter()
         .map(|p| {
-            p.technologies
+            2 * p
+                .technologies
                 .iter()
                 .filter_map(|id| rules.techs.get(*id))
-                .map(|t| t.industry_cost as u32)
-                .sum()
+                .map(|t| t.industry_cost as u64)
+                .sum::<u64>()
         })
         .collect();
-    let mut owners: Vec<usize> =
-        (0..n).filter(|&i| !state.players[i].technologies.is_empty()).collect();
-    owners.sort_by(|&a, &b| {
-        industry[b]
-            .cmp(&industry[a])
-            .then(clockwise_distance(state, a).cmp(&clockwise_distance(state, b)))
-    });
-    let mut awards = vec![0u32; n];
-    if let Some(&first) = owners.first() {
-        awards[first] = 10;
+    // Competitors: real owners of >= 1 card (`Some(seat)`), plus — at 2P —
+    // the dummy (`None`) at doubled value 15, unconditionally (the NOTE gives
+    // it the value outright, not per any ownership precondition).
+    let mut competitors: Vec<(u64, usize, Option<usize>)> = (0..n)
+        .filter(|&i| !state.players[i].technologies.is_empty())
+        .map(|i| (doubled_industry[i], clockwise_distance(state, i), Some(i)))
+        .collect();
+    if state.config.player_count == 2 {
+        // Tie-key `n` (farther than any real seat) keeps the order total; the
+        // branch is unreachable anyway — 15 is odd, real doubled totals even.
+        competitors.push((15, n, None));
     }
-    if let Some(&second) = owners.get(1) {
-        awards[second] = 5;
+    competitors.sort_by(|a, b| b.0.cmp(&a.0).then(a.1.cmp(&b.1)));
+    let mut awards = vec![0u32; n];
+    // A place held by the dummy (`None`) is awarded to nobody, but it still
+    // pushes the real players below it down a rank.
+    if let Some(&(_, _, Some(seat))) = competitors.first() {
+        awards[seat] = 10;
+    }
+    if let Some(&(_, _, Some(seat))) = competitors.get(1) {
+        awards[seat] = 5;
     }
     awards
 }
@@ -696,10 +724,12 @@ mod tests {
     fn technology_bonus_tie_breaks_clockwise_from_start_player() {
         // RB p.9: "the player who is the closest clockwise to the Start
         // player breaks ties (The Start player himself is considered to be
-        // the closest)". Twin copies give an exact industry tie.
+        // the closest)". Twin copies give an exact industry tie. Staged at
+        // 3P so the general rule is exercised dummy-free — the 2P dummy
+        // competition is D5's own tests below.
         let rules = Rules::standard();
         let (a, b) = twin_techs(&rules);
-        let mut s = two_player_state();
+        let mut s = three_player_state();
         zero_resources(&mut s);
         s.players[0].technologies = vec![a];
         s.players[1].technologies = vec![b];
@@ -712,15 +742,136 @@ mod tests {
     #[test]
     fn technology_bonus_sole_owner_no_second_place() {
         // "If there is only 1 player with Technology cards, that player earns
-        // 10 points and no other player receives points" [RB p.9-10].
+        // 10 points and no other player receives points" [RB p.9-10]. Staged
+        // at 3P — the general, dummy-free rule; at 2P the D5 dummy competes
+        // (its tests below).
         let rules = Rules::standard();
         let any = rules.techs.iter().next().expect("standard data has techs");
-        let mut s = two_player_state();
+        let mut s = three_player_state();
         zero_resources(&mut s);
         s.players[0].technologies = vec![any.id];
         let st = final_standings(&s, &rules);
         assert_eq!(total_of(&st, 0), 10);
         assert_eq!(total_of(&st, 1), 0, "tech-less player never takes second");
+        assert_eq!(total_of(&st, 2), 0);
+    }
+
+    /// Distinct-title cards whose printed Industry values sum to exactly
+    /// `target` — D5 fixtures need exact totals on either side of 7.5.
+    fn techs_totalling(rules: &Rules, target: u32) -> Vec<yokohama_core::TechCardId> {
+        // One representative card per title (one-per-title ownership rule),
+        // then exact subset-sum by depth-first search.
+        let mut reps: Vec<(yokohama_core::TechCardId, u32)> = Vec::new();
+        let mut seen_effects = Vec::new();
+        for c in rules.techs.iter() {
+            if !seen_effects.contains(&c.effect) {
+                seen_effects.push(c.effect);
+                reps.push((c.id, c.industry_cost as u32));
+            }
+        }
+        fn dfs(
+            reps: &[(yokohama_core::TechCardId, u32)],
+            start: usize,
+            remaining: u32,
+            picked: &mut Vec<yokohama_core::TechCardId>,
+        ) -> bool {
+            if remaining == 0 {
+                return true;
+            }
+            for i in start..reps.len() {
+                let (id, cost) = reps[i];
+                if cost <= remaining {
+                    picked.push(id);
+                    if dfs(reps, i + 1, remaining - cost, picked) {
+                        return true;
+                    }
+                    picked.pop();
+                }
+            }
+            false
+        }
+        let mut picked = Vec::new();
+        assert!(
+            dfs(&reps, 0, target, &mut picked),
+            "standard data can compose industry total {target}"
+        );
+        picked
+    }
+
+    #[test]
+    fn two_player_dummy_competes_in_technology_at_exactly_seven_and_a_half() {
+        // D5 [RB p.9 final-scoring NOTE, Jeremy's edition; DL 2026-08-08]:
+        // "the dummy player ends the game with an industry value of 7.5" and
+        // competes in the Technology majority too. The BGA-observed shape:
+        // owner 1st (10 VP), the dummy's 7.5 beats the IV-7 opponent for
+        // 2nd, which is awarded to NOBODY (consumed, exactly as on the
+        // church/customs tracks).
+        let rules = Rules::standard();
+        let mut s = two_player_state();
+        zero_resources(&mut s);
+        s.players[0].technologies = techs_totalling(&rules, 9);
+        s.players[1].technologies = techs_totalling(&rules, 7);
+        // Owned techs also carry Country icons — net that component out so
+        // the assertion is purely about the Technology majority.
+        let country: Vec<u32> = s
+            .players
+            .iter()
+            .map(|p| country_score_from_counts(&icon_counts(p, &rules)))
+            .collect();
+        let st = final_standings(&s, &rules);
+        assert_eq!(total_of(&st, 0), 10 + country[0]);
+        assert_eq!(total_of(&st, 1), country[1], "the dummy's 7.5 consumed second place");
+    }
+
+    #[test]
+    fn two_player_the_half_is_exact_iv7_loses_iv8_beats() {
+        // D5: the 7.5 is EXACT — an IV-7 sole owner loses first place to the
+        // dummy (10 VP to nobody, owner takes 5), an IV-8 sole owner beats
+        // it (10 VP, the dummy consumes second). A tie against the dummy is
+        // unrepresentable: real totals are whole numbers.
+        let rules = Rules::standard();
+        let mut s = two_player_state();
+        zero_resources(&mut s);
+        s.players[0].technologies = techs_totalling(&rules, 7);
+        let country = country_score_from_counts(&icon_counts(&s.players[0], &rules));
+        let st = final_standings(&s, &rules);
+        assert_eq!(total_of(&st, 0), 5 + country, "IV 7 < 7.5: the dummy takes first");
+        assert_eq!(total_of(&st, 1), 0);
+        s.players[0].technologies = techs_totalling(&rules, 8);
+        let country = country_score_from_counts(&icon_counts(&s.players[0], &rules));
+        let st = final_standings(&s, &rules);
+        assert_eq!(total_of(&st, 0), 10 + country, "IV 8 > 7.5: the owner beats the dummy");
+        assert_eq!(total_of(&st, 1), 0);
+    }
+
+    #[test]
+    fn two_player_both_above_the_dummy_score_normally() {
+        // D5: with both real totals above 7.5 the dummy ranks third and
+        // changes nothing — 10/5 as always.
+        let rules = Rules::standard();
+        let mut s = two_player_state();
+        zero_resources(&mut s);
+        s.players[0].technologies = techs_totalling(&rules, 11);
+        s.players[1].technologies = techs_totalling(&rules, 8);
+        let country: Vec<u32> = s
+            .players
+            .iter()
+            .map(|p| country_score_from_counts(&icon_counts(p, &rules)))
+            .collect();
+        let st = final_standings(&s, &rules);
+        assert_eq!(total_of(&st, 0), 10 + country[0]);
+        assert_eq!(total_of(&st, 1), 5 + country[1]);
+    }
+
+    #[test]
+    fn two_player_no_real_tech_owner_scores_nothing() {
+        // D5 edge: with no real owner the dummy stands alone — both places
+        // effectively unawarded; no phantom VP appears anywhere.
+        let mut s = two_player_state();
+        zero_resources(&mut s);
+        let st = final_standings(&s, &Rules::standard());
+        assert_eq!(total_of(&st, 0), 0);
+        assert_eq!(total_of(&st, 1), 0);
     }
 
     // --- 5. Country bonus [RB p.10 §4] ---
@@ -812,7 +963,9 @@ mod tests {
     fn country_bonus_combines_completed_orders_and_techs_only() {
         // One completed Order + one owned Tech of DIFFERENT countries form a
         // set of 2 (+2 VP); orders still in hand return to the box and score
-        // nothing [RB p.10 §4: "return all unfulfilled Order cards"].
+        // nothing [RB p.10 §4: "return all unfulfilled Order cards"]. Staged
+        // at 3P so the tech-majority component is dummy-free (at 2P the D5
+        // dummy would outrank this single low-IV card).
         let rules = Rules::standard();
         let tech = rules.techs.iter().next().expect("standard data has techs");
         let order = rules
@@ -825,7 +978,7 @@ mod tests {
             .iter()
             .find(|o| o.id != order.id)
             .expect("a second order exists");
-        let mut s = two_player_state();
+        let mut s = three_player_state();
         zero_resources(&mut s);
         s.players[0].technologies = vec![tech.id];
         s.players[0].completed_orders = vec![order.id];
@@ -834,6 +987,7 @@ mod tests {
         // P0: sole tech owner (+10) + country set of 2 (+2) = 12.
         assert_eq!(total_of(&st, 0), 12);
         assert_eq!(total_of(&st, 1), 0);
+        assert_eq!(total_of(&st, 2), 0);
     }
 
     // --- 6. Remainder scoring [RB p.10 §5] ---
