@@ -54,11 +54,17 @@ use std::fmt;
 /// Measured: filtering these from the socket form makes the `(kind, uid)`
 /// sequence equal to the history form on 88 of 88 doubly-covered moves of the
 /// H0 corpus; without the filter, 83 of 88 disagree.
-pub const SOCKET_ONLY_KINDS: [&str; 4] = [
+pub const SOCKET_ONLY_KINDS: [&str; 5] = [
     "gameStateChange",
     "updateReflexionTime",
     "wakeupPlayers",
     "tableWindow",
+    // The multi-active state update BGA emits during the SIMULTANEOUS opening
+    // placement — measured live at the gate game (table 896153951, move 1).
+    // The proving corpus never showed it because its socket joined mid-game,
+    // past the multi-active opening. Framework chrome of the same class as
+    // gameStateChange: socket-only, never in history.
+    "gameStateMultipleActiveUpdate",
 ];
 
 /// The only notification kinds a MOVELESS packet may carry (besides none).
@@ -1012,6 +1018,24 @@ mod tests {
         pk["prevpacket"] = serde_json::json!([]);
         let out = read_and_collapse(&socket_line(pk), Some(42)).expect("an empty prevpacket at packet 1 is the stream's genesis, not an undo");
         assert_eq!(out.report.moves, 1, "the genesis packet's move must survive the collapse");
+    }
+
+    /// The second live-measured genesis-class shape (gate game, move 1): the
+    /// SIMULTANEOUS opening placement rides a `gameStateMultipleActiveUpdate`
+    /// framework notification that exists on the socket only — the merge check
+    /// must treat it as socket-only chrome, not as feed disagreement.
+    #[test]
+    fn the_multi_active_opening_update_is_socket_only_chrome() {
+        let mut p1 = socket_packet(1, Some(1), 0, serde_json::json!([
+            notif("u1", "assistantPlacement"),
+            notif("u2", "gameStateMultipleActiveUpdate"),
+        ]));
+        p1["prevpacket"] = serde_json::json!([]);
+        let hist = history_line(serde_json::json!([history_packet(1, "1".into(), serde_json::json!([notif("u1", "assistantPlacement")]))]));
+        let input = format!("{}\n{}", socket_line(p1).trim_end(), hist.trim_end());
+        let out = read_and_collapse(&input, Some(42))
+            .expect("the multi-active update filters out of the merge check as socket-only chrome");
+        assert_eq!(out.report.enriched, 1, "the move must merge, not disagree");
     }
 
     /// The narrowness that keeps the genesis arm honest: an empty prevpacket
