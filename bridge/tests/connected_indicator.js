@@ -31,6 +31,30 @@
 //      are asserted verbatim, because the cheapest way to build a health poll
 //      is to reach for `alarms`, and the cheapest way to build a popup that
 //      knows which tab you are on is to reach for `tabs`. Neither is taken.
+//
+//   5. THE BADGE CANNOT OUTLIVE ITS EVIDENCE (review fix wave, SHOULD-1). A
+//      green "recording" painted from an hour-old reading is worse than no
+//      badge, because the whole feature exists to answer "is it recording?".
+//      Two things are pinned: the staleness rule that turns an old reading back
+//      into "unknown", and that the health poll's cadence sits INSIDE Chrome's
+//      ~30s MV3 idle window - a `setTimeout` scheduled at or past that window
+//      is a timer whose worker is usually dead before it fires, i.e. a
+//      correction mechanism that cannot run in the case it was written for.
+//
+//   6. EVERY REQUEST IS LOOPBACK (review fix wave, SHOULD-3). The old pins
+//      asserted the relay origin the worker REPORTS and matched health hits
+//      with a tail-only `/\/health$/`, so a worker pointed at
+//      `https://telemetry.example.com/health` passed all four suites. Both the
+//      requests actually made and the URL literals in the source are checked
+//      now. `host_permissions` is not this pin: it governs whether a response
+//      can be READ, not where a request may go.
+//
+//   7. A SNAPSHOT IS COUNTED ON BOTH PATHS (review fix wave, SHOULD-2). §6 of
+//      docs/bridge-setup.md tells the owner to confirm the pre-move-1 anchor by
+//      watching "Snapshots taken" go 0 -> 1, and that anchor is the one
+//      observation no later diligence recovers. The counters were correct and
+//      untested: stripping BOTH `recordSession` calls out of `deliverSnapshot`
+//      left all four suites green.
 
 const fs = require("fs");
 const path = require("path");
@@ -46,7 +70,16 @@ const extensionDir = path.join(__dirname, "..", "extension");
 
 const { check, done } = reporter(`connected indicator\n  target: ${target}\n`);
 
-const { context } = loadWorker({ target });
+// Every worker this file boots, so the egress pin in §5 can sweep the requests
+// ALL of them made rather than the ones one cell happened to look at.
+const workers = [];
+const boot = (options) => {
+  const worker = loadWorker(options);
+  workers.push(worker);
+  return worker;
+};
+
+const { context } = boot({ target });
 const badgeFor = context.badgeFor;
 const sessionAfter = context.sessionAfter;
 const emptySession = context.emptySession;
@@ -99,6 +132,79 @@ check("a badge is total over junk input", (() => {
   }
 })());
 
+// A backlog with NO reading behind it. The count is a local fact and is always
+// shown; what the tooltip may not do is invent the reason for it.
+const unsurePark = badgeFor({ relayUp: null, pending: 4 });
+const knownPark = badgeFor({ relayUp: false, pending: 4 });
+check("a backlog with no relay reading still shows its COUNT", unsurePark.text === "4", JSON.stringify(unsurePark.text));
+check("a KNOWN-down backlog says the relay is not answering", /not answering/i.test(knownPark.title), knownPark.title);
+check(
+  "...and an UNKNOWN-state backlog does not say that, because it does not know",
+  !/not answering/i.test(unsurePark.title) && unsurePark.title !== knownPark.title,
+  unsurePark.title
+);
+
+// ------------------------------------------ 1b. what the badge may believe ---
+//
+// THE FIX-WAVE PIN (SHOULD-1). `badgeFor` reads a stored reading; nothing in it
+// knows how OLD that reading is, so a worker waking on an hour-old `up: true`
+// painted "connected, recording" having probed nothing. These two exports are
+// the rule that stops it and the cadence that makes the rule rarely bite.
+
+const relayBeliefAt = context.relayBeliefAt;
+const healthPollMs = context.healthPollMs;
+const IDLE_KILL_MS = 30000; // Chrome recycles an idle MV3 service worker at ~30s
+
+const staleRuleExposed = typeof relayBeliefAt === "function" && typeof healthPollMs === "function";
+check(
+  "background.js exposes the badge's staleness rule and its poll cadence",
+  staleRuleExposed,
+  `relayBeliefAt=${typeof relayBeliefAt} healthPollMs=${typeof healthPollMs}`
+);
+
+// Read from the worker rather than duplicated here, so this file cannot drift
+// from the shipped cadence. A `const` in a vm context is not visible on the
+// context object, which is why the worker exports it as a function.
+const POLL_MS = staleRuleExposed ? healthPollMs() : IDLE_KILL_MS;
+
+if (staleRuleExposed) {
+  check(
+    "the health poll fires INSIDE Chrome's ~30s idle window, so it can actually run",
+    POLL_MS > 0 && POLL_MS < IDLE_KILL_MS,
+    `poll at ${POLL_MS}ms vs a ~${IDLE_KILL_MS}ms idle kill - a timer at or past the window dies with its worker`
+  );
+
+  const now = 1000000;
+  const fresh = { up: true, at_ms: now - 1000 };
+  const ancient = { up: true, at_ms: now - 2 * POLL_MS - 1 };
+  check("a reading taken a second ago is believed", relayBeliefAt(fresh, now) === true);
+  check(
+    "a reading older than two poll intervals is NOT believed",
+    relayBeliefAt(ancient, now) === null,
+    String(relayBeliefAt(ancient, now))
+  );
+  check(
+    "...and a stale relay-DOWN reading is equally unknown, not sticky",
+    relayBeliefAt({ up: false, at_ms: now - 2 * POLL_MS - 1 }, now) === null
+  );
+  check("a stale reading is unknown, which is a DIFFERENT badge from either answer", (() => {
+    const painted = badgeFor({ relayUp: relayBeliefAt(ancient, now), pending: 0 });
+    return painted.text === unknown.text && painted.text !== live.text;
+  })());
+  check("no reading at all is unknown", relayBeliefAt(null, now) === null);
+  check("a malformed reading is unknown rather than a crash", (() => {
+    try {
+      return relayBeliefAt({ up: "yes" }, now) === null && relayBeliefAt(undefined, now) === null;
+    } catch (_) {
+      return false;
+    }
+  })());
+  check(
+    "a reading dated in the FUTURE (the clock moved) is unknown, not believed",
+    relayBeliefAt({ up: true, at_ms: now + 60000 }, now) === null
+  );
+}
+
 // --------------------------------------------------------- 2. the counters ---
 
 const seed = emptySession(1000, "test");
@@ -136,9 +242,15 @@ check("...but the table it named is still the last table seen", afterJunk.last_t
 
 // ------------------------------------------------- 3. end to end, in a stub ---
 
+// The relay this extension is allowed to talk to, and the ONE health URL. Both
+// spelled in full: the old pins matched `/\/health$/`, which a request to
+// `https://telemetry.example.com/health` also satisfies.
+const LOOPBACK = "http://127.0.0.1:8787";
+const HEALTH_URL = `${LOOPBACK}/health`;
+
 (async () => {
   // --- a cold wake paints the badge without touching the network -----------
-  const cold = loadWorker({ target, relay: "up" });
+  const cold = boot({ target, relay: "up" });
   await settle();
   check("a cold worker paints the badge from stored state", cold.badge.text === unknown.text, `badge=${JSON.stringify(cold.badge.text)}`);
   check(
@@ -147,34 +259,70 @@ check("...but the table it named is still the last table seen", afterJunk.last_t
     `${cold.requests.length} request(s): ${cold.requests.map((r) => r.url).join(", ")}`
   );
   check(
-    "...and arms a 30s health poll",
-    cold.timers.some((t) => t.ms === 30000),
+    `...and arms the health poll at its shipped cadence (${POLL_MS}ms)`,
+    cold.timers.some((t) => t.ms === POLL_MS),
     `timers at: ${cold.timers.map((t) => t.ms).join(", ") || "(none)"}`
   );
 
-  cold.fireTimer(30000);
+  cold.fireTimer(POLL_MS);
   await settle();
-  const healthHits = cold.requests.filter((r) => /\/health$/.test(r.url));
-  check("the poll probes /health", healthHits.length === 1, `${healthHits.length} hit(s)`);
+  const healthHits = cold.requests.filter((r) => r.url === HEALTH_URL);
+  check("the poll probes /health ON THE LOOPBACK RELAY", healthHits.length === 1, `${healthHits.length} hit(s) of ${cold.requests.length} request(s)`);
   check("...and the badge turns connected", cold.badge.text === live.text && cold.badge.color === live.color, `${JSON.stringify(cold.badge.text)} ${cold.badge.color}`);
   check(
     "...and re-arms itself while a BGA tab is open",
-    cold.timers.filter((t) => t.ms === 30000).length === 2,
-    `${cold.timers.filter((t) => t.ms === 30000).length} poll timer(s)`
+    cold.timers.filter((t) => t.ms === POLL_MS).length === 2,
+    `${cold.timers.filter((t) => t.ms === POLL_MS).length} poll timer(s)`
   );
 
-  const noTabs = loadWorker({ target, relay: "up", tabs: [] });
+  const noTabs = boot({ target, relay: "up", tabs: [] });
   await settle();
-  noTabs.fireTimer(30000);
+  noTabs.fireTimer(POLL_MS);
   await settle();
   check(
     "with no BGA tab open the poll stops rather than running forever",
-    noTabs.timers.filter((t) => t.ms === 30000).length === 1 && noTabs.requests.length === 0,
-    `${noTabs.timers.filter((t) => t.ms === 30000).length} poll timer(s), ${noTabs.requests.length} request(s)`
+    noTabs.timers.filter((t) => t.ms === POLL_MS).length === 1 && noTabs.requests.length === 0,
+    `${noTabs.timers.filter((t) => t.ms === POLL_MS).length} poll timer(s), ${noTabs.requests.length} request(s)`
+  );
+
+  // --- waking on an old reading (SHOULD-1, end to end) ---------------------
+  //
+  // The exact probe from the review: storage holds "connected", taken an hour
+  // ago; the relay is in fact down. The wake deliberately spends no request, so
+  // the ONLY thing standing between the owner and a green "recording" badge
+  // that is an hour out of date is the staleness rule.
+  const stale = boot({
+    target,
+    relay: "down",
+    store: { relay: { up: true, at_ms: Date.now() - 3600000 } },
+  });
+  await settle();
+  check(
+    "a worker waking on an HOUR-OLD 'connected' reading does not paint CONNECTED",
+    stale.badge.text !== live.text,
+    `badge=${JSON.stringify(stale.badge.text)} ${stale.badge.color} - ${stale.badge.title}`
+  );
+  check(
+    "...it paints UNKNOWN, which is what it actually knows",
+    stale.badge.text === unknown.text && stale.badge.color === unknown.color,
+    `${JSON.stringify(stale.badge.text)} ${stale.badge.color}`
+  );
+  check(
+    "...and still spends no request to say so (the wake's cost is unchanged)",
+    stale.requests.length === 0,
+    `${stale.requests.length} request(s)`
+  );
+
+  const recent = boot({ target, relay: "down", store: { relay: { up: true, at_ms: Date.now() - 2000 } } });
+  await settle();
+  check(
+    "a two-second-old reading is still trusted, so the rule ages readings and does not just discard them",
+    recent.badge.text === live.text,
+    `badge=${JSON.stringify(recent.badge.text)}`
   );
 
   // --- the relay is down: park, and SAY so ---------------------------------
-  const down = loadWorker({ target, relay: "down" });
+  const down = boot({ target, relay: "down" });
   await settle();
   for (const marker of ["a", "b"]) {
     down.send({ type: "capture", table: "895724349", kind: "packets", payload: { marker } });
@@ -195,7 +343,7 @@ check("...but the table it named is still the last table seen", afterJunk.last_t
   check("the badge turns connected", down.badge.text === live.text && down.badge.color === live.color, `${JSON.stringify(down.badge.text)} ${down.badge.color}`);
 
   // --- the recycle: the point of putting counters in storage ---------------
-  const recycled = loadWorker({ target, relay: "up", store: down.store });
+  const recycled = boot({ target, relay: "up", store: down.store });
   await settle();
   recycled.send({ type: "capture", table: "895724349", kind: "packets", payload: { marker: "d" } });
   await settle();
@@ -217,14 +365,55 @@ check("...but the table it named is still the last table seen", afterJunk.last_t
     check("the report carries this session's delivered count", report.session.packets_delivered === 4);
     check("the report carries the badge the toolbar is showing", !!(report.badge && report.badge.text === live.text));
     check(
-      "a forced status probes /health, so the panel is never stale",
-      recycled.requests.some((r) => /\/health$/.test(r.url)),
+      "a forced status probes /health on the loopback relay, so the panel is never stale",
+      recycled.requests.some((r) => r.url === HEALTH_URL),
       recycled.requests.map((r) => r.url).join(", ")
     );
   }
 
+  // --- a snapshot is counted on BOTH paths (SHOULD-2) ----------------------
+  //
+  // §6 of docs/bridge-setup.md hangs the pre-move-1 anchor on "Snapshots taken
+  // going 0 -> 1", and that anchor is the one observation no later diligence
+  // recovers. Both arms of `deliverSnapshot` are exercised, because the
+  // relay-is-down arm is the one the owner meets when the anchor matters most.
+  const snapUp = boot({ target, relay: "up" });
+  await settle();
+  await snapUp.send({ type: "capture", table: "895724349", kind: "snapshot", payload: { gamedatas: true } });
+  await settle();
+  check(
+    "a snapshot delivered to a live relay counts as a SNAPSHOT, not as a packet",
+    snapUp.store.session.snapshots_delivered === 1 && snapUp.store.session.packets_delivered === 0,
+    JSON.stringify(snapUp.store.session)
+  );
+  check(
+    "...and it went to the loopback relay's capture endpoint for that table",
+    snapUp.requests.some((r) => r.method === "POST" && r.url === `${LOOPBACK}/capture/895724349`),
+    snapUp.requests.map((r) => `${r.method} ${r.url}`).join(", ")
+  );
+
+  const snapDown = boot({ target, relay: "down" });
+  await settle();
+  await snapDown.send({ type: "capture", table: "895724349", kind: "snapshot", payload: { gamedatas: true } });
+  await settle();
+  check(
+    "a snapshot with the relay down is handed back to the PAGE to save",
+    snapDown.tabMessages.some((m) => m.message && m.message.type === "download" && /\.ndjson\.json$/.test(m.message.filename)),
+    JSON.stringify(snapDown.tabMessages.map((m) => m.message && m.message.type))
+  );
+  check(
+    "...and is STILL counted as a snapshot taken - the count the owner confirms the anchor with",
+    snapDown.store.session.snapshots_saved === 1,
+    JSON.stringify(snapDown.store.session)
+  );
+  check(
+    "...and it does not go into the outbox, which is the packets stream's queue",
+    (snapDown.store.outbox || []).length === 0,
+    `${(snapDown.store.outbox || []).length} parked`
+  );
+
   // --- the snapshot-on-click contract -------------------------------------
-  const clicker = loadWorker({ target, relay: "down" });
+  const clicker = boot({ target, relay: "down" });
   await settle();
   clicker.send({ type: "capture", table: "895724349", kind: "packets", payload: { marker: "parked" } });
   await settle();
@@ -243,7 +432,7 @@ check("...but the table it named is still the last table seen", afterJunk.last_t
     `${(clicker.store.outbox || []).length} still parked`
   );
 
-  const noTab = loadWorker({ target, relay: "up", tabSendFails: true });
+  const noTab = boot({ target, relay: "up", tabSendFails: true });
   await settle();
   const failed = await noTab.send({ type: "snapshot-now", tabId: 9 }, {});
   check(
@@ -251,6 +440,55 @@ check("...but the table it named is still the last table seen", afterJunk.last_t
     !!(failed && failed.ok === false && typeof failed.detail === "string" && failed.detail.length > 10),
     failed ? JSON.stringify(failed.detail) : "no answer"
   );
+
+  // ------------------------------------ 3b. everything went to the loopback ---
+  //
+  // THE FIX-WAVE PIN (SHOULD-3). Every worker booted above is swept, so this
+  // covers the health probe, the capture POSTs, both snapshot arms and the
+  // drain - whichever cell happened to drive them. Repointing either fetch site
+  // at a remote host used to pass all four suites: the only things resembling a
+  // pin were `report.relay_origin`, which is a string the worker REPORTS, and a
+  // tail-only `/\/health$/`, which `https://anywhere/health` satisfies.
+  //
+  // `host_permissions` does not cover this. It decides whether a response can
+  // be READ, not where a request may be SENT - a request to an unlisted origin
+  // still leaves the machine.
+  const originOf = (url) => {
+    try {
+      return new URL(url).origin;
+    } catch (_) {
+      return `(unparseable: ${url})`;
+    }
+  };
+  const everyRequest = workers.flatMap((w) => w.requests);
+  const offOrigin = everyRequest.filter((r) => originOf(r.url) !== LOOPBACK);
+  check(
+    "the workers made requests at all, so the sweep below is not vacuous",
+    everyRequest.length > 0,
+    `${everyRequest.length} request(s) across ${workers.length} worker(s)`
+  );
+  check(
+    "EVERY request any worker made went to the loopback relay, and nowhere else",
+    offOrigin.length === 0,
+    offOrigin.map((r) => `${r.method} ${r.url}`).join(", ") || "none off-origin"
+  );
+
+  // The static half, so an arm no cell drives cannot smuggle one in. Read from
+  // `target` for the worker (it is the code under test - a mutation run must be
+  // caught here) and from the shipped popup, which is not.
+  const scanned = [
+    ["background.js", fs.readFileSync(target, "utf8")],
+    ["popup.js", fs.readFileSync(path.join(extensionDir, "popup.js"), "utf8")],
+  ];
+  for (const [name, source] of scanned) {
+    const urls = source.match(/https?:\/\/[^\s"'`)]+/g) || [];
+    const foreign = urls.filter((u) => originOf(u) !== LOOPBACK);
+    check(
+      `every absolute URL in ${name} - comments included - is the loopback relay`,
+      foreign.length === 0,
+      foreign.join(", ") || `${urls.length} URL(s), all loopback`
+    );
+  }
 
   // ------------------------------------------- 4. no new permissions, ever ---
 
