@@ -1328,6 +1328,32 @@ mod tests {
         assert!(!hand_split_ordering_holds(&late_broken));
     }
 
+    /// **The round's hard constraint, asserted against the ITERATION CANDIDATE
+    /// rather than only against what ships.**
+    ///
+    /// Protocol §4.2 forbids relaxing L14/T1's `core > on_board > excess` at any
+    /// rung of the evidence ladder, and [`WeightTable::V2_DRAFT`] is the table a
+    /// round re-prices — so the check belongs on the CANDIDATE, per edit.
+    /// Without it the first round that re-prices the assistant triple past the
+    /// ordering discovers the violation at screen time, four hundred games
+    /// later, in a `candidate=VIOLATED` field beside a figure that should never
+    /// have been measured.
+    ///
+    /// Deliberately NOT `assert_eq!(V2_DRAFT, V1)`. The draft's whole job is to
+    /// move, and a pin whose documented fate is deletion teaches its readers to
+    /// delete pins; the identity digests in every screen report are what say
+    /// whether it has moved yet.
+    #[test]
+    fn the_iteration_candidate_holds_the_hand_split_ordering() {
+        assert!(
+            hand_split_ordering_holds(&WeightTable::V2_DRAFT),
+            "WeightTable::V2_DRAFT breaks L14/T1's `core > on_board > excess` in at least one \
+             vector. Protocol §4.2 forbids relaxing that ordering at ANY ladder rung — it is the \
+             one-ply non-degeneracy condition, not a prediction — so re-price the assistant \
+             triple back inside it rather than screening this table.",
+        );
+    }
+
     #[test]
     fn a_zero_unit_or_unsupported_screen_is_a_typed_error_not_a_nan_report() {
         let rules = Rules::standard();

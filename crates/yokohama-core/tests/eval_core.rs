@@ -62,11 +62,11 @@ use rand::SeedableRng;
 use rand_chacha::ChaCha8Rng;
 
 use yokohama_core::game::eval::{
-    achievement_progress as view_achievement_progress, clock_ppm, explain, initial_order_deck_len,
-    interpolate, order_cards_to_remove, place_signal, progress_ppm, raw_value, score,
-    terminal_standing, track_trigger, view_is_terminal, Explanation, Feature, ScoreStructure,
-    WeightTable, PROGRESS_FULL_PPM, TERMINAL_MARGIN_CLAMP, TERMINAL_MARGIN_STEP,
-    TERMINAL_RANK_STEP,
+    achievement_progress as view_achievement_progress, achievement_progress_postclaim_sum,
+    clock_ppm, explain, initial_order_deck_len, interpolate, order_cards_to_remove, place_signal,
+    progress_ppm, raw_value, score, terminal_standing, track_trigger, view_is_terminal,
+    Explanation, Feature, ScoreStructure, WeightTable, PROGRESS_FULL_PPM, TERMINAL_MARGIN_CLAMP,
+    TERMINAL_MARGIN_STEP, TERMINAL_RANK_STEP,
 };
 use yokohama_core::{
     achievement_progress, apply_move_unchecked, final_result, finalize_setup, is_game_over,
@@ -1357,6 +1357,213 @@ fn an_area_holding_both_building_types_counts_once_in_view_side_progress() {
             "overlap area double-counted: {card:?} drifted from the engine",
         );
     }
+}
+
+// ---------------------------------------------------------------------------
+// Phase 3.5c round 1 — the T3 post-claim candidate (protocol §4.1(ii) / §5 T3)
+//
+// ADDITIVE at this commit: nothing in `score`/`explain` calls the helper, so
+// these tests are the only thing holding its arithmetic. The call-path switch
+// (and its blast radius) is the freeze commit's business.
+// ---------------------------------------------------------------------------
+
+/// The viewer's row of a view, by seat.
+fn seat_of<'v>(view: &'v PlayerView, seat: PlayerId) -> &'v VisiblePlayer {
+    view.players.iter().find(|p| p.id == seat).expect("seat is in the view")
+}
+
+/// The SHIPPED sum, read where the evaluator reads it — through the feature
+/// rather than through the private function, so these tests compare the
+/// candidate against what actually prices a position today.
+fn shipped_sum(view: &PlayerView, rules: &Rules, seat: PlayerId) -> i64 {
+    ScoreStructure::derive(view, rules)
+        .value_of(seat_of(view, seat), Feature::AchievementProgressSum)
+}
+
+/// One card's capped leg for one seat — the quantity the post-claim filter
+/// removes, computed from the mirror rather than hand-typed so a cap change
+/// cannot leave these tests asserting a stale constant.
+fn capped_leg(view: &PlayerView, seat: PlayerId, card: yokohama_core::AchievementType) -> i64 {
+    let (current, needed) = view_achievement_progress(view, seat_of(view, seat), card);
+    i64::from(current.min(needed))
+}
+
+/// A state where BOTH seats under test carry real, UNEQUAL progress toward the
+/// cards in play, so a post-claim exclusion has something to remove on either
+/// side and the surviving legs have something to keep. Seat 0 is over the copper
+/// cap and under the money one; seat 1 is the reverse.
+///
+/// FOUR seats, on the achievement mirror's own board and for its reason: only
+/// the 4P board carries the five production plus one commercial area the
+/// AND-shaped counterexample below needs (the 2P board cannot hold five
+/// production areas at all). The filter under test is per-seat, so the seat
+/// count is a fixture detail rather than part of the property.
+fn postclaim_fixture(rules: &Rules, card: yokohama_core::AchievementType) -> GameState {
+    let mut state = keep_game(4, 31, rules);
+    state.players[0].copper = 9;
+    state.players[0].money = 7;
+    state.players[1].copper = 2;
+    state.players[1].money = 25;
+
+    let production: Vec<_> = state
+        .board_layout
+        .areas
+        .iter()
+        .filter(|(_, c)| c.area_type.is_production())
+        .map(|(a, _)| *a)
+        .collect();
+    let commercial: Vec<_> = state
+        .board_layout
+        .areas
+        .iter()
+        .filter(|(_, c)| c.area_type.is_commercial())
+        .map(|(a, _)| *a)
+        .collect();
+    assert!(
+        production.len() >= 5 && commercial.len() >= 1,
+        "the 4P board must offer 5 production and 1 commercial area for the AND-shaped leg",
+    );
+    // Seat 0: five production areas and ONE commercial — the AND-shaped
+    // counterexample shape (raw 6, capped 3 + 1 = 4, `needed` 5, claim unmet).
+    state.players[0].trading_houses.built = production[..5].to_vec();
+    state.players[0].shophouses.built.insert(commercial[0], 0);
+
+    state.achievements = [
+        yokohama_core::AchievementCard::new(card),
+        yokohama_core::AchievementCard::new(card),
+        yokohama_core::AchievementCard::new(card),
+    ];
+    state
+}
+
+/// With nothing claimed the candidate IS the shipped computation — over every
+/// card type and both seats, so "reproduces it exactly" is a statement about
+/// the arithmetic and not about one lucky fixture.
+#[test]
+fn the_postclaim_sum_reproduces_the_shipped_sum_while_nothing_is_claimed() {
+    let rules = Rules::standard();
+    for card in ALL_ACHIEVEMENTS {
+        let state = postclaim_fixture(&rules, card);
+        for seat in [PlayerId(0), PlayerId(1)] {
+            let view = observe(&state, seat).unwrap();
+            assert!(
+                view.achievements.iter().all(|c| c.claimed_by.is_empty()),
+                "the fixture must start unclaimed",
+            );
+            assert_eq!(
+                achievement_progress_postclaim_sum(&view, seat_of(&view, seat)),
+                shipped_sum(&view, &rules, seat),
+                "{card:?} seat {seat:?}: the unclaimed candidate must equal the shipped sum",
+            );
+        }
+    }
+}
+
+/// The one thing the candidate changes: a card THE SEAT BEING VALUED has
+/// already claimed contributes 0, and exactly that card's capped leg leaves the
+/// sum. The shipped sum is asserted NOT to move in the same breath — that
+/// standing difference is the double-count protocol §5 T3 names.
+#[test]
+fn the_postclaim_sum_drops_a_card_the_viewer_has_already_claimed() {
+    let rules = Rules::standard();
+    let card = yokohama_core::AchievementType::Copper5;
+    let mut state = postclaim_fixture(&rules, card);
+
+    let view = observe(&state, PlayerId(0)).unwrap();
+    let before = achievement_progress_postclaim_sum(&view, seat_of(&view, PlayerId(0)));
+    let leg = capped_leg(&view, PlayerId(0), card);
+    let shipped_before = shipped_sum(&view, &rules, PlayerId(0));
+    assert!(leg > 0, "the fixture's copper leg must carry weight for the drop to be visible");
+    assert_eq!(before, 3 * leg, "three identical cards, one leg each");
+
+    // ONE of the three cards is claimed by the viewer.
+    state.achievements[0].claimed_by.push(PlayerId(0));
+    let view = observe(&state, PlayerId(0)).unwrap();
+    assert_eq!(
+        achievement_progress_postclaim_sum(&view, seat_of(&view, PlayerId(0))),
+        before - leg,
+        "exactly the claimed card's capped leg leaves the candidate sum",
+    );
+    assert_eq!(
+        shipped_sum(&view, &rules, PlayerId(0)),
+        shipped_before,
+        "the SHIPPED sum keeps paying for a claimed card — the double-count T3 names",
+    );
+
+    // …and claiming all three empties it.
+    state.achievements[1].claimed_by.push(PlayerId(0));
+    state.achievements[2].claimed_by.push(PlayerId(0));
+    let view = observe(&state, PlayerId(0)).unwrap();
+    assert_eq!(achievement_progress_postclaim_sum(&view, seat_of(&view, PlayerId(0))), 0);
+}
+
+/// **The scope boundary, and the rules fact under it.** An OPPONENT's claim
+/// leaves the viewer's leg fully live, because the rules let a second seat claim
+/// the same card for the printed subsequent VP — asserted here against the
+/// engine's own claim gate, not against a reading of the rulebook.
+#[test]
+fn an_opponent_claim_leaves_the_viewers_leg_fully_live() {
+    let rules = Rules::standard();
+    let card = yokohama_core::AchievementType::Copper5;
+    let mut state = postclaim_fixture(&rules, card);
+
+    let view = observe(&state, PlayerId(0)).unwrap();
+    let viewer_before = achievement_progress_postclaim_sum(&view, seat_of(&view, PlayerId(0)));
+    let opponent_before = achievement_progress_postclaim_sum(&view, seat_of(&view, PlayerId(1)));
+    let opponent_leg = capped_leg(&view, PlayerId(1), card);
+    assert!(opponent_leg > 0, "seat 1 must hold copper for its own drop to be visible");
+
+    state.achievements[0].claimed_by.push(PlayerId(1));
+    let view = observe(&state, PlayerId(0)).unwrap();
+    assert_eq!(
+        achievement_progress_postclaim_sum(&view, seat_of(&view, PlayerId(0))),
+        viewer_before,
+        "an opponent's claim must not touch the VIEWER's sum",
+    );
+    assert_eq!(
+        achievement_progress_postclaim_sum(&view, seat_of(&view, PlayerId(1))),
+        opponent_before - opponent_leg,
+        "the exclusion is per-seat: it fires for the claimant and for nobody else",
+    );
+
+    // The rules fact the scope rests on: seat 0 can still claim the card seat 1
+    // took, so its leg is a live claim rather than dead weight.
+    assert!(
+        state.players[0].assistants.in_hand >= 1,
+        "the claim gate needs an assistant in hand; the fixture must supply one",
+    );
+    assert!(
+        yokohama_core::can_claim_achievement(&state, PlayerId(0), card),
+        "an opponent-claimed card stays claimable — which is why the filter is per-seat",
+    );
+}
+
+/// The AND-shaped cards' per-leg caps survive the filter: on a card the viewer
+/// has NOT claimed the candidate reports the same capped arithmetic the shipped
+/// mirror does (raw 6 → capped 4, never the raw sum), and a claim removes
+/// exactly that capped value.
+#[test]
+fn the_postclaim_sum_preserves_the_and_shaped_cards_cap_arithmetic() {
+    let rules = Rules::standard();
+    let card = yokohama_core::AchievementType::Prod3Comm2;
+    let mut state = postclaim_fixture(&rules, card);
+
+    let view = observe(&state, PlayerId(0)).unwrap();
+    let (current, needed) = view_achievement_progress(&view, seat_of(&view, PlayerId(0)), card);
+    assert_eq!((current, needed), (4, 5), "min(5,3) + min(1,2) = 4, NOT the raw 6");
+    assert_eq!(
+        achievement_progress_postclaim_sum(&view, seat_of(&view, PlayerId(0))),
+        3 * 4,
+        "three unclaimed AND-shaped cards, each capped at 4",
+    );
+
+    state.achievements[2].claimed_by.push(PlayerId(0));
+    let view = observe(&state, PlayerId(0)).unwrap();
+    assert_eq!(
+        achievement_progress_postclaim_sum(&view, seat_of(&view, PlayerId(0))),
+        2 * 4,
+        "the claimed card leaves at its CAPPED value, not at its raw one",
+    );
 }
 
 /// §0.3(a)'s allocation bound holds on the TERMINAL branch too (T2 review

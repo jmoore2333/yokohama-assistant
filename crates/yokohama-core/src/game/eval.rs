@@ -524,6 +524,14 @@ impl WeightTable {
         late:  [40,   30,   20,   16,   20,    20,    2,   -4,  10,   20,   25,  10,   8,    4,    4,   -6],
     };
 
+    /// **THE PHASE-3.5c ITERATION CANDIDATE** — the table the evaluator-v2
+    /// protocol (`docs/plans/2026-08-09-phase3.5c-evaluator-v2-protocol.md`)
+    /// re-prices round by round, and the one that BECOMES `V2` at the freeze
+    /// commit.
+    ///
+    /// RED: the numbers land in the GREEN commit; the ordering pin fails here.
+    pub const V2_DRAFT: WeightTable = WeightTable::ZERO;
+
     /// The all-zero table: a CONSTANT evaluator. Not a curiosity — spec §3.2's
     /// degeneracy pin and §0.2's targeted-mutation authoring rule both need one,
     /// and a table is how a caller builds a mutant without a second code path.
@@ -1180,6 +1188,12 @@ fn achievement_progress_sum(view: &PlayerView, player: &VisiblePlayer) -> i64 {
         sum += i64::from(current.min(needed));
     }
     sum
+}
+
+/// The T3 POST-CLAIM candidate — RED: unimplemented until the GREEN commit.
+pub fn achievement_progress_postclaim_sum(view: &PlayerView, player: &VisiblePlayer) -> i64 {
+    let _ = (view, player);
+    unimplemented!("the T3 post-claim sum lands in the GREEN commit")
 }
 
 /// One player's `(current, needed)` progress toward one achievement, mirroring
