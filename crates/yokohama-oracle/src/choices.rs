@@ -255,27 +255,39 @@ mod tests {
     }
 
     #[test]
-    fn assistant_move_skips_an_area_entry_drained_to_zero() {
+    fn assistant_move_skips_an_area_entry_at_count_zero() {
         // "Move 1 of your Assistants from ... an Area" (RB p.10): an Area you
-        // have NO assistant in is not a source. The `on_board` map may carry an
-        // area at count ZERO, so presence in the map is not presence on the
-        // board — the count is what the rule reads.
+        // have NO assistant in is not a source. `on_board` is a map from area
+        // to COUNT, and a zero count is representable in it, so presence in the
+        // map is not presence on the board — the count is what the rule reads.
         //
-        // NEWLY LOAD-BEARING UNDER D6 [DL 2026-08-08, `SEMANTICS_REV` 7]: the
-        // Church/Customs track pawn now comes from the ACTIVATED AREA first,
-        // so a take can drain the acting area to zero and an AssistantMove
-        // icon queued between that take and Recovery sees the drained entry.
-        // Under the old hand-first rule a track take never touched `on_board`
-        // at all, so this shape did not arise from this path. Pinned here
-        // because no oracle test covered a zero count before rev 7 (verified
-        // by mutation: deleting the guard left all 188 tests green).
+        // WHY THIS IS A REPRESENTABLE-INPUT PIN, not a reachability claim.
+        // This oracle enumerates over states it is HANDED; it does not get to
+        // assume which shapes any particular producer emits, and the `>= 1`
+        // guard is defensive over the full representable input space. That is
+        // the whole justification, and it is sufficient.
+        //
+        // An earlier version of this comment justified the test instead by
+        // asserting that D6 (area-first track pawns) made a zero-count entry
+        // NEWLY reachable, and that the previous hand-first rule "never touched
+        // `on_board` at all". The rev-7 review found BOTH claims false. They
+        // are withdrawn here rather than repaired, because reasoning from
+        // another crate's writer discipline is exactly the dependency this
+        // crate exists without — an oracle that knows when its counterpart
+        // leaves a zero has stopped being an independent reading of the rules.
+        // Do not reinstate a reachability rationale for this test.
+        //
+        // The test is worth keeping on its own terms: no oracle test covered a
+        // zero count at all before rev 7 (mutation-proven — deleting the `>= 1`
+        // guard leaves every other test in this crate green and fails only
+        // here).
         let mut s = two_player_state();
         s.pending_choices = vec![PendingChoice::AssistantMove];
         s.players[0].assistants.in_hand = 0;
-        s.players[0].assistants.on_board.insert(AreaId::new(2), 0); // drained by the take
+        s.players[0].assistants.on_board.insert(AreaId::new(2), 0); // the zero-count entry
         s.players[0].assistants.on_board.insert(AreaId::new(1), 1); // anti-vacuity
         let moves = head_choice_moves(&s, &rules());
-        // The drained area is not a source in ANY target shape — neither the
+        // The zero-count area is not a source in ANY target shape — neither the
         // D3 hand return nor an area-to-area move.
         assert!(
             !moves
