@@ -10,6 +10,16 @@ permissions:
 
 env:
   CARGO_TERM_COLOR: always
+  # The three "Test the CLI" steps below run `cargo test -p yokohama-cli`, which
+  # includes ten pins backed by the owner's gitignored BGA capture
+  # (`bridge-captures/895724349.ndjson`). Absence of that capture is a LOUD
+  # panic by default — deliberately, so a corpus-less run cannot report those
+  # pins as `ok` while asserting nothing (3.5b six-lens F6). A release runner
+  # never has the capture, so without this the whole release build would fail on
+  # all three OSes at the next tag. This is the documented opt-out, and it only
+  # turns ABSENCE into a quiet skip: where the capture IS present the pins still
+  # run and still assert.
+  YOKOHAMA_BGA_CORPUS_OPTIONAL: "1"
 
 jobs:
   ubuntu:
