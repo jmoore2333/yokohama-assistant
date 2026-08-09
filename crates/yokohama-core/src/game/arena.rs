@@ -190,7 +190,13 @@ const SALT_RAW_STREAM: u64 = 0xA3E1_4157_0000_0003;
 /// Fold `components` into one full-width sub-seed under `salt` — the module
 /// doc's derivation. Injective in any single component (others fixed); see the
 /// module doc for what is NOT claimed across several.
-fn mix(salt: u64, components: &[u64]) -> u64 {
+///
+/// `pub(crate)` rather than private since Phase 3.5c: `game::eval_screen` is a
+/// SIBLING module that derives its own bootstrap resample stream, and the module
+/// doc's "one mixing authority and not a re-typed copy of its constants" rule
+/// applies across the crate, not merely inside this file. It stays crate-private
+/// — sub-seed derivation is not a public surface.
+pub(crate) fn mix(salt: u64, components: &[u64]) -> u64 {
     let mut acc = salt;
     for &component in components {
         let mut step = acc ^ component;
@@ -605,7 +611,13 @@ pub struct ArenaGameStats {
 /// Typed guard shared by both public drivers (T6 review F4): every other bad
 /// input here is a typed `ArenaError`, and Task 9 wires these entry points to
 /// argv, where a `--players 5` panic would be user-facing.
-fn require_supported_player_count(players: u8) -> Result<(), ArenaError> {
+///
+/// `pub(crate)` since Phase 3.5c so `game::eval_screen`'s own unit loop asks the
+/// SAME authority what the engine plays: its loop calls `unit_for` before it
+/// calls any driver, and `unit_for(0, ..)` yields an empty seating list, so a
+/// screen that re-derived the bound could tabulate zero games into a report full
+/// of NaNs instead of erroring.
+pub(crate) fn require_supported_player_count(players: u8) -> Result<(), ArenaError> {
     if (2..=4).contains(&players) {
         Ok(())
     } else {
