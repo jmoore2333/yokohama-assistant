@@ -15,98 +15,29 @@
 // thunk form (`serialize(() => …)`). This file is what tells the difference:
 // against the defect it reports 1/2 survived, against the fix 2/2.
 //
-// The environment below is a stub, not Chrome. It reproduces the ONE property
-// the race depends on - that `chrome.storage.local` get/set are asynchronous -
-// and nothing else.
+// The environment is `mv3_stub.js` - a stub, not Chrome. It reproduces the ONE
+// property this race depends on (that `chrome.storage.local` get/set are
+// asynchronous) and nothing else, and the relay is DOWN throughout, so every
+// capture MUST end up parked.
 
-const fs = require("fs");
 const path = require("path");
-const vm = require("vm");
+const { loadWorker, reporter } = require("./mv3_stub");
 
-const target =
-  process.argv[2] || path.join(__dirname, "..", "extension", "background.js");
-const source = fs.readFileSync(target, "utf8");
-
-const tick = () => new Promise((resolve) => setTimeout(resolve, 0));
-
-/** Load background.js in a stubbed MV3 world with the relay DOWN. */
-function loadWorker() {
-  const store = {};
-  const storage = {
-    async get(key) {
-      await tick(); // a real read is async; this is where the interleave happens
-      return { [key]: store[key] };
-    },
-    async set(object) {
-      await tick();
-      Object.assign(store, object);
-    },
-  };
-
-  let messageListener = null;
-  const chrome = {
-    storage: { local: storage },
-    runtime: {
-      onMessage: { addListener: (fn) => (messageListener = fn) },
-      onStartup: { addListener: () => {} },
-      onInstalled: { addListener: () => {} },
-    },
-    action: {
-      setBadgeBackgroundColor: async () => {},
-      setBadgeText: async () => {},
-      onClicked: { addListener: () => {} },
-    },
-    tabs: { sendMessage: async () => {} },
-  };
-
-  // A FRESH context per load, not `runInThisContext`: the worker declares its
-  // constants at top level, so a second load into a shared global would fail
-  // with "Identifier 'RELAY_ORIGIN' has already been declared".
-  const context = {
-    chrome,
-    // Every delivery attempt fails, so every capture MUST end up parked.
-    fetch: () => Promise.reject(new Error("ECONNREFUSED (relay not running)")),
-    // The worker logs loudly on delivery failure, which is correct behaviour
-    // and pure noise here.
-    console: { ...console, error: () => {}, warn: () => {}, info: () => {} },
-    setTimeout,
-    clearTimeout,
-    AbortController,
-    Promise,
-    JSON,
-    String,
-    Object,
-    Date,
-  };
-  context.globalThis = context;
-  vm.createContext(context);
-  vm.runInContext(source, context, { filename: target });
-
-  return { store, deliver: messageListener };
-}
+const target = process.argv[2] || path.join(__dirname, "..", "extension", "background.js");
 
 /** Deliver `markers` as one burst and report which survived, in order. */
 async function burst(markers) {
-  const { store, deliver } = loadWorker();
+  const worker = loadWorker({ target, relay: "down" });
   for (const marker of markers) {
-    deliver(
-      { type: "capture", table: "895608640", kind: "packets", payload: { marker } },
-      { tab: { id: 1 } },
-      () => {}
-    );
+    // Not awaited, on purpose: the whole point is that they arrive together.
+    worker.send({ type: "capture", table: "895608640", kind: "packets", payload: { marker } });
   }
   await new Promise((resolve) => setTimeout(resolve, 500));
-  return (store.outbox || []).map((item) => item.payload.marker);
+  return (worker.store.outbox || []).map((item) => item.payload.marker);
 }
 
-let failures = 0;
-const check = (label, ok, detail) => {
-  if (!ok) failures += 1;
-  console.log(`  [${ok ? "PASS" : "FAIL"}] ${label}${detail ? "  - " + detail : ""}`);
-};
-
 (async () => {
-  console.log(`outbox race regression (M-1)\n  target: ${target}\n`);
+  const { check, done } = reporter(`outbox race regression (M-1)\n  target: ${target}\n`);
 
   const pair = ["packet-A", "packet-B"];
   const parkedPair = await burst(pair);
@@ -134,6 +65,5 @@ const check = (label, ok, detail) => {
     `got: ${parkedMany.join(", ") || "(none)"}`
   );
 
-  console.log(`\n${failures === 0 ? "PASS" : "FAIL"} - ${failures} failing check(s)`);
-  process.exit(failures === 0 ? 0 : 1);
+  done();
 })();
