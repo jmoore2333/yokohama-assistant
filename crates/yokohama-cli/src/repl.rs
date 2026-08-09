@@ -6704,9 +6704,10 @@ mod tests {
     ///
     /// This pins the two heights the fix is FOR, so the fix cannot be undone
     /// without a failing number: the composed-everything frame overruns
-    /// `screen`'s recorded 2P opening height (48 rows, `FRAME_HEIGHTS`) and the
-    /// design floor with it, while the frame the player actually lands on after
-    /// the review is back at that recorded height exactly.
+    /// `screen`'s recorded 2P opening height (49 rows since the end-trigger
+    /// strip, `FRAME_HEIGHTS`) and the design floor with it, while the frame
+    /// the player actually lands on after the review is back at that recorded
+    /// height exactly.
     #[test]
     fn the_bot_narrative_overran_the_design_floor_and_the_reviewed_frame_does_not() {
         let mut r = repl_2p_bots(4, &[0]);
@@ -6728,9 +6729,10 @@ mod tests {
         );
         let reviewed = opening.frame.lines().count();
         assert_eq!(
-            reviewed, 48,
+            reviewed, 49,
             "and the frame behind the review is the ordinary 2P opening frame, at the height \
-             `screen::FRAME_HEIGHTS` records for it — it drew {reviewed} rows",
+             `screen::FRAME_HEIGHTS` records for it (49 since the end-trigger strip, \
+             2026-08-08) — it drew {reviewed} rows",
         );
     }
 

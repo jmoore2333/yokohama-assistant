@@ -1,0 +1,197 @@
+/* popup.css - the click detail's whole appearance.
+ *
+ * A separate file rather than a <style> block so the page needs no CSP
+ * relaxation of any kind, and so the HTML stays readable as structure. Colours
+ * are declared for both schemes: a toolbar panel that ignores the browser's
+ * dark mode reads as a bug. */
+
+:root {
+  --bg: #ffffff;
+  --fg: #1f1f1f;
+  --muted: #5f6368;
+  --rule: #e3e3e3;
+  --live: #1b7f3b;
+  --draining: #9a6400;
+  --parking: #b3261e;
+  --unsure: #5f6368;
+  --button: #f1f3f4;
+  --button-fg: #1f1f1f;
+  --accent: #1b7f3b;
+  /* The primary button's TEXT, a token rather than a literal, because the
+   * accent flips from a dark green to a light one between the schemes and a
+   * fixed white failed the dark half at 1.95:1 (review N-4). White on #1b7f3b
+   * is 5.07:1; #202124 on #5bd07f is 8.26:1. Both clear WCAG AA's 4.5:1, and
+   * bridge/tests/connected_indicator.js computes them rather than trusting
+   * this comment. */
+  --accent-fg: #ffffff;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #202124;
+    --fg: #e8eaed;
+    --muted: #9aa0a6;
+    --rule: #3c4043;
+    --live: #5bd07f;
+    --draining: #f0b849;
+    --parking: #f28b82;
+    --unsure: #9aa0a6;
+    --button: #3c4043;
+    --button-fg: #e8eaed;
+    --accent: #5bd07f;
+    --accent-fg: #202124;
+  }
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  width: 288px;
+  margin: 0;
+  padding: 12px 14px 10px;
+  background: var(--bg);
+  color: var(--fg);
+  font: 13px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif;
+}
+
+h1 {
+  margin: 0 0 8px;
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.state {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0 0 10px;
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.dot {
+  width: 10px;
+  height: 10px;
+  flex: 0 0 auto;
+  border-radius: 50%;
+  background: var(--unsure);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--unsure) 22%, transparent);
+}
+
+.state-live {
+  color: var(--live);
+}
+.state-live .dot {
+  background: var(--live);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--live) 22%, transparent);
+}
+
+.state-draining {
+  color: var(--draining);
+}
+.state-draining .dot {
+  background: var(--draining);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--draining) 22%, transparent);
+}
+
+.state-parking {
+  color: var(--parking);
+}
+.state-parking .dot {
+  background: var(--parking);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--parking) 22%, transparent);
+}
+
+.state-offline,
+.state-unknown {
+  color: var(--unsure);
+}
+.state-offline .dot {
+  background: transparent;
+  border: 2px solid var(--unsure);
+}
+
+dl {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 3px 12px;
+  margin: 0 0 10px;
+  padding: 9px 0;
+  border-top: 1px solid var(--rule);
+  border-bottom: 1px solid var(--rule);
+}
+
+dt {
+  color: var(--muted);
+}
+
+dd {
+  margin: 0;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+.trouble {
+  margin: 0 0 10px;
+  padding: 7px 9px;
+  border-radius: 6px;
+  background: color-mix(in srgb, var(--parking) 12%, transparent);
+  color: var(--parking);
+  font-size: 12px;
+}
+
+.actions {
+  display: flex;
+  gap: 8px;
+}
+
+button {
+  flex: 1 1 auto;
+  padding: 7px 10px;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  background: var(--accent);
+  color: var(--accent-fg);
+  font: inherit;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+button.secondary {
+  flex: 0 0 auto;
+  background: var(--button);
+  color: var(--button-fg);
+  font-weight: 500;
+}
+
+button:focus-visible {
+  outline: 2px solid var(--fg);
+  outline-offset: 2px;
+}
+
+button:disabled {
+  opacity: 0.55;
+  cursor: default;
+}
+
+.message {
+  min-height: 1.45em;
+  margin: 8px 0 0;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.message.bad {
+  color: var(--parking);
+}
+
+.foot {
+  margin: 6px 0 0;
+  color: var(--muted);
+  font-size: 11px;
+}

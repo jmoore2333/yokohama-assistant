@@ -34,3 +34,10 @@ skills-lock.json
 
 # Wizard default autosaves (yokohama-game-<seed>.json in CWD) — never commit; the one that slipped in was removed 2026-08-06 (owner-cleared)
 yokohama-game-*.json
+
+# Phase-3.5b bridge captures (`bridge-relay --dir`, default ./bridge-captures).
+# Never committed: these are the owner's own live Board Game Arena sessions,
+# captured verbatim from a logged-in browser tab. They are input data for the
+# importer, not a fixture — a fixture that needs one gets a redacted excerpt
+# committed deliberately, under docs/plans/.
+bridge-captures/

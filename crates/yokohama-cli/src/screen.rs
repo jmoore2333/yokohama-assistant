@@ -317,8 +317,10 @@ const FRAME_WIDTHS: [usize; 3] = [198, 175, 200];
 /// arrangement, made total. The players panel turns on its side (one column per
 /// seat, [`panel_render::SEAT_ROWS`] rows for all of them together instead of
 /// eight rows each), and the other three panels compress onto one titled row
-/// apiece. That is 15 rows at both counts against 45 and 54, and it lands the
-/// openings at 49 and 48.
+/// apiece. That is 15 rows at both counts against 45 and 54, and it landed the
+/// openings at 49 and 48 — 50 and 49 since the end-trigger strip added one row
+/// to every frame (owner request, 2026-08-08); the 3-player frame now sits ON
+/// the 50-row floor exactly.
 ///
 /// **The three OPENING numbers no longer move independently, and that is a
 /// property rather than a coincidence.** The below block is FIXED-height by
@@ -339,7 +341,7 @@ const FRAME_WIDTHS: [usize; 3] = [198, 175, 200];
 /// frame is, so a production constant here would be dead code claiming to be
 /// used.
 #[cfg(test)]
-const FRAME_HEIGHTS: [usize; 3] = [48, 49, 48];
+const FRAME_HEIGHTS: [usize; 3] = [49, 50, 49];
 
 /// The design floor's height (spec §0.1's 200x50), which every entry of
 /// [`FRAME_HEIGHTS`] meets since T10. `cfg(test)` for the same reason.
@@ -405,7 +407,7 @@ const FLOOR_H: usize = 50;
 /// fails, and the fix is to re-measure the table deliberately, not to raise one
 /// entry until a run goes quiet.
 #[cfg(test)]
-const WALK_HEIGHTS: [usize; 3] = [67, 60, 60];
+const WALK_HEIGHTS: [usize; 3] = [68, 61, 61];
 
 /// Allowance over [`WALK_HEIGHTS`], and one row is all it is.
 ///
@@ -571,6 +573,12 @@ fn stage(repl: &Repl) -> String {
             );
         }
     }
+    // End-trigger strip (owner request 2026-08-08): every frame states how
+    // close the game is to ending, on every trigger at once — public counts
+    // only (the render fn carries the leak fence and the dummy-exclusion
+    // reading; its own tests pin both).
+    stage.push_str(&render::end_trigger_line(state));
+    stage.push('\n');
     // Discoverability strip (owner scope item 10): every frame names the
     // game-info surfaces and the command that opens them, so a player who
     // never read the guide finds them on screen.
@@ -750,6 +758,28 @@ mod tests {
             "the discoverability strip must be in every frame (owner scope item 10): {f}"
         );
         assert!(f.ends_with("BODY-MARKER\n> hint\n"), "body must close the frame: {f}");
+    }
+
+    /// The end-trigger strip (owner request 2026-08-08) rides EVERY composed
+    /// frame at every player count, directly above the game-info strip, and is
+    /// always the state's own truthful reading (composed fresh per wrap, like
+    /// the board it sits under).
+    #[test]
+    fn every_composed_frame_carries_the_end_trigger_strip() {
+        for n in [2u8, 3, 4] {
+            let r = repl_np(n);
+            force(true);
+            let f = wrap(&r, "BODY\n");
+            force(false);
+            let expected = crate::render::end_trigger_line(r.session.state());
+            assert!(f.contains(&expected), "{n}P frame must carry the strip: {f}");
+            let strip_pos = f.find(&expected).unwrap();
+            let info_pos = f.find("info: type 'view'").unwrap();
+            assert!(
+                strip_pos < info_pos,
+                "the end-trigger strip sits above the game-info strip"
+            );
+        }
     }
 
     /// Spec §0.1's arrangement ruling, reproduced from the geometry rather

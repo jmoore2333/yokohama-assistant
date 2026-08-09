@@ -115,6 +115,7 @@ compatibility-keyed to the game-semantics revision (`SEMANTICS_REV`), not the re
 | `yokohama-cli` | The game driver: setup wizard → REPL; simulated games and live-table tracking (reconciliation, desync tripwire), save/load/undo, TTY-colored board, and **human-vs-bot play** in sim mode (any seat mix with ≥1 human; the bot runs the same honest view → belief-sampler → policy path the arena does) plus **`suggest`** — the evaluator bot analyzes YOUR seat's view and explains its recommended move term by term, deterministic on repeat presses even across save/reload |
 | `yokohama-oracle` | The independent referee: legal-move enumeration, final scoring + tie-break, and a prune-free route reference, authored from the rules sources under an audited independence rule (types-only dependency on the engine) |
 | `yokohama-difftest` | The harness comparing engine vs oracle: per-decision-point sweeps under two policies, terminal scoring comparison, three-way route-pruning check, self-contained divergence artifacts + `repro` tool |
+| `yokohama-bridge` | The BGA capture relay (Phase 3.5b): a localhost-only HTTP sink that appends what the read-only browser extension in `bridge/` observes to `bridge-captures/<table>.ndjson`, plus the feed pre-processor (typed NDJSON reader, payload-identity dedupe, structural supersession collapse for takebacks). Depends on NO engine crate and knows no rules — translating captures into engine moves is `yokohama-cli`'s `import`, deliberately on the other side of that boundary |
 | `gen-data` | YAML → Rust generator for the verified card/site data (never hand-edit `game/data.rs`) |
 
 ## Download and run
@@ -165,8 +166,8 @@ Fastest playable game: answer the wizard `sim`, `2`, `red`, `blue`, `0`, Enter t
 your seat), `undo`, `save`, `q`. Full tester guide:
 **[HTML](docs/cli-guide.html)** or [Markdown](docs/cli-guide.md).
 
-**Gates.** Per-edit (debug): the four crate suites + `cargo clippy --workspace --all-targets
--- -D warnings`, all zero-warning. Pre-merge: all **fourteen** release gates below — the fourteenth is Phase 3.4's
+**Gates.** Per-edit (debug): the crate suites + `cargo clippy --workspace --all-targets
+-- -D warnings`, all zero-warning (five crates on master; on the 3.5b bridge branch also `cargo test -p yokohama-bridge` and the four `bridge/tests/*.js` node suites, which have no cargo coverage and would otherwise never run). Pre-merge: all **fourteen** release gates below — the fourteenth is Phase 3.4's
 architecture gate, added 2026-08-04, which also restates the roster target
 **≤360s → ≤420s** on the grounds of one added binary. The **fourteen**-gate roster measured
 **326.70s** together as one uninterrupted sequence 2026-08-05 at the `phase3.4-search-arch` close

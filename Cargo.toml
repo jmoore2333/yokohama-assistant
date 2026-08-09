@@ -6,6 +6,7 @@ members = [
     "crates/yokohama-cli",
     "crates/yokohama-oracle",
     "crates/yokohama-difftest",
+    "crates/yokohama-bridge",
 ]
 
 [workspace.package]

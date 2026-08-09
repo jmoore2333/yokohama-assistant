@@ -1,0 +1,48 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Yokohama bridge</title>
+    <link rel="stylesheet" href="popup.css" />
+  </head>
+  <body>
+    <h1>Yokohama BGA bridge</h1>
+
+    <p id="state" class="state state-unknown">
+      <span id="dot" class="dot" aria-hidden="true"></span>
+      <span id="state-text">checking the relay…</span>
+    </p>
+
+    <dl id="detail">
+      <dt>Table</dt>
+      <dd id="table">—</dd>
+      <!-- "(session)" is load-bearing, not decoration (review N-3): these
+           counters are per BROWSER SESSION, and they sit directly under a
+           per-TABLE heading. Two tables in one session render both their
+           captures under whichever table was seen last. -->
+      <dt>Captures delivered (session)</dt>
+      <dd id="delivered">—</dd>
+      <dt>Snapshots taken (session)</dt>
+      <dd id="snapshots">—</dd>
+      <dt>Outbox</dt>
+      <dd id="outbox">—</dd>
+      <dt>Relay</dt>
+      <dd id="relay">—</dd>
+      <dt>Recording since</dt>
+      <dd id="session">—</dd>
+    </dl>
+
+    <p id="trouble" class="trouble" hidden></p>
+
+    <div class="actions">
+      <button id="snapshot" type="button" autofocus>Take snapshot</button>
+      <button id="recheck" type="button" class="secondary">Recheck relay</button>
+    </div>
+
+    <p id="message" class="message" role="status"></p>
+
+    <p class="foot">Read-only. This extension never writes to Board Game Arena.</p>
+
+    <script src="popup.js"></script>
+  </body>
+</html>
