@@ -81,8 +81,27 @@ pub(crate) fn owns_effect(
         .any(|id| rules.techs.get(*id).is_some_and(|t| t.effect == effect))
 }
 
-/// §3.4 Church/Customs assistant source: the current player has an assistant in
-/// hand OR in the acting `area` (decision log 2026-07-18 I3).
+/// §3.4 Church/Customs track pawn AVAILABILITY: the current player has an
+/// assistant in hand OR in the acting `area`. Keyed on the ACTIVATED area — a
+/// pawn parked in any other area supplies nothing.
+///
+/// This predicate is deliberately SOURCE-BLIND, and it is source-blind under
+/// BOTH readings of where the pawn comes from, which is why D6 did not move it:
+///
+/// - The PRINTED rule offers the player a choice — "place 1 Assistant pawn from
+///   the Church/Customs Area **or** your hand" [RB p.13/p.14] — so availability
+///   is the union of the two sources.
+/// - The ENGINE implements AREA-FIRST instead [D6, DL 2026-08-08,
+///   `SEMANTICS_REV` 7, owner-ruled for BGA parity and recorded as a POTENTIAL
+///   RULEBOOK DIFF]: own pawn(s) in the activated area ⇒ the pawn comes from the
+///   AREA, otherwise from hand. That is a rule about WHICH source is spent, with
+///   a hand FALLBACK — so its availability condition is the same union.
+///
+/// Either way the action is available iff at least one source is non-empty, so
+/// the legal set AT THE TAKE is identical under both readings. The oracle
+/// enumerates; it never spends the pawn, so D6 reaches no further than this doc.
+/// Pinned by `track_take_legal_set_is_identical_whichever_source_supplies_the_pawn`
+/// and `an_assistant_in_some_other_area_does_not_supply_the_track_pawn`.
 #[allow(dead_code)] // consumed by lane D (church/customs) once landed.
 pub(crate) fn track_assistant_available(state: &GameState, area: AreaId) -> bool {
     let p = state.current_player();

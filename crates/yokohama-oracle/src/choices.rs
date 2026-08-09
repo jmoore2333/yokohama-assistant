@@ -255,6 +255,45 @@ mod tests {
     }
 
     #[test]
+    fn assistant_move_skips_an_area_entry_drained_to_zero() {
+        // "Move 1 of your Assistants from ... an Area" (RB p.10): an Area you
+        // have NO assistant in is not a source. The `on_board` map may carry an
+        // area at count ZERO, so presence in the map is not presence on the
+        // board — the count is what the rule reads.
+        //
+        // NEWLY LOAD-BEARING UNDER D6 [DL 2026-08-08, `SEMANTICS_REV` 7]: the
+        // Church/Customs track pawn now comes from the ACTIVATED AREA first,
+        // so a take can drain the acting area to zero and an AssistantMove
+        // icon queued between that take and Recovery sees the drained entry.
+        // Under the old hand-first rule a track take never touched `on_board`
+        // at all, so this shape did not arise from this path. Pinned here
+        // because no oracle test covered a zero count before rev 7 (verified
+        // by mutation: deleting the guard left all 188 tests green).
+        let mut s = two_player_state();
+        s.pending_choices = vec![PendingChoice::AssistantMove];
+        s.players[0].assistants.in_hand = 0;
+        s.players[0].assistants.on_board.insert(AreaId::new(2), 0); // drained by the take
+        s.players[0].assistants.on_board.insert(AreaId::new(1), 1); // anti-vacuity
+        let moves = head_choice_moves(&s, &rules());
+        // The drained area is not a source in ANY target shape — neither the
+        // D3 hand return nor an area-to-area move.
+        assert!(
+            !moves
+                .iter()
+                .any(|m| matches!(m, Move::ChooseAssistantMove { from: MoveSource::Area(a), .. }
+                                  if *a == AreaId::new(2))),
+            "an area at count 0 is not a movable-from source: {moves:?}",
+        );
+        // Anti-vacuity: the still-occupied area IS offered, so the assertion
+        // above is not passing merely because the enumeration is empty.
+        assert!(moves.contains(&Move::ChooseAssistantMove {
+            from: MoveSource::Area(AreaId::new(1)),
+            to: MoveTarget::Hand,
+        }));
+        assert!(moves.contains(&Move::DeclineAssistantMove));
+    }
+
+    #[test]
     fn recovery_leave_offers_both_options() {
         let mut s = two_player_state();
         s.pending_choices = vec![PendingChoice::RecoveryLeave];
