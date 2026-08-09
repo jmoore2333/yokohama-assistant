@@ -132,7 +132,9 @@
 //! and none contradicted, its magnitudes still hand-set;
 //! `docs/plans/2026-07-27-phase3.3-weight-freeze.md` is the record, and
 //! `nonzero_recovery_is_sometimes_the_argmax_under_the_frozen_table` is the
-//! per-edit falsifier the freeze's recovery measurement set the floor for. Every
+//! falsifier the freeze's recovery measurement set the floor for — RELEASE-TIER
+//! since 2026-08-09 (the FIFTEENTH gate, `cargo test --release -p yokohama-core
+//! --lib -- --ignored`; owner ruling, see that test's own doc). Every
 //! weight in [`score_starting_order`]'s own vocabulary remains hand-set and
 //! UNMEASURED — spec §8's own terms, revisited at 3.5.
 
@@ -868,15 +870,29 @@ mod tests {
     ///
     /// # Two owner-visible costs of that re-size, stated rather than absorbed
     ///
-    /// 1. DEBUG WALL 23 s → ~110 s (0.36 s/game, measured at HEAD). That is a
-    ///    real per-edit-loop regression, and by the two-tier policy's own
-    ///    logic this test is now shaped like a release-tier
-    ///    distributional/regression-net property rather than a per-edit
-    ///    correctness one. Demoting it would ADD A FIFTEENTH GATE to the
-    ///    documented roster (a `--release --lib … -- --ignored` command plus
-    ///    rows at the four doc sites), which is a roster change and therefore
-    ///    an OWNER call — flagged in the rev-7 branch report, deliberately not
-    ///    taken here.
+    /// 1. DEBUG WALL 23 s → ~110 s (0.36 s/game, measured at HEAD). That was a
+    ///    real per-edit-loop regression, and by the two-tier policy's own logic
+    ///    this test is shaped like a release-tier distributional/regression-net
+    ///    property rather than a per-edit correctness one. **THE OWNER CALL
+    ///    FLAGGED HERE HAS NOW BEEN TAKEN: demoted 2026-08-09 by owner ruling
+    ///    (guidingpath's 2026-08-09 rulings row, OD-6 arm 1) to the FIFTEENTH
+    ///    release gate** — `cargo test --release -p yokohama-core --lib --
+    ///    --ignored`, which is the whole gate because this is the ONLY
+    ///    `#[ignore]`d test in the core lib (it runs exactly 1 test; a second
+    ///    one arriving here must be added to that gate's doc rows or it rides
+    ///    in unannounced). Rows at CLAUDE.md, README, guidingpath and the
+    ///    phase-3 map §4 carry it, and OD-6 arm 2 DEFERRED the roster-target
+    ///    restatement: the ≤420s target stands. MEASURED at the demotion
+    ///    (2026-08-09, branch `phase3.5c-strength`, warm builds, one agent,
+    ///    sequential): `cargo test -p yokohama-core` **191.11 s → 89.18 s**,
+    ///    with a second warm AFTER reading of **102.68 s** on a busier machine
+    ///    — so read the saving as **−88 to −102 s**, not as one number (the lib
+    ///    binary alone 124.80 s → 20.23 s, and the falsifier measured ALONE is
+    ///    113.01 s debug against ~7 s release). The new release gate reads
+    ///    **7.02 / 6.84 / 7.00 s** across three runs — the same 3
+    ///    picks / 169,014 applied moves / share 0.000018 the debug run read, so
+    ///    the tier move changed the wall and nothing else. The test's CONTENT
+    ///    did not move — tier only.
     /// 2. The margin ceiling is STRUCTURAL, so do not chase rev 6's. The floor
     ///    is defined as half the corpus share, so ANY long prefix converges to
     ///    ~2× the floor by construction; rev 6's 6.1× was an early-cluster
@@ -1789,8 +1805,8 @@ mod tests {
     /// 1.78× the floor.**
     ///
     /// Three events is a thin sample and this doc says so rather than dressing
-    /// it up. The CORPUS is the measurement; this is the per-edit tripwire that
-    /// the behaviour still exists, sized by the smallest seeded prefix that
+    /// it up. The CORPUS is the measurement; this is the tripwire that the
+    /// behaviour still exists, sized by the smallest seeded prefix that
     /// contains events with any margin at all. A red here means "re-run the
     /// probe", not "the number moved".
     ///
@@ -1799,8 +1815,37 @@ mod tests {
     /// floor by construction and ~2× is the ceiling, not the failure case;
     /// rev 6's 6.1× came from a 64-game window that happened to catch an early
     /// cluster. See [`RECOVERY_SAMPLE_GAMES`] for the full rev-7 cumulative
-    /// readings, the 23 s → ~110 s debug-wall cost, and the owner question
-    /// that cost raises (demote to a fifteenth release gate?).
+    /// readings and the 23 s → ~110 s debug-wall cost that led to the
+    /// demotion below.
+    ///
+    /// # RELEASE-TIER: THE FIFTEENTH GATE (demoted 2026-08-09, owner ruling)
+    ///
+    /// `cargo test --release -p yokohama-core --lib -- --ignored` — the
+    /// documented gate command, run before merges and phase closes with the
+    /// other fourteen. The ruling is guidingpath's 2026-08-09 rulings row
+    /// (OD-6 arm 1, the in-source flag at [`RECOVERY_SAMPLE_GAMES`] naming the
+    /// call that has now been made); arm 2 deferred the roster-target
+    /// restatement, so ≤420s stands. This is the ONLY `#[ignore]`d test in the
+    /// core lib, so that command runs EXACTLY 1 test — the four doc rows all
+    /// say so, and a second ignored lib test arriving later must update them.
+    ///
+    /// **There is deliberately NO small-N per-edit smoke of this property, and
+    /// that is the opposite of every other gate binary's habit** (`arena_gate`,
+    /// `policy_diversity`, `evaluator_gate` and `architecture_gate` each keep a
+    /// never-`#[ignore]`d smoke so a release-only binary cannot rot invisibly).
+    /// The reason is that here the SAMPLE SIZE *IS* THE POWER: the statistic is
+    /// ~3.6 events per hundred thousand applied moves, so any N small enough to
+    /// be per-edit reads zero from a HEALTHY table and would have to assert
+    /// nothing to stay green — a smoke that cannot go red for the defect it
+    /// names. That is exactly `policy_diversity`'s frozen-floor precedent,
+    /// stated there in the same words: the gate's discriminating power IS its
+    /// N, which is why its smoke deliberately omits that cell while keeping the
+    /// others. Rot protection here comes from the doc rows plus the fact that
+    /// the lib binary itself is never release-only. The per-edit tier keeps the
+    /// OTHER guards on the assistant triple unmoved: `eval.rs`'s ordering pin
+    /// `the_hand_split_orders_core_above_board_above_excess_in_both_vectors`
+    /// and the one-ply cells, which is what still catches an L14 ordering break
+    /// on every edit.
     ///
     /// # SCOPED TO 2P, deliberately
     ///
@@ -1832,6 +1877,7 @@ mod tests {
     /// would have noticed. Zero recoveries is invisible to every other pin
     /// here, which is why this one exists.
     #[test]
+    #[ignore = "release-tier gate 15: cargo test --release -p yokohama-core --lib -- --ignored"]
     fn nonzero_recovery_is_sometimes_the_argmax_under_the_frozen_table() {
         let mut schedule = SeedSchedule::diagnostic(FREEZE_MASTER);
         let mut applied = 0u64;
