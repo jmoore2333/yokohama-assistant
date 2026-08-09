@@ -542,8 +542,11 @@ impl WeightTable {
     /// L4 screen), `examples/eval_probe`'s `--score-table v2-draft` spelling,
     /// and the scenarios that ride a v2 change once they land.
     ///
-    /// **ROUND 1 ADOPTED, 2026-08-09 — this table is the candidate `m22`, no
-    /// longer V1's numbers, and the CONJUNCTIVE adoption rule is discharged:**
+    /// **ROUND 1 ADOPTED, 2026-08-09 — the table BECAME the candidate `m22`, no
+    /// longer V1's numbers, and the CONJUNCTIVE adoption rule was discharged:**
+    /// (round 2 has since moved it again — see the ROUND 2 block below for what
+    /// the numbers above are today; this block is kept as the round's history,
+    /// because a table that records only its latest edit cannot be audited.)
     /// scenarios + hard constraints by the suite (13/13, hand-split ok both
     /// vectors), and the two L4 screens at the round's pre-recorded master
     /// `0x3EE753CE7F4052C4` — lookahead θ̂ 0.5725, bootstrap [0.5250, 0.6200]
@@ -580,37 +583,118 @@ impl WeightTable {
     /// i.e. its interval excludes chance where the incumbent's spans it — and it
     /// is in fact the best of the nineteen on ALL SIX (corpus × stage) held-out
     /// columns, which is what makes a nineteen-way held-out selection
-    /// defensible at this N. **Weight identity `0x73bf3f54421717a8`** (the
-    /// incumbent's is `0xe1fedd5efc49d0f6`); the two no longer collide, so a
-    /// screen against this table is a real cell rather than the null one it was.
+    /// defensible at this N. **`m22`'s weight identity was
+    /// `0x73bf3f54421717a8`** (the incumbent's is `0xe1fedd5efc49d0f6`); the two
+    /// no longer collided, so a screen against the draft became a real cell
+    /// rather than the null one it had been. The identity the table carries
+    /// TODAY is round 2's, below.
     ///
     /// Read the honest limits with the numbers: those AUCs are measured on
     /// INCUMBENT-play corpora and are therefore off-policy for this table, the
     /// grid's winner sits at the grid's EDGE (recorded for round 2, deliberately
-    /// not chased here — extending after seeing that would be
+    /// not chased there — extending after seeing that would have been
     /// selection-after-results), and the on-policy checks are the round's arena
     /// screen and, for the accumulated total, the freeze's own fresh cell.
+    ///
+    /// **ROUND 2 ADOPTED PROVISIONALLY, 2026-08-09 — this table is now the
+    /// candidate `M*`, and the adoption rule is HALF discharged.** What holds at
+    /// this commit is protocol §4.2's rungs L1–L3: the R0 evidence, the round's
+    /// pre-registered two-stage L2 fit, and the scenario suite (14/14 tests —
+    /// thirteen scenarios plus the registry pin — with the hand-split ordering
+    /// holding in both vectors). What has NOT run is L4 — the two arena screens at the
+    /// round's pre-recorded master `0x3A6B04285CCB85E0` — so the adoption is
+    /// PROVISIONAL until they do and this paragraph is finalized with their
+    /// figures, in the shape the ROUND 1 block above shows. The round's own
+    /// pre-commitment is what makes that ordering safe: the master was drawn from
+    /// OS entropy and recorded in the execution ledger's ROUND-2 row before any
+    /// evidence ran, and is never redrawn (§4.3), so nothing about landing the
+    /// table first can shop for a field. It moved SEVEN weights across six
+    /// features over `m22` — one of the six, `hand_size`, moves in BOTH vectors —
+    /// and every one is evidenced in
+    /// `docs/plans/2026-08-09-phase3.5c-round2-evidence.md` (the two-stage L2)
+    /// over `docs/plans/2026-08-09-phase3.5c-r0-report.md` (the R0 corpora):
+    ///
+    /// - **the LATE BONUS CROSSING** — `church_bonus_now` late `16 → 8` and
+    ///   `five_power_tokens` late `10 → 14`, the round's dominant pair and the
+    ///   only two slots whose decision a scenario can separate. R0's finding F7,
+    ///   in the SHIPPED lookahead regime: the church bonus late is NO-SIGNAL at
+    ///   0.5180 [0.4915, 0.5437] while carrying a +16 weight — the church race is
+    ///   near-universal (ChurchTrackFull is 5-for-5 across every corpus in
+    ///   existence), so the AWARDED bonus stops separating winners from losers and
+    ///   the weight was paying for a near-constant — while five-power tokens late
+    ///   measure 0.8058 [0.7874, 0.8236] on a weight of 10, the second-strongest
+    ///   late member of the table after `victory_points`. Note what is NOT claimed:
+    ///   the church TERM is not down-priced because the church is unimportant, but
+    ///   because the bonus-as-awarded carries no information in this regime — a
+    ///   margin/denial FEATURE might, and that is a T5 admission candidate for a
+    ///   later round, not a re-pricing.
+    /// - **the HAND-SIZE SOFTENING**, `−3/−6 → −1/−2` (both vectors) — no-signal
+    ///   at every stage under lookahead, though the greedy corpus still confirms
+    ///   the SIGN late (0.4320). Softened, deliberately not zeroed: the sign has
+    ///   evidence behind it and the suite's leak clauses compare weighted
+    ///   PRODUCTS, so a zeroed term would silently stop separating fixtures.
+    ///   Recorded honestly — this component's held-out read was MARGINAL
+    ///   (+0.0001 on its home stage); it rides the round's pre-registered merge
+    ///   rule rather than a demonstration of its own.
+    /// - **the EARLY EXTENSION**, `vp 2 → 1`, `ctry 18 → 20`, `tech 12 → 14` —
+    ///   round 1's grid winner sat at the grid's EDGE on a monotone axis, which
+    ///   that round recorded and refused to chase after the fact; round 2
+    ///   PRE-REGISTERED the follow-up step as a grid cell and it improved —
+    ///   held-out EARLY on the shipped-regime corpus 0.5692 (`m22`) → 0.5748 for
+    ///   this delta alone, and 0.5893 for the merged `M*`. Its direction is the
+    ///   same one scenario 10 already pins, and `M*` widens that scenario's
+    ///   margin (+165 → +205) rather than narrowing it.
+    ///
+    /// **SELECTION RULE, pre-registered before any figure existed** (the
+    /// execution ledger's ROUND-2 row, committed ahead of the runs): a TWO-STAGE
+    /// fit on the same two FIXED incumbent-play corpora at their recorded masters
+    /// and the same parity split — stage 1 scores seven single-slot deltas plus
+    /// their full merge, stage 2 evaluates the DETERMINISTIC merge of exactly
+    /// those singles that improved on `m22` in their HOME stages, with no
+    /// discretion in the merge rule. Primary = mean held-out MID+LATE EVAL-TOTAL
+    /// AUC on the shipped-regime corpus: **`M*` 0.8188 > c1 0.8180 > K 0.8177 >
+    /// `m22` 0.8112.** The margin over the runner-up is small (+0.0009, inside
+    /// bootstrap widths) and the tie-break that carries it is the same
+    /// cross-corpus unanimity round 1 leant on — `M*` leads all six (corpus ×
+    /// stage) held-out columns. Two proposed deltas were EXCLUDED by the rule —
+    /// `trad_l 25→18` and the early `brd 6→5, exc 5→4` step, both below baseline
+    /// on their home stages, the second negative on the greedy corpus too — which
+    /// is the merge rule doing its job rather than a grid that happened to agree
+    /// with itself. **Weight identity `0x9a240f2ff7624b0e`**, verified at this
+    /// commit against the probe's own digest of the two arrays below.
+    ///
+    /// Read the honest limits with these numbers too, and they are round 1's
+    /// unchanged: the AUCs are measured on INCUMBENT-play corpora and are
+    /// off-policy for this table (`m22`-play would be the on-policy corpus, and
+    /// nobody generates one mid-round), so the on-policy checks remain the round's
+    /// arena screens and, for the accumulated total, the freeze's own fresh cell.
+    /// A round's screen field does not compose across rounds.
     ///
     /// **What is pinned regardless of what a round adopts** — L14/T1's
     /// `core > on_board > excess` in BOTH vectors, the one-ply non-degeneracy
     /// condition protocol §4.2 forbids relaxing at any rung of the evidence
-    /// ladder. It survives this adoption unchanged (early 30 > 6 > 5; late
-    /// 20 > 10 > 2), and the round moved `brd` and `hEXC` INSIDE it rather than
-    /// through it. The screen harness's `hand_split_ordering_holds` is asserted
-    /// against THIS table per edit
+    /// ladder. It survives BOTH adoptions unchanged (early 30 > 6 > 5; late
+    /// 20 > 10 > 2): round 1 moved `brd` and `hEXC` INSIDE it rather than through
+    /// it, and round 2 left the triple alone entirely. The screen harness's
+    /// `hand_split_ordering_holds` is asserted against THIS table per edit
     /// (`the_iteration_candidate_holds_the_hand_split_ordering`), so a round
     /// that re-prices the assistant triple past the ordering fails at test time
     /// rather than four hundred games into a screen.
     ///
-    /// **The scenarios that guard the six moved slots** land red-then-green
-    /// against this commit (protocol §4.2 rung L3), in
-    /// `tests/scenario_suite.rs`: *early engine over early VP* for the re-mix
-    /// and *warehouse decay flattened* for the flatten, each with the round's
-    /// own edit REVERTED as its counterfactual rather than a zeroed term.
+    /// **The scenarios that guard the moved slots** land red-then-green against
+    /// the commit that moves them (protocol §4.2 rung L3), in
+    /// `tests/scenario_suite.rs`: *early engine over early VP* for round 1's
+    /// re-mix (and, unchanged, for round 2's extension of it), *warehouse decay
+    /// flattened* for the flatten, and *late bonus re-pricing: tokens over
+    /// church* for round 2's late crossing — each with the round's own edit
+    /// REVERTED as its counterfactual rather than a zeroed term. Round 2's two
+    /// minor components (the hand-size softening, the early extension) carry no
+    /// discriminating fixture of their own and are not claimed to: that scenario's
+    /// doc says which rung each of them rides instead.
     pub const V2_DRAFT: WeightTable = WeightTable {
         //     [vp, ctry, tech, chur, cust, hCORE, hEXC, ware, brd, shop, trad, 5pw, imp, achv, merc, hnd#]
-        early: [ 2,   18,   12,   -4,    3,    30,    5,  -10,   6,   12,   15,   8,   5,    2,    3,   -3],
-        late:  [40,   30,   20,   16,   20,    20,    2,  -10,  10,   20,   25,  10,   8,    4,    4,   -6],
+        early: [ 1,   20,   14,   -4,    3,    30,    5,  -10,   6,   12,   15,   8,   5,    2,    3,   -1],
+        late:  [40,   30,   20,    8,   20,    20,    2,  -10,  10,   20,   25,  14,   8,    4,    4,   -2],
     };
 
     /// The all-zero table: a CONSTANT evaluator. Not a curiosity — spec §3.2's

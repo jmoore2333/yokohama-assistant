@@ -17,9 +17,13 @@
 //! unmoved draft, and turns green in the adoption commit; its counterfactual is
 //! then the round's own edit REVERTED rather than a zeroed term.
 //!
-//! Nothing about scenarios 1–9 changed when 10–12 landed, and nothing about
-//! 10–12 changed when 13 landed. The never-delete rule below covers every wave
-//! alike.
+//! Nothing about scenarios 1–9 changed when 10–12 landed, and no scenario's
+//! CODE or property changed when 13 landed. Scenario 10's counterfactual helper
+//! was RE-DOCUMENTED there ([`early_remix_reverted`]) because round 2 moved
+//! three of its five slots a second time, so "restore V1" and "undo round 1"
+//! stopped being the same sentence — a re-pointing of the doc, which is exactly
+//! what the never-delete rule below asks for when the evaluator legitimately
+//! moves under a standing scenario.
 //!
 //! # THE NEVER-DELETE RULE (map §5-3.3, spec §6)
 //!
@@ -1694,24 +1698,39 @@ fn scenario_09_terminal_scoring() {
 // 10. Early engine over early VP  (3.5c round 1 — the early re-mix)
 // ---------------------------------------------------------------------------
 
-/// The round-1 EARLY re-mix, REVERTED inside the candidate table: the five early
-/// slots the round moved, put back to [`WeightTable::V1`]'s values, and nothing
-/// else touched.
+/// The PRE-V2 early mix, restored inside the candidate table: the five early
+/// slots this scenario is built on, put back to [`WeightTable::V1`]'s values, and
+/// nothing else touched.
 ///
 /// This is §0.2's targeted mutation for scenario 10, in the shape an ADOPTION
 /// round needs. Suite v1's mutations zero one term because a v1 scenario asks
-/// "does the shipped table price this term at all"; a round-1 scenario asks
+/// "does the shipped table price this term at all"; a re-pricing scenario asks
 /// "does the round's own edit carry this position", so the mutation is the edit
 /// undone. Zeroing a term here would prove only that the term matters — which
 /// scenarios 1, 2 and 8 already prove for three of these five — and would say
 /// nothing about the re-mix.
 ///
+/// **RE-DOCUMENTED AT ROUND 2, and the meaning has genuinely changed** (round
+/// 1's Task-F review NOTE-4, which asked for exactly this re-visit if a later
+/// round moved these slots again — it did). At round 1 this helper reverted ONE
+/// round's edit, so "restore V1" and "undo round 1" named the same thing. Round
+/// 2's early extension then moved THREE of these five slots a second time
+/// (`vp 2→1`, `ctry 18→20`, `tech 12→14`), so what the helper restores today is
+/// **the ORIGINAL (V1) early mix — "the mix the evaluator was frozen with", not
+/// "round 1 undone"**. The code is unchanged and deliberately so: `V1` is the
+/// right authority either way, because the scenario's claim is about the
+/// evaluator's early RATIOS against the ones T4 froze, and every round that
+/// re-mixes them has to answer here. The margin the scenario reports grows with
+/// each such round rather than resetting (+165 at round 1, +205 at round 2), and
+/// the counterfactual line below is INVARIANT across them — it is computed from
+/// V1's five early weights, which no round moves.
+///
 /// Each slot's LATE weight is taken from the DRAFT, not from `V1`, so the
 /// mutation is exactly the EARLY re-mix and not a whole-column revert. (For
-/// these five the two late values coincide — the round moved only their early
-/// entries — so this is a statement about what the code MEANS rather than about
-/// what it currently computes, and it stays correct if a later round moves one
-/// of their late weights.)
+/// these five the two late values still coincide — neither round has moved their
+/// late entries — so this is a statement about what the code MEANS rather than
+/// about what it currently computes, and it stays correct the day a round moves
+/// one of their late weights.)
 fn early_remix_reverted() -> WeightTable {
     let mut w = WeightTable::V2_DRAFT;
     for feature in EARLY_REMIX_SLOTS {
@@ -1722,9 +1741,11 @@ fn early_remix_reverted() -> WeightTable {
     w
 }
 
-/// The five EARLY slots round 1 re-mixed, in [`Feature::ALL`] order — the
+/// The five EARLY slots round 1 re-mixed, in [`Feature::ALL`] order — that
 /// round's change-set (a) made a list, and the exact set scenario 10's fixture
-/// is built to separate on.
+/// is built to separate on. Round 2's early extension re-priced three of them
+/// again (`vp`, `ctry`, `tech`) without widening or narrowing the set, which is
+/// why this list did not move with it.
 const EARLY_REMIX_SLOTS: [Feature; 5] = [
     Feature::VictoryPoints,
     Feature::CountryBonusNow,
@@ -1760,14 +1781,24 @@ const EARLY_REMIX_SLOTS: [Feature; 5] = [
 /// 9 doubles to 18, clear of the 2P dummy's 15, so the majority's first place is
 /// taken outright while the leader owns no technology and does not place at
 /// all), `assistants_in_hand_excess +3`, `assistants_on_board −3`. Under the
-/// round-1 candidate that reads
-/// `2·(−12) + 18·4 + 12·10 + 5·3 + 6·(−3) = −24 + 72 + 120 + 15 − 18 = +165`;
+/// CURRENT candidate (round 2's `M*`) that reads
+/// `1·(−12) + 20·4 + 14·10 + 5·3 + 6·(−3) = −12 + 80 + 140 + 15 − 18 = +205`;
 /// under V1's early weights it reads
 /// `10·(−12) + 12·4 + 6·10 + 4·3 + 14·(−3) = −120 + 48 + 60 + 12 − 42 = −42`.
-/// The same two positions, ranked opposite ways by the round's edit — which is
-/// what "the re-mix moves the MIX, not the scale" buys (R0 finding F8: halving
-/// the whole early vector is play-identical, so only a change of RATIOS can move
-/// a decision).
+/// The same two positions, ranked opposite ways by the re-mix — which is what
+/// "the re-mix moves the MIX, not the scale" buys (R0 finding F8: halving the
+/// whole early vector is play-identical, so only a change of RATIOS can move a
+/// decision).
+///
+/// **The margin's history, since two rounds have now moved these ratios.** Round
+/// 1 landed it at
+/// `2·(−12) + 18·4 + 12·10 + 5·3 + 6·(−3) = +165`; round 2's early extension
+/// (`vp 2→1`, `ctry 18→20`, `tech 12→14`) took it to `+205`. Each round pushes
+/// the same direction, so the scenario does not merely survive the second
+/// round — it is one of the two places round 2's early component is guarded at
+/// all (the other being the round's own L2/L4 evidence). The counterfactual is
+/// UNCHANGED at −42 across both, because it is computed from V1's five early
+/// weights.
 ///
 /// **FIXTURE HONESTY — the assistant total.** Both positions carry the engine's
 /// own 20 tokens (leader 6 on board + 2 in hand + 12 warehouse; engine 3 + 5 +
@@ -1788,7 +1819,10 @@ const EARLY_REMIX_SLOTS: [Feature; 5] = [
 /// holds" (guidingpath's 2026-08-09 canon-batch row). The L2 pass then picked
 /// the magnitudes: `m22` is the held-out EARLY argmax on the shipped-regime
 /// corpus and the best cell on all six corpus×stage columns
-/// (`docs/plans/2026-08-09-phase3.5c-round1-evidence.md`). This scenario is
+/// (`docs/plans/2026-08-09-phase3.5c-round1-evidence.md`), and round 2's
+/// pre-registered follow-up step moved three of them one notch further along the
+/// same monotone axis, improving held-out EARLY again
+/// (`docs/plans/2026-08-09-phase3.5c-round2-evidence.md`). This scenario is
 /// protocol §4.2 rung L3 for that change: the DECISION the re-priced ratios
 /// make, pinned so a later round cannot quietly undo it without answering here.
 ///
@@ -1797,9 +1831,13 @@ const EARLY_REMIX_SLOTS: [Feature; 5] = [
 /// held-out games, quoted where it lives. What is pinned is that the shipped
 /// rung, handed these two positions early, prefers the builder.
 ///
-/// **COUNTERFACTUAL — the five re-mixed EARLY slots reverted to V1
-/// (`vp 10, ctry 12, tech 6, excess 4, board 14`; [`early_remix_reverted`]).**
-/// Observed failing line, verbatim:
+/// **COUNTERFACTUAL — the five re-mixed EARLY slots restored to the PRE-V2 (V1)
+/// mix (`vp 10, ctry 12, tech 6, excess 4, board 14`;
+/// [`early_remix_reverted`], whose doc records why "restore V1" and "undo round
+/// 1" stopped being the same sentence at round 2).** Observed failing line,
+/// verbatim — RE-VERIFIED unchanged at the round-2 change-set commit, which is
+/// itself a small fact about the fixture: the five reverted weights are V1's
+/// either way, and every other term cancels between the two positions:
 ///
 /// ```text
 /// early ENGINE over early VP: the country/tech/spare-hand position must
@@ -1940,7 +1978,8 @@ fn early_engine_over_early_vp(rules: &Rules) -> Result<(), String> {
 
     admit(
         SCENARIOS[9].0,
-        "the five re-mixed EARLY slots reverted to V1 (vp 10, ctry 12, tech 6, excess 4, board 14)",
+        "the five re-mixed EARLY slots restored to the pre-V2 (V1) mix (vp 10, ctry 12, tech 6, \
+         excess 4, board 14)",
         "must outrank the VP-and-board leader in the EARLY vector",
         check(&WeightTable::V2_DRAFT),
         check(&early_remix_reverted()),
@@ -2389,11 +2428,12 @@ fn late_bonus_reprice_reverted() -> WeightTable {
 /// faith 7 is a real competitor that can take a place, which is then awarded to
 /// nobody (finding D1, guidingpath's 2026-07-21 rows). (b) A 5-POWER TOKEN is
 /// taken by acting in an area at Power exactly 5 while that area's face-up token
-/// is still there; taking it resolves its printed one-off effect (imported
-/// goods, a trade good, or yen) and leaves the area with none
-/// (`apply_move.rs`'s five-power arm, rulebook p.10's icon glossary). The held
-/// count is therefore a RECORD of how many areas this seat has dominated, and
-/// [`Feature::FivePowerTokens`] is that count.
+/// is still there; taking it resolves the token's printed one-off effect and
+/// leaves the area with none (`apply_move.rs`'s five-power arm, which refuses
+/// any other power and any empty area). The effects are goods, imported goods or
+/// yen and nothing else (`types/board.rs`'s `FivePowerEffect`, six variants), so
+/// a held token is not itself worth VP — the held COUNT is a record of how many
+/// areas this seat has dominated, and [`Feature::FivePowerTokens`] is that count.
 ///
 /// **SEAT.** 0, in a 2-player game, with the order deck run out so the DECK
 /// clock reads `p = 1,000,000` — the LATE vector exactly. (As in scenario 11, a
@@ -2434,8 +2474,9 @@ fn late_bonus_reprice_reverted() -> WeightTable {
 /// **WHY.** R0's shipped-regime evidence on both members, finding F7
 /// (`docs/plans/2026-08-09-phase3.5c-r0-report.md`). Under lookahead —
 /// the regime that ships — `church_bonus_now` LATE is **NO-SIGNAL at 0.5180
-/// [0.4915, 0.5437]** while carrying the table's fourth-largest late weight
-/// (+16): the church race is near-universal in this regime (ChurchTrackFull is
+/// [0.4915, 0.5437]** while carrying a +16 late weight, more than the term this
+/// scenario prices it against: the church race is near-universal in this regime
+/// (ChurchTrackFull is
 /// 5-for-5 across every corpus in existence), so the awarded bonus stops telling
 /// winners from losers, and paying +16 for it prices a near-constant.
 /// `five_power_tokens` LATE, by contrast, measures **0.8058 [0.7874, 0.8236]** —
@@ -2584,7 +2625,13 @@ fn late_bonus_repricing_tokens_over_church(rules: &Rules) -> Result<(), String> 
     // spaces with the same number of real pawns, so the pair differs in WHO holds
     // what and never in how much was spent.
     let occupied = |v: &PlayerView| -> Vec<usize> {
-        v.church_track.slots.iter().enumerate().filter(|(_, s)| s.is_some()).map(|(i, _)| i).collect()
+        v.church_track
+            .slots
+            .iter()
+            .enumerate()
+            .filter(|(_, slot)| slot.is_some())
+            .map(|(index, _)| index)
+            .collect()
     };
     if occupied(&church_lead) != occupied(&five_power)
         || church_lead.church_track.total_assistants() != 2
