@@ -37,7 +37,12 @@ const path = require("path");
 const { loadWorker, settle, reporter } = require("./mv3_stub");
 
 const target = process.argv[2] || path.join(__dirname, "..", "extension", "background.js");
-const extensionDir = path.dirname(target);
+
+// The manifest and popup checks below read the SHIPPED extension, never
+// `dirname(target)`: they are assertions about what is loaded into Chrome, and
+// a mutation run (which points `target` at an edited copy in /tmp to prove a
+// cell discriminates) must not have them blow up beside it.
+const extensionDir = path.join(__dirname, "..", "extension");
 
 const { check, done } = reporter(`connected indicator\n  target: ${target}\n`);
 

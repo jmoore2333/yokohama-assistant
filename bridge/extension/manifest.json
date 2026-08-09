@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Yokohama BGA bridge (capture)",
-  "version": "0.3.3",
+  "version": "0.4.0",
   "description": "Read-only capture of your own Board Game Arena Yokohama table, delivered to the local yokohama-assistant bridge relay. Never submits anything to BGA.",
 
   "minimum_chrome_version": "111",
@@ -16,7 +16,8 @@
   "background": { "service_worker": "background.js" },
 
   "action": {
-    "default_title": "Yokohama bridge - capture a gamedatas snapshot (and flush any backlog)"
+    "default_title": "Yokohama bridge - recording state, and the snapshot button",
+    "default_popup": "popup.html"
   },
 
   "content_scripts": [
