@@ -1,13 +1,13 @@
-//! **Scenario suite** (Phase 3.3 T9; spec §6, admitted under §0.2) — twelve
+//! **Scenario suite** (Phase 3.3 T9; spec §6, admitted under §0.2) — thirteen
 //! hand-built rules situations the evaluator rung has to get right, each one a
 //! single falsifiable property with a rules citation, a WHY line, and a
 //! demonstrated failing counterpart.
 //!
-//! # The two waves, and which table each one is written against
+//! # The waves, and which table each one is written against
 //!
 //! **Scenarios 1–9 are suite v1** (Phase 3.3 T9), authored against the frozen
 //! [`WeightTable::V1`] — the table the bot plays today. **Scenarios 10–12 are
-//! the Phase-3.5c round-1 growth** (protocol
+//! the Phase-3.5c round-1 growth and scenario 13 is round 2's** (protocol
 //! `docs/plans/2026-08-09-phase3.5c-evaluator-v2-protocol.md` §4.2 rung L3 and
 //! §6's growth list), and they are written against
 //! [`WeightTable::V2_DRAFT`] — the ITERATION CANDIDATE that becomes V2 at the
@@ -17,8 +17,9 @@
 //! unmoved draft, and turns green in the adoption commit; its counterfactual is
 //! then the round's own edit REVERTED rather than a zeroed term.
 //!
-//! Nothing about scenarios 1–9 changed when 10–12 landed. The never-delete rule
-//! below covers both waves alike.
+//! Nothing about scenarios 1–9 changed when 10–12 landed, and nothing about
+//! 10–12 changed when 13 landed. The never-delete rule below covers every wave
+//! alike.
 //!
 //! # THE NEVER-DELETE RULE (map §5-3.3, spec §6)
 //!
@@ -46,9 +47,9 @@
 //! | authoring proof | the doc's **COUNTERFACTUAL** block |
 //!
 //! §6 names three property SHAPES and all three are in use: `eval(A) > eval(B)`
-//! carries nine scenarios; *the explanation's top term names X* carries
-//! country-set completion's second clause and both round-1 re-pricing scenarios'
-//! leak clause (the explanation must attribute the margin to a NAMED set of
+//! carries ten scenarios; *the explanation's top term names X* carries
+//! country-set completion's second clause and the three re-pricing scenarios'
+//! leak clauses (the explanation must attribute the margin to a NAMED set of
 //! terms and to nothing else, which doubles as each fixture's leak check); and
 //! *chosen move ∈ set* carries the null-placement trap, in its aggregate form —
 //! see that scenario's doc for why a count over a segment is the right reading
@@ -63,6 +64,12 @@
 //! `score`/`explain` call-site switch is the freeze commit's business — so there
 //! is no weight for a scenario to move yet, and a scenario that waited for the
 //! switch would be the change landing unguarded.
+//!
+//! **Round 2 adds NO new shape.** Scenario 13 is the first shape with the
+//! second's leak clause, exactly like scenarios 10 and 11 — what is new about it
+//! is that its two positions are an EXCHANGE of the same table material rather
+//! than two different holdings, so its margin is a pure statement about the
+//! ORDER of two weights (see its doc's arithmetic).
 //!
 //! # §0.2's authoring anti-vacuity rule, made executable
 //!
@@ -109,8 +116,8 @@
 //!
 //! # Cost, and why most scenarios drive no game
 //!
-//! Eleven of the twelve are EVAL-ORDERING properties over constructed views (ten
-//! over [`score`], one over a feature function): the evaluator is a pure
+//! Twelve of the thirteen are EVAL-ORDERING properties over constructed views
+//! (eleven over [`score`], one over a feature function): the evaluator is a pure
 //! function of a [`PlayerView`], so specifying its input directly is both the
 //! cheapest and the most precise way to state "this position must outrank that
 //! one". Only the null-placement trap is genuinely BEHAVIOURAL — "the bot does
@@ -130,7 +137,7 @@
 //!
 //! # Determinism
 //!
-//! Every scenario is deterministic. The eleven eval-ordering ones consume no
+//! Every scenario is deterministic. The twelve eval-ordering ones consume no
 //! randomness at all — `score` is a pure function. The driven one fixes both
 //! agent seeds ([`DRIVEN_SEEDS`]), which fixes the per-decision sampler seed
 //! and the §3.2 tie-break draw, so the segment is byte-identical run to run;
@@ -145,10 +152,11 @@
 //! the registry pin). RE-MEASURED unchanged at the T9 review close, with the
 //! fixture invariant audits that wave added inside the figure. RE-MEASURED
 //! AGAIN at the 3.5c round-1 close with the three new scenarios inside it (13
-//! tests) — see below for the figure and for why it did not move.
+//! tests), and AGAIN at round 2 with the fourteenth (14 tests) — see below for
+//! the figures and for why they did not move.
 //!
 //! The split is the interesting figure and it is why the shapes were chosen
-//! this way: the eleven eval-ordering scenarios plus the registry pin run in
+//! this way: the twelve eval-ordering scenarios plus the registry pin run in
 //! **0.00 s** (below the timer's resolution — one shared [`rules`] build,
 //! per-scenario setup-and-`observe` fixtures, the per-fixture
 //! [`check_invariants`] audits, and order-tens of `score` calls), and the
@@ -165,6 +173,11 @@
 //! calls, and the driven scenario is still effectively the whole binary. A
 //! future round wanting a BEHAVIOURAL scenario (scenario 5's doc names the one
 //! it would most like) still has the whole budget for it.
+//!
+//! **Round 2's one addition does not move it either** — re-measured at the
+//! round-2 change-set commit, same machine, same method, 14 tests: the same
+//! **0.05–0.06 s** band. Scenario 13 is a constructed-view property too, and its
+//! fixture is one `base_view` plus two clones.
 
 use std::collections::BTreeMap;
 use std::sync::OnceLock;
@@ -191,16 +204,21 @@ use yokohama_core::{
 /// §0.2's admission — the shipped property and its targeted counterfactual.
 type ScenarioFn = fn(&Rules) -> Result<(), String>;
 
-/// **THE TWELVE SCENARIOS.** Indices 0–8 are suite v1 — spec §6's eight
+/// **THE THIRTEEN SCENARIOS.** Indices 0–8 are suite v1 — spec §6's eight
 /// categories plus the terminal-scoring scenario that section adds. Indices
 /// 9–11 are the Phase-3.5c round-1 growth, one per adopted change: the early
 /// re-mix, the warehouse flatten (protocol scenario 16), and the T3 post-claim
-/// filter (protocol scenario 17).
+/// filter (protocol scenario 17). Index 12 is round 2's, guarding that round's
+/// two dominant re-pricings together (the late church/five-power crossing).
 ///
-/// The length is pinned by the type. Adding a thirteenth scenario is a
-/// deliberate edit to this array and its `#[test]`; removing one of these twelve
-/// is the thing the never-delete rule forbids, and it will not compile.
-const SCENARIOS: [(&str, ScenarioFn); 12] = [
+/// **These are REGISTRY INDICES, and the protocol's scenario NUMBERS are
+/// tension LABELS** — the two do not line up and are not meant to (protocol §6's
+/// 2026-08-09 naming amendment: this array is dense, the labels are not).
+///
+/// The length is pinned by the type. Adding a fourteenth scenario is a
+/// deliberate edit to this array and its `#[test]`; removing one of these
+/// thirteen is the thing the never-delete rule forbids, and it will not compile.
+const SCENARIOS: [(&str, ScenarioFn); 13] = [
     ("country-set completion", country_set_completion),
     ("order economics: fulfill now vs hold", order_economics_fulfill_now_vs_hold),
     ("end-trigger timing: the church clock", end_trigger_timing_church_clock),
@@ -213,20 +231,21 @@ const SCENARIOS: [(&str, ScenarioFn); 12] = [
     ("early engine over early VP", early_engine_over_early_vp),
     ("warehouse decay flattened", warehouse_decay_flattened),
     ("post-claim achievement progress", post_claim_achievement_progress),
+    ("late bonus re-pricing: tokens over church", late_bonus_repricing_tokens_over_church),
 ];
 
-/// Spec §6's never-delete rule, plus the registry hygiene the twelve `#[test]`s
+/// Spec §6's never-delete rule, plus the registry hygiene the thirteen `#[test]`s
 /// lean on: each test names both its index and its scenario name, so a
 /// reordering that silently re-pointed a test at a different scenario fails
 /// here and there.
 #[test]
-fn the_registry_holds_twelve_uniquely_named_scenarios() {
+fn the_registry_holds_thirteen_uniquely_named_scenarios() {
     assert_eq!(
         SCENARIOS.len(),
-        12,
+        13,
         "spec §6's eight categories plus the terminal-scoring scenario (suite v1's nine), \
-         plus the Phase-3.5c round-1 growth's three; scenarios are never deleted (this \
-         file's header states the rule)",
+         plus the Phase-3.5c round-1 growth's three and round 2's one; scenarios are never \
+         deleted (this file's header states the rule)",
     );
     let mut names: Vec<&str> = SCENARIOS.iter().map(|(n, _)| *n).collect();
     names.sort_unstable();
@@ -2307,6 +2326,361 @@ fn post_claim_achievement_progress(rules: &Rules) -> Result<(), String> {
 #[test]
 fn scenario_12_post_claim_achievement_progress() {
     run(11, "post-claim achievement progress");
+}
+
+// ---------------------------------------------------------------------------
+// 13. Late bonus re-pricing  (3.5c round 2 — the church/five-power crossing)
+// ---------------------------------------------------------------------------
+
+/// The two LATE slots round 2's change-set CROSSED, in [`Feature::ALL`] order —
+/// the round's dominant pair made a list, and the exact set scenario 13's
+/// fixture is built to separate on.
+///
+/// `church_bonus_now` late `16 → 8` (the C-axis winner, c1) and
+/// `five_power_tokens` late `10 → 14` (c4) are one decision here rather than
+/// two, because the scenario's whole margin is a statement about their ORDER:
+/// under the round-1 table the church weight is the larger of the pair, under
+/// the round-2 candidate the five-power weight is.
+const LATE_REPRICED_SLOTS: [Feature; 2] = [Feature::ChurchBonusNow, Feature::FivePowerTokens];
+/// The round-2 LATE re-pricing, REVERTED inside the candidate table: the two
+/// slots of [`LATE_REPRICED_SLOTS`], put back to the prices the round-1 table
+/// `m22` carried, and nothing else touched.
+///
+/// §0.2's targeted mutation for scenario 13, in the shape an ADOPTION round
+/// needs — the round's own edit undone, exactly as [`early_remix_reverted`] and
+/// [`warehouse_decay_restored`] are for rounds 1's two re-pricings.
+///
+/// **Where the reverted numbers come from, and why that is exact.** `m22` is not
+/// a constant in this tree — it was the previous VALUE of
+/// [`WeightTable::V2_DRAFT`], which round 2's adoption commit overwrote — so the
+/// in-source authority for the two reverted late weights is
+/// [`WeightTable::V1`], and it is the RIGHT authority here because round 1 moved
+/// NEITHER of these slots: `m22` inherited `church_bonus_now` late 16 and
+/// `five_power_tokens` late 10 from V1 unchanged, so "restore V1's late values"
+/// and "restore m22's late values" name the same two numbers today.
+///
+/// **Read that as a dated statement, not a permanent one** (round 1's Task-F
+/// review NOTE-4, generalized): the day a LATER round moves either slot again,
+/// this helper reverts TWO rounds of edits rather than one, and its meaning
+/// becomes "the ORIGINAL (V1) pricing" rather than "round 2 undone". That is
+/// exactly what happened to [`early_remix_reverted`] at this round, and its doc
+/// was re-written to say so rather than its code changed. Re-document this one
+/// the same way when it happens.
+///
+/// Each slot's EARLY weight is taken from the DRAFT, not from `V1`, so the
+/// mutation is exactly the LATE re-pricing and not a whole-column revert. (For
+/// these two the early values coincide in both tables — round 2 moved only their
+/// late entries — so this is a statement about what the code MEANS rather than
+/// about what it currently computes.)
+fn late_bonus_reprice_reverted() -> WeightTable {
+    let mut w = WeightTable::V2_DRAFT;
+    for feature in LATE_REPRICED_SLOTS {
+        let (_, m22_late) = WeightTable::V1.get(feature);
+        let (draft_early, _) = WeightTable::V2_DRAFT.get(feature);
+        w.set(feature, draft_early, m22_late);
+    }
+    w
+}
+
+/// **RULES.** Two printed end-scoring rewards, priced against each other.
+/// (a) The CHURCH majority pays 6 VP to the most pawns on the Church management
+/// board and 3 to the second, a count tie broken by the RIGHTMOST occupied space
+/// (rulebook p.9; `game/scoring.rs`) — and at two players the setup dummy on
+/// faith 7 is a real competitor that can take a place, which is then awarded to
+/// nobody (finding D1, guidingpath's 2026-07-21 rows). (b) A 5-POWER TOKEN is
+/// taken by acting in an area at Power exactly 5 while that area's face-up token
+/// is still there; taking it resolves its printed one-off effect (imported
+/// goods, a trade good, or yen) and leaves the area with none
+/// (`apply_move.rs`'s five-power arm, rulebook p.10's icon glossary). The held
+/// count is therefore a RECORD of how many areas this seat has dominated, and
+/// [`Feature::FivePowerTokens`] is that count.
+///
+/// **SEAT.** 0, in a 2-player game, with the order deck run out so the DECK
+/// clock reads `p = 1,000,000` — the LATE vector exactly. (As in scenario 11, a
+/// view at full progress is not a finished game: the real trigger also needs an
+/// empty Port slot, a conjunct [`clock_ppm`] deliberately drops, so the position
+/// is scored positionally rather than through the terminal ladder.)
+///
+/// **PROPERTY.** `score(the FIVE-POWER position)` > `score(the CHURCH-MAJORITY
+/// position)` under [`WeightTable::V2_DRAFT`], in two clauses. (a) The two
+/// positions separate on EXACTLY the two slots round 2 re-priced
+/// ([`LATE_REPRICED_SLOTS`]) and on no other term — the fixture's own leak
+/// check. (b) The five-power position outranks.
+///
+/// **THE FIXTURE IS AN EXCHANGE, which is what makes the arithmetic clean.** The
+/// two positions hold the SAME table material with the two seats swapped. In the
+/// church-majority position the viewer's lone church pawn sits on faith 10 and
+/// the opponent's on faith 9 — one pawn each, so the majority is the D1 tie-break
+/// and the viewer's rightmost space takes it (6 to the viewer, 3 to the
+/// opponent, the dummy on faith 7 losing the same tie) — while the opponent
+/// banks four 5-Power tokens to the viewer's one. The five-power position is
+/// that position with BOTH holdings exchanged: the opponent on faith 10, the
+/// viewer on faith 9, and the four tokens in the viewer's pile. Both positions
+/// therefore put the same number of pawns on the same two spaces, so the
+/// viewer's assistant commitment and the church clock are identical by
+/// construction and there is no "who spent more" caveat to make.
+///
+/// **THE ARITHMETIC, stated because the margin is the point.** The evaluator is
+/// relative, so each term reads `w · (mine − theirs)`. Church: `+3` in one
+/// position and `−3` in the other. Five-power: `−3` and `+3`. Every other term is
+/// shared. So
+/// `score(five-power) − score(church) = 6 · (w_five_power − w_church)` at
+/// `p = 1,000,000` — the margin is SIX TIMES THE GAP BETWEEN THE TWO LATE
+/// WEIGHTS, and nothing else. Under the round-2 candidate that reads
+/// `6 · (14 − 8) = +36`; under the round-1 prices it reads
+/// `6 · (10 − 16) = −36`. The same two positions, ranked opposite ways by the
+/// round's edit, because the edit CROSSES the two weights.
+///
+/// **WHY.** R0's shipped-regime evidence on both members, finding F7
+/// (`docs/plans/2026-08-09-phase3.5c-r0-report.md`). Under lookahead —
+/// the regime that ships — `church_bonus_now` LATE is **NO-SIGNAL at 0.5180
+/// [0.4915, 0.5437]** while carrying the table's fourth-largest late weight
+/// (+16): the church race is near-universal in this regime (ChurchTrackFull is
+/// 5-for-5 across every corpus in existence), so the awarded bonus stops telling
+/// winners from losers, and paying +16 for it prices a near-constant.
+/// `five_power_tokens` LATE, by contrast, measures **0.8058 [0.7874, 0.8236]** —
+/// the second-strongest late member of the whole table after `victory_points`
+/// — on a weight of only 10. Round 2's pre-registered two-stage L2 then chose
+/// the magnitudes: c1 (`chur_l 16→8`) is the round's dominant single, positive on
+/// every column of both corpora, and c4 (`5pw_l 10→14`) is its second admission;
+/// the merged candidate `M*` leads all six (corpus × stage) held-out columns
+/// (`docs/plans/2026-08-09-phase3.5c-round2-evidence.md`). This scenario is
+/// protocol §4.2 rung L3 for that pair: the DECISION the crossing makes, pinned
+/// so a later round cannot quietly undo it without answering here.
+///
+/// **What the round's OTHER components ride, stated honestly.** Round 2's
+/// change-set also softens `hand_size` (`−3/−6 → −1/−2`, c3) and extends the
+/// early re-mix (`vp 2→1, ctry 18→20, tech 12→14`, d1). Neither gets a
+/// discriminating fixture of its own here, and neither is claimed to have one:
+/// c3 was admitted on a MARGINAL held-out read (+0.0001 on its home stage) that
+/// the round's evidence artifact records as riding the pre-registered merge rule
+/// rather than its own demonstration, so a scenario asserting a decision it
+/// turns would be inventing evidence; d1's DIRECTION is already guarded — it
+/// moves three of the five slots scenario 10 pins, and `M*` strengthens that
+/// scenario's margin rather than weakening it (+165 → +205). Both ride the
+/// round's L2 evidence and its L4 screens, which is what the ladder is for; this
+/// scenario carries the change-set's L3 obligation for the two components that
+/// DO have a demonstrable decision between them.
+///
+/// **What it does NOT claim.** Not that the five-power position wins the game —
+/// this is one constructed exchange, not a corpus, and the corpus evidence is an
+/// AUC over held-out games, quoted where it lives. What is pinned is that the
+/// shipped rung, handed this exchange late, takes the tokens.
+///
+/// **COUNTERFACTUAL — the two re-priced LATE slots restored to m22's
+/// `(church 16, five-power 10)` ([`late_bonus_reprice_reverted`]).** Observed
+/// failing line, verbatim:
+///
+/// ```text
+/// late bonus RE-PRICING: the five-power position must outrank the
+/// church-majority position in the LATE vector — five-power -18, church 18,
+/// margin -36 (late weights: church 16, five_power 10)
+/// ```
+///
+/// The MARGIN is the figure the arithmetic above predicts and it reads −36
+/// exactly. The two absolute scores are ±18 — symmetric around zero — because
+/// the exchange is the fixture's ONLY doctoring and a fresh 2P view is otherwise
+/// seat-symmetric, so every one of the other fourteen terms contributes exactly
+/// 0 to both. `16·3 − 10·3 = +18` and its mirror is the whole of each score.
+fn late_bonus_repricing_tokens_over_church(rules: &Rules) -> Result<(), String> {
+    /// Faith 7 — the D1 dummy's 2P setup space, and the pawn both positions beat
+    /// on the rightmost-space tie-break.
+    const DUMMY_FAITH: u8 = 7;
+    /// The winning and losing spaces of the one-pawn-each count tie.
+    const HIGH_FAITH: u8 = 10;
+    const LOW_FAITH: u8 = 9;
+    /// The 5-Power holdings the two positions exchange.
+    const TOKENS_HELD: u8 = 4;
+    const TOKENS_TRAILING: u8 = 1;
+
+    let mut base = base_view(2, 22, rules);
+    // The deck clock at full dates both positions (scenario 11's device): the
+    // church occupancy is IDENTICAL across the pair by construction, so it could
+    // not date them differently, but the deck is what puts them in the LATE
+    // vector at all.
+    base.order_deck_len = 0;
+
+    let dummy_index = ChurchTrack::faith_to_index(DUMMY_FAITH).expect("faith 7 is on the track");
+    if !base.church_track.slots[dummy_index].is_some_and(|s| s.player.is_dummy()) {
+        return Err(format!(
+            "fixture: the 2P setup must place the church dummy on faith {DUMMY_FAITH} (D1) — \
+             without it the count tie below is not the rule this scenario cites"
+        ));
+    }
+    if base.church_track.total_assistants() != 0 {
+        return Err("fixture: a fresh 2P church track must carry no REAL pawn".into());
+    }
+
+    // The five tokens the two seats hold between them come OFF the board, so the
+    // doctored view stays coherent about a token pool that is finite by
+    // construction. Nothing in the evaluator reads the board's token map — the
+    // feature is a field read on the player — so this buys coherence, not a
+    // measurement; it is done because a fixture that mints tokens is a fixture a
+    // reader has to take on trust.
+    let held_total = usize::from(TOKENS_HELD + TOKENS_TRAILING);
+    let taken: Vec<_> = base
+        .board_layout
+        .five_power_tokens
+        .iter()
+        .filter(|(_, token)| token.is_some())
+        .map(|(area, _)| *area)
+        .take(held_total)
+        .collect();
+    if taken.len() != held_total {
+        return Err(format!(
+            "fixture: the 2P board must carry at least {held_total} face-up 5-Power tokens for \
+             the two seats to have taken them, it carries {}",
+            taken.len(),
+        ));
+    }
+    for area in &taken {
+        base.board_layout.five_power_tokens.insert(*area, None);
+    }
+
+    // The exchange: `church_first` takes the rightmost church space (and with it
+    // the 6), `token_holder` banks the four 5-Power tokens. The two positions are
+    // `(0, 1)` and `(1, 0)` — the same material, held the other way round.
+    let position = |church_first: u8, token_holder: u8| -> PlayerView {
+        let mut v = base.clone();
+        for (faith, seat, arrival) in
+            [(HIGH_FAITH, church_first, 1u8), (LOW_FAITH, 1 - church_first, 2u8)]
+        {
+            v.church_track.slots[ChurchTrack::faith_to_index(faith).expect("faith 4..=11")] =
+                Some(ChurchSlot { player: PlayerId(seat), arrival_order: arrival });
+        }
+        for player in v.players.iter_mut() {
+            if player.id == PlayerId(token_holder) {
+                player.five_power_tokens = TOKENS_HELD;
+            } else if player.id == PlayerId(1 - token_holder) {
+                player.five_power_tokens = TOKENS_TRAILING;
+            }
+        }
+        v
+    };
+    let church_lead = position(0, 1);
+    let five_power = position(1, 0);
+
+    // The stage is the scenario's premise, so it is asserted: at p = FULL the
+    // weights ARE the late vector, and the DECK clock is the one that put them
+    // there.
+    for (label, view) in [("church-majority", &church_lead), ("five-power", &five_power)] {
+        let p = progress_ppm(view, rules);
+        let clocks = clock_ppm(view, rules);
+        if p != PROGRESS_FULL_PPM || clocks[0] != PROGRESS_FULL_PPM {
+            return Err(format!(
+                "fixture: the {label} position must sit at full progress on the DECK clock so \
+                 the LATE vector governs exactly, got p={p} with clocks {clocks:?}"
+            ));
+        }
+        if view_is_terminal(view) {
+            return Err(format!(
+                "fixture: the {label} position must still be scored POSITIONALLY — the terminal \
+                 ladder short-circuits the weight vector this scenario is about"
+            ));
+        }
+    }
+
+    // The exchange, made executable: both positions must occupy the SAME church
+    // spaces with the same number of real pawns, so the pair differs in WHO holds
+    // what and never in how much was spent.
+    let occupied = |v: &PlayerView| -> Vec<usize> {
+        v.church_track.slots.iter().enumerate().filter(|(_, s)| s.is_some()).map(|(i, _)| i).collect()
+    };
+    if occupied(&church_lead) != occupied(&five_power)
+        || church_lead.church_track.total_assistants() != 2
+    {
+        return Err(format!(
+            "fixture: the two positions must occupy the same church spaces with two REAL pawns \
+             (the exchange swaps owners, never occupancy), got {:?} at {} real and {:?} at {} \
+             real",
+            occupied(&church_lead),
+            church_lead.church_track.total_assistants(),
+            occupied(&five_power),
+            five_power.church_track.total_assistants(),
+        ));
+    }
+
+    // Both seats' derived values, read off the structure rather than assumed
+    // from the doctoring — this is where D1's tie-break and the token exchange
+    // become facts instead of intentions.
+    let value_of = |v: &PlayerView, seat: u8, feature: Feature| -> i64 {
+        let row = v
+            .players
+            .iter()
+            .find(|p| p.id == PlayerId(seat))
+            .expect("a 2P view contains both seats");
+        ScoreStructure::derive(v, rules).value_of(row, feature)
+    };
+    let built = [
+        ("church-majority", &church_lead, Feature::ChurchBonusNow, 6, 3),
+        ("five-power", &five_power, Feature::ChurchBonusNow, 3, 6),
+        (
+            "church-majority",
+            &church_lead,
+            Feature::FivePowerTokens,
+            i64::from(TOKENS_TRAILING),
+            i64::from(TOKENS_HELD),
+        ),
+        (
+            "five-power",
+            &five_power,
+            Feature::FivePowerTokens,
+            i64::from(TOKENS_HELD),
+            i64::from(TOKENS_TRAILING),
+        ),
+    ];
+    for (label, view, feature, mine, theirs) in built {
+        let (got_mine, got_theirs) = (value_of(view, 0, feature), value_of(view, 1, feature));
+        if (got_mine, got_theirs) != (mine, theirs) {
+            return Err(format!(
+                "fixture: on the {label} position {} must read {mine} for the viewer and \
+                 {theirs} for the opponent, got {got_mine} and {got_theirs}",
+                feature.name(),
+            ));
+        }
+    }
+
+    let check = |w: &WeightTable| -> Result<(), String> {
+        let separating = separating_terms(&five_power, &church_lead, rules, w);
+        let expected: Vec<&str> = LATE_REPRICED_SLOTS.iter().map(|f| f.name()).collect();
+        require(
+            separating == expected,
+            format!(
+                "the two positions must separate on EXACTLY the two re-priced late slots \
+                 {expected:?}, they separated on {separating:?}"
+            ),
+        )?;
+        let a = score(&five_power, rules, w);
+        let b = score(&church_lead, rules, w);
+        let at = |f: Feature| {
+            let (e, l) = w.get(f);
+            interpolate(e, l, PROGRESS_FULL_PPM)
+        };
+        require(
+            a > b,
+            format!(
+                "late bonus RE-PRICING: the five-power position must outrank the church-majority \
+                 position in the LATE vector — five-power {a}, church {b}, margin {} (late \
+                 weights: church {}, five_power {})",
+                a - b,
+                at(Feature::ChurchBonusNow),
+                at(Feature::FivePowerTokens),
+            ),
+        )
+    };
+
+    admit(
+        SCENARIOS[12].0,
+        "the two re-priced LATE slots restored to m22's (church 16, five-power 10)",
+        "must outrank the church-majority position in the LATE vector",
+        check(&WeightTable::V2_DRAFT),
+        check(&late_bonus_reprice_reverted()),
+    )
+}
+
+#[test]
+fn scenario_13_late_bonus_repricing() {
+    run(12, "late bonus re-pricing: tokens over church");
 }
 
 // ---------------------------------------------------------------------------
