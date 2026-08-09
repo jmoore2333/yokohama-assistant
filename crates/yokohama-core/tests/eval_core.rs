@@ -1368,7 +1368,7 @@ fn an_area_holding_both_building_types_counts_once_in_view_side_progress() {
 // ---------------------------------------------------------------------------
 
 /// The viewer's row of a view, by seat.
-fn seat_of<'v>(view: &'v PlayerView, seat: PlayerId) -> &'v VisiblePlayer {
+fn seat_of(view: &PlayerView, seat: PlayerId) -> &VisiblePlayer {
     view.players.iter().find(|p| p.id == seat).expect("seat is in the view")
 }
 
@@ -1420,7 +1420,7 @@ fn postclaim_fixture(rules: &Rules, card: yokohama_core::AchievementType) -> Gam
         .map(|(a, _)| *a)
         .collect();
     assert!(
-        production.len() >= 5 && commercial.len() >= 1,
+        production.len() >= 5 && !commercial.is_empty(),
         "the 4P board must offer 5 production and 1 commercial area for the AND-shaped leg",
     );
     // Seat 0: five production areas and ONE commercial — the AND-shaped

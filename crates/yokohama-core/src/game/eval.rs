@@ -527,10 +527,44 @@ impl WeightTable {
     /// **THE PHASE-3.5c ITERATION CANDIDATE** — the table the evaluator-v2
     /// protocol (`docs/plans/2026-08-09-phase3.5c-evaluator-v2-protocol.md`)
     /// re-prices round by round, and the one that BECOMES `V2` at the freeze
-    /// commit.
+    /// commit (§7's mechanics: [`EVAL_IMPL_VERSION`] 2→3, every controller const
+    /// that embeds this evaluator bumped with it, and [`WeightTable::V1`]
+    /// retained verbatim beside it exactly as
+    /// [`WeightTable::PRE_FREEZE_2026_07_27`] is retained today).
     ///
-    /// RED: the numbers land in the GREEN commit; the ordering pin fails here.
-    pub const V2_DRAFT: WeightTable = WeightTable::ZERO;
+    /// **Shipped by NO constructor, and that is the whole of its safety.**
+    /// `GreedyAgent::new`, the search rung and every arena contestant keep
+    /// taking `V1`; the contestant name grammar carries no weight knob at all
+    /// (spec §0.5 / L12 — a weight change is a version bump, not a cell
+    /// parameter), which is exactly why the candidate-vs-incumbent comparison
+    /// lives in the in-crate screen harness instead of in that grammar. The only
+    /// readers are the ROUND INSTRUMENTS: `examples/eval_screen_round` (the §4.2
+    /// L4 screen), `examples/eval_probe`'s `--score-table v2-draft` spelling,
+    /// and the scenarios that ride a v2 change once they land.
+    ///
+    /// **INITIALIZED to V1's thirty-two numbers — a meaningful state, not a
+    /// placeholder.** While the two tables hold the same numbers their identity
+    /// digests COLLIDE, so a screen against this table is a NULL cell (the
+    /// V1-vs-V1 shape the screen harness's own null test describes), and a
+    /// round's ADOPTION commit is the thing that moves it. Nothing pins the
+    /// equality: such a pin would have to be deleted by the first adoption, and
+    /// a test whose documented fate is deletion teaches its readers to delete
+    /// tests. The identity digests printed in every screen report are what say
+    /// whether the draft has moved yet.
+    ///
+    /// **What IS pinned is the constraint the equality does not exempt it
+    /// from** — L14/T1's `core > on_board > excess` in BOTH vectors, the one-ply
+    /// non-degeneracy condition protocol §4.2 forbids relaxing at any rung of
+    /// the evidence ladder. The screen harness's `hand_split_ordering_holds` is
+    /// asserted against THIS table per edit
+    /// (`the_iteration_candidate_holds_the_hand_split_ordering`), so a round
+    /// that re-prices the assistant triple past the ordering fails at test time
+    /// rather than four hundred games into a screen.
+    pub const V2_DRAFT: WeightTable = WeightTable {
+        //     [vp, ctry, tech, chur, cust, hCORE, hEXC, ware, brd, shop, trad, 5pw, imp, achv, merc, hnd#]
+        early: [10,   12,    6,   -4,    3,    30,    4,  -10,  14,   12,   15,   8,   5,    2,    3,   -3],
+        late:  [40,   30,   20,   16,   20,    20,    2,   -4,  10,   20,   25,  10,   8,    4,    4,   -6],
+    };
 
     /// The all-zero table: a CONSTANT evaluator. Not a curiosity — spec §3.2's
     /// degeneracy pin and §0.2's targeted-mutation authoring rule both need one,
@@ -1190,10 +1224,55 @@ fn achievement_progress_sum(view: &PlayerView, player: &VisiblePlayer) -> i64 {
     sum
 }
 
-/// The T3 POST-CLAIM candidate — RED: unimplemented until the GREEN commit.
+/// **The T3 POST-CLAIM candidate** — `achievement_progress_sum`'s value with
+/// each card's leg dropped for the seat that has ALREADY CLAIMED it.
+///
+/// The evaluator-v2 protocol's ONE sanctioned feature change
+/// (`docs/plans/2026-08-09-phase3.5c-evaluator-v2-protocol.md` §4.1(ii), §5's
+/// T3 row). The shipped sum keeps paying a seat for progress toward a card it
+/// has already taken, whose VP has already landed in
+/// [`Feature::VictoryPoints`]; the cap only stops that leg GROWING, it does not
+/// stop it being counted.
+///
+/// **The scope is EXACTLY the viewer's own claim, and the second clause is a
+/// decision rather than an oversight:**
+///
+/// * a card whose `claimed_by` contains THE SEAT BEING VALUED contributes 0;
+/// * a card claimed by an OPPONENT contributes exactly what the shipped
+///   computation contributes. The rules let a second seat claim the same card
+///   for the printed subsequent value — the engine's own claim gate refuses only
+///   a repeat claim by the SAME seat — so an opponent's claim leaves this seat's
+///   leg a live claim, and zeroing it would price a reachable reward at nothing.
+///   Pinned in `tests/eval_core.rs` against that gate rather than against a
+///   reading of the rulebook.
+///
+/// Everything else is the shipped arithmetic verbatim, [`achievement_progress`]
+/// included, so the AND-shaped cards' per-leg caps are untouched: a claimed
+/// AND-card leaves at its CAPPED value.
+///
+/// **ADDITIVE ONLY at this commit.** Neither [`score`] nor [`explain`] calls it,
+/// [`Feature::AchievementProgressSum`] still reads the shipped sum, and
+/// [`EVAL_IMPL_VERSION`] does not move. The freeze commit is where the call path
+/// switches and absorbs the blast radius — goldens, drift pins, the version bump
+/// and every controller const that embeds this evaluator (protocol §7) — so the
+/// switch is one auditable event instead of a behavior change smuggled inside a
+/// re-pricing round.
+///
+/// **View-measurable**, which is what makes it admissible at all: `claimed_by`
+/// is public card state any seated player reads off the table, so nothing here
+/// widens what an evaluator can see (§2.1).
 pub fn achievement_progress_postclaim_sum(view: &PlayerView, player: &VisiblePlayer) -> i64 {
-    let _ = (view, player);
-    unimplemented!("the T3 post-claim sum lands in the GREEN commit")
+    let mut sum = 0i64;
+    for card in &view.achievements {
+        // The ONE difference from the shipped computation. Per-seat: an
+        // opponent's claim is not this seat's business, see the doc.
+        if card.claimed_by.contains(&player.id) {
+            continue;
+        }
+        let (current, needed) = achievement_progress(view, player, card.achievement_type);
+        sum += i64::from(current.min(needed));
+    }
+    sum
 }
 
 /// One player's `(current, needed)` progress toward one achievement, mirroring
