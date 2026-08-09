@@ -5,11 +5,11 @@
 //! figure below is a statement about the SAME games:
 //!
 //!   * **(a) generate** a self-play corpus under a NAMED contestant — Greedy-v1
-//!     through the honest arena driver, or a [`RolloutPolicy`] rung through the
-//!     raw-state driver (legitimate here: the bot is not the subject, which is
-//!     research-notes R1's own harness disposition) — at a given player count,
-//!     game count and master, snapshotting **every seat's view at every turn
-//!     start**;
+//!     or Lookahead-v1 through the honest arena driver, or a [`RolloutPolicy`]
+//!     rung through the raw-state driver (legitimate here: the bot is not the
+//!     subject, which is research-notes R1's own harness disposition) — at a
+//!     given player count, game count and master, snapshotting **every seat's
+//!     view at every turn start**;
 //!   * **(b) per-feature AUC** against the eventual winner, on R1's design:
 //!     game-aggregated cells (game × seat × stage tercile), a **game-clustered**
 //!     bootstrap for the interval, and EARLY / **MID** / LATE reported for every
@@ -20,7 +20,11 @@
 //!     says how many steps the "continuous" proxy actually has);
 //!   * **(d) behavioural counters** — the §2.5 nonzero-recovery pick share, the
 //!     §3.3 placement cap-bind count, the game-length distribution and the
-//!     end-trigger mix.
+//!     end-trigger mix, plus (on a searching contestant) the spec §0.3(b)
+//!     per-seat explained-equals-applied identity and the two search guards
+//!     `ply_cap_hits` / `free_cap_hits`, which are RECORDED and never asserted:
+//!     this is an instrument, and the gate that asserts them is
+//!     `tests/evaluator_gate.rs`.
 //!
 //! # Two things this instrument is careful about
 //!
@@ -61,6 +65,8 @@
 //!     run 2 2000 --contestant greedy-v1 --master 0xE7A1202607270001
 //! cargo run --release -p yokohama-core --example eval_probe -- \
 //!     run 2 200 --contestant family-weighted --blocks proxy
+//! cargo run --release -p yokohama-core --example eval_probe -- \
+//!     run 2 400 --contestant lookahead-v1 --master 0xE7A1202608090001
 //! cargo run --release -p yokohama-core --example eval_probe -- table
 //! ```
 //!
@@ -76,14 +82,20 @@ use rand_chacha::ChaCha8Rng;
 use yokohama_core::game::eval::{
     progress_ppm, score, Feature, ScoreStructure, WeightTable, PROGRESS_FULL_PPM,
 };
+// `DEFAULT_RETREAT_SAMPLES` is deliberately NOT imported here: since the parse
+// delegates to `Contestant::from_str_name`, every default this file used to type
+// comes off that grammar's own consts instead. The tests import it to pin them.
 use yokohama_core::game::greedy::{
-    weight_table_identity, ExplanationTally, GreedyAgent, DEFAULT_RETREAT_SAMPLES,
-    GREEDY_CONTROLLER,
+    weight_table_identity, ExplanationTally, GreedyAgent, GREEDY_CONTROLLER,
+};
+use yokohama_core::game::lookahead::{
+    LookaheadAgent, SearchScheme, SearchTally, LOOKAHEAD_CONTROLLER,
 };
 use yokohama_core::{
     agent_stream_seed, finalize_setup, new_game, observe, replay_from, run_arena_game,
-    run_raw_game, ArenaGameStats, GameState, PlayerId, PlayerView, QuantileSketch, RolloutPolicy,
-    Rules, SeedSchedule, SeedScheduleKind, Slot, TriggerTally, WorldSeed, SEMANTICS_REV,
+    run_raw_game, ArenaAgent, ArenaGameStats, Contestant, GameState, PlayerId, PlayerView,
+    QuantileSketch, RolloutPolicy, Rules, SeedSchedule, SeedScheduleKind, Slot, TriggerTally,
+    WorldSeed, SEMANTICS_REV,
 };
 
 const USAGE: &str = "\
@@ -101,12 +113,22 @@ usage: eval_probe <subcommand> [options]
   table [--weights v1|pre-freeze]
       Print a weight table with its provenance identity. No games are played.
 
-contestants:
-  greedy-v1            the honest arena driver (observe -> sampler -> handle)
-  uniform | retreat-averse | family-weighted
+contestants (the grammar is Contestant::from_str_name's — unknown is an error at
+every level, and an unknown knob is never silently ignored):
+  greedy-v1[:m=<n>]    the honest arena driver (observe -> sampler -> handle)
+  lookahead-v1[:b=<n>,k=<n>,m=<n>,cap=<n>]
+                       the S1 turn-boundary search rung, through the SAME honest
+                       driver (never the raw-state one). b = beam, k = worlds,
+                       m = retreat samples, cap = the shared scored-successor
+                       budget; OMITTING cap is the shipped UNCAPPED rung, and
+                       cap=0 is refused rather than read as uncapped
+  uniform | retreat-averse | family-weighted[:p=<ppm>,k=<n>]
                        a RolloutPolicy rung through the RAW-STATE driver, which
                        is privileged play by construction and labelled as such
                        (legitimate for a corpus: the bot is not the subject)
+  mcts-v1 and atomic-diag-v1 PARSE but are refused HERE: this instrument reports
+  the greedy/search counter sets and has none for them. Run those through
+  `cargo run --release -p yokohama-core --example arena`.
 ";
 
 /// This task's committed diagnostic master. The NAME of the constructor is the
@@ -201,35 +223,90 @@ fn weights_from(flags: &BTreeMap<String, String>) -> Result<(WeightTable, &'stat
 
 /// Who plays the corpus.
 ///
-/// Named `Probe…` rather than `Contestant` because `game::arena::Contestant` is
-/// a public type with a DIFFERENT shape (four variants, knobs on three of them),
-/// and its greedy arm is not this one: two incompatible answers to
+/// Named `Probe…` rather than `Contestant` because [`Contestant`] is a public
+/// type with a DIFFERENT shape (five variants), and two incompatible answers to
 /// `grep 'enum Contestant'` in one crate is a trap, not an abbreviation
-/// (six-lens review).
+/// (six-lens review). Since Phase 3.5c W1 the NAME GRAMMAR is nonetheless
+/// single-sourced — [`ProbeContestant::parse`] runs [`Contestant::from_str_name`]
+/// and then narrows — so a spec typed here means what it means at
+/// `examples/arena`, knobs and refusals included.
+///
+/// **Why the probe still constructs its own agents rather than calling
+/// [`Contestant::build`]:** `build` hard-codes [`WeightTable::V1`], and this
+/// instrument's entire `--weights pre-freeze` arm is the ability to run a corpus
+/// under a DIFFERENT table. Delegating construction would make that flag a
+/// silent no-op — the exact failure mode `split_args` refuses unknown flags to
+/// avoid, one level up.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum ProbeContestant {
     /// Greedy-v1 at every seat, through the HONEST driver.
-    Greedy,
+    Greedy { m: u8 },
+    /// Lookahead-v1 — the S1 turn-boundary rung — at every seat, through the
+    /// SAME honest driver. `cap` absent is the shipped UNCAPPED rung, which is
+    /// what every recorded 3.3 figure was measured on.
+    Lookahead { b: u16, k: u8, m: u8, cap: Option<u32> },
     /// One policy rung at every seat, through the RAW-STATE driver.
     Policy(RolloutPolicy),
 }
 
 impl ProbeContestant {
+    /// Parse a contestant spec through the CORE grammar, then narrow it to the
+    /// arms this instrument meters.
+    ///
+    /// The two refusals are not a to-do list. An eval_probe corpus is only worth
+    /// the counters block that describes it, and neither refused arm has one
+    /// here: MCTS-v1's meters are a different SET (`McTally`, with no
+    /// free-extension counter at all and a `(Some, None)` cap-counter shape),
+    /// and the S2 atomic arm is a labelled diagnostic no weight-freeze figure
+    /// reads. A silently-accepted third arm would print the greedy block over a
+    /// contestant that never bound a placement cap — a figure with the wrong
+    /// provenance, which is worse than a refusal.
     fn parse(spec: &str) -> Result<Self, String> {
-        if spec == GREEDY_CONTROLLER {
-            return Ok(ProbeContestant::Greedy);
+        // The narrowing is an exhaustive match, no `_` arm: a sixth contestant
+        // upstream must be dispositioned here rather than silently refused by a
+        // catch-all that names nothing.
+        match Contestant::from_str_name(spec)? {
+            Contestant::GreedyV1 { m } => Ok(ProbeContestant::Greedy { m }),
+            Contestant::LookaheadV1 { b, k, m, cap } => {
+                Ok(ProbeContestant::Lookahead { b, k, m, cap })
+            }
+            Contestant::Policy(policy) => Ok(ProbeContestant::Policy(policy)),
+            Contestant::AtomicDiag { .. } => Err(Self::refusal(
+                spec,
+                "the S2 atomic-diag arm is a labelled DIAGNOSTIC (3.3 spec §4.1) and no \
+                 weight-freeze figure reads its corpus",
+            )),
+            Contestant::MctsV1 { .. } => Err(Self::refusal(
+                spec,
+                "the tree's counters are a different set from the greedy/search ones this \
+                 instrument reports (McTally, and no free-extension meter at all), so its \
+                 corpus would arrive with a counters block describing some other contestant",
+            )),
         }
-        RolloutPolicy::from_str_name(spec).map(ProbeContestant::Policy).ok_or_else(|| {
-            format!("unknown contestant {spec:?} (greedy-v1 | uniform | retreat-averse | family-weighted)")
-        })
+    }
+
+    fn refusal(spec: &str, why: &str) -> String {
+        format!(
+            "eval_probe does not drive {spec:?}: {why}. Run it through `examples/arena` instead. \
+             (this probe: {GREEDY_CONTROLLER} | {LOOKAHEAD_CONTROLLER} | uniform | \
+             retreat-averse | family-weighted)"
+        )
     }
 
     fn echo(self, weights: &WeightTable, label: &str) -> String {
+        let identity = weight_table_identity(weights) as u64;
         match self {
-            ProbeContestant::Greedy => format!(
-                "{GREEDY_CONTROLLER}{{m={DEFAULT_RETREAT_SAMPLES},weights={label}:{:#018x}}} \
+            ProbeContestant::Greedy { m } => format!(
+                "{GREEDY_CONTROLLER}{{m={m},weights={label}:{identity:#018x}}} \
                  [honest driver: observe -> sampler K=1 -> handle]",
-                weight_table_identity(weights) as u64,
+            ),
+            ProbeContestant::Lookahead { b, k, m, cap } => format!(
+                "{LOOKAHEAD_CONTROLLER}{{b={b},k={k},m={m},{}weights={label}:{identity:#018x}}} \
+                 [honest driver: observe -> sampler K=1 -> handle]",
+                // An absent cap emits NO token — `Contestant::provenance`'s rule,
+                // held here for its reason: an uncapped echo has to say the
+                // SHIPPED rung, not a rung wearing a budget it never had.
+                cap.map_or(String::new(), |c| format!("cap={c},")),
             ),
             ProbeContestant::Policy(p) => {
                 let (name, version, params) = p.descriptor();
@@ -242,6 +319,86 @@ impl ProbeContestant {
             }
         }
     }
+}
+
+/// One seat's counter read-out from a contestant that EXPLAINS.
+///
+/// The two underlying tallies are deliberately different types upstream (a beam
+/// has continuation lengths and budget meters; a one-ply argmax has neither), so
+/// this is the narrow thing the probe needs from both. It mirrors
+/// [`yokohama_core::ExplainHandle`]'s `Option` rule verbatim — **`None` always
+/// means "this contestant has no such quantity", never "zero"** — and lives here
+/// beside it rather than reusing it because `ExplainHandle` does not expose
+/// `placement_cap_binds`, which is the §3.3 counter this probe's greedy block has
+/// printed since Phase 3.3 and which both tallies carry.
+#[derive(Clone)]
+enum ProbeTally {
+    Greedy(ExplanationTally),
+    Search(SearchTally),
+}
+
+impl ProbeTally {
+    /// Decisions this seat explained. On a completed game this equals the moves
+    /// the seat applied — no evaluator agent can return a move without
+    /// explaining it — which is the identity [`identity_blocks`] checks.
+    fn explained(&self) -> u64 {
+        match self {
+            Self::Greedy(t) => t.explained(),
+            Self::Search(t) => t.explained(),
+        }
+    }
+
+    fn candidates_scored(&self) -> u64 {
+        match self {
+            Self::Greedy(t) => t.candidates_scored(),
+            Self::Search(t) => t.candidates_scored(),
+        }
+    }
+
+    /// Decisions whose placement family exceeded the candidate cap. Summed over
+    /// DECISIONS for the one-ply arm and over search NODES for S1, which is why
+    /// the two arms print the counter with different words.
+    fn placement_cap_binds(&self) -> u64 {
+        match self {
+            Self::Greedy(t) => t.placement_cap_binds(),
+            Self::Search(t) => t.placement_cap_binds(),
+        }
+    }
+
+    /// Continuations `MAX_TURN_PLIES` stopped — `None` for the one-ply argmax,
+    /// which has no continuation to truncate, on `ExplainHandle::ply_cap_hits`'s
+    /// own grounds: a `0` there would read as "searched and never hit the guard".
+    fn ply_cap_hits(&self) -> Option<u64> {
+        match self {
+            Self::Greedy(_) => None,
+            Self::Search(t) => Some(t.ply_cap_hits()),
+        }
+    }
+
+    /// Free extensions `MAX_FREE_EXTENSION` stopped, same `None` rule. `Some(0)`
+    /// on an S1 corpus is STRUCTURAL rather than evidence — the turn-boundary
+    /// scheme never enters the quiescence arm at all.
+    fn free_cap_hits(&self) -> Option<u64> {
+        match self {
+            Self::Greedy(_) => None,
+            Self::Search(t) => Some(t.free_cap_hits()),
+        }
+    }
+}
+
+/// The spec §0.3(b) identity, per SEAT: an explaining contestant explained
+/// exactly the moves it applied.
+///
+/// Returns `(blocks, mismatches)` over `max(len)` indices. A LENGTH disagreement
+/// is a mismatch at every unpaired index rather than a truncation, because a zip
+/// over the shorter list would report a clean identity over a table it only half
+/// checked — and "no tallies came back at all" is exactly what a contestant that
+/// stopped handing them out looks like.
+fn identity_blocks(explained: &[u64], moves_by_seat: &[u64]) -> (u64, u64) {
+    let blocks = explained.len().max(moves_by_seat.len());
+    let mismatches =
+        (0..blocks).filter(|i| explained.get(*i) != moves_by_seat.get(*i)).count();
+    (blocks as u64, mismatches as u64)
 }
 
 fn profile() -> &'static str {
@@ -621,10 +778,21 @@ struct Corpus {
     nonzero_recovery: u64,
     area_actions: u64,
     builds: u64,
-    /// Greedy only; zero under a policy rung, which has no cap to bind.
+    /// Explaining contestants only; zero under a policy rung, which has no cap
+    /// to bind.
     cap_binds: u64,
     decisions: u64,
     candidates: u64,
+    /// The two SEARCH guards, `None` on a contestant that has no such quantity
+    /// (see [`ProbeTally::ply_cap_hits`]). RECORDED here and asserted nowhere:
+    /// the gate that asserts them is `tests/evaluator_gate.rs`.
+    ply_cap_hits: Option<u64>,
+    free_cap_hits: Option<u64>,
+    /// The §0.3(b) identity, folded over (game × seat) blocks — see
+    /// [`identity_blocks`]. Zero blocks under a policy rung, which explains
+    /// nothing and hands back no tallies at all.
+    identity_blocks: u64,
+    identity_mismatches: u64,
     wall: f64,
 }
 
@@ -660,6 +828,10 @@ fn generate(
         cap_binds: 0,
         decisions: 0,
         candidates: 0,
+        ply_cap_hits: None,
+        free_cap_hits: None,
+        identity_blocks: 0,
+        identity_mismatches: 0,
         wall: 0.0,
     };
 
@@ -682,6 +854,23 @@ fn generate(
             corpus.cap_binds += tally.placement_cap_binds();
             corpus.decisions += tally.explained();
             corpus.candidates += tally.candidates_scored();
+            if let Some(hits) = tally.ply_cap_hits() {
+                *corpus.ply_cap_hits.get_or_insert(0) += hits;
+            }
+            if let Some(hits) = tally.free_cap_hits() {
+                *corpus.free_cap_hits.get_or_insert(0) += hits;
+            }
+        }
+        // A rung explains nothing and hands back no tallies at all, so there is
+        // no identity to check — folding one anyway would report every seat of
+        // every rung game as a mismatch. Gated on the CONTESTANT rather than on
+        // `tallies.is_empty()`, so an explaining arm that stopped filling the
+        // sink still reads as the violation it is.
+        if !matches!(contestant, ProbeContestant::Policy(_)) {
+            let explained: Vec<u64> = tallies.iter().map(ProbeTally::explained).collect();
+            let (blocks, mismatches) = identity_blocks(&explained, &stats.moves_by_seat);
+            corpus.identity_blocks += blocks;
+            corpus.identity_mismatches += mismatches;
         }
 
         snapshot_game(&stats, players, weights, rules, &rows, game, &mut corpus)?;
@@ -692,7 +881,12 @@ fn generate(
 }
 
 /// Play ONE game with the named contestant, returning its stats plus the
-/// per-seat Greedy tallies (empty for a policy rung).
+/// per-seat explanation tallies IN SEAT ORDER (empty for a policy rung, which
+/// explains nothing).
+///
+/// Seat order is what makes the §0.3(b) identity a per-seat check rather than an
+/// aggregate one: [`run_arena_game`] builds its agents `(0..players)`, so the
+/// `i`-th tally belongs to the `i`-th entry of `ArenaGameStats::moves_by_seat`.
 fn play_one(
     seed: WorldSeed,
     players: u8,
@@ -701,30 +895,36 @@ fn play_one(
     rules: &Rules,
     master: u64,
     invariants: bool,
-) -> Result<(ArenaGameStats, Vec<ExplanationTally>), String> {
+) -> Result<(ArenaGameStats, Vec<ProbeTally>), String> {
+    let table = *weights;
     match contestant {
-        ProbeContestant::Greedy => {
-            // Cloned out BEFORE the agents move into the driver — the
-            // `HonestPathTally` precedent, and the only way to read the
-            // counters afterwards.
-            let handles: std::sync::Arc<std::sync::Mutex<Vec<ExplanationTally>>> =
-                std::sync::Arc::default();
-            let sink = std::sync::Arc::clone(&handles);
-            let table = *weights;
-            let mut make = |seat: PlayerId, _n: u8| -> Box<dyn yokohama_core::ArenaAgent> {
-                let agent = GreedyAgent::with_weights(
+        ProbeContestant::Greedy { m } => {
+            drive_honest(seed, players, rules, invariants, |agent_seed| {
+                let agent = GreedyAgent::with_weights(rules, table, m, agent_seed);
+                let tally = ProbeTally::Greedy(agent.tally());
+                (Box::new(agent), tally)
+            })
+        }
+        // The SAME honest chain as the greedy arm — `run_arena_game`, one agent
+        // per seat on its own `agent_stream_seed` stream — and deliberately NOT
+        // `run_raw_game`: a search corpus generated from privileged state would
+        // be a different measurement wearing this one's label, and the whole
+        // point of the A0 (contestant × rev) corpus is that the two contestants
+        // differ in nothing but the contestant.
+        ProbeContestant::Lookahead { b, k, m, cap } => {
+            drive_honest(seed, players, rules, invariants, |agent_seed| {
+                let agent = LookaheadAgent::with_knobs(
                     rules,
+                    SearchScheme::TurnBoundary { beam: b },
+                    k,
+                    m,
                     table,
-                    DEFAULT_RETREAT_SAMPLES,
-                    agent_stream_seed(seed, seat, Slot(seat.0)),
-                );
-                sink.lock().expect("tally sink").push(agent.tally());
-                Box::new(agent)
-            };
-            let stats = run_arena_game(seed, players, rules, &mut make, invariants)
-                .map_err(|e| format!("game at seed {:#018x}: {e}", seed.0))?;
-            let tallies = handles.lock().expect("tally sink").clone();
-            Ok((stats, tallies))
+                    agent_seed,
+                )
+                .with_cap(cap);
+                let tally = ProbeTally::Search(agent.tally());
+                (Box::new(agent), tally)
+            })
         }
         ProbeContestant::Policy(policy) => {
             let seats = vec![policy; players as usize];
@@ -733,6 +933,32 @@ fn play_one(
             Ok((stats, Vec::new()))
         }
     }
+}
+
+/// Run one game through the HONEST driver with `make` at every seat.
+///
+/// Each agent's tally is cloned out BEFORE the agent moves into the driver — the
+/// `HonestPathTally` precedent, and the only way to read the counters afterwards,
+/// since a game's agents are built by the driver's own factory and never handed
+/// back.
+fn drive_honest(
+    seed: WorldSeed,
+    players: u8,
+    rules: &Rules,
+    invariants: bool,
+    make: impl Fn(u64) -> (Box<dyn ArenaAgent>, ProbeTally),
+) -> Result<(ArenaGameStats, Vec<ProbeTally>), String> {
+    let handles: std::sync::Arc<std::sync::Mutex<Vec<ProbeTally>>> = std::sync::Arc::default();
+    let sink = std::sync::Arc::clone(&handles);
+    let mut factory = |seat: PlayerId, _n: u8| -> Box<dyn ArenaAgent> {
+        let (agent, tally) = make(agent_stream_seed(seed, seat, Slot(seat.0)));
+        sink.lock().expect("tally sink").push(tally);
+        agent
+    };
+    let stats = run_arena_game(seed, players, rules, &mut factory, invariants)
+        .map_err(|e| format!("game at seed {:#018x}: {e}", seed.0))?;
+    let tallies = handles.lock().expect("tally sink").clone();
+    Ok((stats, tallies))
 }
 
 /// Walk one finished game's record and fold every turn start into cells.
@@ -1234,6 +1460,13 @@ fn share(num: u64, den: u64) -> String {
     format!("{:.6}", num as f64 / den as f64)
 }
 
+/// A counter this contestant may not have at all. `n/a` rather than `0`, on
+/// [`ProbeTally`]'s `Option` rule: printing a zero for an absent quantity is
+/// exactly the confusion the rule exists to prevent.
+fn counter(value: Option<u64>) -> String {
+    value.map_or_else(|| "n/a".to_string(), |v| v.to_string())
+}
+
 fn report_counters(corpus: &Corpus, contestant: ProbeContestant) {
     println!();
     println!("--- (d) behavioural counters over the corpus ---");
@@ -1259,7 +1492,14 @@ fn report_counters(corpus: &Corpus, contestant: ProbeContestant) {
         share(corpus.builds, corpus.applied),
     );
     match contestant {
-        ProbeContestant::Greedy => {
+        // FROZEN BLOCK. Its bytes are the cross-rev comparator for the A0
+        // (contestant × rev) obligation — a greedy corpus at rev 7 has to diff
+        // line for line against the rev-5 freeze artifact — so a new line HERE
+        // would show up as a difference in every row of that comparison. The
+        // search block below is where this instrument's new counters print, and
+        // the identity VIOLATION line after the match fires on any arm, so the
+        // freeze costs no coverage.
+        ProbeContestant::Greedy { .. } => {
             println!(
                 "  placement cap binds         {:>10}  of {} decisions  (spec §3.3)",
                 corpus.cap_binds, corpus.decisions,
@@ -1271,9 +1511,46 @@ fn report_counters(corpus: &Corpus, contestant: ProbeContestant) {
                 corpus.decisions,
             );
         }
+        ProbeContestant::Lookahead { .. } => {
+            println!(
+                "  placement cap binds         {:>10}  of {} decisions  (spec §3.3, summed over \
+                 search NODES: one decision can bind it several times)",
+                corpus.cap_binds, corpus.decisions,
+            );
+            println!(
+                "  candidates/decision         {:>10.2}  ({} scored / {} decisions)",
+                corpus.candidates as f64 / corpus.decisions.max(1) as f64,
+                corpus.candidates,
+                corpus.decisions,
+            );
+            println!(
+                "  explained / applied         {:>10} / {}  over {} (game x seat) blocks, \
+                 per-seat mismatches {}   <- spec §0.3(b)",
+                corpus.decisions,
+                corpus.applied,
+                corpus.identity_blocks,
+                corpus.identity_mismatches,
+            );
+            println!(
+                "  ply cap hits                {:>10}  free cap hits {}   [RECORDED, never \
+                 asserted here: this is an instrument; evaluator_gate is the gate]",
+                counter(corpus.ply_cap_hits),
+                counter(corpus.free_cap_hits),
+            );
+        }
         ProbeContestant::Policy(_) => {
             println!("  placement cap binds         (n/a: a policy rung has no candidate cap)");
         }
+    }
+    // Fires on ANY arm, which is why the frozen greedy block above can stay
+    // frozen: a violated identity is never silent, it just does not cost a line
+    // when it holds.
+    if corpus.identity_mismatches > 0 {
+        println!(
+            "  *** {} of {} (game x seat) blocks EXPLAINED A DIFFERENT NUMBER OF MOVES THAN THEY \
+             APPLIED — spec §0.3(b) is violated and every figure above is suspect",
+            corpus.identity_mismatches, corpus.identity_blocks,
+        );
     }
     if let Some(q) = corpus.turns.quantiles() {
         println!(
@@ -1339,6 +1616,234 @@ fn cmd_table(args: &[String]) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    use yokohama_core::game::greedy::DEFAULT_RETREAT_SAMPLES;
+    use yokohama_core::game::lookahead::{DEFAULT_BEAM, DEFAULT_WORLDS};
+
+    /// Task C (Phase 3.5c W1): the probe's contestant grammar IS the core one
+    /// ([`Contestant::from_str_name`], promoted in W1-B), so a spec typed here
+    /// means what it means at `examples/arena` — knobs and refusals included.
+    #[test]
+    fn the_contestant_grammar_is_the_cores_and_the_old_four_still_parse() {
+        assert_eq!(
+            ProbeContestant::parse(GREEDY_CONTROLLER),
+            Ok(ProbeContestant::Greedy { m: DEFAULT_RETREAT_SAMPLES }),
+        );
+        assert_eq!(
+            ProbeContestant::parse("uniform"),
+            Ok(ProbeContestant::Policy(RolloutPolicy::Uniform)),
+        );
+        assert_eq!(
+            ProbeContestant::parse("retreat-averse"),
+            Ok(ProbeContestant::Policy(RolloutPolicy::RetreatAverse)),
+        );
+        assert_eq!(
+            ProbeContestant::parse("family-weighted"),
+            Ok(ProbeContestant::Policy(RolloutPolicy::FAMILY_WEIGHTED_DEFAULT)),
+        );
+
+        // Knobs the probe never had before it delegated — the whole point of
+        // single-sourcing rather than growing a second spelling of the grammar.
+        assert_eq!(ProbeContestant::parse("greedy-v1:m=3"), Ok(ProbeContestant::Greedy { m: 3 }));
+        assert_eq!(
+            ProbeContestant::parse("family-weighted:p=50000,k=5"),
+            Ok(ProbeContestant::Policy(RolloutPolicy::FamilyWeighted {
+                retreat_ppm: 50_000,
+                recovery_min_of: 5,
+            })),
+        );
+
+        // …and the refusals ride along unchanged: unknown IS an error at every
+        // level, and the message names what it saw.
+        for (spec, token) in
+            [("uniform:p=5", "uniform"), ("greedy-v1:zzz=1", "zzz"), ("nope", "nope")]
+        {
+            let message = ProbeContestant::parse(spec).expect_err("spec must be refused");
+            assert!(message.contains(token), "refusal of {spec:?} did not name {token:?}: {message}");
+        }
+    }
+
+    #[test]
+    fn the_lookahead_arm_parses_bare_and_at_every_knob() {
+        assert_eq!(
+            ProbeContestant::parse(LOOKAHEAD_CONTROLLER),
+            Ok(ProbeContestant::Lookahead {
+                b: DEFAULT_BEAM,
+                k: DEFAULT_WORLDS,
+                m: DEFAULT_RETREAT_SAMPLES,
+                // An absent cap is the SHIPPED rung, not some large number:
+                // every 3.3 figure was measured uncapped.
+                cap: None,
+            }),
+        );
+        assert_eq!(
+            ProbeContestant::parse("lookahead-v1:b=2,k=3,m=4,cap=750"),
+            Ok(ProbeContestant::Lookahead { b: 2, k: 3, m: 4, cap: Some(750) }),
+        );
+        assert_eq!(
+            ProbeContestant::parse("lookahead-v1:b=8"),
+            Ok(ProbeContestant::Lookahead {
+                b: 8,
+                k: DEFAULT_WORLDS,
+                m: DEFAULT_RETREAT_SAMPLES,
+                cap: None,
+            }),
+        );
+        let zero = ProbeContestant::parse("lookahead-v1:cap=0").expect_err("cap=0 must be refused");
+        assert!(zero.contains("omit the knob"), "{zero}");
+        assert!(ProbeContestant::parse("lookahead-v1:b=0").is_err(), "b=0 is not a beam");
+        assert!(ProbeContestant::parse("lookahead-v1:zzz=1").is_err(), "unknown knob");
+    }
+
+    /// The two arms the probe REFUSES, and the reason the refusal is the
+    /// probe's rather than the grammar's: the core parser accepts every one of
+    /// these specs, and this instrument declines to generate a corpus it cannot
+    /// print honest counters for.
+    #[test]
+    fn the_probe_refuses_the_contestants_it_does_not_meter() {
+        for spec in
+            ["mcts-v1", "mcts-v1:cap=750", "atomic-diag-v1", "lookahead-atomic-diag-v1:d=3"]
+        {
+            assert!(
+                Contestant::from_str_name(spec).is_ok(),
+                "{spec:?} must PARSE — the refusal below is the probe's, not the grammar's",
+            );
+            let message = ProbeContestant::parse(spec).expect_err("spec must be refused here");
+            assert!(message.contains(spec), "the refusal must name what it saw: {message}");
+            assert!(
+                message.contains("eval_probe does not drive"),
+                "the refusal must say whose it is: {message}",
+            );
+            assert!(
+                message.contains("examples/arena"),
+                "the refusal must name where the arm DOES run: {message}",
+            );
+        }
+    }
+
+    #[test]
+    fn the_echo_names_the_honest_driver_and_omits_an_absent_cap() {
+        let weights = WeightTable::V1;
+        let greedy = ProbeContestant::Greedy { m: DEFAULT_RETREAT_SAMPLES }.echo(&weights, "v1");
+        assert!(greedy.starts_with("greedy-v1{m=8,weights=v1:0x"), "{greedy}");
+        assert!(greedy.contains("[honest driver: observe -> sampler K=1 -> handle]"), "{greedy}");
+
+        let bare = ProbeContestant::Lookahead {
+            b: DEFAULT_BEAM,
+            k: DEFAULT_WORLDS,
+            m: DEFAULT_RETREAT_SAMPLES,
+            cap: None,
+        }
+        .echo(&weights, "v1");
+        assert!(bare.starts_with("lookahead-v1{b=4,k=1,m=8,weights=v1:0x"), "{bare}");
+        assert!(!bare.contains("cap="), "an absent cap must emit no token: {bare}");
+        assert!(
+            bare.contains("[honest driver: observe -> sampler K=1 -> handle]"),
+            "the search arm runs the SAME honest chain the greedy arm does: {bare}",
+        );
+
+        let capped = ProbeContestant::Lookahead {
+            b: DEFAULT_BEAM,
+            k: DEFAULT_WORLDS,
+            m: DEFAULT_RETREAT_SAMPLES,
+            cap: Some(750),
+        }
+        .echo(&weights, "v1");
+        assert!(capped.contains("cap=750,"), "{capped}");
+        assert_ne!(capped, bare);
+
+        // The rung says PRIVILEGED, and it must keep saying it.
+        let rung = ProbeContestant::Policy(RolloutPolicy::Uniform).echo(&weights, "v1");
+        assert!(rung.contains("RAW-STATE driver: privileged play, corpus only"), "{rung}");
+    }
+
+    #[test]
+    fn the_per_seat_identity_counts_every_block_including_unpaired_ones() {
+        assert_eq!(identity_blocks(&[3, 4], &[3, 4]), (2, 0));
+        assert_eq!(identity_blocks(&[3, 4], &[3, 5]), (2, 1));
+        assert_eq!(identity_blocks(&[], &[]), (0, 0));
+        assert_eq!(identity_blocks(&[3], &[3, 4]), (2, 1));
+        // A contestant that stopped handing back tallies at all is exactly the
+        // case a zip over the SHORTER list would report as a clean identity
+        // over zero blocks — so the unpaired indices count as mismatches.
+        assert_eq!(identity_blocks(&[], &[3, 4]), (2, 2));
+        assert_eq!(identity_blocks(&[3, 4], &[]), (2, 2));
+    }
+
+    /// The lookahead arm end to end: through the HONEST driver (never
+    /// `run_raw_game`), with the per-seat §0.3(b) identity holding and the
+    /// view-derived blocks — features cells and proxy points — populated for a
+    /// search corpus exactly as for a greedy one.
+    ///
+    /// One game, because a debug-profile S1 game is seconds rather than
+    /// milliseconds; the properties are structural, so N buys nothing here.
+    #[test]
+    fn a_lookahead_corpus_runs_through_the_honest_driver_and_explains_every_move() {
+        let rules = Rules::standard();
+        let (corpus, master) = generate(
+            2,
+            1,
+            ProbeContestant::Lookahead {
+                b: DEFAULT_BEAM,
+                k: DEFAULT_WORLDS,
+                m: DEFAULT_RETREAT_SAMPLES,
+                cap: None,
+            },
+            &WeightTable::V1,
+            &rules,
+            SeedScheduleKind::Diagnostic(DEFAULT_MASTER),
+            true,
+        )
+        .expect("a 2P lookahead game completes");
+        assert_eq!(master, DEFAULT_MASTER);
+        assert_eq!(corpus.games, 1);
+
+        // (a) the identity, per seat rather than in aggregate.
+        assert!(corpus.applied > 0, "a game that applied no moves proves nothing");
+        assert_eq!(corpus.identity_blocks, 2, "one block per seat");
+        assert_eq!(corpus.identity_mismatches, 0);
+        assert_eq!(corpus.decisions, corpus.applied, "every applied move was explained");
+
+        // (b) the search cap counters EXIST on this arm. `Some` is the whole
+        // claim — the values are RECORDED, never asserted (the probe is an
+        // instrument, not a gate), and `Some(0)` vs `None` is what separates
+        // "searched and never hit the guard" from "has no guard to hit".
+        assert!(corpus.ply_cap_hits.is_some(), "an S1 corpus has a ply guard to report");
+        assert!(corpus.free_cap_hits.is_some(), "an S1 corpus has a free-extension counter");
+        assert!(
+            corpus.candidates > corpus.decisions,
+            "a beam search scores more than one successor per decision",
+        );
+
+        // (c) the view-derived blocks work for a search corpus too — verified,
+        // not assumed: they read the RECORD the driver handed back, and the
+        // record does not know which agent produced it.
+        assert!(!corpus.cells.is_empty(), "no analysis cells from a search corpus");
+        assert!(corpus.snapshots > 0);
+        assert_eq!(
+            corpus.proxy.len() * 2,
+            corpus.snapshots as usize,
+            "one proxy point per turn start, one snapshot per (turn start x seat) at 2P",
+        );
+
+        // The discriminating half of the `Option` rule: the one-ply arm has NO
+        // such quantity, and answers `None` rather than a zero that would read
+        // as a measurement.
+        let (greedy, _) = generate(
+            2,
+            1,
+            ProbeContestant::Greedy { m: DEFAULT_RETREAT_SAMPLES },
+            &WeightTable::V1,
+            &rules,
+            SeedScheduleKind::Diagnostic(DEFAULT_MASTER),
+            true,
+        )
+        .expect("a 2P greedy game completes");
+        assert_eq!(greedy.ply_cap_hits, None, "a one-ply argmax has no continuation to truncate");
+        assert_eq!(greedy.free_cap_hits, None);
+        assert_eq!(greedy.identity_mismatches, 0);
+        assert_eq!(greedy.identity_blocks, 2);
+    }
 
     fn column(points: &[(f64, bool)]) -> Vec<(f64, u32, bool)> {
         let mut rows: Vec<(f64, u32, bool)> =
