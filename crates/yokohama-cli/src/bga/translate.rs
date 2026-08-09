@@ -38,19 +38,6 @@ pub struct CounterDiff {
     pub engine: i64,
 }
 
-/// One Church/Customs take that consumed a track pawn while BOTH sources
-/// (hand and acting area) held one — the state where core's hand-first pick
-/// and BGA's measured area-first pick produce different mid-turn counters.
-/// See `record_ambiguous_track_take` for the full story.
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct AmbiguousTrackTake {
-    move_id: u64,
-    seat: u8,
-    action: &'static str,
-    hand: u8,
-    area: u8,
-}
-
 /// How far the replay got and what it verified on the way.
 #[derive(Debug, Default)]
 pub struct ReplayReport {
@@ -68,22 +55,6 @@ pub struct ReplayReport {
 
 fn rerr(move_id: u64, detail: impl Into<String>) -> ImportError {
     ImportError::Sheet { detail: format!("replay STOP at BGA move {move_id}: {}", detail.into()) }
-}
-
-/// `Some((in_hand, in_acting_area))` when the CURRENT seat could source a
-/// Church/Customs track pawn from either place — exactly the states where
-/// core's hand-first pick (`take_church_or_customs_assistant`, tracks.rs) and
-/// BGA's measured area-first pick produce DIFFERENT mid-turn states. The
-/// acting area comes from the engine's own `resolve_acting_area`, so
-/// mercenary sub-turns read the mercenary target area, not the president's.
-/// One-source states return `None`: there the two rules coincide and a take
-/// translates faithfully.
-fn both_track_pawn_sources(state: &yokohama_core::GameState) -> Option<(u8, u8)> {
-    let acting = yokohama_core::game::actions::resolve_acting_area(state, state.current_player).ok()?;
-    let p = &state.players[state.current_player.0 as usize];
-    let hand = p.assistants.in_hand;
-    let area = p.assistants.in_area(acting);
-    (hand >= 1 && area >= 1).then_some((hand, area))
 }
 
 /// Counter keys the T9 check deliberately does not model, each with its
@@ -174,9 +145,6 @@ pub struct Translator<'a> {
     /// move 107). Checkpoints below it are named skips, same discipline as
     /// `mid_composite_moves`.
     first_placement_move: u64,
-    /// Both-sources Church/Customs takes, recorded for the T9 STOP's
-    /// source-rule annotation (see `record_ambiguous_track_take`).
-    ambiguous_track_takes: Vec<AmbiguousTrackTake>,
     pub report: ReplayReport,
     max_move_seen: u64,
     /// A checkpoint STOP found inside `consume_drive` (surfaced by `step`).
@@ -281,7 +249,6 @@ impl<'a> Translator<'a> {
             state_snapshots: Vec::new(),
             snap_cursor: 0,
             mid_composite_moves: BTreeSet::new(),
-            ambiguous_track_takes: Vec::new(),
             // The deliberately-unchecked list rides the report from
             // CONSTRUCTION so every return path — the STOPPED runs included —
             // carries it (H2 review SHOULD-2: T9's "listed explicitly with
@@ -376,42 +343,6 @@ impl<'a> Translator<'a> {
         self.state().current_player.0
     }
 
-    /// The m49 divergence RECORDER (live gate table 896157897; divergence
-    /// D6). A Church/Customs take consumes one track pawn, and the rulebook
-    /// (p.13/p.14) lets the player source it "from the [Church/Customs] Area
-    /// or your hand". Core collapsed that choice to HAND-FIRST
-    /// (`take_church_or_customs_assistant`, tracks.rs — reasoned net-inert
-    /// because the same-turn Recovery reconverges the totals), while every
-    /// BGA observation to date sources AREA-first: 896157897 m49's workers
-    /// list moves a Church-AREA pawn onto the track with the hand untouched
-    /// (hand was 1), and the proving corpus's checkpointed takes (m153/m180)
-    /// do the same at hand 0, where the two rules coincide. **The owner
-    /// RULED D6 area-first (2026-08-08), matching BGA; the engine flip lands
-    /// in the separate rules-parity rev-7 pipeline** — until it does, a
-    /// both-sources take is POTENTIALLY divergent, but not provably: the
-    /// corpus's m82 both-sources take replays green because no checkpoint
-    /// observes its window, and stopping there would kill a
-    /// legitimately-green replay. So the take is RECORDED, not stopped, and
-    /// when a later T9 checkpoint fails with exactly the source-rule
-    /// signature (engine board_assists one HIGH and hand_assists one LOW —
-    /// hand-sourcing counts the track pawn as board on top of an untouched
-    /// area) the STOP carries the named story instead of a bare counter
-    /// mystery (the shape that mis-aimed the first m49 diagnosis toward
-    /// recovery semantics). Never an offset, never silence — and once rev 7
-    /// lands the signature simply stops arising, at which point this
-    /// recorder is dead weight to retire.
-    fn record_ambiguous_track_take(&mut self, action: &'static str, move_id: u64) {
-        if let Some((hand, area)) = both_track_pawn_sources(self.state()) {
-            self.ambiguous_track_takes.push(AmbiguousTrackTake {
-                move_id,
-                seat: self.current_seat(),
-                action,
-                hand,
-                area,
-            });
-        }
-    }
-
     /// Resolve the pending customs-space choice from the stashed
     /// `customsPlacement` VP evidence — the one choice whose evidence is
     /// consumed WITH its action fact (the church space arrives as its own
@@ -429,29 +360,6 @@ impl<'a> Translator<'a> {
             .find(|s| CustomsTrack::vp_reward(*s) == vp)
             .ok_or_else(|| rerr(move_id, format!("no customs space grants {vp} VP")))?;
         Ok(Move::ChooseCustomsSpace { space })
-    }
-
-    /// The source-rule signature over a failed checkpoint's diffs: every diff
-    /// on one seat, exactly the two assistant counters, engine board one HIGH
-    /// and hand one LOW — with a recorded both-sources take by that seat at
-    /// or before the checkpoint's move. Returns the matching take.
-    fn source_rule_signature(&self, diffs: &[CounterDiff]) -> Option<&AmbiguousTrackTake> {
-        let [a, b] = diffs else { return None };
-        if a.seat != b.seat {
-            return None;
-        }
-        let (board, hand) = match (a.counter.as_str(), b.counter.as_str()) {
-            ("board_assists", "hand_assists") => (a, b),
-            ("hand_assists", "board_assists") => (b, a),
-            _ => return None,
-        };
-        if board.engine != board.bga + 1 || hand.engine != hand.bga - 1 {
-            return None;
-        }
-        self.ambiguous_track_takes
-            .iter()
-            .rev()
-            .find(|t| t.seat == board.seat && t.move_id <= board.move_id)
     }
 
     /// Engine counter snapshot for every checked key, per seat.
@@ -739,32 +647,12 @@ impl<'a> Translator<'a> {
                     self.report.diffs = diffs;
                     let d = self.report.diffs.first().cloned();
                     if let Some(d) = d {
-                        // A bare counter diff mis-aims diagnosis when the
-                        // cause is the known source-rule divergence — name it
-                        // whenever the diff carries its exact signature (see
-                        // `record_ambiguous_track_take`).
-                        let source_story = match self.source_rule_signature(&self.report.diffs) {
-                            Some(t) => format!(
-                                " — this is the {} track pawn SOURCE-RULE signature: the m{} take \
-                                 held {} hand pawn(s) AND {} on the acting area, the engine \
-                                 consumed hand-first (core take_church_or_customs_assistant, \
-                                 rulebook p.13/p.14 allows either source) where every BGA \
-                                 observation to date consumes from the AREA (896157897 m49 \
-                                 workers; corpus m153/m180 at hand 0), so the engine runs one \
-                                 board-assistant HIGH and one hand-assistant LOW until Recovery \
-                                 reconverges them; this is divergence D6, RULED area-first \
-                                 (owner, 2026-08-08) — the engine flip lands at rules-parity \
-                                 rev 7, and this replay passes once it does",
-                                t.action, t.move_id, t.hand, t.area
-                            ),
-                            None => String::new(),
-                        };
                         return Err(rerr(
                             cp.move_id,
                             format!(
                                 "T9 counter divergence — no engine state in this turn window \
                                  matches BGA's move-{} counters; nearest: seat {} `{}` BGA {} vs \
-                                 engine {} ({} diff(s) total){source_story}",
+                                 engine {} ({} diff(s) total)",
                                 cp.move_id,
                                 d.seat,
                                 d.counter,
@@ -1241,7 +1129,6 @@ impl<'a> Translator<'a> {
                 Fact::ChurchPay { seat: s, pays, .. } if *s == seat => {
                     let pays = *pays;
                     self.consume_drive();
-                    self.record_ambiguous_track_take("Church", move_id);
                     // The rev-5 D1 offset arm lived here (BGA charged 2 yen,
                     // the engine 1). Since rev 6 the engine's church yen price
                     // IS 2 (owner ruling D1, 2026-08-08) — nothing to
@@ -1302,7 +1189,6 @@ impl<'a> Translator<'a> {
                 Fact::Customs { seat: s, count, vp } if *s == seat => {
                     let (count, vp) = (*count, *vp);
                     self.consume_drive();
-                    self.record_ambiguous_track_take("Customs", move_id);
                     self.stash_customs_vp = Some(vp);
                     let mv = Move::ExecuteAreaAction {
                         action: AreaAction::Customs { imported_goods_paid: count },
@@ -1809,30 +1695,36 @@ mod tests {
     // absorbs_it` in tests/bga_import.rs) pins that a counter divergence at
     // the 4th-tech move — or anywhere else — is now a plain T9 STOP.
 
-    /// The m49 divergence pin (live gate table 896157897): when a T9
-    /// checkpoint fails with exactly the track-pawn SOURCE-RULE signature —
-    /// engine `board_assists` one HIGH, `hand_assists` one LOW, after a
-    /// Church/Customs take that held BOTH sources — the STOP must carry the
-    /// NAMED story, not the bare counter diff that mis-aimed the first m49
-    /// diagnosis toward recovery semantics. Rulebook p.13/p.14 lets the
-    /// player source the track pawn "from the [Church/Customs] Area or your
-    /// hand"; core's `take_church_or_customs_assistant` (tracks.rs) collapsed
-    /// that to HAND-FIRST (net-inert at end of turn, NOT over the mid-turn
-    /// states BGA checkpoints), and every BGA observation sources AREA-first
-    /// (m49: a Church-area pawn moves onto the track, counters untouched at
-    /// 8/1 where the engine lands 9/0). The take itself must NOT stop — the
-    /// proving corpus's m82 both-sources take replays green because no
-    /// checkpoint observes its window, and that 194-move acceptance run is a
-    /// standing pin. The live capture is gitignored, so the trigger is
-    /// scripted synthetically: Option-B two on Church, president onto Church
-    /// (power 3), church pay with the yen type (start money 3 covers the
-    /// 2-yen price, faith 3+1=4 lands the one eligible space inline), then a
-    /// checkpoint carrying the AREA-sourced counters BGA would report. What
-    /// only the live run proves — that BGA's counters MATCH an area-first
-    /// engine — was measured by a never-committed area-first diagnostic
-    /// build replaying 896157897 clean through m49 (33 checkpoints green).
+    /// D6 AT THE TRANSLATOR BOUNDARY, pinned in BOTH directions (live gate
+    /// table 896157897 m49). Rulebook p.13/p.14 lets the player source a
+    /// Church/Customs track pawn "from the [Church/Customs] Area or your
+    /// hand"; the owner RULED area-first for BGA parity and rev 7 landed the
+    /// flip in `take_church_or_customs_assistant` (tracks.rs). Mid-turn that
+    /// is observable — an area-sourced take leaves the board total unchanged
+    /// (a pawn moves area → track, both counted as board) and the hand
+    /// untouched, where hand-first would run one board HIGH and one hand LOW
+    /// until Recovery reconverges them — so a BGA checkpoint inside the take
+    /// window discriminates the two rules, and this test drives one of each:
+    /// the AREA-sourced counters BGA actually reports must replay CLEAN, and
+    /// the HAND-sourced counters must STOP. Both arms fail against a
+    /// hand-first engine (the first stops, the second passes), which is what
+    /// makes this a D6 pin rather than a plumbing smoke.
+    ///
+    /// This REPLACES the rev-6-era source-rule STOP recorder, whose own doc
+    /// named this moment: it annotated exactly this divergence while the
+    /// engine was hand-first and could not arise once rev 7 landed. Keeping
+    /// it would have been worse than dead — its numeric signature would
+    /// eventually have attached D6's story to some unrelated counter diff.
+    ///
+    /// The live capture is gitignored, so the trigger is scripted
+    /// synthetically: Option-B two on Church, president onto Church (power
+    /// 3), church pay with the yen type (start money 3 covers the 2-yen
+    /// price, faith 3+1=4 lands the one eligible space inline), then the
+    /// checkpoint. What only the live run proves — that BGA's counters match
+    /// an area-first engine — is the m49 observation itself, and the whole
+    /// 896157897 replay at rev 7 is its standing evidence.
     #[test]
-    fn the_source_rule_signature_names_the_story_on_the_t9_stop() {
+    fn the_track_take_sources_from_the_area_and_a_hand_sourced_checkpoint_stops() {
         let text = std::fs::read_to_string(concat!(
             env!("CARGO_MANIFEST_DIR"),
             "/../yokohama-bridge/tests/data/excerpt-895724349.ndjson"
@@ -1843,8 +1735,9 @@ mod tests {
         let answers = super::super::setup::synthesize(&feed, &rules).unwrap();
         // A fully synthetic drive script (seat 0 is the excerpt's start
         // player): the facts are constructed directly rather than parsed, so
-        // the committed fixture needs no capture bytes.
-        let mut stream = FactStream {
+        // the committed fixture needs no capture bytes. `FactStream` is not
+        // Clone, and each arm consumes one, so the script is a builder.
+        let script = || FactStream {
             facts: vec![
                 TimedFact {
                     move_id: 4,
@@ -1876,79 +1769,49 @@ mod tests {
             ],
             checkpoints: Vec::new(),
         };
-        let resolved = super::super::resolve::resolve(answers, &feed, &stream, &rules).unwrap();
-        let session = super::super::setup::build_session(&resolved.answers, rules.clone()).unwrap();
-        // The checkpoint BGA would emit after an AREA-sourced take: the two
-        // placed pawns become one on the area plus one on the track (board
-        // total unchanged at 2), the hand untouched, and `yens` down by the
-        // 2-yen church price — the payment anchor that keeps this checkpoint
-        // from matching the PRE-take state, whose board/hand read the same.
-        let s0_hand = session.state().players[0].assistants.in_hand;
+        let resolved = super::super::resolve::resolve(answers, &feed, &script(), &rules).unwrap();
+        let fresh_session =
+            || super::super::setup::build_session(&resolved.answers, rules.clone()).unwrap();
+        let s0_hand = fresh_session().state().players[0].assistants.in_hand;
         let pid = resolved.answers.seats[0].bga_player_id.clone();
-        stream.checkpoints = vec![super::super::facts::CounterCheckpoint {
-            move_id: 7,
-            per_player: BTreeMap::from([(
-                pid,
-                serde_json::json!({
-                    "board_assists": 2,
-                    "hand_assists": s0_hand - 2,
-                    "yens": 1,
-                }),
-            )]),
-        }];
-        let mut t = Translator::new(session, &resolved, stream, &feed).unwrap();
+        // `yens` down by the 2-yen church price is the payment anchor that
+        // keeps either checkpoint from matching the PRE-take state, whose
+        // board/hand counts read the same as the area-sourced post-take ones.
+        let checkpoint = |board: i64, hand: i64| {
+            vec![super::super::facts::CounterCheckpoint {
+                move_id: 7,
+                per_player: BTreeMap::from([(
+                    pid.clone(),
+                    serde_json::json!({
+                        "board_assists": board,
+                        "hand_assists": hand,
+                        "yens": 1,
+                    }),
+                )]),
+            }]
+        };
+
+        // AREA-sourced — what BGA reports, and what rev 7 replays: the two
+        // placed pawns become one on the area plus one on the track, board
+        // total unchanged at 2, hand untouched.
+        let mut area_stream = script();
+        area_stream.checkpoints = checkpoint(2, s0_hand as i64 - 2);
+        let mut t = Translator::new(fresh_session(), &resolved, area_stream, &feed).unwrap();
+        t.run().expect("rev 7 sources the track pawn from the activated area, matching BGA");
+        assert_eq!(t.report.checkpoints_passed, 1, "the checkpoint was actually compared");
+
+        // HAND-sourced — the rev-6 shape: the track pawn comes out of the
+        // hand on top of an untouched area, so board runs one HIGH and hand
+        // one LOW. Against rev 7 that is a plain counter divergence.
+        let mut hand_stream = script();
+        hand_stream.checkpoints = checkpoint(3, s0_hand as i64 - 3);
+        let mut t = Translator::new(fresh_session(), &resolved, hand_stream, &feed).unwrap();
         let detail = t
             .run()
-            .expect_err("the area-sourced checkpoint must STOP against the hand-first engine")
+            .expect_err("hand-sourced counters cannot match an area-first engine")
             .to_string();
         assert!(detail.contains("T9 counter divergence"), "{detail}");
-        assert!(detail.contains("SOURCE-RULE signature"), "the story is named: {detail}");
-        assert!(detail.contains("m6 take"), "the take is located: {detail}");
-        assert!(detail.contains("hand-first"), "the engine's rule is named: {detail}");
-        assert!(detail.contains("D6, RULED area-first"), "the ruling is carried: {detail}");
-        assert!(detail.contains("rev 7"), "the resolution vehicle is named: {detail}");
-    }
-
-    /// The guard's CONDITION, pinned exactly: it reads the acting seat's hand
-    /// and the ACTING AREA (via the engine's own `resolve_acting_area`), and
-    /// fires only when both hold a pawn — one-source takes are exactly the
-    /// states where hand-first and area-first coincide, so they must not
-    /// stop. The one-source variants are pinned on MUTATED clones because a
-    /// legal walk cannot cheaply reach them: the possible-action-area rule
-    /// means a president stands only where an own assistant does, so at a
-    /// real president-led take the area side is ≥ 1 by construction and the
-    /// discriminating side is the hand (empty-hand takes area-source on both
-    /// models; a zero-area acting state needs a mercenary activation).
-    #[test]
-    fn the_both_sources_condition_reads_hand_and_acting_area_exactly() {
-        let mut s = sim_2p(900);
-        let church = *s
-            .state()
-            .board_layout
-            .areas
-            .iter()
-            .find(|(_, c)| c.area_type == AreaType::Church)
-            .unwrap()
-            .0;
-        s.apply(Move::EndAdditionalPhase, vec![]).unwrap();
-        s.apply(Move::PlaceTwoSameArea { area: church, adjacent_bonus: None }, vec![]).unwrap();
-        s.apply(Move::PlacePresident { destination: church }, vec![]).unwrap();
-        let state = s.state().clone();
-        let hand = state.players[0].assistants.in_hand;
-        assert!(hand >= 1, "sim start leaves hand pawns after an Option-B placement");
-        assert_eq!(both_track_pawn_sources(&state), Some((hand, 2)));
-        // Hand empty: the area is the only source — both models agree.
-        let mut hand_empty = state.clone();
-        hand_empty.players[0].assistants.in_hand = 0;
-        assert_eq!(both_track_pawn_sources(&hand_empty), None);
-        // Acting area drained (the mercenary-reachable shape): hand-only.
-        let mut area_empty = state.clone();
-        area_empty.players[0].assistants.on_board.remove(&church);
-        assert_eq!(both_track_pawn_sources(&area_empty), None);
-        // No acting area resolves at all (president in hand): no take exists.
-        let mut off_board = state;
-        off_board.players[0].president_location = PresidentLocation::InHand;
-        assert_eq!(both_track_pawn_sources(&off_board), None);
+        assert!(detail.contains("board_assists") || detail.contains("hand_assists"), "{detail}");
     }
 
     /// F2 (lens-2 MUST): the T9 counter cross-check gets its NEGATIVE pin. A
