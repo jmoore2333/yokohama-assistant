@@ -918,6 +918,88 @@ mod tests {
     }
 
     #[test]
+    fn church_track_pawn_comes_from_the_mercenary_target_not_the_presidents_area() {
+        // D6 x the mercenary sub-turn — the ruling's one UNIVERSAL delta, and
+        // until the rev-7 review it was completely unpinned.
+        //
+        // `apply_mercenary` refuses a target area holding none of the acting
+        // player's assistants, so during a sub-turn the activated area ALWAYS
+        // holds one — which means area-first ALWAYS fires there, where rev 6
+        // paid from hand whenever the hand was non-empty. So EVERY mercenary
+        // Church take changed behaviour at rev 7, and no test said so.
+        //
+        // DISCRIMINATING BY CONSTRUCTION: all three candidate sources are live
+        // at once — a non-empty hand, own pawns at the mercenary target, and
+        // own pawns at the area the president is standing in — so only the
+        // right one may be spent, and each wrong one is asserted untouched.
+        // The pre-existing mercenary tests cannot make this statement: both
+        // leave the president IN HAND (so a president-keyed take falls through
+        // to the resolved area and looks correct), and the one that varies the
+        // source empties the hand, a shape rev 6 and rev 7 agree on.
+        //
+        // The president standing SOMEWHERE ELSE is not an exotic fixture — it
+        // is the only shape a real sub-turn has. `apply_mercenary` refuses a
+        // target holding the acting player's own president
+        // (`apply_move.rs`, "Target area cannot have your president"), so
+        // president area != activated area is GUARANTEED for the whole family,
+        // and a president-keyed take is wrong at every one of them.
+        //
+        // MUTATION-PROVEN (reverted by inverse edit — L7): keying the take on
+        // `president_location` when the president is on board, i.e. a
+        // mercenary-BLIND take falling back to the resolved area otherwise,
+        // passes all 22 core test binaries with 0 failures without this test,
+        // and fails here on all three assertions.
+        let rules = Rules::empty_for_tests();
+        let mut state = create_test_state();
+
+        // The president stands somewhere else entirely: a mercenary sub-turn
+        // bypasses it, so it must contribute nothing to the pawn source.
+        let president_area = AreaId::new(0);
+        state.board_layout.areas.insert(president_area, AreaConfig {
+            area_type: AreaType::Bank,
+            grid_position: (0, 0),
+        });
+        state.players[0].president_location = PresidentLocation::OnBoard(president_area);
+
+        let church_area = AreaId::new(9);
+        state.board_layout.areas.insert(church_area, AreaConfig {
+            area_type: AreaType::Church,
+            grid_position: (0, 9),
+        });
+        state.is_mercenary_action = true;
+        state.mercenary_target_area = Some(church_area);
+
+        state.players[0].assistants.in_hand = 3;
+        state.players[0].assistants.on_board.insert(church_area, 2);
+        state.players[0].assistants.on_board.insert(president_area, 2);
+
+        // Power 5, no goods -> faith 5 -> spaces {4,5} eligible -> deferred,
+        // so this exercises the placement TAIL (where the take lives) via the
+        // same explicit resolution the sibling D6 pins use.
+        let result = execute_church_action(
+            &mut state, PlayerId::new(0), 5, false, false, false, false, false, false, &rules,
+        );
+        assert!(result.is_ok());
+
+        place_church_assistant(&mut state, PlayerId::new(0), 5, &rules).unwrap();
+
+        let p = &state.players[0];
+        assert_eq!(
+            p.assistants.on_board.get(&church_area), Some(&1),
+            "the MERCENARY TARGET is the activated area, and it pays the pawn",
+        );
+        assert_eq!(
+            p.assistants.in_hand, 3,
+            "hand untouched -- this is exactly where rev 6 would have spent it",
+        );
+        assert_eq!(
+            p.assistants.on_board.get(&president_area), Some(&2),
+            "the president's area is NOT the activated area during a sub-turn",
+        );
+        assert_eq!(p.assistants.on_church, 1);
+    }
+
+    #[test]
     fn area_first_take_moves_the_rider_assistant_move_source_from_the_spent_area_to_hand() {
         // The ONE mid-turn legality surface D6 moves (the take itself is
         // source-blind, so the legal set AT the action does not move): between
@@ -1655,6 +1737,60 @@ mod tests {
         let p = &state.players[0];
         assert_eq!(p.assistants.in_hand, 2, "hand pays when the activated area holds none of ours");
         assert_eq!(p.assistants.on_board.get(&elsewhere), Some(&2), "an unrelated area is never touched");
+    }
+
+    #[test]
+    fn customs_track_pawn_comes_from_the_mercenary_target_not_the_presidents_area() {
+        // D6 x the mercenary sub-turn, Customs side — see the Church twin
+        // `church_track_pawn_comes_from_the_mercenary_target_not_the_presidents_area`
+        // for why this shape (and only this shape) discriminates, and for the
+        // mutation it is proven against. Both tails carry the take, so both
+        // need the pin: the Church test alone would leave half the mutation
+        // surface uncovered.
+        let rules = Rules::empty_for_tests();
+        let mut state = create_test_state();
+
+        let president_area = AreaId::new(0);
+        state.board_layout.areas.insert(president_area, AreaConfig {
+            area_type: AreaType::Bank,
+            grid_position: (0, 0),
+        });
+        state.players[0].president_location = PresidentLocation::OnBoard(president_area);
+
+        let customs_area = AreaId::new(9);
+        state.board_layout.areas.insert(customs_area, AreaConfig {
+            area_type: AreaType::Customs,
+            grid_position: (0, 9),
+        });
+        state.is_mercenary_action = true;
+        state.mercenary_target_area = Some(customs_area);
+
+        state.players[0].imported_goods = 3;
+        state.players[0].assistants.in_hand = 3;
+        state.players[0].assistants.on_board.insert(customs_area, 2);
+        state.players[0].assistants.on_board.insert(president_area, 2);
+
+        // Power 5 / pay 3 -> cost pair {5,6} (neither carries a rider) ->
+        // deferred, so the placement TAIL is what consumes the pawn.
+        let result = execute_customs_action(&mut state, PlayerId::new(0), 5, 3, &rules);
+        assert!(result.is_ok());
+
+        place_customs_assistant(&mut state, PlayerId::new(0), 5, &rules).unwrap();
+
+        let p = &state.players[0];
+        assert_eq!(
+            p.assistants.on_board.get(&customs_area), Some(&1),
+            "the MERCENARY TARGET is the activated area, and it pays the pawn",
+        );
+        assert_eq!(
+            p.assistants.in_hand, 3,
+            "hand untouched -- this is exactly where rev 6 would have spent it",
+        );
+        assert_eq!(
+            p.assistants.on_board.get(&president_area), Some(&2),
+            "the president's area is NOT the activated area during a sub-turn",
+        );
+        assert_eq!(p.assistants.on_customs, 1);
     }
 
     #[test]
