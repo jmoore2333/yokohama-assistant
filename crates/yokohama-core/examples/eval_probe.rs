@@ -129,7 +129,9 @@ usage: eval_probe <subcommand> [options]
                              measured beside the sixteen and shipped by nothing.
                              Today: `postclaim` (achievement_progress_sum with
                              the viewer's already-claimed cards dropped).
-                             Feature::ALL stays sixteen everywhere.
+                             Feature::ALL stays sixteen everywhere. REFUSED
+                             when --blocks omits `features` (an ignored column
+                             would be a silent no-op).
 
   table [--weights v1|pre-freeze]
       Print a weight table with its provenance identity. No games are played.
@@ -768,7 +770,12 @@ impl Split {
 /// scoring it, and the ladder value is a function of the standings alone — the
 /// same number under every weight table — so `shipped_total`, the value `score`
 /// already returned for this view, is the answer for every candidate and cannot
-/// disagree with one.
+/// disagree with one. **On every corpus this instrument can generate the branch
+/// is DEFENSIVELY UNREACHABLE** (Task-D review NOTE-1): snapshots are taken at
+/// turn STARTS only, and a finished game records no further turn start, so no
+/// recorded view is terminal. It is kept for totality — a hand-built corpus
+/// could contain one — and it is deliberately the trivial pass-through above
+/// precisely so unreachable code cannot lie about a weight table.
 fn candidate_total(
     view: &PlayerView,
     me: &yokohama_core::VisiblePlayer,
@@ -1521,6 +1528,17 @@ fn cmd_run(args: &[String]) -> Result<(), String> {
         None => Vec::new(),
         Some(raw) => CandidateColumn::parse_list(raw)?,
     };
+    // A candidate column only ever prints inside the features block, so a
+    // --blocks list without `features` would silently drop the request — and
+    // this file's rule is that ignored input is an error, never a no-op.
+    if !columns.is_empty() && !blocks.features {
+        return Err(
+            "--candidate-columns rides the features block, and this --blocks list omits \
+             `features` — add it or drop the flag (a silently-ignored column would violate \
+             the ignored-input rule)"
+                .to_string(),
+        );
+    }
     let candidates: Vec<ScoreTableSpec> = repeated
         .get("score-table")
         .map(|specs| specs.iter().map(|s| parse_score_table(s)).collect::<Result<Vec<_>, _>>())
@@ -1968,8 +1986,12 @@ fn render_candidate_tables(
     let _ = writeln!(out, "  games: fit {fit_games} · held-out {held_games}");
     let _ = writeln!(
         out,
-        "  HELD-OUT is the QUOTABLE evidence figure; fit is printed for the GAP only (fit far \
-         above held-out is the overfit signature)"
+        "  HELD-OUT is the QUOTABLE evidence figure; fit is printed for the gap. NOTHING is \
+         fitted on the fit half — candidates are hand-specified tables evaluated identically \
+         on both halves, so the fit/held-out gap is sampling noise, not an overfit signature. \
+         The overfitting hazard that IS live here is SELECTION across a candidate grid on \
+         these held-out figures; a round quoting a grid winner carries that caveat, and the \
+         protocol's L4 screen plus the freeze's fresh cell are the guards"
     );
     let _ = writeln!(
         out,
@@ -2035,7 +2057,14 @@ fn render_candidate_tables(
                 stage.name(),
                 point_render(&fit[s]),
                 point_render(&held[s]),
-                if lo.is_nan() {
+                // A CONSTANT held-out column refuses its interval the way block
+                // (a)'s `AucRow::render` does: every resample of a constant is
+                // the constant, so [0.5000, 0.5000] would be a zero-width
+                // interval claiming a measurement it did not make — the same
+                // refusal `arena_gate`'s §0-R3 exists to enforce.
+                if is_constant(&held[s].rows) {
+                    "--  (constant: no interval)".to_string()
+                } else if lo.is_nan() {
                     "--  (no interval)".to_string()
                 } else {
                     format!("[{lo:.4}, {hi:.4}]")
@@ -2737,35 +2766,44 @@ mod tests {
     /// row's cell values EXACTLY, cell by cell, on a real corpus.
     #[test]
     fn the_candidate_machinery_with_v1_reproduces_the_benchmark_row() {
+        // BOTH player counts, deliberately: at 2P the signed-weight opponent
+        // selection is a no-op (one opponent), so a 2P-only pin leaves
+        // `candidate_total`'s max-over-opponents loop structurally unexercised —
+        // an inverted selection (max→min) passes it (Task-D review SHOULD-1,
+        // mutation-demonstrated). The 4P cell is what makes that mutation fail;
+        // `--score-table` itself is not gated to 2P.
         let rules = Rules::standard();
-        let (corpus, _) = generate(
-            2,
-            1,
-            ProbeContestant::Greedy { m: DEFAULT_RETREAT_SAMPLES },
-            &WeightTable::V1,
-            &rules,
-            SeedScheduleKind::Diagnostic(DEFAULT_MASTER),
-            true,
-            &[],
-            &[ScoreTableSpec { name: "v1".to_string(), table: WeightTable::V1 }],
-        )
-        .expect("a 2P greedy game completes");
+        for players in [2u8, 4] {
+            let (corpus, _) = generate(
+                players,
+                1,
+                ProbeContestant::Greedy { m: DEFAULT_RETREAT_SAMPLES },
+                &WeightTable::V1,
+                &rules,
+                SeedScheduleKind::Diagnostic(DEFAULT_MASTER),
+                true,
+                &[],
+                &[ScoreTableSpec { name: "v1".to_string(), table: WeightTable::V1 }],
+            )
+            .expect("a greedy game completes");
 
-        let slot = corpus
-            .rows
-            .iter()
-            .position(|r| matches!(r, Row::EvalTotal))
-            .expect("the benchmark row is always reported");
-        assert!(!corpus.cells.is_empty(), "a corpus with no cells proves nothing");
-        for cell in &corpus.cells {
-            assert_eq!(cell.cand.len(), 1);
-            assert_eq!(
-                cell.cand[0].to_bits(),
-                cell.rel[slot].to_bits(),
-                "game {} stage {:?}: the candidate re-weighting drifted from `eval::score`",
-                cell.game,
-                cell.stage,
-            );
+            let slot = corpus
+                .rows
+                .iter()
+                .position(|r| matches!(r, Row::EvalTotal))
+                .expect("the benchmark row is always reported");
+            assert!(!corpus.cells.is_empty(), "a corpus with no cells proves nothing");
+            for cell in &corpus.cells {
+                assert_eq!(cell.cand.len(), 1);
+                assert_eq!(
+                    cell.cand[0].to_bits(),
+                    cell.rel[slot].to_bits(),
+                    "{players}P game {} stage {:?}: the candidate re-weighting drifted from \
+                     `eval::score`",
+                    cell.game,
+                    cell.stage,
+                );
+            }
         }
     }
 

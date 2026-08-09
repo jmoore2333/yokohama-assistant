@@ -57,6 +57,7 @@
 use yokohama_core::game::eval::WeightTable;
 use yokohama_core::game::eval_screen::{
     hand_split_ordering_holds, run_screen, run_screen_with, ScreenReport, ScreenRung, ScreenSpec,
+    GREEDY_PAUSE_LINE,
 };
 use yokohama_core::game::greedy::weight_table_identity;
 use yokohama_core::{Rules, SeedScheduleKind};
@@ -214,8 +215,11 @@ fn run(args: &[String]) -> Result<(), String> {
     Ok(())
 }
 
-/// The three clauses a round's ledger row quotes, each labelled with the rule it
-/// belongs to rather than left as a bare boolean.
+/// The clauses a round's ledger row quotes, each labelled with the rule it
+/// belongs to rather than left as a bare boolean. The greedy pause line gets a
+/// COMPUTED verdict on greedy reports (Task-D review SHOULD-4: a clause named
+/// in output with no verdict is a clause an operator has to eyeball); on the
+/// lookahead rung the clause does not apply and no line prints.
 fn print_verdicts(report: &ScreenReport) {
     println!(
         "  VERDICT position          = {:?}   (§4.2's classification against the {:.4} null; a \
@@ -229,10 +233,17 @@ fn print_verdicts(report: &ScreenReport) {
     );
     println!(
         "  VERDICT entirely_below    = {}   (§4.2 step-4 adoption clause: adopt only if this is \
-         FALSE at the lookahead rung; a greedy interval entirely below 0.40 pauses the round for \
-         recorded reconsideration)",
+         FALSE at the lookahead rung)",
         report.entirely_below_null(),
     );
+    if report.provenance.rung == ScreenRung::Greedy {
+        println!(
+            "  VERDICT greedy_pause      = {}   (§4.2 step-4(c): interval entirely below the \
+             HAND-SET {GREEDY_PAUSE_LINE} line pauses the round for recorded reconsideration — \
+             a pause, never a block)",
+            report.greedy_pause_triggered(),
+        );
+    }
 }
 
 fn verdict(ok: bool) -> &'static str {

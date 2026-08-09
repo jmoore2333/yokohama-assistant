@@ -149,6 +149,15 @@ const SALT_SCREEN_BOOTSTRAP: u64 = 0xA3E1_5C2E_0000_0005;
 /// contestant under test here is a TABLE, not a controller.
 const CANDIDATE_SLOT: Slot = Slot(0);
 
+/// Protocol §4.2 step 4(c)'s GREEDY PAUSE LINE — **HAND-SET, with no measured
+/// basis** (the protocol states it in those words), and it triggers a RECORDED
+/// PAUSE for orchestrator reconsideration, never a block. It lives here as one
+/// authority so the round script and any future round harness read the same
+/// number, and [`ScreenReport::greedy_pause_triggered`] is the clause made
+/// callable (Task-D review SHOULD-4: a clause named in output with no computed
+/// verdict is a clause an operator has to eyeball).
+pub const GREEDY_PAUSE_LINE: f64 = 0.40;
+
 // ---------------------------------------------------------------------------
 // The rung
 // ---------------------------------------------------------------------------
@@ -623,6 +632,24 @@ impl ScreenReport {
         self.position == NullPosition::Below
     }
 
+    /// **Adoption rule (c)'s pause trigger** (protocol §4.2 step 4): does this
+    /// GREEDY-rung report sit entirely below [`GREEDY_PAUSE_LINE`]?
+    ///
+    /// RUNG-AWARE on purpose: the clause reads the greedy rung's screen alone —
+    /// greedy is a preserved rung whose large regression the owner is entitled
+    /// to weigh even though lookahead is what ships — so on any other rung this
+    /// answers `false` because the clause does not APPLY there, not because a
+    /// shape was checked and cleared. The classification reuses [`classify`] at
+    /// the pause line, so its bootstrap and refusal arms cannot drift from the
+    /// null classification's: a bootstrap interval triggers when `hi` sits
+    /// below 0.40, the all-lost refusal triggers, and all-won or
+    /// interior-constant refusals do not.
+    pub fn greedy_pause_triggered(&self) -> bool {
+        self.provenance.rung == ScreenRung::Greedy
+            && classify(&self.interval, &self.candidate_unit_shares, GREEDY_PAUSE_LINE)
+                == NullPosition::Below
+    }
+
     fn all_units_won(&self) -> bool {
         !self.candidate_unit_shares.is_empty()
             && self.candidate_unit_shares.iter().all(|&u| u >= 1.0)
@@ -1019,6 +1046,54 @@ mod tests {
         assert!(report.routing_matched);
         assert!(report.invariants);
         println!("{}", report.render());
+    }
+
+    /// SHOULD-4 (Task-D review): §4.2 step 4(c)'s pause line gets a COMPUTED
+    /// verdict. The method is a pure function of (rung, interval, unit vector),
+    /// so the shapes are exercised by FIELD SUBSTITUTION on one real report —
+    /// substituted fields ARE the shapes, and no games need to lose on cue.
+    #[test]
+    fn the_greedy_pause_trigger_classifies_every_interval_shape() {
+        let rules = Rules::standard();
+        let s = spec("pause-shapes", ScreenRung::Greedy, WeightTable::V1, 2);
+        let base = run_screen(&s, &rules).expect("screen runs");
+
+        let shaped = |interval: IntervalOutcome, shares: Vec<f64>, rung: ScreenRung| {
+            let mut r = base.clone();
+            r.interval = interval;
+            r.candidate_unit_shares = shares;
+            r.provenance.rung = rung;
+            r
+        };
+        let boot = |lo: f64, hi: f64| IntervalOutcome::Bootstrap {
+            lo,
+            hi,
+            b: BOOTSTRAP_REPLICATES,
+            resample_seed: 0,
+        };
+        let refusal = |bound: f64| IntervalOutcome::RefusedZeroWidth {
+            one_sided_lower: bound,
+            method: "field-substitution fixture",
+        };
+
+        // Bootstrap arms: entirely below 0.40 triggers; touching or above does not.
+        assert!(shaped(boot(0.10, 0.39), vec![0.0, 0.5], ScreenRung::Greedy)
+            .greedy_pause_triggered());
+        assert!(!shaped(boot(0.10, 0.41), vec![0.0, 0.5], ScreenRung::Greedy)
+            .greedy_pause_triggered());
+        // Refusal arms: all-lost triggers, all-won and interior-constant do not.
+        assert!(shaped(refusal(0.0), vec![0.0, 0.0], ScreenRung::Greedy)
+            .greedy_pause_triggered());
+        assert!(!shaped(refusal(0.985), vec![1.0, 1.0], ScreenRung::Greedy)
+            .greedy_pause_triggered());
+        assert!(!shaped(refusal(0.0), vec![0.5, 0.5], ScreenRung::Greedy)
+            .greedy_pause_triggered());
+        // Rung-awareness: the same triggering shapes answer false at the
+        // lookahead rung, because the clause does not APPLY there.
+        assert!(!shaped(boot(0.10, 0.39), vec![0.0, 0.5], ScreenRung::Lookahead)
+            .greedy_pause_triggered());
+        assert!(!shaped(refusal(0.0), vec![0.0, 0.0], ScreenRung::Lookahead)
+            .greedy_pause_triggered());
     }
 
     /// MUST-1 (W3 harness review): the pin that the candidate TABLE provably
