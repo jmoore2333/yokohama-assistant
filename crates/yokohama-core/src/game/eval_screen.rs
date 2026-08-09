@@ -119,9 +119,7 @@
 
 use std::collections::BTreeMap;
 
-use crate::game::arena::stats::{
-    mean as stats_mean, sample_sd as stats_sample_sd, SALT_BOOTSTRAP,
-};
+use crate::game::arena::stats::{mean as stats_mean, sample_sd as stats_sample_sd};
 use crate::game::arena::{
     agent_stream_seed, interval_for_units, mix, require_supported_player_count, run_arena_game,
     unit_for, ArenaAgent, ArenaError, ControllerProvenance, ExplainHandle, IntervalOutcome,
@@ -1345,7 +1343,7 @@ mod tests {
         // Same components, different salt from `arena::stats`'s bootstrap — two
         // instruments handed the same master must not silently share a stream.
         let screen = resample_seed_for(MASTER, 200, 2);
-        let stats = mix(SALT_BOOTSTRAP, &[MASTER, 200, 2]);
+        let stats = mix(crate::game::arena::stats::SALT_BOOTSTRAP, &[MASTER, 200, 2]);
         assert_ne!(screen, stats);
         // …and it is a function of the DESIGN alone, so it reproduces.
         assert_eq!(screen, resample_seed_for(MASTER, 200, 2));
