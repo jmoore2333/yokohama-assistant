@@ -332,7 +332,7 @@ impl Follower {
     ) -> Result<(yokohama_bridge::feed::CollapsedFeed, Replays), ImportError> {
         let feed = read_and_collapse(&self.text, self.opts.table)?;
         let answers = super::setup::synthesize(&feed, &self.rules)?;
-        let reps = import::replay_attempts(answers, &feed, &self.rules, None)?;
+        let reps = import::replay_attempts(answers, &feed, &self.rules, None, &[])?;
         Ok((feed, reps))
     }
 }

@@ -317,6 +317,23 @@ const CATEGORY_TYPES: [(u64, [AchievementType; 4]); 3] = [
     (3, [AchievementType::Production4, AchievementType::Commercial4, AchievementType::Prod3Comm2, AchievementType::Prod2Comm3]),
 ];
 
+/// Every achievement type this importer knows, in category order — the ONE
+/// vocabulary, single-sourced with `achievement_candidates` off
+/// `CATEGORY_TYPES` so the `--achievement` flag can never accept a spelling
+/// the resolver would not produce, nor refuse one it would.
+pub(crate) fn achievement_type_names() -> Vec<String> {
+    CATEGORY_TYPES.iter().flat_map(|(_, t)| t.iter()).map(|ty| format!("{ty:?}")).collect()
+}
+
+/// The engine type spelled exactly as `achievement_type_names` prints it.
+pub(crate) fn parse_achievement_type(name: &str) -> Option<AchievementType> {
+    CATEGORY_TYPES
+        .iter()
+        .flat_map(|(_, t)| t.iter())
+        .copied()
+        .find(|ty| format!("{ty:?}") == name)
+}
+
 /// The candidate engine types one BGA achievement row can be, under both
 /// field-order hypotheses (the qty_1↔production correspondence is
 /// unevidenced — module doc). Exposed for H2's resolver, which turns a

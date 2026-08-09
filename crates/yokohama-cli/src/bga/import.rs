@@ -22,7 +22,7 @@ use super::ImportError;
 use std::path::PathBuf;
 use yokohama_bridge::feed::{read_and_collapse, CollapsedFeed};
 use yokohama_bridge::sanitize::sanitize;
-use yokohama_core::Rules;
+use yokohama_core::{AchievementType, Rules};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ImportArgs {
@@ -38,6 +38,86 @@ pub struct ImportArgs {
     /// translator on two feeds — one entry point, one place that knows how a
     /// `Session` is built.
     pub follow: bool,
+    /// Owner arbitration answers, `(category, type)` with category 0/1/2 = A/B/C.
+    /// A capture whose claimed achievement matches two engine types leaves a
+    /// replay-decidable hypothesis; when the replay decides it, nothing here is
+    /// needed, and when it does NOT — both assignments replaying to game end —
+    /// this is how the owner's answer enters. See `apply_owner_answers`.
+    pub achievements: Vec<OwnerAchievement>,
+}
+
+/// One owner arbitration answer: `(category, type)`, category 0/1/2 = A/B/C.
+pub type OwnerAchievement = (usize, AchievementType);
+
+/// Category letters, indexed by the `category` field the resolver uses.
+const CATEGORY_LETTERS: [&str; 3] = ["A", "B", "C"];
+
+/// Parse one `--achievement` value, `<A|B|C>=<Type>`. Exact on both halves:
+/// the category letter, the engine type's own spelling, and the type actually
+/// BELONGING to that category. Anything else is a usage error naming the
+/// offending text — a mistyped answer that parsed to "no answer" would let the
+/// hypothesis loop resolve the game by whichever candidate it listed first.
+fn parse_achievement_answer(spec: &str) -> Result<OwnerAchievement, ImportError> {
+    let refuse = |why: &str| ImportError::Usage {
+        detail: format!(
+            "--achievement `{spec}` {why}; expected <A|B|C>=<Type>, e.g. B=Orders5 \
+             (types are the engine's own spellings: {})",
+            super::setup::achievement_type_names().join(", ")
+        ),
+    };
+    let (cat, ty) = spec.split_once('=').ok_or_else(|| refuse("is not `<CATEGORY>=<TYPE>`"))?;
+    let category = CATEGORY_LETTERS
+        .iter()
+        .position(|l| *l == cat)
+        .ok_or_else(|| refuse("does not name category A, B or C"))?;
+    let ty = super::setup::parse_achievement_type(ty)
+        .ok_or_else(|| refuse("does not name an achievement type"))?;
+    if ty.category() as usize != category {
+        return Err(refuse("names a type from a different category"));
+    }
+    Ok((category, ty))
+}
+
+/// Narrow replay-decidable hypotheses by the owner's answers, returning one
+/// declaration note per answer applied. The answer NARROWS — it does not
+/// bypass: the surviving assignment still has to replay clean, so an answer
+/// that contradicts the game STOPs like any other divergence. An answer whose
+/// type is not among the candidates, or one for a category the capture never
+/// made ambiguous, is REFUSED rather than dropped, so a flag left on a later
+/// capture's command line cannot pass unnoticed.
+pub(crate) fn apply_owner_answers(
+    hypotheses: &mut [super::resolve::AchHypothesis],
+    answers: &[OwnerAchievement],
+) -> Result<Vec<String>, ImportError> {
+    let mut notes = Vec::new();
+    for (category, ty) in answers {
+        let letter = CATEGORY_LETTERS[*category];
+        let h = hypotheses.iter_mut().find(|h| h.category == *category).ok_or_else(|| {
+            ImportError::Sheet {
+                detail: format!(
+                    "--achievement {letter}={ty:?}: this capture leaves no undecided hypothesis \
+                     for category {letter} — nothing to arbitrate, so the answer would be silently \
+                     inert"
+                ),
+            }
+        })?;
+        if !h.candidates.contains(ty) {
+            return Err(ImportError::Sheet {
+                detail: format!(
+                    "--achievement {letter}={ty:?} is not among category {letter}'s candidates \
+                     {:?} — the capture's own quantities rule it out",
+                    h.candidates
+                ),
+            });
+        }
+        h.candidates = vec![*ty];
+        notes.push(format!(
+            "achievement {letter} = {ty:?} is an OWNER ANSWER (--achievement {letter}={ty:?}), \
+             not evidence: the capture replayed clean under more than one candidate, so the \
+             assignment was supplied rather than decided by this replay"
+        ));
+    }
+    Ok(notes)
 }
 
 /// The full `import` flag surface, in the order the usage string lists them.
@@ -47,12 +127,14 @@ pub struct ImportArgs {
 /// a flag the parser lacks with the whole suite green (F7 / lens-4). Kept in
 /// step with `parse_args`'s match arms and the `usage` string below; the unit
 /// test `every_documented_flag_is_a_real_parser_flag` pins that coupling.
-pub const FLAGS: &[&str] = &["--table", "--answers", "--through", "--out", "--report", "--follow"];
+pub const FLAGS: &[&str] =
+    &["--table", "--answers", "--through", "--out", "--report", "--follow", "--achievement"];
 
 /// Parse everything after the `import` keyword.
 pub fn parse_args(args: &[String]) -> Result<ImportArgs, ImportError> {
     let usage = "import <capture.ndjson> [--table <id>] [--answers] [--through <move_id>] \
-                 [--out <record.json>] [--report <path>] [--follow]";
+                 [--out <record.json>] [--report <path>] [--follow] \
+                 [--achievement <A|B|C>=<Type>]";
     let mut path: Option<PathBuf> = None;
     let mut table: Option<u64> = None;
     let mut answers_only = false;
@@ -60,6 +142,7 @@ pub fn parse_args(args: &[String]) -> Result<ImportArgs, ImportError> {
     let mut out: Option<PathBuf> = None;
     let mut report: Option<PathBuf> = None;
     let mut follow = false;
+    let mut achievements: Vec<OwnerAchievement> = Vec::new();
     let mut it = args.iter();
     while let Some(arg) = it.next() {
         match arg.as_str() {
@@ -73,6 +156,22 @@ pub fn parse_args(args: &[String]) -> Result<ImportArgs, ImportError> {
                 })?);
             }
             "--answers" => answers_only = true,
+            "--achievement" => {
+                let v = it.next().ok_or_else(|| ImportError::Usage {
+                    detail: format!("--achievement needs <A|B|C>=<Type>; {usage}"),
+                })?;
+                let answer = parse_achievement_answer(v)?;
+                if achievements.iter().any(|(c, _)| *c == answer.0) {
+                    return Err(ImportError::Usage {
+                        detail: format!(
+                            "two --achievement answers for category {} — one of them is wrong; \
+                             {usage}",
+                            CATEGORY_LETTERS[answer.0]
+                        ),
+                    });
+                }
+                achievements.push(answer);
+            }
             "--through" => {
                 let v = it.next().ok_or_else(|| ImportError::Usage {
                     detail: format!("--through needs a move id; {usage}"),
@@ -115,6 +214,13 @@ pub fn parse_args(args: &[String]) -> Result<ImportArgs, ImportError> {
             ("--answers", answers_only),
             ("--through", through.is_some()),
             ("--report", report.is_some()),
+            // Batch-only for a second reason worth stating: an answer for a
+            // category the capture has not yet made ambiguous is REFUSED, and
+            // early in a live game no claim exists at all — so the flag would
+            // kill the follower on its first poll rather than help it. The
+            // follower's own answer to undiscriminated hypotheses is to keep
+            // tailing until the claims arrive.
+            ("--achievement", !achievements.is_empty()),
         ] {
             if set {
                 return Err(ImportError::Usage {
@@ -136,6 +242,7 @@ pub fn parse_args(args: &[String]) -> Result<ImportArgs, ImportError> {
         out,
         report,
         follow,
+        achievements,
     })
 }
 
@@ -259,8 +366,9 @@ pub(crate) fn replay_attempts(
     feed: &CollapsedFeed,
     rules: &Rules,
     through: Option<u64>,
+    owner_answers: &[OwnerAchievement],
 ) -> Result<Replays, ImportError> {
-    let resolved = {
+    let mut resolved = {
         let seats = answers.seats.clone();
         let mapper = super::orders::OrderMapper::from_rules(rules)?;
         let stream = super::facts::extract(
@@ -270,6 +378,9 @@ pub(crate) fn replay_attempts(
         )?;
         resolve(answers, feed, &stream, rules)?
     };
+    // The owner's answers narrow the loop BEFORE it runs, so a supplied
+    // assignment is still replayed rather than trusted.
+    let owner_notes = apply_owner_answers(&mut resolved.hypotheses, owner_answers)?;
 
     // Hypothesis combinations: the cartesian product over the (small) list.
     let mut combos: Vec<Vec<(usize, yokohama_core::AchievementType)>> = vec![Vec::new()];
@@ -301,7 +412,11 @@ pub(crate) fn replay_attempts(
         } else {
             label_parts.join(", ")
         };
-        attempts.push(run_replay_attempt(&resolved, &answers, feed, through, rules, label)?);
+        let mut attempt = run_replay_attempt(&resolved, &answers, feed, through, rules, label)?;
+        // Declared where every other honesty note is declared, so a reader of
+        // the report (or the follow frame) sees the answer was SUPPLIED.
+        attempt.report.notes.extend(owner_notes.iter().cloned());
+        attempts.push(attempt);
     }
 
     let survivors: Vec<usize> = attempts
@@ -447,7 +562,7 @@ pub fn run(args: &ImportArgs, rules: Rules) -> Result<RunOutcome, ImportError> {
     }
 
     // ---- H2: resolution + the hypothesis-looped replay ---------------------
-    let reps = replay_attempts(answers, &feed, &rules, args.through)?;
+    let reps = replay_attempts(answers, &feed, &rules, args.through, &args.achievements)?;
     let Replays { resolved, attempts, survivors, best } = &reps;
     let chosen = match survivors.as_slice() {
         [one] => *one,
@@ -597,6 +712,7 @@ mod tests {
             (vec!["--answers"], "--answers"),
             (vec!["--through", "50"], "--through"),
             (vec!["--report", "rep.txt"], "--report"),
+            (vec!["--achievement", "B=Orders5"], "--achievement"),
         ] {
             let mut argv = vec!["cap.ndjson", "--follow"];
             argv.extend(extra);
@@ -615,6 +731,107 @@ mod tests {
         ));
     }
 
+    /// `--achievement <A|B|C>=<Type>` — the OWNER-ARBITRATION path, added
+    /// when the live gate game (table 896157897) replayed to the engine's own
+    /// game end under BOTH surviving assignments and the batch import
+    /// correctly refused with "owner input needed". Until then the importer
+    /// had NO way to accept the answer: `--answers` prints the evidence sheet
+    /// and stops, so the two-survivor refusal was a dead end rather than a
+    /// question. The spelling is exact on both halves — a mistyped answer
+    /// must be LOUD, since silently ignoring one would resolve the game by
+    /// whichever candidate the loop happened to list first.
+    #[test]
+    fn an_owner_achievement_answer_parses_its_category_and_type() {
+        let a = parse_args(&strs(&["cap.ndjson", "--achievement", "B=Orders5"])).unwrap();
+        assert_eq!(a.achievements, vec![(1, AchievementType::Orders5)]);
+        // Every category, and a second answer alongside the first.
+        let a = parse_args(&strs(&[
+            "cap.ndjson", "--achievement", "A=Seafood7", "--achievement", "C=Prod3Comm2",
+        ]))
+        .unwrap();
+        assert_eq!(
+            a.achievements,
+            vec![(0, AchievementType::Seafood7), (2, AchievementType::Prod3Comm2)]
+        );
+
+        for bad in [
+            "Orders5",      // no category
+            "B:Orders5",    // wrong separator
+            "D=Orders5",    // no such category
+            "B=Orders6",    // no such type
+            "b=Orders5",    // category case is exact
+            "B=orders5",    // type case is exact
+            "B=Seafood7",   // a real type, but category A's
+            "B=",           // empty type
+            "=Orders5",     // empty category
+        ] {
+            let err = parse_args(&strs(&["cap.ndjson", "--achievement", bad])).unwrap_err();
+            assert!(
+                matches!(&err, ImportError::Usage { detail } if detail.contains(bad)),
+                "`{bad}` must be refused, naming itself: {err:?}"
+            );
+        }
+        // Two answers for ONE category cannot both be right.
+        let err = parse_args(&strs(&[
+            "cap.ndjson", "--achievement", "B=Orders5", "--achievement", "B=Tokens5",
+        ]))
+        .unwrap_err();
+        assert!(matches!(&err, ImportError::Usage { detail } if detail.contains('B')), "{err:?}");
+    }
+
+    /// The answer NARROWS the hypothesis loop; it never bypasses the replay.
+    /// An answer the capture's candidates do not contain, or one for a
+    /// category the capture never made ambiguous, is refused rather than
+    /// silently dropped — a stale flag left on a later capture's command line
+    /// must not pass unnoticed. What survives narrowing still has to replay
+    /// clean, so an owner answer that contradicts the game STOPs like any
+    /// other divergence.
+    #[test]
+    fn an_owner_answer_narrows_the_hypothesis_and_refuses_what_it_cannot_mean() {
+        use super::super::resolve::AchHypothesis;
+        let hyp = || {
+            vec![AchHypothesis {
+                category: 1,
+                candidates: vec![AchievementType::Tokens5, AchievementType::Orders5],
+            }]
+        };
+
+        let mut h = hyp();
+        let notes = apply_owner_answers(&mut h, &[(1, AchievementType::Orders5)]).unwrap();
+        assert_eq!(h[0].candidates, vec![AchievementType::Orders5], "narrowed to the answer");
+        assert_eq!(notes.len(), 1);
+        assert!(
+            notes[0].contains("OWNER ANSWER")
+                && notes[0].contains("not evidence")
+                && notes[0].contains("--achievement B=Orders5"),
+            "the note must declare the answer as OWNER-supplied, not evidenced, \
+             and echo the flag that supplied it: {}",
+            notes[0]
+        );
+
+        // A type that is not a candidate here: refused, naming the candidates.
+        let mut h = hyp();
+        let err = apply_owner_answers(&mut h, &[(1, AchievementType::Money10)]).unwrap_err();
+        assert!(
+            matches!(&err, ImportError::Sheet { detail }
+                if detail.contains("Money10") && detail.contains("Tokens5")),
+            "{err:?}"
+        );
+
+        // A category with no hypothesis at all: refused.
+        let mut h = hyp();
+        let err = apply_owner_answers(&mut h, &[(0, AchievementType::Seafood7)]).unwrap_err();
+        assert!(
+            matches!(&err, ImportError::Sheet { detail } if detail.contains('A')),
+            "{err:?}"
+        );
+
+        // No answers: no narrowing, no notes.
+        let mut h = hyp();
+        assert!(apply_owner_answers(&mut h, &[]).unwrap().is_empty());
+        assert_eq!(h[0].candidates.len(), 2);
+    }
+
     /// F7 (lens-4): the exported `FLAGS` set is what `guide_sync` pins the guide
     /// pair against, so it must equal the parser's REAL flags — every one is
     /// accepted (never an "unknown flag") when given with a plausible value.
@@ -626,6 +843,7 @@ mod tests {
             let argv = match *flag {
                 "--table" | "--through" => vec!["c.ndjson", flag, "1"],
                 "--out" | "--report" => vec!["c.ndjson", flag, "x"],
+                "--achievement" => vec!["c.ndjson", flag, "B=Orders5"],
                 _ => vec!["c.ndjson", flag], // valueless: --answers, --follow
             };
             let parsed = parse_args(&strs(&argv));
