@@ -122,12 +122,22 @@ async function postToRelay(item) {
 const readOutbox = async () => (await chrome.storage.local.get(OUTBOX_KEY))[OUTBOX_KEY] || [];
 const writeOutbox = (items) => chrome.storage.local.set({ [OUTBOX_KEY]: items });
 
+// PURE, and the ONE definition of "full" (review N-1). `enqueue` reads it to
+// decide whether to DROP, and the badge reads it to SAY so; a second copy of
+// the rule would be a badge that reports "parked" about captures that were in
+// fact thrown away. Full by EITHER bound - the item cap or the byte cap, since
+// both drop.
+function outboxIsFull(items) {
+  const list = Array.isArray(items) ? items : [];
+  const bytes = list.reduce((n, i) => n + ((i && i.bytes) || 0), 0);
+  return list.length >= OUTBOX_MAX_ITEMS || bytes >= OUTBOX_MAX_BYTES;
+}
+
 // Returns "parked" | "dropped" - the caller records which, because a dropped
 // capture is the one thing here that is unrecoverable and the panel says so.
 async function enqueue(item) {
   const items = await readOutbox();
-  const bytes = items.reduce((n, i) => n + (i.bytes || 0), 0);
-  if (items.length >= OUTBOX_MAX_ITEMS || bytes >= OUTBOX_MAX_BYTES) {
+  if (outboxIsFull(items)) {
     console.error(
       "[yokohama-bridge] outbox is full - this capture was DROPPED. Start bridge-relay and " +
         "reload the BGA tab; the notification history endpoint is cumulative, so a full " +
@@ -184,67 +194,164 @@ async function pendingCount() {
 //   1. free - every packets delivery already POSTs to the relay, so its
 //      outcome IS a reachability observation. During play this is what keeps
 //      the badge honest, at zero extra requests.
-//   2. a 30s poll, armed only while a boardgamearena.com tab exists, and
-//      re-armed only while one still does. It costs one loopback GET per
-//      half-minute of a game you are sitting in, and nothing at all otherwise.
+//   2. a 20s poll, armed only while a boardgamearena.com tab exists, and
+//      re-armed only while one still does. It costs one loopback GET per 20s
+//      of a game you are sitting in, and nothing at all otherwise.
 //   3. the popup, which force-probes on open. A click is a deliberate act, so
 //      it is allowed to spend a request, and it is why the PANEL is the
 //      authority and the badge is the hint.
 //
+// And ONE thing keeps all three honest: a stored reading EXPIRES
+// (`relayBeliefAt`). Whatever the badge paints, it paints from evidence no
+// older than two poll intervals, or it paints "?". Freshness is not something
+// the three mechanisms are trusted to maintain - it is checked at the moment
+// of painting.
+//
 // The poll is a plain `setTimeout` chain and NOT `chrome.alarms`, because
 // `alarms` is a permission and this extension's permission list is a promise to
-// the owner. The honest cost of that choice: Chrome may recycle this worker
-// between polls, and a recycled worker's badge keeps whatever it last painted
-// until something wakes it. So the badge can lag a relay that died while you
-// were not looking - which is exactly why the panel probes rather than trusting
-// the cached value, and why `wake()` repaints on every worker start.
+// the owner.
+//
+// THE CADENCE IS LOAD-BEARING, and it used to be wrong (review SHOULD-1). It
+// was 30s - EXACTLY Chrome's MV3 idle-termination window. A pending
+// `setTimeout` is an in-memory timer that dies with its worker, so a timer
+// armed for the same 30s Chrome is counting down usually loses the race, and it
+// loses it precisely in the case it was written for: a BGA tab open with
+// nothing being captured. At 20s the timer fires with ~10s to spare.
+//
+// The knock-on, stated rather than pocketed: the poll's own `chrome.*` calls
+// RESET that idle timer, so while a boardgamearena.com tab is open this worker
+// now stays resident instead of being recycled every half-minute. That is a
+// deliberate trade - one loopback GET and one live worker per open table,
+// against a badge that can be checked. It is bounded by the tab: with no BGA
+// tab open the poll does not re-arm, nothing resets the timer, and the worker
+// is recycled as before.
+//
+// What the poll still cannot do is repaint a badge while no worker is running.
+// So the residual is a FROZEN badge (a photograph from the last worker), never
+// a badge that keeps asserting something it has stopped checking - that is what
+// the staleness rule below is for.
 const HEALTH_TTL_MS = 15000; // a probe younger than this is reused
-const HEALTH_POLL_MS = 30000; // the idle cadence, while a BGA tab is open
+const HEALTH_POLL_MS = 20000; // the idle cadence, while a BGA tab is open
 const BGA_TAB_MATCH = ["*://*.boardgamearena.com/*"];
+
+// Exposed as a function because `bridge/tests/connected_indicator.js` loads this
+// file into a `vm` context, where top-level `const`s are NOT visible on the
+// context object but function declarations are. The test reads the shipped
+// cadence rather than duplicating it, and asserts it is inside the idle window.
+function healthPollMs() {
+  return HEALTH_POLL_MS;
+}
 
 const BADGE_LIVE = "#1b7f3b"; // green   - relay answering, nothing waiting
 const BADGE_DRAINING = "#9a6400"; // amber   - relay answering, backlog going out
 const BADGE_PARKING = "#b3261e"; // red     - relay down, captures piling up
 const BADGE_UNSURE = "#5f6368"; // grey    - relay down or not yet asked
 
-// PURE, and the whole badge policy. `relayUp` is true / false / null (never
-// asked). `pending` is the outbox depth.
+// PURE, and the whole badge policy - THE ONLY COPY OF IT (review N-2). `popup.js`
+// used to re-derive the same four-state decision to pick its CSS class, so the
+// policy lived in two places and only one of them was tested. It now reads the
+// `state` name returned here and supplies wording for it; deciding WHICH state
+// we are in happens exactly once, and it happens here.
 //
-// The two rules worth stating out loud:
+// `relayUp` is true / false / null (never asked). `pending` is the outbox depth.
+// `full` comes from `outboxIsFull` - never re-derived from `pending`, because
+// the outbox is also full by BYTES.
+//
+// The three rules worth stating out loud:
 //   * a nonzero outbox ALWAYS renders as its count. That was the badge's only
 //     meaning before this feature and it is the number the owner already knows
 //     how to read; the indicator adds colour to it rather than taking it away.
 //   * no state renders empty. An empty badge used to mean "fine" and also
 //     "this worker has never run" and also "the relay died an hour ago", which
 //     is the ambiguity the whole feature exists to remove.
+//   * a FULL outbox says DROPPED, not parked. At the cap the count stops being
+//     a backlog that will drain and becomes a loss that will not - and the two
+//     were previously the same red badge saying the same word (review N-1).
 function badgeFor(state) {
   const pending = (state && Number(state.pending)) || 0;
   const relayUp = state ? state.relayUp : null;
+  const full = !!(state && state.full);
 
   if (pending > 0) {
-    return relayUp === true
+    if (relayUp === true) {
+      // No FULL wording on this arm even at the cap: with the relay answering,
+      // a capture is POSTed directly (and the backlog flushed first), so
+      // nothing is being dropped - the depth is draining, not overflowing.
+      return {
+        state: "draining",
+        text: String(pending),
+        color: BADGE_DRAINING,
+        title: `Yokohama bridge - relay connected, sending ${pending} queued capture(s)`,
+      };
+    }
+    // Red either way: a backlog wants attention whether or not we know why it
+    // is there. The TOOLTIP is where the two part company - the depth is a
+    // local fact and is always true, but "the relay is not answering" is a
+    // READING, and with `relayUp === null` there is no reading to say it from.
+    const holding = full
+      ? `outbox FULL at ${pending} - new captures are being DROPPED`
+      : `${pending} capture(s) parked`;
+    return relayUp === false
       ? {
-          text: String(pending),
-          color: BADGE_DRAINING,
-          title: `Yokohama bridge - relay connected, sending ${pending} queued capture(s)`,
-        }
-      : {
+          state: "parking",
           text: String(pending),
           color: BADGE_PARKING,
-          title: `Yokohama bridge - RELAY NOT ANSWERING on ${RELAY_ORIGIN}; ${pending} capture(s) parked. Start bridge-relay.`,
+          title: `Yokohama bridge - RELAY NOT ANSWERING on ${RELAY_ORIGIN}; ${holding}. Start bridge-relay.`,
+        }
+      : {
+          state: "waiting",
+          text: String(pending),
+          color: BADGE_PARKING,
+          title: `Yokohama bridge - ${
+            full ? holding : `${pending} capture(s) waiting`
+          }; relay state unchecked. Open the panel to check ${RELAY_ORIGIN}.`,
         };
   }
   if (relayUp === true) {
-    return { text: "●", color: BADGE_LIVE, title: `Yokohama bridge - relay connected on ${RELAY_ORIGIN}, recording` };
+    return {
+      state: "live",
+      text: "●",
+      color: BADGE_LIVE,
+      title: `Yokohama bridge - relay connected on ${RELAY_ORIGIN}, recording`,
+    };
   }
   if (relayUp === false) {
     return {
+      state: "offline",
       text: "○",
       color: BADGE_UNSURE,
       title: `Yokohama bridge - relay NOT answering on ${RELAY_ORIGIN} (nothing parked yet)`,
     };
   }
-  return { text: "?", color: BADGE_UNSURE, title: "Yokohama bridge - relay not checked yet; open the panel to check" };
+  return {
+    state: "unknown",
+    text: "?",
+    color: BADGE_UNSURE,
+    title: "Yokohama bridge - relay not checked yet; open the panel to check",
+  };
+}
+
+// A reading older than this stops being evidence and goes back to "unknown".
+// Two poll intervals: one missed poll is ordinary (a recycle, a busy machine),
+// two in a row means nothing is checking.
+const BADGE_STALE_AFTER_MS = 2 * HEALTH_POLL_MS;
+
+// PURE, and the rule that stops the badge asserting more than it knows (review
+// SHOULD-1). `badgeFor` reads a stored answer and has no idea how old it is, so
+// before this a worker waking on an hour-old `{up: true}` painted a green
+// "connected, recording" having probed nothing - and `wake()` deliberately
+// spends no request, so nothing corrected it until the next capture or poll.
+//
+// Returns true / false / null, where null is "I do not know" - which the badge
+// already renders honestly as "?".
+//
+// A reading dated in the FUTURE is unknown rather than believed: the clock
+// moved, so the age is not measurable, and unknown is the safe direction.
+function relayBeliefAt(relay, nowMs) {
+  if (!relay || typeof relay.up !== "boolean") return null;
+  const age = (nowMs || 0) - (relay.at_ms || 0);
+  if (age < 0 || age > BADGE_STALE_AFTER_MS) return null;
+  return relay.up;
 }
 
 // PURE. A session's counters, zeroed. A "session" starts at browser startup or
@@ -332,25 +439,45 @@ const readRelay = async () => (await chrome.storage.local.get(RELAY_KEY))[RELAY_
 // under-claims freshness by up to HEALTH_TTL_MS, which is the safe direction:
 // the panel may say "checked 14s ago" about a 2s-old observation, never the
 // reverse.
-async function noteRelay(up) {
+//
+// `force` is the ONE exception, and it exists for the Recheck relay button
+// (review N-6). Under the suppression rule a deliberate re-probe that came back
+// with the same answer within 15s left `at_ms` alone, so the panel still read
+// "up · 14s ago" and the click looked like it had done nothing. A forced probe
+// really did just happen, so it is allowed to say so.
+async function noteRelay(up, options) {
   const reachable = !!up; // callers pass a comparison result, not always a bool
   const previous = await readRelay();
   const now = Date.now();
-  if (previous && previous.up === reachable && now - (previous.at_ms || 0) < HEALTH_TTL_MS) return previous;
+  const force = !!(options && options.force);
+  if (!force && previous && previous.up === reachable && now - (previous.at_ms || 0) < HEALTH_TTL_MS) return previous;
   const record = { up: reachable, at_ms: now };
   await chrome.storage.local.set({ [RELAY_KEY]: record });
   return record;
 }
 
-async function probeRelay() {
+async function probeRelay(options) {
   const up = await relayIsUp();
-  await noteRelay(up);
+  await noteRelay(up, options);
   return up;
 }
 
+// The badge is painted through the staleness rule, ALWAYS - including on the
+// wake, which is the paint that used to carry an arbitrarily old claim. The
+// panel does not need it: `statusReport` re-probes anything older than
+// HEALTH_TTL_MS before it renders, so what it shows is at most 15s old and is
+// dated on screen.
 async function currentBadge() {
   const relay = await readRelay();
-  return badgeFor({ pending: await pendingCount(), relayUp: relay ? relay.up : null });
+  // ONE outbox read, and both facts come out of it: the depth, and whether the
+  // outbox is at a bound. Asking `pendingCount()` and then re-deriving fullness
+  // from the number it returned would miss the byte bound entirely.
+  const items = await readOutbox();
+  return badgeFor({
+    pending: items.length,
+    full: outboxIsFull(items),
+    relayUp: relayBeliefAt(relay, Date.now()),
+  });
 }
 
 async function updateBadge() {
@@ -366,16 +493,21 @@ async function updateBadge() {
 // still happens once the cached one is older than HEALTH_TTL_MS, so the panel
 // is never showing a reading it cannot date.
 async function statusReport(options) {
+  const forced = !!(options && options.force);
   const cached = await readRelay();
   const stale = !cached || Date.now() - (cached.at_ms || 0) >= HEALTH_TTL_MS;
-  if ((options && options.force) || stale) await probeRelay();
+  if (forced || stale) await probeRelay({ force: forced });
 
   // Repainting here is the point of opening the panel: whatever the badge was
   // showing, it now shows what the panel is about to say.
   const badge = await updateBadge();
   const relay = await readRelay();
   const pending = await pendingCount();
-  const session = (await readSession()) || emptySession(Date.now(), "not started");
+  // Started at 0, NOT at `Date.now()` (review N-5). There is no session here;
+  // stamping the synthetic one with the current time made the panel report
+  // "Recording since 0s" on a worker that had been up for an hour and recorded
+  // nothing. Zero renders as "—", which is the truth.
+  const session = (await readSession()) || emptySession(0, "not started");
 
   return {
     relay_origin: RELAY_ORIGIN,
@@ -396,7 +528,8 @@ let pollTimer = null;
 // The `url` filter works on the strength of the boardgamearena.com HOST
 // permission - no `tabs` permission is taken for it. If a future Chrome were to
 // ignore the filter without that permission, this degrades to "poll while any
-// tab is open", which costs one extra loopback GET per 30s and breaks nothing.
+// tab is open", which costs one extra loopback GET per poll interval and breaks
+// nothing.
 async function anyBgaTabOpen() {
   try {
     const tabs = await chrome.tabs.query({ url: BGA_TAB_MATCH });
@@ -602,7 +735,12 @@ chrome.runtime.onInstalled.addListener(() =>
 // worker never shows a badge left over from a different truth) and re-arms the
 // poll (which died with the previous worker). Deliberately NO probe: a wake is
 // not a reason to spend a request, and the poll or the next delivery will have
-// the real answer within the half-minute.
+// the real answer within ~20s.
+//
+// The repaint is safe to make WITHOUT a probe only because `currentBadge` runs
+// the stored reading through `relayBeliefAt` first. This paint is exactly where
+// the review found an hour-old "connected, recording": stored state is not a
+// fact, it is a dated observation, and the date is checked here.
 serialize(async () => {
   await updateBadge();
   armPoll();

@@ -194,8 +194,10 @@ makes a move-1 replay possible at all**.
    and press **Take snapshot** while the table is still in setup. This banks
    the initial Port A six and Lab A six — the one observation the notification
    feeds never repeat. A game whose first snapshot is mid-game imports as a
-   bounded replay, not a move-1 replay. The panel's **Snapshots taken** count
-   going 0 → 1 is your confirmation it happened.
+   bounded replay, not a move-1 replay. The panel's **Snapshots taken
+   (session)** count going **up by one** is your confirmation it happened —
+   it counts the whole browser session, not this table, so it reads 0 → 1 only
+   for the first snapshot after a browser start or an extension reload.
 4. **Start the follower** in a repo terminal:
 
    ```bash
@@ -263,8 +265,9 @@ backlog on its way out with the relay up, and needs nothing from you.)
 asked yet. Start it (§1) and press **Recheck relay** in the panel.
 
 **The badge says green ● but nothing is landing.** The badge reports the
-RELAY; captures come from the PAGE. Open the panel — if **Captures delivered**
-is not moving, it is the page half: reload the BGA tab (next entry).
+RELAY; captures come from the PAGE. Open the panel — if **Captures delivered
+(session)** is not moving, it is the page half: reload the BGA tab (next
+entry).
 
 **Nothing is being captured.** Reload the BGA tab. The wrapper installs at page
 load, so a tab opened before the extension was loaded (or before it was
@@ -299,11 +302,14 @@ diligence can recover.
 
 §3a's connected indicator (extension 0.4.0, 2026-08-08) is verified by
 `bridge/tests/connected_indicator.js` and by rendering the panel in a real
-Chrome in both colour schemes. It has **not** yet been watched during a live
-game — the first recorded game after this change is what confirms the badge
-reads true against a real table, and the reading to distrust first is a green
-● that lags a relay killed while nothing was being captured (the recycle case
-§3a names).
+Chrome in both colour schemes. Read that second clause narrowly: the eye
+confirmed the panel LAYS OUT in both schemes, and it missed a primary button
+at 1.95:1 in the dark one (review N-4, fixed) — which is why the contrast of
+both schemes is now COMPUTED by the test rather than looked at. It has **not**
+yet been watched during a live game — the first recorded game after this
+change is what confirms the badge reads true against a real table, and the
+reading to distrust first is a green ● that lags a relay killed while nothing
+was being captured (the recycle case §3a names).
 
 ## Recording future games (the steady-state process, owner-ruled 2026-08-08)
 

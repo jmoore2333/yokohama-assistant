@@ -17,6 +17,13 @@
   --button: #f1f3f4;
   --button-fg: #1f1f1f;
   --accent: #1b7f3b;
+  /* The primary button's TEXT, a token rather than a literal, because the
+   * accent flips from a dark green to a light one between the schemes and a
+   * fixed white failed the dark half at 1.95:1 (review N-4). White on #1b7f3b
+   * is 5.07:1; #202124 on #5bd07f is 8.26:1. Both clear WCAG AA's 4.5:1, and
+   * bridge/tests/connected_indicator.js computes them rather than trusting
+   * this comment. */
+  --accent-fg: #ffffff;
 }
 
 @media (prefers-color-scheme: dark) {
@@ -32,6 +39,7 @@
     --button: #3c4043;
     --button-fg: #e8eaed;
     --accent: #5bd07f;
+    --accent-fg: #202124;
   }
 }
 
@@ -148,7 +156,7 @@ button {
   border: 1px solid transparent;
   border-radius: 6px;
   background: var(--accent);
-  color: #ffffff;
+  color: var(--accent-fg);
   font: inherit;
   font-weight: 600;
   cursor: pointer;

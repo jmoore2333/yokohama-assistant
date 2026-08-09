@@ -68,19 +68,31 @@ function since(ms, nowMs) {
   return `${Math.round(minutes / 60)} h`;
 }
 
-// The same four states the badge has, said in words. Kept deliberately parallel
-// to `badgeFor` in background.js: if the badge is green, this line says
-// connected, and there is exactly one place each fact is derived from.
+// The badge's state, said in words.
+//
+// It is READ from `report.badge.state`, not re-decided here (review N-2). This
+// function used to re-implement `badgeFor`'s policy from `pending` and
+// `relay_up`, which meant the four-state rule existed twice and the copy in
+// this file was covered by no test at all - the two agreed, but nothing said
+// they had to. What lives here now is WORDING and a class name, which is the
+// panel's own business; WHICH state we are in is decided once, in the worker.
+//
+// An unrecognised state falls back to unknown rather than throwing: this file
+// and background.js ship together, so a mismatch means a half-applied reload,
+// and "not checked yet" is the honest thing to say when the answer is
+// unreadable.
+const STATES = {
+  draining: { klass: "state-draining", text: (r) => `Connected — sending ${r.pending}` },
+  parking: { klass: "state-parking", text: (r) => `Relay down — ${r.pending} parked` },
+  waiting: { klass: "state-parking", text: (r) => `${r.pending} waiting — relay unchecked` },
+  live: { klass: "state-live", text: () => "Connected — recording" },
+  offline: { klass: "state-offline", text: () => "Relay not answering" },
+  unknown: { klass: "state-unknown", text: () => "Relay not checked yet" },
+};
+
 function stateOf(report) {
-  if (report.pending > 0 && report.relay_up === true) {
-    return { klass: "state-draining", text: `Connected — sending ${report.pending}` };
-  }
-  if (report.pending > 0) {
-    return { klass: "state-parking", text: `Relay down — ${report.pending} parked` };
-  }
-  if (report.relay_up === true) return { klass: "state-live", text: "Connected — recording" };
-  if (report.relay_up === false) return { klass: "state-offline", text: "Relay not answering" };
-  return { klass: "state-unknown", text: "Relay not checked yet" };
+  const name = report.badge && STATES[report.badge.state] ? report.badge.state : "unknown";
+  return { klass: STATES[name].klass, text: STATES[name].text(report) };
 }
 
 function render(report) {
@@ -100,7 +112,12 @@ function render(report) {
     report.relay_up === null
       ? report.relay_origin
       : `${report.relay_up ? "up" : "down"} · ${ago(report.relay_checked_at_ms, now)}`;
-  $("session").textContent = session.started_at_ms ? since(session.started_at_ms, now) : "—";
+  // `started_because` is surfaced rather than merely stored (review N-5): it is
+  // what distinguishes "these counts are low because the browser just started"
+  // from "…because the extension was reloaded mid-game".
+  $("session").textContent = session.started_at_ms
+    ? `${since(session.started_at_ms, now)} · ${session.started_because || "unknown"}`
+    : "—";
 
   // Only shown when there is something to say, so its presence is the signal.
   const trouble = [];

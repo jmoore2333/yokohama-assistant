@@ -55,9 +55,29 @@
 //      observation no later diligence recovers. The counters were correct and
 //      untested: stripping BOTH `recordSession` calls out of `deliverSnapshot`
 //      left all four suites green.
+//
+//   8. A FULL OUTBOX SAYS SO (review fix wave, N-1). At the cap the badge said
+//      "parked" about captures it had in fact DROPPED - the same red, the same
+//      word, as an ordinary seven-deep backlog. Both halves are pinned: the
+//      wording, and that "full" has ONE definition shared with the code that
+//      does the dropping.
+//
+//   9. THE POPUP DOES NOT RE-DERIVE THE POLICY (review fix wave, N-2). The
+//      four-state decision used to be written twice - `badgeFor` here and
+//      `stateOf` in popup.js - and no test loaded popup.js at all. The pin that
+//      matters is the CROSSED report: fields that disagree with the badge, so a
+//      panel that re-derives locally answers differently from one that reads
+//      the worker's answer.
+//
+//  10. THE PANEL IS LEGIBLE IN BOTH SCHEMES (review fix wave, N-4). The dark
+//      block flips the accent to a light green while the button kept white
+//      text: 1.95:1, under WCAG AA and under 3:1, in a panel a doc claimed was
+//      "verified in both colour schemes". Contrast is arithmetic, so it is
+//      COMPUTED here rather than looked at.
 
 const fs = require("fs");
 const path = require("path");
+const vm = require("vm");
 const { loadWorker, settle, reporter } = require("./mv3_stub");
 
 const target = process.argv[2] || path.join(__dirname, "..", "extension", "background.js");
@@ -142,6 +162,38 @@ check(
   "...and an UNKNOWN-state backlog does not say that, because it does not know",
   !/not answering/i.test(unsurePark.title) && unsurePark.title !== knownPark.title,
   unsurePark.title
+);
+
+// ------------------------------------------------ 1a2. a FULL outbox (N-1) ---
+//
+// At the cap, captures are not queued - they are thrown away. Before this the
+// badge said "400 capture(s) parked. Start bridge-relay." in the same red as a
+// seven-deep backlog, so the one state where data is being LOST looked like the
+// state where it is being kept.
+
+const fullPark = badgeFor({ relayUp: false, pending: 400, full: true });
+const fullUnsure = badgeFor({ relayUp: null, pending: 400, full: true });
+check("a FULL outbox says captures are being DROPPED", /DROPPED/.test(fullPark.title), fullPark.title);
+check("...and does not call them parked, which is what they are not", !/parked/i.test(fullPark.title), fullPark.title);
+check(
+  "...and says it even with no relay reading, because fullness is a LOCAL fact",
+  /DROPPED/.test(fullUnsure.title),
+  fullUnsure.title
+);
+check(
+  "an ordinary backlog is still described as parked, so the words still differ",
+  /parked/i.test(parking.title) && !/DROPPED/.test(parking.title),
+  parking.title
+);
+check(
+  "a full outbox with the relay UP is draining, not dropping (nothing is lost on that arm)",
+  !/DROPPED/.test(badgeFor({ relayUp: true, pending: 400, full: true }).title),
+  badgeFor({ relayUp: true, pending: 400, full: true }).title
+);
+check(
+  "fullness is not guessed from the depth - the flag is what says it",
+  !/DROPPED/.test(badgeFor({ relayUp: false, pending: 400 }).title),
+  badgeFor({ relayUp: false, pending: 400 }).title
 );
 
 // ------------------------------------------ 1b. what the badge may believe ---
@@ -441,6 +493,71 @@ const HEALTH_URL = `${LOOPBACK}/health`;
     failed ? JSON.stringify(failed.detail) : "no answer"
   );
 
+  // --- the outbox hits its cap (N-1, end to end) ---------------------------
+  //
+  // The pure cells above prove the WORDING. This proves the WIRING: that the
+  // badge's idea of "full" is the same one `enqueue` drops on, rather than a
+  // second copy that could drift from it.
+  const brimming = boot({
+    target,
+    relay: "down",
+    store: { outbox: Array.from({ length: 400 }, (_, i) => ({ table: "895724349", kind: "packets", payload: { i }, bytes: 20 })) },
+  });
+  await settle();
+  await brimming.send({ type: "capture", table: "895724349", kind: "packets", payload: { marker: "one too many" } });
+  await settle();
+  check(
+    "a capture arriving at a full outbox is DROPPED, not queued",
+    (brimming.store.outbox || []).length === 400 && brimming.store.session.captures_dropped === 1,
+    `${(brimming.store.outbox || []).length} in the outbox, ${brimming.store.session.captures_dropped} dropped`
+  );
+  check(
+    "...and the badge SAYS it is dropping them, in the same breath as the count",
+    brimming.badge.text === "400" && /DROPPED/.test(brimming.badge.title),
+    `${JSON.stringify(brimming.badge.text)} - ${brimming.badge.title}`
+  );
+
+  // --- a forced recheck restamps the reading (N-6) --------------------------
+  //
+  // `noteRelay` suppresses a same-answer write inside HEALTH_TTL_MS, so before
+  // this a deliberate Recheck relay that succeeded within 15s left the panel
+  // reading "up · 14s ago" - a button that looked like it had done nothing.
+  const seeded = Date.now() - 5000;
+  const recheck = boot({ target, relay: "up", store: { relay: { up: true, at_ms: seeded } } });
+  await settle();
+  await recheck.send({ type: "status", force: true }, {});
+  await settle();
+  check(
+    "a FORCED recheck restamps the reading, so the panel shows the click happened",
+    (recheck.store.relay || {}).at_ms > seeded,
+    `at_ms moved ${((recheck.store.relay || {}).at_ms || 0) - seeded}ms`
+  );
+
+  const economy = boot({ target, relay: "up", store: { relay: { up: true, at_ms: seeded } } });
+  await settle();
+  await economy.send({ type: "capture", table: "895724349", kind: "packets", payload: { marker: "e" } });
+  await settle();
+  check(
+    "...while an ordinary delivery does NOT, so a busy game is still one write per capture",
+    (economy.store.relay || {}).at_ms === seeded,
+    `at_ms moved ${((economy.store.relay || {}).at_ms || 0) - seeded}ms`
+  );
+
+  // --- no session yet is not a session that started now (N-5) --------------
+  const unstarted = boot({ target, relay: "up" });
+  await settle();
+  const unstartedReport = (await unstarted.send({ type: "status", force: true }, {}) || {}).report;
+  check(
+    "a worker with no session reports no start time, rather than 'started just now'",
+    !!unstartedReport && unstartedReport.session.started_at_ms === 0,
+    unstartedReport ? String(unstartedReport.session.started_at_ms) : "no report"
+  );
+  check(
+    "...and says WHY, which is the field that was written and never read",
+    !!unstartedReport && unstartedReport.session.started_because === "not started",
+    unstartedReport ? String(unstartedReport.session.started_because) : "no report"
+  );
+
   // ------------------------------------ 3b. everything went to the loopback ---
   //
   // THE FIX-WAVE PIN (SHOULD-3). Every worker booted above is swept, so this
@@ -488,6 +605,182 @@ const HEALTH_URL = `${LOOPBACK}/health`;
       foreign.length === 0,
       foreign.join(", ") || `${urls.length} URL(s), all loopback`
     );
+  }
+
+  // --------------------------------------------------- 5. the panel itself ---
+  //
+  // popup.js was loaded by NO test before this wave, which is how it came to
+  // carry a second copy of the badge policy. It gets a DOM stub here rather
+  // than one in mv3_stub.js because it is a different world - a document and a
+  // message port, not a service worker - and exactly one file needs it.
+  const loadPopup = (report) => {
+    const elements = {};
+    const el = (id) => {
+      if (!elements[id]) {
+        elements[id] = { id, textContent: "", className: "", hidden: false, disabled: false, addEventListener() {} };
+      }
+      return elements[id];
+    };
+    const unref = (handle) => {
+      if (handle && typeof handle.unref === "function") handle.unref();
+      return handle;
+    };
+    const context = {
+      document: { getElementById: el },
+      chrome: {
+        runtime: {
+          lastError: null,
+          sendMessage: (message, callback) => callback({ ok: true, report }),
+        },
+        tabs: { query: async () => [{ id: 1 }] },
+      },
+      setTimeout: (fn, ms) => unref(setTimeout(fn, ms)),
+      setInterval: (fn, ms) => unref(setInterval(fn, ms)),
+      Promise,
+      JSON,
+      String,
+      Number,
+      Object,
+      Array,
+      Math,
+      Date,
+      console,
+    };
+    context.globalThis = context;
+    vm.createContext(context);
+    vm.runInContext(fs.readFileSync(path.join(extensionDir, "popup.js"), "utf8"), context, { filename: "popup.js" });
+    return { context, el };
+  };
+
+  const reportWith = (badge, extra) => ({
+    relay_origin: LOOPBACK,
+    relay_up: null,
+    relay_checked_at_ms: null,
+    pending: 0,
+    outbox_max_items: 400,
+    badge,
+    session: emptySession(0, "not started"),
+    now_ms: Date.now(),
+    ...extra,
+  });
+
+  const panel = loadPopup(reportWith(unknown));
+  const popupStateOf = panel.context.stateOf;
+  check("popup.js loads and exposes its state mapping", typeof popupStateOf === "function", typeof popupStateOf);
+
+  if (typeof popupStateOf === "function") {
+    // THE PIN (N-2). The raw fields say "relay down, nothing pending"; the badge
+    // says live. A panel that re-derives the policy locally reads the fields and
+    // answers "offline"; one that reads the worker's answer says live. Nothing
+    // but a second copy of the policy can fail this.
+    const crossed = reportWith(badgeFor({ relayUp: true, pending: 0 }), { relay_up: false, pending: 0 });
+    check(
+      "the panel follows the WORKER's state rather than re-deriving it from the raw fields",
+      popupStateOf(crossed).klass === "state-live",
+      `${popupStateOf(crossed).klass} - ${popupStateOf(crossed).text}`
+    );
+    const crossedBack = reportWith(badgeFor({ relayUp: false, pending: 0 }), { relay_up: true, pending: 9 });
+    check(
+      "...in both directions, so it is reading the field and not coincidentally agreeing",
+      crossedBack && popupStateOf(crossedBack).klass === "state-offline",
+      popupStateOf(crossedBack).klass
+    );
+
+    // Every state the badge can produce has wording. A state the panel does not
+    // know would silently render as "not checked yet", which is the drift this
+    // pin exists to catch.
+    const produced = new Set();
+    for (const relayUp of [true, false, null]) {
+      for (const pending of [0, 3]) {
+        for (const full of [false, true]) produced.add(badgeFor({ relayUp, pending, full }).state);
+      }
+    }
+    const orphaned = [...produced].filter(
+      (name) => name !== "unknown" && popupStateOf(reportWith({ state: name })).klass === "state-unknown"
+    );
+    check(
+      "every state the badge can be in has panel wording of its own",
+      produced.size >= 5 && orphaned.length === 0,
+      `${produced.size} states: ${[...produced].join(", ")}${orphaned.length ? ` | orphaned: ${orphaned.join(", ")}` : ""}`
+    );
+    check(
+      "an unrecognised state degrades to 'not checked yet' rather than throwing",
+      popupStateOf(reportWith({ state: "from-a-future-version" })).klass === "state-unknown"
+    );
+  }
+
+  // The counters are per browser SESSION and they sit under a per-TABLE
+  // heading, so the label carries the scope (N-3).
+  const popupHtml = fs.readFileSync(path.join(extensionDir, "popup.html"), "utf8");
+  for (const label of ["Captures delivered", "Snapshots taken"]) {
+    check(
+      `the panel's "${label}" label says which scope it counts`,
+      new RegExp(`${label} \\(session\\)`).test(popupHtml),
+      (popupHtml.match(new RegExp(`${label}[^<]*`)) || [])[0]
+    );
+  }
+
+  // --- contrast, computed rather than eyeballed (N-4) ----------------------
+  const luminance = (hex) => {
+    const match = /^#([0-9a-f]{6})$/i.exec(String(hex || "").trim());
+    if (!match) return null;
+    const value = parseInt(match[1], 16);
+    const channel = (byte) => {
+      const c = byte / 255;
+      return c <= 0.03928 ? c / 12.92 : Math.pow((c + 0.055) / 1.055, 2.4);
+    };
+    return 0.2126 * channel((value >> 16) & 255) + 0.7152 * channel((value >> 8) & 255) + 0.0722 * channel(value & 255);
+  };
+  const contrast = (a, b) => {
+    const pair = [luminance(a), luminance(b)];
+    if (pair[0] === null || pair[1] === null) return null;
+    const [hi, lo] = pair.sort((p, q) => q - p);
+    return (hi + 0.05) / (lo + 0.05);
+  };
+
+  const css = fs.readFileSync(path.join(extensionDir, "popup.css"), "utf8");
+  const rootBlocks = css.match(/:root\s*\{[^}]*\}/g) || [];
+  check(
+    "popup.css declares exactly two palettes - light, and the dark override",
+    rootBlocks.length === 2,
+    `${rootBlocks.length} :root block(s)`
+  );
+  if (rootBlocks.length === 2) {
+    const varsIn = (block) => {
+      const out = {};
+      for (const [, name, value] of block.matchAll(/(--[a-z-]+)\s*:\s*([^;]+);/g)) out[name] = value.trim();
+      return out;
+    };
+    const light = varsIn(rootBlocks[0]);
+    const dark = { ...light, ...varsIn(rootBlocks[1]) };
+    const declaration = (block, property) => {
+      const match = new RegExp(`(?:^|[;{\\s])${property}\\s*:\\s*([^;]+);`).exec(block);
+      return match ? match[1].trim() : null;
+    };
+    const resolve = (value, palette) => {
+      const match = /^var\((--[a-z-]+)\)$/.exec(String(value || "").trim());
+      return match ? palette[match[1]] : value;
+    };
+    // The PRIMARY button rule only - `button.secondary`, `:focus-visible` and
+    // `:disabled` all start with something other than whitespace-or-brace.
+    const buttonRule = (css.match(/\nbutton\s*\{[^}]*\}/) || [])[0] || "";
+    const bodyRule = (css.match(/\nbody\s*\{[^}]*\}/) || [])[0] || "";
+    const AA = 4.5;
+    for (const [scheme, palette] of [["light", light], ["dark", dark]]) {
+      for (const [what, rule] of [["primary button", buttonRule], ["body text", bodyRule]]) {
+        const ratio = contrast(
+          resolve(declaration(rule, "color"), palette),
+          resolve(declaration(rule, "background"), palette)
+        );
+        check(
+          `the ${what} clears WCAG AA in the ${scheme} scheme`,
+          ratio !== null && ratio >= AA,
+          ratio === null
+            ? `unreadable: color=${declaration(rule, "color")} background=${declaration(rule, "background")}`
+            : `${ratio.toFixed(2)}:1 (AA wants ${AA}:1)`
+        );
+      }
+    }
   }
 
   // ------------------------------------------- 4. no new permissions, ever ---

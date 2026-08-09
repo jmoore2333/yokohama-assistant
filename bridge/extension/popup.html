@@ -16,9 +16,13 @@
     <dl id="detail">
       <dt>Table</dt>
       <dd id="table">—</dd>
-      <dt>Captures delivered</dt>
+      <!-- "(session)" is load-bearing, not decoration (review N-3): these
+           counters are per BROWSER SESSION, and they sit directly under a
+           per-TABLE heading. Two tables in one session render both their
+           captures under whichever table was seen last. -->
+      <dt>Captures delivered (session)</dt>
       <dd id="delivered">—</dd>
-      <dt>Snapshots taken</dt>
+      <dt>Snapshots taken (session)</dt>
       <dd id="snapshots">—</dd>
       <dt>Outbox</dt>
       <dd id="outbox">—</dd>
