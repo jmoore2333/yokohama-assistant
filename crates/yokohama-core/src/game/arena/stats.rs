@@ -365,6 +365,41 @@ impl Contestant {
         leaf: LeafRule::HandOff,
     };
 
+    /// Parse a contestant SPEC — `<name>` or `<name>:<key>=<value>,…` — into the
+    /// contestant it names. **THE single-sourced grammar** (Phase 3.5c W1-B):
+    /// `examples/arena.rs` parses its `<x>`/`<y>` through here, and the CLI's
+    /// bot seats (W5) and the probe's contestant arm (Task C) are its other
+    /// consumers, so a spec typed at one of them means the same thing at all
+    /// three. The body and its reasoning live in [`super::grammar`].
+    ///
+    /// **UNKNOWN IS AN ERROR at every level** — an unknown contestant name, an
+    /// unknown knob, an unknown knob VALUE, or any knob at all on a contestant
+    /// that has none. Nothing is silently defaulted or silently ignored,
+    /// because a swallowed knob would put a published figure under knobs the
+    /// cell did not run. Every error NAMES what it saw.
+    ///
+    /// The signature deliberately differs from [`RolloutPolicy::from_str_name`]'s
+    /// `Option`: a rung name either is or is not one of three literals, while
+    /// this grammar has many distinct ways to be wrong and the caller cannot
+    /// reconstruct which one fired — so the refusal carries its own text, which
+    /// is user-facing in the runner.
+    ///
+    /// ```
+    /// use yokohama_core::Contestant;
+    /// // A bare name is that controller's SHIPPED default…
+    /// assert_eq!(Contestant::from_str_name("lookahead-v1"), Ok(Contestant::LOOKAHEAD_V1_DEFAULT));
+    /// // …and for S1 that means UNCAPPED: an absent cap is not any set cap.
+    /// assert!(matches!(
+    ///     Contestant::from_str_name("lookahead-v1"),
+    ///     Ok(Contestant::LookaheadV1 { cap: None, .. })
+    /// ));
+    /// assert!(Contestant::from_str_name("lookahead-v1:cap=0").is_err());
+    /// assert!(Contestant::from_str_name("greedy-v1:zzz=1").is_err());
+    /// ```
+    pub fn from_str_name(spec: &str) -> Result<Self, String> {
+        super::grammar::parse_contestant(spec)
+    }
+
     /// What this contestant CALLS itself, for provenance and the report echo —
     /// routed to the controller's own descriptor and never composed here.
     ///

@@ -40,6 +40,12 @@
 //! setup-identical — they resolve a dealt Order pair by different Keep rules —
 //! and both the header and the report echo say which kind of cell ran.
 //!
+//! THE GRAMMAR ITSELF LIVES IN CORE since Phase 3.5c W1-B: this runner parses
+//! `<x>`/`<y>` through [`Contestant::from_str_name`] (`game/arena/grammar.rs`),
+//! which is also what the CLI's bot seats and the evaluator probe call, so a
+//! spec typed at any of the three means the same thing — and unknown names,
+//! knobs and knob VALUES are errors there exactly as they were here.
+//!
 //! THE TWO AXES (3.4 spec §0.3). Every `cell` invocation now prints, per SIDE:
 //! the realized scored-successor spend with its root share and cap counters
 //! (deterministic, off the `CellReport`), and the realized in-cell µs/decision
@@ -208,212 +214,6 @@ fn parse_u64(raw: &str) -> Result<u64, String> {
         None => cleaned.parse::<u64>(),
     };
     parsed.map_err(|e| format!("{raw:?} is not a u64: {e}"))
-}
-
-/// The short alias for the S2 diagnostic arm.
-///
-/// Its provenance name is `lookahead::ATOMIC_DIAG_CONTROLLER`
-/// (`lookahead-atomic-diag-v1`) and BOTH spellings parse — the canonical one so
-/// a cell can be typed from what a corpus record says, this one because the
-/// runner grammar the spec §5.3 brief names is the short form and a name that
-/// has to be looked up is a name that gets mistyped.
-const ATOMIC_DIAG_ALIAS: &str = "atomic-diag-v1";
-
-/// One contestant: a rung (with the 3.2 knob grammar, unchanged) or one of the
-/// 3.3 evaluator controllers.
-///
-/// UNKNOWN IS AN ERROR at every level — an unknown name, an unknown knob, or a
-/// knob on a contestant that has none. Same discipline as `split_args`'s unknown
-/// flag, and for the same reason: a silently-ignored knob would put a cell's
-/// published figure under knobs it did not run.
-///
-/// The evaluator names come from their controller consts, never hand-typed here,
-/// so the grammar cannot drift from what provenance records.
-fn parse_contestant(spec: &str) -> Result<Contestant, String> {
-    let (name, knobs) = match spec.split_once(':') {
-        Some((name, knobs)) => (name, Some(knobs)),
-        None => (spec, None),
-    };
-
-    if name == greedy::GREEDY_CONTROLLER {
-        let mut m = greedy::DEFAULT_RETREAT_SAMPLES;
-        for (key, value) in knob_pairs(knobs)? {
-            match key.as_str() {
-                "m" => m = parse_knob_u8(&key, &value)?,
-                other => return Err(format!("unknown knob {other:?} for {name} (m)")),
-            }
-        }
-        return Ok(Contestant::GreedyV1 { m });
-    }
-
-    if name == lookahead::LOOKAHEAD_CONTROLLER {
-        let (mut b, mut k, mut m) = (
-            lookahead::DEFAULT_BEAM,
-            lookahead::DEFAULT_WORLDS,
-            greedy::DEFAULT_RETREAT_SAMPLES,
-        );
-        // `None` unless typed: the shipped rung is the UNCAPPED one, and the
-        // default must stay the thing every 3.3 figure was measured on.
-        let mut cap: Option<u32> = None;
-        for (key, value) in knob_pairs(knobs)? {
-            match key.as_str() {
-                "b" => {
-                    b = value.parse::<u16>().map_err(|e| format!("b must be a beam width: {e}"))?;
-                    if b == 0 {
-                        return Err("b=0 is not a beam".to_string());
-                    }
-                }
-                "k" => k = parse_knob_u8(&key, &value)?,
-                "m" => m = parse_knob_u8(&key, &value)?,
-                "cap" => cap = Some(parse_knob_cap(&value)?),
-                other => {
-                    return Err(format!("unknown knob {other:?} for {name} (b | k | m | cap)"))
-                }
-            }
-        }
-        return Ok(Contestant::LookaheadV1 { b, k, m, cap });
-    }
-
-    if name == mcts::MCTS_CONTROLLER {
-        let (mut c_ppm, mut scale, mut m, mut leaf) = (
-            mcts::DEFAULT_EXPLORATION_PPM,
-            mcts::DEFAULT_SQUASH_SCALE,
-            greedy::DEFAULT_RETREAT_SAMPLES,
-            mcts::LeafRule::default(),
-        );
-        let mut cap: Option<u32> = None;
-        for (key, value) in knob_pairs(knobs)? {
-            match key.as_str() {
-                "cap" => cap = Some(parse_knob_cap(&value)?),
-                "c" => {
-                    c_ppm = value
-                        .parse::<u32>()
-                        .map_err(|e| format!("c must be parts per million: {e}"))?;
-                }
-                "scale" => {
-                    scale =
-                        value.parse::<i64>().map_err(|e| format!("scale must be an integer: {e}"))?;
-                    if scale <= 0 {
-                        return Err(format!("scale={scale} is not a squash scale"));
-                    }
-                }
-                "m" => m = parse_knob_u8(&key, &value)?,
-                // An unknown knob VALUE is an error on the same grounds as an
-                // unknown knob NAME: a silently-defaulted leaf rule would put a
-                // published cell under a mechanism it did not run.
-                "leaf" => {
-                    leaf = mcts::LeafRule::from_str_name(&value).ok_or_else(|| {
-                        format!(
-                            "unknown leaf mode {value:?} ({} | {} | {})",
-                            mcts::LeafRule::HandOff.as_str(),
-                            mcts::LeafRule::MidTurnDiag.as_str(),
-                            mcts::LeafRule::ConstantDiag.as_str(),
-                        )
-                    })?;
-                }
-                other => {
-                    return Err(format!(
-                        "unknown knob {other:?} for {name} (cap | c | scale | m | leaf)"
-                    ))
-                }
-            }
-        }
-        return Ok(Contestant::MctsV1 { cap, c_ppm, scale, m, leaf });
-    }
-
-    if name == lookahead::ATOMIC_DIAG_CONTROLLER || name == ATOMIC_DIAG_ALIAS {
-        let (mut d, mut k, mut m) = (
-            lookahead::DEFAULT_ATOMIC_DEPTH,
-            lookahead::DEFAULT_WORLDS,
-            greedy::DEFAULT_RETREAT_SAMPLES,
-        );
-        for (key, value) in knob_pairs(knobs)? {
-            match key.as_str() {
-                "d" => {
-                    d = parse_knob_u8(&key, &value)?;
-                    if d == 0 {
-                        return Err("d=0 searches nothing".to_string());
-                    }
-                }
-                "k" => k = parse_knob_u8(&key, &value)?,
-                "m" => m = parse_knob_u8(&key, &value)?,
-                other => return Err(format!("unknown knob {other:?} for {name} (d | k | m)")),
-            }
-        }
-        return Ok(Contestant::AtomicDiag { d, k, m });
-    }
-
-    parse_policy(name, knobs).map(Contestant::Policy)
-}
-
-/// `key=value` pairs from a `:`-suffix knob group, or an empty list when there
-/// is none. Empty segments (a trailing comma) are skipped; a segment without
-/// `=` is an error.
-fn knob_pairs(knobs: Option<&str>) -> Result<Vec<(String, String)>, String> {
-    let Some(knobs) = knobs else { return Ok(Vec::new()) };
-    knobs
-        .split(',')
-        .filter(|k| !k.is_empty())
-        .map(|knob| {
-            knob.split_once('=')
-                .map(|(k, v)| (k.to_string(), v.to_string()))
-                .ok_or_else(|| format!("knob {knob:?} is not <key>=<value>"))
-        })
-        .collect()
-}
-
-fn parse_knob_u8(key: &str, value: &str) -> Result<u8, String> {
-    value.parse::<u8>().map_err(|e| format!("{key} must be a small count: {e}"))
-}
-
-/// The shared scored-successor budget (spec §3.4). `cap=0` is refused rather
-/// than silently meaning "uncapped": OMITTING the knob is how a caller says
-/// uncapped, and a budget of zero would starve the mandatory root pass at every
-/// decision — a configuration nothing in the experiment wants and everything
-/// downstream would have to caveat.
-fn parse_knob_cap(value: &str) -> Result<u32, String> {
-    let cap = value.parse::<u32>().map_err(|e| format!("cap must be a scored-successor budget: {e}"))?;
-    if cap == 0 {
-        return Err("cap=0 starves every decision; omit the knob for an uncapped seat".to_string());
-    }
-    Ok(cap)
-}
-
-/// A policy name, optionally with `:p=<ppm>,k=<n>` knobs.
-///
-/// The knob form exists so the two `FamilyWeighted` settings §0-R3(i)'s
-/// guaranteed edge is built from are reachable from a command line without a
-/// second enum. Knobs on a rung that has none is an error, not a silent ignore.
-fn parse_policy(name: &str, knobs: Option<&str>) -> Result<RolloutPolicy, String> {
-    let base = RolloutPolicy::from_str_name(name).ok_or_else(|| {
-        format!(
-            "unknown contestant {name:?} (rungs: uniform | retreat-averse | family-weighted; \
-             evaluator: {} | {} | {ATOMIC_DIAG_ALIAS}; architecture: {})",
-            greedy::GREEDY_CONTROLLER,
-            lookahead::LOOKAHEAD_CONTROLLER,
-            mcts::MCTS_CONTROLLER,
-        )
-    })?;
-    let Some(knobs) = knobs else { return Ok(base) };
-
-    let RolloutPolicy::FamilyWeighted { mut retreat_ppm, mut recovery_min_of } = base else {
-        return Err(format!("policy {name:?} has no knobs, but {knobs:?} was given"));
-    };
-    for (key, value) in knob_pairs(Some(knobs))? {
-        match key.as_str() {
-            "p" => {
-                retreat_ppm = value
-                    .parse::<u32>()
-                    .map_err(|e| format!("p must be parts per million: {e}"))?;
-                if retreat_ppm > 1_000_000 {
-                    return Err(format!("p={retreat_ppm} exceeds 1_000_000 ppm"));
-                }
-            }
-            "k" => recovery_min_of = parse_knob_u8(&key, &value)?,
-            other => return Err(format!("unknown knob {other:?} (p | k)")),
-        }
-    }
-    Ok(RolloutPolicy::FamilyWeighted { retreat_ppm, recovery_min_of })
 }
 
 // ---------------------------------------------------------------------------
@@ -627,8 +427,12 @@ fn cmd_cell(args: &[String]) -> Result<(), String> {
     }
     let name = positional[0].clone();
     let players: u8 = positional[1].parse().map_err(|e| format!("<players>: {e}"))?;
-    let x = parse_contestant(&positional[2])?;
-    let y = parse_contestant(&positional[3])?;
+    // The contestant grammar lives in CORE since Phase 3.5c W1-B
+    // (`Contestant::from_str_name`, `game/arena/grammar.rs`) — this runner, the
+    // CLI's bot seats and the probe all parse the same specs through the same
+    // code, and its refusals are the user-facing text they always were.
+    let x = Contestant::from_str_name(&positional[2])?;
+    let y = Contestant::from_str_name(&positional[3])?;
     let units: u32 = positional[4].parse().map_err(|e| format!("<units>: {e}"))?;
     let master = master_from(&flags)?;
     let emit: Option<PathBuf> = flags.get("emit").map(PathBuf::from);
