@@ -181,6 +181,10 @@ fn main() {
 // argv
 // ---------------------------------------------------------------------------
 
+/// [`split_args`]' three products: the positionals, the single-valued flags,
+/// and the repeatable ones (each with every value it was given, in argv order).
+type SplitArgs = (Vec<String>, BTreeMap<String, String>, BTreeMap<String, Vec<String>>);
+
 /// Split argv into positionals, `--flag [value]` pairs, and REPEATABLE flags.
 ///
 /// An unknown flag is an ERROR, never a silent no-op — `examples/arena`'s rule,
@@ -199,7 +203,7 @@ fn split_args(
     valued: &[&str],
     bare: &[&str],
     multi: &[&str],
-) -> Result<(Vec<String>, BTreeMap<String, String>, BTreeMap<String, Vec<String>>), String> {
+) -> Result<SplitArgs, String> {
     let mut positional = Vec::new();
     let mut flags: BTreeMap<String, String> = BTreeMap::new();
     let mut repeated: BTreeMap<String, Vec<String>> = BTreeMap::new();
@@ -580,8 +584,15 @@ impl CandidateColumn {
     /// reason: a silently-dropped column would print a report missing the very
     /// row the run was made to look at.
     fn parse_list(raw: &str) -> Result<Vec<Self>, String> {
-        let _ = raw;
-        unimplemented!("the candidate-column grammar lands in the GREEN commit")
+        raw.split(',')
+            .filter(|s| !s.is_empty())
+            .map(|name| match name {
+                "postclaim" => Ok(CandidateColumn::PostClaim),
+                other => Err(format!(
+                    "unknown --candidate-columns entry {other:?} (postclaim)"
+                )),
+            })
+            .collect()
     }
 }
 
@@ -620,8 +631,71 @@ struct ScoreTableSpec {
 /// its lengths against `Feature::COUNT` rather than against a literal 16, so a
 /// feature admission cannot leave this parser accepting a stale width.
 fn parse_score_table(spec: &str) -> Result<ScoreTableSpec, String> {
-    let _ = spec;
-    unimplemented!("the --score-table grammar lands in the GREEN commit")
+    const FORMS: &str =
+        "(v1 | v2-draft | <name>=<16 comma-separated i64>/<16 comma-separated i64>)";
+
+    match spec {
+        "v1" => {
+            return Ok(ScoreTableSpec { name: "v1".to_string(), table: WeightTable::V1 })
+        }
+        "v2-draft" => {
+            return Ok(ScoreTableSpec {
+                name: "v2-draft".to_string(),
+                table: WeightTable::V2_DRAFT,
+            })
+        }
+        _ => {}
+    }
+
+    let Some((name, vectors)) = spec.split_once('=') else {
+        return Err(format!("unknown --score-table {spec:?} {FORMS}"));
+    };
+    if name.is_empty() {
+        return Err(format!(
+            "--score-table {spec:?} has an empty name before the `=`; a candidate needs a name \
+             to be reported under {FORMS}"
+        ));
+    }
+    let Some((early, late)) = vectors.split_once('/') else {
+        return Err(format!(
+            "--score-table {spec:?} names no LATE vector: the two vectors are separated by `/` \
+             {FORMS}"
+        ));
+    };
+
+    // `Feature::COUNT`, never a literal 16: a future feature admission moves the
+    // width, and a parser holding a stale literal would accept exactly the
+    // tables that no longer fit the vectors.
+    let parse_vector = |raw: &str, which: &str| -> Result<[i64; Feature::COUNT], String> {
+        let entries: Vec<&str> = raw.split(',').collect();
+        if entries.len() != Feature::COUNT {
+            return Err(format!(
+                "--score-table {spec:?}: the {which} vector has {} entries, and Feature::ALL has \
+                 {} — every weight is named or none is",
+                entries.len(),
+                Feature::COUNT,
+            ));
+        }
+        let mut out = [0i64; Feature::COUNT];
+        for (slot, entry) in entries.iter().enumerate() {
+            out[slot] = entry.trim().parse::<i64>().map_err(|e| {
+                format!(
+                    "--score-table {spec:?}: the {which} vector's entry {} ({entry:?}) is not an \
+                     i64: {e}",
+                    slot + 1,
+                )
+            })?;
+        }
+        Ok(out)
+    };
+
+    Ok(ScoreTableSpec {
+        name: name.to_string(),
+        table: WeightTable {
+            early: parse_vector(early, "EARLY")?,
+            late: parse_vector(late, "LATE")?,
+        },
+    })
 }
 
 /// Which half of the L2 split a game's cells belong to.
@@ -640,8 +714,11 @@ enum Split {
 
 impl Split {
     fn of(game: u32) -> Self {
-        let _ = game;
-        unimplemented!("the L2 split lands in the GREEN commit")
+        if game.is_multiple_of(2) {
+            Split::Fit
+        } else {
+            Split::HeldOut
+        }
     }
 
     fn name(self) -> &'static str {
@@ -654,15 +731,23 @@ impl Split {
     /// This game's position among the games on its own side — the CLUSTER index
     /// the bootstrap resamples over, since `auc_weighted` indexes `mult` by the
     /// cluster id it is handed.
+    ///
+    /// One expression serves both sides because halving maps `0,2,4,…` and
+    /// `1,3,5,…` onto `0,1,2,…` alike.
     fn cluster(self, game: u32) -> u32 {
-        let _ = game;
-        unimplemented!("the L2 split lands in the GREEN commit")
+        debug_assert_eq!(Self::of(game), self, "game {game} is not on the {} side", self.name());
+        game / 2
     }
 
-    /// How many clusters this side holds out of `games` generated.
+    /// How many clusters this side holds out of `games` generated. An odd game
+    /// count leaves the extra game on the FIT side, which is what the even-index
+    /// rule implies and is stated here so the resample population is read off
+    /// the design rather than counted out of the rows.
     fn clusters(self, games: u32) -> usize {
-        let _ = games;
-        unimplemented!("the L2 split lands in the GREEN commit")
+        match self {
+            Split::Fit => games.div_ceil(2) as usize,
+            Split::HeldOut => (games / 2) as usize,
+        }
     }
 }
 
@@ -693,8 +778,37 @@ fn candidate_total(
     terminal: bool,
     shipped_total: f64,
 ) -> f64 {
-    let _ = (view, me, structure, table, progress, terminal, shipped_total);
-    unimplemented!("the candidate re-weighting lands in the GREEN commit")
+    if terminal {
+        return shipped_total;
+    }
+    let mut total: i64 = 0;
+    for feature in Feature::ALL {
+        let (early, late) = table.get(feature);
+        let weight = interpolate(early, late, progress);
+        let mine = structure.value_of(me, feature);
+        // `eval::opponent_extreme`'s rule, reproduced: maximize `weight · value`
+        // over the non-dummy opponents and subtract the winner's RAW value, with
+        // ties (including every tie at `weight == 0`) keeping the FIRST opponent
+        // in seat order. Unexercised at 2P, where the maximum is over one
+        // opponent — but the corpora are not the only thing this runs on.
+        let mut theirs: Option<i64> = None;
+        for other in &view.players {
+            if other.id == me.id || other.id.is_dummy() {
+                continue;
+            }
+            let value = structure.value_of(other, feature);
+            let improves = match theirs {
+                None => true,
+                Some(current) => weight.saturating_mul(value) > weight.saturating_mul(current),
+            };
+            if improves {
+                theirs = Some(value);
+            }
+        }
+        let theirs = theirs.unwrap_or(0);
+        total = total.saturating_add(weight.saturating_mul(mine.saturating_sub(theirs)));
+    }
+    total as f64
 }
 
 /// The ROWS_LEN values a single view contributes, relative and absolute.
@@ -707,6 +821,7 @@ fn candidate_total(
 /// convention, recorded rather than assumed away. AUC is a separation
 /// statistic, so a feature the plain max orients "backwards" reads below 0.5
 /// and is still measured, just from the other side.
+#[allow(clippy::too_many_arguments)]
 fn row_values(
     view: &PlayerView,
     rules: &Rules,
@@ -1343,8 +1458,8 @@ fn snapshot_game(
                 acc.rel[slot] += rel[slot];
                 acc.abs[slot] += abs[slot];
             }
-            for slot in 0..candidates.len() {
-                acc.cand[slot] += cand[slot];
+            for (target, value) in acc.cand.iter_mut().zip(cand.iter()) {
+                *target += value;
             }
             corpus.snapshots += 1;
         }
@@ -1646,6 +1761,27 @@ fn report_features(
         table[0][1].cells, table[0][1].winners,
         table[0][2].cells, table[0][2].winners,
     );
+    // Printed only when a `--candidate-columns` row is present, so an
+    // argument-free run stays byte-identical to every recorded appendix. The
+    // marking is load-bearing: these rows sit in the same table as the sixteen
+    // and ship in nothing, and a reader who takes one for a feature would read
+    // the whole report as describing an evaluator that does not exist.
+    let candidate_columns: Vec<&str> = corpus
+        .rows
+        .iter()
+        .filter_map(|r| match r {
+            Row::Candidate(c) => Some(c.name()),
+            _ => None,
+        })
+        .collect();
+    if !candidate_columns.is_empty() {
+        println!(
+            "  CANDIDATE COLUMNS — measured here, shipped by NOTHING, no weight and so no \
+             disposition; Feature::ALL is still {}: {}",
+            Feature::COUNT,
+            candidate_columns.join(", "),
+        );
+    }
     println!(
         "  {:<28} {:>4} {:<22} {:<16} {:<22} {:>4} {:<22} {:<16} shape",
         "row", "w_e", "EARLY auc [95%]", "early-disp", "MID auc [95%]", "w_l",
@@ -1717,8 +1853,88 @@ struct SplitColumn {
 
 /// Collect one candidate's cells for one stage and one side of the split.
 fn split_column(corpus: &Corpus, candidate: usize, stage: Stage, split: Split) -> SplitColumn {
-    let _ = (corpus, candidate, stage, split);
-    unimplemented!("the split columns land in the GREEN commit")
+    let mut rows: Vec<(f64, u32, bool)> = corpus
+        .cells
+        .iter()
+        .filter(|c| c.stage == stage && Split::of(c.game) == split)
+        .map(|c| (c.cand[candidate], split.cluster(c.game), c.label))
+        .collect();
+    rows.sort_by(|a, b| a.0.partial_cmp(&b.0).expect("candidate totals are finite"));
+    let winners = rows.iter().filter(|r| r.2).count();
+    SplitColumn { rows, clusters: split.clusters(corpus.games), winners }
+}
+
+/// This candidate's own resample stream.
+///
+/// Derived from the DESIGN — the run's own design-derived `resample_seed` and
+/// the candidate's WEIGHT-TABLE IDENTITY — and never from an outcome. The
+/// identity rather than the position deliberately: a candidate re-run ALONE, to
+/// check one row of a nineteen-cell grid, then reproduces the interval it was
+/// quoted with, which a position-keyed stream would not.
+fn candidate_resample_seed(resample_seed: u64, table: &WeightTable) -> u64 {
+    mix64(resample_seed ^ mix64(weight_table_identity(table) as u64))
+}
+
+/// The percentile interval for the three HELD-OUT stage columns of ONE
+/// candidate.
+///
+/// ONE multiplicity draw per replicate, reused across the three stages —
+/// `report_features`'s rule, for its reason: the cluster resample is a property
+/// of the replicate, not of the column, so drawing per stage would make a
+/// candidate's own stage rows mutually incomparable. Across CANDIDATES the
+/// streams differ by construction (see [`candidate_resample_seed`]), so two
+/// candidates' intervals are not paired — stated in the block header rather than
+/// left for a reader to assume either way.
+fn held_out_intervals(
+    columns: &[SplitColumn; 3],
+    bootstrap: u32,
+    seed: u64,
+) -> [(f64, f64); 3] {
+    let clusters = columns[0].clusters;
+    if clusters == 0 || bootstrap == 0 {
+        return [(f64::NAN, f64::NAN); 3];
+    }
+    let mut rng = ChaCha8Rng::seed_from_u64(seed);
+    let mut replicates: [Vec<f64>; 3] = [
+        Vec::with_capacity(bootstrap as usize),
+        Vec::with_capacity(bootstrap as usize),
+        Vec::with_capacity(bootstrap as usize),
+    ];
+    let mut mult = vec![0u32; clusters];
+    for _ in 0..bootstrap {
+        mult.iter_mut().for_each(|m| *m = 0);
+        for _ in 0..clusters {
+            mult[rng.gen_range(0..clusters)] += 1;
+        }
+        for (s, column) in columns.iter().enumerate() {
+            if let Some(a) = auc_weighted(&column.rows, &mult) {
+                replicates[s].push(a);
+            }
+        }
+    }
+    let mut out = [(f64::NAN, f64::NAN); 3];
+    for (s, reps) in replicates.iter_mut().enumerate() {
+        reps.sort_by(|a, b| a.partial_cmp(b).expect("AUCs are finite"));
+        if reps.is_empty() {
+            continue;
+        }
+        out[s] = (
+            reps[nearest_rank_index(reps.len(), 25, 1000)],
+            reps[nearest_rank_index(reps.len(), 975, 1000)],
+        );
+    }
+    out
+}
+
+/// One AUC point estimate, or the two honest non-answers.
+fn point_render(column: &SplitColumn) -> String {
+    if is_constant(&column.rows) {
+        return "constant".to_string();
+    }
+    match auc_weighted(&column.rows, &vec![1u32; column.clusters]) {
+        None => "--".to_string(),
+        Some(p) => format!("{p:.4}"),
+    }
 }
 
 /// The whole `(e)` block as one deterministic string.
@@ -1732,8 +1948,109 @@ fn render_candidate_tables(
     bootstrap: u32,
     resample_seed: u64,
 ) -> String {
-    let _ = (corpus, corpus_weights, candidates, bootstrap, resample_seed);
-    unimplemented!("the candidate block lands in the GREEN commit")
+    use std::fmt::Write;
+
+    let mut out = String::new();
+    let corpus_identity = weight_table_identity(corpus_weights) as u64;
+    let fit_games = Split::Fit.clusters(corpus.games);
+    let held_games = Split::HeldOut.clusters(corpus.games);
+
+    let _ = writeln!(
+        out,
+        "\n--- (e) candidate weight tables: EVAL TOTAL under a CANDIDATE table, fit/held-out by \
+         game ---"
+    );
+    let _ = writeln!(
+        out,
+        "  L2 split: fit = EVEN generation index (0,2,4,...) · held-out = ODD (1,3,5,...) — a \
+         function of the generation index ALONE, never of a cell's value or label"
+    );
+    let _ = writeln!(out, "  games: fit {fit_games} · held-out {held_games}");
+    let _ = writeln!(
+        out,
+        "  HELD-OUT is the QUOTABLE evidence figure; fit is printed for the GAP only (fit far \
+         above held-out is the overfit signature)"
+    );
+    let _ = writeln!(
+        out,
+        "  bootstrap B={bootstrap}, game-clustered, on the HELD-OUT columns only; one draw per \
+         replicate is shared by a candidate's three stages, so those are jointly resampled and \
+         two DIFFERENT candidates' intervals are not paired"
+    );
+    let _ = writeln!(
+        out,
+        "  each candidate's stream = mix64(run resample_seed ^ mix64(weight identity)) — the \
+         DESIGN and the candidate's own identity, never the outcomes; keyed on IDENTITY not \
+         position, so re-running one candidate alone reproduces its interval"
+    );
+    let _ = writeln!(
+        out,
+        "  candidates are EVALUATED on this corpus and NEVER generate one (protocol §2: \
+         incumbent-play corpora only) — the games above were played under the header's \
+         contestant and weight table, identity {corpus_identity:#018x}"
+    );
+
+    for (ordinal, candidate) in candidates.iter().enumerate() {
+        let identity = weight_table_identity(&candidate.table) as u64;
+        let seed = candidate_resample_seed(resample_seed, &candidate.table);
+        let fit: Vec<SplitColumn> =
+            STAGES.iter().map(|s| split_column(corpus, ordinal, *s, Split::Fit)).collect();
+        let held: [SplitColumn; 3] = [
+            split_column(corpus, ordinal, Stage::Early, Split::HeldOut),
+            split_column(corpus, ordinal, Stage::Mid, Split::HeldOut),
+            split_column(corpus, ordinal, Stage::Late, Split::HeldOut),
+        ];
+        let intervals = held_out_intervals(&held, bootstrap, seed);
+
+        let _ = writeln!(
+            out,
+            "\n  [{}] candidate={}  identity={identity:#018x}  vs corpus table: {}  \
+             resample_seed={seed:#018x}",
+            ordinal + 1,
+            candidate.name,
+            if identity == corpus_identity { "SAME" } else { "DIFFERENT" },
+        );
+        let _ = writeln!(out, "      early={:?}", candidate.table.early);
+        let _ = writeln!(out, "      late ={:?}", candidate.table.late);
+        let _ = writeln!(
+            out,
+            "      hand-split ordering (L14 core>on_board>excess, both vectors): {}",
+            if yokohama_core::game::eval_screen::hand_split_ordering_holds(&candidate.table) {
+                "ok"
+            } else {
+                "VIOLATED — protocol §4.2 forbids relaxing it at any ladder rung"
+            },
+        );
+        let _ = writeln!(
+            out,
+            "      {:<7} {:>9} {:>9}   {:<26} {:>13}",
+            "stage", "fit auc", "held auc", "held-out 95% [lo, hi]", "cells fit/held",
+        );
+        for stage in STAGES {
+            let s = stage.index();
+            let (lo, hi) = intervals[s];
+            let _ = writeln!(
+                out,
+                "      {:<7} {:>9} {:>9}   {:<26} {:>13}",
+                stage.name(),
+                point_render(&fit[s]),
+                point_render(&held[s]),
+                if lo.is_nan() {
+                    "--  (no interval)".to_string()
+                } else {
+                    format!("[{lo:.4}, {hi:.4}]")
+                },
+                format!(
+                    "{}/{} ({}w/{}w)",
+                    fit[s].rows.len(),
+                    held[s].rows.len(),
+                    fit[s].winners,
+                    held[s].winners,
+                ),
+            );
+        }
+    }
+    out
 }
 
 // ---------------------------------------------------------------------------
