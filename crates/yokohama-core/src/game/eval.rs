@@ -681,16 +681,21 @@ impl WeightTable {
     /// that re-prices the assistant triple past the ordering fails at test time
     /// rather than four hundred games into a screen.
     ///
-    /// **The scenarios that guard the moved slots** land red-then-green against
-    /// the commit that moves them (protocol §4.2 rung L3), in
-    /// `tests/scenario_suite.rs`: *early engine over early VP* for round 1's
-    /// re-mix (and, unchanged, for round 2's extension of it), *warehouse decay
-    /// flattened* for the flatten, and *late bonus re-pricing: tokens over
-    /// church* for round 2's late crossing — each with the round's own edit
+    /// **The scenarios that guard the moved slots** (protocol §4.2 rung L3), in
+    /// `tests/scenario_suite.rs`: *early engine over early VP* landed
+    /// red-then-green against round 1's re-mix, *warehouse decay flattened*
+    /// against the flatten, and *late bonus re-pricing: tokens over church*
+    /// against round 2's late crossing — each with the round's own edit
     /// REVERTED as its counterfactual rather than a zeroed term. Round 2's two
-    /// minor components (the hand-size softening, the early extension) carry no
-    /// discriminating fixture of their own and are not claimed to: that scenario's
-    /// doc says which rung each of them rides instead.
+    /// minor components carry no red-then-green fixture of their own and are
+    /// not claimed to (the round's pre-registered change-SET reading, ledger
+    /// ROUND-2 row): the EARLY extension's slots are property-and-red-mutation
+    /// guarded by the early-engine scenario as it now runs against this draft —
+    /// which was already green before the extension, so that is direction
+    /// coverage, not a round-2 red — and the hand-size softening is
+    /// scenario-uncovered DELIBERATELY, because its evidence is
+    /// no-signal-toward-zero and a fixture pretending to discriminate it would
+    /// pin noise.
     pub const V2_DRAFT: WeightTable = WeightTable {
         //     [vp, ctry, tech, chur, cust, hCORE, hEXC, ware, brd, shop, trad, 5pw, imp, achv, merc, hnd#]
         early: [ 1,   20,   14,   -4,    3,    30,    5,  -10,   6,   12,   15,   8,   5,    2,    3,   -1],

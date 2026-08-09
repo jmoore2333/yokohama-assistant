@@ -485,7 +485,7 @@ fn viewer_value(view: &PlayerView, rules: &Rules, feature: Feature) -> i64 {
 }
 
 /// Which features' EXPLAINED products separate two views under `w` — the leak
-/// check both re-pricing scenarios lean on, in [`Feature::ALL`] order.
+/// check the three re-pricing scenarios lean on, in [`Feature::ALL`] order.
 ///
 /// A re-pricing scenario's whole claim is "these two positions differ on the
 /// slots the round moved and on nothing else", and a doctored fixture is exactly
