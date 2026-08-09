@@ -12,13 +12,18 @@ use yokohama_core::{AreaAction, AreaId, ChurchTrack, CustomsTrack, GameState, Mo
 use crate::common::track_assistant_available;
 
 /// §3.4 Church: every goods-backed payment combo whose `total_faith` reaches an
-/// eligible empty space, with an assistant available from hand or the acting
-/// area. `acting` is the Church area (own-assistant source, §3.4/§3.9).
+/// eligible empty space, with a track pawn available from hand or the acting
+/// area. `acting` is the Church area (the activated area D6 keys the pawn's
+/// source on — see `track_assistant_available`).
 pub(crate) fn church_moves(state: &GameState, power: u8, acting: AreaId) -> Vec<Move> {
     let p = state.current_player();
-    // "place 1 Assistant pawn from the Church Area or your hand" [RB p.13;
-    // DL 2026-07-18 final-review I3] — no assistant, no combo (Skip remains,
-    // appended by the lib.rs facade).
+    // A track pawn must be available from EITHER source — no pawn, no combo
+    // (Skip remains, appended by the lib.rs facade). The printed rule offers
+    // the player a choice, "place 1 Assistant pawn from the Church Area or
+    // your hand" [RB p.13]; this engine instead takes it AREA-FIRST with a
+    // hand fallback [D6, DL 2026-08-08, `SEMANTICS_REV` 7]. Both readings
+    // share this union availability condition, so the enumeration below is
+    // unaffected by which one governs — see `track_assistant_available`.
     if !track_assistant_available(state, acting) {
         return Vec::new();
     }
@@ -64,11 +69,13 @@ pub(crate) fn church_moves(state: &GameState, power: u8, acting: AreaId) -> Vec<
 }
 
 /// §3.4 Customs: every `Customs { n }` whose `n` exactly matches an empty,
-/// unblocked printed space cost, `1 ≤ n ≤ min(power-1, 4)`, assistant available
+/// unblocked printed space cost, `1 ≤ n ≤ min(power-1, 4)`, track pawn available
 /// from hand or the acting area.
 pub(crate) fn customs_moves(state: &GameState, power: u8, acting: AreaId) -> Vec<Move> {
     let p = state.current_player();
-    // "from the Customs Area or your hand" [RB p.14; DL 2026-07-18 I3].
+    // Same union availability as the Church: printed "from the Customs Area or
+    // your hand" [RB p.14] vs the engine's AREA-FIRST-with-hand-fallback [D6,
+    // DL 2026-08-08, `SEMANTICS_REV` 7]. Both share this condition.
     if !track_assistant_available(state, acting) {
         return Vec::new();
     }
@@ -316,13 +323,88 @@ mod tests {
 
     #[test]
     fn church_assistant_from_hand_or_acting_area() {
-        // [RB p.13; DL 2026-07-18 I3] assistant from hand OR the Church area —
-        // the mercenary hand-0 shape stays legal.
+        // A track pawn from hand OR the Church area [RB p.13 printed choice;
+        // D6 area-first with hand fallback, DL 2026-08-08 — same union] — the
+        // mercenary hand-0 shape stays legal.
         let mut s = two_player_state();
         s.players[0].assistants.in_hand = 0;
         assert!(church_moves(&s, 5, church_area()).is_empty());
         s.players[0].assistants.on_board.insert(church_area(), 1);
         assert!(!church_moves(&s, 5, church_area()).is_empty());
+    }
+
+    #[test]
+    fn track_take_legal_set_is_identical_whichever_source_supplies_the_pawn() {
+        // D6 [DL 2026-08-08, `SEMANTICS_REV` 7]: the pawn now comes from the
+        // ACTIVATED AREA when the acting player has one there, otherwise from
+        // hand. That rule selects a SOURCE; it does not gate the action. The
+        // availability condition is the UNION under both the printed
+        // "Area or your hand" choice and under area-first-with-hand-fallback,
+        // so the emitted move set at the take must be BYTE-IDENTICAL across
+        // every source configuration — this is the executable form of "D6
+        // does not move the legal set at the take".
+        let hand_only = {
+            let mut s = two_player_state();
+            s.players[0].imported_goods = 2;
+            s.players[0].assistants.in_hand = 8;
+            s
+        };
+        let area_only = {
+            let mut s = hand_only.clone();
+            s.players[0].assistants.in_hand = 0;
+            s.players[0].assistants.on_board.insert(church_area(), 1);
+            s.players[0].assistants.on_board.insert(customs_area(), 1);
+            s
+        };
+        let both = {
+            let mut s = hand_only.clone();
+            s.players[0].assistants.on_board.insert(church_area(), 1);
+            s.players[0].assistants.on_board.insert(customs_area(), 1);
+            s
+        };
+        // Anti-vacuity first: an all-empty set would satisfy equality trivially.
+        assert!(!church_moves(&hand_only, 5, church_area()).is_empty());
+        assert!(!customs_moves(&hand_only, 5, customs_area()).is_empty());
+        for other in [&area_only, &both] {
+            assert_eq!(
+                church_moves(&hand_only, 5, church_area()),
+                church_moves(other, 5, church_area()),
+                "church take set moved with the pawn's source",
+            );
+            assert_eq!(
+                customs_moves(&hand_only, 5, customs_area()),
+                customs_moves(other, 5, customs_area()),
+                "customs take set moved with the pawn's source",
+            );
+        }
+        // And with NEITHER source the action is unavailable on both tracks.
+        let neither = {
+            let mut s = hand_only.clone();
+            s.players[0].assistants.in_hand = 0;
+            s
+        };
+        assert!(church_moves(&neither, 5, church_area()).is_empty());
+        assert!(customs_moves(&neither, 5, customs_area()).is_empty());
+    }
+
+    #[test]
+    fn an_assistant_in_some_other_area_does_not_supply_the_track_pawn() {
+        // The area source is keyed on the ACTIVATED area (RB p.13/p.14 name the
+        // Church/Customs Area itself; D6 keys area-first on that same area).
+        // A pawn parked anywhere ELSE supplies nothing — pinned because the
+        // pre-rev-7 tests only ever placed a pawn ON the acting area, so a
+        // predicate that scanned the whole board would have passed them.
+        let mut s = two_player_state();
+        s.players[0].imported_goods = 2;
+        s.players[0].assistants.in_hand = 0;
+        s.players[0].assistants.on_board.insert(AreaId::new(0), 3); // CopperMine
+        assert!(church_moves(&s, 5, church_area()).is_empty());
+        assert!(customs_moves(&s, 5, customs_area()).is_empty());
+        // Anti-vacuity: the same state with the pawn ON the acting area works.
+        s.players[0].assistants.on_board.insert(church_area(), 1);
+        s.players[0].assistants.on_board.insert(customs_area(), 1);
+        assert!(!church_moves(&s, 5, church_area()).is_empty());
+        assert!(!customs_moves(&s, 5, customs_area()).is_empty());
     }
 
     #[test]
@@ -381,7 +463,8 @@ mod tests {
 
     #[test]
     fn customs_assistant_from_hand_or_acting_area() {
-        // [RB p.14; DL 2026-07-18 I3].
+        // [RB p.14 printed choice; D6 area-first with hand fallback,
+        // DL 2026-08-08 — same union availability].
         let mut s = two_player_state();
         s.players[0].imported_goods = 2;
         s.players[0].assistants.in_hand = 0;

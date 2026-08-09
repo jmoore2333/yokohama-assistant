@@ -8,32 +8,68 @@ use crate::game::choices::push_choice;
 use crate::game::rules::Rules;
 use crate::game::tech_effects::{church_vp_bonus, customs_vp_bonus};
 
-/// Take 1 assistant from hand, or (if hand is empty) from the acting area
-/// itself - rulebook p.13/p.14: "place 1 Assistant pawn from the
-/// [Church/Customs] Area or your hand" (I3 final-review fix). Caller's
-/// validator must already have confirmed at least one source has >= 1.
-/// Preferring hand keeps existing hand >= 1 play unchanged (the two sources
-/// are net-identical in v1's same-turn-recovery flow); the acting-area
-/// fallback only engages at hand == 0. Decrementing `on_board[area]` here
-/// (rather than leaving a stale entry) is what keeps the automatic Recovery
-/// step from later double-recovering a pawn that already moved onto the
-/// track.
+/// Take 1 assistant for a Church/Customs track placement: AREA-FIRST — from
+/// the activated area when the acting player has own assistant(s) standing
+/// there, otherwise from hand. Caller's validator must already have confirmed
+/// at least one source has >= 1.
+///
+/// D6 OWNER RULING 2026-08-08 (`SEMANTICS_REV` 6->7), a deliberate BGA-parity
+/// choice recorded as a POTENTIAL RULEBOOK DIFF: rulebook p.13/p.14 reads
+/// "place 1 Assistant pawn from the [Church/Customs] Area OR your hand" — a
+/// player CHOICE that BGA appears not to offer. Live-gate evidence: table
+/// 896157897 m49, where BGA moved the pawn Church-area -> track with the hand
+/// untouched. Rev 6 and earlier were hand-first.
+///
+/// WHAT THE FLIP MOVES, stated honestly (the pre-rev-7 doc here claimed the
+/// two sources were "net-identical", which was true only at TURN END and only
+/// without Telephone):
+/// - The legal set AT THE TAKE does not move: availability is source-blind
+///   (`has_church_or_customs_assistant` is hand OR area), and so are the
+///   generator, `move_legality`, and `check_invariants`' queue-head clause.
+/// - MID-TURN it does move, at exactly one surface: an `AssistantMove` icon
+///   queued between the take and Recovery. `choices::assistant_move_options`
+///   reads `in_hand` and `on_board`, and the two rules leave them different by
+///   one — area-first leaves the hand pawn (a source for EVERY non-Canal
+///   area), hand-first left the area pawn (a source for every non-Canal area
+///   except its own, plus the D3 to-hand return). Pinned by
+///   `area_first_take_moves_the_rider_assistant_move_source_from_the_spent_area_to_hand`.
+///   Owner's reasoning for accepting this: the pawn "is going to go back to
+///   your hand at the end of the turn, and even on the church, if you get the
+///   ability to move assistants, you can do it from your hand or that tile,
+///   so you're not any worse off."
+/// - AT TURN END the two converge — the activated area IS the Recovery area
+///   (`apply_recovery_with_leave` resolves it the same way), so the pawn
+///   hand-first left behind comes straight back — with ONE exception: with
+///   Telephone and EXACTLY ONE own pawn in the activated area, hand-first
+///   could park that pawn on the board past the turn (leave-one recovers
+///   zero), while area-first has already spent it and offers no
+///   `RecoveryLeave` at all.
+///
+/// Decrementing `on_board[area]` here (rather than leaving a stale entry) is
+/// what keeps the automatic Recovery step from later double-recovering a pawn
+/// that already moved onto the track.
 fn take_church_or_customs_assistant(p: &mut PlayerState, area: AreaId) {
+    if let Some(&count) = p.assistants.on_board.get(&area) {
+        if count >= 1 {
+            if count > 1 {
+                p.assistants.on_board.insert(area, count - 1);
+            } else {
+                p.assistants.on_board.remove(&area);
+            }
+            return;
+        }
+    }
     if p.assistants.in_hand >= 1 {
         p.assistants.in_hand -= 1;
-        return;
-    }
-    if let Some(&count) = p.assistants.on_board.get(&area) {
-        if count > 1 {
-            p.assistants.on_board.insert(area, count - 1);
-        } else {
-            p.assistants.on_board.remove(&area);
-        }
     }
 }
 
 /// True if the player has an assistant available for a Church/Customs
 /// placement: in hand, or already on the acting area (I3 final-review fix).
+/// SOURCE-BLIND on purpose, and that is why D6 (rev 7) could flip WHICH source
+/// pays without moving the legal set at the take: this one predicate is what
+/// the validators, the legal-move generator, `move_legality` and
+/// `check_invariants`' queue-head clause all read.
 /// `pub(crate)` since FIX-B (Codex PR-3 review): `check_invariants`'s
 /// queue-head COHERENCE clause reuses this exact predicate so the invariant
 /// can never drift from the Stage-4 placement-tail guard it mirrors.
@@ -241,8 +277,9 @@ pub fn execute_church_action(
 /// Placement tail for a resolved Church space: called either inline from
 /// `execute_church_action` (exactly one eligible space) or from
 /// `ChooseChurchSpace` resolution (`game::choices::resolve_choice_move`).
-/// Consumes the assistant (hand-preferred, acting-area fallback per I3 —
-/// the acting area is resolved via the shared `resolve_acting_area` helper
+/// Consumes the assistant (AREA-FIRST, hand otherwise — D6 owner ruling
+/// 2026-08-08, see `take_church_or_customs_assistant`; the acting area is
+/// resolved via the shared `resolve_acting_area` helper
 /// (Task 5 review item 7), since a deferred resolution can land in a
 /// later `apply_move` call after the triggering action), records the slot
 /// with arrival order, awards the space's VP plus Winery bonus per owned
@@ -419,8 +456,9 @@ pub fn execute_customs_action(
 /// Placement tail for a resolved Customs space: called either inline from
 /// `execute_customs_action` (exactly one eligible space) or from
 /// `ChooseCustomsSpace` resolution (`game::choices::resolve_choice_move`).
-/// Consumes the assistant (hand-preferred, acting-area fallback per I3 --
-/// the acting area is resolved via the shared `resolve_acting_area` helper,
+/// Consumes the assistant (AREA-FIRST, hand otherwise -- D6 owner ruling
+/// 2026-08-08, see `take_church_or_customs_assistant`; the acting area is
+/// resolved via the shared `resolve_acting_area` helper,
 /// since a deferred resolution can land in a later `apply_move` call after
 /// the triggering action), records the slot with arrival order, awards the
 /// space's VP plus Brickyard bonus per owned copy, applies the space's Yen
@@ -777,7 +815,11 @@ mod tests {
         // I3 final-review fix: rulebook p.13 - "place 1 Assistant pawn from
         // the Church Area OR your hand." With hand empty but an assistant
         // already on the acting area, the action must still be legal - it
-        // takes that pawn instead of rejecting.
+        // takes that pawn instead of rejecting. Under D6 (rev 7, area-first)
+        // the area is simply the FIRST source rather than a hand-empty
+        // fallback, so this cell is one the two source rules COINCIDE on --
+        // which is why it survived the flip unedited. The discriminating
+        // cell is church_track_pawn_comes_from_the_activated_area_*.
         let rules = Rules::empty_for_tests();
         let mut state = create_test_state();
         let area = place_president_at_church(&mut state);
@@ -824,10 +866,10 @@ mod tests {
     }
 
     #[test]
-    fn test_execute_church_action_prefers_hand_assistant_when_both_sources_available() {
-        // With hand >= 1, the acting-area pawn must be left untouched (the
-        // two sources are net-identical in v1's same-turn-recovery flow, but
-        // this pins WHICH pawn moves so on_board bookkeeping stays exact).
+    fn church_track_pawn_comes_from_the_activated_area_when_the_player_has_one_there() {
+        // D6 owner ruling 2026-08-08 (BGA parity, SEMANTICS_REV 6->7): with
+        // own assistant(s) in the activated Church area, the track pawn comes
+        // from the AREA, not from hand. Before rev 7 this was hand-first.
         let rules = Rules::empty_for_tests();
         let mut state = create_test_state();
         let area = place_president_at_church(&mut state);
@@ -842,8 +884,176 @@ mod tests {
         place_church_assistant(&mut state, PlayerId::new(0), 5, &rules).unwrap();
 
         let p = &state.players[0];
-        assert_eq!(p.assistants.in_hand, 2, "hand pawn spent, not the acting-area one");
-        assert_eq!(p.assistants.on_board.get(&area), Some(&2), "acting-area pawns untouched");
+        assert_eq!(p.assistants.in_hand, 3, "hand untouched -- the activated area pays");
+        assert_eq!(p.assistants.on_board.get(&area), Some(&1), "the activated area lost the pawn");
+    }
+
+    #[test]
+    fn church_track_pawn_falls_back_to_hand_with_no_own_assistant_in_the_activated_area() {
+        // D6's "otherwise from hand" half: no own pawn in the activated area,
+        // so hand pays. (An assistant belonging to ANOTHER player standing
+        // there is not the acting player's `on_board` entry and is invisible
+        // to this rule.)
+        let rules = Rules::empty_for_tests();
+        let mut state = create_test_state();
+        place_president_at_church(&mut state);
+        let elsewhere = AreaId::new(1);
+        state.board_layout.areas.insert(elsewhere, AreaConfig {
+            area_type: AreaType::Bank,
+            grid_position: (0, 1),
+        });
+        state.players[0].assistants.in_hand = 3;
+        state.players[0].assistants.on_board.insert(elsewhere, 2); // NOT the acting area
+
+        let result = execute_church_action(
+            &mut state, PlayerId::new(0), 5, false, false, false, false, false, false, &rules,
+        );
+        assert!(result.is_ok());
+
+        place_church_assistant(&mut state, PlayerId::new(0), 5, &rules).unwrap();
+
+        let p = &state.players[0];
+        assert_eq!(p.assistants.in_hand, 2, "hand pays when the activated area holds none of ours");
+        assert_eq!(p.assistants.on_board.get(&elsewhere), Some(&2), "an unrelated area is never touched");
+    }
+
+    #[test]
+    fn church_track_pawn_comes_from_the_mercenary_target_not_the_presidents_area() {
+        // D6 x the mercenary sub-turn — the ruling's one UNIVERSAL delta, and
+        // until the rev-7 review it was completely unpinned.
+        //
+        // `apply_mercenary` refuses a target area holding none of the acting
+        // player's assistants, so during a sub-turn the activated area ALWAYS
+        // holds one — which means area-first ALWAYS fires there, where rev 6
+        // paid from hand whenever the hand was non-empty. So EVERY mercenary
+        // Church take changed behaviour at rev 7, and no test said so.
+        //
+        // DISCRIMINATING BY CONSTRUCTION: all three candidate sources are live
+        // at once — a non-empty hand, own pawns at the mercenary target, and
+        // own pawns at the area the president is standing in — so only the
+        // right one may be spent, and each wrong one is asserted untouched.
+        // The pre-existing mercenary tests cannot make this statement: both
+        // leave the president IN HAND (so a president-keyed take falls through
+        // to the resolved area and looks correct), and the one that varies the
+        // source empties the hand, a shape rev 6 and rev 7 agree on.
+        //
+        // The president standing SOMEWHERE ELSE is not an exotic fixture — it
+        // is the only shape a real sub-turn has. `apply_mercenary` refuses a
+        // target holding the acting player's own president
+        // (`apply_move.rs`, "Target area cannot have your president"), so
+        // president area != activated area is GUARANTEED for the whole family,
+        // and a president-keyed take is wrong at every one of them.
+        //
+        // MUTATION-PROVEN (reverted by inverse edit — L7): keying the take on
+        // `president_location` when the president is on board, i.e. a
+        // mercenary-BLIND take falling back to the resolved area otherwise,
+        // passes all 22 core test binaries with 0 failures without this test,
+        // and fails here on all three assertions.
+        let rules = Rules::empty_for_tests();
+        let mut state = create_test_state();
+
+        // The president stands somewhere else entirely: a mercenary sub-turn
+        // bypasses it, so it must contribute nothing to the pawn source.
+        let president_area = AreaId::new(0);
+        state.board_layout.areas.insert(president_area, AreaConfig {
+            area_type: AreaType::Bank,
+            grid_position: (0, 0),
+        });
+        state.players[0].president_location = PresidentLocation::OnBoard(president_area);
+
+        let church_area = AreaId::new(9);
+        state.board_layout.areas.insert(church_area, AreaConfig {
+            area_type: AreaType::Church,
+            grid_position: (0, 9),
+        });
+        state.is_mercenary_action = true;
+        state.mercenary_target_area = Some(church_area);
+
+        state.players[0].assistants.in_hand = 3;
+        state.players[0].assistants.on_board.insert(church_area, 2);
+        state.players[0].assistants.on_board.insert(president_area, 2);
+
+        // Power 5, no goods -> faith 5 -> spaces {4,5} eligible -> deferred,
+        // so this exercises the placement TAIL (where the take lives) via the
+        // same explicit resolution the sibling D6 pins use.
+        let result = execute_church_action(
+            &mut state, PlayerId::new(0), 5, false, false, false, false, false, false, &rules,
+        );
+        assert!(result.is_ok());
+
+        place_church_assistant(&mut state, PlayerId::new(0), 5, &rules).unwrap();
+
+        let p = &state.players[0];
+        assert_eq!(
+            p.assistants.on_board.get(&church_area), Some(&1),
+            "the MERCENARY TARGET is the activated area, and it pays the pawn",
+        );
+        assert_eq!(
+            p.assistants.in_hand, 3,
+            "hand untouched -- this is exactly where rev 6 would have spent it",
+        );
+        assert_eq!(
+            p.assistants.on_board.get(&president_area), Some(&2),
+            "the president's area is NOT the activated area during a sub-turn",
+        );
+        assert_eq!(p.assistants.on_church, 1);
+    }
+
+    #[test]
+    fn area_first_take_moves_the_rider_assistant_move_source_from_the_spent_area_to_hand() {
+        // The ONE mid-turn legality surface D6 moves (the take itself is
+        // source-blind, so the legal set AT the action does not move): between
+        // the take and Recovery, `assistant_move_options` reads hand and
+        // on_board counts that the two source rules leave DIFFERENT. With
+        // hand 1 and exactly 1 own pawn in the activated area, area-first
+        // leaves (hand 1, area 0) where hand-first left (hand 0, area 1) --
+        // so the movement-icon rider offers HAND sources here and offered
+        // AREA sources (plus the D3 to-hand return) before rev 7.
+        let rules = Rules::empty_for_tests();
+        let mut state = create_test_state();
+        let church = place_president_at_church(&mut state);
+        let other = AreaId::new(1);
+        state.board_layout.areas.insert(other, AreaConfig {
+            area_type: AreaType::Bank,
+            grid_position: (0, 1),
+        });
+        state.turn_phase = TurnPhase::AreaAction;
+        state.current_action_power = Some(4); // faith 4 -> exactly one eligible space -> inline
+        state.players[0].assistants.in_hand = 1;
+        state.players[0].assistants.on_board.insert(church, 1);
+
+        let s = apply_move(
+            &state,
+            &Move::ExecuteAreaAction { action: AreaAction::Church {
+                copper: false, silk: false, tea: false,
+                seafood: false, yen: false, imported_good: false,
+            } },
+            &rules,
+        ).unwrap();
+
+        assert_eq!(s.players[0].assistants.in_hand, 1, "area-first: the hand pawn survived the take");
+        assert_eq!(s.players[0].assistants.on_board.get(&church), None, "the activated area paid");
+        assert_eq!(s.pending_choices, vec![PendingChoice::AssistantMove], "faith-4 rider");
+
+        let legal = get_legal_moves(&s, &rules);
+        assert!(
+            legal.contains(&Move::ChooseAssistantMove {
+                from: MoveSource::Hand, to: MoveTarget::Area(other),
+            }),
+            "the surviving hand pawn is the rider's source now: {legal:?}"
+        );
+        assert!(
+            !legal.iter().any(|m| matches!(
+                m, Move::ChooseAssistantMove { from: MoveSource::Area(a), .. } if *a == church
+            )),
+            "the spent area can no longer source the rider (hand-first left a pawn there): {legal:?}"
+        );
+        assert!(
+            !legal.contains(&Move::ChooseAssistantMove {
+                from: MoveSource::Area(church), to: MoveTarget::Hand,
+            }),
+            "and the D3 to-hand return from that area goes with it: {legal:?}"
+        );
     }
 
     #[test]
@@ -1452,7 +1662,10 @@ mod tests {
     #[test]
     fn test_execute_customs_action_allows_assistant_from_acting_area_when_hand_empty() {
         // I3 final-review fix: rulebook p.14 - "place 1 Assistant pawn from
-        // the Customs Area OR your hand." Uses power 5 / pay 3 -> cost pair
+        // the Customs Area OR your hand." Hand-empty is a cell the pre-rev-7
+        // hand-first rule and D6's area-first rule COINCIDE on (see the Church
+        // counterpart's note), so it survived the flip unedited. Uses power 5
+        // / pay 3 -> cost pair
         // {5,6} (neither carries a rider), so the assertions below aren't
         // muddied by space 1's +2-warehouse-takes rider (a WarehouseTake
         // choice per take, which would otherwise mask the pawn-source bug
@@ -1480,9 +1693,10 @@ mod tests {
     }
 
     #[test]
-    fn test_execute_customs_action_prefers_hand_assistant_when_both_sources_available() {
-        // Power 5 / pay 3 -> cost pair {5,6} (neither carries a rider); see
-        // the acting-area test's comment for why a rider-free pair matters here.
+    fn customs_track_pawn_comes_from_the_activated_area_when_the_player_has_one_there() {
+        // D6 counterpart of the Church pin (BGA parity, rev 7). Power 5 / pay
+        // 3 -> cost pair {5,6} (neither carries a rider); see the acting-area
+        // test's comment for why a rider-free pair matters here.
         let rules = Rules::empty_for_tests();
         let mut state = create_test_state();
         let area = place_president_at_customs(&mut state);
@@ -1496,8 +1710,87 @@ mod tests {
         place_customs_assistant(&mut state, PlayerId::new(0), 5, &rules).unwrap();
 
         let p = &state.players[0];
-        assert_eq!(p.assistants.in_hand, 2, "hand pawn spent, not the acting-area one");
-        assert_eq!(p.assistants.on_board.get(&area), Some(&2), "acting-area pawns untouched");
+        assert_eq!(p.assistants.in_hand, 3, "hand untouched -- the activated area pays");
+        assert_eq!(p.assistants.on_board.get(&area), Some(&1), "the activated area lost the pawn");
+    }
+
+    #[test]
+    fn customs_track_pawn_falls_back_to_hand_with_no_own_assistant_in_the_activated_area() {
+        // D6's "otherwise from hand" half, Customs side.
+        let rules = Rules::empty_for_tests();
+        let mut state = create_test_state();
+        place_president_at_customs(&mut state);
+        let elsewhere = AreaId::new(1);
+        state.board_layout.areas.insert(elsewhere, AreaConfig {
+            area_type: AreaType::Bank,
+            grid_position: (0, 1),
+        });
+        state.players[0].imported_goods = 3;
+        state.players[0].assistants.in_hand = 3;
+        state.players[0].assistants.on_board.insert(elsewhere, 2); // NOT the acting area
+
+        let result = execute_customs_action(&mut state, PlayerId::new(0), 5, 3, &rules);
+        assert!(result.is_ok());
+
+        place_customs_assistant(&mut state, PlayerId::new(0), 5, &rules).unwrap();
+
+        let p = &state.players[0];
+        assert_eq!(p.assistants.in_hand, 2, "hand pays when the activated area holds none of ours");
+        assert_eq!(p.assistants.on_board.get(&elsewhere), Some(&2), "an unrelated area is never touched");
+    }
+
+    #[test]
+    fn customs_track_pawn_comes_from_the_mercenary_target_not_the_presidents_area() {
+        // D6 x the mercenary sub-turn, Customs side — see the Church twin
+        // `church_track_pawn_comes_from_the_mercenary_target_not_the_presidents_area`
+        // for why this shape (and only this shape) discriminates, and for the
+        // mutation it is proven against. Both tails carry the take, so both
+        // need the pin: the Church test alone would leave half the mutation
+        // surface uncovered.
+        let rules = Rules::empty_for_tests();
+        let mut state = create_test_state();
+
+        let president_area = AreaId::new(0);
+        state.board_layout.areas.insert(president_area, AreaConfig {
+            area_type: AreaType::Bank,
+            grid_position: (0, 0),
+        });
+        state.players[0].president_location = PresidentLocation::OnBoard(president_area);
+
+        let customs_area = AreaId::new(9);
+        state.board_layout.areas.insert(customs_area, AreaConfig {
+            area_type: AreaType::Customs,
+            grid_position: (0, 9),
+        });
+        state.is_mercenary_action = true;
+        state.mercenary_target_area = Some(customs_area);
+
+        state.players[0].imported_goods = 3;
+        state.players[0].assistants.in_hand = 3;
+        state.players[0].assistants.on_board.insert(customs_area, 2);
+        state.players[0].assistants.on_board.insert(president_area, 2);
+
+        // Power 5 / pay 3 -> cost pair {5,6} (neither carries a rider) ->
+        // deferred, so the placement TAIL is what consumes the pawn.
+        let result = execute_customs_action(&mut state, PlayerId::new(0), 5, 3, &rules);
+        assert!(result.is_ok());
+
+        place_customs_assistant(&mut state, PlayerId::new(0), 5, &rules).unwrap();
+
+        let p = &state.players[0];
+        assert_eq!(
+            p.assistants.on_board.get(&customs_area), Some(&1),
+            "the MERCENARY TARGET is the activated area, and it pays the pawn",
+        );
+        assert_eq!(
+            p.assistants.in_hand, 3,
+            "hand untouched -- this is exactly where rev 6 would have spent it",
+        );
+        assert_eq!(
+            p.assistants.on_board.get(&president_area), Some(&2),
+            "the president's area is NOT the activated area during a sub-turn",
+        );
+        assert_eq!(p.assistants.on_customs, 1);
     }
 
     #[test]

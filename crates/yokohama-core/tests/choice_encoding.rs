@@ -195,7 +195,10 @@ fn church_space_choice_places_and_cascades_into_movement_riders() {
     let after_space = apply_move(&mid, &Move::ChooseChurchSpace { space: 6 }, &rules).unwrap();
     assert_eq!(after_space.players[0].church_positions, vec![6]);
     assert_eq!(after_space.players[0].victory_points, 5); // ChurchTrack::vp_reward(6)
-    assert_eq!(after_space.players[0].assistants.in_hand, starting_hand - 1); // placement, hand-first
+    // The fixture's acting area holds no own assistant, so D6's area-first
+    // rule (rev 7) falls through to hand exactly as the old hand-first rule
+    // did — this line reads the same under both.
+    assert_eq!(after_space.players[0].assistants.in_hand, starting_hand - 1);
     // Faith 6 -> ChurchTrack::movement_rider(6) == 2 riders (the "church->riders" cascade).
     assert_eq!(after_space.pending_choices, vec![PendingChoice::AssistantMove, PendingChoice::AssistantMove]);
 
@@ -246,7 +249,9 @@ fn customs_space_choice_places_and_cascades_into_warehouse_takes() {
     let placed = apply_move(&mid, &Move::ChooseCustomsSpace { space: 1 }, &rules).unwrap();
     assert_eq!(placed.players[0].customs_positions, vec![1]);
     assert_eq!(placed.players[0].victory_points, 5); // CustomsTrack::vp_reward(1)
-    assert_eq!(placed.players[0].assistants.in_hand, starting_hand - 1); // placement, hand-first
+    // Same as the Church cell above: no own assistant on the acting area, so
+    // D6's area-first rule falls through to hand.
+    assert_eq!(placed.players[0].assistants.in_hand, starting_hand - 1);
     assert_eq!(placed.pending_choices, vec![PendingChoice::WarehouseTake, PendingChoice::WarehouseTake]);
 
     // Drain both rider takes: one real take, one decline.

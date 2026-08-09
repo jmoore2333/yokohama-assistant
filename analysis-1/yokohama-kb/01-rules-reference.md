@@ -372,6 +372,8 @@ Contribute Faith value to advance on Church Management Board.
 3. Gain reward shown on that space
 4. Assistant is locked permanently
 
+**WHERE THE TRACK PAWN COMES FROM — a POTENTIAL RULEBOOK DIFF (owner-ruled 2026-08-08, D6, `SEMANTICS_REV` 7):** rulebook p.13 reads "place 1 Assistant pawn from the **Church Area or your hand**" — i.e. the printed rule offers the player a CHOICE of source. **BGA appears not to offer that choice: it takes the pawn from the activated Area** (live gate game table 896157897 m49 — the pawn moved Church-area → track with the player's hand untouched). The owner ruled for BGA parity, so this engine is **AREA-FIRST**: with own assistant(s) in the activated Church Area the pawn comes from the AREA, otherwise from hand. This is a deliberate divergence from the printed text, recorded here rather than papered over — the printed rule is the "Area or hand" choice above, the engine implements BGA's behaviour. Rationale (owner): the area pawn returns to hand at Recovery anyway and a movement icon can move a pawn from hand or from that tile, so the player is not worse off; parity buys simplicity and shrinks the 3.5c+ problem space. See `guidingpath.md` decision log 2026-08-08 for the full row.
+
 **Church Management Board rewards** (Bonus column corrected 2026-07-17 from board art — every space carries a movement rider, values 1,1,2,2,2,2,3,3; see `guidingpath.md` decision log):
 | Faith | VP | Bonus |
 |-------|-----|-------|
@@ -400,6 +402,8 @@ Pay Imported Goods to advance on Customs Management Board.
 2. Place 1 assistant on Customs Management Board at corresponding space
 3. Gain reward shown on that space
 4. Assistant is locked permanently
+
+**WHERE THE TRACK PAWN COMES FROM — the same POTENTIAL RULEBOOK DIFF as the Church (owner-ruled 2026-08-08, D6, `SEMANTICS_REV` 7):** rulebook p.14 reads "place 1 Assistant pawn from the **Customs Area or your hand**", a player CHOICE of source; the engine is **AREA-FIRST** (own assistant(s) in the activated Customs Area → the pawn comes from the AREA, otherwise from hand) to match BGA. See the Church section above for the evidence and the owner's reasoning, and `guidingpath.md` decision log 2026-08-08 for the full row.
 
 **Customs Management Board rewards (board-art verified 2026-07-17 — CORRECTS the table below, which previously modeled a goods-keyed 8-slot track with 1/3/4-Imported-Good bonuses that don't exist on the physical board):**
 

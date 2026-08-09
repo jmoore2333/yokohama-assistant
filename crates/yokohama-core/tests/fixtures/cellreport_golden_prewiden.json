@@ -3,9 +3,9 @@
   "games": 8,
   "x_unit_shares": [
     0.5,
+    0.0,
     0.5,
-    0.5,
-    0.0
+    0.5
   ],
   "theta_hat": 0.375,
   "interval": {
@@ -25,12 +25,12 @@
   ],
   "seat0_wins": 5,
   "ties_to_seat0": 0,
-  "vp_margin_mean": -3.625,
+  "vp_margin_mean": 7.25,
   "applied_by_seat": [
-    2876,
-    2897
+    2827,
+    2871
   ],
-  "x_applied_moves": 2860,
+  "x_applied_moves": 2845,
   "x_explanations": null,
   "x_ply_cap_hits": null,
   "x_free_cap_hits": null,
@@ -44,8 +44,8 @@
   "y_budget_starved_decisions": null,
   "trigger": {
     "counts": {
-      "ChurchTrackFull": 6,
-      "OrderDeckEmpty": 2
+      "ChurchTrackFull": 5,
+      "OrderDeckEmpty": 3
     },
     "games": 8
   },
