@@ -1,7 +1,24 @@
-//! **Scenario suite v1** (Phase 3.3 T9; spec §6, admitted under §0.2) — nine
+//! **Scenario suite** (Phase 3.3 T9; spec §6, admitted under §0.2) — twelve
 //! hand-built rules situations the evaluator rung has to get right, each one a
 //! single falsifiable property with a rules citation, a WHY line, and a
 //! demonstrated failing counterpart.
+//!
+//! # The two waves, and which table each one is written against
+//!
+//! **Scenarios 1–9 are suite v1** (Phase 3.3 T9), authored against the frozen
+//! [`WeightTable::V1`] — the table the bot plays today. **Scenarios 10–12 are
+//! the Phase-3.5c round-1 growth** (protocol
+//! `docs/plans/2026-08-09-phase3.5c-evaluator-v2-protocol.md` §4.2 rung L3 and
+//! §6's growth list), and they are written against
+//! [`WeightTable::V2_DRAFT`] — the ITERATION CANDIDATE that becomes V2 at the
+//! freeze commit — because L3's whole job is that *"every adopted change has at
+//! least one scenario that lands red-then-green against it"*. A round's
+//! scenario is therefore authored BEFORE the weights move, fails against the
+//! unmoved draft, and turns green in the adoption commit; its counterfactual is
+//! then the round's own edit REVERTED rather than a zeroed term.
+//!
+//! Nothing about scenarios 1–9 changed when 10–12 landed. The never-delete rule
+//! below covers both waves alike.
 //!
 //! # THE NEVER-DELETE RULE (map §5-3.3, spec §6)
 //!
@@ -29,13 +46,23 @@
 //! | authoring proof | the doc's **COUNTERFACTUAL** block |
 //!
 //! §6 names three property SHAPES and all three are in use: `eval(A) > eval(B)`
-//! carries seven scenarios; *the explanation's top term names X* carries
-//! country-set completion's second clause (the explanation must attribute the
-//! whole margin to `country_bonus_now` and to nothing else, which doubles as
-//! that fixture's leak check); and *chosen move ∈ set* carries the
-//! null-placement trap, in its aggregate form — see that scenario's doc for why
-//! a count over a segment is the right reading of it under a randomised
-//! tie-break.
+//! carries nine scenarios; *the explanation's top term names X* carries
+//! country-set completion's second clause and both round-1 re-pricing scenarios'
+//! leak clause (the explanation must attribute the margin to a NAMED set of
+//! terms and to nothing else, which doubles as each fixture's leak check); and
+//! *chosen move ∈ set* carries the null-placement trap, in its aggregate form —
+//! see that scenario's doc for why a count over a segment is the right reading
+//! of it under a randomised tie-break.
+//!
+//! Round 1 adds a FOURTH shape, recorded as an addition rather than folded into
+//! the three: scenario 12's subject is a FEATURE FUNCTION, not a weight, so its
+//! property is `f(A) > f(B)` over the candidate feature plus an arithmetic
+//! identity against the shipped one, and its counterfactual substitutes the
+//! shipped function for the candidate instead of mutating a table. That shape
+//! exists because the T3 post-claim filter lands ADDITIVELY in this round — the
+//! `score`/`explain` call-site switch is the freeze commit's business — so there
+//! is no weight for a scenario to move yet, and a scenario that waited for the
+//! switch would be the change landing unguarded.
 //!
 //! # §0.2's authoring anti-vacuity rule, made executable
 //!
@@ -82,13 +109,14 @@
 //!
 //! # Cost, and why most scenarios drive no game
 //!
-//! Eight of the nine are EVAL-ORDERING properties over constructed views: the
-//! evaluator is a pure function of a [`PlayerView`], so specifying its input
-//! directly is both the cheapest and the most precise way to state "this
-//! position must outrank that one". Only the null-placement trap is genuinely
-//! BEHAVIOURAL — "the bot does not spend the game placing nothing" is a
-//! statement about picks, not about scores — and it pays for one short driven
-//! segment (40 decisions, twice: shipped and mutated).
+//! Eleven of the twelve are EVAL-ORDERING properties over constructed views (ten
+//! over [`score`], one over a feature function): the evaluator is a pure
+//! function of a [`PlayerView`], so specifying its input directly is both the
+//! cheapest and the most precise way to state "this position must outrank that
+//! one". Only the null-placement trap is genuinely BEHAVIOURAL — "the bot does
+//! not spend the game placing nothing" is a statement about picks, not about
+//! scores — and it pays for one short driven segment (40 decisions, twice:
+//! shipped and mutated).
 //!
 //! The constructed views are DOCTORED: built by `observe`ing a real game and
 //! then overwriting the fields the scenario is about. Several are not states
@@ -102,7 +130,7 @@
 //!
 //! # Determinism
 //!
-//! Every scenario is deterministic. The eight eval-ordering ones consume no
+//! Every scenario is deterministic. The eleven eval-ordering ones consume no
 //! randomness at all — `score` is a pure function. The driven one fixes both
 //! agent seeds ([`DRIVEN_SEEDS`]), which fixes the per-decision sampler seed
 //! and the §3.2 tie-break draw, so the segment is byte-identical run to run;
@@ -115,7 +143,9 @@
 //! DEBUG, binary run directly, three runs on a quiet Apple M5:
 //! **0.05 / 0.05 / 0.05 s** for the whole binary (10 tests: nine scenarios plus
 //! the registry pin). RE-MEASURED unchanged at the T9 review close, with the
-//! fixture invariant audits that wave added inside the figure.
+//! fixture invariant audits that wave added inside the figure. RE-MEASURED
+//! AGAIN at the 3.5c round-1 close with the three new scenarios inside it (13
+//! tests) — see below for the figure and for why it did not move.
 //!
 //! The split is the interesting figure and it is why the shapes were chosen
 //! this way: the eight eval-ordering scenarios plus the registry pin run in
@@ -126,22 +156,30 @@
 //! binary. Order-seconds was the budget; the suite came in two orders under it,
 //! and the room that buys is for the driven scenarios a later revision will
 //! want.
+//!
+//! **Round 1's three additions spend that room and barely touch the figure**
+//! (0.06 / 0.05 / 0.05 s for the whole binary at the round-1 close, same
+//! machine, same method): all three are constructed-view properties with no
+//! driven segment, so each costs one setup-and-`observe` plus a handful of
+//! `score`/`explain` calls. The driven scenario is still effectively the whole
+//! binary, and a future round wanting a BEHAVIOURAL scenario (scenario 5's doc
+//! names the one it would most like) still has the budget for it.
 
 use std::collections::BTreeMap;
 use std::sync::OnceLock;
 
 use yokohama_core::game::actions::calculate_church_faith;
 use yokohama_core::game::eval::{
-    clock_ppm, explain, interpolate, place_signal, progress_ppm, score, terminal_standing,
-    view_is_terminal, Feature, ScoreStructure, WeightTable, TERMINAL_MARGIN_STEP,
-    TERMINAL_RANK_STEP,
+    achievement_progress, achievement_progress_postclaim_sum, clock_ppm, explain, interpolate,
+    place_signal, progress_ppm, score, terminal_standing, view_is_terminal, Feature, ScoreStructure,
+    WeightTable, HAND_CORE_RESERVE, PROGRESS_FULL_PPM, TERMINAL_MARGIN_STEP, TERMINAL_RANK_STEP,
 };
 use yokohama_core::game::greedy::{GreedyAgent, DEFAULT_RETREAT_SAMPLES};
 use yokohama_core::{
     apply_move_unchecked, check_invariants, final_result, finalize_setup, is_game_over, new_game,
     observe, AchievementCard, AchievementType, ArenaAgent, ChurchSlot, ChurchTrack, Country,
     CustomsSlot, CustomsTrack, EndGameTrigger, GameConfig, GameState, HandCard, Move, OrderCardId,
-    PlayerId, PlayerView, Rules, StartingOrderChoice, TurnPhase, VisiblePlayer,
+    PlayerId, PlayerView, Rules, StartingOrderChoice, TechCardId, TurnPhase, VisiblePlayer,
 };
 
 // ---------------------------------------------------------------------------
@@ -152,13 +190,16 @@ use yokohama_core::{
 /// §0.2's admission — the shipped property and its targeted counterfactual.
 type ScenarioFn = fn(&Rules) -> Result<(), String>;
 
-/// **THE NINE SCENARIOS OF SUITE v1.** Spec §6's eight categories plus the
-/// terminal-scoring scenario that section adds.
+/// **THE TWELVE SCENARIOS.** Indices 0–8 are suite v1 — spec §6's eight
+/// categories plus the terminal-scoring scenario that section adds. Indices
+/// 9–11 are the Phase-3.5c round-1 growth, one per adopted change: the early
+/// re-mix, the warehouse flatten (protocol scenario 16), and the T3 post-claim
+/// filter (protocol scenario 17).
 ///
-/// The length is pinned by the type. Adding a tenth scenario is a deliberate
-/// edit to this array and its `#[test]`; removing one of these nine is the
-/// thing the never-delete rule forbids, and it will not compile.
-const SCENARIOS: [(&str, ScenarioFn); 9] = [
+/// The length is pinned by the type. Adding a thirteenth scenario is a
+/// deliberate edit to this array and its `#[test]`; removing one of these twelve
+/// is the thing the never-delete rule forbids, and it will not compile.
+const SCENARIOS: [(&str, ScenarioFn); 12] = [
     ("country-set completion", country_set_completion),
     ("order economics: fulfill now vs hold", order_economics_fulfill_now_vs_hold),
     ("end-trigger timing: the church clock", end_trigger_timing_church_clock),
@@ -168,19 +209,23 @@ const SCENARIOS: [(&str, ScenarioFn); 9] = [
     ("faith arithmetic", faith_arithmetic_buys_the_rightmost_church_space),
     ("the null-placement trap", the_null_placement_trap),
     ("terminal scoring", terminal_scoring_prefers_the_bonus_win),
+    ("early engine over early VP", early_engine_over_early_vp),
+    ("warehouse decay flattened", warehouse_decay_flattened),
+    ("post-claim achievement progress", post_claim_achievement_progress),
 ];
 
-/// Spec §6's never-delete rule, plus the registry hygiene the nine `#[test]`s
+/// Spec §6's never-delete rule, plus the registry hygiene the twelve `#[test]`s
 /// lean on: each test names both its index and its scenario name, so a
 /// reordering that silently re-pointed a test at a different scenario fails
 /// here and there.
 #[test]
-fn the_registry_holds_nine_uniquely_named_scenarios() {
+fn the_registry_holds_twelve_uniquely_named_scenarios() {
     assert_eq!(
         SCENARIOS.len(),
-        9,
-        "spec §6 is eight categories plus the terminal-scoring scenario; scenarios are \
-         never deleted (this file's header states the rule)",
+        12,
+        "spec §6's eight categories plus the terminal-scoring scenario (suite v1's nine), \
+         plus the Phase-3.5c round-1 growth's three; scenarios are never deleted (this \
+         file's header states the rule)",
     );
     let mut names: Vec<&str> = SCENARIOS.iter().map(|(n, _)| *n).collect();
     names.sort_unstable();
@@ -377,6 +422,65 @@ fn one_order_per_country(rules: &Rules) -> ([OrderCardId; 5], OrderCardId) {
         pick(Country::Dutch, 0),
     ];
     (set, pick(Country::English, 1))
+}
+
+/// One Technology per country, lowest id first, for the first `n` countries of
+/// [`Country::ALL`] — a technology holding whose country icons are DISTINCT by
+/// construction, and whose printed gear costs the caller reads off the registry
+/// rather than retyping.
+///
+/// Countries with no printed technology are skipped rather than faked, so the
+/// caller checks the returned LENGTH (all five have techs today; the check is
+/// what would notice if a data edit changed that).
+fn one_tech_per_country(rules: &Rules, n: usize) -> Vec<TechCardId> {
+    Country::ALL
+        .iter()
+        .take(n)
+        .filter_map(|country| {
+            let mut ids: Vec<TechCardId> =
+                rules.techs.iter().filter(|c| c.country == *country).map(|c| c.id).collect();
+            ids.sort_unstable_by_key(|id| id.0);
+            ids.first().copied()
+        })
+        .collect()
+}
+
+/// The viewer's own row. A free function rather than a closure because callers
+/// need the borrow to outlive the call (a closure returning a reference derived
+/// from its argument cannot express that).
+fn own_row(view: &PlayerView) -> &VisiblePlayer {
+    view.players.iter().find(|p| p.id == view.viewer).expect("the view contains its seat")
+}
+
+/// The viewer's own raw value for one feature — the same number [`score`]
+/// multiplies by a weight, read without a weight so a fixture can state what it
+/// built (`ScoreStructure` is the authority on all sixteen; ten are field reads
+/// and five are re-derived end scoring).
+fn viewer_value(view: &PlayerView, rules: &Rules, feature: Feature) -> i64 {
+    ScoreStructure::derive(view, rules).value_of(own_row(view), feature)
+}
+
+/// Which features' EXPLAINED products separate two views under `w` — the leak
+/// check both re-pricing scenarios lean on, in [`Feature::ALL`] order.
+///
+/// A re-pricing scenario's whole claim is "these two positions differ on the
+/// slots the round moved and on nothing else", and a doctored fixture is exactly
+/// the place a stray term creeps in (a tech card carries a country icon; a
+/// completed order feeds an achievement leg). Naming the separating terms turns
+/// that claim into a printed list rather than a reviewer's trust.
+fn separating_terms(
+    a: &PlayerView,
+    b: &PlayerView,
+    rules: &Rules,
+    w: &WeightTable,
+) -> Vec<&'static str> {
+    explain(a, rules, w)
+        .terms
+        .iter()
+        .zip(explain(b, rules, w).terms.iter())
+        .filter(|(x, y)| x.product != y.product)
+        .map(|(x, _)| x.feature.name())
+        .collect()
 }
 
 // ---------------------------------------------------------------------------
@@ -1564,6 +1668,634 @@ fn force_terminal(state: &mut GameState) {
 #[test]
 fn scenario_09_terminal_scoring() {
     run(8, "terminal scoring");
+}
+
+// ---------------------------------------------------------------------------
+// 10. Early engine over early VP  (3.5c round 1 — the early re-mix)
+// ---------------------------------------------------------------------------
+
+/// The round-1 EARLY re-mix, REVERTED inside the candidate table: the five early
+/// slots the round moved, put back to [`WeightTable::V1`]'s values, and nothing
+/// else touched.
+///
+/// This is §0.2's targeted mutation for scenario 10, in the shape an ADOPTION
+/// round needs. Suite v1's mutations zero one term because a v1 scenario asks
+/// "does the shipped table price this term at all"; a round-1 scenario asks
+/// "does the round's own edit carry this position", so the mutation is the edit
+/// undone. Zeroing a term here would prove only that the term matters — which
+/// scenarios 1, 2 and 8 already prove for three of these five — and would say
+/// nothing about the re-mix.
+///
+/// Each slot's LATE weight is taken from the DRAFT, not from `V1`, so the
+/// mutation is exactly the EARLY re-mix and not a whole-column revert. (For
+/// these five the two late values coincide — the round moved only their early
+/// entries — so this is a statement about what the code MEANS rather than about
+/// what it currently computes, and it stays correct if a later round moves one
+/// of their late weights.)
+fn early_remix_reverted() -> WeightTable {
+    let mut w = WeightTable::V2_DRAFT;
+    for feature in EARLY_REMIX_SLOTS {
+        let (v1_early, _) = WeightTable::V1.get(feature);
+        let (_, draft_late) = WeightTable::V2_DRAFT.get(feature);
+        w.set(feature, v1_early, draft_late);
+    }
+    w
+}
+
+/// The five EARLY slots round 1 re-mixed, in [`Feature::ALL`] order — the
+/// round's change-set (a) made a list, and the exact set scenario 10's fixture
+/// is built to separate on.
+const EARLY_REMIX_SLOTS: [Feature; 5] = [
+    Feature::VictoryPoints,
+    Feature::CountryBonusNow,
+    Feature::TechBonusNow,
+    Feature::AssistantsInHandExcess,
+    Feature::AssistantsOnBoard,
+];
+
+/// **RULES.** Nothing an early position banks is worth what it will be worth at
+/// the end, and the two piles that pay at the end are face-up: completed Orders
+/// and owned Technologies carry the COUNTRY ICONS a set is formed from
+/// (2/3/4/5 distinct countries = 2/4/8/12 VP), and owned Technologies also carry
+/// the printed GEAR values the 10/5 technology majority is ranked on — where at
+/// two players the setup dummy competes at industry value exactly 7.5 (D5, owner
+/// ruling 2026-08-08, rulebook p.9 final-scoring NOTE). Running VP, by contrast,
+/// is already banked and compounds no further. Assistants placed FROM HAND buy
+/// action power now; assistants held past the reserve are tempo
+/// ([`HAND_CORE_RESERVE`]).
+///
+/// **SEAT.** 0, in a 2-player game, at `p = 0` — the EARLY vector exactly.
+///
+/// **PROPERTY.** `score(the ENGINE position)` > `score(the VP-AND-BOARD leader)`
+/// under [`WeightTable::V2_DRAFT`], in two clauses. (a) The two positions
+/// separate on EXACTLY the five slots round 1 re-mixed
+/// ([`EARLY_REMIX_SLOTS`]) and on no other term — the fixture's own leak check,
+/// and what makes clause (b) a statement about the re-mix rather than about
+/// whatever else the doctoring moved. (b) The engine position outranks.
+///
+/// **THE ARITHMETIC, stated because the margin is the point.** Both positions
+/// share one base view, so the margin is `Σ w(0) · (v_engine − v_leader)` over
+/// the separating terms alone. The five deltas are `vp −12`, `country_bonus_now
+/// +4` (three distinct country icons = a 3-set), `tech_bonus_now +10` (industry
+/// 9 doubles to 18, clear of the 2P dummy's 15, so the majority's first place is
+/// taken outright while the leader owns no technology and does not place at
+/// all), `assistants_in_hand_excess +3`, `assistants_on_board −3`. Under the
+/// round-1 candidate that reads
+/// `2·(−12) + 18·4 + 12·10 + 5·3 + 6·(−3) = −24 + 72 + 120 + 15 − 18 = +165`;
+/// under V1's early weights it reads
+/// `10·(−12) + 12·4 + 6·10 + 4·3 + 14·(−3) = −120 + 48 + 60 + 12 − 42 = −42`.
+/// The same two positions, ranked opposite ways by the round's edit — which is
+/// what "the re-mix moves the MIX, not the scale" buys (R0 finding F8: halving
+/// the whole early vector is play-identical, so only a change of RATIOS can move
+/// a decision).
+///
+/// **FIXTURE HONESTY — the assistant total.** Both positions carry the engine's
+/// own 20 tokens (leader 6 on board + 2 in hand + 12 warehouse; engine 3 + 5 +
+/// 12), so unlike scenario 6 this pair needs no total caveat. The doctoring that
+/// IS unreachable-as-written is the leader's 12 running VP beside an empty
+/// completed-order pile — a real seat would have banked those VP through cards
+/// that also carry icons. That is deliberate: pricing the two piles TOGETHER is
+/// what the round is arguing about, so the fixture separates them.
+///
+/// **WHY.** R0's headline finding, and the roundest number in the whole report:
+/// EVAL TOTAL early measures **0.5314** in the SHIPPED regime — near chance —
+/// and the two terms it is most weighted on are the two the corpus
+/// CONTRADICTED, `victory_points` at 0.4651 and `assistants_on_board` at 0.4464
+/// (`docs/plans/2026-08-09-phase3.5c-r0-report.md` findings F1 and F2: both
+/// point the wrong way early, i.e. the early leader on those terms is the seat
+/// that goes on to LOSE). The owner independently confirmed the reading as
+/// canon, in as many words — early VP leaders lose to engine builders, "it
+/// holds" (guidingpath's 2026-08-09 canon-batch row). The L2 pass then picked
+/// the magnitudes: `m22` is the held-out EARLY argmax on the shipped-regime
+/// corpus and the best cell on all six corpus×stage columns
+/// (`docs/plans/2026-08-09-phase3.5c-round1-evidence.md`). This scenario is
+/// protocol §4.2 rung L3 for that change: the DECISION the re-priced ratios
+/// make, pinned so a later round cannot quietly undo it without answering here.
+///
+/// **What it does NOT claim.** Not that the engine position WINS the game — this
+/// is one constructed pair, not a corpus, and the corpus evidence is an AUC over
+/// held-out games, quoted where it lives. What is pinned is that the shipped
+/// rung, handed these two positions early, prefers the builder.
+///
+/// **COUNTERFACTUAL — the five re-mixed EARLY slots reverted to V1
+/// (`vp 10, ctry 12, tech 6, excess 4, board 14`; [`early_remix_reverted`]).**
+/// Observed failing line, verbatim:
+///
+/// ```text
+/// early ENGINE over early VP: the country/tech/spare-hand position must
+/// outrank the VP-and-board leader in the EARLY vector — engine 138, leader
+/// 180, margin -42 (early weights: vp 10, country 12, tech 6, excess 4,
+/// board 14)
+/// ```
+///
+/// The two absolute scores carry the base view's shared terms; the MARGIN is
+/// the figure the arithmetic above predicts, and it reads −42 exactly.
+fn early_engine_over_early_vp(rules: &Rules) -> Result<(), String> {
+    let techs = one_tech_per_country(rules, 3);
+    if techs.len() != 3 {
+        return Err(format!(
+            "fixture: three countries must each print a technology, got {} — the country \
+             registry or the tech data moved",
+            techs.len(),
+        ));
+    }
+    let industry: u32 =
+        techs.iter().filter_map(|id| rules.techs.get(*id)).map(|c| u32::from(c.industry_cost)).sum();
+    // D5's dummy contends at industry 7.5, compared as a doubled integer (15).
+    // The holding must clear it, or the majority this scenario is about is the
+    // dummy's and the tech delta collapses from 10 to 5.
+    if 2 * industry <= 15 {
+        return Err(format!(
+            "fixture: the three technologies must out-industry the 2P dummy's 7.5 (D5), \
+             their printed gears total {industry}"
+        ));
+    }
+
+    let mut base = base_view(2, 19, rules);
+    // Set explicitly rather than taking the deal: two of the twelve achievement
+    // types count completed ORDERS and owned TECHNOLOGIES, and either would give
+    // the engine position a sixth separating term and break clause (a) for a
+    // reason that has nothing to do with the re-mix.
+    base.achievements = [
+        AchievementCard::new(AchievementType::Copper5),
+        AchievementCard::new(AchievementType::Silk6),
+        AchievementCard::new(AchievementType::Tea7),
+    ];
+    let area = *base.board_layout.areas.keys().next().ok_or("fixture: an empty board")?;
+    {
+        let me = viewer_mut(&mut base);
+        me.completed_orders.clear();
+        me.technologies.clear();
+        me.victory_points = 0;
+    }
+
+    // The VP-and-board leader: 12 banked VP and six assistants working, holding
+    // exactly the reserve in hand.
+    let mut leader = base.clone();
+    {
+        let me = viewer_mut(&mut leader);
+        me.victory_points = 12;
+        me.assistants.in_hand = HAND_CORE_RESERVE;
+        me.assistants.on_board = BTreeMap::from([(area, 6u8)]);
+    }
+    // The engine: three technologies (three country icons AND the industry
+    // majority), three assistants working, three spare in hand past the reserve.
+    let mut engine = base.clone();
+    {
+        let me = viewer_mut(&mut engine);
+        me.technologies = techs.clone();
+        me.assistants.in_hand = HAND_CORE_RESERVE + 3;
+        me.assistants.on_board = BTreeMap::from([(area, 3u8)]);
+    }
+
+    // The stage is the scenario's premise, so it is asserted: at p = 0 the
+    // weights ARE the early vector, with no interpolation to reason about.
+    let (pa, pb) = (progress_ppm(&engine, rules), progress_ppm(&leader, rules));
+    if (pa, pb) != (0, 0) {
+        return Err(format!(
+            "fixture: both positions must sit at p=0 so the EARLY vector governs exactly, \
+             got {pa} and {pb}"
+        ));
+    }
+    // The three end-scoring values the re-mix aims weight at, read off the
+    // structure rather than assumed from the doctoring.
+    let built = [
+        (Feature::CountryBonusNow, viewer_value(&engine, rules, Feature::CountryBonusNow), 4),
+        (Feature::TechBonusNow, viewer_value(&engine, rules, Feature::TechBonusNow), 10),
+        (Feature::CountryBonusNow, viewer_value(&leader, rules, Feature::CountryBonusNow), 0),
+        (Feature::TechBonusNow, viewer_value(&leader, rules, Feature::TechBonusNow), 0),
+    ];
+    for (feature, got, want) in built {
+        if got != want {
+            return Err(format!(
+                "fixture: {} must read {want} on the position it was built for, got {got}",
+                feature.name(),
+            ));
+        }
+    }
+    // Anti-vacuity on the hand split: both positions must hold the FULL reserve,
+    // so `assistants_in_hand_core` cancels and the only hand term that separates
+    // them is the excess one the round re-priced.
+    let core = |v: &PlayerView| viewer_value(v, rules, Feature::AssistantsInHandCore);
+    if core(&engine) != core(&leader) {
+        return Err(format!(
+            "fixture: both positions must hold the whole {HAND_CORE_RESERVE}-token reserve so \
+             the core term cancels, got {} and {}",
+            core(&engine),
+            core(&leader),
+        ));
+    }
+
+    let check = |w: &WeightTable| -> Result<(), String> {
+        let separating = separating_terms(&engine, &leader, rules, w);
+        let expected: Vec<&str> = EARLY_REMIX_SLOTS.iter().map(|f| f.name()).collect();
+        require(
+            separating == expected,
+            format!(
+                "the two positions must separate on EXACTLY the five re-mixed early slots \
+                 {expected:?}, they separated on {separating:?}"
+            ),
+        )?;
+        let a = score(&engine, rules, w);
+        let b = score(&leader, rules, w);
+        let at = |f: Feature| {
+            let (e, l) = w.get(f);
+            interpolate(e, l, 0)
+        };
+        require(
+            a > b,
+            format!(
+                "early ENGINE over early VP: the country/tech/spare-hand position must outrank \
+                 the VP-and-board leader in the EARLY vector — engine {a}, leader {b}, margin \
+                 {} (early weights: vp {}, country {}, tech {}, excess {}, board {})",
+                a - b,
+                at(Feature::VictoryPoints),
+                at(Feature::CountryBonusNow),
+                at(Feature::TechBonusNow),
+                at(Feature::AssistantsInHandExcess),
+                at(Feature::AssistantsOnBoard),
+            ),
+        )
+    };
+
+    admit(
+        SCENARIOS[9].0,
+        "the five re-mixed EARLY slots reverted to V1 (vp 10, ctry 12, tech 6, excess 4, board 14)",
+        "must outrank the VP-and-board leader in the EARLY vector",
+        check(&WeightTable::V2_DRAFT),
+        check(&early_remix_reverted()),
+    )
+}
+
+#[test]
+fn scenario_10_early_engine_over_early_vp() {
+    run(9, "early engine over early VP");
+}
+
+// ---------------------------------------------------------------------------
+// 11. Warehouse decay flattened  (3.5c round 1 — protocol scenario 16, T2)
+// ---------------------------------------------------------------------------
+
+/// The round-1 WAREHOUSE FLATTEN, REVERTED inside the candidate table: the one
+/// feature pair the round's change-set (b) moved, put back to
+/// [`WeightTable::V1`]'s `(−10, −4)`, and nothing else touched.
+///
+/// §0.2's targeted mutation for scenario 11. The EARLY half of the pair is
+/// −10 in both tables — the flatten is a LATE-only edit — so this reverts
+/// exactly one number, which is as targeted as a mutation gets.
+fn warehouse_decay_restored() -> WeightTable {
+    let mut w = WeightTable::V2_DRAFT;
+    let (early, late) = WeightTable::V1.get(Feature::AssistantsInWarehouse);
+    w.set(Feature::AssistantsInWarehouse, early, late);
+    w
+}
+
+/// **RULES.** Assistants live in exactly three places: the seat's HAND, the
+/// main board, and the WAREHOUSE. Placements come from hand only, so a token in
+/// the warehouse does nothing at all until it is taken out — and the only ways
+/// out are the Employment Agency's printed 4/5/6/7 take progression, the
+/// University additional action, and the warehouse-icon choice, each of which
+/// costs a decision point that could have been spent acting. Nothing in the
+/// rules ever moves a token INTO the warehouse mid-game, so a clogged warehouse
+/// is a seat that never spent those decisions (KB `01-rules-reference.md`;
+/// design §5.2's take progression).
+///
+/// **SEAT.** 0, in a 2-player game, with the order deck run out so the DECK
+/// clock reads `p = 1,000,000` — the LATE vector exactly. (A view at full
+/// progress is not a finished game: the real trigger also needs an empty Port
+/// slot, a conjunct [`clock_ppm`] deliberately drops, and the position is scored
+/// positionally rather than through the terminal ladder.)
+///
+/// **PROPERTY.** `score(the CLEAN warehouse)` > `score(the CLOGGED warehouse)`
+/// under [`WeightTable::V2_DRAFT`], in two clauses: (a) the two positions
+/// separate on exactly `assistants_in_hand_excess`, `assistants_in_warehouse`
+/// and `imported_goods` — the leak check — and (b) the clean position outranks.
+///
+/// **THE ARITHMETIC, and why the flatten is the ONLY thing that decides it.**
+/// Both positions carry the engine's own 20 tokens, so the six tokens that are
+/// stranded in one are IN HAND in the other: clean holds `warehouse 2 / hand 18`
+/// against clogged's `warehouse 8 / hand 12`, and the clogged seat is paid for
+/// its stranding with six more imported goods. The margin is
+/// `w_excess·(16−10) + w_warehouse·(2−8) + w_imported·(0−6)`. Two of those three
+/// weights are IDENTICAL in the candidate and in the reverted table (late excess
+/// 2, late imported 8), so they contribute `+12 − 48 = −36` either way and
+/// cannot decide anything; the whole decision is the third term, which reads
+/// `(−10)·(−6) = +60` flattened and `(−4)·(−6) = +24` decayed. Totals **+24**
+/// and **−12** — one number, one sign flip.
+///
+/// **WHY.** T2, the warehouse-decay tension, is one of the two magnitude
+/// tensions the T4 freeze RECORDED rather than resolved, and its own words are
+/// the argument: the term's separation *"does not decay late (0.2742), which the
+/// −10 → −4 weight decay does. Sign confirmed, magnitude shape unsupported and
+/// left alone by the one-pass rule; recorded for 3.5"*
+/// ([`WeightTable`]'s doc, from `docs/plans/2026-07-27-phase3.3-weight-freeze.md`).
+/// Round 1 is the 3.5 the note was deferring to, and the L2 pass chose the
+/// flatten from a pre-registered three-point grid (`−8/−8`, `−10/−10`, `−10/−7`)
+/// on held-out AUC — `m22` holds the early magnitude and undoes the late decay
+/// (`docs/plans/2026-08-09-phase3.5c-round1-evidence.md`). The DECISION content
+/// is this: late, a rung with the decayed weight will accept a stranded
+/// warehouse for a modest consolation elsewhere, and a rung with the flat weight
+/// will not.
+///
+/// **COUNTERFACTUAL — the warehouse pair restored to V1's `(−10, −4)`
+/// ([`warehouse_decay_restored`]).** Observed failing line, verbatim:
+///
+/// ```text
+/// warehouse decay flattened: the CLEAN warehouse must outrank the CLOGGED one
+/// that paid for its stranding with 6 imported goods — clean 60, clogged 72,
+/// margin -12 (late weights: warehouse -4, excess 2, imported 8)
+/// ```
+fn warehouse_decay_flattened(rules: &Rules) -> Result<(), String> {
+    let mut base = base_view(2, 20, rules);
+    // The deck clock at full: `initial_order_deck_len` is DERIVED from the
+    // registry, so emptying the view's deck is what dates the position, and the
+    // maximum over the four clocks is then 1,000,000 whatever the tracks read.
+    base.order_deck_len = 0;
+    {
+        let me = viewer_mut(&mut base);
+        me.assistants.on_board = BTreeMap::new();
+        me.imported_goods = 0;
+    }
+
+    // Twenty tokens either way — the six the clogged seat left stranded are the
+    // six the clean seat is holding.
+    let with_warehouse = |stranded: u8, imported: u32| -> PlayerView {
+        let mut v = base.clone();
+        let me = viewer_mut(&mut v);
+        me.assistants.in_warehouse = stranded;
+        me.assistants.in_hand = 20 - stranded;
+        me.imported_goods = imported;
+        v
+    };
+    let clean = with_warehouse(2, 0);
+    let clogged = with_warehouse(8, 6);
+
+    let total = |v: &PlayerView| -> u32 {
+        let me = v.players.iter().find(|p| p.id == v.viewer).expect("own row");
+        u32::from(me.assistants.in_warehouse)
+            + u32::from(me.assistants.in_hand)
+            + me.assistants.on_board.values().map(|n| u32::from(*n)).sum::<u32>()
+    };
+    if total(&clean) != total(&clogged) {
+        return Err(format!(
+            "fixture: the two positions must hold the SAME tokens in different places, got \
+             {} and {} — otherwise the clogged seat is simply a richer one",
+            total(&clean),
+            total(&clogged),
+        ));
+    }
+    let (pa, pb) = (progress_ppm(&clean, rules), progress_ppm(&clogged, rules));
+    if (pa, pb) != (PROGRESS_FULL_PPM, PROGRESS_FULL_PPM) {
+        return Err(format!(
+            "fixture: both positions must sit at full progress so the LATE vector governs \
+             exactly, got {pa} and {pb}"
+        ));
+    }
+    if view_is_terminal(&clean) || view_is_terminal(&clogged) {
+        return Err("fixture: a full-progress view must still be scored POSITIONALLY — the \
+                    terminal ladder short-circuits the weight vector this scenario is about"
+            .into());
+    }
+
+    let check = |w: &WeightTable| -> Result<(), String> {
+        let separating = separating_terms(&clean, &clogged, rules, w);
+        require(
+            separating
+                == ["assistants_in_hand_excess", "assistants_in_warehouse", "imported_goods"],
+            format!(
+                "the two positions must separate on the stranded tokens, the hand they came \
+                 from, and the goods that paid for the stranding — they separated on \
+                 {separating:?}"
+            ),
+        )?;
+        let a = score(&clean, rules, w);
+        let b = score(&clogged, rules, w);
+        let at = |f: Feature| {
+            let (e, l) = w.get(f);
+            interpolate(e, l, PROGRESS_FULL_PPM)
+        };
+        require(
+            a > b,
+            format!(
+                "warehouse decay flattened: the CLEAN warehouse must outrank the CLOGGED one \
+                 that paid for its stranding with 6 imported goods — clean {a}, clogged {b}, \
+                 margin {} (late weights: warehouse {}, excess {}, imported {})",
+                a - b,
+                at(Feature::AssistantsInWarehouse),
+                at(Feature::AssistantsInHandExcess),
+                at(Feature::ImportedGoods),
+            ),
+        )
+    };
+
+    admit(
+        SCENARIOS[10].0,
+        "the warehouse pair restored to V1's (-10, -4)",
+        "the CLEAN warehouse must outrank the CLOGGED one",
+        check(&WeightTable::V2_DRAFT),
+        check(&warehouse_decay_restored()),
+    )
+}
+
+#[test]
+fn scenario_11_warehouse_decay_flattened() {
+    run(10, "warehouse decay flattened");
+}
+
+// ---------------------------------------------------------------------------
+// 12. Post-claim achievement progress  (3.5c round 1 — protocol scenario 17, T3)
+// ---------------------------------------------------------------------------
+
+/// **RULES.** The three Achievement cards in play are claimed by placing an
+/// assistant on the card once its printed requirement is met; the claim pays its
+/// printed VP and the goods are NOT spent, so a seat keeps holding whatever it
+/// held. A seat may not claim the SAME card twice — the engine's claim gate
+/// refuses exactly that repeat and nothing else — while a SECOND seat may still
+/// claim the same card for the printed subsequent value (KB
+/// `01-rules-reference.md`, achievement categories; the gate is
+/// `can_claim_achievement`).
+///
+/// **SEAT.** 0, in a 2-player game, holding a claimed Tea 7 beside an unclaimed
+/// Seafood 7 — two cards with the SAME printed threshold, which is what lets the
+/// two positions carry identical shipped progress.
+///
+/// **PROPERTY**, two clauses over the CANDIDATE FEATURE FUNCTION rather than
+/// over a weight (see below for why). (i) **The ordering content:** a position
+/// holding LIVE progress toward the unclaimed card reads strictly above an
+/// otherwise-identical position holding only DEAD progress on the card this seat
+/// has already claimed — 7 against 0 — while the SHIPPED unfiltered sum reads
+/// both positions **7**, i.e. cannot tell them apart at all. (ii) **The
+/// arithmetic identity:** [`achievement_progress_postclaim_sum`] equals the
+/// shipped sum minus exactly the claimed card's CAPPED leg, on both positions
+/// (`0 = 7 − 7` on the dead one, `7 = 7 − 0` on the live one), which is what
+/// says the filter drops a leg and rewrites no other arithmetic.
+///
+/// Clause (i) is checked FIRST on purpose, and scenario 9's doc records the same
+/// reasoning for the same reason: the counterfactual substitutes the shipped sum
+/// for the candidate one, which breaks clause (ii) as well — so a fixture that
+/// asked the identity first would report the identity's line and the
+/// counterfactual would be admitted on the wrong clause.
+///
+/// **WHY THIS SCENARIO OWNS NO WEIGHT, and what happens at the freeze.** T3's
+/// post-claim filter is the ONE sanctioned feature change of the v2 protocol
+/// (§4.1(ii), §5's T3 row) and it lands in round 1 **additively**: the function
+/// exists, nothing calls it, `score` and `explain` still read the shipped sum,
+/// and `EVAL_IMPL_VERSION` does not move. The call-site switch and its blast
+/// radius — goldens, drift pins, the version bump, every controller const that
+/// embeds the evaluator — are the FREEZE commit's business (protocol §7's
+/// mechanics), so the switch stays one auditable event instead of a behavior
+/// change smuggled inside a re-pricing round. **This scenario re-points to
+/// `score` there:** clause (i) becomes `score(live) > score(dead)`, and the
+/// additive-only guard below (which asserts today that the shipped score ranks
+/// the two EQUAL) becomes the thing that has to be rewritten rather than
+/// deleted. The re-point is the never-delete rule working as designed, and it is
+/// written down here so the freeze commit does not have to rediscover it.
+///
+/// **WHY the change at all.** The shipped sum keeps paying a seat for progress
+/// toward a card it has already taken. The cap stops that leg GROWING; it does
+/// not stop it being COUNTED, and the VP the claim paid has already landed in
+/// `victory_points`, which [`Feature::VictoryPoints`] already prices — so the
+/// evaluator charges the same banked reward twice and, worse, cannot see the
+/// difference between a seat with a live claim in front of it and a seat with
+/// none. The corpus column is supporting rather than load-bearing and is read
+/// honestly in `docs/plans/2026-08-09-phase3.5c-round1-evidence.md`: under the
+/// shipped LOOKAHEAD regime the filtered column separates better EARLY and MID
+/// (0.5198 and 0.5358, against the unfiltered feature's no-signal 0.4996 and
+/// 0.5024) and worse LATE (0.5312 against 0.5601) — and that late advantage IS
+/// the double count, progress at cap on cards already claimed proxying for
+/// banked VP, so it is the complaint rather than a defence. T3 therefore stands
+/// on the structural argument, which is protocol §4.2 L1's named-structural-
+/// argument arm, with the early/mid improvement as regime evidence beside it.
+///
+/// **SCOPE — the filter is the VIEWER'S OWN claim, and that is a decision.** A
+/// card an OPPONENT has claimed leaves this seat's leg fully live, because the
+/// rules let a second seat claim the same card for the printed subsequent value;
+/// zeroing it would price a reachable reward at nothing. Pinned against the
+/// engine's own gate in `tests/eval_core.rs`, not against a reading of the
+/// rulebook, and exercised here by the third card in play.
+///
+/// **COUNTERFACTUAL — the SHIPPED unfiltered sum substituted for the candidate
+/// one.** A source-shaped mutation rather than a weight one, because no weight
+/// can reach a function nothing calls: the property is evaluated twice, once
+/// through [`achievement_progress_postclaim_sum`] and once through the value
+/// `ScoreStructure` computes for [`Feature::AchievementProgressSum`], which IS
+/// the shipped arithmetic. Observed failing line, verbatim:
+///
+/// ```text
+/// post-claim achievement progress (the SHIPPED unfiltered sum): LIVE progress
+/// toward an unclaimed card must outrank DEAD progress on a card this seat has
+/// already claimed — live 7, dead 7, and the shipped feature reads both 7
+/// ```
+fn post_claim_achievement_progress(rules: &Rules) -> Result<(), String> {
+    let mut base = base_view(2, 21, rules);
+    let mut claimed = AchievementCard::new(AchievementType::Tea7);
+    claimed.claimed_by = vec![PlayerId(0)];
+    // Tea 7 and Seafood 7 print the SAME threshold, so the two positions below
+    // can carry identical shipped progress on different cards. Money 10 is the
+    // third card in play and is untouched by either position — it is what makes
+    // the filtered sum a SUM over the cards rather than a single leg.
+    base.achievements = [
+        claimed,
+        AchievementCard::new(AchievementType::Seafood7),
+        AchievementCard::new(AchievementType::Money10),
+    ];
+    {
+        let me = viewer_mut(&mut base);
+        me.money = 0;
+        me.copper = 0;
+        me.silk = 0;
+        me.tea = 0;
+        me.seafood = 0;
+    }
+
+    let mut dead = base.clone();
+    viewer_mut(&mut dead).tea = 7;
+    let mut live = base.clone();
+    viewer_mut(&mut live).seafood = 7;
+
+    let filtered = |v: &PlayerView| achievement_progress_postclaim_sum(v, own_row(v));
+    let unfiltered = |v: &PlayerView| viewer_value(v, rules, Feature::AchievementProgressSum);
+    // The claimed card's own capped leg, per position — the quantity clause (ii)
+    // says the filter subtracts.
+    let claimed_leg = |v: &PlayerView| -> i64 {
+        let (current, needed) = achievement_progress(v, own_row(v), AchievementType::Tea7);
+        i64::from(current.min(needed))
+    };
+
+    // THE FIXTURE'S PREMISE, and the blindness this scenario exists to make
+    // visible: the shipped feature values the two positions identically.
+    let (u_live, u_dead) = (unfiltered(&live), unfiltered(&dead));
+    if u_live != u_dead || u_dead == 0 {
+        return Err(format!(
+            "fixture: the shipped sum must value the two positions EQUALLY and nonzero (that \
+             equality is the double-count blindness the filter removes), got {u_live} and \
+             {u_dead}"
+        ));
+    }
+    // The claimed leg must be AT ITS CAP on the dead position, or "dead progress"
+    // is really "progress that could still grow".
+    let (current, needed) = achievement_progress(&dead, own_row(&dead), AchievementType::Tea7);
+    if current < needed {
+        return Err(format!(
+            "fixture: the claimed card's leg must sit AT its cap on the dead position, got \
+             {current} of {needed}"
+        ));
+    }
+    if !base.achievements[0].claimed_by.contains(&PlayerId(0))
+        || !base.achievements[1].claimed_by.is_empty()
+    {
+        return Err("fixture: card 0 must be claimed by the viewer and card 1 unclaimed".into());
+    }
+    // THE ADDITIVE-ONLY GUARD (protocol §4.1(ii)): nothing calls the candidate
+    // function yet, so the shipped evaluator must rank these two positions
+    // EXACTLY equal. **AT THE FREEZE COMMIT this becomes `score(&live) >
+    // score(&dead)` and clause (i) re-points onto `score`** — see the doc.
+    let (s_live, s_dead) =
+        (score(&live, rules, &WeightTable::V2_DRAFT), score(&dead, rules, &WeightTable::V2_DRAFT));
+    if s_live != s_dead {
+        return Err(format!(
+            "the T3 filter is ADDITIVE in this round: `score` must still read the shipped \
+             unfiltered sum and rank these two positions equal, got {s_live} and {s_dead} — if \
+             the call site has legitimately switched, re-point this guard and clause (i) onto \
+             `score` (protocol §7's mechanics), do not delete them"
+        ));
+    }
+
+    let check = |sum: &dyn Fn(&PlayerView) -> i64, label: &str| -> Result<(), String> {
+        let (l, d) = (sum(&live), sum(&dead));
+        require(
+            l > d,
+            format!(
+                "post-claim achievement progress ({label}): LIVE progress toward an unclaimed \
+                 card must outrank DEAD progress on a card this seat has already claimed — \
+                 live {l}, dead {d}, and the shipped feature reads both {u_dead}"
+            ),
+        )?;
+        for (name, view, value) in [("live", &live, l), ("dead", &dead, d)] {
+            let (shipped, leg) = (unfiltered(view), claimed_leg(view));
+            require(
+                value == shipped - leg,
+                format!(
+                    "the post-claim sum must be the shipped sum minus exactly the claimed \
+                     card's capped leg on the {name} position: {value} against {shipped} − {leg}"
+                ),
+            )?;
+        }
+        Ok(())
+    };
+
+    admit(
+        SCENARIOS[11].0,
+        "the SHIPPED unfiltered achievement_progress_sum substituted for the candidate",
+        "must outrank DEAD progress on a card this seat has already claimed",
+        check(&filtered, "the candidate post-claim filter"),
+        check(&unfiltered, "the SHIPPED unfiltered sum"),
+    )
+}
+
+#[test]
+fn scenario_12_post_claim_achievement_progress() {
+    run(11, "post-claim achievement progress");
 }
 
 // ---------------------------------------------------------------------------
