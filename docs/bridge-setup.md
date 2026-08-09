@@ -58,7 +58,13 @@ curl http://127.0.0.1:8787/health
 
 It asks for two hosts and one permission: `boardgamearena.com` (to watch the
 page), `127.0.0.1:8787` (to reach the relay), and `storage` (to hold captures
-if the relay is down).
+if the relay is down). The connected indicator (§3a) added no permission and no
+host to that list.
+
+> **Already had it loaded?** The connected indicator ships in extension version
+> **0.4.0**. Reload the extension once in `chrome://extensions` to get it — and
+> then reload the BGA tab, because reloading the extension orphans the wrapper
+> in any page that was already open.
 
 ## 3. Open the table
 
@@ -90,9 +96,41 @@ The relay's own console prints a line per capture:
 capture table=895608640 +18422 B (file now 214883 B)
 ```
 
+## 3a. Is it recording? (the connected indicator)
+
+The toolbar button answers that without you looking at a single file.
+
+**The badge, at a glance:**
+
+| Badge | Colour | Means |
+|---|---|---|
+| ● | green | Relay connected, nothing waiting. This is the "it is recording" state. |
+| ○ | grey | Relay is **not** answering — and nothing has been captured yet either. Start the relay. |
+| `17` | red | Relay is **not** answering and 17 captures are **parked** in the outbox. Start the relay; they go out on the next capture. |
+| `17` | amber | Relay **is** answering and the 17-deep backlog is going out now. Transient. |
+| ? | grey | Not checked yet — the extension has just started. Click the button to check. |
+
+**Click it** for the detail: the table number, captures delivered this session,
+snapshots taken, outbox depth, and the relay state with the age of the reading.
+It also warns about the things you would otherwise only find later — captures
+dropped because the outbox filled, captures the relay refused, and snapshots
+that ended up in `~/Downloads` instead.
+
+Two buttons: **Take snapshot** (§4 — the primary one, and it is focused when
+the panel opens, so click-then-Enter is the whole gesture) and **Recheck relay**.
+
+How current is the badge? Relay state is refreshed by every delivery (free —
+each capture already POSTs to the relay), by a 30-second poll while a BGA tab
+is open, and by opening the panel, which always probes. Chrome recycles the
+extension's service worker after about thirty idle seconds, and a recycled
+worker keeps whatever badge it last painted — so if the relay dies while
+nothing is happening, the badge can lag. **The panel is the authority; the
+badge is the hint.** Opening it always gives you a fresh answer.
+
 ## 4. Take a snapshot
 
-Click the extension's toolbar button. It captures `gameui.gamedatas` — the full
+Click the extension's toolbar button, then **Take snapshot** (it is already
+focused, so Enter works). It captures `gameui.gamedatas` — the full
 own-perspective game state, roughly 30 KB — and delivers it to the relay.
 
 If the relay is not running, the snapshot downloads as a `.ndjson.json` file
@@ -149,12 +187,15 @@ makes a move-1 replay possible at all**.
 2. **Open the table tab** (§3), *after* the extension is loaded. If in any
    doubt about the ordering, reload the tab: the wrapper installs at page load
    and can never attach to a page already running. Confirm capture lines are
-   arriving (`tail -f bridge-captures/<table>.ndjson`, or the relay console).
+   arriving — the toolbar badge should be a **green ●** (§3a), and
+   `tail -f bridge-captures/<table>.ndjson` or the relay console shows them
+   landing.
 3. **Snapshot at table open, BEFORE move 1** (§4): click the toolbar button
-   while the table is still in setup. This banks the initial Port A six and
-   Lab A six — the one observation the notification feeds never repeat. A
-   game whose first snapshot is mid-game imports as a bounded replay, not a
-   move-1 replay.
+   and press **Take snapshot** while the table is still in setup. This banks
+   the initial Port A six and Lab A six — the one observation the notification
+   feeds never repeat. A game whose first snapshot is mid-game imports as a
+   bounded replay, not a move-1 replay. The panel's **Snapshots taken** count
+   going 0 → 1 is your confirmation it happened.
 4. **Start the follower** in a repo terminal:
 
    ```bash
@@ -193,26 +234,45 @@ makes a move-1 replay possible at all**.
 Both halves have their own suite, and neither runs the other's:
 
 ```bash
-cargo test -p yokohama-bridge                                             # the relay
-node bridge/tests/outbox_race.js && node bridge/tests/wrapper_transparency.js   # the extension
+cargo test -p yokohama-bridge                              # the relay
+node bridge/tests/outbox_race.js \
+  && node bridge/tests/wrapper_transparency.js \
+  && node bridge/tests/safe_table_parity.js \
+  && node bridge/tests/connected_indicator.js              # the extension
 ```
 
-The `node` pair needs no dependencies and exits nonzero on failure. It covers
-the outbox's behaviour when the relay is down, and that the page cannot tell its
-`fetch`/`XMLHttpRequest` have been wrapped.
+The `node` four need no dependencies and exit nonzero on failure. They cover
+the outbox's behaviour when the relay is down, that the page cannot tell its
+`fetch`/`XMLHttpRequest`/`WebSocket` have been wrapped, that table ids the
+relay would refuse are never emitted, and the connected indicator (badge map,
+session counters — including that they survive a service-worker recycle — the
+snapshot-on-click contract, and that no new permission was taken).
 
 ---
 
 ## Troubleshooting
 
-**The toolbar badge shows a number.** That many captures are parked because the
-relay is not answering. Start it — the backlog flushes on the next capture, or
-immediately if you click the button. If the badge keeps climbing, check that
-the relay's port matches `RELAY_ORIGIN` in `background.js`.
+**The toolbar badge shows a RED number.** That many captures are parked because
+the relay is not answering. Start it — the backlog flushes on the next capture,
+within 30 seconds of the poll, or immediately if you open the panel and press
+**Recheck relay**. If the badge keeps climbing, check that the relay's port
+matches `RELAY_ORIGIN` in `background.js`. (An **amber** number is the same
+backlog on its way out with the relay up, and needs nothing from you.)
+
+**The badge is a grey ○ or ?.** The relay is not answering, or has not been
+asked yet. Start it (§1) and press **Recheck relay** in the panel.
+
+**The badge says green ● but nothing is landing.** The badge reports the
+RELAY; captures come from the PAGE. Open the panel — if **Captures delivered**
+is not moving, it is the page half: reload the BGA tab (next entry).
 
 **Nothing is being captured.** Reload the BGA tab. The wrapper installs at page
 load, so a tab opened before the extension was loaded (or before it was
 reloaded) has no wrapper in it.
+
+**The panel says "Service worker not answering".** Chrome recycled it and it
+did not come back. Reload the extension in `chrome://extensions`, then reload
+the BGA tab.
 
 **"Extension context invalidated" in the page console.** You reloaded the
 extension while the tab was open. Reload the tab.
@@ -237,14 +297,25 @@ to end (execution ledger, H0 rows). §6's runsheet is the H3 procedure the
 gate run follows; its snapshot-before-move-1 step is the one thing no later
 diligence can recover.
 
+§3a's connected indicator (extension 0.4.0, 2026-08-08) is verified by
+`bridge/tests/connected_indicator.js` and by rendering the panel in a real
+Chrome in both colour schemes. It has **not** yet been watched during a live
+game — the first recorded game after this change is what confirms the badge
+reads true against a real table, and the reading to distrust first is a green
+● that lags a relay killed while nothing was being captured (the recycle case
+§3a names).
+
 ## Recording future games (the steady-state process, owner-ruled 2026-08-08)
 
 Per game, any number of sittings (async-friendly — every table-page load banks a full
 cumulative history fetch):
 
 1. Relay up: `cargo run -p yokohama-bridge --bin bridge-relay` (leave running while playing).
-2. Open the table; **snapshot (toolbar button) before move 1** — the game-start anchor.
+2. Open the table; check the badge is a **green ●** (§3a), then **snapshot (toolbar
+   button → Take snapshot) before move 1** — the game-start anchor.
 3. Play. Realtime moves ride the socket; async sittings re-bank history on every open.
+   Glance at the badge when you sit down: green ● is recording, a red number is a relay
+   you forgot to start.
 4. At the final score screen: snapshot again, then reload the tab once (belt-and-braces
    cumulative copy). Each table auto-writes its own `bridge-captures/<table>.ndjson`.
 5. Later, in any session: `yokohama-cli import bridge-captures/<table>.ndjson`. Whatever the
@@ -255,8 +326,10 @@ cumulative history fetch):
 Caveat: with the relay DOWN, the extension's outbox parks at most 400 items / 6 MB
 (drop-newest) — enough for a sitting's history fetches, not days of socket traffic. If in
 doubt, reload the tab once with the relay up: cumulative history recovers everything for
-turn-based play.
+turn-based play. The badge now tells you before it matters: a red number IS the parked
+count, and the panel says so in words.
 
-TODO (owner-requested, deferred to a future wave): a CONNECTED indicator on the extension —
-badge state showing relay reachability, click revealing the current table number and
-snapshot/capture counts — so recording state is visible at a glance without checking files.
+The connected indicator this section used to carry as a deferred item **shipped in extension
+version 0.4.0** (2026-08-08) and is documented at **§3a** — badge state for relay
+reachability, click for the table number and this session's capture/snapshot counts.
+Reload the extension once in `chrome://extensions` to get it.
