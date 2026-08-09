@@ -127,11 +127,34 @@ usage: eval_probe <subcommand> [options]
       --candidate-columns <list>
                              Comma-separated extra ROWS in the features block,
                              measured beside the sixteen and shipped by nothing.
-                             Today: `postclaim` (achievement_progress_sum with
-                             the viewer's already-claimed cards dropped).
                              Feature::ALL stays sixteen everywhere. REFUSED
                              when --blocks omits `features` (an ignored column
-                             would be a silent no-op).
+                             would be a silent no-op). The eight names, each
+                             also the row's printed name except `postclaim`:
+                               postclaim
+                                   achievement_progress_sum with the viewer's
+                                   OWN already-claimed cards dropped (T3)
+                               church_majority_margin
+                                   signed margin in the 6/3 pawn ranking, 2P
+                                   dummy competing (D1); > 0 means this seat
+                                   holds first place as the board stands
+                               customs_majority_margin
+                                   the same over the 8/4 ranking
+                               tech_majority_margin
+                                   the 10/5 industry-value ranking, 2P dummy
+                                   competing at DOUBLED value 15 (D5)
+                               achievement_race_proximity
+                                   minus the nearest UNCLAIMED-by-this-seat
+                                   card's remaining capped gap (0 is nearest)
+                               clock_control_church
+                                   this seat's own pawns on the church track
+                               port_empty_slots
+                                   empty Port card slots across every board —
+                                   BOARD-GLOBAL, so its relative form is 0 for
+                                   every seat by construction and only the
+                                   absolute form carries information
+                               money
+                                   this seat's yen
 
   table [--weights v1|pre-freeze]
       Print a weight table with its provenance identity. No games are played.
@@ -562,22 +585,98 @@ enum CandidateColumn {
     /// viewer's already-claimed cards dropped (protocol §4.1(ii) / §5's T3 row).
     /// Computed by the additive `eval` helper, which nothing in `score` calls.
     PostClaim,
+    /// **Round 3, T5.** The seat's signed margin in the CHURCH majority ranking
+    /// — see [`majority_margin`] for the arithmetic and its rules citation.
+    ChurchMajorityMargin,
+    /// **Round 3, T5.** The same over the CUSTOMS majority ranking.
+    CustomsMajorityMargin,
+    /// **Round 3, T5/T9.** The seat's signed margin in the TECHNOLOGY
+    /// industry-value ranking, the 2P dummy competing at doubled value 15 (D5)
+    /// — see [`tech_majority_margin`].
+    TechMajorityMargin,
+    /// **Round 3, T5.** Nearness to the seat's next achievement claim — see
+    /// [`achievement_race_proximity`].
+    AchievementRaceProximity,
+    /// **Round 3, T6.** The seat's OWN pawn count on the church track: how much
+    /// of the ending clock this seat is itself driving.
+    ClockControlChurch,
+    /// **Round 3, T6.** Empty Port card slots across every Port board — the
+    /// conjunct the `OrderDeckEmpty` trigger drops. BOARD-GLOBAL: see
+    /// [`port_empty_slots`] for what that costs the relative form.
+    PortEmptySlots,
+    /// **Round 3, T7/T8.** The seat's yen, re-tested at rev-7 prices.
+    Money,
 }
 
+/// Every accepted `--candidate-columns` token, paired with the column it names.
+///
+/// [`CandidateColumn::parse_list`] and its refusal's "what IS accepted" list
+/// both read THIS array, so a token can never drift from what the refusal
+/// advertises. [`CandidateColumn::token`]'s exhaustive match is the
+/// compile-time half of the guard (a new variant must be named); this array is
+/// the half that makes it reachable from the command line, and
+/// `every_candidate_column_is_reachable_from_the_command_line` is what pins the
+/// two together.
+const CANDIDATE_COLUMNS: [CandidateColumn; 8] = [
+    CandidateColumn::PostClaim,
+    CandidateColumn::ChurchMajorityMargin,
+    CandidateColumn::CustomsMajorityMargin,
+    CandidateColumn::TechMajorityMargin,
+    CandidateColumn::AchievementRaceProximity,
+    CandidateColumn::ClockControlChurch,
+    CandidateColumn::PortEmptySlots,
+    CandidateColumn::Money,
+];
+
 impl CandidateColumn {
-    /// The reported column name — deliberately the shipped feature's name plus a
-    /// suffix, so a reader diffing the two rows sees they measure the same
-    /// quantity under different rules.
+    /// The command-line token. Equal to [`name`](Self::name) for every round-3
+    /// column — a name a reader sees in the report is a name they can type —
+    /// and deliberately NOT for `postclaim`, whose short token is already in
+    /// recorded round-1 commands and stays byte-compatible with them.
+    fn token(self) -> &'static str {
+        match self {
+            CandidateColumn::PostClaim => "postclaim",
+            _ => self.name(),
+        }
+    }
+
+    /// The reported column name. For `postclaim` this is deliberately the
+    /// shipped feature's name plus a suffix, so a reader diffing the two rows
+    /// sees they measure the same quantity under different rules; the round-3
+    /// columns name the quantity they compute, in snake_case, and every one of
+    /// them fits the table's 28-column name field.
     fn name(self) -> &'static str {
         match self {
             CandidateColumn::PostClaim => "achievement_progress_sum_postclaim",
+            CandidateColumn::ChurchMajorityMargin => "church_majority_margin",
+            CandidateColumn::CustomsMajorityMargin => "customs_majority_margin",
+            CandidateColumn::TechMajorityMargin => "tech_majority_margin",
+            CandidateColumn::AchievementRaceProximity => "achievement_race_proximity",
+            CandidateColumn::ClockControlChurch => "clock_control_church",
+            CandidateColumn::PortEmptySlots => "port_empty_slots",
+            CandidateColumn::Money => "money",
         }
     }
 
     /// One seat's raw value for this column.
-    fn value(self, view: &PlayerView, player: &yokohama_core::VisiblePlayer) -> i64 {
+    ///
+    /// `rules` is here for the technology margin alone — industry values live in
+    /// the tech registry, exactly as `eval::technology_majority` reads them.
+    fn value(self, view: &PlayerView, player: &yokohama_core::VisiblePlayer, rules: &Rules) -> i64 {
+        // RED (Phase 3.5c round 3, task D): the seven admission columns are
+        // STUBBED at zero in this commit so its tests fail on ARITHMETIC rather
+        // than on compilation. The GREEN commit replaces every stub below with
+        // its mirror.
+        let _ = rules;
         match self {
             CandidateColumn::PostClaim => achievement_progress_postclaim_sum(view, player),
+            CandidateColumn::ChurchMajorityMargin
+            | CandidateColumn::CustomsMajorityMargin
+            | CandidateColumn::TechMajorityMargin
+            | CandidateColumn::AchievementRaceProximity
+            | CandidateColumn::ClockControlChurch
+            | CandidateColumn::PortEmptySlots
+            | CandidateColumn::Money => 0,
         }
     }
 
@@ -588,11 +687,17 @@ impl CandidateColumn {
     fn parse_list(raw: &str) -> Result<Vec<Self>, String> {
         raw.split(',')
             .filter(|s| !s.is_empty())
-            .map(|name| match name {
-                "postclaim" => Ok(CandidateColumn::PostClaim),
-                other => Err(format!(
-                    "unknown --candidate-columns entry {other:?} (postclaim)"
-                )),
+            .map(|name| {
+                CANDIDATE_COLUMNS.iter().copied().find(|c| c.token() == name).ok_or_else(|| {
+                    format!(
+                        "unknown --candidate-columns entry {name:?} ({})",
+                        CANDIDATE_COLUMNS
+                            .iter()
+                            .map(|c| c.token())
+                            .collect::<Vec<_>>()
+                            .join(" | "),
+                    )
+                })
             })
             .collect()
     }
@@ -893,10 +998,10 @@ fn row_values(
                     .players
                     .iter()
                     .filter(|p| p.id != me.id && !p.id.is_dummy())
-                    .map(|p| c.value(view, p))
+                    .map(|p| c.value(view, p, rules))
                     .max()
                     .unwrap_or(0);
-                (c.value(view, me) as f64, theirs as f64)
+                (c.value(view, me, rules) as f64, theirs as f64)
             }
             // Already relative, and an "absolute" evaluator total is not a
             // defined quantity — the row reports the same number in both
@@ -2365,6 +2470,10 @@ mod tests {
 
     use yokohama_core::game::greedy::DEFAULT_RETREAT_SAMPLES;
     use yokohama_core::game::lookahead::{DEFAULT_BEAM, DEFAULT_WORLDS};
+    use yokohama_core::{
+        AchievementCard, AchievementType, ChurchSlot, ChurchTrack, CustomsSlot, CustomsTrack,
+        GameConfig, OrderCardId, StartingOrderChoice, TechCardId, VisiblePlayer,
+    };
 
     /// W1-C review NOTE-3: `worlds` and `retreat_samples` are ADJACENT `u8`
     /// parameters on `LookaheadAgent::with_knobs`, so a k/m transposition in
@@ -3041,6 +3150,571 @@ mod tests {
         assert_eq!(shape(&row(0.60), &row(0.50), &row(0.40)), "monotone");
         assert_eq!(shape(&row(0.40), &row(0.70), &row(0.60)), "NON-MONOTONE(+0.1000)");
         assert_eq!(shape(&row(0.40), &row(0.30), &row(0.60)), "NON-MONOTONE(+0.1000)");
+    }
+
+    // -----------------------------------------------------------------------
+    // Phase 3.5c round 3 — the T5/T6/T7 admission columns (an L1 evidence round)
+    // -----------------------------------------------------------------------
+
+    /// A real OBSERVED view, from a real setup — the only kind of view this
+    /// instrument ever sees in production. Every fixture below mutates one of
+    /// these rather than hand-building a `PlayerView`, so no field a column
+    /// reads can be a shape `observe` never produces.
+    fn observed_view(players: u8, seed: u64, seat: u8, rules: &Rules) -> PlayerView {
+        let pending =
+            new_game(GameConfig::for_player_count(players), rules, seed).expect("a standard setup");
+        let choices: Vec<_> = (0..players).map(|_| StartingOrderChoice::Keep(0)).collect();
+        let state = finalize_setup(pending, &choices).expect("the setup finalizes");
+        observe(&state, PlayerId(seat)).expect("a seated view")
+    }
+
+    /// A 2P view whose two tracks hold NOTHING but the setup dummy (church
+    /// faith-7 / customs space-4, invariant I9). The D1 fixture shape
+    /// `tests/eval_core.rs` uses, restated view-side.
+    fn dummy_view(rules: &Rules) -> PlayerView {
+        let mut view = observed_view(2, 7, 0, rules);
+        assert!(
+            view.church_track.slots.iter().flatten().any(|s| s.player.is_dummy())
+                && view.customs_track.slots.iter().flatten().any(|s| s.player.is_dummy()),
+            "a 2P setup must place both dummy pawns — finding D1",
+        );
+        view.church_track.slots.iter_mut().for_each(|slot| {
+            *slot = slot.filter(|occupant| occupant.player.is_dummy());
+        });
+        view.customs_track.slots.iter_mut().for_each(|slot| {
+            *slot = slot.filter(|occupant| occupant.player.is_dummy());
+        });
+        view
+    }
+
+    fn seat_of(view: &PlayerView, seat: u8) -> &VisiblePlayer {
+        view.players.iter().find(|p| p.id == PlayerId(seat)).expect("the seat is in this view")
+    }
+
+    fn seat_mut(view: &mut PlayerView, seat: u8) -> &mut VisiblePlayer {
+        view.players.iter_mut().find(|p| p.id == PlayerId(seat)).expect("the seat is in this view")
+    }
+
+    fn column_value(column: CandidateColumn, view: &PlayerView, seat: u8, rules: &Rules) -> i64 {
+        column.value(view, seat_of(view, seat), rules)
+    }
+
+    /// What the SHIPPED structure awards this seat — the quantity every margin
+    /// mirror is judged against.
+    fn shipped_bonus(view: &PlayerView, seat: u8, feature: Feature, rules: &Rules) -> i64 {
+        ScoreStructure::derive(view, rules).value_of(seat_of(view, seat), feature)
+    }
+
+    fn place_church(view: &mut PlayerView, faith: u8, seat: u8) {
+        let index = ChurchTrack::faith_to_index(faith).expect("a printed faith space");
+        view.church_track.slots[index] =
+            Some(ChurchSlot { player: PlayerId(seat), arrival_order: faith });
+    }
+
+    fn place_customs(view: &mut PlayerView, space: u8, seat: u8) {
+        let index = CustomsTrack::space_to_index(space).expect("a printed customs space");
+        view.customs_track.slots[index] =
+            Some(CustomsSlot { player: PlayerId(seat), arrival_order: space });
+    }
+
+    /// Distinct-NAMED technology cards with the requested industry costs. The
+    /// registry holds 20 titles across 30 physical cards and a player may own
+    /// only ONE card of a given name, so a fixture stacking two copies of one
+    /// title would be a state no game can reach.
+    fn techs_totalling(rules: &Rules, costs: &[u8]) -> Vec<TechCardId> {
+        let cards = rules.techs.iter_sorted_by_id();
+        let mut used: Vec<String> = Vec::new();
+        let mut out = Vec::new();
+        for cost in costs {
+            let card = cards
+                .iter()
+                .find(|c| c.industry_cost == *cost && !used.contains(&c.name))
+                .unwrap_or_else(|| panic!("no unused technology of industry cost {cost}"));
+            used.push(card.name.clone());
+            out.push(card.id);
+        }
+        out
+    }
+
+    /// **THE ANTI-DRIFT PIN for the church margin.** The column is a mirror of
+    /// `eval::majority_bonus`'s ranking at finer grain, so the claim it makes —
+    /// POSITIVE exactly when this seat holds first place as the board stands —
+    /// is checked against what the shipped structure actually awards, case by
+    /// case, with the 2P dummy competing throughout (finding D1, rulebook p.9
+    /// NOTE; church 6/3, count then RIGHTMOST occupied space).
+    ///
+    /// Anti-vacuity is built in: the same seat reads 0 / 3 / 6 across the cases
+    /// below, so a mirror that ignored the dummy, or one that ignored the
+    /// rightmost tie-break, disagrees on a VALUE rather than on an absence.
+    #[test]
+    fn the_church_margin_is_positive_exactly_when_the_seat_holds_the_six() {
+        let rules = Rules::standard();
+        let check = |label: &str, view: &PlayerView, margins: [i64; 2], bonuses: [i64; 2]| {
+            for seat in 0..2u8 {
+                let margin = column_value(CandidateColumn::ChurchMajorityMargin, view, seat, &rules);
+                let bonus = shipped_bonus(view, seat, Feature::ChurchBonusNow, &rules);
+                assert_eq!(margin, margins[usize::from(seat)], "{label}: seat {seat} margin");
+                assert_eq!(bonus, bonuses[usize::from(seat)], "{label}: seat {seat} shipped bonus");
+                assert_eq!(
+                    margin > 0,
+                    bonus == 6,
+                    "{label}: seat {seat}: a positive margin must mean first place \
+                     (margin {margin}, bonus {bonus})",
+                );
+            }
+        };
+
+        // (i) The dummy alone on the track: it holds first place, awarded to
+        //     nobody, and both real seats are one pawn behind it.
+        let lone_dummy = dummy_view(&rules);
+        check("dummy alone", &lone_dummy, [-2, -2], [0, 0]);
+
+        // (ii) Both real pawns LEFT of faith-7: a three-way count tie the dummy
+        //      wins on rightmost, so P1 collects only the second place.
+        let mut denied = dummy_view(&rules);
+        place_church(&mut denied, 4, 0);
+        place_church(&mut denied, 5, 1);
+        check("denied", &denied, [-1, -1], [0, 3]);
+
+        // (iii) A count tie between the two real seats, decided by rightmost.
+        let mut rightmost = dummy_view(&rules);
+        place_church(&mut rightmost, 4, 0);
+        place_church(&mut rightmost, 8, 0);
+        place_church(&mut rightmost, 5, 1);
+        place_church(&mut rightmost, 9, 1);
+        check("rightmost tie", &rightmost, [-1, 1], [3, 6]);
+
+        // (iv) A real count gap: the magnitude carries it, at 2 per pawn.
+        let mut gap = dummy_view(&rules);
+        for faith in [4u8, 5, 6] {
+            place_church(&mut gap, faith, 0);
+        }
+        place_church(&mut gap, 9, 1);
+        check("count gap", &gap, [4, -4], [6, 3]);
+
+        // (v) An empty track — including no dummy — is a flat 0 for everyone,
+        //     the one shape in which the margin reads exactly zero.
+        let mut empty = dummy_view(&rules);
+        empty.church_track.slots = [None; 8];
+        check("empty", &empty, [0, 0], [0, 0]);
+
+        // (vi) A lone real occupant with the dummy cleared: first place with no
+        //      rival at all, and the seat that never placed is not in the
+        //      ranking (no second place is awarded to it).
+        let mut lone = dummy_view(&rules);
+        lone.church_track.slots = [None; 8];
+        place_church(&mut lone, 6, 0);
+        check("lone occupant", &lone, [2, -2], [6, 0]);
+    }
+
+    /// The customs half of the same pin (8/4, seven printed spaces). Case (i) is
+    /// the engine's own D1 reproducer read through the view: the dummy wins a
+    /// COUNT TIE on the rightmost space and drops P0 from 8 VP to 4.
+    #[test]
+    fn the_customs_margin_is_positive_exactly_when_the_seat_holds_the_eight() {
+        let rules = Rules::standard();
+        let check = |label: &str, view: &PlayerView, margins: [i64; 2], bonuses: [i64; 2]| {
+            for seat in 0..2u8 {
+                let margin =
+                    column_value(CandidateColumn::CustomsMajorityMargin, view, seat, &rules);
+                let bonus = shipped_bonus(view, seat, Feature::CustomsBonusNow, &rules);
+                assert_eq!(margin, margins[usize::from(seat)], "{label}: seat {seat} margin");
+                assert_eq!(bonus, bonuses[usize::from(seat)], "{label}: seat {seat} shipped bonus");
+                assert_eq!(
+                    margin > 0,
+                    bonus == 8,
+                    "{label}: seat {seat}: a positive margin must mean first place \
+                     (margin {margin}, bonus {bonus})",
+                );
+            }
+        };
+
+        let mut denied = dummy_view(&rules);
+        place_customs(&mut denied, 3, 0);
+        place_customs(&mut denied, 1, 1);
+        check("dummy wins the rightmost tie", &denied, [-1, -1], [4, 0]);
+
+        let mut beaten = dummy_view(&rules);
+        place_customs(&mut beaten, 5, 0);
+        place_customs(&mut beaten, 6, 0);
+        place_customs(&mut beaten, 1, 1);
+        place_customs(&mut beaten, 2, 1);
+        check("dummy out-counted", &beaten, [1, -1], [8, 4]);
+
+        let mut empty = dummy_view(&rules);
+        empty.customs_track.slots = [None; 7];
+        check("empty", &empty, [0, 0], [0, 0]);
+    }
+
+    /// **D5 made executable on the candidate side.** At two players the setup
+    /// dummy competes in the TECHNOLOGY majority at industry value exactly 7.5
+    /// (owner ruling 2026-08-08, rulebook p.9 final-scoring NOTE), which the
+    /// engine and `eval.rs` alike represent as DOUBLED value 15 against real
+    /// doubled totals that are always even. These two cells straddle that
+    /// half-point — industry 7 (doubled 14) loses to it, industry 8 (doubled
+    /// 16) beats it — which is the whole content of the ruling.
+    #[test]
+    fn the_tech_margin_prices_the_2p_dummy_at_doubled_fifteen() {
+        let rules = Rules::standard();
+        for (costs, industry, margin_me, bonus_me, margin_them) in [
+            (vec![3u8, 4], 7u32, -2i64, 5i64, -30i64),
+            (vec![3, 5], 8, 2, 10, -32),
+        ] {
+            let mut view = observed_view(2, 11, 0, &rules);
+            let ids = techs_totalling(&rules, &costs);
+            let total: u32 = ids
+                .iter()
+                .map(|id| u32::from(rules.techs.get(*id).expect("a registry card").industry_cost))
+                .sum();
+            assert_eq!(total, industry, "the fixture must own the industry it claims");
+            seat_mut(&mut view, 0).technologies = ids;
+            seat_mut(&mut view, 1).technologies = Vec::new();
+
+            assert_eq!(
+                column_value(CandidateColumn::TechMajorityMargin, &view, 0, &rules),
+                margin_me,
+                "industry {industry} against the dummy's 7.5",
+            );
+            assert_eq!(
+                shipped_bonus(&view, 0, Feature::TechBonusNow, &rules),
+                bonus_me,
+                "industry {industry}: the shipped award",
+            );
+            // A seat owning NO technology never places — it is not a contender
+            // at all — and the margin says so from the other side.
+            assert_eq!(
+                column_value(CandidateColumn::TechMajorityMargin, &view, 1, &rules),
+                margin_them,
+            );
+            assert_eq!(shipped_bonus(&view, 1, Feature::TechBonusNow, &rules), 0);
+            for seat in 0..2u8 {
+                let margin = column_value(CandidateColumn::TechMajorityMargin, &view, seat, &rules);
+                let bonus = shipped_bonus(&view, seat, Feature::TechBonusNow, &rules);
+                assert_eq!(margin > 0, bonus == 10, "seat {seat}: margin {margin}, bonus {bonus}");
+            }
+        }
+    }
+
+    /// The technology tie-break is the official CLOCKWISE one (nearest to the
+    /// start player wins), and it is the only term that can decide an
+    /// equal-industry ranking. Run at 4P, where no dummy competes, and flipped
+    /// so the tie flips in the mirror AND in the shipped award — a fixture whose
+    /// answer never moved would pin nothing.
+    #[test]
+    fn the_tech_margin_breaks_an_equal_value_tie_clockwise_from_the_start_player() {
+        let rules = Rules::standard();
+        let mut view = observed_view(4, 13, 0, &rules);
+        let pair = techs_totalling(&rules, &[5, 5]);
+        for player in view.players.iter_mut() {
+            player.technologies = Vec::new();
+        }
+        seat_mut(&mut view, 2).technologies = vec![pair[0]];
+        seat_mut(&mut view, 3).technologies = vec![pair[1]];
+
+        // Start player P1 ⇒ distances P2 = 1, P3 = 2, so P2 wins the tie.
+        view.config.start_player = PlayerId(1);
+        assert_eq!(column_value(CandidateColumn::TechMajorityMargin, &view, 2, &rules), 1);
+        assert_eq!(column_value(CandidateColumn::TechMajorityMargin, &view, 3, &rules), -1);
+        assert_eq!(shipped_bonus(&view, 2, Feature::TechBonusNow, &rules), 10);
+        assert_eq!(shipped_bonus(&view, 3, Feature::TechBonusNow, &rules), 5);
+        // A seat with no technology sits a whole doubled value behind.
+        assert_eq!(column_value(CandidateColumn::TechMajorityMargin, &view, 0, &rules), -20);
+        assert_eq!(shipped_bonus(&view, 0, Feature::TechBonusNow, &rules), 0);
+
+        // Start player P3 ⇒ distances P3 = 0, P2 = 3: the tie flips, both sides.
+        view.config.start_player = PlayerId(3);
+        assert_eq!(column_value(CandidateColumn::TechMajorityMargin, &view, 3, &rules), 1);
+        assert_eq!(column_value(CandidateColumn::TechMajorityMargin, &view, 2, &rules), -1);
+        assert_eq!(shipped_bonus(&view, 3, Feature::TechBonusNow, &rules), 10);
+        assert_eq!(shipped_bonus(&view, 2, Feature::TechBonusNow, &rules), 5);
+    }
+
+    /// The achievement column is SELF-guidance, per the owner's 2026-08-09 canon
+    /// batch: achievements are agenda-setters, so what it measures is how near
+    /// THIS seat is to its next claim — never how near an opponent is.
+    #[test]
+    fn achievement_race_proximity_is_the_nearest_unclaimed_gap_negated() {
+        let rules = Rules::standard();
+        let one_tech = techs_totalling(&rules, &[3]);
+        let fresh = || {
+            let mut view = observed_view(2, 17, 0, &rules);
+            view.achievements = [
+                AchievementCard::new(AchievementType::Money10),
+                AchievementCard::new(AchievementType::Orders5),
+                AchievementCard::new(AchievementType::Technologies4),
+            ];
+            let me = seat_mut(&mut view, 0);
+            me.money = 8; // Money10: gap 2 — the nearest
+            me.completed_orders = vec![OrderCardId(1), OrderCardId(2)]; // Orders5: gap 3
+            me.technologies = one_tech.clone(); // Technologies4: gap 3
+            view
+        };
+        let proximity = |view: &PlayerView| {
+            column_value(CandidateColumn::AchievementRaceProximity, view, 0, &rules)
+        };
+
+        let base = fresh();
+        assert_eq!(proximity(&base), -2, "the NEAREST unclaimed card sets the column");
+
+        // The viewer's OWN claim drops that leg; the next-nearest takes over.
+        let mut self_claimed = fresh();
+        self_claimed.achievements[0].claimed_by.push(PlayerId(0));
+        assert_eq!(proximity(&self_claimed), -3);
+
+        // An OPPONENT's claim leaves this seat's leg fully LIVE: the engine's
+        // own gate refuses only a REPEAT claim by the same seat, so the card is
+        // still worth its subsequent value here (`can_claim_achievement`).
+        let mut opponent_claimed = fresh();
+        opponent_claimed.achievements[0].claimed_by.push(PlayerId(1));
+        assert_eq!(proximity(&opponent_claimed), -2);
+
+        // A card standing at full progress reads 0 — the top of the scale.
+        let mut claimable = fresh();
+        seat_mut(&mut claimable, 0).money = 10;
+        assert_eq!(proximity(&claimable), 0);
+
+        // …and OVER-progress does not read positive: the gap is capped, exactly
+        // as `achievement_progress_sum`'s legs are.
+        let mut hoarding = fresh();
+        seat_mut(&mut hoarding, 0).money = 25;
+        assert_eq!(proximity(&hoarding), 0);
+
+        // All three claimed by this seat reads 0 as well — a DECIDED collision
+        // with the claimable-now reading above, recorded rather than papered
+        // over: both are "nothing left to chase", and the state needs three
+        // claims by one seat to occur at all.
+        let mut swept = fresh();
+        for card in swept.achievements.iter_mut() {
+            card.claimed_by.push(PlayerId(0));
+        }
+        assert_eq!(proximity(&swept), 0);
+    }
+
+    /// The clock column is CONTROL-shaped, not brake-shaped: the owner's canon
+    /// batch inverts the end-trigger question (a behind player keeps building),
+    /// so what is worth measuring is how much of the church clock this seat is
+    /// itself driving.
+    #[test]
+    fn clock_control_church_counts_this_seats_own_pawns_and_never_the_dummys() {
+        let rules = Rules::standard();
+        let mut view = dummy_view(&rules);
+        let control =
+            |view: &PlayerView, seat: u8| column_value(CandidateColumn::ClockControlChurch, view, seat, &rules);
+
+        // The dummy is on the track and belongs to neither seat.
+        assert_eq!(view.church_track.slots.iter().flatten().count(), 1);
+        assert_eq!(control(&view, 0), 0);
+        assert_eq!(control(&view, 1), 0);
+
+        place_church(&mut view, 4, 0);
+        place_church(&mut view, 8, 0);
+        place_church(&mut view, 5, 1);
+        assert_eq!(control(&view, 0), 2);
+        assert_eq!(control(&view, 1), 1);
+
+        // The seats' shares SUM to the end-trigger's own currency — the
+        // executable form of "the dummy is not a pawn the trigger tallies"
+        // (`ChurchTrack::total_assistants`, finding D1).
+        let total: i64 = (0..2u8).map(|seat| control(&view, seat)).sum();
+        assert_eq!(total, i64::from(view.church_track.total_assistants()));
+        assert_eq!(view.church_track.slots.iter().flatten().count(), 4, "the dummy is still there");
+    }
+
+    /// T6's dropped conjunct. BOARD-GLOBAL by construction, which the report
+    /// must not be able to hide: the relative form is identically zero for every
+    /// seat, and that is pinned here through `row_values` itself — the function
+    /// the features block actually reads — rather than asserted about the helper
+    /// alone.
+    #[test]
+    fn port_empty_slots_counts_every_board_and_reads_the_same_from_every_seat() {
+        let rules = Rules::standard();
+        let mut view = observed_view(2, 19, 0, &rules);
+        assert!(view.port_state.port_b.is_none(), "2P plays one Port board");
+        let empty =
+            |view: &PlayerView, seat: u8| column_value(CandidateColumn::PortEmptySlots, view, seat, &rules);
+
+        view.port_state.port_a.slots = [None; 6];
+        assert_eq!(empty(&view, 0), 6);
+        assert_eq!(empty(&view, 1), 6);
+        view.port_state.port_a.slots[0] = Some(OrderCardId(1));
+        view.port_state.port_a.slots[5] = Some(OrderCardId(2));
+        assert_eq!(empty(&view, 0), 4);
+        assert_eq!(empty(&view, 1), 4, "a board-global quantity reads the same from every seat");
+
+        let rows = [Row::Candidate(CandidateColumn::PortEmptySlots)];
+        let mut rel = [0.0f64];
+        let mut abs = [0.0f64];
+        let mut cand: [f64; 0] = [];
+        row_values(&view, &rules, &WeightTable::V1, &rows, &[], &mut rel, &mut abs, &mut cand);
+        assert_eq!(rel[0], 0.0, "the relative form of a board-global column is zero by construction");
+        assert_eq!(abs[0], 4.0, "the absolute form is the whole information this column carries");
+
+        // The SECOND Port board counts too — a 2P-only implementation would
+        // read 6 where the table holds twelve slots.
+        let mut four = observed_view(4, 23, 0, &rules);
+        assert!(four.port_state.port_b.is_some(), "4P plays two Port boards");
+        four.port_state.port_a.slots = [None; 6];
+        four.port_state.port_b.as_mut().expect("port B").slots = [None; 6];
+        assert_eq!(empty(&four, 0), 12);
+        four.port_state.port_b.as_mut().expect("port B").slots[2] = Some(OrderCardId(3));
+        assert_eq!(empty(&four, 0), 11);
+    }
+
+    /// T7/T8's candidate, re-tested at rev-7 prices (the Church action now costs
+    /// 2 Yen, D1 2026-08-08). Trivial arithmetic, pinned anyway: a column that
+    /// silently read the wrong field would be indistinguishable from a null
+    /// result at L1, which is exactly the conclusion this round might draw.
+    #[test]
+    fn money_is_this_seats_yen() {
+        let rules = Rules::standard();
+        let mut view = observed_view(2, 29, 0, &rules);
+        seat_mut(&mut view, 0).money = 7;
+        seat_mut(&mut view, 1).money = 13;
+        assert_eq!(column_value(CandidateColumn::Money, &view, 0, &rules), 7);
+        assert_eq!(column_value(CandidateColumn::Money, &view, 1, &rules), 13);
+        seat_mut(&mut view, 0).money = 0;
+        assert_eq!(column_value(CandidateColumn::Money, &view, 0, &rules), 0);
+    }
+
+    /// Every variant is typeable, every token is unique, and nothing here moves
+    /// `Feature::ALL` or the argument-free row vector.
+    #[test]
+    fn every_candidate_column_is_reachable_from_the_command_line() {
+        for column in CANDIDATE_COLUMNS {
+            assert_eq!(
+                CandidateColumn::parse_list(column.token()),
+                Ok(vec![column]),
+                "{column:?} does not parse from its own token",
+            );
+            if column != CandidateColumn::PostClaim {
+                assert_eq!(
+                    column.token(),
+                    column.name(),
+                    "a round-3 column's token is its printed name",
+                );
+                // Round-1 review NOTE-5 recorded `postclaim`'s 34-character name
+                // overflowing the 28-wide name field as cosmetic; the round-3
+                // names are inside it, and this keeps them there.
+                assert!(column.name().len() <= 28, "{} overflows the name field", column.name());
+            }
+        }
+        let tokens: Vec<&str> = CANDIDATE_COLUMNS.iter().map(|c| c.token()).collect();
+        let names: Vec<&str> = CANDIDATE_COLUMNS.iter().map(|c| c.name()).collect();
+        for (label, mut list) in [("token", tokens.clone()), ("name", names.clone())] {
+            let before = list.len();
+            list.sort_unstable();
+            list.dedup();
+            assert_eq!(list.len(), before, "two candidate columns share a {label}");
+        }
+
+        // A list parses in argv order, and an empty entry is skipped.
+        assert_eq!(
+            CandidateColumn::parse_list("money,church_majority_margin,"),
+            Ok(vec![CandidateColumn::Money, CandidateColumn::ChurchMajorityMargin]),
+        );
+
+        // An unknown name names what it SAW and everything that IS accepted.
+        let message =
+            CandidateColumn::parse_list("church_margin").expect_err("a near-miss must be refused");
+        assert!(message.contains("church_margin"), "{message}");
+        for token in &tokens {
+            assert!(message.contains(token), "the refusal never mentions {token:?}: {message}");
+        }
+
+        // The shipped feature list is untouched, the argument-free row vector is
+        // the one every recorded appendix was rendered from, and the benchmark
+        // row still ends the table with every column present.
+        assert_eq!(Feature::COUNT, 16);
+        assert_eq!(Row::all(&[]).len(), 18);
+        assert_eq!(Row::all(&CANDIDATE_COLUMNS).len(), 18 + CANDIDATE_COLUMNS.len());
+        assert!(matches!(Row::all(&CANDIDATE_COLUMNS).last(), Some(Row::EvalTotal)));
+        assert_eq!(
+            Row::all(&CANDIDATE_COLUMNS)[..17],
+            Row::all(&[])[..17],
+            "candidate columns must not disturb the sixteen features or the unsplit hand row",
+        );
+    }
+
+    /// The columns are functions of the VIEW and of nothing else. Built twice
+    /// from scratch rather than cloned: two `observe` calls allocate their own
+    /// hash maps with their own `RandomState`, so a column that had come to
+    /// depend on a map's iteration order reads differently between the two.
+    #[test]
+    fn the_admission_columns_are_pure_functions_of_the_view() {
+        let rules = Rules::standard();
+        let build = || {
+            let mut view = dummy_view(&rules);
+            place_church(&mut view, 4, 0);
+            place_church(&mut view, 9, 1);
+            place_customs(&mut view, 2, 0);
+            seat_mut(&mut view, 0).technologies = techs_totalling(&rules, &[3, 5]);
+            seat_mut(&mut view, 0).money = 6;
+            seat_mut(&mut view, 1).money = 11;
+            view
+        };
+        let first = build();
+        let second = build();
+        assert_eq!(first, second, "the two fixtures must be the same view to begin with");
+        for column in CANDIDATE_COLUMNS {
+            for seat in 0..2u8 {
+                let a = column_value(column, &first, seat, &rules);
+                let b = column_value(column, &second, seat, &rules);
+                let again = column_value(column, &first, seat, &rules);
+                assert_eq!(a, b, "{column:?} seat {seat} moved between two identical views");
+                assert_eq!(a, again, "{column:?} seat {seat} moved on a second call");
+            }
+        }
+    }
+
+    /// End to end on a real corpus: the columns ride the same cell machinery the
+    /// sixteen do, every value is finite, the board-global column's relative
+    /// cells are identically zero, and the columns are not all silently zero
+    /// (the anti-vacuity that separates a measured null from a stub).
+    #[test]
+    fn the_admission_columns_ride_a_real_corpus_end_to_end() {
+        let rules = Rules::standard();
+        let (corpus, _) = generate(
+            2,
+            1,
+            ProbeContestant::Greedy { m: DEFAULT_RETREAT_SAMPLES },
+            &WeightTable::V1,
+            &rules,
+            SeedScheduleKind::Diagnostic(DEFAULT_MASTER),
+            true,
+            &CANDIDATE_COLUMNS,
+            &[],
+        )
+        .expect("a 2P greedy game completes");
+
+        assert_eq!(corpus.rows.len(), 18 + CANDIDATE_COLUMNS.len());
+        assert!(!corpus.cells.is_empty(), "a corpus with no cells proves nothing");
+        let slot = |column: CandidateColumn| {
+            corpus
+                .rows
+                .iter()
+                .position(|row| matches!(row, Row::Candidate(c) if *c == column))
+                .expect("every requested column is a row")
+        };
+        let port = slot(CandidateColumn::PortEmptySlots);
+        for cell in &corpus.cells {
+            for value in cell.rel.iter().chain(cell.abs.iter()) {
+                assert!(value.is_finite(), "game {} stage {:?}: a non-finite cell", cell.game, cell.stage);
+            }
+            assert_eq!(cell.rel[port], 0.0, "a board-global column has no seat margin");
+            assert!(cell.abs[port] >= 0.0, "an empty-slot count is never negative");
+        }
+        // The 2P dummy sits on both tracks from setup, so every seat starts a
+        // pawn behind in the church ranking — a value no stub produces.
+        let church = slot(CandidateColumn::ChurchMajorityMargin);
+        assert!(
+            corpus.cells.iter().any(|cell| cell.abs[church] != 0.0),
+            "the church margin is identically zero across a whole game",
+        );
+        let money = slot(CandidateColumn::Money);
+        assert!(
+            corpus.cells.iter().any(|cell| cell.abs[money] > 0.0),
+            "no seat held a single yen all game",
+        );
     }
 
     #[test]
