@@ -146,7 +146,38 @@ use crate::types::GameState;
 ///
 /// The usual consequence: rev-5 saves stop resuming (records do not cross
 /// revs — which is also why D3's `Move` serde change is safe).
-pub const SEMANTICS_REV: u32 = 6;
+///
+/// Rev 7 (2026-08-08, rules-parity continued — ONE owner ruling, branch
+/// `rules-parity-rev7`): D6 CHURCH/CUSTOMS TRACK-PAWN SOURCE becomes
+/// AREA-FIRST. When the acting player has own assistant(s) in the activated
+/// Church/Customs area, the track pawn comes from THAT AREA; otherwise from
+/// hand. Rev 6 and earlier were hand-first.
+///
+/// Recorded as a POTENTIAL RULEBOOK DIFF, deliberately: rulebook p.13/p.14
+/// reads "place 1 Assistant pawn from the [Church/Customs] Area OR your hand"
+/// — a player CHOICE that BGA appears not to offer. The ruling matches BGA
+/// (live-gate table 896157897 m49: BGA moved the pawn Church-area -> track
+/// with the hand untouched), buys simplicity, and shrinks the 3.5c+ problem
+/// space. Full owner reasoning: guidingpath's D6 decision-log row.
+///
+/// A REACHABLE-STATE behaviour change like rev 6's, but a narrow one, and the
+/// scope is worth stating precisely because it is easy to overstate in both
+/// directions:
+/// - The legal set AT THE TAKE does NOT move. Availability is source-blind
+///   (`has_church_or_customs_assistant`, hand OR area), and the generator,
+///   `move_legality` and `check_invariants`' queue-head clause all read that
+///   one predicate.
+/// - The legal set DOES move at exactly one mid-turn surface: an
+///   `AssistantMove` icon queued between the take and Recovery, where
+///   `choices::assistant_move_options` reads hand/`on_board` counts the two
+///   rules leave different by one.
+/// - At TURN END the two rules converge (the activated area is the Recovery
+///   area), EXCEPT with Telephone and exactly one own pawn in that area, where
+///   hand-first could park the pawn on the board past the turn and area-first
+///   cannot.
+///
+/// The usual consequence: rev-6 saves stop resuming.
+pub const SEMANTICS_REV: u32 = 7;
 
 /// FNV-1a 64 over `bytes`, seeded with the standard offset basis. Hand-rolled
 /// for the same reason `Rules::content_hash` hand-rolls it: `std::hash` is not

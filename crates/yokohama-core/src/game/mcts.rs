@@ -4177,10 +4177,15 @@ mod tests {
         let rules = Rules::standard();
         // `back` is fixture-derived, not principled: it must land on a point
         // whose bounded search actually reaches finished games. Re-probed at
-        // each SEMANTICS_REV-6 rules-parity ruling (every one moves the
-        // seeded greedy walk; it drifted 2 -> 4 -> 3 -> 2 across the set);
-        // probe adjacent values if a future rev drifts it again.
-        let (world, seat) = point_before_the_end(&rules, 2);
+        // each rules-parity ruling (every one moves the seeded greedy walk;
+        // it drifted 2 -> 4 -> 3 -> 2 across the rev-6 set, then 2 -> 5 at
+        // rev 7's D6); probe adjacent values if a future rev drifts it again.
+        // The rev-7 sweep over back = 1..=10 found exactly TWO qualifying
+        // points, 5 and 6 (every other value reaches 0 terminal nodes); 5 is
+        // taken as the nearer, and it spends 546 of the 10,000 budget against
+        // 6's 8,137, which keeps the "stopped WITHOUT spending the budget"
+        // clause below emphatic rather than marginal.
+        let (world, seat) = point_before_the_end(&rules, 5);
 
         // Simulations bounded ONLY by the budget — the contestant shape.
         let mut c = ctx(&rules, &WeightTable::V1, u32::MAX, 0xE7D);

@@ -710,21 +710,30 @@ fn president_label(state: &GameState, loc: PresidentLocation) -> String {
 /// (Placement never queues a reward, so `before.turn_phase` cleanly
 /// disambiguates a shape both moves produce identically).
 ///
-/// A Church/Customs placement drawn from the acting area (rather than hand,
-/// when hand is empty -- `take_church_or_customs_assistant` prefers hand,
-/// falls back to the acting area) is reserved out of `board_diff` below so
-/// it isn't ALSO reported as a spurious "recovered" line. WHICH area that is
-/// comes from the engine's own `resolve_acting_area` against the pre-move
-/// state, so the mercenary sub-turn case (target area, not the president's)
-/// is covered rather than mis-attributed (S1, fixed 2026-07-20).
+/// A Church/Customs placement drawn from the acting area is reserved out of
+/// `board_diff` below so it isn't ALSO reported as a spurious "recovered"
+/// line. Since D6 (2026-08-08, `SEMANTICS_REV` 7) that is the PRIMARY source
+/// rather than a hand-empty fallback --
+/// `take_church_or_customs_assistant` is AREA-FIRST, taking from the
+/// activated area whenever the acting player has own assistant(s) there and
+/// from hand otherwise -- so this reservation now fires on the common path,
+/// not the rare one. The arithmetic is unchanged and needed no edit: the
+/// reservation keys on `track_placed > hand_shrink`, i.e. on the OBSERVED
+/// diff, never on the source rule. WHICH area is reserved comes from the
+/// engine's own `resolve_acting_area` against the pre-move state, so the
+/// mercenary sub-turn case (target area, not the president's) is covered
+/// rather than mis-attributed (S1, fixed 2026-07-20).
 ///
 /// One caveat remains, accepted for a v1 CLI display feature: the
-/// reservation can mis-attribute by one unit in the rare case where a
-/// singleton movement-reward AND a hand-empty Church/Customs placement land
-/// in the same move's diff (both draw on the same acting-area count). Not
-/// reached by any move shape the current engine actually produces outside a
-/// contrived fixture -- and unlike the S1 case, this one does not depend on
-/// a state the fuzzer under-samples.
+/// reservation can mis-attribute by one unit if a singleton auto-resolved
+/// movement-reward and an area-sourced Church/Customs placement land in the
+/// same move's diff (both draw on the same acting-area count). Under D6 this
+/// needs the acting player's hand at 0 -- otherwise the rider has a hand
+/// source into every non-Canal area and so more than one option, which is not
+/// a singleton and never auto-resolves -- and at hand 0 the rider's remaining
+/// options are empty (auto-Decline, no diff) or plural. So it stays a
+/// contrived-fixture shape, and unlike the S1 case it does not depend on a
+/// state the fuzzer under-samples.
 fn assistant_lines(lines: &mut Vec<String>, before: &GameState, after: &GameState, b: &PlayerState, a: &PlayerState) {
     let mut board_diff: BTreeMap<AreaId, i64> = BTreeMap::new();
     for (&area, &n) in &b.assistants.on_board {
@@ -1826,9 +1835,10 @@ mod tests {
 
         {
             let p = &mut before.players[0];
-            // Empty hand forces the Church placement to draw off the BOARD --
-            // `take_church_or_customs_assistant` prefers hand, falls back to
-            // the acting area.
+            // The Church placement draws off the BOARD -- since D6 (rev 7)
+            // `take_church_or_customs_assistant` is AREA-FIRST, and the empty
+            // hand here additionally removes the fallback, so the fixture
+            // discriminates the reserved AREA (its subject) under either rule.
             p.assistants.in_hand = 0;
             p.assistants.on_board.clear();
             p.assistants.on_board.insert(target, 1);
