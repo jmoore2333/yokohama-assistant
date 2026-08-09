@@ -80,8 +80,8 @@ use rand::{Rng, SeedableRng};
 use rand_chacha::ChaCha8Rng;
 
 use yokohama_core::game::eval::{
-    achievement_progress_postclaim_sum, interpolate, progress_ppm, score, view_is_terminal,
-    Feature, ScoreStructure, WeightTable, PROGRESS_FULL_PPM,
+    achievement_progress, achievement_progress_postclaim_sum, interpolate, progress_ppm, score,
+    view_is_terminal, Feature, ScoreStructure, WeightTable, PROGRESS_FULL_PPM,
 };
 // `DEFAULT_RETREAT_SAMPLES` is deliberately NOT imported here: since the parse
 // delegates to `Contestant::from_str_name`, every default this file used to type
@@ -663,20 +663,27 @@ impl CandidateColumn {
     /// `rules` is here for the technology margin alone — industry values live in
     /// the tech registry, exactly as `eval::technology_majority` reads them.
     fn value(self, view: &PlayerView, player: &yokohama_core::VisiblePlayer, rules: &Rules) -> i64 {
-        // RED (Phase 3.5c round 3, task D): the seven admission columns are
-        // STUBBED at zero in this commit so its tests fail on ARITHMETIC rather
-        // than on compilation. The GREEN commit replaces every stub below with
-        // its mirror.
-        let _ = rules;
         match self {
             CandidateColumn::PostClaim => achievement_progress_postclaim_sum(view, player),
-            CandidateColumn::ChurchMajorityMargin
-            | CandidateColumn::CustomsMajorityMargin
-            | CandidateColumn::TechMajorityMargin
-            | CandidateColumn::AchievementRaceProximity
-            | CandidateColumn::ClockControlChurch
-            | CandidateColumn::PortEmptySlots
-            | CandidateColumn::Money => 0,
+            CandidateColumn::ChurchMajorityMargin => majority_margin(
+                view.church_track.slots.iter().map(|slot| slot.map(|o| o.player)),
+                player.id,
+            ),
+            CandidateColumn::CustomsMajorityMargin => majority_margin(
+                view.customs_track.slots.iter().map(|slot| slot.map(|o| o.player)),
+                player.id,
+            ),
+            CandidateColumn::TechMajorityMargin => tech_majority_margin(view, player, rules),
+            CandidateColumn::AchievementRaceProximity => achievement_race_proximity(view, player),
+            CandidateColumn::ClockControlChurch => view
+                .church_track
+                .slots
+                .iter()
+                .flatten()
+                .filter(|occupant| occupant.player == player.id)
+                .count() as i64,
+            CandidateColumn::PortEmptySlots => port_empty_slots(view),
+            CandidateColumn::Money => i64::from(player.money),
         }
     }
 
@@ -701,6 +708,275 @@ impl CandidateColumn {
             })
             .collect()
     }
+}
+
+// ---------------------------------------------------------------------------
+// The round-3 admission columns' arithmetic (probe-side mirrors)
+// ---------------------------------------------------------------------------
+//
+// Everything below is a MIRROR of scoring arithmetic that lives in `eval.rs`
+// and `game/scoring.rs`, restated here at finer grain: the shipped features
+// report the VP a majority would pay, and these report the seat's standing IN
+// that majority. They live in this example rather than in `eval.rs` because
+// round 3 is an L1 EVIDENCE round (execution-ledger row, protocol §4.2): an
+// admission moves `Feature::ALL`, which is freeze-commit blast radius, so the
+// evidence is gathered before any admission is proposed. If a column is later
+// admitted, its computation moves into `eval.rs` with its own tests at that
+// point.
+//
+// A mirror with no pin is a second implementation waiting to disagree, which is
+// why each margin below is pinned by BEHAVIOUR against the shipped structure —
+// positive exactly when `ScoreStructure` awards this seat first place — rather
+// than by inspection.
+//
+// **Canon conformance** (guidingpath's 2026-08-09 canon-batch row, which
+// reversed two drafted scenarios): church denial and achievement denial are NOT
+// canon, customs is a RACE, and the end-trigger brake INVERTS. So every shape
+// here is a MARGIN, a PROXIMITY or a CONTROL SHARE read from the seat's own
+// side — "how am I doing in this race, and how much of the clock am I driving"
+// — and none of them is a denial-seeking construct.
+
+/// Contender slots in a management-board majority: the four printed seats plus
+/// the 2-player dummy. `eval.rs` holds the same two constants privately
+/// (`MAX_CONTENDERS` / `DUMMY_SLOT`), so they are restated rather than imported
+/// and the agreement is pinned behaviourally.
+const PROBE_MAX_SEATS: usize = 4;
+const PROBE_DUMMY_SLOT: usize = PROBE_MAX_SEATS;
+
+/// A track owner's row in the tally, or `None` for a seat number outside the
+/// printed range (only a hand-built view has one) — `eval::majority_bonus`'s own
+/// slot rule.
+fn contender_slot(owner: PlayerId) -> Option<usize> {
+    if owner.is_dummy() {
+        return Some(PROBE_DUMMY_SLOT);
+    }
+    let index = usize::from(owner.0);
+    (index < PROBE_MAX_SEATS).then_some(index)
+}
+
+/// One seat's SIGNED MARGIN in a management-board majority ranking.
+///
+/// # The arithmetic, and why it is shaped this way
+///
+/// `eval::majority_bonus` ranks contenders by the rulebook's key — pawn COUNT
+/// first, then the RIGHTMOST occupied space (rulebook p.9; the count-then-
+/// position tie-break is `game/scoring.rs`'s, differentially confirmed against
+/// the independent oracle 2026-07-20) — and awards `vps[0]` / `vps[1]` to the
+/// first two, a place taken by the 2P dummy being CONSUMED and awarded to
+/// nobody (finding D1, rulebook p.9 NOTE).
+///
+/// That key is lexicographic and this column is one scalar, so the count gap is
+/// SCALED BY TWO to leave room for the tie-break underneath it:
+///
+/// ```text
+/// margin = 2·(my pawns − the best rival's pawns) + tie
+/// tie    = +1 / −1 by rightmost occupied space, and ONLY on a count tie
+/// ```
+///
+/// which is strictly monotone in the rulebook's own ordering: a one-pawn lead
+/// reads at least +1 whatever the tie term does, and a count tie won on position
+/// reads exactly +1. One space holds one pawn, so two contenders can never share
+/// a rightmost index — the tie term is never 0 between two contenders that both
+/// hold a pawn.
+///
+/// # What the sign means, exactly
+///
+/// `> 0` iff this seat holds FIRST place as the board stands — iff `eval`'s
+/// structure would award it `vps[0]` right now. It does NOT distinguish second
+/// place from not placing at all (two seats behind one leader both read
+/// negative), which is deliberate: the T5 re-aim asks for majority ARITHMETIC
+/// and opponent-progress AWARENESS, and "am I winning this majority, by how
+/// much" is the quantity a seat can act on. `== 0` means no contender holds a
+/// pawn at all.
+///
+/// # Who counts as a rival
+///
+/// The 2P dummy does, at every count where it holds a pawn. A seat holding NO
+/// pawn does not — `majority_bonus` skips a zero tally, so such a seat is not in
+/// the ranking and cannot be anybody's best rival. With no rival contending the
+/// margin is simply twice this seat's own pawn count.
+fn majority_margin(occupants: impl Iterator<Item = Option<PlayerId>>, me: PlayerId) -> i64 {
+    let mut tally = [(0u8, 0u8); PROBE_MAX_SEATS + 1];
+    for (index, owner) in occupants.enumerate() {
+        let Some(owner) = owner else { continue };
+        let Some(slot) = contender_slot(owner) else { continue };
+        tally[slot].0 = tally[slot].0.saturating_add(1);
+        tally[slot].1 = tally[slot].1.max(index as u8);
+    }
+
+    let Some(my_slot) = contender_slot(me) else { return 0 };
+    let mine = tally[my_slot];
+    let best = tally
+        .iter()
+        .enumerate()
+        .filter(|(slot, entry)| *slot != my_slot && entry.0 > 0)
+        .map(|(_, entry)| *entry)
+        .max_by_key(|entry| (entry.0, entry.1));
+
+    let Some(best) = best else {
+        return 2 * i64::from(mine.0);
+    };
+    let gap = i64::from(mine.0) - i64::from(best.0);
+    let tie = if mine.0 == best.0 {
+        (i64::from(mine.1) - i64::from(best.1)).signum()
+    } else {
+        0
+    };
+    2 * gap + tie
+}
+
+/// Seats clockwise from the start player, 0 for the start player itself — the
+/// official tie-break key for the technology majority. A restatement of
+/// `eval::clockwise_distance`, which is private to that module; `rem_euclid`
+/// rather than `%` for the same reason it gives (a hand-built config must not
+/// underflow the subtraction).
+fn probe_clockwise_distance(view: &PlayerView, player: PlayerId) -> i32 {
+    let seats = i32::from(view.config.player_count);
+    if seats <= 0 {
+        return 0;
+    }
+    (i32::from(player.0) + seats - i32::from(view.config.start_player.0)).rem_euclid(seats)
+}
+
+/// One seat's SIGNED MARGIN in the TECHNOLOGY industry-value ranking (10 / 5).
+///
+/// The same shape as [`majority_margin`] over a different key: total industry
+/// value first, then the official CLOCKWISE distance from the start player
+/// (nearest wins). Values are carried DOUBLED, exactly as
+/// `eval::technology_majority` and `scoring::calculate_technology_bonus` carry
+/// them, because that is what makes D5 representable: at two players the setup
+/// dummy competes at industry value exactly **7.5** (owner ruling 2026-08-08,
+/// rulebook p.9 final-scoring NOTE), i.e. doubled 15 against real doubled totals
+/// that are always even — so a tie against the dummy is unrepresentable and its
+/// distance key is a placeholder that never gets read.
+///
+/// A player owning NO technology never places (`technology_majority` skips a
+/// zero industry value), so it is never a rival here either; its own margin is
+/// the whole doubled gap to the leader, which is the honest reading of "not in
+/// this race at all".
+fn tech_majority_margin(
+    view: &PlayerView,
+    me: &yokohama_core::VisiblePlayer,
+    rules: &Rules,
+) -> i64 {
+    let doubled = |player: &yokohama_core::VisiblePlayer| -> u32 {
+        2 * player
+            .technologies
+            .iter()
+            .filter_map(|id| rules.techs.get(*id))
+            .map(|card| u32::from(card.industry_cost))
+            .sum::<u32>()
+    };
+
+    // (doubled industry value, clockwise distance), better = higher value then
+    // SMALLER distance — `technology_majority`'s `better` predicate verbatim.
+    let mut best: Option<(u32, i32)> = None;
+    let mut consider = |candidate: (u32, i32)| {
+        let improves = match best {
+            None => true,
+            Some(current) => {
+                candidate.0 > current.0 || (candidate.0 == current.0 && candidate.1 < current.1)
+            }
+        };
+        if improves {
+            best = Some(candidate);
+        }
+    };
+    for other in &view.players {
+        if other.id == me.id || other.id.is_dummy() {
+            continue;
+        }
+        let value = doubled(other);
+        if value == 0 {
+            continue;
+        }
+        consider((value, probe_clockwise_distance(view, other.id)));
+    }
+    if view.config.player_count == 2 {
+        consider((15, i32::MAX));
+    }
+
+    let mine = doubled(me);
+    let Some(best) = best else {
+        return 2 * i64::from(mine);
+    };
+    let gap = i64::from(mine) - i64::from(best.0);
+    let tie = if mine == best.0 {
+        // Nearer to the start player is BETTER, so the sign is reversed against
+        // the raw distance comparison.
+        (i64::from(best.1) - i64::from(probe_clockwise_distance(view, me.id))).signum()
+    } else {
+        0
+    };
+    2 * gap + tie
+}
+
+/// How near this seat is to its NEXT achievement claim, negated so that nearer
+/// reads HIGHER.
+///
+/// Over the cards this seat has not already claimed, each card's remaining gap
+/// is `needed − min(current, needed)` on `eval::achievement_progress`'s own
+/// arithmetic (the AND-shaped cards' per-leg caps included), and the column is
+/// minus the SMALLEST of them.
+///
+/// Three decisions, each recorded rather than implied:
+///
+/// * **Cards claimed by an OPPONENT stay live.** The engine's claim gate refuses
+///   only a REPEAT claim by the SAME seat (`can_claim_achievement`), so a card
+///   an opponent has taken is still worth its printed subsequent value to this
+///   seat, and dropping it would price a reachable reward at nothing. This is
+///   also why the column is SELF-guidance rather than a denial term: the owner's
+///   2026-08-09 canon batch rules achievement denial explicitly NOT canon, and
+///   names achievements agenda-setters instead.
+/// * **The cap is inherited**, so hoarding past a requirement does not read as
+///   extra nearness — the same reasoning `achievement_progress_sum` gives.
+/// * **A seat that has claimed all three reads 0**, which COLLIDES with the
+///   reading for a seat standing on a claimable card. Both are "nothing left to
+///   chase"; the state needs three claims by one seat to occur at all; and the
+///   alternative — a sentinel outside the scale — would put a discontinuity into
+///   a column whose whole content is an ordering. Stated so a reader of the L1
+///   table knows which zero they are looking at.
+fn achievement_race_proximity(view: &PlayerView, me: &yokohama_core::VisiblePlayer) -> i64 {
+    let mut nearest: Option<u32> = None;
+    for card in &view.achievements {
+        if card.claimed_by.contains(&me.id) {
+            continue;
+        }
+        let (current, needed) = achievement_progress(view, me, card.achievement_type);
+        let gap = needed.saturating_sub(current.min(needed));
+        nearest = Some(nearest.map_or(gap, |best| best.min(gap)));
+    }
+    -i64::from(nearest.unwrap_or(0))
+}
+
+/// Empty Port CARD SLOTS across every Port board in play (six per board; two
+/// boards from three players up).
+///
+/// T6's dropped conjunct: the `OrderDeckEmpty` end trigger fires on "the order
+/// deck is empty AND a Port slot is empty" (`01-rules-reference.md:514`), and
+/// only the deck half has ever been priced — `progress_ppm`'s deck clock reads
+/// the deck, nothing reads the slots.
+///
+/// **BOARD-GLOBAL, and the report must not be able to hide it:** every seat sees
+/// the same number, so the relative form (`viewer − best opponent`) is
+/// identically 0 and its AUC column is CONSTANT by construction. The ABSOLUTE
+/// form's per-stage trajectory is the whole of what this column can tell an L1
+/// reading, and `port_empty_slots_counts_every_board_and_reads_the_same_from_
+/// every_seat` pins both halves of that through `row_values` itself.
+///
+/// **A per-seat formulation is possible and is deliberately NOT what this is.**
+/// The faithful seat-relative shape of the dropped conjunct is an INTERACTION —
+/// the clock's nearness multiplied by whether ending now favours this seat —
+/// and the second factor is terminal-margin awareness, which the protocol lists
+/// as its own T6 candidate. Building the product here would measure the two
+/// candidates at once and let a null in either hide behind the other, so this
+/// column stays the raw conjunct and the interaction is proposed rather than
+/// implemented (round-3 report).
+fn port_empty_slots(view: &PlayerView) -> i64 {
+    let empty = |board: &yokohama_core::PortBoard| -> i64 {
+        board.slots.iter().filter(|slot| slot.is_none()).count() as i64
+    };
+    empty(&view.port_state.port_a) + view.port_state.port_b.as_ref().map_or(0, empty)
 }
 
 // ---------------------------------------------------------------------------
