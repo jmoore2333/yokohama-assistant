@@ -2021,6 +2021,22 @@ impl LookaheadAgent {
         &self.weights
     }
 
+    /// Worlds sampled per decision (`with_knobs`' third parameter).
+    ///
+    /// Exists so a corpus instrument can PIN its own construction: `worlds` and
+    /// `retreat_samples` are adjacent `u8` parameters, so a transposed call
+    /// compiles clean and would mislabel every corpus it generates (`k=` in the
+    /// provenance echo prints the PARSED knob, not anything the agent reports).
+    pub fn worlds(&self) -> u8 {
+        self.worlds
+    }
+
+    /// Retreat candidates sampled per decision (`with_knobs`' fourth parameter).
+    /// See [`worlds`](Self::worlds) for why this accessor exists.
+    pub fn retreat_samples(&self) -> u8 {
+        self.retreat_samples
+    }
+
     /// A cloneable handle on the counters, readable after the agent has been
     /// moved into the driver.
     pub fn tally(&self) -> SearchTally {

@@ -121,7 +121,11 @@ every level, and an unknown knob is never silently ignored):
                        driver (never the raw-state one). b = beam, k = worlds,
                        m = retreat samples, cap = the shared scored-successor
                        budget; OMITTING cap is the shipped UNCAPPED rung, and
-                       cap=0 is refused rather than read as uncapped
+                       cap=0 is refused rather than read as uncapped. Caps
+                       32-128 are a MEASURED non-terminating band for 2P
+                       self-play (LookaheadAgent::with_cap's doc carries the
+                       data) — a corpus run there grinds to the turn budget
+                       and errors rather than finishing
   uniform | retreat-averse | family-weighted[:p=<ppm>,k=<n>]
                        a RolloutPolicy rung through the RAW-STATE driver, which
                        is privileged play by construction and labelled as such
@@ -382,6 +386,30 @@ impl ProbeTally {
         match self {
             Self::Greedy(_) => None,
             Self::Search(t) => Some(t.free_cap_hits()),
+        }
+    }
+
+    /// Spec §3.4's cap-bind count — decisions where the scored-successor budget
+    /// DENIED work. Same `None` rule; `Some(0)` on an uncapped corpus is the
+    /// shipped shape (an absent cap threads an unlimited budget that never
+    /// binds), while a capped corpus with binds at essentially every decision is
+    /// a MATERIALLY different corpus — which is why the block prints these
+    /// beside the search guards rather than leaving the §3.3 placement line to
+    /// impersonate them (W1-C review SHOULD-1).
+    fn budget_binds(&self) -> Option<u64> {
+        match self {
+            Self::Greedy(_) => None,
+            Self::Search(t) => Some(t.budget_binds()),
+        }
+    }
+
+    /// Spec §3.4's starvation count — decisions that got ONLY the root pass.
+    /// A strict sub-case of [`budget_binds`](Self::budget_binds); same `None`
+    /// rule.
+    fn budget_starved(&self) -> Option<u64> {
+        match self {
+            Self::Greedy(_) => None,
+            Self::Search(t) => Some(t.budget_starved_decisions()),
         }
     }
 }
@@ -788,6 +816,13 @@ struct Corpus {
     /// the gate that asserts them is `tests/evaluator_gate.rs`.
     ply_cap_hits: Option<u64>,
     free_cap_hits: Option<u64>,
+    /// Spec §3.4's budget meters, same `None` rule and the same
+    /// recorded-never-asserted posture (`tests/architecture_gate.rs` is where
+    /// their relations are gated). On an UNCAPPED corpus both read `Some(0)` by
+    /// construction; on a capped one they are the figures that say what kind of
+    /// corpus this actually is.
+    budget_binds: Option<u64>,
+    budget_starved: Option<u64>,
     /// The §0.3(b) identity, folded over (game × seat) blocks — see
     /// [`identity_blocks`]. Zero blocks under a policy rung, which explains
     /// nothing and hands back no tallies at all.
@@ -830,6 +865,8 @@ fn generate(
         candidates: 0,
         ply_cap_hits: None,
         free_cap_hits: None,
+        budget_binds: None,
+        budget_starved: None,
         identity_blocks: 0,
         identity_mismatches: 0,
         wall: 0.0,
@@ -860,6 +897,12 @@ fn generate(
             if let Some(hits) = tally.free_cap_hits() {
                 *corpus.free_cap_hits.get_or_insert(0) += hits;
             }
+            if let Some(binds) = tally.budget_binds() {
+                *corpus.budget_binds.get_or_insert(0) += binds;
+            }
+            if let Some(starved) = tally.budget_starved() {
+                *corpus.budget_starved.get_or_insert(0) += starved;
+            }
         }
         // A rung explains nothing and hands back no tallies at all, so there is
         // no identity to check — folding one anyway would report every seat of
@@ -887,6 +930,26 @@ fn generate(
 /// Seat order is what makes the §0.3(b) identity a per-seat check rather than an
 /// aggregate one: [`run_arena_game`] builds its agents `(0..players)`, so the
 /// `i`-th tally belongs to the `i`-th entry of `ArenaGameStats::moves_by_seat`.
+/// The ONE construction site for the probe's lookahead agent, pulled out of
+/// [`play_one`]'s closure so a test can pin the knob-to-parameter wiring:
+/// `worlds` and `retreat_samples` are ADJACENT `u8` parameters on
+/// [`LookaheadAgent::with_knobs`], so a k/m transposition compiles clean, the
+/// provenance echo would not reveal it (it prints the PARSED knobs), and every
+/// corpus it generated would be mislabelled (W1-C review NOTE-3). The pin is
+/// `lookahead_knobs_reach_their_agent_slots_unswapped`.
+fn lookahead_probe_agent(
+    rules: &Rules,
+    b: u16,
+    k: u8,
+    m: u8,
+    cap: Option<u32>,
+    table: WeightTable,
+    agent_seed: u64,
+) -> LookaheadAgent {
+    LookaheadAgent::with_knobs(rules, SearchScheme::TurnBoundary { beam: b }, k, m, table, agent_seed)
+        .with_cap(cap)
+}
+
 fn play_one(
     seed: WorldSeed,
     players: u8,
@@ -913,15 +976,7 @@ fn play_one(
         // differ in nothing but the contestant.
         ProbeContestant::Lookahead { b, k, m, cap } => {
             drive_honest(seed, players, rules, invariants, |agent_seed| {
-                let agent = LookaheadAgent::with_knobs(
-                    rules,
-                    SearchScheme::TurnBoundary { beam: b },
-                    k,
-                    m,
-                    table,
-                    agent_seed,
-                )
-                .with_cap(cap);
+                let agent = lookahead_probe_agent(rules, b, k, m, cap, table, agent_seed);
                 let tally = ProbeTally::Search(agent.tally());
                 (Box::new(agent), tally)
             })
@@ -1537,6 +1592,18 @@ fn report_counters(corpus: &Corpus, contestant: ProbeContestant) {
                 counter(corpus.ply_cap_hits),
                 counter(corpus.free_cap_hits),
             );
+            // Spec §3.4's meters, so a CAPPED corpus cannot pass for the shipped
+            // uncapped one: at cap=750 the budget binds at essentially every
+            // decision and candidates/decision drops ~4.6x, which is a
+            // materially different corpus wearing the same contestant name. On
+            // an uncapped run 0 / 0 is the truthful shipped shape.
+            println!(
+                "  budget binds                {:>10}  starved {}   (spec §3.4, over {} decisions; \
+                 0 / 0 is the UNCAPPED shape — architecture_gate is where the relations are gated)",
+                counter(corpus.budget_binds),
+                counter(corpus.budget_starved),
+                corpus.decisions,
+            );
         }
         ProbeContestant::Policy(_) => {
             println!("  placement cap binds         (n/a: a policy rung has no candidate cap)");
@@ -1619,6 +1686,38 @@ mod tests {
 
     use yokohama_core::game::greedy::DEFAULT_RETREAT_SAMPLES;
     use yokohama_core::game::lookahead::{DEFAULT_BEAM, DEFAULT_WORLDS};
+
+    /// W1-C review NOTE-3: `worlds` and `retreat_samples` are ADJACENT `u8`
+    /// parameters on `LookaheadAgent::with_knobs`, so a k/m transposition in
+    /// [`lookahead_probe_agent`] would compile clean, echo the PARSED knobs
+    /// (the echo prints what was typed, not what the agent holds), and mislabel
+    /// every corpus this instrument generates. Pinned through the agent's own
+    /// accessors at ASYMMETRIC values — a swap cannot pass — plus the beam and
+    /// both cap shapes.
+    #[test]
+    fn lookahead_knobs_reach_their_agent_slots_unswapped() {
+        let rules = Rules::standard();
+        let agent = lookahead_probe_agent(&rules, 3, 2, 9, Some(750), WeightTable::V1, 0xA5);
+        assert!(
+            matches!(agent.scheme(), SearchScheme::TurnBoundary { beam: 3 }),
+            "b must land in the beam slot",
+        );
+        assert_eq!(agent.worlds(), 2, "k must land in the worlds slot");
+        assert_eq!(agent.retreat_samples(), 9, "m must land in the retreat-samples slot");
+        assert_eq!(agent.cap(), Some(750));
+
+        // The absent-cap shape stays absent (the T0 byte-inertness fact).
+        let uncapped = lookahead_probe_agent(
+            &rules,
+            DEFAULT_BEAM,
+            DEFAULT_WORLDS,
+            DEFAULT_RETREAT_SAMPLES,
+            None,
+            WeightTable::V1,
+            0xA5,
+        );
+        assert_eq!(uncapped.cap(), None);
+    }
 
     /// Task C (Phase 3.5c W1): the probe's contestant grammar IS the core one
     /// ([`Contestant::from_str_name`], promoted in W1-B), so a spec typed here

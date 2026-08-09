@@ -42,9 +42,11 @@
 //!
 //! THE GRAMMAR ITSELF LIVES IN CORE since Phase 3.5c W1-B: this runner parses
 //! `<x>`/`<y>` through [`Contestant::from_str_name`] (`game/arena/grammar.rs`),
-//! which is also what the CLI's bot seats and the evaluator probe call, so a
-//! spec typed at any of the three means the same thing — and unknown names,
-//! knobs and knob VALUES are errors there exactly as they were here.
+//! which the evaluator probe also calls since W1-C and the CLI's bot seats
+//! WILL call at their W5 retype (today they still parse rung names through
+//! `RolloutPolicy::from_str_name`) — so a spec typed at the runner or the probe
+//! means the same thing, and unknown names, knobs and knob VALUES are errors
+//! there exactly as they were here.
 //!
 //! THE TWO AXES (3.4 spec §0.3). Every `cell` invocation now prints, per SIDE:
 //! the realized scored-successor spend with its root share and cap counters
@@ -428,9 +430,10 @@ fn cmd_cell(args: &[String]) -> Result<(), String> {
     let name = positional[0].clone();
     let players: u8 = positional[1].parse().map_err(|e| format!("<players>: {e}"))?;
     // The contestant grammar lives in CORE since Phase 3.5c W1-B
-    // (`Contestant::from_str_name`, `game/arena/grammar.rs`) — this runner, the
-    // CLI's bot seats and the probe all parse the same specs through the same
-    // code, and its refusals are the user-facing text they always were.
+    // (`Contestant::from_str_name`, `game/arena/grammar.rs`) — this runner and
+    // the probe (W1-C) parse the same specs through the same code, the CLI's
+    // bot seats join at their W5 retype, and its refusals are the user-facing
+    // text they always were.
     let x = Contestant::from_str_name(&positional[2])?;
     let y = Contestant::from_str_name(&positional[3])?;
     let units: u32 = positional[4].parse().map_err(|e| format!("<units>: {e}"))?;

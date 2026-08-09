@@ -367,10 +367,11 @@ impl Contestant {
 
     /// Parse a contestant SPEC — `<name>` or `<name>:<key>=<value>,…` — into the
     /// contestant it names. **THE single-sourced grammar** (Phase 3.5c W1-B):
-    /// `examples/arena.rs` parses its `<x>`/`<y>` through here, and the CLI's
-    /// bot seats (W5) and the probe's contestant arm (Task C) are its other
-    /// consumers, so a spec typed at one of them means the same thing at all
-    /// three. The body and its reasoning live in [`super::grammar`].
+    /// `examples/arena.rs` parses its `<x>`/`<y>` through here, the probe's
+    /// contestant arm delegates here too since W1-C (narrowing after the parse),
+    /// and the CLI's bot seats JOIN at their W5 retype — so a spec typed at any
+    /// consumer means the same thing at all of them. The body and its reasoning
+    /// live in [`super::grammar`].
     ///
     /// **UNKNOWN IS AN ERROR at every level** — an unknown contestant name, an
     /// unknown knob, an unknown knob VALUE, or any knob at all on a contestant

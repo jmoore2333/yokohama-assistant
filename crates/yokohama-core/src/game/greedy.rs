@@ -1834,7 +1834,7 @@ mod tests {
     /// `policy_diversity`, `evaluator_gate` and `architecture_gate` each keep a
     /// never-`#[ignore]`d smoke so a release-only binary cannot rot invisibly).
     /// The reason is that here the SAMPLE SIZE *IS* THE POWER: the statistic is
-    /// ~3.6 events per hundred thousand applied moves, so any N small enough to
+    /// ~3 events per ~170,000 applied moves (≈1.8 per 100,000), so any N small enough to
     /// be per-edit reads zero from a HEALTHY table and would have to assert
     /// nothing to stay green — a smoke that cannot go red for the defect it
     /// names. That is exactly `policy_diversity`'s frozen-floor precedent,

@@ -7,9 +7,10 @@
 //! 3.3 through 3.4 and moved here with its BEHAVIOUR unchanged — every accepted
 //! spec and every refusal string is pinned to what the example printed before
 //! the move (`tests::FROZEN_BATTERY`, captured mechanically off the old code).
-//! The runner now delegates; the CLI's bot-seat retype (W5) and the probe's
-//! contestant arm (Task C) call the same code rather than growing a second
-//! spelling of the same grammar. The public entry point is
+//! The runner delegates, and the probe's contestant arm delegates too since
+//! W1-C (it narrows AFTER parsing — it refuses the arms it does not drive);
+//! the CLI's bot-seat retype (W5) is the remaining consumer-to-be, so no second
+//! spelling of the grammar survives outside the CLI's rung-name lookup. The public entry point is
 //! [`Contestant::from_str_name`]; this module is the body.
 //!
 //! **UNKNOWN IS AN ERROR at every level** — an unknown name, an unknown knob, an
