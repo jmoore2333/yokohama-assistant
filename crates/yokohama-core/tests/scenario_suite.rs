@@ -157,13 +157,14 @@
 //! and the room that buys is for the driven scenarios a later revision will
 //! want.
 //!
-//! **Round 1's three additions spend that room and barely touch the figure**
-//! (0.06 / 0.05 / 0.05 s for the whole binary at the round-1 close, same
-//! machine, same method): all three are constructed-view properties with no
-//! driven segment, so each costs one setup-and-`observe` plus a handful of
-//! `score`/`explain` calls. The driven scenario is still effectively the whole
-//! binary, and a future round wanting a BEHAVIOURAL scenario (scenario 5's doc
-//! names the one it would most like) still has the budget for it.
+//! **Round 1's three additions do not move the figure at all** — re-measured at
+//! the round-1 close, same machine, same method, 13 tests:
+//! **0.05 / 0.05 / 0.05 s**, i.e. the T9 reading reproduced digit for digit.
+//! All three additions are constructed-view properties with no driven segment,
+//! so each costs one setup-and-`observe` plus a handful of `score`/`explain`
+//! calls, and the driven scenario is still effectively the whole binary. A
+//! future round wanting a BEHAVIOURAL scenario (scenario 5's doc names the one
+//! it would most like) still has the whole budget for it.
 
 use std::collections::BTreeMap;
 use std::sync::OnceLock;

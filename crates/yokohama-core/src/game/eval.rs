@@ -542,28 +542,67 @@ impl WeightTable {
     /// L4 screen), `examples/eval_probe`'s `--score-table v2-draft` spelling,
     /// and the scenarios that ride a v2 change once they land.
     ///
-    /// **INITIALIZED to V1's thirty-two numbers — a meaningful state, not a
-    /// placeholder.** While the two tables hold the same numbers their identity
-    /// digests COLLIDE, so a screen against this table is a NULL cell (the
-    /// V1-vs-V1 shape the screen harness's own null test describes), and a
-    /// round's ADOPTION commit is the thing that moves it. Nothing pins the
-    /// equality: such a pin would have to be deleted by the first adoption, and
-    /// a test whose documented fate is deletion teaches its readers to delete
-    /// tests. The identity digests printed in every screen report are what say
-    /// whether the draft has moved yet.
+    /// **ROUND 1 ADOPTED, 2026-08-09 — this table is the candidate `m22`, no
+    /// longer V1's numbers.** It moved SIX slots and every one of them is
+    /// evidenced in
+    /// `docs/plans/2026-08-09-phase3.5c-round1-evidence.md` (the L2 pass) over
+    /// `docs/plans/2026-08-09-phase3.5c-r0-report.md` (the R0 corpora):
     ///
-    /// **What IS pinned is the constraint the equality does not exempt it
-    /// from** — L14/T1's `core > on_board > excess` in BOTH vectors, the one-ply
-    /// non-degeneracy condition protocol §4.2 forbids relaxing at any rung of
-    /// the evidence ladder. The screen harness's `hand_split_ordering_holds` is
-    /// asserted against THIS table per edit
+    /// - **the EARLY re-mix**, off R0's findings F1/F2 — EVAL TOTAL early
+    ///   measures 0.5314 in the shipped regime, near chance, and the two terms
+    ///   the early vector leant hardest on are the two the corpus CONTRADICTED
+    ///   (`victory_points` 0.4651, `assistants_on_board` 0.4464, both pointing
+    ///   at the seat that goes on to lose). Weight moves off them and onto the
+    ///   members both regimes confirmed: `vp 10 → 2`, `ctry 12 → 18`,
+    ///   `tech 6 → 12`, `hEXC 4 → 5`, `brd 14 → 6`. The MIX moves, not the
+    ///   scale, and that is forced rather than stylistic — R0's finding F8 is
+    ///   that a uniform rescale of the early vector is play-IDENTICAL, so only
+    ///   a change of ratios can move a decision.
+    /// - **the WAREHOUSE FLATTEN**, `late −4 → −10` (early unchanged at −10) —
+    ///   the magnitude tension the T4 freeze recorded rather than resolved:
+    ///   the term's measured separation does not decay late, while the shipped
+    ///   weight does. See `V1`'s doc, which deferred exactly this to 3.5.
+    ///
+    /// **SELECTION RULE, pre-registered before any figure existed** (the
+    /// execution ledger's ROUND-1 row, committed ahead of the run): candidates
+    /// are evaluated on the two FIXED incumbent-play corpora at their recorded
+    /// masters, split fit/held-out by generation-index parity, and the winner is
+    /// the held-out EARLY argmax on the shipped-regime corpus. `m22` took it —
+    /// 0.5692 [0.5333, 0.6030] against the incumbent's 0.5313 [0.4944, 0.5651],
+    /// i.e. its interval excludes chance where the incumbent's spans it — and it
+    /// is in fact the best of the nineteen on ALL SIX (corpus × stage) held-out
+    /// columns, which is what makes a nineteen-way held-out selection
+    /// defensible at this N. **Weight identity `0x73bf3f54421717a8`** (the
+    /// incumbent's is `0xe1fedd5efc49d0f6`); the two no longer collide, so a
+    /// screen against this table is a real cell rather than the null one it was.
+    ///
+    /// Read the honest limits with the numbers: those AUCs are measured on
+    /// INCUMBENT-play corpora and are therefore off-policy for this table, the
+    /// grid's winner sits at the grid's EDGE (recorded for round 2, deliberately
+    /// not chased here — extending after seeing that would be
+    /// selection-after-results), and the on-policy checks are the round's arena
+    /// screen and, for the accumulated total, the freeze's own fresh cell.
+    ///
+    /// **What is pinned regardless of what a round adopts** — L14/T1's
+    /// `core > on_board > excess` in BOTH vectors, the one-ply non-degeneracy
+    /// condition protocol §4.2 forbids relaxing at any rung of the evidence
+    /// ladder. It survives this adoption unchanged (early 30 > 6 > 5; late
+    /// 20 > 10 > 2), and the round moved `brd` and `hEXC` INSIDE it rather than
+    /// through it. The screen harness's `hand_split_ordering_holds` is asserted
+    /// against THIS table per edit
     /// (`the_iteration_candidate_holds_the_hand_split_ordering`), so a round
     /// that re-prices the assistant triple past the ordering fails at test time
     /// rather than four hundred games into a screen.
+    ///
+    /// **The scenarios that guard the six moved slots** land red-then-green
+    /// against this commit (protocol §4.2 rung L3), in
+    /// `tests/scenario_suite.rs`: *early engine over early VP* for the re-mix
+    /// and *warehouse decay flattened* for the flatten, each with the round's
+    /// own edit REVERTED as its counterfactual rather than a zeroed term.
     pub const V2_DRAFT: WeightTable = WeightTable {
         //     [vp, ctry, tech, chur, cust, hCORE, hEXC, ware, brd, shop, trad, 5pw, imp, achv, merc, hnd#]
-        early: [10,   12,    6,   -4,    3,    30,    4,  -10,  14,   12,   15,   8,   5,    2,    3,   -3],
-        late:  [40,   30,   20,   16,   20,    20,    2,   -4,  10,   20,   25,  10,   8,    4,    4,   -6],
+        early: [ 2,   18,   12,   -4,    3,    30,    5,  -10,   6,   12,   15,   8,   5,    2,    3,   -3],
+        late:  [40,   30,   20,   16,   20,    20,    2,  -10,  10,   20,   25,  10,   8,    4,    4,   -6],
     };
 
     /// The all-zero table: a CONSTANT evaluator. Not a curiosity — spec §3.2's
