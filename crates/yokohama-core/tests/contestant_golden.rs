@@ -185,6 +185,31 @@
 //! [`MASTER_2P_34`]): its old master degenerates to a constant unit vector
 //! under rev-6 play, which the anti-vacuity guard refuses by design.
 //!
+//! ## Rev-7 re-capture (2026-08-08, branch `rules-parity-rev7`)
+//!
+//! ALL FIVE fixtures were re-captured again at `SEMANTICS_REV` 7. The
+//! owner-visible ruling the mismatch message demands is the 2026-08-08 D6 row
+//! in guidingpath's decision log: the Church/Customs track pawn is taken
+//! AREA-FIRST (from the activated area when the acting player has own
+//! assistant(s) there, from hand otherwise), a deliberate BGA-parity choice
+//! recorded as a potential rulebook diff. That is a reachable-state behaviour
+//! change by design, so every self-play trajectory these cells freeze
+//! legitimately moved; the goldens now pin the rev-7 arms. The claim these
+//! fixtures carry is unchanged in KIND — "the contestant-seam plumbing does
+//! not move play" — with its baseline moved to the rev-7 tree.
+//!
+//! Read the size of the move honestly: D6 does NOT change the legal set at
+//! the Church/Customs action itself (availability is source-blind), so these
+//! cells did not move because the arms were offered different choices there.
+//! They moved because a rung's sampler consumes the SAME keyed stream against
+//! a state whose assistant counts differ by one from the take onward — every
+//! downstream draw shifts, and the trajectories diverge from that point.
+//!
+//! The 4P prewiden cell additionally moved master (serial `0036` → `0038`,
+//! see [`MASTER_4P`]): its old master degenerates to a constant unit vector
+//! under rev-7 play, the same anti-vacuity refusal rev 6 hit on the two 2P
+//! cells. The other four kept their masters.
+//!
 //! ## On `compose_echo`
 //!
 //! `compose_echo` mirrors `stats.rs`'s private `policy_echo` body — it is a
@@ -216,8 +241,16 @@ use yokohama_core::{
 /// gave distinct shares (1×0.0 · 3×0.5) with a real bootstrap interval — no
 /// serial burned.
 const MASTER_2P: u64 = 0xA3E1_2026_0726_0037;
-/// The 4P rotation-block cell's committed diagnostic master.
-const MASTER_4P: u64 = 0xA3E1_2026_0726_0036;
+/// The 4P rotation-block cell's committed diagnostic master. Originally
+/// `0036` (the 3.3 capture, itself the third probe there). RE-PROBED at the
+/// SEMANTICS_REV-7 re-capture (module doc, "Rev-7 re-capture"): under rev-7
+/// play `0036` degenerates to a CONSTANT unit vector and the anti-vacuity
+/// guard refuses it — the same refusal rev 6 hit on the two 2P cells, landing
+/// on this one instead. `0038` is the family's next free serial in the `0726`
+/// date field (`0037` is the 2P cell's) and its FIRST probe gave distinct
+/// shares (1×0.5 · 1×0.75) with a real bootstrap interval [0.50, 0.75] — no
+/// serial burned.
+const MASTER_4P: u64 = 0xA3E1_2026_0726_0038;
 
 const CELL_NAME_2P: &str = "t0-prewiden-golden-ra-vs-fw";
 const CELL_NAME_4P: &str = "t0-prewiden-golden-ra-vs-fw-4p";

@@ -852,14 +852,43 @@ mod tests {
     /// default, `examples/eval_probe`'s `DEFAULT_MASTER`).
     const FREEZE_MASTER: u64 = 0xE7A1_2026_0727_0001;
 
-    /// How many games of that corpus the falsifier replays. RE-SIZED 8 → 64
-    /// at `SEMANTICS_REV` 6 (2026-08-08 rules-parity rulings): the rev-6
-    /// corpus share is ~20× rarer than T4's (see the floor below), so an
-    /// 8-game prefix's expected event count fell to ~0.16 and the test's
-    /// literal `> 0` clause needs a prefix that actually CONTAINS events —
-    /// 64 games carry 2 (share 0.000061, 6.1× the floor). Debug cost ~20 s;
-    /// see the test's doc for the sizing discipline.
-    const RECOVERY_SAMPLE_GAMES: u32 = 64;
+    /// How many games of that corpus the falsifier replays. RE-SIZED 8 → 64 at
+    /// `SEMANTICS_REV` 6, then 64 → 312 at `SEMANTICS_REV` 7 (D6, the
+    /// area-first track-pawn ruling).
+    ///
+    /// The rev-7 re-size is NOT a report of decayed behaviour: the CORPUS
+    /// share barely moved and moved UPWARD (0.000033 → 0.000036, see the
+    /// floor below). What moved is where the rare events fall in this seeded
+    /// walk — the rev-6 prefix's two events are gone from the first 64 games
+    /// and the first now lands at game 174. Cumulative readings from the
+    /// probe (`temp` sweep over the same schedule): g64 0 picks / 34,918
+    /// applied · g128 0 / 71,343 · **g174 1** / 97,015 · **g257 2** / 138,641
+    /// · **g312 3** / 169,014 (share 0.000018) · g394 4 / 214,017 · g512 4 /
+    /// 279,493.
+    ///
+    /// # Two owner-visible costs of that re-size, stated rather than absorbed
+    ///
+    /// 1. DEBUG WALL 23 s → ~110 s (0.36 s/game, measured at HEAD). That is a
+    ///    real per-edit-loop regression, and by the two-tier policy's own
+    ///    logic this test is now shaped like a release-tier
+    ///    distributional/regression-net property rather than a per-edit
+    ///    correctness one. Demoting it would ADD A FIFTEENTH GATE to the
+    ///    documented roster (a `--release --lib … -- --ignored` command plus
+    ///    rows at the four doc sites), which is a roster change and therefore
+    ///    an OWNER call — flagged in the rev-7 branch report, deliberately not
+    ///    taken here.
+    /// 2. The margin ceiling is STRUCTURAL, so do not chase rev 6's. The floor
+    ///    is defined as half the corpus share, so ANY long prefix converges to
+    ///    ~2× the floor by construction; rev 6's 6.1× was an early-cluster
+    ///    artefact of a 64-game window, never a property to hold. 312 games
+    ///    read 1.78×, which is near that ceiling.
+    ///
+    /// 312 rather than the literal smallest prefix that contains an event
+    /// (174, share 0.0000103 — 1.03× the floor, i.e. no margin at all) or the
+    /// two-event 257: at three events, losing one to a future drift still
+    /// leaves the sample green, which is what keeps a red here meaning
+    /// "re-run the probe" instead of "one rare game moved".
+    const RECOVERY_SAMPLE_GAMES: u32 = 312;
 
     /// **MEASURED, THEN HALVED.** Half the frozen-table 2P corpus share,
     /// rounded DOWN to one significant figure — `policy_diversity`'s
@@ -875,6 +904,16 @@ mod tests {
     /// rev-6 economics make recovery-positive retreats far rarer for this
     /// agent, recorded here and in the branch close-out, not hidden). Half,
     /// rounded down to one significant figure: 0.00001.
+    ///
+    /// RE-MEASURED AGAIN at `SEMANTICS_REV` 7 (2026-08-08, D6's area-first
+    /// track-pawn ruling), same command, same master: **40 nonzero-recovery
+    /// picks in 1,099,281 applied moves, share 0.000036**. Half, rounded down
+    /// to one significant figure, is 0.00001 again — so THE CONSTANT DOES NOT
+    /// MOVE at rev 7, and it is worth being explicit that this is a re-derived
+    /// value that happens to land on the same number, not an un-re-measured
+    /// carry-over. rev 6 → rev 7 moved the corpus share slightly UPWARD; the
+    /// re-size of [`RECOVERY_SAMPLE_GAMES`] above is about WHERE the events
+    /// fall in the seeded walk, not about the rate.
     const RECOVERY_SHARE_FLOOR_2P: f64 = 0.00001;
 
     // -- fixtures -------------------------------------------------------------
@@ -1733,27 +1772,35 @@ mod tests {
     ///
     /// # The floor is MEASURED, then halved (the house pattern)
     ///
-    /// The rev-6 frozen-table corpus — 2,000 games, 1,087,155 applied moves,
+    /// The rev-7 frozen-table corpus — 2,000 games, 1,099,281 applied moves,
     /// `cargo run --release -p yokohama-core --example eval_probe -- run 2 2000
-    /// --master 0xE7A1202607270001`, re-run 2026-08-08 at `SEMANTICS_REV` 6 —
-    /// read **36 nonzero-recovery picks, share 0.000033** (T4's rev-5 reading
-    /// was 739 / 1,051,752 = 0.000703; the ~20× drop is the rules-parity
-    /// rulings moving the economics, recorded not hidden).
-    /// [`RECOVERY_SHARE_FLOOR_2P`] is half of the rev-6 share, rounded down
+    /// --master 0xE7A1202607270001`, re-run 2026-08-08 at `SEMANTICS_REV` 7 —
+    /// read **40 nonzero-recovery picks, share 0.000036** (rev 6 read 36 /
+    /// 1,087,155 = 0.000033; T4's rev-5 reading was 739 / 1,051,752 =
+    /// 0.000703, and that ~20× drop happened at rev 6, not here).
+    /// [`RECOVERY_SHARE_FLOOR_2P`] is half of the rev-7 share, rounded down
     /// to one significant figure, exactly as `policy_diversity`'s coverage
-    /// floors are set. The sample here is the FIRST SIXTY-FOUR GAMES OF THAT
-    /// SAME CORPUS (same master, same schedule, same agent keying; only the
+    /// floors are set — it re-derives to the same 0.00001 rev 6 set. The
+    /// sample here is the FIRST THREE HUNDRED AND TWELVE GAMES OF THAT SAME
+    /// CORPUS (same master, same schedule, same agent keying; only the
     /// per-move invariant check is off, which does not touch play), so its
     /// share is a prefix of the published figure rather than a second
-    /// measurement: **2 picks in 32,787 applied moves, share 0.000061 —
-    /// 6.1× the floor.**
+    /// measurement: **3 picks in 169,014 applied moves, share 0.000018 —
+    /// 1.78× the floor.**
     ///
-    /// Two events is a thin sample and this doc says so rather than dressing
+    /// Three events is a thin sample and this doc says so rather than dressing
     /// it up. The CORPUS is the measurement; this is the per-edit tripwire that
     /// the behaviour still exists, sized by the smallest seeded prefix that
-    /// contains events at all (~20 s debug — the rev-6 rarity is what forced
-    /// the growth from 8 games). A red here means "re-run the probe", not
-    /// "the number moved".
+    /// contains events with any margin at all. A red here means "re-run the
+    /// probe", not "the number moved".
+    ///
+    /// DO NOT read 1.78× as a regression against rev 6's 6.1×. The floor is
+    /// DEFINED as half the corpus share, so a long prefix converges to ~2× the
+    /// floor by construction and ~2× is the ceiling, not the failure case;
+    /// rev 6's 6.1× came from a 64-game window that happened to catch an early
+    /// cluster. See [`RECOVERY_SAMPLE_GAMES`] for the full rev-7 cumulative
+    /// readings, the 23 s → ~110 s debug-wall cost, and the owner question
+    /// that cost raises (demote to a fifteenth release gate?).
     ///
     /// # SCOPED TO 2P, deliberately
     ///
