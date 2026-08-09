@@ -86,7 +86,7 @@ use crate::game::seeds::SeedSchedule;
 use crate::types::{OrderCardId, PlayerId, PlayerView};
 
 /// Domain salt for the bootstrap resample stream.
-const SALT_BOOTSTRAP: u64 = 0xA3E1_B007_0000_0004;
+pub(crate) const SALT_BOOTSTRAP: u64 = 0xA3E1_B007_0000_0004;
 
 /// The contestant under test. Every other slot in the unit is Y — the
 /// single-champion shape [`unit_for`]'s rotations are built for, and the reason
@@ -1238,7 +1238,7 @@ pub fn pairs_needed_for_mme(mme_theta: f64, var_pair: f64) -> u64 {
 // Printed cross-checks and echoes
 // ---------------------------------------------------------------------------
 
-fn mean(values: &[f64]) -> f64 {
+pub(crate) fn mean(values: &[f64]) -> f64 {
     if values.is_empty() {
         return f64::NAN;
     }
@@ -1246,7 +1246,9 @@ fn mean(values: &[f64]) -> f64 {
 }
 
 /// Sample standard deviation (n − 1 denominator), or `NaN` under two units.
-fn sample_sd(values: &[f64]) -> f64 {
+/// `pub(crate)` since Phase 3.5c W3 so `eval_screen`'s sd means what a cell's
+/// does by SHARING the function rather than by copying it (its review, SHOULD-4).
+pub(crate) fn sample_sd(values: &[f64]) -> f64 {
     if values.len() < 2 {
         return f64::NAN;
     }

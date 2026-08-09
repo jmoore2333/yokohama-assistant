@@ -600,14 +600,6 @@ pub struct ArenaGameStats {
     pub record: GameRecord,
 }
 
-/// Play one honest game: one [`ArenaAgent`] per seat, each acting on its own
-/// view alone.
-///
-/// `make_agent` is invoked BY THIS FUNCTION, after `new_game`, with only
-/// `(seat, player_count)` — the caller never gets a chance to construct an
-/// agent from privileged setup data. `invariants` runs `check_invariants` after
-/// every applied move (ON in tests and gates; bulk corpus generation may
-/// disable it, since those records are verified by strict replay instead).
 /// Typed guard shared by both public drivers (T6 review F4): every other bad
 /// input here is a typed `ArenaError`, and Task 9 wires these entry points to
 /// argv, where a `--players 5` panic would be user-facing.
@@ -625,6 +617,14 @@ pub(crate) fn require_supported_player_count(players: u8) -> Result<(), ArenaErr
     }
 }
 
+/// Play one honest game: one [`ArenaAgent`] per seat, each acting on its own
+/// view alone.
+///
+/// `make_agent` is invoked BY THIS FUNCTION, after `new_game`, with only
+/// `(seat, player_count)` — the caller never gets a chance to construct an
+/// agent from privileged setup data. `invariants` runs `check_invariants` after
+/// every applied move (ON in tests and gates; bulk corpus generation may
+/// disable it, since those records are verified by strict replay instead).
 pub fn run_arena_game(
     seed: WorldSeed,
     players: u8,

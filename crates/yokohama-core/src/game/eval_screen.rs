@@ -119,6 +119,9 @@
 
 use std::collections::BTreeMap;
 
+use crate::game::arena::stats::{
+    mean as stats_mean, sample_sd as stats_sample_sd, SALT_BOOTSTRAP,
+};
 use crate::game::arena::{
     agent_stream_seed, interval_for_units, mix, require_supported_player_count, run_arena_game,
     unit_for, ArenaAgent, ArenaError, ControllerProvenance, ExplainHandle, IntervalOutcome,
@@ -463,8 +466,16 @@ pub struct ScreenReport {
     pub position: NullPosition,
     /// Sample sd of the unit shares (n − 1), `NaN` under two units.
     pub unit_sd: f64,
-    /// `unit_sd / sqrt(n)`, `NaN` under two units. A zero here on a
-    /// multi-unit cell is the CRN-collapse signature the null screen watches for.
+    /// `unit_sd / sqrt(n)`, `NaN` under two units.
+    ///
+    /// HONESTY (W3 harness review SHOULD-3): a zero here is NOT a collapse
+    /// detector for a weight screen. A healthy 2P V1-vs-V1 null SPLITS many
+    /// units 1–1 (measured: 22 of 40 at N=40), driving sd DOWN — a broken swap
+    /// drives it UP — so the arena/architecture gates' `sd > 0` CRN check
+    /// points the WRONG WAY here and is deliberately not borrowed. The routing
+    /// pin (`candidate_games_by_seat` + `routing_matched`) is this instrument's
+    /// integrity check; at smoke N a refusal with zero sd is the EXPECTED
+    /// healthy shape, evidence of nothing.
     pub unit_se: f64,
     /// Moves applied by the candidate's seat, summed over the cell — the seat
     /// changes with the arrangement, so this follows the TABLE.
@@ -490,6 +501,35 @@ pub struct ScreenReport {
     /// cannot be screened without the violation appearing beside the figure.
     pub candidate_hand_split_ok: bool,
     pub incumbent_hand_split_ok: bool,
+    /// Games in which the candidate's TABLE sat at each seat, tallied from the
+    /// SEATING in the unit loop (arena-tested `unit_for` territory). Under the
+    /// balanced design every seat holds the candidate equally often — the
+    /// routing pin's first clause (W3 harness review MUST-1: a broken swap
+    /// collapses this to one seat and nothing else in the report says so).
+    pub candidate_games_by_seat: Vec<u32>,
+    /// Did every agent get built with the table its seat was OWED? Cross-checked
+    /// per game between the loop's seating-derived candidate seat and the digest
+    /// the factory recorded from the table it actually built with — the routing
+    /// pin's second clause (an inverted table→seat selection flips a screen's
+    /// verdict while every other figure stays plausible). On a V1-vs-V1 null the
+    /// digests are equal, so this clause discriminates only when the tables
+    /// differ — which is every screen that matters.
+    pub routing_matched: bool,
+    /// The two SEARCH guards per side, `None` on a rung with no such quantity
+    /// (the greedy one-ply argmax truncates nothing). READ from the handles
+    /// rather than cloned-and-dropped — the evaluator_gate defect the 3.4
+    /// six-lens wave fixed, kept fixed here (W3 harness review SHOULD-2). An
+    /// UNCAPPED lookahead's only truncation guard is `MAX_TURN_PLIES`; a capped
+    /// line is valued mid-turn, a slightly different measurement.
+    pub candidate_ply_cap_hits: Option<u64>,
+    pub candidate_free_cap_hits: Option<u64>,
+    pub incumbent_ply_cap_hits: Option<u64>,
+    pub incumbent_free_cap_hits: Option<u64>,
+    /// Whether per-move `check_invariants` ran — carried into `render()` beside
+    /// the build profile so an invariants-off screen cannot impersonate an
+    /// invariants-on one in an artifact (protocol §2 lists profile among the
+    /// provenance a figure must carry).
+    pub invariants: bool,
 }
 
 impl ScreenReport {
@@ -500,17 +540,38 @@ impl ScreenReport {
     /// reproduces exactly. Nothing load-sensitive (no wall clock) may enter it,
     /// for `arena::stats::CellWall`'s stated reason.
     pub fn render(&self) -> String {
-        let shares: Vec<String> =
-            self.candidate_unit_shares.iter().map(|s| format!("{s:.6}")).collect();
+        // Inline the full share vector only at smoke scale: at the protocol's
+        // N=200 it is a ~1,800-character line inside the byte-identity surface
+        // a ledger row quotes (W3 harness review NOTE). The struct always
+        // carries the full vector; elision here loses nothing reproducible.
+        let shares_repr = if self.candidate_unit_shares.len() <= 24 {
+            let shares: Vec<String> =
+                self.candidate_unit_shares.iter().map(|s| format!("{s:.6}")).collect();
+            format!("[{}]", shares.join(", "))
+        } else {
+            format!(
+                "[{} shares — elided from render; `candidate_unit_shares` carries them]",
+                self.candidate_unit_shares.len(),
+            )
+        };
+        let counter = |v: Option<u64>| match v {
+            Some(n) => n.to_string(),
+            None => "n/a".to_string(),
+        };
         format!(
             "{}\n  \
+             profile={} invariants={}\n  \
              theta_hat={:.6}  null={:.6}  position={}  interval={}\n  \
-             unit sd={:.6}  SE={:.6}  n={} units  shares=[{}]\n  \
+             unit sd={:.6}  SE={:.6}  n={} units  shares={}\n  \
+             candidate seat rotation={:?}  routing={}\n  \
              candidate: applied={} explained={}   incumbent: applied={} explained={}\n  \
+             ply cap hits: candidate={} incumbent={}   free cap hits: candidate={} incumbent={}\n  \
              seat0_wins={}/{}  vp_margin_mean={:+.4}\n  \
              hand-split ordering (L14 core>on_board>excess, both vectors): \
              candidate={} incumbent={}",
             self.provenance.render(),
+            if cfg!(debug_assertions) { "debug" } else { "release" },
+            if self.invariants { "on" } else { "OFF" },
             self.theta_hat,
             self.null,
             self.position.label(),
@@ -518,11 +579,17 @@ impl ScreenReport {
             self.unit_sd,
             self.unit_se,
             self.candidate_unit_shares.len(),
-            shares.join(", "),
+            shares_repr,
+            self.candidate_games_by_seat,
+            if self.routing_matched { "ok" } else { "MISMATCH — every figure above is suspect" },
             self.candidate_applied_moves,
             self.candidate_explanations,
             self.incumbent_applied_moves,
             self.incumbent_explanations,
+            counter(self.candidate_ply_cap_hits),
+            counter(self.incumbent_ply_cap_hits),
+            counter(self.candidate_free_cap_hits),
+            counter(self.incumbent_free_cap_hits),
             self.seat0_wins,
             self.games,
             self.vp_margin_mean,
@@ -673,6 +740,23 @@ pub fn run_screen_with(
     let mut cand_explained = 0u64;
     let mut inc_applied = 0u64;
     let mut inc_explained = 0u64;
+    // MUST-1 (W3 harness review): the routing pin's two independent derivations.
+    // `candidate_games_by_seat` is tallied from the SEATING in this loop —
+    // arena-tested `unit_for` territory — while the digests below are recorded
+    // by the FACTORY from the table it actually built with, so a broken swap
+    // fails the first and an inverted table→seat selection fails the second.
+    let cand_digest = weight_table_identity(&spec.candidate);
+    let inc_digest = weight_table_identity(&spec.incumbent);
+    let mut candidate_games_by_seat = vec![0u32; players as usize];
+    let mut routing_matched = true;
+    // SHOULD-2: the search guards, cloned out per side and READ rather than
+    // dropped (the exact evaluator_gate defect the 3.4 six-lens wave fixed —
+    // an uncapped lookahead's only truncation guard is MAX_TURN_PLIES, and a
+    // capped line is valued mid-turn). `None` = the side has no such quantity.
+    let mut cand_ply: Option<u64> = None;
+    let mut cand_free: Option<u64> = None;
+    let mut inc_ply: Option<u64> = None;
+    let mut inc_free: Option<u64> = None;
 
     for _ in 0..spec.units {
         let seed = schedule.next_world();
@@ -691,16 +775,23 @@ pub fn run_screen_with(
                     ))
                 })?;
 
+            candidate_games_by_seat[cand_seat.0 as usize] += 1;
+
             let seating = seating.clone();
             let (rung, candidate, incumbent) = (spec.rung, spec.candidate, spec.incumbent);
             let mut cand_handles: Vec<ExplainHandle> = Vec::new();
             let mut inc_handles: Vec<ExplainHandle> = Vec::new();
+            let mut built: Vec<(u8, i64)> = Vec::new();
             let stats = {
-                let (ch, ih) = (&mut cand_handles, &mut inc_handles);
+                let (ch, ih, bt) = (&mut cand_handles, &mut inc_handles, &mut built);
                 let mut make_agent = |seat: PlayerId, _players: u8| -> Box<dyn ArenaAgent> {
                     let slot = seating[seat.0 as usize];
                     let is_candidate = slot == CANDIDATE_SLOT;
                     let weights = if is_candidate { candidate } else { incumbent };
+                    // Recorded from the LOCAL the agent is built with, post-
+                    // selection — an inverted selection records the wrong digest
+                    // and the cross-check below catches it.
+                    bt.push((seat.0, weight_table_identity(&weights)));
                     let (agent, handle) =
                         rung.build(rules, weights, agent_stream_seed(seed, seat, slot));
                     if is_candidate {
@@ -713,15 +804,33 @@ pub fn run_screen_with(
                 run_arena_game(seed, players, rules, &mut make_agent, invariants)?
             };
 
+            routing_matched &= built.len() == players as usize;
+            for (seat, digest) in &built {
+                let expected = if *seat == cand_seat.0 { cand_digest } else { inc_digest };
+                routing_matched &= *digest == expected;
+            }
+
             games += 1;
             cand_applied += stats.moves_by_seat[cand_seat.0 as usize];
             inc_applied += stats.moves_by_seat.iter().sum::<u64>()
                 - stats.moves_by_seat[cand_seat.0 as usize];
             for handle in &cand_handles {
                 cand_explained += handle.explained();
+                if let Some(h) = handle.ply_cap_hits() {
+                    *cand_ply.get_or_insert(0) += h;
+                }
+                if let Some(h) = handle.free_cap_hits() {
+                    *cand_free.get_or_insert(0) += h;
+                }
             }
             for handle in &inc_handles {
                 inc_explained += handle.explained();
+                if let Some(h) = handle.ply_cap_hits() {
+                    *inc_ply.get_or_insert(0) += h;
+                }
+                if let Some(h) = handle.free_cap_hits() {
+                    *inc_free.get_or_insert(0) += h;
+                }
             }
 
             if stats.result.winner == cand_seat {
@@ -745,12 +854,12 @@ pub fn run_screen_with(
         shares.push(f64::from(unit_wins) / unit.seatings.len() as f64);
     }
 
-    let theta_hat = mean(&shares);
+    let theta_hat = stats_mean(&shares);
     let resample_seed = resample_seed_for(master, spec.units, players);
     let interval = interval_for_units(&shares, BOOTSTRAP_REPLICATES, resample_seed);
     let null = 1.0 / f64::from(players);
     let position = classify(&interval, &shares, null);
-    let unit_sd = sample_sd(&shares);
+    let unit_sd = stats_sample_sd(&shares);
     let unit_se = unit_sd / (shares.len() as f64).sqrt();
 
     Ok(ScreenReport {
@@ -771,26 +880,17 @@ pub fn run_screen_with(
         vp_margin_mean: vp_margin_sum / f64::from(games),
         candidate_hand_split_ok: hand_split_ordering_holds(&spec.candidate),
         incumbent_hand_split_ok: hand_split_ordering_holds(&spec.incumbent),
+        candidate_games_by_seat,
+        routing_matched,
+        candidate_ply_cap_hits: cand_ply,
+        candidate_free_cap_hits: cand_free,
+        incumbent_ply_cap_hits: inc_ply,
+        incumbent_free_cap_hits: inc_free,
+        invariants,
     })
 }
 
-fn mean(values: &[f64]) -> f64 {
-    if values.is_empty() {
-        return f64::NAN;
-    }
-    values.iter().sum::<f64>() / values.len() as f64
-}
 
-/// Sample standard deviation (n − 1 denominator), or `NaN` under two units —
-/// `arena::stats`'s own convention, so a screen's sd means what a cell's does.
-fn sample_sd(values: &[f64]) -> f64 {
-    if values.len() < 2 {
-        return f64::NAN;
-    }
-    let m = mean(values);
-    let ss: f64 = values.iter().map(|v| (v - m) * (v - m)).sum();
-    (ss / (values.len() - 1) as f64).sqrt()
-}
 
 #[cfg(test)]
 mod tests {
@@ -899,12 +999,65 @@ mod tests {
                 assert!(report.unit_se > 0.0, "a bootstrap interval needs a nonzero SE");
                 assert!(lo <= hi, "interval endpoints ordered");
             }
+            // At 2 units a healthy null REFUSING is the EXPECTED shape, not a
+            // collapse signature (see `unit_se`'s doc — the sd>0 CRN check
+            // points the wrong way for a weight screen); this branch only pins
+            // that the refusal's arithmetic is coherent with a constant vector.
             IntervalOutcome::RefusedZeroWidth { .. } => {
                 assert_eq!(report.unit_sd, 0.0, "a refusal means the unit vector is constant");
                 assert_eq!(report.unit_se, 0.0);
             }
         }
+
+        // The greedy rung has NO search guards — `None`, never `Some(0)` (the
+        // Option discipline that keeps the lookahead assertion non-vacuous).
+        assert_eq!(report.candidate_ply_cap_hits, None);
+        assert_eq!(report.candidate_free_cap_hits, None);
+        assert_eq!(report.incumbent_ply_cap_hits, None);
+        assert_eq!(report.incumbent_free_cap_hits, None);
+        // Routing fields exist on a null too; with equal digests the digest
+        // clause is trivially satisfied and the SEAT clause still bites.
+        assert_eq!(report.candidate_games_by_seat, vec![2, 2], "2 units rotate 2 seats twice");
+        assert!(report.routing_matched);
+        assert!(report.invariants);
         println!("{}", report.render());
+    }
+
+    /// MUST-1 (W3 harness review): the pin that the candidate TABLE provably
+    /// reaches the candidate's rotating seat. Two independent clauses over one
+    /// 1-unit cell with DISTINCT tables: (1) the seat tally, derived from the
+    /// seating in the unit loop — a broken swap reads [2, 0]; (2) the digest
+    /// cross-check, recorded by the factory from the table it actually built
+    /// with — an inverted table→seat selection records the incumbent's digest
+    /// at the candidate's seat and `routing_matched` goes false. Both survived
+    /// mutations were verified caught by exactly these clauses before commit.
+    #[test]
+    fn the_candidate_table_provably_reaches_its_rotating_seat() {
+        let rules = Rules::standard();
+        let weakened = warehouse_inverted(WeightTable::V1);
+        let s = ScreenSpec {
+            name: "routing-pin".to_string(),
+            rung: ScreenRung::Greedy,
+            candidate: weakened,
+            incumbent: WeightTable::V1,
+            players: 2,
+            units: 1,
+            master: SeedScheduleKind::Diagnostic(MASTER),
+        };
+        let report = run_screen(&s, &rules).expect("routing pin cell runs");
+        assert_eq!(
+            report.candidate_games_by_seat,
+            vec![1, 1],
+            "one unit at 2P seats the candidate at each seat exactly once",
+        );
+        assert!(
+            report.routing_matched,
+            "every agent must be built with the table its seat was owed",
+        );
+        assert_ne!(
+            report.provenance.candidate_identity, report.provenance.incumbent_identity,
+            "anti-vacuity: the digest clause discriminates only when the tables differ",
+        );
     }
 
     /// The SHIPPED rung's plumbing, at the smallest design that exists. One unit
@@ -930,6 +1083,15 @@ mod tests {
         assert_eq!(report.candidate_explanations, report.candidate_applied_moves);
         assert_eq!(report.incumbent_explanations, report.incumbent_applied_moves);
         assert!(report.candidate_applied_moves > 0, "anti-vacuity: the cell played");
+        // SHOULD-2: the search guards are READ, not cloned-and-dropped. An
+        // uncapped S1 screen expects `Some(0)` on all four — `Some` proves the
+        // plumbing (the greedy null pins `None`, so this cannot pass vacuously),
+        // and 0 is the only value at which every line was valued at a true turn
+        // boundary rather than mid-turn.
+        assert_eq!(report.candidate_ply_cap_hits, Some(0));
+        assert_eq!(report.candidate_free_cap_hits, Some(0));
+        assert_eq!(report.incumbent_ply_cap_hits, Some(0));
+        assert_eq!(report.incumbent_free_cap_hits, Some(0));
         println!("{}", report.render());
     }
 
@@ -1133,6 +1295,13 @@ mod tests {
                 vp_margin_mean: 0.0,
                 candidate_hand_split_ok: true,
                 incumbent_hand_split_ok: true,
+                candidate_games_by_seat: vec![n as u32, n as u32],
+                routing_matched: true,
+                candidate_ply_cap_hits: None,
+                candidate_free_cap_hits: None,
+                incumbent_ply_cap_hits: None,
+                incumbent_free_cap_hits: None,
+                invariants: true,
             }
         };
         let small = report(3);
@@ -1176,7 +1345,7 @@ mod tests {
         // Same components, different salt from `arena::stats`'s bootstrap — two
         // instruments handed the same master must not silently share a stream.
         let screen = resample_seed_for(MASTER, 200, 2);
-        let stats = mix(0xA3E1_B007_0000_0004, &[MASTER, 200, 2]);
+        let stats = mix(SALT_BOOTSTRAP, &[MASTER, 200, 2]);
         assert_ne!(screen, stats);
         // …and it is a function of the DESIGN alone, so it reproduces.
         assert_eq!(screen, resample_seed_for(MASTER, 200, 2));
