@@ -148,18 +148,18 @@
 //! tests) — see below for the figure and for why it did not move.
 //!
 //! The split is the interesting figure and it is why the shapes were chosen
-//! this way: the eight eval-ordering scenarios plus the registry pin run in
-//! **0.00 s** (below the timer's resolution — one shared [`rules`] build, nine
-//! setup-and-`observe` fixtures, fourteen [`check_invariants`] fixture audits,
-//! and about forty `score` calls), and the null-placement scenario's two
-//! 40-decision Greedy-v1 segments are **0.05 s**, i.e. effectively the whole
-//! binary. Order-seconds was the budget; the suite came in two orders under it,
-//! and the room that buys is for the driven scenarios a later revision will
-//! want.
+//! this way: the eleven eval-ordering scenarios plus the registry pin run in
+//! **0.00 s** (below the timer's resolution — one shared [`rules`] build,
+//! per-scenario setup-and-`observe` fixtures, the per-fixture
+//! [`check_invariants`] audits, and order-tens of `score` calls), and the
+//! null-placement scenario's two 40-decision Greedy-v1 segments are **0.05 s**,
+//! i.e. effectively the whole binary. Order-seconds was the budget; the suite
+//! came in two orders under it, and the room that buys is for the driven
+//! scenarios a later revision will want.
 //!
-//! **Round 1's three additions do not move the figure at all** — re-measured at
-//! the round-1 close, same machine, same method, 13 tests:
-//! **0.05 / 0.05 / 0.05 s**, i.e. the T9 reading reproduced digit for digit.
+//! **Round 1's three additions do not move the figure** — re-measured at the
+//! round-1 close, same machine, same method, 13 tests: a **0.05–0.06 s** band
+//! (load-variant in the last digit; the T9 reading sits inside it).
 //! All three additions are constructed-view properties with no driven segment,
 //! so each costs one setup-and-`observe` plus a handful of `score`/`explain`
 //! calls, and the driven scenario is still effectively the whole binary. A
@@ -1990,6 +1990,10 @@ fn warehouse_decay_restored() -> WeightTable {
 /// −10 → −4 weight decay does. Sign confirmed, magnitude shape unsupported and
 /// left alone by the one-pass rule; recorded for 3.5"*
 /// ([`WeightTable`]'s doc, from `docs/plans/2026-07-27-phase3.3-weight-freeze.md`).
+/// That quote is the rev-5 record; the REV-7 corpora reproduce the shape and are
+/// what the disposition actually rests on (protocol §2's rule): greedy
+/// |AUC−.5| late 0.223 vs early 0.175, lookahead late 0.190 vs early 0.161 —
+/// non-decaying in BOTH regimes (`docs/plans/2026-08-09-phase3.5c-r0-report.md`).
 /// Round 1 is the 3.5 the note was deferring to, and the L2 pass chose the
 /// flatten from a pre-registered three-point grid (`−8/−8`, `−10/−10`, `−10/−7`)
 /// on held-out AUC — `m22` holds the early magnitude and undoes the late decay
@@ -2227,10 +2231,16 @@ fn post_claim_achievement_progress(rules: &Rules) -> Result<(), String> {
     // visible: the shipped feature values the two positions identically.
     let (u_live, u_dead) = (unfiltered(&live), unfiltered(&dead));
     if u_live != u_dead || u_dead == 0 {
+        // This guard runs FIRST, so it is also the line the FREEZE author will
+        // meet: switching Feature::AchievementProgressSum onto the filtered sum
+        // makes `unfiltered` read the filter through the call site and trips
+        // this premise before the additive-only guard below is reached (Task-F
+        // review SHOULD-1). Hence the instruction rides here too.
         return Err(format!(
             "fixture: the shipped sum must value the two positions EQUALLY and nonzero (that \
              equality is the double-count blindness the filter removes), got {u_live} and \
-             {u_dead}"
+             {u_dead}. If this fired because the freeze switched the feature's call site onto \
+             the filtered sum: RE-POINT this scenario at `score` per its doc — never delete it"
         ));
     }
     // The claimed leg must be AT ITS CAP on the dead position, or "dead progress"

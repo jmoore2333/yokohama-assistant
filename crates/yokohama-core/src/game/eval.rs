@@ -542,8 +542,13 @@ impl WeightTable {
     /// L4 screen), `examples/eval_probe`'s `--score-table v2-draft` spelling,
     /// and the scenarios that ride a v2 change once they land.
     ///
-    /// **ROUND 1 ADOPTED, 2026-08-09 — this table is the candidate `m22`, no
-    /// longer V1's numbers.** It moved SIX slots and every one of them is
+    /// **ROUND 1 CANDIDATE `m22` LANDED, 2026-08-09 — no longer V1's numbers;
+    /// adoption is PROVISIONAL until the round's L4 screens report** (the
+    /// pre-committed rule is CONJUNCTIVE — scenarios + hard constraints, which
+    /// this commit's suite discharges, AND the two arena screens at the round's
+    /// recorded master, which the execution ledger's ROUND-1 row records; a
+    /// reader at this commit must not take the adoption gate as passed from
+    /// this doc alone). It moved SIX slots and every one of them is
     /// evidenced in
     /// `docs/plans/2026-08-09-phase3.5c-round1-evidence.md` (the L2 pass) over
     /// `docs/plans/2026-08-09-phase3.5c-r0-report.md` (the R0 corpora):
