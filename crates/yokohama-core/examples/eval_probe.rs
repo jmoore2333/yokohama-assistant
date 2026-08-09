@@ -599,6 +599,14 @@ enum CandidateColumn {
     AchievementRaceProximity,
     /// **Round 3, T6.** The seat's OWN pawn count on the church track: how much
     /// of the ending clock this seat is itself driving.
+    ///
+    /// **NEAR-REDUNDANT WITH [`ChurchMajorityMargin`] in the RELATIVE form at
+    /// 2P** (Task-D review SHOULD-2, measured): whenever the dummy is both
+    /// seats' best rival, `church_rel = 2·(c_me − c_opp)` while
+    /// `clock_rel = c_me − c_opp` — proportional, and AUC is rank-based, so the
+    /// two relative columns carry IDENTICAL AUC there (sign agreement 4,446 of
+    /// 4,448 organic 2P cells). An L1 report must not read them as two
+    /// independent signals, and round 4 must not admit one signal twice.
     ClockControlChurch,
     /// **Round 3, T6.** Empty Port card slots across every Port board — the
     /// conjunct the `OrderDeckEmpty` trigger drops. BOARD-GLOBAL: see
@@ -3581,6 +3589,50 @@ mod tests {
         lone.church_track.slots = [None; 8];
         place_church(&mut lone, 6, 0);
         check("lone occupant", &lone, [2, -2], [6, 0]);
+    }
+
+    /// SHOULD-1 (Task-D review): the two arithmetic mutations that survived the
+    /// whole branch battery, each pinned by the exact shape the review's
+    /// 7,933-position organic harness caught them with.
+    ///
+    /// (a) The best-RIVAL selection ranks count-tied rivals by RIGHTMOST: seat 0
+    /// at faith 8 sits BETWEEN its two count-tied rivals (opponent at 9, dummy
+    /// at 7). A selection truncated to count alone keeps whichever rival
+    /// iterates last and can flip the tie term to +1 — first place by the
+    /// margin's sign contract — while the shipped structure awards seat 0 the
+    /// SECOND place. (b) A zero-industry seat is never a tech contender: at the
+    /// 3P OPENING (no dummy, no technology anywhere) every margin reads exactly
+    /// 0, and a dropped guard turns the clockwise term into a spurious ±1 at
+    /// the very early cells the round's L1 reading examines first.
+    #[test]
+    fn tied_rivals_rank_by_rightmost_and_zero_industry_seats_never_contend() {
+        let rules = Rules::standard();
+
+        let mut between = dummy_view(&rules);
+        place_church(&mut between, 8, 0);
+        place_church(&mut between, 9, 1);
+        let margin = column_value(CandidateColumn::ChurchMajorityMargin, &between, 0, &rules);
+        let bonus = shipped_bonus(&between, 0, Feature::ChurchBonusNow, &rules);
+        assert_eq!(bonus, 3, "fixture: the three-way count tie must award seat 0 second place");
+        assert_eq!(
+            margin, -1,
+            "seat 0's best rival is the RIGHTMOST of its two count-tied rivals (the opponent \
+             at faith 9, not the dummy at 7), so the tie term reads against it",
+        );
+
+        for seat in 0..3u8 {
+            let view = observed_view(3, 77, seat, &rules);
+            assert!(
+                view.players.iter().all(|p| p.technologies.is_empty()),
+                "fixture: a post-setup opening holds no technologies",
+            );
+            assert_eq!(
+                column_value(CandidateColumn::TechMajorityMargin, &view, seat, &rules),
+                0,
+                "seat {seat}: with no contender anywhere the margin is exactly 0 — never a \
+                 clockwise ±1",
+            );
+        }
     }
 
     /// The customs half of the same pin (8/4, seven printed spaces). Case (i) is
