@@ -596,19 +596,23 @@ impl WeightTable {
     /// selection-after-results), and the on-policy checks are the round's arena
     /// screen and, for the accumulated total, the freeze's own fresh cell.
     ///
-    /// **ROUND 2 ADOPTED PROVISIONALLY, 2026-08-09 — this table is now the
-    /// candidate `M*`, and the adoption rule is HALF discharged.** What holds at
-    /// this commit is protocol §4.2's rungs L1–L3: the R0 evidence, the round's
-    /// pre-registered two-stage L2 fit, and the scenario suite (14/14 tests —
-    /// thirteen scenarios plus the registry pin — with the hand-split ordering
-    /// holding in both vectors). What has NOT run is L4 — the two arena screens at the
-    /// round's pre-recorded master `0x3A6B04285CCB85E0` — so the adoption is
-    /// PROVISIONAL until they do and this paragraph is finalized with their
-    /// figures, in the shape the ROUND 1 block above shows. The round's own
-    /// pre-commitment is what makes that ordering safe: the master was drawn from
-    /// OS entropy and recorded in the execution ledger's ROUND-2 row before any
-    /// evidence ran, and is never redrawn (§4.3), so nothing about landing the
-    /// table first can shop for a field. It moved SEVEN weights across six
+    /// **ROUND 2 ADOPTED, 2026-08-09 — this table is the candidate `M*`, and
+    /// the CONJUNCTIVE adoption rule is discharged:** protocol §4.2's rungs
+    /// L1–L3 (the R0 evidence, the pre-registered two-stage L2 fit, and the
+    /// scenario suite — 14/14 with the hand-split ordering holding in both
+    /// vectors) AND the two L4 screens at the round's pre-recorded master
+    /// `0x3A6B04285CCB85E0` — lookahead θ̂ 0.6750, bootstrap [0.6275, 0.7225]
+    /// ENTIRELY ABOVE the null (round 1 read 0.5725 on ITS field; rounds do not
+    /// compose); greedy θ̂ 0.4875, [0.4400, 0.5325], SPANNING the null with no
+    /// 0.40 pause — the preserved rung's near-null reading is REPORTED, not
+    /// hidden, and is coherent with the round's content (the late church
+    /// down-pricing pays where the shipped rung's half-length games live in the
+    /// LATE vector). Full blocks: the round-2 evidence artifact's Appendix E;
+    /// the ledger's ROUND-2 row carries the verdict. The round's own
+    /// pre-commitment is what makes the landing order safe: the master was
+    /// drawn from OS entropy and recorded in the execution ledger's ROUND-2 row
+    /// before any evidence ran, and was never redrawn (§4.3), so nothing about
+    /// landing the table first could shop for a field. It moved SEVEN weights across six
     /// features over `m22` — one of the six, `hand_size`, moves in BOTH vectors —
     /// and every one is evidenced in
     /// `docs/plans/2026-08-09-phase3.5c-round2-evidence.md` (the two-stage L2)
