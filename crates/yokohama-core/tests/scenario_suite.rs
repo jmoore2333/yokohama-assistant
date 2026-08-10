@@ -264,10 +264,10 @@ use std::sync::OnceLock;
 
 use yokohama_core::game::actions::calculate_church_faith;
 use yokohama_core::game::eval::{
-    achievement_progress, achievement_progress_postclaim_sum, clock_ppm, explain, initial_order_deck_len,
-    interpolate, place_signal, progress_ppm, score, terminal_standing, view_is_terminal, Feature, ScoreStructure,
-    WeightTable, HAND_CORE_RESERVE, MAX_SEATS, PROGRESS_FULL_PPM, TERMINAL_MARGIN_CLAMP,
-    TERMINAL_MARGIN_STEP, TERMINAL_RANK_STEP,
+    achievement_progress, achievement_progress_postclaim_sum, achievement_progress_sum, clock_ppm,
+    explain, initial_order_deck_len, interpolate, place_signal, progress_ppm, score,
+    terminal_standing, view_is_terminal, Feature, ScoreStructure, WeightTable, HAND_CORE_RESERVE,
+    MAX_SEATS, PROGRESS_FULL_PPM, TERMINAL_MARGIN_CLAMP, TERMINAL_MARGIN_STEP, TERMINAL_RANK_STEP,
 };
 use yokohama_core::game::greedy::{GreedyAgent, DEFAULT_RETREAT_SAMPLES};
 use yokohama_core::{
@@ -2479,19 +2479,12 @@ fn post_claim_achievement_progress(rules: &Rules) -> Result<(), String> {
     // THE PRE-FILTER ARITHMETIC, written out here rather than read through the
     // feature. Before the freeze this closure WAS
     // `viewer_value(v, rules, Feature::AchievementProgressSum)`; the freeze
-    // switched that call site onto the filtered sum, so the unfiltered sum is no
-    // longer reachable through any public accessor and the counterfactual has to
-    // state it. Same arithmetic as `achievement_progress_postclaim_sum` with its
-    // one `continue` removed — every card's leg, capped at its own requirement.
-    let unfiltered = |v: &PlayerView| -> i64 {
-        v.achievements
-            .iter()
-            .map(|card| {
-                let (current, needed) = achievement_progress(v, own_row(v), card.achievement_type);
-                i64::from(current.min(needed))
-            })
-            .sum()
-    };
+    // switched that call site onto the filtered sum; the unfiltered arithmetic
+    // survives as the AUTHORED `eval::achievement_progress_sum` (made `pub` at
+    // the freeze exactly so this counterfactual and `eval_core`'s pins read ONE
+    // function instead of re-typing a copy that could drift — the freeze
+    // review's SHOULD-1, which found this closure doing precisely that).
+    let unfiltered = |v: &PlayerView| achievement_progress_sum(v, own_row(v));
     // What the FEATURE now computes — the switched call site itself.
     let feature = |v: &PlayerView| viewer_value(v, rules, Feature::AchievementProgressSum);
     // The claimed card's own capped leg, per position — the quantity clause (ii)

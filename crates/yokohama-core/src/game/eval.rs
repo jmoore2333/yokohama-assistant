@@ -406,7 +406,11 @@ impl WeightTable {
     /// the S1 rung, the MCTS diagnostic and every arena contestant take `V2` —
     /// and its remaining readers are the record: the screen harness's incumbent
     /// arm, `examples/eval_probe`'s `--weights v1` (still the DEFAULT there, so
-    /// every committed corpus command reproduces), the sign and ordering pins
+    /// a committed corpus command still parses and runs under the TABLE its
+    /// figures named — though NOT to the same corpus: T3's filter now rides the
+    /// score structure unconditionally, so the recorded corpus figures belong
+    /// to the pre-filter tree and reproduce only at their recorded commits —
+    /// the freeze review's MUST-1), the sign and ordering pins
     /// below, and the scenarios whose claim is table-independent. Its identity
     /// digest is `0xe1fedd5efc49d0f6`. Everything this doc says about T4 is a
     /// statement about 2026-07-27 and stays true; the v2 freeze's own register

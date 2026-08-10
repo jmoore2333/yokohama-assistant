@@ -293,10 +293,19 @@ fn weights_from(flags: &BTreeMap<String, String>) -> Result<(WeightTable, &'stat
         // so a default-weights corpus is no longer an incumbent-play corpus of
         // what ships — but every committed probe command (the R0 corpora, both
         // rounds' L2 passes, the greedy counters comparator) omits this flag,
-        // and moving the default would silently re-point all of them at a table
-        // their recorded figures were not measured under. A record that cannot
-        // be re-run is not a record. Every report header prints the table's
-        // identity digest, so a run is self-labelling either way; `v2` is
+        // and moving the default would additionally change the TABLE out from
+        // under them. **What the default buys is stated exactly (freeze review
+        // MUST-1): the TABLE's thirty-two numbers, so a run is weight-comparable
+        // with the record — NOT the corpus itself.** T3's post-claim filter now
+        // rides `ScoreStructure::derive` unconditionally, with no switch, so the
+        // same command at the same master plays a DIFFERENT corpus than the one
+        // the recorded figures were measured on (measured: R0-G's 1,099,281
+        // applied moves read 1,101,363 at the freeze HEAD). A re-run here is a
+        // different measurement, not a reproduction — `eval_screen_round`'s
+        // post-freeze doc says the same of criteria 1–2 — and reproducing a
+        // recorded figure means checking out its recorded commit. The `table`
+        // subcommand's default print pairs V1's digits with `eval_impl_version
+        // 3` for the same reason; the `[v1]` header is the self-label. `v2` is
         // spelled out below and must be asked for.
         None | Some("v1") => Ok((WeightTable::V1, "v1")),
         Some("v2") => Ok((WeightTable::V2, "v2")),

@@ -300,7 +300,8 @@ pub fn stream_seed(record: &GameRecord, seat: PlayerId) -> u64 {
 ///
 /// The knobs are the shipped rung's, taken from `LookaheadAgent::new`'s own
 /// defaults rather than restated here: S1 turn-boundary at `B` = 4, `K` = 1,
-/// `M` = 8, `WeightTable::V1`.
+/// `M` = 8, `WeightTable::V2` (V1 until the 2026-08-10 v2 freeze — reading the
+/// defaults off the constructor is exactly what let this line lag it once).
 ///
 /// **The answer is checked against the TRUE position before it is returned**
 /// ([`ensure_offered_by_the_true_state`], T10 review S2).

@@ -217,7 +217,10 @@
 //! freeze ships `WeightTable::V2` in place of `V1` at every evaluator
 //! constructor and switches `Feature::AchievementProgressSum` onto T3's
 //! post-claim filter, so both arms of the `lookahead-v1` vs `greedy-v1` cell
-//! legitimately play different games. A rung carries no evaluator at all, so
+//! legitimately play different games. **Which of the two moved THIS cell was
+//! probed, not assumed (freeze review NOTE-1): with V2 shipped and the filter's
+//! call site reverted, the old golden PASSES — on this 4-game cell the whole
+//! delta is the weight table, and the filter's contribution is zero.** A rung carries no evaluator at all, so
 //! `retreat-averse` vs `family-weighted` must be byte-identical across the
 //! freeze — and it is. A Policy golden moving here would have meant the freeze
 //! reached somewhere it must not.

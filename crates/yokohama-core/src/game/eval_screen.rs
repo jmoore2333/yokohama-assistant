@@ -12,12 +12,14 @@
 //!
 //! [`Contestant`](crate::game::arena::Contestant) deliberately carries NO weight
 //! knob, and its own doc states the rule: *"they run the frozen
-//! [`WeightTable::V1`] the shipped agents run, and a weight change is a version
-//! bump (spec §0.5 / L12), not a cell parameter."* Adding `weights=` to the
-//! `<x>`/`<y>` spec grammar would contradict that rule at the exact moment v2 is
-//! being iterated toward — it would let an unversioned table be published under a
-//! versioned controller name, which is the confusion the composite comparability
-//! key (T16) exists to prevent.
+//! [`WeightTable::V2`] the shipped agents run (`V1` until the 2026-08-10 v2
+//! freeze), and a weight change is a version bump (spec §0.5 / L12), not a cell
+//! parameter"* — the quotation re-taken from its source at the freeze, when
+//! that doc moved (the freeze review's SHOULD-3). Adding `weights=` to the
+//! `<x>`/`<y>` spec grammar would contradict that rule at the exact moment a
+//! candidate is being iterated toward — it would let an unversioned table be
+//! published under a versioned controller name, which is the confusion the
+//! composite comparability key (T16) exists to prevent.
 //!
 //! But an ITERATION loop must be able to put two tables on one board before
 //! either is versioned. So the comparison lives HERE, over the public weighted
@@ -273,8 +275,11 @@ pub struct ScreenSpec {
     pub rung: ScreenRung,
     /// The table under test. Sits in [`CANDIDATE_SLOT`].
     pub candidate: WeightTable,
-    /// The table it must not lose to — [`WeightTable::V1`] until a freeze moves
-    /// it.
+    /// The table it must not lose to. The 2026-08-10 freeze happened and
+    /// deliberately did NOT move this from [`WeightTable::V1`]: the round
+    /// record reads against V1, and what a POST-freeze screen's incumbent
+    /// should be is the five-rung pre-registration's question (this module's
+    /// own "after the freeze" rule), not a default to drift.
     pub incumbent: WeightTable,
     /// 2 for every screen the protocol registers. 3–4P runs, but nothing has
     /// measured what a multi-table field means there, and E2's 3P seat-symmetry

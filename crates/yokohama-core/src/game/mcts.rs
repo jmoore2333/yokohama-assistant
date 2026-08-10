@@ -4206,8 +4206,10 @@ mod tests {
         //
         // **A WEIGHT FREEZE MOVES THIS WALK TOO** — `GreedyAgent::new` below
         // takes the shipped table, so the 2026-08-10 v2 freeze (V1 -> V2 plus
-        // T3's post-claim filter) re-drew every step of it. `back = 5` was
-        // RE-VERIFIED there rather than re-probed: the premise below
+        // T3's post-claim filter) re-drew every step of it. The SEARCH under
+        // test still runs `&WeightTable::V1` two lines down, deliberately —
+        // only the WALK moved, not the fixture's table (freeze review NOTE-3).
+        // `back = 5` was RE-VERIFIED there rather than re-probed: the premise below
         // (`terminal_nodes > 0`) still holds and the budget still goes unspent,
         // so the fixture survived a change that had been mapped as likely to
         // break it. Do not read that as robustness — it is one value surviving
