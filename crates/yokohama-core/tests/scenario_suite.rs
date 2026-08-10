@@ -1,4 +1,4 @@
-//! **Scenario suite** (Phase 3.3 T9; spec §6, admitted under §0.2) — fifteen
+//! **Scenario suite** (Phase 3.3 T9; spec §6, admitted under §0.2) — nineteen
 //! hand-built rules situations the evaluator rung has to get right, each one a
 //! single falsifiable property with a rules citation, a WHY line, and a
 //! demonstrated failing counterpart.
@@ -29,9 +29,13 @@
 //! TABLE** section naming its choice and its reason, and a canon-judgment
 //! scenario additionally quotes the owner ruling it encodes and names its
 //! protocol LABEL (guidingpath's 2026-08-09 canon-batch row; protocol §6's
-//! naming amendment). **The two scenarios landed by this commit are the
-//! RULES-DERIVABLE pair and need no canon at all** — D5's dummy in the
-//! technology majority, and the deck clock's banking decision.
+//! naming amendment). **W4 landed its RULES-DERIVABLE pair first** — D5's dummy
+//! in the technology majority, and the deck clock's banking decision, neither of
+//! which needs canon — **and then its CANON JUDGMENT band**, one scenario per
+//! ruling of the owner's 2026-08-09 batch (labels 11, 12+13, 14, 15). Two of
+//! those rulings REVERSED the drafts they were asked about and one INVERTED its
+//! draft, so each judgment doc quotes the ruling it encodes verbatim rather than
+//! paraphrasing a scenario title that no longer means what it once said.
 //!
 //! Nothing about scenarios 1–9 changed when 10–12 landed, and no scenario's
 //! CODE or property changed when 13 landed or when the W4 wave landed.
@@ -153,8 +157,8 @@
 //!
 //! # Cost, and why most scenarios drive no game
 //!
-//! Fourteen of the fifteen are EVAL-ORDERING properties over constructed views
-//! or states (thirteen over [`score`], one over a feature function): the
+//! Eighteen of the nineteen are EVAL-ORDERING properties over constructed views
+//! or states (seventeen over [`score`], one over a feature function): the
 //! evaluator is a pure function of a [`PlayerView`], so specifying its input
 //! directly is both the cheapest and the most precise way to state "this
 //! position must outrank that one". Only the null-placement trap is genuinely
@@ -174,7 +178,7 @@
 //!
 //! # Determinism
 //!
-//! Every scenario is deterministic. The fourteen eval-ordering ones consume no
+//! Every scenario is deterministic. The eighteen eval-ordering ones consume no
 //! randomness at all — `score` is a pure function. The driven one fixes both
 //! agent seeds ([`DRIVEN_SEEDS`]), which fixes the per-decision sampler seed
 //! and the §3.2 tie-break draw, so the segment is byte-identical run to run;
@@ -219,11 +223,15 @@
 //! **W4's growth re-measures the figure at every commit it makes**, and reports
 //! it as a BAND rather than a single reading, because the binary's wall is
 //! dominated by one driven scenario and sits at the timer's resolution
-//! everywhere else. **This commit — the W4 rules-derivable pair, 16 tests —
-//! measures 0.05–0.07 s**, the same band the round-2 close read. Scenario 14
-//! builds two finished `GameState`s and pays two `check_invariants` audits and
-//! two `final_result` calls, which is the most expensive non-driven fixture in
-//! the file and still invisible against the driven segment.
+//! everywhere else. **The W4 rules-derivable pair, 16 tests: 0.05–0.07 s**, the
+//! same band the round-2 close read. Scenario 14 builds two finished
+//! `GameState`s and pays two `check_invariants` audits and two `final_result`
+//! calls, which is the most expensive non-driven fixture in the file and still
+//! invisible against the driven segment. **The canon judgment band, 20 tests:
+//! 0.05–0.07 s** — unmoved, and for the same reason: its four scenarios are
+//! constructed-view properties costing one `base_view` and a handful of
+//! `score`/`explain` calls apiece, against a driven segment that is still
+//! effectively the whole binary.
 
 use std::collections::BTreeMap;
 use std::sync::OnceLock;
@@ -251,7 +259,7 @@ use yokohama_core::{
 /// §0.2's admission — the shipped property and its targeted counterfactual.
 type ScenarioFn = fn(&Rules) -> Result<(), String>;
 
-/// **THE FIFTEEN SCENARIOS.** Indices 0–8 are suite v1 — spec §6's eight
+/// **THE NINETEEN SCENARIOS.** Indices 0–8 are suite v1 — spec §6's eight
 /// categories plus the terminal-scoring scenario that section adds. Indices
 /// 9–11 are the Phase-3.5c round-1 growth, one per adopted change: the early
 /// re-mix, the warehouse flatten (protocol scenario 16), and the T3 post-claim
@@ -259,16 +267,22 @@ type ScenarioFn = fn(&Rules) -> Result<(), String>;
 /// two dominant re-pricings together (the late church/five-power crossing).
 /// Indices 13–14 open the **W4 growth wave** with its RULES-DERIVABLE pair —
 /// the D5 dummy deciding a terminal, and the deck clock's banking decision
-/// (this file's own named coverage gap, closed).
+/// (this file's own named coverage gap, closed). Indices 15–18 are W4's
+/// **CANON JUDGMENT band**, one per owner ruling of the 2026-08-09 batch:
+/// track-racing (protocol label 11), the customs race with the church side
+/// folded in (labels 12 and 13, both re-aimed), achievement proximity as
+/// self-guidance (label 14, re-aimed), and the end-trigger brake the ruling
+/// INVERTED (label 15).
 ///
 /// **These are REGISTRY INDICES, and the protocol's scenario NUMBERS are
 /// tension LABELS** — the two do not line up and are not meant to (protocol §6's
-/// 2026-08-09 naming amendment: this array is dense, the labels are not).
+/// 2026-08-09 naming amendment: this array is dense, the labels are not). Each
+/// judgment scenario's doc names the label it answers for.
 ///
-/// The length is pinned by the type. Adding a sixteenth scenario is a
+/// The length is pinned by the type. Adding a twentieth scenario is a
 /// deliberate edit to this array and its `#[test]`; removing one of these
-/// fifteen is the thing the never-delete rule forbids, and it will not compile.
-const SCENARIOS: [(&str, ScenarioFn); 15] = [
+/// nineteen is the thing the never-delete rule forbids, and it will not compile.
+const SCENARIOS: [(&str, ScenarioFn); 19] = [
     ("country-set completion", country_set_completion),
     ("order economics: fulfill now vs hold", order_economics_fulfill_now_vs_hold),
     ("end-trigger timing: the church clock", end_trigger_timing_church_clock),
@@ -284,20 +298,25 @@ const SCENARIOS: [(&str, ScenarioFn); 15] = [
     ("late bonus re-pricing: tokens over church", late_bonus_repricing_tokens_over_church),
     ("D5 dummy decides the technology majority", d5_dummy_decides_the_technology_majority),
     ("deck clock: bank before the deck runs out", deck_clock_banking_beats_holding),
+    ("track-racing: extending a winnable church race", track_racing_extends_a_winnable_church_race),
+    ("customs race: the rival's progress", customs_race_and_the_rivals_progress),
+    ("achievement proximity as self-guidance", achievement_proximity_as_self_guidance),
+    ("behind at the end trigger: keep building", behind_at_the_end_trigger_keeps_building),
 ];
 
-/// Spec §6's never-delete rule, plus the registry hygiene the fifteen `#[test]`s
-/// lean on: each test names both its index and its scenario name, so a
-/// reordering that silently re-pointed a test at a different scenario fails
+/// Spec §6's never-delete rule, plus the registry hygiene the nineteen
+/// `#[test]`s lean on: each test names both its index and its scenario name, so
+/// a reordering that silently re-pointed a test at a different scenario fails
 /// here and there.
 #[test]
-fn the_registry_holds_fifteen_uniquely_named_scenarios() {
+fn the_registry_holds_nineteen_uniquely_named_scenarios() {
     assert_eq!(
         SCENARIOS.len(),
-        15,
+        19,
         "spec §6's eight categories plus the terminal-scoring scenario (suite v1's nine), \
          plus the Phase-3.5c round-1 growth's three, round 2's one, and the W4 growth wave's \
-         rules-derivable pair; scenarios are never deleted (this file's header states the rule)",
+         rules-derivable pair and canon judgment band; scenarios are never deleted (this file's \
+         header states the rule)",
     );
     let mut names: Vec<&str> = SCENARIOS.iter().map(|(n, _)| *n).collect();
     names.sort_unstable();
@@ -3522,6 +3541,1098 @@ fn deck_clock_banking_beats_holding(rules: &Rules) -> Result<(), String> {
 #[test]
 fn scenario_15_deck_clock_banking() {
     run(14, "deck clock: bank before the deck runs out");
+}
+
+// ---------------------------------------------------------------------------
+// 16. Track-racing: extending a WINNABLE race  (3.5c W4 — protocol label 11)
+// ---------------------------------------------------------------------------
+
+/// **RULES.** The Church management board is one of the end-game clocks: the
+/// game ends when the track fills to the player-count threshold (4/5/6 REAL
+/// pawns at 2/3/4 players — the 2P dummy does not count, finding D1;
+/// `game/end_game.rs`, `GameConfig::track_trigger`). The board itself pays a
+/// MAJORITY at the end — 6 VP to the most pawns and 3 to the second, a count tie
+/// broken by the RIGHTMOST occupied space (rulebook p.9) — and at two players
+/// the neutral dummy on faith 7 is a real competitor that can take a place,
+/// which is then consumed while being awarded to nobody (finding D1,
+/// guidingpath's 2026-07-21 rows). A pawn that goes on the track LEAVES the
+/// board: it is spent, it stops earning action power, and it does not come back.
+///
+/// **SEAT.** 0, in a 2-player game, with the order deck run out so the DECK
+/// clock reads `p = 1,000,000` — the LATE vector exactly, in all four positions,
+/// so the one-pawn occupancy difference inside each pair cannot move the stage.
+/// (Scenario 11's device: a view at full progress is not a finished game, since
+/// the real trigger also needs an empty Port slot — a conjunct [`clock_ppm`]
+/// deliberately drops.)
+///
+/// **THE CANON IT ENCODES — protocol label 11, ruled CONDITIONALLY YES.** The
+/// owner, 2026-08-09 (guidingpath's canon-batch row): *"sometimes forcing the
+/// end game sooner does make sense"* — a church rush for a short game is
+/// anecdotally popular among BGA 2P players, it is the counter to
+/// engine-building, and it is *"hard to do totally alone without losing to an
+/// engine"*. **The CONDITIONAL is the load-bearing half**, and it is what this
+/// scenario makes executable: the fixture is sized so the race is WINNABLE, and
+/// the control is the same physical extension in a race where it wins nothing.
+///
+/// **PROPERTY**, three clauses. (a) **WINNABLE:** `score(extend)` >
+/// `score(abandon)`, where extending puts a second pawn on the track and takes
+/// the majority (6 VP to the viewer, 3 to the rival) that one pawn behind the
+/// rival's collected nothing at all. (b) **DECIDED — the conditional's other
+/// side:** the SAME conversion, in a field where the viewer's single pawn
+/// already holds first place, reads strictly BELOW leaving the assistant in its
+/// area, because the majority is 6/3 either way and the pawn only stops working.
+/// (c) The winnable pair separates on EXACTLY `church_bonus_now` and
+/// `assistants_on_board` — the fixture's leak check.
+///
+/// **THE TWO FIELDS ARE THE SAME MATERIAL, one space index apart.** The rival
+/// holds one pawn on faith 8 in all four positions and the dummy sits on faith
+/// 7. In the WINNABLE field the viewer's first pawn is on faith 5 — behind both,
+/// so at one pawn each the count-1 tie goes to the rival's rightmost space and
+/// the viewer collects nothing; the second pawn (faith 6) wins the count
+/// outright and takes the 6. In the DECIDED field that first pawn is on faith 11
+/// instead — rightmost, so it already takes the 6 — and the second pawn (faith
+/// 10) changes no award. Nothing else about the two fields differs, which is
+/// what makes the flip a statement about the race rather than about pawns.
+///
+/// **THE ARITHMETIC.** Every term but two is identical inside a pair, so the
+/// margin is `w_church · Δ(mine − theirs) + w_board · Δ(mine)` at
+/// `p = 1,000,000`. WINNABLE: the church relative value goes from `0 − 6` to
+/// `6 − 3`, i.e. `+9`, and the board loses one assistant, so under the frozen
+/// table `16·9 + 10·(−1) = 144 − 10 = +134`. DECIDED: the church relative value
+/// is `6 − 3` in BOTH positions, so the whole margin is the board's
+/// `10·(−1) = −10`.
+///
+/// **FIXTURE HONESTY — the twenty tokens stay twenty.** A pawn that extends the
+/// race has left `assistants.on_board` and arrived on `assistants.on_church`, so
+/// every position here is asserted to hold the seat's whole printed supply
+/// (`AssistantState::total`) rather than
+/// quietly dropping a token the way a fixture that edited only `on_board` would.
+/// Both seats' hands are equal across each pair by construction, so the three
+/// hand terms cancel out of every margin.
+///
+/// **WHICH TABLE.** [`WeightTable::V1`], on this file's W4 rule: the claim holds
+/// table-independently, so it rides the frozen table and the freeze commit has
+/// one fewer scenario to re-point. Recorded at authoring, not asserted: under
+/// [`WeightTable::V2_DRAFT`] the same two margins read **+62** and **−10** — the
+/// winnable margin is smaller because round 2 down-priced the late church bonus
+/// (16 → 8), and the conditional is unchanged.
+///
+/// **WHAT IS NOT EXPRESSIBLE AT THIS GRAIN, said out loud.** The canon's own
+/// words are about *forcing the end game sooner*, and the evaluator has no term
+/// for that: a clock only RE-WEIGHTS the position, it never prices "the game
+/// stops earlier" as such. This fixture holds the stage FIXED (the deck clock
+/// dates all four positions) precisely so the margin is the majority arithmetic
+/// and nothing else, which is the half of the ruling this rung can answer for.
+/// The other half — whether racing the clock to shorten the game is right —
+/// is a strength question that belongs to the arena, not to a constructed pair.
+///
+/// **COUNTERFACTUAL — `church_bonus_now` zeroed (§0.2's targeted mutation).**
+/// With the majority priced at nothing, extending is only ever an assistant
+/// leaving the board, so the winnable field ranks the way the decided one does.
+/// Note the clause ORDER below: the ordering clauses run BEFORE the leak clause,
+/// because a zeroed term stops separating the pair at all and a leak clause
+/// asked first would fire on the mutation instead of the property (scenario 9's
+/// masking hazard, met from the other direction). Observed failing line,
+/// verbatim:
+///
+/// ```text
+/// extending a WINNABLE church race must outrank abandoning it — the second
+/// pawn takes the 6/3 majority the first one lost to the rival's rightmost
+/// space: extend 22, abandon 32, margin -10 (late weights: church 0, board 10)
+/// ```
+fn track_racing_extends_a_winnable_church_race(rules: &Rules) -> Result<(), String> {
+    /// The D1 dummy's 2P church space.
+    const DUMMY_FAITH: u8 = 7;
+    /// The rival's single pawn, to the RIGHT of the dummy.
+    const RIVAL_FAITH: u8 = 8;
+
+    let mut base = base_view(2, 25, rules);
+    base.order_deck_len = 0;
+    let area = *base.board_layout.areas.keys().next().ok_or("fixture: an empty board")?;
+
+    let dummy_index = ChurchTrack::faith_to_index(DUMMY_FAITH).expect("faith 7 is on the track");
+    if !base.church_track.slots[dummy_index].is_some_and(|s| s.player.is_dummy()) {
+        return Err(format!(
+            "fixture: the 2P setup must place the church dummy on faith {DUMMY_FAITH} (D1) — the \
+             majority arithmetic this scenario cites is the dummy's rule"
+        ));
+    }
+    if base.church_track.total_assistants() != 0 {
+        return Err("fixture: a fresh 2P church track must carry no REAL pawn".into());
+    }
+    let supply = own_row(&base).assistants.total();
+
+    // One position: the viewer's pawns on `mine`, the rival's on `theirs`, and
+    // the viewer's remaining working assistants in one area. The hand absorbs
+    // the rest, so every seat still holds the whole printed supply.
+    let position = |mine: &[u8], theirs: &[u8], on_board: u8| -> Result<PlayerView, String> {
+        let mut v = base.clone();
+        for (faiths, seat) in [(mine, 0u8), (theirs, 1u8)] {
+            for (n, faith) in faiths.iter().enumerate() {
+                let index = ChurchTrack::faith_to_index(*faith)
+                    .ok_or_else(|| format!("fixture: faith {faith} is not a church space"))?;
+                if v.church_track.slots[index].is_some() {
+                    return Err(format!("fixture: faith {faith} is occupied twice"));
+                }
+                v.church_track.slots[index] =
+                    Some(ChurchSlot { player: PlayerId(seat), arrival_order: n as u8 + 1 });
+            }
+        }
+        for player in v.players.iter_mut() {
+            let (pawns, board) = if player.id == PlayerId(0) {
+                (mine.len() as u8, on_board)
+            } else {
+                (theirs.len() as u8, 0)
+            };
+            player.assistants.on_church = pawns;
+            player.assistants.on_board = BTreeMap::new();
+            if board > 0 {
+                player.assistants.on_board.insert(area, board);
+            }
+            player.assistants.in_hand = supply
+                .checked_sub(player.assistants.in_warehouse + board + pawns)
+                .ok_or("fixture: the position spends more assistants than a seat owns")?;
+        }
+        Ok(v)
+    };
+
+    let winnable_abandon = position(&[5], &[RIVAL_FAITH], 4)?;
+    let winnable_extend = position(&[5, 6], &[RIVAL_FAITH], 3)?;
+    let decided_abandon = position(&[11], &[RIVAL_FAITH], 4)?;
+    let decided_extend = position(&[10, 11], &[RIVAL_FAITH], 3)?;
+
+    // The stage is the premise, so it is asserted: the DECK clock puts all four
+    // positions in the LATE vector, and none of them is a finished game.
+    let all = [
+        ("winnable-abandon", &winnable_abandon),
+        ("winnable-extend", &winnable_extend),
+        ("decided-abandon", &decided_abandon),
+        ("decided-extend", &decided_extend),
+    ];
+    for (label, view) in all {
+        let (p, clocks) = (progress_ppm(view, rules), clock_ppm(view, rules));
+        if p != PROGRESS_FULL_PPM || clocks[0] != PROGRESS_FULL_PPM {
+            return Err(format!(
+                "fixture: the {label} position must sit at full progress on the DECK clock so the \
+                 LATE vector governs exactly and the extra pawn cannot move the stage, got p={p} \
+                 with clocks {clocks:?}"
+            ));
+        }
+        if view_is_terminal(view) {
+            return Err(format!(
+                "fixture: the {label} position must still be scored POSITIONALLY — the terminal \
+                 ladder short-circuits the weight vector this scenario is about"
+            ));
+        }
+        for player in &view.players {
+            if !player.id.is_dummy() && player.assistants.total() != supply {
+                return Err(format!(
+                    "fixture: the {label} position must leave seat {} holding the whole {supply}-\
+                     token supply (a pawn on the track left the board and arrived on `on_church`), \
+                     it holds {}",
+                    player.id.0,
+                    player.assistants.total(),
+                ));
+            }
+        }
+    }
+
+    // THE CONDITIONAL, read off the structure rather than assumed from the
+    // doctoring: the extension must WIN a place in one field and change nothing
+    // in the other, or the two clauses below are not the pair the doc claims.
+    let awards = |v: &PlayerView| -> (i64, i64) {
+        let structure = ScoreStructure::derive(v, rules);
+        let value = |seat: u8| {
+            let row = v.players.iter().find(|p| p.id == PlayerId(seat)).expect("both seats");
+            structure.value_of(row, Feature::ChurchBonusNow)
+        };
+        (value(0), value(1))
+    };
+    let built = [
+        ("winnable-abandon", &winnable_abandon, (0, 6)),
+        ("winnable-extend", &winnable_extend, (6, 3)),
+        ("decided-abandon", &decided_abandon, (6, 3)),
+        ("decided-extend", &decided_extend, (6, 3)),
+    ];
+    for (label, view, want) in built {
+        let got = awards(view);
+        if got != want {
+            return Err(format!(
+                "fixture: the {label} position's church majority must read {want:?} for (viewer, \
+                 rival) — the WINNABLE field is the one where the second pawn takes a place and \
+                 the DECIDED field the one where it takes none — it read {got:?}"
+            ));
+        }
+    }
+
+    let check = |w: &WeightTable| -> Result<(), String> {
+        let at = |f: Feature| {
+            let (e, l) = w.get(f);
+            interpolate(e, l, PROGRESS_FULL_PPM)
+        };
+        let (church, board) = (at(Feature::ChurchBonusNow), at(Feature::AssistantsOnBoard));
+        let (a, b) = (score(&winnable_extend, rules, w), score(&winnable_abandon, rules, w));
+        require(
+            a > b,
+            format!(
+                "extending a WINNABLE church race must outrank abandoning it — the second pawn \
+                 takes the 6/3 majority the first one lost to the rival's rightmost space: extend \
+                 {a}, abandon {b}, margin {} (late weights: church {church}, board {board})",
+                a - b,
+            ),
+        )?;
+        let (c, d) = (score(&decided_extend, rules, w), score(&decided_abandon, rules, w));
+        require(
+            c < d,
+            format!(
+                "the SAME extension in a race the viewer has ALREADY won must read below leaving \
+                 the assistant working — the majority is 6/3 either way, so the pawn buys nothing \
+                 and stops earning: extend {c}, abandon {d}, margin {} (late weights: church \
+                 {church}, board {board})",
+                c - d,
+            ),
+        )?;
+        // The leak clause runs LAST on purpose — see the doc's counterfactual
+        // note: the targeted mutation zeroes the term the pair separates on, so
+        // a leak clause asked first would fire on the mutation rather than on
+        // the property.
+        let separating = separating_terms(&winnable_extend, &winnable_abandon, rules, w);
+        require(
+            separating == ["church_bonus_now", "assistants_on_board"],
+            format!(
+                "the winnable pair must separate on the majority it wins and the assistant it \
+                 spends, and on nothing else — it separated on {separating:?}"
+            ),
+        )
+    };
+
+    admit(
+        SCENARIOS[15].0,
+        "church_bonus_now zeroed",
+        "extending a WINNABLE church race must outrank abandoning it",
+        check(&WeightTable::V1),
+        check(&zeroed(Feature::ChurchBonusNow)),
+    )
+}
+
+#[test]
+fn scenario_16_track_racing_winnable_church_race() {
+    run(15, "track-racing: extending a winnable church race");
+}
+
+// ---------------------------------------------------------------------------
+// 17. The customs RACE and the rival's progress  (3.5c W4 — protocol labels
+//     12 and 13, both re-aimed)
+// ---------------------------------------------------------------------------
+
+/// **RULES.** The Customs management board is seven SINGLE-OCCUPANCY spaces,
+/// taken by paying their printed imported-goods cost (1,1,2,2,3,3,4) for their
+/// printed VP (5,4,10,9,16,15,22) — so the cost-4 space is a thing exactly ONE
+/// player can ever have — and it is the second of the two track end-clocks
+/// (4/5/6 REAL pawns at 2/3/4 players). At the end the board pays a MAJORITY: 8
+/// VP to the most pawns and 4 to the second, a count tie broken by the RIGHTMOST
+/// occupied space, with the 2P dummy on space 4 competing for a place that is
+/// then consumed and awarded to nobody (finding D1; `game/scoring.rs`, rulebook
+/// p.9). The printed per-space VP is paid WHEN THE SPACE IS TAKEN, so it is
+/// already inside `victory_points`; the majority is the part that is still
+/// contested, and it is what [`Feature::CustomsBonusNow`] mirrors.
+///
+/// **SEAT.** 0, in a 2-player game, deck run out so `p = 1,000,000` — the LATE
+/// vector exactly, in all four positions (scenario 11's device again).
+///
+/// **THE CANON IT ENCODES — protocol labels 12 and 13, and BOTH were RE-AIMED
+/// away from the drafts they started as** (the owner, 2026-08-09; guidingpath's
+/// canon-batch row). Label 13, customs: **REFRAMED AS A RACE, NOT DENIAL** —
+/// *"only one player can have the 4-track"*, **the AWARENESS of the opponent's
+/// customs progress is the valuable thing**, assistants committed there
+/// handicap everything else, and most of the track is lower-value redemptions.
+/// Label 12, church denial: **NOT CANON** — *"denial as a strategy is fairly
+/// advanced and probably not the most optimal place a player can take"*, so the
+/// drafted denial scenario must NOT encode denial-beats-neutral, while *"the
+/// majority ARITHMETIC being priced correctly is a different, narrower property
+/// and stays fair game"*. This scenario carries both: the customs half as the
+/// race, and the church half as the CONTROL that says the evaluator prices the
+/// arithmetic of a place and never the denial of a space.
+///
+/// **PROPERTY**, four clauses. (a) **THE RACE, contested:** with the rival
+/// holding a customs space, committing an assistant to the track reads ABOVE
+/// leaving it working — it takes the 8 and leaves the rival the 4, where before
+/// the rival held the 8 and the viewer had nothing. (b) **THE SAME COMMITMENT,
+/// uncontested:** with the rival absent from the track and the viewer's single
+/// pawn already holding first place, a second pawn reads strictly BELOW leaving
+/// the assistant working — the majority is 8 either way and the token only stops
+/// earning. The two fields differ in EXACTLY the rival's customs progress, which
+/// is the awareness the canon calls valuable, made executable. (c) **THE CHURCH
+/// SIDE, per label 12's re-aim:** two church landings whose majority awards are
+/// IDENTICAL score EQUAL, whichever space they occupy — there is no denial term,
+/// and the suite does not grow one. (d) The contested pair separates on exactly
+/// `customs_bonus_now` and `assistants_on_board`.
+///
+/// **THE ARITHMETIC.** Inside each pair everything but two terms is identical,
+/// so the margin is `w_customs · Δ(mine − theirs) + w_board · Δ(mine)` at
+/// `p = 1,000,000`. CONTESTED: the customs relative value goes from `0 − 8` to
+/// `8 − 4`, i.e. `+12`, so under the frozen table `20·12 + 10·(−1) = 240 − 10 =
+/// +230`. UNCONTESTED: the relative value is `8 − 0` in both positions, so the
+/// margin is the board's `10·(−1) = −10`.
+///
+/// **WHY THIS IS NOT DENIAL, stated precisely, because the line matters.** The
+/// evaluator is relative — every term is `w · (mine − theirs)` — so a rival's
+/// award always enters a margin. What the canon rules out is treating denial as
+/// a GOAL: a term that paid for taking an option away from a rival independently
+/// of what it wins. Clause (c) is the executable form of "there is no such
+/// term": the viewer's own award and the rival's are both held fixed while the
+/// occupied SPACE moves, and the two positions must score identically. Clause
+/// (a)'s margin, by contrast, is entirely the arithmetic of places actually
+/// changing hands, which is exactly the *"narrower property"* the ruling leaves
+/// fair game.
+///
+/// **WHICH TABLE.** [`WeightTable::V1`], on this file's W4 rule — the claim is
+/// table-independent, and the two tables price both terms this scenario turns on
+/// identically late (`customs 20`, `board 10`), so the margins above are the
+/// same figure under the draft. Recorded at authoring: **+230 and −10 under both
+/// tables**, and the church control is an equality under any table at all.
+///
+/// **COUNTERFACTUAL — `customs_bonus_now` zeroed (§0.2's targeted mutation).**
+/// With the majority priced at nothing, committing an assistant to the track is
+/// only ever a token leaving the board, so the contested field ranks the way the
+/// uncontested one does. The leak clause runs last for scenario 16's reason.
+/// Observed failing line, verbatim:
+///
+/// ```text
+/// in a CONTESTED customs race the commitment must outrank leaving the
+/// assistant working — it takes the 8 and leaves the rival the 4, where the
+/// abandoned position had the rival on the 8 and the viewer on nothing: commit
+/// 24, abandon 34, margin -10 (late weights: customs 0, board 10)
+/// ```
+fn customs_race_and_the_rivals_progress(rules: &Rules) -> Result<(), String> {
+    /// The D1 dummy's 2P customs space.
+    const DUMMY_SPACE: u8 = 4;
+    /// The rival's space when it is contesting — right of the dummy, so at one
+    /// pawn each it wins the count tie against everything to its left.
+    const RIVAL_SPACE: u8 = 5;
+    /// The viewer's first and second landings, both right of the rival's.
+    const MINE_FIRST: u8 = 7;
+    const MINE_SECOND: u8 = 6;
+
+    let mut base = base_view(2, 26, rules);
+    base.order_deck_len = 0;
+    let area = *base.board_layout.areas.keys().next().ok_or("fixture: an empty board")?;
+
+    let dummy_index = CustomsTrack::space_to_index(DUMMY_SPACE).expect("space 4 exists");
+    if !base.customs_track.slots[dummy_index].is_some_and(|s| s.player.is_dummy()) {
+        return Err(format!(
+            "fixture: the 2P setup must place the customs dummy on space {DUMMY_SPACE} (D1)"
+        ));
+    }
+    if base.customs_track.total_assistants() != 0 {
+        return Err("fixture: a fresh 2P customs track must carry no REAL pawn".into());
+    }
+    let supply = own_row(&base).assistants.total();
+
+    // One position, on the customs side of scenario 16's constructor: the
+    // viewer's pawns on `mine`, the rival's on `theirs`, the viewer's remaining
+    // working assistants in one area, and both seats still holding the whole
+    // printed supply.
+    let position = |mine: &[u8], theirs: &[u8], on_board: u8| -> Result<PlayerView, String> {
+        let mut v = base.clone();
+        for (spaces, seat) in [(mine, 0u8), (theirs, 1u8)] {
+            for (n, space) in spaces.iter().enumerate() {
+                let index = CustomsTrack::space_to_index(*space)
+                    .ok_or_else(|| format!("fixture: space {space} is not a customs space"))?;
+                if v.customs_track.slots[index].is_some() {
+                    return Err(format!("fixture: customs space {space} is occupied twice"));
+                }
+                v.customs_track.slots[index] =
+                    Some(CustomsSlot { player: PlayerId(seat), arrival_order: n as u8 + 1 });
+            }
+        }
+        for player in v.players.iter_mut() {
+            let (pawns, board) = if player.id == PlayerId(0) {
+                (mine.len() as u8, on_board)
+            } else {
+                (theirs.len() as u8, 0)
+            };
+            player.assistants.on_customs = pawns;
+            player.assistants.on_board = BTreeMap::new();
+            if board > 0 {
+                player.assistants.on_board.insert(area, board);
+            }
+            player.assistants.in_hand = supply
+                .checked_sub(player.assistants.in_warehouse + board + pawns)
+                .ok_or("fixture: the position spends more assistants than a seat owns")?;
+        }
+        Ok(v)
+    };
+
+    let contested_abandon = position(&[], &[RIVAL_SPACE], 4)?;
+    let contested_commit = position(&[MINE_FIRST], &[RIVAL_SPACE], 3)?;
+    let uncontested_abandon = position(&[MINE_FIRST], &[], 4)?;
+    let uncontested_commit = position(&[MINE_FIRST, MINE_SECOND], &[], 3)?;
+
+    let all = [
+        ("contested-abandon", &contested_abandon),
+        ("contested-commit", &contested_commit),
+        ("uncontested-abandon", &uncontested_abandon),
+        ("uncontested-commit", &uncontested_commit),
+    ];
+    for (label, view) in all {
+        let (p, clocks) = (progress_ppm(view, rules), clock_ppm(view, rules));
+        if p != PROGRESS_FULL_PPM || clocks[0] != PROGRESS_FULL_PPM {
+            return Err(format!(
+                "fixture: the {label} position must sit at full progress on the DECK clock so the \
+                 LATE vector governs exactly and the extra pawn cannot move the stage, got p={p} \
+                 with clocks {clocks:?}"
+            ));
+        }
+        if view_is_terminal(view) {
+            return Err(format!(
+                "fixture: the {label} position must still be scored POSITIONALLY — the terminal \
+                 ladder short-circuits the weight vector this scenario is about"
+            ));
+        }
+        for player in &view.players {
+            if !player.id.is_dummy() && player.assistants.total() != supply {
+                return Err(format!(
+                    "fixture: the {label} position must leave seat {} holding the whole {supply}-\
+                     token supply (a pawn on the track left the board and arrived on \
+                     `on_customs`), it holds {}",
+                    player.id.0,
+                    player.assistants.total(),
+                ));
+            }
+        }
+    }
+
+    // The two FIELDS, read off the structure: the commitment must win a place
+    // where the rival contests and win none where the rival is absent.
+    let awards = |v: &PlayerView| -> (i64, i64) {
+        let structure = ScoreStructure::derive(v, rules);
+        let value = |seat: u8| {
+            let row = v.players.iter().find(|p| p.id == PlayerId(seat)).expect("both seats");
+            structure.value_of(row, Feature::CustomsBonusNow)
+        };
+        (value(0), value(1))
+    };
+    let built = [
+        ("contested-abandon", &contested_abandon, (0, 8)),
+        ("contested-commit", &contested_commit, (8, 4)),
+        ("uncontested-abandon", &uncontested_abandon, (8, 0)),
+        ("uncontested-commit", &uncontested_commit, (8, 0)),
+    ];
+    for (label, view, want) in built {
+        let got = awards(view);
+        if got != want {
+            return Err(format!(
+                "fixture: the {label} position's customs majority must read {want:?} for (viewer, \
+                 rival) — the CONTESTED field is the one where the commitment takes a place from \
+                 the rival and the UNCONTESTED field the one where it takes none — it read {got:?}"
+            ));
+        }
+    }
+
+    // Clause (c)'s pair — the church side of the re-aim. Both seats hold one
+    // church pawn; only the SPACE the viewer's sits on moves, and both landings
+    // are right of the rival's, so the 6/3 awards are identical by construction.
+    let church_landing = |mine: u8| -> Result<PlayerView, String> {
+        let mut v = base.clone();
+        for (faith, seat) in [(mine, 0u8), (8, 1u8)] {
+            let index = ChurchTrack::faith_to_index(faith)
+                .ok_or_else(|| format!("fixture: faith {faith} is not a church space"))?;
+            if v.church_track.slots[index].is_some() {
+                return Err(format!("fixture: faith {faith} is occupied twice"));
+            }
+            v.church_track.slots[index] =
+                Some(ChurchSlot { player: PlayerId(seat), arrival_order: seat + 1 });
+        }
+        for player in v.players.iter_mut() {
+            if !player.id.is_dummy() {
+                player.assistants.on_church = 1;
+                player.assistants.in_hand -= 1;
+            }
+        }
+        Ok(v)
+    };
+    let (blocking, neutral) = (church_landing(10)?, church_landing(9)?);
+    let church_awards = |v: &PlayerView| -> (i64, i64) {
+        let structure = ScoreStructure::derive(v, rules);
+        let value = |seat: u8| {
+            let row = v.players.iter().find(|p| p.id == PlayerId(seat)).expect("both seats");
+            structure.value_of(row, Feature::ChurchBonusNow)
+        };
+        (value(0), value(1))
+    };
+    if church_awards(&blocking) != (6, 3) || church_awards(&neutral) != (6, 3) {
+        return Err(format!(
+            "fixture: both church landings must award the viewer the 6 and the rival the 3, or \
+             clause (c) is comparing two different majorities rather than two different spaces — \
+             they read {:?} and {:?}",
+            church_awards(&blocking),
+            church_awards(&neutral),
+        ));
+    }
+
+    let check = |w: &WeightTable| -> Result<(), String> {
+        let at = |f: Feature| {
+            let (e, l) = w.get(f);
+            interpolate(e, l, PROGRESS_FULL_PPM)
+        };
+        let (customs, board) = (at(Feature::CustomsBonusNow), at(Feature::AssistantsOnBoard));
+        let (a, b) = (score(&contested_commit, rules, w), score(&contested_abandon, rules, w));
+        require(
+            a > b,
+            format!(
+                "in a CONTESTED customs race the commitment must outrank leaving the assistant \
+                 working — it takes the 8 and leaves the rival the 4, where the abandoned position \
+                 had the rival on the 8 and the viewer on nothing: commit {a}, abandon {b}, margin \
+                 {} (late weights: customs {customs}, board {board})",
+                a - b,
+            ),
+        )?;
+        let (c, d) = (score(&uncontested_commit, rules, w), score(&uncontested_abandon, rules, w));
+        require(
+            c < d,
+            format!(
+                "the SAME commitment with the rival ABSENT from the track must read below leaving \
+                 the assistant working — the majority is 8 either way, so the second pawn only \
+                 handicaps everything else: commit {c}, abandon {d}, margin {} (late weights: \
+                 customs {customs}, board {board})",
+                c - d,
+            ),
+        )?;
+        let (e, f) = (score(&blocking, rules, w), score(&neutral, rules, w));
+        require(
+            e == f,
+            format!(
+                "the church side of the re-aim: two landings with IDENTICAL majority awards must \
+                 score EQUAL — this rung prices the arithmetic of a place, never the denial of a \
+                 space: faith 10 {e}, faith 9 {f}"
+            ),
+        )?;
+        let separating = separating_terms(&contested_commit, &contested_abandon, rules, w);
+        require(
+            separating == ["customs_bonus_now", "assistants_on_board"],
+            format!(
+                "the contested pair must separate on the majority it wins and the assistant it \
+                 spends, and on nothing else — it separated on {separating:?}"
+            ),
+        )
+    };
+
+    admit(
+        SCENARIOS[16].0,
+        "customs_bonus_now zeroed",
+        "in a CONTESTED customs race the commitment must outrank leaving the assistant working",
+        check(&WeightTable::V1),
+        check(&zeroed(Feature::CustomsBonusNow)),
+    )
+}
+
+#[test]
+fn scenario_17_customs_race_and_the_rivals_progress() {
+    run(16, "customs race: the rival's progress");
+}
+
+// ---------------------------------------------------------------------------
+// 18. Achievement proximity as SELF-guidance  (3.5c W4 — protocol label 14,
+//     re-aimed)
+// ---------------------------------------------------------------------------
+
+/// **RULES.** Three Achievement cards are in play for the whole game. A card is
+/// claimed by placing an assistant on it once its printed requirement is MET,
+/// the goods are not spent, and a seat may not claim the same card twice (KB
+/// `01-rules-reference.md`, achievement categories; the gate is
+/// `can_claim_achievement`). The three goods cards in this fixture print Copper
+/// 5, Silk 6 and Tea 7. [`Feature::AchievementProgressSum`] mirrors the seat's
+/// nearness to those claims as a SUM of legs, **each leg capped at its own
+/// threshold** — capped because a seat sitting on 12 copper is no closer to the
+/// 5-copper card than one sitting on 5, and because the VP of a card already
+/// taken has landed in `victory_points` (see [`achievement_progress`]).
+///
+/// **SEAT.** 0, in a 2-player game at `p = 0` — a fresh deck and empty tracks,
+/// so the EARLY vector governs exactly.
+///
+/// **THE CANON IT ENCODES — protocol label 14, RE-AIMED.** The drafted scenario
+/// was achievement DENIAL and the owner ruled it **NOT CANON** (2026-08-09,
+/// guidingpath's canon-batch row): achievements are **AGENDA-SETTERS** — *"use
+/// them as guides to help set your agenda"*: which orders to take, where to
+/// build, whether to chase 5-power tokens — and denial *"forgoes something
+/// better"*; the anecdote attached to the ruling is a friend who wins by
+/// building his whole strategy around achieving all three. The re-aim is
+/// therefore **proximity as SELF-guidance**, and this scenario is that at the
+/// grain the SHIPPED evaluator can express it.
+///
+/// **PROPERTY**, three clauses. (a) **THE EXPRESSIBLE HALF:** at EQUAL total
+/// goods, a holding spread across LIVE legs reads above one that has overflowed
+/// a single card past its threshold — 8 points of progress against 5, for the
+/// same eight goods. (b) **THE BLIND SPOT, pinned as an EQUALITY:** two holdings
+/// with the same capped SUM but very different nearness-to-claim — four copper,
+/// one short of the Copper 5 card, against two copper and two silk, which is
+/// three and four short of two cards — score EXACTLY EQUAL. The shipped feature
+/// cannot tell them apart, and that is recorded here rather than wished away.
+/// (c) The clause-(a) pair separates on exactly `achievement_progress_sum`.
+///
+/// **THE ARITHMETIC.** Trade goods are not features (§2.2 excludes them as
+/// uninformative, R1-7) and the leftover conversions are end-scoring only, so
+/// the ONLY term either pair moves is the progress sum: clause (a)'s margin is
+/// `w_achievement(0) · (8 − 5) = 2 · 3 = +6`, and clause (b)'s is
+/// `2 · (4 − 4) = 0`.
+///
+/// **WHAT THE SHIPPED GRAIN CANNOT SAY, and the V3 re-point.** "Nearer to claim
+/// reads better at equal cost" is NOT expressible as a capped sum wherever the
+/// caps do not bite: five copper and a spread 2/2/1 are the same 5 to this
+/// feature, though one is a claim and the other is three separate errands. That
+/// is exactly what round 3 MEASURED — `achievement_race_proximity` separates
+/// **+0.054 EARLY and +0.094 MID** over the shipped progress sum in the shipped
+/// regime, the one genuine find of the round's L1 pass, recorded as the named
+/// FIRST CANDIDATE of the post-freeze V3 cycle and deliberately not admitted
+/// pre-freeze (`docs/plans/2026-08-09-phase3.5c-round3-evidence.md`). Clause (b)
+/// is the scenario's honest half: it pins what the rung does TODAY, so that the
+/// day a proximity feature lands, this is the clause that gets RE-POINTED —
+/// rewritten to an inequality in the same commit as the feature — and never
+/// deleted (the file's never-delete rule; scenario 12 carries the same
+/// instruction for the T3 filter, and it is the pattern this follows).
+///
+/// **WHICH TABLE.** [`WeightTable::V1`]. Both tables price this term at exactly
+/// `2 → 4` — no round moved it — so the claim is table-independent and rides the
+/// frozen table, sparing the freeze commit a re-point.
+///
+/// **COUNTERFACTUAL — `achievement_progress_sum` zeroed (§0.2's targeted
+/// mutation).** With the term priced at nothing the two holdings of clause (a)
+/// are indistinguishable, which is the same blindness clause (b) records — just
+/// arrived at by pricing rather than by capping. Observed failing line,
+/// verbatim:
+///
+/// ```text
+/// achievement proximity as SELF-guidance: at eight goods either way, progress
+/// on LIVE legs must outrank a holding that has overflowed one card past its
+/// printed threshold — live 0, overflow 0, margin 0 (achievement weight 0,
+/// capped progress 8 against 5)
+/// ```
+fn achievement_proximity_as_self_guidance(rules: &Rules) -> Result<(), String> {
+    let mut base = base_view(2, 27, rules);
+    // Set explicitly rather than taking the deal: three GOODS cards, so no leg
+    // reads completed orders, owned technologies or buildings and the fixture's
+    // only lever is the goods it hands the seat.
+    base.achievements = [
+        AchievementCard::new(AchievementType::Copper5),
+        AchievementCard::new(AchievementType::Silk6),
+        AchievementCard::new(AchievementType::Tea7),
+    ];
+    {
+        let me = viewer_mut(&mut base);
+        me.completed_orders.clear();
+        me.technologies.clear();
+        me.victory_points = 0;
+        me.copper = 0;
+        me.silk = 0;
+        me.tea = 0;
+        me.seafood = 0;
+    }
+    let holding = |copper: u32, silk: u32| -> PlayerView {
+        let mut v = base.clone();
+        let me = viewer_mut(&mut v);
+        me.copper = copper;
+        me.silk = silk;
+        v
+    };
+    // Eight goods either way: five copper (a claim) plus three silk against
+    // eight copper, three of which are past the Copper 5 cap and buy nothing.
+    let (live, overflow) = (holding(5, 3), holding(8, 0));
+    // Four goods either way, and the same capped sum: one copper short of a
+    // claim, against a spread that is short of two.
+    let (near, smeared) = (holding(4, 0), holding(2, 2));
+
+    let goods = |v: &PlayerView| -> u32 {
+        let me = own_row(v);
+        me.copper + me.silk + me.tea + me.seafood
+    };
+    let progress = |v: &PlayerView| viewer_value(v, rules, Feature::AchievementProgressSum);
+    for (label, a, b) in [("clause (a)", &live, &overflow), ("clause (b)", &near, &smeared)] {
+        if goods(a) != goods(b) {
+            return Err(format!(
+                "fixture: {label}'s two holdings must carry the SAME number of goods — otherwise \
+                 the richer one is simply richer and the comparison says nothing about nearness — \
+                 they carry {} and {}",
+                goods(a),
+                goods(b),
+            ));
+        }
+    }
+    if (progress(&live), progress(&overflow)) != (8, 5) {
+        return Err(format!(
+            "fixture: the LIVE holding must read 8 points of capped progress and the OVERFLOW one \
+             5 (three of its eight copper sit past the Copper 5 cap), they read {} and {}",
+            progress(&live),
+            progress(&overflow),
+        ));
+    }
+    if progress(&near) != progress(&smeared) {
+        return Err(format!(
+            "fixture: clause (b)'s two holdings must read the SAME capped progress — that equality \
+             IS the blind spot the clause records — they read {} and {}",
+            progress(&near),
+            progress(&smeared),
+        ));
+    }
+    // The nearness the shipped sum cannot see, asserted so the clause is not
+    // quietly comparing two equally-distant holdings: one is a single good from
+    // a claim, the other is three and four goods from two.
+    let short_of = |v: &PlayerView, card: AchievementType| -> i64 {
+        let (current, needed) = achievement_progress(v, own_row(v), card);
+        i64::from(needed) - i64::from(current.min(needed))
+    };
+    if short_of(&near, AchievementType::Copper5) != 1
+        || short_of(&smeared, AchievementType::Copper5) != 3
+        || short_of(&smeared, AchievementType::Silk6) != 4
+    {
+        return Err(format!(
+            "fixture: clause (b)'s NEAR holding must sit one good from the Copper 5 claim and its \
+             SMEARED twin three and four from two claims, they sit {} / {} and {}",
+            short_of(&near, AchievementType::Copper5),
+            short_of(&smeared, AchievementType::Copper5),
+            short_of(&smeared, AchievementType::Silk6),
+        ));
+    }
+    for (label, view) in [("live", &live), ("near", &near)] {
+        let p = progress_ppm(view, rules);
+        if p != 0 {
+            return Err(format!(
+                "fixture: the {label} position must sit at p=0 so the EARLY vector governs \
+                 exactly, got {p}"
+            ));
+        }
+    }
+
+    let check = |w: &WeightTable| -> Result<(), String> {
+        let (early, late) = w.get(Feature::AchievementProgressSum);
+        let weight = interpolate(early, late, 0);
+        let (a, b) = (score(&live, rules, w), score(&overflow, rules, w));
+        require(
+            a > b,
+            format!(
+                "achievement proximity as SELF-guidance: at eight goods either way, progress on \
+                 LIVE legs must outrank a holding that has overflowed one card past its printed \
+                 threshold — live {a}, overflow {b}, margin {} (achievement weight {weight}, \
+                 capped progress 8 against 5)",
+                a - b,
+            ),
+        )?;
+        let (c, d) = (score(&near, rules, w), score(&smeared, rules, w));
+        require(
+            c == d,
+            format!(
+                "the BLIND SPOT this rung still has, pinned rather than wished away: a holding one \
+                 good from a claim and one that is three and four goods from two claims carry the \
+                 same capped sum and must score EQUAL here — near {c}, smeared {d}. Re-point this \
+                 clause to an inequality in the same commit that admits a proximity feature \
+                 (round 3's `achievement_race_proximity`, +0.054 early / +0.094 mid); never \
+                 delete it"
+            ),
+        )?;
+        let separating = separating_terms(&live, &overflow, rules, w);
+        require(
+            separating == ["achievement_progress_sum"],
+            format!(
+                "the clause-(a) pair must separate on the progress sum alone — trade goods are not \
+                 features — it separated on {separating:?}"
+            ),
+        )
+    };
+
+    admit(
+        SCENARIOS[17].0,
+        "achievement_progress_sum zeroed",
+        "progress on LIVE legs must outrank a holding that has overflowed",
+        check(&WeightTable::V1),
+        check(&zeroed(Feature::AchievementProgressSum)),
+    )
+}
+
+#[test]
+fn scenario_18_achievement_proximity() {
+    run(17, "achievement proximity as self-guidance");
+}
+
+// ---------------------------------------------------------------------------
+// 19. Behind at the end trigger, keep building  (3.5c W4 — protocol label 15,
+//     INVERTED by the ruling)
+// ---------------------------------------------------------------------------
+
+/// **RULES.** End scoring is running VP PLUS the unbanked end bonuses, and the
+/// technology bonus is one of them: 10 VP to the largest total printed industry
+/// value and 5 to the second, ties broken clockwise, with the 2P setup dummy
+/// competing at industry value exactly **7.5** (finding D5, owner ruling
+/// 2026-08-08, rulebook p.9 final-scoring NOTE) — so a 2P seat needs a printed
+/// gear total of 8 to take the majority outright, and a seat owning no
+/// technology never places at all. An Order card, by contrast, pays its printed
+/// VP the moment it is completed and compounds no further; Order #3 (GB) prints
+/// `seafood 1 · copper 2 → 4 VP, 1 Yen`.
+///
+/// **SEAT.** 0, in a 2-player game, deck run out so `p = 1,000,000` — the LATE
+/// vector, i.e. the stage at which `victory_points` carries its LARGEST weight
+/// in the whole table (40). This is the hardest place to make this scenario's
+/// claim, which is why it is made here.
+///
+/// **THE CANON IT ENCODES — protocol label 15, and the ruling INVERTED the
+/// drafted scenario.** The draft was an end-trigger BRAKE: a seat behind near
+/// the end should cash what it can. The owner ruled **NO** (2026-08-09,
+/// guidingpath's canon-batch row): a behind player **KEEPS BUILDING** — *"focus
+/// on the flags from your orders and tech cards, build more orders, look for
+/// synergies, make each turn efficient"* — because scores diverge and then
+/// *"swing enormously in the final two turns on end bonuses (order flags
+/// included)"*, so being behind mid-game is not decisive. This scenario is the
+/// inverted ruling: near the end trigger and behind, the end-scoring structure
+/// outranks the printed cash.
+///
+/// **PROPERTY**, three clauses. (a) **BEHIND, LATE:** `score(the two
+/// technologies that clear the D5 dummy and take the 10/5 majority)` >
+/// `score(the same seat having banked Order #3's printed 4 VP instead)`, with
+/// the rival 20 VP ahead in both. (b) **NO BRAKE EXISTS, and that is the
+/// ruling's content:** the SAME pair with the viewer AHEAD instead of behind
+/// produces the IDENTICAL margin — the preference does not depend on the deficit
+/// at all, so there is no end-trigger brake for the deficit to arm. (c) The pair
+/// separates on exactly `victory_points` and `tech_bonus_now`.
+///
+/// **THE ARITHMETIC, and the boundary it draws.** The margin is
+/// `w_tech · 10 − w_vp · Δvp` at `p = 1,000,000`, i.e. `20·10 − 40·4 = 200 − 160
+/// = +40` under the frozen table. Read the boundary off that rather than the
+/// single number: at this stage the 10-VP majority outprices ANY printed cash
+/// below 5 VP and loses to anything above it, because a banked VP is priced at
+/// 40 and an end-scoring VP inside the technology bonus at 20. The scenario
+/// pins the side of that boundary the canon is about; it does not claim the
+/// boundary is in the right place, which is a magnitude question and therefore
+/// 3.5c's tuning lane rather than a scenario's.
+///
+/// **WHY CLAUSE (b) IS STRUCTURAL, said plainly.** Every term of this evaluator
+/// is `w · (mine − theirs)`, so a rival's running VP enters BOTH positions of a
+/// pair identically and cancels out of the margin. The deficit therefore CANNOT
+/// change this preference, whatever the table says — which is exactly the
+/// ruling ("being behind is not a reason to change plan"), and exactly why the
+/// clause is worth pinning: a future term keyed to the seat's own deficit — the
+/// brake the drafted scenario 15 assumed — would have to break this clause to
+/// exist, and would then have to answer for the canon here.
+///
+/// **FIXTURE HONESTY.** The two positions are constructed to isolate the two
+/// end-scoring shapes; they are not a claim that these are the two legal moves
+/// at some real decision point (the goods and gears they cost are different
+/// currencies, and the evaluator sees one ply). Scenario 10 states the same
+/// caveat for the same reason. The CASH position banks 4 VP beside an empty
+/// completed-order pile, which no real seat would have — deliberately, because
+/// pricing the icons and the VP together is the thing this pair is separating.
+/// Both holdings are ENGLISH technologies, so the country-set bonus is 0 on both
+/// sides (one distinct country forms no set) and the pair cannot leak into it.
+///
+/// **WHICH TABLE.** [`WeightTable::V1`], on this file's W4 rule: the two tables
+/// carry identical LATE weights for both terms (`vp 40`, `tech 20`), so the
+/// claim is table-independent and the margin is +40 under the draft too.
+///
+/// **COUNTERFACTUAL — `tech_bonus_now` zeroed (§0.2's targeted mutation).** With
+/// the majority priced at nothing, the structure is worth nothing and the printed
+/// cash wins by the whole of its weighted 4 VP. Observed failing line, verbatim:
+///
+/// ```text
+/// BEHIND at the end trigger, the engine must still outrank the cash: the two
+/// technologies that clear the D5 dummy take the 10/5 majority, where banking
+/// order 3's printed 4 VP compounds no further — build -800, cash -640, margin
+/// -160 (late weights: vp 40, tech 0)
+/// ```
+fn behind_at_the_end_trigger_keeps_building(rules: &Rules) -> Result<(), String> {
+    /// The rival's running VP in the BEHIND field, and the viewer's.
+    const RIVAL_VP: u32 = 30;
+    const MY_VP: u32 = 10;
+
+    // The cash side's magnitude is a PRINTED reward, read off the registry.
+    let cash_card = OrderCardId(3);
+    let card = rules.orders.get(cash_card).ok_or("fixture: order 3 is not in the registry")?;
+    let cash_vp = u32::from(card.rewards.victory_points);
+    if cash_vp == 0 || cash_vp >= 5 {
+        return Err(format!(
+            "fixture: order 3's printed VP must sit strictly under 5 — the boundary the doc's \
+             arithmetic draws — it prints {cash_vp}"
+        ));
+    }
+    // The build side: two ENGLISH gear-4 technologies, printed gear total 8, so
+    // the doubled 16 clears the D5 dummy's 15 and takes the majority outright.
+    let techs = techs_of_country_at_gear(rules, Country::English, 4);
+    if techs.len() < 2 {
+        return Err(format!(
+            "fixture: England must print at least two gear-4 technologies, the registry has {}",
+            techs.len(),
+        ));
+    }
+    let holding = vec![techs[0], techs[1]];
+    let industry: u32 = holding
+        .iter()
+        .filter_map(|id| rules.techs.get(*id))
+        .map(|c| u32::from(c.industry_cost))
+        .sum();
+    if 2 * industry <= 15 {
+        return Err(format!(
+            "fixture: the holding must out-industry the 2P dummy's 7.5 (D5), its printed gears \
+             total {industry}"
+        ));
+    }
+    let mut titles: Vec<&str> =
+        holding.iter().filter_map(|id| rules.techs.get(*id)).map(|c| c.name.as_str()).collect();
+    let owned = titles.len();
+    titles.sort_unstable();
+    titles.dedup();
+    if titles.len() != owned {
+        return Err(format!(
+            "fixture: a seat may own only one Technology of a NAME — this holding carries {titles:?}"
+        ));
+    }
+
+    let mut base = base_view(2, 28, rules);
+    // The deck run out: the LATE vector, and the end trigger one empty Port slot
+    // away (scenario 11's note on the conjunct `clock_ppm` drops).
+    base.order_deck_len = 0;
+    // Three GOODS cards, so neither the completed-order count nor the owned-tech
+    // count feeds an achievement leg and clause (c) stays a two-term claim.
+    base.achievements = [
+        AchievementCard::new(AchievementType::Copper5),
+        AchievementCard::new(AchievementType::Silk6),
+        AchievementCard::new(AchievementType::Tea7),
+    ];
+    {
+        let me = viewer_mut(&mut base);
+        me.completed_orders.clear();
+        me.technologies.clear();
+        me.victory_points = MY_VP;
+    }
+
+    // `rival_vp` is the ONLY thing that separates the behind field from the
+    // ahead one — clause (b)'s whole point.
+    let field = |rival_vp: u32| -> (PlayerView, PlayerView) {
+        let mut base = base.clone();
+        for player in base.players.iter_mut() {
+            if player.id == PlayerId(1) {
+                player.victory_points = rival_vp;
+            }
+        }
+        let mut cash = base.clone();
+        viewer_mut(&mut cash).victory_points += cash_vp;
+        let mut build = base.clone();
+        viewer_mut(&mut build).technologies = holding.clone();
+        (cash, build)
+    };
+    let (behind_cash, behind_build) = field(RIVAL_VP);
+    let (ahead_cash, ahead_build) = field(0);
+
+    for (label, view) in [
+        ("behind-cash", &behind_cash),
+        ("behind-build", &behind_build),
+        ("ahead-cash", &ahead_cash),
+        ("ahead-build", &ahead_build),
+    ] {
+        let (p, clocks) = (progress_ppm(view, rules), clock_ppm(view, rules));
+        if p != PROGRESS_FULL_PPM || clocks[0] != PROGRESS_FULL_PPM {
+            return Err(format!(
+                "fixture: the {label} position must sit at full progress on the DECK clock so the \
+                 LATE vector governs exactly, got p={p} with clocks {clocks:?}"
+            ));
+        }
+        if view_is_terminal(view) {
+            return Err(format!(
+                "fixture: the {label} position must still be scored POSITIONALLY — the terminal \
+                 ladder short-circuits the weight vector this scenario is about"
+            ));
+        }
+    }
+    // The premise of the whole scenario, asserted: BEHIND means behind on
+    // running VP in both positions of the field, and ahead means ahead.
+    let standing = |v: &PlayerView| -> (i64, i64) {
+        let structure = ScoreStructure::derive(v, rules);
+        (structure.base_vp[0], structure.base_vp[1])
+    };
+    for (label, view) in [("behind-cash", &behind_cash), ("behind-build", &behind_build)] {
+        let (mine, theirs) = standing(view);
+        if mine >= theirs {
+            return Err(format!(
+                "fixture: the {label} position must leave the viewer BEHIND on running VP — that \
+                 is the ruling's premise — it reads {mine} against {theirs}"
+            ));
+        }
+    }
+    for (label, view) in [("ahead-cash", &ahead_cash), ("ahead-build", &ahead_build)] {
+        let (mine, theirs) = standing(view);
+        if mine <= theirs {
+            return Err(format!(
+                "fixture: the {label} position must leave the viewer AHEAD on running VP, it reads \
+                 {mine} against {theirs}"
+            ));
+        }
+    }
+    // The two end-scoring values, read off the structure rather than assumed:
+    // the build takes the majority outright, the cash position places nowhere,
+    // and neither forms a country set.
+    let value = |v: &PlayerView, feature: Feature| viewer_value(v, rules, feature);
+    let built = [
+        ("behind-build", &behind_build, Feature::TechBonusNow, 10),
+        ("behind-cash", &behind_cash, Feature::TechBonusNow, 0),
+        ("behind-build", &behind_build, Feature::CountryBonusNow, 0),
+        ("behind-cash", &behind_cash, Feature::CountryBonusNow, 0),
+    ];
+    for (label, view, feature, want) in built {
+        let got = value(view, feature);
+        if got != want {
+            return Err(format!(
+                "fixture: {} must read {want} on the {label} position, it read {got}",
+                feature.name(),
+            ));
+        }
+    }
+
+    let check = |w: &WeightTable| -> Result<(), String> {
+        let at = |f: Feature| {
+            let (e, l) = w.get(f);
+            interpolate(e, l, PROGRESS_FULL_PPM)
+        };
+        let (vp, tech) = (at(Feature::VictoryPoints), at(Feature::TechBonusNow));
+        let (a, b) = (score(&behind_build, rules, w), score(&behind_cash, rules, w));
+        require(
+            a > b,
+            format!(
+                "BEHIND at the end trigger, the engine must still outrank the cash: the two \
+                 technologies that clear the D5 dummy take the 10/5 majority, where banking order \
+                 3's printed {cash_vp} VP compounds no further — build {a}, cash {b}, margin {} \
+                 (late weights: vp {vp}, tech {tech})",
+                a - b,
+            ),
+        )?;
+        let (c, d) = (score(&ahead_build, rules, w), score(&ahead_cash, rules, w));
+        require(
+            a - b == c - d,
+            format!(
+                "there is no END-TRIGGER BRAKE for a deficit to arm: the same pair with the viewer \
+                 AHEAD must produce the IDENTICAL margin, since every term is relative and the \
+                 rival's running VP cancels — behind {} , ahead {}",
+                a - b,
+                c - d,
+            ),
+        )?;
+        let separating = separating_terms(&behind_build, &behind_cash, rules, w);
+        require(
+            separating == ["victory_points", "tech_bonus_now"],
+            format!(
+                "the pair must separate on the banked VP and the technology majority, and on \
+                 nothing else — it separated on {separating:?}"
+            ),
+        )
+    };
+
+    admit(
+        SCENARIOS[18].0,
+        "tech_bonus_now zeroed",
+        "BEHIND at the end trigger, the engine must still outrank the cash",
+        check(&WeightTable::V1),
+        check(&zeroed(Feature::TechBonusNow)),
+    )
+}
+
+#[test]
+fn scenario_19_behind_at_the_end_trigger() {
+    run(18, "behind at the end trigger: keep building");
 }
 
 // ---------------------------------------------------------------------------
