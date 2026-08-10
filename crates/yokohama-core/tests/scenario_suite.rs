@@ -2329,40 +2329,53 @@ fn scenario_11_warehouse_decay_flattened() {
 /// Seafood 7 — two cards with the SAME printed threshold, which is what lets the
 /// two positions carry identical shipped progress.
 ///
-/// **PROPERTY**, two clauses over the CANDIDATE FEATURE FUNCTION rather than
-/// over a weight (see below for why). (i) **The ordering content:** a position
-/// holding LIVE progress toward the unclaimed card reads strictly above an
-/// otherwise-identical position holding only DEAD progress on the card this seat
-/// has already claimed — 7 against 0 — while the SHIPPED unfiltered sum reads
-/// both positions **7**, i.e. cannot tell them apart at all. (ii) **The
-/// arithmetic identity:** [`achievement_progress_postclaim_sum`] equals the
-/// shipped sum minus exactly the claimed card's CAPPED leg, on both positions
-/// (`0 = 7 − 7` on the dead one, `7 = 7 − 0` on the live one), which is what
-/// says the filter drops a leg and rewrites no other arithmetic.
+/// **PROPERTY**, three clauses since the freeze. (i) **The ordering, on the
+/// SHIPPED path:** `score(the LIVE position) > score(the DEAD position)` — a
+/// position holding live progress toward the unclaimed card outranks an
+/// otherwise-identical position holding only dead progress on the card this seat
+/// has already claimed, which before the freeze the evaluator could not do at
+/// all (it ranked them EXACTLY equal). (ii) **The ordering content, at the
+/// feature:** the same ordering over the feature values — 7 against 0 — while
+/// the PRE-FILTER arithmetic reads both positions **7**, i.e. cannot tell them
+/// apart. (iii) **The arithmetic identity:**
+/// [`achievement_progress_postclaim_sum`] equals the pre-filter sum minus
+/// exactly the claimed card's CAPPED leg, on both positions (`0 = 7 − 7` on the
+/// dead one, `7 = 7 − 0` on the live one), which is what says the filter drops a
+/// leg and rewrites no other arithmetic.
 ///
-/// Clause (i) is checked FIRST on purpose, and scenario 9's doc records the same
-/// reasoning for the same reason: the counterfactual substitutes the shipped sum
-/// for the candidate one, which breaks clause (ii) as well — so a fixture that
-/// asked the identity first would report the identity's line and the
+/// Clause (ii) is checked before (iii) on purpose, and scenario 9's doc records
+/// the same reasoning for the same reason: the counterfactual substitutes the
+/// pre-filter sum for the shipped one, which breaks (iii) as well — so a fixture
+/// that asked the identity first would report the identity's line and the
 /// counterfactual would be admitted on the wrong clause.
 ///
-/// **WHY THIS SCENARIO OWNS NO WEIGHT, and what happens at the freeze.** T3's
-/// post-claim filter is the ONE sanctioned feature change of the v2 protocol
-/// (§4.1(ii), §5's T3 row) and it lands in round 1 **additively**: the function
-/// exists, nothing calls it, `score` and `explain` still read the shipped sum,
-/// and `EVAL_IMPL_VERSION` does not move. The call-site switch and its blast
-/// radius — goldens, drift pins, the version bump, every controller const that
-/// embeds the evaluator — are the FREEZE commit's business (protocol §7's
-/// mechanics), so the switch stays one auditable event instead of a behavior
-/// change smuggled inside a re-pricing round. **This scenario re-points to
-/// `score` there:** clause (i) becomes `score(live) > score(dead)`, and the
-/// additive-only guard below (which asserts today that the shipped score ranks
-/// the two EQUAL) becomes the thing that has to be rewritten rather than
-/// deleted. The re-point is the never-delete rule working as designed, and it is
-/// written down here so the freeze commit does not have to rediscover it.
+/// **THE FREEZE RE-POINT, and what it did to this scenario.** T3's post-claim
+/// filter is the ONE sanctioned feature change of the v2 protocol (§4.1(ii),
+/// §5's T3 row). It landed in ROUND 1 **additively** — the function existed,
+/// nothing called it, `score` and `explain` still read the unfiltered sum, and
+/// `EVAL_IMPL_VERSION` did not move — and the FREEZE COMMIT switched
+/// [`Feature::AchievementProgressSum`]'s call site onto it together with its
+/// whole blast radius (goldens, drift pins, the version bump, every controller
+/// const that embeds the evaluator; protocol §7's mechanics), so the switch is
+/// one auditable event rather than a behavior change smuggled inside a
+/// re-pricing round. This scenario re-pointed with it, exactly as its round-1
+/// doc pre-committed: clause (i) is now `score(live) > score(dead)`, and the
+/// round's additive-only guard — which asserted that the shipped score ranked
+/// the two EQUAL — was REWRITTEN into that clause rather than deleted. The
+/// never-delete rule working as designed.
 ///
-/// **WHY the change at all.** The shipped sum keeps paying a seat for progress
-/// toward a card it has already taken. The cap stops that leg GROWING; it does
+/// **The counterfactual moved with it, and the reason is worth stating.** Before
+/// the freeze the mutation arm read the unfiltered sum straight off
+/// `Feature::AchievementProgressSum`; after it, that accessor IS the filter, so
+/// the pre-filter arithmetic is written out locally in the fixture (the same
+/// capped-leg sum with the filter's one `continue` removed). No weight can
+/// express this mutation — zeroing the achievement term would break clause (i)
+/// too, but it would demonstrate that the scenario tests the achievement TERM,
+/// not that it tests the FILTER — which is why the §0.2 counterfactual stays a
+/// function substitution and clause (i) rides as a fixture guard beside it.
+///
+/// **WHY the change at all.** The pre-filter sum kept paying a seat for progress
+/// toward a card it had already taken. The cap stops that leg GROWING; it does
 /// not stop it being COUNTED, and the VP the claim paid has already landed in
 /// `victory_points`, which [`Feature::VictoryPoints`] already prices — so the
 /// evaluator charges the same banked reward twice and, worse, cannot see the
@@ -2384,18 +2397,38 @@ fn scenario_11_warehouse_decay_flattened() {
 /// engine's own gate in `tests/eval_core.rs`, not against a reading of the
 /// rulebook, and exercised here by the third card in play.
 ///
-/// **COUNTERFACTUAL — the SHIPPED unfiltered sum substituted for the candidate
-/// one.** A source-shaped mutation rather than a weight one, because no weight
-/// can reach a function nothing calls: the property is evaluated twice, once
-/// through [`achievement_progress_postclaim_sum`] and once through the value
-/// `ScoreStructure` computes for [`Feature::AchievementProgressSum`], which IS
-/// the shipped arithmetic. Observed failing line, verbatim:
+/// **COUNTERFACTUAL — the PRE-FREEZE unfiltered sum substituted for the shipped
+/// filter.** A source-shaped mutation rather than a weight one (see the re-point
+/// block above for why no weight can express it): the property is evaluated
+/// twice, once through [`achievement_progress_postclaim_sum`] — which is what
+/// `ScoreStructure` now computes for [`Feature::AchievementProgressSum`] — and
+/// once through the capped-leg sum written out in the fixture, which is the
+/// arithmetic that shipped before the freeze. Observed failing line, verbatim
+/// (unchanged by the re-point except for the label and the closing clause's
+/// wording, since the fixture's numbers did not move):
 ///
 /// ```text
-/// post-claim achievement progress (the SHIPPED unfiltered sum): LIVE progress
+/// post-claim achievement progress (the PRE-FREEZE unfiltered sum): LIVE progress
 /// toward an unclaimed card must outrank DEAD progress on a card this seat has
-/// already claimed — live 7, dead 7, and the shipped feature reads both 7
+/// already claimed — live 7, dead 7, and the pre-filter arithmetic reads both 7
 /// ```
+///
+/// **THE RED-FIRST RECORD of the re-point itself** (the freeze commit's own
+/// TDD pair): with clause (i) re-pointed onto `score` and the call site NOT yet
+/// switched, this scenario failed on the guard that replaced the additive-only
+/// one, verbatim —
+///
+/// ```text
+/// the T3 filter is SHIPPED since the freeze: `score` must rank the LIVE position
+/// strictly above the DEAD one, got 2 and 2. Equality here means the feature's
+/// call site is reading the unfiltered sum again — re-point the call site, not
+/// this guard
+/// ```
+///
+/// (Both positions score **2** because the achievement term is the ONLY feature
+/// they differ on, so an unfiltered feature makes the two scores identical
+/// rather than merely close — which is exactly the blindness clause (i) now
+/// falsifies.)
 fn post_claim_achievement_progress(rules: &Rules) -> Result<(), String> {
     let mut base = base_view(2, 21, rules);
     let mut claimed = AchievementCard::new(AchievementType::Tea7);
@@ -2424,7 +2457,24 @@ fn post_claim_achievement_progress(rules: &Rules) -> Result<(), String> {
     viewer_mut(&mut live).seafood = 7;
 
     let filtered = |v: &PlayerView| achievement_progress_postclaim_sum(v, own_row(v));
-    let unfiltered = |v: &PlayerView| viewer_value(v, rules, Feature::AchievementProgressSum);
+    // THE PRE-FILTER ARITHMETIC, written out here rather than read through the
+    // feature. Before the freeze this closure WAS
+    // `viewer_value(v, rules, Feature::AchievementProgressSum)`; the freeze
+    // switched that call site onto the filtered sum, so the unfiltered sum is no
+    // longer reachable through any public accessor and the counterfactual has to
+    // state it. Same arithmetic as `achievement_progress_postclaim_sum` with its
+    // one `continue` removed — every card's leg, capped at its own requirement.
+    let unfiltered = |v: &PlayerView| -> i64 {
+        v.achievements
+            .iter()
+            .map(|card| {
+                let (current, needed) = achievement_progress(v, own_row(v), card.achievement_type);
+                i64::from(current.min(needed))
+            })
+            .sum()
+    };
+    // What the FEATURE now computes — the switched call site itself.
+    let feature = |v: &PlayerView| viewer_value(v, rules, Feature::AchievementProgressSum);
     // The claimed card's own capped leg, per position — the quantity clause (ii)
     // says the filter subtracts.
     let claimed_leg = |v: &PlayerView| -> i64 {
@@ -2433,19 +2483,13 @@ fn post_claim_achievement_progress(rules: &Rules) -> Result<(), String> {
     };
 
     // THE FIXTURE'S PREMISE, and the blindness this scenario exists to make
-    // visible: the shipped feature values the two positions identically.
+    // visible: the PRE-FILTER arithmetic values the two positions identically.
     let (u_live, u_dead) = (unfiltered(&live), unfiltered(&dead));
     if u_live != u_dead || u_dead == 0 {
-        // This guard runs FIRST, so it is also the line the FREEZE author will
-        // meet: switching Feature::AchievementProgressSum onto the filtered sum
-        // makes `unfiltered` read the filter through the call site and trips
-        // this premise before the additive-only guard below is reached (Task-F
-        // review SHOULD-1). Hence the instruction rides here too.
         return Err(format!(
-            "fixture: the shipped sum must value the two positions EQUALLY and nonzero (that \
+            "fixture: the pre-filter sum must value the two positions EQUALLY and nonzero (that \
              equality is the double-count blindness the filter removes), got {u_live} and \
-             {u_dead}. If this fired because the freeze switched the feature's call site onto \
-             the filtered sum: RE-POINT this scenario at `score` per its doc — never delete it"
+             {u_dead}"
         ));
     }
     // The claimed leg must be AT ITS CAP on the dead position, or "dead progress"
@@ -2462,19 +2506,33 @@ fn post_claim_achievement_progress(rules: &Rules) -> Result<(), String> {
     {
         return Err("fixture: card 0 must be claimed by the viewer and card 1 unclaimed".into());
     }
-    // THE ADDITIVE-ONLY GUARD (protocol §4.1(ii)): nothing calls the candidate
-    // function yet, so the shipped evaluator must rank these two positions
-    // EXACTLY equal. **AT THE FREEZE COMMIT this becomes `score(&live) >
-    // score(&dead)` and clause (i) re-points onto `score`** — see the doc.
+    // **THE FREEZE RE-POINT** — this guard is the round-1 ADDITIVE-ONLY guard,
+    // rewritten rather than deleted exactly as this scenario's doc instructed.
+    // Before the freeze it asserted that `score` ranked the two positions EQUAL
+    // (nothing called the filter); the freeze switched
+    // `Feature::AchievementProgressSum` onto the filtered sum, so what it now
+    // asserts is the property that switch BUYS: the shipped evaluator can tell a
+    // live claim from a dead one. This is clause (i) re-pointed onto `score`.
     let (s_live, s_dead) =
         (score(&live, rules, &WeightTable::V2_DRAFT), score(&dead, rules, &WeightTable::V2_DRAFT));
-    if s_live != s_dead {
+    if s_live <= s_dead {
         return Err(format!(
-            "the T3 filter is ADDITIVE in this round: `score` must still read the shipped \
-             unfiltered sum and rank these two positions equal, got {s_live} and {s_dead} — if \
-             the call site has legitimately switched, re-point this guard and clause (i) onto \
-             `score` (protocol §7's mechanics), do not delete them"
+            "the T3 filter is SHIPPED since the freeze: `score` must rank the LIVE position \
+             strictly above the DEAD one, got {s_live} and {s_dead}. Equality here means the \
+             feature's call site is reading the unfiltered sum again — re-point the call site, \
+             not this guard"
         ));
+    }
+    // And the switch is pinned at the call site itself, not only through its
+    // consequence for `score`: what the feature computes IS the filtered sum.
+    for (name, view) in [("live", &live), ("dead", &dead)] {
+        let (f, c) = (feature(view), filtered(view));
+        if f != c {
+            return Err(format!(
+                "the feature's call site must read the post-claim filtered sum on the {name} \
+                 position: feature {f} against filter {c}"
+            ));
+        }
     }
 
     let check = |sum: &dyn Fn(&PlayerView) -> i64, label: &str| -> Result<(), String> {
@@ -2484,7 +2542,7 @@ fn post_claim_achievement_progress(rules: &Rules) -> Result<(), String> {
             format!(
                 "post-claim achievement progress ({label}): LIVE progress toward an unclaimed \
                  card must outrank DEAD progress on a card this seat has already claimed — \
-                 live {l}, dead {d}, and the shipped feature reads both {u_dead}"
+                 live {l}, dead {d}, and the pre-filter arithmetic reads both {u_dead}"
             ),
         )?;
         for (name, view, value) in [("live", &live, l), ("dead", &dead, d)] {
@@ -2502,10 +2560,10 @@ fn post_claim_achievement_progress(rules: &Rules) -> Result<(), String> {
 
     admit(
         SCENARIOS[11].0,
-        "the SHIPPED unfiltered achievement_progress_sum substituted for the candidate",
+        "the PRE-FREEZE unfiltered achievement_progress_sum substituted for the shipped filter",
         "must outrank DEAD progress on a card this seat has already claimed",
-        check(&filtered, "the candidate post-claim filter"),
-        check(&unfiltered, "the SHIPPED unfiltered sum"),
+        check(&filtered, "the shipped post-claim filter"),
+        check(&unfiltered, "the PRE-FREEZE unfiltered sum"),
     )
 }
 
