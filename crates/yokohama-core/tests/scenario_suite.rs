@@ -1,4 +1,4 @@
-//! **Scenario suite** (Phase 3.3 T9; spec §6, admitted under §0.2) — thirteen
+//! **Scenario suite** (Phase 3.3 T9; spec §6, admitted under §0.2) — fifteen
 //! hand-built rules situations the evaluator rung has to get right, each one a
 //! single falsifiable property with a rules citation, a WHY line, and a
 //! demonstrated failing counterpart.
@@ -17,13 +17,30 @@
 //! unmoved draft, and turns green in the adoption commit; its counterfactual is
 //! then the round's own edit REVERTED rather than a zeroed term.
 //!
+//! **Scenarios 14 onward are the W4 GROWTH WAVE** (protocol §6's growth list,
+//! landing with the freeze package), and they are a THIRD kind of scenario
+//! again: they guard no round's edit, because the iteration loop stopped
+//! adopting at round 3. Each one instead pins a property the evaluator is
+//! required to have *by the rules* or *by owner canon*, against whichever table
+//! that property is a statement about — [`WeightTable::V1`] where the claim
+//! holds table-independently (which spares the freeze commit a re-point),
+//! [`WeightTable::V2_DRAFT`] where the claim is genuinely about the
+//! shipped-candidate's own pricing. Every W4 scenario's doc carries a **WHICH
+//! TABLE** section naming its choice and its reason, and a canon-judgment
+//! scenario additionally quotes the owner ruling it encodes and names its
+//! protocol LABEL (guidingpath's 2026-08-09 canon-batch row; protocol §6's
+//! naming amendment). **The two scenarios landed by this commit are the
+//! RULES-DERIVABLE pair and need no canon at all** — D5's dummy in the
+//! technology majority, and the deck clock's banking decision.
+//!
 //! Nothing about scenarios 1–9 changed when 10–12 landed, and no scenario's
-//! CODE or property changed when 13 landed. Scenario 10's counterfactual helper
-//! was RE-DOCUMENTED there ([`early_remix_reverted`]) because round 2 moved
-//! three of its five slots a second time, so "restore V1" and "undo round 1"
-//! stopped being the same sentence — a re-pointing of the doc, which is exactly
-//! what the never-delete rule below asks for when the evaluator legitimately
-//! moves under a standing scenario.
+//! CODE or property changed when 13 landed or when the W4 wave landed.
+//! Scenario 10's counterfactual helper was RE-DOCUMENTED at round 2
+//! ([`early_remix_reverted`]) because round 2 moved three of its five slots a
+//! second time, so "restore V1" and "undo round 1" stopped being the same
+//! sentence — a re-pointing of the doc, which is exactly what the never-delete
+//! rule below asks for when the evaluator legitimately moves under a standing
+//! scenario.
 //!
 //! # THE NEVER-DELETE RULE (map §5-3.3, spec §6)
 //!
@@ -105,43 +122,59 @@
 //!    names the source edit and quotes the line it produced at authoring, and
 //!    the shipped counterfactual is the same rejected reading computed locally.
 //!
-//! # What this suite does NOT cover (T9 review S3)
+//! # What this suite does NOT cover (T9 review S3) — and what W4 closed
 //!
 //! Spec §6's category (3), end-trigger timing, names TWO clocks: the church
 //! track filling, and the order deck running near-empty so that unbanked cards
-//! have to be converted. The delivered scenario discharges the category through
-//! the CHURCH clock alone, per T4's routing of the church sign-flip question to
-//! this suite. **Nothing here exercises the deck half.** Scenario 5 sets
-//! `order_deck_len` and scenario 9 leaves a shortened deck behind, but both use
-//! it purely as STAGE-SETTING — a stage proxy the position is dated by, never a
-//! decision about banking before the deck runs out. Recorded here so suite
-//! growth has a named target, and so no reader takes "end-trigger timing:
-//! covered" for more than the one clock it is.
+//! have to be converted. Suite v1 discharged the category through the CHURCH
+//! clock alone, per T4's routing of the church sign-flip question to this
+//! suite, and this section recorded the gap in as many words: *"nothing here
+//! exercises the deck half"* — scenario 5 set `order_deck_len` and scenario 9
+//! left a shortened deck behind, but both used it purely as STAGE-SETTING, a
+//! stage proxy the position is dated by, never a decision about banking before
+//! the deck runs out.
+//!
+//! **The W4 wave CLOSES that named target: [`deck_clock_banking_beats_holding`]
+//! is the deck half**, and the deck clock is what DATES its two positions and
+//! what its margin is a function of, rather than stage-setting a position merely
+//! sits inside. Read "decision" there in this file's own sense and no wider: it
+//! is an EVAL-ORDERING property over two constructed views (the same seat with
+//! the order banked and with it still held), not a driven pick — the one
+//! genuinely behavioural scenario here is still the null-placement trap. The gap
+//! paragraph is kept rather than deleted, because the discipline it
+//! demonstrates — name the target, do not claim the category — is the reason the
+//! gap was closable at all.
+//!
+//! What is still NOT covered, stated in the same spirit: the BUILDING clock
+//! (`clock_ppm`'s fourth component) dates no scenario here, and no scenario
+//! makes a decision about firing the 8-shophouse or 4-trading-house trigger.
+//! Scenario 5 is the nearest thing and its own doc records that it reduces to a
+//! weight ordering with no rules arithmetic exercised.
 //!
 //! # Cost, and why most scenarios drive no game
 //!
-//! Twelve of the thirteen are EVAL-ORDERING properties over constructed views
-//! (eleven over [`score`], one over a feature function): the evaluator is a pure
-//! function of a [`PlayerView`], so specifying its input directly is both the
-//! cheapest and the most precise way to state "this position must outrank that
-//! one". Only the null-placement trap is genuinely BEHAVIOURAL — "the bot does
-//! not spend the game placing nothing" is a statement about picks, not about
-//! scores — and it pays for one short driven segment (40 decisions, twice:
-//! shipped and mutated).
+//! Fourteen of the fifteen are EVAL-ORDERING properties over constructed views
+//! or states (thirteen over [`score`], one over a feature function): the
+//! evaluator is a pure function of a [`PlayerView`], so specifying its input
+//! directly is both the cheapest and the most precise way to state "this
+//! position must outrank that one". Only the null-placement trap is genuinely
+//! BEHAVIOURAL — "the bot does not spend the game placing nothing" is a
+//! statement about picks, not about scores — and it pays for one short driven
+//! segment (40 decisions, twice: shipped and mutated).
 //!
 //! The constructed views are DOCTORED: built by `observe`ing a real game and
 //! then overwriting the fields the scenario is about. Several are not states
 //! the engine could reach (a hand-set track, a truncated deck), and that is
 //! fine and stated — the evaluator's entire input is the view, so a doctored
 //! view is a complete specification of an evaluation, and the engine's own
-//! reachability is pinned by four other suites. The two scenarios whose claim
+//! reachability is pinned by four other suites. The THREE scenarios whose claim
 //! involves the ENGINE's agreement (the D1 dummy's majority, the terminal
-//! ranking) build real `GameState`s instead and cross-check against
-//! `final_result`.
+//! ranking, and W4's D5 dummy terminal) build real `GameState`s instead and
+//! cross-check against `final_result`.
 //!
 //! # Determinism
 //!
-//! Every scenario is deterministic. The twelve eval-ordering ones consume no
+//! Every scenario is deterministic. The fourteen eval-ordering ones consume no
 //! randomness at all — `score` is a pure function. The driven one fixes both
 //! agent seeds ([`DRIVEN_SEEDS`]), which fixes the per-decision sampler seed
 //! and the §3.2 tie-break draw, so the segment is byte-identical run to run;
@@ -182,15 +215,25 @@
 //! round-2 change-set commit, same machine, same method, 14 tests: the same
 //! **0.05–0.06 s** band. Scenario 13 is a constructed-view property too, and its
 //! fixture is one `base_view` plus two clones.
+//!
+//! **W4's growth re-measures the figure at every commit it makes**, and reports
+//! it as a BAND rather than a single reading, because the binary's wall is
+//! dominated by one driven scenario and sits at the timer's resolution
+//! everywhere else. **This commit — the W4 rules-derivable pair, 16 tests —
+//! measures 0.05–0.07 s**, the same band the round-2 close read. Scenario 14
+//! builds two finished `GameState`s and pays two `check_invariants` audits and
+//! two `final_result` calls, which is the most expensive non-driven fixture in
+//! the file and still invisible against the driven segment.
 
 use std::collections::BTreeMap;
 use std::sync::OnceLock;
 
 use yokohama_core::game::actions::calculate_church_faith;
 use yokohama_core::game::eval::{
-    achievement_progress, achievement_progress_postclaim_sum, clock_ppm, explain, interpolate,
-    place_signal, progress_ppm, score, terminal_standing, view_is_terminal, Feature, ScoreStructure,
-    WeightTable, HAND_CORE_RESERVE, PROGRESS_FULL_PPM, TERMINAL_MARGIN_STEP, TERMINAL_RANK_STEP,
+    achievement_progress, achievement_progress_postclaim_sum, clock_ppm, explain, initial_order_deck_len,
+    interpolate, place_signal, progress_ppm, score, terminal_standing, view_is_terminal, Feature, ScoreStructure,
+    WeightTable, HAND_CORE_RESERVE, MAX_SEATS, PROGRESS_FULL_PPM, TERMINAL_MARGIN_CLAMP,
+    TERMINAL_MARGIN_STEP, TERMINAL_RANK_STEP,
 };
 use yokohama_core::game::greedy::{GreedyAgent, DEFAULT_RETREAT_SAMPLES};
 use yokohama_core::{
@@ -208,21 +251,24 @@ use yokohama_core::{
 /// §0.2's admission — the shipped property and its targeted counterfactual.
 type ScenarioFn = fn(&Rules) -> Result<(), String>;
 
-/// **THE THIRTEEN SCENARIOS.** Indices 0–8 are suite v1 — spec §6's eight
+/// **THE FIFTEEN SCENARIOS.** Indices 0–8 are suite v1 — spec §6's eight
 /// categories plus the terminal-scoring scenario that section adds. Indices
 /// 9–11 are the Phase-3.5c round-1 growth, one per adopted change: the early
 /// re-mix, the warehouse flatten (protocol scenario 16), and the T3 post-claim
 /// filter (protocol scenario 17). Index 12 is round 2's, guarding that round's
 /// two dominant re-pricings together (the late church/five-power crossing).
+/// Indices 13–14 open the **W4 growth wave** with its RULES-DERIVABLE pair —
+/// the D5 dummy deciding a terminal, and the deck clock's banking decision
+/// (this file's own named coverage gap, closed).
 ///
 /// **These are REGISTRY INDICES, and the protocol's scenario NUMBERS are
 /// tension LABELS** — the two do not line up and are not meant to (protocol §6's
 /// 2026-08-09 naming amendment: this array is dense, the labels are not).
 ///
-/// The length is pinned by the type. Adding a fourteenth scenario is a
+/// The length is pinned by the type. Adding a sixteenth scenario is a
 /// deliberate edit to this array and its `#[test]`; removing one of these
-/// thirteen is the thing the never-delete rule forbids, and it will not compile.
-const SCENARIOS: [(&str, ScenarioFn); 13] = [
+/// fifteen is the thing the never-delete rule forbids, and it will not compile.
+const SCENARIOS: [(&str, ScenarioFn); 15] = [
     ("country-set completion", country_set_completion),
     ("order economics: fulfill now vs hold", order_economics_fulfill_now_vs_hold),
     ("end-trigger timing: the church clock", end_trigger_timing_church_clock),
@@ -236,20 +282,22 @@ const SCENARIOS: [(&str, ScenarioFn); 13] = [
     ("warehouse decay flattened", warehouse_decay_flattened),
     ("post-claim achievement progress", post_claim_achievement_progress),
     ("late bonus re-pricing: tokens over church", late_bonus_repricing_tokens_over_church),
+    ("D5 dummy decides the technology majority", d5_dummy_decides_the_technology_majority),
+    ("deck clock: bank before the deck runs out", deck_clock_banking_beats_holding),
 ];
 
-/// Spec §6's never-delete rule, plus the registry hygiene the thirteen `#[test]`s
+/// Spec §6's never-delete rule, plus the registry hygiene the fifteen `#[test]`s
 /// lean on: each test names both its index and its scenario name, so a
 /// reordering that silently re-pointed a test at a different scenario fails
 /// here and there.
 #[test]
-fn the_registry_holds_thirteen_uniquely_named_scenarios() {
+fn the_registry_holds_fifteen_uniquely_named_scenarios() {
     assert_eq!(
         SCENARIOS.len(),
-        13,
+        15,
         "spec §6's eight categories plus the terminal-scoring scenario (suite v1's nine), \
-         plus the Phase-3.5c round-1 growth's three and round 2's one; scenarios are never \
-         deleted (this file's header states the rule)",
+         plus the Phase-3.5c round-1 growth's three, round 2's one, and the W4 growth wave's \
+         rules-derivable pair; scenarios are never deleted (this file's header states the rule)",
     );
     let mut names: Vec<&str> = SCENARIOS.iter().map(|(n, _)| *n).collect();
     names.sort_unstable();
@@ -417,6 +465,56 @@ fn take_order_out_of_play(state: &mut GameState, id: OrderCardId) -> Result<(), 
     Err(format!("fixture: order {} sits in no pile — conservation was broken before this", id.0))
 }
 
+/// Take one Technology card out of whichever pile the setup left it in, so a
+/// fixture may file it under a seat's `technologies` without minting a 31st
+/// card — [`take_order_out_of_play`]'s twin, against the tech-conservation
+/// clause of [`check_invariants`] (`deck + labs + owned == 30`).
+///
+/// Techs have PER-COPY ids (30 physical cards, 20 titles), so the two error
+/// arms below name genuinely different fixture repairs: an already-owned card
+/// means two fixtures collided on one physical copy, and a card in no pile means
+/// conservation was already broken upstream.
+fn take_tech_out_of_play(state: &mut GameState, id: TechCardId) -> Result<(), String> {
+    if let Some(i) = state.tech_deck.iter().position(|c| *c == id) {
+        state.tech_deck.remove(i);
+        return Ok(());
+    }
+    let labs = std::iter::once(&mut state.lab_state.lab_a).chain(state.lab_state.lab_b.as_mut());
+    for slot in labs.flat_map(|lab| lab.slots.iter_mut()) {
+        if *slot == Some(id) {
+            *slot = None;
+            return Ok(());
+        }
+    }
+    if let Some(p) = state.players.iter().find(|p| p.technologies.contains(&id)) {
+        return Err(format!(
+            "fixture: technology {} is already owned by seat {} — two fixtures picked the same \
+             physical copy, so re-pick rather than double-filing it",
+            id.0, p.id.0,
+        ));
+    }
+    Err(format!("fixture: technology {} sits in no pile — conservation was broken before this", id.0))
+}
+
+/// Every physical Technology copy of one country printing one gear value, by
+/// id — the raw material for a holding whose INDUSTRY TOTAL is chosen and whose
+/// COUNTRY ICONS are held constant.
+///
+/// Read off the registry rather than retyped, on the same discipline as
+/// [`one_tech_per_country`]: the caller states the gear value it wants and
+/// checks how many copies came back, so a data edit is a named fixture failure
+/// rather than a silently different holding.
+fn techs_of_country_at_gear(rules: &Rules, country: Country, gear: u8) -> Vec<TechCardId> {
+    let mut ids: Vec<TechCardId> = rules
+        .techs
+        .iter()
+        .filter(|c| c.country == country && c.industry_cost == gear)
+        .map(|c| c.id)
+        .collect();
+    ids.sort_unstable_by_key(|id| id.0);
+    ids
+}
+
 /// Seat 0's view of a fresh game — the base every doctored fixture starts from.
 fn base_view(players: u8, seed: u64, rules: &Rules) -> PlayerView {
     observe(&keep_game(players, seed, rules), PlayerId(0)).expect("seat 0 is viewable")
@@ -474,6 +572,24 @@ fn one_tech_per_country(rules: &Rules, n: usize) -> Vec<TechCardId> {
 /// from its argument cannot express that).
 fn own_row(view: &PlayerView) -> &VisiblePlayer {
     view.players.iter().find(|p| p.id == view.viewer).expect("the view contains its seat")
+}
+
+/// One player's slot in a [`MAX_SEATS`]-wide seat array, or `None` — a MIRROR of
+/// `eval.rs`'s own `seat_index`, and deliberately as narrow: the dummy sentinel
+/// has no slot, and neither has any seat number outside the printed range (only
+/// a hand-built view can carry one).
+///
+/// It exists so [`terminal_value_with_dummy_gear`] — a REJECTED READING of the
+/// shipped terminal ladder — indexes seats exactly where the shipped code
+/// indexes them. A control that dropped only the dummy would be a subtly
+/// different function from the one it is the counterfactual to, and on this
+/// file's hand-built views that difference is reachable rather than theoretical.
+fn seat_slot(player: &VisiblePlayer) -> Option<usize> {
+    if player.id.is_dummy() {
+        return None;
+    }
+    let index = usize::from(player.id.0);
+    (index < MAX_SEATS).then_some(index)
 }
 
 /// The viewer's own raw value for one feature — the same number [`score`]
@@ -2728,6 +2844,684 @@ fn late_bonus_repricing_tokens_over_church(rules: &Rules) -> Result<(), String> 
 #[test]
 fn scenario_13_late_bonus_repricing() {
     run(12, "late bonus re-pricing: tokens over church");
+}
+
+// ---------------------------------------------------------------------------
+// 14. The D5 dummy decides a terminal  (3.5c W4 — rules-derivable, no canon)
+// ---------------------------------------------------------------------------
+
+/// **RULES.** Finding D5 (owner ruling 2026-08-08, rulebook p.9 final-scoring
+/// NOTE; guidingpath's 2026-08-08 decision-log rows, `SEMANTICS_REV` 5→7). At
+/// TWO players the setup dummy competes in the TECHNOLOGY majority at industry
+/// value exactly **7.5** — not merely in the church and customs majorities
+/// finding D1 covers. The majority pays 10 VP to the largest total industry
+/// value and 5 to the second, ties broken clockwise from the start player, and
+/// a place the dummy takes is CONSUMED while being awarded to nobody. The
+/// engine and the evaluator's mirror both compare DOUBLED industry values so
+/// the dummy is the integer 15 and a real seat's total is always even — a tie
+/// against the dummy is unrepresentable by construction, which is what makes
+/// "7.5" a decision procedure rather than a rounding question.
+///
+/// **SEAT.** 0, in two finished 2-player games (the only count with a dummy).
+///
+/// **ITS NUMBER IS A REGISTRY POSITION, NOT A PROTOCOL LABEL.** This is the
+/// file's fourteenth scenario — [`SCENARIOS`] index 13 — and it is **not**
+/// protocol scenario 14. The protocol's numbers are TENSION LABELS over a sparse
+/// list while this array is dense (protocol §6's 2026-08-09 naming amendment),
+/// and labels 14 and 15 name two of the CANON-ruled judgment scenarios
+/// (achievement proximity, the end-trigger brake) that land later in this wave.
+/// This one and its neighbour carry no protocol label at all: §6's growth list
+/// names them by description — "the rules-derivable two" — precisely because
+/// they need no canon.
+///
+/// **PROPERTY**, in three clauses of one claim, over two REAL `GameState`s
+/// rather than doctored views — half the claim is that the ENGINE's own final
+/// scoring agrees, and that needs `final_result`. Seat 0 holds two English
+/// technologies in both games and seat 1 holds none; the only difference is the
+/// printed gear total.
+///
+/// (a) **The fixture is the rule.** At gear **7** (doubled 14 < 15) seat 0
+///     LOSES the majority to the dummy and collects the second place, 5 VP; at
+///     gear **8** (doubled 16 > 15) it TAKES the first, 10 VP. Both legs are
+///     read off [`ScoreStructure`] and both winners are read off the engine's
+///     `final_result` before the evaluator is asked.
+/// (b) **The ordering.** `score(the gear-8 game)` > `score(the gear-7 game)`.
+///     Running VP is 20 for seat 0 and 26 for seat 1 in BOTH games, so the 5 VP
+///     the dummy's 7.5 moves is exactly what decides the winner: 30 against 26
+///     at gear 8, 25 against 26 at gear 7. Measured under the frozen table:
+///     **+1,004,000,000 against −1,001,000,000** — a win one side of the rank
+///     ladder and a loss the other, with the margin refinement inside each.
+/// (c) **The view-side standing agrees with the engine**, 1st and 2nd
+///     respectively. Checked AFTER the ordering, so a broken ranking reports
+///     the score line rather than the rank line (scenario 9's ordering rule,
+///     for scenario 9's reason).
+///
+/// **WHICH TABLE, and why it is not the draft.** [`WeightTable::V1`], because
+/// §2.6 short-circuits the weight vector entirely on a terminal view: no table
+/// reaches this property, so naming the draft would imply a dependence that
+/// does not exist. The claim is rules-derivable and table-independent, which is
+/// also why this scenario needs no canon ruling — D5 is a printed rule the owner
+/// adjudicated, not a judgment about play.
+///
+/// **WHY.** D5 landed at `SEMANTICS_REV` 7 as one of the five BGA-parity
+/// rulings, and it is the one with no scenario behind it: the suite covers D1's
+/// dummy in the CUSTOMS majority (scenario 4) and the church tie-break (scenario
+/// 7), but nothing here made the technology dummy decide anything. It is also
+/// the rule most easily lost by omission in exactly the direction that matters —
+/// a mirror that ranked only the real seats would hand seat 0 the 10 VP at gear
+/// 7 as well, i.e. would call the LOST game won, and a search valuing a terminal
+/// successor would then play toward a finish it actually loses. Scenario 9 pins
+/// that the terminal ladder ranks on FINAL totals rather than running VP; this
+/// one pins that one of those totals is computed with the dummy in the field.
+///
+/// **COUNTERFACTUAL — the technology majority recomputed with the dummy priced
+/// at gear 7 (doubled 14) instead of 7.5.** The targeted mutation here is a
+/// SOURCE-shaped one, not a weight, for scenario 9's reason: no
+/// [`WeightTable`] can reach a terminal view. Priced at 14 the gear-7 seat TIES
+/// the dummy on doubled industry and takes the tie on clockwise distance (the
+/// dummy's distance key is unreachable), so it collects the first place, its
+/// final total becomes 30, and BOTH games are wins by the same margin of 4 —
+/// the ordering collapses to equality. The shipped counterfactual is that
+/// rejected reading computed LOCALLY, from [`ScoreStructure`]'s public per-seat
+/// legs with only the technology leg re-derived, so the control cannot rot with
+/// a source edit. Observed failing line, verbatim:
+///
+/// ```text
+/// the D5 dummy priced at gear 7 instead of 7.5: gear-8 1004000000, gear-7
+/// 1004000000
+/// ```
+///
+/// **The equivalent SOURCE edit, and why it is not the shipped control.**
+/// Changing `eval.rs`'s `technology_majority` to `consider((DUMMY_SEAT, 14,
+/// i32::MAX))` produces the same reading — but it also rewrites the arithmetic
+/// clause (a) reads, so the fixture guard fires FIRST and masks the property.
+/// That is scenario 9's masking hazard met a second time, and it is exactly why
+/// the shipped counterfactual is computed locally instead of being a recorded
+/// source edit. Verified at authoring by making the edit and reverting it; what
+/// it produced was the guard, verbatim:
+///
+/// ```text
+/// fixture: the gear-8 holding must TAKE the technology majority (10) and the
+/// gear-7 holding must lose it to the dummy's 7.5 and collect the second place
+/// (5), the structure read 10 and 10
+/// ```
+///
+/// Read that as the guard doing its job in both directions: it is anti-vacuity
+/// for the fixture AND the reason the counterfactual could not be a source edit.
+fn d5_dummy_decides_the_technology_majority(rules: &Rules) -> Result<(), String> {
+    // Two English gear-4 copies and one English gear-3 copy, read off the
+    // registry. Both holdings are TWO ENGLISH technologies, so the country-set
+    // bonus (one distinct country, no set) and the owned-card count are equal
+    // across the pair and the only thing that moves is the gear total.
+    let gear4 = techs_of_country_at_gear(rules, Country::English, 4);
+    let gear3 = techs_of_country_at_gear(rules, Country::English, 3);
+    if gear4.len() < 2 || gear3.is_empty() {
+        return Err(format!(
+            "fixture: England must print at least two gear-4 technologies and one gear-3, the \
+             registry has {} and {}",
+            gear4.len(),
+            gear3.len(),
+        ));
+    }
+    let high = vec![gear4[0], gear4[1]];
+    let low = vec![gear3[0], gear4[0]];
+    let industry = |holding: &[TechCardId]| -> u32 {
+        holding.iter().filter_map(|id| rules.techs.get(*id)).map(|c| u32::from(c.industry_cost)).sum()
+    };
+    if (industry(&low), industry(&high)) != (7, 8) {
+        return Err(format!(
+            "fixture: the two holdings must print gear 7 and gear 8 — the values that straddle \
+             the D5 dummy's 7.5 — they print {} and {}",
+            industry(&low),
+            industry(&high),
+        ));
+    }
+    // The RULE the two holdings have to obey to be holdings at all: a player may
+    // own only ONE Technology of a given NAME (10 of the 20 titles circulate as
+    // two physical copies so two seats can each own one). [`techs_of_country_at_gear`]
+    // selects by country and printed gear, which are not the title — England
+    // prints exactly one gear-4 copy of each of two DIFFERENT titles today, so
+    // `high` is legal, and this guard is what would notice the day a data edit
+    // made it two copies of one title instead.
+    for holding in [&high, &low] {
+        let mut titles: Vec<&str> = holding
+            .iter()
+            .filter_map(|id| rules.techs.get(*id))
+            .map(|card| card.name.as_str())
+            .collect();
+        let owned = titles.len();
+        titles.sort_unstable();
+        titles.dedup();
+        if titles.len() != owned || owned != holding.len() {
+            return Err(format!(
+                "fixture: a seat may own only one Technology of a NAME, and this holding of {} \
+                 cards carries {} distinct titles ({titles:?}) — re-pick rather than filing an \
+                 illegal holding under a seat",
+                holding.len(),
+                titles.len(),
+            ));
+        }
+    }
+
+    let finished = |holding: &[TechCardId]| -> Result<GameState, String> {
+        let mut state = keep_game(2, 23, rules);
+        force_terminal(&mut state);
+        for p in state.players.iter_mut() {
+            // Zero every remainder leg so the two final totals are exactly the
+            // numbers this scenario is about (scenario 9's device, same reason).
+            p.money = 0;
+            p.copper = 0;
+            p.silk = 0;
+            p.tea = 0;
+            p.seafood = 0;
+            p.imported_goods = 0;
+            p.completed_orders.clear();
+            p.technologies.clear();
+            p.victory_points = if p.id.0 == 0 { 20 } else { 26 };
+        }
+        // CONSERVATION: a technology filed under a seat while still sitting in
+        // the deck or a lab slot mints a 31st card, which `check_invariants`
+        // rejects (scenario 9's order-side lesson, applied to techs).
+        for id in holding {
+            take_tech_out_of_play(&mut state, *id)?;
+        }
+        state.players[0].technologies = holding.to_vec();
+        engine_valid(&state, rules, &format!("terminal 2P game, seat 0 at gear {}", industry(holding)))?;
+        Ok(state)
+    };
+    let (gear8, gear7) = (finished(&high)?, finished(&low)?);
+
+    // The ENGINE's own verdict, before the evaluator is asked: the gear-8 game
+    // is seat 0's and the gear-7 game is seat 1's.
+    for (label, state, winner) in [("gear-8", &gear8, 0u8), ("gear-7", &gear7, 1)] {
+        let result = final_result(state, rules);
+        if result.winner != PlayerId(winner) {
+            return Err(format!(
+                "fixture: the engine must call seat {winner} the winner of the '{label}' game, \
+                 it called seat {}",
+                result.winner.0,
+            ));
+        }
+    }
+
+    let view = |s: &GameState| observe(s, PlayerId(0)).expect("seat 0 is viewable");
+    let (gear8_view, gear7_view) = (view(&gear8), view(&gear7));
+    if !view_is_terminal(&gear8_view) || !view_is_terminal(&gear7_view) {
+        return Err("fixture: both views must be finished games".into());
+    }
+    // Clause (a): the 10/5 split, and the totals it produces, read off the
+    // structure rather than assumed from the doctoring. This is the guard the
+    // equivalent source edit would trip first — see the doc.
+    let legs = |v: &PlayerView| -> (i64, i64, i64) {
+        let s = ScoreStructure::derive(v, rules);
+        (s.tech[0], s.final_total(0), s.final_total(1))
+    };
+    let (gear8_tech, gear8_mine, gear8_theirs) = legs(&gear8_view);
+    let (gear7_tech, gear7_mine, gear7_theirs) = legs(&gear7_view);
+    if (gear8_tech, gear7_tech) != (10, 5) {
+        return Err(format!(
+            "fixture: the gear-8 holding must TAKE the technology majority (10) and the gear-7 \
+             holding must lose it to the dummy's 7.5 and collect the second place (5), the \
+             structure read {gear8_tech} and {gear7_tech}"
+        ));
+    }
+    if !(gear8_mine > gear8_theirs && gear7_mine < gear7_theirs) {
+        return Err(format!(
+            "fixture: the 5 VP the dummy moves must decide the winner — gear-8 {gear8_mine} \
+             against {gear8_theirs} and gear-7 {gear7_mine} against {gear7_theirs}"
+        ));
+    }
+
+    let standing = |v: &PlayerView| terminal_standing(v, rules).expect("a terminal view stands");
+    let shipped = (|| -> Result<(), String> {
+        let (a, b) =
+            (score(&gear8_view, rules, &WeightTable::V1), score(&gear7_view, rules, &WeightTable::V1));
+        require(
+            a > b,
+            format!(
+                "a seat at printed gear 8 TAKES the technology majority over the D5 dummy's 7.5 \
+                 (10 VP, final {gear8_mine} against {gear8_theirs}) and one at gear 7 loses it \
+                 (5 VP, final {gear7_mine} against {gear7_theirs}): gear-8 {a}, gear-7 {b}"
+            ),
+        )?;
+        let (won_rank, lost_rank) = (standing(&gear8_view).rank, standing(&gear7_view).rank);
+        require(
+            (won_rank, lost_rank) == (1, 2),
+            format!(
+                "the view-side standing must place the viewer 1st in the gear-8 game and 2nd in \
+                 the gear-7 game, got {won_rank} and {lost_rank}"
+            ),
+        )
+    })();
+
+    // The rejected reading, computed locally: the same terminal ladder with the
+    // technology leg re-derived against a dummy priced at gear 7.
+    let mutated = {
+        let (a, b) =
+            (terminal_value_with_dummy_gear(&gear8_view, rules, 14), terminal_value_with_dummy_gear(&gear7_view, rules, 14));
+        require(a > b, format!("the D5 dummy priced at gear 7 instead of 7.5: gear-8 {a}, gear-7 {b}"))
+    };
+
+    admit(
+        SCENARIOS[13].0,
+        "the technology majority recomputed with the dummy at gear 7 (doubled 14) instead of 7.5",
+        "the D5 dummy priced at gear 7 instead of 7.5",
+        shipped,
+        mutated,
+    )
+}
+
+/// §2.6's terminal ladder, recomputed with the 2-player technology dummy priced
+/// at `dummy_doubled` instead of the shipped 15 — the rejected reading scenario
+/// 14's counterfactual runs.
+///
+/// Everything except the technology leg comes from the shipped
+/// [`ScoreStructure`] (its per-seat legs are public), so the mutation really is
+/// the ONE number the doc names and not a second implementation of end scoring.
+/// The ranking key and the ladder magnitudes are the shipped ones
+/// ([`TERMINAL_RANK_STEP`], [`TERMINAL_MARGIN_STEP`],
+/// [`TERMINAL_MARGIN_CLAMP`], [`place_signal`]).
+///
+/// **Seat indexing narrows exactly as the shipped mirrors narrow.** `eval.rs`'s
+/// `seat_index` drops the dummy sentinel AND any seat number outside
+/// `0..MAX_SEATS`; [`seat_slot`] below is that predicate, and every index into a
+/// seat-wide array here goes through it — a control that indexed on
+/// `is_dummy()` alone would be a slightly DIFFERENT function from the one it is
+/// the rejected reading of, on exactly the hand-built views this file makes.
+fn terminal_value_with_dummy_gear(view: &PlayerView, rules: &Rules, dummy_doubled: u32) -> i64 {
+    let structure = ScoreStructure::derive(view, rules);
+    let seats = i32::from(view.config.player_count);
+    let distance = |p: PlayerId| {
+        (i32::from(p.0) + seats - i32::from(view.config.start_player.0)).rem_euclid(seats)
+    };
+
+    // (seat or None for the dummy, DOUBLED industry, clockwise distance).
+    let mut field: Vec<(Option<usize>, u32, i32)> = Vec::new();
+    for player in &view.players {
+        let Some(seat) = seat_slot(player) else { continue };
+        let gears: u32 = player
+            .technologies
+            .iter()
+            .filter_map(|id| rules.techs.get(*id))
+            .map(|card| u32::from(card.industry_cost))
+            .sum();
+        // A seat owning no technology never places — the shipped rule.
+        if gears == 0 {
+            continue;
+        }
+        field.push((Some(seat), 2 * gears, distance(player.id)));
+    }
+    if view.config.player_count == 2 {
+        field.push((None, dummy_doubled, i32::MAX));
+    }
+    field.sort_by(|a, b| b.1.cmp(&a.1).then(a.2.cmp(&b.2)));
+
+    let mut tech = [0i64; MAX_SEATS];
+    for (place, vp) in [(0usize, 10i64), (1usize, 5i64)] {
+        if let Some((Some(seat), _, _)) = field.get(place).copied() {
+            tech[seat] += vp;
+        }
+    }
+    let total = |seat: usize| structure.final_total(seat) - structure.tech[seat] + tech[seat];
+
+    let mine = view
+        .players
+        .iter()
+        .find(|p| p.id == view.viewer)
+        .and_then(seat_slot)
+        .unwrap_or(0);
+    let my_total = total(mine);
+    let mut rank = 1u8;
+    let mut best_other: Option<i64> = None;
+    for player in &view.players {
+        let Some(seat) = seat_slot(player) else { continue };
+        if seat == mine {
+            continue;
+        }
+        let theirs = total(seat);
+        best_other = Some(best_other.map_or(theirs, |b: i64| b.max(theirs)));
+        if theirs > my_total
+            || (theirs == my_total && distance(player.id) < distance(view.viewer))
+        {
+            rank += 1;
+        }
+    }
+    let margin = (my_total - best_other.unwrap_or(my_total))
+        .clamp(-TERMINAL_MARGIN_CLAMP, TERMINAL_MARGIN_CLAMP);
+    TERMINAL_RANK_STEP * place_signal(rank) + TERMINAL_MARGIN_STEP * margin
+}
+
+#[test]
+fn scenario_14_d5_dummy_technology_majority() {
+    run(13, "D5 dummy decides the technology majority");
+}
+
+// ---------------------------------------------------------------------------
+// 15. The deck clock's banking decision  (3.5c W4 — the file's named gap)
+// ---------------------------------------------------------------------------
+
+/// [`WeightTable::V1`] with the `victory_points` pair FLATTENED to its EARLY
+/// value — the stage dependence of the one term scenario 15's margin turns on,
+/// removed, and nothing else touched.
+///
+/// §0.2's targeted mutation for scenario 15, and it is deliberately NOT
+/// "victory_points zeroed" (scenario 2's mutation, which would prove only that
+/// printed VP is worth something — a claim scenario 2 already carries, on a
+/// fixture of very nearly this shape). This scenario's claim is about the DECK
+/// CLOCK: banking gets BETTER as the deck runs out, and it does so because the
+/// term paying for the conversion is the one that RISES with the stage. So the
+/// mutation removes the LATENESS from `victory_points` rather than the term —
+/// held at its early 10, a banked VP is priced the same at a full deck as at an
+/// empty one, and the margin stops growing with the clock.
+fn victory_points_flattened_to_early() -> WeightTable {
+    let mut w = WeightTable::V1;
+    let (early, _) = WeightTable::V1.get(Feature::VictoryPoints);
+    w.set(Feature::VictoryPoints, early, early);
+    w
+}
+
+/// **RULES.** One of the end-game triggers is the order DECK running out with
+/// an empty Port slot (`game/end_game.rs`; [`clock_ppm`]'s first component is
+/// its clock, which deliberately drops the port conjunct). An Order card still
+/// in a player's hand at the end scores NOTHING and its country icon counts for
+/// nothing — only a COMPLETED order pays its printed rewards and carries an icon
+/// into a country set. Order #14 (DE) prints `copper 1 · silk 2 · tea 2 → 6 VP,
+/// 2 Yen` and nothing else, so fulfilling it is exactly a goods-for-VP
+/// conversion with no other board effect. Achievement cards, by contrast, reward
+/// HOLDING goods (Copper 5 / Silk 6 / Tea 7 — KB `01-rules-reference.md`).
+///
+/// **SEAT.** 0, in a 2-player game with **one card left in the order deck** —
+/// the deck clock at 900,000 ppm, and asserted to be the clock that dates the
+/// position (no track carries a real pawn and nobody has built).
+///
+/// **ITS NUMBER IS A REGISTRY POSITION, NOT A PROTOCOL LABEL.** This is the
+/// file's fifteenth scenario — [`SCENARIOS`] index 14 — and it is **not**
+/// protocol scenario 15, which names the END-TRIGGER BRAKE the owner ruled on
+/// (and inverted) and which lands later in this wave as its own canon-judgment
+/// scenario. The protocol's numbers are tension LABELS over a sparse list while
+/// this array is dense (protocol §6's 2026-08-09 naming amendment); this
+/// scenario is one of §6's "rules-derivable two" and carries no label.
+///
+/// **WHICH TABLE, and why it is not the draft.** [`WeightTable::V1`], on this
+/// file's rule for W4 scenarios: the claim is TABLE-INDEPENDENT — both tables
+/// price a banked VP at 40 late and both grow it with the stage, which is the
+/// whole of what clause (c) asserts — so it rides the frozen table and the
+/// freeze commit has one fewer scenario to re-point. **Recorded at authoring,
+/// NOT asserted:** under [`WeightTable::V2_DRAFT`] the same pair reads **+202**
+/// with one card left against **−3** at a full deck, i.e. the draft's round-1
+/// early-VP re-pricing makes the early half of the contrast a preference for
+/// HOLDING; under V1 the early half still prefers banking (+53). The GROWTH is
+/// the property both tables share, and the growth is what is pinned.
+///
+/// **PROPERTY**, three clauses. (a) The two positions separate on EXACTLY
+/// `victory_points`, `achievement_progress_sum` and `hand_size` — the fixture's
+/// own leak check, and what makes the rest a statement about the conversion
+/// rather than about whatever else the doctoring moved. (b) `score(the order
+/// BANKED)` > `score(the order still HELD)` with one card left. (c) **THE DECK
+/// CLOCK'S OWN CONTENT:** that margin is strictly LARGER than the one the same
+/// pair reads with a FULL deck — the closer the deck is to running out, the
+/// better banking gets. Measured under the frozen table: **+212 against +53**.
+///
+/// **THE ARITHMETIC, and why the deck clock is the subject.** Both positions
+/// share one base view, so the margin is `Σ w(p) · (v_banked − v_held)` over the
+/// three separating terms: `vp +6` (the card's printed reward),
+/// `achievement_progress_sum −5` (every one of the five goods the order costs
+/// was a point of progress, all three legs sitting strictly below their caps),
+/// `hand_size −1` (the commitment left the hand). At the deck-dated
+/// `p = 900,000` the interpolated weights are `vp 37`, `achievement 3`,
+/// `hand_size −5`, so the margin is
+/// `37·6 + 3·(−5) + (−5)·(−1) = 222 − 15 + 5 = +212`; with a FULL deck (`p = 0`)
+/// they are `vp 10`, `achievement 2`, `hand_size −3` and it is
+/// `10·6 + 2·(−5) + (−3)·(−1) = 60 − 10 + 3 = +53`. Both read exactly.
+///
+/// **WHY THE GROWTH IS THE RIGHT CLAUSE, and not the ordering alone.** Under the
+/// frozen table banking this order beats holding it at EVERY stage, so an
+/// ordering-only property here would restate scenario 2 with a shorter deck and
+/// pin nothing about the clock. What is distinctive is the DERIVATIVE: the same
+/// conversion is worth four times as much one card from the end as it is at a
+/// full deck, and the reason is the rules content — a held order is worth
+/// nothing at all when the game stops, so the nearer the deck is to out, the
+/// less an unfulfilled commitment can ever be worth. That is the same fact
+/// `hand_size`'s measured negative sign reports from the corpus side (R1-7,
+/// 0.4745 → 0.3753), read from the decision side.
+///
+/// **WHY.** This file's header recorded, from the T9 review onward, that spec
+/// §6's end-trigger category names two clocks and that *"nothing here exercises
+/// the deck half"*. This is the deck half: the position is DATED by the deck (a
+/// fixture guard, not a hope) and the margin is a function of it. It is an
+/// eval-ORDERING property over two constructed views, like twelve of its
+/// neighbours — the header says so where it retires the gap, and "decision" here
+/// means the ranking of two positions, never a driven pick.
+///
+/// **FIXTURE HONESTY — the goods sit OFF the threshold corner, deliberately.**
+/// The seat holds 3 copper / 3 silk / 3 tea against cards printing 5 / 6 / 7, so
+/// every leg is strictly below its cap and the five goods the order costs are
+/// five points of progress given up whichever way the cap would have rounded.
+/// An earlier draft of this fixture sat the seat exactly AT all three thresholds
+/// (5/6/7); the margins are identical either way, and the corner was moved off
+/// because sitting at three simultaneous claim thresholds is precisely the shape
+/// round 3 identified the shipped progress SUM as blind to — the
+/// `achievement_race_proximity` finding (+0.054 early / +0.094 mid,
+/// `docs/plans/2026-08-09-phase3.5c-round3-evidence.md`), which is the named
+/// first candidate of the post-freeze V3 cycle. A required suite property should
+/// not be resting on the one corner a future feature is chartered to re-price.
+///
+/// **What it does NOT claim.** Not that fulfilling is right at any particular
+/// real decision point — the goods are always doing something else, and the
+/// evaluator sees one ply. What is pinned is that with the deck one card from
+/// out, this rung prefers the banked position, and prefers it MORE than it would
+/// have with the deck full.
+///
+/// **COUNTERFACTUAL — the `victory_points` pair flattened to its early value
+/// (10/10) ([`victory_points_flattened_to_early`]).** With the term's stage
+/// dependence gone the deck clock buys the conversion nothing: the late margin
+/// falls to +50 while the full-deck margin is unmoved at +53 — so banking still
+/// beats holding (clause (b) survives, as it must: the mutation does not touch
+/// whether a VP is worth having) and the GROWTH clause, the one this scenario is
+/// about, inverts. Observed failing line, verbatim:
+///
+/// ```text
+/// the deck clock must make banking BETTER, not merely acceptable: with ONE card
+/// left the margin is 50 and with a FULL deck the same pair reads 53 (p=900000,
+/// deck-dated weights vp 10, achievement 3, hand_size -5)
+/// ```
+///
+/// Both figures are what the arithmetic above predicts once `vp` stops moving:
+/// `10·6 + 3·(−5) + (−5)·(−1) = +50` late against the unchanged `+53` early.
+/// That the EARLY number does not move is not a coincidence worth hiding — the
+/// flatten sets `vp` to the value it already had there, so the full-deck half of
+/// the contrast is by construction the same number in both runs. It is the
+/// deck-dated half that moves, +212 → +50, which is exactly the claim.
+fn deck_clock_banking_beats_holding(rules: &Rules) -> Result<(), String> {
+    // The card is named by its printed corner index and every number below is
+    // read off the registry rather than retyped.
+    let id = OrderCardId(14);
+    let card = rules.orders.get(id).ok_or("fixture: order 14 is not in the registry")?;
+    let (req, rewards) = (card.requirements, card.rewards);
+    if req.copper == 0 || req.silk == 0 || req.tea == 0 || req.seafood != 0 {
+        return Err(format!(
+            "fixture: order 14 must cost copper, silk and tea and no seafood (three types, one \
+             per achievement card in play), it costs {req:?}"
+        ));
+    }
+    // A pure goods-for-VP conversion: any other printed reward would move a
+    // fourth term and break the leak clause for a reason that has nothing to do
+    // with the deck.
+    if rewards.victory_points == 0
+        || (rewards.imported_goods, rewards.warehouse_tokens, rewards.any_trade_good) != (0, 0, 0)
+        || (rewards.copper, rewards.silk, rewards.tea, rewards.seafood) != (0, 0, 0, 0)
+        || rewards.movement != 0
+    {
+        return Err(format!(
+            "fixture: order 14 must pay VP (and Yen, which is not a feature) and nothing else — \
+             its printed rewards are {rewards:?}"
+        ));
+    }
+
+    let mut base = base_view(2, 24, rules);
+    // ONE card left. The deck clock is then 900,000 ppm and, with no pawn on
+    // either track and nothing built, it is the clock that dates the position.
+    base.order_deck_len = 1;
+    // Set explicitly rather than taking the deal: these three are the cards the
+    // order's three goods types feed. The holding sits STRICTLY BELOW all three
+    // printed thresholds (3 against 5 / 6 / 7) — see the doc's fixture-honesty
+    // note for why the threshold corner is deliberately avoided — so every good
+    // the order spends is a point of progress given up with no cap in the way.
+    base.achievements = [
+        AchievementCard::new(AchievementType::Copper5),
+        AchievementCard::new(AchievementType::Silk6),
+        AchievementCard::new(AchievementType::Tea7),
+    ];
+    {
+        let me = viewer_mut(&mut base);
+        me.completed_orders.clear();
+        me.technologies.clear();
+        me.victory_points = 0;
+        me.copper = 3;
+        me.silk = 3;
+        me.tea = 3;
+        me.seafood = 0;
+        me.hand = vec![HandCard::Known(id)];
+    }
+
+    let held = base.clone();
+    let mut banked = base.clone();
+    {
+        let me = viewer_mut(&mut banked);
+        me.hand.clear();
+        me.completed_orders = vec![id];
+        me.victory_points += u32::from(rewards.victory_points);
+        me.money += u32::from(rewards.money);
+        me.copper -= u32::from(req.copper);
+        me.silk -= u32::from(req.silk);
+        me.tea -= u32::from(req.tea);
+    }
+    // The same pair with a FULL deck — clause (c)'s comparator.
+    // `initial_order_deck_len` is derived from the registry, so restoring the
+    // view's deck to it is what puts p back at 0.
+    let with_full_deck = |v: &PlayerView| -> PlayerView {
+        let mut v = v.clone();
+        v.order_deck_len = initial_order_deck_len(&v, rules).unwrap_or(0);
+        v
+    };
+    let (held_early, banked_early) = (with_full_deck(&held), with_full_deck(&banked));
+
+    // THE STAGE IS THE SCENARIO'S SUBJECT, so it is asserted rather than
+    // assumed: the DECK clock must be the maximum, and the other three must be
+    // strictly behind it, or the position is dated by something else and the
+    // scenario is not about the deck at all.
+    let clocks = clock_ppm(&banked, rules);
+    let p = progress_ppm(&banked, rules);
+    if p != 900_000 || clocks[0] != p || clocks[1..].iter().any(|c| *c >= p) {
+        return Err(format!(
+            "fixture: one card left in a 2P deck must date the position at 900000 ppm on the \
+             DECK clock alone, got p={p} with clocks {clocks:?}"
+        ));
+    }
+    if progress_ppm(&held, rules) != p {
+        return Err("fixture: banking must not move the stage (the deck length is the same in \
+                    both positions — only the hand and the piles differ)"
+            .into());
+    }
+    if progress_ppm(&banked_early, rules) != 0 || progress_ppm(&held_early, rules) != 0 {
+        return Err("fixture: clause (c)'s full-deck comparator must sit at p=0".into());
+    }
+    for (label, view) in
+        [("banked", &banked), ("held", &held), ("banked-full-deck", &banked_early)]
+    {
+        if view_is_terminal(view) {
+            return Err(format!(
+                "fixture: the {label} position must still be scored POSITIONALLY — a near-empty \
+                 deck is not a finished game, and the terminal ladder short-circuits the weight \
+                 vector this scenario is about"
+            ));
+        }
+    }
+    // Anti-vacuity: the conversion must actually COST achievement progress, or
+    // the scenario is a plain "more VP is better" restatement.
+    let progress = |v: &PlayerView| viewer_value(v, rules, Feature::AchievementProgressSum);
+    let (held_progress, banked_progress) = (progress(&held), progress(&banked));
+    if held_progress - banked_progress != i64::from(req.total()) {
+        return Err(format!(
+            "fixture: every one of the order's {} goods must be a point of achievement progress \
+             given up, progress went {held_progress} -> {banked_progress}",
+            req.total(),
+        ));
+    }
+    // OFF THE THRESHOLD CORNER, asserted rather than described (the doc's
+    // fixture-honesty note): every leg must sit strictly UNDER its printed
+    // requirement in the richer of the two positions, so no cap is doing any of
+    // the arithmetic above and the fixture is not resting on the simultaneous
+    // triple-claim corner the V3 proximity candidate is chartered to re-price.
+    for card in &held.achievements {
+        let (current, needed) = achievement_progress(&held, own_row(&held), card.achievement_type);
+        if current >= needed {
+            return Err(format!(
+                "fixture: every achievement leg must sit strictly below its threshold on the \
+                 HELD position, {:?} reads {current} of {needed}",
+                card.achievement_type,
+            ));
+        }
+    }
+
+    let check = |w: &WeightTable| -> Result<(), String> {
+        let separating = separating_terms(&banked, &held, rules, w);
+        require(
+            separating == ["victory_points", "achievement_progress_sum", "hand_size"],
+            format!(
+                "the two positions must separate on the printed VP, the achievement progress the \
+                 goods were feeding, and the commitment that left the hand — they separated on \
+                 {separating:?}"
+            ),
+        )?;
+        let (a, b) = (score(&banked, rules, w), score(&held, rules, w));
+        let early_margin = score(&banked_early, rules, w) - score(&held_early, rules, w);
+        let at = |f: Feature| {
+            let (e, l) = w.get(f);
+            interpolate(e, l, p)
+        };
+        require(
+            a > b,
+            format!(
+                "with ONE card left in the order deck, banking the completable order must beat \
+                 holding it: banked {a}, held {b}, margin {} (p={p}, weights vp {}, achievement \
+                 {}, hand_size {})",
+                a - b,
+                at(Feature::VictoryPoints),
+                at(Feature::AchievementProgressSum),
+                at(Feature::HandSize),
+            ),
+        )?;
+        // THE DECK CLOCK'S OWN CONTENT (clause (c)): the ordering above holds at
+        // every stage under the frozen table, so what makes this the DECK
+        // scenario rather than a restatement of scenario 2 is that the margin
+        // GROWS as the deck runs out.
+        require(
+            a - b > early_margin,
+            format!(
+                "the deck clock must make banking BETTER, not merely acceptable: with ONE card \
+                 left the margin is {} and with a FULL deck the same pair reads {early_margin} \
+                 (p={p}, deck-dated weights vp {}, achievement {}, hand_size {})",
+                a - b,
+                at(Feature::VictoryPoints),
+                at(Feature::AchievementProgressSum),
+                at(Feature::HandSize),
+            ),
+        )
+    };
+
+    admit(
+        SCENARIOS[14].0,
+        "the victory_points pair flattened to its early value (10/10)",
+        "the deck clock must make banking BETTER",
+        check(&WeightTable::V1),
+        check(&victory_points_flattened_to_early()),
+    )
+}
+
+#[test]
+fn scenario_15_deck_clock_banking() {
+    run(14, "deck clock: bank before the deck runs out");
 }
 
 // ---------------------------------------------------------------------------
