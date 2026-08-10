@@ -14,6 +14,30 @@
 //!     --rung lookahead --units 200 --master 0x3EE753CE7F4052C4
 //! ```
 //!
+//! # AFTER THE FREEZE (2026-08-10)
+//!
+//! The iteration loop is closed and `WeightTable::V2_DRAFT` is now an ALIAS of
+//! `WeightTable::V2`, the table that ships — so this binary still runs a REAL
+//! cell (candidate `V2` against incumbent `V1`, two different tables) rather
+//! than the null one an un-moved draft would give, and the cell it runs is
+//! exactly the freeze's **criteria 1–2**:
+//!
+//! ```text
+//! cargo run --release -p yokohama-core --example eval_screen_round -- \
+//!     --master 0xF524FFB9D041DCAE
+//! ```
+//!
+//! **What that command reproduces, and what it does NOT.** Criteria 1–2 were run
+//! PRE-COMMIT (freeze pre-registration §2), when nothing called T3's post-claim
+//! filter. Re-running the command now measures the same two TABLES with the
+//! filter active on BOTH arms, and prints `eval_impl=3` where the recorded
+//! blocks print 2 — so it is a different measurement, not a reproduction, and
+//! the recorded criteria figures (lookahead θ̂ 0.6775 [0.6275, 0.7250] above the
+//! null; greedy θ̂ 0.4825 [0.4325, 0.5300] spanning it) belong to the pre-commit
+//! tree. The spelling `V2_DRAFT` is deliberately left in the code and in the
+//! printed label so the ROUND blocks in the evidence artifacts keep reading
+//! against the same identifier they were produced under.
+//!
 //! # THERE IS NO TABLE ARGUMENT, AND THAT IS THE DESIGN
 //!
 //! The candidate is `V2_DRAFT` and the incumbent is `V1`, both hardcoded, as is

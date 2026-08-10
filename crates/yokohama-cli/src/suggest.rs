@@ -482,14 +482,20 @@ fn render_suggestion_within(
     //
     // **`evaluator impl {}` is `EVAL_IMPL_VERSION`, and it used to read
     // `eval v{}`, which was the wrong words for the right number** (T11). The
-    // rung on the same line is `lookahead-v1` and the weights it runs are the
-    // frozen `WeightTable::V1`, so a header reading `lookahead-v1 … eval v2`
-    // invited exactly one reading — that some newer evaluator had replaced the
-    // v1 everything else names — and that reading is false. `2` is the
-    // evaluator MODULE's implementation revision (the T4 freeze bumped it
-    // without moving a single weight), which is what a reader needs to know two
-    // suggestions are comparable. Saying "impl" says so; the weight table's own
-    // identity is a 64-bit digest and belongs in provenance, not on screen.
+    // rung on the same line is `lookahead-v1`, so a header reading
+    // `lookahead-v1 … eval v2` invited exactly one reading — that some newer
+    // evaluator had replaced the v1 everything else names — and that reading was
+    // false. The number is the evaluator MODULE's implementation revision, which
+    // is what a reader needs to know two suggestions are comparable. Saying
+    // "impl" says so; the weight table's own identity is a 64-bit digest and
+    // belongs in provenance, not on screen.
+    //
+    // Since the 2026-08-10 v2 freeze it reads **3**, and the weights this rung
+    // runs are `WeightTable::V2` — so the guide's §5 prose now has to keep TWO
+    // numbers apart (the weight table's `v2` and the module's `impl 3`) where
+    // before it only had to explain one. It does; the captured screen and that
+    // paragraph move together, and `guide_sync` fails if this line drifts from
+    // either format.
     body.painted_head(
         Tone::Player(color),
         &format!("Seat {} ({})", s.seat.0, render::color_name(color)),

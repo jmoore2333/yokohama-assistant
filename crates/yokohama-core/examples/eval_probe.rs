@@ -102,7 +102,7 @@ use yokohama_core::{
 const USAGE: &str = "\
 usage: eval_probe <subcommand> [options]
 
-  run <players> <games> [--contestant <name>] [--weights v1|pre-freeze]
+  run <players> <games> [--contestant <name>] [--weights v1|v2|pre-freeze]
                         [--master <u64> | --os-entropy]
                         [--invariants | --no-invariants]
                         [--bootstrap <B>] [--blocks <list>]
@@ -117,13 +117,16 @@ usage: eval_probe <subcommand> [options]
                              split fit (EVEN game index) / held-out (ODD) by
                              generation index alone, with a game-clustered
                              bootstrap on the HELD-OUT figures — the quotable
-                             ones. <spec> is `v1` (the reproduction check),
-                             `v2-draft`, or `<name>=<e0,...,e15>/<l0,...,l15>`
-                             (sixteen i64 per vector, Feature::ALL order).
+                             ones. <spec> is `v1` (the reproduction check for
+                             every committed round command), `v2` (the table
+                             that ships since the 2026-08-10 freeze), `v2-draft`
+                             (the same numbers under the rounds' own spelling),
+                             or `<name>=<e0,...,e15>/<l0,...,l15>` (sixteen i64
+                             per vector, Feature::ALL order).
                              A candidate is EVALUATED here and never GENERATES
-                             the corpus: `--weights` still chooses what the bot
-                             plays and still takes only v1 | pre-freeze, because
-                             the protocol's corpora are incumbent-play corpora.
+                             the corpus: `--weights` chooses what the bot plays,
+                             and its DEFAULT is still v1 so every committed
+                             corpus command reproduces.
       --candidate-columns <list>
                              Comma-separated extra ROWS in the features block,
                              measured beside the sixteen and shipped by nothing.
@@ -156,7 +159,7 @@ usage: eval_probe <subcommand> [options]
                                money
                                    this seat's yen
 
-  table [--weights v1|pre-freeze]
+  table [--weights v1|v2|pre-freeze]
       Print a weight table with its provenance identity. No games are played.
 
 contestants (the grammar is Contestant::from_str_name's — unknown is an error at
@@ -285,9 +288,20 @@ fn master_from(flags: &BTreeMap<String, String>) -> Result<SeedScheduleKind, Str
 /// reports.
 fn weights_from(flags: &BTreeMap<String, String>) -> Result<(WeightTable, &'static str), String> {
     match flags.get("weights").map(String::as_str) {
+        // **THE DEFAULT STAYS `v1`, and that is a decision rather than an
+        // oversight.** Since the 2026-08-10 v2 freeze the SHIPPED table is `V2`,
+        // so a default-weights corpus is no longer an incumbent-play corpus of
+        // what ships — but every committed probe command (the R0 corpora, both
+        // rounds' L2 passes, the greedy counters comparator) omits this flag,
+        // and moving the default would silently re-point all of them at a table
+        // their recorded figures were not measured under. A record that cannot
+        // be re-run is not a record. Every report header prints the table's
+        // identity digest, so a run is self-labelling either way; `v2` is
+        // spelled out below and must be asked for.
         None | Some("v1") => Ok((WeightTable::V1, "v1")),
+        Some("v2") => Ok((WeightTable::V2, "v2")),
         Some("pre-freeze") => Ok((WeightTable::PRE_FREEZE_2026_07_27, "pre-freeze")),
-        Some(other) => Err(format!("unknown --weights {other:?} (v1 | pre-freeze)")),
+        Some(other) => Err(format!("unknown --weights {other:?} (v1 | v2 | pre-freeze)")),
     }
 }
 
@@ -302,9 +316,11 @@ fn weights_from(flags: &BTreeMap<String, String>) -> Result<(WeightTable, &'stat
 /// `examples/arena`, knobs and refusals included.
 ///
 /// **Why the probe still constructs its own agents rather than calling
-/// [`Contestant::build`]:** `build` hard-codes [`WeightTable::V1`], and this
-/// instrument's entire `--weights pre-freeze` arm is the ability to run a corpus
-/// under a DIFFERENT table. Delegating construction would make that flag a
+/// [`Contestant::build`]:** `build` hard-codes the SHIPPED table
+/// ([`WeightTable::V2`] since the 2026-08-10 freeze, `V1` before it — a
+/// contestant carries no weight knob by L12 design), and this instrument's
+/// entire `--weights` flag is the ability to run a corpus under a different
+/// one. Delegating construction would make that flag a
 /// silent no-op — the exact failure mode `split_args` refuses unknown flags to
 /// avoid, one level up.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -1010,10 +1026,13 @@ struct ScoreTableSpec {
 /// Parse one `--score-table` value.
 ///
 /// Three forms, and nothing else parses:
-///   * `v1` — the shipped table, i.e. the REPRODUCTION CHECK (run it beside a
-///     real candidate and the candidate's numbers have something to be read
-///     against on the same split);
-///   * `v2-draft` — [`WeightTable::V2_DRAFT`], the round's iteration candidate;
+///   * `v1` — the pre-v2-freeze table, i.e. the REPRODUCTION CHECK for every
+///     round command (run it beside a real candidate and the candidate's
+///     numbers have something to be read against on the same split);
+///   * `v2` — [`WeightTable::V2`], the table that SHIPS since the freeze;
+///   * `v2-draft` — the same numbers under the spelling the rounds used
+///     (`WeightTable::V2_DRAFT` is an alias of `V2` since the freeze promoted
+///     it), kept so the committed round commands still parse and reproduce;
 ///   * `<name>=<e0,…,e15>/<l0,…,l15>` — sixteen comma-separated `i64` per
 ///     vector, in [`Feature::ALL`] order, for a grid cell that has no const yet.
 ///
@@ -1023,11 +1042,14 @@ struct ScoreTableSpec {
 /// feature admission cannot leave this parser accepting a stale width.
 fn parse_score_table(spec: &str) -> Result<ScoreTableSpec, String> {
     const FORMS: &str =
-        "(v1 | v2-draft | <name>=<16 comma-separated i64>/<16 comma-separated i64>)";
+        "(v1 | v2 | v2-draft | <name>=<16 comma-separated i64>/<16 comma-separated i64>)";
 
     match spec {
         "v1" => {
             return Ok(ScoreTableSpec { name: "v1".to_string(), table: WeightTable::V1 })
+        }
+        "v2" => {
+            return Ok(ScoreTableSpec { name: "v2".to_string(), table: WeightTable::V2 })
         }
         "v2-draft" => {
             return Ok(ScoreTableSpec {
@@ -3024,16 +3046,30 @@ mod tests {
     // Phase 3.5c round 1 — the L2 candidate arm
     // -----------------------------------------------------------------------
 
-    /// The three accepted spellings, and the shape of what they build.
+    /// The four accepted spellings, and the shape of what they build.
     #[test]
-    fn the_score_table_grammar_parses_its_three_forms() {
+    fn the_score_table_grammar_parses_its_four_forms() {
         assert_eq!(
             parse_score_table("v1"),
             Ok(ScoreTableSpec { name: "v1".to_string(), table: WeightTable::V1 }),
         );
         assert_eq!(
+            parse_score_table("v2"),
+            Ok(ScoreTableSpec { name: "v2".to_string(), table: WeightTable::V2 }),
+        );
+        // The rounds' own spelling, kept alive by the alias so every committed
+        // command still parses — and it names the SAME numbers `v2` does, which
+        // is what the promotion means. The two report under DIFFERENT names on
+        // purpose: a block quoting `v2-draft` is reproducing a round, one
+        // quoting `v2` is measuring what ships.
+        assert_eq!(
             parse_score_table("v2-draft"),
             Ok(ScoreTableSpec { name: "v2-draft".to_string(), table: WeightTable::V2_DRAFT }),
+        );
+        assert_eq!(
+            parse_score_table("v2-draft").unwrap().table,
+            parse_score_table("v2").unwrap().table,
+            "the draft spelling and the shipped spelling name one table since the freeze",
         );
 
         // An explicit vector: sixteen per side, Feature::ALL order, negatives
@@ -3061,7 +3097,10 @@ mod tests {
     fn an_unknown_or_malformed_score_table_is_a_typed_error_naming_what_it_saw() {
         let sixteen = (0..16).map(|_| "1").collect::<Vec<_>>().join(",");
         for (spec, token) in [
-            ("v2", "v2"),
+            // `v3` stands in for the spelling `v2` used to hold here: a table
+            // name the grammar does not know is an ERROR, never a silent
+            // default. (`v2` itself became legal at the freeze.)
+            ("v3", "v3"),
             ("pre-freeze", "pre-freeze"),
             ("", ""),
             ("A1=1,2,3/4,5,6", "A1"),

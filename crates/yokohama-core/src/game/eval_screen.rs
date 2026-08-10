@@ -1403,29 +1403,45 @@ mod tests {
         assert!(!hand_split_ordering_holds(&late_broken));
     }
 
-    /// **The round's hard constraint, asserted against the ITERATION CANDIDATE
-    /// rather than only against what ships.**
+    /// **The hard constraint, asserted against the table the rounds re-priced —
+    /// which since the 2026-08-10 freeze is the table that SHIPS.**
     ///
     /// Protocol §4.2 forbids relaxing L14/T1's `core > on_board > excess` at any
-    /// rung of the evidence ladder, and [`WeightTable::V2_DRAFT`] is the table a
-    /// round re-prices — so the check belongs on the CANDIDATE, per edit.
-    /// Without it the first round that re-prices the assistant triple past the
-    /// ordering discovers the violation at screen time, four hundred games
-    /// later, in a `candidate=VIOLATED` field beside a figure that should never
-    /// have been measured.
+    /// rung of the evidence ladder, and [`WeightTable::V2`] is what three rounds
+    /// of re-pricing landed on — so the check belongs here, per edit. Before the
+    /// freeze it guarded the candidate so that the first round to re-price the
+    /// assistant triple past the ordering would fail at test time rather than
+    /// four hundred games into a screen; after it, it guards the shipped table
+    /// against the same class of edit, which is if anything the stronger job.
     ///
-    /// Deliberately NOT `assert_eq!(V2_DRAFT, V1)`. The draft's whole job is to
-    /// move, and a pin whose documented fate is deletion teaches its readers to
-    /// delete pins; the identity digests in every screen report are what say
-    /// whether it has moved yet.
+    /// The IDENTITY assertion beside it is the freeze's own pin: `V2` holds the
+    /// thirty-two numbers round 2 adopted, and its digest is the weight
+    /// component of T16's composite comparability key. A re-priced `V2` fails
+    /// here first, which is where a re-pricing should be forced to declare
+    /// itself.
     #[test]
-    fn the_iteration_candidate_holds_the_hand_split_ordering() {
+    fn the_shipped_table_holds_the_hand_split_ordering_and_its_frozen_identity() {
         assert!(
-            hand_split_ordering_holds(&WeightTable::V2_DRAFT),
-            "WeightTable::V2_DRAFT breaks L14/T1's `core > on_board > excess` in at least one \
+            hand_split_ordering_holds(&WeightTable::V2),
+            "WeightTable::V2 breaks L14/T1's `core > on_board > excess` in at least one \
              vector. Protocol §4.2 forbids relaxing that ordering at ANY ladder rung — it is the \
              one-ply non-degeneracy condition, not a prediction — so re-price the assistant \
-             triple back inside it rather than screening this table.",
+             triple back inside it rather than shipping this table.",
+        );
+        assert_eq!(
+            weight_table_identity(&WeightTable::V2) as u64,
+            0x9a24_0f2f_f762_4b0e,
+            "the v2 freeze's weight identity moved. That digest is quoted in eval.rs's V2 \
+             register, in the round-2 evidence artifact, in the execution ledger's freeze row \
+             and in every screen report those cite — so if V2 has legitimately been re-priced, \
+             this constant moves in the same commit as the numbers and the freeze figures \
+             become a record of the table they measured, not of this one.",
+        );
+        assert_eq!(
+            WeightTable::V2_DRAFT,
+            WeightTable::V2,
+            "the draft alias must keep naming the shipped table, or every committed round \
+             command reproduces something else",
         );
     }
 

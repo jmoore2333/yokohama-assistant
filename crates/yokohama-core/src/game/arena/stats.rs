@@ -134,10 +134,12 @@ pub enum SeedScheduleKind {
 /// is a silent divergence between what a cell says it ran and what it ran.
 ///
 /// The evaluator contestants carry NO weight knob: they run the frozen
-/// [`WeightTable::V1`] the shipped agents run, and a weight change is a version
-/// bump (spec §0.5 / L12), not a cell parameter. `weights=<identity>` still
-/// rides the params map so a corpus reader can tell two tables apart without
-/// consulting a document.
+/// [`WeightTable::V2`] the shipped agents run (`V1` until the 2026-08-10 v2
+/// freeze), and a weight change is a version bump (spec §0.5 / L12), not a cell
+/// parameter — which is exactly what that freeze did, moving all four
+/// controller version consts in the commit that moved the table.
+/// `weights=<identity>` still rides the params map so a corpus reader can tell
+/// two tables apart without consulting a document.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Contestant {
     /// A 3.2 rollout rung, played by [`PolicyAgent`] exactly as before.
@@ -413,7 +415,7 @@ impl Contestant {
         match *self {
             Self::Policy(policy) => ControllerProvenance::from_policy(policy, agent_seed),
             Self::GreedyV1 { m } => {
-                greedy::controller_provenance(&WeightTable::V1, m, agent_seed)
+                greedy::controller_provenance(&WeightTable::V2, m, agent_seed)
             }
             // The CAPPED form for S1, on the same function: an absent cap emits
             // no token there, so the uncapped rung's descriptor is what it
@@ -423,19 +425,19 @@ impl Contestant {
                 k,
                 m,
                 cap,
-                &WeightTable::V1,
+                &WeightTable::V2,
                 agent_seed,
             ),
             Self::AtomicDiag { d, k, m } => lookahead::controller_provenance(
                 SearchScheme::AtomicDiag { depth: d },
                 k,
                 m,
-                &WeightTable::V1,
+                &WeightTable::V2,
                 agent_seed,
             ),
             Self::MctsV1 { cap, c_ppm, scale, m, leaf } => mcts::controller_provenance(
                 McKnobs::sized_by_cap(cap, c_ppm, scale, m, leaf),
-                &WeightTable::V1,
+                &WeightTable::V2,
                 agent_seed,
             ),
         }
@@ -487,7 +489,13 @@ impl Contestant {
         match *self {
             Self::Policy(policy) => (Box::new(PolicyAgent::new(policy, agent_seed)), None),
             Self::GreedyV1 { m } => {
-                let agent = GreedyAgent::with_weights(rules, WeightTable::V1, m, agent_seed);
+                // THE SHIPPED TABLE, and the reason all three arms below name it
+                // explicitly rather than calling `::new`: a contestant's weights
+                // are part of what its NAME means (L12 — the grammar carries no
+                // weight knob), so the one place a cell's table is decided is
+                // here. The v2 freeze moved all three from `V1` to `V2` in one
+                // commit and bumped every controller const with them.
+                let agent = GreedyAgent::with_weights(rules, WeightTable::V2, m, agent_seed);
                 let handle = ExplainHandle::Greedy(agent.tally());
                 (Box::new(agent), Some(handle))
             }
@@ -514,7 +522,7 @@ impl Contestant {
                 // cap rather than named separately (`mcts::simulations_for_cap`).
                 let knobs = McKnobs::sized_by_cap(cap, c_ppm, scale, m, leaf);
                 let agent = MctsAgent::with_knobs(rules, agent_seed, knobs)
-                    .with_weights(WeightTable::V1);
+                    .with_weights(WeightTable::V2);
                 let handle = ExplainHandle::Mcts(agent.tally());
                 (Box::new(agent), Some(handle))
             }
@@ -534,7 +542,7 @@ impl Contestant {
             scheme,
             worlds,
             retreat_samples,
-            WeightTable::V1,
+            WeightTable::V2,
             agent_seed,
         )
         .with_cap(cap);
@@ -2319,7 +2327,7 @@ mod tests {
         );
         assert_eq!(report.x_free_cap_hits, Some(0), "S1 cannot reach the quiescence guard at all");
         assert!(
-            report.spec_echo.contains("x=lookahead-v1@v1{"),
+            report.spec_echo.contains("x=lookahead-v1@v2{"),
             "the X seat's provenance must be the search rung's descriptor: {}",
             report.spec_echo,
         );

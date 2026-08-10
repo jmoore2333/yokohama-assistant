@@ -210,6 +210,46 @@
 //! under rev-7 play, the same anti-vacuity refusal rev 6 hit on the two 2P
 //! cells. The other four kept their masters.
 //!
+//! ## v2 weight-freeze re-capture (2026-08-10, branch `phase3.5c-strength`)
+//!
+//! **ONE fixture moved — the EVALUATOR cell — and the four Policy fixtures did
+//! not, which is itself part of what this section records.** The Phase-3.5c
+//! freeze ships `WeightTable::V2` in place of `V1` at every evaluator
+//! constructor and switches `Feature::AchievementProgressSum` onto T3's
+//! post-claim filter, so both arms of the `lookahead-v1` vs `greedy-v1` cell
+//! legitimately play different games. A rung carries no evaluator at all, so
+//! `retreat-averse` vs `family-weighted` must be byte-identical across the
+//! freeze — and it is. A Policy golden moving here would have meant the freeze
+//! reached somewhere it must not.
+//!
+//! **The authority, stated exactly rather than rounded up.** The mismatch
+//! message above demands an owner-visible ruling. What exists is protocol §7's
+//! pre-registered freeze mechanics — "goldens and gate binaries re-captured
+//! honestly" — in a protocol the owner authorized the orchestrator to lead
+//! through on 2026-08-09, with the freeze SIGN-OFF itself scheduled as the OD-2
+//! pause that has not happened at the time of this capture. That is a DELEGATED
+//! authorization, weaker than the rev-6/rev-7 rows above, each of which cites a
+//! ruling the owner had already given. It is recorded that way on purpose: a
+//! reader auditing this fixture should know the difference.
+//!
+//! What moved, exactly (the produced-vs-fixture diff, all of it):
+//!
+//! ```text
+//! spec_echo            x/y  @v1 -> @v2, eval_impl 2 -> 3, weights identity
+//!                           -2162047371061899018 -> -7339724794018772210
+//! applied_by_seat      [574, 567] -> [752, 769]
+//! x_applied_moves      625 -> 841        x_explanations   625 -> 841
+//! x_root_scored        14353 -> 20689    x_candidates_scored  415942 -> 793994
+//! y_candidates_scored  14439 -> 18365    vp_margin_mean   68.0 -> 86.5
+//! ```
+//!
+//! `theta_hat`, `interval`, `x_unit_shares`, `trigger` and `seat0_wins` did NOT
+//! move: the cell's expected shape is the all-won refusal (see "Phase 3.4 T0"
+//! below) and Lookahead-v1 still sweeps Greedy-v1 at V2, so the anti-vacuity
+//! guard's own condition held without probing a new master. The games got
+//! LONGER at V2 (applied moves up ~35%), which is a fact about this two-unit
+//! cell and not a claim about the freeze.
+//!
 //! ## On `compose_echo`
 //!
 //! `compose_echo` mirrors `stats.rs`'s private `policy_echo` body — it is a
@@ -304,8 +344,16 @@ const ECHO_KNOBBED_EXPLICIT: &str = "family-weighted@v1{recovery_min_of=5,retrea
 /// `compose_echo`"): everything up to the `weights=` table-identity hash, which
 /// is the one component that must ride the composed descriptor. BTreeMap knob
 /// order (alphabetical).
-const ECHO_LOOKAHEAD_PREFIX: &str = "lookahead-v1@v1{b=4,eval_impl=2,k=1,m=8,weights=";
-const ECHO_GREEDY_PREFIX: &str = "greedy-v1@v1{eval_impl=2,m=8,placement_cap=512,weights=";
+///
+/// **Both moved at the v2 freeze** (module doc, "v2 weight-freeze re-capture"):
+/// `@v1` → `@v2` is the CONTROLLER version const (L12 — a weight change bumps
+/// every controller that embeds the evaluator; the controller NAME `-v1` is
+/// unchanged and is a different thing), and `eval_impl=2` → `3` is
+/// `EVAL_IMPL_VERSION`. Both are hand-typed here on purpose: they are exactly
+/// the tokens a version bump must be unable to slip past, so a bump that forgot
+/// one of the four consts fails on this literal.
+const ECHO_LOOKAHEAD_PREFIX: &str = "lookahead-v1@v2{b=4,eval_impl=3,k=1,m=8,weights=";
+const ECHO_GREEDY_PREFIX: &str = "greedy-v1@v2{eval_impl=3,m=8,placement_cap=512,weights=";
 
 /// The 3.3-era captured-key list — every top-level field `CellReport` had at
 /// the 3.3 capture. The 3.3 fixtures are held to THIS list (they were captured

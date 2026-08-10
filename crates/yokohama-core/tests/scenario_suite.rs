@@ -6,12 +6,15 @@
 //! # The waves, and which table each one is written against
 //!
 //! **Scenarios 1–9 are suite v1** (Phase 3.3 T9), authored against the frozen
-//! [`WeightTable::V1`] — the table the bot plays today. **Scenarios 10–12 are
-//! the Phase-3.5c round-1 growth and scenario 13 is round 2's** (protocol
+//! [`WeightTable::V1`] — the table the bot played until the 2026-08-10 v2
+//! freeze, and now the table whose claims here are table-INDEPENDENT (see the
+//! FREEZE NOTE below). **Scenarios 10–12 are the Phase-3.5c round-1 growth and
+//! scenario 13 is round 2's** (protocol
 //! `docs/plans/2026-08-09-phase3.5c-evaluator-v2-protocol.md` §4.2 rung L3 and
-//! §6's growth list), and they are written against
-//! [`WeightTable::V2_DRAFT`] — the ITERATION CANDIDATE that becomes V2 at the
-//! freeze commit — because L3's whole job is that *"every adopted change has at
+//! §6's growth list), and they are written against [`WeightTable::V2`] — the
+//! table that SHIPS since the freeze, spelled `V2_DRAFT` while the rounds ran
+//! because it was the iteration candidate then and the promotion is what
+//! renamed it — because L3's whole job is that *"every adopted change has at
 //! least one scenario that lands red-then-green against it"*. A round's
 //! scenario is therefore authored BEFORE the weights move, fails against the
 //! unmoved draft, and turns green in the adoption commit; its counterfactual is
@@ -24,7 +27,7 @@
 //! required to have *by the rules* or *by owner canon*, against whichever table
 //! that property is a statement about — [`WeightTable::V1`] where the claim
 //! holds table-independently (which spares the freeze commit a re-point),
-//! [`WeightTable::V2_DRAFT`] where the claim is genuinely about the
+//! [`WeightTable::V2`] where the claim is genuinely about the
 //! shipped-candidate's own pricing. Every W4 scenario's doc carries a **WHICH
 //! TABLE** section naming its choice and its reason, and a canon-judgment
 //! scenario additionally quotes the owner ruling it encodes and names its
@@ -38,6 +41,22 @@
 //! paraphrasing a scenario title that no longer means what it once said. The
 //! wave closes with label 18's CONSTRUCTED ChurchTrackFull scenario (T13) and
 //! with the batched ruling on D3, the to-hand movement target.
+//!
+//! **FREEZE NOTE (2026-08-10).** The v2 freeze changed exactly two things in
+//! this file and neither deleted a scenario. (a) Every `WeightTable::V2_DRAFT`
+//! reader is now spelled `WeightTable::V2` — a RENAME, not a re-point: the
+//! draft's final value is what the freeze promoted, so no scenario changed which
+//! numbers it evaluates and every counterfactual line above stayed put. (b)
+//! Scenario 12 RE-POINTED onto `score`, which its own doc pre-committed to at
+//! round 1: the T3 post-claim filter reached its call site in the freeze commit,
+//! so the round's additive-only guard was rewritten into the strict ordering the
+//! switch buys, and the counterfactual's unfiltered arm moved off the feature
+//! accessor (which the switch turns INTO the filter) onto the pre-freeze
+//! function `eval::achievement_progress_sum`. The scenarios that name
+//! `WeightTable::V1` did NOT move: each one's WHICH TABLE section says its claim
+//! is table-independent, and that claim is now load-bearing rather than
+//! convenient — V1 is a retained record, so a V1-pinned scenario is asserting
+//! about arithmetic both tables share.
 //!
 //! Nothing about scenarios 1–9 changed when 10–12 landed, and no scenario's
 //! CODE or property changed when 13 landed or when the W4 wave landed.
@@ -1879,10 +1898,10 @@ fn scenario_09_terminal_scoring() {
 /// about what it currently computes, and it stays correct the day a round moves
 /// one of their late weights.)
 fn early_remix_reverted() -> WeightTable {
-    let mut w = WeightTable::V2_DRAFT;
+    let mut w = WeightTable::V2;
     for feature in EARLY_REMIX_SLOTS {
         let (v1_early, _) = WeightTable::V1.get(feature);
-        let (_, draft_late) = WeightTable::V2_DRAFT.get(feature);
+        let (_, draft_late) = WeightTable::V2.get(feature);
         w.set(feature, v1_early, draft_late);
     }
     w
@@ -1915,7 +1934,7 @@ const EARLY_REMIX_SLOTS: [Feature; 5] = [
 /// **SEAT.** 0, in a 2-player game, at `p = 0` — the EARLY vector exactly.
 ///
 /// **PROPERTY.** `score(the ENGINE position)` > `score(the VP-AND-BOARD leader)`
-/// under [`WeightTable::V2_DRAFT`], in two clauses. (a) The two positions
+/// under [`WeightTable::V2`], in two clauses. (a) The two positions
 /// separate on EXACTLY the five slots round 1 re-mixed
 /// ([`EARLY_REMIX_SLOTS`]) and on no other term — the fixture's own leak check,
 /// and what makes clause (b) a statement about the re-mix rather than about
@@ -2128,7 +2147,7 @@ fn early_engine_over_early_vp(rules: &Rules) -> Result<(), String> {
         "the five re-mixed EARLY slots restored to the pre-V2 (V1) mix (vp 10, ctry 12, tech 6, \
          excess 4, board 14)",
         "must outrank the VP-and-board leader in the EARLY vector",
-        check(&WeightTable::V2_DRAFT),
+        check(&WeightTable::V2),
         check(&early_remix_reverted()),
     )
 }
@@ -2150,7 +2169,7 @@ fn scenario_10_early_engine_over_early_vp() {
 /// −10 in both tables — the flatten is a LATE-only edit — so this reverts
 /// exactly one number, which is as targeted as a mutation gets.
 fn warehouse_decay_restored() -> WeightTable {
-    let mut w = WeightTable::V2_DRAFT;
+    let mut w = WeightTable::V2;
     let (early, late) = WeightTable::V1.get(Feature::AssistantsInWarehouse);
     w.set(Feature::AssistantsInWarehouse, early, late);
     w
@@ -2173,7 +2192,7 @@ fn warehouse_decay_restored() -> WeightTable {
 /// positionally rather than through the terminal ladder.)
 ///
 /// **PROPERTY.** `score(the CLEAN warehouse)` > `score(the CLOGGED warehouse)`
-/// under [`WeightTable::V2_DRAFT`], in two clauses: (a) the two positions
+/// under [`WeightTable::V2`], in two clauses: (a) the two positions
 /// separate on exactly `assistants_in_hand_excess`, `assistants_in_warehouse`
 /// and `imported_goods` — the leak check — and (b) the clean position outranks.
 ///
@@ -2302,7 +2321,7 @@ fn warehouse_decay_flattened(rules: &Rules) -> Result<(), String> {
         SCENARIOS[10].0,
         "the warehouse pair restored to V1's (-10, -4)",
         "the CLEAN warehouse must outrank the CLOGGED one",
-        check(&WeightTable::V2_DRAFT),
+        check(&WeightTable::V2),
         check(&warehouse_decay_restored()),
     )
 }
@@ -2514,7 +2533,7 @@ fn post_claim_achievement_progress(rules: &Rules) -> Result<(), String> {
     // asserts is the property that switch BUYS: the shipped evaluator can tell a
     // live claim from a dead one. This is clause (i) re-pointed onto `score`.
     let (s_live, s_dead) =
-        (score(&live, rules, &WeightTable::V2_DRAFT), score(&dead, rules, &WeightTable::V2_DRAFT));
+        (score(&live, rules, &WeightTable::V2), score(&dead, rules, &WeightTable::V2));
     if s_live <= s_dead {
         return Err(format!(
             "the T3 filter is SHIPPED since the freeze: `score` must rank the LIVE position \
@@ -2596,7 +2615,7 @@ const LATE_REPRICED_SLOTS: [Feature; 2] = [Feature::ChurchBonusNow, Feature::Fiv
 ///
 /// **Where the reverted numbers come from, and why that is exact.** `m22` is not
 /// a constant in this tree — it was the previous VALUE of
-/// [`WeightTable::V2_DRAFT`], which round 2's adoption commit overwrote — so the
+/// [`WeightTable::V2`], which round 2's adoption commit overwrote — so the
 /// in-source authority for the two reverted late weights is
 /// [`WeightTable::V1`], and it is the RIGHT authority here because round 1 moved
 /// NEITHER of these slots: `m22` inherited `church_bonus_now` late 16 and
@@ -2617,10 +2636,10 @@ const LATE_REPRICED_SLOTS: [Feature; 2] = [Feature::ChurchBonusNow, Feature::Fiv
 /// late entries — so this is a statement about what the code MEANS rather than
 /// about what it currently computes.)
 fn late_bonus_reprice_reverted() -> WeightTable {
-    let mut w = WeightTable::V2_DRAFT;
+    let mut w = WeightTable::V2;
     for feature in LATE_REPRICED_SLOTS {
         let (_, m22_late) = WeightTable::V1.get(feature);
-        let (draft_early, _) = WeightTable::V2_DRAFT.get(feature);
+        let (draft_early, _) = WeightTable::V2.get(feature);
         w.set(feature, draft_early, m22_late);
     }
     w
@@ -2647,7 +2666,7 @@ fn late_bonus_reprice_reverted() -> WeightTable {
 /// is scored positionally rather than through the terminal ladder.)
 ///
 /// **PROPERTY.** `score(the FIVE-POWER position)` > `score(the CHURCH-MAJORITY
-/// position)` under [`WeightTable::V2_DRAFT`], in two clauses. (a) The two
+/// position)` under [`WeightTable::V2`], in two clauses. (a) The two
 /// positions separate on EXACTLY the two slots round 2 re-priced
 /// ([`LATE_REPRICED_SLOTS`]) and on no other term — the fixture's own leak
 /// check. (b) The five-power position outranks.
@@ -2941,7 +2960,7 @@ fn late_bonus_repricing_tokens_over_church(rules: &Rules) -> Result<(), String> 
         SCENARIOS[12].0,
         "the two re-priced LATE slots restored to m22's (church 16, five-power 10)",
         "must outrank the church-majority position in the LATE vector",
-        check(&WeightTable::V2_DRAFT),
+        check(&WeightTable::V2),
         check(&late_bonus_reprice_reverted()),
     )
 }
@@ -3352,7 +3371,7 @@ fn victory_points_flattened_to_early() -> WeightTable {
 /// price a banked VP at 40 late and both grow it with the stage, which is the
 /// whole of what clause (c) asserts — so it rides the frozen table and the
 /// freeze commit has one fewer scenario to re-point. **Recorded at authoring,
-/// NOT asserted:** under [`WeightTable::V2_DRAFT`] the same pair reads **+202**
+/// NOT asserted:** under [`WeightTable::V2`] the same pair reads **+202**
 /// with one card left against **−3** at a full deck, i.e. the draft's round-1
 /// early-VP re-pricing makes the early half of the contrast a preference for
 /// HOLDING; under V1 the early half still prefers banking (+53). The GROWTH is
@@ -3715,7 +3734,7 @@ fn scenario_15_deck_clock_banking() {
 /// **WHICH TABLE.** [`WeightTable::V1`], on this file's W4 rule: the claim holds
 /// table-independently, so it rides the frozen table and the freeze commit has
 /// one fewer scenario to re-point. Recorded at authoring, not asserted: under
-/// [`WeightTable::V2_DRAFT`] the three margins read **+38**, **−10** and
+/// [`WeightTable::V2`] the three margins read **+38**, **−10** and
 /// **+110** — the winnable margin is smaller because round 2 down-priced the
 /// late church bonus (16 → 8), and the two controls are unchanged (neither turns
 /// on the church term).
@@ -5039,7 +5058,7 @@ fn scenario_19_behind_at_the_end_trigger() {
 //     protocol label 18, CONSTRUCTED by T13's disposition)
 // ---------------------------------------------------------------------------
 
-/// [`WeightTable::V2_DRAFT`] with the `church_bonus_now` LATE weight restored to
+/// [`WeightTable::V2`] with the `church_bonus_now` LATE weight restored to
 /// [`WeightTable::V1`]'s 16 — round 2's church down-pricing undone, one number
 /// moved, and nothing else touched.
 ///
@@ -5053,8 +5072,8 @@ fn scenario_19_behind_at_the_end_trigger() {
 /// V1's `L = 16`. Moving the one number moves the crossing, which is exactly the
 /// decision this scenario is about.
 fn church_late_restored_to_v1() -> WeightTable {
-    let mut w = WeightTable::V2_DRAFT;
-    let (draft_early, _) = WeightTable::V2_DRAFT.get(Feature::ChurchBonusNow);
+    let mut w = WeightTable::V2;
+    let (draft_early, _) = WeightTable::V2.get(Feature::ChurchBonusNow);
     let (_, v1_late) = WeightTable::V1.get(Feature::ChurchBonusNow);
     w.set(Feature::ChurchBonusNow, draft_early, v1_late);
     w
@@ -5130,7 +5149,7 @@ fn church_late_restored_to_v1() -> WeightTable {
 /// declaration covers.
 ///
 /// **WHICH TABLE, and this is the one W4 scenario that is genuinely
-/// table-DEPENDENT.** [`WeightTable::V2_DRAFT`], because the claim is about the
+/// table-DEPENDENT.** [`WeightTable::V2`], because the claim is about the
 /// candidate's own pricing: under V1 the early clause is FALSE by construction
 /// (the crossing sits below one pawn, so `d(one pawn)` reads **+12** there).
 /// That makes this scenario a second guard on round 2's church down-pricing, at
@@ -5287,7 +5306,7 @@ fn two_player_church_crossing(rules: &Rules) -> Result<(), String> {
         SCENARIOS[19].0,
         "the church_bonus_now LATE weight restored to V1's 16",
         "a church lead must still be priced NEGATIVE",
-        check(&WeightTable::V2_DRAFT),
+        check(&WeightTable::V2),
         check(&church_late_restored_to_v1()),
     )
 }
@@ -5382,7 +5401,7 @@ fn hand_split_collapsed_to_excess() -> WeightTable {
 /// **WHICH TABLE.** [`WeightTable::V1`], on this file's W4 rule — the ordering
 /// holds in both tables, so the claim is table-independent and rides the frozen
 /// one. **Recorded at authoring, not asserted:** under
-/// [`WeightTable::V2_DRAFT`] the two margins read **+24** and **+1**. The second
+/// [`WeightTable::V2`] the two margins read **+24** and **+1**. The second
 /// figure is worth carrying to the freeze package: round 1 moved `assistants_on_board`
 /// early `14 → 6` and `assistants_in_hand_excess` early `4 → 5` — both INSIDE
 /// the ordering rather than through it — so the draft's early board and excess

@@ -63,7 +63,8 @@ use rand_chacha::ChaCha8Rng;
 
 use yokohama_core::game::eval::{
     achievement_progress as view_achievement_progress, achievement_progress_postclaim_sum,
-    clock_ppm, explain, initial_order_deck_len, interpolate, order_cards_to_remove, place_signal,
+    achievement_progress_sum as prefreeze_achievement_sum, clock_ppm, explain,
+    initial_order_deck_len, interpolate, order_cards_to_remove, place_signal,
     progress_ppm, raw_value, score, terminal_standing, track_trigger, view_is_terminal,
     Explanation, Feature, ScoreStructure, WeightTable, PROGRESS_FULL_PPM, TERMINAL_MARGIN_CLAMP,
     TERMINAL_MARGIN_STEP, TERMINAL_RANK_STEP,
@@ -362,6 +363,17 @@ struct Tally {
     /// The largest |positional score| the sweep produced — the measured input
     /// to §2.6's dominance claim (recorded AND asserted against the rank step).
     max_abs_positional: i64,
+    /// (`seat`, card) legs the v2 post-claim filter actually DROPPED across the
+    /// drift sweep — anti-vacuity for the re-derivation above. Without it the
+    /// filtered and unfiltered expectations would agree everywhere and the
+    /// re-derived clause would be pinning the pre-freeze arithmetic under a new
+    /// name. Organic play must claim achievements for the filter to bite, and
+    /// this counter is what says it did.
+    postclaim_drops: usize,
+    /// Views on which the PRE-FREEZE (unfiltered) achievement sum was nonzero —
+    /// the same-run comparator for `nonzero_by_feature[13]`, so the freeze's own
+    /// delta on this sweep is a measured difference rather than an inference.
+    nonzero_prefreeze_achievement: usize,
 }
 
 /// One organic game: play it with the shipped weighted rung and check every
@@ -516,7 +528,17 @@ fn check_drift(state: &GameState, rules: &Rules, tally: &mut Tally) {
         // The achievement mirror is pinned per CARD, `(current, needed)` and
         // all, not just through the summed feature — a sum can agree while two
         // legs are wrong in opposite directions.
+        //
+        // RE-DERIVED AT THE v2 FREEZE, and the shape of the change matters: the
+        // PER-LEG half below is untouched (it is a mirror pin against the
+        // engine's own progress arithmetic, which T3 did not touch), while the
+        // SUM the feature reports is now the POST-CLAIM sum — so the expected
+        // total skips the cards THIS seat has already claimed. Both totals are
+        // accumulated so the pre-freeze one can still be asserted against
+        // `prefreeze_achievement_sum`, which keeps the two arithmetics honest
+        // against each other over organic play rather than only on a fixture.
         let mut expected_sum = 0i64;
+        let mut expected_prefreeze = 0i64;
         for card in &view.achievements {
             let mine = view_achievement_progress(&view, me, card.achievement_type);
             let theirs = achievement_progress(state, id, card.achievement_type);
@@ -525,12 +547,24 @@ fn check_drift(state: &GameState, rules: &Rules, tally: &mut Tally) {
                 "seat {seat}: {:?} progress drifted from the engine",
                 card.achievement_type
             );
-            expected_sum += i64::from(mine.0.min(mine.1));
+            let leg = i64::from(mine.0.min(mine.1));
+            expected_prefreeze += leg;
+            if !card.claimed_by.contains(&id) {
+                expected_sum += leg;
+            } else {
+                tally.postclaim_drops += 1;
+            }
         }
         assert_eq!(
             structure.value_of(me, Feature::AchievementProgressSum),
             expected_sum,
-            "seat {seat}: the summed achievement feature is not the capped sum of its legs"
+            "seat {seat}: the summed achievement feature is not the POST-CLAIM capped sum of \
+             its legs (T3's filter, shipped at the v2 freeze)"
+        );
+        assert_eq!(
+            prefreeze_achievement_sum(&view, me),
+            expected_prefreeze,
+            "seat {seat}: the pre-freeze sum is not the unfiltered capped sum of its legs"
         );
 
         // The full final total — the quantity §2.6 ranks — against the engine's
@@ -686,6 +720,18 @@ fn check_view(
         if term.viewer_value != 0 {
             tally.nonzero_by_feature[term.feature.index()] += 1;
         }
+        // SAME-RUN ATTRIBUTION for the v2 freeze's one feature change: the
+        // shipped (filtered) count rides `nonzero_by_feature` above, and this is
+        // the count the PRE-FREEZE arithmetic would have produced on the
+        // identical trajectories. Their difference is the T3 filter's whole
+        // footprint on this sweep, measured rather than reasoned about — which
+        // is what lets this test's re-recorded doc separate the freeze's own
+        // delta from the rules-rev drift the trajectories already carried.
+        if term.feature == Feature::AchievementProgressSum
+            && prefreeze_achievement_sum(view, me) != 0
+        {
+            tally.nonzero_prefreeze_achievement += 1;
+        }
     }
 
     tally.max_abs_positional = tally.max_abs_positional.max(s.abs());
@@ -717,36 +763,54 @@ fn check_view(
 /// — see [`check_drift`] and [`check_terminal`], which ride the same traversal
 /// rather than paying for a second one.
 ///
-/// MEASURED at the T2 close and RE-MEASURED at T3's in-hand split, with the
-/// floors set at roughly HALF each measured count (the sweep is fully
-/// deterministic — fixed seeds, seeded ChaCha8 — so the figures are exact, and
-/// the halving is headroom for benign drift rather than protection against
-/// flake). The T3 figures:
+/// MEASURED at the T2 close, RE-MEASURED at T3's in-hand split, and RE-RECORDED
+/// at the Phase-3.5c v2 freeze (2026-08-10), with the floors set at roughly HALF
+/// each measured count (the sweep is fully deterministic — fixed seeds, seeded
+/// ChaCha8 — so the figures are exact, and the halving is headroom for benign
+/// drift rather than protection against flake). The figures AT HEAD:
 ///
 /// ```text
-/// views 1711 · early_zero 132 · late_half 1134 · full 3
-/// clocks [deck 1462, church 1466, customs 390, building 1216]
-/// nonzero_terms 14149 · negative_weight_picks 1788 · decision points 537
+/// views 1598 · early_zero 132 · late_half 853 · full 3
+/// clocks [deck 1415, church 1353, customs 195, building 1153]
+/// nonzero_terms 14267 · negative_weight_picks 1903 · decision points 507
 /// nonzero_by_feature
-///   [vp 1378, ctry 978, tech 750, chur 774, cust 169, hCORE 1269, hEXC 267,
-///    ware 1711, brd 1670, shop 862, trad 61, 5pw 110, imp 241, achv 1618,
-///    merc 635, hnd# 1647]
-/// drift_pairs 1720 · drift_dummy_pairs 240 · terminal_views 9
-/// max |positional score| 2188  (rank step 1e9 clears it 457,038x — the
-///   test's own integer division; 1e9/2188 = 457,038.4)
+///   [vp 1165, ctry 780, tech 665, chur 667, cust 105, hCORE 1240, hEXC 363,
+///    ware 1470, brd 1557, shop 746, trad 77, 5pw 327, imp 395, achv 1475,
+///    merc 503, hnd# 1458]
+/// drift_pairs 1607 · drift_dummy_pairs 270 · terminal_views 9
+/// max |positional score| 2675  (rank step 1e9 clears it 373,831x — the
+///   test's own integer division; 1e9/2675 = 373,831.7)
+/// postclaim_drops 238 · nonzero_prefreeze_achievement 1475
 /// ```
 ///
 /// WHAT MOVED AND WHY, since a re-measure that does not account for its own
-/// deltas is just a new number. The GAMES are identical — the sweep plays under
-/// `FAMILY_WEIGHTED_DEFAULT`, not under the evaluator — so every trajectory
-/// count (views, bands, clocks, drift pairs, terminal views) is unchanged. Three
-/// figures moved and all three are the split: `nonzero_terms` 13,944 → 14,149
-/// (a sixteenth term per view, nonzero on the 267 views where a hand exceeds
-/// the reserve, minus the ties the re-priced board weight resolves);
-/// `max_abs_positional` 2,168 → 2,188 (new weights, same shape, still ~5 orders
-/// under the rank step); and `assistants_in_hand` 1,269 splitting into
-/// `core` 1,269 / `excess` 267. `negative_weight_picks` is unchanged at 1,788,
-/// as it must be: the split added no negative feature and moved no sign.
+/// deltas is just a new number — and here the honest answer has TWO parts,
+/// only one of which belongs to the freeze.
+///
+/// **1. Most of it is RULES-REV DRIFT that was already in the tree.** The T3
+/// block above was recorded at `SEMANTICS_REV` 5. The sweep plays under
+/// `FAMILY_WEIGHTED_DEFAULT`, which never consults the evaluator, so no
+/// evaluator change can move a trajectory — but the five 2026-08-08 parity
+/// rulings (revs 6 and 7) changed reachable states, and every trajectory count
+/// moved with them: views 1,711 → 1,598, `late_half` 1,134 → 853, the customs
+/// clock 390 → 195, `drift_pairs` 1,720 → 1,607. Those deltas predate this
+/// commit; the halved floors absorbed them silently, which is the floors working
+/// as designed and also the reason a re-record was overdue.
+///
+/// **2. The FREEZE's own footprint is measured, not inferred, and it is
+/// small.** T3's post-claim filter dropped **238** (seat × card) legs across the
+/// drift sweep (`postclaim_drops`, the anti-vacuity counter for the re-derived
+/// achievement clause — a filter that dropped nothing would leave that clause
+/// pinning the pre-freeze arithmetic under a new name). Its effect on the
+/// per-feature anti-vacuity count is **zero**: `nonzero_by_feature[achv]` and
+/// the same-run pre-freeze comparator `nonzero_prefreeze_achievement` BOTH read
+/// 1,475, because a seat that has claimed one card still holds live progress on
+/// another. The two figures this run cannot separate are `nonzero_terms` and
+/// `max_abs_positional`, which carry the rev drift and the filter together; they
+/// are recorded as measured and nothing is claimed about their split. NOTE that
+/// this sweep still evaluates with `WeightTable::V1` on purpose — its subject is
+/// the assembly (`explain` == `score`), not the shipped pricing, and holding the
+/// table fixed is what makes even this much attribution possible.
 ///
 /// T1 → T2's earlier delta stands recorded too: the five score-structure
 /// features began computing real values, which changed every score.
@@ -815,6 +879,15 @@ fn explain_reconstructs_score_exactly_over_organic_views() {
     // pin whose organic half never met a dummy would be half a pin).
     assert!(tally.drift_pairs >= 850, "the drift pin barely ran: {tally:?}");
     assert!(tally.drift_dummy_pairs >= 120, "no organic 2P-dummy coverage: {tally:?}");
+    // v2 FREEZE anti-vacuity: the drift pin's achievement clause now expects the
+    // POST-CLAIM sum, and that expectation is only a different statement from
+    // the pre-freeze one where organic play actually claimed something. Measured
+    // 238, floored at half in this file's standing discipline.
+    assert!(
+        tally.postclaim_drops >= 119,
+        "T3's filter dropped almost no legs, so the re-derived achievement clause is pinning \
+         the PRE-FREEZE arithmetic under a new name: {tally:?}"
+    );
     assert_eq!(
         tally.terminal_views,
         2 + 3 + 4,
@@ -1360,11 +1433,15 @@ fn an_area_holding_both_building_types_counts_once_in_view_side_progress() {
 }
 
 // ---------------------------------------------------------------------------
-// Phase 3.5c round 1 — the T3 post-claim candidate (protocol §4.1(ii) / §5 T3)
+// Phase 3.5c — T3's post-claim filter (protocol §4.1(ii) / §5 T3)
 //
-// ADDITIVE at this commit: nothing in `score`/`explain` calls the helper, so
-// these tests are the only thing holding its arithmetic. The call-path switch
-// (and its blast radius) is the freeze commit's business.
+// It landed ADDITIVELY in round 1 (nothing called it, so these tests were the
+// only thing holding its arithmetic) and the FREEZE COMMIT switched
+// `Feature::AchievementProgressSum`'s call site onto it. These tests moved with
+// the switch: `shipped_sum` below reads through the FEATURE, so it now reports
+// the filter, and the double-count fact they were written to demonstrate is
+// re-pointed onto `prefreeze_achievement_sum` — the pre-filter arithmetic, which
+// eval.rs still exports for exactly this purpose.
 // ---------------------------------------------------------------------------
 
 /// The viewer's row of a view, by seat.
@@ -1372,12 +1449,21 @@ fn seat_of(view: &PlayerView, seat: PlayerId) -> &VisiblePlayer {
     view.players.iter().find(|p| p.id == seat).expect("seat is in the view")
 }
 
-/// The SHIPPED sum, read where the evaluator reads it — through the feature
-/// rather than through the private function, so these tests compare the
-/// candidate against what actually prices a position today.
+/// The SHIPPED sum, read where the evaluator reads it — through the FEATURE
+/// rather than through either underlying function, so these tests compare
+/// against what actually prices a position today. Since the freeze that is the
+/// post-claim filter, and asserting so is one of this file's jobs.
 fn shipped_sum(view: &PlayerView, rules: &Rules, seat: PlayerId) -> i64 {
     ScoreStructure::derive(view, rules)
         .value_of(seat_of(view, seat), Feature::AchievementProgressSum)
+}
+
+/// The PRE-FREEZE sum — the same capped-leg arithmetic with no claim filter.
+/// It is what `Feature::AchievementProgressSum` read until 2026-08-10, and it is
+/// kept reachable so the double count T3 removed can still be DEMONSTRATED
+/// rather than only described.
+fn prefreeze_sum(view: &PlayerView, seat: PlayerId) -> i64 {
+    prefreeze_achievement_sum(view, seat_of(view, seat))
 }
 
 /// One card's capped leg for one seat — the quantity the post-claim filter
@@ -1472,7 +1558,7 @@ fn the_postclaim_sum_drops_a_card_the_viewer_has_already_claimed() {
     let view = observe(&state, PlayerId(0)).unwrap();
     let before = achievement_progress_postclaim_sum(&view, seat_of(&view, PlayerId(0)));
     let leg = capped_leg(&view, PlayerId(0), card);
-    let shipped_before = shipped_sum(&view, &rules, PlayerId(0));
+    let prefreeze_before = prefreeze_sum(&view, PlayerId(0));
     assert!(leg > 0, "the fixture's copper leg must carry weight for the drop to be visible");
     assert_eq!(before, 3 * leg, "three identical cards, one leg each");
 
@@ -1482,12 +1568,26 @@ fn the_postclaim_sum_drops_a_card_the_viewer_has_already_claimed() {
     assert_eq!(
         achievement_progress_postclaim_sum(&view, seat_of(&view, PlayerId(0))),
         before - leg,
-        "exactly the claimed card's capped leg leaves the candidate sum",
+        "exactly the claimed card's capped leg leaves the filtered sum",
     );
+    // THE DOUBLE COUNT, still demonstrated rather than merely described — on the
+    // PRE-FREEZE arithmetic, which is where it lives now.
+    assert_eq!(
+        prefreeze_sum(&view, PlayerId(0)),
+        prefreeze_before,
+        "the PRE-FREEZE sum kept paying for a claimed card — the double-count T3 names",
+    );
+    // …and the SHIPPED feature no longer does. This is the call-site switch
+    // itself, pinned at the one place the evaluator reads the value.
     assert_eq!(
         shipped_sum(&view, &rules, PlayerId(0)),
-        shipped_before,
-        "the SHIPPED sum keeps paying for a claimed card — the double-count T3 names",
+        before - leg,
+        "since the freeze `Feature::AchievementProgressSum` IS the filtered sum",
+    );
+    assert_ne!(
+        shipped_sum(&view, &rules, PlayerId(0)),
+        prefreeze_before,
+        "anti-vacuity: the two arithmetics must genuinely differ on this fixture",
     );
 
     // …and claiming all three empties it.

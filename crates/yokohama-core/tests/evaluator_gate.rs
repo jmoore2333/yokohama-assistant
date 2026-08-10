@@ -84,7 +84,8 @@
 //! inference. The spec's probability was computed at the RESEARCH BASE's per-unit
 //! sweep rate of 0.86 — measured for an eval-**v0** *greedy* agent on a different
 //! corpus and regime (research notes R2's 516/83/1 unit split). The shipped
-//! contestant is a turn-boundary SEARCH rung over the FROZEN `WeightTable::V1`,
+//! contestant is a turn-boundary SEARCH rung over the FROZEN weight table
+//! (`WeightTable::V1` when this was written, `V2` since the 2026-08-10 freeze),
 //! and against family-weighted random at 2P its realized per-unit sweep rate is
 //! 1.00. The honest statement is that **the estimate was for a weaker bot**, so
 //! the anticipated-rare corner is the LIKELY outcome here rather than a freak
@@ -96,7 +97,7 @@
 //!   quantitative statement than a two-sided interval would have been: it says
 //!   θ ≥ 0.985 with 95% confidence and says nothing sharper.
 //! - This binary still produces REAL two-sided intervals — lattice A
-//!   (`[0.595000, 0.690000]`) and the null cell (`[0.465000, 0.562500]`) — so a
+//!   (`[0.577500, 0.680000]`) and the null cell (`[0.500000, 0.597500]`) — so a
 //!   reader must not conclude the estimator's two-sided arm went unexercised.
 //! - Sizing follow-up (recorded, NOT acted on here): at a 1.00 sweep rate, N is
 //!   no longer the binding constraint on this cell's precision and a future
@@ -138,6 +139,16 @@
 //! sum of the five             145.02 s
 //! WHOLE BINARY, one sequence  145.84 s / 144.60 s across two runs, 1,472 games
 //! ```
+//!
+//! **Those per-cell walls are a `SEMANTICS_REV` 5 / `WeightTable::V1` reading and
+//! are NOT re-measured here.** The whole binary at rev 7 read 157.83 / 160.64 s
+//! at the two rules-parity merge closes and 158.29 s at the 3.5c day-0 baseline;
+//! at the v2 freeze it reads **184.17 s** (whole binary, one sequence, same
+//! command, same 1,472 games — 3:08 total wall including the build check). The
+//! rev-7 band and this figure are both above the rev-5 one because the games
+//! themselves got longer, and V2's games are longer again (see the promotion
+//! cell's own doc). Per-cell walls at v2 were NOT re-taken; quote the whole-binary
+//! figure, which is the one the documented command produces.
 //!
 //! Against spec §10.2's estimate of ~150–170 s: **~145 s, just BELOW the low
 //! end** — under target, so the over-target disposition does not fire. Row by row
@@ -457,7 +468,7 @@ fn promotion_cell_at(scale: Scale) -> CellReport {
         report.spec_echo,
     );
     assert!(
-        report.spec_echo.contains("x=lookahead-v1@v1{"),
+        report.spec_echo.contains("x=lookahead-v1@v2{"),
         "the contestant under test must be the search rung's own descriptor: {}",
         report.spec_echo,
     );
@@ -486,18 +497,27 @@ fn promotion_cell_at(scale: Scale) -> CellReport {
 /// refusal of the WRONG SIGN, and the all-won check in front of it is what
 /// forecloses that.
 ///
-/// MEASURED AT HEAD (release, master `0xA3E1_2026_0727_0001`, 77.13 s for 400
-/// games): **θ̂ 1.000000, the estimator REFUSED a zero-width interval and
-/// returned the all-won rule-of-three one-sided 95% lower bound 0.985000 >
-/// 0.5** — the SECOND accepted shape, i.e. the valve rather than the operative
-/// arm (the module doc's "which arm fired" paragraph is the honest reading, and
-/// it is not the 8×10⁻¹⁴ event the spec's arithmetic describes). 200 of 200 units
-/// swept; 400 of 400 games won; seat-0 wins 200/400, so the sweep is not a seat
-/// artifact; mean VP margin **+67.42**; 400/400 games completed
-/// (ChurchTrackFull 385 / OrderDeckEmpty 15) with no cap hit; applied per seat
-/// [66,511 · 66,397] of which X applied **71,707 and explained 71,707** (the
-/// §0.3(b) identity, exact); Wilson-on-pooled-games cross-check
+/// MEASURED AT HEAD — RE-RECORDED AT THE v2 FREEZE (2026-08-10; release, master
+/// `0xA3E1_2026_0727_0001`): **θ̂ 1.000000, the estimator REFUSED a zero-width
+/// interval and returned the all-won rule-of-three one-sided 95% lower bound
+/// 0.985000 > 0.5** — the SECOND accepted shape, i.e. the valve rather than the
+/// operative arm (the module doc's "which arm fired" paragraph is the honest
+/// reading, and it is not the 8×10⁻¹⁴ event the spec's arithmetic describes).
+/// 200 of 200 units swept; 400 of 400 games won; seat-0 wins 200/400, so the
+/// sweep is not a seat artifact; mean VP margin **+74.15**; 400/400 games
+/// completed (ChurchTrackFull 382 / OrderDeckEmpty 18) with no cap hit; applied
+/// per seat [68,846 · 69,329] of which X applied **74,331 and explained 74,331**
+/// (the §0.3(b) identity, exact); Wilson-on-pooled-games cross-check
 /// [0.990488, 1.000000].
+///
+/// **The freeze did not move the SHAPE, and that was the pre-committed
+/// expectation rather than a hope**: the arm was already sweeping at V1 (θ̂
+/// 1.000000, the same refusal bound), so V2 could only fail to sweep, and the
+/// task's instruction was to STOP and report if it did. What moved is the size
+/// of the win — mean VP margin +67.42 → **+74.15** — and the amount of play
+/// behind it (X applied 71,707 → 74,331). Neither is asserted. The rev-5 figures
+/// this replaces were: θ̂ 1.000000, margin +67.42, triggers 385/15, applied per
+/// seat [66,511 · 66,397], X 71,707.
 #[test]
 #[ignore = "release-tier gate: cargo test --release -p yokohama-core --test evaluator_gate -- --ignored --test-threads=1"]
 fn lookahead_v1_beats_family_weighted_with_an_honest_interval() {
@@ -602,15 +622,22 @@ fn lattice_a_at(scale: Scale) -> CellReport {
 /// explanation identity on the greedy arm, which is a different tally type from
 /// the search arm's and so needs its own exercise at scale).
 ///
-/// MEASURED AT HEAD (release, 5.35 s for 400 games): **θ̂ 0.642500, bootstrap 95%
-/// [0.595000, 0.690000]** — a REAL two-sided interval that excludes the 2P null,
-/// which is worth noting because the promotion cell's did not exist to. Unit sd
-/// 0.337659, SE(θ̂) 0.023876 over 200 units; 257/400 games; mean VP margin +7.40;
-/// 6 top-VP ties, all decided for seat 0; ChurchTrackFull 389 / OrderDeckEmpty 11;
-/// X applied **119,822 moves and explained 119,822**.
+/// MEASURED AT HEAD — RE-RECORDED AT THE v2 FREEZE (2026-08-10, release):
+/// **θ̂ 0.630000, bootstrap 95% [0.577500, 0.680000]** — a REAL two-sided
+/// interval that excludes the 2P null, which is worth noting because the
+/// promotion cell's did not exist to. Unit sd 0.365744, SE(θ̂) 0.025862 over 200
+/// units; 252/400 games; mean VP margin +6.36; 2 top-VP ties, both decided for
+/// seat 0; ChurchTrackFull 388 / OrderDeckEmpty 10 / ShophousesComplete 1 /
+/// TradingHousesComplete 1; X applied **126,423 moves and explained 126,423**.
+/// (Pre-freeze, at V1: θ̂ 0.642500, [0.595000, 0.690000], sd 0.337659, 257/400
+/// games, margin +7.40, 6 ties, triggers 389/11, X 119,822. The two θ̂s are well
+/// inside each other's intervals; nothing here says the freeze moved this cell,
+/// and the cell asserts no direction to begin with. The BUILDING triggers are
+/// new — this is the first recorded run of this cell where a game ended by
+/// completing a building set.)
 ///
 /// Read beside lattice B and the promotion cell, this is the ladder: the one-ply
-/// rung beats the same field by a MEASURABLE margin (θ̂ 0.64), the search rung
+/// rung beats the same field by a MEASURABLE margin (θ̂ 0.63), the search rung
 /// sweeps it (θ̂ 1.00), and the search rung also sweeps the one-ply rung. Recorded,
 /// not asserted.
 #[test]
@@ -656,12 +683,16 @@ fn lattice_b_at(scale: Scale) -> CellReport {
 /// of Lookahead-vs-Greedy is ~30 s, and doubling it would buy precision on a
 /// figure nothing asserts. Direction printed, never asserted.
 ///
-/// MEASURED AT HEAD (release, 40.79 s for 200 games): **θ̂ 1.000000, the estimator
-/// REFUSED a zero-width interval** and returned the all-won rule-of-three
-/// one-sided 95% lower bound **0.970000** (`1 − 3/100`). 100 of 100 units and
-/// 200 of 200 games to Lookahead-v1; seat-0 wins 100/200; mean VP margin +65.59;
-/// ChurchTrackFull 199 / OrderDeckEmpty 1; `setup-identical=yes`; X applied
-/// **37,081 moves and explained 37,081**.
+/// MEASURED AT HEAD — RE-RECORDED AT THE v2 FREEZE (2026-08-10, release, 200
+/// games): **θ̂ 1.000000, the estimator REFUSED a zero-width interval** and
+/// returned the all-won rule-of-three one-sided 95% lower bound **0.970000**
+/// (`1 − 3/100`). 100 of 100 units and 200 of 200 games to Lookahead-v1; seat-0
+/// wins 100/200; mean VP margin +72.81; ChurchTrackFull 200/200;
+/// `setup-identical=yes`; X applied **37,411 moves and explained 37,411**.
+/// (Before the freeze: margin +65.59, triggers 199/1, X 37,081. Both arms moved
+/// to V2 together here — this is S1 against a one-ply rung reading the same
+/// table — so the sweep surviving says the search advantage is not an artifact
+/// of the old weights.)
 ///
 /// The refusal here is the same phenomenon as the promotion cell's and it is
 /// informative in a way that cell is not: the search rung sweeps the STRONGER of
@@ -734,11 +765,25 @@ fn print_direction(label: &str, report: &CellReport) {
 /// pair (Greedy-v1 vs family-weighted) fails the `setup-identical=yes` assertion
 /// first, which is the other half of the cell's shape.
 ///
-/// MEASURED AT HEAD (release, 8.24 s for 400 games): **θ̂ 0.515000, bootstrap 95%
-/// [0.465000, 0.562500]**, containing 0.5 with real width; unit sd 0.354121,
-/// SE(θ̂) 0.025040 over 200 units; 206/400 games to X; seat-0 wins 212/400; mean VP
-/// margin +2.87; 6 top-VP ties; ChurchTrackFull 400/400; X applied **106,848 moves
-/// and explained 106,848**.
+/// MEASURED AT HEAD — RE-RECORDED AT THE v2 FREEZE (2026-08-10, release, 400
+/// games): **θ̂ 0.547500, bootstrap 95% [0.500000, 0.597500]**, containing 0.5
+/// with real width; unit sd 0.353011, SE(θ̂) 0.024962 over 200 units; 219/400
+/// games to X; seat-0 wins 207/400; mean VP margin +1.76; 8 top-VP ties;
+/// ChurchTrackFull 400/400; X applied **119,260 moves and explained 119,260**.
+/// (Before the freeze: θ̂ 0.515000, [0.465000, 0.562500], sd 0.354121, SE
+/// 0.025040, 206/400, seat-0 212/400, margin +2.87, 6 ties, X 106,848.)
+///
+/// **READ THE CONTAINMENT MARGIN HONESTLY: the interval's LOWER BOUND is
+/// 0.500000, i.e. the containment assertion passes at its boundary.** The
+/// assertion is `lo <= 0.5 <= hi` and it holds, but a null cell whose interval
+/// starts exactly at the null is one resample away from failing, and a future
+/// run of this cell may well trip it. That would NOT be evidence of a CRN
+/// collapse — the collapse this cell exists to catch produces `sd == 0` and a
+/// refusal, both of which are separately asserted and both healthy here (sd
+/// 0.353011, real bootstrap width 0.0975). It would be the ordinary luck of a
+/// two-sided interval at N = 200 on a self-play null whose true θ is 0.5 by
+/// construction. If it fires, the honest disposition is to record the run and
+/// re-read the shape assertions, not to widen the band.
 #[test]
 #[ignore = "release-tier gate: cargo test --release -p yokohama-core --test evaluator_gate -- --ignored --test-threads=1"]
 fn the_greedy_null_self_test_is_honest() {
@@ -819,9 +864,10 @@ fn null_cell_at(scale: Scale) {
 /// anti-vacuity check ("the report did not depend on the master at all"), so the
 /// control is genuinely a control and not decoration.
 ///
-/// MEASURED AT HEAD (release, 13.51 s for all three runs / 72 games): the two
-/// N = 12 runs serialize to **1,870 identical bytes**; the flipped-master control
-/// moves `vp_margin_mean` from **+68.50 to +78.54**.
+/// MEASURED AT HEAD — RE-RECORDED AT THE v2 FREEZE (2026-08-10, release, 72
+/// games): the two N = 12 runs serialize to **2,129 identical bytes**; the
+/// flipped-master control moves `vp_margin_mean` from **+75.54 to +84.58**.
+/// (Before the freeze: 1,870 bytes, +68.50 → +78.54.)
 #[test]
 #[ignore = "release-tier gate: cargo test --release -p yokohama-core --test evaluator_gate -- --ignored --test-threads=1"]
 fn the_promotion_cell_reproduces_byte_identically() {
