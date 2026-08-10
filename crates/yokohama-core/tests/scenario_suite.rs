@@ -2607,6 +2607,22 @@ fn late_bonus_reprice_reverted() -> WeightTable {
 /// viewer's assistant commitment and the church clock are identical by
 /// construction and there is no "who spent more" caveat to make.
 ///
+/// **FIXTURE HONESTY — the printed landing VP is deliberately HELD EQUAL across
+/// the exchange (W4 fix-wave routing).** In a reached game each landed pawn
+/// would have banked its space's printed VP the moment it landed (faith 10 pays
+/// 11, faith 9 pays 8 — `ChurchTrack::vp_reward`, credited by the track
+/// action), so a REACHED pair of these positions would also swap a 3-VP printed
+/// difference and the margin would read `6·(w_five_power − w_church) − 6·w_vp`
+/// (−240 of it at the late vp weight 40) — dominated by the VP term, not the
+/// crossing this scenario exists to pin. This fixture holds
+/// `victory_points` equal instead, BECAUSE ITS PROPERTY IS A WEIGHT-ORDERING
+/// PIN (`5pw_late > chur_late`, the round-2 adoption's L3 guard), not a claim
+/// about a landing DECISION — the isolation is the content, the same way the
+/// W4 scenarios that DO claim decision content (registry 15/16) credit the VP
+/// and pay their price in construction. Read this scenario as "the table
+/// orders these two terms", never as "landing on the church is worse than
+/// taking tokens in a real game".
+///
 /// **THE ARITHMETIC, stated because the margin is the point.** The evaluator is
 /// relative, so each term reads `w · (mine − theirs)`. Church: `+3` in one
 /// position and `−3` in the other. Five-power: `−3` and `+3`. Every other term is
