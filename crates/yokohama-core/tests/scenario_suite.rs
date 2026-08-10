@@ -1,4 +1,4 @@
-//! **Scenario suite** (Phase 3.3 T9; spec §6, admitted under §0.2) — nineteen
+//! **Scenario suite** (Phase 3.3 T9; spec §6, admitted under §0.2) — twenty-one
 //! hand-built rules situations the evaluator rung has to get right, each one a
 //! single falsifiable property with a rules citation, a WHY line, and a
 //! demonstrated failing counterpart.
@@ -35,7 +35,9 @@
 //! ruling of the owner's 2026-08-09 batch (labels 11, 12+13, 14, 15). Two of
 //! those rulings REVERSED the drafts they were asked about and one INVERTED its
 //! draft, so each judgment doc quotes the ruling it encodes verbatim rather than
-//! paraphrasing a scenario title that no longer means what it once said.
+//! paraphrasing a scenario title that no longer means what it once said. The
+//! wave closes with label 18's CONSTRUCTED ChurchTrackFull scenario (T13) and
+//! with the batched ruling on D3, the to-hand movement target.
 //!
 //! Nothing about scenarios 1–9 changed when 10–12 landed, and no scenario's
 //! CODE or property changed when 13 landed or when the W4 wave landed.
@@ -157,8 +159,8 @@
 //!
 //! # Cost, and why most scenarios drive no game
 //!
-//! Eighteen of the nineteen are EVAL-ORDERING properties over constructed views
-//! or states (seventeen over [`score`], one over a feature function): the
+//! Twenty of the twenty-one are EVAL-ORDERING properties over constructed views
+//! or states (nineteen over [`score`], one over a feature function): the
 //! evaluator is a pure function of a [`PlayerView`], so specifying its input
 //! directly is both the cheapest and the most precise way to state "this
 //! position must outrank that one". Only the null-placement trap is genuinely
@@ -178,7 +180,7 @@
 //!
 //! # Determinism
 //!
-//! Every scenario is deterministic. The eighteen eval-ordering ones consume no
+//! Every scenario is deterministic. The twenty eval-ordering ones consume no
 //! randomness at all — `score` is a pure function. The driven one fixes both
 //! agent seeds ([`DRIVEN_SEEDS`]), which fixes the per-decision sampler seed
 //! and the §3.2 tie-break draw, so the segment is byte-identical run to run;
@@ -231,7 +233,8 @@
 //! 0.05–0.07 s** — unmoved, and for the same reason: its four scenarios are
 //! constructed-view properties costing one `base_view` and a handful of
 //! `score`/`explain` calls apiece, against a driven segment that is still
-//! effectively the whole binary.
+//! effectively the whole binary. **The closing pair, 22 tests: 0.05–0.07 s** —
+//! the same band a third time, for the same reason.
 
 use std::collections::BTreeMap;
 use std::sync::OnceLock;
@@ -272,17 +275,20 @@ type ScenarioFn = fn(&Rules) -> Result<(), String>;
 /// track-racing (protocol label 11), the customs race with the church side
 /// folded in (labels 12 and 13, both re-aimed), achievement proximity as
 /// self-guidance (label 14, re-aimed), and the end-trigger brake the ruling
-/// INVERTED (label 15).
+/// INVERTED (label 15). Indices 19–20 close the wave: protocol label 18's
+/// CONSTRUCTED ChurchTrackFull scenario (T13's disposition), and the batched
+/// canon ruling on **D3**, whose two clauses are the to-hand/to-area switch.
 ///
 /// **These are REGISTRY INDICES, and the protocol's scenario NUMBERS are
 /// tension LABELS** — the two do not line up and are not meant to (protocol §6's
 /// 2026-08-09 naming amendment: this array is dense, the labels are not). Each
 /// judgment scenario's doc names the label it answers for.
 ///
-/// The length is pinned by the type. Adding a twentieth scenario is a
+/// The length is pinned by the type. Adding a twenty-second scenario is a
 /// deliberate edit to this array and its `#[test]`; removing one of these
-/// nineteen is the thing the never-delete rule forbids, and it will not compile.
-const SCENARIOS: [(&str, ScenarioFn); 19] = [
+/// twenty-one is the thing the never-delete rule forbids, and it will not
+/// compile.
+const SCENARIOS: [(&str, ScenarioFn); 21] = [
     ("country-set completion", country_set_completion),
     ("order economics: fulfill now vs hold", order_economics_fulfill_now_vs_hold),
     ("end-trigger timing: the church clock", end_trigger_timing_church_clock),
@@ -302,21 +308,23 @@ const SCENARIOS: [(&str, ScenarioFn); 19] = [
     ("customs race: the rival's progress", customs_race_and_the_rivals_progress),
     ("achievement proximity as self-guidance", achievement_proximity_as_self_guidance),
     ("behind at the end trigger: keep building", behind_at_the_end_trigger_keeps_building),
+    ("2P church crossing in the ChurchTrackFull regime", two_player_church_crossing),
+    ("D3 to-hand: the empty-hand corner", d3_to_hand_is_only_for_the_empty_hand_corner),
 ];
 
-/// Spec §6's never-delete rule, plus the registry hygiene the nineteen
+/// Spec §6's never-delete rule, plus the registry hygiene the twenty-one
 /// `#[test]`s lean on: each test names both its index and its scenario name, so
 /// a reordering that silently re-pointed a test at a different scenario fails
 /// here and there.
 #[test]
-fn the_registry_holds_nineteen_uniquely_named_scenarios() {
+fn the_registry_holds_twenty_one_uniquely_named_scenarios() {
     assert_eq!(
         SCENARIOS.len(),
-        19,
+        21,
         "spec §6's eight categories plus the terminal-scoring scenario (suite v1's nine), \
          plus the Phase-3.5c round-1 growth's three, round 2's one, and the W4 growth wave's \
-         rules-derivable pair and canon judgment band; scenarios are never deleted (this file's \
-         header states the rule)",
+         rules-derivable pair, canon judgment band and closing pair; scenarios are never deleted \
+         (this file's header states the rule)",
     );
     let mut names: Vec<&str> = SCENARIOS.iter().map(|(n, _)| *n).collect();
     names.sort_unstable();
@@ -4633,6 +4641,511 @@ fn behind_at_the_end_trigger_keeps_building(rules: &Rules) -> Result<(), String>
 #[test]
 fn scenario_19_behind_at_the_end_trigger() {
     run(18, "behind at the end trigger: keep building");
+}
+
+// ---------------------------------------------------------------------------
+// 20. The 2P church crossing, in the ChurchTrackFull regime  (3.5c W4 —
+//     protocol label 18, CONSTRUCTED by T13's disposition)
+// ---------------------------------------------------------------------------
+
+/// [`WeightTable::V2_DRAFT`] with the `church_bonus_now` LATE weight restored to
+/// [`WeightTable::V1`]'s 16 — round 2's church down-pricing undone, one number
+/// moved, and nothing else touched.
+///
+/// §0.2's targeted mutation for scenario 20, and deliberately NARROWER than
+/// [`late_bonus_reprice_reverted`], which scenario 13 uses: that helper reverts
+/// BOTH slots of round 2's late crossing, and here the five-power slot is not
+/// part of the claim at all. What this scenario names is where the church term
+/// CROSSES ZERO on the 2P church clock, and that crossing is a function of the
+/// pair `(early, late)` alone — `interpolate(-4, L, p) = 0` at
+/// `p = 4,000,000 / (L + 4)`, i.e. 333,333 at the draft's `L = 8` and 200,000 at
+/// V1's `L = 16`. Moving the one number moves the crossing, which is exactly the
+/// decision this scenario is about.
+fn church_late_restored_to_v1() -> WeightTable {
+    let mut w = WeightTable::V2_DRAFT;
+    let (draft_early, _) = WeightTable::V2_DRAFT.get(Feature::ChurchBonusNow);
+    let (_, v1_late) = WeightTable::V1.get(Feature::ChurchBonusNow);
+    w.set(Feature::ChurchBonusNow, draft_early, v1_late);
+    w
+}
+
+/// **RULES.** The Church majority pays 6 VP to the most pawns and 3 to the
+/// second, count ties broken by the RIGHTMOST occupied space (rulebook p.9), and
+/// the board is also an end-game clock: 4 REAL pawns end a 2-player game
+/// (`GameConfig::track_trigger`; the D1 dummy on faith 7 is not counted by the
+/// trigger but IS a competitor in the majority, so a place it takes is consumed
+/// and awarded to nobody). At two players the clock therefore takes exactly five
+/// values — 0, 250,000, 500,000, 750,000 and full — one per real pawn.
+///
+/// **SEAT.** 0, in a 2-player game with a FULL order deck and empty everything
+/// else, so the CHURCH clock is the one that dates every position (asserted).
+///
+/// **PROTOCOL LABEL 18, and why it stays CONSTRUCTED.** Tension T13: every
+/// corpus in existence ends via `ChurchTrackFull` — 5-for-5, and 99.95% of the
+/// 3.3 freeze corpus's 2,000 games — which is a monoculture that MAY be 2P
+/// structural rather than a fact about play, so the protocol's disposition is
+/// that this scenario stays a CONSTRUCTED fixture and the monoculture is
+/// *"recorded as observation, never ceiling"* (protocol §5's T13 row). Nothing
+/// here is harvested from a game, and nothing here is a claim about how often
+/// that ending happens.
+///
+/// **WHAT IS NEW HERE, against scenario 3.** Scenario 3 pins the church term's
+/// SIGN FLIP, and its own doc records why it runs at FOUR players: *"at two
+/// players a single church pawn already reads the clock at 25% and the early
+/// stage this scenario needs cannot be constructed"*. That is true of the stage
+/// and false of the CROSSING, and the difference is the whole of this scenario.
+/// At 2P the flip is still visible — between the FIRST and the SECOND pawn —
+/// and it is visible only under the shipped candidate: `interpolate(-4, L, p)`
+/// crosses zero at `p = 4,000,000/(L+4)`, which is **333,333 at the draft's late
+/// 8** (between the first pawn's 250,000 and the second's 500,000) and
+/// **200,000 at V1's late 16** (BELOW the first pawn, so V1 never prices a 2P
+/// church lead negative at all). This scenario is therefore the 2P half of the
+/// church question, in the regime the bot actually lives in, and the D1 dummy is
+/// in the field — which scenario 3's 4P fixture structurally cannot exercise.
+///
+/// **PROPERTY.** Let `d(field) = score(the viewer leads the church) −
+/// score(the same pawns owned by the rival)`. Then
+/// `d(one real pawn) < 0 < d(three real pawns)` — scenario 3's device, at 2P.
+/// Measured under the candidate: **d = −12 at p = 250,000** (church weight −1)
+/// and **d = +60 at p = 750,000** (weight +5).
+///
+/// **THE ARITHMETIC, and why it is exactly `12 · w`.** Each field is a MIRROR:
+/// the same pawns on the same spaces, owned the other way round. Every feature
+/// but the church one therefore has the same viewer value and the same rival
+/// value in both members, so every other term cancels out of `d` exactly. In
+/// both fields the leading side takes the 6 and the DUMMY takes the second place
+/// — consumed, awarded to nobody — so the church values are `(6, 0)` in one
+/// member and `(0, 6)` in the other, and `d = w · (6 − 0) − w · (0 − 6) = 12w`.
+/// The dummy is load-bearing there: without it the trailing side would collect
+/// the 3 and `d` would be `6w` instead.
+///
+/// **FIXTURE HONESTY — the pawns are NOT deducted from either seat's
+/// assistants,** exactly as scenario 3's are not, and here that is required
+/// rather than merely tolerated: the two members of a field hold DIFFERENT
+/// numbers of church pawns, so accounting them into `on_church` would make the
+/// hand terms differ between the members as well as the church one, and `d`
+/// would stop being a statement about the church term alone. (Scenarios 16 and
+/// 17 do account their pawns, because there the two positions are different
+/// COMMITMENTS and the accounting is the honesty; here they are the same
+/// commitment held by different seats.) These are doctored views, which the
+/// header's doctoring declaration covers.
+///
+/// **WHICH TABLE, and this is the one W4 scenario that is genuinely
+/// table-DEPENDENT.** [`WeightTable::V2_DRAFT`], because the claim is about the
+/// candidate's own pricing: under V1 the early clause is FALSE by construction
+/// (the crossing sits below one pawn, so `d(one pawn)` reads **+12** there).
+/// That makes this scenario a second guard on round 2's church down-pricing, at
+/// a player count and a clock the round's own scenario 13 does not touch — 13
+/// dates its positions by the DECK clock and prices church against five-power,
+/// while this one is dated by the CHURCH clock and prices the term against
+/// itself at two stages. It re-points at the freeze commit with the rest of the
+/// draft-riding scenarios.
+///
+/// **COUNTERFACTUAL — the `church_bonus_now` LATE weight restored to V1's 16
+/// ([`church_late_restored_to_v1`]).** The crossing moves from 333,333 down to
+/// 200,000, i.e. below the first pawn, and the early clause inverts: a single
+/// church pawn at 2P is priced POSITIVE. Observed failing line, verbatim:
+///
+/// ```text
+/// ONE real pawn of the 2P trigger's four (p=250000, church weight 1): a church
+/// lead must still be priced NEGATIVE — this table crosses zero at 200000 ppm,
+/// and the 2P clock's first step is 250000 — leader 6, follower -6, d=12
+/// (church pair -4/16)
+/// ```
+fn two_player_church_crossing(rules: &Rules) -> Result<(), String> {
+    /// The D1 dummy's 2P church space.
+    const DUMMY_FAITH: u8 = 7;
+
+    let base = base_view(2, 29, rules);
+    let dummy_index = ChurchTrack::faith_to_index(DUMMY_FAITH).expect("faith 7 is on the track");
+    if !base.church_track.slots[dummy_index].is_some_and(|s| s.player.is_dummy()) {
+        return Err(format!(
+            "fixture: the 2P setup must place the church dummy on faith {DUMMY_FAITH} (D1) — it is \
+             what consumes the second place in both members of both fields"
+        ));
+    }
+    if base.church_track.total_assistants() != 0 {
+        return Err("fixture: a fresh 2P church track must carry no REAL pawn".into());
+    }
+
+    // (faith, owner). A field's two members are the same list with the two
+    // seats exchanged, so every non-church term cancels out of `d`.
+    let with_pawns = |owners: &[(u8, u8)]| -> Result<PlayerView, String> {
+        let mut v = base.clone();
+        for (n, (faith, seat)) in owners.iter().enumerate() {
+            let index = ChurchTrack::faith_to_index(*faith)
+                .ok_or_else(|| format!("fixture: faith {faith} is not a church space"))?;
+            if v.church_track.slots[index].is_some() {
+                return Err(format!("fixture: faith {faith} is occupied twice"));
+            }
+            v.church_track.slots[index] =
+                Some(ChurchSlot { player: PlayerId(*seat), arrival_order: n as u8 + 1 });
+        }
+        Ok(v)
+    };
+    let mirror = |owners: &[(u8, u8)]| -> Vec<(u8, u8)> {
+        owners.iter().map(|(faith, seat)| (*faith, 1 - *seat)).collect()
+    };
+
+    let one_pawn = [(11u8, 0u8)];
+    let three_pawns = [(11u8, 0u8), (10, 0), (5, 1)];
+    let early_leader = with_pawns(&one_pawn)?;
+    let early_follower = with_pawns(&mirror(&one_pawn))?;
+    let late_leader = with_pawns(&three_pawns)?;
+    let late_follower = with_pawns(&mirror(&three_pawns))?;
+
+    // The CHURCH clock must be the one dating both members of a field, and the
+    // two fields must sit at the two stages the doc names — one real pawn and
+    // three of the 2P trigger's four.
+    let stage = |a: &PlayerView, b: &PlayerView, label: &str, expect: u32| -> Result<(), String> {
+        let clocks = clock_ppm(a, rules);
+        let (pa, pb) = (progress_ppm(a, rules), progress_ppm(b, rules));
+        if pa != expect || pb != pa || clocks[1] != pa {
+            return Err(format!(
+                "fixture: {label}: the CHURCH clock must date BOTH members at {expect} ppm (the \
+                 mirror moves ownership, never occupancy), got {pa} and {pb} with clocks {clocks:?}"
+            ));
+        }
+        if view_is_terminal(a) || view_is_terminal(b) {
+            return Err(format!(
+                "fixture: {label}: neither member may be a finished game — the terminal ladder \
+                 short-circuits the weight vector this scenario is about"
+            ));
+        }
+        Ok(())
+    };
+    stage(&early_leader, &early_follower, "one pawn", 250_000)?;
+    stage(&late_leader, &late_follower, "three pawns", 750_000)?;
+
+    // The 6/0 shape, read off the structure: in BOTH fields the dummy takes the
+    // second place, so the trailing seat collects nothing and `d` is 12·w.
+    let awards = |v: &PlayerView| -> (i64, i64) {
+        let structure = ScoreStructure::derive(v, rules);
+        let value = |seat: u8| {
+            let row = v.players.iter().find(|p| p.id == PlayerId(seat)).expect("both seats");
+            structure.value_of(row, Feature::ChurchBonusNow)
+        };
+        (value(0), value(1))
+    };
+    let built = [
+        ("one-pawn leader", &early_leader, (6, 0)),
+        ("one-pawn follower", &early_follower, (0, 6)),
+        ("three-pawn leader", &late_leader, (6, 0)),
+        ("three-pawn follower", &late_follower, (0, 6)),
+    ];
+    for (label, view, want) in built {
+        let got = awards(view);
+        if got != want {
+            return Err(format!(
+                "fixture: the {label} position's church majority must read {want:?} for (viewer, \
+                 rival) — the D1 dummy consuming the second place is what makes the trailing side \
+                 zero — it read {got:?}"
+            ));
+        }
+    }
+
+    let check = |w: &WeightTable| -> Result<(), String> {
+        let (ce, cl) = w.get(Feature::ChurchBonusNow);
+        // Where THIS table's church term crosses zero. `interpolate` is linear,
+        // so `w(p) = 0` at `p = −early · 10^6 / (late − early)`. Computed rather
+        // than quoted, so the failure line stays true under the mutation — which
+        // moves the crossing, and is the whole of what the mutation does.
+        let crossing = if ce < 0 && cl > 0 {
+            format!("{}", (-ce * i64::from(PROGRESS_FULL_PPM)) / (cl - ce))
+        } else {
+            "nowhere (this pair does not change sign)".to_string()
+        };
+        let d = |a: &PlayerView, b: &PlayerView| score(a, rules, w) - score(b, rules, w);
+        let (d_early, d_late) = (
+            d(&early_leader, &early_follower),
+            d(&late_leader, &late_follower),
+        );
+        require(
+            d_early < 0,
+            format!(
+                "ONE real pawn of the 2P trigger's four (p=250000, church weight {}): a church \
+                 lead must still be priced NEGATIVE — this table crosses zero at {crossing} ppm, \
+                 and the 2P clock's first step is 250000 — leader {}, follower {}, d={d_early} \
+                 (church pair {ce}/{cl})",
+                interpolate(ce, cl, 250_000),
+                score(&early_leader, rules, w),
+                score(&early_follower, rules, w),
+            ),
+        )?;
+        require(
+            d_late > 0,
+            format!(
+                "THREE real pawns (p=750000, church weight {}): a church lead must be priced \
+                 POSITIVE — leader {}, follower {}, d={d_late} (church pair {ce}/{cl})",
+                interpolate(ce, cl, 750_000),
+                score(&late_leader, rules, w),
+                score(&late_follower, rules, w),
+            ),
+        )
+    };
+
+    admit(
+        SCENARIOS[19].0,
+        "the church_bonus_now LATE weight restored to V1's 16",
+        "a church lead must still be priced NEGATIVE",
+        check(&WeightTable::V2_DRAFT),
+        check(&church_late_restored_to_v1()),
+    )
+}
+
+#[test]
+fn scenario_20_two_player_church_crossing() {
+    run(19, "2P church crossing in the ChurchTrackFull regime");
+}
+
+// ---------------------------------------------------------------------------
+// 21. D3's to-hand corner  (3.5c W4 — the batched canon ruling on D3)
+// ---------------------------------------------------------------------------
+
+/// [`WeightTable::V1`] with the assistant CORE half priced at the EXCESS half's
+/// weights — the piecewise hand split collapsed back into ONE linear in-hand
+/// term, which is the shape the evaluator had before T3 and the shape L14 proved
+/// cannot have both halves of the assistant calculus.
+///
+/// §0.2's targeted mutation for scenario 21, and it is the historically real
+/// one rather than a zeroing: under a single linear in-hand term a placement's
+/// sign is exactly `k · (w_board − w_hand)`, so the same inequality has to serve
+/// both "a placement ever pays" and "a retreat sometimes pays" — one term cannot
+/// have both, and the pre-T3 table's choice of the retreat side is what made
+/// 2P greedy self-play place ZERO assistants and run to the turn cap
+/// ([`WeightTable`]'s doc, spec L14). Collapsing core onto excess picks the
+/// other side of that same trap: the reserve stops being worth more than a board
+/// presence, and returning the last assistant to an EMPTY hand stops paying.
+fn hand_split_collapsed_to_excess() -> WeightTable {
+    let mut w = WeightTable::V1;
+    let (early, late) = WeightTable::V1.get(Feature::AssistantsInHandExcess);
+    w.set(Feature::AssistantsInHandCore, early, late);
+    w
+}
+
+/// **RULES.** Finding **D3** (owner ruling 2026-08-08, guidingpath's 2026-08-08
+/// decision-log rows, `SEMANTICS_REV` 5→7): a movement icon MAY return an
+/// assistant to the OWNER'S HAND, and it stays there — the engine's move carries
+/// `MoveTarget::{Hand, Area}` for exactly that choice. **D3 is a deliberate
+/// PARITY divergence** from this project's own reading of the rulebook, adopted
+/// so bridged BGA games replay, with the disagreement RECORDED rather than
+/// resolved. Assistants are placed FROM HAND only, so a seat with an empty hand
+/// cannot place, cannot visit the Church and cannot visit Customs; assistants
+/// past [`HAND_CORE_RESERVE`] are spare tempo.
+///
+/// **SEAT.** 0, in a 2-player game at `p = 0` — a fresh deck and empty tracks,
+/// so the EARLY vector governs exactly. The two inequalities this scenario turns
+/// on hold at EVERY interpolation anyway, because the three weight bands do not
+/// overlap in either vector ([`WeightTable`]'s doc states that as the assistant
+/// triple's design), so the stage is a simplification and not a premise.
+///
+/// **THE CANON IT ENCODES — the D3 to-hand question, ruled ALMOST NEVER.** The
+/// owner, 2026-08-09 (guidingpath's canon-batch row): a movement icon is
+/// *"effectively a free action"* and *"shouldn't be wasted"*, so returning an
+/// assistant to hand is almost never the right target; **the one no-loss corner
+/// is having ~nothing in hand with those assistants going out next turn
+/// anyway** — and the ruling adds its own honest limit, that at a human table
+/// the corner also HIDES activity, an edge the engine cannot represent since
+/// hand counts are public in the view, *"so in-engine the corner is exactly
+/// neutral"*.
+///
+/// **PROPERTY**, four clauses — the switch, pinned on BOTH sides. (a) **THE
+/// CORNER:** with the hand EMPTY, returning the assistant to hand reads ABOVE
+/// leaving it in its area. (b) **EVERYWHERE ELSE:** with the reserve already
+/// held, moving the assistant to an AREA reads above returning it to hand.
+/// (c) and (d) are the two pairs' leak checks: (a) separates on exactly
+/// `assistants_in_hand_core` and `assistants_on_board`, and (b) on exactly
+/// `assistants_in_hand_excess` and `assistants_on_board`.
+///
+/// **THE ARITHMETIC — the draft's own triple is the switch.** The evaluator
+/// holds `core > on_board > excess` in both vectors (L14/T1's non-degeneracy
+/// condition, which protocol §4.2 forbids relaxing at any rung), and those two
+/// inequalities ARE the two clauses. (a)'s margin is
+/// `w_core · (+1) + w_board · (−1) = w_core − w_board`, i.e. `30 − 14 = +16`
+/// under the frozen table: the assistant fills the first slot of the reserve, so
+/// it is priced by the CORE half. (b)'s margin is
+/// `w_board · (+1) + w_excess · (−1) = w_board − w_excess = 14 − 4 = +10`: the
+/// reserve is already full, so the same token is priced by the EXCESS half and
+/// the board wins. One switch, two inequalities, no extra machinery.
+///
+/// **THE DIVERGENCE FROM THE CANON'S OWN WORDS, recorded rather than smoothed.**
+/// The ruling calls the corner *exactly neutral* in-engine; this rung prices it
+/// strictly POSITIVE, at +16. The reasoning differs, and the difference is
+/// legible: the canon's neutrality comes from the assistants *"going out next
+/// turn anyway"* — a turn-end recovery a ONE-PLY evaluator structurally cannot
+/// see — while what the evaluator prices is that an empty hand cannot act at
+/// all, which is L14's condition and the reason the split exists. So what this
+/// scenario pins is the SWITCH, which is the half the canon and the rung agree
+/// on: to-hand only in the corner the ruling names, to-area everywhere else. The
+/// magnitude at the corner is not claimed to match the ruling and is recorded
+/// here as differing.
+///
+/// **WHICH TABLE.** [`WeightTable::V1`], on this file's W4 rule — the ordering
+/// holds in both tables, so the claim is table-independent and rides the frozen
+/// one. **Recorded at authoring, not asserted:** under
+/// [`WeightTable::V2_DRAFT`] the two margins read **+24** and **+1**. The second
+/// figure is worth carrying to the freeze package: round 1 moved `assistants_on_board`
+/// early `14 → 6` and `assistants_in_hand_excess` early `4 → 5` — both INSIDE
+/// the ordering rather than through it — so the draft's early board and excess
+/// bands sit one point apart, and clause (b) survives by exactly that one point.
+/// It is not a violation of anything (the ordering is what is pinned, and it
+/// holds), but a re-pricing that closed the last point would turn a canon
+/// judgment into a tie, and this is the scenario that would say so.
+///
+/// **FIXTURE HONESTY — twenty tokens, all four positions.** Each position splits
+/// the seat's supply as `warehouse 12 + hand + area = 20`, asserted, so the pair
+/// really is one assistant moving between two places rather than a token
+/// appearing or vanishing (scenario 6's fixtures, by contrast, carry 16 and its
+/// doc says so).
+///
+/// **COUNTERFACTUAL — the hand split COLLAPSED, core priced at the excess half's
+/// weights ([`hand_split_collapsed_to_excess`]).** With one linear in-hand term
+/// the reserve stops outranking a board presence and the corner clause inverts;
+/// clause (b) is untouched, which is L14's point in one line — a single term
+/// cannot hold both ends. Observed failing line, verbatim:
+///
+/// ```text
+/// D3's ONE no-loss corner: with the hand EMPTY, a movement icon returning the
+/// assistant TO HAND must outrank sending it to an area — an empty hand cannot
+/// place, visit the Church or visit Customs — to-hand 68, to-area 78, margin
+/// -10 (early weights: core 4, board 14, excess 4)
+/// ```
+fn d3_to_hand_is_only_for_the_empty_hand_corner(rules: &Rules) -> Result<(), String> {
+    let base = base_view(2, 30, rules);
+    let area = *base.board_layout.areas.keys().next().ok_or("fixture: an empty board")?;
+    let supply = own_row(&base).assistants.total();
+
+    // One position: `in_hand` in hand, the rest of the seat's non-warehouse
+    // tokens working in one area. The movement icon's two targets are then two
+    // values of `in_hand` one apart.
+    let position = |in_hand: u8, working: u8| -> Result<PlayerView, String> {
+        let mut v = base.clone();
+        let me = viewer_mut(&mut v);
+        me.assistants.in_hand = in_hand;
+        me.assistants.on_board = BTreeMap::new();
+        if working > 0 {
+            me.assistants.on_board.insert(area, working);
+        }
+        if me.assistants.total() != supply {
+            return Err(format!(
+                "fixture: every position must hold the seat's whole {supply}-token supply \
+                 (warehouse {} + hand {in_hand} + area {working}), it holds {}",
+                me.assistants.in_warehouse,
+                me.assistants.total(),
+            ));
+        }
+        Ok(v)
+    };
+
+    // THE CORNER: the hand is empty, so the returning assistant fills the first
+    // slot of the reserve.
+    let corner_to_hand = position(1, 7)?;
+    let corner_to_area = position(0, 8)?;
+    // EVERYWHERE ELSE: the reserve is already held, so the same token is spare.
+    let stocked_to_hand = position(3, 5)?;
+    let stocked_to_area = position(2, 6)?;
+
+    let all = [
+        ("corner-to-hand", &corner_to_hand),
+        ("corner-to-area", &corner_to_area),
+        ("stocked-to-hand", &stocked_to_hand),
+        ("stocked-to-area", &stocked_to_area),
+    ];
+    for (label, view) in all {
+        let p = progress_ppm(view, rules);
+        if p != 0 {
+            return Err(format!(
+                "fixture: the {label} position must sit at p=0 so the EARLY vector governs \
+                 exactly, got {p}"
+            ));
+        }
+    }
+    // The CORNER is the corner, and the other field is not: the ruling's
+    // condition is about having ~nothing in hand, so it is asserted rather than
+    // implied by two numbers a reader has to compare.
+    for (label, view) in [("corner-to-hand", &corner_to_hand), ("corner-to-area", &corner_to_area)] {
+        let held = own_row(view).assistants.in_hand;
+        if held >= HAND_CORE_RESERVE {
+            return Err(format!(
+                "fixture: the {label} position must sit BELOW the {HAND_CORE_RESERVE}-token \
+                 reserve — that is the corner the ruling names — it holds {held}"
+            ));
+        }
+    }
+    for (label, view) in
+        [("stocked-to-hand", &stocked_to_hand), ("stocked-to-area", &stocked_to_area)]
+    {
+        let held = own_row(view).assistants.in_hand;
+        if held < HAND_CORE_RESERVE {
+            return Err(format!(
+                "fixture: the {label} position must hold the whole {HAND_CORE_RESERVE}-token \
+                 reserve, so the moved token is priced by the EXCESS half — it holds {held}"
+            ));
+        }
+    }
+
+    let check = |w: &WeightTable| -> Result<(), String> {
+        let at = |f: Feature| {
+            let (e, l) = w.get(f);
+            interpolate(e, l, 0)
+        };
+        let (core, board, excess) = (
+            at(Feature::AssistantsInHandCore),
+            at(Feature::AssistantsOnBoard),
+            at(Feature::AssistantsInHandExcess),
+        );
+        let (a, b) = (score(&corner_to_hand, rules, w), score(&corner_to_area, rules, w));
+        require(
+            a > b,
+            format!(
+                "D3's ONE no-loss corner: with the hand EMPTY, a movement icon returning the \
+                 assistant TO HAND must outrank sending it to an area — an empty hand cannot \
+                 place, visit the Church or visit Customs — to-hand {a}, to-area {b}, margin {} \
+                 (early weights: core {core}, board {board}, excess {excess})",
+                a - b,
+            ),
+        )?;
+        let (c, d) = (score(&stocked_to_area, rules, w), score(&stocked_to_hand, rules, w));
+        require(
+            c > d,
+            format!(
+                "and ALMOST NEVER otherwise: with the reserve already held, the same icon must \
+                 prefer the AREA — the returning token would be spare tempo and a movement icon \
+                 is a free action that should not be wasted — to-area {c}, to-hand {d}, margin {} \
+                 (early weights: core {core}, board {board}, excess {excess})",
+                c - d,
+            ),
+        )?;
+        let corner = separating_terms(&corner_to_hand, &corner_to_area, rules, w);
+        require(
+            corner == ["assistants_in_hand_core", "assistants_on_board"],
+            format!(
+                "the corner pair must separate on the reserve slot it fills and the area it \
+                 leaves, and on nothing else — it separated on {corner:?}"
+            ),
+        )?;
+        let stocked = separating_terms(&stocked_to_area, &stocked_to_hand, rules, w);
+        require(
+            stocked == ["assistants_in_hand_excess", "assistants_on_board"],
+            format!(
+                "the stocked pair must separate on the spare hand token and the area, and on \
+                 nothing else — it separated on {stocked:?}"
+            ),
+        )
+    };
+
+    admit(
+        SCENARIOS[20].0,
+        "the hand split collapsed — core priced at the excess half's weights",
+        "a movement icon returning the assistant TO HAND must outrank sending it to an area",
+        check(&WeightTable::V1),
+        check(&hand_split_collapsed_to_excess()),
+    )
+}
+
+#[test]
+fn scenario_21_d3_to_hand_corner() {
+    run(20, "D3 to-hand: the empty-hand corner");
 }
 
 // ---------------------------------------------------------------------------
