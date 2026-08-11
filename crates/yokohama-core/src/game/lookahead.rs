@@ -1275,7 +1275,7 @@ impl<R: Rng> Run<'_, R> {
         if children.len() <= beam {
             return; // no cut, no draw
         }
-        children.sort_by(|a, b| b.eval.cmp(&a.eval));
+        children.sort_by_key(|c| std::cmp::Reverse(c.eval));
         let cut = children[beam - 1].eval;
         let lo = children.partition_point(|n| n.eval > cut);
         let hi = children.partition_point(|n| n.eval >= cut);
@@ -1701,7 +1701,7 @@ fn allocation_order(eligible: &[Option<i64>], ties: &TieStream) -> Vec<usize> {
     // Stable so that the ONLY thing separating equal values is the keyed draw
     // below — an unstable sort would leak a second, unkeyed ordering into the
     // tied blocks.
-    order.sort_by(|&a, &b| value(b).cmp(&value(a)));
+    order.sort_by_key(|&x| std::cmp::Reverse(value(x)));
 
     let mut lo = 0;
     while lo < order.len() {

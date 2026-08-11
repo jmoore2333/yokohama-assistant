@@ -324,7 +324,7 @@ pub fn suggest(
     let mut ranking = agent.last_roots().to_vec();
     // Stable, so tied candidates keep the candidate scheme's own order and two
     // presses at one position cannot disagree about which tie is printed first.
-    ranking.sort_by(|a, b| b.value.cmp(&a.value));
+    ranking.sort_by_key(|e| std::cmp::Reverse(e.value));
 
     Ok(Suggestion {
         seat,
@@ -1333,7 +1333,7 @@ mod tests {
                 r.value = best - 1;
             }
         }
-        s.ranking.sort_by(|a, b| b.value.cmp(&a.value));
+        s.ranking.sort_by_key(|e| std::cmp::Reverse(e.value));
         assert_eq!(s.tied_at_top(), 1, "fixture: the tie must actually be broken");
 
         let untied = render_suggestion(&s, session.state(), session.rules());
