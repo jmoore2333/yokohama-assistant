@@ -116,7 +116,7 @@
 //!
 //! **T4 SUPPLIED THAT REPRESENTATIVE MEAN** (`examples/eval_probe`, release,
 //! per-move invariants ON, diagnostic master `0xE7A1_2026_0727_0001`): 2P
-//! Greedy-vs-Greedy under the FROZEN [`WeightTable::V1`] runs **27.50
+//! Greedy-vs-Greedy under the then-frozen [`WeightTable::V1`] ran **27.50
 //! candidates/decision** over 1,051,752 decisions in 2,000 games — the
 //! single-game 27.91 above was representative after all. At 4P the same
 //! measurement over 50 games reads **64.78** candidates/decision, and the
@@ -132,7 +132,9 @@
 //! and none contradicted, its magnitudes still hand-set;
 //! `docs/plans/2026-07-27-phase3.3-weight-freeze.md` is the record, and
 //! `nonzero_recovery_is_sometimes_the_argmax_under_the_frozen_table` is the
-//! per-edit falsifier the freeze's recovery measurement set the floor for. Every
+//! falsifier the freeze's recovery measurement set the floor for — RELEASE-TIER
+//! since 2026-08-09 (the FIFTEENTH gate, `cargo test --release -p yokohama-core
+//! --lib -- --ignored`; owner ruling, see that test's own doc). Every
 //! weight in [`score_starting_order`]'s own vocabulary remains hand-set and
 //! UNMEASURED — spec §8's own terms, revisited at 3.5.
 
@@ -169,7 +171,16 @@ use crate::types::{AreaId, Country, GameState, Move, OrderCard, OrderCardId, Pla
 /// embeds the evaluator, honestly: comparability is the criterion, not
 /// authorship. `POLICY_IMPL_VERSION` is a different controller family's const
 /// and is untouched by anything here.
-pub const GREEDY_IMPL_VERSION: u32 = 1;
+///
+/// **2 = THE PHASE-3.5c v2 FREEZE** (2026-08-10). This rung's default weights
+/// moved from `WeightTable::V1` to `WeightTable::V2` and the evaluator's
+/// achievement feature gained T3's post-claim filter, so a Greedy-v1 seat plays
+/// differently at identical knobs — every figure recorded at version 1 is
+/// non-comparable forward. The controller NAME does not move
+/// ([`GREEDY_CONTROLLER`] is still `greedy-v1`): the runner grammar names
+/// controllers, not versions, and re-naming it would break every committed cell
+/// command for a change the version const exists to record.
+pub const GREEDY_IMPL_VERSION: u32 = 2;
 
 /// The stable controller name — provenance, runner grammar and corpus filters
 /// all read it from here rather than hand-typing it (the `RolloutPolicy::as_str`
@@ -662,11 +673,12 @@ pub struct GreedyAgent {
 }
 
 impl GreedyAgent {
-    /// Greedy-v1 at the shipped knobs: [`WeightTable::V1`] and
-    /// `M` = [`DEFAULT_RETREAT_SAMPLES`]. `agent_seed` is the PLAY stream — key
-    /// it with [`agent_stream_seed`](crate::game::arena::agent_stream_seed).
+    /// Greedy-v1 at the shipped knobs: [`WeightTable::V2`] (the v2 freeze's
+    /// table — `V1` until 2026-08-10) and `M` = [`DEFAULT_RETREAT_SAMPLES`].
+    /// `agent_seed` is the PLAY stream — key it with
+    /// [`agent_stream_seed`](crate::game::arena::agent_stream_seed).
     pub fn new(rules: &Rules, agent_seed: u64) -> Self {
-        Self::with_weights(rules, WeightTable::V1, DEFAULT_RETREAT_SAMPLES, agent_seed)
+        Self::with_weights(rules, WeightTable::V2, DEFAULT_RETREAT_SAMPLES, agent_seed)
     }
 
     /// Greedy-v1 with an explicit weight table and `M`. The weight parameter is
@@ -868,15 +880,29 @@ mod tests {
     ///
     /// # Two owner-visible costs of that re-size, stated rather than absorbed
     ///
-    /// 1. DEBUG WALL 23 s → ~110 s (0.36 s/game, measured at HEAD). That is a
-    ///    real per-edit-loop regression, and by the two-tier policy's own
-    ///    logic this test is now shaped like a release-tier
-    ///    distributional/regression-net property rather than a per-edit
-    ///    correctness one. Demoting it would ADD A FIFTEENTH GATE to the
-    ///    documented roster (a `--release --lib … -- --ignored` command plus
-    ///    rows at the four doc sites), which is a roster change and therefore
-    ///    an OWNER call — flagged in the rev-7 branch report, deliberately not
-    ///    taken here.
+    /// 1. DEBUG WALL 23 s → ~110 s (0.36 s/game, measured at HEAD). That was a
+    ///    real per-edit-loop regression, and by the two-tier policy's own logic
+    ///    this test is shaped like a release-tier distributional/regression-net
+    ///    property rather than a per-edit correctness one. **THE OWNER CALL
+    ///    FLAGGED HERE HAS NOW BEEN TAKEN: demoted 2026-08-09 by owner ruling
+    ///    (guidingpath's 2026-08-09 rulings row, OD-6 arm 1) to the FIFTEENTH
+    ///    release gate** — `cargo test --release -p yokohama-core --lib --
+    ///    --ignored`, which is the whole gate because this is the ONLY
+    ///    `#[ignore]`d test in the core lib (it runs exactly 1 test; a second
+    ///    one arriving here must be added to that gate's doc rows or it rides
+    ///    in unannounced). Rows at CLAUDE.md, README, guidingpath and the
+    ///    phase-3 map §4 carry it, and OD-6 arm 2 DEFERRED the roster-target
+    ///    restatement: the ≤420s target stands. MEASURED at the demotion
+    ///    (2026-08-09, branch `phase3.5c-strength`, warm builds, one agent,
+    ///    sequential): `cargo test -p yokohama-core` **191.11 s → 89.18 s**,
+    ///    with a second warm AFTER reading of **102.68 s** on a busier machine
+    ///    — so read the saving as **−88 to −102 s**, not as one number (the lib
+    ///    binary alone 124.80 s → 20.23 s, and the falsifier measured ALONE is
+    ///    113.01 s debug against ~7 s release). The new release gate reads
+    ///    **7.02 / 6.84 / 7.00 s** across three runs — the same 3
+    ///    picks / 169,014 applied moves / share 0.000018 the debug run read, so
+    ///    the tier move changed the wall and nothing else. The test's CONTENT
+    ///    did not move — tier only.
     /// 2. The margin ceiling is STRUCTURAL, so do not chase rev 6's. The floor
     ///    is defined as half the corpus share, so ANY long prefix converges to
     ///    ~2× the floor by construction; rev 6's 6.1× was an early-cluster
@@ -914,7 +940,28 @@ mod tests {
     /// carry-over. rev 6 → rev 7 moved the corpus share slightly UPWARD; the
     /// re-size of [`RECOVERY_SAMPLE_GAMES`] above is about WHERE the events
     /// fall in the seeded walk, not about the rate.
-    const RECOVERY_SHARE_FLOOR_2P: f64 = 0.00001;
+    ///
+    /// **RE-MEASURED AT THE v2 WEIGHT FREEZE (2026-08-10), and this time the
+    /// constant MOVES: 0.00001 → 0.00002.** The freeze is exactly the kind of
+    /// event this floor has to be re-derived for — round 1 re-priced TWO of the
+    /// three assistant-triple slots this falsifier is about (`assistants_on_board`
+    /// early 14 → 6 and `assistants_in_hand_excess` early 4 → 5, inside the
+    /// L14 ordering rather than through it), which widens `w_core − w_board`
+    /// early from 16 to 24 and makes recovering into an empty hand pay MORE.
+    /// The re-measure confirms the direction: same command with the shipped
+    /// table named explicitly, `cargo run --release -p yokohama-core --example
+    /// eval_probe -- run 2 2000 --master 0xE7A1202607270001 --weights v2
+    /// --blocks counters`, reads **61 nonzero-recovery picks in 1,136,316
+    /// applied moves, share 0.000054** (against V1's 40 / 1,099,281 =
+    /// 0.000036 at the same master and rev). Half, rounded DOWN to one
+    /// significant figure: **0.00002**.
+    ///
+    /// Raising a floor is the direction that can only ever make a gate stricter,
+    /// and it is taken here because the pattern's own rule says half the CURRENT
+    /// corpus share — a floor left at 0.00001 would be half of a share the
+    /// shipped table no longer produces, i.e. a gate quietly loosened by a
+    /// re-pricing.
+    const RECOVERY_SHARE_FLOOR_2P: f64 = 0.00002;
 
     // -- fixtures -------------------------------------------------------------
 
@@ -1695,8 +1742,8 @@ mod tests {
     }
 
     /// The DRIVEN half of the T3 discharge: a 2P Greedy-vs-Greedy game under the
-    /// shipped [`WeightTable::V1`] completes inside the cap and puts
-    /// assistants on the board.
+    /// SHIPPED table — [`WeightTable::V2`] since the 2026-08-10 v2 freeze —
+    /// completes inside the cap and puts assistants on the board.
     ///
     /// **This test's whole content is that its predecessor's observation is no
     /// longer reproducible.** Before the hand split, this exact call returned
@@ -1705,8 +1752,12 @@ mod tests {
     /// at every Placement point. That is quoted here rather than deleted: it is
     /// the measurement the split was made against, and a future re-pricing that
     /// re-broke the ordering would land back on it. Measured after the split, at
-    /// the same master and cap: **turns 42 · moves 274 · assistants placed 58 ·
-    /// 27.91 candidates/decision**. Only `placed > 0` and `turns < CAP` are
+    /// the same master and cap, under `V1`: **turns 42 · moves 274 · assistants
+    /// placed 58 · 27.91 candidates/decision**. RE-MEASURED at the v2 freeze,
+    /// same master and cap, under `V2`: **turns 70 · moves 423 · assistants
+    /// placed 65 · 25.60 candidates/decision** — a longer game with more
+    /// placement, which is the direction the early re-mix predicts and is
+    /// recorded rather than asserted. Only `placed > 0` and `turns < CAP` are
     /// asserted; the rest is printed, because the figures are properties of one
     /// master and one game rather than of the rung.
     ///
@@ -1717,15 +1768,16 @@ mod tests {
     #[test]
     fn the_shipped_table_plays_a_game_that_places_assistants_and_ends() {
         const CAP: u32 = 1_500;
-        let (stats, tallies) = greedy_selfplay_2p(WeightTable::V1, MASTER, CAP)
+        let (stats, tallies) = greedy_selfplay_2p(WeightTable::V2, MASTER, CAP)
             .expect("the shipped table must play a game that ENDS, not one that caps out");
 
         let placed = assistants_placed(&stats);
         // RECORDED, never asserted beyond "> 0": the exact figures are a
         // property of this master and this one game. T4 re-measured the same
         // shape over 2,000 games and 1,051,752 applied moves and read 27.50
-        // candidates/decision, so the single-game 27.91 below is representative
-        // rather than lucky — but it is still one game.
+        // candidates/decision, so the V1-era single-game 27.91 was
+        // representative rather than lucky — but it was still one game, and the
+        // 25.60 this prints at V2 has had no such corpus-scale companion.
         let scored: u64 = tallies.iter().map(|t| t.candidates_scored()).sum();
         let decisions: u64 = tallies.iter().map(|t| t.explained()).sum();
         println!(
@@ -1772,35 +1824,69 @@ mod tests {
     ///
     /// # The floor is MEASURED, then halved (the house pattern)
     ///
-    /// The rev-7 frozen-table corpus — 2,000 games, 1,099,281 applied moves,
-    /// `cargo run --release -p yokohama-core --example eval_probe -- run 2 2000
-    /// --master 0xE7A1202607270001`, re-run 2026-08-08 at `SEMANTICS_REV` 7 —
-    /// read **40 nonzero-recovery picks, share 0.000036** (rev 6 read 36 /
-    /// 1,087,155 = 0.000033; T4's rev-5 reading was 739 / 1,051,752 =
-    /// 0.000703, and that ~20× drop happened at rev 6, not here).
-    /// [`RECOVERY_SHARE_FLOOR_2P`] is half of the rev-7 share, rounded down
+    /// **The corpus is re-measured whenever the SHIPPED table moves, and the v2
+    /// weight freeze (2026-08-10) is the latest such move.** At `SEMANTICS_REV`
+    /// 7 under `WeightTable::V2`, `cargo run --release -p yokohama-core
+    /// --example eval_probe -- run 2 2000 --master 0xE7A1202607270001 --weights
+    /// v2 --blocks counters` reads **61 nonzero-recovery picks in 1,136,316
+    /// applied moves, share 0.000054**. The V1 reading at the same master and
+    /// rev was 40 / 1,099,281 = 0.000036 (rev 6: 36 / 1,087,155 = 0.000033;
+    /// T4's rev-5: 739 / 1,051,752 = 0.000703, that ~20× drop happening at rev
+    /// 6). [`RECOVERY_SHARE_FLOOR_2P`] is half the CURRENT share rounded down
     /// to one significant figure, exactly as `policy_diversity`'s coverage
-    /// floors are set — it re-derives to the same 0.00001 rev 6 set. The
-    /// sample here is the FIRST THREE HUNDRED AND TWELVE GAMES OF THAT SAME
+    /// floors are set — **0.00002 since the freeze**, and that constant's own
+    /// doc carries why the freeze had to move it.
+    ///
+    /// The sample here is the FIRST THREE HUNDRED AND TWELVE GAMES OF THAT SAME
     /// CORPUS (same master, same schedule, same agent keying; only the
     /// per-move invariant check is off, which does not touch play), so its
     /// share is a prefix of the published figure rather than a second
-    /// measurement: **3 picks in 169,014 applied moves, share 0.000018 —
-    /// 1.78× the floor.**
+    /// measurement: **7 picks in 175,782 applied moves, share 0.000040 —
+    /// 2.0× the floor.** (Under V1 it read 3 picks in 169,014, share 0.000018,
+    /// 1.78× the then-floor.)
     ///
-    /// Three events is a thin sample and this doc says so rather than dressing
-    /// it up. The CORPUS is the measurement; this is the per-edit tripwire that
+    /// Seven events is still a thin sample and this doc says so rather than
+    /// dressing it up. The CORPUS is the measurement; this is the tripwire that
     /// the behaviour still exists, sized by the smallest seeded prefix that
-    /// contains events with any margin at all. A red here means "re-run the
-    /// probe", not "the number moved".
+    /// contained events with any margin at all when it was sized. A red here
+    /// means "re-run the probe", not "the number moved".
     ///
-    /// DO NOT read 1.78× as a regression against rev 6's 6.1×. The floor is
-    /// DEFINED as half the corpus share, so a long prefix converges to ~2× the
-    /// floor by construction and ~2× is the ceiling, not the failure case;
-    /// rev 6's 6.1× came from a 64-game window that happened to catch an early
-    /// cluster. See [`RECOVERY_SAMPLE_GAMES`] for the full rev-7 cumulative
-    /// readings, the 23 s → ~110 s debug-wall cost, and the owner question
-    /// that cost raises (demote to a fifteenth release gate?).
+    /// DO NOT read 2.0× as an improvement over rev 7's 1.78×, and do not read
+    /// either against rev 6's 6.1×. The floor is DEFINED as half the corpus
+    /// share, so a long prefix converges to ~2× the floor BY CONSTRUCTION and
+    /// ~2× is the ceiling rather than a healthy margin to celebrate; rev 6's
+    /// 6.1× came from a 64-game window that happened to catch an early cluster.
+    /// See [`RECOVERY_SAMPLE_GAMES`] for the full rev-7 cumulative readings and
+    /// the 23 s → ~110 s debug-wall cost that led to the demotion below.
+    ///
+    /// # RELEASE-TIER: THE FIFTEENTH GATE (demoted 2026-08-09, owner ruling)
+    ///
+    /// `cargo test --release -p yokohama-core --lib -- --ignored` — the
+    /// documented gate command, run before merges and phase closes with the
+    /// other fourteen. The ruling is guidingpath's 2026-08-09 rulings row
+    /// (OD-6 arm 1, the in-source flag at [`RECOVERY_SAMPLE_GAMES`] naming the
+    /// call that has now been made); arm 2 deferred the roster-target
+    /// restatement, so ≤420s stands. This is the ONLY `#[ignore]`d test in the
+    /// core lib, so that command runs EXACTLY 1 test — the four doc rows all
+    /// say so, and a second ignored lib test arriving later must update them.
+    ///
+    /// **There is deliberately NO small-N per-edit smoke of this property, and
+    /// that is the opposite of every other gate binary's habit** (`arena_gate`,
+    /// `policy_diversity`, `evaluator_gate` and `architecture_gate` each keep a
+    /// never-`#[ignore]`d smoke so a release-only binary cannot rot invisibly).
+    /// The reason is that here the SAMPLE SIZE *IS* THE POWER: the statistic is
+    /// ~7 events per ~176,000 applied moves (≈4 per 100,000), so any N small enough to
+    /// be per-edit reads zero from a HEALTHY table and would have to assert
+    /// nothing to stay green — a smoke that cannot go red for the defect it
+    /// names. That is exactly `policy_diversity`'s frozen-floor precedent,
+    /// stated there in the same words: the gate's discriminating power IS its
+    /// N, which is why its smoke deliberately omits that cell while keeping the
+    /// others. Rot protection here comes from the doc rows plus the fact that
+    /// the lib binary itself is never release-only. The per-edit tier keeps the
+    /// OTHER guards on the assistant triple unmoved: `eval.rs`'s ordering pin
+    /// `the_hand_split_orders_core_above_board_above_excess_in_both_vectors`
+    /// and the one-ply cells, which is what still catches an L14 ordering break
+    /// on every edit.
     ///
     /// # SCOPED TO 2P, deliberately
     ///
@@ -1812,10 +1898,12 @@ mod tests {
     ///
     /// # MUTATION-PROVEN (reverted by inverse edit, never `git checkout` — L7)
     ///
-    /// Re-pricing `WeightTable::V1`'s `assistants_in_hand_core` from `(30, 20)`
-    /// to `(9, 9)` — below `assistants_on_board`'s `(14, 10)`, i.e. breaking the
-    /// L14 ordering in the one direction that makes recovering into an empty
-    /// hand a strict loss — drives the sample to zero and fails this test:
+    /// Re-pricing the shipped table's `assistants_in_hand_core` from `(30, 20)`
+    /// to `(9, 9)` — below `assistants_on_board`, i.e. breaking the L14 ordering
+    /// in the one direction that makes recovering into an empty hand a strict
+    /// loss — drives the sample to zero and fails this test. (Run at V1 and at
+    /// its then-floor 0.000300 over 8 games; the mutation is a statement about
+    /// the ORDERING, which both tables hold, so it was not re-run at V2:)
     ///
     /// ```text
     /// §2.5 falsifier, 8 seeded 2P games (722 turns, 4738 applied moves): 0
@@ -1832,6 +1920,7 @@ mod tests {
     /// would have noticed. Zero recoveries is invisible to every other pin
     /// here, which is why this one exists.
     #[test]
+    #[ignore = "release-tier gate 15: cargo test --release -p yokohama-core --lib -- --ignored"]
     fn nonzero_recovery_is_sometimes_the_argmax_under_the_frozen_table() {
         let mut schedule = SeedSchedule::diagnostic(FREEZE_MASTER);
         let mut applied = 0u64;
@@ -1839,7 +1928,7 @@ mod tests {
         let mut turns = 0u32;
         for _ in 0..RECOVERY_SAMPLE_GAMES {
             let seed = schedule.next_world();
-            let (stats, _) = greedy_selfplay_2p(WeightTable::V1, seed.0, HONEST_MAX_TURNS)
+            let (stats, _) = greedy_selfplay_2p(WeightTable::V2, seed.0, HONEST_MAX_TURNS)
                 .expect("the frozen table must play games that END");
             applied += stats.coverage.applied();
             nonzero += stats.coverage.nonzero_recovery_retreats();
@@ -2069,8 +2158,16 @@ mod tests {
         assert_eq!(p.params["placement_cap"], PLACEMENT_CANDIDATE_CAP as i64);
         assert_eq!(
             p.params["weights"],
-            weight_table_identity(&WeightTable::V1),
+            weight_table_identity(&WeightTable::V2),
             "the params map identifies the weight table it actually evaluates with",
+        );
+        // The SHIPPED table is what `::new` takes, and naming it here is the
+        // point of the pin: it moved V1 -> V2 at the 2026-08-10 v2 freeze, and a
+        // constructor that quietly fell back to V1 would fail exactly here.
+        assert_ne!(
+            weight_table_identity(&WeightTable::V2),
+            weight_table_identity(&WeightTable::V1),
+            "anti-vacuity: the two frozen tables must be distinguishable at all",
         );
 
         // A different table is a different identity, and the same table twice is

@@ -1,7 +1,8 @@
 //! **MCTS-v1** — the UCT contestant of the Phase 3.4 architecture experiment
 //! (spec §2, §3.1–§3.3). A fresh tree per decision over ONE
 //! [`BeliefSampler`]-sampled world, expanded one node per simulation, valued by
-//! the frozen [`WeightTable::V1`] evaluator at the leaf and by the official
+//! the frozen weight table's evaluator at the leaf (`WeightTable::V1` when 3.4
+//! ran, `V2` since the 2026-08-10 freeze) and by the official
 //! ranking at a terminal.
 //!
 //! # The honest chain, verbatim (spec §3.1)
@@ -431,12 +432,32 @@ pub const MCTS_CONTROLLER: &str = "mcts-v1";
 /// [`LOOKAHEAD_IMPL_VERSION`](crate::game::lookahead::LOOKAHEAD_IMPL_VERSION)
 /// and `GREEDY_IMPL_VERSION` carry it).
 ///
-/// Bump it when a change moves what an `mcts-v1` seat PLAYS at fixed knobs; a
-/// weight-table change is NOT such a change (it rides `weights=<identity>` in
-/// the params map — spec §0.5 / L12), and neither is a change confined to
-/// counters or explanations. A bump stops figure comparability across the
-/// boundary, which is exactly what it is for.
-pub const MCTS_IMPL_VERSION: u32 = 1;
+/// Bump it when a change moves what an `mcts-v1` seat PLAYS at fixed knobs — a
+/// change confined to counters or explanations is not such a change. A bump
+/// stops figure comparability across the boundary, which is exactly what it is
+/// for.
+///
+/// **2 = THE PHASE-3.5c v2 FREEZE** (2026-08-10): the default weights moved
+/// `WeightTable::V1` → `WeightTable::V2` and the evaluator's achievement feature
+/// gained T3's post-claim filter, so every value this tree backs up moved.
+///
+/// **THE BUMP RULE WAS CORRECTED HERE, and the correction is worth reading
+/// rather than skipping.** Until this freeze this doc said a weight-table change
+/// is NOT a bump for this controller, on the grounds that the table's identity
+/// already rides `weights=<identity>` in the params map. That is a real
+/// argument and the OTHER two controllers' consts always disagreed with it in
+/// writing (`GREEDY_IMPL_VERSION` and
+/// [`LOOKAHEAD_IMPL_VERSION`](crate::game::lookahead::LOOKAHEAD_IMPL_VERSION)
+/// both say "the evaluator weights it embeds" in their own bump rules), so the
+/// tree carried two answers to one question. The v2 protocol §7 settled it by
+/// naming all four consts — GREEDY, LOOKAHEAD, ATOMIC_DIAG, MCTS — and the
+/// reason is L12's own criterion: **comparability, not authorship.** An
+/// `mcts-v1@750` figure measured at `V1` is not comparable with one measured at
+/// `V2`, and a reader who has to join a params map to discover that is a reader
+/// the version const failed. The identity digest stays where it is; it answers
+/// the finer question of WHICH table, not the coarse one of whether two records
+/// may be pooled.
+pub const MCTS_IMPL_VERSION: u32 = 2;
 
 /// Simulations per decision. **A placeholder default with no strength claim
 /// behind it**: the experiment sizes the search from the shared
@@ -483,7 +504,7 @@ pub const DEFAULT_EXPLORATION_PPM: u32 = 1_414_214;
 /// [`squash`] reads 0.75.
 ///
 /// **Measured grounds** (authoring measurement, release, `Rules::standard()`,
-/// the frozen `WeightTable::V1`, 2P, a Greedy-v1 walk of the first 300 moves at
+/// the then-frozen `WeightTable::V1`, 2P, a Greedy-v1 walk of the first 300 moves at
 /// master `0x1EA4_2026_0727_0001`, the shipped candidate scheme at
 /// `M = 8`, 116 decision points offering >1 candidate; an out-of-gate harness
 /// run at authoring — nothing below is asserted anywhere). The quantity that
@@ -2521,7 +2542,7 @@ impl MctsAgent {
             squash_scale: DEFAULT_SQUASH_SCALE,
             leaf: LeafRule::default(),
             cap: None,
-            weights: WeightTable::V1,
+            weights: WeightTable::V2,
             rng: ChaCha8Rng::seed_from_u64(agent_seed),
             agent_seed,
             keep_scores: rules
@@ -2619,9 +2640,11 @@ impl MctsAgent {
         self
     }
 
-    /// The weights this agent evaluates with. Spec §0.5 freezes
-    /// [`WeightTable::V1`] for the whole experiment; the setter exists for
-    /// fixtures and for whatever bumps the controller version later.
+    /// The weights this agent evaluates with. Spec §0.5 froze
+    /// [`WeightTable::V1`] for the 3.4 experiment; the Phase-3.5c v2 freeze
+    /// moved the default to [`WeightTable::V2`] and bumped
+    /// [`MCTS_IMPL_VERSION`] with it, which is what that const's own rule now
+    /// requires. The setter exists for fixtures and for the next such move.
     pub fn with_weights(mut self, weights: WeightTable) -> Self {
         self.weights = weights;
         self
@@ -4180,6 +4203,17 @@ mod tests {
         // each rules-parity ruling (every one moves the seeded greedy walk;
         // it drifted 2 -> 4 -> 3 -> 2 across the rev-6 set, then 2 -> 5 at
         // rev 7's D6); probe adjacent values if a future rev drifts it again.
+        //
+        // **A WEIGHT FREEZE MOVES THIS WALK TOO** — `GreedyAgent::new` below
+        // takes the shipped table, so the 2026-08-10 v2 freeze (V1 -> V2 plus
+        // T3's post-claim filter) re-drew every step of it. The SEARCH under
+        // test still runs `&WeightTable::V1` two lines down, deliberately —
+        // only the WALK moved, not the fixture's table (freeze review NOTE-3).
+        // `back = 5` was RE-VERIFIED there rather than re-probed: the premise below
+        // (`terminal_nodes > 0`) still holds and the budget still goes unspent,
+        // so the fixture survived a change that had been mapped as likely to
+        // break it. Do not read that as robustness — it is one value surviving
+        // one move of a walk it has no principled relation to.
         // The rev-7 sweep over back = 1..=10 found exactly TWO qualifying
         // points, 5 and 6 (every other value reaches 0 terminal nodes); 5 is
         // taken as the nearer, and it spends 546 of the 10,000 budget against
@@ -4736,7 +4770,10 @@ mod tests {
         assert_eq!(agent.knobs(), knobs, "the agent will run a different search than it was given");
         assert_eq!(
             ArenaAgent::controller(&agent),
-            controller_provenance(knobs, &WeightTable::V1, Some(0xABCD)),
+            // V2 since the 2026-08-10 freeze: `MctsAgent::new` (which
+            // `with_knobs` builds on) takes the SHIPPED table, so the free
+            // descriptor has to be handed the same one or the two disagree.
+            controller_provenance(knobs, &WeightTable::V2, Some(0xABCD)),
             "the agent and the free descriptor disagree about what it is",
         );
     }

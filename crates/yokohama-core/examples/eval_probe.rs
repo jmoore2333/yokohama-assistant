@@ -5,11 +5,11 @@
 //! figure below is a statement about the SAME games:
 //!
 //!   * **(a) generate** a self-play corpus under a NAMED contestant — Greedy-v1
-//!     through the honest arena driver, or a [`RolloutPolicy`] rung through the
-//!     raw-state driver (legitimate here: the bot is not the subject, which is
-//!     research-notes R1's own harness disposition) — at a given player count,
-//!     game count and master, snapshotting **every seat's view at every turn
-//!     start**;
+//!     or Lookahead-v1 through the honest arena driver, or a [`RolloutPolicy`]
+//!     rung through the raw-state driver (legitimate here: the bot is not the
+//!     subject, which is research-notes R1's own harness disposition) — at a
+//!     given player count, game count and master, snapshotting **every seat's
+//!     view at every turn start**;
 //!   * **(b) per-feature AUC** against the eventual winner, on R1's design:
 //!     game-aggregated cells (game × seat × stage tercile), a **game-clustered**
 //!     bootstrap for the interval, and EARLY / **MID** / LATE reported for every
@@ -20,7 +20,11 @@
 //!     says how many steps the "continuous" proxy actually has);
 //!   * **(d) behavioural counters** — the §2.5 nonzero-recovery pick share, the
 //!     §3.3 placement cap-bind count, the game-length distribution and the
-//!     end-trigger mix.
+//!     end-trigger mix, plus (on a searching contestant) the spec §0.3(b)
+//!     per-seat explained-equals-applied identity and the two search guards
+//!     `ply_cap_hits` / `free_cap_hits`, which are RECORDED and never asserted:
+//!     this is an instrument, and the gate that asserts them is
+//!     `tests/evaluator_gate.rs`.
 //!
 //! # Two things this instrument is careful about
 //!
@@ -61,6 +65,8 @@
 //!     run 2 2000 --contestant greedy-v1 --master 0xE7A1202607270001
 //! cargo run --release -p yokohama-core --example eval_probe -- \
 //!     run 2 200 --contestant family-weighted --blocks proxy
+//! cargo run --release -p yokohama-core --example eval_probe -- \
+//!     run 2 400 --contestant lookahead-v1 --master 0xE7A1202608090001
 //! cargo run --release -p yokohama-core --example eval_probe -- table
 //! ```
 //!
@@ -74,39 +80,108 @@ use rand::{Rng, SeedableRng};
 use rand_chacha::ChaCha8Rng;
 
 use yokohama_core::game::eval::{
-    progress_ppm, score, Feature, ScoreStructure, WeightTable, PROGRESS_FULL_PPM,
+    achievement_progress, achievement_progress_postclaim_sum, interpolate, progress_ppm, score,
+    view_is_terminal, Feature, ScoreStructure, WeightTable, PROGRESS_FULL_PPM,
 };
+// `DEFAULT_RETREAT_SAMPLES` is deliberately NOT imported here: since the parse
+// delegates to `Contestant::from_str_name`, every default this file used to type
+// comes off that grammar's own consts instead. The tests import it to pin them.
 use yokohama_core::game::greedy::{
-    weight_table_identity, ExplanationTally, GreedyAgent, DEFAULT_RETREAT_SAMPLES,
-    GREEDY_CONTROLLER,
+    weight_table_identity, ExplanationTally, GreedyAgent, GREEDY_CONTROLLER,
+};
+use yokohama_core::game::lookahead::{
+    LookaheadAgent, SearchScheme, SearchTally, LOOKAHEAD_CONTROLLER,
 };
 use yokohama_core::{
     agent_stream_seed, finalize_setup, new_game, observe, replay_from, run_arena_game,
-    run_raw_game, ArenaGameStats, GameState, PlayerId, PlayerView, QuantileSketch, RolloutPolicy,
-    Rules, SeedSchedule, SeedScheduleKind, Slot, TriggerTally, WorldSeed, SEMANTICS_REV,
+    run_raw_game, ArenaAgent, ArenaGameStats, Contestant, GameState, PlayerId, PlayerView,
+    QuantileSketch, RolloutPolicy, Rules, SeedSchedule, SeedScheduleKind, Slot, TriggerTally,
+    WorldSeed, SEMANTICS_REV,
 };
 
 const USAGE: &str = "\
 usage: eval_probe <subcommand> [options]
 
-  run <players> <games> [--contestant <name>] [--weights v1|pre-freeze]
+  run <players> <games> [--contestant <name>] [--weights v1|v2|pre-freeze]
                         [--master <u64> | --os-entropy]
                         [--invariants | --no-invariants]
                         [--bootstrap <B>] [--blocks <list>]
+                        [--score-table <spec>]... [--candidate-columns <list>]
       Generate a self-play corpus and report the blocks in <list> (default all):
         features  per-feature AUC per stage tercile, game-clustered bootstrap
         proxy     progress_ppm against the post-hoc terciles
         counters  recovery share, cap binds, game length, end-trigger mix
 
-  table [--weights v1|pre-freeze]
+      --score-table <spec>   REPEATABLE. Evaluate a CANDIDATE weight table on
+                             this corpus and report its EVAL TOTAL AUC per stage,
+                             split fit (EVEN game index) / held-out (ODD) by
+                             generation index alone, with a game-clustered
+                             bootstrap on the HELD-OUT figures — the quotable
+                             ones. <spec> is `v1` (the reproduction check for
+                             every committed round command), `v2` (the table
+                             that ships since the 2026-08-10 freeze), `v2-draft`
+                             (the same numbers under the rounds' own spelling),
+                             or `<name>=<e0,...,e15>/<l0,...,l15>` (sixteen i64
+                             per vector, Feature::ALL order).
+                             A candidate is EVALUATED here and never GENERATES
+                             the corpus: `--weights` chooses what the bot plays,
+                             and its DEFAULT is still v1 so every committed
+                             corpus command reproduces.
+      --candidate-columns <list>
+                             Comma-separated extra ROWS in the features block,
+                             measured beside the sixteen and shipped by nothing.
+                             Feature::ALL stays sixteen everywhere. REFUSED
+                             when --blocks omits `features` (an ignored column
+                             would be a silent no-op). The eight names, each
+                             also the row's printed name except `postclaim`:
+                               postclaim
+                                   achievement_progress_sum with the viewer's
+                                   OWN already-claimed cards dropped (T3)
+                               church_majority_margin
+                                   signed margin in the 6/3 pawn ranking, 2P
+                                   dummy competing (D1); > 0 means this seat
+                                   holds first place as the board stands
+                               customs_majority_margin
+                                   the same over the 8/4 ranking
+                               tech_majority_margin
+                                   the 10/5 industry-value ranking, 2P dummy
+                                   competing at DOUBLED value 15 (D5)
+                               achievement_race_proximity
+                                   minus the nearest UNCLAIMED-by-this-seat
+                                   card's remaining capped gap (0 is nearest)
+                               clock_control_church
+                                   this seat's own pawns on the church track
+                               port_empty_slots
+                                   empty Port card slots across every board —
+                                   BOARD-GLOBAL, so its relative form is 0 for
+                                   every seat by construction and only the
+                                   absolute form carries information
+                               money
+                                   this seat's yen
+
+  table [--weights v1|v2|pre-freeze]
       Print a weight table with its provenance identity. No games are played.
 
-contestants:
-  greedy-v1            the honest arena driver (observe -> sampler -> handle)
-  uniform | retreat-averse | family-weighted
+contestants (the grammar is Contestant::from_str_name's — unknown is an error at
+every level, and an unknown knob is never silently ignored):
+  greedy-v1[:m=<n>]    the honest arena driver (observe -> sampler -> handle)
+  lookahead-v1[:b=<n>,k=<n>,m=<n>,cap=<n>]
+                       the S1 turn-boundary search rung, through the SAME honest
+                       driver (never the raw-state one). b = beam, k = worlds,
+                       m = retreat samples, cap = the shared scored-successor
+                       budget; OMITTING cap is the shipped UNCAPPED rung, and
+                       cap=0 is refused rather than read as uncapped. Caps
+                       32-128 are a MEASURED non-terminating band for 2P
+                       self-play (LookaheadAgent::with_cap's doc carries the
+                       data) — a corpus run there grinds to the turn budget
+                       and errors rather than finishing
+  uniform | retreat-averse | family-weighted[:p=<ppm>,k=<n>]
                        a RolloutPolicy rung through the RAW-STATE driver, which
                        is privileged play by construction and labelled as such
                        (legitimate for a corpus: the bot is not the subject)
+  mcts-v1 and atomic-diag-v1 PARSE but are refused HERE: this instrument reports
+  the greedy/search counter sets and has none for them. Run those through
+  `cargo run --release -p yokohama-core --example arena`.
 ";
 
 /// This task's committed diagnostic master. The NAME of the constructor is the
@@ -134,23 +209,43 @@ fn main() {
 // argv
 // ---------------------------------------------------------------------------
 
-/// Split argv into positionals and `--flag [value]` pairs.
+/// [`split_args`]' three products: the positionals, the single-valued flags,
+/// and the repeatable ones (each with every value it was given, in argv order).
+type SplitArgs = (Vec<String>, BTreeMap<String, String>, BTreeMap<String, Vec<String>>);
+
+/// Split argv into positionals, `--flag [value]` pairs, and REPEATABLE flags.
 ///
 /// An unknown flag is an ERROR, never a silent no-op — `examples/arena`'s rule,
 /// and for its reason: a mistyped `--os-entropi` that quietly left the run on a
 /// diagnostic master would put a fixed master behind a figure published as
 /// freshly drawn.
+///
+/// `multi` names the flags that may appear more than once; their values collect
+/// into a `Vec` IN ARGV ORDER, which is the order the candidate blocks print in.
+/// They are kept out of the single-valued map deliberately: a repeat landing
+/// there would silently keep the last value, and losing a `--score-table` is
+/// exactly the failure mode the unknown-flag rule above exists to prevent one
+/// level up.
 fn split_args(
     args: &[String],
     valued: &[&str],
     bare: &[&str],
-) -> Result<(Vec<String>, BTreeMap<String, String>), String> {
+    multi: &[&str],
+) -> Result<SplitArgs, String> {
     let mut positional = Vec::new();
     let mut flags: BTreeMap<String, String> = BTreeMap::new();
+    let mut repeated: BTreeMap<String, Vec<String>> = BTreeMap::new();
     let mut i = 0;
     while i < args.len() {
         let arg = &args[i];
         if let Some(name) = arg.strip_prefix("--") {
+            if multi.contains(&name) {
+                let value =
+                    args.get(i + 1).ok_or_else(|| format!("--{name} needs a value\n\n{USAGE}"))?;
+                repeated.entry(name.to_string()).or_default().push(value.clone());
+                i += 2;
+                continue;
+            }
             if valued.contains(&name) {
                 let value =
                     args.get(i + 1).ok_or_else(|| format!("--{name} needs a value\n\n{USAGE}"))?;
@@ -168,7 +263,7 @@ fn split_args(
         positional.push(arg.clone());
         i += 1;
     }
-    Ok((positional, flags))
+    Ok((positional, flags, repeated))
 }
 
 fn parse_u64(raw: &str) -> Result<u64, String> {
@@ -193,43 +288,120 @@ fn master_from(flags: &BTreeMap<String, String>) -> Result<SeedScheduleKind, Str
 /// reports.
 fn weights_from(flags: &BTreeMap<String, String>) -> Result<(WeightTable, &'static str), String> {
     match flags.get("weights").map(String::as_str) {
+        // **THE DEFAULT STAYS `v1`, and that is a decision rather than an
+        // oversight.** Since the 2026-08-10 v2 freeze the SHIPPED table is `V2`,
+        // so a default-weights corpus is no longer an incumbent-play corpus of
+        // what ships — but every committed probe command (the R0 corpora, both
+        // rounds' L2 passes, the greedy counters comparator) omits this flag,
+        // and moving the default would additionally change the TABLE out from
+        // under them. **What the default buys is stated exactly (freeze review
+        // MUST-1): the TABLE's thirty-two numbers, so a run is weight-comparable
+        // with the record — NOT the corpus itself.** T3's post-claim filter now
+        // rides `ScoreStructure::derive` unconditionally, with no switch, so the
+        // same command at the same master plays a DIFFERENT corpus than the one
+        // the recorded figures were measured on (measured: R0-G's 1,099,281
+        // applied moves read 1,101,363 at the freeze HEAD). A re-run here is a
+        // different measurement, not a reproduction — `eval_screen_round`'s
+        // post-freeze doc says the same of criteria 1–2 — and reproducing a
+        // recorded figure means checking out its recorded commit. The `table`
+        // subcommand's default print pairs V1's digits with `eval_impl_version
+        // 3` for the same reason; the `[v1]` header is the self-label. `v2` is
+        // spelled out below and must be asked for.
         None | Some("v1") => Ok((WeightTable::V1, "v1")),
+        Some("v2") => Ok((WeightTable::V2, "v2")),
         Some("pre-freeze") => Ok((WeightTable::PRE_FREEZE_2026_07_27, "pre-freeze")),
-        Some(other) => Err(format!("unknown --weights {other:?} (v1 | pre-freeze)")),
+        Some(other) => Err(format!("unknown --weights {other:?} (v1 | v2 | pre-freeze)")),
     }
 }
 
 /// Who plays the corpus.
 ///
-/// Named `Probe…` rather than `Contestant` because `game::arena::Contestant` is
-/// a public type with a DIFFERENT shape (four variants, knobs on three of them),
-/// and its greedy arm is not this one: two incompatible answers to
+/// Named `Probe…` rather than `Contestant` because [`Contestant`] is a public
+/// type with a DIFFERENT shape (five variants), and two incompatible answers to
 /// `grep 'enum Contestant'` in one crate is a trap, not an abbreviation
-/// (six-lens review).
+/// (six-lens review). Since Phase 3.5c W1 the NAME GRAMMAR is nonetheless
+/// single-sourced — [`ProbeContestant::parse`] runs [`Contestant::from_str_name`]
+/// and then narrows — so a spec typed here means what it means at
+/// `examples/arena`, knobs and refusals included.
+///
+/// **Why the probe still constructs its own agents rather than calling
+/// [`Contestant::build`]:** `build` hard-codes the SHIPPED table
+/// ([`WeightTable::V2`] since the 2026-08-10 freeze, `V1` before it — a
+/// contestant carries no weight knob by L12 design), and this instrument's
+/// entire `--weights` flag is the ability to run a corpus under a different
+/// one. Delegating construction would make that flag a
+/// silent no-op — the exact failure mode `split_args` refuses unknown flags to
+/// avoid, one level up.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum ProbeContestant {
     /// Greedy-v1 at every seat, through the HONEST driver.
-    Greedy,
+    Greedy { m: u8 },
+    /// Lookahead-v1 — the S1 turn-boundary rung — at every seat, through the
+    /// SAME honest driver. `cap` absent is the shipped UNCAPPED rung, which is
+    /// what every recorded 3.3 figure was measured on.
+    Lookahead { b: u16, k: u8, m: u8, cap: Option<u32> },
     /// One policy rung at every seat, through the RAW-STATE driver.
     Policy(RolloutPolicy),
 }
 
 impl ProbeContestant {
+    /// Parse a contestant spec through the CORE grammar, then narrow it to the
+    /// arms this instrument meters.
+    ///
+    /// The two refusals are not a to-do list. An eval_probe corpus is only worth
+    /// the counters block that describes it, and neither refused arm has one
+    /// here: MCTS-v1's meters are a different SET (`McTally`, with no
+    /// free-extension counter at all and a `(Some, None)` cap-counter shape),
+    /// and the S2 atomic arm is a labelled diagnostic no weight-freeze figure
+    /// reads. A silently-accepted third arm would print the greedy block over a
+    /// contestant that never bound a placement cap — a figure with the wrong
+    /// provenance, which is worse than a refusal.
     fn parse(spec: &str) -> Result<Self, String> {
-        if spec == GREEDY_CONTROLLER {
-            return Ok(ProbeContestant::Greedy);
+        // The narrowing is an exhaustive match, no `_` arm: a sixth contestant
+        // upstream must be dispositioned here rather than silently refused by a
+        // catch-all that names nothing.
+        match Contestant::from_str_name(spec)? {
+            Contestant::GreedyV1 { m } => Ok(ProbeContestant::Greedy { m }),
+            Contestant::LookaheadV1 { b, k, m, cap } => {
+                Ok(ProbeContestant::Lookahead { b, k, m, cap })
+            }
+            Contestant::Policy(policy) => Ok(ProbeContestant::Policy(policy)),
+            Contestant::AtomicDiag { .. } => Err(Self::refusal(
+                spec,
+                "the S2 atomic-diag arm is a labelled DIAGNOSTIC (3.3 spec §4.1) and no \
+                 weight-freeze figure reads its corpus",
+            )),
+            Contestant::MctsV1 { .. } => Err(Self::refusal(
+                spec,
+                "the tree's counters are a different set from the greedy/search ones this \
+                 instrument reports (McTally, and no free-extension meter at all), so its \
+                 corpus would arrive with a counters block describing some other contestant",
+            )),
         }
-        RolloutPolicy::from_str_name(spec).map(ProbeContestant::Policy).ok_or_else(|| {
-            format!("unknown contestant {spec:?} (greedy-v1 | uniform | retreat-averse | family-weighted)")
-        })
+    }
+
+    fn refusal(spec: &str, why: &str) -> String {
+        format!(
+            "eval_probe does not drive {spec:?}: {why}. Run it through `examples/arena` instead. \
+             (this probe: {GREEDY_CONTROLLER} | {LOOKAHEAD_CONTROLLER} | uniform | \
+             retreat-averse | family-weighted)"
+        )
     }
 
     fn echo(self, weights: &WeightTable, label: &str) -> String {
+        let identity = weight_table_identity(weights) as u64;
         match self {
-            ProbeContestant::Greedy => format!(
-                "{GREEDY_CONTROLLER}{{m={DEFAULT_RETREAT_SAMPLES},weights={label}:{:#018x}}} \
+            ProbeContestant::Greedy { m } => format!(
+                "{GREEDY_CONTROLLER}{{m={m},weights={label}:{identity:#018x}}} \
                  [honest driver: observe -> sampler K=1 -> handle]",
-                weight_table_identity(weights) as u64,
+            ),
+            ProbeContestant::Lookahead { b, k, m, cap } => format!(
+                "{LOOKAHEAD_CONTROLLER}{{b={b},k={k},m={m},{}weights={label}:{identity:#018x}}} \
+                 [honest driver: observe -> sampler K=1 -> handle]",
+                // An absent cap emits NO token — `Contestant::provenance`'s rule,
+                // held here for its reason: an uncapped echo has to say the
+                // SHIPPED rung, not a rung wearing a budget it never had.
+                cap.map_or(String::new(), |c| format!("cap={c},")),
             ),
             ProbeContestant::Policy(p) => {
                 let (name, version, params) = p.descriptor();
@@ -242,6 +414,110 @@ impl ProbeContestant {
             }
         }
     }
+}
+
+/// One seat's counter read-out from a contestant that EXPLAINS.
+///
+/// The two underlying tallies are deliberately different types upstream (a beam
+/// has continuation lengths and budget meters; a one-ply argmax has neither), so
+/// this is the narrow thing the probe needs from both. It mirrors
+/// [`yokohama_core::ExplainHandle`]'s `Option` rule verbatim — **`None` always
+/// means "this contestant has no such quantity", never "zero"** — and lives here
+/// beside it rather than reusing it because `ExplainHandle` does not expose
+/// `placement_cap_binds`, which is the §3.3 counter this probe's greedy block has
+/// printed since Phase 3.3 and which both tallies carry.
+#[derive(Clone)]
+enum ProbeTally {
+    Greedy(ExplanationTally),
+    Search(SearchTally),
+}
+
+impl ProbeTally {
+    /// Decisions this seat explained. On a completed game this equals the moves
+    /// the seat applied — no evaluator agent can return a move without
+    /// explaining it — which is the identity [`identity_blocks`] checks.
+    fn explained(&self) -> u64 {
+        match self {
+            Self::Greedy(t) => t.explained(),
+            Self::Search(t) => t.explained(),
+        }
+    }
+
+    fn candidates_scored(&self) -> u64 {
+        match self {
+            Self::Greedy(t) => t.candidates_scored(),
+            Self::Search(t) => t.candidates_scored(),
+        }
+    }
+
+    /// Decisions whose placement family exceeded the candidate cap. Summed over
+    /// DECISIONS for the one-ply arm and over search NODES for S1, which is why
+    /// the two arms print the counter with different words.
+    fn placement_cap_binds(&self) -> u64 {
+        match self {
+            Self::Greedy(t) => t.placement_cap_binds(),
+            Self::Search(t) => t.placement_cap_binds(),
+        }
+    }
+
+    /// Continuations `MAX_TURN_PLIES` stopped — `None` for the one-ply argmax,
+    /// which has no continuation to truncate, on `ExplainHandle::ply_cap_hits`'s
+    /// own grounds: a `0` there would read as "searched and never hit the guard".
+    fn ply_cap_hits(&self) -> Option<u64> {
+        match self {
+            Self::Greedy(_) => None,
+            Self::Search(t) => Some(t.ply_cap_hits()),
+        }
+    }
+
+    /// Free extensions `MAX_FREE_EXTENSION` stopped, same `None` rule. `Some(0)`
+    /// on an S1 corpus is STRUCTURAL rather than evidence — the turn-boundary
+    /// scheme never enters the quiescence arm at all.
+    fn free_cap_hits(&self) -> Option<u64> {
+        match self {
+            Self::Greedy(_) => None,
+            Self::Search(t) => Some(t.free_cap_hits()),
+        }
+    }
+
+    /// Spec §3.4's cap-bind count — decisions where the scored-successor budget
+    /// DENIED work. Same `None` rule; `Some(0)` on an uncapped corpus is the
+    /// shipped shape (an absent cap threads an unlimited budget that never
+    /// binds), while a capped corpus with binds at essentially every decision is
+    /// a MATERIALLY different corpus — which is why the block prints these
+    /// beside the search guards rather than leaving the §3.3 placement line to
+    /// impersonate them (W1-C review SHOULD-1).
+    fn budget_binds(&self) -> Option<u64> {
+        match self {
+            Self::Greedy(_) => None,
+            Self::Search(t) => Some(t.budget_binds()),
+        }
+    }
+
+    /// Spec §3.4's starvation count — decisions that got ONLY the root pass.
+    /// A strict sub-case of [`budget_binds`](Self::budget_binds); same `None`
+    /// rule.
+    fn budget_starved(&self) -> Option<u64> {
+        match self {
+            Self::Greedy(_) => None,
+            Self::Search(t) => Some(t.budget_starved_decisions()),
+        }
+    }
+}
+
+/// The spec §0.3(b) identity, per SEAT: an explaining contestant explained
+/// exactly the moves it applied.
+///
+/// Returns `(blocks, mismatches)` over `max(len)` indices. A LENGTH disagreement
+/// is a mismatch at every unpaired index rather than a truncation, because a zip
+/// over the shorter list would report a clean identity over a table it only half
+/// checked — and "no tallies came back at all" is exactly what a contestant that
+/// stopped handing them out looks like.
+fn identity_blocks(explained: &[u64], moves_by_seat: &[u64]) -> (u64, u64) {
+    let blocks = explained.len().max(moves_by_seat.len());
+    let mismatches =
+        (0..blocks).filter(|i| explained.get(*i) != moves_by_seat.get(*i)).count();
+    (blocks as u64, mismatches as u64)
 }
 
 fn profile() -> &'static str {
@@ -273,6 +549,8 @@ enum Row {
     /// actually measured (0.6026 early), before T3 split it. Reported so the
     /// two halves have something to be compared AGAINST.
     HandUnsplit,
+    /// A row that is NOT in the shipped feature list — see [`CandidateColumn`].
+    Candidate(CandidateColumn),
     /// The evaluator's own positional total: the benchmark row every feature is
     /// trying to beat, and already a relative quantity.
     EvalTotal,
@@ -283,25 +561,681 @@ impl Row {
         match self {
             Row::Feature(f) => f.name(),
             Row::HandUnsplit => "assistants_in_hand (unsplit)",
+            Row::Candidate(c) => c.name(),
             Row::EvalTotal => "EVAL TOTAL (benchmark)",
         }
     }
 
     /// The weight pair the row's measured sign is judged against, or `None` for
-    /// the two synthetic rows (which ship no weight).
+    /// the synthetic rows and the candidate columns (which ship no weight, so
+    /// there is no shipped direction for a measurement to contradict).
     fn weights(self, table: &WeightTable) -> Option<(i64, i64)> {
         match self {
             Row::Feature(f) => Some(table.get(f)),
-            Row::HandUnsplit | Row::EvalTotal => None,
+            Row::HandUnsplit | Row::Candidate(_) | Row::EvalTotal => None,
         }
     }
 
-    fn all() -> Vec<Row> {
+    /// The reported rows, in print order: the sixteen shipped features, the
+    /// unsplit hand row, then any CANDIDATE COLUMNS, and the benchmark total
+    /// last.
+    ///
+    /// Candidate columns sit before `EvalTotal` so the benchmark keeps ending
+    /// the table, which is the shape every recorded artifact's appendix has.
+    /// With `columns` empty the vector is byte-for-byte the one this instrument
+    /// has always built — the property that keeps an argument-free run
+    /// reproducing the R0 appendices.
+    fn all(columns: &[CandidateColumn]) -> Vec<Row> {
         let mut rows: Vec<Row> = Feature::ALL.into_iter().map(Row::Feature).collect();
         rows.push(Row::HandUnsplit);
+        rows.extend(columns.iter().copied().map(Row::Candidate));
         rows.push(Row::EvalTotal);
         rows
     }
+}
+
+/// A row this instrument can measure that the shipped feature list does NOT
+/// contain — an admission candidate, reported beside the sixteen so a proposal
+/// can be read against the evidence rather than argued from first principles.
+///
+/// **NOT a [`Feature`], and nothing here moves `Feature::ALL`.** The shipped
+/// list stays sixteen entries everywhere; adding a variant here adds a REPORTED
+/// COLUMN and nothing else. That separation is the point: the protocol's ladder
+/// (§4.2) wants L1 evidence for an admission BEFORE the feature count moves, and
+/// the feature count moving is the one step `Feature::ALL`'s own doc calls out
+/// as having a silent failure mode.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum CandidateColumn {
+    /// The T3 post-claim filter's value: `achievement_progress_sum` with the
+    /// viewer's already-claimed cards dropped (protocol §4.1(ii) / §5's T3 row).
+    /// Computed by the additive `eval` helper, which nothing in `score` calls.
+    PostClaim,
+    /// **Round 3, T5.** The seat's signed margin in the CHURCH majority ranking
+    /// — see [`majority_margin`] for the arithmetic and its rules citation.
+    ChurchMajorityMargin,
+    /// **Round 3, T5.** The same over the CUSTOMS majority ranking.
+    CustomsMajorityMargin,
+    /// **Round 3, T5/T9.** The seat's signed margin in the TECHNOLOGY
+    /// industry-value ranking, the 2P dummy competing at doubled value 15 (D5)
+    /// — see [`tech_majority_margin`].
+    TechMajorityMargin,
+    /// **Round 3, T5.** Nearness to the seat's next achievement claim — see
+    /// [`achievement_race_proximity`].
+    AchievementRaceProximity,
+    /// **Round 3, T6.** The seat's OWN pawn count on the church track: how much
+    /// of the ending clock this seat is itself driving.
+    ///
+    /// **NEAR-REDUNDANT WITH [`ChurchMajorityMargin`] in the RELATIVE form at
+    /// 2P** (Task-D review SHOULD-2, measured): whenever the dummy is both
+    /// seats' best rival, `church_rel = 2·(c_me − c_opp)` while
+    /// `clock_rel = c_me − c_opp` — proportional, and AUC is rank-based, so the
+    /// two relative columns carry IDENTICAL AUC there (sign agreement 4,446 of
+    /// 4,448 organic 2P cells). An L1 report must not read them as two
+    /// independent signals, and round 4 must not admit one signal twice.
+    ClockControlChurch,
+    /// **Round 3, T6.** Empty Port card slots across every Port board — the
+    /// conjunct the `OrderDeckEmpty` trigger drops. BOARD-GLOBAL: see
+    /// [`port_empty_slots`] for what that costs the relative form.
+    PortEmptySlots,
+    /// **Round 3, T7/T8.** The seat's yen, re-tested at rev-7 prices.
+    Money,
+}
+
+/// Every accepted `--candidate-columns` token, paired with the column it names.
+///
+/// [`CandidateColumn::parse_list`] and its refusal's "what IS accepted" list
+/// both read THIS array, so a token can never drift from what the refusal
+/// advertises. [`CandidateColumn::token`]'s exhaustive match is the
+/// compile-time half of the guard (a new variant must be named); this array is
+/// the half that makes it reachable from the command line, and
+/// `every_candidate_column_is_reachable_from_the_command_line` is what pins the
+/// two together.
+const CANDIDATE_COLUMNS: [CandidateColumn; 8] = [
+    CandidateColumn::PostClaim,
+    CandidateColumn::ChurchMajorityMargin,
+    CandidateColumn::CustomsMajorityMargin,
+    CandidateColumn::TechMajorityMargin,
+    CandidateColumn::AchievementRaceProximity,
+    CandidateColumn::ClockControlChurch,
+    CandidateColumn::PortEmptySlots,
+    CandidateColumn::Money,
+];
+
+impl CandidateColumn {
+    /// The command-line token. Equal to [`name`](Self::name) for every round-3
+    /// column — a name a reader sees in the report is a name they can type —
+    /// and deliberately NOT for `postclaim`, whose short token is already in
+    /// recorded round-1 commands and stays byte-compatible with them.
+    fn token(self) -> &'static str {
+        match self {
+            CandidateColumn::PostClaim => "postclaim",
+            _ => self.name(),
+        }
+    }
+
+    /// The reported column name. For `postclaim` this is deliberately the
+    /// shipped feature's name plus a suffix, so a reader diffing the two rows
+    /// sees they measure the same quantity under different rules; the round-3
+    /// columns name the quantity they compute, in snake_case, and every one of
+    /// them fits the table's 28-column name field.
+    fn name(self) -> &'static str {
+        match self {
+            CandidateColumn::PostClaim => "achievement_progress_sum_postclaim",
+            CandidateColumn::ChurchMajorityMargin => "church_majority_margin",
+            CandidateColumn::CustomsMajorityMargin => "customs_majority_margin",
+            CandidateColumn::TechMajorityMargin => "tech_majority_margin",
+            CandidateColumn::AchievementRaceProximity => "achievement_race_proximity",
+            CandidateColumn::ClockControlChurch => "clock_control_church",
+            CandidateColumn::PortEmptySlots => "port_empty_slots",
+            CandidateColumn::Money => "money",
+        }
+    }
+
+    /// One seat's raw value for this column.
+    ///
+    /// `rules` is here for the technology margin alone — industry values live in
+    /// the tech registry, exactly as `eval::technology_majority` reads them.
+    fn value(self, view: &PlayerView, player: &yokohama_core::VisiblePlayer, rules: &Rules) -> i64 {
+        match self {
+            CandidateColumn::PostClaim => achievement_progress_postclaim_sum(view, player),
+            CandidateColumn::ChurchMajorityMargin => majority_margin(
+                view.church_track.slots.iter().map(|slot| slot.map(|o| o.player)),
+                player.id,
+            ),
+            CandidateColumn::CustomsMajorityMargin => majority_margin(
+                view.customs_track.slots.iter().map(|slot| slot.map(|o| o.player)),
+                player.id,
+            ),
+            CandidateColumn::TechMajorityMargin => tech_majority_margin(view, player, rules),
+            CandidateColumn::AchievementRaceProximity => achievement_race_proximity(view, player),
+            CandidateColumn::ClockControlChurch => view
+                .church_track
+                .slots
+                .iter()
+                .flatten()
+                .filter(|occupant| occupant.player == player.id)
+                .count() as i64,
+            CandidateColumn::PortEmptySlots => port_empty_slots(view),
+            CandidateColumn::Money => i64::from(player.money),
+        }
+    }
+
+    /// Parse a comma-separated `--candidate-columns` list. An unknown name is an
+    /// ERROR naming what was seen — `split_args`'s rule one level down, for its
+    /// reason: a silently-dropped column would print a report missing the very
+    /// row the run was made to look at.
+    fn parse_list(raw: &str) -> Result<Vec<Self>, String> {
+        raw.split(',')
+            .filter(|s| !s.is_empty())
+            .map(|name| {
+                CANDIDATE_COLUMNS.iter().copied().find(|c| c.token() == name).ok_or_else(|| {
+                    format!(
+                        "unknown --candidate-columns entry {name:?} ({})",
+                        CANDIDATE_COLUMNS
+                            .iter()
+                            .map(|c| c.token())
+                            .collect::<Vec<_>>()
+                            .join(" | "),
+                    )
+                })
+            })
+            .collect()
+    }
+}
+
+// ---------------------------------------------------------------------------
+// The round-3 admission columns' arithmetic (probe-side mirrors)
+// ---------------------------------------------------------------------------
+//
+// Everything below is a MIRROR of scoring arithmetic that lives in `eval.rs`
+// and `game/scoring.rs`, restated here at finer grain: the shipped features
+// report the VP a majority would pay, and these report the seat's standing IN
+// that majority. They live in this example rather than in `eval.rs` because
+// round 3 is an L1 EVIDENCE round (execution-ledger row, protocol §4.2): an
+// admission moves `Feature::ALL`, which is freeze-commit blast radius, so the
+// evidence is gathered before any admission is proposed. If a column is later
+// admitted, its computation moves into `eval.rs` with its own tests at that
+// point.
+//
+// A mirror with no pin is a second implementation waiting to disagree, which is
+// why each margin below is pinned by BEHAVIOUR against the shipped structure —
+// positive exactly when `ScoreStructure` awards this seat first place — rather
+// than by inspection.
+//
+// **Canon conformance** (guidingpath's 2026-08-09 canon-batch row, which
+// reversed two drafted scenarios): church denial and achievement denial are NOT
+// canon, customs is a RACE, and the end-trigger brake INVERTS. So every shape
+// here is a MARGIN, a PROXIMITY or a CONTROL SHARE read from the seat's own
+// side — "how am I doing in this race, and how much of the clock am I driving"
+// — and none of them is a denial-seeking construct.
+
+/// Contender slots in a management-board majority: the four printed seats plus
+/// the 2-player dummy. `eval.rs` holds the same two constants privately
+/// (`MAX_CONTENDERS` / `DUMMY_SLOT`), so they are restated rather than imported
+/// and the agreement is pinned behaviourally.
+const PROBE_MAX_SEATS: usize = 4;
+const PROBE_DUMMY_SLOT: usize = PROBE_MAX_SEATS;
+
+/// A track owner's row in the tally, or `None` for a seat number outside the
+/// printed range (only a hand-built view has one) — `eval::majority_bonus`'s own
+/// slot rule.
+fn contender_slot(owner: PlayerId) -> Option<usize> {
+    if owner.is_dummy() {
+        return Some(PROBE_DUMMY_SLOT);
+    }
+    let index = usize::from(owner.0);
+    (index < PROBE_MAX_SEATS).then_some(index)
+}
+
+/// One seat's SIGNED MARGIN in a management-board majority ranking.
+///
+/// # The arithmetic, and why it is shaped this way
+///
+/// `eval::majority_bonus` ranks contenders by the rulebook's key — pawn COUNT
+/// first, then the RIGHTMOST occupied space (rulebook p.9; the count-then-
+/// position tie-break is `game/scoring.rs`'s, differentially confirmed against
+/// the independent oracle 2026-07-20) — and awards `vps[0]` / `vps[1]` to the
+/// first two, a place taken by the 2P dummy being CONSUMED and awarded to
+/// nobody (finding D1, rulebook p.9 NOTE).
+///
+/// That key is lexicographic and this column is one scalar, so the count gap is
+/// SCALED BY TWO to leave room for the tie-break underneath it:
+///
+/// ```text
+/// margin = 2·(my pawns − the best rival's pawns) + tie
+/// tie    = +1 / −1 by rightmost occupied space, and ONLY on a count tie
+/// ```
+///
+/// which is strictly monotone in the rulebook's own ordering: a one-pawn lead
+/// reads at least +1 whatever the tie term does, and a count tie won on position
+/// reads exactly +1. One space holds one pawn, so two contenders can never share
+/// a rightmost index — the tie term is never 0 between two contenders that both
+/// hold a pawn.
+///
+/// # What the sign means, exactly
+///
+/// `> 0` iff this seat holds FIRST place as the board stands — iff `eval`'s
+/// structure would award it `vps[0]` right now. It does NOT distinguish second
+/// place from not placing at all (two seats behind one leader both read
+/// negative), which is deliberate: the T5 re-aim asks for majority ARITHMETIC
+/// and opponent-progress AWARENESS, and "am I winning this majority, by how
+/// much" is the quantity a seat can act on. `== 0` means no contender holds a
+/// pawn at all.
+///
+/// # Who counts as a rival
+///
+/// The 2P dummy does, at every count where it holds a pawn. A seat holding NO
+/// pawn does not — `majority_bonus` skips a zero tally, so such a seat is not in
+/// the ranking and cannot be anybody's best rival. With no rival contending the
+/// margin is simply twice this seat's own pawn count.
+fn majority_margin(occupants: impl Iterator<Item = Option<PlayerId>>, me: PlayerId) -> i64 {
+    let mut tally = [(0u8, 0u8); PROBE_MAX_SEATS + 1];
+    for (index, owner) in occupants.enumerate() {
+        let Some(owner) = owner else { continue };
+        let Some(slot) = contender_slot(owner) else { continue };
+        tally[slot].0 = tally[slot].0.saturating_add(1);
+        tally[slot].1 = tally[slot].1.max(index as u8);
+    }
+
+    let Some(my_slot) = contender_slot(me) else { return 0 };
+    let mine = tally[my_slot];
+    let best = tally
+        .iter()
+        .enumerate()
+        .filter(|(slot, entry)| *slot != my_slot && entry.0 > 0)
+        .map(|(_, entry)| *entry)
+        .max_by_key(|entry| (entry.0, entry.1));
+
+    let Some(best) = best else {
+        return 2 * i64::from(mine.0);
+    };
+    let gap = i64::from(mine.0) - i64::from(best.0);
+    let tie = if mine.0 == best.0 {
+        (i64::from(mine.1) - i64::from(best.1)).signum()
+    } else {
+        0
+    };
+    2 * gap + tie
+}
+
+/// Seats clockwise from the start player, 0 for the start player itself — the
+/// official tie-break key for the technology majority. A restatement of
+/// `eval::clockwise_distance`, which is private to that module; `rem_euclid`
+/// rather than `%` for the same reason it gives (a hand-built config must not
+/// underflow the subtraction).
+fn probe_clockwise_distance(view: &PlayerView, player: PlayerId) -> i32 {
+    let seats = i32::from(view.config.player_count);
+    if seats <= 0 {
+        return 0;
+    }
+    (i32::from(player.0) + seats - i32::from(view.config.start_player.0)).rem_euclid(seats)
+}
+
+/// One seat's SIGNED MARGIN in the TECHNOLOGY industry-value ranking (10 / 5).
+///
+/// The same shape as [`majority_margin`] over a different key: total industry
+/// value first, then the official CLOCKWISE distance from the start player
+/// (nearest wins). Values are carried DOUBLED, exactly as
+/// `eval::technology_majority` and `scoring::calculate_technology_bonus` carry
+/// them, because that is what makes D5 representable: at two players the setup
+/// dummy competes at industry value exactly **7.5** (owner ruling 2026-08-08,
+/// rulebook p.9 final-scoring NOTE), i.e. doubled 15 against real doubled totals
+/// that are always even — so a tie against the dummy is unrepresentable and its
+/// distance key is a placeholder that never gets read.
+///
+/// A player owning NO technology never places (`technology_majority` skips a
+/// zero industry value), so it is never a rival here either; its own margin is
+/// the whole doubled gap to the leader, which is the honest reading of "not in
+/// this race at all".
+fn tech_majority_margin(
+    view: &PlayerView,
+    me: &yokohama_core::VisiblePlayer,
+    rules: &Rules,
+) -> i64 {
+    let doubled = |player: &yokohama_core::VisiblePlayer| -> u32 {
+        2 * player
+            .technologies
+            .iter()
+            .filter_map(|id| rules.techs.get(*id))
+            .map(|card| u32::from(card.industry_cost))
+            .sum::<u32>()
+    };
+
+    // (doubled industry value, clockwise distance), better = higher value then
+    // SMALLER distance — `technology_majority`'s `better` predicate verbatim.
+    let mut best: Option<(u32, i32)> = None;
+    let mut consider = |candidate: (u32, i32)| {
+        let improves = match best {
+            None => true,
+            Some(current) => {
+                candidate.0 > current.0 || (candidate.0 == current.0 && candidate.1 < current.1)
+            }
+        };
+        if improves {
+            best = Some(candidate);
+        }
+    };
+    for other in &view.players {
+        if other.id == me.id || other.id.is_dummy() {
+            continue;
+        }
+        let value = doubled(other);
+        if value == 0 {
+            continue;
+        }
+        consider((value, probe_clockwise_distance(view, other.id)));
+    }
+    if view.config.player_count == 2 {
+        consider((15, i32::MAX));
+    }
+
+    let mine = doubled(me);
+    let Some(best) = best else {
+        return 2 * i64::from(mine);
+    };
+    let gap = i64::from(mine) - i64::from(best.0);
+    let tie = if mine == best.0 {
+        // Nearer to the start player is BETTER, so the sign is reversed against
+        // the raw distance comparison.
+        (i64::from(best.1) - i64::from(probe_clockwise_distance(view, me.id))).signum()
+    } else {
+        0
+    };
+    2 * gap + tie
+}
+
+/// How near this seat is to its NEXT achievement claim, negated so that nearer
+/// reads HIGHER.
+///
+/// Over the cards this seat has not already claimed, each card's remaining gap
+/// is `needed − min(current, needed)` on `eval::achievement_progress`'s own
+/// arithmetic (the AND-shaped cards' per-leg caps included), and the column is
+/// minus the SMALLEST of them.
+///
+/// Three decisions, each recorded rather than implied:
+///
+/// * **Cards claimed by an OPPONENT stay live.** The engine's claim gate refuses
+///   only a REPEAT claim by the SAME seat (`can_claim_achievement`), so a card
+///   an opponent has taken is still worth its printed subsequent value to this
+///   seat, and dropping it would price a reachable reward at nothing. This is
+///   also why the column is SELF-guidance rather than a denial term: the owner's
+///   2026-08-09 canon batch rules achievement denial explicitly NOT canon, and
+///   names achievements agenda-setters instead.
+/// * **The cap is inherited**, so hoarding past a requirement does not read as
+///   extra nearness — the same reasoning `achievement_progress_sum` gives.
+/// * **A seat that has claimed all three reads 0**, which COLLIDES with the
+///   reading for a seat standing on a claimable card. Both are "nothing left to
+///   chase"; the state needs three claims by one seat to occur at all; and the
+///   alternative — a sentinel outside the scale — would put a discontinuity into
+///   a column whose whole content is an ordering. Stated so a reader of the L1
+///   table knows which zero they are looking at.
+fn achievement_race_proximity(view: &PlayerView, me: &yokohama_core::VisiblePlayer) -> i64 {
+    let mut nearest: Option<u32> = None;
+    for card in &view.achievements {
+        if card.claimed_by.contains(&me.id) {
+            continue;
+        }
+        let (current, needed) = achievement_progress(view, me, card.achievement_type);
+        let gap = needed.saturating_sub(current.min(needed));
+        nearest = Some(nearest.map_or(gap, |best| best.min(gap)));
+    }
+    -i64::from(nearest.unwrap_or(0))
+}
+
+/// Empty Port CARD SLOTS across every Port board in play (six per board; two
+/// boards from three players up).
+///
+/// T6's dropped conjunct: the `OrderDeckEmpty` end trigger fires on "the order
+/// deck is empty AND a Port slot is empty" (`01-rules-reference.md:514`), and
+/// only the deck half has ever been priced — `progress_ppm`'s deck clock reads
+/// the deck, nothing reads the slots.
+///
+/// **BOARD-GLOBAL, and the report must not be able to hide it:** every seat sees
+/// the same number, so the relative form (`viewer − best opponent`) is
+/// identically 0 and its AUC column is CONSTANT by construction. The ABSOLUTE
+/// form's per-stage trajectory is the whole of what this column can tell an L1
+/// reading, and `port_empty_slots_counts_every_board_and_reads_the_same_from_
+/// every_seat` pins both halves of that through `row_values` itself.
+///
+/// **A per-seat formulation is possible and is deliberately NOT what this is.**
+/// The faithful seat-relative shape of the dropped conjunct is an INTERACTION —
+/// the clock's nearness multiplied by whether ending now favours this seat —
+/// and the second factor is terminal-margin awareness, which the protocol lists
+/// as its own T6 candidate. Building the product here would measure the two
+/// candidates at once and let a null in either hide behind the other, so this
+/// column stays the raw conjunct and the interaction is proposed rather than
+/// implemented (round-3 report).
+fn port_empty_slots(view: &PlayerView) -> i64 {
+    let empty = |board: &yokohama_core::PortBoard| -> i64 {
+        board.slots.iter().filter(|slot| slot.is_none()).count() as i64
+    };
+    empty(&view.port_state.port_a) + view.port_state.port_b.as_ref().map_or(0, empty)
+}
+
+// ---------------------------------------------------------------------------
+// Candidate weight tables (the protocol's L2 arm)
+// ---------------------------------------------------------------------------
+
+/// One weight table named on the command line, to be EVALUATED on this corpus.
+///
+/// **A candidate never GENERATES a corpus** (protocol §2, verbatim: "candidate
+/// weight tables are never evaluated by regenerating a corpus under candidate
+/// play (circular and expensive); candidates are evaluated on the fixed corpora
+/// by held-out fitting and by the arena screen"). That is why `--weights` — the
+/// flag that chooses what the BOT plays — is untouched by this arm and still
+/// takes only `v1 | pre-freeze`: the two flags mean different things, and
+/// letting a draft table into the generator would quietly turn an incumbent-play
+/// corpus into a candidate-play one wearing the same header.
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct ScoreTableSpec {
+    name: String,
+    table: WeightTable,
+}
+
+/// Parse one `--score-table` value.
+///
+/// Three forms, and nothing else parses:
+///   * `v1` — the pre-v2-freeze table, i.e. the REPRODUCTION CHECK for every
+///     round command (run it beside a real candidate and the candidate's
+///     numbers have something to be read against on the same split);
+///   * `v2` — [`WeightTable::V2`], the table that SHIPS since the freeze;
+///   * `v2-draft` — the same numbers under the spelling the rounds used
+///     (`WeightTable::V2_DRAFT` is an alias of `V2` since the freeze promoted
+///     it), kept so the committed round commands still parse and reproduce;
+///   * `<name>=<e0,…,e15>/<l0,…,l15>` — sixteen comma-separated `i64` per
+///     vector, in [`Feature::ALL`] order, for a grid cell that has no const yet.
+///
+/// Every refusal names what it SAW (the importer discipline: an unrecognized
+/// input is a typed error, never a silent default), and the vector arm checks
+/// its lengths against `Feature::COUNT` rather than against a literal 16, so a
+/// feature admission cannot leave this parser accepting a stale width.
+fn parse_score_table(spec: &str) -> Result<ScoreTableSpec, String> {
+    const FORMS: &str =
+        "(v1 | v2 | v2-draft | <name>=<16 comma-separated i64>/<16 comma-separated i64>)";
+
+    match spec {
+        "v1" => {
+            return Ok(ScoreTableSpec { name: "v1".to_string(), table: WeightTable::V1 })
+        }
+        "v2" => {
+            return Ok(ScoreTableSpec { name: "v2".to_string(), table: WeightTable::V2 })
+        }
+        "v2-draft" => {
+            return Ok(ScoreTableSpec {
+                name: "v2-draft".to_string(),
+                table: WeightTable::V2_DRAFT,
+            })
+        }
+        _ => {}
+    }
+
+    let Some((name, vectors)) = spec.split_once('=') else {
+        return Err(format!("unknown --score-table {spec:?} {FORMS}"));
+    };
+    if name.is_empty() {
+        return Err(format!(
+            "--score-table {spec:?} has an empty name before the `=`; a candidate needs a name \
+             to be reported under {FORMS}"
+        ));
+    }
+    let Some((early, late)) = vectors.split_once('/') else {
+        return Err(format!(
+            "--score-table {spec:?} names no LATE vector: the two vectors are separated by `/` \
+             {FORMS}"
+        ));
+    };
+
+    // `Feature::COUNT`, never a literal 16: a future feature admission moves the
+    // width, and a parser holding a stale literal would accept exactly the
+    // tables that no longer fit the vectors.
+    let parse_vector = |raw: &str, which: &str| -> Result<[i64; Feature::COUNT], String> {
+        let entries: Vec<&str> = raw.split(',').collect();
+        if entries.len() != Feature::COUNT {
+            return Err(format!(
+                "--score-table {spec:?}: the {which} vector has {} entries, and Feature::ALL has \
+                 {} — every weight is named or none is",
+                entries.len(),
+                Feature::COUNT,
+            ));
+        }
+        let mut out = [0i64; Feature::COUNT];
+        for (slot, entry) in entries.iter().enumerate() {
+            out[slot] = entry.trim().parse::<i64>().map_err(|e| {
+                format!(
+                    "--score-table {spec:?}: the {which} vector's entry {} ({entry:?}) is not an \
+                     i64: {e}",
+                    slot + 1,
+                )
+            })?;
+        }
+        Ok(out)
+    };
+
+    Ok(ScoreTableSpec {
+        name: name.to_string(),
+        table: WeightTable {
+            early: parse_vector(early, "EARLY")?,
+            late: parse_vector(late, "LATE")?,
+        },
+    })
+}
+
+/// Which half of the L2 split a game's cells belong to.
+///
+/// **A function of the GENERATION INDEX ALONE** — even = fit, odd = held-out —
+/// pre-registered in the round-1 ledger row before any candidate was scored.
+/// Never a function of a cell's value, its outcome label, or anything the corpus
+/// measured: a split that read an outcome would make the held-out figure a
+/// second look at the same data, which is the whole thing a held-out figure is
+/// supposed to rule out.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum Split {
+    Fit,
+    HeldOut,
+}
+
+impl Split {
+    fn of(game: u32) -> Self {
+        if game.is_multiple_of(2) {
+            Split::Fit
+        } else {
+            Split::HeldOut
+        }
+    }
+
+    fn name(self) -> &'static str {
+        match self {
+            Split::Fit => "fit",
+            Split::HeldOut => "held-out",
+        }
+    }
+
+    /// This game's position among the games on its own side — the CLUSTER index
+    /// the bootstrap resamples over, since `auc_weighted` indexes `mult` by the
+    /// cluster id it is handed.
+    ///
+    /// One expression serves both sides because halving maps `0,2,4,…` and
+    /// `1,3,5,…` onto `0,1,2,…` alike.
+    fn cluster(self, game: u32) -> u32 {
+        debug_assert_eq!(Self::of(game), self, "game {game} is not on the {} side", self.name());
+        game / 2
+    }
+
+    /// How many clusters this side holds out of `games` generated. An odd game
+    /// count leaves the extra game on the FIT side, which is what the even-index
+    /// rule implies and is stated here so the resample population is read off
+    /// the design rather than counted out of the rows.
+    fn clusters(self, games: u32) -> usize {
+        match self {
+            Split::Fit => games.div_ceil(2) as usize,
+            Split::HeldOut => (games / 2) as usize,
+        }
+    }
+}
+
+/// The evaluator's own positional total under a CANDIDATE table, RE-WEIGHTED
+/// from the [`ScoreStructure`] this view already derived.
+///
+/// A deliberate MIRROR of `eval::score`'s loop — the interpolation, the
+/// signed-weight opponent selection with its first-wins tie rule, and the
+/// saturating arithmetic. It is a mirror rather than a second `score` call for
+/// the cost reason this file's module doc opens with: `score` derives a whole
+/// `ScoreStructure` per call, and a nineteen-candidate grid over a 340,000-view
+/// corpus would pay that derivation six million extra times. The drift a mirror
+/// risks is paid for by
+/// `the_candidate_machinery_with_v1_reproduces_the_benchmark_row`, which pins
+/// this against `score` itself, cell by cell, over a real corpus.
+///
+/// TERMINAL views short-circuit. §2.6 ranks a finished position instead of
+/// scoring it, and the ladder value is a function of the standings alone — the
+/// same number under every weight table — so `shipped_total`, the value `score`
+/// already returned for this view, is the answer for every candidate and cannot
+/// disagree with one. **On every corpus this instrument can generate the branch
+/// is DEFENSIVELY UNREACHABLE** (Task-D review NOTE-1): snapshots are taken at
+/// turn STARTS only, and a finished game records no further turn start, so no
+/// recorded view is terminal. It is kept for totality — a hand-built corpus
+/// could contain one — and it is deliberately the trivial pass-through above
+/// precisely so unreachable code cannot lie about a weight table.
+fn candidate_total(
+    view: &PlayerView,
+    me: &yokohama_core::VisiblePlayer,
+    structure: &ScoreStructure,
+    table: &WeightTable,
+    progress: u32,
+    terminal: bool,
+    shipped_total: f64,
+) -> f64 {
+    if terminal {
+        return shipped_total;
+    }
+    let mut total: i64 = 0;
+    for feature in Feature::ALL {
+        let (early, late) = table.get(feature);
+        let weight = interpolate(early, late, progress);
+        let mine = structure.value_of(me, feature);
+        // `eval::opponent_extreme`'s rule, reproduced: maximize `weight · value`
+        // over the non-dummy opponents and subtract the winner's RAW value, with
+        // ties (including every tie at `weight == 0`) keeping the FIRST opponent
+        // in seat order. Unexercised at 2P, where the maximum is over one
+        // opponent — but the corpora are not the only thing this runs on.
+        let mut theirs: Option<i64> = None;
+        for other in &view.players {
+            if other.id == me.id || other.id.is_dummy() {
+                continue;
+            }
+            let value = structure.value_of(other, feature);
+            let improves = match theirs {
+                None => true,
+                Some(current) => weight.saturating_mul(value) > weight.saturating_mul(current),
+            };
+            if improves {
+                theirs = Some(value);
+            }
+        }
+        let theirs = theirs.unwrap_or(0);
+        total = total.saturating_add(weight.saturating_mul(mine.saturating_sub(theirs)));
+    }
+    total as f64
 }
 
 /// The ROWS_LEN values a single view contributes, relative and absolute.
@@ -314,13 +1248,16 @@ impl Row {
 /// convention, recorded rather than assumed away. AUC is a separation
 /// statistic, so a feature the plain max orients "backwards" reads below 0.5
 /// and is still measured, just from the other side.
+#[allow(clippy::too_many_arguments)]
 fn row_values(
     view: &PlayerView,
     rules: &Rules,
     weights: &WeightTable,
     rows: &[Row],
+    candidates: &[ScoreTableSpec],
     out_rel: &mut [f64],
     out_abs: &mut [f64],
+    out_cand: &mut [f64],
 ) {
     // ONCE per view — see the module doc. Everything below indexes it.
     let structure = ScoreStructure::derive(view, rules);
@@ -368,6 +1305,19 @@ fn row_values(
                     .unwrap_or(0);
                 (sum(me) as f64, theirs as f64)
             }
+            // Same plain-max convention as the feature rows above, and for the
+            // same reason: this column is measured, not shipped, so the
+            // orientation question a signed weight answers does not arise.
+            Row::Candidate(c) => {
+                let theirs = view
+                    .players
+                    .iter()
+                    .filter(|p| p.id != me.id && !p.id.is_dummy())
+                    .map(|p| c.value(view, p, rules))
+                    .max()
+                    .unwrap_or(0);
+                (c.value(view, me, rules) as f64, theirs as f64)
+            }
             // Already relative, and an "absolute" evaluator total is not a
             // defined quantity — the row reports the same number in both
             // columns rather than inventing one.
@@ -375,6 +1325,25 @@ fn row_values(
         };
         out_rel[slot] = mine - theirs;
         out_abs[slot] = mine;
+    }
+
+    // The candidate tables, priced on the structure derived once above. Costs
+    // nothing at all when no `--score-table` was given, which is what keeps an
+    // argument-free run byte-identical to every recorded appendix.
+    if !candidates.is_empty() {
+        let progress = progress_ppm(view, rules);
+        let terminal = view_is_terminal(view);
+        for (slot, candidate) in candidates.iter().enumerate() {
+            out_cand[slot] = candidate_total(
+                view,
+                me,
+                &structure,
+                &candidate.table,
+                progress,
+                terminal,
+                total,
+            );
+        }
     }
 }
 
@@ -442,6 +1411,9 @@ struct Cell {
     label: bool,
     rel: Vec<f64>,
     abs: Vec<f64>,
+    /// One EVAL TOTAL per `--score-table` candidate, in the order they were
+    /// named. Empty — and allocation-free — when none was given.
+    cand: Vec<f64>,
 }
 
 /// A per-(game, seat, stage) accumulator, folded into a [`Cell`] at game end.
@@ -449,11 +1421,17 @@ struct CellAcc {
     n: u64,
     rel: Vec<f64>,
     abs: Vec<f64>,
+    cand: Vec<f64>,
 }
 
 impl CellAcc {
-    fn new(rows: usize) -> Self {
-        CellAcc { n: 0, rel: vec![0.0; rows], abs: vec![0.0; rows] }
+    fn new(rows: usize, candidates: usize) -> Self {
+        CellAcc {
+            n: 0,
+            rel: vec![0.0; rows],
+            abs: vec![0.0; rows],
+            cand: vec![0.0; candidates],
+        }
     }
 }
 
@@ -621,13 +1599,32 @@ struct Corpus {
     nonzero_recovery: u64,
     area_actions: u64,
     builds: u64,
-    /// Greedy only; zero under a policy rung, which has no cap to bind.
+    /// Explaining contestants only; zero under a policy rung, which has no cap
+    /// to bind.
     cap_binds: u64,
     decisions: u64,
     candidates: u64,
+    /// The two SEARCH guards, `None` on a contestant that has no such quantity
+    /// (see [`ProbeTally::ply_cap_hits`]). RECORDED here and asserted nowhere:
+    /// the gate that asserts them is `tests/evaluator_gate.rs`.
+    ply_cap_hits: Option<u64>,
+    free_cap_hits: Option<u64>,
+    /// Spec §3.4's budget meters, same `None` rule and the same
+    /// recorded-never-asserted posture (`tests/architecture_gate.rs` is where
+    /// their relations are gated). On an UNCAPPED corpus both read `Some(0)` by
+    /// construction; on a capped one they are the figures that say what kind of
+    /// corpus this actually is.
+    budget_binds: Option<u64>,
+    budget_starved: Option<u64>,
+    /// The §0.3(b) identity, folded over (game × seat) blocks — see
+    /// [`identity_blocks`]. Zero blocks under a policy rung, which explains
+    /// nothing and hands back no tallies at all.
+    identity_blocks: u64,
+    identity_mismatches: u64,
     wall: f64,
 }
 
+#[allow(clippy::too_many_arguments)]
 fn generate(
     players: u8,
     games: u32,
@@ -636,13 +1633,15 @@ fn generate(
     rules: &Rules,
     master: SeedScheduleKind,
     invariants: bool,
+    columns: &[CandidateColumn],
+    candidates: &[ScoreTableSpec],
 ) -> Result<(Corpus, u64), String> {
     let (mut schedule, master_value) = match master {
         SeedScheduleKind::Diagnostic(m) => (SeedSchedule::diagnostic(m), m),
         SeedScheduleKind::OsEntropy => SeedSchedule::from_os_entropy(),
     };
 
-    let rows = Row::all();
+    let rows = Row::all(columns);
     let mut corpus = Corpus {
         rows: rows.clone(),
         cells: Vec::new(),
@@ -660,6 +1659,12 @@ fn generate(
         cap_binds: 0,
         decisions: 0,
         candidates: 0,
+        ply_cap_hits: None,
+        free_cap_hits: None,
+        budget_binds: None,
+        budget_starved: None,
+        identity_blocks: 0,
+        identity_mismatches: 0,
         wall: 0.0,
     };
 
@@ -682,9 +1687,32 @@ fn generate(
             corpus.cap_binds += tally.placement_cap_binds();
             corpus.decisions += tally.explained();
             corpus.candidates += tally.candidates_scored();
+            if let Some(hits) = tally.ply_cap_hits() {
+                *corpus.ply_cap_hits.get_or_insert(0) += hits;
+            }
+            if let Some(hits) = tally.free_cap_hits() {
+                *corpus.free_cap_hits.get_or_insert(0) += hits;
+            }
+            if let Some(binds) = tally.budget_binds() {
+                *corpus.budget_binds.get_or_insert(0) += binds;
+            }
+            if let Some(starved) = tally.budget_starved() {
+                *corpus.budget_starved.get_or_insert(0) += starved;
+            }
+        }
+        // A rung explains nothing and hands back no tallies at all, so there is
+        // no identity to check — folding one anyway would report every seat of
+        // every rung game as a mismatch. Gated on the CONTESTANT rather than on
+        // `tallies.is_empty()`, so an explaining arm that stopped filling the
+        // sink still reads as the violation it is.
+        if !matches!(contestant, ProbeContestant::Policy(_)) {
+            let explained: Vec<u64> = tallies.iter().map(ProbeTally::explained).collect();
+            let (blocks, mismatches) = identity_blocks(&explained, &stats.moves_by_seat);
+            corpus.identity_blocks += blocks;
+            corpus.identity_mismatches += mismatches;
         }
 
-        snapshot_game(&stats, players, weights, rules, &rows, game, &mut corpus)?;
+        snapshot_game(&stats, players, weights, rules, &rows, candidates, game, &mut corpus)?;
     }
     corpus.wall = started.elapsed().as_secs_f64();
 
@@ -692,7 +1720,32 @@ fn generate(
 }
 
 /// Play ONE game with the named contestant, returning its stats plus the
-/// per-seat Greedy tallies (empty for a policy rung).
+/// per-seat explanation tallies IN SEAT ORDER (empty for a policy rung, which
+/// explains nothing).
+///
+/// Seat order is what makes the §0.3(b) identity a per-seat check rather than an
+/// aggregate one: [`run_arena_game`] builds its agents `(0..players)`, so the
+/// `i`-th tally belongs to the `i`-th entry of `ArenaGameStats::moves_by_seat`.
+/// The ONE construction site for the probe's lookahead agent, pulled out of
+/// [`play_one`]'s closure so a test can pin the knob-to-parameter wiring:
+/// `worlds` and `retreat_samples` are ADJACENT `u8` parameters on
+/// [`LookaheadAgent::with_knobs`], so a k/m transposition compiles clean, the
+/// provenance echo would not reveal it (it prints the PARSED knobs), and every
+/// corpus it generated would be mislabelled (W1-C review NOTE-3). The pin is
+/// `lookahead_knobs_reach_their_agent_slots_unswapped`.
+fn lookahead_probe_agent(
+    rules: &Rules,
+    b: u16,
+    k: u8,
+    m: u8,
+    cap: Option<u32>,
+    table: WeightTable,
+    agent_seed: u64,
+) -> LookaheadAgent {
+    LookaheadAgent::with_knobs(rules, SearchScheme::TurnBoundary { beam: b }, k, m, table, agent_seed)
+        .with_cap(cap)
+}
+
 fn play_one(
     seed: WorldSeed,
     players: u8,
@@ -701,30 +1754,28 @@ fn play_one(
     rules: &Rules,
     master: u64,
     invariants: bool,
-) -> Result<(ArenaGameStats, Vec<ExplanationTally>), String> {
+) -> Result<(ArenaGameStats, Vec<ProbeTally>), String> {
+    let table = *weights;
     match contestant {
-        ProbeContestant::Greedy => {
-            // Cloned out BEFORE the agents move into the driver — the
-            // `HonestPathTally` precedent, and the only way to read the
-            // counters afterwards.
-            let handles: std::sync::Arc<std::sync::Mutex<Vec<ExplanationTally>>> =
-                std::sync::Arc::default();
-            let sink = std::sync::Arc::clone(&handles);
-            let table = *weights;
-            let mut make = |seat: PlayerId, _n: u8| -> Box<dyn yokohama_core::ArenaAgent> {
-                let agent = GreedyAgent::with_weights(
-                    rules,
-                    table,
-                    DEFAULT_RETREAT_SAMPLES,
-                    agent_stream_seed(seed, seat, Slot(seat.0)),
-                );
-                sink.lock().expect("tally sink").push(agent.tally());
-                Box::new(agent)
-            };
-            let stats = run_arena_game(seed, players, rules, &mut make, invariants)
-                .map_err(|e| format!("game at seed {:#018x}: {e}", seed.0))?;
-            let tallies = handles.lock().expect("tally sink").clone();
-            Ok((stats, tallies))
+        ProbeContestant::Greedy { m } => {
+            drive_honest(seed, players, rules, invariants, |agent_seed| {
+                let agent = GreedyAgent::with_weights(rules, table, m, agent_seed);
+                let tally = ProbeTally::Greedy(agent.tally());
+                (Box::new(agent), tally)
+            })
+        }
+        // The SAME honest chain as the greedy arm — `run_arena_game`, one agent
+        // per seat on its own `agent_stream_seed` stream — and deliberately NOT
+        // `run_raw_game`: a search corpus generated from privileged state would
+        // be a different measurement wearing this one's label, and the whole
+        // point of the A0 (contestant × rev) corpus is that the two contestants
+        // differ in nothing but the contestant.
+        ProbeContestant::Lookahead { b, k, m, cap } => {
+            drive_honest(seed, players, rules, invariants, |agent_seed| {
+                let agent = lookahead_probe_agent(rules, b, k, m, cap, table, agent_seed);
+                let tally = ProbeTally::Search(agent.tally());
+                (Box::new(agent), tally)
+            })
         }
         ProbeContestant::Policy(policy) => {
             let seats = vec![policy; players as usize];
@@ -735,6 +1786,32 @@ fn play_one(
     }
 }
 
+/// Run one game through the HONEST driver with `make` at every seat.
+///
+/// Each agent's tally is cloned out BEFORE the agent moves into the driver — the
+/// `HonestPathTally` precedent, and the only way to read the counters afterwards,
+/// since a game's agents are built by the driver's own factory and never handed
+/// back.
+fn drive_honest(
+    seed: WorldSeed,
+    players: u8,
+    rules: &Rules,
+    invariants: bool,
+    make: impl Fn(u64) -> (Box<dyn ArenaAgent>, ProbeTally),
+) -> Result<(ArenaGameStats, Vec<ProbeTally>), String> {
+    let handles: std::sync::Arc<std::sync::Mutex<Vec<ProbeTally>>> = std::sync::Arc::default();
+    let sink = std::sync::Arc::clone(&handles);
+    let mut factory = |seat: PlayerId, _n: u8| -> Box<dyn ArenaAgent> {
+        let (agent, tally) = make(agent_stream_seed(seed, seat, Slot(seat.0)));
+        sink.lock().expect("tally sink").push(tally);
+        agent
+    };
+    let stats = run_arena_game(seed, players, rules, &mut factory, invariants)
+        .map_err(|e| format!("game at seed {:#018x}: {e}", seed.0))?;
+    let tallies = handles.lock().expect("tally sink").clone();
+    Ok((stats, tallies))
+}
+
 /// Walk one finished game's record and fold every turn start into cells.
 ///
 /// The walk is a REPLAY rather than a hook inside the driver: `run_arena_game`
@@ -742,12 +1819,14 @@ fn play_one(
 /// from exactly the states the recorded game passed through — the same fold
 /// `replay`/`replay_strict` use, one event at a time, so this instrument cannot
 /// have its own idea of what a game did.
+#[allow(clippy::too_many_arguments)]
 fn snapshot_game(
     stats: &ArenaGameStats,
     players: u8,
     weights: &WeightTable,
     rules: &Rules,
     rows: &[Row],
+    candidates: &[ScoreTableSpec],
     game: u32,
     corpus: &mut Corpus,
 ) -> Result<(), String> {
@@ -774,10 +1853,11 @@ fn snapshot_game(
     // Pass 2: one accumulator per (seat, stage), folded at the end.
     let turns = starts.len();
     let mut accs: Vec<CellAcc> = (0..usize::from(players) * STAGES.len())
-        .map(|_| CellAcc::new(rows.len()))
+        .map(|_| CellAcc::new(rows.len(), candidates.len()))
         .collect();
     let mut rel = vec![0.0f64; rows.len()];
     let mut abs = vec![0.0f64; rows.len()];
+    let mut cand = vec![0.0f64; candidates.len()];
 
     for (index, start) in starts.iter().enumerate() {
         let stage = stage_of(index, turns);
@@ -789,12 +1869,24 @@ fn snapshot_game(
             if seat == 0 {
                 corpus.proxy.push((progress_ppm(&view, rules), stage));
             }
-            row_values(&view, rules, weights, rows, &mut rel, &mut abs);
+            row_values(
+                &view,
+                rules,
+                weights,
+                rows,
+                candidates,
+                &mut rel,
+                &mut abs,
+                &mut cand,
+            );
             let acc = &mut accs[usize::from(seat) * STAGES.len() + stage.index()];
             acc.n += 1;
             for slot in 0..rows.len() {
                 acc.rel[slot] += rel[slot];
                 acc.abs[slot] += abs[slot];
+            }
+            for (target, value) in acc.cand.iter_mut().zip(cand.iter()) {
+                *target += value;
             }
             corpus.snapshots += 1;
         }
@@ -816,6 +1908,7 @@ fn snapshot_game(
                 label: stats.result.winner == PlayerId(seat),
                 rel: acc.rel.iter().map(|v| v / n).collect(),
                 abs: acc.abs.iter().map(|v| v / n).collect(),
+                cand: acc.cand.iter().map(|v| v / n).collect(),
             });
         }
     }
@@ -823,10 +1916,11 @@ fn snapshot_game(
 }
 
 fn cmd_run(args: &[String]) -> Result<(), String> {
-    let (positional, flags) = split_args(
+    let (positional, flags, repeated) = split_args(
         args,
-        &["contestant", "weights", "master", "bootstrap", "blocks"],
+        &["contestant", "weights", "master", "bootstrap", "blocks", "candidate-columns"],
         &["os-entropy", "invariants", "no-invariants"],
+        &["score-table"],
     )?;
     if positional.len() != 2 {
         return Err(format!("run takes 2 positional arguments\n\n{USAGE}"));
@@ -850,10 +1944,39 @@ fn cmd_run(args: &[String]) -> Result<(), String> {
     }
     let invariants = !flags.contains_key("no-invariants");
     let blocks = blocks_from(&flags)?;
+    let columns = match flags.get("candidate-columns") {
+        None => Vec::new(),
+        Some(raw) => CandidateColumn::parse_list(raw)?,
+    };
+    // A candidate column only ever prints inside the features block, so a
+    // --blocks list without `features` would silently drop the request — and
+    // this file's rule is that ignored input is an error, never a no-op.
+    if !columns.is_empty() && !blocks.features {
+        return Err(
+            "--candidate-columns rides the features block, and this --blocks list omits \
+             `features` — add it or drop the flag (a silently-ignored column would violate \
+             the ignored-input rule)"
+                .to_string(),
+        );
+    }
+    let candidates: Vec<ScoreTableSpec> = repeated
+        .get("score-table")
+        .map(|specs| specs.iter().map(|s| parse_score_table(s)).collect::<Result<Vec<_>, _>>())
+        .transpose()?
+        .unwrap_or_default();
 
     let rules = Rules::standard();
-    let (corpus, master_value) =
-        generate(players, games, contestant, &weights, &rules, master, invariants)?;
+    let (corpus, master_value) = generate(
+        players,
+        games,
+        contestant,
+        &weights,
+        &rules,
+        master,
+        invariants,
+        &columns,
+        &candidates,
+    )?;
 
     // Derived from the DESIGN, printed, and never from the outcomes.
     let resample_seed =
@@ -899,6 +2022,15 @@ fn cmd_run(args: &[String]) -> Result<(), String> {
     }
     if blocks.counters {
         report_counters(&corpus, contestant);
+    }
+    // AFTER the standard blocks, and gated on the flag rather than on `--blocks`
+    // — the candidate arm is not one of the three named blocks, and a run that
+    // asked for a candidate table wants it whichever blocks it also asked for.
+    if !candidates.is_empty() {
+        print!(
+            "{}",
+            render_candidate_tables(&corpus, &weights, &candidates, bootstrap, resample_seed)
+        );
     }
     Ok(())
 }
@@ -1067,6 +2199,27 @@ fn report_features(
         table[0][1].cells, table[0][1].winners,
         table[0][2].cells, table[0][2].winners,
     );
+    // Printed only when a `--candidate-columns` row is present, so an
+    // argument-free run stays byte-identical to every recorded appendix. The
+    // marking is load-bearing: these rows sit in the same table as the sixteen
+    // and ship in nothing, and a reader who takes one for a feature would read
+    // the whole report as describing an evaluator that does not exist.
+    let candidate_columns: Vec<&str> = corpus
+        .rows
+        .iter()
+        .filter_map(|r| match r {
+            Row::Candidate(c) => Some(c.name()),
+            _ => None,
+        })
+        .collect();
+    if !candidate_columns.is_empty() {
+        println!(
+            "  CANDIDATE COLUMNS — measured here, shipped by NOTHING, no weight and so no \
+             disposition; Feature::ALL is still {}: {}",
+            Feature::COUNT,
+            candidate_columns.join(", "),
+        );
+    }
     println!(
         "  {:<28} {:>4} {:<22} {:<16} {:<22} {:>4} {:<22} {:<16} shape",
         "row", "w_e", "EARLY auc [95%]", "early-disp", "MID auc [95%]", "w_l",
@@ -1120,6 +2273,233 @@ fn report_features(
             table[slot][2].mean_abs,
         );
     }
+}
+
+// ---------------------------------------------------------------------------
+// Block (e): candidate weight tables, fit vs held-out
+// ---------------------------------------------------------------------------
+
+/// One (candidate × stage × split) column, pre-sorted for [`auc_weighted`].
+struct SplitColumn {
+    rows: Vec<(f64, u32, bool)>,
+    /// Games on this side of the split — the resample's cluster count, taken
+    /// from the DESIGN rather than from the rows, so a stage that happens to be
+    /// missing a short game's cell still resamples the right population.
+    clusters: usize,
+    winners: usize,
+}
+
+/// Collect one candidate's cells for one stage and one side of the split.
+fn split_column(corpus: &Corpus, candidate: usize, stage: Stage, split: Split) -> SplitColumn {
+    let mut rows: Vec<(f64, u32, bool)> = corpus
+        .cells
+        .iter()
+        .filter(|c| c.stage == stage && Split::of(c.game) == split)
+        .map(|c| (c.cand[candidate], split.cluster(c.game), c.label))
+        .collect();
+    rows.sort_by(|a, b| a.0.partial_cmp(&b.0).expect("candidate totals are finite"));
+    let winners = rows.iter().filter(|r| r.2).count();
+    SplitColumn { rows, clusters: split.clusters(corpus.games), winners }
+}
+
+/// This candidate's own resample stream.
+///
+/// Derived from the DESIGN — the run's own design-derived `resample_seed` and
+/// the candidate's WEIGHT-TABLE IDENTITY — and never from an outcome. The
+/// identity rather than the position deliberately: a candidate re-run ALONE, to
+/// check one row of a nineteen-cell grid, then reproduces the interval it was
+/// quoted with, which a position-keyed stream would not.
+fn candidate_resample_seed(resample_seed: u64, table: &WeightTable) -> u64 {
+    mix64(resample_seed ^ mix64(weight_table_identity(table) as u64))
+}
+
+/// The percentile interval for the three HELD-OUT stage columns of ONE
+/// candidate.
+///
+/// ONE multiplicity draw per replicate, reused across the three stages —
+/// `report_features`'s rule, for its reason: the cluster resample is a property
+/// of the replicate, not of the column, so drawing per stage would make a
+/// candidate's own stage rows mutually incomparable. Across CANDIDATES the
+/// streams differ by construction (see [`candidate_resample_seed`]), so two
+/// candidates' intervals are not paired — stated in the block header rather than
+/// left for a reader to assume either way.
+fn held_out_intervals(
+    columns: &[SplitColumn; 3],
+    bootstrap: u32,
+    seed: u64,
+) -> [(f64, f64); 3] {
+    let clusters = columns[0].clusters;
+    if clusters == 0 || bootstrap == 0 {
+        return [(f64::NAN, f64::NAN); 3];
+    }
+    let mut rng = ChaCha8Rng::seed_from_u64(seed);
+    let mut replicates: [Vec<f64>; 3] = [
+        Vec::with_capacity(bootstrap as usize),
+        Vec::with_capacity(bootstrap as usize),
+        Vec::with_capacity(bootstrap as usize),
+    ];
+    let mut mult = vec![0u32; clusters];
+    for _ in 0..bootstrap {
+        mult.iter_mut().for_each(|m| *m = 0);
+        for _ in 0..clusters {
+            mult[rng.gen_range(0..clusters)] += 1;
+        }
+        for (s, column) in columns.iter().enumerate() {
+            if let Some(a) = auc_weighted(&column.rows, &mult) {
+                replicates[s].push(a);
+            }
+        }
+    }
+    let mut out = [(f64::NAN, f64::NAN); 3];
+    for (s, reps) in replicates.iter_mut().enumerate() {
+        reps.sort_by(|a, b| a.partial_cmp(b).expect("AUCs are finite"));
+        if reps.is_empty() {
+            continue;
+        }
+        out[s] = (
+            reps[nearest_rank_index(reps.len(), 25, 1000)],
+            reps[nearest_rank_index(reps.len(), 975, 1000)],
+        );
+    }
+    out
+}
+
+/// One AUC point estimate, or the two honest non-answers.
+fn point_render(column: &SplitColumn) -> String {
+    if is_constant(&column.rows) {
+        return "constant".to_string();
+    }
+    match auc_weighted(&column.rows, &vec![1u32; column.clusters]) {
+        None => "--".to_string(),
+        Some(p) => format!("{p:.4}"),
+    }
+}
+
+/// The whole `(e)` block as one deterministic string.
+///
+/// Returned rather than printed so the determinism claim is testable at all: a
+/// block that only ever reaches stdout cannot be compared with itself.
+fn render_candidate_tables(
+    corpus: &Corpus,
+    corpus_weights: &WeightTable,
+    candidates: &[ScoreTableSpec],
+    bootstrap: u32,
+    resample_seed: u64,
+) -> String {
+    use std::fmt::Write;
+
+    let mut out = String::new();
+    let corpus_identity = weight_table_identity(corpus_weights) as u64;
+    let fit_games = Split::Fit.clusters(corpus.games);
+    let held_games = Split::HeldOut.clusters(corpus.games);
+
+    let _ = writeln!(
+        out,
+        "\n--- (e) candidate weight tables: EVAL TOTAL under a CANDIDATE table, fit/held-out by \
+         game ---"
+    );
+    let _ = writeln!(
+        out,
+        "  L2 split: fit = EVEN generation index (0,2,4,...) · held-out = ODD (1,3,5,...) — a \
+         function of the generation index ALONE, never of a cell's value or label"
+    );
+    let _ = writeln!(out, "  games: fit {fit_games} · held-out {held_games}");
+    let _ = writeln!(
+        out,
+        "  HELD-OUT is the QUOTABLE evidence figure; fit is printed for the gap. NOTHING is \
+         fitted on the fit half — candidates are hand-specified tables evaluated identically \
+         on both halves, so the fit/held-out gap is sampling noise, not an overfit signature. \
+         The overfitting hazard that IS live here is SELECTION across a candidate grid on \
+         these held-out figures; a round quoting a grid winner carries that caveat, and the \
+         protocol's L4 screen plus the freeze's fresh cell are the guards"
+    );
+    let _ = writeln!(
+        out,
+        "  bootstrap B={bootstrap}, game-clustered, on the HELD-OUT columns only; one draw per \
+         replicate is shared by a candidate's three stages, so those are jointly resampled and \
+         two DIFFERENT candidates' intervals are not paired"
+    );
+    let _ = writeln!(
+        out,
+        "  each candidate's stream = mix64(run resample_seed ^ mix64(weight identity)) — the \
+         DESIGN and the candidate's own identity, never the outcomes; keyed on IDENTITY not \
+         position, so re-running one candidate alone reproduces its interval"
+    );
+    let _ = writeln!(
+        out,
+        "  candidates are EVALUATED on this corpus and NEVER generate one (protocol §2: \
+         incumbent-play corpora only) — the games above were played under the header's \
+         contestant and weight table, identity {corpus_identity:#018x}"
+    );
+
+    for (ordinal, candidate) in candidates.iter().enumerate() {
+        let identity = weight_table_identity(&candidate.table) as u64;
+        let seed = candidate_resample_seed(resample_seed, &candidate.table);
+        let fit: Vec<SplitColumn> =
+            STAGES.iter().map(|s| split_column(corpus, ordinal, *s, Split::Fit)).collect();
+        let held: [SplitColumn; 3] = [
+            split_column(corpus, ordinal, Stage::Early, Split::HeldOut),
+            split_column(corpus, ordinal, Stage::Mid, Split::HeldOut),
+            split_column(corpus, ordinal, Stage::Late, Split::HeldOut),
+        ];
+        let intervals = held_out_intervals(&held, bootstrap, seed);
+
+        let _ = writeln!(
+            out,
+            "\n  [{}] candidate={}  identity={identity:#018x}  vs corpus table: {}  \
+             resample_seed={seed:#018x}",
+            ordinal + 1,
+            candidate.name,
+            if identity == corpus_identity { "SAME" } else { "DIFFERENT" },
+        );
+        let _ = writeln!(out, "      early={:?}", candidate.table.early);
+        let _ = writeln!(out, "      late ={:?}", candidate.table.late);
+        let _ = writeln!(
+            out,
+            "      hand-split ordering (L14 core>on_board>excess, both vectors): {}",
+            if yokohama_core::game::eval_screen::hand_split_ordering_holds(&candidate.table) {
+                "ok"
+            } else {
+                "VIOLATED — protocol §4.2 forbids relaxing it at any ladder rung"
+            },
+        );
+        let _ = writeln!(
+            out,
+            "      {:<7} {:>9} {:>9}   {:<26} {:>13}",
+            "stage", "fit auc", "held auc", "held-out 95% [lo, hi]", "cells fit/held",
+        );
+        for stage in STAGES {
+            let s = stage.index();
+            let (lo, hi) = intervals[s];
+            let _ = writeln!(
+                out,
+                "      {:<7} {:>9} {:>9}   {:<26} {:>13}",
+                stage.name(),
+                point_render(&fit[s]),
+                point_render(&held[s]),
+                // A CONSTANT held-out column refuses its interval the way block
+                // (a)'s `AucRow::render` does: every resample of a constant is
+                // the constant, so [0.5000, 0.5000] would be a zero-width
+                // interval claiming a measurement it did not make — the same
+                // refusal `arena_gate`'s §0-R3 exists to enforce.
+                if is_constant(&held[s].rows) {
+                    "--  (constant: no interval)".to_string()
+                } else if lo.is_nan() {
+                    "--  (no interval)".to_string()
+                } else {
+                    format!("[{lo:.4}, {hi:.4}]")
+                },
+                format!(
+                    "{}/{} ({}w/{}w)",
+                    fit[s].rows.len(),
+                    held[s].rows.len(),
+                    fit[s].winners,
+                    held[s].winners,
+                ),
+            );
+        }
+    }
+    out
 }
 
 // ---------------------------------------------------------------------------
@@ -1234,6 +2614,13 @@ fn share(num: u64, den: u64) -> String {
     format!("{:.6}", num as f64 / den as f64)
 }
 
+/// A counter this contestant may not have at all. `n/a` rather than `0`, on
+/// [`ProbeTally`]'s `Option` rule: printing a zero for an absent quantity is
+/// exactly the confusion the rule exists to prevent.
+fn counter(value: Option<u64>) -> String {
+    value.map_or_else(|| "n/a".to_string(), |v| v.to_string())
+}
+
 fn report_counters(corpus: &Corpus, contestant: ProbeContestant) {
     println!();
     println!("--- (d) behavioural counters over the corpus ---");
@@ -1259,7 +2646,14 @@ fn report_counters(corpus: &Corpus, contestant: ProbeContestant) {
         share(corpus.builds, corpus.applied),
     );
     match contestant {
-        ProbeContestant::Greedy => {
+        // FROZEN BLOCK. Its bytes are the cross-rev comparator for the A0
+        // (contestant × rev) obligation — a greedy corpus at rev 7 has to diff
+        // line for line against the rev-5 freeze artifact — so a new line HERE
+        // would show up as a difference in every row of that comparison. The
+        // search block below is where this instrument's new counters print, and
+        // the identity VIOLATION line after the match fires on any arm, so the
+        // freeze costs no coverage.
+        ProbeContestant::Greedy { .. } => {
             println!(
                 "  placement cap binds         {:>10}  of {} decisions  (spec §3.3)",
                 corpus.cap_binds, corpus.decisions,
@@ -1271,9 +2665,58 @@ fn report_counters(corpus: &Corpus, contestant: ProbeContestant) {
                 corpus.decisions,
             );
         }
+        ProbeContestant::Lookahead { .. } => {
+            println!(
+                "  placement cap binds         {:>10}  of {} decisions  (spec §3.3, summed over \
+                 search NODES: one decision can bind it several times)",
+                corpus.cap_binds, corpus.decisions,
+            );
+            println!(
+                "  candidates/decision         {:>10.2}  ({} scored / {} decisions)",
+                corpus.candidates as f64 / corpus.decisions.max(1) as f64,
+                corpus.candidates,
+                corpus.decisions,
+            );
+            println!(
+                "  explained / applied         {:>10} / {}  over {} (game x seat) blocks, \
+                 per-seat mismatches {}   <- spec §0.3(b)",
+                corpus.decisions,
+                corpus.applied,
+                corpus.identity_blocks,
+                corpus.identity_mismatches,
+            );
+            println!(
+                "  ply cap hits                {:>10}  free cap hits {}   [RECORDED, never \
+                 asserted here: this is an instrument; evaluator_gate is the gate]",
+                counter(corpus.ply_cap_hits),
+                counter(corpus.free_cap_hits),
+            );
+            // Spec §3.4's meters, so a CAPPED corpus cannot pass for the shipped
+            // uncapped one: at cap=750 the budget binds at essentially every
+            // decision and candidates/decision drops ~4.6x, which is a
+            // materially different corpus wearing the same contestant name. On
+            // an uncapped run 0 / 0 is the truthful shipped shape.
+            println!(
+                "  budget binds                {:>10}  starved {}   (spec §3.4, over {} decisions; \
+                 0 / 0 is the UNCAPPED shape — architecture_gate is where the relations are gated)",
+                counter(corpus.budget_binds),
+                counter(corpus.budget_starved),
+                corpus.decisions,
+            );
+        }
         ProbeContestant::Policy(_) => {
             println!("  placement cap binds         (n/a: a policy rung has no candidate cap)");
         }
+    }
+    // Fires on ANY arm, which is why the frozen greedy block above can stay
+    // frozen: a violated identity is never silent, it just does not cost a line
+    // when it holds.
+    if corpus.identity_mismatches > 0 {
+        println!(
+            "  *** {} of {} (game x seat) blocks EXPLAINED A DIFFERENT NUMBER OF MOVES THAN THEY \
+             APPLIED — spec §0.3(b) is violated and every figure above is suspect",
+            corpus.identity_mismatches, corpus.identity_blocks,
+        );
     }
     if let Some(q) = corpus.turns.quantiles() {
         println!(
@@ -1309,7 +2752,7 @@ fn report_counters(corpus: &Corpus, contestant: ProbeContestant) {
 // ---------------------------------------------------------------------------
 
 fn cmd_table(args: &[String]) -> Result<(), String> {
-    let (positional, flags) = split_args(args, &["weights"], &[])?;
+    let (positional, flags, _) = split_args(args, &["weights"], &[], &[])?;
     if !positional.is_empty() {
         return Err(format!("table takes no positional arguments\n\n{USAGE}"));
     }
@@ -1339,6 +2782,537 @@ fn cmd_table(args: &[String]) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    use yokohama_core::game::greedy::DEFAULT_RETREAT_SAMPLES;
+    use yokohama_core::game::lookahead::{DEFAULT_BEAM, DEFAULT_WORLDS};
+    use yokohama_core::{
+        AchievementCard, AchievementType, ChurchSlot, ChurchTrack, CustomsSlot, CustomsTrack,
+        GameConfig, OrderCardId, StartingOrderChoice, TechCardId, VisiblePlayer,
+    };
+
+    /// W1-C review NOTE-3: `worlds` and `retreat_samples` are ADJACENT `u8`
+    /// parameters on `LookaheadAgent::with_knobs`, so a k/m transposition in
+    /// [`lookahead_probe_agent`] would compile clean, echo the PARSED knobs
+    /// (the echo prints what was typed, not what the agent holds), and mislabel
+    /// every corpus this instrument generates. Pinned through the agent's own
+    /// accessors at ASYMMETRIC values — a swap cannot pass — plus the beam and
+    /// both cap shapes.
+    #[test]
+    fn lookahead_knobs_reach_their_agent_slots_unswapped() {
+        let rules = Rules::standard();
+        let agent = lookahead_probe_agent(&rules, 3, 2, 9, Some(750), WeightTable::V1, 0xA5);
+        assert!(
+            matches!(agent.scheme(), SearchScheme::TurnBoundary { beam: 3 }),
+            "b must land in the beam slot",
+        );
+        assert_eq!(agent.worlds(), 2, "k must land in the worlds slot");
+        assert_eq!(agent.retreat_samples(), 9, "m must land in the retreat-samples slot");
+        assert_eq!(agent.cap(), Some(750));
+
+        // The absent-cap shape stays absent (the T0 byte-inertness fact).
+        let uncapped = lookahead_probe_agent(
+            &rules,
+            DEFAULT_BEAM,
+            DEFAULT_WORLDS,
+            DEFAULT_RETREAT_SAMPLES,
+            None,
+            WeightTable::V1,
+            0xA5,
+        );
+        assert_eq!(uncapped.cap(), None);
+    }
+
+    /// Task C (Phase 3.5c W1): the probe's contestant grammar IS the core one
+    /// ([`Contestant::from_str_name`], promoted in W1-B), so a spec typed here
+    /// means what it means at `examples/arena` — knobs and refusals included.
+    #[test]
+    fn the_contestant_grammar_is_the_cores_and_the_old_four_still_parse() {
+        assert_eq!(
+            ProbeContestant::parse(GREEDY_CONTROLLER),
+            Ok(ProbeContestant::Greedy { m: DEFAULT_RETREAT_SAMPLES }),
+        );
+        assert_eq!(
+            ProbeContestant::parse("uniform"),
+            Ok(ProbeContestant::Policy(RolloutPolicy::Uniform)),
+        );
+        assert_eq!(
+            ProbeContestant::parse("retreat-averse"),
+            Ok(ProbeContestant::Policy(RolloutPolicy::RetreatAverse)),
+        );
+        assert_eq!(
+            ProbeContestant::parse("family-weighted"),
+            Ok(ProbeContestant::Policy(RolloutPolicy::FAMILY_WEIGHTED_DEFAULT)),
+        );
+
+        // Knobs the probe never had before it delegated — the whole point of
+        // single-sourcing rather than growing a second spelling of the grammar.
+        assert_eq!(ProbeContestant::parse("greedy-v1:m=3"), Ok(ProbeContestant::Greedy { m: 3 }));
+        assert_eq!(
+            ProbeContestant::parse("family-weighted:p=50000,k=5"),
+            Ok(ProbeContestant::Policy(RolloutPolicy::FamilyWeighted {
+                retreat_ppm: 50_000,
+                recovery_min_of: 5,
+            })),
+        );
+
+        // …and the refusals ride along unchanged: unknown IS an error at every
+        // level, and the message names what it saw.
+        for (spec, token) in
+            [("uniform:p=5", "uniform"), ("greedy-v1:zzz=1", "zzz"), ("nope", "nope")]
+        {
+            let message = ProbeContestant::parse(spec).expect_err("spec must be refused");
+            assert!(message.contains(token), "refusal of {spec:?} did not name {token:?}: {message}");
+        }
+    }
+
+    #[test]
+    fn the_lookahead_arm_parses_bare_and_at_every_knob() {
+        assert_eq!(
+            ProbeContestant::parse(LOOKAHEAD_CONTROLLER),
+            Ok(ProbeContestant::Lookahead {
+                b: DEFAULT_BEAM,
+                k: DEFAULT_WORLDS,
+                m: DEFAULT_RETREAT_SAMPLES,
+                // An absent cap is the SHIPPED rung, not some large number:
+                // every 3.3 figure was measured uncapped.
+                cap: None,
+            }),
+        );
+        assert_eq!(
+            ProbeContestant::parse("lookahead-v1:b=2,k=3,m=4,cap=750"),
+            Ok(ProbeContestant::Lookahead { b: 2, k: 3, m: 4, cap: Some(750) }),
+        );
+        assert_eq!(
+            ProbeContestant::parse("lookahead-v1:b=8"),
+            Ok(ProbeContestant::Lookahead {
+                b: 8,
+                k: DEFAULT_WORLDS,
+                m: DEFAULT_RETREAT_SAMPLES,
+                cap: None,
+            }),
+        );
+        let zero = ProbeContestant::parse("lookahead-v1:cap=0").expect_err("cap=0 must be refused");
+        assert!(zero.contains("omit the knob"), "{zero}");
+        assert!(ProbeContestant::parse("lookahead-v1:b=0").is_err(), "b=0 is not a beam");
+        assert!(ProbeContestant::parse("lookahead-v1:zzz=1").is_err(), "unknown knob");
+    }
+
+    /// The two arms the probe REFUSES, and the reason the refusal is the
+    /// probe's rather than the grammar's: the core parser accepts every one of
+    /// these specs, and this instrument declines to generate a corpus it cannot
+    /// print honest counters for.
+    #[test]
+    fn the_probe_refuses_the_contestants_it_does_not_meter() {
+        for spec in
+            ["mcts-v1", "mcts-v1:cap=750", "atomic-diag-v1", "lookahead-atomic-diag-v1:d=3"]
+        {
+            assert!(
+                Contestant::from_str_name(spec).is_ok(),
+                "{spec:?} must PARSE — the refusal below is the probe's, not the grammar's",
+            );
+            let message = ProbeContestant::parse(spec).expect_err("spec must be refused here");
+            assert!(message.contains(spec), "the refusal must name what it saw: {message}");
+            assert!(
+                message.contains("eval_probe does not drive"),
+                "the refusal must say whose it is: {message}",
+            );
+            assert!(
+                message.contains("examples/arena"),
+                "the refusal must name where the arm DOES run: {message}",
+            );
+        }
+    }
+
+    #[test]
+    fn the_echo_names_the_honest_driver_and_omits_an_absent_cap() {
+        let weights = WeightTable::V1;
+        let greedy = ProbeContestant::Greedy { m: DEFAULT_RETREAT_SAMPLES }.echo(&weights, "v1");
+        assert!(greedy.starts_with("greedy-v1{m=8,weights=v1:0x"), "{greedy}");
+        assert!(greedy.contains("[honest driver: observe -> sampler K=1 -> handle]"), "{greedy}");
+
+        let bare = ProbeContestant::Lookahead {
+            b: DEFAULT_BEAM,
+            k: DEFAULT_WORLDS,
+            m: DEFAULT_RETREAT_SAMPLES,
+            cap: None,
+        }
+        .echo(&weights, "v1");
+        assert!(bare.starts_with("lookahead-v1{b=4,k=1,m=8,weights=v1:0x"), "{bare}");
+        assert!(!bare.contains("cap="), "an absent cap must emit no token: {bare}");
+        assert!(
+            bare.contains("[honest driver: observe -> sampler K=1 -> handle]"),
+            "the search arm runs the SAME honest chain the greedy arm does: {bare}",
+        );
+
+        let capped = ProbeContestant::Lookahead {
+            b: DEFAULT_BEAM,
+            k: DEFAULT_WORLDS,
+            m: DEFAULT_RETREAT_SAMPLES,
+            cap: Some(750),
+        }
+        .echo(&weights, "v1");
+        assert!(capped.contains("cap=750,"), "{capped}");
+        assert_ne!(capped, bare);
+
+        // The rung says PRIVILEGED, and it must keep saying it.
+        let rung = ProbeContestant::Policy(RolloutPolicy::Uniform).echo(&weights, "v1");
+        assert!(rung.contains("RAW-STATE driver: privileged play, corpus only"), "{rung}");
+    }
+
+    #[test]
+    fn the_per_seat_identity_counts_every_block_including_unpaired_ones() {
+        assert_eq!(identity_blocks(&[3, 4], &[3, 4]), (2, 0));
+        assert_eq!(identity_blocks(&[3, 4], &[3, 5]), (2, 1));
+        assert_eq!(identity_blocks(&[], &[]), (0, 0));
+        assert_eq!(identity_blocks(&[3], &[3, 4]), (2, 1));
+        // A contestant that stopped handing back tallies at all is exactly the
+        // case a zip over the SHORTER list would report as a clean identity
+        // over zero blocks — so the unpaired indices count as mismatches.
+        assert_eq!(identity_blocks(&[], &[3, 4]), (2, 2));
+        assert_eq!(identity_blocks(&[3, 4], &[]), (2, 2));
+    }
+
+    /// The lookahead arm end to end: through the HONEST driver (never
+    /// `run_raw_game`), with the per-seat §0.3(b) identity holding and the
+    /// view-derived blocks — features cells and proxy points — populated for a
+    /// search corpus exactly as for a greedy one.
+    ///
+    /// One game, because a debug-profile S1 game is seconds rather than
+    /// milliseconds; the properties are structural, so N buys nothing here.
+    #[test]
+    fn a_lookahead_corpus_runs_through_the_honest_driver_and_explains_every_move() {
+        let rules = Rules::standard();
+        let (corpus, master) = generate(
+            2,
+            1,
+            ProbeContestant::Lookahead {
+                b: DEFAULT_BEAM,
+                k: DEFAULT_WORLDS,
+                m: DEFAULT_RETREAT_SAMPLES,
+                cap: None,
+            },
+            &WeightTable::V1,
+            &rules,
+            SeedScheduleKind::Diagnostic(DEFAULT_MASTER),
+            true,
+            &[],
+            &[],
+        )
+        .expect("a 2P lookahead game completes");
+        assert_eq!(master, DEFAULT_MASTER);
+        assert_eq!(corpus.games, 1);
+
+        // (a) the identity, per seat rather than in aggregate.
+        assert!(corpus.applied > 0, "a game that applied no moves proves nothing");
+        assert_eq!(corpus.identity_blocks, 2, "one block per seat");
+        assert_eq!(corpus.identity_mismatches, 0);
+        assert_eq!(corpus.decisions, corpus.applied, "every applied move was explained");
+
+        // (b) the search cap counters EXIST on this arm. `Some` is the whole
+        // claim — the values are RECORDED, never asserted (the probe is an
+        // instrument, not a gate), and `Some(0)` vs `None` is what separates
+        // "searched and never hit the guard" from "has no guard to hit".
+        assert!(corpus.ply_cap_hits.is_some(), "an S1 corpus has a ply guard to report");
+        assert!(corpus.free_cap_hits.is_some(), "an S1 corpus has a free-extension counter");
+        assert!(
+            corpus.candidates > corpus.decisions,
+            "a beam search scores more than one successor per decision",
+        );
+
+        // (c) the view-derived blocks work for a search corpus too — verified,
+        // not assumed: they read the RECORD the driver handed back, and the
+        // record does not know which agent produced it.
+        assert!(!corpus.cells.is_empty(), "no analysis cells from a search corpus");
+        assert!(corpus.snapshots > 0);
+        assert_eq!(
+            corpus.proxy.len() * 2,
+            corpus.snapshots as usize,
+            "one proxy point per turn start, one snapshot per (turn start x seat) at 2P",
+        );
+
+        // The discriminating half of the `Option` rule: the one-ply arm has NO
+        // such quantity, and answers `None` rather than a zero that would read
+        // as a measurement.
+        let (greedy, _) = generate(
+            2,
+            1,
+            ProbeContestant::Greedy { m: DEFAULT_RETREAT_SAMPLES },
+            &WeightTable::V1,
+            &rules,
+            SeedScheduleKind::Diagnostic(DEFAULT_MASTER),
+            true,
+            &[],
+            &[],
+        )
+        .expect("a 2P greedy game completes");
+        assert_eq!(greedy.ply_cap_hits, None, "a one-ply argmax has no continuation to truncate");
+        assert_eq!(greedy.free_cap_hits, None);
+        assert_eq!(greedy.identity_mismatches, 0);
+        assert_eq!(greedy.identity_blocks, 2);
+    }
+
+    // -----------------------------------------------------------------------
+    // Phase 3.5c round 1 — the L2 candidate arm
+    // -----------------------------------------------------------------------
+
+    /// The four accepted spellings, and the shape of what they build.
+    #[test]
+    fn the_score_table_grammar_parses_its_four_forms() {
+        assert_eq!(
+            parse_score_table("v1"),
+            Ok(ScoreTableSpec { name: "v1".to_string(), table: WeightTable::V1 }),
+        );
+        assert_eq!(
+            parse_score_table("v2"),
+            Ok(ScoreTableSpec { name: "v2".to_string(), table: WeightTable::V2 }),
+        );
+        // The rounds' own spelling, kept alive by the alias so every committed
+        // command still parses — and it names the SAME numbers `v2` does, which
+        // is what the promotion means. The two report under DIFFERENT names on
+        // purpose: a block quoting `v2-draft` is reproducing a round, one
+        // quoting `v2` is measuring what ships.
+        assert_eq!(
+            parse_score_table("v2-draft"),
+            Ok(ScoreTableSpec { name: "v2-draft".to_string(), table: WeightTable::V2_DRAFT }),
+        );
+        assert_eq!(
+            parse_score_table("v2-draft").unwrap().table,
+            parse_score_table("v2").unwrap().table,
+            "the draft spelling and the shipped spelling name one table since the freeze",
+        );
+
+        // An explicit vector: sixteen per side, Feature::ALL order, negatives
+        // and zeroes included so the parser cannot be a positive-only reader.
+        let early: Vec<String> = (0..16).map(|i| (i as i64 - 3).to_string()).collect();
+        let late: Vec<String> = (0..16).map(|i| (40 - i as i64).to_string()).collect();
+        let spec = format!("A1={}/{}", early.join(","), late.join(","));
+        let parsed = parse_score_table(&spec).expect("an explicit vector must parse");
+        assert_eq!(parsed.name, "A1");
+        assert_eq!(parsed.table.early[0], -3);
+        assert_eq!(parsed.table.early[3], 0);
+        assert_eq!(parsed.table.late[0], 40);
+        assert_eq!(parsed.table.late[15], 25);
+        assert_eq!(
+            parsed.table.get(Feature::VictoryPoints),
+            (-3, 40),
+            "slot 0 of each vector is Feature::ALL[0]",
+        );
+    }
+
+    /// Every refusal names what it SAW. A silently-ignored candidate spec would
+    /// print a report missing the row the run was made to look at, which is the
+    /// same class of failure `split_args` refuses unknown flags to prevent.
+    #[test]
+    fn an_unknown_or_malformed_score_table_is_a_typed_error_naming_what_it_saw() {
+        let sixteen = (0..16).map(|_| "1").collect::<Vec<_>>().join(",");
+        for (spec, token) in [
+            // `v3` stands in for the spelling `v2` used to hold here: a table
+            // name the grammar does not know is an ERROR, never a silent
+            // default. (`v2` itself became legal at the freeze.)
+            ("v3", "v3"),
+            ("pre-freeze", "pre-freeze"),
+            ("", ""),
+            ("A1=1,2,3/4,5,6", "A1"),
+            ("=1/2", "name"),
+        ] {
+            let message = parse_score_table(spec).expect_err("{spec:?} must be refused");
+            assert!(
+                message.contains(token),
+                "the refusal of {spec:?} did not name {token:?}: {message}",
+            );
+        }
+        // A vector of the wrong WIDTH names the width it got and the width the
+        // feature list has, so a future admission cannot be mistaken for a typo.
+        let short = format!("A1={}/{}", sixteen, (0..15).map(|_| "1").collect::<Vec<_>>().join(","));
+        let message = parse_score_table(&short).expect_err("15 late entries must be refused");
+        assert!(message.contains("15") && message.contains("16"), "{message}");
+        // A non-integer entry names the token rather than the whole spec.
+        let bad = format!("A1={}/{}", sixteen.replacen('1', "x", 1), sixteen);
+        let message = parse_score_table(&bad).expect_err("a non-integer entry must be refused");
+        assert!(message.contains('x'), "{message}");
+        // The missing separator, both ways round.
+        assert!(parse_score_table("A1=1,2,3").is_err(), "no `/` is not a table");
+        assert!(parse_score_table("A1/1,2,3").is_err(), "no `=` is not a named table");
+    }
+
+    #[test]
+    fn an_unknown_candidate_column_is_a_typed_error() {
+        assert_eq!(
+            CandidateColumn::parse_list("postclaim"),
+            Ok(vec![CandidateColumn::PostClaim]),
+        );
+        let message = CandidateColumn::parse_list("postclim").expect_err("a typo must be refused");
+        assert!(message.contains("postclim"), "{message}");
+        assert!(message.contains("postclaim"), "the refusal must name what IS accepted: {message}");
+        // Feature::ALL is not touched by a candidate column, ever.
+        assert_eq!(Feature::COUNT, 16);
+        assert_eq!(Row::all(&[CandidateColumn::PostClaim]).len(), Row::all(&[]).len() + 1);
+        // …and the benchmark row stays last.
+        assert!(matches!(Row::all(&[CandidateColumn::PostClaim]).last(), Some(Row::EvalTotal)));
+    }
+
+    /// **The split is a function of the generation index ALONE** — the round-1
+    /// pre-registration's words. Pinned on a hand-built corpus so the mapping is
+    /// visible rather than inferred: games 0/2/4 are fit at cluster indices
+    /// 0/1/2, games 1/3/5 are held-out at cluster indices 0/1/2, and no cell's
+    /// VALUE or LABEL moves it.
+    #[test]
+    fn the_l2_split_is_a_function_of_the_generation_index_alone() {
+        let cells: Vec<Cell> = (0..6u32)
+            .map(|game| Cell {
+                game,
+                stage: Stage::Early,
+                // Labels and values deliberately correlate with parity: if the
+                // split ever read either, this fixture would still look tidy and
+                // the assertions below would still have to hold, so they pin the
+                // MAPPING rather than a summary of it.
+                label: game % 2 == 1,
+                rel: vec![f64::from(game)],
+                abs: vec![f64::from(game)],
+                cand: vec![f64::from(game) * 10.0],
+            })
+            .collect();
+        let corpus = test_corpus(cells, 6);
+
+        for game in 0..6u32 {
+            let expected = if game % 2 == 0 { Split::Fit } else { Split::HeldOut };
+            assert_eq!(Split::of(game), expected, "game {game}");
+            assert_eq!(expected.cluster(game), game / 2, "game {game} cluster index");
+        }
+        assert_eq!(Split::Fit.clusters(6), 3);
+        assert_eq!(Split::HeldOut.clusters(6), 3);
+        // An ODD game count leaves the extra game on the FIT side.
+        assert_eq!(Split::Fit.clusters(7), 4);
+        assert_eq!(Split::HeldOut.clusters(7), 3);
+
+        let fit = split_column(&corpus, 0, Stage::Early, Split::Fit);
+        let held = split_column(&corpus, 0, Stage::Early, Split::HeldOut);
+        assert_eq!(fit.rows.iter().map(|r| r.0).collect::<Vec<_>>(), vec![0.0, 20.0, 40.0]);
+        assert_eq!(held.rows.iter().map(|r| r.0).collect::<Vec<_>>(), vec![10.0, 30.0, 50.0]);
+        assert_eq!(fit.rows.iter().map(|r| r.1).collect::<Vec<_>>(), vec![0, 1, 2]);
+        assert_eq!(held.rows.iter().map(|r| r.1).collect::<Vec<_>>(), vec![0, 1, 2]);
+        assert_eq!(fit.clusters, 3);
+        assert_eq!(held.clusters, 3);
+        assert_eq!(fit.winners, 0, "even games lose in this fixture");
+        assert_eq!(held.winners, 3);
+    }
+
+    /// **THE ANTI-DRIFT PIN.** `candidate_total` is a hand-written mirror of
+    /// `eval::score`'s loop (interpolation, signed-weight opponent selection,
+    /// saturating arithmetic, the terminal short-circuit), written that way to
+    /// avoid re-deriving a `ScoreStructure` per candidate per view. A mirror
+    /// with no pin is a second implementation waiting to disagree, so this
+    /// runs the candidate machinery with V1 — the very table the corpus was
+    /// scored under — and requires it to reproduce the benchmark EVAL TOTAL
+    /// row's cell values EXACTLY, cell by cell, on a real corpus.
+    #[test]
+    fn the_candidate_machinery_with_v1_reproduces_the_benchmark_row() {
+        // BOTH player counts, deliberately: at 2P the signed-weight opponent
+        // selection is a no-op (one opponent), so a 2P-only pin leaves
+        // `candidate_total`'s max-over-opponents loop structurally unexercised —
+        // an inverted selection (max→min) passes it (Task-D review SHOULD-1,
+        // mutation-demonstrated). The 4P cell is what makes that mutation fail;
+        // `--score-table` itself is not gated to 2P.
+        let rules = Rules::standard();
+        for players in [2u8, 4] {
+            let (corpus, _) = generate(
+                players,
+                1,
+                ProbeContestant::Greedy { m: DEFAULT_RETREAT_SAMPLES },
+                &WeightTable::V1,
+                &rules,
+                SeedScheduleKind::Diagnostic(DEFAULT_MASTER),
+                true,
+                &[],
+                &[ScoreTableSpec { name: "v1".to_string(), table: WeightTable::V1 }],
+            )
+            .expect("a greedy game completes");
+
+            let slot = corpus
+                .rows
+                .iter()
+                .position(|r| matches!(r, Row::EvalTotal))
+                .expect("the benchmark row is always reported");
+            assert!(!corpus.cells.is_empty(), "a corpus with no cells proves nothing");
+            for cell in &corpus.cells {
+                assert_eq!(cell.cand.len(), 1);
+                assert_eq!(
+                    cell.cand[0].to_bits(),
+                    cell.rel[slot].to_bits(),
+                    "{players}P game {} stage {:?}: the candidate re-weighting drifted from \
+                     `eval::score`",
+                    cell.game,
+                    cell.stage,
+                );
+            }
+        }
+    }
+
+    /// Same arguments, same bytes — the property every recorded figure rests on.
+    #[test]
+    fn the_candidate_block_is_byte_identical_on_a_second_render() {
+        let rules = Rules::standard();
+        let candidates = vec![
+            ScoreTableSpec { name: "v1".to_string(), table: WeightTable::V1 },
+            ScoreTableSpec { name: "v2-draft".to_string(), table: WeightTable::V2_DRAFT },
+        ];
+        let (corpus, _) = generate(
+            2,
+            2,
+            ProbeContestant::Greedy { m: DEFAULT_RETREAT_SAMPLES },
+            &WeightTable::V1,
+            &rules,
+            SeedScheduleKind::Diagnostic(DEFAULT_MASTER),
+            true,
+            &[],
+            &candidates,
+        )
+        .expect("two 2P greedy games complete");
+
+        let first = render_candidate_tables(&corpus, &WeightTable::V1, &candidates, 64, 0xABCD);
+        let second = render_candidate_tables(&corpus, &WeightTable::V1, &candidates, 64, 0xABCD);
+        assert_eq!(first, second, "the candidate block must not depend on run order");
+        // …and it says the things a quoted figure needs beside it.
+        for needle in ["fit", "held-out", "EARLY", "MID", "LATE", "v2-draft", "resample_seed"] {
+            assert!(first.contains(needle), "the block never mentions {needle:?}:\n{first}");
+        }
+        // A different candidate stream is a different block.
+        let alone = vec![candidates[1].clone()];
+        assert_ne!(
+            render_candidate_tables(&corpus, &WeightTable::V1, &alone, 64, 0xABCD),
+            first,
+        );
+    }
+
+    /// A [`Corpus`] carrying nothing but cells — everything the split and the
+    /// candidate columns read, and nothing they do not.
+    fn test_corpus(cells: Vec<Cell>, games: u32) -> Corpus {
+        Corpus {
+            rows: Row::all(&[]),
+            cells,
+            games,
+            snapshots: 0,
+            proxy: Vec::new(),
+            turns: QuantileSketch::default(),
+            moves: QuantileSketch::default(),
+            trigger: TriggerTally::default(),
+            applied: 0,
+            retreat_picks: 0,
+            nonzero_recovery: 0,
+            area_actions: 0,
+            builds: 0,
+            cap_binds: 0,
+            decisions: 0,
+            candidates: 0,
+            ply_cap_hits: None,
+            free_cap_hits: None,
+            budget_binds: None,
+            budget_starved: None,
+            identity_blocks: 0,
+            identity_mismatches: 0,
+            wall: 0.0,
+        }
+    }
 
     fn column(points: &[(f64, bool)]) -> Vec<(f64, u32, bool)> {
         let mut rows: Vec<(f64, u32, bool)> =
@@ -1508,6 +3482,615 @@ mod tests {
         assert_eq!(shape(&row(0.60), &row(0.50), &row(0.40)), "monotone");
         assert_eq!(shape(&row(0.40), &row(0.70), &row(0.60)), "NON-MONOTONE(+0.1000)");
         assert_eq!(shape(&row(0.40), &row(0.30), &row(0.60)), "NON-MONOTONE(+0.1000)");
+    }
+
+    // -----------------------------------------------------------------------
+    // Phase 3.5c round 3 — the T5/T6/T7 admission columns (an L1 evidence round)
+    // -----------------------------------------------------------------------
+
+    /// A real OBSERVED view, from a real setup — the only kind of view this
+    /// instrument ever sees in production. Every fixture below mutates one of
+    /// these rather than hand-building a `PlayerView`, so no field a column
+    /// reads can be a shape `observe` never produces.
+    fn observed_view(players: u8, seed: u64, seat: u8, rules: &Rules) -> PlayerView {
+        let pending =
+            new_game(GameConfig::for_player_count(players), rules, seed).expect("a standard setup");
+        let choices: Vec<_> = (0..players).map(|_| StartingOrderChoice::Keep(0)).collect();
+        let state = finalize_setup(pending, &choices).expect("the setup finalizes");
+        observe(&state, PlayerId(seat)).expect("a seated view")
+    }
+
+    /// A 2P view whose two tracks hold NOTHING but the setup dummy (church
+    /// faith-7 / customs space-4, invariant I9). The D1 fixture shape
+    /// `tests/eval_core.rs` uses, restated view-side.
+    fn dummy_view(rules: &Rules) -> PlayerView {
+        let mut view = observed_view(2, 7, 0, rules);
+        assert!(
+            view.church_track.slots.iter().flatten().any(|s| s.player.is_dummy())
+                && view.customs_track.slots.iter().flatten().any(|s| s.player.is_dummy()),
+            "a 2P setup must place both dummy pawns — finding D1",
+        );
+        view.church_track.slots.iter_mut().for_each(|slot| {
+            *slot = slot.filter(|occupant| occupant.player.is_dummy());
+        });
+        view.customs_track.slots.iter_mut().for_each(|slot| {
+            *slot = slot.filter(|occupant| occupant.player.is_dummy());
+        });
+        view
+    }
+
+    fn seat_of(view: &PlayerView, seat: u8) -> &VisiblePlayer {
+        view.players.iter().find(|p| p.id == PlayerId(seat)).expect("the seat is in this view")
+    }
+
+    fn seat_mut(view: &mut PlayerView, seat: u8) -> &mut VisiblePlayer {
+        view.players.iter_mut().find(|p| p.id == PlayerId(seat)).expect("the seat is in this view")
+    }
+
+    fn column_value(column: CandidateColumn, view: &PlayerView, seat: u8, rules: &Rules) -> i64 {
+        column.value(view, seat_of(view, seat), rules)
+    }
+
+    /// What the SHIPPED structure awards this seat — the quantity every margin
+    /// mirror is judged against.
+    fn shipped_bonus(view: &PlayerView, seat: u8, feature: Feature, rules: &Rules) -> i64 {
+        ScoreStructure::derive(view, rules).value_of(seat_of(view, seat), feature)
+    }
+
+    fn place_church(view: &mut PlayerView, faith: u8, seat: u8) {
+        let index = ChurchTrack::faith_to_index(faith).expect("a printed faith space");
+        view.church_track.slots[index] =
+            Some(ChurchSlot { player: PlayerId(seat), arrival_order: faith });
+    }
+
+    fn place_customs(view: &mut PlayerView, space: u8, seat: u8) {
+        let index = CustomsTrack::space_to_index(space).expect("a printed customs space");
+        view.customs_track.slots[index] =
+            Some(CustomsSlot { player: PlayerId(seat), arrival_order: space });
+    }
+
+    /// Distinct-NAMED technology cards with the requested industry costs. The
+    /// registry holds 20 titles across 30 physical cards and a player may own
+    /// only ONE card of a given name, so a fixture stacking two copies of one
+    /// title would be a state no game can reach.
+    fn techs_totalling(rules: &Rules, costs: &[u8]) -> Vec<TechCardId> {
+        let cards = rules.techs.iter_sorted_by_id();
+        let mut used: Vec<String> = Vec::new();
+        let mut out = Vec::new();
+        for cost in costs {
+            let card = cards
+                .iter()
+                .find(|c| c.industry_cost == *cost && !used.contains(&c.name))
+                .unwrap_or_else(|| panic!("no unused technology of industry cost {cost}"));
+            used.push(card.name.clone());
+            out.push(card.id);
+        }
+        out
+    }
+
+    /// **THE ANTI-DRIFT PIN for the church margin.** The column is a mirror of
+    /// `eval::majority_bonus`'s ranking at finer grain, so the claim it makes —
+    /// POSITIVE exactly when this seat holds first place as the board stands —
+    /// is checked against what the shipped structure actually awards, case by
+    /// case, with the 2P dummy competing throughout (finding D1, rulebook p.9
+    /// NOTE; church 6/3, count then RIGHTMOST occupied space).
+    ///
+    /// Anti-vacuity is built in: the same seat reads 0 / 3 / 6 across the cases
+    /// below, so a mirror that ignored the dummy, or one that ignored the
+    /// rightmost tie-break, disagrees on a VALUE rather than on an absence.
+    #[test]
+    fn the_church_margin_is_positive_exactly_when_the_seat_holds_the_six() {
+        let rules = Rules::standard();
+        let check = |label: &str, view: &PlayerView, margins: [i64; 2], bonuses: [i64; 2]| {
+            for seat in 0..2u8 {
+                let margin = column_value(CandidateColumn::ChurchMajorityMargin, view, seat, &rules);
+                let bonus = shipped_bonus(view, seat, Feature::ChurchBonusNow, &rules);
+                assert_eq!(margin, margins[usize::from(seat)], "{label}: seat {seat} margin");
+                assert_eq!(bonus, bonuses[usize::from(seat)], "{label}: seat {seat} shipped bonus");
+                assert_eq!(
+                    margin > 0,
+                    bonus == 6,
+                    "{label}: seat {seat}: a positive margin must mean first place \
+                     (margin {margin}, bonus {bonus})",
+                );
+            }
+        };
+
+        // (i) The dummy alone on the track: it holds first place, awarded to
+        //     nobody, and both real seats are one pawn behind it.
+        let lone_dummy = dummy_view(&rules);
+        check("dummy alone", &lone_dummy, [-2, -2], [0, 0]);
+
+        // (ii) Both real pawns LEFT of faith-7: a three-way count tie the dummy
+        //      wins on rightmost, so P1 collects only the second place.
+        let mut denied = dummy_view(&rules);
+        place_church(&mut denied, 4, 0);
+        place_church(&mut denied, 5, 1);
+        check("denied", &denied, [-1, -1], [0, 3]);
+
+        // (iii) A count tie between the two real seats, decided by rightmost.
+        let mut rightmost = dummy_view(&rules);
+        place_church(&mut rightmost, 4, 0);
+        place_church(&mut rightmost, 8, 0);
+        place_church(&mut rightmost, 5, 1);
+        place_church(&mut rightmost, 9, 1);
+        check("rightmost tie", &rightmost, [-1, 1], [3, 6]);
+
+        // (iv) A real count gap: the magnitude carries it, at 2 per pawn.
+        let mut gap = dummy_view(&rules);
+        for faith in [4u8, 5, 6] {
+            place_church(&mut gap, faith, 0);
+        }
+        place_church(&mut gap, 9, 1);
+        check("count gap", &gap, [4, -4], [6, 3]);
+
+        // (v) An empty track — including no dummy — is a flat 0 for everyone,
+        //     the one shape in which the margin reads exactly zero.
+        let mut empty = dummy_view(&rules);
+        empty.church_track.slots = [None; 8];
+        check("empty", &empty, [0, 0], [0, 0]);
+
+        // (vi) A lone real occupant with the dummy cleared: first place with no
+        //      rival at all, and the seat that never placed is not in the
+        //      ranking (no second place is awarded to it).
+        let mut lone = dummy_view(&rules);
+        lone.church_track.slots = [None; 8];
+        place_church(&mut lone, 6, 0);
+        check("lone occupant", &lone, [2, -2], [6, 0]);
+    }
+
+    /// SHOULD-1 (Task-D review): the two arithmetic mutations that survived the
+    /// whole branch battery, each pinned by the exact shape the review's
+    /// 7,933-position organic harness caught them with.
+    ///
+    /// (a) The best-RIVAL selection ranks count-tied rivals by RIGHTMOST: seat 0
+    /// at faith 8 sits BETWEEN its two count-tied rivals (opponent at 9, dummy
+    /// at 7). A selection truncated to count alone keeps whichever rival
+    /// iterates last and can flip the tie term to +1 — first place by the
+    /// margin's sign contract — while the shipped structure awards seat 0 the
+    /// SECOND place. (b) A zero-industry seat is never a tech contender: at the
+    /// 3P OPENING (no dummy, no technology anywhere) every margin reads exactly
+    /// 0, and a dropped guard turns the clockwise term into a spurious ±1 at
+    /// the very early cells the round's L1 reading examines first.
+    #[test]
+    fn tied_rivals_rank_by_rightmost_and_zero_industry_seats_never_contend() {
+        let rules = Rules::standard();
+
+        let mut between = dummy_view(&rules);
+        place_church(&mut between, 8, 0);
+        place_church(&mut between, 9, 1);
+        let margin = column_value(CandidateColumn::ChurchMajorityMargin, &between, 0, &rules);
+        let bonus = shipped_bonus(&between, 0, Feature::ChurchBonusNow, &rules);
+        assert_eq!(bonus, 3, "fixture: the three-way count tie must award seat 0 second place");
+        assert_eq!(
+            margin, -1,
+            "seat 0's best rival is the RIGHTMOST of its two count-tied rivals (the opponent \
+             at faith 9, not the dummy at 7), so the tie term reads against it",
+        );
+
+        for seat in 0..3u8 {
+            let view = observed_view(3, 77, seat, &rules);
+            assert!(
+                view.players.iter().all(|p| p.technologies.is_empty()),
+                "fixture: a post-setup opening holds no technologies",
+            );
+            assert_eq!(
+                column_value(CandidateColumn::TechMajorityMargin, &view, seat, &rules),
+                0,
+                "seat {seat}: with no contender anywhere the margin is exactly 0 — never a \
+                 clockwise ±1",
+            );
+        }
+    }
+
+    /// The customs half of the same pin (8/4, seven printed spaces). Case (i) is
+    /// the engine's own D1 reproducer read through the view: the dummy wins a
+    /// COUNT TIE on the rightmost space and drops P0 from 8 VP to 4.
+    #[test]
+    fn the_customs_margin_is_positive_exactly_when_the_seat_holds_the_eight() {
+        let rules = Rules::standard();
+        let check = |label: &str, view: &PlayerView, margins: [i64; 2], bonuses: [i64; 2]| {
+            for seat in 0..2u8 {
+                let margin =
+                    column_value(CandidateColumn::CustomsMajorityMargin, view, seat, &rules);
+                let bonus = shipped_bonus(view, seat, Feature::CustomsBonusNow, &rules);
+                assert_eq!(margin, margins[usize::from(seat)], "{label}: seat {seat} margin");
+                assert_eq!(bonus, bonuses[usize::from(seat)], "{label}: seat {seat} shipped bonus");
+                assert_eq!(
+                    margin > 0,
+                    bonus == 8,
+                    "{label}: seat {seat}: a positive margin must mean first place \
+                     (margin {margin}, bonus {bonus})",
+                );
+            }
+        };
+
+        let mut denied = dummy_view(&rules);
+        place_customs(&mut denied, 3, 0);
+        place_customs(&mut denied, 1, 1);
+        check("dummy wins the rightmost tie", &denied, [-1, -1], [4, 0]);
+
+        let mut beaten = dummy_view(&rules);
+        place_customs(&mut beaten, 5, 0);
+        place_customs(&mut beaten, 6, 0);
+        place_customs(&mut beaten, 1, 1);
+        place_customs(&mut beaten, 2, 1);
+        check("dummy out-counted", &beaten, [1, -1], [8, 4]);
+
+        let mut empty = dummy_view(&rules);
+        empty.customs_track.slots = [None; 7];
+        check("empty", &empty, [0, 0], [0, 0]);
+    }
+
+    /// **D5 made executable on the candidate side.** At two players the setup
+    /// dummy competes in the TECHNOLOGY majority at industry value exactly 7.5
+    /// (owner ruling 2026-08-08, rulebook p.9 final-scoring NOTE), which the
+    /// engine and `eval.rs` alike represent as DOUBLED value 15 against real
+    /// doubled totals that are always even. These two cells straddle that
+    /// half-point — industry 7 (doubled 14) loses to it, industry 8 (doubled
+    /// 16) beats it — which is the whole content of the ruling.
+    #[test]
+    fn the_tech_margin_prices_the_2p_dummy_at_doubled_fifteen() {
+        let rules = Rules::standard();
+        for (costs, industry, margin_me, bonus_me, margin_them) in [
+            (vec![3u8, 4], 7u32, -2i64, 5i64, -30i64),
+            (vec![3, 5], 8, 2, 10, -32),
+        ] {
+            let mut view = observed_view(2, 11, 0, &rules);
+            let ids = techs_totalling(&rules, &costs);
+            let total: u32 = ids
+                .iter()
+                .map(|id| u32::from(rules.techs.get(*id).expect("a registry card").industry_cost))
+                .sum();
+            assert_eq!(total, industry, "the fixture must own the industry it claims");
+            seat_mut(&mut view, 0).technologies = ids;
+            seat_mut(&mut view, 1).technologies = Vec::new();
+
+            assert_eq!(
+                column_value(CandidateColumn::TechMajorityMargin, &view, 0, &rules),
+                margin_me,
+                "industry {industry} against the dummy's 7.5",
+            );
+            assert_eq!(
+                shipped_bonus(&view, 0, Feature::TechBonusNow, &rules),
+                bonus_me,
+                "industry {industry}: the shipped award",
+            );
+            // A seat owning NO technology never places — it is not a contender
+            // at all — and the margin says so from the other side.
+            assert_eq!(
+                column_value(CandidateColumn::TechMajorityMargin, &view, 1, &rules),
+                margin_them,
+            );
+            assert_eq!(shipped_bonus(&view, 1, Feature::TechBonusNow, &rules), 0);
+            for seat in 0..2u8 {
+                let margin = column_value(CandidateColumn::TechMajorityMargin, &view, seat, &rules);
+                let bonus = shipped_bonus(&view, seat, Feature::TechBonusNow, &rules);
+                assert_eq!(margin > 0, bonus == 10, "seat {seat}: margin {margin}, bonus {bonus}");
+            }
+        }
+    }
+
+    /// The technology tie-break is the official CLOCKWISE one (nearest to the
+    /// start player wins), and it is the only term that can decide an
+    /// equal-industry ranking. Run at 4P, where no dummy competes, and flipped
+    /// so the tie flips in the mirror AND in the shipped award — a fixture whose
+    /// answer never moved would pin nothing.
+    #[test]
+    fn the_tech_margin_breaks_an_equal_value_tie_clockwise_from_the_start_player() {
+        let rules = Rules::standard();
+        let mut view = observed_view(4, 13, 0, &rules);
+        let pair = techs_totalling(&rules, &[5, 5]);
+        for player in view.players.iter_mut() {
+            player.technologies = Vec::new();
+        }
+        seat_mut(&mut view, 2).technologies = vec![pair[0]];
+        seat_mut(&mut view, 3).technologies = vec![pair[1]];
+
+        // Start player P1 ⇒ distances P2 = 1, P3 = 2, so P2 wins the tie.
+        view.config.start_player = PlayerId(1);
+        assert_eq!(column_value(CandidateColumn::TechMajorityMargin, &view, 2, &rules), 1);
+        assert_eq!(column_value(CandidateColumn::TechMajorityMargin, &view, 3, &rules), -1);
+        assert_eq!(shipped_bonus(&view, 2, Feature::TechBonusNow, &rules), 10);
+        assert_eq!(shipped_bonus(&view, 3, Feature::TechBonusNow, &rules), 5);
+        // A seat with no technology sits a whole doubled value behind.
+        assert_eq!(column_value(CandidateColumn::TechMajorityMargin, &view, 0, &rules), -20);
+        assert_eq!(shipped_bonus(&view, 0, Feature::TechBonusNow, &rules), 0);
+
+        // Start player P3 ⇒ distances P3 = 0, P2 = 3: the tie flips, both sides.
+        view.config.start_player = PlayerId(3);
+        assert_eq!(column_value(CandidateColumn::TechMajorityMargin, &view, 3, &rules), 1);
+        assert_eq!(column_value(CandidateColumn::TechMajorityMargin, &view, 2, &rules), -1);
+        assert_eq!(shipped_bonus(&view, 3, Feature::TechBonusNow, &rules), 10);
+        assert_eq!(shipped_bonus(&view, 2, Feature::TechBonusNow, &rules), 5);
+    }
+
+    /// The achievement column is SELF-guidance, per the owner's 2026-08-09 canon
+    /// batch: achievements are agenda-setters, so what it measures is how near
+    /// THIS seat is to its next claim — never how near an opponent is.
+    #[test]
+    fn achievement_race_proximity_is_the_nearest_unclaimed_gap_negated() {
+        let rules = Rules::standard();
+        let one_tech = techs_totalling(&rules, &[3]);
+        let fresh = || {
+            let mut view = observed_view(2, 17, 0, &rules);
+            view.achievements = [
+                AchievementCard::new(AchievementType::Money10),
+                AchievementCard::new(AchievementType::Orders5),
+                AchievementCard::new(AchievementType::Technologies4),
+            ];
+            let me = seat_mut(&mut view, 0);
+            me.money = 8; // Money10: gap 2 — the nearest
+            me.completed_orders = vec![OrderCardId(1), OrderCardId(2)]; // Orders5: gap 3
+            me.technologies = one_tech.clone(); // Technologies4: gap 3
+            view
+        };
+        let proximity = |view: &PlayerView| {
+            column_value(CandidateColumn::AchievementRaceProximity, view, 0, &rules)
+        };
+
+        let base = fresh();
+        assert_eq!(proximity(&base), -2, "the NEAREST unclaimed card sets the column");
+
+        // The viewer's OWN claim drops that leg; the next-nearest takes over.
+        let mut self_claimed = fresh();
+        self_claimed.achievements[0].claimed_by.push(PlayerId(0));
+        assert_eq!(proximity(&self_claimed), -3);
+
+        // An OPPONENT's claim leaves this seat's leg fully LIVE: the engine's
+        // own gate refuses only a REPEAT claim by the same seat, so the card is
+        // still worth its subsequent value here (`can_claim_achievement`).
+        let mut opponent_claimed = fresh();
+        opponent_claimed.achievements[0].claimed_by.push(PlayerId(1));
+        assert_eq!(proximity(&opponent_claimed), -2);
+
+        // A card standing at full progress reads 0 — the top of the scale.
+        let mut claimable = fresh();
+        seat_mut(&mut claimable, 0).money = 10;
+        assert_eq!(proximity(&claimable), 0);
+
+        // …and OVER-progress does not read positive: the gap is capped, exactly
+        // as `achievement_progress_sum`'s legs are.
+        let mut hoarding = fresh();
+        seat_mut(&mut hoarding, 0).money = 25;
+        assert_eq!(proximity(&hoarding), 0);
+
+        // All three claimed by this seat reads 0 as well — a DECIDED collision
+        // with the claimable-now reading above, recorded rather than papered
+        // over: both are "nothing left to chase", and the state needs three
+        // claims by one seat to occur at all.
+        let mut swept = fresh();
+        for card in swept.achievements.iter_mut() {
+            card.claimed_by.push(PlayerId(0));
+        }
+        assert_eq!(proximity(&swept), 0);
+    }
+
+    /// The clock column is CONTROL-shaped, not brake-shaped: the owner's canon
+    /// batch inverts the end-trigger question (a behind player keeps building),
+    /// so what is worth measuring is how much of the church clock this seat is
+    /// itself driving.
+    #[test]
+    fn clock_control_church_counts_this_seats_own_pawns_and_never_the_dummys() {
+        let rules = Rules::standard();
+        let mut view = dummy_view(&rules);
+        let control =
+            |view: &PlayerView, seat: u8| column_value(CandidateColumn::ClockControlChurch, view, seat, &rules);
+
+        // The dummy is on the track and belongs to neither seat.
+        assert_eq!(view.church_track.slots.iter().flatten().count(), 1);
+        assert_eq!(control(&view, 0), 0);
+        assert_eq!(control(&view, 1), 0);
+
+        place_church(&mut view, 4, 0);
+        place_church(&mut view, 8, 0);
+        place_church(&mut view, 5, 1);
+        assert_eq!(control(&view, 0), 2);
+        assert_eq!(control(&view, 1), 1);
+
+        // The seats' shares SUM to the end-trigger's own currency — the
+        // executable form of "the dummy is not a pawn the trigger tallies"
+        // (`ChurchTrack::total_assistants`, finding D1).
+        let total: i64 = (0..2u8).map(|seat| control(&view, seat)).sum();
+        assert_eq!(total, i64::from(view.church_track.total_assistants()));
+        assert_eq!(view.church_track.slots.iter().flatten().count(), 4, "the dummy is still there");
+    }
+
+    /// T6's dropped conjunct. BOARD-GLOBAL by construction, which the report
+    /// must not be able to hide: the relative form is identically zero for every
+    /// seat, and that is pinned here through `row_values` itself — the function
+    /// the features block actually reads — rather than asserted about the helper
+    /// alone.
+    #[test]
+    fn port_empty_slots_counts_every_board_and_reads_the_same_from_every_seat() {
+        let rules = Rules::standard();
+        let mut view = observed_view(2, 19, 0, &rules);
+        assert!(view.port_state.port_b.is_none(), "2P plays one Port board");
+        let empty =
+            |view: &PlayerView, seat: u8| column_value(CandidateColumn::PortEmptySlots, view, seat, &rules);
+
+        view.port_state.port_a.slots = [None; 6];
+        assert_eq!(empty(&view, 0), 6);
+        assert_eq!(empty(&view, 1), 6);
+        view.port_state.port_a.slots[0] = Some(OrderCardId(1));
+        view.port_state.port_a.slots[5] = Some(OrderCardId(2));
+        assert_eq!(empty(&view, 0), 4);
+        assert_eq!(empty(&view, 1), 4, "a board-global quantity reads the same from every seat");
+
+        let rows = [Row::Candidate(CandidateColumn::PortEmptySlots)];
+        let mut rel = [0.0f64];
+        let mut abs = [0.0f64];
+        let mut cand: [f64; 0] = [];
+        row_values(&view, &rules, &WeightTable::V1, &rows, &[], &mut rel, &mut abs, &mut cand);
+        assert_eq!(rel[0], 0.0, "the relative form of a board-global column is zero by construction");
+        assert_eq!(abs[0], 4.0, "the absolute form is the whole information this column carries");
+
+        // The SECOND Port board counts too — a 2P-only implementation would
+        // read 6 where the table holds twelve slots.
+        let mut four = observed_view(4, 23, 0, &rules);
+        assert!(four.port_state.port_b.is_some(), "4P plays two Port boards");
+        four.port_state.port_a.slots = [None; 6];
+        four.port_state.port_b.as_mut().expect("port B").slots = [None; 6];
+        assert_eq!(empty(&four, 0), 12);
+        four.port_state.port_b.as_mut().expect("port B").slots[2] = Some(OrderCardId(3));
+        assert_eq!(empty(&four, 0), 11);
+    }
+
+    /// T7/T8's candidate, re-tested at rev-7 prices (the Church action now costs
+    /// 2 Yen, D1 2026-08-08). Trivial arithmetic, pinned anyway: a column that
+    /// silently read the wrong field would be indistinguishable from a null
+    /// result at L1, which is exactly the conclusion this round might draw.
+    #[test]
+    fn money_is_this_seats_yen() {
+        let rules = Rules::standard();
+        let mut view = observed_view(2, 29, 0, &rules);
+        seat_mut(&mut view, 0).money = 7;
+        seat_mut(&mut view, 1).money = 13;
+        assert_eq!(column_value(CandidateColumn::Money, &view, 0, &rules), 7);
+        assert_eq!(column_value(CandidateColumn::Money, &view, 1, &rules), 13);
+        seat_mut(&mut view, 0).money = 0;
+        assert_eq!(column_value(CandidateColumn::Money, &view, 0, &rules), 0);
+    }
+
+    /// Every variant is typeable, every token is unique, and nothing here moves
+    /// `Feature::ALL` or the argument-free row vector.
+    #[test]
+    fn every_candidate_column_is_reachable_from_the_command_line() {
+        for column in CANDIDATE_COLUMNS {
+            assert_eq!(
+                CandidateColumn::parse_list(column.token()),
+                Ok(vec![column]),
+                "{column:?} does not parse from its own token",
+            );
+            if column != CandidateColumn::PostClaim {
+                assert_eq!(
+                    column.token(),
+                    column.name(),
+                    "a round-3 column's token is its printed name",
+                );
+                // Round-1 review NOTE-5 recorded `postclaim`'s 34-character name
+                // overflowing the 28-wide name field as cosmetic; the round-3
+                // names are inside it, and this keeps them there.
+                assert!(column.name().len() <= 28, "{} overflows the name field", column.name());
+            }
+        }
+        let tokens: Vec<&str> = CANDIDATE_COLUMNS.iter().map(|c| c.token()).collect();
+        let names: Vec<&str> = CANDIDATE_COLUMNS.iter().map(|c| c.name()).collect();
+        for (label, mut list) in [("token", tokens.clone()), ("name", names.clone())] {
+            let before = list.len();
+            list.sort_unstable();
+            list.dedup();
+            assert_eq!(list.len(), before, "two candidate columns share a {label}");
+        }
+
+        // A list parses in argv order, and an empty entry is skipped.
+        assert_eq!(
+            CandidateColumn::parse_list("money,church_majority_margin,"),
+            Ok(vec![CandidateColumn::Money, CandidateColumn::ChurchMajorityMargin]),
+        );
+
+        // An unknown name names what it SAW and everything that IS accepted.
+        let message =
+            CandidateColumn::parse_list("church_margin").expect_err("a near-miss must be refused");
+        assert!(message.contains("church_margin"), "{message}");
+        for token in &tokens {
+            assert!(message.contains(token), "the refusal never mentions {token:?}: {message}");
+        }
+
+        // The shipped feature list is untouched, the argument-free row vector is
+        // the one every recorded appendix was rendered from, and the benchmark
+        // row still ends the table with every column present.
+        assert_eq!(Feature::COUNT, 16);
+        assert_eq!(Row::all(&[]).len(), 18);
+        assert_eq!(Row::all(&CANDIDATE_COLUMNS).len(), 18 + CANDIDATE_COLUMNS.len());
+        assert!(matches!(Row::all(&CANDIDATE_COLUMNS).last(), Some(Row::EvalTotal)));
+        assert_eq!(
+            Row::all(&CANDIDATE_COLUMNS)[..17],
+            Row::all(&[])[..17],
+            "candidate columns must not disturb the sixteen features or the unsplit hand row",
+        );
+    }
+
+    /// The columns are functions of the VIEW and of nothing else. Built twice
+    /// from scratch rather than cloned: two `observe` calls allocate their own
+    /// hash maps with their own `RandomState`, so a column that had come to
+    /// depend on a map's iteration order reads differently between the two.
+    #[test]
+    fn the_admission_columns_are_pure_functions_of_the_view() {
+        let rules = Rules::standard();
+        let build = || {
+            let mut view = dummy_view(&rules);
+            place_church(&mut view, 4, 0);
+            place_church(&mut view, 9, 1);
+            place_customs(&mut view, 2, 0);
+            seat_mut(&mut view, 0).technologies = techs_totalling(&rules, &[3, 5]);
+            seat_mut(&mut view, 0).money = 6;
+            seat_mut(&mut view, 1).money = 11;
+            view
+        };
+        let first = build();
+        let second = build();
+        assert_eq!(first, second, "the two fixtures must be the same view to begin with");
+        for column in CANDIDATE_COLUMNS {
+            for seat in 0..2u8 {
+                let a = column_value(column, &first, seat, &rules);
+                let b = column_value(column, &second, seat, &rules);
+                let again = column_value(column, &first, seat, &rules);
+                assert_eq!(a, b, "{column:?} seat {seat} moved between two identical views");
+                assert_eq!(a, again, "{column:?} seat {seat} moved on a second call");
+            }
+        }
+    }
+
+    /// End to end on a real corpus: the columns ride the same cell machinery the
+    /// sixteen do, every value is finite, the board-global column's relative
+    /// cells are identically zero, and the columns are not all silently zero
+    /// (the anti-vacuity that separates a measured null from a stub).
+    #[test]
+    fn the_admission_columns_ride_a_real_corpus_end_to_end() {
+        let rules = Rules::standard();
+        let (corpus, _) = generate(
+            2,
+            1,
+            ProbeContestant::Greedy { m: DEFAULT_RETREAT_SAMPLES },
+            &WeightTable::V1,
+            &rules,
+            SeedScheduleKind::Diagnostic(DEFAULT_MASTER),
+            true,
+            &CANDIDATE_COLUMNS,
+            &[],
+        )
+        .expect("a 2P greedy game completes");
+
+        assert_eq!(corpus.rows.len(), 18 + CANDIDATE_COLUMNS.len());
+        assert!(!corpus.cells.is_empty(), "a corpus with no cells proves nothing");
+        let slot = |column: CandidateColumn| {
+            corpus
+                .rows
+                .iter()
+                .position(|row| matches!(row, Row::Candidate(c) if *c == column))
+                .expect("every requested column is a row")
+        };
+        let port = slot(CandidateColumn::PortEmptySlots);
+        for cell in &corpus.cells {
+            for value in cell.rel.iter().chain(cell.abs.iter()) {
+                assert!(value.is_finite(), "game {} stage {:?}: a non-finite cell", cell.game, cell.stage);
+            }
+            assert_eq!(cell.rel[port], 0.0, "a board-global column has no seat margin");
+            assert!(cell.abs[port] >= 0.0, "an empty-slot count is never negative");
+        }
+        // The 2P dummy sits on both tracks from setup, so every seat starts a
+        // pawn behind in the church ranking — a value no stub produces.
+        let church = slot(CandidateColumn::ChurchMajorityMargin);
+        assert!(
+            corpus.cells.iter().any(|cell| cell.abs[church] != 0.0),
+            "the church margin is identically zero across a whole game",
+        );
+        let money = slot(CandidateColumn::Money);
+        assert!(
+            corpus.cells.iter().any(|cell| cell.abs[money] > 0.0),
+            "no seat held a single yen all game",
+        );
     }
 
     #[test]

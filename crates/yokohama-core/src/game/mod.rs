@@ -53,6 +53,16 @@ pub mod lookahead;
 /// `search_world` and `squash` would COLLIDE with `lookahead::search_world` at
 /// the crate root. Callers write `mcts::MctsAgent` / `mcts::search_world`.
 pub mod mcts;
+/// The candidate-vs-incumbent WEIGHT SCREEN (Phase 3.5c, evaluator-v2 protocol
+/// §4.2's L4). NAMESPACED for the same reason [`eval`], [`greedy`], [`lookahead`]
+/// and [`mcts`] are: `run_screen`, `ScreenSpec` and `NullPosition` say nothing
+/// about weights at the crate root. Callers write `eval_screen::run_screen`.
+///
+/// It is a SIBLING of [`arena`] rather than a submodule of it deliberately —
+/// see its own module doc: the arena's cell grammar carries no weight knob BY
+/// DESIGN (L12), and this instrument exists precisely to run the comparison that
+/// grammar refuses to express.
+pub mod eval_screen;
 
 pub use power::*;
 pub use movement::*;

@@ -146,7 +146,9 @@
 //! **These SUPERSEDE the research notes' §3 figures, which were taken under a
 //! provisional weight table before the T3 hand split and — for the hand-off row
 //! — under a first-wins tie-break (notes Amendment A1).** Conditions: release,
-//! Apple M5, quiet machine, `Rules::standard()`, the FROZEN [`WeightTable::V1`],
+//! Apple M5, quiet machine, `Rules::standard()`, the then-frozen
+//! [`WeightTable::V1`] (the v2 freeze has since moved the shipped table, and
+//! these walls were NOT re-taken — they size a search, not a table),
 //! 2P Lookahead-vs-Lookahead self-play at `K = 1`, diagnostic master
 //! `0x1EA4_2026_0727_0001`, per-move invariants OFF; harness = an out-of-tree
 //! scratch binary that path-depends on this crate and drives
@@ -353,7 +355,16 @@ use crate::types::{
 /// honestly: comparability is the criterion, not authorship. Per spec §0.5 each
 /// controller NAME carries its own const, which is why the diagnostic arm below
 /// has [`ATOMIC_DIAG_IMPL_VERSION`] rather than riding this one.
-pub const LOOKAHEAD_IMPL_VERSION: u32 = 1;
+///
+/// **2 = THE PHASE-3.5c v2 FREEZE** (2026-08-10). The default weights moved
+/// `WeightTable::V1` → `WeightTable::V2` and the evaluator's achievement feature
+/// gained T3's post-claim filter, so an S1 seat plays differently at identical
+/// `B`/`K`/`M`/cap — every Lookahead-v1 figure recorded at version 1 is
+/// non-comparable forward, the 3.3 evaluator-gate table and the 3.4 ADR's cells
+/// included. The controller NAME is unchanged ([`LOOKAHEAD_CONTROLLER`] is still
+/// `lookahead-v1`): the runner grammar names controllers, and this const is what
+/// names versions.
+pub const LOOKAHEAD_IMPL_VERSION: u32 = 2;
 
 /// The stable S1 controller name — provenance, runner grammar and corpus
 /// filters read it from here rather than hand-typing it.
@@ -368,7 +379,13 @@ pub const LOOKAHEAD_CONTROLLER: &str = "lookahead-v1";
 /// built, and a depth-spent FORCED phase boundary is valued where it used to
 /// extend free (see [`Run::atomic`]). S1 did not move, so
 /// [`LOOKAHEAD_IMPL_VERSION`] did not either.
-pub const ATOMIC_DIAG_IMPL_VERSION: u32 = 2;
+///
+/// **3 = THE PHASE-3.5c v2 FREEZE** (2026-08-10), and here the two DID move
+/// together: the S2 arm embeds the same evaluator, so the `V1` → `V2` default
+/// and T3's post-claim filter make its figures non-comparable exactly as they do
+/// S1's. Protocol §7 names this arm explicitly, kept comparable as the labelled
+/// diagnostic it is.
+pub const ATOMIC_DIAG_IMPL_VERSION: u32 = 3;
 
 /// The S2 DIAGNOSTIC arm's controller name.
 ///
@@ -1258,7 +1275,7 @@ impl<R: Rng> Run<'_, R> {
         if children.len() <= beam {
             return; // no cut, no draw
         }
-        children.sort_by(|a, b| b.eval.cmp(&a.eval));
+        children.sort_by_key(|c| std::cmp::Reverse(c.eval));
         let cut = children[beam - 1].eval;
         let lo = children.partition_point(|n| n.eval > cut);
         let hi = children.partition_point(|n| n.eval >= cut);
@@ -1684,7 +1701,7 @@ fn allocation_order(eligible: &[Option<i64>], ties: &TieStream) -> Vec<usize> {
     // Stable so that the ONLY thing separating equal values is the keyed draw
     // below — an unstable sort would leak a second, unkeyed ordering into the
     // tied blocks.
-    order.sort_by(|&a, &b| value(b).cmp(&value(a)));
+    order.sort_by_key(|&x| std::cmp::Reverse(value(x)));
 
     let mut lo = 0;
     while lo < order.len() {
@@ -1888,7 +1905,8 @@ pub struct LookaheadAgent {
 impl LookaheadAgent {
     /// Lookahead-v1 at the shipped knobs: S1 at `B` = [`DEFAULT_BEAM`],
     /// `K` = [`DEFAULT_WORLDS`], `M` = [`DEFAULT_RETREAT_SAMPLES`], and the
-    /// frozen [`WeightTable::V1`]. `agent_seed` is the PLAY stream — key it with
+    /// frozen [`WeightTable::V2`] (the v2 freeze's table — `V1` until
+    /// 2026-08-10). `agent_seed` is the PLAY stream — key it with
     /// [`agent_stream_seed`](crate::game::arena::agent_stream_seed).
     pub fn new(rules: &Rules, agent_seed: u64) -> Self {
         Self::with_knobs(
@@ -1896,20 +1914,21 @@ impl LookaheadAgent {
             SearchScheme::default(),
             DEFAULT_WORLDS,
             DEFAULT_RETREAT_SAMPLES,
-            WeightTable::V1,
+            WeightTable::V2,
             agent_seed,
         )
     }
 
     /// The diagnostic S2 arm at depth `d` (spec §4.1) — same evaluator, same
-    /// candidates, same tie discipline.
+    /// candidates, same tie discipline, and therefore the same
+    /// [`WeightTable::V2`] the shipped rung took at the v2 freeze.
     pub fn atomic_diag(rules: &Rules, depth: u8, agent_seed: u64) -> Self {
         Self::with_knobs(
             rules,
             SearchScheme::AtomicDiag { depth },
             DEFAULT_WORLDS,
             DEFAULT_RETREAT_SAMPLES,
-            WeightTable::V1,
+            WeightTable::V2,
             agent_seed,
         )
     }
@@ -2019,6 +2038,22 @@ impl LookaheadAgent {
     /// The weights this agent evaluates with.
     pub fn weights(&self) -> &WeightTable {
         &self.weights
+    }
+
+    /// Worlds sampled per decision (`with_knobs`' third parameter).
+    ///
+    /// Exists so a corpus instrument can PIN its own construction: `worlds` and
+    /// `retreat_samples` are adjacent `u8` parameters, so a transposed call
+    /// compiles clean and would mislabel every corpus it generates (`k=` in the
+    /// provenance echo prints the PARSED knob, not anything the agent reports).
+    pub fn worlds(&self) -> u8 {
+        self.worlds
+    }
+
+    /// Retreat candidates sampled per decision (`with_knobs`' fourth parameter).
+    /// See [`worlds`](Self::worlds) for why this accessor exists.
+    pub fn retreat_samples(&self) -> u8 {
+        self.retreat_samples
     }
 
     /// A cloneable handle on the counters, readable after the agent has been
@@ -2770,7 +2805,7 @@ mod tests {
     /// Anti-vacuity is load-bearing twice over: the fixture must offer more than
     /// one root (otherwise "the chosen move is a maximiser" is trivial), and at
     /// least two DISTINCT values must appear (otherwise a constant-valued
-    /// reporter would pass — the shipped `WeightTable::V1` is what separates
+    /// reporter would pass — a non-degenerate weight table is what separates
     /// them, and `WeightTable::ZERO` is what would not).
     #[test]
     fn last_roots_reports_every_root_candidate_with_its_folded_value() {
@@ -3344,7 +3379,8 @@ mod tests {
         assert_eq!(s1.params["k"], i64::from(DEFAULT_WORLDS));
         assert_eq!(s1.params["m"], i64::from(DEFAULT_RETREAT_SAMPLES));
         assert_eq!(s1.params["eval_impl"], i64::from(EVAL_IMPL_VERSION));
-        assert_eq!(s1.params["weights"], weight_table_identity(&WeightTable::V1));
+        // The SHIPPED table, which moved V1 -> V2 at the 2026-08-10 v2 freeze.
+        assert_eq!(s1.params["weights"], weight_table_identity(&WeightTable::V2));
         assert!(!s1.params.contains_key("d"), "S1 has no depth knob");
 
         let s2 = LookaheadAgent::atomic_diag(&rules, DEFAULT_ATOMIC_DEPTH, 0x1234).controller();
@@ -3451,10 +3487,11 @@ mod tests {
             at = apply_move_unchecked(&at, mv, &rules).expect("replay");
         }
         assert!(at.current_player != seat || at.is_game_over(), "the line ends at a hand-off");
+        // `LookaheadAgent::new`'s own table — V2 since the 2026-08-10 freeze.
         let expected = eval::explain(
             &observe(&at, seat).expect("observe"),
             &rules,
-            &WeightTable::V1,
+            &WeightTable::V2,
         );
         let got = agent.last_explanation().expect("a decision leaves an explanation");
         assert_eq!(got.total, expected.total, "the explanation is the hand-off's");

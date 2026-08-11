@@ -98,6 +98,13 @@
 //! WHOLE BINARY, one sequence         32.52 / 32.58 / 32.52 s across three runs, 136 games
 //! ```
 //!
+//! Those per-cell walls are a `SEMANTICS_REV` 5 / `WeightTable::V1` reading. At
+//! the v2 freeze (2026-08-10) the WHOLE BINARY reads **33.43 s** in one sequence
+//! on the same command and the same 136 games — within a second of the 3.4
+//! figure despite two rules revs and a weight freeze in between, which is worth
+//! recording because it says the cells' COST is set by the budget knob rather
+//! than by what the evaluator returns. Per-cell walls were not re-taken.
+//!
 //! Against spec §8's estimate of ~30–60 s: **~32.5 s, at the low end.** The null
 //! cell is 58% of it and the reason is one number — an mcts-vs-mcts game costs
 //! **389.4 ms** against the C2 shape's **168.1 ms**, because both seats run the
@@ -393,7 +400,7 @@ fn assert_cell_plumbing(report: &CellReport, spec: &CellSpec) {
         report.spec_echo,
     );
     assert!(
-        report.spec_echo.contains("x=mcts-v1@v1{"),
+        report.spec_echo.contains("x=mcts-v1@v2{"),
         "the contestant under test must be the tree's own descriptor: {}",
         report.spec_echo,
     );
@@ -475,7 +482,7 @@ fn assert_capped_side(
 /// **THE MEASURED OUTCOME OF THIS CELL IS NOT THE EXPERIMENT'S ANSWER, and the
 /// distinction matters enough to state here rather than only in the ADR.** At
 /// HEAD the C2 shape's unit vector is ALL-LOST (θ̂ 0.000000, 24/24 games to the
-/// capped S1 arm, mean VP margin −92.08, typed zero-width refusal). This cell
+/// capped S1 arm, mean VP margin −93.21, typed zero-width refusal). This cell
 /// asserts NO direction and that figure is a fact about two contestants at
 /// SHIPPED knobs, at N = 12, on THIS binary's master — spec §5's C2 runs at
 /// N = 200 on the pre-registered adjudication family with a §4-screened config,
@@ -490,9 +497,13 @@ fn assert_capped_side(
 /// that pins it. The null cell below EXERCISES the resampler (it does report a
 /// `Bootstrap`) but never re-runs, so it is not a second pin (T7 review).
 ///
-/// MEASURED AT HEAD: 24 games per run, **2,336 bytes** identical across the two
-/// asserted runs; the flipped-master control moves `vp_margin_mean`
-/// **−92.08 → −75.46**. See the module doc's walls block for timings.
+/// MEASURED AT HEAD — RE-RECORDED AT THE v2 FREEZE (2026-08-10): 24 games per
+/// run, **2,335 bytes** identical across the two asserted runs; the
+/// flipped-master control moves `vp_margin_mean` **−93.21 → −101.12**. (Before
+/// the freeze: 2,336 bytes, −92.08 → −75.46. The byte count is a serialization
+/// length and moves with the figures inside it — one digit of `vp_margin_mean`
+/// is enough to change it, and here it fell by exactly one.) See the module
+/// doc's walls block for timings.
 #[test]
 #[ignore = "release-tier gate: cargo test --release -p yokohama-core --test architecture_gate -- --ignored --test-threads=1"]
 fn the_mcts_c2_cell_reproduces_byte_identically() {
@@ -558,13 +569,18 @@ fn determinism_at(scale: Scale) {
 /// almost every decision, so the per-edit cell cannot tell whether the relations
 /// survive a budget that is large enough for real tree growth. They do, and the
 /// shape MOVES with the budget in a way the per-edit cell could not have shown:
-/// at B\* the root share is 9.3% (X) / 12.4% (Y) with `starved` 0 on both sides,
-/// against 50.2% / 93.6% and 107 / 207 starved decisions at the smoke's caps of
-/// 24 / 8.
+/// at B\* the root share is 10.4% (X) / 13.2% (Y) with `starved` 0 on both
+/// sides, against 50.2% / 93.6% and 107 / 207 starved decisions at the smoke's
+/// caps of 24 / 8.
 ///
-/// MEASURED AT HEAD (16 games): X applied **3,108 moves and explained 3,108**;
-/// X scored 1,080,946 (100,024 root · 1,346 binds · 0 starved), Y scored 823,801
-/// (102,025 root · 686 binds · 0 starved). No direction is asserted — see the
+/// MEASURED AT HEAD — RE-RECORDED AT THE v2 FREEZE (2026-08-10, 16 games): X
+/// applied **2,648 moves and explained 2,648**; X scored 927,187 (96,193 root ·
+/// 1,152 binds · 0 starved), Y scored 695,665 (91,709 root · 585 binds · 0
+/// starved). Every relation the cell asserts still holds and the shape is the
+/// same one; the counts fell because V2's games at this budget are shorter here.
+/// (Before the freeze: X applied 3,108 / explained 3,108, X scored 1,080,946
+/// with 100,024 root and 1,346 binds, Y scored 823,801 with 102,025 root and 686
+/// binds — root shares 9.3% / 12.4%.) No direction is asserted — see the
 /// determinism cell's doc for why this shape's θ̂ is not the experiment's answer.
 #[test]
 #[ignore = "release-tier gate: cargo test --release -p yokohama-core --test architecture_gate -- --ignored --test-threads=1"]
@@ -650,11 +666,15 @@ fn counters_at(scale: Scale) -> CellReport {
 /// its CRN message. That is the mutation worth running rather than bumping a
 /// threshold: the hazard is a degenerate vector passing as a calibrated null.
 ///
-/// MEASURED AT HEAD (48 games): **θ̂ 0.479167, bootstrap 95% [0.354167, 0.604167]**
-/// — which CONTAINS 0.5, printed rather than asserted. Unit sd 0.345127,
-/// SE(θ̂) 0.070449 over 24 units; unit values `{0.0, 0.5, 1.0}` (6 · 13 · 5);
-/// seat-0 wins 25/48; mean VP margin +2.79; ChurchTrackFull 40 / OrderDeckEmpty 8;
-/// X applied **19,892 moves and explained 19,892**.
+/// MEASURED AT HEAD — RE-RECORDED AT THE v2 FREEZE (2026-08-10, 48 games):
+/// **θ̂ 0.541667, bootstrap 95% [0.375000, 0.708333]** — which CONTAINS 0.5,
+/// printed rather than asserted. Unit sd 0.414851, SE(θ̂) 0.084681 over 24 units;
+/// unit values `{0.0, 0.5, 1.0}`; seat-0 wins 26/48; mean VP margin +4.67;
+/// ChurchTrackFull 45 / OrderDeckEmpty 3; X applied **21,697 moves and explained
+/// 21,697**. (Before the freeze: θ̂ 0.479167, [0.354167, 0.604167], sd 0.345127,
+/// SE 0.070449, unit values at 6 · 13 · 5, seat-0 25/48, margin +2.79, triggers
+/// 40/8, X 19,892. The two θ̂s sit inside each other's intervals — this is a
+/// self-play null on both sides of the freeze, and it must be.)
 #[test]
 #[ignore = "release-tier gate: cargo test --release -p yokohama-core --test architecture_gate -- --ignored --test-threads=1"]
 fn the_mcts_self_null_is_non_degenerate() {
@@ -674,8 +694,8 @@ fn null_at(scale: Scale) {
     assert_cell_plumbing(&report, &spec);
 
     // NOTHING is asserted about WHERE theta_hat sits. A tight point claim is
-    // exactly what N = 24 cannot support — the measured 0.479167 would fail a
-    // ±0.02 band while being a perfectly healthy null (SE 0.070449), which is
+    // exactly what N = 24 cannot support — the measured 0.541667 would fail a
+    // ±0.02 band while being a perfectly healthy null (SE 0.084681), which is
     // the concrete reason this cell gates SHAPE and prints location.
     let sd = sample_sd(&report.x_unit_shares);
     assert!(

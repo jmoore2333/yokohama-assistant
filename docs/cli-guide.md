@@ -277,43 +277,42 @@ The first two lines are your own move's summary; the four `Seat 1` lines are the
 
 ```
 ─ Suggest ──────────────────────────────
-Seat 0 (Red) · lookahead-v1 · beam 4, K=1, M=8, evaluator impl 2 · stream 0x7199df924be0e320
+Seat 0 (Red) · lookahead-v1 · beam 4, K=1, M=8, evaluator impl 3 · stream 0x7199df924be0e320
 Suggested move:
-  Place 1 assistant in each of: Port A (A00), Bank (A06), Church (A08)
+  Place 1 assistant in each of: Port A (A00), Laboratory A (A01), Employment Agency (A07)
 
-The line it searched, 7 move(s) to the hand-over (the move above is step 1):
-  1. Place 1 assistant in each of: Port A (A00), Bank (A06), Church (A08)
-  2. Place President from hand in Church (A08)
-  3. Church: pay copper, silk -> faith 4 (power 2 + 2 kinds)
-  4. Move an assistant from hand to Port A (A00) (reward move)
-  5. Skip the 5-Power token
-  6. Skip the building
-  7. End additional-action phase
+The line it searched, 6 move(s) to the hand-over (the move above is step 1):
+  1. Place 1 assistant in each of: Port A (A00), Laboratory A (A01), Employment Agen…
+  2. Place President from hand in Laboratory A (A01)
+  3. Laboratory: acquire Postal System, +2 yen
+  4. Skip the 5-Power token
+  5. Skip the building
+  6. End additional-action phase
 
-Score at that point: 77   ·   stage 250000/1000000 ppm (0 = opening, 1000000 = end trigger)
+Score at that point: 72   ·   stage 0/1000000 ppm (0 = opening, 1000000 = end trigger)
   feature                        you   best opp   weight     product
-  victory_points                   3          0       17          51
-  country_bonus_now                0          0       16           0
-  tech_bonus_now                   0          0        9           0
-  church_bonus_now                 3          0        1           3
-  customs_bonus_now                0          0        7           0
-  assistants_in_hand_core          2          2       28           0
-  assistants_in_hand_excess        2          6        4         -16
-  assistants_in_warehouse         12         12       -9           0
-  assistants_on_board              3          0       13          39
-  shophouses_built                 0          0       14           0
-  trading_houses_built             0          0       17           0
+  victory_points                   0          0        1           0
+  country_bonus_now                0          0       20           0
+  tech_bonus_now                   5          0       14          70
+  church_bonus_now                 0          0       -4           0
+  customs_bonus_now                0          0        3           0
+  assistants_in_hand_core          2          2       30           0
+  assistants_in_hand_excess        4          6        5         -10
+  assistants_in_warehouse         12         12      -10           0
+  assistants_on_board              2          0        6          12
+  shophouses_built                 0          0       12           0
+  trading_houses_built             0          0       15           0
   five_power_tokens                0          0        8           0
   imported_goods                   0          0        5           0
   achievement_progress_sum         1          1        2           0
   mercenaries_total                0          0        3           0
-  hand_size                        1          1       -3           0
-  TOTAL                                                           77
+  hand_size                        1          1       -1           0
+  TOTAL                                                           72
 
 Runner-ups (margin against the suggestion, so 0 means tied) — 186 candidate(s) ranked:
-           0  Place 1 assistant in each of: Port A (A00), Laboratory A (A01), Church (A08)
-           0  Place 1 assistant in each of: Port A (A00), Tea Plantation (A02), Church (A08)
-           0  Place 1 assistant in each of: Port A (A00), Fishing Ground (A03), Church (A08)
+           0  Place 1 assistant in each of: Port A (A00), Laboratory A (A01), Tea Plantation …
+           0  Place 1 assistant in each of: Port A (A00), Laboratory A (A01), Fishing Ground …
+           0  Place 1 assistant in each of: Port A (A00), Laboratory A (A01), Silk Mill (A04)
   36 candidates tie at the top; which one you see is this position's own
   keyed draw, so a second press will not change it.
 This is the bot's arithmetic, not advice: each row is (your value − the best
@@ -321,9 +320,9 @@ opponent's) × the weight for this stage, summed. It read ONE guess at the hidde
 cards, and its weights are hand-set rather than tuned.
 ```
 
-**Reading it.** The header names the search that ran — `lookahead-v1`, a 4-wide beam over ONE sampled guess at the hidden cards, scoring positions with the frozen v1 weight table at **evaluator implementation 2** (that number is the evaluator module's own revision, not a newer evaluator: the `-v1` in `lookahead-v1` and the weights it runs are the same v1 everything else here names) — and the stream key that press used, so two presses that differ can be told apart at a glance. **The line it searched** is the sequence the bot valued the move by: it plays *its own* turn out to the hand-over and scores the position **there**, which is why the score belongs to the end of that line and not to the first move alone. That line lives inside the sampled world, and if a step stops matching your real position the tool says so under the list. **The table** is that score, term by term: your value for a feature, the best opponent's value, the weight that feature carries at this stage (weights slide from an early-game set to a late-game one, and `stage` is how far along the tool thinks the game is), and their product; the products sum to `TOTAL`. **Runner-ups** are the next-best candidates with their margin against the suggestion — a `0` margin is a genuine tie, and a line under them says how many candidates tie at the top. **Long move names.** Every line of this screen is sized to the frame width §2 states for your player count, so a move name too long for it is wrapped onto an indented second line when it is the suggestion itself — the answer is never cut — and trimmed with a `…` when it is a list row, where keeping the columns aligned is worth more than the last few words. It is the tallest screen this tool prints (roughly 45 rows under the board): on a short terminal the board scrolls off above it, which costs nothing — the suggestion itself stays on screen and the board redraws on your next input — and `panel` or `screen` (§2) buys those rows back.
+**Reading it.** The header names the search that ran — `lookahead-v1`, a 4-wide beam over ONE sampled guess at the hidden cards, scoring positions with the frozen **v2** weight table at **evaluator implementation 3** (two different numbers doing two different jobs: `v2` names the thirty-two weights the bot prices positions with — frozen 2026-08-10, after three rounds of measurement, replacing the v1 table shipped before it — while `implementation 3` is the evaluator MODULE's own revision. Neither of them contradicts the `-v1` in `lookahead-v1`, which names the SEARCH and has not changed) — and the stream key that press used, so two presses that differ can be told apart at a glance. **The line it searched** is the sequence the bot valued the move by: it plays *its own* turn out to the hand-over and scores the position **there**, which is why the score belongs to the end of that line and not to the first move alone. That line lives inside the sampled world, and if a step stops matching your real position the tool says so under the list. **The table** is that score, term by term: your value for a feature, the best opponent's value, the weight that feature carries at this stage (weights slide from an early-game set to a late-game one, and `stage` is how far along the tool thinks the game is), and their product; the products sum to `TOTAL`. **Runner-ups** are the next-best candidates with their margin against the suggestion — a `0` margin is a genuine tie, and a line under them says how many candidates tie at the top. **Long move names.** Every line of this screen is sized to the frame width §2 states for your player count, so a move name too long for it is wrapped onto an indented second line when it is the suggestion itself — the answer is never cut — and trimmed with a `…` when it is a list row, where keeping the columns aligned is worth more than the last few words. It is the tallest screen this tool prints (roughly 45 rows under the board): on a short terminal the board scrolls off above it, which costs nothing — the suggestion itself stays on screen and the board redraws on your next input — and `panel` or `screen` (§2) buys those rows back.
 
-**It is arithmetic, not advice.** The weights are hand-set rather than tuned, the search is one turn deep in one sampled world, the opponents' hidden cards are guessed, and nothing here has been measured against a human player. What it gives you is a window on what the bot thinks — which is exactly what makes it useful for this testing round: a suggestion that is obviously wrong at the table is worth reporting (§9).
+**It is arithmetic, not advice.** The weights are hand-set — informed by measurement since the v2 freeze, but not machine-tuned — the search is one turn deep in one sampled world, the opponents' hidden cards are guessed, and nothing here has been measured against a human player. What it gives you is a window on what the bot thinks — which is exactly what makes it useful for this testing round: a suggestion that is obviously wrong at the table is worth reporting (§9).
 
 ## 5. Commands
 

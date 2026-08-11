@@ -86,13 +86,30 @@
 //!
 //! # What is frozen, and what is still hand-set
 //!
-//! [`WeightTable::V1`] is FROZEN as of T4 (2026-07-27): its sixteen SIGNS were
-//! re-measured on 2,000 Greedy-v1 self-play games with game-clustered intervals
-//! and none was contradicted, so §2.4's single adjustment pass moved nothing.
-//! The MAGNITUDES are still hand-set — a confirmed sign is not a measured
-//! weight — and 3.5's tuning is where that changes. The full adjudication, the
-//! two recorded magnitude tensions, and every command that reproduces the run
-//! are in `docs/plans/2026-07-27-phase3.3-weight-freeze.md`.
+//! [`WeightTable::V2`] is the SHIPPED table since 2026-08-10 — the Phase-3.5c
+//! evaluator-v2 freeze, three rounds of re-pricing on held-out fits over fixed
+//! incumbent-play corpora, promoted on one pre-registered fresh cell (criterion
+//! 1: lookahead@V2 vs lookahead@V1, θ̂ 0.6775, interval entirely above the
+//! null). Its own doc carries the round trail and, more importantly, the
+//! register of what the freeze does NOT establish — magnitudes are still
+//! hand-set (now INFORMED by fits, which is not the same as tuned), round
+//! screens do not compose, and every L1/L2 figure is off-policy.
+//! [`WeightTable::V1`] is RETAINED VERBATIM beside it, exactly as
+//! [`WeightTable::PRE_FREEZE_2026_07_27`] is retained beside `V1`.
+//!
+//! `V1` was FROZEN at T4 (2026-07-27): its sixteen SIGNS were re-measured on
+//! 2,000 Greedy-v1 self-play games with game-clustered intervals and none was
+//! contradicted, so §2.4's single adjustment pass moved nothing. The full
+//! adjudication, the two recorded magnitude tensions — the warehouse decay and
+//! the assistant triple's ordering — and every command that reproduces the run
+//! are in `docs/plans/2026-07-27-phase3.3-weight-freeze.md`. Both of those
+//! tensions were acted on in the v2 rounds; the artifact stays the record of
+//! what was measured when.
+//!
+//! The FEATURE LIST is unchanged across both freezes at sixteen. The one
+//! feature-level change v2 made is inside a value rather than in the list:
+//! [`Feature::AchievementProgressSum`] now drops the legs of cards the valued
+//! seat has already claimed (T3's post-claim filter).
 
 use crate::game::rules::Rules;
 use crate::types::{AchievementType, Country, PlayerId, PlayerView, TurnPhase, VisiblePlayer};
@@ -105,16 +122,46 @@ use crate::types::{AchievementType, Country, PlayerId, PlayerView, TurnPhase, Vi
 /// attribution is finer than the controller name alone.
 ///
 /// **2 = the T4 FREEZE** (`docs/plans/2026-07-27-phase3.3-weight-freeze.md`),
-/// and the honest reading of this particular bump: the measured adjustment pass
+/// and the honest reading of that particular bump: the measured adjustment pass
 /// moved ZERO weights, so `1` and `2` name the same thirty numbers and are
 /// behaviourally comparable. What changed is STATUS — provisional-until-measured
-/// became frozen-and-measured. The bump is taken anyway because this const's own
+/// became frozen-and-measured. The bump was taken anyway because this const's own
 /// rule pre-committed to it, and because a status change is exactly the thing a
 /// corpus reader wants a version for; the finer key that says whether two
 /// records were produced by the same thirty numbers is the weight-table identity
 /// digest the greedy rung stamps beside this const in provenance, and that key
-/// did NOT move (`0xe1fedd5efc49d0f6` on both sides of the freeze).
-pub const EVAL_IMPL_VERSION: u32 = 2;
+/// did NOT move (`0xe1fedd5efc49d0f6` on both sides of that freeze).
+///
+/// **3 = THE PHASE-3.5c v2 FREEZE** (2026-08-10; protocol
+/// `docs/plans/2026-08-09-phase3.5c-evaluator-v2-protocol.md` §7, mechanics
+/// fixed in `docs/plans/2026-08-09-phase3.5c-freeze-prereg.md` §2), and this
+/// bump is the OPPOSITE of bump 2's: it names a real behaviour change, in two
+/// parts landed as ONE auditable event.
+///
+/// * **[`WeightTable::V2`] ships** — six slots re-priced in round 1 (the early
+///   re-mix off R0's two contradicted early terms, plus the warehouse flatten)
+///   and seven more in round 2 (the late church/five-power crossing, the
+///   hand-size softening, the early extension). Thirty-two numbers, weight
+///   identity `0x9a240f2ff7624b0e` against V1's `0xe1fedd5efc49d0f6`.
+/// * **T3's post-claim filter reaches the call site** —
+///   [`Feature::AchievementProgressSum`] is computed by
+///   [`achievement_progress_postclaim_sum`] in [`ScoreStructure::derive`], so a
+///   card the VIEWER has already claimed stops paying a leg whose VP is already
+///   priced by [`Feature::VictoryPoints`]. The feature COUNT does not move, so
+///   [`Feature::ALL`] and both vector widths are untouched.
+///
+/// **The comparability key is composite and no single const carries it** (T16):
+/// `SEMANTICS_REV` (UNCHANGED at 7 — the freeze touches no rule), the
+/// weight-table identity digest (moved, above), and the per-controller version
+/// consts (`GREEDY_IMPL_VERSION`, `LOOKAHEAD_IMPL_VERSION`,
+/// `ATOMIC_DIAG_IMPL_VERSION`, `MCTS_IMPL_VERSION` — all bumped in the same
+/// commit, per L12). The corollary, stated so nobody has to infer it: **every
+/// figure recorded before this bump for a controller that embeds this evaluator
+/// is non-comparable forward.** That includes the 3.3 freeze artifact's whole
+/// table, the 3.4 ADR's cells, the R0 corpora, and every round-screen figure in
+/// the ledger — each of which is still a valid record of what it measured, and
+/// none of which may be pooled with a v2 figure.
+pub const EVAL_IMPL_VERSION: u32 = 3;
 
 /// Full progress, in the ppm units [`progress_ppm`] reports.
 pub const PROGRESS_FULL_PPM: u32 = 1_000_000;
@@ -226,7 +273,12 @@ pub enum Feature {
     /// Imported goods — the customs track's currency.
     ImportedGoods,
     /// Progress toward the three Achievement cards in play, each leg capped at
-    /// its own threshold. See [`achievement_progress`].
+    /// its own threshold — and, since the v2 freeze, with the legs of cards the
+    /// VALUED SEAT has already claimed dropped entirely (T3's post-claim filter:
+    /// [`achievement_progress_postclaim_sum`], whose doc carries the scope
+    /// decision). An OPPONENT'S claim leaves this seat's leg live, because the
+    /// rules let a second seat claim the same card. See
+    /// [`achievement_progress`] for the per-card arithmetic.
     AchievementProgressSum,
     /// Foreign mercenaries held (used and unused).
     MercenariesTotal,
@@ -347,6 +399,22 @@ impl WeightTable {
     /// the research notes §1 and are now RE-MEASURED under the bot's own play;
     /// the MAGNITUDES remain hand-set on the reasoning below, and the freeze did
     /// not measure them.
+    ///
+    /// **SUPERSEDED AS THE SHIPPED TABLE ON 2026-08-10 by [`WeightTable::V2`],
+    /// and RETAINED VERBATIM.** Nothing below has moved a digit; what changed is
+    /// what reads it. No constructor takes `V1` any more — `GreedyAgent::new`,
+    /// the S1 rung, the MCTS diagnostic and every arena contestant take `V2` —
+    /// and its remaining readers are the record: the screen harness's incumbent
+    /// arm, `examples/eval_probe`'s `--weights v1` (still the DEFAULT there, so
+    /// a committed corpus command still parses and runs under the TABLE its
+    /// figures named — though NOT to the same corpus: T3's filter now rides the
+    /// score structure unconditionally, so the recorded corpus figures belong
+    /// to the pre-filter tree and reproduce only at their recorded commits —
+    /// the freeze review's MUST-1), the sign and ordering pins
+    /// below, and the scenarios whose claim is table-independent. Its identity
+    /// digest is `0xe1fedd5efc49d0f6`. Everything this doc says about T4 is a
+    /// statement about 2026-07-27 and stays true; the v2 freeze's own register
+    /// is on `V2`.
     ///
     /// # What the freeze did, precisely
     ///
@@ -515,14 +583,302 @@ impl WeightTable {
     /// `the_pre_freeze_table_is_the_corpus_generator_and_v1_matches_it_today`,
     /// which also states what to do when `V1` legitimately moves away.
     ///
-    /// Nothing else may read it. `GreedyAgent::new` takes `V1`, the sign and
-    /// ordering pins hold `V1`, and the only other in-tree reader is
-    /// `examples/eval_probe`'s reproduction flag.
+    /// Nothing else may read it: the sign and ordering pins hold `V1`, and the
+    /// only other in-tree reader is `examples/eval_probe`'s reproduction flag
+    /// (`--weights pre-freeze`). Since the v2 freeze no constructor takes `V1`
+    /// either — they take [`WeightTable::V2`] — so this const's neighbour is a
+    /// record too, and the equality pin below is a statement about 2026-07-27
+    /// that both of them still satisfy.
     pub const PRE_FREEZE_2026_07_27: WeightTable = WeightTable {
         //     [vp, ctry, tech, chur, cust, hCORE, hEXC, ware, brd, shop, trad, 5pw, imp, achv, merc, hnd#]
         early: [10,   12,    6,   -4,    3,    30,    4,  -10,  14,   12,   15,   8,   5,    2,    3,   -3],
         late:  [40,   30,   20,   16,   20,    20,    2,   -4,  10,   20,   25,  10,   8,    4,    4,   -6],
     };
+
+    /// **THE SHIPPED TABLE since the Phase-3.5c freeze (2026-08-10)** — what
+    /// `GreedyAgent::new`, the S1 search rung, the MCTS diagnostic and every
+    /// arena contestant evaluate with. It is the evaluator-v2 protocol's
+    /// iteration candidate promoted verbatim: the numbers below are the ones
+    /// round 2 adopted, unchanged by the promotion, weight identity
+    /// **`0x9a240f2ff7624b0e`** (V1's is `0xe1fedd5efc49d0f6`).
+    ///
+    /// [`WeightTable::V1`] is RETAINED VERBATIM beside it — byte-identical to
+    /// what it was before the freeze — exactly as
+    /// [`WeightTable::PRE_FREEZE_2026_07_27`] is retained beside `V1`, and for
+    /// the same reason: the round evidence, the R0 corpora and the 3.3 freeze
+    /// artifact all name a table, and a measurement whose input cannot be re-run
+    /// is a claim rather than a record. Nothing here re-prices either of them.
+    ///
+    /// # The freeze criteria, and which one this table's promotion rests on
+    ///
+    /// Protocol §7 pre-registered four criteria before any freeze result
+    /// existed, and the pre-registration
+    /// (`docs/plans/2026-08-09-phase3.5c-freeze-prereg.md`) fixed their
+    /// mechanics — one OS-entropy CLOSE MASTER `0xF524FFB9D041DCAE`, drawn and
+    /// recorded in the execution ledger's freeze row before any criterion ran,
+    /// never redrawn. **Criterion 1, the one the promotion rests on:** the
+    /// screen-harness cell `lookahead-v1@V2` vs `lookahead-v1@V1`, 2P, N = 200
+    /// design units / 400 games, run PRE-COMMIT — **θ̂ 0.6775, bootstrap 95%
+    /// [0.6275, 0.7250], the interval ENTIRELY ABOVE the 0.5 null**, which is
+    /// the first of §7's two pre-committed passing shapes. **Criterion 2, the
+    /// preserved rung, reported with no directional requirement:**
+    /// `greedy-v1@V2` vs `greedy-v1@V1` on the same field reads θ̂ 0.482500,
+    /// [0.432500, 0.530000] — SPANNING the null, no §4.2 pause (the hand-set
+    /// 0.40 line is nowhere near) — and it is shown rather than hidden, which is
+    /// what criterion 2 exists for. Criteria 3 (the promotion field re-held via
+    /// the arena runner at the same master) and 4 (the grown scenario suite plus
+    /// the fifteen-gate roster) run AFTER this commit, by the pre-registration's
+    /// own order of operations; the freeze package carries all four.
+    ///
+    /// **A scope limit on criterion 1 that the pre-registration did not
+    /// anticipate, recorded here rather than smoothed over.** Criteria 1–2 ran
+    /// pre-commit, so BOTH their arms evaluated with T3's post-claim filter
+    /// ABSENT — the cell isolates the WEIGHT package and says nothing about the
+    /// filter. The filter ships on protocol §4.2 L1's named-structural-argument
+    /// arm (a claimed card's VP is already priced by
+    /// [`Feature::VictoryPoints`]), on its round-1 corpus column, and on
+    /// scenario 12, which lands red-then-green against the call-site switch
+    /// itself. Re-running the same cell post-commit would measure a THIRD thing
+    /// (both arms filtered) and is not what §7 pre-registered.
+    ///
+    /// **ROUND 1 ADOPTED, 2026-08-09 — the table BECAME the candidate `m22`, no
+    /// longer V1's numbers, and the CONJUNCTIVE adoption rule was discharged:**
+    /// (round 2 has since moved it again — see the ROUND 2 block below for what
+    /// the numbers above are today; this block is kept as the round's history,
+    /// because a table that records only its latest edit cannot be audited.)
+    /// scenarios + hard constraints by the suite (13/13, hand-split ok both
+    /// vectors), and the two L4 screens at the round's pre-recorded master
+    /// `0x3EE753CE7F4052C4` — lookahead θ̂ 0.5725, bootstrap [0.5250, 0.6200]
+    /// ENTIRELY ABOVE the null; greedy θ̂ 0.5150 spanning it, no 0.40 pause —
+    /// all quoted with full provenance in the execution ledger's ROUND-1 row
+    /// and the round-1 evidence artifact's Appendix D. (A round's screen field
+    /// does not compose across rounds; the accumulated total is cashed only at
+    /// the freeze's own fresh cell.) It moved SIX slots and every one of them
+    /// is evidenced in
+    /// `docs/plans/2026-08-09-phase3.5c-round1-evidence.md` (the L2 pass) over
+    /// `docs/plans/2026-08-09-phase3.5c-r0-report.md` (the R0 corpora):
+    ///
+    /// - **the EARLY re-mix**, off R0's findings F1/F2 — EVAL TOTAL early
+    ///   measures 0.5314 in the shipped regime, near chance, and the two terms
+    ///   the early vector leant hardest on are the two the corpus CONTRADICTED
+    ///   (`victory_points` 0.4651, `assistants_on_board` 0.4464, both pointing
+    ///   at the seat that goes on to lose). Weight moves off them and onto the
+    ///   members both regimes confirmed: `vp 10 → 2`, `ctry 12 → 18`,
+    ///   `tech 6 → 12`, `hEXC 4 → 5`, `brd 14 → 6`. The MIX moves, not the
+    ///   scale, and that is forced rather than stylistic — R0's finding F8 is
+    ///   that a uniform rescale of the early vector is play-IDENTICAL, so only
+    ///   a change of ratios can move a decision.
+    /// - **the WAREHOUSE FLATTEN**, `late −4 → −10` (early unchanged at −10) —
+    ///   the magnitude tension the T4 freeze recorded rather than resolved:
+    ///   the term's measured separation does not decay late, while the shipped
+    ///   weight does. See `V1`'s doc, which deferred exactly this to 3.5.
+    ///
+    /// **SELECTION RULE, pre-registered before any figure existed** (the
+    /// execution ledger's ROUND-1 row, committed ahead of the run): candidates
+    /// are evaluated on the two FIXED incumbent-play corpora at their recorded
+    /// masters, split fit/held-out by generation-index parity, and the winner is
+    /// the held-out EARLY argmax on the shipped-regime corpus. `m22` took it —
+    /// 0.5692 [0.5333, 0.6030] against the incumbent's 0.5313 [0.4944, 0.5651],
+    /// i.e. its interval excludes chance where the incumbent's spans it — and it
+    /// is in fact the best of the nineteen on ALL SIX (corpus × stage) held-out
+    /// columns, which is what makes a nineteen-way held-out selection
+    /// defensible at this N. **`m22`'s weight identity was
+    /// `0x73bf3f54421717a8`** (the incumbent's is `0xe1fedd5efc49d0f6`); the two
+    /// no longer collided, so a screen against the draft became a real cell
+    /// rather than the null one it had been. The identity the table carries
+    /// TODAY is round 2's, below.
+    ///
+    /// Read the honest limits with the numbers: those AUCs are measured on
+    /// INCUMBENT-play corpora and are therefore off-policy for this table, the
+    /// grid's winner sits at the grid's EDGE (recorded for round 2, deliberately
+    /// not chased there — extending after seeing that would have been
+    /// selection-after-results), and the on-policy checks are the round's arena
+    /// screen and, for the accumulated total, the freeze's own fresh cell.
+    ///
+    /// **ROUND 2 ADOPTED, 2026-08-09 — this table is the candidate `M*`, and
+    /// the CONJUNCTIVE adoption rule is discharged:** protocol §4.2's rungs
+    /// L1–L3 (the R0 evidence, the pre-registered two-stage L2 fit, and the
+    /// scenario suite — 14/14 with the hand-split ordering holding in both
+    /// vectors) AND the two L4 screens at the round's pre-recorded master
+    /// `0x3A6B04285CCB85E0` — lookahead θ̂ 0.6750, bootstrap [0.6275, 0.7225]
+    /// ENTIRELY ABOVE the null (round 1 read 0.5725 on ITS field; rounds do not
+    /// compose); greedy θ̂ 0.4875, [0.4400, 0.5325], SPANNING the null with no
+    /// 0.40 pause — the preserved rung's near-null reading is REPORTED, not
+    /// hidden, and is coherent with the round's content (the late church
+    /// down-pricing pays where the shipped rung's half-length games live in the
+    /// LATE vector). Full blocks: the round-2 evidence artifact's Appendix E;
+    /// the ledger's ROUND-2 row carries the verdict. The round's own
+    /// pre-commitment is what makes the landing order safe: the master was
+    /// drawn from OS entropy and recorded in the execution ledger's ROUND-2 row
+    /// before any evidence ran, and was never redrawn (§4.3), so nothing about
+    /// landing the table first could shop for a field. It moved SEVEN weights across six
+    /// features over `m22` — one of the six, `hand_size`, moves in BOTH vectors —
+    /// and every one is evidenced in
+    /// `docs/plans/2026-08-09-phase3.5c-round2-evidence.md` (the two-stage L2)
+    /// over `docs/plans/2026-08-09-phase3.5c-r0-report.md` (the R0 corpora):
+    ///
+    /// - **the LATE BONUS CROSSING** — `church_bonus_now` late `16 → 8` and
+    ///   `five_power_tokens` late `10 → 14`, the round's dominant pair and the
+    ///   only two slots whose decision a scenario can separate. R0's finding F7,
+    ///   in the SHIPPED lookahead regime: the church bonus late is NO-SIGNAL at
+    ///   0.5180 [0.4915, 0.5437] while carrying a +16 weight — the church race is
+    ///   near-universal (ChurchTrackFull is 5-for-5 across every corpus in
+    ///   existence), so the AWARDED bonus stops separating winners from losers and
+    ///   the weight was paying for a near-constant — while five-power tokens late
+    ///   measure 0.8058 [0.7874, 0.8236] on a weight of 10, the second-strongest
+    ///   late member of the table after `victory_points`. Note what is NOT claimed:
+    ///   the church TERM is not down-priced because the church is unimportant, but
+    ///   because the bonus-as-awarded carries no information in this regime — a
+    ///   margin/denial FEATURE might, and that is a T5 admission candidate for a
+    ///   later round, not a re-pricing.
+    /// - **the HAND-SIZE SOFTENING**, `−3/−6 → −1/−2` (both vectors) — no-signal
+    ///   at every stage under lookahead, though the greedy corpus still confirms
+    ///   the SIGN late (0.4320). Softened, deliberately not zeroed: the sign has
+    ///   evidence behind it and the suite's leak clauses compare weighted
+    ///   PRODUCTS, so a zeroed term would silently stop separating fixtures.
+    ///   Recorded honestly — this component's held-out read was MARGINAL
+    ///   (+0.0001 on its home stage); it rides the round's pre-registered merge
+    ///   rule rather than a demonstration of its own.
+    /// - **the EARLY EXTENSION**, `vp 2 → 1`, `ctry 18 → 20`, `tech 12 → 14` —
+    ///   round 1's grid winner sat at the grid's EDGE on a monotone axis, which
+    ///   that round recorded and refused to chase after the fact; round 2
+    ///   PRE-REGISTERED the follow-up step as a grid cell and it improved —
+    ///   held-out EARLY on the shipped-regime corpus 0.5692 (`m22`) → 0.5748 for
+    ///   this delta alone, and 0.5893 for the merged `M*`. Its direction is the
+    ///   same one scenario 10 already pins, and `M*` widens that scenario's
+    ///   margin (+165 → +205) rather than narrowing it.
+    ///
+    /// **SELECTION RULE, pre-registered before any figure existed** (the
+    /// execution ledger's ROUND-2 row, committed ahead of the runs): a TWO-STAGE
+    /// fit on the same two FIXED incumbent-play corpora at their recorded masters
+    /// and the same parity split — stage 1 scores seven single-slot deltas plus
+    /// their full merge, stage 2 evaluates the DETERMINISTIC merge of exactly
+    /// those singles that improved on `m22` in their HOME stages, with no
+    /// discretion in the merge rule. Primary = mean held-out MID+LATE EVAL-TOTAL
+    /// AUC on the shipped-regime corpus: **`M*` 0.8188 > c1 0.8180 > K 0.8177 >
+    /// `m22` 0.8112.** The margin over the runner-up is small (+0.0009, inside
+    /// bootstrap widths) and the tie-break that carries it is the same
+    /// cross-corpus unanimity round 1 leant on — `M*` leads all six (corpus ×
+    /// stage) held-out columns. Two proposed deltas were EXCLUDED by the rule —
+    /// `trad_l 25→18` and the early `brd 6→5, exc 5→4` step, both below baseline
+    /// on their home stages, the second negative on the greedy corpus too — which
+    /// is the merge rule doing its job rather than a grid that happened to agree
+    /// with itself. **Weight identity `0x9a240f2ff7624b0e`**, verified at this
+    /// commit against the probe's own digest of the two arrays below.
+    ///
+    /// Read the honest limits with these numbers too, and they are round 1's
+    /// unchanged: the AUCs are measured on INCUMBENT-play corpora and are
+    /// off-policy for this table (`m22`-play would be the on-policy corpus, and
+    /// nobody generates one mid-round), so the on-policy checks remain the round's
+    /// arena screens and, for the accumulated total, the freeze's own fresh cell.
+    /// A round's screen field does not compose across rounds.
+    ///
+    /// **What is pinned regardless of what a round adopts** — L14/T1's
+    /// `core > on_board > excess` in BOTH vectors, the one-ply non-degeneracy
+    /// condition protocol §4.2 forbids relaxing at any rung of the evidence
+    /// ladder. It survives BOTH adoptions unchanged (early 30 > 6 > 5; late
+    /// 20 > 10 > 2): round 1 moved `brd` and `hEXC` INSIDE it rather than through
+    /// it, and round 2 left the triple alone entirely. The screen harness's
+    /// `hand_split_ordering_holds` is asserted against THIS table per edit
+    /// (`the_iteration_candidate_holds_the_hand_split_ordering`), so a round
+    /// that re-prices the assistant triple past the ordering fails at test time
+    /// rather than four hundred games into a screen.
+    ///
+    /// **The scenarios that guard the moved slots** (protocol §4.2 rung L3), in
+    /// `tests/scenario_suite.rs`: *early engine over early VP* landed
+    /// red-then-green against round 1's re-mix, *warehouse decay flattened*
+    /// against the flatten, and *late bonus re-pricing: tokens over church*
+    /// against round 2's late crossing — each with the round's own edit
+    /// REVERTED as its counterfactual rather than a zeroed term. Round 2's two
+    /// minor components carry no red-then-green fixture of their own and are
+    /// not claimed to (the round's pre-registered change-SET reading, ledger
+    /// ROUND-2 row): the EARLY extension's slots are property-and-red-mutation
+    /// guarded by the early-engine scenario as it now runs against this draft —
+    /// which was already green before the extension, so that is direction
+    /// coverage, not a round-2 red — and the hand-size softening is
+    /// scenario-uncovered DELIBERATELY, because its evidence is
+    /// no-signal-toward-zero and a fixture pretending to discriminate it would
+    /// pin noise.
+    ///
+    /// **ROUND 3 ADOPTED NOTHING, and it is part of this table's provenance for
+    /// exactly that reason** (ledger ROUND-3 row; evidence
+    /// `docs/plans/2026-08-09-phase3.5c-round3-evidence.md`). It was an L1
+    /// EVIDENCE round over seven admission-candidate COLUMNS computed in the
+    /// probe rather than in this file — the church/customs/tech majority-race
+    /// margins, achievement-race proximity, church clock control, empty Port
+    /// slots, and money — because an admission moves [`Feature::ALL`] and that
+    /// is freeze-commit blast radius. Six of the seven cleared the
+    /// pre-registered interval bar BY THE LETTER and the honest reading killed
+    /// them anyway: the customs and tech margins DUPLICATE the shipped bonus
+    /// mirrors (Δ ≤ +0.009, the customs pair identical to four decimals on the
+    /// greedy corpus), church margin ≡ clock control ≡ the shipped church shape
+    /// at 2P, money separates late only (0.5627), and empty Port slots are
+    /// structurally unmeasurable in a regime where ChurchTrackFull is 5-for-5.
+    /// The ONE genuine find, `achievement_race_proximity` (+0.054 EARLY /
+    /// +0.094 MID over the shipped progress-sum in the shipped regime), was
+    /// deliberately NOT admitted pre-freeze — modest absolute level, unmeasured
+    /// incremental value over the terms already here — and is recorded as the
+    /// post-freeze V3 cycle's first named candidate. The round's recorded master
+    /// was retired UNUSED. **The stopping rule (§4.5's second arm) fired with
+    /// that evidence, which is what sent the lane to §7 and produced this
+    /// table** rather than a fourth round.
+    ///
+    /// # What this freeze does NOT establish (protocol §7's honesty register)
+    ///
+    /// * **The magnitudes are still hand-set.** They are now hand-set INFORMED
+    ///   BY held-out fits on fixed corpora — protocol §4.2 rung L2 is explicit
+    ///   that the fit is EVIDENCE FOR a hand-set number and never a shipped
+    ///   machine weight — which is a better epistemic position than V1's and is
+    ///   not the same thing as a tuned table. Weight TUNING is W6, after this
+    ///   freeze, against this table.
+    /// * **The screen fields do not compose.** Round 1 read θ̂ 0.5725 on its
+    ///   master, round 2 read 0.6750 on its own, and criterion 1 read 0.6775 on
+    ///   the close master. Those are three incomparable fields by construction
+    ///   (§4.3 rotates the master every round precisely so the iteration cannot
+    ///   overfit one), so they may not be multiplied, averaged or read as a
+    ///   trend. **Criterion 1's single fresh cell IS the direction's basis** —
+    ///   the accumulated total cashed once, on a field drawn after the last
+    ///   adoption and never redrawn.
+    /// * **The L1/L2 evidence is off-policy.** Every AUC quoted above was
+    ///   measured on INCUMBENT-play corpora (R0-G under greedy@V1, R0-L under
+    ///   lookahead@V1), so it describes how a term separates in the incumbent's
+    ///   game, not in this table's. The screens and criterion 1 are the only
+    ///   on-policy evidence in the record.
+    /// * **Nothing here says the evaluator is good, only that it is better on
+    ///   this field than V1 was.** The bar (map §5-3.5 / §1.9) is the owner's to
+    ///   declare, last, and this table is one input to it.
+    /// * **Two-player only.** Every corpus, fit, scenario and screen in the
+    ///   trail is 2P. Nothing has measured what these weights do at 3–4P.
+    pub const V2: WeightTable = WeightTable {
+        //     [vp, ctry, tech, chur, cust, hCORE, hEXC, ware, brd, shop, trad, 5pw, imp, achv, merc, hnd#]
+        early: [ 1,   20,   14,   -4,    3,    30,    5,  -10,   6,   12,   15,   8,   5,    2,    3,   -1],
+        late:  [40,   30,   20,    8,   20,    20,    2,  -10,  10,   20,   25,  14,   8,    4,    4,   -2],
+    };
+
+    /// **THE ITERATION CANDIDATE, retained as an ALIAS of [`WeightTable::V2`]
+    /// now that its job is done.** Through rounds 1–3 this const WAS the
+    /// candidate — it moved twice and every round instrument named it. The
+    /// freeze promoted its final value to `V2` verbatim, so the two hold the
+    /// same thirty-two numbers and the same identity `0x9a240f2ff7624b0e`.
+    ///
+    /// **Why it is kept rather than deleted, and what that buys.** The round
+    /// commands are committed, in the ledger rows and in both evidence
+    /// artifacts, and several of them name this spelling — `eval_probe`'s
+    /// `--score-table v2-draft` and `examples/eval_screen_round`'s candidate
+    /// arm. Deleting the const would break the commands that reproduce the
+    /// record. This is `PRE_FREEZE_2026_07_27`'s reasoning applied one rung
+    /// down, with one HONEST DIFFERENCE that has to be said out loud: PRE_FREEZE
+    /// pins its own literals and so reproduces a specific historical table,
+    /// while this const is an ALIAS and therefore tracks V2. It reproduces the
+    /// FINAL draft (round 2's `M*`, which is what V2 is) and nothing earlier —
+    /// round 1's `m22` was already unrecoverable from this tree the moment
+    /// round 2 overwrote it, as `late_bonus_reprice_reverted`'s doc in the
+    /// scenario suite records. A future re-pricing of `V2` moves this alias with
+    /// it; if a reader ever needs the 3.5c draft as a fixed historical table,
+    /// that is a new const with its own literals, not this one.
+    ///
+    /// Prefer `V2` in new code. This spelling exists for the committed commands.
+    pub const V2_DRAFT: WeightTable = Self::V2;
 
     /// The all-zero table: a CONSTANT evaluator. Not a curiosity — spec §3.2's
     /// degeneracy pin and §0.2's targeted-mutation authoring rule both need one,
@@ -870,7 +1226,11 @@ impl ScoreStructure {
             s.base_vp[i] = i64::from(player.victory_points);
             s.country[i] = country_set_bonus(player, rules);
             s.remainder[i] = remainder_bonus(player);
-            s.achievement[i] = achievement_progress_sum(view, player);
+            // THE T3 CALL SITE, switched at the v2 freeze (2026-08-10;
+            // [`EVAL_IMPL_VERSION`] 3). Per SEAT, so each row drops only the
+            // cards THAT row's player has already claimed — an opponent's claim
+            // leaves this seat's leg live, which is the rules' own shape.
+            s.achievement[i] = achievement_progress_postclaim_sum(view, player);
         }
 
         technology_majority(view, rules, &mut s.tech);
@@ -1165,17 +1525,85 @@ fn remainder_bonus(player: &VisiblePlayer) -> i64 {
         + goods / 3
 }
 
-/// `achievement_progress_sum`'s value: each of the three cards in play
-/// contributes its progress CAPPED at its own requirement.
+/// The PRE-FREEZE achievement sum: each of the three cards in play contributes
+/// its progress CAPPED at its own requirement, with no claim filter.
 ///
 /// Capped because the feature measures nearness to a claim, not hoarding: a
 /// player sitting on 12 copper is no closer to the 5-copper card than one
 /// sitting on 5, and the VP for a card already taken has landed in
 /// `victory_points` (which [`Feature::VictoryPoints`] already prices, so an
 /// uncapped sum would double-count it and keep growing afterwards).
-fn achievement_progress_sum(view: &PlayerView, player: &VisiblePlayer) -> i64 {
+///
+/// **NOT the shipped arithmetic since the v2 freeze** — the
+/// [`Feature::AchievementProgressSum`] call site in [`ScoreStructure::derive`]
+/// reads [`achievement_progress_postclaim_sum`] instead, because the cap stops a
+/// claimed leg GROWING and never stopped it being COUNTED, which is the double
+/// count T3 removed.
+///
+/// It stays, and it is `pub` since the freeze, because it is the base the filter
+/// is defined as a filter OVER: `tests/eval_core.rs` holds the two against each
+/// other and the post-claim SCENARIO uses it as its §0.2 counterfactual. Both of
+/// those need the pre-freeze arithmetic to exist as ONE authored function rather
+/// than as a copy re-typed in a fixture — a copy is exactly what would drift
+/// from [`achievement_progress`]'s per-card caps the day those change.
+pub fn achievement_progress_sum(view: &PlayerView, player: &VisiblePlayer) -> i64 {
     let mut sum = 0i64;
     for card in &view.achievements {
+        let (current, needed) = achievement_progress(view, player, card.achievement_type);
+        sum += i64::from(current.min(needed));
+    }
+    sum
+}
+
+/// **THE SHIPPED achievement feature since the v2 freeze** —
+/// [`achievement_progress_sum`]'s value with each card's leg dropped for the
+/// seat that has ALREADY CLAIMED it.
+///
+/// The evaluator-v2 protocol's ONE sanctioned feature change
+/// (`docs/plans/2026-08-09-phase3.5c-evaluator-v2-protocol.md` §4.1(ii), §5's
+/// T3 row). The pre-freeze sum kept paying a seat for progress toward a card it
+/// had already taken, whose VP has already landed in
+/// [`Feature::VictoryPoints`]; the cap only stops that leg GROWING, it does not
+/// stop it being counted.
+///
+/// **The scope is EXACTLY the viewer's own claim, and the second clause is a
+/// decision rather than an oversight:**
+///
+/// * a card whose `claimed_by` contains THE SEAT BEING VALUED contributes 0;
+/// * a card claimed by an OPPONENT contributes exactly what the shipped
+///   computation contributes. The rules let a second seat claim the same card
+///   for the printed subsequent value — the engine's own claim gate refuses only
+///   a repeat claim by the SAME seat — so an opponent's claim leaves this seat's
+///   leg a live claim, and zeroing it would price a reachable reward at nothing.
+///   Pinned in `tests/eval_core.rs` against that gate rather than against a
+///   reading of the rulebook.
+///
+/// Everything else is the pre-freeze arithmetic verbatim,
+/// [`achievement_progress`] included, so the AND-shaped cards' per-leg caps are
+/// untouched: a claimed AND-card leaves at its CAPPED value.
+///
+/// **LANDED ADDITIVELY, SWITCHED AT THE FREEZE — one auditable event, as
+/// planned.** In round 1 this function existed and nothing called it, so
+/// `score`/`explain` were byte-inert and [`EVAL_IMPL_VERSION`] did not move.
+/// The FREEZE COMMIT (2026-08-10) pointed
+/// [`Feature::AchievementProgressSum`] at it inside [`ScoreStructure::derive`]
+/// and absorbed the whole blast radius in the same commit — the drift pin's
+/// achievement clause re-derived, the evaluator golden re-captured, the mcts
+/// walk fixture re-probed, [`EVAL_IMPL_VERSION`] 2→3 and every controller const
+/// that embeds this evaluator (protocol §7) — so the behaviour change is one
+/// event rather than something smuggled inside a re-pricing round.
+///
+/// **View-measurable**, which is what makes it admissible at all: `claimed_by`
+/// is public card state any seated player reads off the table, so nothing here
+/// widens what an evaluator can see (§2.1).
+pub fn achievement_progress_postclaim_sum(view: &PlayerView, player: &VisiblePlayer) -> i64 {
+    let mut sum = 0i64;
+    for card in &view.achievements {
+        // The ONE difference from the shipped computation. Per-seat: an
+        // opponent's claim is not this seat's business, see the doc.
+        if card.claimed_by.contains(&player.id) {
+            continue;
+        }
         let (current, needed) = achievement_progress(view, player, card.achievement_type);
         sum += i64::from(current.min(needed));
     }

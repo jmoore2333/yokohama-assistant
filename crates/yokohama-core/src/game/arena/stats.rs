@@ -86,7 +86,7 @@ use crate::game::seeds::SeedSchedule;
 use crate::types::{OrderCardId, PlayerId, PlayerView};
 
 /// Domain salt for the bootstrap resample stream.
-const SALT_BOOTSTRAP: u64 = 0xA3E1_B007_0000_0004;
+pub(crate) const SALT_BOOTSTRAP: u64 = 0xA3E1_B007_0000_0004;
 
 /// The contestant under test. Every other slot in the unit is Y — the
 /// single-champion shape [`unit_for`]'s rotations are built for, and the reason
@@ -134,10 +134,12 @@ pub enum SeedScheduleKind {
 /// is a silent divergence between what a cell says it ran and what it ran.
 ///
 /// The evaluator contestants carry NO weight knob: they run the frozen
-/// [`WeightTable::V1`] the shipped agents run, and a weight change is a version
-/// bump (spec §0.5 / L12), not a cell parameter. `weights=<identity>` still
-/// rides the params map so a corpus reader can tell two tables apart without
-/// consulting a document.
+/// [`WeightTable::V2`] the shipped agents run (`V1` until the 2026-08-10 v2
+/// freeze), and a weight change is a version bump (spec §0.5 / L12), not a cell
+/// parameter — which is exactly what that freeze did, moving all four
+/// controller version consts in the commit that moved the table.
+/// `weights=<identity>` still rides the params map so a corpus reader can tell
+/// two tables apart without consulting a document.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Contestant {
     /// A 3.2 rollout rung, played by [`PolicyAgent`] exactly as before.
@@ -365,6 +367,42 @@ impl Contestant {
         leaf: LeafRule::HandOff,
     };
 
+    /// Parse a contestant SPEC — `<name>` or `<name>:<key>=<value>,…` — into the
+    /// contestant it names. **THE single-sourced grammar** (Phase 3.5c W1-B):
+    /// `examples/arena.rs` parses its `<x>`/`<y>` through here, the probe's
+    /// contestant arm delegates here too since W1-C (narrowing after the parse),
+    /// and the CLI's bot seats JOIN at their W5 retype — so a spec typed at any
+    /// consumer means the same thing at all of them. The body and its reasoning
+    /// live in [`super::grammar`].
+    ///
+    /// **UNKNOWN IS AN ERROR at every level** — an unknown contestant name, an
+    /// unknown knob, an unknown knob VALUE, or any knob at all on a contestant
+    /// that has none. Nothing is silently defaulted or silently ignored,
+    /// because a swallowed knob would put a published figure under knobs the
+    /// cell did not run. Every error NAMES what it saw.
+    ///
+    /// The signature deliberately differs from [`RolloutPolicy::from_str_name`]'s
+    /// `Option`: a rung name either is or is not one of three literals, while
+    /// this grammar has many distinct ways to be wrong and the caller cannot
+    /// reconstruct which one fired — so the refusal carries its own text, which
+    /// is user-facing in the runner.
+    ///
+    /// ```
+    /// use yokohama_core::Contestant;
+    /// // A bare name is that controller's SHIPPED default…
+    /// assert_eq!(Contestant::from_str_name("lookahead-v1"), Ok(Contestant::LOOKAHEAD_V1_DEFAULT));
+    /// // …and for S1 that means UNCAPPED: an absent cap is not any set cap.
+    /// assert!(matches!(
+    ///     Contestant::from_str_name("lookahead-v1"),
+    ///     Ok(Contestant::LookaheadV1 { cap: None, .. })
+    /// ));
+    /// assert!(Contestant::from_str_name("lookahead-v1:cap=0").is_err());
+    /// assert!(Contestant::from_str_name("greedy-v1:zzz=1").is_err());
+    /// ```
+    pub fn from_str_name(spec: &str) -> Result<Self, String> {
+        super::grammar::parse_contestant(spec)
+    }
+
     /// What this contestant CALLS itself, for provenance and the report echo —
     /// routed to the controller's own descriptor and never composed here.
     ///
@@ -377,7 +415,7 @@ impl Contestant {
         match *self {
             Self::Policy(policy) => ControllerProvenance::from_policy(policy, agent_seed),
             Self::GreedyV1 { m } => {
-                greedy::controller_provenance(&WeightTable::V1, m, agent_seed)
+                greedy::controller_provenance(&WeightTable::V2, m, agent_seed)
             }
             // The CAPPED form for S1, on the same function: an absent cap emits
             // no token there, so the uncapped rung's descriptor is what it
@@ -387,19 +425,19 @@ impl Contestant {
                 k,
                 m,
                 cap,
-                &WeightTable::V1,
+                &WeightTable::V2,
                 agent_seed,
             ),
             Self::AtomicDiag { d, k, m } => lookahead::controller_provenance(
                 SearchScheme::AtomicDiag { depth: d },
                 k,
                 m,
-                &WeightTable::V1,
+                &WeightTable::V2,
                 agent_seed,
             ),
             Self::MctsV1 { cap, c_ppm, scale, m, leaf } => mcts::controller_provenance(
                 McKnobs::sized_by_cap(cap, c_ppm, scale, m, leaf),
-                &WeightTable::V1,
+                &WeightTable::V2,
                 agent_seed,
             ),
         }
@@ -451,7 +489,13 @@ impl Contestant {
         match *self {
             Self::Policy(policy) => (Box::new(PolicyAgent::new(policy, agent_seed)), None),
             Self::GreedyV1 { m } => {
-                let agent = GreedyAgent::with_weights(rules, WeightTable::V1, m, agent_seed);
+                // THE SHIPPED TABLE, and the reason all three arms below name it
+                // explicitly rather than calling `::new`: a contestant's weights
+                // are part of what its NAME means (L12 — the grammar carries no
+                // weight knob), so the one place a cell's table is decided is
+                // here. The v2 freeze moved all three from `V1` to `V2` in one
+                // commit and bumped every controller const with them.
+                let agent = GreedyAgent::with_weights(rules, WeightTable::V2, m, agent_seed);
                 let handle = ExplainHandle::Greedy(agent.tally());
                 (Box::new(agent), Some(handle))
             }
@@ -478,7 +522,7 @@ impl Contestant {
                 // cap rather than named separately (`mcts::simulations_for_cap`).
                 let knobs = McKnobs::sized_by_cap(cap, c_ppm, scale, m, leaf);
                 let agent = MctsAgent::with_knobs(rules, agent_seed, knobs)
-                    .with_weights(WeightTable::V1);
+                    .with_weights(WeightTable::V2);
                 let handle = ExplainHandle::Mcts(agent.tally());
                 (Box::new(agent), Some(handle))
             }
@@ -498,7 +542,7 @@ impl Contestant {
             scheme,
             worlds,
             retreat_samples,
-            WeightTable::V1,
+            WeightTable::V2,
             agent_seed,
         )
         .with_cap(cap);
@@ -1202,7 +1246,7 @@ pub fn pairs_needed_for_mme(mme_theta: f64, var_pair: f64) -> u64 {
 // Printed cross-checks and echoes
 // ---------------------------------------------------------------------------
 
-fn mean(values: &[f64]) -> f64 {
+pub(crate) fn mean(values: &[f64]) -> f64 {
     if values.is_empty() {
         return f64::NAN;
     }
@@ -1210,7 +1254,9 @@ fn mean(values: &[f64]) -> f64 {
 }
 
 /// Sample standard deviation (n − 1 denominator), or `NaN` under two units.
-fn sample_sd(values: &[f64]) -> f64 {
+/// `pub(crate)` since Phase 3.5c W3 so `eval_screen`'s sd means what a cell's
+/// does by SHARING the function rather than by copying it (its review, SHOULD-4).
+pub(crate) fn sample_sd(values: &[f64]) -> f64 {
     if values.len() < 2 {
         return f64::NAN;
     }
@@ -2281,7 +2327,7 @@ mod tests {
         );
         assert_eq!(report.x_free_cap_hits, Some(0), "S1 cannot reach the quiescence guard at all");
         assert!(
-            report.spec_echo.contains("x=lookahead-v1@v1{"),
+            report.spec_echo.contains("x=lookahead-v1@v2{"),
             "the X seat's provenance must be the search rung's descriptor: {}",
             report.spec_echo,
         );

@@ -141,7 +141,14 @@
 
 pub mod corpus;
 pub mod stats;
+/// The contestant name grammar (Phase 3.5c W1-B). PRIVATE, deliberately: the
+/// public entry is [`Contestant::from_str_name`], so there is exactly ONE way to
+/// turn a typed spec into a contestant and no second spelling to drift from it.
+/// (`grammar` at the crate root would also be far too generic a name — the same
+/// reason `eval`/`greedy`/`lookahead`/`mcts` are namespaced in `game/mod.rs`.)
+mod grammar;
 pub use corpus::*;
+pub use grammar::ATOMIC_DIAG_ALIAS;
 pub use stats::*;
 
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -183,7 +190,13 @@ const SALT_RAW_STREAM: u64 = 0xA3E1_4157_0000_0003;
 /// Fold `components` into one full-width sub-seed under `salt` — the module
 /// doc's derivation. Injective in any single component (others fixed); see the
 /// module doc for what is NOT claimed across several.
-fn mix(salt: u64, components: &[u64]) -> u64 {
+///
+/// `pub(crate)` rather than private since Phase 3.5c: `game::eval_screen` is a
+/// SIBLING module that derives its own bootstrap resample stream, and the module
+/// doc's "one mixing authority and not a re-typed copy of its constants" rule
+/// applies across the crate, not merely inside this file. It stays crate-private
+/// — sub-seed derivation is not a public surface.
+pub(crate) fn mix(salt: u64, components: &[u64]) -> u64 {
     let mut acc = salt;
     for &component in components {
         let mut step = acc ^ component;
@@ -587,6 +600,23 @@ pub struct ArenaGameStats {
     pub record: GameRecord,
 }
 
+/// Typed guard shared by both public drivers (T6 review F4): every other bad
+/// input here is a typed `ArenaError`, and Task 9 wires these entry points to
+/// argv, where a `--players 5` panic would be user-facing.
+///
+/// `pub(crate)` since Phase 3.5c so `game::eval_screen`'s own unit loop asks the
+/// SAME authority what the engine plays: its loop calls `unit_for` before it
+/// calls any driver, and `unit_for(0, ..)` yields an empty seating list, so a
+/// screen that re-derived the bound could tabulate zero games into a report full
+/// of NaNs instead of erroring.
+pub(crate) fn require_supported_player_count(players: u8) -> Result<(), ArenaError> {
+    if (2..=4).contains(&players) {
+        Ok(())
+    } else {
+        Err(ArenaError::Driver(format!("unsupported player count {players} (the engine plays 2-4)")))
+    }
+}
+
 /// Play one honest game: one [`ArenaAgent`] per seat, each acting on its own
 /// view alone.
 ///
@@ -595,17 +625,6 @@ pub struct ArenaGameStats {
 /// agent from privileged setup data. `invariants` runs `check_invariants` after
 /// every applied move (ON in tests and gates; bulk corpus generation may
 /// disable it, since those records are verified by strict replay instead).
-/// Typed guard shared by both public drivers (T6 review F4): every other bad
-/// input here is a typed `ArenaError`, and Task 9 wires these entry points to
-/// argv, where a `--players 5` panic would be user-facing.
-fn require_supported_player_count(players: u8) -> Result<(), ArenaError> {
-    if (2..=4).contains(&players) {
-        Ok(())
-    } else {
-        Err(ArenaError::Driver(format!("unsupported player count {players} (the engine plays 2-4)")))
-    }
-}
-
 pub fn run_arena_game(
     seed: WorldSeed,
     players: u8,

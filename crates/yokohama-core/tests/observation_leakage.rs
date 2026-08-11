@@ -910,7 +910,10 @@ const TRIPWIRE_BEAM: u16 = 1;
 /// `M` for the Lookahead cells; see [`TRIPWIRE_BEAM`].
 const TRIPWIRE_RETREAT_SAMPLES: u8 = 2;
 
-/// Greedy-v1 as a decider, on the shipped [`WeightTable::V1`] and `M`.
+/// Greedy-v1 as a decider, on the SHIPPED table and `M` — whatever
+/// `GreedyAgent::new` takes, which is [`WeightTable::V2`] since the 2026-08-10
+/// v2 freeze. Read through the constructor on purpose: this helper's job is to
+/// be the agent, so it must not pin a table the agent has moved off.
 fn greedy_agent_pick(rules: &Rules, agent_seed: u64, view: &PlayerView) -> Move {
     let mut agent = GreedyAgent::new(rules, agent_seed);
     agent.choose(view, rules).expect("Greedy-v1 resolves a move at a real decision point").mv
@@ -2056,7 +2059,13 @@ fn decide_in_world(
     tie_key: u64,
     candidate_seed: u64,
 ) -> (Move, usize) {
-    let weights = WeightTable::V1;
+    // THE SHIPPED TABLE — `V2` since the 2026-08-10 v2 freeze. It has to be the
+    // one the AGENTS take, because the MCTS cell's agent-fidelity control feeds
+    // an agent's own three play-stream words back through this instrument and
+    // demands the same move; a table left behind here would make that control
+    // fail (it did, at the freeze) and would make any rate below a statement
+    // about a harness rather than about the contestant.
+    let weights = WeightTable::V2;
     match arm {
         SensitivityArm::Mcts(simulations) => {
             let knobs = mcts_knobs(simulations);
@@ -2077,7 +2086,7 @@ fn decide_in_world(
         }
         SensitivityArm::Greedy => {
             // Greedy-v1's in-world half, restated on ITS OWN constants
-            // (`DEFAULT_RETREAT_SAMPLES`, `WeightTable::V1`) — the
+            // (`DEFAULT_RETREAT_SAMPLES`, `WeightTable::V2`) — the
             // determinization cell's CONFIG PIN, and the same caveat: what is
             // re-stated by hand is the pipeline SHAPE (handle → candidates →
             // apply → observe → score → keyed argmax), verified against
@@ -2254,8 +2263,14 @@ fn world_sensitivity(arm: SensitivityArm, rules: &Rules) -> SensitivityReport {
 /// §11(b) names as a follow-up and does NOT take this cycle — which is exactly
 /// why §0.4 pre-registers no numeric threshold on this rate.
 ///
-/// **MEASURED AT AUTHORING: 3 of 35 non-forced points = 0.0857**, in the regime
-/// below. Every part of that regime is part of the figure (L22's rule):
+/// **MEASURED AT AUTHORING: 3 of 35 non-forced points = 0.0857.
+/// RE-MEASURED AT THE v2 FREEZE (2026-08-10): 1 of 35 = 0.0286**, the two walks
+/// and the point census unchanged (80 points, 45 forced) — what moved is which
+/// move the tree returns, since `WeightTable::V2` and T3's post-claim filter
+/// change every value it backs up. Read the two numbers together with the N
+/// caveat below rather than as a trend: at N = 35 the numerator is single-digit
+/// in both, and the doc already declines to call this a calibrated rate. The
+/// regime below is the figure's other half (L22's rule):
 /// 2P · [`MCTS_SENSITIVITY_SIMULATIONS`] = 64 simulations · `M = 2` ·
 /// `LeafRule::HandOff` · `c` and `scale` at the shipped defaults ·
 /// `W = SENSITIVITY_WORLDS` = 3 · world-common tie key and candidate seed ·
