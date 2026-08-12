@@ -2364,12 +2364,21 @@ mod tests {
     /// halves and reparsing the bare NAME would silently reset every knob (a
     /// recorded `lookahead-v1` at `b=8` would resume at `b=4`).
     ///
-    /// Round-tripped over every arm AND over knob-presence: the two cap-carrying
-    /// contestants appear once uncapped and once capped in the sibling test
-    /// below, because absence IS the uncapped identity on the provenance
-    /// preserve-list.
+    /// Round-tripped over every arm AND over knob-presence: BOTH cap-carrying
+    /// contestants appear once uncapped and once capped, because absence IS the
+    /// uncapped identity on the provenance preserve-list — and the capped tree
+    /// is additionally the one descriptor shape where `cap` is present while
+    /// the derived `sims` is absent, so it pins `MCTS_DERIVED_PARAM_KEYS`
+    /// behaviour nothing else reaches (T1 review SHOULD-1).
     #[test]
     fn from_parts_round_trips_every_descriptor() {
+        let capped_mcts = {
+            let Contestant::MctsV1 { c_ppm, scale, m, leaf, .. } = Contestant::MCTS_V1_DEFAULT
+            else {
+                unreachable!("MCTS_V1_DEFAULT is the MctsV1 arm");
+            };
+            Contestant::MctsV1 { cap: Some(750), c_ppm, scale, m, leaf }
+        };
         for contestant in [
             Contestant::Policy(RolloutPolicy::Uniform),
             Contestant::Policy(RolloutPolicy::RetreatAverse),
@@ -2383,6 +2392,7 @@ mod tests {
             Contestant::LookaheadV1 { b: 8, k: 1, m: 8, cap: Some(750) },
             Contestant::ATOMIC_DIAG_DEFAULT,
             Contestant::MCTS_V1_DEFAULT,
+            capped_mcts,
         ] {
             let (name, _version, params) = contestant.descriptor();
             assert_eq!(
@@ -2426,6 +2436,20 @@ mod tests {
             Contestant::from_parts(&name, &params),
             Ok(Contestant::MctsV1 { cap: None, .. }),
         ));
+
+        // The capped tree, full equality — a recorded `mcts-v1@<cap>` seat that
+        // silently resumed uncapped would be a different contestant under the
+        // same name (T1 review SHOULD-1's escaped mutation).
+        let capped_mcts = {
+            let Contestant::MctsV1 { c_ppm, scale, m, leaf, .. } = Contestant::MCTS_V1_DEFAULT
+            else {
+                unreachable!("MCTS_V1_DEFAULT is the MctsV1 arm");
+            };
+            Contestant::MctsV1 { cap: Some(750), c_ppm, scale, m, leaf }
+        };
+        let (name, _, params) = capped_mcts.descriptor();
+        assert_eq!(params.get("cap"), Some(&750_i64));
+        assert_eq!(Contestant::from_parts(&name, &params), Ok(capped_mcts));
     }
 
     /// Unknown is an error, and the error names what it saw — the grammar's
@@ -2503,23 +2527,35 @@ mod tests {
     fn from_parts_accepts_identity_keys_without_consuming_them() {
         let (name, _, params) = Contestant::LOOKAHEAD_V1_DEFAULT.descriptor();
         assert!(params.contains_key("eval_impl") && params.contains_key("weights"));
-        assert_eq!(
-            Contestant::from_parts(&name, &params),
-            Ok(Contestant::LOOKAHEAD_V1_DEFAULT),
-        );
+        let (name_g, _, params_g) = Contestant::GREEDY_V1_DEFAULT.descriptor();
+        assert!(params_g.contains_key("placement_cap"), "greedy's third identity key");
+        assert_eq!(Contestant::from_parts(&name, &params), Ok(Contestant::LOOKAHEAD_V1_DEFAULT));
+        assert_eq!(Contestant::from_parts(&name_g, &params_g), Ok(Contestant::GREEDY_V1_DEFAULT));
 
-        let mut altered = params.clone();
-        altered.insert("weights".to_string(), 0x0BAD_0BAD);
-        altered.insert("eval_impl".to_string(), 1);
-        assert_eq!(
-            Contestant::from_parts(&name, &altered),
-            Ok(Contestant::LOOKAHEAD_V1_DEFAULT),
-            "an identity key was consumed as a construction input",
-        );
-
-        let (name, _, params) = Contestant::GREEDY_V1_DEFAULT.descriptor();
-        assert!(params.contains_key("placement_cap"), "greedy's third identity key");
-        assert_eq!(Contestant::from_parts(&name, &params), Ok(Contestant::GREEDY_V1_DEFAULT));
+        // The skip clause ALTERED on every arm that emits identity keys — a
+        // single-arm pin lets the other arms start CHECKING a key undetected,
+        // which is exactly the cross-build unloadability `IDENTITY_PARAM_KEYS`'
+        // doc forbids (T1 review SHOULD-2's escaped mutation).
+        for contestant in [
+            Contestant::GREEDY_V1_DEFAULT,
+            Contestant::LOOKAHEAD_V1_DEFAULT,
+            Contestant::ATOMIC_DIAG_DEFAULT,
+            Contestant::MCTS_V1_DEFAULT,
+        ] {
+            let (name, _, params) = contestant.descriptor();
+            let mut altered = params.clone();
+            for key in IDENTITY_PARAM_KEYS {
+                if altered.contains_key(*key) {
+                    altered.insert((*key).to_string(), 0x0BAD_0BAD);
+                }
+            }
+            assert_ne!(altered, params, "the alteration must actually move a key on {name}");
+            assert_eq!(
+                Contestant::from_parts(&name, &altered),
+                Ok(contestant),
+                "an identity key was consumed as a construction input on {name}",
+            );
+        }
     }
 
     /// The echo composer is a PUBLIC method on the type (W5 design §4.2) — the

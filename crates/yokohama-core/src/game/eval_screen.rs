@@ -418,7 +418,7 @@ impl ScreenProvenance {
     }
 }
 
-/// `name@vN{k=v,…}` — `arena::stats::contestant_echo`'s spelling, fed by the
+/// `name@vN{k=v,…}` — [`Contestant::echo`]'s spelling, fed by the
 /// controller's own descriptor so no knob name is hand-typed.
 fn side_echo(name: &str, version: u32, params: &BTreeMap<String, i64>) -> String {
     if params.is_empty() {

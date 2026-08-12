@@ -313,6 +313,13 @@ impl GameRecord {
 /// (`new_game`/`reconcile_setup`/`finalize_setup`, before any event has
 /// folded) reports `event_index: 0` with `message` prefixed to say which
 /// setup step failed, since no event index is meaningful yet.
+///
+/// Two callers additionally use the PAST-THE-END convention
+/// `event_index == events.len()`, where no event failed and the message says
+/// what did: `replay_strict`'s terminal-digest mismatch, and `state_at`'s
+/// out-of-range refusal. A caller branching on `event_index` alone cannot
+/// tell those from a last-event failure — the message text is the
+/// discriminator.
 #[derive(Debug)]
 pub struct ReplayError {
     pub event_index: usize,
