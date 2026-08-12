@@ -427,17 +427,12 @@ fn identity_drift_warnings(i: usize, seat: &SeatProvenance, contestant: Contesta
 /// One bot decision: the move, and -- for a contestant that VALUES rather than
 /// samples -- everything needed to account for it.
 ///
-/// **`allow(dead_code)` on the accounting half, and it is temporary by
-/// construction.** The bot PUMP wants only [`mv`](Self::mv); the reader of
-/// everything below it is `why`, task 5 of this same W5 cut. Producing the
-/// parts here rather than at that seam is the design's own point (§1.3): one
-/// `decide` serves both callers, so `why` cannot reconstruct a decision by a
-/// path the pump did not take. The fields ARE read today -- by
-/// `each_evaluator_arm_accounts_for_its_move_in_its_own_shape`, which pins the
-/// per-arm shape `why` renders off -- but a `cfg(test)` reader does not satisfy
-/// the lint in the plain `lib` build, and `expect` is unusable here for the
-/// mirror-image reason (it would go unfulfilled in the test build).
-#[allow(dead_code)]
+/// **The bot PUMP wants only [`mv`](Self::mv); the reader of everything below
+/// it is [`crate::why`]**, task 5 of this same W5 cut, which is why the
+/// accounting half carried an `allow(dead_code)` between the two tasks and no
+/// longer does. Producing the parts HERE rather than at that seam is the
+/// design's own point (§1.3): one `decide` serves both callers, so `why` cannot
+/// reconstruct a decision by a path the pump did not take.
 pub(crate) struct Decision {
     /// The move the contestant chose.
     pub mv: Move,
@@ -449,8 +444,8 @@ pub(crate) struct Decision {
 
 /// What an evaluator contestant can say about the move it just chose --
 /// `suggest`'s [`Suggestion`](crate::suggest::Suggestion) parts, minus the
-/// press-specific ones. See [`Decision`] for why the lint is allowed here.
-#[allow(dead_code)]
+/// press-specific ones. [`crate::why`] turns exactly these into that same
+/// screen (design §2.4: one renderer, a parameterized header).
 pub(crate) struct DecisionExplanation {
     /// `eval::explain` at the state the value was READ at: the hand-off for a
     /// search, the one-ply successor for greedy.

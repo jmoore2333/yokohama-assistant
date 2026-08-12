@@ -324,6 +324,12 @@ cards, and its weights are hand-set rather than tuned.
 
 **It is arithmetic, not advice.** The weights are hand-set — informed by measurement since the v2 freeze, but not machine-tuned — the search is one turn deep in one sampled world, the opponents' hidden cards are guessed, and nothing here has been measured against a human player. What it gives you is a window on what the bot thinks — which is exactly what makes it useful for this testing round: a suggestion that is obviously wrong at the table is worth reporting (§9).
 
+**Asking why the bot played THAT (simulation only).** `why` is `suggest`'s other half. `suggest` answers *what would you play on my seat*, before you move; `why` answers *how did the bot choose the move it just played*, after — the same screen and the same arithmetic, about a move that has already happened. Type `why` for the bot's most recent move, or `why <n>` for one particular event, where `n` is the number `log` prints beside each line. Like `suggest` it applies nothing, records nothing and does not autosave, and two presses at one event give byte-identical output. A **finished game is not a refusal**: `why` reads history, and history survives the end, so reading back through a completed game is exactly what it is for.
+
+**How it knows, and when it refuses to say.** Nothing is stored — the tool keeps no diary of what the bot was thinking. It replays the game to the position that move was decided in, re-derives the same random key the bot's own turn used (from the stream key the wizard printed and how many moves had been played by then), and re-runs the identical search. Then it checks itself: did that reproduce the move the record says was played? If it did, you get the account. **If it did not, `why` refuses and names both moves** — showing you confident arithmetic for a move nobody made would be worse than showing you nothing. That is what a save written by an older build of this program looks like (the versions are named in the refusal), and it is also what a seat whose moves were not really the bot's looks like. The other refusals: live mode, which has no bot seats at all; before any bot has moved; an event number the log does not have, or one that is a reveal rather than a move; your own move, which is `suggest`'s question asked before you play it rather than after; and a seat playing one of the legacy rollout rungs, which **sample** a move from a distribution instead of scoring one — there is no arithmetic to show, and that is a different thing from a score of zero.
+
+**Reading it.** The header names the seat, the exact contestant that played it — its name, version and every knob, the same identity the save file records — the event number, and the decision key that move was searched under. Under that, one line saying the account was reconstructed by replay under this build's own version numbers, and what the search cost in positions scored; and, if the save was written by a different build, a warning saying so. Everything below is the `suggest` screen described above, read the same way: the move, the line it was valued down, the term-by-term table, the runner-ups. A seat playing the one-ply `greedy-v1` contestant shows the table alone and says why — it searches no line at all and ranks no candidates, so the table is its whole account.
+
 ## 5. Commands
 
 ```
@@ -350,6 +356,7 @@ score           show current VP/money (or the final scores once the game is over
 log             open the LOG view: the move and reveal trail, each line as it read when it applied
 view            open the numbered game-info menu over all of the views and indexes above ('views' also works)
 suggest         simulation only: what the built-in bot would play from your seat, with its arithmetic
+why [n]         simulation only: how a bot seat chose its last move (or the log's event n), with the same arithmetic
 privacy         toggle hiding hand contents in views (default: hidden in live mode)
 panel           toggle the players panel inside the composed screen (terminal only)
 screen          toggle the composed screen itself (terminal only; pipes are always plain)

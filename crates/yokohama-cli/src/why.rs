@@ -42,12 +42,22 @@
 
 use yokohama_core::*;
 
-use crate::bot::BotSeats;
+use crate::bot::{self, BotSeats};
 use crate::session::{Session, TrackingMode};
+use crate::style::Tone;
+use crate::suggest::{Header, Suggestion};
+use crate::{describe, suggest};
+
+/// What a one-ply argmax has instead of a line and a ranking — the sentence
+/// `why` prints in place of both blocks for a `greedy-v1` mover
+/// ([`Header::explanation_only`]).
+const ONE_PLY_ACCOUNT: &str = "This contestant takes a one-ply argmax: it scores each successor \
+                               position and plays the best one, so it searched no line and \
+                               reports no per-candidate ranking — the table below IS its whole \
+                               account of the move.";
 
 /// The `why` screen for `arg` (or for the most recent explainable bot move
 /// when `arg` is `None`), or the typed refusal that stands in for it.
-#[allow(dead_code)]
 pub(crate) fn why(session: &Session, bots: &BotSeats, arg: Option<usize>) -> String {
     why_over(session.mode, session.record(), session.rules(), bots, arg)
 }
@@ -65,8 +75,442 @@ fn why_over(
     bots: &BotSeats,
     arg: Option<usize>,
 ) -> String {
-    let _ = (mode, record, rules, bots, arg);
-    "why: not implemented\n".to_string()
+    match account(mode, record, rules, bots, arg) {
+        Ok(screen) => screen,
+        // Folded HERE rather than authored pre-wrapped: every refusal below
+        // interpolates something unbounded (a parser's error, a `Move`'s
+        // `Debug`, a contestant's echo), so a hand-wrapped literal bounds the
+        // half that was never the risk. See `suggest::wrap_to`.
+        Err(refusal) => suggest::wrap_to(&refusal.to_string(), refusal_width(record)),
+    }
+}
+
+/// How wide a refusal's prose may run: the editorial measure, or the frame if
+/// the frame is narrower. The frame is the GUARANTEE (`screen::wrap` sizes the
+/// composed screen to its widest line); [`suggest::PROSE_TEXT_WIDTH`] is what
+/// keeps a paragraph readable at a 198-column two-player frame. One measure for
+/// both surfaces, so a refusal and the account's own notes cannot disagree
+/// about how wide a sentence is.
+fn refusal_width(record: &GameRecord) -> usize {
+    crate::screen::frame_width(usize::from(record.config.player_count))
+        .min(suggest::PROSE_TEXT_WIDTH)
+}
+
+/// Why there is no account — design §2.3's table, one variant per row plus the
+/// two arms it names in prose (a DIAGNOSTIC controller, and one this build
+/// cannot parse at all).
+///
+/// Typed and named rather than collapsed to one string for `SuggestError`'s
+/// reason: they mean genuinely different things to the reader. Three of them
+/// say *ask a different question* (live mode, a human's move, a rung's
+/// sample), three say *that is not an address* (out of range, a reveal, no bot
+/// move yet), and two say *this driver will not pretend* (the reconstruction
+/// mismatch, and a contestant it cannot run).
+///
+/// **Written as prose and folded by machine** ([`why_over`], via
+/// [`suggest::wrap_to`]). These are view bodies, and `screen::wrap` sizes the
+/// composed frame to its widest line — so one over-wide paragraph here would
+/// shove the board sideways for exactly as long as the refusal is on screen
+/// (`suggest_cmd`'s live refusal carries the same warning, for the same
+/// defect). Hand-wrapping cannot buy that here, because every arm below
+/// interpolates something whose length it does not control.
+#[derive(Debug)]
+enum Refusal {
+    LiveMode,
+    NoBotMoveYet,
+    OutOfRange { asked: usize, events: usize },
+    NotAMove { index: usize, kind: &'static str },
+    HumanSeat { index: usize, seat: PlayerId },
+    Rung { index: usize, seat: PlayerId, rung: String },
+    Diagnostic { index: usize, seat: PlayerId, why: String },
+    UnknownController { index: usize, seat: PlayerId, controller: String, why: String },
+    Mismatch(Box<Mismatch>),
+    Reconstruction { index: usize, seat: PlayerId, why: String },
+    Unaccounted { index: usize, contestant: String },
+    Replay { index: usize, message: String },
+}
+
+/// The mismatch refusal's parts, boxed so the one heavy variant does not size
+/// the whole enum (clippy's `large_enum_variant`, and it is the rarest arm).
+#[derive(Debug)]
+struct Mismatch {
+    index: usize,
+    seat: PlayerId,
+    controller: String,
+    /// `Debug`, not a description: the reconstructed move need not be legal in
+    /// the TRUE position (it was chosen inside a sampled world), and naming a
+    /// move against a state that does not admit it is how a formatter gets to
+    /// index something that is not there — `SuggestError::Inconsistent`'s own
+    /// reasoning, at the one other site with the same exposure.
+    reconstructed: String,
+    /// The recorded move in words, which is always safe: it applied here.
+    recorded: String,
+    recorded_version: Option<u32>,
+    current_version: u32,
+}
+
+/// Every arm is written as PROSE — one logical line per paragraph, with a `\n`
+/// only where the layout genuinely needs one (the mismatch's two named moves).
+/// [`why_over`] folds the result to the reader's measure, which is the only way
+/// a message carrying an unbounded interpolation can be bounded at all.
+impl std::fmt::Display for Refusal {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::LiveMode => write!(
+                f,
+                "`why` is simulation-only. A live-tracked game has no bot seats at all — a live \
+                 save that names one drops it loudly on load, because a bot cannot read a \
+                 face-down card off your table — so there is no bot decision here to reconstruct. \
+                 (`suggest` is refused in live mode too, for the neighbouring reason: see guide \
+                 §4.)"
+            ),
+            Self::NoBotMoveYet => write!(
+                f,
+                "No bot move to explain yet. `why` accounts for a move a BOT seat played, and \
+                 this game has recorded none — a rung seat's samples do not count, since a rung \
+                 has no valuation to show. What the bot would play on YOUR seat is `suggest`'s \
+                 question, asked before you move rather than after."
+            ),
+            Self::OutOfRange { asked, events } if *events == 0 => write!(
+                f,
+                "There is no event {asked} to explain: this game has no events recorded yet."
+            ),
+            Self::OutOfRange { asked, events } => write!(
+                f,
+                "There is no event {asked} to explain: the log runs 0-{} ({events} event(s) \
+                 recorded). `why <n>` takes the number `log` prints beside each line.",
+                events - 1,
+            ),
+            Self::NotAMove { index, kind } => write!(
+                f,
+                "Event {index} is {kind}, not a move — there was no decision to make, so there is \
+                 nothing to account for. `log` shows what it recorded."
+            ),
+            Self::HumanSeat { index, seat } => write!(
+                f,
+                "Event {index} was seat {}'s own move, and the record names no bot on that seat. \
+                 `why` accounts for BOT moves; what the bot would play on YOUR seat is \
+                 `suggest`'s question, asked before you move rather than after.",
+                seat.0,
+            ),
+            Self::Rung { index, seat, rung } => write!(
+                f,
+                "Seat {} played event {index} as `{rung}`, a rollout RUNG: it SAMPLED that move \
+                 from a distribution rather than valuing it, so there is no arithmetic to show. \
+                 That is a different fact from a score of zero. Rungs are kept so that every save \
+                 this driver ever wrote still resumes; a bot seat configured today plays a \
+                 search, which does account for its moves.",
+                seat.0,
+            ),
+            Self::Diagnostic { index, seat, why } => write!(
+                f,
+                "Seat {} is recorded at event {index} under a controller this driver will not \
+                 run: {why}. The seat resumed as a HUMAN seat and this driver never ran that \
+                 search, so there is no decision of its here to reconstruct.",
+                seat.0,
+            ),
+            Self::UnknownController { index, seat, controller, why } => write!(
+                f,
+                "Seat {} is recorded at event {index} under controller \"{controller}\", which \
+                 this build does not know how to run ({why}) — so `why` cannot rebuild the \
+                 decision it would have made. The seat resumed as a HUMAN seat.",
+                seat.0,
+            ),
+            Self::Mismatch(m) => {
+                let recorded_version =
+                    m.recorded_version.map_or_else(|| "none".to_string(), |v| format!("v{v}"));
+                write!(
+                    f,
+                    "`why` cannot account for event {} honestly. Replaying seat {}'s decision \
+                     under `{}` reproduced\n  \
+                     {}\n\
+                     but the record says the move played was\n  \
+                     {}\n\
+                     The record stores this controller at version {recorded_version} and this \
+                     build runs v{}. Rather than show you the arithmetic for a move that was not \
+                     played, `why` stops here — this is also how a seat that was downgraded to \
+                     HUMAN mid-game reads, since its later moves were typed rather than searched. \
+                     The game is untouched.",
+                    m.index,
+                    m.seat.0,
+                    m.controller,
+                    m.reconstructed,
+                    m.recorded,
+                    m.current_version,
+                )
+            }
+            Self::Reconstruction { index, seat, why } => write!(
+                f,
+                "`why` could not re-run seat {}'s decision at event {index}: {why} The game is \
+                 untouched.",
+                seat.0,
+            ),
+            Self::Unaccounted { index, contestant } => write!(
+                f,
+                "`{contestant}` reproduced event {index}'s move but explained nothing, which is a \
+                 broken contract in this program rather than something you did. Worth reporting. \
+                 The game is untouched."
+            ),
+            Self::Replay { index, message } => write!(
+                f,
+                "`why` could not rebuild the position event {index} was decided in: {message} \
+                 The game is untouched."
+            ),
+        }
+    }
+}
+
+/// What the RECORD says played a seat, narrowed to what `why` can do about it.
+enum SeatReading {
+    /// An evaluator arm that accounts for its move.
+    Explainable(Contestant),
+    /// A human seat — or a record naming no controller for this seat at all,
+    /// which is the same fact from the other side (nothing here was a bot).
+    Human,
+    /// A preserved rollout rung, named.
+    Rung(String),
+    /// A labelled diagnostic arm, carrying [`bot::eligible`]'s own sentence.
+    Diagnostic(String),
+    /// A name this build cannot parse, carrying the parser's own sentence.
+    Unknown { controller: String, why: String },
+}
+
+/// The record's provenance for `seat`, if it carries any.
+fn seat_provenance(record: &GameRecord, seat: PlayerId) -> Option<&SeatProvenance> {
+    record.run.as_ref()?.seats.get(usize::from(seat.0))
+}
+
+/// Read `seat`'s recorded controller through the SAME two functions the resume
+/// path uses — `Contestant::from_parts` over both stored halves, then
+/// [`bot::eligible`] — so `why` and `BotSeats::from_provenance` cannot disagree
+/// about what a seat is. The extra narrowing here is the rung: eligible to
+/// PLAY (grandfathered), never eligible to EXPLAIN.
+fn read_seat(record: &GameRecord, seat: PlayerId) -> SeatReading {
+    let Some(provenance) = seat_provenance(record, seat) else { return SeatReading::Human };
+    if provenance.controller == CONTROLLER_HUMAN {
+        return SeatReading::Human;
+    }
+    match Contestant::from_parts(&provenance.controller, &provenance.params) {
+        Err(why) => SeatReading::Unknown { controller: provenance.controller.clone(), why },
+        Ok(contestant) => match bot::eligible(contestant) {
+            Err(why) => SeatReading::Diagnostic(why),
+            Ok(Contestant::Policy(rung)) => SeatReading::Rung(rung.as_str().to_string()),
+            Ok(explainable) => SeatReading::Explainable(explainable),
+        },
+    }
+}
+
+/// Which kind of event this is, in the words a refusal names it with.
+fn event_kind(event: &RecordedEvent) -> &'static str {
+    match event {
+        RecordedEvent::Move(_) => "a move",
+        RecordedEvent::RevealOrders(_) => "an order-deck reveal",
+        RecordedEvent::RevealTechs(_) => "a technology-deck reveal",
+        RecordedEvent::RevealStartingOrder { .. } => "a starting-order reveal",
+    }
+}
+
+/// Bare `why`'s address: the HIGHEST event index that is a move AND whose
+/// mover's recorded controller is one this driver can account for.
+///
+/// One FORWARD fold rather than a backwards `state_at` walk, and the
+/// difference is not cosmetic: the backwards form re-replays the record from
+/// event 0 at every step, so an all-human game — the case this scan exists to
+/// refuse — would cost `O(events²)` checked applies before printing "no bot
+/// move yet".
+///
+/// The `ReplayError`'s own `event_index` is DISCARDED and only its message
+/// kept: each iteration hands `replay_from` a fresh one-element slice, so that
+/// index is structurally always 0 whatever really failed (the trap
+/// `Session::load` documents at its own fold). The index printed is this
+/// loop's.
+fn last_explainable_bot_move(record: &GameRecord, rules: &Rules) -> Result<usize, Refusal> {
+    let mut state =
+        state_at(record, 0, rules).map_err(|e| Refusal::Replay { index: 0, message: e.message })?;
+    let mut found = None;
+    for (index, event) in record.events.iter().enumerate() {
+        if matches!(event, RecordedEvent::Move(_))
+            && matches!(read_seat(record, state.current_player), SeatReading::Explainable(_))
+        {
+            found = Some(index);
+        }
+        state = replay_from(&state, std::slice::from_ref(event), rules)
+            .map_err(|e| Refusal::Replay { index, message: e.message })?;
+    }
+    found.ok_or(Refusal::NoBotMoveYet)
+}
+
+/// Resolve the address, reconstruct the decision, gate it against the record,
+/// and render — design §2.1-§2.4 in the order it states them.
+fn account(
+    mode: TrackingMode,
+    record: &GameRecord,
+    rules: &Rules,
+    bots: &BotSeats,
+    arg: Option<usize>,
+) -> Result<String, Refusal> {
+    if matches!(mode, TrackingMode::Live) {
+        return Err(Refusal::LiveMode);
+    }
+    let events = record.events.len();
+    let index = match arg {
+        Some(asked) if asked < events => asked,
+        Some(asked) => return Err(Refusal::OutOfRange { asked, events }),
+        None => last_explainable_bot_move(record, rules)?,
+    };
+    let RecordedEvent::Move(recorded) = &record.events[index] else {
+        return Err(Refusal::NotAMove { index, kind: event_kind(&record.events[index]) });
+    };
+
+    // The state the mover DECIDED IN — `state_at(record, n)` is the state
+    // after the first n events, which is the position event n was chosen at.
+    // `index < events` above, so the past-the-end arm of `state_at` is
+    // unreachable from here; its message is still never printed raw (its
+    // "replay failed at event N" framing would name an event that replayed
+    // perfectly).
+    let state = state_at(record, index, rules)
+        .map_err(|e| Refusal::Replay { index, message: e.message })?;
+    let seat = state.current_player;
+    let contestant = match read_seat(record, seat) {
+        SeatReading::Explainable(contestant) => contestant,
+        SeatReading::Human => return Err(Refusal::HumanSeat { index, seat }),
+        SeatReading::Rung(rung) => return Err(Refusal::Rung { index, seat, rung }),
+        SeatReading::Diagnostic(why) => return Err(Refusal::Diagnostic { index, seat, why }),
+        SeatReading::Unknown { controller, why } => {
+            return Err(Refusal::UnknownController { index, seat, controller, why })
+        }
+    };
+
+    // THE PUMP'S OWN KEY: `BotSeats::decision_seed(n)` over the RECONCILED
+    // stream seed — the one `from_provenance` kept (first bot seat's wins, and
+    // a conflict has already warned at load). Deliberately not the mover's own
+    // `agent_seed`, which would disagree with the pump for the second bot seat
+    // of a conflicting record, and deliberately not `suggest::stream_seed`,
+    // which is a DIFFERENT derivation: reporting a search the bot never ran is
+    // the one defect this whole seam exists to make impossible.
+    let decision_seed = bots.decision_seed(index);
+    let decision = bot::decide(contestant, &state, rules, seat, decision_seed)
+        .map_err(|e| Refusal::Reconstruction { index, seat, why: e.to_string() })?;
+
+    let (controller, current_version, _) = contestant.descriptor();
+    let recorded_version = seat_provenance(record, seat).map(|p| p.version);
+    if decision.mv != *recorded {
+        return Err(Refusal::Mismatch(Box::new(Mismatch {
+            index,
+            seat,
+            controller: contestant.echo(),
+            reconstructed: format!("{:?}", decision.mv),
+            recorded: describe::describe_move(recorded, &state, rules),
+            recorded_version,
+            current_version,
+        })));
+    }
+    let explain = decision
+        .explain
+        .ok_or_else(|| Refusal::Unaccounted { index, contestant: controller.clone() })?;
+
+    Ok(render(
+        Reconstruction { contestant, index, seat, decision_seed, recorded_version, current_version },
+        decision.mv,
+        explain,
+        &state,
+        rules,
+    ))
+}
+
+/// What the header says about the reconstruction, as one argument rather than
+/// six positional ones.
+struct Reconstruction {
+    contestant: Contestant,
+    index: usize,
+    seat: PlayerId,
+    decision_seed: u64,
+    recorded_version: Option<u32>,
+    current_version: u32,
+}
+
+/// The screen: `why`'s own header over `suggest`'s body (design §2.4 — the
+/// table is not forked, and the parameterization is a header, not a rewrite).
+fn render(
+    r: Reconstruction,
+    mv: Move,
+    explain: bot::DecisionExplanation,
+    state: &GameState,
+    rules: &Rules,
+) -> String {
+    let (controller, _, _) = r.contestant.descriptor();
+    let mut notes = vec![(
+        Tone::Dim,
+        format!(
+            "This move was reconstructed by replay under THIS build's consts — evaluator impl {}, \
+             {controller} impl v{} — from decision seed {:#018x}, the key the bot's own pump \
+             derived from the recorded stream seed and the event count.",
+            eval::EVAL_IMPL_VERSION,
+            r.current_version,
+            r.decision_seed,
+        ),
+    )];
+    if let Some(stats) = explain.stats {
+        notes.push((
+            Tone::Dim,
+            format!(
+                "Search cost: {} successor position(s) scored across {} root candidate(s).",
+                stats.scored, stats.root_candidates,
+            ),
+        ));
+    }
+    // Version drift WARNS and does not refuse: the move still reproduced, so
+    // the table is a true account of a decision an older build made — but the
+    // arithmetic below is this build's, and a reader comparing two runs needs
+    // to know that. Params drift (a moved weight table, a bumped eval impl) is
+    // already warned per field at LOAD by `BotSeats::from_provenance`, which is
+    // where a cross-build resume announces itself.
+    if r.recorded_version.is_some_and(|recorded| recorded != r.current_version) {
+        notes.push((
+            Tone::Warn,
+            format!(
+                "WARNING: the record stores {controller} at version {}, and this build runs \
+                 version {} — the move still reproduces, so the account below is THIS build's \
+                 reading of a move an older one played.",
+                r.recorded_version.unwrap_or_default(),
+                r.current_version,
+            ),
+        ));
+    }
+
+    let header = Header {
+        title: "Why",
+        identity: format!(" · {} · event {}", r.contestant.echo(), r.index),
+        notes,
+        move_label: "The move it played:",
+        // By the ARM rather than by the data: greedy reports no line and no
+        // ranking BY CONSTRUCTION, which is a different fact from a search
+        // that happened to find one candidate. Exhaustive with no `_`, the
+        // `bot::eligible` discipline — a contestant added to core lands here
+        // as a question rather than as a default.
+        explanation_only: match r.contestant {
+            Contestant::GreedyV1 { .. } => Some(ONE_PLY_ACCOUNT),
+            Contestant::LookaheadV1 { .. } => None,
+            // Unreachable: `read_seat` admits only the two arms above.
+            Contestant::Policy(_) | Contestant::MctsV1 { .. } | Contestant::AtomicDiag { .. } => {
+                None
+            }
+        },
+    };
+
+    let suggestion = Suggestion {
+        seat: r.seat,
+        mv,
+        explanation: explain.explanation,
+        continuation: explain.continuation,
+        ranking: explain.ranking,
+        // The stream field is the HEADER's business and this header prints the
+        // decision seed itself, so nothing reads this one — it is filled with
+        // the same value rather than a placeholder so the struct cannot lie.
+        stream_seed: r.decision_seed,
+        search_hit_ply_cap: explain.hit_ply_cap,
+    };
+    suggest::render_with_header(&suggestion, &header, state, rules)
 }
 
 #[cfg(test)]
@@ -169,6 +613,39 @@ mod tests {
             state = replay_from(&state, std::slice::from_ref(ev), rules).expect("the record folds");
         }
         out
+    }
+
+    /// Every index of [`move_indices_of`] whose decision point offered MORE
+    /// THAN ONE move.
+    ///
+    /// **Load-bearing rather than tidy**, and `suggest`'s own fixtures learned
+    /// it first: the bot's first move of a game is the forced
+    /// `End additional-action phase`, so a fixture that stopped at the first
+    /// bot move at all would render "No runner-up: this decision point offered
+    /// exactly one move" and a one-step line — exercising neither the
+    /// runner-up rows nor the claim that greedy's leaner block replaces a block
+    /// that would otherwise have had content.
+    fn branching_move_indices_of(record: &GameRecord, rules: &Rules, seat: PlayerId) -> Vec<usize> {
+        move_indices_of(record, rules, seat)
+            .into_iter()
+            .filter(|&i| {
+                let state = state_at(record, i, rules).expect("the decision state");
+                get_legal_moves(&state, rules).len() > 1
+            })
+            .collect()
+    }
+
+    /// Play until the bot has made a move at a branching decision point, and
+    /// hand back the first such index.
+    fn play_to_a_branching_bot_move(r: &mut Repl) -> usize {
+        let rules = Rules::standard();
+        play(r, 400, |r| {
+            !branching_move_indices_of(r.session.record(), &Rules::standard(), PlayerId::new(1))
+                .is_empty()
+        });
+        *branching_move_indices_of(r.session.record(), &rules, PlayerId::new(1))
+            .first()
+            .expect("fixture: the bot must have decided at a branching point")
     }
 
     /// The move recorded at `index`, in the words the screen names it with.
@@ -347,7 +824,10 @@ mod tests {
 
         let out = why(&r.session, &r.bots, Some(played[0]));
         assert!(out.contains("family-weighted"), "the rung is named: {out}");
-        assert!(out.contains("sampled"), "{out}");
+        // Case-insensitive on purpose: the pin is the CLAIM (this move was
+        // sampled, not valued), and the screen's own emphasis capitalization is
+        // typography rather than content.
+        assert!(out.to_lowercase().contains("sampled"), "{out}");
         assert!(!out.contains(ACCOUNTED), "{out}");
 
         let bare = why(&r.session, &r.bots, None);
@@ -465,11 +945,16 @@ mod tests {
     /// seat, the contestant's ECHO, the event index and the decision seed the
     /// pump keyed that decision with, and the body carries the explanation
     /// table and the move the record says was played.
+    ///
+    /// The BODY half is asserted at a BRANCHING bot decision rather than at the
+    /// last one, which need not be: a forced point renders a one-step line and
+    /// "No runner-up", so the two blocks that carry most of the screen would go
+    /// unexercised (`suggest`'s `repl_mid_game` learned this first).
     #[test]
     fn why_explains_the_last_bot_move_with_the_contestant_echo_header() {
         let mut r = bot_repl(4, PROVISIONAL_DEFAULT_BOT);
         let rules = Rules::standard();
-        play(&mut r, 200, |r| !move_indices_of(r.session.record(), &Rules::standard(), PlayerId::new(1)).is_empty());
+        let branching = play_to_a_branching_bot_move(&mut r);
         let played = move_indices_of(r.session.record(), &rules, PlayerId::new(1));
         let last = *played.last().expect("fixture: the bot must have moved");
 
@@ -490,6 +975,17 @@ mod tests {
         );
         // The same address by number is the same answer.
         assert_eq!(why(&r.session, &r.bots, Some(last)), out);
+
+        // ...and at a point that offered a real choice, the search's own two
+        // blocks are there with content in them.
+        let branching_out = why(&r.session, &r.bots, Some(branching));
+        assert!(branching_out.contains("The line it searched"), "{branching_out}");
+        assert!(branching_out.contains("Runner-ups ("), "{branching_out}");
+        assert!(branching_out.contains("Search cost:"), "{branching_out}");
+        assert!(
+            flat(&branching_out).contains(&flat(&described_move_at(r.session.record(), &rules, branching))),
+            "{branching_out}",
+        );
     }
 
     /// **Read-only, asserted rather than implied.** Two calls agree byte for
@@ -563,9 +1059,12 @@ mod tests {
     #[test]
     fn a_greedy_mover_renders_the_leaner_block() {
         let mut r = bot_repl(4, Contestant::GREEDY_V1_DEFAULT);
-        play(&mut r, 200, |r| !move_indices_of(r.session.record(), &Rules::standard(), PlayerId::new(1)).is_empty());
+        // A BRANCHING decision, so "no runner-up: this decision point offered
+        // exactly one move" would be a FALSE sentence here rather than a
+        // harmless one — which is what makes suppressing it a repair.
+        let branching = play_to_a_branching_bot_move(&mut r);
 
-        let out = why(&r.session, &r.bots, None);
+        let out = why(&r.session, &r.bots, Some(branching));
         assert!(out.contains(ACCOUNTED), "{out}");
         assert!(out.contains(&Contestant::GREEDY_V1_DEFAULT.echo()), "{out}");
         assert!(out.contains("one-ply"), "the leaner block says WHY it is leaner: {out}");
@@ -573,6 +1072,78 @@ mod tests {
         assert!(!out.contains("No line to show"), "{out}");
         assert!(!out.contains("Runner-ups ("), "{out}");
         assert!(!out.contains("No runner-up"), "a branching point DID offer others: {out}");
+        // ...and the search-only note stays off too: greedy runs no search, so
+        // there are no counters to report.
+        assert!(!out.contains("Search cost:"), "{out}");
+    }
+
+    /// **Every line of every `why` screen fits the frame, and the prose fits
+    /// the editorial measure under it** — the property `screen::wrap` makes
+    /// load-bearing (it sizes the composed frame to its widest line, so one
+    /// over-wide body shoves the board sideways for as long as it is up).
+    ///
+    /// Written over the REFUSALS above all, because that is where the risk is:
+    /// each one interpolates something whose length it does not control (a
+    /// parser's error listing every contestant name, a `Move`'s `Debug`, a
+    /// contestant's echo), and a hand-wrapped literal bounds only the half that
+    /// was never in doubt. Measured with `screen::visible_width`, the same
+    /// escape-stripping measure the frame guard uses; and the screens must be
+    /// plain, since nothing here paints outside `Body`.
+    #[test]
+    fn every_why_screen_fits_the_frame_and_says_its_dashes_in_em() {
+        crate::style::force(false);
+        let mut r = bot_repl(4, PROVISIONAL_DEFAULT_BOT);
+        let rules = Rules::standard();
+        let branching = play_to_a_branching_bot_move(&mut r);
+        let mut screens: Vec<(String, String)> = vec![
+            ("the account".to_string(), why(&r.session, &r.bots, Some(branching))),
+            ("no bot move".to_string(), why(&human_repl(4).session, &BotSeats::none(), None)),
+            ("live".to_string(), why(&live_repl(21).session, &BotSeats::none(), None)),
+            ("out of range".to_string(), why(&r.session, &r.bots, Some(9_999))),
+            ("human seat".to_string(), why(&r.session, &r.bots, Some(0))),
+        ];
+        // The unknown-controller arm carries the LONGEST interpolation in the
+        // module: the core parser's refusal lists every contestant name it
+        // knows, which alone runs past 150 columns.
+        let mut record = r.session.record().clone();
+        record.run.as_mut().expect("provenance").seats[1].controller = "bga-human".to_string();
+        screens.push((
+            "unknown controller".to_string(),
+            why_over(TrackingMode::Simulation, &record, &rules, &r.bots, Some(branching)),
+        ));
+        let mut reveal = r.session.record().clone();
+        reveal.events.push(RecordedEvent::RevealTechs(vec![*r
+            .session
+            .state()
+            .tech_deck
+            .last()
+            .expect("a tech card")]));
+        let n = reveal.events.len() - 1;
+        screens.push((
+            "reveal".to_string(),
+            why_over(TrackingMode::Simulation, &reveal, &rules, &r.bots, Some(n)),
+        ));
+
+        let frame = crate::screen::frame_width(2);
+        for (what, text) in &screens {
+            assert!(!text.is_empty(), "{what}: the fixture produced no text");
+            assert!(!text.contains('\u{1b}'), "{what}: piped output must carry no ANSI:\n{text}");
+            crate::style::test_support::assert_no_ascii_prose_dash(what, text);
+            for line in text.lines() {
+                let width = crate::screen::visible_width(line);
+                assert!(width <= frame, "{what}: a line is {width} columns against {frame}: {line:?}");
+            }
+        }
+        // Anti-vacuity, in the direction that matters: at least one refusal is
+        // long enough that a bound could bite it, so the sweep above is not
+        // measuring a handful of short sentences.
+        let longest = screens
+            .iter()
+            .flat_map(|(_, t)| t.lines())
+            .map(crate::screen::visible_width)
+            .max()
+            .expect("lines");
+        assert!(longest > 60, "the fixtures must produce real paragraphs, widest was {longest}");
     }
 
     // ---- the command ------------------------------------------------------

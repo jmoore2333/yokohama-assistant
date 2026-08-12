@@ -781,6 +781,22 @@ impl Repl {
             // the trail into a report.
             ["log"] => self.out_view(self.log_tail()),
             ["suggest"] => self.suggest_cmd(),
+            ["why"] => self.why_cmd(None),
+            ["why", token] => match token.parse::<usize>() {
+                Ok(n) => self.why_cmd(Some(n)),
+                Err(_) => self.out(
+                    format!(
+                        "'{token}' is not an event number — `why <n>` takes the number `log` \
+                         prints beside each line, or `why` on its own for the last bot move.\n"
+                    ),
+                    false,
+                ),
+            },
+            ["why", ..] => self.out(
+                "Usage: 'why' for the last bot move, or 'why <n>' for the log's own event number.\n"
+                    .to_string(),
+                false,
+            ),
             ["view"] | ["views"] => {
                 self.overlay = Some(Overlay::Menu);
                 self.out(String::new(), false)
@@ -2813,6 +2829,22 @@ impl Repl {
         }
     }
 
+    /// `why`: how a BOT seat chose the move it already played (W5 task 5,
+    /// design §2), reconstructed by replaying the record to that position and
+    /// re-running the recorded contestant under the pump's own decision key.
+    ///
+    /// **`&self`, like [`Self::suggest_cmd`] and for the same reason**: the
+    /// compiler enforces the sandbox rather than a convention, so this cannot
+    /// record an event, move the state or trip an autosave even by accident.
+    ///
+    /// The two commands split the game between them, which is OD-4(i)'s own
+    /// division: `suggest` answers for YOUR seat before you move, `why`
+    /// accounts for a BOT's move after it. Each refusal here that has a better
+    /// address points at the other one by name.
+    fn why_cmd(&self, arg: Option<usize>) -> StepOutput {
+        self.out_view(crate::why::why(&self.session, &self.bots, arg))
+    }
+
     /// The seats a `reveal` could legitimately be about: live-tracked players
     /// whose starting order the engine still holds as hidden, in seat order.
     ///
@@ -3312,6 +3344,7 @@ Commands:
   log             open the LOG view: the move and reveal trail, each line as it read when it applied
   view            open the numbered game-info menu over all of the views and indexes above ('views' also works)
   suggest         simulation only: what the built-in bot would play from your seat, with its arithmetic
+  why [n]         simulation only: how a bot seat chose its last move (or the log's event n), with the same arithmetic
   privacy         toggle hiding hand contents in views (default: hidden in live mode)
   panel           toggle the players panel inside the composed screen (terminal only)
   screen          toggle the composed screen itself (terminal only; pipes are always plain)
@@ -4816,13 +4849,13 @@ mod tests {
     fn every_command_outside_the_lockdown_allow_list_is_refused_and_does_nothing() {
         // The whole dispatch surface a locked prompt could be handed: the two
         // spellings of undo, every view word and index word, the menu, the
-        // toggles, the pagers, `suggest`, `reveal`, a bare number, and one of
-        // each move grammar.
+        // toggles, the pagers, `suggest`, both forms of `why`, `reveal`, a bare
+        // number, and one of each move grammar.
         for line in [
             "undo", "back", "board", "players", "score", "help", "view", "views", "more", "list",
-            "suggest", "privacy", "panel", "screen", "tracks", "sites", "ports", "labs", "hand",
-            "goals", "orders", "techs", "sitecards", "?", "index", "reveal", "reveal 1", "1", "2",
-            "a 0", "b 0", "m 0", "r 0:1", "", "wat",
+            "suggest", "why", "why 0", "privacy", "panel", "screen", "tracks", "sites", "ports",
+            "labs", "hand", "goals", "orders", "techs", "sitecards", "?", "index", "reveal",
+            "reveal 1", "1", "2", "a 0", "b 0", "m 0", "r 0:1", "", "wat",
         ] {
             let mut r = locked_after_one_move();
             let state_before = r.session.state().clone();
