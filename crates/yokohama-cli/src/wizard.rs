@@ -636,7 +636,7 @@ fn ask_bots(
     out: &mut dyn FnMut(&str),
     players: u8,
 ) -> Result<crate::bot::BotSeats, String> {
-    let mut seats: Option<Vec<Option<RolloutPolicy>>> = None;
+    let mut seats: Option<Vec<Option<Contestant>>> = None;
     let example = if players > 2 { "'1' or '0 2'" } else { "'1' or '0'" };
     ask(
         input,
@@ -656,7 +656,7 @@ fn ask_bots(
                 if seat >= players {
                     return Err(format!("seat must be 0-{}", players - 1));
                 }
-                chosen[seat as usize] = Some(RolloutPolicy::FAMILY_WEIGHTED_DEFAULT);
+                chosen[seat as usize] = Some(Contestant::Policy(RolloutPolicy::FAMILY_WEIGHTED_DEFAULT));
             }
             if chosen.iter().all(Option::is_some) {
                 return Err("at least one seat must stay human (bot-vs-bot is not in this version)".to_string());

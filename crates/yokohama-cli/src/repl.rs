@@ -2656,7 +2656,7 @@ impl Repl {
 
         while !self.locked && !self.session.is_over() {
             let seat = self.session.state().current_player;
-            let Some(policy) = self.bots.policy_at(seat) else { break };
+            let Some(contestant) = self.bots.contestant_at(seat) else { break };
             if moves.len() >= PUMP_MOVE_CAP {
                 halt = Some(format!(
                     "BOT HALT — the pump has applied {PUMP_MOVE_CAP} moves across consecutive bot \
@@ -2667,7 +2667,8 @@ impl Repl {
                 break;
             }
             let decision_seed = self.bots.decision_seed(self.session.record().events.len());
-            let chosen = chooser.choose(self.session.state(), self.session.rules(), seat, policy, decision_seed);
+            let chosen =
+                chooser.choose(self.session.state(), self.session.rules(), seat, contestant, decision_seed);
             let mv = match chosen {
                 Ok(mv) => mv,
                 // A dead end is the policy honestly finding nothing: halt, do
@@ -4300,7 +4301,7 @@ mod tests {
         // and shown by `main` above the opening frame rather than returned from
         // the loop. The live-record-names-a-bot demotion is the one this
         // driver can construct without a file on disk.
-        let bots = BotSeats::new(vec![None, Some(RolloutPolicy::FAMILY_WEIGHTED_DEFAULT)], 3);
+        let bots = BotSeats::new(vec![None, Some(Contestant::Policy(RolloutPolicy::FAMILY_WEIGHTED_DEFAULT))], 3);
         let mut session = Session::new_live(
             GameConfig::for_player_count(2),
             21,
@@ -6522,7 +6523,7 @@ mod tests {
     fn repl_np_bots(players: u8, seed: u64, bot_seats: &[u8]) -> Repl {
         let mut seats = vec![None; players as usize];
         for s in bot_seats {
-            seats[*s as usize] = Some(RolloutPolicy::FAMILY_WEIGHTED_DEFAULT);
+            seats[*s as usize] = Some(Contestant::Policy(RolloutPolicy::FAMILY_WEIGHTED_DEFAULT));
         }
         let bots = BotSeats::new(seats, 0x5A17_3B0C_9E44_D218);
         let mut session = Session::new_sim(
@@ -7079,7 +7080,7 @@ mod tests {
             _state: &GameState,
             _rules: &Rules,
             _seat: PlayerId,
-            _policy: RolloutPolicy,
+            _contestant: Contestant,
             _decision_seed: u64,
         ) -> Result<Move, BotError> {
             match &self.0 {
@@ -7155,7 +7156,7 @@ mod tests {
     /// in front of a view `observe` will refuse.
     #[test]
     fn a_live_record_naming_a_bot_seat_resumes_it_as_human_with_a_warning() {
-        let bots = BotSeats::new(vec![None, Some(RolloutPolicy::FAMILY_WEIGHTED_DEFAULT)], 3);
+        let bots = BotSeats::new(vec![None, Some(Contestant::Policy(RolloutPolicy::FAMILY_WEIGHTED_DEFAULT))], 3);
         let mut session = Session::new_live(
             GameConfig::for_player_count(2),
             21,
