@@ -403,6 +403,132 @@ impl Contestant {
         super::grammar::parse_contestant(spec)
     }
 
+    /// **The INVERSE of [`descriptor`](Self::descriptor)** over a record's two
+    /// stored halves — the controller `name` and its typed `params` map
+    /// (`SeatProvenance`'s own fields) — Phase 3.5c W5, design §1.5.
+    ///
+    /// WHY this exists rather than a bare-name reparse: a name carries no
+    /// knobs, so reconstructing a recorded seat from `controller` alone
+    /// silently resets every one of them — a recorded `lookahead-v1` at `b=8`
+    /// would resume at `b=4` and go on playing under knobs the record does not
+    /// name. The CLI's resume path (W5 task 3) is the first consumer; the
+    /// deferred replay viewer and the agreement instrument are the next.
+    ///
+    /// **UNKNOWN IS AN ERROR at every level**, [`from_str_name`](Self::from_str_name)'s
+    /// discipline adopted from birth: an unknown controller name, an unknown
+    /// params key, or a value outside the agent's own type is `Err`, and every
+    /// refusal NAMES what it saw.
+    ///
+    /// Three rules worth stating in full, because each is a silent defect if
+    /// mis-read:
+    ///
+    /// - **An absent `cap` key is `cap: None`** — absence IS the uncapped
+    ///   identity on the provenance preserve-list, and the descriptor emits no
+    ///   token for it. A `cap` of 0 is refused with [`super::grammar`]'s own
+    ///   sentence.
+    /// - **The identity keys are accepted and NOT consumed** — see
+    ///   [`IDENTITY_PARAM_KEYS`]; the caller compares them.
+    /// - **A missing CONSTRUCTION key is an error, never a default.** Every key
+    ///   read below is one the matching arm's descriptor ALWAYS emits, so its
+    ///   absence means the map did not come from a descriptor — and defaulting
+    ///   it would invent a knob value the record never carried. (`cap` is the
+    ///   one optional key, and its absence is a stated value rather than a
+    ///   default.)
+    ///
+    /// **Names are WIRE names.** The four controller consts and
+    /// [`RolloutPolicy::from_str_name`]'s rung names are accepted; the runner
+    /// grammar's short `atomic-diag-v1` alias is NOT, because no descriptor
+    /// ever emits it and this function inverts descriptors.
+    ///
+    /// **Core stays neutral about eligibility**: `mcts-v1` and the S2
+    /// diagnostic parse here without complaint. Refusing a diagnostic
+    /// contestant a particular consumer will not drive is that consumer's
+    /// narrowing to make (the probe's W1-C precedent, and the CLI's at W5).
+    pub fn from_parts(name: &str, params: &BTreeMap<String, i64>) -> Result<Self, String> {
+        if name == greedy::GREEDY_CONTROLLER {
+            reject_unknown_params(name, params, &["m"], &[])?;
+            return Ok(Self::GreedyV1 { m: param_u8(name, params, "m")? });
+        }
+
+        if name == lookahead::LOOKAHEAD_CONTROLLER {
+            reject_unknown_params(name, params, &["b", "k", "m", "cap"], &[])?;
+            let b = param_u16(name, params, "b")?;
+            if b == 0 {
+                return Err(format!("b=0 is not a beam ({name} descriptors floor it at 1)"));
+            }
+            return Ok(Self::LookaheadV1 {
+                b,
+                k: param_worlds(name, params)?,
+                m: param_u8(name, params, "m")?,
+                cap: param_cap(name, params)?,
+            });
+        }
+
+        if name == lookahead::ATOMIC_DIAG_CONTROLLER {
+            reject_unknown_params(name, params, &["d", "k", "m"], &[])?;
+            let d = param_u8(name, params, "d")?;
+            if d == 0 {
+                return Err(format!("d=0 searches nothing ({name} descriptors floor it at 1)"));
+            }
+            return Ok(Self::AtomicDiag {
+                d,
+                k: param_worlds(name, params)?,
+                m: param_u8(name, params, "m")?,
+            });
+        }
+
+        if name == mcts::MCTS_CONTROLLER {
+            reject_unknown_params(
+                name,
+                params,
+                &["c", "scale", "m", "leaf", "cap"],
+                MCTS_DERIVED_PARAM_KEYS,
+            )?;
+            let scale = required_param(name, params, "scale")?;
+            if scale <= 0 {
+                return Err(format!("scale={scale} is not a squash scale"));
+            }
+            return Ok(Self::MctsV1 {
+                cap: param_cap(name, params)?,
+                c_ppm: param_u32(name, params, "c")?,
+                scale,
+                m: param_u8(name, params, "m")?,
+                leaf: param_leaf(name, params)?,
+            });
+        }
+
+        let Some(policy) = RolloutPolicy::from_str_name(name) else {
+            return Err(format!(
+                "unknown controller {name:?} (rungs: uniform | retreat-averse | family-weighted; \
+                 evaluator: {} | {} | {}; architecture: {})",
+                greedy::GREEDY_CONTROLLER,
+                lookahead::LOOKAHEAD_CONTROLLER,
+                lookahead::ATOMIC_DIAG_CONTROLLER,
+                mcts::MCTS_CONTROLLER,
+            ));
+        };
+        match policy {
+            RolloutPolicy::FamilyWeighted { .. } => {
+                reject_unknown_params(name, params, &["retreat_ppm", "recovery_min_of"], &[])?;
+                let retreat_ppm = param_u32(name, params, "retreat_ppm")?;
+                // The policy's own stated bound: `Rng::gen_ratio` asserts it in
+                // every profile, so a record above it would panic at play rather
+                // than at load.
+                if retreat_ppm > 1_000_000 {
+                    return Err(format!("retreat_ppm={retreat_ppm} exceeds 1_000_000 ppm"));
+                }
+                Ok(Self::Policy(RolloutPolicy::FamilyWeighted {
+                    retreat_ppm,
+                    recovery_min_of: param_u8(name, params, "recovery_min_of")?,
+                }))
+            }
+            knobless => {
+                reject_unknown_params(name, params, &[], &[])?;
+                Ok(Self::Policy(knobless))
+            }
+        }
+    }
+
     /// What this contestant CALLS itself, for provenance and the report echo —
     /// routed to the controller's own descriptor and never composed here.
     ///
@@ -449,6 +575,33 @@ impl Contestant {
     pub fn descriptor(&self) -> (String, u32, BTreeMap<String, i64>) {
         let p = self.provenance(None);
         (p.name, p.version, p.params)
+    }
+
+    /// `name@vN` or `name@vN{k=v,…}` — ONE display form for every contestant,
+    /// fed by [`descriptor`](Self::descriptor) so a rung's echo is byte-for-byte
+    /// what it was before the 3.3 widening (`tests/contestant_golden.rs` pins
+    /// the strings).
+    ///
+    /// Public since Phase 3.5c W5 (design §4.2) because the CLI needs the same
+    /// sentence in three places — the wizard's sim summary, the `why` header,
+    /// and the resume warnings — and a second composer in the CLI is exactly
+    /// the drift the W1 grammar promotion exists to prevent. `spec_echo` reads
+    /// it here, so a report header and a CLI header cannot disagree about what
+    /// a seat is.
+    ///
+    /// **This is a DISPLAY form, deliberately NOT the parse grammar**
+    /// (`name:k=v,…`): the knob separator differs, the version rides the string,
+    /// and the params map carries identity keys that are not knobs at all — so
+    /// `from_str_name(echo(..))` does not round-trip and is not meant to.
+    /// [`from_parts`](Self::from_parts) is the inverse that does, over the
+    /// record's two halves rather than over this string.
+    pub fn echo(&self) -> String {
+        let (name, version, params) = self.descriptor();
+        if params.is_empty() {
+            return format!("{name}@v{version}");
+        }
+        let knobs: Vec<String> = params.iter().map(|(k, v)| format!("{k}={v}")).collect();
+        format!("{name}@v{version}{{{}}}", knobs.join(","))
     }
 
     /// Which starting-order rule this contestant plays (spec §5.5).
@@ -549,6 +702,133 @@ impl Contestant {
         let handle = ExplainHandle::Search(agent.tally());
         (Box::new(agent), Some(handle))
     }
+}
+
+// ---------------------------------------------------------------------------
+// `from_parts`: reading a descriptor back
+// ---------------------------------------------------------------------------
+
+/// Descriptor keys that IDENTIFY the build rather than CONSTRUCT the
+/// contestant — accepted by [`Contestant::from_parts`] on every arm, consumed
+/// by none.
+///
+/// **WHY they are skipped rather than checked.** `eval_impl` says which
+/// evaluator implementation produced the record, `weights` which thirty
+/// numbers, and greedy's `placement_cap` which enumeration ceiling. None is an
+/// input to any constructor here, and all three may legitimately differ from
+/// the running build's when an OLDER record is resumed — which is the whole
+/// case this function exists to serve. Design §1.5 puts the CHECKING in the
+/// caller: it compares every recorded param against a freshly-derived
+/// [`Contestant::descriptor`] and warns loudly per differing field, so the game
+/// stays playable and the drift stays visible. Consuming (or verifying) them
+/// here would instead make a cross-build record unloadable, which is the
+/// failure the preserve-list forbids.
+const IDENTITY_PARAM_KEYS: &[&str] = &["eval_impl", "weights", "placement_cap"];
+
+/// Descriptor keys the MCTS arm DERIVES rather than carries.
+///
+/// [`Contestant::MctsV1`] names five knobs; `McKnobs::sized_by_cap` turns them
+/// into a knob set that additionally reports `k` (worlds, floored at 1) and —
+/// on an UNCAPPED seat only — `sims`, the simulation count derived from the cap
+/// by `mcts::simulations_for_cap`. Neither has a field to be read back into, so
+/// both are accepted and ignored on this arm exactly as the identity keys are;
+/// the `cap` they are derived FROM is what round-trips. They are a separate
+/// list from [`IDENTITY_PARAM_KEYS`] because `k` is a real construction knob on
+/// the two lookahead arms, and a shared list would silently stop consuming it
+/// there.
+const MCTS_DERIVED_PARAM_KEYS: &[&str] = &["k", "sims"];
+
+/// Every key must be one this arm constructs from, derives, or identifies with
+/// — anything else is refused rather than ignored, because a swallowed param
+/// resumes a seat under knobs the record does not name.
+fn reject_unknown_params(
+    name: &str,
+    params: &BTreeMap<String, i64>,
+    construction: &[&str],
+    derived: &[&str],
+) -> Result<(), String> {
+    for key in params.keys() {
+        let known = construction.contains(&key.as_str())
+            || derived.contains(&key.as_str())
+            || IDENTITY_PARAM_KEYS.contains(&key.as_str());
+        if !known {
+            let takes = if construction.is_empty() {
+                "it takes no construction params".to_string()
+            } else {
+                construction.join(" | ")
+            };
+            return Err(format!("unknown param {key:?} for {name} ({takes})"));
+        }
+    }
+    Ok(())
+}
+
+/// A CONSTRUCTION key's raw value. Absence is an error, never a default: every
+/// caller below reads a key its arm's descriptor always emits, so a missing one
+/// means the map did not come from a descriptor.
+fn required_param(name: &str, params: &BTreeMap<String, i64>, key: &str) -> Result<i64, String> {
+    params.get(key).copied().ok_or_else(|| {
+        format!("{name} params are missing {key:?}, which every {name} descriptor emits")
+    })
+}
+
+fn param_u8(name: &str, params: &BTreeMap<String, i64>, key: &str) -> Result<u8, String> {
+    let raw = required_param(name, params, key)?;
+    u8::try_from(raw).map_err(|e| format!("{key}={raw} is out of range for {name}: {e}"))
+}
+
+fn param_u16(name: &str, params: &BTreeMap<String, i64>, key: &str) -> Result<u16, String> {
+    let raw = required_param(name, params, key)?;
+    u16::try_from(raw).map_err(|e| format!("{key}={raw} is out of range for {name}: {e}"))
+}
+
+fn param_u32(name: &str, params: &BTreeMap<String, i64>, key: &str) -> Result<u32, String> {
+    let raw = required_param(name, params, key)?;
+    u32::try_from(raw).map_err(|e| format!("{key}={raw} is out of range for {name}: {e}"))
+}
+
+/// `k`, the sampled-world count. Zero is REFUSED rather than floored: the
+/// descriptor emits `worlds.max(1)`, so a recorded `k=0` never came from one,
+/// and flooring it here would let `from_parts` and `descriptor` disagree about
+/// the map they just exchanged.
+fn param_worlds(name: &str, params: &BTreeMap<String, i64>) -> Result<u8, String> {
+    let k = param_u8(name, params, "k")?;
+    if k == 0 {
+        return Err(format!("k=0 is not a world count ({name} descriptors floor it at 1)"));
+    }
+    Ok(k)
+}
+
+/// The shared scored-successor budget (spec §3.4): an ABSENT key is the
+/// uncapped identity, and `cap=0` is refused with [`super::grammar`]'s own
+/// sentence so the two surfaces cannot drift into two rules.
+fn param_cap(name: &str, params: &BTreeMap<String, i64>) -> Result<Option<u32>, String> {
+    let Some(&raw) = params.get("cap") else { return Ok(None) };
+    let cap = u32::try_from(raw)
+        .map_err(|e| format!("cap={raw} is out of range for {name}: {e}"))?;
+    if cap == 0 {
+        return Err(super::grammar::CAP_ZERO_REFUSAL.to_string());
+    }
+    Ok(Some(cap))
+}
+
+/// The leaf rule, read back off its WIRE CODE — the params map is `i64`-valued
+/// and cannot carry a name. The inverse is searched over `LeafRule::code`
+/// itself rather than re-tabulated, so the two directions cannot renumber
+/// apart; an unrecognized code is an error on the grammar's own grounds (an
+/// unknown knob VALUE is as dangerous as an unknown knob NAME).
+fn param_leaf(name: &str, params: &BTreeMap<String, i64>) -> Result<LeafRule, String> {
+    let code = required_param(name, params, "leaf")?;
+    [LeafRule::HandOff, LeafRule::MidTurnDiag, LeafRule::ConstantDiag]
+        .into_iter()
+        .find(|rule| rule.code() == code)
+        .ok_or_else(|| {
+            let known: Vec<String> = [LeafRule::HandOff, LeafRule::MidTurnDiag, LeafRule::ConstantDiag]
+                .into_iter()
+                .map(|rule| format!("{} = {}", rule.code(), rule.as_str()))
+                .collect();
+            format!("unknown leaf code {code} for {name} ({})", known.join(" | "))
+        })
 }
 
 /// One cell of the arena: contestant X against contestant Y at a player count,
@@ -1289,18 +1569,6 @@ fn student_t_975(df: u64) -> f64 {
             / (92160.0 * v.powi(4))
 }
 
-/// `name@vN` or `name@vN{k=v,...}` — one formatter for every contestant, fed by
-/// [`Contestant::descriptor`] so a rung's echo is byte-for-byte what it was
-/// before the widening (`tests/contestant_golden.rs` pins the strings).
-fn contestant_echo(contestant: Contestant) -> String {
-    let (name, version, params) = contestant.descriptor();
-    if params.is_empty() {
-        return format!("{name}@v{version}");
-    }
-    let knobs: Vec<String> = params.iter().map(|(k, v)| format!("{k}={v}")).collect();
-    format!("{name}@v{version}{{{}}}", knobs.join(","))
-}
-
 fn spec_echo(spec: &CellSpec, master: u64, resample_seed: u64) -> String {
     let unit_shape = if spec.players == 2 {
         "pair (2 seatings)".to_string()
@@ -1333,8 +1601,10 @@ fn spec_echo(spec: &CellSpec, master: u64, resample_seed: u64) -> String {
          setup-identical={setup_identical}",
         spec.name,
         spec.players,
-        contestant_echo(spec.x),
-        contestant_echo(spec.y),
+        // [`Contestant::echo`], the one composer — public since W5 so the CLI
+        // reads the same sentence rather than growing a second one.
+        spec.x.echo(),
+        spec.y.echo(),
         spec.units,
         unit_shape,
         u32::from(spec.players) * spec.units,

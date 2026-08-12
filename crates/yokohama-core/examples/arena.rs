@@ -230,13 +230,13 @@ fn profile() -> &'static str {
     }
 }
 
+/// The header's contestant token, delegated to the library's own composer
+/// (public since Phase 3.5c W5) exactly as this file's PARSING already
+/// delegates to `Contestant::from_str_name`. A private copy here would be a
+/// second spelling of a format the goldens pin, free to drift from the report
+/// echo printed three lines further down.
 fn contestant_echo(contestant: Contestant) -> String {
-    let (name, version, params) = contestant.descriptor();
-    if params.is_empty() {
-        return format!("{name}@v{version}");
-    }
-    let knobs: Vec<String> = params.iter().map(|(k, v)| format!("{k}={v}")).collect();
-    format!("{name}@v{version}{{{}}}", knobs.join(","))
+    contestant.echo()
 }
 
 fn master_echo(kind: SeedScheduleKind) -> String {
