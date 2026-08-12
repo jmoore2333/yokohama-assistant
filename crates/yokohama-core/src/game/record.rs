@@ -512,6 +512,60 @@ pub fn replay_strict(record: &GameRecord, rules: &Rules) -> Result<GameState, Re
     Ok(state)
 }
 
+/// The state after the FIRST `k` EVENTS of `record` — the replay-to-position
+/// primitive (Phase 3.5c W5, design §3).
+///
+/// **The off-by-one, stated explicitly, because every caller depends on it:**
+/// `k` counts events APPLIED, not an event index. So `state_at(record, 0)` is
+/// the post-setup initial state with nothing folded onto it; `state_at(record,
+/// record.events.len())` is the state a full [`replay`] produces; and the state
+/// a mover decided IN before the move that became event `n` is
+/// `state_at(record, n)` — event `n` is the first event NOT applied. (`why <n>`
+/// and the deferred replay viewer both address events by that index, so a
+/// silent off-by-one here would explain the wrong decision.)
+///
+/// `k > record.events.len()` is a typed refusal naming the bound — **never a
+/// clamp**: a caller addressing events by index must learn that it asked for
+/// something that does not exist rather than quietly receive the terminal
+/// state. The range is checked BEFORE the setup preamble runs, so an
+/// out-of-range `k` is reported as such even on a record whose setup would also
+/// fail; that refusal carries `event_index: record.events.len()` (the
+/// past-the-end boundary that was exceeded — `replay_strict`'s terminal-digest
+/// precedent for an error about the whole record rather than one event), since
+/// no event failed to apply.
+///
+/// **`ReplayError::event_index` is RECORD-RELATIVE here**, unlike the
+/// slice-relative trap the CLI's `Session::load` documents (session.rs:296-308,
+/// where a fresh 1-element slice per iteration makes the error's own index
+/// structurally always 0 and the true index has to be reconstructed by the
+/// caller). This function folds `&record.events[..k]`, a slice that starts at
+/// the record's own event 0, so the index a failure reports IS the record's
+/// event index and needs no adjustment.
+///
+/// Deliberately NEITHER lenient nor strict about provenance: unlike [`replay`]
+/// it prints no drift warnings (a positioning primitive gets called per
+/// invocation — per-call stderr would be noise), and unlike [`replay_strict`]
+/// it runs no per-event invariant checks and refuses nothing on
+/// `rules_hash`/`semantics_rev`. A caller that needs those verdicts asks for
+/// them by calling the function that renders them.
+///
+/// Cost is O(k) checked applies per call — trivial at CLI scales, and no state
+/// is cached anywhere (`GameState` stays history-free by design).
+pub fn state_at(record: &GameRecord, k: usize, rules: &Rules) -> Result<GameState, ReplayError> {
+    let available = record.events.len();
+    if k > available {
+        return Err(ReplayError {
+            event_index: available,
+            message: format!(
+                "state_at({k}) is past the end of the event log: the record carries {available} events, \
+                 so k must be at most {available} (state_at never clamps)"
+            ),
+        });
+    }
+    let initial = rebuild_initial_state(record, rules)?;
+    replay_from(&initial, &record.events[..k], rules)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -664,14 +718,18 @@ mod tests {
 
         let pending = new_game(record.config.clone(), &rules, record.seed).unwrap();
         let mut walked = finalize_setup(pending, &record.choices).unwrap();
-        for k in 0..=record.events.len() {
+        // `states` is indexed by events-applied, so iterating it walks exactly
+        // `k in 0..=events.len()` — pinned here, since the loop only covers the
+        // whole ladder (the top index included) if that relation holds.
+        assert_eq!(states.len(), record.events.len() + 1);
+        for (k, played) in states.iter().enumerate() {
             if k > 0 {
                 walked = replay_from(&walked, std::slice::from_ref(&record.events[k - 1]), &rules)
                     .unwrap_or_else(|e| panic!("the incremental fold failed at event {}: {e}", k - 1));
             }
             let at_k = state_at(&record, k, &rules).unwrap_or_else(|e| panic!("state_at({k}) failed: {e}"));
             assert_eq!(at_k, walked, "state_at({k}) disagreed with the incremental fold");
-            assert_eq!(at_k, states[k], "state_at({k}) disagreed with the state the game played through");
+            assert_eq!(&at_k, played, "state_at({k}) disagreed with the state the game played through");
         }
 
         // ...and the top of the ladder is the whole-record entry point, which
