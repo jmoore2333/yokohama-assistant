@@ -582,10 +582,14 @@ mod tests {
         assert_eq!(err.event_index, 1);
     }
 
-    /// A record with some events to hang the provenance pins off. Setup plus
-    /// the first `moves` legal moves of a real 2P game, terminal digest stamped
-    /// — i.e. a record `replay_strict` accepts.
-    fn strict_clean_record(seed: u64, moves: usize) -> (GameRecord, GameState, Rules) {
+    /// A record of the first `moves` legal moves of a real 2P game, PLUS every
+    /// state the game actually passed through: `states[k]` is the state after
+    /// the first `k` events, captured AS THE GAME WAS PLAYED rather than
+    /// reconstructed afterwards. That is what makes it usable as an independent
+    /// witness for `state_at` — asserting against a state the record's own
+    /// machinery rebuilt would only prove that machinery agrees with itself.
+    /// `states.len() == moves + 1` (index 0 is the post-setup initial state).
+    fn recorded_walk(seed: u64, moves: usize) -> (GameRecord, Vec<GameState>, Rules) {
         let rules = Rules::standard();
         let config = GameConfig::for_player_count(2);
         let pending = new_game(config, &rules, seed).unwrap();
@@ -593,13 +597,120 @@ mod tests {
         // From `pending.state.config`, so `config.setup_seed == record.seed`.
         let mut record = GameRecord::new(seed, pending.state.config.clone(), choices.clone(), &rules);
         let mut state = finalize_setup(pending, &choices).unwrap();
+        let mut states = vec![state.clone()];
         for _ in 0..moves {
             let mv = crate::game::legal_moves::get_legal_moves(&state, &rules)[0].clone();
             state = apply_move(&state, &mv, &rules).unwrap();
             record.push_move(mv);
+            states.push(state.clone());
         }
-        record.stamp_terminal_digest(&state);
-        (record, state, rules)
+        (record, states, rules)
+    }
+
+    /// A record with some events to hang the provenance pins off. Setup plus
+    /// the first `moves` legal moves of a real 2P game, terminal digest stamped
+    /// — i.e. a record `replay_strict` accepts. The construction is
+    /// `recorded_walk`'s (one fixture builder, not two that can drift); this
+    /// wrapper adds the digest stamp and keeps only the terminal state, which
+    /// is all its callers want.
+    fn strict_clean_record(seed: u64, moves: usize) -> (GameRecord, GameState, Rules) {
+        let (mut record, states, rules) = recorded_walk(seed, moves);
+        let terminal = states.last().expect("recorded_walk always captures the initial state").clone();
+        record.stamp_terminal_digest(&terminal);
+        (record, terminal, rules)
+    }
+
+    /// `state_at`'s off-by-one, stated as a test: `k` counts EVENTS APPLIED,
+    /// so `state_at(r, 0)` applies none of them and is the post-setup initial
+    /// state — the state the move that became event 0 was decided IN. Three
+    /// readings fail here: an off-by-one (index 0 returning the state after the
+    /// first event), a clamp, and a "0 means the whole log" reading.
+    #[test]
+    fn state_at_zero_is_the_post_setup_initial_state() {
+        let (record, states, rules) = recorded_walk(3, 3);
+        assert_eq!(record.events.len(), 3, "index 0 means nothing on a record with no events");
+
+        let at_zero = state_at(&record, 0, &rules).expect("k=0 is in range for every record");
+        assert_eq!(at_zero, states[0], "state_at(0) must be the state the game started from");
+
+        // Anti-vacuity, both directions: the fixture's events genuinely move
+        // the state, so `state_at(0)` agreeing with the initial state is not
+        // something every implementation would satisfy — in particular an
+        // implementation that folded the whole log regardless of `k` fails the
+        // second assertion.
+        assert_ne!(states[0], states[3], "the fixture's events must move the state");
+        assert_ne!(
+            at_zero,
+            replay(&record, &rules).expect("the fixture replays"),
+            "state_at(0) must not be the fully replayed state",
+        );
+    }
+
+    /// The whole ladder, cross-checked against a DIFFERENT route to each index:
+    /// the `Session::load` walk (rebuild the setup preamble, then fold one
+    /// event at a time through `replay_from`) reaches state `k` in `k`
+    /// one-event calls where `state_at` reaches it in one `k`-event call.
+    /// Agreement at every index is what makes `state_at` a positioning
+    /// primitive rather than "replay, roughly".
+    #[test]
+    fn state_at_matches_an_incremental_fold_at_every_index() {
+        let (record, states, rules) = recorded_walk(5, 6);
+        assert_eq!(record.events.len(), 6);
+        // Anti-vacuity: with two adjacent states equal, an off-by-one at that
+        // index would be invisible to the comparisons below.
+        for k in 1..states.len() {
+            assert_ne!(states[k - 1], states[k], "adjacent states must differ (index {k})");
+        }
+
+        let pending = new_game(record.config.clone(), &rules, record.seed).unwrap();
+        let mut walked = finalize_setup(pending, &record.choices).unwrap();
+        for k in 0..=record.events.len() {
+            if k > 0 {
+                walked = replay_from(&walked, std::slice::from_ref(&record.events[k - 1]), &rules)
+                    .unwrap_or_else(|e| panic!("the incremental fold failed at event {}: {e}", k - 1));
+            }
+            let at_k = state_at(&record, k, &rules).unwrap_or_else(|e| panic!("state_at({k}) failed: {e}"));
+            assert_eq!(at_k, walked, "state_at({k}) disagreed with the incremental fold");
+            assert_eq!(at_k, states[k], "state_at({k}) disagreed with the state the game played through");
+        }
+
+        // ...and the top of the ladder is the whole-record entry point, which
+        // is the other half of the off-by-one: `k == events.len()` is IN range
+        // and is the terminal state.
+        assert_eq!(
+            state_at(&record, record.events.len(), &rules).unwrap(),
+            replay(&record, &rules).unwrap(),
+            "state_at(events.len()) must equal a full replay",
+        );
+    }
+
+    /// Past the end is a typed refusal naming the bound — never a clamp. A
+    /// clamp is the dangerous shape here: a caller addressing events by index
+    /// (`why <n>`) would silently get the terminal state for every
+    /// out-of-range index and never learn it asked for something that does not
+    /// exist.
+    #[test]
+    fn state_at_past_the_end_is_a_typed_error_not_a_clamp() {
+        let (record, states, rules) = recorded_walk(7, 4);
+        let n = record.events.len();
+        assert_eq!(n, 4);
+
+        // The boundary itself is IN range.
+        assert_eq!(state_at(&record, n, &rules).unwrap(), states[n]);
+
+        let err = state_at(&record, n + 1, &rules).expect_err("one past the end must not succeed");
+        assert!(
+            err.message.contains(&(n + 1).to_string()) && err.message.contains(&n.to_string()),
+            "the refusal must name both what was asked and the bound: {}",
+            err.message,
+        );
+        // Nothing failed to APPLY, so the index points at the past-the-end
+        // boundary that was exceeded — `replay_strict`'s terminal-digest
+        // precedent for an error about the whole record rather than one event.
+        assert_eq!(err.event_index, n);
+
+        // Far past the end refuses the same way rather than saturating.
+        assert!(state_at(&record, usize::MAX, &rules).is_err(), "usize::MAX must refuse, not clamp");
     }
 
     fn sample_provenance() -> RunProvenance {
