@@ -357,9 +357,14 @@ mod tests {
     }
 
     /// A controller this build cannot run comes back HUMAN with a warning --
-    /// never silently as some other bot.
+    /// never silently as some other bot, and since the W5 retype the warning
+    /// carries the PARSE ERROR'S OWN TEXT so it names what was actually seen
+    /// rather than only that something was.
+    ///
+    /// Renamed at W5 (was `an_unknown_controller_resumes_as_a_human_seat_with_a_warning`)
+    /// because the added clause is the point of the change.
     #[test]
-    fn an_unknown_controller_resumes_as_a_human_seat_with_a_warning() {
+    fn an_unknown_controller_resumes_as_human_with_the_parse_error_text() {
         let run = RunProvenance {
             schema: RUN_PROVENANCE_SCHEMA,
             master_seed: None,
@@ -377,6 +382,11 @@ mod tests {
         assert_eq!(warnings.len(), 1);
         assert!(warnings[0].contains("mcts-2027"), "{}", warnings[0]);
         assert!(warnings[0].contains("HUMAN"), "{}", warnings[0]);
+        assert!(
+            warnings[0].contains("unknown controller"),
+            "the refusal `Contestant::from_parts` produced must reach the reader: {}",
+            warnings[0],
+        );
         // Produced before there is a session to walk, so the REPL's dash sweep
         // cannot reach it (T11 review F5).
         crate::style::test_support::assert_no_ascii_prose_dash(
@@ -469,5 +479,221 @@ mod tests {
         assert_eq!(a, b, "same seed, same move");
         let differs = (0..200u64).any(|s| HonestChooser.choose(&state, &rules, seat, fw(), s).unwrap() != a);
         assert!(differs, "the draw must actually depend on the seed");
+    }
+
+    // ---- Phase 3.5c W5 task 3: the four-seam `Contestant` retype ----------
+    //
+    // The two GOLDENS below were captured by RUNNING THE PRE-RETYPE CODE (a
+    // scratch integration test over the shipped `BotSeats`/`HonestChooser`,
+    // deleted once its output was read), not by writing down what the new code
+    // produces. That is the whole of their value: a literal taken off the new
+    // implementation would pin the retype to itself.
+
+    /// A rung seat under the retype is `Contestant::Policy(..)`.
+    fn fw_seat() -> Contestant {
+        Contestant::Policy(fw())
+    }
+
+    /// Drive `state` forward to a MOVEMENT decision point with a real choice —
+    /// the second cell of the drift pin, and a structurally different one from
+    /// [`branching_state`]'s opening Placement (route enumeration, a handful of
+    /// candidates instead of 186).
+    ///
+    /// The walk cycles the legal index rather than always taking `legal[0]`,
+    /// which loops inside one turn without ever reaching Movement.
+    fn movement_state(mut state: GameState, rules: &Rules) -> GameState {
+        for step in 0..400usize {
+            let legal = get_legal_moves(&state, rules);
+            if state.turn_phase == TurnPhase::Movement
+                && state.pending_choices.is_empty()
+                && legal.len() > 1
+            {
+                return state;
+            }
+            state = apply_move_unchecked(&state, &legal[step % legal.len()], rules).unwrap();
+        }
+        panic!("no branching movement decision point within 400 moves");
+    }
+
+    /// **The retype must not move one recorded BYTE for a rung seat.** Design
+    /// §1.4: `Contestant::provenance` delegates to `ControllerProvenance::from_policy`
+    /// on the `Policy` arm, so every save this driver has ever written keeps
+    /// meaning exactly what it meant — and the way to know that is a literal
+    /// captured before the edit, not an argument about delegation.
+    #[test]
+    fn a_rung_seats_provenance_is_byte_identical_across_the_retype() {
+        let bots = BotSeats::new(vec![None, Some(fw_seat()), None], 0x0102_0304_0506_0708);
+        let json = serde_json::to_string(&bots.seat_provenance()).expect("provenance serializes");
+        assert_eq!(
+            json,
+            "[{\"controller\":\"human\",\"version\":0,\"params\":{},\"observation\":\"view\"},\
+             {\"controller\":\"family-weighted\",\"version\":1,\
+             \"params\":{\"recovery_min_of\":5,\"retreat_ppm\":166667},\
+             \"agent_seed\":72623859790382856,\"observation\":\"view\"},\
+             {\"controller\":\"human\",\"version\":0,\"params\":{},\"observation\":\"view\"}]",
+        );
+    }
+
+    /// **A rung seat decides byte-identically to the pre-retype chain.** The
+    /// three moves below came off `HonestChooser` BEFORE `decide` existed, at
+    /// the same fixture and the same seeds; they differ from each other, so a
+    /// `decide` that ignored its seed could not pass by accident.
+    #[test]
+    fn a_policy_seat_decides_byte_identically_to_the_old_chain() {
+        let (state, rules) = branching_state();
+        let seat = state.current_player;
+        let goldens = [
+            (12_345u64, "{\"PlaceThreeAreas\":{\"placements\":[2,3,9]}}"),
+            (77u64, "{\"PlaceThreeAreas\":{\"placements\":[1,3,7]}}"),
+            (0xDEAD_BEEFu64, "{\"PlaceThreeAreas\":{\"placements\":[0,6,9]}}"),
+        ];
+        for (seed, golden) in goldens {
+            let decision = decide(fw_seat(), &state, &rules, seat, seed).expect("a move");
+            assert_eq!(serde_json::to_string(&decision.mv).unwrap(), golden, "at seed {seed}");
+            assert!(
+                decision.explain.is_none(),
+                "a rung SAMPLES its move; there is no valuation to account for",
+            );
+        }
+    }
+
+    /// **The drift pin (design §1.3).** `decide` builds its own concrete agent
+    /// rather than `Contestant::build`'s boxed one — because a `DecisionReport`
+    /// carries no explanation and `why` needs one — so the two constructions
+    /// can silently come apart (a wrong weight table, a dropped `.with_cap`,
+    /// the adjacent `k`/`m` arguments transposed). This pins them equal at
+    /// every eligible evaluator arm.
+    ///
+    /// The capped cell's `cap = 200` is deliberately OUTSIDE the measured
+    /// 32-128 non-terminating band (`LookaheadAgent::with_cap`'s doc): the
+    /// standing constraint binds fixtures too.
+    #[test]
+    fn decide_matches_contestant_build_for_every_eligible_evaluator_arm() {
+        let (placement, rules) = branching_state();
+        let movement = movement_state(placement.clone(), &rules);
+        assert_eq!(placement.turn_phase, TurnPhase::Placement, "fixture: two different shapes");
+        assert_eq!(movement.turn_phase, TurnPhase::Movement, "fixture: two different shapes");
+        let arms = [
+            Contestant::GREEDY_V1_DEFAULT,
+            Contestant::LOOKAHEAD_V1_DEFAULT,
+            Contestant::LookaheadV1 { b: 2, k: 1, m: 4, cap: Some(200) },
+        ];
+        for state in [&placement, &movement] {
+            let seat = state.current_player;
+            let view = observe(state, seat).expect("a sim seat's view");
+            for arm in arms {
+                for seed in [1u64, 7, 0x5EED] {
+                    let mine = decide(arm, state, &rules, seat, seed).expect("a decision");
+                    let (mut theirs, _handle) = arm.build(&rules, seed);
+                    let report = theirs.choose(&view, &rules).expect("the arena agent's own decision");
+                    assert_eq!(mine.mv, report.mv, "{arm:?} at seed {seed}");
+                    assert!(
+                        mine.explain.is_some(),
+                        "an evaluator arm accounts for the move it chose: {arm:?}",
+                    );
+                }
+            }
+        }
+    }
+
+    /// A DIAGNOSTIC contestant resumes HUMAN and says why (design §1.2). The
+    /// CLI must not become a second surface for arms core labels diagnostic.
+    #[test]
+    fn a_diagnostic_contestant_resumes_as_human_loudly() {
+        let (controller, version, params) = Contestant::MCTS_V1_DEFAULT.descriptor();
+        let run = RunProvenance {
+            schema: RUN_PROVENANCE_SCHEMA,
+            master_seed: None,
+            run_id: None,
+            seats: vec![SeatProvenance {
+                controller,
+                version,
+                params,
+                agent_seed: Some(5),
+                observation: OBSERVATION_VIEW.to_string(),
+            }],
+        };
+        let (bots, warnings) = BotSeats::from_provenance(Some(&run));
+        assert!(!bots.is_bot(PlayerId::new(0)), "a diagnostic seat is never played by this driver");
+        assert_eq!(warnings.len(), 1, "{warnings:?}");
+        assert!(warnings[0].contains("mcts-v1"), "{}", warnings[0]);
+        assert!(warnings[0].contains("diagnostic"), "{}", warnings[0]);
+        assert!(warnings[0].contains("HUMAN"), "{}", warnings[0]);
+        crate::style::test_support::assert_no_ascii_prose_dash(
+            "the diagnostic-contestant warning",
+            &warnings.join("\n"),
+        );
+    }
+
+    /// **Identity drift WARNS per field and never refuses** (design §1.5). The
+    /// record's stored version and params are compared against a freshly
+    /// derived descriptor, so a cross-build resume (a moved weight table, a
+    /// bumped `eval_impl`) is visible without making the save unloadable.
+    #[test]
+    fn a_version_or_identity_param_mismatch_warns_per_field() {
+        let (controller, version, mut params) = Contestant::LOOKAHEAD_V1_DEFAULT.descriptor();
+        assert!(params.contains_key("weights"), "fixture: the descriptor carries the identity key");
+        let stale = params["weights"].wrapping_add(1);
+        params.insert("weights".to_string(), stale);
+        let run = RunProvenance {
+            schema: RUN_PROVENANCE_SCHEMA,
+            master_seed: None,
+            run_id: None,
+            seats: vec![SeatProvenance {
+                controller,
+                version: version - 1,
+                params,
+                agent_seed: Some(5),
+                observation: OBSERVATION_VIEW.to_string(),
+            }],
+        };
+        let (bots, warnings) = BotSeats::from_provenance(Some(&run));
+        assert_eq!(
+            bots.contestant_at(PlayerId::new(0)),
+            Some(Contestant::LOOKAHEAD_V1_DEFAULT),
+            "drift is loud, never a refusal: the seat still plays, under the CURRENT build",
+        );
+        assert_eq!(warnings.len(), 2, "one warning per differing field: {warnings:?}");
+        assert!(
+            warnings.iter().any(|w| w.contains("version") && w.contains(&(version - 1).to_string())),
+            "{warnings:?}",
+        );
+        assert!(
+            warnings.iter().any(|w| w.contains("weights") && w.contains(&stale.to_string())),
+            "{warnings:?}",
+        );
+        crate::style::test_support::assert_no_ascii_prose_dash(
+            "the identity-drift warnings",
+            &warnings.join("\n"),
+        );
+    }
+
+    /// **Knobs ride the record and come back.** The defect design §1.5 names:
+    /// a bare-name reparse of `lookahead-v1` resumes at `b=4` whatever the
+    /// record says, so a seat recorded at `b=8` would go on playing a search
+    /// the record does not describe. `Contestant::from_parts` reads BOTH stored
+    /// halves, and the capped/uncapped pair pins the preserve-list's
+    /// absent-cap-is-the-uncapped-identity rule at this seam too.
+    #[test]
+    fn an_evaluator_seat_resumes_with_its_recorded_knobs_not_the_defaults() {
+        let battery = [
+            Contestant::LookaheadV1 { b: 8, k: 1, m: 8, cap: None },
+            Contestant::LookaheadV1 { b: 2, k: 1, m: 4, cap: Some(200) },
+            Contestant::GreedyV1 { m: 3 },
+        ];
+        for contestant in battery {
+            let bots = BotSeats::new(vec![Some(contestant), None], 0x0BAD_F00D_1234_5678);
+            let run = RunProvenance {
+                schema: RUN_PROVENANCE_SCHEMA,
+                master_seed: None,
+                run_id: None,
+                seats: bots.seat_provenance(),
+            };
+            let (back, warnings) = BotSeats::from_provenance(Some(&run));
+            assert!(warnings.is_empty(), "a same-build round trip is silent: {warnings:?}");
+            assert_eq!(back.contestant_at(PlayerId::new(0)), Some(contestant));
+            assert_eq!(back.contestant_at(PlayerId::new(1)), None);
+            assert_eq!(back.seed(), bots.seed());
+        }
     }
 }
