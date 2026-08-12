@@ -269,7 +269,12 @@ mod tests {
         ("family-weighted:p=-1", Err("p must be parts per million: invalid digit found in string")),
         ("family-weighted:p=abc", Err("p must be parts per million: invalid digit found in string")),
         ("family-weighted:k=256", Err("k must be a small count: number too large to fit in target type")),
-        ("family-weighted:z=1", Err("unknown knob \"z\" (p | k)")),
+        // W5: the ONE refusal in this file that did not name the contestant it
+        // was reading (the W1 fix wave recorded the repair and deferred it here
+        // as an owner-visible error-text change). Every other arm's fall-through
+        // already said `for <name>`; this row is the frozen battery's only
+        // deliberate departure from HEAD `a9029b8`.
+        ("family-weighted:z=1", Err("unknown knob \"z\" for family-weighted (p | k)")),
         ("family-weighted:", Ok("Policy(FamilyWeighted { retreat_ppm: 166667, recovery_min_of: 5 })")),
         ("family_weighted:p=1", Ok("Policy(FamilyWeighted { retreat_ppm: 1, recovery_min_of: 5 })")),
         ("uniform:p=5", Err("policy \"uniform\" has no knobs, but \"p=5\" was given")),
@@ -502,6 +507,9 @@ mod tests {
             ("atomic-diag-v1:zzz=1", "zzz"),
             ("mcts-v1:zzz=1", "zzz"),
             ("family-weighted:zzz=1", "zzz"),
+            // …and the rung arm names the CONTESTANT too, exactly as the four
+            // evaluator/architecture arms always did (W5's deferred repair).
+            ("family-weighted:zzz=1", "family-weighted"),
             ("mcts-v1:leaf=zzz", "zzz"),
             ("uniform:p=5", "uniform"),
             ("greedy-v1:zzz", "zzz"),

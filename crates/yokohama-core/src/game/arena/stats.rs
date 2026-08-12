@@ -2088,6 +2088,210 @@ mod tests {
         assert!(echo.contains(&format!("x={MCTS_CONTROLLER}@v{MCTS_IMPL_VERSION}{{")), "{echo}");
     }
 
+    /// **[`Contestant::from_parts`] is the INVERSE of
+    /// [`Contestant::descriptor`]** (W5 design §1.5) — the property the CLI's
+    /// resume path rests on, since a recorded seat stores exactly those two
+    /// halves and reparsing the bare NAME would silently reset every knob (a
+    /// recorded `lookahead-v1` at `b=8` would resume at `b=4`).
+    ///
+    /// Round-tripped over every arm AND over knob-presence: the two cap-carrying
+    /// contestants appear once uncapped and once capped in the sibling test
+    /// below, because absence IS the uncapped identity on the provenance
+    /// preserve-list.
+    #[test]
+    fn from_parts_round_trips_every_descriptor() {
+        for contestant in [
+            Contestant::Policy(RolloutPolicy::Uniform),
+            Contestant::Policy(RolloutPolicy::RetreatAverse),
+            Contestant::Policy(RolloutPolicy::FAMILY_WEIGHTED_DEFAULT),
+            Contestant::Policy(RolloutPolicy::FamilyWeighted {
+                retreat_ppm: 50_000,
+                recovery_min_of: 5,
+            }),
+            Contestant::GREEDY_V1_DEFAULT,
+            Contestant::LOOKAHEAD_V1_DEFAULT,
+            Contestant::LookaheadV1 { b: 8, k: 1, m: 8, cap: Some(750) },
+            Contestant::ATOMIC_DIAG_DEFAULT,
+            Contestant::MCTS_V1_DEFAULT,
+        ] {
+            let (name, _version, params) = contestant.descriptor();
+            assert_eq!(
+                Contestant::from_parts(&name, &params),
+                Ok(contestant),
+                "the descriptor of {contestant:?} did not invert",
+            );
+        }
+    }
+
+    /// The preserve-list clause made executable on BOTH sides of the shared
+    /// scored-successor budget: an absent `cap` key is not any set cap, and it
+    /// survives the round trip as `None` rather than as some default number.
+    #[test]
+    fn from_parts_absent_cap_is_uncapped_and_present_cap_is_capped() {
+        let (name, _, params) = Contestant::LOOKAHEAD_V1_DEFAULT.descriptor();
+        assert!(!params.contains_key("cap"), "the shipped S1 rung emits no cap token");
+        assert_eq!(
+            Contestant::from_parts(&name, &params),
+            Ok(Contestant::LookaheadV1 {
+                b: DEFAULT_BEAM,
+                k: DEFAULT_WORLDS,
+                m: DEFAULT_RETREAT_SAMPLES,
+                cap: None,
+            }),
+        );
+
+        let capped = Contestant::LookaheadV1 {
+            b: DEFAULT_BEAM,
+            k: DEFAULT_WORLDS,
+            m: DEFAULT_RETREAT_SAMPLES,
+            cap: Some(750),
+        };
+        let (name, _, params) = capped.descriptor();
+        assert_eq!(params.get("cap"), Some(&750_i64));
+        assert_eq!(Contestant::from_parts(&name, &params), Ok(capped));
+
+        let (name, _, params) = Contestant::MCTS_V1_DEFAULT.descriptor();
+        assert!(!params.contains_key("cap"), "the knobless tree spelling is uncapped");
+        assert!(matches!(
+            Contestant::from_parts(&name, &params),
+            Ok(Contestant::MctsV1 { cap: None, .. }),
+        ));
+    }
+
+    /// Unknown is an error, and the error names what it saw — the grammar's
+    /// contract, adopted here from birth.
+    ///
+    /// The short runner alias `atomic-diag-v1` is deliberately among the
+    /// REFUSED names: this function inverts a descriptor, and no descriptor ever
+    /// emits that spelling (`ATOMIC_DIAG_CONTROLLER` is the wire name).
+    #[test]
+    fn from_parts_refuses_an_unknown_name_naming_it() {
+        let params = BTreeMap::new();
+        for name in ["", "human", "bga-human", "greedy-v2", "atomic-diag-v1", "UNIFORM"] {
+            let message = Contestant::from_parts(name, &params)
+                .expect_err("an unknown controller name must be refused");
+            assert!(
+                message.contains(&format!("{name:?}")),
+                "the refusal of {name:?} did not name it: {message}",
+            );
+        }
+    }
+
+    /// A key no arm knows is an error rather than a silent ignore — a swallowed
+    /// param would resume a seat under knobs the record did not name.
+    #[test]
+    fn from_parts_refuses_an_unknown_key_naming_it() {
+        let (name, _, mut params) = Contestant::LOOKAHEAD_V1_DEFAULT.descriptor();
+        params.insert("zzz".to_string(), 1);
+        let message =
+            Contestant::from_parts(&name, &params).expect_err("an unknown param must be refused");
+        assert!(message.contains("zzz"), "the refusal did not name the key: {message}");
+        assert!(message.contains(&name), "the refusal did not name the contestant: {message}");
+
+        // A construction knob belonging to ANOTHER arm is still unknown here.
+        let (name, _, mut params) = Contestant::GREEDY_V1_DEFAULT.descriptor();
+        params.insert("b".to_string(), 4);
+        let message =
+            Contestant::from_parts(&name, &params).expect_err("a one-ply argmax has no beam");
+        assert!(message.contains("\"b\""), "the refusal did not name the key: {message}");
+    }
+
+    /// A value outside the agent's own type (or outside the grammar's stated
+    /// range) is refused, not truncated.
+    #[test]
+    fn from_parts_refuses_an_out_of_range_value() {
+        let (name, _, mut params) = Contestant::GREEDY_V1_DEFAULT.descriptor();
+        params.insert("m".to_string(), 300);
+        let message =
+            Contestant::from_parts(&name, &params).expect_err("300 does not fit the agent's u8");
+        assert!(message.contains("300"), "the refusal did not name the value: {message}");
+        assert!(message.contains('m'), "the refusal did not name the key: {message}");
+
+        // `cap=0` carries the GRAMMAR's own refusal text, single-sourced: the two
+        // surfaces must not disagree about what a zero budget means.
+        let (name, _, mut params) = Contestant::LOOKAHEAD_V1_DEFAULT.descriptor();
+        params.insert("cap".to_string(), 0);
+        let message = Contestant::from_parts(&name, &params).expect_err("cap=0 must be refused");
+        assert!(message.contains("omit the knob"), "{message}");
+
+        // A negative count is not a count.
+        let (name, _, mut params) = Contestant::LOOKAHEAD_V1_DEFAULT.descriptor();
+        params.insert("b".to_string(), -1);
+        assert!(
+            Contestant::from_parts(&name, &params).is_err(),
+            "a negative beam width was accepted",
+        );
+    }
+
+    /// The descriptor carries IDENTITY keys beyond the construction knobs —
+    /// `eval_impl`, the `weights` table digest, greedy's `placement_cap`. They
+    /// are ACCEPTED here and never checked: design §1.5 puts the checking in the
+    /// CALLER's field-by-field comparison against a freshly-derived descriptor,
+    /// which warns loudly per differing field and never refuses, so a record
+    /// from another build still loads and still plays.
+    #[test]
+    fn from_parts_accepts_identity_keys_without_consuming_them() {
+        let (name, _, params) = Contestant::LOOKAHEAD_V1_DEFAULT.descriptor();
+        assert!(params.contains_key("eval_impl") && params.contains_key("weights"));
+        assert_eq!(
+            Contestant::from_parts(&name, &params),
+            Ok(Contestant::LOOKAHEAD_V1_DEFAULT),
+        );
+
+        let mut altered = params.clone();
+        altered.insert("weights".to_string(), 0x0BAD_0BAD);
+        altered.insert("eval_impl".to_string(), 1);
+        assert_eq!(
+            Contestant::from_parts(&name, &altered),
+            Ok(Contestant::LOOKAHEAD_V1_DEFAULT),
+            "an identity key was consumed as a construction input",
+        );
+
+        let (name, _, params) = Contestant::GREEDY_V1_DEFAULT.descriptor();
+        assert!(params.contains_key("placement_cap"), "greedy's third identity key");
+        assert_eq!(Contestant::from_parts(&name, &params), Ok(Contestant::GREEDY_V1_DEFAULT));
+    }
+
+    /// The echo composer is a PUBLIC method on the type (W5 design §4.2) — the
+    /// CLI's wizard summary, `why` header and resume warnings all need it, and a
+    /// second spelling in the CLI is exactly the drift the W1 grammar promotion
+    /// exists to prevent.
+    ///
+    /// The literals are what the module-private `contestant_echo` produced at
+    /// HEAD `a61d642`, captured BEFORE the body moved onto the type. Both format
+    /// branches are covered: knobless, and knob-bearing.
+    #[test]
+    fn the_echo_is_public_and_matches_the_spec_echo_format() {
+        assert_eq!(
+            Contestant::LOOKAHEAD_V1_DEFAULT.echo(),
+            "lookahead-v1@v2{b=4,eval_impl=3,k=1,m=8,weights=-7339724794018772210}",
+        );
+        assert_eq!(Contestant::Policy(RolloutPolicy::Uniform).echo(), "uniform@v1");
+
+        // …and the cell echo is composed from that same method, so the report
+        // header and a CLI header cannot disagree about what a seat is.
+        let echo = spec_echo(
+            &CellSpec {
+                name: "echo".to_string(),
+                players: 2,
+                x: Contestant::LOOKAHEAD_V1_DEFAULT,
+                y: Contestant::Policy(RolloutPolicy::Uniform),
+                units: 1,
+                master: SeedScheduleKind::Diagnostic(MASTER),
+            },
+            MASTER,
+            0,
+        );
+        assert!(
+            echo.contains(&format!("x={}", Contestant::LOOKAHEAD_V1_DEFAULT.echo())),
+            "{echo}",
+        );
+        assert!(
+            echo.contains(&format!("y={}", Contestant::Policy(RolloutPolicy::Uniform).echo())),
+            "{echo}",
+        );
+    }
+
     /// §5.5: the echo states whether the cell's two contestants resolve a deal
     /// the same way, so a reader of a quoted figure knows whether its units were
     /// setup-identical or merely swapped-balanced.
