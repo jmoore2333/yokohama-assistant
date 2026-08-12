@@ -488,21 +488,35 @@ pub(crate) struct DecisionExplanation {
 /// all and `why` could not be written over it.
 ///
 /// **Error classification.** `observe` failing is this driver's own fault
-/// ([`BotError::View`], which the pump treats as a lockdown). Everything an
-/// evaluator agent refuses comes back as [`BotError::DeadEnd`] -- a HALT that
-/// leaves the session sound and playable -- because the agent's error channel
-/// is an untyped `String` and this driver will not sniff message text to
-/// decide how loud to be. The residual, stated rather than hidden: a belief
-/// sampler refusal INSIDE an evaluator agent reaches the pump as a halt where
-/// the rung arm (whose sampler this module builds itself, so it can classify)
-/// would lock down. Neither shape can fall back to privileged play; the agent
-/// simply returns nothing, and the halt carries its words verbatim.
-/// **Since W5 task 4 that residual is the SHIPPED default's behavior**, not a
-/// corner reachable only by a hand-built seat: [`PROVISIONAL_DEFAULT_BOT`] is an
-/// evaluator arm, so a belief-sampler refusal at a wizard-configured bot seat
-/// now prints a HALT and leaves the session playable where a rung seat would
-/// have locked it down. Recorded rather than repaired -- classifying by message
-/// text is the alternative, and it is worse.
+/// ([`BotError::View`], which the pump treats as a lockdown). A REFUSED VIEW
+/// classifies as [`BotError::Belief`] (a lockdown) on EVERY arm: the rung arm
+/// builds the sampler itself, and the evaluator arms run [`preflight_belief`]
+/// before the agent is built -- so the fault class that would mean this driver
+/// handed the agent something inconsistent never masquerades as a benign halt
+/// (T4 review SHOULD-2; the pre-flight is sound because every `from_view`
+/// refusal is structural, checked before the sampler's RNG is touched, so a
+/// pre-flight that passes cannot be followed by an agent-side refusal of the
+/// same view). The residual, stated rather than hidden and NARROWER than it
+/// was: an evaluator agent's remaining errors -- its internal seat/volume/
+/// apply contract violations, arriving through an untyped `String` channel
+/// this driver will not sniff -- come back as [`BotError::DeadEnd`], a HALT
+/// that leaves the session sound and playable, carrying the agent's words
+/// verbatim. Neither shape can fall back to privileged play.
+/// Pre-flight the belief census an evaluator agent will run inside `choose`,
+/// so a refused view classifies as [`BotError::Belief`] here -- the lockdown
+/// the rung arm already gives that fault -- instead of arriving through the
+/// agent's untyped error channel as a benign dead-end halt (T4 review
+/// SHOULD-2, remedy verified there). Sound because every `from_view` refusal
+/// is structural, checked before the sampler's RNG is touched, so a
+/// pre-flight that passes cannot be followed by an agent-side refusal of the
+/// same view. The probe sampler is DISCARDED unsampled: the agent draws its
+/// own worlds from its own stream, and this probe moves no stream anywhere.
+fn preflight_belief(view: &PlayerView, rules: &Rules, decision_seed: u64) -> Result<(), BotError> {
+    BeliefSampler::from_view(view, rules, decision_seed)
+        .map(|_| ())
+        .map_err(|e| BotError::Belief(e.to_string()))
+}
+
 pub(crate) fn decide(
     contestant: Contestant,
     state: &GameState,
@@ -535,6 +549,7 @@ pub(crate) fn decide(
             Ok(Decision { mv, explain: None })
         }
         Contestant::GreedyV1 { m } => {
+            preflight_belief(&view, rules, decision_seed)?;
             let mut agent = greedy::GreedyAgent::with_weights(rules, WeightTable::V2, m, decision_seed);
             let report = agent.choose(&view, rules).map_err(BotError::DeadEnd)?;
             let explanation = cloned_explanation(agent.last_explanation(), &contestant)?;
@@ -550,6 +565,7 @@ pub(crate) fn decide(
             })
         }
         Contestant::LookaheadV1 { b, k, m, cap } => {
+            preflight_belief(&view, rules, decision_seed)?;
             let mut agent = lookahead::LookaheadAgent::with_knobs(
                 rules,
                 SearchScheme::TurnBoundary { beam: b },
@@ -581,8 +597,9 @@ pub(crate) fn decide(
         // Unreachable today, but by CONSTANT rather than by guard: resume is
         // the one narrowed path (`from_provenance` routes through `eligible`),
         // while the wizard hardcodes an eligible const it never re-checks --
-        // `PROVISIONAL_DEFAULT_BOT`'s own eligibility pin is what keeps that
-        // true as the const moves (T3 review SHOULD-1). Answered rather than
+        // `the_provisional_default_bot_is_a_contestant_this_driver_runs` is
+        // the pin that keeps that true as the const moves (T3 review
+        // SHOULD-1). Answered rather than
         // panicked, and as a HALT rather than a lockdown -- a session that
         // somehow acquired a diagnostic seat is misconfigured, not corrupt,
         // and stays playable by hand. Spelled out rather than caught by a
