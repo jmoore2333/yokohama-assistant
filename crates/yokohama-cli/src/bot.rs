@@ -960,6 +960,26 @@ mod tests {
         }
     }
 
+    /// **The wizard's default contestant must be one this driver will run** --
+    /// the pin [`decide`]'s diagnostic arm names as what keeps its own
+    /// unreachability true (T3 review SHOULD-1).
+    ///
+    /// The wizard hardcodes [`PROVISIONAL_DEFAULT_BOT`] and never re-checks it:
+    /// [`eligible`] guards the RESUME path only, so a const re-pointed at an
+    /// arm this driver refuses would build a table whose every decision is a
+    /// halt, with nothing between the edit and the game to say so. That matters
+    /// precisely because the const is PROVISIONAL -- D1's identity freeze will
+    /// move it -- so the check belongs to the const, not to the arm it happens
+    /// to hold today.
+    #[test]
+    fn the_provisional_default_bot_is_a_contestant_this_driver_runs() {
+        assert_eq!(
+            eligible(PROVISIONAL_DEFAULT_BOT),
+            Ok(PROVISIONAL_DEFAULT_BOT),
+            "the wizard's default must survive the eligibility narrowing it never runs",
+        );
+    }
+
     /// A DIAGNOSTIC contestant resumes HUMAN and says why (design §1.2). The
     /// CLI must not become a second surface for arms core labels diagnostic.
     #[test]

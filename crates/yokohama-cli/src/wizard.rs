@@ -3583,6 +3583,57 @@ mod tests {
         }
     }
 
+    // ---- Phase 3.5c W5 Task 4: the provisional default bot ----------------
+
+    /// **What a wizard-configured bot seat PLAYS**, pinned at the question that
+    /// builds it rather than at a transcript -- the T7 lesson again: a claim
+    /// about what an ANSWER does belongs at the function that takes it.
+    ///
+    /// The default is `lookahead-v1` at shipped knobs (b=4/k=1/m=8, uncapped,
+    /// `WeightTable::V2`) since W5, so the owner's diagnostic games play the
+    /// production-intent controller rather than a rollout rung (design §4.1).
+    /// The LITERAL is pinned deliberately: the wizard reads
+    /// `bot::PROVISIONAL_DEFAULT_BOT`, and this test is what stops that const
+    /// from moving silently -- it is provisional until D1's identity freeze,
+    /// and the freeze is an owner-ruled event, not a quiet edit.
+    #[test]
+    fn the_wizard_default_bot_seat_is_the_provisional_production_contestant() {
+        let (seats, transcript) = ask_bots_directly(2, &["1"]);
+        let seats =
+            seats.unwrap_or_else(|e| panic!("'1' must answer the question, got Err({e}); transcript:\n{transcript}"));
+
+        assert_eq!(
+            seats.contestant_at(PlayerId::new(1)),
+            Some(Contestant::LOOKAHEAD_V1_DEFAULT),
+            "a wizard-configured bot seat plays the provisional production contestant"
+        );
+        assert!(!seats.is_bot(PlayerId::new(0)), "the unnamed seat stays human");
+    }
+
+    /// The setup review names the contestant the way every other surface does:
+    /// through `Contestant::echo`, the ONE display form (core's, made public at
+    /// W5 for exactly this). A summary that composed its own sentence could
+    /// disagree with what the question stored -- so the line is rendered off
+    /// `ws.bots` itself, and this pins the whole `bots: seat … playing …`
+    /// phrase rather than a fragment of it.
+    #[test]
+    fn the_sim_summary_names_the_default_contestants_echo() {
+        let (repl, transcript) = feed(&[
+            "sim", "2", "red", "blue", "0", "804", "",
+            "1", "2",     // keep choices
+            "1",          // bots: seat 1
+            "confirm",
+        ]);
+        let repl = repl.unwrap_or_else(|e| panic!("expected Ok, got Err({e}); transcript:\n{transcript}"));
+
+        assert!(
+            transcript.contains(&format!("bots: seat 1 playing {}", Contestant::LOOKAHEAD_V1_DEFAULT.echo())),
+            "the review must name the seat and the contestant's echo: {transcript}"
+        );
+        assert!(repl.session.record().run.is_some(), "fixture: the game was built");
+        std::fs::remove_file("yokohama-game-804.json").ok();
+    }
+
     // ---- Phase 3.5a T7: the wizard redesign (findings F1, F2, F5, F6) ----
     //
     // These pin the four things the owner hit at the live-gate attempt, at the
