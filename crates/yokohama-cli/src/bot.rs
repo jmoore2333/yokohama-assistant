@@ -307,6 +307,40 @@ impl BotSeats {
     }
 }
 
+/// **What a wizard-configured bot seat plays** -- `lookahead-v1` at the shipped
+/// knobs (b=4/k=1/m=8, uncapped, `WeightTable::V2`), named as a const so the
+/// one behavioral choice has one home (design §4.1).
+///
+/// This is the production-intent controller: the S1 turn-boundary search the
+/// v2 freeze shipped, the same one `suggest` already runs on your own seat. A
+/// bot seat is therefore no longer a rollout RUNG, which sampled its move from
+/// a distribution and could account for nothing -- it VALUES its move, which is
+/// what makes `why` possible at all.
+///
+/// **PROVISIONAL, and the word is load-bearing.** At D1's identity freeze this
+/// re-points at the FROZEN CHAMPION, constructed from the explicit knobs
+/// recorded in that pre-registration -- never from a `*_DEFAULT` constant,
+/// which is D1's own rule (a shared default that moves would move every cell
+/// quoting it). `suggest`'s own construction (`suggest.rs`'s
+/// `LookaheadAgent::new` at constructor defaults) unifies with this const in
+/// that same commit, so the seat you play against and the seat that advises you
+/// cannot drift apart -- recorded at design §4.3 so the freeze checklist
+/// inherits it. Until then `LOOKAHEAD_V1_DEFAULT` is itself frozen identity
+/// (D1: the shared default constants may not move without an owner ruling), so
+/// the provisional default cannot drift silently either.
+///
+/// There is NO picker. The wizard's question stays "which seats are bots";
+/// difficulty levels and per-seat contestant choice are out of scope (OD-4(i)).
+/// A RESUME still restores whatever eligible contestant the record names -- a
+/// consequence of the provenance preserve-list, not a configuration surface.
+///
+/// The wizard uses this const WITHOUT re-checking [`eligible`] (the narrowing
+/// guards the resume path, where the name comes from a file). What keeps that
+/// safe as the const moves is
+/// `the_provisional_default_bot_is_a_contestant_this_driver_runs`, and
+/// [`decide`]'s diagnostic arm names that pin for the same reason.
+pub(crate) const PROVISIONAL_DEFAULT_BOT: Contestant = Contestant::LOOKAHEAD_V1_DEFAULT;
+
 /// Which contestants this driver will run as a bot seat, and why the rest are
 /// refused BY NAME (design §1.2).
 ///
@@ -463,6 +497,12 @@ pub(crate) struct DecisionExplanation {
 /// the rung arm (whose sampler this module builds itself, so it can classify)
 /// would lock down. Neither shape can fall back to privileged play; the agent
 /// simply returns nothing, and the halt carries its words verbatim.
+/// **Since W5 task 4 that residual is the SHIPPED default's behavior**, not a
+/// corner reachable only by a hand-built seat: [`PROVISIONAL_DEFAULT_BOT`] is an
+/// evaluator arm, so a belief-sampler refusal at a wizard-configured bot seat
+/// now prints a HALT and leaves the session playable where a rung seat would
+/// have locked it down. Recorded rather than repaired -- classifying by message
+/// text is the alternative, and it is worse.
 pub(crate) fn decide(
     contestant: Contestant,
     state: &GameState,

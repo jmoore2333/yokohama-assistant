@@ -6513,6 +6513,16 @@ mod tests {
     /// stamped on the session, `Repl::new` reading its bot seats back out of it
     /// -- so every fixture here exercises the SAME restoration path a resumed
     /// save does, rather than a test-only constructor that could drift from it.
+    ///
+    /// **Deliberately the RUNG, not the wizard's default** (W5 task 4, where
+    /// that default became `lookahead-v1`). Every fixture below wants SOME bot
+    /// moving so a pump, a review surface, an `undo` or a lockdown can be
+    /// observed; none of them is about which contestant sits there, and a
+    /// search per decision would pay for a property no test here asserts. The
+    /// rung is not deprecated -- it is simply no longer the default. A test
+    /// whose SUBJECT is the shipped default belongs at the wizard, where
+    /// `the_wizard_default_bot_seat_is_the_provisional_production_contestant`
+    /// pins it.
     fn repl_2p_bots(seed: u64, bot_seats: &[u8]) -> Repl {
         repl_np_bots(2, seed, bot_seats)
     }

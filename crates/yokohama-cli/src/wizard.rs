@@ -625,6 +625,12 @@ fn ask_save_path(input: &mut dyn Iterator<Item = String>, out: &mut dyn FnMut(&s
 /// space-separated form needs two seats that can both be bots, which a
 /// 2-player table does not have.
 ///
+/// **What every named seat PLAYS is [`crate::bot::PROVISIONAL_DEFAULT_BOT`]**
+/// -- `lookahead-v1` at shipped knobs since W5, where it was the family-weighted
+/// rung before. The question does not ask: there is no picker and no difficulty
+/// level (OD-4(i)), so the answer is a set of SEATS and the contestant is one
+/// const away, provisional until D1's identity freeze.
+///
 /// The bot seed is DRAWN, not asked: it is a full-`u64` stream key, which is
 /// not something to type at a prompt, and it is echoed + recorded in the
 /// record's run provenance so a game stays reproducible from its save alone.
@@ -656,7 +662,7 @@ fn ask_bots(
                 if seat >= players {
                     return Err(format!("seat must be 0-{}", players - 1));
                 }
-                chosen[seat as usize] = Some(Contestant::Policy(RolloutPolicy::FAMILY_WEIGHTED_DEFAULT));
+                chosen[seat as usize] = Some(crate::bot::PROVISIONAL_DEFAULT_BOT);
             }
             if chosen.iter().all(Option::is_some) {
                 return Err("at least one seat must stay human (bot-vs-bot is not in this version)".to_string());
@@ -1235,19 +1241,25 @@ fn render_sim_summary(ws: &SimWizardState) -> String {
     out.push_str(&format!("start seat: {}\n", ws.start_player.0));
     out.push_str(&format!("seed: {}\n", ws.seed));
     out.push_str(&format!("save path: {}\n", ws.save_path));
-    let bot_seats: Vec<String> = (0..ws.players)
-        .filter(|s| ws.bots.is_bot(PlayerId::new(*s)))
-        .map(|s| s.to_string())
+    // Read off the TABLE the question built, never off the const it built it
+    // from: a summary composed independently could name a contestant the seat
+    // is not playing, which is the one thing a review line exists to rule out.
+    // `Contestant::echo` is core's single display form (public since W5), so a
+    // seat reads the same here, in a `why` header and in an arena report.
+    let bot_seats: Vec<(u8, Contestant)> = (0..ws.players)
+        .filter_map(|s| ws.bots.contestant_at(PlayerId::new(s)).map(|c| (s, c)))
         .collect();
-    if bot_seats.is_empty() {
-        out.push_str("bots: none\n");
-    } else {
-        out.push_str(&format!(
+    match bot_seats.split_first() {
+        None => out.push_str("bots: none\n"),
+        // One contestant plays every bot seat -- the question has no picker
+        // (OD-4(i)), so the first seat's is the whole answer. Should a per-seat
+        // picker ever land, this line grows a `seat: contestant` list.
+        Some(((_, contestant), _)) => out.push_str(&format!(
             "bots: seat {} playing {} (seed {})\n",
-            bot_seats.join(", "),
-            RolloutPolicy::FAMILY_WEIGHTED_DEFAULT.as_str(),
+            bot_seats.iter().map(|(s, _)| s.to_string()).collect::<Vec<_>>().join(", "),
+            contestant.echo(),
             ws.bots.seed(),
-        ));
+        )),
     }
     for (seat, choice) in ws.choices.iter().enumerate() {
         if let StartingOrderChoice::Keep(k) = choice {
@@ -3391,9 +3403,14 @@ mod tests {
         let repl = repl.unwrap_or_else(|e| panic!("expected Ok, got Err({e}); transcript:\n{transcript}"));
 
         assert!(transcript.contains("Bot seats?"), "the question must be asked: {transcript}");
+        // RE-POINTED at W5 task 4: the default bot contestant changed from the
+        // family-weighted rung to `lookahead-v1`, and the review names it
+        // through `Contestant::echo` rather than a policy's short name. What
+        // this test is about -- that the FIRST answer is reviewed and the
+        // EDITED one is what reaches the session -- is unchanged.
         assert!(
-            transcript.contains("bots: seat 1 playing family-weighted"),
-            "the first review must name the bot seat and its policy: {transcript}"
+            transcript.contains(&format!("bots: seat 1 playing {}", Contestant::LOOKAHEAD_V1_DEFAULT.echo())),
+            "the first review must name the bot seat and its contestant: {transcript}"
         );
         assert!(transcript.contains("bot seed:"), "a drawn seed must be echoed: {transcript}");
         assert!(
@@ -3422,8 +3439,21 @@ mod tests {
         let repl = repl.unwrap_or_else(|e| panic!("expected Ok, got Err({e}); transcript:\n{transcript}"));
         let seats = &repl.session.record().run.as_ref().expect("provenance").seats;
         assert_eq!(seats[0].controller, yokohama_core::CONTROLLER_HUMAN);
-        assert_eq!(seats[1].controller, RolloutPolicy::FAMILY_WEIGHTED_DEFAULT.as_str());
-        assert_eq!(seats[1].params["recovery_min_of"], 5, "{seats:?}");
+        // RE-POINTED at W5 task 4: the default bot contestant changed to
+        // `lookahead-v1`, so the recorded name, version and KNOBS are the
+        // search's, not the rung's `recovery_min_of`. Pinned twice on purpose --
+        // as literals, so a silent controller-name or version move is visible
+        // here, and against the descriptor, so the knobs that ride the record
+        // are the ones the seat actually plays.
+        let (name, version, params) = Contestant::LOOKAHEAD_V1_DEFAULT.descriptor();
+        assert_eq!((seats[1].controller.as_str(), seats[1].version), ("lookahead-v1", 2), "{seats:?}");
+        assert_eq!((seats[1].controller.as_str(), seats[1].version), (name.as_str(), version), "{seats:?}");
+        assert_eq!(seats[1].params, params, "the knobs ride the record, b/k/m plus the identity keys: {seats:?}");
+        assert_eq!((seats[1].params["b"], seats[1].params["k"], seats[1].params["m"]), (4, 1, 8), "{seats:?}");
+        assert!(
+            !seats[1].params.contains_key("cap"),
+            "the shipped default is UNCAPPED, and an absent key IS that identity (preserve-list): {seats:?}"
+        );
         assert!(seats[1].agent_seed.is_some(), "a bot seat records the stream it played on");
         assert!(seats.iter().all(|s| s.observation == yokohama_core::OBSERVATION_VIEW));
         std::fs::remove_file("yokohama-game-802.json").ok();
@@ -3448,7 +3478,11 @@ mod tests {
         assert!(transcript.contains("seat must be 0-1"), "{transcript}");
         assert!(transcript.contains("is not a seat number"), "{transcript}");
         let seats = &repl.session.record().run.as_ref().expect("provenance").seats;
-        assert_eq!(seats[0].controller, RolloutPolicy::FAMILY_WEIGHTED_DEFAULT.as_str());
+        // RE-POINTED at W5 task 4: the default bot contestant changed to
+        // `lookahead-v1`. This test's subject is WHICH SEAT the accepted answer
+        // bots, so it names the contestant through the same const the wizard
+        // reads rather than restating the descriptor's spelling.
+        assert_eq!(seats[0].controller, Contestant::LOOKAHEAD_V1_DEFAULT.descriptor().0);
         assert_eq!(seats[1].controller, yokohama_core::CONTROLLER_HUMAN);
         std::fs::remove_file("yokohama-game-803.json").ok();
     }
