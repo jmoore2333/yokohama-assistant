@@ -538,12 +538,15 @@ pub(crate) fn decide(
                 }),
             })
         }
-        // Structurally unreachable: the wizard and `from_provenance` are the
-        // only constructors of a seat's contestant and both go through
-        // `eligible`. Answered rather than panicked, and as a HALT rather than
-        // a lockdown -- a session that somehow acquired a diagnostic seat is
-        // misconfigured, not corrupt, and stays playable by hand. Spelled out
-        // rather than caught by a `_`, for [`eligible`]'s reason.
+        // Unreachable today, but by CONSTANT rather than by guard: resume is
+        // the one narrowed path (`from_provenance` routes through `eligible`),
+        // while the wizard hardcodes an eligible const it never re-checks --
+        // `PROVISIONAL_DEFAULT_BOT`'s own eligibility pin is what keeps that
+        // true as the const moves (T3 review SHOULD-1). Answered rather than
+        // panicked, and as a HALT rather than a lockdown -- a session that
+        // somehow acquired a diagnostic seat is misconfigured, not corrupt,
+        // and stays playable by hand. Spelled out rather than caught by a
+        // `_`, for [`eligible`]'s reason.
         Contestant::MctsV1 { .. } | Contestant::AtomicDiag { .. } => {
             Err(BotError::DeadEnd(diagnostic_refusal(contestant)))
         }
@@ -1026,6 +1029,36 @@ mod tests {
         crate::style::test_support::assert_no_ascii_prose_dash(
             "the identity-drift warnings",
             &warnings.join("\n"),
+        );
+
+        // The ABSENT side of the union comparison (T3 review SHOULD-3): a key
+        // one side does not emit at all is drift too — the cross-build case
+        // the function exists for, an older build emitting a smaller identity
+        // set. Reported as `absent`, still never a refusal.
+        let (controller, version, mut params) = Contestant::LOOKAHEAD_V1_DEFAULT.descriptor();
+        params.remove("weights").expect("fixture: the descriptor carries the identity key");
+        let run = RunProvenance {
+            schema: RUN_PROVENANCE_SCHEMA,
+            master_seed: None,
+            run_id: None,
+            seats: vec![SeatProvenance {
+                controller,
+                version,
+                params,
+                agent_seed: Some(5),
+                observation: OBSERVATION_VIEW.to_string(),
+            }],
+        };
+        let (bots, warnings) = BotSeats::from_provenance(Some(&run));
+        assert_eq!(
+            bots.contestant_at(PlayerId::new(0)),
+            Some(Contestant::LOOKAHEAD_V1_DEFAULT),
+            "an absent identity key is drift, never a refusal",
+        );
+        assert_eq!(warnings.len(), 1, "exactly the absent-key warning: {warnings:?}");
+        assert!(
+            warnings[0].contains("weights") && warnings[0].contains("absent"),
+            "the warning names the key and its absence: {warnings:?}",
         );
     }
 
