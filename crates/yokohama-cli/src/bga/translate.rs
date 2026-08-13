@@ -145,6 +145,60 @@ fn select_free_president_label(candidates: &[(Move, u32)]) -> Result<Move, usize
     }
 }
 
+/// The WHOLE tram selection, as one seam a test can drive on a Tram-bearing
+/// state (T1 review MUST-1: the naive readings — `path.is_empty()` inside the
+/// selection, or routing a tram fact through the fee-count matcher — survived
+/// the original suite because nothing exercised the selection end to end).
+///
+/// Order of gates: (1) a tram fact carrying OBSERVED pass-through fees
+/// contradicts the matcher's whole premise (Tram moves for FREE; both
+/// surviving register facts are fee-free) and refuses rather than absorbing
+/// the evidence into a zero-cost pick (T1 review SHOULD-1); (2) the unique
+/// zero-PRICE label among the destination's candidates — the teleport, or the
+/// free WALK that suppressed it; (3) no unique free label is a typed STOP
+/// naming the move id, the destination and every candidate with its price.
+fn select_tram_move(
+    state: &yokohama_core::GameState,
+    rules: &yokohama_core::Rules,
+    legal: &[Move],
+    seat: u8,
+    dest: AreaType,
+    dest_id: AreaId,
+    fees: usize,
+    move_id: u64,
+) -> Result<Move, ImportError> {
+    if fees > 0 {
+        return Err(rerr(
+            move_id,
+            format!(
+                "a `trams` president move to {dest:?} arrived with {fees} observed pass-through \
+                 fee(s) — the Tram technology moves for FREE and both surviving register facts \
+                 are fee-free; refusing rather than assuming (never guessed)"
+            ),
+        ));
+    }
+    let candidates = president_candidates_to(state, rules, legal, seat, dest_id);
+    match select_free_president_label(&candidates) {
+        Ok(mv) => Ok(mv),
+        Err(0) => Err(rerr(
+            move_id,
+            format!(
+                "a `trams` president move to {dest:?} has no free (zero-cost) legal label — \
+                 the Tram technology moves for free, so one must exist; candidates considered: {}",
+                describe_candidates(&candidates)
+            ),
+        )),
+        Err(n) => Err(rerr(
+            move_id,
+            format!(
+                "{n} distinct zero-cost labels to {dest:?} — the engine's route enumeration \
+                 emits at most one per destination; candidates considered: {}",
+                describe_candidates(&candidates)
+            ),
+        )),
+    }
+}
+
 /// Name every candidate considered, so a refusal reports what it saw rather
 /// than picking the nearest.
 fn describe_candidates(candidates: &[(Move, u32)]) -> String {
@@ -480,40 +534,27 @@ impl<'a> Translator<'a> {
     ///
     /// A tram fact that matches no such label is a typed STOP naming the move
     /// id, the destination and every candidate considered — never a nearest
-    /// pick.
+    /// pick. The body lives in the free [`select_tram_move`] so the selection
+    /// is testable on Tram-bearing states without a `Translator` (T1 review
+    /// MUST-1); this method is a one-line delegate.
     fn tram_president_move(
         &self,
         seat: u8,
         dest: AreaType,
         dest_id: AreaId,
+        fees: usize,
         move_id: u64,
     ) -> Result<Move, ImportError> {
-        let candidates = president_candidates_to(
+        select_tram_move(
             self.state(),
             self.session.rules(),
             &self.session.legal(),
             seat,
+            dest,
             dest_id,
-        );
-        match select_free_president_label(&candidates) {
-            Ok(mv) => Ok(mv),
-            Err(0) => Err(rerr(
-                move_id,
-                format!(
-                    "a `trams` president move to {dest:?} has no free (zero-cost) legal label — \
-                     the Tram technology moves for free, so one must exist; candidates considered: {}",
-                    describe_candidates(&candidates)
-                ),
-            )),
-            Err(n) => Err(rerr(
-                move_id,
-                format!(
-                    "{n} distinct zero-cost labels to {dest:?} — the engine's route enumeration \
-                     emits at most one per destination; candidates considered: {}",
-                    describe_candidates(&candidates)
-                ),
-            )),
-        }
+            fees,
+            move_id,
+        )
     }
 
     /// Resolve the pending customs-space choice from the stashed
@@ -1034,15 +1075,45 @@ impl<'a> Translator<'a> {
                         self.state().players[seat as usize].president_location,
                         PresidentLocation::InHand
                     );
+                    // The `via` dispatch. A residual the fix wave records
+                    // rather than closes (T1 review MUST-1's mutation C): a
+                    // dispatch that routed `Tram` through the fee-count
+                    // matcher is behaviorally invisible at 2P, where price
+                    // and fee count coincide — the seam pins below catch the
+                    // naive SELECTIONS, and the end-to-end catch for the
+                    // ROUTING is Task 2's replay of m128/m137 once the
+                    // resolve-stage hold on this capture clears.
                     let mv = if in_hand {
-                        Move::PlacePresident { destination: dest_id }
+                        match via {
+                            PresidentVia::Placed => {
+                                Move::PlacePresident { destination: dest_id }
+                            }
+                            // Unobserved shape, refused rather than re-read
+                            // as a placement (T1 review SHOULD-2): both
+                            // surviving tram facts move an ON-BOARD
+                            // President, and a silent PlacePresident here
+                            // could charge a placement fee the evidence
+                            // never showed. Untested-unreachable arm, the
+                            // T3-NOTE-4 posture: spelled out, never `_`.
+                            PresidentVia::Tram => {
+                                return Err(rerr(
+                                    move_id,
+                                    format!(
+                                        "a `trams` president move to {dest:?} with the President \
+                                         IN HAND is outside the observed set — both surviving \
+                                         tram facts (m128, m137) move an on-board President; \
+                                         hard error, never guessed"
+                                    ),
+                                ));
+                            }
+                        }
                     } else {
                         match via {
                             PresidentVia::Placed => self.walked_president_move(
                                 seat, dest, dest_id, fees, move_id,
                             )?,
                             PresidentVia::Tram => {
-                                self.tram_president_move(seat, dest, dest_id, move_id)?
+                                self.tram_president_move(seat, dest, dest_id, fees, move_id)?
                             }
                         }
                     };
@@ -1768,15 +1839,6 @@ mod tests {
         );
     }
 
-    /// The TRANSLATOR half of the same pin: given the engine fact above
-    /// (`reveals[0]` lands rightmost) and BGA's display mechanics (census §1:
-    /// slide-left, then ascending keys refill the vacated right end — the
-    /// order `port_shadow`'s ascending append mirrors), only a DESCENDING
-    /// draw list puts ascending keys in ascending slots. Reversing this list
-    /// changes nothing the corpus checkpoints can see — the escaped mutation
-    /// M4 — but silently mis-arranges the engine's display, and slot
-    /// arrangement carries LOW/MID/HIGH zone take-power gating, so a wrong
-    /// order could flip a take's legality in a future corpus.
     /// Drive a 2P sim by always taking the first legal move until a Movement
     /// decision point offers real `MovePresident` labels — i.e. the President
     /// is already ON the board, which is the only shape a `trams` fact can
@@ -1813,22 +1875,17 @@ mod tests {
         panic!("no Movement decision point with the President on board within 400 moves");
     }
 
-    /// THE SUPPRESSION PIN — the reason W2 was not a one-line vocabulary widen.
+    /// The ENGINE guarantee the `Ok` arm depends on, pinned where the matcher
+    /// can see it: per destination there is AT MOST ONE zero-cost label, and
+    /// at a real Movement point some free label is a WALK with a non-empty
+    /// path (the suppression shape a `path.is_empty()` reading would miss).
     ///
-    /// `movement_routes_family` suppresses a Tram/Station teleport to any
-    /// destination already covered by a ZERO-COST move, so when BGA says
-    /// `trams` to an adjacent tile the surviving engine label is the free WALK,
-    /// with a NON-EMPTY path. Both surviving tram facts in async table
-    /// 896199544 are exactly that shape (m128 tile 3→2, m137 tile 2→1). A
-    /// matcher written as `path.is_empty()` — the obvious reading of "Tram is a
-    /// teleport" — would therefore find nothing at all, which is the failure
-    /// this test exists to catch.
-    ///
-    /// It also pins the ENGINE guarantee the `Ok` arm depends on: per
-    /// destination there is AT MOST ONE zero-cost label, so selecting "the free
-    /// one" is never a choice between equals.
+    /// Renamed at the T1 fix wave (review SHOULD-3): this test involves no
+    /// tram fact and no Tram technology — the tests that DRIVE the tram
+    /// selection are `select_tram_move_picks_the_free_walk_…` and its
+    /// siblings below.
     #[test]
-    fn a_tram_fact_selects_the_free_walk_the_engine_kept_after_suppression() {
+    fn every_destination_has_at_most_one_zero_cost_label_and_some_free_one_walks() {
         let s = sim_at_a_president_move();
         let seat = s.state().current_player.0;
         let legal = s.legal();
@@ -1909,6 +1966,205 @@ mod tests {
         assert_eq!(describe_candidates(&[]), "none");
     }
 
+    /// The AreaType a board id carries — display-only in the selection's
+    /// refusal text, looked up rather than guessed so the tests' messages
+    /// stay true.
+    fn area_type_of(state: &yokohama_core::GameState, id: AreaId) -> AreaType {
+        state
+            .board_layout
+            .areas
+            .iter()
+            .find(|(a, _)| **a == id)
+            .map(|(_, cfg)| cfg.area_type)
+            .expect("a listed destination is on the board")
+    }
+
+    /// **THE SEAM PIN, suppressed side** (T1 review MUST-1): drive
+    /// [`select_tram_move`] itself — not its helpers — at every destination
+    /// whose free label is the WALK the engine kept after suppressing the
+    /// teleport, and require it to return exactly that walk. A selection
+    /// re-written as `path.is_empty()` (the naive "Tram is a teleport"
+    /// reading, the review's escaped mutation A) refuses every one of these
+    /// and fails this test's anti-vacuity floor.
+    #[test]
+    fn select_tram_move_picks_the_free_walk_the_engine_kept_after_suppression() {
+        let s = sim_at_a_president_move();
+        let seat = s.state().current_player.0;
+        let legal = s.legal();
+        let mut suppressed_walks = 0usize;
+        for dest_id in president_destinations(&legal) {
+            let candidates =
+                president_candidates_to(s.state(), s.rules(), &legal, seat, dest_id);
+            let free: Vec<&(Move, u32)> =
+                candidates.iter().filter(|(_, cost)| *cost == 0).collect();
+            if free.len() != 1 {
+                continue;
+            }
+            let Move::MovePresident { path, .. } = &free[0].0 else { continue };
+            if path.is_empty() {
+                continue; // a genuine teleport — the sibling test's subject
+            }
+            let picked = select_tram_move(
+                s.state(),
+                s.rules(),
+                &legal,
+                seat,
+                area_type_of(s.state(), dest_id),
+                dest_id,
+                0,
+                4242,
+            )
+            .expect("a destination with a free walk must select");
+            assert_eq!(
+                picked,
+                free[0].0.clone(),
+                "the selection is the engine's surviving free WALK, path and all",
+            );
+            suppressed_walks += 1;
+        }
+        assert!(
+            suppressed_walks > 0,
+            "anti-vacuity: at least one destination exercises the suppressed-into-walk shape",
+        );
+    }
+
+    /// **THE SEAM PIN, teleport side**: grant the acting seat the Tram
+    /// technology on a cloned state, re-enumerate, and every destination
+    /// whose free label is the TELEPORT (empty path — nothing free walks
+    /// there) must come back from [`select_tram_move`] as that teleport.
+    /// Together with the suppressed-side pin this kills the naive selections
+    /// in both directions.
+    #[test]
+    fn select_tram_move_picks_the_teleport_where_no_free_walk_exists() {
+        let s = sim_at_a_president_move();
+        let seat = s.state().current_player.0;
+        let rules = s.rules();
+        let tram_id = rules
+            .techs
+            .iter()
+            .find(|t| t.effect == yokohama_core::TechEffect::Tram)
+            .expect("the standard registry carries the Tram technology")
+            .id;
+        let mut state = s.state().clone();
+        if !state.players[seat as usize].technologies.contains(&tram_id) {
+            state.players[seat as usize].technologies.push(tram_id);
+        }
+        let legal = yokohama_core::get_legal_moves(&state, rules);
+        let mut teleports = 0usize;
+        for dest_id in president_destinations(&legal) {
+            let candidates = president_candidates_to(&state, rules, &legal, seat, dest_id);
+            let free: Vec<&(Move, u32)> =
+                candidates.iter().filter(|(_, cost)| *cost == 0).collect();
+            if free.len() != 1 {
+                continue;
+            }
+            let Move::MovePresident { path, .. } = &free[0].0 else { continue };
+            if !path.is_empty() {
+                continue; // the suppressed shape — the sibling test's subject
+            }
+            let picked = select_tram_move(
+                &state,
+                rules,
+                &legal,
+                seat,
+                area_type_of(&state, dest_id),
+                dest_id,
+                0,
+                4242,
+            )
+            .expect("a destination whose free label is the teleport must select");
+            assert_eq!(picked, free[0].0.clone(), "the selection is the teleport, empty path");
+            teleports += 1;
+        }
+        assert!(
+            teleports > 0,
+            "anti-vacuity: granting Tram must surface at least one unsuppressed teleport",
+        );
+    }
+
+    /// **THE SEAM PIN, refusal side**: driven through [`select_tram_move`]
+    /// itself. (a) A tram fact carrying observed pass-through fees refuses
+    /// BEFORE any selection — Tram moves for free, and absorbing fee evidence
+    /// into a zero-cost pick would discard a contradiction (T1 review
+    /// SHOULD-1). (b) A destination with no free label refuses naming the
+    /// move id, the destination and every candidate with its price.
+    #[test]
+    fn select_tram_move_refuses_fees_and_no_free_label_naming_what_it_saw() {
+        let s = sim_at_a_president_move();
+        let seat = s.state().current_player.0;
+        let legal = s.legal();
+        let dests: Vec<AreaId> = president_destinations(&legal);
+        assert!(!dests.is_empty());
+
+        // (a) the fee gate, on any real destination.
+        let err = select_tram_move(
+            s.state(),
+            s.rules(),
+            &legal,
+            seat,
+            area_type_of(s.state(), dests[0]),
+            dests[0],
+            2,
+            777,
+        )
+        .expect_err("observed fees contradict a free move");
+        let text = err.to_string();
+        assert!(text.contains("2 observed pass-through fee(s)"), "{text}");
+        assert!(text.contains("777"), "the refusal names its move id: {text}");
+
+        // (b) no free label: an area that is NOT a legal destination at all
+        // (here: unreachable at this point) has an empty candidate set, which
+        // is the same Err(0) arm a fully-priced destination reaches — refused
+        // naming the move id and what was considered, never a nearest pick.
+        // (The priced-rivals wording is pinned by value in the
+        // `describe_candidates` rows of the refusal-shape test above.)
+        let listed: BTreeSet<AreaId> = dests.iter().copied().collect();
+        let unreachable = s
+            .state()
+            .board_layout
+            .areas
+            .iter()
+            .map(|(id, _)| *id)
+            .find(|id| !listed.contains(id))
+            .expect("some board area is not a legal destination at this point");
+        let err = select_tram_move(
+            s.state(),
+            s.rules(),
+            &legal,
+            seat,
+            area_type_of(s.state(), unreachable),
+            unreachable,
+            0,
+            888,
+        )
+        .expect_err("no free label must refuse, never nearest-pick");
+        let text = err.to_string();
+        assert!(text.contains("no free (zero-cost) legal label"), "{text}");
+        assert!(text.contains("none"), "an empty candidate set is named as such: {text}");
+        assert!(text.contains("888"), "{text}");
+    }
+
+    /// Every `MovePresident` destination in a legal list, deduplicated.
+    fn president_destinations(legal: &[Move]) -> Vec<AreaId> {
+        let set: BTreeSet<AreaId> = legal
+            .iter()
+            .filter_map(|m| match m {
+                Move::MovePresident { destination, .. } => Some(*destination),
+                _ => None,
+            })
+            .collect();
+        set.into_iter().collect()
+    }
+
+    /// The TRANSLATOR half of the same pin: given the engine fact above
+    /// (`reveals[0]` lands rightmost) and BGA's display mechanics (census §1:
+    /// slide-left, then ascending keys refill the vacated right end — the
+    /// order `port_shadow`'s ascending append mirrors), only a DESCENDING
+    /// draw list puts ascending keys in ascending slots. Reversing this list
+    /// changes nothing the corpus checkpoints can see — the escaped mutation
+    /// M4 — but silently mis-arranges the engine's display, and slot
+    /// arrangement carries LOW/MID/HIGH zone take-power gating, so a wrong
+    /// order could flip a take's legality in a future corpus.
     #[test]
     fn refill_draw_keys_descend_so_ascending_keys_land_left_to_right() {
         assert_eq!(refill_draw_keys(38, 2), vec![39, 38]);

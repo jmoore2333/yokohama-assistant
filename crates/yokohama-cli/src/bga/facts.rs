@@ -369,7 +369,7 @@ pub fn extract(
                 //
                 //   m127  socket ×2   tile 3 → 1 (Church)     route_keys []
                 //   m128  socket ×2   tile 3 → 2 (Silk Mill)  route_keys ["2"]
-                //         history ×1  arg-thin: action/tile_name/power only
+                //         history ×1  arg-thin: action/player_id/tile_name/power
                 //   m137  socket ×2   tile 2 → 1 (Church)     route_keys ["1"]
                 //         history ×1  arg-thin, as above
                 //
