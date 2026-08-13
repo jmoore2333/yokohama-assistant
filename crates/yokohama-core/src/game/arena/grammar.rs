@@ -179,6 +179,15 @@ fn parse_knob_u8(key: &str, value: &str) -> Result<u8, String> {
     value.parse::<u8>().map_err(|e| format!("{key} must be a small count: {e}"))
 }
 
+/// What a zero budget is refused WITH, at every surface that reads one.
+///
+/// Single-sourced because [`Contestant::from_parts`] refuses `cap=0` in a
+/// recorded params map on exactly the same grounds this parser refuses it on a
+/// command line: the two surfaces describing one rule must not drift into two
+/// different sentences about it.
+pub(super) const CAP_ZERO_REFUSAL: &str =
+    "cap=0 starves every decision; omit the knob for an uncapped seat";
+
 /// The shared scored-successor budget (spec §3.4). `cap=0` is refused rather
 /// than silently meaning "uncapped": OMITTING the knob is how a caller says
 /// uncapped, and a budget of zero would starve the mandatory root pass at every
@@ -189,7 +198,7 @@ fn parse_knob_cap(value: &str) -> Result<u32, String> {
         .parse::<u32>()
         .map_err(|e| format!("cap must be a scored-successor budget: {e}"))?;
     if cap == 0 {
-        return Err("cap=0 starves every decision; omit the knob for an uncapped seat".to_string());
+        return Err(CAP_ZERO_REFUSAL.to_string());
     }
     Ok(cap)
 }
@@ -199,6 +208,15 @@ fn parse_knob_cap(value: &str) -> Result<u32, String> {
 /// The knob form exists so the two `FamilyWeighted` settings §0-R3(i)'s
 /// guaranteed edge is built from are reachable from a command line without a
 /// second enum. Knobs on a rung that has none is an error, not a silent ignore.
+///
+/// **W5's deferred repair:** the unknown-knob fall-through below now names the
+/// contestant it was reading, `for {name}`, exactly as the four
+/// evaluator/architecture arms in [`parse_contestant`] always did. It was the
+/// one refusal in this file that made a reader go back to the source to learn
+/// which contestant had rejected their knob; the W1 fix wave recorded the
+/// repair and deferred it here because the string is owner-visible in the
+/// runner. `FROZEN_BATTERY`'s `family-weighted:z=1` row moved with it — the
+/// battery's only deliberate departure from HEAD `a9029b8`.
 fn parse_policy(name: &str, knobs: Option<&str>) -> Result<RolloutPolicy, String> {
     let base = RolloutPolicy::from_str_name(name).ok_or_else(|| {
         format!(
@@ -225,7 +243,7 @@ fn parse_policy(name: &str, knobs: Option<&str>) -> Result<RolloutPolicy, String
                 }
             }
             "k" => recovery_min_of = parse_knob_u8(&key, &value)?,
-            other => return Err(format!("unknown knob {other:?} (p | k)")),
+            other => return Err(format!("unknown knob {other:?} for {name} (p | k)")),
         }
     }
     Ok(RolloutPolicy::FamilyWeighted { retreat_ppm, recovery_min_of })
@@ -249,6 +267,13 @@ mod tests {
     /// `Ok` rows carry the `Debug` of the parsed [`Contestant`] (which pins
     /// every field, defaults included); `Err` rows carry the error string
     /// VERBATIM, because those strings are user-facing in the runner.
+    ///
+    /// **ONE row has deliberately departed from that capture** — W5 landed the
+    /// refusal-text repair the W1 fix wave recorded and deferred (see
+    /// [`parse_policy`]), so `family-weighted:z=1` now names the contestant the
+    /// way every other arm's fall-through always did. It is marked in place
+    /// below. Every other row is still byte-for-byte the old code's own output,
+    /// and a second unmarked departure is a regression, not a re-capture.
     const FROZEN_BATTERY: &[(&str, Result<&str, &str>)] = &[
         ("uniform", Ok("Policy(Uniform)")),
         ("retreat-averse", Ok("Policy(RetreatAverse)")),
@@ -269,7 +294,12 @@ mod tests {
         ("family-weighted:p=-1", Err("p must be parts per million: invalid digit found in string")),
         ("family-weighted:p=abc", Err("p must be parts per million: invalid digit found in string")),
         ("family-weighted:k=256", Err("k must be a small count: number too large to fit in target type")),
-        ("family-weighted:z=1", Err("unknown knob \"z\" (p | k)")),
+        // W5: the ONE refusal in this file that did not name the contestant it
+        // was reading (the W1 fix wave recorded the repair and deferred it here
+        // as an owner-visible error-text change). Every other arm's fall-through
+        // already said `for <name>`; this row is the frozen battery's only
+        // deliberate departure from HEAD `a9029b8`.
+        ("family-weighted:z=1", Err("unknown knob \"z\" for family-weighted (p | k)")),
         ("family-weighted:", Ok("Policy(FamilyWeighted { retreat_ppm: 166667, recovery_min_of: 5 })")),
         ("family_weighted:p=1", Ok("Policy(FamilyWeighted { retreat_ppm: 1, recovery_min_of: 5 })")),
         ("uniform:p=5", Err("policy \"uniform\" has no knobs, but \"p=5\" was given")),
@@ -502,6 +532,9 @@ mod tests {
             ("atomic-diag-v1:zzz=1", "zzz"),
             ("mcts-v1:zzz=1", "zzz"),
             ("family-weighted:zzz=1", "zzz"),
+            // …and the rung arm names the CONTESTANT too, exactly as the four
+            // evaluator/architecture arms always did (W5's deferred repair).
+            ("family-weighted:zzz=1", "family-weighted"),
             ("mcts-v1:leaf=zzz", "zzz"),
             ("uniform:p=5", "uniform"),
             ("greedy-v1:zzz", "zzz"),

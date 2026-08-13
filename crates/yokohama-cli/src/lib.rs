@@ -20,4 +20,5 @@ pub mod session;
 pub mod style;
 pub mod suggest;
 pub mod view_render;
+pub(crate) mod why;
 pub mod wizard;

@@ -623,6 +623,47 @@ fn section8_phase_names_match_the_describer() {
     }
 }
 
+/// (n2) §4's `why` section states BOTH grammars and the refusal that makes the
+/// command trustworthy, in both formats (W5 task 5).
+///
+/// The mechanical half of the guide pair for a NEW command. (a)/(d)/(l) already
+/// hold §5's one-line entry to `HELP_TEXT` verbatim in both formats; what they
+/// cannot see is the prose that teaches the command — and `why`'s prose carries
+/// two claims a tester will act on: that `why <n>` takes the LOG's own number
+/// (so it has to name the log), and that a reconstruction which disagrees with
+/// the record REFUSES rather than showing an account of a move nobody played.
+/// Test (b)'s shape, scoped to §4 so a §5 line cannot satisfy a §4 assertion —
+/// this file's own named-check lesson.
+#[test]
+fn section4_states_the_why_grammars_and_its_mismatch_refusal() {
+    let md = section_slice(GUIDE_MD, "## 4.", "## 5.");
+    let html = unescape_html(section_slice(GUIDE_HTML, "<h2>4.", "<h2>5."));
+    for needle in ["why <n>", "the number `log` prints", "refuses and names both moves"] {
+        // The `.md` writes code spans with backticks and the `.html` with
+        // <code>; both are stripped to the same words before comparing, which
+        // is the "word-identical modulo markup" rule this pair follows.
+        let plain = needle.replace('`', "");
+        for (file, text) in [("cli-guide.md", md.replace('`', "")), ("cli-guide.html", strip_code_tags(&html))] {
+            assert!(
+                text.contains(&plain),
+                "{file} §4 no longer says {plain:?} about `why` — the section teaches the \
+                 command's two grammars and its refuse-on-mismatch guarantee, and both formats \
+                 carry it word for word (authority: crates/yokohama-cli/src/why.rs)."
+            );
+        }
+    }
+}
+
+/// `<code>`/`</code>`/`<strong>`/`</strong>`/`<em>`/`</em>` removed, so HTML
+/// prose can be compared against the markdown's backtick-stripped twin.
+fn strip_code_tags(s: &str) -> String {
+    let mut out = s.to_string();
+    for tag in ["<code>", "</code>", "<strong>", "</strong>", "<em>", "</em>"] {
+        out = out.replace(tag, "");
+    }
+    out
+}
+
 /// (n) The choice-option strings §8.6 QUOTES are strings `describe_move`
 /// actually produces. Every one of these is a constant arm -- no state reaches
 /// its wording -- so a fresh session is enough to render them, and an editorial

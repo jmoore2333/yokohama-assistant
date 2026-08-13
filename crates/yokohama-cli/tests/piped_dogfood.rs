@@ -16,8 +16,12 @@
 //! hard input cap so a regression can never hang the suite.
 //!
 //! TWO games run here, sharing that one driver: all-human, and (Phase 3.2
-//! Task 12) human-vs-bot with seat 1 played by the shipped family-weighted
-//! rung. The driver answers only the HUMAN's prompts in both -- a bot's turn
+//! Task 12) human-vs-bot with seat 1 played by whatever the WIZARD configures
+//! -- `lookahead-v1` at shipped knobs since Phase 3.5c W5, the family-weighted
+//! rung before it. The bot is reached through the wizard's own answer rather
+//! than constructed here, so this gate always exercises the SHIPPED default,
+//! and its wall moves when that default does (W5 re-measured both figures).
+//! The driver answers only the HUMAN's prompts in both -- a bot's turn
 //! arrives already played, since the REPL pumps it before printing the next
 //! prompt -- so a pump that stopped working would hang this test on a prompt
 //! addressed to a seat the driver does not play, rather than passing quietly.
@@ -157,8 +161,8 @@ fn full_piped_2p_game_runs_plain_to_winner() {
 /// bot seat, prefixed by the seat it was played on (`Repl::pump_bots`).
 const BOT_MOVE_PREFIX: &str = "Seat 1 (Blue) \u{2014}";
 
-/// Phase 3.2 Task 12: the same full game with seat 1 played by the shipped
-/// family-weighted bot. Same binary, same driver, same honesty assertions --
+/// Phase 3.2 Task 12: the same full game with seat 1 played by the wizard's
+/// default bot (`lookahead-v1` since W5). Same binary, same driver, same honesty assertions --
 /// the driver answers the HUMAN's prompts and the bot's turns arrive already
 /// played, because the REPL pumps them before printing the prompt. That is the
 /// property this variant exists to prove on the shipped executable: a piped

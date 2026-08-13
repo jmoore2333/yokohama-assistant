@@ -125,6 +125,17 @@ pub fn table_row(cells: [&str; 5]) -> String {
 /// unchanged by the frame bound.
 const ROW_TEXT_WIDTH: usize = 80;
 
+/// Longest line of PROSE this screen prints — header notes ([`Body::painted_prose`])
+/// and `why`'s refusals ([`wrap_to`]'s callers).
+///
+/// The same editorial-under-a-guarantee split [`ROW_TEXT_WIDTH`] makes, applied
+/// to sentences instead of rows: the frame is what a line may NOT exceed, this
+/// is what a paragraph should not exceed, and at a 198-column two-player frame
+/// the difference is the whole of readability. It is the measure [`HONESTY_NOTE`]
+/// is hand-wrapped at, named so the text that cannot be hand-wrapped — anything
+/// carrying an interpolation — can be folded to the same width by machine.
+pub(crate) const PROSE_TEXT_WIDTH: usize = 80;
+
 /// The closing honesty note (spec §7: the explanation text states term
 /// contributions, it does not give play advice). Pre-wrapped as fixed lines
 /// rather than reflowed at render time: its longest line is 80 columns, inside
@@ -438,6 +449,53 @@ impl Body {
             self.line(&format!("{indent}{piece}"));
         }
     }
+
+    /// [`prose`](Self::prose), painted line by line and folded at
+    /// [`PROSE_TEXT_WIDTH`] — `why`'s header notes, which are sentences rather
+    /// than labels and so must wrap rather than be cut, and must not run
+    /// edge-to-edge across a 198-column frame either. Each piece is elided
+    /// BEFORE it is painted (`wrap_words` leaves an unbreakable word whole, and
+    /// `style`'s alignment rule puts the paint outside the measurement), and
+    /// painted per line because `paint` wraps whatever it is given: a newline
+    /// inside one call would put the reset escape on a row of its own.
+    fn painted_prose(&mut self, tone: Tone, indent: &str, text: &str) {
+        let room = self.width.saturating_sub(indent.chars().count()).min(PROSE_TEXT_WIDTH);
+        for piece in wrap_words(text, room) {
+            self.out.push_str(indent);
+            self.out.push_str(&paint(tone, &elide(&piece, room)));
+            self.out.push('\n');
+        }
+    }
+}
+
+/// Everything the `suggest` screen and the `why` screen differ in — which is
+/// the header and two labels, and deliberately NOT the table (design §2.4: the
+/// explanation is rendered by one implementation, refactored only as far as
+/// sharing requires).
+///
+/// `suggest`'s own header is built by [`suggest_header`] and its output is
+/// byte-identical to what it was before this seam existed; the pins that hold
+/// that are `suggest`'s existing render tests and `guide_sync`'s captured
+/// screen, none of which moved.
+pub(crate) struct Header {
+    /// [`render::section`]'s title.
+    pub title: &'static str,
+    /// The clause printed after `Seat N (Colour)` on the identity line.
+    pub identity: String,
+    /// Plain sentences under the identity line, each with its own tone —
+    /// `why`'s reconstruction note and its version-drift warning. Empty for
+    /// `suggest`, which says everything it has to say on one line.
+    pub notes: Vec<(Tone, String)>,
+    /// The label above the move.
+    pub move_label: &'static str,
+    /// `Some(reason)` for a contestant that reports NEITHER a line NOR a
+    /// candidate ranking — greedy's one-ply argmax, whose empty continuation
+    /// and empty ranking are what it HAS to report rather than a degenerate
+    /// position. The renderer then prints `reason` once in place of both
+    /// blocks, because the two "none" sentences it would otherwise print
+    /// ("the score was read at this position itself", "this decision point
+    /// offered exactly one move") are false about a branching position.
+    pub explanation_only: Option<&'static str>,
 }
 
 /// The whole `suggest` screen.
@@ -474,10 +532,23 @@ fn render_suggestion_within(
     rules: &Rules,
     budget: usize,
 ) -> String {
-    let mut body = Body::new(budget);
-    body.line(render::section("Suggest").trim_end_matches('\n'));
+    render_within(s, &suggest_header(s), state, rules, budget)
+}
 
-    let color = state.player(s.seat).color;
+/// [`render_within`] at the frame's own budget, for a caller supplying its own
+/// header — `why`'s entry into this renderer.
+pub(crate) fn render_with_header(
+    s: &Suggestion,
+    header: &Header,
+    state: &GameState,
+    rules: &Rules,
+) -> String {
+    render_within(s, header, state, rules, crate::screen::frame_width(state.players.len()))
+}
+
+/// The `suggest` screen's own header — the lines this file used to write
+/// inline, moved behind [`Header`] unchanged.
+fn suggest_header(s: &Suggestion) -> Header {
     // Every knob printed comes from the const the agent itself reads, so this
     // line cannot describe a rung the press did not run.
     //
@@ -497,10 +568,9 @@ fn render_suggestion_within(
     // before it only had to explain one. It does; the captured screen and that
     // paragraph move together, and `guide_sync` fails if this line drifts from
     // either format.
-    body.painted_head(
-        Tone::Player(color),
-        &format!("Seat {} ({})", s.seat.0, render::color_name(color)),
-        &format!(
+    Header {
+        title: "Suggest",
+        identity: format!(
             " · {} · beam {}, K={}, M={}, evaluator impl {} · stream {:#018x}",
             lookahead::LOOKAHEAD_CONTROLLER,
             lookahead::DEFAULT_BEAM,
@@ -509,8 +579,34 @@ fn render_suggestion_within(
             eval::EVAL_IMPL_VERSION,
             s.stream_seed,
         ),
+        notes: Vec::new(),
+        move_label: "Suggested move:",
+        explanation_only: None,
+    }
+}
+
+/// The shared body: the move, the line it was valued down, the term table, the
+/// runner-ups and the closing notes — everything below [`Header`].
+fn render_within(
+    s: &Suggestion,
+    header: &Header,
+    state: &GameState,
+    rules: &Rules,
+    budget: usize,
+) -> String {
+    let mut body = Body::new(budget);
+    body.line(render::section(header.title).trim_end_matches('\n'));
+
+    let color = state.player(s.seat).color;
+    body.painted_head(
+        Tone::Player(color),
+        &format!("Seat {} ({})", s.seat.0, render::color_name(color)),
+        &header.identity,
     );
-    body.line("Suggested move:");
+    for (tone, note) in &header.notes {
+        body.painted_prose(*tone, "", note);
+    }
+    body.line(header.move_label);
     // The ANSWER wraps: a placement naming three areas and their fee recipients
     // runs past every frame, and the tail a cut would take is the fee — which is
     // the part a reader is deciding on. Continuation lines indent under the
@@ -524,7 +620,13 @@ fn render_suggestion_within(
     // -- the line the value was read at ------------------------------------
     let (steps, drifted) = describe_line(&s.continuation, state, rules);
     body.blank();
-    if steps.is_empty() {
+    if let Some(reason) = header.explanation_only {
+        // A contestant that reports neither a line nor a ranking says so ONCE,
+        // in place of both blocks: the two "none" sentences below are about a
+        // degenerate POSITION, and printing them here would claim something
+        // false about a perfectly branching one.
+        body.prose("", reason);
+    } else if steps.is_empty() {
         body.line("No line to show: the score below was read at this position itself.");
     } else {
         // The reach claim is dropped, not restated, when the ply guard fired
@@ -580,28 +682,33 @@ fn render_suggestion_within(
     body.line(&table_row([TOTAL_LABEL, "", "", "", &s.explanation.total.to_string()]));
 
     // -- runner-ups ---------------------------------------------------------
-    let best = s.best_value();
-    let others: Vec<&lookahead::RootScore> =
-        s.ranking.iter().filter(|r| r.mv != s.mv).take(RUNNER_UPS_SHOWN).collect();
-    body.blank();
-    if others.is_empty() {
-        body.line("No runner-up: this decision point offered exactly one move.");
-    } else {
-        body.line(&format!("{RUNNER_UPS_LABEL} — {} candidate(s) ranked:", s.ranking.len()));
-        for r in others {
-            body.row(
-                &format!("  {:>10}  ", r.value - best),
-                &describe::describe_move(&r.mv, state, rules),
-                ROW_TEXT_WIDTH,
-            );
+    // Skipped WHOLE (its blank line included) for an explanation-only
+    // contestant: it has no ranking to show and the reason was already given
+    // above, so a second block would only repeat it in a worse sentence.
+    if header.explanation_only.is_none() {
+        let best = s.best_value();
+        let others: Vec<&lookahead::RootScore> =
+            s.ranking.iter().filter(|r| r.mv != s.mv).take(RUNNER_UPS_SHOWN).collect();
+        body.blank();
+        if others.is_empty() {
+            body.line("No runner-up: this decision point offered exactly one move.");
+        } else {
+            body.line(&format!("{RUNNER_UPS_LABEL} — {} candidate(s) ranked:", s.ranking.len()));
+            for r in others {
+                body.row(
+                    &format!("  {:>10}  ", r.value - best),
+                    &describe::describe_move(&r.mv, state, rules),
+                    ROW_TEXT_WIDTH,
+                );
+            }
         }
-    }
-    let tied = s.tied_at_top();
-    if tied > 1 {
-        body.line(&format!(
-            "  {tied} candidates tie at the top; which one you see is this position's own"
-        ));
-        body.line("  keyed draw, so a second press will not change it.");
+        let tied = s.tied_at_top();
+        if tied > 1 {
+            body.line(&format!(
+                "  {tied} candidates tie at the top; which one you see is this position's own"
+            ));
+            body.line("  keyed draw, so a second press will not change it.");
+        }
     }
 
     // Painted line by line, never as one block: `paint` wraps whatever it is
@@ -688,6 +795,36 @@ fn wrap_answer(answer: &str, width: usize) -> Vec<String> {
         pieces.extend(wrap_words(&rest, room_for(ANSWER_WRAP_INDENT)));
     }
     pieces
+}
+
+/// Fold a whole authored message so no line exceeds `width` visible columns,
+/// keeping each line's own leading indent and its blank lines.
+///
+/// **For text a caller INTERPOLATES into** — `why`'s refusals, which carry a
+/// parser's error, a `Move`'s `Debug` and a contestant's echo, none of which
+/// has a bounded length. Hand-wrapping such a message wraps the literal and
+/// leaves the interpolation to run off the end: measured, one refusal reached
+/// ~230 columns against a 198-column frame, which is exactly the defect
+/// `suggest_cmd`'s live refusal comment warns about (a view body wider than
+/// the frame sizes the composed screen to itself and shoves the board sideways
+/// for as long as it is up).
+///
+/// Per LINE rather than per paragraph so a message may still lay itself out —
+/// the mismatch refusal indents the two moves it names under their own lines,
+/// and re-flowing that into a paragraph would merge them.
+pub(crate) fn wrap_to(text: &str, width: usize) -> String {
+    let mut out = String::new();
+    for line in text.lines() {
+        let split = line.find(|c: char| !c.is_whitespace()).unwrap_or(line.len());
+        let (indent, rest) = line.split_at(split);
+        let room = width.saturating_sub(indent.chars().count());
+        for piece in wrap_words(rest, room) {
+            out.push_str(indent);
+            out.push_str(&elide(&piece, room));
+            out.push('\n');
+        }
+    }
+    out
 }
 
 /// Break `text` at spaces into runs of at most `width` display columns.

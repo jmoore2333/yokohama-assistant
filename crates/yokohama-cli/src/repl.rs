@@ -781,6 +781,22 @@ impl Repl {
             // the trail into a report.
             ["log"] => self.out_view(self.log_tail()),
             ["suggest"] => self.suggest_cmd(),
+            ["why"] => self.why_cmd(None),
+            ["why", token] => match token.parse::<usize>() {
+                Ok(n) => self.why_cmd(Some(n)),
+                Err(_) => self.out(
+                    format!(
+                        "'{token}' is not an event number — `why <n>` takes the number `log` \
+                         prints beside each line, or `why` on its own for the last bot move.\n"
+                    ),
+                    false,
+                ),
+            },
+            ["why", ..] => self.out(
+                "Usage: 'why' for the last bot move, or 'why <n>' for the log's own event number.\n"
+                    .to_string(),
+                false,
+            ),
             ["view"] | ["views"] => {
                 self.overlay = Some(Overlay::Menu);
                 self.out(String::new(), false)
@@ -2656,7 +2672,7 @@ impl Repl {
 
         while !self.locked && !self.session.is_over() {
             let seat = self.session.state().current_player;
-            let Some(policy) = self.bots.policy_at(seat) else { break };
+            let Some(contestant) = self.bots.contestant_at(seat) else { break };
             if moves.len() >= PUMP_MOVE_CAP {
                 halt = Some(format!(
                     "BOT HALT — the pump has applied {PUMP_MOVE_CAP} moves across consecutive bot \
@@ -2667,7 +2683,8 @@ impl Repl {
                 break;
             }
             let decision_seed = self.bots.decision_seed(self.session.record().events.len());
-            let chosen = chooser.choose(self.session.state(), self.session.rules(), seat, policy, decision_seed);
+            let chosen =
+                chooser.choose(self.session.state(), self.session.rules(), seat, contestant, decision_seed);
             let mv = match chosen {
                 Ok(mv) => mv,
                 // A dead end is the policy honestly finding nothing: halt, do
@@ -2810,6 +2827,22 @@ impl Repl {
             )),
             Err(e) => self.out_view(format!("No suggestion: {e}")),
         }
+    }
+
+    /// `why`: how a BOT seat chose the move it already played (W5 task 5,
+    /// design §2), reconstructed by replaying the record to that position and
+    /// re-running the recorded contestant under the pump's own decision key.
+    ///
+    /// **`&self`, like [`Self::suggest_cmd`] and for the same reason**: the
+    /// compiler enforces the sandbox rather than a convention, so this cannot
+    /// record an event, move the state or trip an autosave even by accident.
+    ///
+    /// The two commands split the game between them, which is OD-4(i)'s own
+    /// division: `suggest` answers for YOUR seat before you move, `why`
+    /// accounts for a BOT's move after it. Each refusal here that has a better
+    /// address points at the other one by name.
+    fn why_cmd(&self, arg: Option<usize>) -> StepOutput {
+        self.out_view(crate::why::why(&self.session, &self.bots, arg))
     }
 
     /// The seats a `reveal` could legitimately be about: live-tracked players
@@ -3311,6 +3344,7 @@ Commands:
   log             open the LOG view: the move and reveal trail, each line as it read when it applied
   view            open the numbered game-info menu over all of the views and indexes above ('views' also works)
   suggest         simulation only: what the built-in bot would play from your seat, with its arithmetic
+  why [n]         simulation only: how a bot seat chose its last move (or the log's event n), with the same arithmetic
   privacy         toggle hiding hand contents in views (default: hidden in live mode)
   panel           toggle the players panel inside the composed screen (terminal only)
   screen          toggle the composed screen itself (terminal only; pipes are always plain)
@@ -4300,7 +4334,7 @@ mod tests {
         // and shown by `main` above the opening frame rather than returned from
         // the loop. The live-record-names-a-bot demotion is the one this
         // driver can construct without a file on disk.
-        let bots = BotSeats::new(vec![None, Some(RolloutPolicy::FAMILY_WEIGHTED_DEFAULT)], 3);
+        let bots = BotSeats::new(vec![None, Some(Contestant::Policy(RolloutPolicy::FAMILY_WEIGHTED_DEFAULT))], 3);
         let mut session = Session::new_live(
             GameConfig::for_player_count(2),
             21,
@@ -4815,13 +4849,13 @@ mod tests {
     fn every_command_outside_the_lockdown_allow_list_is_refused_and_does_nothing() {
         // The whole dispatch surface a locked prompt could be handed: the two
         // spellings of undo, every view word and index word, the menu, the
-        // toggles, the pagers, `suggest`, `reveal`, a bare number, and one of
-        // each move grammar.
+        // toggles, the pagers, `suggest`, both forms of `why`, `reveal`, a bare
+        // number, and one of each move grammar.
         for line in [
             "undo", "back", "board", "players", "score", "help", "view", "views", "more", "list",
-            "suggest", "privacy", "panel", "screen", "tracks", "sites", "ports", "labs", "hand",
-            "goals", "orders", "techs", "sitecards", "?", "index", "reveal", "reveal 1", "1", "2",
-            "a 0", "b 0", "m 0", "r 0:1", "", "wat",
+            "suggest", "why", "why 0", "privacy", "panel", "screen", "tracks", "sites", "ports",
+            "labs", "hand", "goals", "orders", "techs", "sitecards", "?", "index", "reveal",
+            "reveal 1", "1", "2", "a 0", "b 0", "m 0", "r 0:1", "", "wat",
         ] {
             let mut r = locked_after_one_move();
             let state_before = r.session.state().clone();
@@ -6512,6 +6546,16 @@ mod tests {
     /// stamped on the session, `Repl::new` reading its bot seats back out of it
     /// -- so every fixture here exercises the SAME restoration path a resumed
     /// save does, rather than a test-only constructor that could drift from it.
+    ///
+    /// **Deliberately the RUNG, not the wizard's default** (W5 task 4, where
+    /// that default became `lookahead-v1`). Every fixture below wants SOME bot
+    /// moving so a pump, a review surface, an `undo` or a lockdown can be
+    /// observed; none of them is about which contestant sits there, and a
+    /// search per decision would pay for a property no test here asserts. The
+    /// rung is not deprecated -- it is simply no longer the default. A test
+    /// whose SUBJECT is the shipped default belongs at the wizard, where
+    /// `the_wizard_default_bot_seat_is_the_provisional_production_contestant`
+    /// pins it.
     fn repl_2p_bots(seed: u64, bot_seats: &[u8]) -> Repl {
         repl_np_bots(2, seed, bot_seats)
     }
@@ -6522,7 +6566,7 @@ mod tests {
     fn repl_np_bots(players: u8, seed: u64, bot_seats: &[u8]) -> Repl {
         let mut seats = vec![None; players as usize];
         for s in bot_seats {
-            seats[*s as usize] = Some(RolloutPolicy::FAMILY_WEIGHTED_DEFAULT);
+            seats[*s as usize] = Some(Contestant::Policy(RolloutPolicy::FAMILY_WEIGHTED_DEFAULT));
         }
         let bots = BotSeats::new(seats, 0x5A17_3B0C_9E44_D218);
         let mut session = Session::new_sim(
@@ -7079,7 +7123,7 @@ mod tests {
             _state: &GameState,
             _rules: &Rules,
             _seat: PlayerId,
-            _policy: RolloutPolicy,
+            _contestant: Contestant,
             _decision_seed: u64,
         ) -> Result<Move, BotError> {
             match &self.0 {
@@ -7155,7 +7199,7 @@ mod tests {
     /// in front of a view `observe` will refuse.
     #[test]
     fn a_live_record_naming_a_bot_seat_resumes_it_as_human_with_a_warning() {
-        let bots = BotSeats::new(vec![None, Some(RolloutPolicy::FAMILY_WEIGHTED_DEFAULT)], 3);
+        let bots = BotSeats::new(vec![None, Some(Contestant::Policy(RolloutPolicy::FAMILY_WEIGHTED_DEFAULT))], 3);
         let mut session = Session::new_live(
             GameConfig::for_player_count(2),
             21,
