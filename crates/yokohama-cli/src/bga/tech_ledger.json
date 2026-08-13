@@ -12,6 +12,8 @@
     { "tech_id": 11, "title": "Language School",   "country_code": 1, "req_gears": 3, "basis": "FORCED",   "evidence": "table 895724349: American/3 class is uniformly Language School (x2)" },
     { "tech_id": 21, "title": "Language School",   "country_code": 1, "req_gears": 3, "basis": "FORCED",   "evidence": "table 895724349: American/3 class is uniformly Language School (x2)" },
     { "tech_id": 17, "title": "Newspaper",         "country_code": 4, "req_gears": 5, "basis": "FORCED",   "evidence": "table 895724349: Dutch/5 class is uniformly Newspaper (x2)" },
-    { "tech_id": 27, "title": "Newspaper",         "country_code": 4, "req_gears": 5, "basis": "FORCED",   "evidence": "table 895724349: Dutch/5 class is uniformly Newspaper (x2)" }
+    { "tech_id": 27, "title": "Newspaper",         "country_code": 4, "req_gears": 5, "basis": "FORCED",   "evidence": "table 895724349: Dutch/5 class is uniformly Newspaper (x2)" },
+    { "tech_id": 5,  "title": "Stock Market",      "country_code": 4, "req_gears": 3, "basis": "DIRECT",   "evidence": "table 896157897: techAcquisition carrying tech_name AND tech_card {tech_id 5, country 4, req_gears 3} (N3 manual commit, 2026-08-12; same game also DIRECT-corroborates shipped row 12 University, left frozen)" },
+    { "tech_id": 16, "title": "Ball",              "country_code": 5, "req_gears": 3, "basis": "DIRECT",   "evidence": "table 896199544: techAcquisition (m6) carrying tech_name AND tech_card {tech_id 16, country 5, req_gears 3} — the SECOND physical Ball copy beside shipped row 26 (N3 manual commit, 2026-08-12; same game also DIRECT-corroborates shipped row 4 Tram, left frozen)" }
   ]
 }

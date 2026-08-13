@@ -375,9 +375,12 @@ mod tests {
     }
 
     #[test]
-    fn the_committed_ledger_loads_with_its_twelve_evidenced_rows() {
+    fn the_committed_ledger_loads_with_its_fourteen_evidenced_rows() {
         let l = ledger();
-        assert_eq!(l.rows().count(), 12, "mapping doc §4.4's resolved table");
+        // 12 at the 3.5b close (mapping doc §4.4's resolved table) + the N3
+        // manual commit's two DIRECT rows (W2, 2026-08-12): tech_id 5 Stock
+        // Market from table 896157897 and tech_id 16 Ball from 896199544.
+        assert_eq!(l.rows().count(), 14, "the resolved table after the N3 commit");
         // The one DIRECT row.
         match l.lookup(2) {
             TechLookup::Known(r) => {
@@ -435,14 +438,15 @@ mod tests {
             TechLookup::Known(r) => r.card,
             other => panic!("tech_id 12 must be known, got {other:?}"),
         };
-        // English/3 University, at a tech_id BELOW 12.
-        l.learn_from(5, "University", 5, 3).unwrap();
+        // English/3 University, at a tech_id BELOW 12. (Was tech_id 5 until
+        // the N3 commit shipped 5 as Stock Market; 6 is still unobserved.)
+        l.learn_from(6, "University", 5, 3).unwrap();
         let after = match l.lookup(12) {
             TechLookup::Known(r) => r.card,
             other => panic!("tech_id 12 must still be known, got {other:?}"),
         };
         assert_eq!(before, after, "tech_id 12's resolution moved across a learn boundary");
-        let learned = match l.lookup(5) {
+        let learned = match l.lookup(6) {
             TechLookup::Known(r) => r,
             other => panic!("the learned id must resolve, got {other:?}"),
         };
@@ -463,10 +467,11 @@ mod tests {
     #[test]
     fn learning_a_class_mismatch_is_a_hard_error() {
         let mut l = ledger();
-        // Tram is American/5; an observation claiming Dutch/3 means the data moved.
-        let err = l.learn_from(5, "Tram", 4, 3).unwrap_err();
+        // Tram is American/5; an observation claiming Dutch/3 means the data
+        // moved. (Fixture id 5→6 at the N3 commit: 5 shipped as Stock Market.)
+        let err = l.learn_from(6, "Tram", 4, 3).unwrap_err();
         match err {
-            BgaMapError::TechClassMismatch { tech_id: 5, .. } => {}
+            BgaMapError::TechClassMismatch { tech_id: 6, .. } => {}
             other => panic!("expected TechClassMismatch, got {other:?}"),
         }
     }
