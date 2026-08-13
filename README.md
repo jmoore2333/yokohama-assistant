@@ -16,15 +16,30 @@ vision lives in `docs/plans/2025-12-07-yokohama-assistant-design.md`).
 
 ## See it running
 
-![The Yokohama CLI mid-game at 2 players: the staggered pyramid board, the players panel, and the
-`suggest` output — recommended move, the line it searched, the term-by-term score table, and the
-ranked runner-ups](docs/images/cli-suggest.png)
+![The Yokohama CLI at 2 players against the built-in bot: the staggered pyramid board on the
+left; on the right the players panel — RED (you) and BLUE marked [bot] with its hand masked —
+the church and customs tracks with the dummy pawn, the three achievements, and your starting
+order rendered as a card; the decision zone along the bottom offers turn 1's options, including
+an immediately fulfillable order](docs/images/cli-frame-w5.png)
 
-Turn 7 of a 2P game, real terminal output. Above the rule is the everyday screen; below it is
-**`suggest`** — the Phase-3.3 evaluator reading *your own seat's view*, printing the move it
-recommends, the six-move line it valued the position by, the arithmetic behind the 330 (each row
-is your value minus the best opponent's, times this stage's weight), and the nearest runner-ups
-out of 66 ranked candidates, each with its margin. It applies nothing and records nothing.
+Turn 1 of a 2P game against the shipped bot, real terminal output (v2 frontend, 200×50). The
+bot plays **`lookahead-v1`** — the production-intent search over the frozen evaluator-v2
+weights — from the same masked view of the game a seated player gets, and every decision it
+makes can be interrogated after the fact:
+
+![The why command's output for the bot's tech purchase: a header naming the seat, the full
+contestant identity string, the event index and decision seed, and the statement that the move
+was reconstructed by replay; then the move it played, the five-move line it searched, the
+term-by-term score table whose tech_bonus_now row drives the total, and the ranked runner-ups it
+rejected](docs/images/cli-why-w5.png)
+
+That is **`why 11`** (Phase 3.5c, W5) asking about the bot's Laboratory purchase: the record is
+replayed to event 11 and the bot's own decision function re-run at the same derived seed — so
+the account is a *reconstruction the engine can vouch for*, not a stored note — then the move,
+the line it searched (whose later steps match the moves it actually went on to play), the
+arithmetic, and what it rejected at what margin. A `why` that cannot reproduce the recorded move
+refuses, naming both moves. **`suggest`** is the same machinery pointed at *your* seat before
+you move; both apply nothing and record nothing.
 
 **[Full `suggest` walkthrough →](https://claude.ai/code/artifact/9dbb3a84-7994-4066-a400-7e83c049a19e)**
 — a few minutes of live play against a bot seat (2026-07-27, v0.3.3), captured as the raw ANSI
