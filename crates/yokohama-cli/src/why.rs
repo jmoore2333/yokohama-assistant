@@ -897,6 +897,42 @@ mod tests {
         );
         let version = PROVISIONAL_DEFAULT_BOT.descriptor().1;
         assert!(out.contains(&format!("v{version}")), "both versions are named: {out}");
+
+        // The two version slots are INDEPENDENT (T5 review SHOULD-2): a
+        // same-build fixture reads v2/v2, which a formatter printing the
+        // CURRENT version in both slots would satisfy. Doctor the recorded
+        // side and both numbers must appear — cross-build honesty is what
+        // §2.2 leans on this refusal for.
+        let mut doctored = session.record().clone();
+        doctored.run.as_mut().expect("provenance").seats[0].version = 99;
+        let out = why_over(TrackingMode::Simulation, &doctored, &rules, &bots, Some(n));
+        assert!(!out.contains(ACCOUNTED), "still a mismatch: {out}");
+        assert!(out.contains("v99"), "the RECORDED version slot: {out}");
+        assert!(out.contains(&format!("v{version}")), "the CURRENT version slot: {out}");
+    }
+
+    /// **Design §2.4's warning line, pinned on the ACCOUNT side** (T5 review
+    /// SHOULD-1): a recorded version that differs while the move still
+    /// reproduces WARNS and RENDERS — the honesty middle ground between
+    /// silence and the mismatch refusal. The resume path's per-field drift
+    /// warnings (bot.rs) are a different surface with different text; this is
+    /// the line `why` itself prints.
+    #[test]
+    fn a_version_drift_that_still_reproduces_warns_and_renders_the_account() {
+        let mut r = bot_repl(4, PROVISIONAL_DEFAULT_BOT);
+        let rules = Rules::standard();
+        play(&mut r, 200, |r| !move_indices_of(r.session.record(), &Rules::standard(), PlayerId::new(1)).is_empty());
+        let played = move_indices_of(r.session.record(), &rules, PlayerId::new(1));
+        let mut record = r.session.record().clone();
+        record.run.as_mut().expect("provenance").seats[1].version = 1;
+
+        let out = why_over(TrackingMode::Simulation, &record, &rules, &r.bots, Some(played[0]));
+        assert!(out.contains(ACCOUNTED), "the account still renders: {out}");
+        assert!(out.contains("WARNING"), "{out}");
+        assert!(
+            out.contains("version 1") && out.contains("version 2"),
+            "both versions named in the warning: {out}",
+        );
     }
 
     /// A DIAGNOSTIC controller refuses in the diagnostic's own words, not the
