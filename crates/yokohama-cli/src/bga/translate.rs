@@ -17,7 +17,7 @@
 //! `Session::apply(move, reveals)`. The opponent's starting order reveals via
 //! `apply_standalone` at its completion moment — the live model's normal path.
 
-use super::facts::{Fact, FactStream, SecondPayment, TimedFact};
+use super::facts::{Fact, FactStream, PresidentVia, SecondPayment, TimedFact};
 use super::resolve::Resolved;
 use super::ImportError;
 use crate::session::Session;
@@ -90,6 +90,75 @@ const UNCHECKED_EXTRA: [(&str, &str); 1] =
 /// `refill_draw_keys_descend_so_ascending_keys_land_left_to_right`.
 fn refill_draw_keys(next_key: u64, k: usize) -> Vec<u64> {
     (0..k).map(|i| next_key + (k - 1 - i) as u64).collect()
+}
+
+/// Every legal `MovePresident` to `dest_id`, each paired with the price the
+/// ENGINE will charge for its path.
+///
+/// The price comes from `calculate_movement_cost_with_tech`, which is the same
+/// single pricing source `enumerate_president_routes` labels routes with and
+/// `apply_move` credits fees from — so a cost computed here cannot drift from
+/// the cost the engine actually applies. It counts BOTH fee kinds: 1 Yen per
+/// opponent President passed (paid to that player) and 1 Yen per Canal crossing
+/// (paid to the bank). That second kind is why a fee COUNT is not a substitute
+/// for a price — a canal-tolled walk passes nobody's President and still is not
+/// free.
+fn president_candidates_to(
+    state: &yokohama_core::GameState,
+    rules: &yokohama_core::Rules,
+    legal: &[Move],
+    seat: u8,
+    dest_id: AreaId,
+) -> Vec<(Move, u32)> {
+    let player = PlayerId::new(seat);
+    legal
+        .iter()
+        .filter_map(|m| match m {
+            Move::MovePresident { path, destination } if *destination == dest_id => Some((
+                m.clone(),
+                yokohama_core::calculate_movement_cost_with_tech(
+                    state,
+                    player,
+                    path,
+                    Some(&rules.techs),
+                ),
+            )),
+            _ => None,
+        })
+        .collect()
+}
+
+/// The UNIQUE zero-cost label among priced candidates — the label a FREE move
+/// carries, whether that move is a Station teleport, a Tram teleport, or the
+/// free WALK that suppressed one. `Err(n)` reports how many were found when it
+/// was not exactly one, so the caller can refuse with the right message.
+///
+/// Uniqueness is the engine's guarantee, not a hope: `enumerate_president_routes`
+/// emits one move per distinct `(destination, fee vector)`, so at most one walk
+/// to a destination carries the EMPTY vector, and both teleport arms are
+/// emitted only when no zero-cost move to that destination is already listed.
+fn select_free_president_label(candidates: &[(Move, u32)]) -> Result<Move, usize> {
+    let free: Vec<&Move> = candidates.iter().filter(|(_, cost)| *cost == 0).map(|(m, _)| m).collect();
+    match free.len() {
+        1 => Ok(free[0].clone()),
+        n => Err(n),
+    }
+}
+
+/// Name every candidate considered, so a refusal reports what it saw rather
+/// than picking the nearest.
+fn describe_candidates(candidates: &[(Move, u32)]) -> String {
+    if candidates.is_empty() {
+        return "none".to_string();
+    }
+    candidates
+        .iter()
+        .map(|(m, cost)| match m {
+            Move::MovePresident { path, .. } => format!("path {path:?} costing {cost}"),
+            other => format!("{other:?}"),
+        })
+        .collect::<Vec<_>>()
+        .join(", ")
 }
 
 pub struct Translator<'a> {
@@ -341,6 +410,110 @@ impl<'a> Translator<'a> {
 
     fn current_seat(&self) -> u8 {
         self.state().current_player.0
+    }
+
+    /// `action: "places"` — disambiguate the route label by the OBSERVED
+    /// pass-through fee count (unchanged since H2; BGA emits one `payForPres`
+    /// per president passed, and the engine's own path pricing counts the same
+    /// areas).
+    fn walked_president_move(
+        &self,
+        seat: u8,
+        dest: AreaType,
+        dest_id: AreaId,
+        fees: usize,
+        move_id: u64,
+    ) -> Result<Move, ImportError> {
+        let state = self.state();
+        let opponents_at = |area: &AreaId| {
+            state.players.iter().enumerate().any(|(i, p)| {
+                i != seat as usize && p.president_location == PresidentLocation::OnBoard(*area)
+            })
+        };
+        let candidates: Vec<Move> = self
+            .session
+            .legal()
+            .into_iter()
+            .filter(|m| match m {
+                Move::MovePresident { path, destination } => {
+                    *destination == dest_id
+                        && path.iter().filter(|a| opponents_at(a)).count() == fees
+                }
+                _ => false,
+            })
+            .collect();
+        match candidates.len() {
+            1 => Ok(candidates.into_iter().next().expect("len checked")),
+            0 => Err(rerr(
+                move_id,
+                format!("no legal president route to {dest:?} with {fees} pass-through fee(s)"),
+            )),
+            n => Err(rerr(
+                move_id,
+                format!("{n} distinct route labels to {dest:?} with {fees} fee(s) — underdetermined"),
+            )),
+        }
+    }
+
+    /// `action: "trams"` — the Tram technology's move, matched on the
+    /// TELEPORT'S LABEL rather than on a fee count.
+    ///
+    /// Tram's card text is "move your President to any area … for free", and
+    /// the engine emits it as `MovePresident { path: [] }` with an empty fee
+    /// vector. But `movement_routes_family` SUPPRESSES a teleport to any
+    /// destination already covered by a ZERO-COST move, so the surviving
+    /// representative of a tram to an adjacent tile may be the free WALK —
+    /// which is exactly what both surviving tram facts in async table 896199544
+    /// are (m128 tile 3→2, m137 tile 2→1, both single steps on BGA's tile
+    /// links, both by a seat holding 0 yen, so neither could have cost
+    /// anything). Matching on `path.is_empty()` would therefore find nothing;
+    /// matching on the pass-through fee count alone is not equivalent either,
+    /// because a CANAL toll is charged to the bank and adds no pass-through fee
+    /// while still making a walk a different label from the teleport.
+    ///
+    /// So the rule is the LABEL: the unique legal move to this destination
+    /// whose total cost is zero. The engine guarantees uniqueness —
+    /// `enumerate_president_routes` emits one move per distinct
+    /// `(destination, fee vector)` so at most one walk carries the empty
+    /// vector, and the teleport is emitted only when no zero-cost move to that
+    /// destination exists.
+    ///
+    /// A tram fact that matches no such label is a typed STOP naming the move
+    /// id, the destination and every candidate considered — never a nearest
+    /// pick.
+    fn tram_president_move(
+        &self,
+        seat: u8,
+        dest: AreaType,
+        dest_id: AreaId,
+        move_id: u64,
+    ) -> Result<Move, ImportError> {
+        let candidates = president_candidates_to(
+            self.state(),
+            self.session.rules(),
+            &self.session.legal(),
+            seat,
+            dest_id,
+        );
+        match select_free_president_label(&candidates) {
+            Ok(mv) => Ok(mv),
+            Err(0) => Err(rerr(
+                move_id,
+                format!(
+                    "a `trams` president move to {dest:?} has no free (zero-cost) legal label — \
+                     the Tram technology moves for free, so one must exist; candidates considered: {}",
+                    describe_candidates(&candidates)
+                ),
+            )),
+            Err(n) => Err(rerr(
+                move_id,
+                format!(
+                    "{n} distinct zero-cost labels to {dest:?} — the engine's route enumeration \
+                     emits at most one per destination; candidates considered: {}",
+                    describe_candidates(&candidates)
+                ),
+            )),
+        }
     }
 
     /// Resolve the pending customs-space choice from the stashed
@@ -851,8 +1024,9 @@ impl<'a> Translator<'a> {
                 }
             },
             TurnPhase::Movement => match &next.fact {
-                Fact::President { seat: s, dest, .. } if *s == seat => {
+                Fact::President { seat: s, dest, via, .. } if *s == seat => {
                     let dest = *dest;
+                    let via = *via;
                     let fees = self.pass_fee_count_window();
                     self.consume_drive();
                     let dest_id = self.area_id(dest, move_id)?;
@@ -863,44 +1037,12 @@ impl<'a> Translator<'a> {
                     let mv = if in_hand {
                         Move::PlacePresident { destination: dest_id }
                     } else {
-                        // Disambiguate the route label by the observed fee count.
-                        let state = self.state();
-                        let opponents_at = |area: &AreaId| {
-                            state.players.iter().enumerate().any(|(i, p)| {
-                                i != seat as usize
-                                    && p.president_location == PresidentLocation::OnBoard(*area)
-                            })
-                        };
-                        let candidates: Vec<Move> = self
-                            .session
-                            .legal()
-                            .into_iter()
-                            .filter(|m| match m {
-                                Move::MovePresident { path, destination } => {
-                                    *destination == dest_id
-                                        && path.iter().filter(|a| opponents_at(a)).count() == fees
-                                }
-                                _ => false,
-                            })
-                            .collect();
-                        match candidates.len() {
-                            1 => candidates.into_iter().next().expect("len checked"),
-                            0 => {
-                                return Err(rerr(
-                                    move_id,
-                                    format!(
-                                        "no legal president route to {dest:?} with {fees} pass-through fee(s)"
-                                    ),
-                                ))
-                            }
-                            n => {
-                                return Err(rerr(
-                                    move_id,
-                                    format!(
-                                        "{n} distinct route labels to {dest:?} with {fees} fee(s) — \
-                                         underdetermined"
-                                    ),
-                                ))
+                        match via {
+                            PresidentVia::Placed => self.walked_president_move(
+                                seat, dest, dest_id, fees, move_id,
+                            )?,
+                            PresidentVia::Tram => {
+                                self.tram_president_move(seat, dest, dest_id, move_id)?
                             }
                         }
                     };
@@ -1635,6 +1777,138 @@ mod tests {
     /// M4 — but silently mis-arranges the engine's display, and slot
     /// arrangement carries LOW/MID/HIGH zone take-power gating, so a wrong
     /// order could flip a take's legality in a future corpus.
+    /// Drive a 2P sim by always taking the first legal move until a Movement
+    /// decision point offers real `MovePresident` labels — i.e. the President
+    /// is already ON the board, which is the only shape a `trams` fact can
+    /// arrive in (turn 1 places from hand).
+    fn sim_at_a_president_move() -> Session {
+        let mut s = sim_2p(900);
+        for _ in 0..400 {
+            let legal = s.legal();
+            if legal.iter().any(|m| matches!(m, Move::MovePresident { .. })) {
+                return s;
+            }
+            // Placements go WIDE (the empty placement is legal and first, and a
+            // President with no assistant chain can never walk), and the
+            // President never voluntarily goes back to hand.
+            let widest = legal
+                .iter()
+                .filter_map(|m| match m {
+                    Move::PlaceThreeAreas { placements } => Some((placements.len(), m)),
+                    _ => None,
+                })
+                .max_by_key(|(n, _)| *n)
+                .filter(|(n, _)| *n > 0)
+                .map(|(_, m)| m.clone());
+            let mv = widest
+                .or_else(|| {
+                    legal
+                        .iter()
+                        .find(|m| !matches!(m, Move::ReturnPresidentToHand { .. }))
+                        .cloned()
+                })
+                .expect("a sim always has a legal move");
+            s.apply(mv, vec![]).expect("the drive stays inside the legal list");
+        }
+        panic!("no Movement decision point with the President on board within 400 moves");
+    }
+
+    /// THE SUPPRESSION PIN — the reason W2 was not a one-line vocabulary widen.
+    ///
+    /// `movement_routes_family` suppresses a Tram/Station teleport to any
+    /// destination already covered by a ZERO-COST move, so when BGA says
+    /// `trams` to an adjacent tile the surviving engine label is the free WALK,
+    /// with a NON-EMPTY path. Both surviving tram facts in async table
+    /// 896199544 are exactly that shape (m128 tile 3→2, m137 tile 2→1). A
+    /// matcher written as `path.is_empty()` — the obvious reading of "Tram is a
+    /// teleport" — would therefore find nothing at all, which is the failure
+    /// this test exists to catch.
+    ///
+    /// It also pins the ENGINE guarantee the `Ok` arm depends on: per
+    /// destination there is AT MOST ONE zero-cost label, so selecting "the free
+    /// one" is never a choice between equals.
+    #[test]
+    fn a_tram_fact_selects_the_free_walk_the_engine_kept_after_suppression() {
+        let s = sim_at_a_president_move();
+        let seat = s.state().current_player.0;
+        let legal = s.legal();
+        let destinations: BTreeSet<AreaId> = legal
+            .iter()
+            .filter_map(|m| match m {
+                Move::MovePresident { destination, .. } => Some(*destination),
+                _ => None,
+            })
+            .collect();
+        assert!(!destinations.is_empty(), "the drive reached a real Movement decision point");
+
+        let mut free_walks = 0usize;
+        for dest_id in &destinations {
+            let candidates =
+                president_candidates_to(s.state(), s.rules(), &legal, seat, *dest_id);
+            assert!(!candidates.is_empty(), "a listed destination has at least one label");
+            let free: Vec<&(Move, u32)> =
+                candidates.iter().filter(|(_, cost)| *cost == 0).collect();
+            assert!(
+                free.len() <= 1,
+                "the engine emits at most one zero-cost label per destination, saw {}: {:?}",
+                free.len(),
+                free
+            );
+            if let Ok(picked) = select_free_president_label(&candidates) {
+                // The selected label IS the free one, and it is the move the
+                // engine would apply — not a reconstruction.
+                assert!(legal.contains(&picked), "the pick comes from the legal list");
+                match &picked {
+                    Move::MovePresident { path, destination } => {
+                        assert_eq!(destination, dest_id);
+                        if !path.is_empty() {
+                            free_walks += 1;
+                        }
+                    }
+                    other => panic!("the pick must be a president move, got {other:?}"),
+                }
+            }
+        }
+        assert!(
+            free_walks > 0,
+            "at least one free label is a WALK with a non-empty path — the suppression case a \
+             `path.is_empty()` matcher would miss"
+        );
+    }
+
+    /// The refusal shape: the selection REFUSES rather than picking a nearest
+    /// label, and the refusal's evidence names every candidate with its price.
+    /// `Err(n)` carries the count so the caller can say which of the two things
+    /// went wrong — no free label at all, or more than one (which would mean
+    /// the engine's per-destination uniqueness broke).
+    #[test]
+    fn a_tram_fact_with_no_unique_free_label_refuses_and_names_what_it_saw() {
+        let a = AreaId::new(1);
+        let b = AreaId::new(2);
+        let tolled = |path: Vec<AreaId>, cost: u32| {
+            (Move::MovePresident { path, destination: b }, cost)
+        };
+
+        // Nothing free: every route to the destination costs something.
+        let none_free = vec![tolled(vec![a, b], 1), tolled(vec![b], 2)];
+        assert_eq!(select_free_president_label(&none_free), Err(0));
+        let described = describe_candidates(&none_free);
+        assert!(described.contains("costing 1") && described.contains("costing 2"), "{described}");
+
+        // Two free labels: refuse rather than take the first.
+        let two_free = vec![tolled(vec![a, b], 0), tolled(vec![b], 0)];
+        assert_eq!(select_free_president_label(&two_free), Err(2));
+
+        // Exactly one free label among priced rivals: that one, not the cheapest.
+        let one_free = vec![tolled(vec![a, b], 3), tolled(vec![b], 0)];
+        assert_eq!(
+            select_free_president_label(&one_free),
+            Ok(Move::MovePresident { path: vec![b], destination: b })
+        );
+
+        assert_eq!(describe_candidates(&[]), "none");
+    }
+
     #[test]
     fn refill_draw_keys_descend_so_ascending_keys_land_left_to_right() {
         assert_eq!(refill_draw_keys(38, 2), vec![39, 38]);
@@ -1751,7 +2025,12 @@ mod tests {
                 TimedFact {
                     move_id: 5,
                     kind: "presidentPlacement".to_string(),
-                    fact: Fact::President { seat: 0, dest: AreaType::Church, power: 3 },
+                    fact: Fact::President {
+                        seat: 0,
+                        dest: AreaType::Church,
+                        power: 3,
+                        via: PresidentVia::Placed,
+                    },
                 },
                 TimedFact {
                     move_id: 6,

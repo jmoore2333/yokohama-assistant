@@ -42,12 +42,29 @@ pub struct ChurchPays {
     pub yen_amount: u8,
 }
 
+/// How BGA's `presidentPlacement` said the President reached the tile — the
+/// `action` arg's observed vocabulary, and the ONLY thing the translator needs
+/// beyond the destination to price the move against the engine's legal list.
+///
+/// The full measured register (which values exist, on which moves, and what
+/// each one's args carry) lives on the `presidentPlacement` arm in [`extract`];
+/// read it there before adding a variant.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PresidentVia {
+    /// `action: "places"` — the ordinary verb: a placement from hand, or a
+    /// walk along the mover's own assistant chain, priced by its fees.
+    Placed,
+    /// `action: "trams"` — the Tram technology's Movement-step move ("move
+    /// your President to any area", `tech_tram`), which is FREE by card text.
+    Tram,
+}
+
 /// One notification's determination. `seat` is the engine seat (0-based).
 #[derive(Debug, Clone, PartialEq)]
 pub enum Fact {
     // ---- drive facts (each demands engine moves) ---------------------------
     Placement { seat: u8, option_b: bool, areas: Vec<AreaType> },
-    President { seat: u8, dest: AreaType, power: u8 },
+    President { seat: u8, dest: AreaType, power: u8, via: PresidentVia },
     ReturnPresident { seat: u8 },
     PortTake { seat: u8, card: Option<OrderCardId>, second: Option<SecondPayment> },
     PortSecondDeclined { seat: u8 },
@@ -330,17 +347,66 @@ pub fn extract(
                     }
                 }
 
+                // ---- presidentPlacement: THE REGISTER-U5 OBSERVED SET -------
+                //
+                // The `action` arg is a VERB substituted into one shared log
+                // template (`${player_name} ${action} the president on the
+                // <B>${tile_name}</B> …`), which is why this arm dispatches on
+                // the arg and never on the log string.
+                //
+                // MEASURED VOCABULARY (2026-08-12, W2 Step 0): exactly
+                // `"places"` and `"trams"`, over every banked capture. Async
+                // table 896199544 — the ONLY one that carries a Tram — holds 84
+                // `places` and 8 `trams` notification instances; the other two
+                // captures hold `places` alone.
+                //
+                // `"trams"` is the Tram technology's Movement-step move. Its
+                // provenance in the capture is unambiguous: the Tram card is
+                // taken at m118 by ONE seat, and every `trams` notification in
+                // the game is that seat's, after that move.
+                //
+                // THE EIGHT INSTANCES, all of them (move × transport):
+                //
+                //   m127  socket ×2   tile 3 → 1 (Church)     route_keys []
+                //   m128  socket ×2   tile 3 → 2 (Silk Mill)  route_keys ["2"]
+                //         history ×1  arg-thin: action/tile_name/power only
+                //   m137  socket ×2   tile 2 → 1 (Church)     route_keys ["1"]
+                //         history ×1  arg-thin, as above
+                //
+                // **m127 never reaches this extractor.** It is a SUPERSEDED
+                // takeback — the player trammed to the Church, saw the faith,
+                // undid it and re-moved — so BGA's history spine keeps only the
+                // surviving line and `feed`'s structural supersession rule drops
+                // the rewound socket packets. TWO tram facts survive, m128 and
+                // m137, and on both of them `route_keys == [trg_tile_key]`.
+                //
+                // **`route_keys` is recorded here as evidence and deliberately
+                // NOT read** — the posture the `places` arm has always had. It
+                // is not a trustworthy path: at m95 a `places` move walked
+                // Copper Mine → Employment Agency, two steps apart on BGA's own
+                // tile links, with `route_keys: []`. What determines the engine
+                // move is `tile_name` (the destination) plus the `via`
+                // discriminator; `translate.rs` prices the rest against the
+                // engine's own legal list.
+                //
+                // Anything outside `places`/`trams` stays a hard error naming
+                // what was seen: this widen covers exactly the measured set.
                 "presidentPlacement" => {
                     let s = seat("presidentPlacement")?;
                     let action = args.get("action").and_then(|a| a.as_str()).unwrap_or("<absent>");
-                    if action != "places" {
-                        return Err(ImportError::Sheet {
-                            detail: format!(
-                                "move {mid}: presidentPlacement action {action:?} is outside the \
-                                 observed set (register U5) — hard error, never guessed"
-                            ),
-                        });
-                    }
+                    let via = match action {
+                        "places" => PresidentVia::Placed,
+                        "trams" => PresidentVia::Tram,
+                        other => {
+                            return Err(ImportError::Sheet {
+                                detail: format!(
+                                    "move {mid}: presidentPlacement action {other:?} is outside the \
+                                     observed set (register U5: \"places\" | \"trams\") — hard \
+                                     error, never guessed"
+                                ),
+                            })
+                        }
+                    };
                     let name = args.get("tile_name").and_then(|t| t.as_str()).ok_or_else(|| {
                         ImportError::Sheet { detail: format!("move {mid}: presidentPlacement without tile_name") }
                     })?;
@@ -349,6 +415,7 @@ pub fn extract(
                         seat: s,
                         dest: area(&strip_bold(name)).map_err(ImportError::Map)?,
                         power,
+                        via,
                     });
                 }
 
