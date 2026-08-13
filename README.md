@@ -33,15 +33,19 @@ projected lines matched the played-out game move for move; it found genuine mult
 combinations; determinism and the no-side-effect guards are real) and **what it flagged** (two
 display-layer bugs in `describe.rs` — a Laboratory surcharge rendered as a reward, and production
 previews that ignore the acting player's techs — plus the evaluator's structural positional
-blindness, and the fact that the *playable* bot is the 3.2 weighted-random rung, not the 3.3
-evaluator). Every finding is display-layer; the engine did the right thing in each case.
+blindness, and the fact that the *playable* bot was, at that date, the 3.2 weighted-random rung).
+Every finding is display-layer; the engine did the right thing in each case. Two of those three
+caveats have since been retired: the weights are **evaluator v2** (frozen 2026-08-10), and since
+Phase A's W5 (2026-08-12) the playable bot IS the search — a wizard bot seat runs `lookahead-v1`,
+the same controller `suggest` consults, and the new **`why`** command replays and explains any bot
+move after the fact.
 
 That link is a hosted copy, so it opens and renders in a browser. The source of truth is
 [`docs/suggest-walkthrough-2026-07-27.html`](docs/suggest-walkthrough-2026-07-27.html) in this
 repo — GitHub shows `.html` as source rather than rendering it, so read that one by opening the
 file locally.
 
-## Status (2026-08-07)
+## Status (2026-08-12)
 
 The engine plays complete, rules-correct games at 2–4 players and has been verified
 **differentially**: an independently-authored rules oracle — written from the rulebook and
@@ -54,9 +58,9 @@ payloads, mutation-proved the invariant suite, and closed all four rules ambigui
 surfaced with owner rulings. Full report:
 [`docs/plans/2026-07-20-phase-2.9-final-report.md`](docs/plans/2026-07-20-phase-2.9-final-report.md).
 
-**The computer player ladder (Phase 3) is five sub-phases in**, governed by the accepted map
-[`docs/plans/2026-07-25-phase3-map.md`](docs/plans/2026-07-25-phase3-map.md), every one of them
-with `SEMANTICS_REV` unmoved at 5 (all merged to master):
+**The computer player ladder (Phase 3) is deep into its final sub-phase**, governed by the
+accepted map [`docs/plans/2026-07-25-phase3-map.md`](docs/plans/2026-07-25-phase3-map.md).
+Sub-phases 3.0–3.4 (all merged to master, `SEMANTICS_REV` unmoved by any of them):
 
 - **3.0 — honest observation** (PRs #6–#7): a seat-relative `PlayerView` masking the five-member
   hidden set, plus a conservation-consistent belief sampler — a bot takes a view, never a raw
@@ -93,26 +97,54 @@ a 200×50 raised-floor frame with a persistent dashboard, full words, a visual c
 canonical identification mechanism, guided pickers and menus everywhere, readline editing, and
 full-screen views — with the piped protocol byte-identical and the engine crates untouched.
 
-**Next (renumbered by owner ruling, 2026-08-07):** **3.5b is the BGA→CLI bridge** — a dev-mode
-Chrome extension + local relay + importer that turns the owner's own BoardGameArena games into
-engine-validated live-tracked records (cards identified by their unique requirement/reward
-vectors), with the re-scoped Phase-2 live-tracking gate claimed by finishing a real BGA table
-tracked end-to-end (design: [`docs/plans/2026-08-07-bga-bridge-design.md`](docs/plans/2026-08-07-bga-bridge-design.md)).
-**3.5c is the strength/automation lane** formerly called 3.5b (evaluator v2, tuning, the
-five-rung experiment, productionized bot seats, acceptance play, the bar declaration).
+**3.5b — the BGA→CLI bridge** (PR #17, merged 2026-08-09): a read-only dev-mode Chrome extension
++ localhost relay + importer that turns the owner's own BoardGameArena games into
+engine-validated records — cards identified by their unique requirement/reward vectors, hidden
+information kept hidden, every unrecognized shape a typed refusal rather than a guess. **The
+re-scoped Phase-2 live-tracking gate is CLAIMED on real table 896157897**: 145/145 BGA moves
+replay engine-legal from move 1, 103 counter checkpoints green, both final scores matching BGA
+exactly (62 == 62, 115 == 115). Along the way the bridged games surfaced five rules questions,
+each closed by an owner ruling sourced from the physical rulebook and BGA's observed behaviour
+(**rules-parity revs 6 and 7**, PRs #18/#19 — `SEMANTICS_REV` now 7, with two deliberate,
+recorded BGA-parity divergences).
+
+**3.5c — the strength lane — is where the work now lives.** So far, all merged:
+
+- **Evaluator v2 frozen and shipped** (PR #20, 2026-08-11): three pre-registered iteration
+  rounds over measured self-play corpora produced thirty-two re-priced weights;
+  the pre-registered close criterion held — `lookahead-v1@V2` vs `@V1`, 2P, N=200 units,
+  θ̂ 0.6775, bootstrap [0.6275, 0.7250] entirely above the null — and the owner signed it off
+  under a deliberately **narrow claim**: a materially stronger successor for the retained 2P
+  turn-boundary controller at shipped knobs. **V2 shipped ≠ the bar.**
+- **The 3.5c scoping amendment ratified** (2026-08-12,
+  [`docs/plans/2026-08-11-phase3.5c-scoping-amendment.md`](docs/plans/2026-08-11-phase3.5c-scoping-amendment.md))
+  — eleven owner rulings that fix the route from V2 to the bar: development-field tuning →
+  a frozen production identity → ONE confirmatory five-rung experiment, with a two-layer
+  strength-reality checkpoint in between and hard attempt-accounting rules throughout.
+- **Phase A of that route is complete** (PRs #21/#22, 2026-08-12): CLI bot seats are typed to
+  `Contestant` and the wizard's default bot **plays the production-intent `lookahead-v1`**;
+  the new **`why` / `why <n>`** command replays any bot move to its exact decision point and
+  prints the same explained account `suggest` gives — refusing honestly whenever the
+  reconstruction cannot vouch for the recorded move; and the BGA importer learned the Tram
+  vocabulary (evidence-first, from the captured payloads), regenerating the comparison corpus
+  at rev 7.
+
+**Next: Phase B** — the driven-fixture harness, exploratory probes on the checkpoint's four
+strategic families, and the owner's two recorded diagnostic games with `why` as the instrument.
 The CLI is tester-ready; start with the linked HTML guide and report any table/CLI mismatch.
 
-Releases now track completed phases (**v0.3.3** ↔ Phase 3.3; the first version bump in the
-repo's history, and the first with a Windows build). Saves and self-play records are
-compatibility-keyed to the game-semantics revision (`SEMANTICS_REV`), not the release version
-(PR #14), so they survive release cuts.
+Releases track completed phases (**v0.3.3** ↔ Phase 3.3; the first with a Windows build — a
+post-3.5 release cut is pending the strength checkpoint). Saves and self-play records are
+compatibility-keyed to the game-semantics revision (`SEMANTICS_REV`, currently 7), not the
+release version (PR #14), so they survive release cuts — though a save stops resuming across a
+semantics bump by design, and rev-6-and-earlier saves no longer resume.
 
 ## Workspace crates
 
 | Crate | What it is |
 |---|---|
 | `yokohama-core` | The engine: serde-serializable `GameState` (history-free, cheap to clone for search), pure `get_legal_moves` / checked `apply_move`, seeded setup, `GameRecord` save/replay stamped with `rules_hash`, `semantics_rev`, and a terminal-state digest verified by `replay_strict` — plus the Phase-3 player stack: the honest observation boundary (`PlayerView`/`observe`/`BeliefSampler`), the factored action families (`DecisionHandle`), the arena (contestants, paired cells, corpus emission), evaluator v1 (`game/eval.rs`), and the Greedy/Lookahead search rungs |
-| `yokohama-cli` | The game driver: setup wizard → REPL; simulated games and live-table tracking (reconciliation, desync tripwire), save/load/undo, TTY-colored board, and **human-vs-bot play** in sim mode (any seat mix with ≥1 human; the bot runs the same honest view → belief-sampler → policy path the arena does) plus **`suggest`** — the evaluator bot analyzes YOUR seat's view and explains its recommended move term by term, deterministic on repeat presses even across save/reload |
+| `yokohama-cli` | The game driver: setup wizard → REPL; simulated games and live-table tracking (reconciliation, desync tripwire), save/load/undo, TTY-colored board, the BGA `import`/`--follow` pipeline, and **human-vs-bot play** in sim mode (any seat mix with ≥1 human; a bot seat is a `Contestant` — the wizard default plays `lookahead-v1`, honest by construction: the agent sees only its seat's view) plus the explanation pair: **`suggest`** — the same search analyzes YOUR seat's view and explains its recommended move term by term — and **`why` / `why <n>`** — any bot move replayed to its exact decision point and accounted for with the same tables, refusing (never guessing) when the reconstruction does not match the record |
 | `yokohama-oracle` | The independent referee: legal-move enumeration, final scoring + tie-break, and a prune-free route reference, authored from the rules sources under an audited independence rule (types-only dependency on the engine) |
 | `yokohama-difftest` | The harness comparing engine vs oracle: per-decision-point sweeps under two policies, terminal scoring comparison, three-way route-pruning check, self-contained divergence artifacts + `repro` tool |
 | `yokohama-bridge` | The BGA capture relay (Phase 3.5b): a localhost-only HTTP sink that appends what the read-only browser extension in `bridge/` observes to `bridge-captures/<table>.ndjson`, plus the feed pre-processor (typed NDJSON reader, payload-identity dedupe, structural supersession collapse for takebacks). Depends on NO engine crate and knows no rules — translating captures into engine moves is `yokohama-cli`'s `import`, deliberately on the other side of that boundary |
@@ -163,33 +195,25 @@ Fastest playable game: answer the wizard `sim`, `2`, `red`, `blue`, `0`, Enter t
 `confirm`. At the prompt: type an option number, or use the direct grammars — placement
 `a 3 7 9` / `b 5`, assistant moves `m 4 7`, retreats `r 3:2 5:1`. Views: `board`, `sites`,
 `goals`, `tracks`, `labs`, `log`, `help`; plus `suggest` (the bot's explained recommendation for
-your seat), `undo`, `save`, `q`. Full tester guide:
-**[HTML](docs/cli-guide.html)** or [Markdown](docs/cli-guide.md).
+your seat), `why` / `why <n>` (a bot move, replayed and accounted for), `undo`, `save`, `q`.
+Full tester guide: **[HTML](docs/cli-guide.html)** or [Markdown](docs/cli-guide.md).
 
-**Gates.** Per-edit (debug): the crate suites + `cargo clippy --workspace --all-targets
--- -D warnings`, all zero-warning (five crates on master; on the 3.5b bridge branch also `cargo test -p yokohama-bridge` and the four `bridge/tests/*.js` node suites, which have no cargo coverage and would otherwise never run). Pre-merge: all **fifteen** release gates below — the fifteenth is the
-Phase-3.3 recovery falsifier, which was not written 2026-08-09 but DEMOTED that day by owner ruling
-(OD-6 arm 1) from the per-edit tier it had outgrown: it buys −88 to −102s on every per-edit core run
-(191.11s before; two warm readings after, 89.18s and 102.68s) for ~7s on the roster, and **no target restatement rides it — the ≤420s target
-stands** (OD-6 arm 2 deferred that), so the next close measures the fifteen as one sequence. The
-fourteenth is Phase 3.4's
-architecture gate, added 2026-08-04, which also restates the roster target
-**≤360s → ≤420s** on the grounds of one added binary. The **fourteen**-gate roster (the roster as it
-then stood — the figures below have not been re-run since) measured
-**326.70s** together as one uninterrupted sequence 2026-08-05 at the `phase3.4-search-arch` close
-(Apple M5, quiet machine, release binaries pre-built first, the arena/evaluator/architecture gates
-single-threaded because their documented commands say so): fuzz 46.57 · census 0.78 · observation
-2.95 · equivalence 27.69 · action-source worst case 0.45 · arena gate 21.05 · policy diversity
-6.35 · **evaluator gate 144.53** · **architecture gate 32.88** · piped dogfood 12.60 ·
-differential 23.03 · routes3 1.83 · scoring 2.10 · routes3 worst case 3.44 — all rc=0, and
-**under** the restated ≤420s target. The thirteen pre-3.4 gates sum to 293.37s inside that run
-against 313.40s at the 3.3 close, so the thirteen carried-over gates got FASTER inside this run (293.37 s vs 313.40 s at the 3.3 close) while the roster TOTAL rose to 326.70 s on the added binary (+13.30 s); the two
-largest movers are both downward (differential 32.48 → 23.03, dogfood 19.70 → 12.60) and are the
-same two rows that were up at the 3.3 close, while the evaluator gate reproduced to within 0.06s —
-per-gate shapes are unchanged, so that is load variance. Re-measure the whole table as one run at every
-close: a sum of per-command times from separate sessions is not a measured total. This table is the
-binding list — if it and CLAUDE.md's two-tier policy ever disagree, they are both wrong until
-reconciled.
+**Gates.** Per-edit (debug): the six crate suites (`yokohama-core`, its `eval_probe` example
+target, `yokohama-cli`, `yokohama-oracle`, `yokohama-difftest`, `yokohama-bridge`) + the four
+`bridge/tests/*.js` node suites (the browser half has no cargo coverage and would otherwise
+never run) + `cargo clippy --workspace --all-targets -- -D warnings`, all zero-warning.
+Pre-merge: all **fifteen** release gates below, measured as ONE uninterrupted sequence at every
+close — a sum of per-command times from separate sessions is not a measured total. **Wall
+figures are per-machine since 2026-08-11** (two workstations whose profiles INVERT by gate
+shape; baselines live side by side and are never compared to each other): **Apple M5 —
+382.86s** at the v2 freeze close, under the ≤420s target, which is an M5 reading; **Debian 13
+WSL2 (Ultra 7 265K) — 508.9s** at the PR #20 merge head, then **498.5s** (W5 close) and
+**511.7s** (W2 close, two gate walls carrying rebuild overhead) — 15/15 rc=0 in every run. The
+fifteenth gate is the Phase-3.3 recovery falsifier, DEMOTED 2026-08-09 by owner ruling from the
+per-edit tier it had outgrown (it buys ~90–100s off every per-edit core run for ~7s of roster);
+the fourteenth is Phase 3.4's architecture gate, whose addition restated the roster target
+≤360s → ≤420s. This table is the binding list — if it and CLAUDE.md's two-tier policy ever
+disagree, they are both wrong until reconciled.
 
 | Gate | Command | Proves |
 |---|---|---|
@@ -204,10 +228,10 @@ reconciled.
 | Worst-case routes | `cargo test --release -p yokohama-difftest --test routes3_worstcase -- --ignored` | maximal 17-area interior-Canal K6 battery (bound 519 — that harness's RECORDED observation, never a ceiling; ledger L9) + route-label key purity |
 | Arena | `cargo test --release -p yokohama-core --test arena_gate -- --ignored --test-threads=1` | the arena ranks seat policies with HONEST intervals: a same-policy null cell containing its null with nonzero SE, a non-degenerate edge cell plus a guaranteed edge from two shipped knob settings, the zero-width refusal exercised on the real blowout (never a printed ±0.000), byte-identical re-runs at both unit shapes, interval-machinery validation against known truth (R=2,000 synthetic) AND against real clustered games (R=100 replicates), honest-play counters, and freshly emitted records that all `replay_strict`-clean (Phase 3.2) |
 | Policy diversity | `cargo test --release -p yokohama-core --test policy_diversity -- --ignored` | the fuzzer runs the SHIPPED family-weighted policy at 2/3/4P (N=500/count, per-move invariants, raw-state driver): 4P trigger diversity recovers against a frozen held-out uniform ceiling (ChurchTrackFull Wilson95 lower bound 1.83% > 0.72%), applied-move coverage clears floors measured before they were set, and per-phase option-count tails are RECORDED — never bounded, since no bound is known (Phase 3.2) |
-| Evaluator | `cargo test --release -p yokohama-core --test evaluator_gate -- --ignored --test-threads=1` | the evaluator bots beat family-weighted random with honest intervals (Phase 3.3), five 2P cells on one committed diagnostic master: the PROMOTION cell (Lookahead-v1 vs family-weighted, N=200 pair units) is the repo's ONE direction-asserting cell — passing on either a bootstrap interval entirely above 0.5 or the all-won refusal's rule-of-three bound 0.985 > 0.5, both pre-committed before the run (measured: θ̂ 1.000000, 400/400 games, the refusal arm) — with §0.3(b)'s explanation identity riding it (71,707 moves played, 71,707 explained); plus two RECORDED lattice cells (Greedy-v1 vs family-weighted θ̂ 0.6425 [0.5950, 0.6900]; Lookahead-v1 vs Greedy-v1 θ̂ 1.0000 at 100 units), a Keep-homogeneous NULL self-test asserting containment (θ̂ 0.5150 [0.4650, 0.5625], SE 0.0250), and byte-identical determinism at N=12. Arm 2 — the close-time OS-entropy confirmation — is deliberately not in the roster |
+| Evaluator | `cargo test --release -p yokohama-core --test evaluator_gate -- --ignored --test-threads=1` | the evaluator bots beat family-weighted random with honest intervals (Phase 3.3; every cell's contestants run `WeightTable::V2` since the 2026-08-10 freeze, all figures re-recorded then), five 2P cells on one committed diagnostic master: the PROMOTION cell (Lookahead-v1 vs family-weighted, N=200 pair units) is the repo's ONE direction-asserting cell — passing on either a bootstrap interval entirely above 0.5 or the all-won refusal's rule-of-three bound 0.985 > 0.5, both pre-committed before the run (measured: θ̂ 1.000000, 400/400 games, the refusal arm) — with §0.3(b)'s explanation identity riding it (74,331 moves played, 74,331 explained); plus two RECORDED lattice cells (Greedy-v1 vs family-weighted θ̂ 0.6300 [0.5775, 0.6800]; Lookahead-v1 vs Greedy-v1 θ̂ 1.0000 at 100 units), a Keep-homogeneous NULL self-test asserting containment (θ̂ 0.5475 [0.5000, 0.5975] — the lower bound sits AT 0.5 exactly on the current capture, a standing flake risk with an in-source disposition, never an excuse to widen), and byte-identical determinism at N=12 (2,129 report bytes). Arm 2 — the close-time OS-entropy confirmation — is deliberately not in the roster |
 | Architecture | `cargo test --release -p yokohama-core --test architecture_gate -- --ignored --test-threads=1` | the Phase-3.4 MCTS-v1 contestant and the shared scored-successor budget are registered honestly, three 2P cells on one committed diagnostic master and **no cell asserts a direction** (the architecture question is the pre-registered experiment's, not a roster test's): DETERMINISM on the node-matched C2 shape (`mcts-v1@750` vs `lookahead-v1:b=4,cap=750`, N=12 run twice — 2,336 byte-identical bytes, with a flipped-master anti-vacuity control backed by a play-derived figure); HONEST COUNTERS on the same shape at N=8 (`x_explanations == x_applied_moves`, 3,108 of 3,108, and the x/y budget meters on both sides at `0 < root < scored`, `binds > 0`, `starved <= binds`, with MCTS-v1's `(Some, None)` cap-counter shape); and the MCTS SELF-NULL at N=24 asserting nonzero SE and non-degenerate unit shares — the only detector a new contestant has for a CRN/keying collapse, which reproduces byte-identically — with containment of 0.5 printed, never asserted at that N (Phase 3.4) |
 | Piped dogfood | `cargo test --release -p yokohama-cli --test piped_dogfood -- --ignored` | the shipped binary plays a full 2P game over pipes to a winner, zero ESC bytes |
-| Recovery falsifier | `cargo test --release -p yokohama-core --lib -- --ignored` | under the frozen `WeightTable::V1`, a retreat that RECOVERS something is still sometimes the greedy argmax — the executable falsifier for L6's eval-v0 pathology (0 of 48,458 picks), measured over the freeze corpus's first 312 seeded 2P games against a measured-then-halved floor: **3 picks in 169,014 applied moves, share 0.000018 vs floor 0.000010** at `SEMANTICS_REV` 7. Per-edit until 2026-08-09, demoted by owner ruling (OD-6 arm 1) once the rev-7 sample re-size took it to ~113s of debug wall; **runs EXACTLY 1 test** — it is the only `#[ignore]`d test in the core lib, which is why the command is `--lib` and why that count is stated here (release wall 7.02 / 6.84 / 7.00s). Deliberately no small-N per-edit smoke: at ~3 events per ~170,000 applied moves (≈1.8 per 100,000) the power IS the sample size (`policy_diversity`'s frozen-floor precedent); the per-edit ordering pin and one-ply cells keep guarding the assistant triple (Phase 3.3, demoted in Phase 3.5c) |
+| Recovery falsifier | `cargo test --release -p yokohama-core --lib -- --ignored` | under the SHIPPED weight table (`WeightTable::V2` since the freeze; both the table and the floor moved with it, deliberately — a floor left at the V1 value would have been half a share the shipped table no longer produces), a retreat that RECOVERS something is still sometimes the greedy argmax — the executable falsifier for L6's eval-v0 pathology, measured over the freeze corpus's first 312 seeded 2P games against a measured-then-halved floor: **7 picks in 175,782 applied moves, share 0.000040 vs floor 0.000020** at `SEMANTICS_REV` 7. Per-edit until 2026-08-09, demoted by owner ruling (OD-6 arm 1) once the rev-7 sample re-size took it to ~113s of debug wall; **runs EXACTLY 1 test** — it is the only `#[ignore]`d test in the core lib, which is why the command is `--lib` and why that count is stated here. Deliberately no small-N per-edit smoke: at ~4 events per ~176,000 applied moves the power IS the sample size (`policy_diversity`'s frozen-floor precedent); the per-edit ordering pin and one-ply cells keep guarding the assistant triple (Phase 3.3, demoted in Phase 3.5c) |
 
 ## Data provenance (cards, boards, tokens)
 
