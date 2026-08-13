@@ -988,6 +988,91 @@ mod tests {
         );
     }
 
+    /// **The reconstruction key is the RECONCILED stream seed, not the mover's
+    /// own `agent_seed`** — the one choice in this module a reader would most
+    /// reasonably get backwards, and the one that cannot be observed on a
+    /// single-bot fixture, where the two coincide.
+    ///
+    /// The pump keys EVERY bot seat off one stream (`BotSeats` carries a single
+    /// `seed`), and `from_provenance` reconciles a record naming two by keeping
+    /// the first bot seat's and warning. So a record whose second bot seat
+    /// records a different seed — which only a hand edit produces, and which
+    /// the resume path already warns about — still has to reconstruct off the
+    /// stream the game was actually played on. Reading the mover's own field
+    /// instead would refuse every one of that seat's moves as a mismatch.
+    #[test]
+    fn the_reconstruction_uses_the_reconciled_stream_seed_not_the_movers_own() {
+        // 3 players, TWO bot seats off one stream: the only shape whose
+        // per-seat seeds can disagree at all.
+        let bots = BotSeats::new(
+            vec![None, Some(PROVISIONAL_DEFAULT_BOT), Some(PROVISIONAL_DEFAULT_BOT)],
+            FIXTURE_BOT_SEED,
+        );
+        let mut session = Session::new_sim(
+            GameConfig::for_player_count(3),
+            4,
+            vec![StartingOrderChoice::Keep(0); 3],
+            Rules::standard(),
+        )
+        .expect("a standard 3-player simulation");
+        session.set_run_seats(bots.seat_provenance());
+        let mut r = Repl::new(session);
+        let rules = Rules::standard();
+        let second = PlayerId::new(2);
+        // Driven a real distance in rather than to the seat's first decision:
+        // a search's argmax is mostly insensitive to its key (the seed picks
+        // the sampled world and breaks ties), so the anti-vacuity clause below
+        // needs enough decisions for the two keyings to actually part.
+        play(&mut r, 400, |r| {
+            branching_move_indices_of(r.session.record(), &Rules::standard(), second).len() >= 12
+        });
+        let played = move_indices_of(r.session.record(), &rules, second);
+        let branching = branching_move_indices_of(r.session.record(), &rules, second);
+        assert!(branching.len() >= 12, "fixture: the SECOND bot seat must have really decided");
+
+        // Doctor the second bot seat's recorded stream. Resume keeps the
+        // first's, loudly — which is the stream the pump played on.
+        let doctored = FIXTURE_BOT_SEED ^ 0xFFFF_FFFF;
+        let mut record = r.session.record().clone();
+        record.run.as_mut().expect("provenance").seats[2].agent_seed = Some(doctored);
+        let (resumed, warnings) = BotSeats::from_provenance(record.run.as_ref());
+        assert_eq!(resumed.seed(), FIXTURE_BOT_SEED, "the first bot seat's stream wins");
+        assert!(
+            warnings.iter().any(|w| w.contains(&doctored.to_string())),
+            "the conflict is already loud at load: {warnings:?}",
+        );
+
+        for &i in &played {
+            let out = why_over(TrackingMode::Simulation, &record, &rules, &resumed, Some(i));
+            assert!(
+                out.contains(ACCOUNTED),
+                "seat 2's event {i} must reconstruct off the RECONCILED stream:\n{out}",
+            );
+        }
+
+        // Anti-vacuity: the mover's own recorded seed really would key a
+        // DIFFERENT search, so the sweep above distinguishes the two choices
+        // rather than passing under either.
+        let wrong_stream = BotSeats::new(vec![None, None, Some(PROVISIONAL_DEFAULT_BOT)], doctored);
+        let diverges = branching.iter().any(|&i| {
+            let state = state_at(&record, i, &rules).expect("the decision state");
+            let RecordedEvent::Move(recorded) = &record.events[i] else { return false };
+            bot::decide(
+                PROVISIONAL_DEFAULT_BOT,
+                &state,
+                &rules,
+                second,
+                wrong_stream.decision_seed(i),
+            )
+            .is_ok_and(|d| d.mv != *recorded)
+        });
+        assert!(
+            diverges,
+            "at no branching decision does the mover's own recorded seed choose differently, so \
+             this fixture cannot tell the two keyings apart",
+        );
+    }
+
     /// **Read-only, asserted rather than implied.** Two calls agree byte for
     /// byte; the state, the record and the legal list are where they were; and
     /// an autosave target that a commit WOULD rewrite is left absent.
