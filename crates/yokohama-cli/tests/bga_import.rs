@@ -21,11 +21,21 @@ use yokohama_cli::bga::orders::OrderMapper;
 use yokohama_cli::bga::setup::synthesize;
 use yokohama_core::Rules;
 
-fn corpus_text() -> Option<String> {
-    let path = concat!(
-        env!("CARGO_MANIFEST_DIR"),
-        "/../../bridge-captures/895724349.ndjson"
-    );
+/// The H1/H2 proving corpus — the 194-move sync game.
+const CORPUS_SYNC: &str = concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../../bridge-captures/895724349.ndjson"
+);
+
+/// The ASYNC corpus (W2): table 896199544, the only banked capture that
+/// carries a Tram technology and therefore the only evidence for the
+/// `presidentPlacement action "trams"` register-U5 shapes.
+const CORPUS_ASYNC: &str = concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../../bridge-captures/896199544.ndjson"
+);
+
+fn corpus_at(path: &str) -> Option<String> {
     match std::fs::read_to_string(path) {
         Ok(t) => Some(t),
         Err(_) if std::env::var_os("YOKOHAMA_BGA_CORPUS_OPTIONAL").is_some() => {
@@ -34,11 +44,120 @@ fn corpus_text() -> Option<String> {
         }
         Err(e) => panic!(
             "the gitignored corpus is not present at {path} ({e}).\n\
-             These pins verify the phase's headline acceptance figures against the real 194-move \
+             These pins verify the phase's headline acceptance figures against the real \
              capture; a silent skip would make 'verified' indistinguishable from 'file missing'. \
              Provide the capture, or set YOKOHAMA_BGA_CORPUS_OPTIONAL=1 to skip this tier deliberately."
         ),
     }
+}
+
+fn corpus_text() -> Option<String> {
+    corpus_at(CORPUS_SYNC)
+}
+
+fn async_corpus_text() -> Option<String> {
+    corpus_at(CORPUS_ASYNC)
+}
+
+/// Extract the async capture's fact stream, or `None` when the corpus is
+/// deliberately absent.
+fn async_fact_stream() -> Option<yokohama_cli::bga::facts::FactStream> {
+    let text = async_corpus_text()?;
+    let rules = Rules::standard();
+    let feed = read_and_collapse(&text, Some(896_199_544)).unwrap();
+    let answers = synthesize(&feed, &rules).unwrap();
+    let mapper = OrderMapper::from_rules(&rules).unwrap();
+    let seats = answers.seats.clone();
+    Some(
+        yokohama_cli::bga::facts::extract(
+            &feed,
+            &|pid| seats.iter().find(|s| s.bga_player_id == pid).map(|s| s.seat),
+            &mapper,
+        )
+        .expect("the async capture extracts with no vocabulary refusal"),
+    )
+}
+
+// ---------------------------------------------------------------------------
+// W2: the `trams` register (Task 1)
+// ---------------------------------------------------------------------------
+
+/// THE REGISTER, measured (2026-08-12, Step 0): async table 896199544 carries
+/// EIGHT `trams` notification instances over THREE distinct moves — m127
+/// (socket ×2), m128 (socket ×2 + history ×1) and m137 (socket ×2 + history
+/// ×1). **m127 is a superseded takeback**: the player trammed to the Church,
+/// saw the faith, undid it and re-moved, so BGA's history spine keeps only the
+/// surviving line and the feed's structural supersession rule drops the
+/// rewound socket packets. Exactly TWO tram facts therefore reach the
+/// extractor, and this pin is what makes that claim executable rather than
+/// prose.
+///
+/// The anti-vacuity half matters as much as the count: m127 is still a MOVE in
+/// the collapsed feed (its surviving notification is the re-done three-area
+/// placement), so "no tram fact at m127" is a statement about supersession and
+/// not about a missing move.
+#[test]
+fn the_async_capture_tram_register_is_exactly_its_two_surviving_moves() {
+    use yokohama_cli::bga::facts::{Fact, PresidentVia};
+    let Some(stream) = async_fact_stream() else { return };
+
+    let trams: Vec<(u64, yokohama_core::AreaType, u8)> = stream
+        .facts
+        .iter()
+        .filter_map(|tf| match tf.fact {
+            Fact::President { dest, power, via: PresidentVia::Tram, .. } => {
+                Some((tf.move_id, dest, power))
+            }
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        trams,
+        vec![
+            (128, yokohama_core::AreaType::SilkMill, 2),
+            (137, yokohama_core::AreaType::Church, 4),
+        ],
+        "the surviving tram register is m128 → Silk Mill @2 and m137 → Church @4"
+    );
+
+    // Anti-vacuity: m127 IS in the feed, carrying its surviving placement —
+    // what the supersession removed is the tram, not the move.
+    let m127: Vec<&Fact> = stream.facts.iter().filter(|tf| tf.move_id == 127).map(|tf| &tf.fact).collect();
+    assert!(
+        m127.iter().any(|f| matches!(f, Fact::Placement { .. })),
+        "m127 survives as its re-done placement: {m127:?}"
+    );
+    assert!(
+        !m127.iter().any(|f| matches!(f, Fact::President { .. })),
+        "the superseded m127 tram must never reach the extractor: {m127:?}"
+    );
+
+    // Every other president fact in the capture is the ordinary verb — the
+    // widen added one measured value, not a permissive arm.
+    let placed = stream
+        .facts
+        .iter()
+        .filter(|tf| matches!(tf.fact, Fact::President { via: PresidentVia::Placed, .. }))
+        .count();
+    assert_eq!(placed, 26, "the `places` facts the same capture yields");
+}
+
+/// STEP 4 — the full extraction census of the async capture: with the `trams`
+/// verb inside the observed set, fact extraction runs the WHOLE stream with no
+/// vocabulary refusal, reaching BGA's own final-scoring marker at m155. Before
+/// this task the same call hard-errored at m128 (register U5), and because
+/// extraction precedes replay, `--through` could not bound around it — so this
+/// pin is the executable form of "the tram vocabulary no longer blocks".
+#[test]
+fn the_async_capture_extracts_through_final_scoring_with_no_vocabulary_refusal() {
+    use yokohama_cli::bga::facts::Fact;
+    let Some(stream) = async_fact_stream() else { return };
+    let last = stream.facts.last().expect("the capture yields facts");
+    assert_eq!(last.move_id, 155, "extraction reaches the capture's last move");
+    assert!(
+        stream.facts.iter().any(|tf| matches!(tf.fact, Fact::FinalScoringMarker)),
+        "BGA's final-scoring marker is reached"
+    );
 }
 
 #[test]

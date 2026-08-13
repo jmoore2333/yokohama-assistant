@@ -676,6 +676,127 @@ pub fn extract(
 mod tests {
     use super::*;
 
+    /// One history-form notification as a capture line. Player NAMES are never
+    /// carried on a tracked file (the 2026-08-08 redaction ruling) and the
+    /// player id is a placeholder; every other arg is verbatim from the wire.
+    fn wire_line(move_id: u64, kind: &str, log: &str, args: Value) -> String {
+        serde_json::json!({
+            "received_at_ms": 1, "kind": "packets",
+            "payload": {"source": "xhr", "body_text": serde_json::json!({
+                "status": 1, "data": {"valid": 1, "data": [{
+                    "packet_type": "history", "table_id": 42, "packet_id": "1",
+                    "move_id": move_id.to_string(),
+                    "data": [{"uid": "u1", "type": kind, "log": log, "args": args}]
+                }]}
+            }).to_string()}
+        })
+        .to_string()
+    }
+
+    fn extract_one(line: &str) -> Result<FactStream, ImportError> {
+        let feed = yokohama_bridge::feed::read_and_collapse(line, None).unwrap();
+        let mapper = OrderMapper::from_rules(&yokohama_core::Rules::standard()).unwrap();
+        extract(&feed, &|pid| (pid == "11111111").then_some(0), &mapper)
+    }
+
+    /// The `presidentPlacement` log template is one string for BOTH observed
+    /// actions — the verb is substituted from `${action}`, which is exactly why
+    /// the arm dispatches on the ARG and never on the log.
+    const T_PRESIDENT: &str =
+        "${player_name} ${action} the president on the <B>${tile_name}</B> with a power of <B>${power}</B>";
+
+    /// Register U5, shape 1 — a Tram move with an EMPTY `route_keys`.
+    ///
+    /// Verbatim from async table 896199544 m127 (redacted per above): the
+    /// President tramming from tile 3 to tile 1 (Church), two steps apart on
+    /// BGA's own tile links, so nothing was walked and `route_keys` is `[]`.
+    /// In the real capture this instance is a SUPERSEDED takeback and the feed
+    /// collapse drops it before extraction — it is pinned here because it is
+    /// the shape BGA emits for a genuine teleport, and the arm must read it as
+    /// a President fact rather than refuse it.
+    #[test]
+    fn the_trams_action_extracts_as_a_president_fact() {
+        let line = wire_line(
+            127,
+            "presidentPlacement",
+            T_PRESIDENT,
+            serde_json::json!({
+                "action": "trams", "player_id": "11111111", "power": "3",
+                "pres_tile_key": "3", "route_keys": [], "tile_name": "Church",
+                "trg_tile_key": "1"
+            }),
+        );
+        let stream = extract_one(&line).expect("the trams verb is inside the observed set");
+        assert_eq!(
+            stream.facts[0].fact,
+            Fact::President {
+                seat: 0,
+                dest: AreaType::Church,
+                power: 3,
+                via: PresidentVia::Tram
+            }
+        );
+    }
+
+    /// Register U5, shape 2 — a Tram move whose `route_keys` is NON-empty.
+    ///
+    /// Verbatim from async table 896199544 m128 (redacted per above), one of
+    /// the two SURVIVING tram facts: tile 3 → tile 2 (Silk Mill), which BGA's
+    /// tile links make directly adjacent, so `route_keys` carries the single
+    /// destination key `["2"]` — on both surviving tram facts it is exactly
+    /// `[trg_tile_key]`. The extracted fact is the SAME shape as the empty-route
+    /// case: `route_keys` is recorded as evidence in the arm's register and
+    /// deliberately not read, so it cannot change what the fact says.
+    #[test]
+    fn a_trams_action_with_route_keys_extracts_per_its_observed_shape() {
+        let line = wire_line(
+            128,
+            "presidentPlacement",
+            T_PRESIDENT,
+            serde_json::json!({
+                "action": "trams", "player_id": "11111111", "power": "2",
+                "pres_tile_key": "3", "route_keys": ["2"], "tile_name": "Silk Mill",
+                "trg_tile_key": "2"
+            }),
+        );
+        let stream = extract_one(&line).expect("a non-empty route_keys is inside the observed set");
+        assert_eq!(
+            stream.facts[0].fact,
+            Fact::President {
+                seat: 0,
+                dest: AreaType::SilkMill,
+                power: 2,
+                via: PresidentVia::Tram
+            }
+        );
+    }
+
+    /// The register-U5 discipline SURVIVES the widen: the observed set grew by
+    /// exactly one measured verb, and a third one still stops the import naming
+    /// itself. Without this the widen could be read as "presidentPlacement is
+    /// now permissive", which is the opposite of what it is.
+    #[test]
+    fn an_unobserved_president_action_still_hard_errors() {
+        let line = wire_line(
+            9,
+            "presidentPlacement",
+            T_PRESIDENT,
+            serde_json::json!({
+                "action": "jetpack", "player_id": "11111111", "power": "3",
+                "pres_tile_key": "3", "route_keys": [], "tile_name": "Church",
+                "trg_tile_key": "1"
+            }),
+        );
+        match extract_one(&line).unwrap_err() {
+            ImportError::Sheet { detail } => {
+                assert!(detail.contains("jetpack"), "the refusal names what was seen: {detail}");
+                assert!(detail.contains("register U5"), "{detail}");
+                assert!(detail.contains("move 9"), "the refusal names the move id: {detail}");
+            }
+            other => panic!("expected the U5 hard error, got {other:?}"),
+        }
+    }
+
     #[test]
     fn reward_items_parse_the_pinned_vocabulary_and_refuse_outside_it() {
         let mut r = SpaceReward::default();
