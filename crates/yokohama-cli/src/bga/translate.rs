@@ -162,16 +162,18 @@ fn select_tram_move(
     rules: &yokohama_core::Rules,
     legal: &[Move],
     seat: u8,
-    dest: AreaType,
     dest_id: AreaId,
     fees: usize,
     move_id: u64,
 ) -> Result<Move, ImportError> {
+    // Display-only: the refusal text names the printed area type, derived
+    // here so the signature stays inside clippy's argument bound.
+    let dest = state.board_layout.areas.get(&dest_id).map(|cfg| cfg.area_type);
     if fees > 0 {
         return Err(rerr(
             move_id,
             format!(
-                "a `trams` president move to {dest:?} arrived with {fees} observed pass-through \
+                "a `trams` president move to {dest:?} ({dest_id:?}) arrived with {fees} observed pass-through \
                  fee(s) — the Tram technology moves for FREE and both surviving register facts \
                  are fee-free; refusing rather than assuming (never guessed)"
             ),
@@ -183,7 +185,7 @@ fn select_tram_move(
         Err(0) => Err(rerr(
             move_id,
             format!(
-                "a `trams` president move to {dest:?} has no free (zero-cost) legal label — \
+                "a `trams` president move to {dest:?} ({dest_id:?}) has no free (zero-cost) legal label — \
                  the Tram technology moves for free, so one must exist; candidates considered: {}",
                 describe_candidates(&candidates)
             ),
@@ -191,7 +193,7 @@ fn select_tram_move(
         Err(n) => Err(rerr(
             move_id,
             format!(
-                "{n} distinct zero-cost labels to {dest:?} — the engine's route enumeration \
+                "{n} distinct zero-cost labels to {dest:?} ({dest_id:?}) — the engine's route enumeration \
                  emits at most one per destination; candidates considered: {}",
                 describe_candidates(&candidates)
             ),
@@ -540,7 +542,6 @@ impl<'a> Translator<'a> {
     fn tram_president_move(
         &self,
         seat: u8,
-        dest: AreaType,
         dest_id: AreaId,
         fees: usize,
         move_id: u64,
@@ -550,7 +551,6 @@ impl<'a> Translator<'a> {
             self.session.rules(),
             &self.session.legal(),
             seat,
-            dest,
             dest_id,
             fees,
             move_id,
@@ -1113,7 +1113,7 @@ impl<'a> Translator<'a> {
                                 seat, dest, dest_id, fees, move_id,
                             )?,
                             PresidentVia::Tram => {
-                                self.tram_president_move(seat, dest, dest_id, fees, move_id)?
+                                self.tram_president_move(seat, dest_id, fees, move_id)?
                             }
                         }
                     };
@@ -1966,19 +1966,6 @@ mod tests {
         assert_eq!(describe_candidates(&[]), "none");
     }
 
-    /// The AreaType a board id carries — display-only in the selection's
-    /// refusal text, looked up rather than guessed so the tests' messages
-    /// stay true.
-    fn area_type_of(state: &yokohama_core::GameState, id: AreaId) -> AreaType {
-        state
-            .board_layout
-            .areas
-            .iter()
-            .find(|(a, _)| **a == id)
-            .map(|(_, cfg)| cfg.area_type)
-            .expect("a listed destination is on the board")
-    }
-
     /// **THE SEAM PIN, suppressed side** (T1 review MUST-1): drive
     /// [`select_tram_move`] itself — not its helpers — at every destination
     /// whose free label is the WALK the engine kept after suppressing the
@@ -2009,7 +1996,6 @@ mod tests {
                 s.rules(),
                 &legal,
                 seat,
-                area_type_of(s.state(), dest_id),
                 dest_id,
                 0,
                 4242,
@@ -2067,7 +2053,6 @@ mod tests {
                 rules,
                 &legal,
                 seat,
-                area_type_of(&state, dest_id),
                 dest_id,
                 0,
                 4242,
@@ -2102,7 +2087,6 @@ mod tests {
             s.rules(),
             &legal,
             seat,
-            area_type_of(s.state(), dests[0]),
             dests[0],
             2,
             777,
@@ -2123,8 +2107,8 @@ mod tests {
             .state()
             .board_layout
             .areas
-            .iter()
-            .map(|(id, _)| *id)
+            .keys()
+            .copied()
             .find(|id| !listed.contains(id))
             .expect("some board area is not a legal destination at this point");
         let err = select_tram_move(
@@ -2132,7 +2116,6 @@ mod tests {
             s.rules(),
             &legal,
             seat,
-            area_type_of(s.state(), unreachable),
             unreachable,
             0,
             888,
