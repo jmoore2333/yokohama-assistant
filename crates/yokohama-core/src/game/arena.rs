@@ -717,7 +717,13 @@ pub fn run_raw_game(
 /// tallying, the failure taxonomy — is shared below, which is the point: the
 /// honest path and the diagnostic path cannot drift in what they consider a
 /// legal, recorded move.
-trait SeatBench {
+///
+/// `pub(crate)` since Phase 3.5c Phase-B T1: [`play_from_state`] is the half of
+/// the driver a ROOTED run shares with the arena, and a `pub(crate)` function
+/// cannot name a private trait in its signature. It stays crate-private — the
+/// bench is an implementation seam, not a public surface (the public seam is
+/// [`ArenaAgent`]).
+pub(crate) trait SeatBench {
     fn starting_order(&mut self, seat: PlayerId, deal: &[OrderCardId; 2]) -> Result<u8, ArenaError>;
     fn decide(
         &mut self,
@@ -735,8 +741,21 @@ trait SeatBench {
     fn seat_provenance(&self) -> Vec<SeatProvenance>;
 }
 
-struct AgentBench {
+pub(crate) struct AgentBench {
     agents: Vec<Box<dyn ArenaAgent>>,
+}
+
+impl AgentBench {
+    /// One bench over `agents`, indexed by seat.
+    ///
+    /// `pub(crate)` since Phase 3.5c Phase-B T1 so `game::driven` seats a rooted
+    /// run through THE arena's own honest bench rather than a copy of it: the
+    /// `observe` call, the view/seat assertion and the refusal classification in
+    /// [`AgentBench::decide`] are the honesty chain, and a second implementation
+    /// of them is a second thing that can drift.
+    pub(crate) fn new(agents: Vec<Box<dyn ArenaAgent>>) -> Self {
+        Self { agents }
+    }
 }
 
 impl SeatBench for AgentBench {
@@ -810,6 +829,95 @@ impl SeatBench for RawBench {
         let mv = policy.pick(&handle, rng).ok_or(ArenaError::DeadEnd { seat })?;
         Ok(DecisionReport { mv, volume })
     }
+}
+
+// ---------------------------------------------------------------------------
+// The play half (Phase 3.5c Phase-B T1)
+// ---------------------------------------------------------------------------
+
+/// Why [`play_from_state`] stopped short of a terminal state.
+///
+/// **Not [`ArenaError`], and the difference is the point.** `ArenaError` is the
+/// FROM-SETUP driver's taxonomy: it names a `WorldSeed` in its cap arm and folds
+/// observe/apply/invariant faults into one `Driver(String)`. The play half is
+/// shared with a ROOTED run that has no world seed and wants those faults
+/// classified rather than stringified, so it reports structurally and each
+/// caller maps into its own taxonomy — [`arena_error`] rebuilds `ArenaError`'s
+/// messages VERBATIM (which is what keeps the arena's behaviour unmoved by the
+/// split), and `game::driven` maps to its own typed error.
+#[derive(Debug)]
+pub(crate) enum PlayError {
+    /// The state handed in violates an engine invariant before any move.
+    CorruptRoot(String),
+    /// `observe` refused to derive the mover's view (a live-tracked seat with an
+    /// unrecorded deal is the reachable case).
+    Observe { seat: PlayerId, detail: String },
+    /// A seat's agent refused to produce a move — the honest chain's typed hard
+    /// error. There is no fallback arm to reach.
+    Agent { seat: PlayerId, detail: String },
+    /// A seat proposed a move that is not legal in the TRUE state.
+    IllegalPick { seat: PlayerId, mv: Box<Move> },
+    /// The decision point offered nothing to play.
+    DeadEnd { seat: PlayerId },
+    /// A validated move failed to apply.
+    Apply { seat: PlayerId, detail: String },
+    /// An invariant broke after an applied move.
+    Invariant { seat: PlayerId, reason: String },
+    /// The turn guard tripped.
+    TurnCap { turns: u32 },
+    /// The decision guard tripped — only reachable when a caller SETS one
+    /// ([`PlayLimits::max_decisions`]); the arena passes `None`.
+    DecisionCap { decisions: u64 },
+}
+
+/// The two non-termination guards the shared loop enforces.
+///
+/// `max_decisions` is `None` for the arena — deliberately, so the split adds no
+/// guard the from-setup driver did not already have, and its behaviour is
+/// unchanged by construction rather than by measurement. A rooted run sets it,
+/// because a HAND-BUILT root can loop without ever advancing `turn_number` and
+/// the turn cap alone would spin forever on it.
+pub(crate) struct PlayLimits {
+    pub(crate) max_turns: u32,
+    pub(crate) max_decisions: Option<u64>,
+}
+
+/// What one run of the shared loop produced. Deliberately record-free: the
+/// arena stamps its own [`GameRecord`] from `applied`, and a rooted run emits no
+/// record at all (a rooted run is not a from-setup game and must not masquerade
+/// as one).
+#[derive(Debug)]
+pub(crate) struct PlayOutcome {
+    /// The state the loop stopped in — terminal by construction on `Ok`.
+    pub(crate) final_state: GameState,
+    /// Every applied move with its MOVER, in play order. The mover is
+    /// `state.current_player` read BEFORE the apply.
+    pub(crate) applied: Vec<(PlayerId, Move)>,
+    /// Applied moves per seat, indexed by seat — sums to `applied.len()`.
+    pub(crate) moves_by_seat: Vec<u64>,
+    pub(crate) volumes: Vec<VolumeObs>,
+    pub(crate) coverage: CoverageTally,
+}
+
+/// Play from `root` to terminal: validate, apply, tally, one decision at a time.
+///
+/// **This is the arena's own loop** — [`drive`] is this function plus the setup
+/// half, and `game::driven` is this function plus a rooted seat list. Nothing in
+/// here knows how the state was reached.
+pub(crate) fn play_from_state(
+    _root: &GameState,
+    _rules: &Rules,
+    _bench: &mut dyn SeatBench,
+    _limits: PlayLimits,
+    _invariants: bool,
+) -> Result<PlayOutcome, PlayError> {
+    todo!("T1 GREEN: the shared play half")
+}
+
+/// [`PlayError`] as the from-setup driver reports it — the messages
+/// [`ArenaError`] carried before the T1 split, rebuilt verbatim.
+fn arena_error(_seed: WorldSeed, _e: PlayError) -> ArenaError {
+    todo!("T1 GREEN: the arena's own error mapping")
 }
 
 /// The shared loop: setup choices, then validate/apply/record per decision.
