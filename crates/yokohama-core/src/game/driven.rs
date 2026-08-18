@@ -2580,12 +2580,18 @@ pub fn adjudicate_root(
 #[cfg(test)]
 mod tests {
     use super::*;
+    // The CHECKED boundary, imported only here: the module itself drives through
+    // `apply_move_unchecked` (moves already drawn from the legal list), so a
+    // test recomputing a continuation independently uses the checked entry point
+    // rather than a second call to the one under test.
+    use crate::game::apply_move::apply_move;
     use crate::game::arena::{
         run_arena_game, ArenaGameStats, ControllerProvenance, DecisionReport,
     };
     use crate::game::end_game::is_game_over;
     use crate::game::invariants::check_invariants;
     use crate::game::record::{state_at, RecordedEvent};
+    use crate::game::scoring::{ScoreBreakdown, Standing};
     use crate::game::seeds::SeedSchedule;
     use crate::game::setup::{finalize_setup, new_game, StartingOrderChoice};
     use crate::types::{
@@ -4806,6 +4812,164 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
+    // The pure readers: the margin's definition and the equality helper
+    // -----------------------------------------------------------------------
+
+    /// **THE BEST-RIVAL DISCRIMINATOR.** The margin is taken against the
+    /// highest-RANKED rival, which on a level board is NOT what a `max` over
+    /// totals returns.
+    ///
+    /// Hand-built and 3P, because that is the only shape where the two readings
+    /// come apart: three seats on the SAME total, `final_result`'s official
+    /// order putting p1 first, the mover p0 second and p2 third. The
+    /// standings-order read answers p1 — the seat the tie-break actually ranks
+    /// ahead — while `max_by_key(total)` over the non-movers answers p2, since
+    /// `Iterator::max_by_key` returns the LAST maximum. Both readings are taken
+    /// here, so the fixture proves it discriminates rather than merely claiming
+    /// it does.
+    ///
+    /// A game costs nothing here on purpose: this is a property of
+    /// [`verdict`]'s reading of a result, and driving a real game to a
+    /// three-way tie is neither cheap nor reliable.
+    #[test]
+    fn the_best_rival_is_the_highest_ranked_rival_not_a_max_over_totals() {
+        // `total` is the only leg this reading touches; the rest are zeroed so
+        // nothing else can be the reason an assertion passes.
+        let scored = |total: u32| ScoreBreakdown {
+            base_vp: total,
+            church: 0,
+            customs: 0,
+            technology: 0,
+            country: 0,
+            remainder: 0,
+            total,
+        };
+        let mover = PlayerId(0);
+        // Standings arrive in the OFFICIAL order — `final_result` sorts by
+        // (total desc, clockwise distance) — so this literal is what a genuine
+        // three-way tie broken in p1's favour looks like.
+        let result = GameResult {
+            standings: vec![
+                Standing { player: PlayerId(1), breakdown: scored(30), rank: 1 },
+                Standing { player: mover, breakdown: scored(30), rank: 2 },
+                Standing { player: PlayerId(2), breakdown: scored(30), rank: 3 },
+            ],
+            winner: PlayerId(1),
+        };
+
+        let v = verdict(&result, mover).expect("the mover has a standing");
+        assert_eq!(
+            v.best_rival,
+            PlayerId(1),
+            "the margin must be taken against the highest-RANKED rival",
+        );
+        assert_eq!((v.mover_total, v.best_rival_total), (30, 30));
+        assert_eq!(v.margin, 0, "level totals are a zero margin");
+        assert_eq!(v.rank, 2);
+        assert!(!v.won, "a zero margin is NOT a win: the tie-break ranks p1 ahead");
+
+        // ANTI-VACUITY: the naive read really does answer differently here, so
+        // this fixture is a discriminator rather than a coincidence.
+        let naive = result
+            .standings
+            .iter()
+            .filter(|s| s.player != mover)
+            .max_by_key(|s| s.breakdown.total)
+            .map(|s| s.player);
+        assert_eq!(naive, Some(PlayerId(2)), "the fixture does not separate the two readings");
+        assert_ne!(v.best_rival, naive.unwrap());
+    }
+
+    /// One hand-built playout carrying nothing but its margin — every other
+    /// field a stated constant, because [`Adjudication::all_candidates_equal`]
+    /// reads margins and nothing else.
+    fn hand_playout(replication: u32, margin: i64) -> CandidatePlayout {
+        CandidatePlayout {
+            replication,
+            world: WorldSeed(0),
+            agent_seeds: vec![0, 0],
+            margin,
+            mover_total: 0,
+            best_rival: PlayerId(1),
+            best_rival_total: 0,
+            rank: 2,
+            won: false,
+            decisions: 0,
+            turns: 0,
+            final_digest: String::new(),
+        }
+    }
+
+    /// A table assembled from margin vectors alone: no root, no engine, no
+    /// game. Each row gets a DISTINCT candidate and continuation digest, so an
+    /// equality helper that compared rows by anything but their margins would
+    /// read these tables differently.
+    fn hand_table(margin_sets: &[&[i64]]) -> Adjudication {
+        let k = margin_sets.first().map_or(0, |m| m.len() as u32);
+        let rows = margin_sets
+            .iter()
+            .enumerate()
+            .map(|(index, margins)| CandidateRow {
+                candidate: Move::BuildShophouse { slot: index as u8 },
+                continuation_digest: format!("hand-built-continuation-{index}"),
+                playouts: margins
+                    .iter()
+                    .enumerate()
+                    .map(|(r, m)| hand_playout(r as u32, *m))
+                    .collect(),
+            })
+            .collect();
+        Adjudication {
+            mover: PlayerId(0),
+            root_turn: 0,
+            master: WorldSeed(0),
+            replications: k,
+            rows,
+            witness: None,
+            provenance: AdjudicationProvenance {
+                root: RootDescriptor {
+                    origin: RootOrigin::Constructed,
+                    event_index: None,
+                    root_digest: "hand-built-root".to_string(),
+                },
+                semantics_rev: SEMANTICS_REV,
+                rules_hash: "hand-built-rules".to_string(),
+                seats: Vec::new(),
+                master: 0,
+                replications: k,
+            },
+        }
+    }
+
+    /// `all_candidates_equal` compares margins ELEMENTWISE, not by mean — at
+    /// the CONSTRUCTOR, where the distinction is statable in microseconds.
+    ///
+    /// The cells above reach this helper through real adjudications, and both
+    /// of the tables they build have candidates whose margins are constant
+    /// across K (their remainders are forced), so neither can tell an
+    /// elementwise comparison from a mean comparison. `[0, 2]` against `[1, 1]`
+    /// can: same mean, different vectors, and calling those equal would hide
+    /// exactly the per-replication variation K exists to expose. The `[1, 1]`
+    /// against `[1, 1]` half is the anti-vacuity — a helper hard-wired to
+    /// `false` fails there.
+    #[test]
+    fn all_candidates_equal_compares_margin_vectors_and_never_their_means() {
+        let equal_means = hand_table(&[&[0, 2], &[1, 1]]);
+        assert_eq!(equal_means.candidates(), 2, "anti-vacuity: one row is trivially 'equal'");
+        assert!(
+            (equal_means.rows[0].mean_margin() - equal_means.rows[1].mean_margin()).abs() < 1e-12,
+            "the fixture does not separate the two readings: the means differ",
+        );
+        assert!(
+            !equal_means.all_candidates_equal(),
+            "two candidates with equal MEANS and different margin VECTORS are not equal",
+        );
+
+        let identical = hand_table(&[&[1, 1], &[1, 1]]);
+        assert!(identical.all_candidates_equal(), "identical margin vectors ARE equal");
+    }
+
+    // -----------------------------------------------------------------------
     // The hand-computed table
     // -----------------------------------------------------------------------
 
@@ -4891,6 +5055,34 @@ mod tests {
             assert!((row.mean_margin() - margin as f64).abs() < 1e-12);
         }
 
+        // Every row's continuation digest IS the state ROOT + that candidate
+        // reaches — recomputed here through the ENGINE's own CHECKED
+        // `apply_move` rather than read back from the value the adjudicator
+        // computed for itself. Without this the digests could all name the ROOT
+        // (or any other single state) and every assertion above would still
+        // pass, leaving the row→playout join pointing at a position no playout
+        // started from.
+        for row in &table.rows {
+            let after = apply_move(&root, &row.candidate, &rules).unwrap_or_else(|e| {
+                panic!("{:?}: the root's own candidate must apply: {e}", row.candidate)
+            });
+            assert_eq!(
+                row.continuation_digest,
+                state_digest(&after),
+                "{:?}: the row names a continuation it did not begin at",
+                row.candidate,
+            );
+        }
+        // ...and the five continuations are five DIFFERENT states, so no row
+        // can be joined to another row's playouts. Note two of these rows score
+        // ALIKE (Skip and the 0-VP space), which is exactly why distinctness is
+        // asserted on the digest and not on the margin.
+        let mut digests: Vec<&str> =
+            table.rows.iter().map(|r| r.continuation_digest.as_str()).collect();
+        digests.sort_unstable();
+        digests.dedup();
+        assert_eq!(digests.len(), table.rows.len(), "two candidates share a continuation digest");
+
         // The zero-margin row is a LOSS, and the +1 row is the only win.
         assert_eq!(table.rows.iter().filter(|r| r.wins() > 0).count(), 1);
         assert!(!table.all_candidates_equal(), "five different margins are not all equal");
@@ -4917,6 +5109,67 @@ mod tests {
         let witness = table.witness.as_ref().expect("a table with playouts has a witness");
         assert_eq!(witness.seats[mover.0 as usize].echo, Contestant::GREEDY_V1_DEFAULT.echo());
         assert_eq!(witness.master, replication_world(master, 0).0, "the witness is replication 0's");
+        // THE JOIN, closed by VALUE. The witness is the FIRST playout of the
+        // FIRST candidate, and a playout's descriptor is `Constructed` on the
+        // state it actually started from — ROOT + that candidate — so the
+        // witness's root digest is row 0's CONTINUATION digest and NOT the
+        // table's root digest. The two are different positions (asserted
+        // below), so reading one for the other would silently mis-identify
+        // every playout's starting state.
+        assert_eq!(
+            witness.root.root_digest, table.rows[0].continuation_digest,
+            "the witness does not name the continuation its playout began at",
+        );
+        assert_ne!(
+            witness.root.root_digest, table.provenance.root.root_digest,
+            "anti-vacuity: the witness's root and the TABLE's root are different positions",
+        );
+        assert_eq!(witness.root.origin, RootOrigin::Constructed);
+        assert_eq!(witness.root.event_index, None, "a constructed continuation indexes no log");
+    }
+
+    /// [`AdjudicationProvenance`] and its [`AdjudicationSeat`]s survive the trip
+    /// to a sidecar and back.
+    ///
+    /// The same fixture and the same MIXED seat vocabulary as the arithmetic
+    /// cell above, at K = 1 — a real adjudication's provenance rather than a
+    /// literal, so the round trip is taken over the values the module actually
+    /// stamps (both `requested` spellings included). `RootedProvenance` has this
+    /// pin already; these two types are a separate pair with their own derives,
+    /// and a missing one is a compile error only once something asks.
+    #[test]
+    fn an_adjudications_provenance_round_trips_through_serde() {
+        let rules = Rules::standard();
+        let (root, mover, _) = near_terminal_building_root(&rules, world(57).0, [3, 4, 5, 0], 6, 10);
+        let mut seats = rung_seats();
+        seats[mover.0 as usize] = SeatSpec::Contestant(Contestant::GREEDY_V1_DEFAULT);
+        let table = adjudicate_root(
+            &RootSource::Constructed(root),
+            &seats,
+            &rules,
+            world(58),
+            1,
+            DrivenOpts::default(),
+        )
+        .expect("the fixture adjudicates");
+
+        let p = &table.provenance;
+        let json = serde_json::to_string(p).expect("the provenance serializes");
+        let back: AdjudicationProvenance =
+            serde_json::from_str(&json).expect("the provenance parses back");
+        assert_eq!(&back, p, "a real adjudication's provenance did not survive serde");
+
+        // The fields a sidecar READER needs are actually in the document —
+        // without these the assertion above would still pass on a document that
+        // wrote nothing but the fields serde defaults.
+        assert_eq!(back.seats.len(), 2);
+        assert!(json.contains("\"contestant\""), "the asked-for seat is not written: {json}");
+        assert!(json.contains("reply:family-weighted"), "the reply seat is not written: {json}");
+        assert!(
+            json.contains(&Contestant::GREEDY_V1_DEFAULT.echo()),
+            "the resolved echo is not written: {json}",
+        );
+        assert!(json.contains(&p.root.root_digest), "the root digest is not written: {json}");
     }
 
     /// A GENUINELY DEAD root: five candidates, one margin.
@@ -5271,5 +5524,71 @@ mod tests {
             ref other => panic!("expected CorruptRoot, got {other:?}"),
         }
         assert!(err.to_string().contains("assistants total"), "{err}");
+    }
+
+    /// **THE NEVER-A-SKIPPED-ROW CONTRACT, and this is its only pin.** A playout
+    /// that does not complete refuses the WHOLE adjudication — no table comes
+    /// back at all.
+    ///
+    /// The load-bearing assertion is the `Err` itself. [`AdjudicationError`]'s
+    /// own doc states the reason: a table missing a candidate — because its
+    /// playout failed and the row was skipped — reads exactly like a table of a
+    /// position with fewer options, and the reading riding on it would be wrong
+    /// with no way to notice. That property lives in a single `?` inside
+    /// [`adjudicate_root`]'s replication loop, and nothing else in this file
+    /// exercises a FAILING playout: every other refusal cell fires in the
+    /// guards, BEFORE a candidate is ever forced.
+    ///
+    /// Driven from an ORGANIC root with a tiny decision bound, for the same
+    /// reason `a_root_that_does_not_terminate_within_the_bound_is_a_typed_refusal`
+    /// is: a fixture that genuinely fails mid-playout would have to hang if the
+    /// guard were missing. The refusal must NAME the candidate and the
+    /// replication, since "some row failed" identifies nothing.
+    #[test]
+    fn a_playout_that_cannot_finish_refuses_the_whole_table() {
+        let rules = Rules::standard();
+        let root = root_2p(&rules, world(59).0);
+        let first = get_legal_moves(&root, &rules)
+            .first()
+            .cloned()
+            .expect("a fresh 2P root offers candidates");
+        // Three decisions is far under a fresh game's ~1,200, so the FIRST
+        // candidate's FIRST replication is the one that reaches the bound.
+        let opts = DrivenOpts { max_decisions: 3, ..DrivenOpts::default() };
+
+        let err = adjudicate_root(
+            &RootSource::Constructed(root),
+            &rung_seats(),
+            &rules,
+            world(60),
+            1,
+            opts,
+        )
+        .expect_err("a playout that cannot finish must produce NO TABLE, not a shorter one");
+
+        match err {
+            AdjudicationError::Playout { ref candidate, replication, ref error } => {
+                assert_eq!(
+                    **candidate, first,
+                    "the refusal must NAME the candidate whose playout failed",
+                );
+                assert_eq!(replication, 0, "the refusal must name WHICH replication failed");
+                match **error {
+                    DrivenError::DecisionCapReached { decisions } => {
+                        assert_eq!(decisions, 3, "the inner refusal must name the bound it reached");
+                    }
+                    ref other => panic!("expected DecisionCapReached, got {other:?}"),
+                }
+            }
+            ref other => panic!("expected Playout, got {other:?}"),
+        }
+        // The rendered sentence carries both halves, so a caller reading a log
+        // can tell which row died and why.
+        let rendered = err.to_string();
+        assert!(rendered.contains("replication 0 of"), "the message hides the row: {rendered}");
+        assert!(
+            rendered.contains("did not terminate within 3 decisions"),
+            "the message hides the cause: {rendered}",
+        );
     }
 }
