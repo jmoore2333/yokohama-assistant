@@ -257,7 +257,7 @@ pub struct SeatOutcome {
 }
 
 /// A completed rooted run.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DrivenOutcome {
     /// The master every seat's stream descends from.
     pub master: WorldSeed,
@@ -462,8 +462,13 @@ pub fn drive_to_terminal(
     }
     // ONE authority for what the engine plays — the arena's own guard, not a
     // re-typed range (a rooted run that tabulated a 1-seat "game" would produce
-    // an outcome whose `final_result` nobody should read).
-    require_supported_player_count(players as u8)
+    // an outcome whose `final_result` nobody should read). The narrowing runs
+    // through `try_from` rather than an `as` cast: `as` would WRAP a nonsense
+    // seat count into a supported one, and the guard would then pass on a state
+    // it should have refused.
+    let seat_count = u8::try_from(players)
+        .map_err(|_| DrivenError::UnsupportedRoot(format!("root carries {players} seats")))?;
+    require_supported_player_count(seat_count)
         .map_err(|e| DrivenError::UnsupportedRoot(e.to_string()))?;
     if opts.max_decisions == 0 {
         return Err(DrivenError::UnsupportedRoot(
