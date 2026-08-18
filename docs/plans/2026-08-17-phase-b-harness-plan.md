@@ -14,6 +14,12 @@ in the lib module / existing suite structure — no new documented test command,
 tier, nothing joins the roster. Tests are CORPUS-FREE (no gitignored-file dependency, no new
 env var, no new panic-when-absent pins).
 
+**AMENDED 2026-08-17 after the cross-model design review (SOUND-WITH-FIXES; resolutions folded
+into the design doc in place and into the task text below). T1 dispatched against the
+pre-amendment text — its deltas (the record-free play-half seam, slot = seat index, the root
+hygiene set) are T1 ADJUDICATION CRITERIA and land at its fix wave if the implementer's
+latitude went elsewhere.**
+
 ## T1 — the driver: `drive_to_terminal` + the arena split + the drift pin
 
 Split arena.rs's private `drive` (`:816`, `PendingSetup`-fed) into a setup half and a
@@ -31,48 +37,69 @@ behavior preservation of the arena split verified the STRONG way — arena gate 
 determinism cells + committed goldens re-run, plus reviewer-chosen drift cells against
 pre-split code.
 
-## T2 — `root_table`
+## T2 — `root_table` (REWRITTEN per review MUST-1/S-8/N-1)
 
-`observe` → `Contestant::build(rules, decision_seed)` → `choose`, ranked values off the explain
-surface; report top-set size, the ≤1-point top-band width, distinct-value count, winner, full
-`SearchStats` (all fifteen counters readable — the D7 step-one surface). Knob-varied
+`observe` → CONCRETE agents constructed by MIRRORING `Contestant::build`'s arms
+(`GreedyAgent::with_weights` / `LookaheadAgent::with_knobs(...).with_cap(...)`, naming
+`WeightTable::V2` exactly as build's arms do — no weight parameter surfaces), because `build`'s
+`Box<dyn ArenaAgent>` erases the concrete `last_roots()`/`last_stats()` surface the ranked
+values live on and `ExplainHandle` carries counters only; this is the CLI's own W5 mirror
+pattern, and the harness carries the same DRIFT PIN — mirror-vs-build move identity at the
+same seed, per supported arm. Seat support: `lookahead-v1` + `greedy-v1` supported; `Policy`
+rungs refused typed (sampled-not-valued); mcts/atomic-diag refused in v1. Report: top-set
+size, the ≤1-point top-band width, distinct-value count, winner, full `SearchStats` (all
+fifteen counters — the D7 step-one surface), and the SAMPLED-WORLD identity (sampler seed +
+world digest) so the separator's same-worlds-across-beams premise is recorded. Knob-varied
 contestants come through the existing grammar (`lookahead-v1:b=8`). RED: a constructed root
 with known ties (band fields exact), counters propagated (uncapped shape `0/0/0`), determinism
-at fixed seed, and a cell proving b=4 vs b=8 tables can differ (anti-vacuity for the
-separator's discriminating power — any legal difference in band structure counts; no claim
-about WHICH way it moves).
+at fixed seed, the mirror-vs-build pin, the rung typed refusal, and a cell proving b=4 vs b=8
+tables can differ (anti-vacuity for the separator's discriminating power — any legal
+difference in band structure counts; no claim about WHICH way it moves).
 
-## T3 — `RootSource` + provenance + registry
+## T3 — `RootSource` + provenance + registry (AMENDED per review S-1/S-3/S-5/S-6/N-3/N-5)
 
 `Constructed` | `RecordPrefix{record, event_index}` (via `state_at` — event_index is the
 decided-in position, matching `why n`) | `Generated{predicate, master, ordinal}` with exactly
-one predicate, `FinalRoundAlreadyTriggered`. `RootedProvenance` (root descriptor + digests +
-`semantics_rev` + `rules_hash` + seat descriptors + master), stamped on every `DrivenOutcome`;
-serde round-trip. `driven::registry()` with the five session entries as `RecordPrefix` on
-`docs/temp/owner-games/` paths — runner material, absent-tolerant typed miss; TESTS use a
+one predicate, `FinalRoundAlreadyTriggered` — the Generated DESCRIPTOR also records the
+generating ecology (driver, seats, seed derivation), since `(predicate, master, ordinal)`
+alone re-points if the generating play changes. `RootedProvenance` (root descriptor + digests
++ `semantics_rev` + `rules_hash` + seat descriptors carrying the RESOLVED contestant echo and
+observation label — Reply seats included — + master), stamped on every `DrivenOutcome`; serde
+round-trip. Root-eligibility precheck: hidden-deal seats (`starting_order_hidden`) refused up
+front by name. `driven::registry()` with the five session entries as `RecordPrefix` on
+`docs/temp/owner-games/` paths (workspace-root-relative, manifest-dir resolved) — runner
+material, absent-tolerant typed miss — each entry carrying its recorded `decision_seed` and
+recorded move where known (the triage §3 seeds), so reproduction runs by default. TESTS use a
 record generated in-test (small arena game → `state_at(k)` → drive to terminal → termination +
-provenance pins). Generated-arm test: a seeded self-play scan finds an ordinal-th
-final-round root deterministically.
+provenance pins). Generated-arm test: a seeded self-play scan finds an ordinal-th final-round
+root deterministically. Graduation mechanics stated in the design §3 (committed serialized
+fixture with digest cross-check; never a `RecordPrefix` into `scenario_suite`).
 
-## T4 — `adjudicate_root`
+## T4 — `adjudicate_root` (AMENDED per review S-2/N-7)
 
 Force each root candidate, drive the remainder to terminal under named reply seats, K seeded
-replications; per-candidate final-margin table, labeled a robustness read (playout under named
-policy, never exact ground truth). RED: a constructed near-terminal fixture with hand-computable
-margins (the scenario_suite grain — equal-banked devices where needed); a
-genuinely-dead constructed root reads all-candidates-equal; K>1 replication variance recorded
-not asserted.
+replications — per-replication worlds via `mix(SALT_DRIVEN_REPLICATION, [master,
+replication_index])`, then `agent_stream_seed(world, seat, slot)`; never an ad-hoc third
+discipline. Per-candidate final-margin table, labeled a robustness read (playout under named
+policy, never exact ground truth) — and the label rides the RUNNER'S printed output in T5, not
+only the docs. RED: a constructed near-terminal fixture with hand-computable margins (the
+scenario_suite grain — equal-banked devices where needed); a genuinely-dead constructed root
+reads all-candidates-equal; a terminal root returns the zero-move outcome; K>1 replication
+variance recorded not asserted.
 
 ## T5 — the runner + session entries + close
 
 `examples/driven.rs`: `table <fixture|path:event> --contestant <spec> --decision-seed <u64>`,
 `run <fixture> [--seats a,b] [--master <u64>] [--replications K]`, `adjudicate <fixture> ...`,
 `list`. Thin argv glue over public functions (USAGE names every knob; unknown anything is an
-error, eval_probe's discipline). Registry carries the five session roots: g1:113 (36-tie),
-g3:63 (26-tie), g3:93 (+116 control), g1:228 (dead-recall tie), g3:178 (final-turn root; g1's
-true final turn e238–244 enters as g1:239 — the triage's correction). Close: CLAUDE.md
-architecture bullet + counts line, ledger row, guide pair UNTOUCHED (no CLI change), branch
-gates green, PR body per house style.
+error, eval_probe's discipline; `adjudicate` output prints the robustness-read label). Registry
+carries the five session roots: g1:113 (36-tie), g3:63 (26-tie), g3:93 (+116 control), g1:228
+(dead-recall tie), g3:178 and g1:239 (the two final-turn roots). **Root-index rule, stated and
+VERIFIED (review S-4): roots are taken at the turn's FIRST BRANCHING decision — the preceding
+`EndAdditionalPhase` events were checked forced via `why` (g1 e238: 1 root candidate, 'No
+runner-up'; g3 e177: 1 root candidate, same), so g1:239/g3:178 skip nothing.** Close:
+CLAUDE.md architecture bullet + counts line, ledger row, guide pair UNTOUCHED (no CLI change),
+branch gates green, PR body per house style.
 
 ## Sequencing and adjudication
 
