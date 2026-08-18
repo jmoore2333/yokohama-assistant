@@ -16,7 +16,7 @@
 //! can tune after seeing the play, and a rule shaped like "the trigger was set
 //! by the hand-off" cannot be.
 //!
-//! **The pieces, and how they compose** (design §4's protocol read
+//! **The four pieces, and how they compose** (design §4's protocol read
 //! bottom-up):
 //!
 //! 1. [`TurnPredicate`] judges ONE (root, hand-off) pair. It is the grain
@@ -26,10 +26,23 @@
 //! 2. [`classify_dead`] answers family 1's admission question at the DECISION
 //!    grain: is this root's candidate field genuinely indifferent, so that a
 //!    pick there confirms nothing and fails nothing?
-//! 3. ROOT ADMISSION and the BINARY READ land in this task's second wave — the
-//!    behaviour-vs-behaviour dominance test families 2–4 admit roots by, and
-//!    the R-replication read that reports verdicts, seeds and D7's step-one
-//!    counter check.
+//! 3. [`admission`] answers families 2–4's, at the BEHAVIOUR grain: across the
+//!    adjudicator's forced-candidate sweep, do the playouts whose first turn
+//!    SATISFIED the predicate reach better margins than the ones that did not?
+//!    That comparison is what makes "the pass behaviour is demonstrably
+//!    worthwhile HERE" a measurement rather than an assertion.
+//! 4. [`family_read`] runs the frozen R replications at one root and reports the
+//!    verdicts, the seeds they were taken at, and D7's step-one COUNTER CHECK —
+//!    which can REFUSE the whole read (a truncated search's pick is not a
+//!    preference).
+//!
+//! **The admission arithmetic is BEHAVIOUR-vs-BEHAVIOUR, not
+//! candidate-vs-candidate**, and the reason is family 4's proximity corner
+//! (design §4, review MUST-2): at a proximity root the claim is TWO decisions
+//! away, so there is no claim CANDIDATE at the root at all and a candidate-level
+//! pass-set would be structurally empty. The comparison that stays computable
+//! everywhere is between the PLAYOUTS that ended up doing the thing and the ones
+//! that did not — which is also the comparison the canon question actually asks.
 //!
 //! **What this module deliberately does NOT do**: judge a family. The three-way
 //! all-sets/some-sets/no-set rule for `AdjudicatedBest`, the conjunction across
@@ -37,9 +50,14 @@
 //! are the FAMILY RUN's (T5) — they are statements about a BLOCK of roots, and
 //! this module never sees more than one.
 
-use crate::game::driven::Adjudication;
+use crate::game::arena::{mix, Contestant};
+use crate::game::driven::{
+    drive_turn, root_table, Adjudication, DrivenError, DrivenOpts, NotAContestant, ReplyPolicy,
+    RootTable, RootTableError, SeatCounters, SeatSpec, TOP_BAND_POINTS,
+};
 use crate::game::rules::Rules;
-use crate::types::{AchievementType, ChurchTrack, CustomsTrack, GameState, PlayerId};
+use crate::game::semantics::state_digest;
+use crate::types::{AchievementType, ChurchTrack, CustomsTrack, GameState, Move, PlayerId};
 
 // ---------------------------------------------------------------------------
 // The contested step (design §3, review NOTE-6)
@@ -270,7 +288,7 @@ pub enum PassRule {
     /// DECISION grain (family 1): the pick must land within `epsilon` of the
     /// best adjudicated mean margin.
     ///
-    /// **`epsilon` is carried, not applied, by the read** — the top set
+    /// **`epsilon` is carried, not applied, by [`family_read`]** — the top set
     /// is a fact about an ADJUDICATION under one reply policy, the three-way
     /// all-sets/some-sets/no-set judgment is a fact about the whole declared
     /// MENU, and neither is available at the grain of one replication's table.
@@ -368,13 +386,745 @@ pub fn classify_dead(adj: &Adjudication, spread_bound: i64) -> bool {
 }
 
 
+// ---------------------------------------------------------------------------
+// Root admission (design §4, review MUST-2/MUST-4)
+// ---------------------------------------------------------------------------
+
+/// Why one reply policy's adjudication could DEMONSTRATE nothing about a root.
+///
+/// Typed rather than a bare "no": each arm routes differently. Two are facts
+/// about the POSITION (the playouts all did the thing, or none of them did — the
+/// comparison has no other side), and one is a fact about the CALL (the
+/// adjudication carried no verdicts at all, so it was run without design §2's
+/// turn hook and this is a caller error rather than a reading).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CannotDemonstrate {
+    /// No playout satisfied the predicate — there is no TRUE group to compare.
+    NoTrueGroup,
+    /// Every playout satisfied it — there is no FALSE group to compare.
+    NoFalseGroup,
+    /// At least one playout carries no verdict: the adjudication was produced by
+    /// `adjudicate_root` (or `adjudicate_root_with(.., None)`) rather than with
+    /// the family's turn hook. Never silently treated as `false` — that would
+    /// put every unstamped playout in the losing group and manufacture a
+    /// dominance out of plumbing.
+    Unstamped,
+}
+
+impl CannotDemonstrate {
+    /// The sentence a report prints.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::NoTrueGroup => "no playout's first turn satisfied the predicate",
+            Self::NoFalseGroup => "every playout's first turn satisfied the predicate",
+            Self::Unstamped => {
+                "the adjudication carries no turn verdicts (it was run without the turn hook)"
+            }
+        }
+    }
+}
+
+/// One reply policy's admission verdict at one root.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AdmissionVerdict {
+    /// The pass behaviour DOMINATES here by the declared margin — the root
+    /// supports the family's question under this policy.
+    Dominates,
+    /// Both groups exist and the declared margin was not reached. A real
+    /// measurement, and a different finding from [`CannotDemonstrate`].
+    Fails,
+    /// Nothing could be demonstrated — see [`CannotDemonstrate`].
+    Cannot(CannotDemonstrate),
+}
+
+/// One reply policy's admission arithmetic at one root.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct PolicyAdmission {
+    pub policy: ReplyPolicy,
+    /// Playouts whose first turn satisfied the predicate.
+    pub true_n: usize,
+    /// Playouts whose first turn did not.
+    pub false_n: usize,
+    /// Mean MARGIN of the TRUE group — `0.0` on an empty group, which the
+    /// verdict already refuses to read.
+    pub true_mean: f64,
+    /// Mean MARGIN of the FALSE group.
+    pub false_mean: f64,
+    /// `true_mean − false_mean`, the quantity the declared δ is compared to.
+    pub difference: f64,
+    pub verdict: AdmissionVerdict,
+}
+
+impl PolicyAdmission {
+    /// Whether this policy admitted the root.
+    pub fn dominates(&self) -> bool {
+        matches!(self.verdict, AdmissionVerdict::Dominates)
+    }
+}
+
+/// One root's admission read across the declared reply menu (design §4).
+#[derive(Debug, Clone, PartialEq)]
+pub struct AdmissionRead {
+    /// The declared dominance margin, in victory points.
+    pub delta: i64,
+    /// A CONTROL root inverts the test: the pass behaviour must demonstrably
+    /// LOSE by δ (family 2's behind-mover control — canon 15's "ending the game
+    /// when you know you're going to lose is a bad idea").
+    pub control: bool,
+    /// One entry per policy, in the order the caller supplied them.
+    pub policies: Vec<PolicyAdmission>,
+}
+
+impl AdmissionRead {
+    /// The CONJUNCTION: the root is admitted only if every declared policy
+    /// demonstrates dominance.
+    ///
+    /// Vacuously false on an empty menu — an admission "across no policies" is
+    /// not a demonstration, and returning `true` there would admit every root of
+    /// a mis-wired block.
+    pub fn admitted(&self) -> bool {
+        !self.policies.is_empty() && self.policies.iter().all(PolicyAdmission::dominates)
+    }
+
+    /// The policies that did NOT demonstrate dominance, in menu order.
+    pub fn dissenters(&self) -> Vec<ReplyPolicy> {
+        self.policies
+            .iter()
+            .filter(|p| !p.dominates())
+            .map(|p| p.policy)
+            .collect()
+    }
+
+    /// **The ADMISSION-CIRCULARITY flag** (design §4, review MUST-4): dominance
+    /// held under every declared policy EXCEPT `lookahead-at-final`.
+    ///
+    /// The subject IS (provisionally) `lookahead@final`, so a subject defect that
+    /// degrades its POST-candidate play deflates measured dominance under
+    /// exactly that arm — and would therefore exclude exactly the roots where
+    /// the defect matters, a broken subject passing by shrinking its own
+    /// denominator. Such an exclusion is COLLECTED as potential
+    /// subject-suppression evidence and routed to D7 as a finding, never
+    /// silently dropped.
+    ///
+    /// Requires a menu of at least two policies — with `lookahead-at-final`
+    /// alone there is no "other policies held" half to observe.
+    pub fn lookahead_sole_dissenter(&self) -> bool {
+        self.policies.len() >= 2
+            && self.dissenters().as_slice() == [ReplyPolicy::LookaheadAtFinal]
+    }
+}
+
+/// Design §4's ROOT ADMISSION: does the pass BEHAVIOUR demonstrably dominate at
+/// this root, under each declared reply policy?
+///
+/// For each adjudication, every playout of every candidate is partitioned by its
+/// [`CandidatePlayout::turn_verdict`](crate::game::driven::CandidatePlayout::turn_verdict)
+/// — the stamp `adjudicate_root_with` writes when the family's turn hook rides
+/// the sweep — and the two groups' MEAN MARGINS are compared:
+///
+/// * positive roots admit when `true_mean − false_mean >= delta`;
+/// * CONTROL roots admit when `true_mean − false_mean <= −delta`.
+///
+/// **Both groups must be non-empty**, else [`CannotDemonstrate`]: a root where
+/// every playout fires (or none does) has no comparison in it, and is
+/// recorded-excluded rather than counted either way.
+///
+/// **MARGINS, never wins.** The 10–10 shape is the trap: two playouts level on
+/// VP have `won` split by the clockwise tie-break while both carry margin 0, so
+/// a group statistic built on `won` measures the tie-break and a group statistic
+/// built on margins measures the position. δ is declared in victory points, so
+/// margins are the only unit that can be compared to it at all.
+///
+/// The conjunction across policies, the sole-dissenter routing and the VOID
+/// rule are [`AdmissionRead`]'s accessors and T5's assembly — this function
+/// measures one root and judges nothing above it.
+pub fn admission(
+    adjs: &[(ReplyPolicy, Adjudication)],
+    delta: i64,
+    control: bool,
+) -> AdmissionRead {
+    let policies = adjs
+        .iter()
+        .map(|(policy, adj)| {
+            let mut trues: Vec<i64> = Vec::new();
+            let mut falses: Vec<i64> = Vec::new();
+            let mut unstamped = false;
+            for playout in adj.rows.iter().flat_map(|row| row.playouts.iter()) {
+                match playout.turn_verdict {
+                    Some(true) => trues.push(playout.margin),
+                    Some(false) => falses.push(playout.margin),
+                    None => unstamped = true,
+                }
+            }
+            let true_mean = mean(&trues);
+            let false_mean = mean(&falses);
+            let difference = true_mean - false_mean;
+            let verdict = if unstamped {
+                AdmissionVerdict::Cannot(CannotDemonstrate::Unstamped)
+            } else if trues.is_empty() {
+                AdmissionVerdict::Cannot(CannotDemonstrate::NoTrueGroup)
+            } else if falses.is_empty() {
+                AdmissionVerdict::Cannot(CannotDemonstrate::NoFalseGroup)
+            } else {
+                let threshold = delta as f64;
+                let met =
+                    if control { difference <= -threshold } else { difference >= threshold };
+                if met {
+                    AdmissionVerdict::Dominates
+                } else {
+                    AdmissionVerdict::Fails
+                }
+            };
+            PolicyAdmission {
+                policy: *policy,
+                true_n: trues.len(),
+                false_n: falses.len(),
+                true_mean,
+                false_mean,
+                difference,
+                verdict,
+            }
+        })
+        .collect();
+    AdmissionRead { delta, control, policies }
+}
+
+/// The arithmetic mean, `0.0` on an empty slice.
+///
+/// An empty group's mean is never read for a verdict — [`admission`] refuses
+/// before it gets there — so a stated constant beats an `Option` that every
+/// caller would unwrap.
+fn mean(values: &[i64]) -> f64 {
+    // DECLARED PLACEHOLDER (T4 wave B, RED): every group mean reads 0.0, so
+    // every difference is 0 and no dominance can fire — the group-arithmetic
+    // and verdict pins fail on assertions while the CannotDemonstrate arms,
+    // which are about group EMPTINESS rather than about margins, still pass.
+    let _ = values;
+    0.0
+}
+
+// ---------------------------------------------------------------------------
+// The binary read (design §2's `family_read`, §4's seeding)
+// ---------------------------------------------------------------------------
+
+/// Domain salt for a FAMILY READ's per-replication decision seed (design §2).
+///
+/// **The derivation, stated where the constant is**:
+/// `mix(SALT_DRIVEN_FAMILY_READ, [master, root_word, replication])`, where
+/// `root_word` is [`root_word`]'s value — the root's own state digest read as
+/// the `u64` it encodes. Distinct roots therefore draw DISTINCT streams from one
+/// recorded master, which is what lets a whole family block ride a single
+/// recorded number without two roots secretly sharing worlds.
+///
+/// **Serial provenance (the A3E1_D21E family)**: this family's HOME is
+/// `arena::SALT_DRIVEN_REPLICATION` (serial 0006, whose own doc records 0004 and
+/// 0005 as taken elsewhere); serial **0007** is `driven`'s `SALT_DRIVEN_RACE_PROBE`
+/// (Phase C's T3 — first consumer keeps the serial, orchestrator ruling at the
+/// T3 adjudication), so this is **0008**. The non-collision is pinned
+/// arithmetically against the family's home rather than by eyeballing the
+/// literals.
+pub const SALT_DRIVEN_FAMILY_READ: u64 = 0xA3E1_D21E_0000_0008;
+
+/// A root's identity as ONE WORD, for the seed derivation.
+///
+/// `state_digest` is `format!("{:016x}", fnv1a_64(..))` — **exactly sixteen hex
+/// characters encoding one `u64`**, so the WHOLE value is the word and there is
+/// no prefix to take. (An earlier sketch said "the digest's first 8 bytes",
+/// which would have been the first 8 HEX CHARACTERS — the digest's top 32 bits —
+/// halving the space for no reason.)
+///
+/// The `expect` is a statement about `state_digest`'s own format, not about the
+/// state: any `GameState` that serializes produces sixteen hex characters, and a
+/// state that does not serialize could not have reached this function.
+pub fn root_word(root: &GameState) -> u64 {
+    // DECLARED PLACEHOLDER (T4 wave B, RED): every root reads word 0, so the
+    // derivation pin and the distinct-roots-distinct-streams pin both fail
+    // while the mix itself stays real.
+    let _ = root;
+    0
+}
+
+/// The decision seed replication `r` of a read at `root` is taken at.
+///
+/// THE one place this derivation lives — T7's separator feeds a failing
+/// replication's seed straight to `driven table … --decision-seed`, and a
+/// second copy of the formula anywhere is a chance for those two to disagree.
+pub fn replication_seed(master: u64, root_word: u64, r: u32) -> u64 {
+    mix(SALT_DRIVEN_FAMILY_READ, &[master, root_word, u64::from(r)])
+}
+
+/// What ONE replication of a read saw.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ReplicationRead {
+    /// Its index, `0..R`.
+    pub replication: u32,
+    /// The seed it was taken at — [`replication_seed`]'s value, RECORDED rather
+    /// than left to be re-derived (design §2, review SHOULD-4: T7's separator
+    /// step feeds this straight to `table --decision-seed`).
+    pub decision_seed: u64,
+    /// The root's own word, verbatim, so a recorded replication carries both
+    /// halves of its own derivation.
+    pub root_word: u64,
+    /// TURN grain: whether the family's predicate held at the hand-off.
+    /// `None` at decision grain, where there is no turn to judge.
+    pub verdict: Option<bool>,
+    /// DECISION grain: the subject's pick. `None` at turn grain — the read
+    /// reports the turn, and its first move is already the turn's first entry.
+    pub pick: Option<Move>,
+    /// TURN grain: how many decisions the turn took. 0 at decision grain.
+    pub turn_moves: u64,
+    /// TURN grain: the hand-off's digest. `None` at decision grain.
+    pub handoff_digest: Option<String>,
+    /// TURN grain: whether the turn ENDED THE GAME rather than handing off.
+    /// `None` at decision grain.
+    pub game_over: Option<bool>,
+    /// TURN grain: the mover's WHOLE-TURN counters (design §2's SHOULD-6 — a
+    /// mid-turn cap hit must reach D7's step-one filter). [`SeatCounters::NONE`]
+    /// at decision grain, where the table's own `SearchStats` is the account.
+    pub counters: SeatCounters,
+}
+
+/// A counter observation that ANNOTATES a read without refusing it (design
+/// §5.4's split, review NOTE-5).
+///
+/// These are the counters that say the evaluator SEPARATED LITTLE, not that the
+/// search was TRUNCATED. A tie-mass root is still a real reading — family 3's
+/// expected tie-mass positives must produce their gap output — it just has to go
+/// through the mechanical separator (b=4 reproduce, b=8/b=16) before an argument
+/// rides it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CounterAnnotation {
+    /// More than one candidate tied AT the best value.
+    TiedAtTop { candidates: usize },
+    /// The top BAND is wider than the tie — the e113 shape, where the evaluator
+    /// separated almost nothing while few candidates were literally equal.
+    TopBand { candidates: usize, points: i64 },
+    /// A node's placement family exceeded the candidate cap.
+    ///
+    /// Deliberately an ANNOTATION and not a refusal, and the reason is stated so
+    /// the choice is visible: design §5.4 enumerates the hard-refuse counters as
+    /// ply/free-cap hits, budget binds and starved decisions, and
+    /// `SeatCounters` — the turn grain's own account — does not carry this one
+    /// at all. Refusing on it would make the two counter sources of one read
+    /// disagree about what a refusal is.
+    PlacementCapBinds { count: u64 },
+}
+
+/// D7's STEP-ONE COUNTER CHECK, as a value (design §2, §5.4).
+#[derive(Debug, Clone, PartialEq)]
+pub struct CounterCheck {
+    /// The FULL fifteen-counter table at replication 0's seed — the whole
+    /// `SearchStats` block plus the ranking's shape, which is why this is a
+    /// `RootTable` rather than a summary.
+    pub table: RootTable,
+    /// Candidates tied at the best value.
+    pub tied_at_top: usize,
+    /// Candidates within [`TOP_BAND_POINTS`] of the best.
+    pub top_band: usize,
+    /// Distinct values in the ranking.
+    pub distinct_values: usize,
+}
+
+/// Which counter source refused a read.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CounterSite {
+    /// The step-one root table at replication 0's seed.
+    RootTable,
+    /// One replication's whole-turn counters.
+    Replication(u32),
+}
+
+impl CounterSite {
+    /// The sentence a report prints.
+    pub fn describe(self) -> String {
+        match self {
+            Self::RootTable => "the step-one root table at replication 0's seed".to_string(),
+            Self::Replication(r) => format!("replication {r}'s whole-turn counters"),
+        }
+    }
+}
+
+/// Why a read produced no outcome.
+///
+/// [`DrivenError`]'s posture at this grain: every variant is a hard stop that
+/// produces nothing. In particular a [`CounterRefusal`](Self::CounterRefusal) is
+/// NOT a failing read — it is a read that refuses to be summarized as a
+/// preference finding at all, and routes to D7's branch 0.
+#[derive(Debug)]
+pub enum FamilyReadError {
+    /// `r` was 0. A read with no replication measures nothing, and silently
+    /// promoting it to 1 would answer a question nobody asked
+    /// (`AdjudicationError::NoReplications`'s rule at this grain).
+    NoReplications,
+    /// The subject names no [`Contestant`] at all — a harness reply rule was
+    /// handed in as the SUBJECT. Exhaustive over [`NotAContestant`], so a second
+    /// harness rule lands here as a compile error rather than as a silent
+    /// materialization.
+    SubjectIsNotAContestant(NotAContestant),
+    /// The step-one root table could not be produced. Carries
+    /// [`RootTableError`] verbatim — including its `Unsupported` arm, which is
+    /// how "this subject has no ranked root surface" is said: the counter check
+    /// is MANDATORY for every family and every grain, so a `Sampled` /
+    /// `Unranked` / `Diagnostic` subject cannot be read here at all, and the
+    /// refusal names the constraint in that type's own words rather than in a
+    /// second taxonomy.
+    Table { replication: u32, error: RootTableError },
+    /// One replication's turn did not drive.
+    Turn { replication: u32, error: Box<DrivenError> },
+    /// **BRANCH-0**: a cap hit, a budget bind, or a starved decision. The read
+    /// REFUSES to summarize this root as a preference finding — a truncated
+    /// search's pick is not a preference — and the offending counters ride the
+    /// refusal so the routing carries its own evidence.
+    CounterRefusal { site: CounterSite, counters: Vec<(&'static str, u64)> },
+}
+
+impl std::fmt::Display for FamilyReadError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::NoReplications => {
+                write!(f, "0 replications: a read with no replication is not a measurement")
+            }
+            Self::SubjectIsNotAContestant(reason) => {
+                write!(f, "the subject is not a contestant: {}", reason.as_str())
+            }
+            Self::Table { replication, error } => {
+                write!(f, "replication {replication} produced no root table: {error}")
+            }
+            Self::Turn { replication, error } => {
+                write!(f, "replication {replication}'s turn did not drive: {error}")
+            }
+            Self::CounterRefusal { site, counters } => {
+                let named: Vec<String> =
+                    counters.iter().map(|(name, value)| format!("{name}={value}")).collect();
+                write!(
+                    f,
+                    "the counter check refuses this root as a preference reading ({}): {} — a \
+                     truncated search's pick is not a preference (D7 branch 0)",
+                    site.describe(),
+                    named.join(" "),
+                )
+            }
+        }
+    }
+}
+
+impl std::error::Error for FamilyReadError {}
+
+/// One root, read R times under one frozen rule (design §2's `family_read`).
+#[derive(Debug, Clone, PartialEq)]
+pub struct FamilyReadOutcome {
+    /// The rule this read judged by.
+    pub rule: PassRule,
+    /// Its grain — [`PassRule::grain`], carried so a report does not re-derive
+    /// it.
+    pub grain: ReadGrain,
+    /// The master every replication seed descends from.
+    pub master: u64,
+    /// The root's word — the seed derivation's second component.
+    pub root_word: u64,
+    /// The root's digest, in the form [`root_word`] parsed.
+    pub root_digest: String,
+    /// What the subject RESOLVED to — never the seat spec's requested name,
+    /// which is a symbol whose meaning moves at D1's identity freeze.
+    pub subject_echo: String,
+    /// One entry per replication, in index order.
+    pub replications: Vec<ReplicationRead>,
+    /// D7's step-one check.
+    pub counter_check: CounterCheck,
+    /// Tie/band observations — never refusals (design §5.4).
+    pub annotations: Vec<CounterAnnotation>,
+}
+
+impl FamilyReadOutcome {
+    /// R.
+    pub fn replication_count(&self) -> u32 {
+        self.replications.len() as u32
+    }
+
+    /// TURN grain: replications whose predicate did NOT hold. `None` at decision
+    /// grain, where a miss is a fact about a TOP SET that T5's family run
+    /// resolves and this outcome cannot.
+    pub fn misses(&self) -> Option<u32> {
+        match self.grain {
+            ReadGrain::Turn => Some(
+                self.replications.iter().filter(|r| r.verdict == Some(false)).count() as u32,
+            ),
+            ReadGrain::Decision => None,
+        }
+    }
+
+    /// Whether the root should go to the mechanical separator before an argument
+    /// rides it — any tie/band annotation (design §5.4).
+    pub fn separator_recommended(&self) -> bool {
+        self.annotations.iter().any(|a| {
+            matches!(a, CounterAnnotation::TiedAtTop { .. } | CounterAnnotation::TopBand { .. })
+        })
+    }
+
+    /// The EXACT BINOMIAL line a family report prints (design §2).
+    ///
+    /// At 0 misses of R the miss RATE is 0 and the only informative statement is
+    /// an upper bound, so the line carries both the exact one-sided 95%
+    /// Clopper–Pearson bound and the RULE OF THREE (`3/R`) it approximates —
+    /// side by side, because the rule of three is what a reader recognises and
+    /// the exact value is what is true. At ≥1 miss the exact bound is still
+    /// reported, computed the same way.
+    ///
+    /// `None` at decision grain, on [`misses`](Self::misses)'s grounds.
+    pub fn binomial_line(&self) -> Option<String> {
+        let misses = self.misses()?;
+        let r = self.replication_count();
+        let rate = if r == 0 { 0.0 } else { f64::from(misses) / f64::from(r) };
+        let upper = clopper_pearson_upper(misses, r, 0.05);
+        let mut line = format!(
+            "misses {misses}/{r} (rate {rate:.4}); exact one-sided 95% upper bound on the \
+             per-world miss rate {upper:.4}"
+        );
+        if misses == 0 && r > 0 {
+            line.push_str(&format!(" (rule of three: {:.4})", 3.0 / f64::from(r)));
+        }
+        Some(line)
+    }
+}
+
+/// The exact (Clopper–Pearson) one-sided upper confidence bound on a binomial
+/// rate: the largest `p` with `P(X <= k | n, p) >= alpha`.
+///
+/// Bisection on the binomial CDF rather than a beta-quantile library call — the
+/// CDF is a polynomial in `p`, monotonically DECREASING in `p` at fixed `k`, so
+/// 200 halvings pin the root to well past `f64` printing precision at the n this
+/// harness uses (R = 20). It is the EXACT method, not a normal approximation.
+///
+/// Self-checking corner: at `k = 0` the CDF is `(1−p)^n` and the bound has the
+/// closed form `1 − alpha^(1/n)`, which the tests pin this bisection against.
+/// `k >= n` is total certainty and returns 1.0.
+fn clopper_pearson_upper(k: u32, n: u32, alpha: f64) -> f64 {
+    // DECLARED PLACEHOLDER (T4 wave B, RED): certainty at every count, so the
+    // binomial-line pins fail on their arithmetic rather than on a compile
+    // error.
+    if true {
+        let _ = binomial_cdf(k, n, alpha);
+        return 1.0;
+    }
+    if n == 0 || k >= n {
+        return 1.0;
+    }
+    let (mut lo, mut hi) = (0.0_f64, 1.0_f64);
+    for _ in 0..200 {
+        let mid = 0.5 * (lo + hi);
+        if binomial_cdf(k, n, mid) >= alpha {
+            lo = mid;
+        } else {
+            hi = mid;
+        }
+    }
+    0.5 * (lo + hi)
+}
+
+/// `P(X <= k)` for `X ~ Binomial(n, p)`, summed from the pmf by the standard
+/// forward recurrence.
+fn binomial_cdf(k: u32, n: u32, p: f64) -> f64 {
+    if p <= 0.0 {
+        return 1.0;
+    }
+    if p >= 1.0 {
+        return if k >= n { 1.0 } else { 0.0 };
+    }
+    let n_f = f64::from(n);
+    let mut term = (1.0 - p).powf(n_f);
+    let mut acc = term;
+    for i in 0..k.min(n) {
+        let i_f = f64::from(i);
+        term *= (n_f - i_f) / (i_f + 1.0) * (p / (1.0 - p));
+        acc += term;
+    }
+    acc.min(1.0)
+}
+
+/// The COUNTERS that refuse a read outright (design §5.4's hard-refuse class),
+/// read off one `SearchStats`.
+///
+/// Empty when the search was clean. The names are the counters' own, so a
+/// refusal message and the type's fields cannot drift.
+fn refusing_stats(table: &RootTable) -> Vec<(&'static str, u64)> {
+    let s = &table.stats;
+    [
+        ("ply_cap_hits", s.ply_cap_hits),
+        ("free_cap_hits", s.free_cap_hits),
+        ("budget_binds", s.budget_binds),
+        ("budget_starved", s.budget_starved),
+    ]
+    .into_iter()
+    .filter(|(_, value)| *value > 0)
+    .collect()
+}
+
+/// The same class, read off one turn's [`SeatCounters`].
+///
+/// **`None` is not zero** — a rung carries no such counter at all — so an absent
+/// counter contributes nothing rather than a spurious 0, which is
+/// `SeatCounters`' own documented rule.
+fn refusing_counters(counters: &SeatCounters) -> Vec<(&'static str, u64)> {
+    [
+        ("ply_cap_hits", counters.ply_cap_hits),
+        ("free_cap_hits", counters.free_cap_hits),
+        ("budget_binds", counters.budget_binds),
+        ("budget_starved_decisions", counters.budget_starved_decisions),
+    ]
+    .into_iter()
+    .filter_map(|(name, value)| value.filter(|v| *v > 0).map(|v| (name, v)))
+    .collect()
+}
+
+/// Read ONE root R times under one frozen pass rule (design §2).
+///
+/// **Seeding is design §2's formula and nothing else**: replication `r` is taken
+/// at [`replication_seed`]`(master, `[`root_word`]`(root), r)`. Distinct roots
+/// draw distinct streams from one master; the derived seed and the root word
+/// both RIDE every replication, so T7's separator can feed a failing
+/// replication's seed straight to `driven table … --decision-seed` without
+/// re-deriving the mix.
+///
+/// **What a replication IS depends on the grain**, and both are one decision or
+/// one turn of the SUBJECT's own honest chain:
+///
+/// * [`PassRule::Turn`] — one [`drive_turn`] at that seed, then the predicate on
+///   `(root, hand-off)`. The mover's WHOLE-TURN counters ride the replication.
+/// * [`PassRule::AdjudicatedBest`] — one [`root_table`] at that seed; the PICK is
+///   reported and the top-set judgment is T5's.
+///
+/// **THE COUNTER CHECK IS MANDATORY AND IT CONSTRAINS THE SUBJECT.** D7's step
+/// one is a table at replication 0's seed — the full fifteen counters, the
+/// ranking's shape — so a subject with no ranked root surface cannot be read
+/// here AT ALL, at either grain. That is a refusal in [`root_table`]'s own words
+/// ([`RootTableError::Unsupported`], carrying `Sampled` / `Unranked` /
+/// `Diagnostic`), never a second taxonomy and never a read that quietly ships
+/// without its step one. In practice the subject is always the shipped
+/// `lookahead-v1` echo — design's own subject paragraph — and the constraint
+/// only bites a machinery smoke that tried to save a few milliseconds with a
+/// rung.
+///
+/// **The hard-refuse / annotate split is design §5.4's**: any cap hit, budget
+/// bind or starved decision — at the root table OR inside any replication's turn
+/// — is a [`FamilyReadError::CounterRefusal`] routing to branch 0; tie count and
+/// top-band structure ANNOTATE and send the root to the mechanical separator.
+///
+/// **COST.** R turns (or R tables) of the subject, plus one table. Under the
+/// uncapped shipped S1 arm an ordinary mid-game turn is tens of milliseconds and
+/// a money-saturated Movement root is not; the sizing choices are the ROOT and
+/// R, exactly as they are for `adjudicate_root`.
+pub fn family_read(
+    root: &GameState,
+    subject: SeatSpec,
+    rule: &PassRule,
+    r: u32,
+    master: u64,
+    rules: &Rules,
+) -> Result<FamilyReadOutcome, FamilyReadError> {
+    if r == 0 {
+        return Err(FamilyReadError::NoReplications);
+    }
+    let contestant: Contestant =
+        subject.contestant().map_err(FamilyReadError::SubjectIsNotAContestant)?;
+
+    let word = root_word(root);
+    let seed_of = |replication: u32| replication_seed(master, word, replication);
+
+    // STEP ONE first, before any replication runs: a subject with no ranked root
+    // surface, a root nobody can observe, or a search that was truncated is a
+    // fact about the whole read, and paying R turns to learn it would be paying
+    // for an answer already refused.
+    let table = root_table(root, root.current_player, contestant, rules, seed_of(0))
+        .map_err(|error| FamilyReadError::Table { replication: 0, error })?;
+    // DECLARED PLACEHOLDER (T4 wave B, RED): the hard-refuse check and the
+    // tie/band annotations are not wired, so the counter-refusal pin and the
+    // annotation pin fail on assertions while the rest of the read runs.
+    let _ = (refusing_stats(&table), refusing_counters(&SeatCounters::NONE));
+
+    let annotations: Vec<CounterAnnotation> = Vec::new();
+    let tied_at_top = table.tied_at_top();
+    let top_band = table.top_band();
+    let _ = TOP_BAND_POINTS;
+    let counter_check = CounterCheck {
+        tied_at_top,
+        top_band,
+        distinct_values: table.distinct_values(),
+        table,
+    };
+
+    let opts = DrivenOpts::default();
+    let mut replications: Vec<ReplicationRead> = Vec::with_capacity(r as usize);
+    for replication in 0..r {
+        let decision_seed = seed_of(replication);
+        let read = match rule {
+            PassRule::Turn(predicate) => {
+                let outcome = drive_turn(root, subject, rules, decision_seed, &opts)
+                    .map_err(|error| FamilyReadError::Turn {
+                        replication,
+                        error: Box::new(error),
+                    })?;
+                // SHOULD-6: the WHOLE turn's counters reach the filter, not just
+                // the root decision's — a mid-turn cap hit is exactly the thing a
+                // replication-0 table cannot see.
+                ReplicationRead {
+                    replication,
+                    decision_seed,
+                    root_word: word,
+                    verdict: Some(predicate.eval(root, &outcome.handoff, rules)),
+                    pick: None,
+                    turn_moves: outcome.decisions,
+                    handoff_digest: Some(state_digest(&outcome.handoff)),
+                    game_over: Some(outcome.game_over),
+                    counters: outcome.counters,
+                }
+            }
+            PassRule::AdjudicatedBest { .. } => {
+                // Replication 0's table is the one the counter check already
+                // built at this very seed — reused rather than recomputed, which
+                // is not merely cheaper: a second identical search would be a
+                // second chance for the two to disagree.
+                let table = if replication == 0 {
+                    counter_check.table.clone()
+                } else {
+                    root_table(root, root.current_player, contestant, rules, decision_seed)
+                        .map_err(|error| FamilyReadError::Table { replication, error })?
+                };
+                ReplicationRead {
+                    replication,
+                    decision_seed,
+                    root_word: word,
+                    verdict: None,
+                    pick: Some(table.winner),
+                    turn_moves: 0,
+                    handoff_digest: None,
+                    game_over: None,
+                    counters: SeatCounters::NONE,
+                }
+            }
+        };
+        replications.push(read);
+    }
+
+    Ok(FamilyReadOutcome {
+        rule: *rule,
+        grain: rule.grain(),
+        master,
+        root_word: word,
+        root_digest: state_digest(root),
+        subject_echo: subject.echo(),
+        replications,
+        counter_check,
+        annotations,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::game::arena::SALT_DRIVEN_REPLICATION;
     use crate::game::driven::{
         adjudicate_root, adjudicate_root_with, AdjudicationProvenance, AdjudicationSeat,
-        CandidatePlayout, CandidateRow, DrivenOpts, ReplyPolicy, RootDescriptor, RootOrigin,
-        RootSource, SeatSpec,
+        CandidatePlayout, CandidateRow, RootDescriptor, RootOrigin, RootSource, UnsupportedReason,
     };
     use crate::game::semantics::SEMANTICS_REV;
     use crate::game::seeds::WorldSeed;
@@ -983,6 +1733,595 @@ mod tests {
         assert!(
             digest.chars().all(|c| c.is_ascii_hexdigit()),
             "and all of them hex — the read's own seeding premise",
+        );
+    }
+
+    // =======================================================================
+    // PHASE C T4 WAVE B: admission
+    // =======================================================================
+
+    /// One hand-built playout carrying a MARGIN, a WIN flag and a VERDICT — the
+    /// three things [`admission`] and [`classify_dead`] read.
+    fn verdict_playout(
+        replication: u32,
+        margin: i64,
+        won: bool,
+        verdict: Option<bool>,
+    ) -> CandidatePlayout {
+        let mut p = hand_playout(replication, margin, won);
+        p.turn_verdict = verdict;
+        p
+    }
+
+    /// A one-row adjudication whose playouts are given as
+    /// `(margin, won, verdict)` — the smallest thing that carries an admission
+    /// partition, since the partition is over PLAYOUTS and ignores which
+    /// candidate produced them.
+    fn verdict_table(playouts: &[(i64, bool, Option<bool>)]) -> Adjudication {
+        let rows = vec![CandidateRow {
+            candidate: Move::EndAdditionalPhase,
+            continuation_digest: "hand-built-continuation".to_string(),
+            playouts: playouts
+                .iter()
+                .enumerate()
+                .map(|(r, (margin, won, verdict))| {
+                    verdict_playout(r as u32, *margin, *won, *verdict)
+                })
+                .collect(),
+        }];
+        let k = playouts.len() as u32;
+        Adjudication {
+            mover: PlayerId(0),
+            root_turn: 0,
+            master: WorldSeed(0),
+            replications: k,
+            rows,
+            witness: None,
+            provenance: AdjudicationProvenance {
+                root: RootDescriptor {
+                    origin: RootOrigin::Constructed,
+                    event_index: None,
+                    root_digest: "hand-built-root".to_string(),
+                },
+                semantics_rev: SEMANTICS_REV,
+                rules_hash: "hand-built-rules".to_string(),
+                seats: Vec::<AdjudicationSeat>::new(),
+                master: 0,
+                replications: k,
+            },
+        }
+    }
+
+    /// **THE δ GROUP ARITHMETIC**, on a hand-built adjudication with a known
+    /// verdict mix — and with the 10–10 TIE-BREAK TRAP built into the fixture.
+    ///
+    /// The TRUE group is two playouts LEVEL on victory points: margin 0 each,
+    /// one `won` and one lost, which is exactly what the clockwise tie-break
+    /// produces and exactly what a signed margin cannot express. The FALSE group
+    /// loses by 10. So the honest difference is `0 − (−10) = +10` and the root
+    /// admits at δ = 5 — while an implementation built on WINS would read the
+    /// groups as 0.5 and 0.0 and could not be compared to a δ in victory points
+    /// at all.
+    #[test]
+    fn the_admission_delta_arithmetic_compares_group_margins_and_never_wins() {
+        let adj = verdict_table(&[
+            (0, true, Some(true)),
+            (0, false, Some(true)),
+            (-10, false, Some(false)),
+            (-10, false, Some(false)),
+        ]);
+        let read = admission(&[(ReplyPolicy::GreedyAtFinal, adj)], 5, false);
+        let p = &read.policies[0];
+        assert_eq!((p.true_n, p.false_n), (2, 2));
+        assert!((p.true_mean - 0.0).abs() < 1e-12, "the TRUE group is level, not won: {p:?}");
+        assert!((p.false_mean + 10.0).abs() < 1e-12);
+        assert!((p.difference - 10.0).abs() < 1e-12);
+        assert_eq!(p.verdict, AdmissionVerdict::Dominates);
+        assert!(read.admitted());
+
+        // ANTI-VACUITY: the wins reading really does answer differently on this
+        // fixture — one of the two level playouts is a WIN.
+        let wins: usize = read.policies.len();
+        assert_eq!(wins, 1);
+        let adj = verdict_table(&[
+            (0, true, Some(true)),
+            (0, false, Some(true)),
+            (-10, false, Some(false)),
+            (-10, false, Some(false)),
+        ]);
+        assert_eq!(adj.rows[0].wins(), 1, "the fixture's premise: margin 0 with a win in it");
+
+        // The SAME groups at a δ the difference does not reach.
+        let read = admission(&[(ReplyPolicy::GreedyAtFinal, adj)], 11, false);
+        assert_eq!(read.policies[0].verdict, AdmissionVerdict::Fails);
+        assert!(!read.admitted());
+    }
+
+    /// A CONTROL root inverts the test: the pass behaviour must demonstrably
+    /// LOSE by δ (canon 15's behind-mover arm).
+    #[test]
+    fn a_control_root_admits_on_the_inverted_difference() {
+        let adj = verdict_table(&[
+            (-12, false, Some(true)),
+            (-12, false, Some(true)),
+            (0, false, Some(false)),
+            (0, false, Some(false)),
+        ]);
+        let control = admission(&[(ReplyPolicy::GreedyAtFinal, adj.clone())], 5, true);
+        assert!((control.policies[0].difference + 12.0).abs() < 1e-12);
+        assert_eq!(control.policies[0].verdict, AdmissionVerdict::Dominates);
+
+        // The same table read as a POSITIVE root fails — the two modes are not
+        // the same test with a sign flip in the report.
+        let positive = admission(&[(ReplyPolicy::GreedyAtFinal, adj)], 5, false);
+        assert_eq!(positive.policies[0].verdict, AdmissionVerdict::Fails);
+    }
+
+    /// BOTH GROUPS must be non-empty, else a typed [`CannotDemonstrate`] — and
+    /// an UNSTAMPED adjudication is its own arm rather than a group of falses.
+    #[test]
+    fn an_admission_with_an_empty_group_or_no_verdicts_demonstrates_nothing() {
+        let all_true = verdict_table(&[(5, false, Some(true)), (5, false, Some(true))]);
+        let all_false = verdict_table(&[(5, false, Some(false)), (5, false, Some(false))]);
+        let unstamped = verdict_table(&[(5, false, Some(true)), (-5, false, None)]);
+
+        for (adj, expected) in [
+            (all_true, CannotDemonstrate::NoFalseGroup),
+            (all_false, CannotDemonstrate::NoTrueGroup),
+            (unstamped, CannotDemonstrate::Unstamped),
+        ] {
+            let read = admission(&[(ReplyPolicy::GreedyAtFinal, adj)], 5, false);
+            assert_eq!(
+                read.policies[0].verdict,
+                AdmissionVerdict::Cannot(expected),
+                "the wrong reason was reported",
+            );
+            assert!(!read.admitted());
+            assert!(!expected.as_str().is_empty());
+        }
+
+        // An UNSTAMPED playout is never silently a `false` — the mixed table
+        // above has a TRUE group and would otherwise read NoFalseGroup.
+        let mixed = verdict_table(&[(5, false, Some(true)), (-5, false, None)]);
+        let read = admission(&[(ReplyPolicy::GreedyAtFinal, mixed)], 5, false);
+        assert_ne!(
+            read.policies[0].verdict,
+            AdmissionVerdict::Cannot(CannotDemonstrate::NoFalseGroup),
+            "an unstamped playout was treated as a false verdict",
+        );
+    }
+
+    /// The CONJUNCTION and the SOLE-DISSENTER flag (review MUST-4), over a menu.
+    ///
+    /// The flag fires only when `lookahead-at-final` is the ONLY policy that did
+    /// not demonstrate — a subject defect that deflates dominance under exactly
+    /// the arm the subject is. Two dissenters, or a lone dissenter that is
+    /// somebody else, are different findings and must not raise it.
+    #[test]
+    fn the_conjunction_and_the_sole_dissenter_flag_read_the_per_policy_verdicts() {
+        let good = || verdict_table(&[(10, false, Some(true)), (-10, false, Some(false))]);
+        let bad = || verdict_table(&[(0, false, Some(true)), (0, false, Some(false))]);
+
+        let all_good = admission(
+            &[
+                (ReplyPolicy::FamilyWeighted, good()),
+                (ReplyPolicy::GreedyAtFinal, good()),
+                (ReplyPolicy::LookaheadAtFinal, good()),
+            ],
+            5,
+            false,
+        );
+        assert!(all_good.admitted());
+        assert!(all_good.dissenters().is_empty());
+        assert!(!all_good.lookahead_sole_dissenter());
+
+        let lookahead_only = admission(
+            &[
+                (ReplyPolicy::FamilyWeighted, good()),
+                (ReplyPolicy::GreedyAtFinal, good()),
+                (ReplyPolicy::LookaheadAtFinal, bad()),
+            ],
+            5,
+            false,
+        );
+        assert!(!lookahead_only.admitted());
+        assert_eq!(lookahead_only.dissenters(), vec![ReplyPolicy::LookaheadAtFinal]);
+        assert!(lookahead_only.lookahead_sole_dissenter(), "MUST-4's collection trigger");
+
+        let someone_else = admission(
+            &[
+                (ReplyPolicy::FamilyWeighted, bad()),
+                (ReplyPolicy::GreedyAtFinal, good()),
+                (ReplyPolicy::LookaheadAtFinal, good()),
+            ],
+            5,
+            false,
+        );
+        assert!(!someone_else.lookahead_sole_dissenter(), "a different lone dissenter is a different finding");
+
+        let two = admission(
+            &[
+                (ReplyPolicy::FamilyWeighted, bad()),
+                (ReplyPolicy::GreedyAtFinal, good()),
+                (ReplyPolicy::LookaheadAtFinal, bad()),
+            ],
+            5,
+            false,
+        );
+        assert_eq!(two.dissenters().len(), 2);
+        assert!(!two.lookahead_sole_dissenter());
+
+        // An EMPTY menu admits nothing — an admission "across no policies" is
+        // not a demonstration.
+        let empty = admission(&[], 5, false);
+        assert!(!empty.admitted());
+        assert!(!empty.lookahead_sole_dissenter());
+    }
+
+    // =======================================================================
+    // PHASE C T4 WAVE B: the binary read
+    // =======================================================================
+
+    /// The salt is its OWN serial in the A3E1_D21E family — pinned
+    /// ARITHMETICALLY against the family's home rather than by eyeballing two
+    /// literals, so a future serial cannot silently collide.
+    #[test]
+    fn the_family_read_salt_is_its_own_serial_in_the_d21e_family() {
+        assert_eq!(SALT_DRIVEN_FAMILY_READ, 0xA3E1_D21E_0000_0008);
+        assert_ne!(SALT_DRIVEN_FAMILY_READ, SALT_DRIVEN_REPLICATION);
+        assert_eq!(
+            SALT_DRIVEN_FAMILY_READ,
+            SALT_DRIVEN_REPLICATION + 2,
+            "0006 is the family's home and 0007 is driven's race probe — this is 0008",
+        );
+    }
+
+    /// [`root_word`] is the WHOLE digest read as one `u64`, and distinct roots
+    /// therefore draw distinct streams from one master.
+    ///
+    /// The derivation is asserted word for word against `state_digest` and the
+    /// crate's own mixing authority — not against a second copy of the formula —
+    /// so a re-route through a different salt, a different component order, or a
+    /// truncated word fails here.
+    #[test]
+    fn the_root_word_is_the_whole_digest_and_distinct_roots_draw_distinct_streams() {
+        let rules = rules();
+        let a = post_setup_2p(&rules, 0x31);
+        let b = post_setup_2p(&rules, 0x32);
+        let digest = state_digest(&a);
+        assert_eq!(digest.len(), 16, "the derivation's premise: sixteen hex characters");
+        assert_eq!(
+            root_word(&a),
+            u64::from_str_radix(&digest, 16).unwrap(),
+            "the word is the WHOLE digest, not a prefix of it",
+        );
+        assert_ne!(root_word(&a), root_word(&b), "two roots share a word");
+
+        let master = MASTER;
+        for r in 0..4 {
+            assert_eq!(
+                replication_seed(master, root_word(&a), r),
+                mix(SALT_DRIVEN_FAMILY_READ, &[master, root_word(&a), u64::from(r)]),
+                "replication {r} did not derive through the declared mix",
+            );
+            assert_ne!(
+                replication_seed(master, root_word(&a), r),
+                replication_seed(master, root_word(&b), r),
+                "distinct roots share replication {r}'s stream",
+            );
+        }
+        let seeds: Vec<u64> = (0..8).map(|r| replication_seed(master, root_word(&a), r)).collect();
+        let mut sorted = seeds.clone();
+        sorted.sort_unstable();
+        sorted.dedup();
+        assert_eq!(sorted.len(), seeds.len(), "two replications drew the same seed");
+    }
+
+    /// The EXACT binomial line: at zero misses the bisection reproduces the
+    /// CLOSED FORM `1 − α^(1/n)`, and the rule of three `3/n` sits just above it.
+    #[test]
+    fn the_binomial_bound_is_exact_at_zero_and_the_rule_of_three_approximates_it() {
+        for n in [5_u32, 20, 100] {
+            let closed = 1.0 - 0.05_f64.powf(1.0 / f64::from(n));
+            let got = clopper_pearson_upper(0, n, 0.05);
+            assert!(
+                (got - closed).abs() < 1e-9,
+                "n={n}: the bisection ({got}) does not reproduce the closed form ({closed})",
+            );
+            let rule_of_three = 3.0 / f64::from(n);
+            assert!(
+                rule_of_three > closed,
+                "n={n}: the rule of three is meant to be the conservative approximation",
+            );
+        }
+        // Monotone in the miss count, and total certainty once every trial missed.
+        assert!(clopper_pearson_upper(1, 20, 0.05) > clopper_pearson_upper(0, 20, 0.05));
+        assert!((clopper_pearson_upper(20, 20, 0.05) - 1.0).abs() < 1e-12);
+        // The exact one-sided bound at 1/20 is the standard textbook value.
+        assert!((clopper_pearson_upper(1, 20, 0.05) - 0.216_0).abs() < 5e-4);
+    }
+
+    /// The cheapest ROOT the shipped S1 arm can be read at: a mid-game position
+    /// out of a rung game, scanned for a real branch.
+    ///
+    /// Rung-generated, so the fixture pays for NO search — the searching is what
+    /// the cell itself does at the root (design §6's wall discipline).
+    fn read_root(rules: &Rules, seed: WorldSeed, width: usize) -> GameState {
+        let mut make = |seat: PlayerId, _players: u8| -> Box<dyn crate::game::arena::ArenaAgent> {
+            Contestant::Policy(crate::game::policy::RolloutPolicy::FAMILY_WEIGHTED_DEFAULT)
+                .build(rules, crate::game::arena::agent_stream_seed(seed, seat,
+                    crate::game::arena::Slot(seat.0)))
+                .0
+        };
+        let stats = crate::game::arena::run_arena_game(seed, 2, rules, &mut make, true)
+            .expect("the generating rung game completes");
+        let events = stats.record.events.len();
+        (200..(240.min(events)))
+            .find_map(|k| {
+                let state = crate::game::record::state_at(&stats.record, k, rules).ok()?;
+                (!crate::game::end_game::is_game_over(&state)
+                    && crate::game::legal_moves::get_legal_moves(&state, rules).len() >= width)
+                    .then_some(state)
+            })
+            .expect("a branching mid-game root")
+    }
+
+    /// **THE TURN-GRAIN SMOKE** — one lookahead subject, R = 2, and every part
+    /// of the outcome a report quotes.
+    ///
+    /// The ONE cell here with a SEARCHING subject (design §6's wall discipline):
+    /// two whole turns under the uncapped shipped S1 arm plus the step-one
+    /// table. Budget ~3s debug; the measured wall is a fraction of that, because
+    /// the root is an ordinary mid-game decision rather than a money-saturated
+    /// Movement point. The budget is the ceiling this cell must not grow past.
+    #[test]
+    fn a_turn_grain_read_reports_a_verdict_and_a_seed_per_replication() {
+        let rules = rules();
+        let root = read_root(&rules, WorldSeed(MASTER), 8);
+        let subject = SeatSpec::Contestant(Contestant::LOOKAHEAD_V1_DEFAULT);
+        let rule = PassRule::Turn(TurnPredicate::NotEndFired);
+
+        let out = family_read(&root, subject, &rule, 2, MASTER, &rules)
+            .expect("the shipped S1 arm reads an organic root");
+
+        assert_eq!(out.grain, ReadGrain::Turn);
+        assert_eq!(out.replication_count(), 2);
+        assert_eq!(out.master, MASTER);
+        assert_eq!(out.root_word, root_word(&root));
+        assert_eq!(out.root_digest, state_digest(&root));
+        assert_eq!(out.subject_echo, Contestant::LOOKAHEAD_V1_DEFAULT.echo());
+        for (r, read) in out.replications.iter().enumerate() {
+            let r = r as u32;
+            assert_eq!(read.replication, r);
+            assert_eq!(
+                read.decision_seed,
+                replication_seed(MASTER, out.root_word, r),
+                "replication {r}'s recorded seed is not the derived one — T7 feeds this \
+                 straight to `table --decision-seed`",
+            );
+            assert_eq!(read.root_word, out.root_word, "the word rides every replication");
+            // A mid-game turn under an untriggered root satisfies NotEndFired.
+            assert_eq!(read.verdict, Some(true), "replication {r}");
+            assert!(read.pick.is_none(), "the turn grain reports no pick");
+            assert!(read.turn_moves >= 1, "replication {r} played no move");
+            assert!(read.handoff_digest.is_some());
+            assert_eq!(read.game_over, Some(false));
+            assert_eq!(
+                read.counters.explained,
+                Some(read.turn_moves),
+                "the WHOLE turn's counters ride the replication (SHOULD-6)",
+            );
+        }
+        assert_eq!(out.misses(), Some(0));
+        let line = out.binomial_line().expect("the turn grain has a binomial line");
+        assert!(line.contains("misses 0/2"), "{line}");
+        assert!(line.contains("rule of three"), "{line}");
+
+        // The STEP-ONE table is the root decision at replication 0's seed, and
+        // its first move is the turn's first move — the join D7's counter check
+        // rides on.
+        assert_eq!(out.counter_check.table.decision_seed, out.replications[0].decision_seed);
+        assert!(out.counter_check.table.candidates() >= 8);
+        assert!(out.counter_check.distinct_values >= 1);
+        assert!(out.counter_check.tied_at_top >= 1);
+        assert!(out.counter_check.top_band >= out.counter_check.tied_at_top);
+        assert_eq!(out.counter_check.table.stats.ply_cap_hits, 0);
+        assert_eq!(out.counter_check.table.stats.budget_binds, 0);
+    }
+
+    /// **THE DECISION-GRAIN SMOKE**: R picks, no verdicts, no binomial line —
+    /// the three-way top-set judgment is T5's and this outcome says so by
+    /// carrying picks rather than pass/fail.
+    #[test]
+    fn a_decision_grain_read_reports_a_pick_and_no_verdict_per_replication() {
+        let rules = rules();
+        let root = read_root(&rules, WorldSeed(MASTER), 8);
+        let subject = SeatSpec::Contestant(Contestant::LOOKAHEAD_V1_DEFAULT);
+        let rule = PassRule::AdjudicatedBest { epsilon: 2 };
+
+        let out = family_read(&root, subject, &rule, 2, MASTER, &rules)
+            .expect("the shipped S1 arm tabulates an organic root");
+        assert_eq!(out.grain, ReadGrain::Decision);
+        assert_eq!(out.rule, rule, "epsilon is CARRIED, for T5 to apply");
+        assert!(out.misses().is_none(), "a miss at this grain is a fact about a TOP SET");
+        assert!(out.binomial_line().is_none());
+        for (r, read) in out.replications.iter().enumerate() {
+            assert!(read.pick.is_some(), "replication {r} reported no pick");
+            assert!(read.verdict.is_none());
+            assert_eq!(read.turn_moves, 0);
+            assert_eq!(read.counters, SeatCounters::NONE);
+            assert_eq!(read.decision_seed, replication_seed(MASTER, out.root_word, r as u32));
+        }
+        // Replication 0 IS the step-one table, reused rather than re-searched.
+        assert_eq!(out.replications[0].pick.as_ref(), Some(&out.counter_check.table.winner));
+    }
+
+    /// SEED-SCHEDULE DETERMINISM: the same inputs read the same outcome twice,
+    /// field for field.
+    #[test]
+    fn the_same_inputs_read_the_same_outcome_twice() {
+        let rules = rules();
+        let root = read_root(&rules, WorldSeed(MASTER), 8);
+        let subject = SeatSpec::Contestant(Contestant::LOOKAHEAD_V1_DEFAULT);
+        let rule = PassRule::Turn(TurnPredicate::NotEndFired);
+        let once = family_read(&root, subject, &rule, 2, MASTER, &rules).expect("first read");
+        let twice = family_read(&root, subject, &rule, 2, MASTER, &rules).expect("second read");
+        assert_eq!(once, twice, "the same master read two different outcomes");
+
+        // A DIFFERENT master moves the seeds — the anti-vacuity half.
+        let elsewhere = family_read(&root, subject, &rule, 2, MASTER ^ 1, &rules).expect("third read");
+        assert_ne!(
+            elsewhere.replications[0].decision_seed, once.replications[0].decision_seed,
+            "the master does not reach the derivation",
+        );
+    }
+
+    /// A subject with NO RANKED ROOT SURFACE is refused in [`root_table`]'s own
+    /// words — because the counter check is MANDATORY at both grains, not
+    /// because the read had nothing to do.
+    ///
+    /// All four kinds are named: a rung SAMPLES, greedy is UNRANKED, mcts and the
+    /// atomic-diag arm are DIAGNOSTIC, and the RaceRusher reply is not a
+    /// contestant at all.
+    #[test]
+    fn a_subject_with_no_ranked_root_surface_is_refused_by_root_tables_own_taxonomy() {
+        let rules = rules();
+        let root = read_root(&rules, WorldSeed(MASTER), 4);
+        let rule = PassRule::Turn(TurnPredicate::NotEndFired);
+
+        for (subject, expected) in [
+            (
+                SeatSpec::Reply(ReplyPolicy::FamilyWeighted),
+                UnsupportedReason::Sampled,
+            ),
+            (SeatSpec::Reply(ReplyPolicy::GreedyAtFinal), UnsupportedReason::Unranked),
+            (SeatSpec::Contestant(Contestant::MCTS_V1_DEFAULT), UnsupportedReason::Diagnostic),
+            (SeatSpec::Contestant(Contestant::ATOMIC_DIAG_DEFAULT), UnsupportedReason::Diagnostic),
+        ] {
+            match family_read(&root, subject, &rule, 2, MASTER, &rules) {
+                Err(FamilyReadError::Table {
+                    replication: 0,
+                    error: RootTableError::Unsupported { reason, .. },
+                }) => assert_eq!(reason, expected, "{subject:?} was refused for the wrong reason"),
+                other => panic!("{subject:?}: expected an Unsupported refusal, got {other:?}"),
+            }
+        }
+
+        match family_read(&root, SeatSpec::Reply(ReplyPolicy::RaceRusher), &rule, 2, MASTER, &rules) {
+            Err(FamilyReadError::SubjectIsNotAContestant(NotAContestant::RaceRusher)) => {}
+            other => panic!("a harness reply rule is not a subject: {other:?}"),
+        }
+
+        match family_read(&root, SeatSpec::Contestant(Contestant::LOOKAHEAD_V1_DEFAULT), &rule, 0,
+            MASTER, &rules) {
+            Err(FamilyReadError::NoReplications) => {}
+            other => panic!("0 replications is not a measurement: {other:?}"),
+        }
+    }
+
+    /// **BRANCH 0**: a capped subject whose budget BINDS refuses the whole read
+    /// rather than reporting a preference.
+    ///
+    /// `cap=1` is the cheapest binding search there is — the mandatory root pass
+    /// alone spends the whole budget, so no continuation can start and every
+    /// candidate is decided on its one-ply value. The refusal names the SITE and
+    /// carries the offending counters, which is what makes the D7 routing carry
+    /// its own evidence.
+    ///
+    /// The uncapped arm at the SAME root is the anti-vacuity: it reads clean, so
+    /// the refusal is about the cap and not about the position.
+    #[test]
+    fn the_counter_check_refuses_a_capped_subject_and_names_its_counters() {
+        let rules = rules();
+        let root = read_root(&rules, WorldSeed(MASTER), 8);
+        let rule = PassRule::Turn(TurnPredicate::NotEndFired);
+        let capped = Contestant::from_str_name("lookahead-v1:cap=1").expect("a capped S1 arm");
+
+        match family_read(&root, SeatSpec::Contestant(capped), &rule, 2, MASTER, &rules) {
+            Err(FamilyReadError::CounterRefusal { site, counters }) => {
+                assert_eq!(site, CounterSite::RootTable, "the cheap refusal comes first");
+                let named: Vec<&str> = counters.iter().map(|(n, _)| *n).collect();
+                assert!(named.contains(&"budget_binds"), "{named:?}");
+                assert!(counters.iter().all(|(_, v)| *v > 0), "a zero counter is not a refusal");
+                let text = FamilyReadError::CounterRefusal { site, counters }.to_string();
+                assert!(text.contains("budget_binds"), "{text}");
+                assert!(text.contains("branch 0"), "{text}");
+            }
+            other => panic!("a bound budget must refuse the preference framing: {other:?}"),
+        }
+
+        // ANTI-VACUITY: the same root, uncapped, reads clean.
+        family_read(&root, SeatSpec::Contestant(Contestant::LOOKAHEAD_V1_DEFAULT), &rule, 1,
+            MASTER, &rules)
+            .expect("the uncapped arm reads this root");
+    }
+
+    /// The hard-refuse and annotate classes, at the two helpers that decide them
+    /// — including the `None`-is-not-zero rule the turn grain's account rides.
+    ///
+    /// Pinned directly because the two SITES are not equally reachable
+    /// end-to-end: the root-table check runs FIRST and a capped subject trips it
+    /// there, so `CounterSite::Replication` is only reached when the root
+    /// decision is clean and a later one is not — a shape a fixture cannot
+    /// manufacture cheaply, and the reason this cell exists.
+    #[test]
+    fn the_counter_classes_split_hard_refusals_from_annotations() {
+        // `None` is NOT zero — a rung carries no such counter at all.
+        assert!(refusing_counters(&SeatCounters::NONE).is_empty());
+        let mut counters = SeatCounters::NONE;
+        counters.budget_binds = Some(0);
+        assert!(refusing_counters(&counters).is_empty(), "a zero counter is not a refusal");
+        counters.budget_binds = Some(3);
+        counters.ply_cap_hits = Some(1);
+        let named: Vec<&str> = refusing_counters(&counters).iter().map(|(n, _)| *n).collect();
+        assert_eq!(named, vec!["ply_cap_hits", "budget_binds"]);
+
+        assert_eq!(CounterSite::RootTable.describe(),
+            "the step-one root table at replication 0's seed");
+        assert_eq!(CounterSite::Replication(4).describe(),
+            "replication 4's whole-turn counters");
+
+        // The ANNOTATE class carries no refusal: a tie-mass root still produces
+        // its reading, it just goes to the separator first.
+        let annotations = [
+            CounterAnnotation::TiedAtTop { candidates: 3 },
+            CounterAnnotation::TopBand { candidates: 100, points: TOP_BAND_POINTS },
+            CounterAnnotation::PlacementCapBinds { count: 2 },
+        ];
+        assert_eq!(annotations.len(), 3);
+    }
+
+    /// The TIE/BAND annotations fire off the step-one table and RECOMMEND the
+    /// separator without refusing the read (design §5.4's split).
+    #[test]
+    fn tie_and_band_counters_annotate_the_read_and_never_refuse_it() {
+        let rules = rules();
+        let root = read_root(&rules, WorldSeed(MASTER), 8);
+        let subject = SeatSpec::Contestant(Contestant::LOOKAHEAD_V1_DEFAULT);
+        let out = family_read(&root, subject, &PassRule::AdjudicatedBest { epsilon: 2 }, 1,
+            MASTER, &rules)
+            .expect("the read completes");
+        let table = &out.counter_check.table;
+
+        let expected_tie = (table.tied_at_top() > 1)
+            .then(|| CounterAnnotation::TiedAtTop { candidates: table.tied_at_top() });
+        let expected_band = (table.top_band() > table.tied_at_top()).then(|| {
+            CounterAnnotation::TopBand { candidates: table.top_band(), points: TOP_BAND_POINTS }
+        });
+        for expected in [expected_tie, expected_band].into_iter().flatten() {
+            assert!(out.annotations.contains(&expected), "missing {expected:?} in {:?}",
+                out.annotations);
+        }
+        assert_eq!(
+            out.separator_recommended(),
+            expected_tie.is_some() || expected_band.is_some(),
+            "the separator recommendation does not follow its own annotations",
+        );
+        // ANTI-VACUITY: this root really does carry tie mass to annotate.
+        assert!(
+            table.top_band() > 1,
+            "the fixture does not exercise the annotate class (band {})",
+            table.top_band(),
         );
     }
 }
