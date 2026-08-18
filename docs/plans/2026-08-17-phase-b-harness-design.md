@@ -114,8 +114,11 @@ a suite no gate line names is a suite that never runs — this design avoids cre
   Per-replication worlds derive as §4 states (review S-2), never ad hoc.
 - **Provenance** — `RootedProvenance { root descriptor (source kind + record digest/table or
   master+ordinal or constructed marker, event index, root-state digest), semantics_rev,
-  rules_hash, seat descriptors, master }`, stamped on every outcome; the runner serializes
-  outcome+provenance JSON to a sidecar path on request. **Seat descriptors record the RESOLVED
+  rules_hash, seat descriptors, master }`, stamped on every outcome. **(Amended at T5
+  adjudication, review S-3:) full outcome/adjudication sidecar serialization is DEFERRED until
+  a consumer exists** — the provenance types (`RootedProvenance`, `AdjudicationProvenance`) are
+  serde-ready today, the outcome/adjudication types deliberately are not, and the runner prints
+  reports rather than writing files; a future sidecar adds the two derives with its consumer. **Seat descriptors record the RESOLVED
   contestant echo (knobs and all) plus the observation label, for Reply seats too** — a menu
   name alone is a symbol whose meaning moves at D1's identity freeze, and the amendment's
   "reply policies fixed at family freeze" needs the resolved identity on disk (review S-1/N-5).
@@ -183,7 +186,9 @@ whose seats carry hidden deals (`starting_order_hidden` — live-tracked records
 front by name, not left to surface as a mid-run `observe` failure at that seat's first
 decision**; the five session roots are sim records, so this is forward-looking hygiene.
 Deliberately absent: CLI/argv coupling
-in-crate; gate registration; weight knobs (contestants only — a weight change is a versioned
+in-crate — **scoped at T5 (review N-3): this clause means no coupling to `yokohama-cli`; the
+harness's OWN runner grammar lives in-crate at `game::driven_runner` precisely so its parse and
+render logic is lib-tested (§2's rule), and `driven.rs` itself stays argv-free** —; gate registration; weight knobs (contestants only — a weight change is a versioned
 controller change, L12); new `RecordedEvent` kinds; `GameRecord` emission; any denial-seeking
 fixture semantics (canon 12/13/14).
 
