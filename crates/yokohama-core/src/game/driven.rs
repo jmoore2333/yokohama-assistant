@@ -90,6 +90,21 @@
 //! second configuration, [`GeneratingEcology::v2_lookahead`], under which the
 //! layer-2 predicates scan the subject's OWN reachable positions.
 //!
+//! **What PHASE C's T2 adds**: the TURN GRAIN. [`drive_turn`] plays ONE mover's
+//! turn from a root — the grain between [`root_table`] (one decision) and
+//! [`drive_to_terminal`] (a whole game), and the one families 2–4 read, because
+//! their pass rules are statements about what a TURN did and the move that fires
+//! a trigger is rarely the move that starts the turn. It stops on a DUAL
+//! condition (hand-off OR game over) because the engine's end-of-turn arm and
+//! its game-end arm write different fields, it runs ONE agent at the caller's
+//! `decision_seed` so the stream advances across the turn, and it reports the
+//! mover's WHOLE-TURN [`SeatCounters`] so a mid-turn cap hit reaches D7's
+//! step-one filter. It is a third per-decision loop — [`play_from_state`] runs
+//! to terminal and exposes no stop hook — and what keeps it from drifting is
+//! stated where it is enforced: a prefix-equivalence pin against the play half,
+//! and a failure taxonomy routed through [`classify`] over the arena's own
+//! `PlayError` rather than re-typed.
+//!
 //! **What this module still deliberately does NOT ship**: the runner (T5). It is
 //! not stubbed here — a stub is a surface a reader has to check the emptiness
 //! of.
@@ -2037,10 +2052,21 @@ pub struct TurnOutcome {
 /// answer, and refusing it would make "the position was already finished" the
 /// one reading the instrument could not report.
 ///
+/// **`mover` names WHAT plays, never WHICH SEAT.** The seat is
+/// `root.current_player` and there is nothing to reconcile: a [`SeatSpec`]
+/// carries a contestant, not an index, and a turn has exactly one mover by the
+/// stop rule above — which is also why this takes ONE spec where
+/// [`drive_to_terminal`] takes a list, and why no reply policy appears anywhere
+/// in a turn.
+///
 /// The root hygiene is [`drive_to_terminal`]'s, through the SHARED guard
 /// [`require_driveable_root`] (seat count, `max_decisions`, hidden-deal
 /// eligibility) plus a `check_invariants` guard that names the ROOT before the
-/// first decision — so a corrupt fixture is never misattributed to a move.
+/// first decision — so a corrupt fixture is never misattributed to a move. The
+/// eligibility check is the one that would be easiest to drop and hardest to
+/// miss the loss of: `observe` is only ever called for the MOVER inside a turn,
+/// so a live-tracked root whose OPPONENT hid its deal would otherwise drive
+/// perfectly and report a turn nobody could have played.
 pub fn drive_turn(
     root: &GameState,
     mover: SeatSpec,
@@ -7882,6 +7908,11 @@ mod tests {
             "the reported hand-off is not where the reported moves lead",
         );
         assert_ne!(state.current_player, mover);
+        assert_eq!(
+            outcome.counters,
+            SeatCounters::NONE,
+            "a rung explains nothing — every counter is absent, not zero",
+        );
     }
 
     /// The FIRST-DECISION JOIN: at one seed, a turn's first move is the move
