@@ -57,15 +57,17 @@ use crate::actions::{
 use crate::game::apply_move::apply_move_unchecked;
 use crate::game::arena::{mix, Contestant};
 use crate::game::driven::{
-    drive_turn, root_table, true_margin_now, Adjudication, DrivenError, DrivenOpts, NotAContestant,
-    ReplyPolicy, RootPredicate, RootTable, RootTableError, SeatCounters, SeatSpec, TOP_BAND_POINTS,
+    adjudicate_root, adjudicate_root_with, drive_turn, root_table, true_margin_now, Adjudication,
+    AdjudicationError, DrivenError, DrivenOpts, NotAContestant, ReplyPolicy, RootDescriptor,
+    RootError, RootPredicate, RootSource, RootTable, RootTableError, SeatCounters, SeatSpec,
+    TOP_BAND_POINTS,
 };
 use crate::game::end_game::is_game_over;
 use crate::game::invariants::check_invariants;
 use crate::game::legal_moves::get_legal_moves;
 use crate::game::observe::observe;
 use crate::game::rules::Rules;
-use crate::game::seeds::SeedSchedule;
+use crate::game::seeds::{SeedSchedule, WorldSeed};
 use crate::game::semantics::state_digest;
 use crate::game::setup::{finalize_setup, new_game, StartingOrderChoice};
 use crate::types::{
@@ -318,6 +320,37 @@ impl PassRule {
         match self {
             Self::Turn(_) => ReadGrain::Turn,
             Self::AdjudicatedBest { .. } => ReadGrain::Decision,
+        }
+    }
+
+    /// Whether this rule names a [`ContestedStep`] — i.e. whether the ROOT owes
+    /// it one.
+    pub fn names_a_step(self) -> bool {
+        matches!(
+            self,
+            Self::Turn(TurnPredicate::ContestedStepTaken(_) | TurnPredicate::DenialNotTaken(_))
+        )
+    }
+
+    /// Re-point a step-carrying rule at the step THIS ROOT declares (design §3:
+    /// the step is "declared by the builder or predicate at generation time,
+    /// never inferred at read time").
+    ///
+    /// A declaration writes its rule with a placeholder
+    /// ([`DECLARED_BY_THE_ROOT`]) because the step is a fact about a root and a
+    /// declaration is written before any root is drawn. A rule that names no
+    /// step is returned unchanged, and so is a step-carrying rule handed `None`
+    /// — the caller checks [`names_a_step`](Self::names_a_step) first and
+    /// refuses, so nothing is ever READ against the placeholder.
+    pub fn with_step(self, step: Option<ContestedStep>) -> Self {
+        match (self, step) {
+            (Self::Turn(TurnPredicate::ContestedStepTaken(_)), Some(s)) => {
+                Self::Turn(TurnPredicate::ContestedStepTaken(s))
+            }
+            (Self::Turn(TurnPredicate::DenialNotTaken(_)), Some(s)) => {
+                Self::Turn(TurnPredicate::DenialNotTaken(s))
+            }
+            (other, _) => other,
         }
     }
 }
@@ -1961,6 +1994,1196 @@ pub fn build_achievement_proximity(seed: u64, rules: &Rules) -> Result<GameState
         ));
     }
     Ok(state)
+}
+
+// ---------------------------------------------------------------------------
+// The FROZEN FAMILY REGISTRY (design §1's four families, §2's `FamilyDecl`)
+// ---------------------------------------------------------------------------
+
+/// The declared reply MENU — all four policies, for every family (design §4).
+///
+/// `RaceRusher` is in it deliberately: the conjunction across the menu is only
+/// as informative as its most hostile arm, and a menu of three cooperative
+/// replies would admit roots that only look worthwhile because nobody competed
+/// for them.
+pub const REPLY_MENU: &[ReplyPolicy] = &[
+    ReplyPolicy::FamilyWeighted,
+    ReplyPolicy::GreedyAtFinal,
+    ReplyPolicy::LookaheadAtFinal,
+    ReplyPolicy::RaceRusher,
+];
+
+/// The PILOT block's ordinals, for every family — design §4's `n = 4` strided
+/// draws.
+pub const PILOT_DRAWS: std::ops::Range<u32> = 0..4;
+
+/// How many strided draws a CONFIRMATORY block spans (design §4's `m = 6`).
+pub const CONFIRMATORY_BLOCK_ROOTS: usize = 6;
+
+/// The VOID rule's floor: a confirmatory result quoting fewer than this many
+/// ADMITTED roots confirms nothing (design §4, review MUST-4).
+pub const MIN_ADMITTED_ROOTS: usize = 4;
+
+/// The pre-declared disposition when the VOID rule fires — carried on the
+/// verdict so a report states the recovery rather than leaving it to be
+/// remembered.
+pub const VOID_DISPOSITION: &str =
+    "extend to the next PRE-DECLARED strided ordinals (never a re-draw), or record and route as \
+     under-powered";
+
+/// R — replications per root (design §4).
+///
+/// **PROVISIONAL until T7's freeze commit**, like every other number in this
+/// block: design §4 states R = 20 as the draft posture and the freeze document
+/// is what fixes it, together with F, δ, ε and the per-policy K. Nothing here
+/// may be read as frozen.
+pub const PROVISIONAL_REPLICATIONS: u32 = 20;
+
+/// Per-root allowed misses (design §4's draft posture, F = 1 of 20).
+///
+/// It is not 0 for a stated reason: admission dominance is measured in TRUTH
+/// while the subject decides in a SAMPLED world, so a sampled deal can flip the
+/// in-world best line at a truth-dominant root, and a blanket F = 0 would make
+/// family failure a Bernoulli event over ~120 trials with unstated false-alarm
+/// arithmetic. PROVISIONAL until the freeze prices it from pilot-measured
+/// world-sensitivity.
+pub const PROVISIONAL_PER_ROOT_F: u32 = 1;
+
+/// The FAMILY-level failure allowance (design §4's draft: 0 roots for families
+/// 1, 2 and 4). Family 3 declares no bar and skips it entirely.
+pub const FAMILY_FAILURE_ALLOWANCE: usize = 0;
+
+/// ε for family 1's [`PassRule::AdjudicatedBest`], in victory points.
+///
+/// PROVISIONAL: design §4 derives it at the freeze from ADJUDICATION-MARGIN
+/// noise at pilot roots, as a conservative upper confidence bound on the sd of
+/// per-candidate means. The leniency direction, stated once more where the
+/// number is: a LARGER epsilon is an EASIER pass.
+pub const PROVISIONAL_EPSILON_VP: i64 = 1;
+
+/// δ for root admission, in victory points (design §4's draft 5 VP).
+///
+/// PROVISIONAL: the freeze sizes it (and the per-policy K) from pilot-measured
+/// playout-margin noise, such that the SE of the group mean-difference is below
+/// δ/2.
+pub const PROVISIONAL_DELTA_VP: i64 = 5;
+
+/// The per-policy admission K (design §4's draft: the full menu at K = 4).
+/// PROVISIONAL, for [`PROVISIONAL_DELTA_VP`]'s reason.
+pub const PROVISIONAL_ADMISSION_K: u32 = 4;
+
+/// The PLACEHOLDER step a step-carrying declaration is written with.
+///
+/// Design §3 is explicit that a contested step is "declared by the builder or
+/// predicate at generation time, never inferred at read time" — so family 3's
+/// declaration names the SHAPE of its rule and the ROOT names the step. A block
+/// run re-points the rule per root through [`PassRule::with_step`]; a root that
+/// declares no step under a step-carrying rule is a typed refusal, never a run
+/// against this placeholder.
+pub const DECLARED_BY_THE_ROOT: ContestedStep =
+    ContestedStep::ChurchSpace { faith: CONTESTED_FAITH };
+
+/// What a family CLAIMS when it passes (design §1).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FamilyLabel {
+    /// The family confirms a behaviour the canon (or the rules) already says is
+    /// right. A pass is evidence FOR the subject; a failure routes through D7.
+    Confirmatory,
+    /// The family demonstrates a GAP and declares no pass bar. Reads at the
+    /// current subject are EXPECTED to fail its positive roots — the output is
+    /// the demonstrated per-root gap, which supports a pivot or a routing and
+    /// never a GO.
+    ExistenceDemonstration,
+}
+
+/// The PARTITION multiplicity is judged over (design §4, review SHOULD-9).
+///
+/// The amendment's rule is "two or more failures in the same strategic class →
+/// the pivot conversation", which is undefined without the partition — so it is
+/// declared here rather than left to a reader. Families 2 and 4 are ONE class
+/// (D7 branch 2's own cluster); family 3 is its own (branch 3), which is why its
+/// expected failures cannot combine with the other two to fire the pivot.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StrategicClass {
+    /// Family 1 — rules-derivable final-round behaviour.
+    RulesFinalRound,
+    /// Families 2 and 4 — end timing and claim proximity.
+    EndTimingProximity,
+    /// Family 3 — opponent reply and the cross-hand-off question.
+    OpponentReply,
+}
+
+impl StrategicClass {
+    /// The stable name, for reports and the freeze document.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::RulesFinalRound => "rules/final-round",
+            Self::EndTimingProximity => "end-timing/proximity",
+            Self::OpponentReply => "opponent-reply",
+        }
+    }
+}
+
+/// A block of draws BAKED INTO the declaration at the freeze commit (design §2,
+/// review SHOULD-4 — the committed-diagnostic-master pattern the gates already
+/// use).
+///
+/// Before the freeze every declaration carries `None` and every run supplies its
+/// own master; after it, `--block confirmatory` runs the committed identity and
+/// a caller-typed master cannot silently substitute a non-frozen block. **Escrow
+/// ordinals are deliberately NOT representable here**: they live in the freeze
+/// document, so no command can burn one by accident.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FrozenBlock {
+    /// The recorded master this block's draws descend from.
+    pub master: u64,
+    /// Its ordinals, in the STRIDED space (design §4).
+    pub ordinals: std::ops::Range<u32>,
+}
+
+/// What a BUILDER hands back: the state, plus the step it declares if its family
+/// reads a step-carrying rule.
+#[derive(Debug, Clone, PartialEq)]
+pub struct BuiltRoot {
+    pub state: GameState,
+    /// The step this root DECLARES — `Some` for family 3's builders, `None` for
+    /// a family whose rule names no step.
+    pub step: Option<ContestedStep>,
+}
+
+/// The one signature a declared builder has.
+///
+/// **Why the three public builders do not have this signature themselves**: they
+/// return what each family actually needs (`(GameState, ContestedStep)` for the
+/// race pair, a bare `GameState` for the proximity corner), which is the honest
+/// type at each call site and is what their own pins read. A `'static`
+/// declaration needs ONE type, so three thin adapters normalize them into
+/// [`BuiltRoot`] — the adaptation is visible, one line each, and neither half
+/// pretends the other's shape.
+pub type BuilderFn = fn(u64, &Rules) -> Result<BuiltRoot, BuilderError>;
+
+/// How a family's roots are DRAWN (design §1: "generators are rules-plus-draws,
+/// never positions picked after seeing play").
+///
+/// **THE SHAPE DECISION, stated because the plan left it open**: an enum with a
+/// PREDICATE arm and a BUILDER arm carrying a plain `fn` pointer plus its NAME.
+/// A trait object would have needed a `dyn` behind a `&'static` in a `const`
+/// context for no gain — there is exactly one operation ("draw the root at this
+/// seed") and no state — and a bare `fn` pointer without the name would leave a
+/// report unable to say WHICH builder produced a block, which is half of a
+/// builder draw's identity.
+#[derive(Clone, Copy)]
+pub enum FamilyGenerator {
+    /// A seeded SCAN for positions satisfying a predicate, under the ecology
+    /// `RootPredicate::ecology` names.
+    Predicate(RootPredicate),
+    /// A parameterized CONSTRUCTOR, drawn at seeds blocked the same way a scan's
+    /// ordinals are.
+    Builder { build: BuilderFn, name: &'static str },
+}
+
+impl std::fmt::Debug for FamilyGenerator {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Predicate(p) => write!(f, "Predicate({})", p.as_str()),
+            Self::Builder { name, .. } => write!(f, "Builder({name})"),
+        }
+    }
+}
+
+impl PartialEq for FamilyGenerator {
+    /// Compared by IDENTITY — the predicate, or the builder's declared name.
+    /// Function-pointer equality is deliberately not the comparison: two
+    /// monomorphizations of one function are not required to share an address,
+    /// and the name is what a freeze document quotes anyway.
+    fn eq(&self, other: &Self) -> bool {
+        match (self, other) {
+            (Self::Predicate(a), Self::Predicate(b)) => a == b,
+            (Self::Builder { name: a, .. }, Self::Builder { name: b, .. }) => a == b,
+            _ => false,
+        }
+    }
+}
+
+impl FamilyGenerator {
+    /// The stable name a report and a freeze document quote.
+    pub fn name(&self) -> &'static str {
+        match self {
+            Self::Predicate(p) => p.as_str(),
+            Self::Builder { name, .. } => name,
+        }
+    }
+}
+
+/// ONE FROZEN FAMILY, as code (design §2).
+///
+/// A frozen family is a declared root GENERATOR + declared reply policies +
+/// pre-declared R and failure counts + a declared PASS RULE + a CONFIRMATORY or
+/// EXISTENCE-DEMONSTRATION label + disjoint pilot/confirmatory blocks. Every one
+/// of those is a field here, and the point of putting them in code rather than
+/// in prose is that a block run cannot quietly use different ones.
+#[derive(Debug, Clone, PartialEq)]
+pub struct FamilyDecl {
+    /// The name a runner asks for.
+    pub id: &'static str,
+    pub label: FamilyLabel,
+    pub class: StrategicClass,
+    pub generator: FamilyGenerator,
+    /// The declared pass rule. A step-carrying rule is written with
+    /// [`DECLARED_BY_THE_ROOT`] and re-pointed per root.
+    pub rule: PassRule,
+    /// R.
+    pub replications: u32,
+    /// Per-root allowed misses.
+    pub per_root_f: u32,
+    /// The declared reply menu, in menu order.
+    pub menu: &'static [ReplyPolicy],
+    /// The PILOT block's ordinals. Pilots quote nothing confirmatory, so they
+    /// carry no master: the caller records one before use.
+    pub pilot: std::ops::Range<u32>,
+    /// The CONFIRMATORY block, baked at the freeze commit. `None` before it.
+    pub confirmatory: Option<FrozenBlock>,
+    /// Which canon (or which rules clause) this family rests on.
+    pub canon: &'static str,
+}
+
+/// [`build_race_positive`] as a [`BuilderFn`].
+fn built_race_positive(seed: u64, rules: &Rules) -> Result<BuiltRoot, BuilderError> {
+    let (state, step) = build_race_positive(seed, rules)?;
+    Ok(BuiltRoot { state, step: Some(step) })
+}
+
+/// [`build_race_no_denial`] as a [`BuilderFn`] — family 3's declared CONTROL,
+/// reachable by a caller that runs the control arm.
+fn built_race_no_denial(seed: u64, rules: &Rules) -> Result<BuiltRoot, BuilderError> {
+    let (state, step) = build_race_no_denial(seed, rules)?;
+    Ok(BuiltRoot { state, step: Some(step) })
+}
+
+/// [`build_achievement_proximity`] as a [`BuilderFn`] — family 4's declared
+/// proximity CORNER, reachable by a caller that runs the corner block.
+fn built_achievement_proximity(seed: u64, rules: &Rules) -> Result<BuiltRoot, BuilderError> {
+    Ok(BuiltRoot { state: build_achievement_proximity(seed, rules)?, step: None })
+}
+
+/// Family 3's declared CONTROL generator (design §1: "a no-denial root — a
+/// denial-shaped move available but not worthwhile").
+///
+/// It is a named handle rather than a fifth entry in [`families`] because the
+/// design's registry is FOUR families: the control is an ARM of family 3, run
+/// under family 3's identity with `DenialNotTaken` in place of
+/// `ContestedStepTaken`, and giving it its own row would make the multiplicity
+/// rule count it as a family.
+pub const RACE_CONTROL_GENERATOR: FamilyGenerator =
+    FamilyGenerator::Builder { build: built_race_no_denial, name: "build_race_no_denial" };
+
+/// Family 4's declared proximity CORNER generator (design §1 family 4), an arm
+/// of family 4 for [`RACE_CONTROL_GENERATOR`]'s reason.
+pub const PROXIMITY_CORNER_GENERATOR: FamilyGenerator = FamilyGenerator::Builder {
+    build: built_achievement_proximity,
+    name: "build_achievement_proximity",
+};
+
+/// **THE FOUR FROZEN FAMILIES** (design §1), in the design's own order.
+///
+/// Every declaration is PRE-FREEZE: `confirmatory` is `None` on all four, so a
+/// confirmatory run refuses by name until T7's freeze commit bakes the masters
+/// and the strided ordinals in. The numbers each declaration carries (R, F, ε)
+/// are the design's draft posture and are re-set from pilot measurements at that
+/// same commit.
+pub fn families() -> Vec<FamilyDecl> {
+    vec![
+        // ---- FAMILY 1 -----------------------------------------------------
+        // Already-triggered final round. CONFIRMATORY and RULES-DERIVABLE — no
+        // canon is needed, which is why it is the family a healthy subject is
+        // most expected to pass and therefore the sharpest instrument check.
+        //
+        // The DECISION grain is right here and nowhere else: the adjudicator
+        // forces exactly the decision the read judges, and a final-round playout
+        // is at most two turns.
+        //
+        // Its declared CONTROL is `RootPredicate::TriggerRoundNotFinal` — the
+        // exact complement on the `final_round` conjunct, so a result that holds
+        // on one and not the other is a statement about the FINAL ROUND rather
+        // than about the trigger (the session's g1:228 shape). Admission here is
+        // the LIVE/DEAD split rather than a dominance demonstration.
+        FamilyDecl {
+            id: "final-round",
+            label: FamilyLabel::Confirmatory,
+            class: StrategicClass::RulesFinalRound,
+            generator: FamilyGenerator::Predicate(RootPredicate::FinalRoundAlreadyTriggered),
+            rule: PassRule::AdjudicatedBest { epsilon: PROVISIONAL_EPSILON_VP },
+            replications: PROVISIONAL_REPLICATIONS,
+            per_root_f: PROVISIONAL_PER_ROOT_F,
+            menu: REPLY_MENU,
+            pilot: PILOT_DRAWS,
+            confirmatory: None,
+            canon: "rules-derivable (rulebook p.9's final round); no canon ruling needed — \
+                    design §1 family 1",
+        },
+        // ---- FAMILY 2 -----------------------------------------------------
+        // End-trigger firing. CONFIRMATORY on canon 15, the INVERTED BRAKE.
+        //
+        // The positive predicate supplies the TRUE arithmetic canon 15 is about
+        // (the F9 lesson made a selection rule) rather than testing whether the
+        // subject can reconstruct it. Its declared CONTROL is
+        // `RootPredicate::EndFirableBehindInTruth` read against
+        // `TurnPredicate::NotEndFired`: a behind mover should hand off WITHOUT
+        // firing, and what it built instead is recorded, not gated.
+        FamilyDecl {
+            id: "end-trigger",
+            label: FamilyLabel::Confirmatory,
+            class: StrategicClass::EndTimingProximity,
+            generator: FamilyGenerator::Predicate(RootPredicate::EndFirableAheadInTruth),
+            rule: PassRule::Turn(TurnPredicate::EndFired),
+            replications: PROVISIONAL_REPLICATIONS,
+            per_root_f: PROVISIONAL_PER_ROOT_F,
+            menu: REPLY_MENU,
+            pilot: PILOT_DRAWS,
+            confirmatory: None,
+            canon: "canon 15 (the inverted brake): ending the game while behind is a bad idea — \
+                    design §1 family 2",
+        },
+        // ---- FAMILY 3 -----------------------------------------------------
+        // Exclusive-race opponent awareness. EXISTENCE DEMONSTRATION (canon
+        // 12/13 + C-A, C-B discounted): it supports a pivot or a routing and
+        // NEVER a GO, and its verdict arm skips the failure allowance entirely.
+        //
+        // The BUILDER is the honest source (design §1 family 3): the generated
+        // arm `RootPredicate::ExclusiveRaceOneStep` is a pilot PROBE whose supply
+        // at the scan bound is measured and recorded, and a recorded `Exhausted`
+        // refusal there is itself the evidence that the builder arm is what the
+        // family rests on. Its declared CONTROL is [`RACE_CONTROL_GENERATOR`],
+        // read against `DenialNotTaken` of the same declared step.
+        //
+        // The rule is written with [`DECLARED_BY_THE_ROOT`] and re-pointed per
+        // root — the step belongs to the ROOT's declaration.
+        FamilyDecl {
+            id: "exclusive-race",
+            label: FamilyLabel::ExistenceDemonstration,
+            class: StrategicClass::OpponentReply,
+            generator: FamilyGenerator::Builder {
+                build: built_race_positive,
+                name: "build_race_positive",
+            },
+            rule: PassRule::Turn(TurnPredicate::ContestedStepTaken(DECLARED_BY_THE_ROOT)),
+            replications: PROVISIONAL_REPLICATIONS,
+            per_root_f: PROVISIONAL_PER_ROOT_F,
+            menu: REPLY_MENU,
+            pilot: PILOT_DRAWS,
+            confirmatory: None,
+            canon: "canon 12/13 (race arithmetic and awareness, never denial-as-default) plus \
+                    C-A's participation framing — design §1 family 3",
+        },
+        // ---- FAMILY 4 -----------------------------------------------------
+        // Achievement proximity. CONFIRMATORY on ruling 14's agenda-setters plus
+        // C-A. No denial claim is made or needed: BOTH seats can claim the same
+        // card, so this family is about the mover's own agenda.
+        //
+        // Its declared CORNER is [`PROXIMITY_CORNER_GENERATOR`] — F8's
+        // produce-then-claim shape, where the claim is TWO decisions away and
+        // therefore not a root candidate at all, which is precisely what makes
+        // the turn grain necessary here.
+        FamilyDecl {
+            id: "achievement",
+            label: FamilyLabel::Confirmatory,
+            class: StrategicClass::EndTimingProximity,
+            generator: FamilyGenerator::Predicate(RootPredicate::AchievementClaimAvailable),
+            rule: PassRule::Turn(TurnPredicate::AchievementClaimed),
+            replications: PROVISIONAL_REPLICATIONS,
+            per_root_f: PROVISIONAL_PER_ROOT_F,
+            menu: REPLY_MENU,
+            pilot: PILOT_DRAWS,
+            confirmatory: None,
+            canon: "ruling 14 (achievements are agenda-setters, denial is not canon) plus C-A — \
+                    design §1 family 4",
+        },
+    ]
+}
+
+// ---------------------------------------------------------------------------
+// The BLOCK RUN (design §4; plan §T5(B))
+// ---------------------------------------------------------------------------
+
+/// Which block of a family's declared draws to run.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BlockKind {
+    /// The pilot draws — the caller supplies (and records) the master.
+    Pilot,
+    /// The frozen confirmatory draws — the declaration supplies the master, and
+    /// a caller-typed one is refused.
+    Confirmatory,
+}
+
+impl BlockKind {
+    /// The stable name, for reports.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Pilot => "pilot",
+            Self::Confirmatory => "confirmatory",
+        }
+    }
+}
+
+/// The sizing a block run uses — the parameters T7's freeze bakes per family.
+///
+/// **K, δ and the dead-spread bound are PARAMETERS and not decl fields**, which
+/// is the honest split at this stage: the design fixes them at the freeze from
+/// PILOT MEASUREMENTS, so before the freeze they belong to the run rather than
+/// to the declaration. [`BlockOpts::pilot`] is the pre-freeze posture, and it is
+/// what the two-argument [`run_family_block`] uses — the same
+/// `adjudicate_root` / `adjudicate_root_with` split, one level up.
+#[derive(Debug, Clone)]
+pub struct BlockOpts {
+    /// Replications per candidate in an ADMISSION adjudication (design §4's
+    /// per-policy K; uniform before the freeze).
+    pub admission_k: u32,
+    /// The admission dominance margin, in victory points.
+    pub delta: i64,
+    /// [`classify_dead`]'s bound.
+    pub dead_spread_bound: i64,
+    /// A CONTROL block inverts admission: the pass behaviour must demonstrably
+    /// LOSE by δ (family 2's behind-mover control).
+    pub control: bool,
+    /// The driver options every adjudication runs under.
+    pub driven: DrivenOpts,
+}
+
+impl BlockOpts {
+    /// The PRE-FREEZE posture — design §4's drafts.
+    pub fn pilot() -> Self {
+        Self {
+            admission_k: PROVISIONAL_ADMISSION_K,
+            delta: PROVISIONAL_DELTA_VP,
+            dead_spread_bound: DEAD_SPREAD_BOUND,
+            control: false,
+            driven: DrivenOpts::default(),
+        }
+    }
+}
+
+impl Default for BlockOpts {
+    fn default() -> Self {
+        Self::pilot()
+    }
+}
+
+/// Why a block produced no report.
+#[derive(Debug)]
+pub enum FamilyRunError {
+    /// A confirmatory run before the freeze commit baked this family's block.
+    NoFrozenBlock { id: &'static str },
+    /// A confirmatory run carrying a caller's master. Refused rather than
+    /// honoured (design §2, review SHOULD-4): a typo must not be able to run a
+    /// plausible-looking non-frozen block.
+    MasterRefused { id: &'static str },
+    /// A pilot run with no master. Recorded-before-use stays the caller's
+    /// obligation, so the run cannot invent one.
+    MasterRequired { id: &'static str },
+    /// The block names no ordinals at all.
+    EmptyBlock { id: &'static str },
+    /// A generated draw could not be resolved.
+    Root { ordinal: u32, error: RootError },
+    /// A builder draw refused.
+    Builder { ordinal: u32, error: BuilderError },
+    /// A step-carrying rule met a root that declares no step — a generator/rule
+    /// mismatch, never a read against [`DECLARED_BY_THE_ROOT`].
+    StepNotDeclared { ordinal: u32 },
+    /// A root declared a step that names no space.
+    IllFormedStep { ordinal: u32, step: ContestedStep },
+    /// An admission adjudication did not complete.
+    Adjudication { ordinal: u32, policy: ReplyPolicy, error: Box<AdjudicationError> },
+    /// A read did not complete for a reason that is NOT a counter refusal — a
+    /// refusal is a per-root FINDING and rides the row.
+    Read { ordinal: u32, error: Box<FamilyReadError> },
+}
+
+impl std::fmt::Display for FamilyRunError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::NoFrozenBlock { id } => write!(
+                f,
+                "family {id} carries no frozen confirmatory block: it is baked at the FREEZE \
+                 commit, and before that only `--block pilot` can run"
+            ),
+            Self::MasterRefused { id } => write!(
+                f,
+                "family {id}'s confirmatory block runs the master its declaration carries — a \
+                 caller-supplied master is refused so a typo cannot run a plausible-looking \
+                 non-frozen block"
+            ),
+            Self::MasterRequired { id } => write!(
+                f,
+                "family {id}'s pilot block needs a master: recorded-before-use is the caller's \
+                 obligation and this run will not invent one"
+            ),
+            Self::EmptyBlock { id } => {
+                write!(f, "family {id}'s block names no ordinals, so there is nothing to run")
+            }
+            Self::Root { ordinal, error } => write!(f, "draw {ordinal}: {error}"),
+            Self::Builder { ordinal, error } => write!(f, "draw {ordinal}: {error}"),
+            Self::StepNotDeclared { ordinal } => write!(
+                f,
+                "draw {ordinal}: the family's rule names a contested step and this root declares \
+                 none — the step is the ROOT's declaration, never the rule's placeholder"
+            ),
+            Self::IllFormedStep { ordinal, step } => {
+                write!(f, "draw {ordinal}: the declared step {step:?} names no space")
+            }
+            Self::Adjudication { ordinal, policy, error } => write!(
+                f,
+                "draw {ordinal}: the admission adjudication under {} did not complete: {error}",
+                policy.as_str()
+            ),
+            Self::Read { ordinal, error } => {
+                write!(f, "draw {ordinal}: the read did not complete: {error}")
+            }
+        }
+    }
+}
+
+impl std::error::Error for FamilyRunError {}
+
+/// Why a drawn root was EXCLUDED from the denominator.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ExclusionReason {
+    /// Family 1's LIVE/DEAD split: the candidate field is genuinely indifferent
+    /// under EVERY declared policy, so a pick there confirms nothing and fails
+    /// nothing.
+    Dead,
+    /// Families 2–4: the pass behaviour does not demonstrably dominate at this
+    /// root under every declared policy. A real measurement, and the rate is
+    /// carried on the report.
+    NotDemonstrated,
+}
+
+/// One drawn root's verdict.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RootVerdict {
+    /// Excluded before any read — see [`ExclusionReason`].
+    Excluded(ExclusionReason),
+    /// **BRANCH 0**: the counter check refused to summarize this root as a
+    /// preference finding. Not a failure — a routing.
+    CounterRefused(String),
+    /// The subject's reads met the rule within the per-root allowance.
+    Pass,
+    /// They did not.
+    Fail { misses: u32, allowance: u32 },
+    /// Family 1 only: the declared policies DISAGREE about this position, so the
+    /// pick landed in some top sets and not others. Never a silent fail — it is
+    /// the exact-adjudicator trigger.
+    UnresolvedPendingExact { replications: u32 },
+    /// Family 3's arm: the gap is recorded and no bar is declared.
+    GapRecorded { misses: u32 },
+}
+
+/// The three-way reading of ONE pick against the declared policies' top sets
+/// (design §1's family-1 rule).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PickJudgment {
+    /// In EVERY declared policy's top set — the pass.
+    InEverySet,
+    /// In at least one but not all — UNRESOLVED-pending-exact.
+    InSomeSet,
+    /// In none — the fail. Also what an EMPTY menu reads, deliberately: a
+    /// judgment across no policies is not a pass.
+    InNoSet,
+}
+
+/// Judge one pick against the per-policy top sets.
+pub fn judge_pick(pick: &Move, top_sets: &[(ReplyPolicy, Vec<Move>)]) -> PickJudgment {
+    if top_sets.is_empty() {
+        return PickJudgment::InNoSet;
+    }
+    let hits = top_sets.iter().filter(|(_, set)| set.contains(pick)).count();
+    if hits == 0 {
+        PickJudgment::InNoSet
+    } else if hits == top_sets.len() {
+        PickJudgment::InEverySet
+    } else {
+        PickJudgment::InSomeSet
+    }
+}
+
+/// The candidates whose MEAN margin is within `epsilon` of the best — the top
+/// set [`PassRule::AdjudicatedBest`] judges against (design §3).
+///
+/// Empty on an empty table, which is the honest reading of a finished game and
+/// is what makes [`judge_pick`] fail rather than vacuously pass there.
+pub fn top_set(adj: &Adjudication, epsilon: i64) -> Vec<Move> {
+    let mut best = f64::NEG_INFINITY;
+    for row in &adj.rows {
+        best = best.max(row.mean_margin());
+    }
+    if !best.is_finite() {
+        return Vec::new();
+    }
+    let floor = best - epsilon as f64;
+    adj.rows
+        .iter()
+        .filter(|row| row.mean_margin() >= floor)
+        .map(|row| row.candidate.clone())
+        .collect()
+}
+
+/// The family-4 RIDER: the shipped achievement readings at one root, beside a
+/// RACE-PROXIMITY reading (design §1 family 4 — D2's named pre-bar trigger test,
+/// taken exactly where it was promised).
+///
+/// **RECORDED, never gated.** Nothing in this phase may move the evaluator (the
+/// STOP fence), so the proximity column exists here to be read at rooted
+/// positions and carried into the V3 candidate discussion, not to change a
+/// verdict.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct AchievementRider {
+    /// `eval::achievement_progress_sum` — the PRE-FREEZE base, with no claim
+    /// filter. Recorded because design §1 names it, and because it is the base
+    /// the shipped filter is defined as a filter OVER.
+    pub progress_sum: i64,
+    /// `eval::achievement_progress_postclaim_sum` — **the SHIPPED feature since
+    /// the v2 freeze** (T3's post-claim filter). The two are printed side by
+    /// side so a reader can see the filter's effect on-policy, which is the
+    /// other half of what design §1 asks this rider for.
+    pub postclaim_sum: i64,
+    /// The race-proximity reading — see
+    /// [`achievement_race_proximity_mirror`].
+    pub race_proximity: i64,
+}
+
+/// Both shipped achievement readings plus the proximity mirror, for one seat.
+pub fn achievement_rider(view: &PlayerView, player: &VisiblePlayer) -> AchievementRider {
+    AchievementRider {
+        progress_sum: crate::game::eval::achievement_progress_sum(view, player),
+        postclaim_sum: crate::game::eval::achievement_progress_postclaim_sum(view, player),
+        race_proximity: achievement_race_proximity_mirror(view, player),
+    }
+}
+
+/// How near this seat is to its NEXT achievement claim, negated so that nearer
+/// reads HIGHER.
+///
+/// **A THIN MIRROR of `achievement_race_proximity` in
+/// `crates/yokohama-core/examples/eval_probe.rs`**, and it names its source
+/// because that is the rule for mirrored logic in this harness (the Phase-B
+/// design's §5 pattern): the column is an EXAMPLE-local candidate, examples are
+/// not a library dependency, and family 4's rider has to print it beside the
+/// shipped sums. The three decisions the probe records ride the mirror
+/// unchanged — a card an OPPONENT claimed stays live (the engine's claim gate
+/// refuses only a repeat claim by the SAME seat), the per-card cap is inherited
+/// from `achievement_progress`, and a seat that has claimed all three reads 0,
+/// which collides with the reading for a seat standing on a claimable card
+/// because both are "nothing left to chase".
+///
+/// It is pinned to a HAND-COMPUTED value on a constructed state, which is what
+/// keeps a mirror from drifting into a second arithmetic.
+fn achievement_race_proximity_mirror(view: &PlayerView, me: &VisiblePlayer) -> i64 {
+    let mut nearest: Option<u32> = None;
+    for card in &view.achievements {
+        if card.claimed_by.contains(&me.id) {
+            continue;
+        }
+        let (current, needed) =
+            crate::game::eval::achievement_progress(view, me, card.achievement_type);
+        let gap = needed.saturating_sub(current.min(needed));
+        nearest = Some(nearest.map_or(gap, |best: u32| best.min(gap)));
+    }
+    -i64::from(nearest.unwrap_or(0))
+}
+
+/// ONE drawn root's row in a block report.
+#[derive(Debug, Clone, PartialEq)]
+pub struct RootRow {
+    /// Its ordinal in the block's (strided, or seed-blocked) space. Together
+    /// with the report's master and generator NAME, this is the draw's identity
+    /// — which matters most for a BUILDER draw, whose `RootDescriptor` is
+    /// honestly `Constructed` because the state was constructed.
+    pub ordinal: u32,
+    pub descriptor: RootDescriptor,
+    /// The step this root DECLARED, for a step-carrying rule.
+    pub step: Option<ContestedStep>,
+    /// The rule as it was RUN — the declaration's rule re-pointed at this root's
+    /// step.
+    pub rule: PassRule,
+    /// Families 2–4: the admission read across the declared menu.
+    pub admission: Option<AdmissionRead>,
+    /// Family 1: `classify_dead` per declared policy, in menu order.
+    pub dead_by_policy: Vec<(ReplyPolicy, bool)>,
+    /// Family 1: DEAD under EVERY declared policy (design §4's NOTE-2 — dead
+    /// means dead under all of them, spread bound applied per policy).
+    pub dead: bool,
+    /// Family 1: the per-policy top sets the picks were judged against.
+    pub top_sets: Vec<(ReplyPolicy, Vec<Move>)>,
+    /// The read, when the root was admitted and the counter check let it stand.
+    pub read: Option<FamilyReadOutcome>,
+    /// Replications that missed the rule (turn grain) or landed in NO top set
+    /// (decision grain).
+    pub misses: u32,
+    /// Decision grain: replications whose pick landed in SOME but not all top
+    /// sets.
+    pub unresolved: u32,
+    pub verdict: RootVerdict,
+    /// The admission-circularity flag (design §4, review MUST-4).
+    pub lookahead_sole_dissenter: bool,
+    /// Family 4's recorded rider.
+    pub rider: Option<AchievementRider>,
+}
+
+/// A family's verdict over a whole block.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum FamilyVerdict {
+    /// Every admitted root passed within the allowances.
+    Pass,
+    /// More admitted roots failed than the family's allowance permits.
+    Fail { failed_roots: usize, allowance: usize },
+    /// At least one root's declared policies disagreed. Never a silent fail.
+    UnresolvedPendingExact { roots: usize },
+    /// **THE VOID RULE** (design §4): a confirmatory result quoting fewer than
+    /// [`MIN_ADMITTED_ROOTS`] admitted roots confirms NOTHING, whatever those
+    /// roots said. The disposition rides the verdict.
+    VoidAsConfirmation {
+        admitted: usize,
+        drawn: usize,
+        minimum: usize,
+        disposition: &'static str,
+    },
+    /// The EXISTENCE arm: no bar was declared, so the output is the per-root
+    /// gap block and the failure allowance does not apply.
+    GapDemonstrated { roots: usize },
+}
+
+/// The family verdict, as arithmetic over the block's counts (design §4).
+///
+/// Split out from [`run_family_block_with`] so the rules can be pinned without
+/// running a block — the same reason `classify_dead` and `admission` are their
+/// own functions. The ORDER of the arms is the semantics: the existence
+/// exemption comes first (it skips everything), then the VOID rule (a block that
+/// cannot confirm has no verdict to give), then the allowance, then the
+/// unresolved routing.
+pub fn family_verdict(
+    label: FamilyLabel,
+    block: BlockKind,
+    drawn: usize,
+    admitted: usize,
+    failed: usize,
+    unresolved: usize,
+) -> FamilyVerdict {
+    if label == FamilyLabel::ExistenceDemonstration {
+        return FamilyVerdict::GapDemonstrated { roots: admitted };
+    }
+    if block == BlockKind::Confirmatory && admitted < MIN_ADMITTED_ROOTS {
+        return FamilyVerdict::VoidAsConfirmation {
+            admitted,
+            drawn,
+            minimum: MIN_ADMITTED_ROOTS,
+            disposition: VOID_DISPOSITION,
+        };
+    }
+    if failed > FAMILY_FAILURE_ALLOWANCE {
+        return FamilyVerdict::Fail { failed_roots: failed, allowance: FAMILY_FAILURE_ALLOWANCE };
+    }
+    if unresolved > 0 {
+        return FamilyVerdict::UnresolvedPendingExact { roots: unresolved };
+    }
+    FamilyVerdict::Pass
+}
+
+/// ONE family block, run and judged.
+#[derive(Debug, Clone, PartialEq)]
+pub struct FamilyBlockReport {
+    pub id: &'static str,
+    pub label: FamilyLabel,
+    pub class: StrategicClass,
+    pub block: BlockKind,
+    /// The generator's declared name.
+    pub generator: &'static str,
+    /// The master every draw, adjudication and read descended from.
+    pub master: u64,
+    /// What the SUBJECT resolved to — never the seat spec's requested name.
+    pub subject_echo: String,
+    /// The declaration's rule, before per-root re-pointing.
+    pub rule: PassRule,
+    pub replications: u32,
+    pub per_root_f: u32,
+    pub menu: Vec<ReplyPolicy>,
+    pub admission_k: u32,
+    pub delta: i64,
+    pub control: bool,
+    pub roots: Vec<RootRow>,
+    pub drawn: usize,
+    /// Roots that were admitted AND produced a read. A counter-refused root is
+    /// admitted but UNREAD — it is a branch-0 routing rather than a reading, so
+    /// it is counted separately and never inflates a confirmation's denominator.
+    pub admitted: usize,
+    pub counter_refused: usize,
+    /// Ordinals whose exclusion had `lookahead-at-final` as the SOLE DISSENTER
+    /// (design §4, review MUST-4): collected as potential subject-suppression
+    /// evidence and routed to D7, never silently dropped.
+    pub sole_dissenters: Vec<u32>,
+    pub verdict: FamilyVerdict,
+    /// The sentence every adjudicated table prints about what it is.
+    pub robustness_read: &'static str,
+}
+
+/// Run ONE declared block of ONE family (design §4's protocol, as a function).
+///
+/// The runner owns no execution logic: it parses argv, calls this, and renders
+/// the report. See [`run_family_block_with`] for the sizing parameters; this
+/// entry point uses [`BlockOpts::pilot`], the pre-freeze posture.
+pub fn run_family_block(
+    decl: &FamilyDecl,
+    block: BlockKind,
+    master_override: Option<u64>,
+    subject: SeatSpec,
+    rules: &Rules,
+) -> Result<FamilyBlockReport, FamilyRunError> {
+    run_family_block_with(decl, block, master_override, subject, rules, BlockOpts::pilot())
+}
+
+/// [`run_family_block`] with the sizing parameters made explicit.
+///
+/// **The order of operations is design §4's and the order matters**: resolve the
+/// block's draws in ONE pass; adjudicate each root under the whole declared menu
+/// (with the family's turn predicate as the hook, at the turn grain); apply
+/// admission (`classify_dead` at the decision grain, `admission` at the turn
+/// grain), AND-ing the verdict across the menu; read the SUBJECT only at
+/// admitted roots; then judge.
+///
+/// **ONE MASTER runs the whole block** — draws, adjudications and reads. That is
+/// sound because the instruments mix under DIFFERENT salts
+/// (`SALT_DRIVEN_REPLICATION` for adjudication worlds,
+/// [`SALT_DRIVEN_FAMILY_READ`] for read seeds), so no read shares a world with
+/// the adjudication that admitted its root by accident of arithmetic.
+///
+/// **COST**, stated because nothing here bounds it: `roots × menu × candidates ×
+/// K` whole games for admission, plus `roots × R` turns of the subject for the
+/// reads. At the design's own sizing that is tens of minutes per root in
+/// release, which is why the pilot prices it before the freeze fixes K.
+pub fn run_family_block_with(
+    decl: &FamilyDecl,
+    block: BlockKind,
+    master_override: Option<u64>,
+    subject: SeatSpec,
+    rules: &Rules,
+    opts: BlockOpts,
+) -> Result<FamilyBlockReport, FamilyRunError> {
+    let (master, ordinals) = resolve_block(decl, block, master_override)?;
+    let draws = resolve_draws(decl, master, &ordinals, rules)?;
+
+    let mut roots: Vec<RootRow> = Vec::with_capacity(draws.len());
+    for draw in draws {
+        roots.push(run_one_root(decl, master, subject, rules, &opts, draw)?);
+    }
+
+    let drawn = roots.len();
+    let admitted = roots.iter().filter(|r| r.read.is_some()).count();
+    let counter_refused =
+        roots.iter().filter(|r| matches!(r.verdict, RootVerdict::CounterRefused(_))).count();
+    let failed = roots.iter().filter(|r| matches!(r.verdict, RootVerdict::Fail { .. })).count();
+    let unresolved = roots
+        .iter()
+        .filter(|r| matches!(r.verdict, RootVerdict::UnresolvedPendingExact { .. }))
+        .count();
+    let sole_dissenters =
+        roots.iter().filter(|r| r.lookahead_sole_dissenter).map(|r| r.ordinal).collect();
+
+    Ok(FamilyBlockReport {
+        id: decl.id,
+        label: decl.label,
+        class: decl.class,
+        block,
+        generator: decl.generator.name(),
+        master,
+        subject_echo: subject.echo(),
+        rule: decl.rule,
+        replications: decl.replications,
+        per_root_f: decl.per_root_f,
+        menu: decl.menu.to_vec(),
+        admission_k: opts.admission_k,
+        delta: opts.delta,
+        control: opts.control,
+        verdict: family_verdict(decl.label, block, drawn, admitted, failed, unresolved),
+        roots,
+        drawn,
+        admitted,
+        counter_refused,
+        sole_dissenters,
+        robustness_read: crate::game::driven::ROBUSTNESS_READ,
+    })
+}
+
+/// The master and ordinals a block runs — and the three refusals that guard
+/// them.
+fn resolve_block(
+    decl: &FamilyDecl,
+    block: BlockKind,
+    master_override: Option<u64>,
+) -> Result<(u64, Vec<u32>), FamilyRunError> {
+    let (master, range) = match block {
+        BlockKind::Pilot => (
+            master_override.ok_or(FamilyRunError::MasterRequired { id: decl.id })?,
+            decl.pilot.clone(),
+        ),
+        BlockKind::Confirmatory => {
+            if master_override.is_some() {
+                return Err(FamilyRunError::MasterRefused { id: decl.id });
+            }
+            let frozen = decl
+                .confirmatory
+                .as_ref()
+                .ok_or(FamilyRunError::NoFrozenBlock { id: decl.id })?;
+            (frozen.master, frozen.ordinals.clone())
+        }
+    };
+    let ordinals: Vec<u32> = range.collect();
+    if ordinals.is_empty() {
+        return Err(FamilyRunError::EmptyBlock { id: decl.id });
+    }
+    Ok((master, ordinals))
+}
+
+/// One resolved draw.
+struct Draw {
+    ordinal: u32,
+    state: GameState,
+    descriptor: RootDescriptor,
+    step: Option<ContestedStep>,
+}
+
+/// Resolve the whole block's draws in ONE pass (plan review NOTE-8).
+///
+/// A PREDICATE block goes through [`crate::game::driven::generate_roots`], which
+/// walks the generated games once for the whole block rather than once per
+/// ordinal — at the v2 lookahead ecology, where both generating seats search,
+/// that difference is the block's entire cost. A BUILDER block draws its seeds
+/// from `SeedSchedule::diagnostic(master)`, the SAME stream the scan draws its
+/// games from, so a builder block and a scan block at one master are two blocks
+/// of one seeded sequence rather than two unrelated conventions.
+fn resolve_draws(
+    decl: &FamilyDecl,
+    master: u64,
+    ordinals: &[u32],
+    rules: &Rules,
+) -> Result<Vec<Draw>, FamilyRunError> {
+    match decl.generator {
+        FamilyGenerator::Predicate(predicate) => {
+            let resolved = crate::game::driven::generate_roots(predicate, master, ordinals, rules)
+                .map_err(|error| {
+                    // The refusal already names the ordinal it could not supply.
+                    let ordinal = match &error {
+                        RootError::Exhausted { ordinal, .. } => *ordinal,
+                        _ => ordinals[0],
+                    };
+                    FamilyRunError::Root { ordinal, error }
+                })?;
+            Ok(ordinals
+                .iter()
+                .copied()
+                .zip(resolved)
+                .map(|(ordinal, (state, descriptor))| Draw {
+                    ordinal,
+                    state,
+                    descriptor,
+                    step: None,
+                })
+                .collect())
+        }
+        FamilyGenerator::Builder { build, .. } => {
+            let highest = ordinals.iter().copied().max().unwrap_or(0);
+            let mut schedule = SeedSchedule::diagnostic(master);
+            let seeds: Vec<u64> =
+                (0..=highest).map(|_| schedule.next_world().0).collect();
+            ordinals
+                .iter()
+                .copied()
+                .map(|ordinal| {
+                    let built = build(seeds[ordinal as usize], rules)
+                        .map_err(|error| FamilyRunError::Builder { ordinal, error })?;
+                    let descriptor = RootDescriptor::constructed(&built.state);
+                    Ok(Draw { ordinal, state: built.state, descriptor, step: built.step })
+                })
+                .collect()
+        }
+    }
+}
+
+/// The seats an admission adjudication runs — the SAME spec at every seat, which
+/// is the harness's own convention (`driven_runner::seats_or_default`).
+///
+/// Every seat, not just the opponent's, and that is what makes MUST-4's
+/// sole-dissenter reading work: the `lookahead-at-final` arm IS the subject's own
+/// agent, so a subject defect that degrades post-candidate play shows up in that
+/// arm's playouts and in no other.
+fn menu_seats(policy: ReplyPolicy, players: usize) -> Vec<SeatSpec> {
+    vec![SeatSpec::Reply(policy); players]
+}
+
+/// Adjudicate, admit, read and judge ONE drawn root.
+fn run_one_root(
+    decl: &FamilyDecl,
+    master: u64,
+    subject: SeatSpec,
+    rules: &Rules,
+    opts: &BlockOpts,
+    draw: Draw,
+) -> Result<RootRow, FamilyRunError> {
+    let Draw { ordinal, state, descriptor, step } = draw;
+    if decl.rule.names_a_step() {
+        match step {
+            None => return Err(FamilyRunError::StepNotDeclared { ordinal }),
+            Some(s) if !s.well_formed() => {
+                return Err(FamilyRunError::IllFormedStep { ordinal, step: s })
+            }
+            Some(_) => {}
+        }
+    }
+    let rule = decl.rule.with_step(step);
+    let source =
+        RootSource::Resolved { state: state.clone(), descriptor: descriptor.clone() };
+    let players = state.players.len();
+    let world = WorldSeed(master);
+
+    let mut dead_by_policy: Vec<(ReplyPolicy, bool)> = Vec::new();
+    let mut top_sets: Vec<(ReplyPolicy, Vec<Move>)> = Vec::new();
+    let mut admission_read: Option<AdmissionRead> = None;
+    let mut dead = false;
+
+    let admitted = match rule {
+        PassRule::AdjudicatedBest { epsilon } => {
+            for &policy in decl.menu {
+                let adj = adjudicate_root(
+                    &source,
+                    &menu_seats(policy, players),
+                    rules,
+                    world,
+                    opts.admission_k,
+                    opts.driven,
+                )
+                .map_err(|error| FamilyRunError::Adjudication {
+                    ordinal,
+                    policy,
+                    error: Box::new(error),
+                })?;
+                dead_by_policy.push((policy, classify_dead(&adj, opts.dead_spread_bound)));
+                top_sets.push((policy, top_set(&adj, epsilon)));
+            }
+            // DEAD is judged PER POLICY and AND-ed across the menu (plan review
+            // NOTE-2): a root the reply menu disagrees about is not indifferent.
+            dead = !dead_by_policy.is_empty() && dead_by_policy.iter().all(|(_, d)| *d);
+            !dead
+        }
+        PassRule::Turn(predicate) => {
+            let mut adjs: Vec<(ReplyPolicy, Adjudication)> = Vec::new();
+            for &policy in decl.menu {
+                let hook = |root: &GameState, handoff: &GameState| {
+                    predicate.eval(root, handoff, rules)
+                };
+                let adj = adjudicate_root_with(
+                    &source,
+                    &menu_seats(policy, players),
+                    rules,
+                    world,
+                    opts.admission_k,
+                    opts.driven,
+                    Some(&hook),
+                )
+                .map_err(|error| FamilyRunError::Adjudication {
+                    ordinal,
+                    policy,
+                    error: Box::new(error),
+                })?;
+                adjs.push((policy, adj));
+            }
+            let read = admission(&adjs, opts.delta, opts.control);
+            let ok = read.admitted();
+            admission_read = Some(read);
+            ok
+        }
+    };
+
+    let lookahead_sole_dissenter =
+        admission_read.as_ref().is_some_and(AdmissionRead::lookahead_sole_dissenter);
+
+    // Family 4's RIDER is recorded at every root of that family, admitted or
+    // not — it is evidence about the family's own question rather than an input
+    // to the verdict.
+    let rider = (decl.rule == PassRule::Turn(TurnPredicate::AchievementClaimed))
+        .then(|| {
+            let mover = state.current_player;
+            let view = observe(&state, mover).ok()?;
+            let me = view.players.iter().find(|p| p.id == mover)?;
+            Some(achievement_rider(&view, me))
+        })
+        .flatten();
+
+    let mut row = RootRow {
+        ordinal,
+        descriptor,
+        step,
+        rule,
+        admission: admission_read,
+        dead_by_policy,
+        dead,
+        top_sets,
+        read: None,
+        misses: 0,
+        unresolved: 0,
+        verdict: RootVerdict::Excluded(if dead {
+            ExclusionReason::Dead
+        } else {
+            ExclusionReason::NotDemonstrated
+        }),
+        lookahead_sole_dissenter,
+        rider,
+    };
+    if !admitted {
+        return Ok(row);
+    }
+
+    let outcome =
+        match family_read(&state, subject, &rule, decl.replications, master, rules) {
+            Ok(outcome) => outcome,
+            Err(err @ FamilyReadError::CounterRefusal { .. }) => {
+                row.verdict = RootVerdict::CounterRefused(err.to_string());
+                return Ok(row);
+            }
+            Err(error) => {
+                return Err(FamilyRunError::Read { ordinal, error: Box::new(error) })
+            }
+        };
+
+    match rule.grain() {
+        ReadGrain::Turn => {
+            row.misses = outcome.misses().unwrap_or(0);
+        }
+        ReadGrain::Decision => {
+            // THE THREE-WAY JUDGMENT (design §1): per replication, against every
+            // declared policy's top set.
+            for replication in &outcome.replications {
+                let Some(pick) = replication.pick.as_ref() else {
+                    continue;
+                };
+                match judge_pick(pick, &row.top_sets) {
+                    PickJudgment::InEverySet => {}
+                    PickJudgment::InSomeSet => row.unresolved += 1,
+                    PickJudgment::InNoSet => row.misses += 1,
+                }
+            }
+        }
+    }
+
+    row.verdict = if decl.label == FamilyLabel::ExistenceDemonstration {
+        // The EXISTENCE arm declares no bar (design §1 family 3): the output is
+        // the per-root gap, and the failure allowance never applies.
+        RootVerdict::GapRecorded { misses: row.misses }
+    } else if row.misses > decl.per_root_f {
+        RootVerdict::Fail { misses: row.misses, allowance: decl.per_root_f }
+    } else if row.unresolved > 0 {
+        RootVerdict::UnresolvedPendingExact { replications: row.unresolved }
+    } else {
+        RootVerdict::Pass
+    };
+    row.read = Some(outcome);
+    Ok(row)
 }
 
 #[cfg(test)]
@@ -3792,7 +5015,12 @@ mod tests {
         }
         state.player_mut(mover).money = 10;
         state.turn_phase = TurnPhase::AdditionalActionSecond;
+        // The trigger's three fields move together — `check_end_game_triggers`
+        // always writes all of them, and `check_invariants` refuses a state
+        // where they do not agree.
         state.end_game_triggered = true;
+        state.trigger_reason = Some(crate::types::EndGameTrigger::ChurchTrackFull);
+        state.trigger_player = Some(mover);
         state.final_round = true;
         state.pending_choices.clear();
         crate::game::invariants::check_invariants(&state, rules)
@@ -3801,15 +5029,15 @@ mod tests {
     }
 
     /// A declaration over [`smoke_root`], at smoke scale.
-    fn smoke_decl(rule: PassRule, label: FamilyLabel) -> FamilyDecl {
+    fn smoke_decl(label: FamilyLabel, per_root_f: u32) -> FamilyDecl {
         FamilyDecl {
             id: "smoke",
             label,
             class: StrategicClass::EndTimingProximity,
             generator: FamilyGenerator::Builder { build: smoke_root, name: "smoke_root" },
-            rule,
+            rule: PassRule::Turn(TurnPredicate::AchievementClaimed),
             replications: 2,
-            per_root_f: 0,
+            per_root_f,
             menu: &[ReplyPolicy::FamilyWeighted],
             pilot: 0..2,
             confirmatory: Some(FrozenBlock { master: MASTER, ordinals: 0..2 }),
@@ -3817,69 +5045,96 @@ mod tests {
         }
     }
 
-    /// **THE BLOCK SMOKE** — the run's arms end to end at smoke scale: an
-    /// ADMITTED root read to a verdict, an EXCLUDED one, the VOID rule that
-    /// follows from excluding them all, and the EXISTENCE arm's exemption.
+    /// The smoke's own sizing: one policy, K = 1, and a delta that admits.
+    fn smoke_opts(delta: i64) -> BlockOpts {
+        BlockOpts { admission_k: 1, delta, ..BlockOpts::pilot() }
+    }
+
+    /// **THE BLOCK SMOKE** — every arm of the run, end to end at smoke scale:
+    /// an ADMITTED root read to PASS and to FAIL, an EXCLUDED one, the VOID
+    /// rule, and the EXISTENCE arm's exemption.
     ///
     /// One lookahead subject, two roots, R = 2, K = 1, a one-policy menu and
-    /// final-round playouts. Budget ~3s debug; the searching happens only at
-    /// the read's own turns, which are a couple of decisions each.
+    /// final-round playouts. Budget ~3s debug (design §6's wall discipline for
+    /// the one searching cell); **MEASURED 0.04s**, because the roots are
+    /// two-candidate additional-action decisions and a final-round playout is at
+    /// most two turns. The budget is the ceiling this cell must not grow past.
+    ///
+    /// **A FIXTURE FACT worth recording rather than tuning away**: at these
+    /// constructed final-round roots the shipped subject values
+    /// `EndAdditionalPhase` at 20 against `FulfillAchievement{Money10}` at 4 and
+    /// hands off WITHOUT claiming, so the rule misses at every replication. That
+    /// is what gives the smoke its FAIL arm for free, and it is a fact about two
+    /// hand-built positions at R = 2 — NOT a family-4 reading, which is T7's
+    /// business at drawn roots under the full menu.
     #[test]
-    fn the_block_run_covers_admitted_excluded_void_and_the_existence_arm() {
+    fn the_block_run_covers_pass_fail_excluded_void_and_the_existence_arm() {
         let rules = rules();
         let subject = SeatSpec::Contestant(Contestant::LOOKAHEAD_V1_DEFAULT);
-        let decl = smoke_decl(PassRule::Turn(TurnPredicate::AchievementClaimed), FamilyLabel::Confirmatory);
 
-        // ADMITTED: a permissive delta lets the demonstration through, and the
-        // subject's own turn is then read against the rule.
-        let mut opts = BlockOpts::pilot();
-        opts.admission_k = 1;
-        opts.delta = -1_000;
-        let report = run_family_block_with(
-            &decl,
-            BlockKind::Confirmatory,
-            None,
-            subject,
-            &rules,
-            opts.clone(),
-        )
-        .expect("the smoke block runs");
+        // (1) ADMITTED and PASSING — the allowance absorbs the misses. Run as a
+        // CONFIRMATORY block, so the VOID rule is exercised with real admitted
+        // roots behind it rather than only with zero.
+        let passing = smoke_decl(FamilyLabel::Confirmatory, 2);
+        let report =
+            run_family_block_with(&passing, BlockKind::Confirmatory, None, subject, &rules,
+                smoke_opts(-1_000))
+                .expect("the smoke block runs");
         assert_eq!(report.drawn, 2);
         assert_eq!(report.admitted, 2, "a permissive delta admits both roots: {:?}", report.roots);
-        assert!(
-            report.roots.iter().all(|r| r.read.is_some()),
-            "an admitted root is READ: {:?}",
-            report.roots,
-        );
+        assert!(report.roots.iter().all(|r| r.read.is_some()), "an admitted root is READ");
         assert!(
             report.roots.iter().all(|r| r.verdict == RootVerdict::Pass),
-            "the shipped subject claims a claimable achievement: {:?}",
-            report.roots,
+            "misses within the allowance are a PASS: {:?}",
+            report.roots.iter().map(|r| &r.verdict).collect::<Vec<_>>(),
+        );
+        assert!(
+            report.roots.iter().all(|r| r.rider.is_some()),
+            "an AchievementClaimed family records its rider at every root",
         );
         // Two admitted of two drawn is below the VOID rule's four, so the
-        // smoke's own verdict IS void — which is the honest reading of a
-        // two-root block and is asserted rather than papered over.
+        // block's own verdict IS void — the honest reading of a two-root block,
+        // asserted rather than papered over.
         assert!(
-            matches!(report.verdict, FamilyVerdict::VoidAsConfirmation { .. }),
+            matches!(report.verdict, FamilyVerdict::VoidAsConfirmation { admitted: 2, .. }),
             "a two-root confirmatory block cannot confirm: {:?}",
             report.verdict,
         );
         assert_eq!(report.subject_echo, Contestant::LOOKAHEAD_V1_DEFAULT.echo());
         assert_eq!(report.robustness_read, crate::game::driven::ROBUSTNESS_READ);
+        assert_eq!(report.generator, "smoke_root");
+        assert_eq!(report.counter_refused, 0);
 
-        // EXCLUDED: an unreachable delta demonstrates nothing, so no root is
+        // (2) ADMITTED and FAILING — the same reads against an allowance of
+        // zero, run as a PILOT so the family verdict is the allowance's and not
+        // the VOID rule's.
+        let failing = smoke_decl(FamilyLabel::Confirmatory, 0);
+        let failed = run_family_block_with(&failing, BlockKind::Pilot, Some(MASTER), subject,
+            &rules, smoke_opts(-1_000))
+            .expect("the smoke block runs");
+        assert!(
+            failed.roots.iter().all(|r| matches!(r.verdict, RootVerdict::Fail { misses: 2, .. })),
+            "{:?}",
+            failed.roots.iter().map(|r| &r.verdict).collect::<Vec<_>>(),
+        );
+        assert!(
+            matches!(failed.verdict, FamilyVerdict::Fail { failed_roots: 2, .. }),
+            "{:?}",
+            failed.verdict,
+        );
+
+        // (3) EXCLUDED: an unreachable delta demonstrates nothing, so no root is
         // read at all and the block is void with zero admitted.
-        let mut strict = BlockOpts::pilot();
-        strict.admission_k = 1;
-        strict.delta = 10_000;
-        let excluded =
-            run_family_block_with(&decl, BlockKind::Confirmatory, None, subject, &rules, strict)
-                .expect("the smoke block runs");
+        let excluded = run_family_block_with(&passing, BlockKind::Confirmatory, None, subject,
+            &rules, smoke_opts(10_000))
+            .expect("the smoke block runs");
         assert_eq!(excluded.admitted, 0);
         assert!(
-            excluded.roots.iter().all(|r| matches!(r.verdict, RootVerdict::Excluded(_))),
+            excluded.roots.iter().all(|r| {
+                r.verdict == RootVerdict::Excluded(ExclusionReason::NotDemonstrated)
+            }),
             "{:?}",
-            excluded.roots,
+            excluded.roots.iter().map(|r| &r.verdict).collect::<Vec<_>>(),
         );
         assert!(excluded.roots.iter().all(|r| r.read.is_none()), "an excluded root is not read");
         assert!(matches!(
@@ -3887,17 +5142,19 @@ mod tests {
             FamilyVerdict::VoidAsConfirmation { admitted: 0, .. }
         ));
 
-        // THE EXISTENCE ARM: the same block under family 3's label skips the
-        // allowance and the VOID rule and emits the gap block instead.
-        let gap_decl = smoke_decl(
-            PassRule::Turn(TurnPredicate::NotEndFired),
-            FamilyLabel::ExistenceDemonstration,
-        );
-        let gap =
-            run_family_block_with(&gap_decl, BlockKind::Pilot, Some(MASTER), subject, &rules, opts)
-                .expect("the existence block runs");
+        // (4) THE EXISTENCE ARM: the same failing block under family 3's label
+        // skips the allowance entirely and emits the gap block instead.
+        let gap_decl = smoke_decl(FamilyLabel::ExistenceDemonstration, 0);
+        let gap = run_family_block_with(&gap_decl, BlockKind::Pilot, Some(MASTER), subject, &rules,
+            smoke_opts(-1_000))
+            .expect("the existence block runs");
         assert!(
-            matches!(gap.verdict, FamilyVerdict::GapDemonstrated { .. }),
+            gap.roots.iter().all(|r| matches!(r.verdict, RootVerdict::GapRecorded { misses: 2 })),
+            "the existence arm records the gap instead of failing: {:?}",
+            gap.roots.iter().map(|r| &r.verdict).collect::<Vec<_>>(),
+        );
+        assert!(
+            matches!(gap.verdict, FamilyVerdict::GapDemonstrated { roots: 2 }),
             "the existence arm declares no bar: {:?}",
             gap.verdict,
         );
