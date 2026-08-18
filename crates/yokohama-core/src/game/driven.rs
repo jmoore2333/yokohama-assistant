@@ -230,7 +230,11 @@ pub enum ReplyPolicy {
     /// [`GreedyAtFinal`](Self::GreedyAtFinal) otherwise. See
     /// [`RaceRusherAgent`] for the rule in full — it is a HARNESS INSTRUMENT and
     /// has no [`Contestant`], which is why [`contestant`](Self::contestant) is
-    /// partial.
+    /// partial. Its FALLBACK is provisional in exactly the sense the two
+    /// `*AtFinal` arms are, and for the same reason: it IS
+    /// [`GreedyAtFinal`](Self::GreedyAtFinal)'s binding
+    /// ([`RACE_RUSHER_FALLBACK`]), so D1's identity freeze moves the two
+    /// together or the pin fails.
     RaceRusher,
 }
 
@@ -316,7 +320,7 @@ impl SeatSpec {
     /// What actually plays, as provenance/report text.
     ///
     /// [`Contestant::echo`] for every seat that names one, and
-    /// [`RACE_RUSHER_ECHO`]'s composed sentence for the one that does not — so
+    /// [`race_rusher_echo`]'s composed sentence for the one that does not — so
     /// a descriptor's `echo` field is always a resolved identity and never a
     /// menu name (the rule [`requested_label`](Self::requested_label) states).
     pub fn echo(self) -> String {
@@ -347,7 +351,11 @@ impl SeatSpec {
     /// defect. `None` is the closest true statement at this granularity — a seat
     /// that carries no explanation account — and it is the same posture a rung
     /// gets for the same kind of reason (see [`SeatCounters::NONE`]).
-    pub fn build(self, rules: &Rules, agent_seed: u64) -> (Box<dyn ArenaAgent>, Option<ExplainHandle>) {
+    pub fn build(
+        self,
+        rules: &Rules,
+        agent_seed: u64,
+    ) -> (Box<dyn ArenaAgent>, Option<ExplainHandle>) {
         match self.contestant() {
             // ARM 1 — an entrant: the arena's own constructor, untouched.
             Ok(contestant) => contestant.build(rules, agent_seed),
@@ -515,9 +523,11 @@ fn is_probed_family(family: &MoveFamily) -> bool {
 /// itself — and checking it first is what keeps the common case (a claim in the
 /// additional-action list) from paying for a clone.
 ///
-/// A move that somehow reached BOTH tracks would classify CHURCH, on the
-/// declared priority. Nothing organic does that; the tie-break is stated so the
-/// function is total rather than lucky.
+/// A move that reaches BOTH tracks classifies CHURCH, on the declared priority.
+/// It is not a hypothetical: a track action taken while a track-space choice is
+/// already queued reaches steps on both, and
+/// `the_race_rule_takes_claim_then_church_then_customs` asserts exactly that
+/// shape so the tie-break is exercised rather than merely written down.
 fn race_class(world: &GameState, mv: &Move, rules: &Rules) -> Option<RaceClass> {
     if matches!(mv, Move::FulfillAchievement { .. }) {
         return Some(RaceClass::Claim);
@@ -599,10 +609,13 @@ pub(crate) struct RaceRusherAgent {
     /// the ordinal means "this seat's n-th decision" rather than "this seat's
     /// n-th probe".
     decisions: u64,
-    /// Candidates handed to [`race_class`] across this seat's life — the
-    /// probe-scope instrument. Test-only: it exists to make "a movement decision
-    /// probes NOTHING" an assertion rather than an argument, and a harness
-    /// instrument does not need it in release.
+    /// Candidates COLLECTED for classification across this seat's life — the
+    /// probe-scope instrument. It counts what the scope rule admitted rather
+    /// than what [`race_class`] was actually called on, because the two differ
+    /// only by [`race_pick`]'s claim short-circuit and it is the SCOPE this
+    /// counter exists to pin. Test-only: it makes "a movement decision probes
+    /// NOTHING" an assertion rather than an argument, and a harness instrument
+    /// does not need it in release.
     #[cfg(test)]
     probed_candidates: u64,
     /// Decisions this seat resolved by taking a race candidate rather than by
@@ -9057,6 +9070,17 @@ mod tests {
         assert_eq!(race_class(&world, &claim, &rules), Some(RaceClass::Claim));
         assert_eq!(race_class(&world, &church, &rules), Some(RaceClass::Church));
         assert_eq!(race_class(&world, &customs, &rules), Some(RaceClass::Customs));
+
+        // The TIE-BREAK is exercised here rather than merely stated: because the
+        // fixture already carries a queued customs choice, the church candidate
+        // reaches steps on BOTH tracks, and the declared priority is what makes
+        // its class Church.
+        let both = mover_reachable_steps(&world, std::slice::from_ref(&church), &rules);
+        assert!(
+            both.iter().any(|s| matches!(s, RaceStep::Church(_)))
+                && both.iter().any(|s| matches!(s, RaceStep::Customs(_))),
+            "the tie-break is untested: the church candidate reaches only {both:?}",
+        );
         assert_eq!(
             RaceClass::Claim.cmp(&RaceClass::Church),
             std::cmp::Ordering::Less,
