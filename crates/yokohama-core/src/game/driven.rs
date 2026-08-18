@@ -549,6 +549,13 @@ pub struct SeatDescriptor {
     /// That controller's implementation version.
     pub version: u32,
     /// Its knobs in their declared integer units, identity keys included.
+    ///
+    /// Defaulted on read, mirroring `SeatProvenance::params` (record.rs:133) for
+    /// its reason: a KNOBLESS controller's empty map is the commonest value this
+    /// field takes, and a sidecar written without the key — by a writer that
+    /// skipped it, or by an older build — must read back as "no knobs" rather
+    /// than fail at parse.
+    #[serde(default)]
     pub params: BTreeMap<String, i64>,
     /// What this seat could SEE, witnessed by the driver's bench.
     pub observation: String,
@@ -1729,12 +1736,42 @@ impl RegistryEntry {
     /// fire on a matching file and both fire loudly on the wrong one — an entry
     /// pointed at a re-saved or replaced game is exactly the silent failure a
     /// hand-transcribed literal invites.
-    pub fn load(&self) -> Result<RootSource, RegistryError> {
-        let path = self.resolved_path();
+    ///
+    /// `rules` is here for the STALENESS verdict
+    /// ([`RegistryError::Stale`]) — the one check that is about the running
+    /// engine rather than about the entry.
+    pub fn load(&self, rules: &Rules) -> Result<RootSource, RegistryError> {
+        self.load_from(&workspace_root(), rules)
+    }
+
+    /// [`load`](Self::load) against an EXPLICIT anchor.
+    ///
+    /// **The injection point that makes the loader's own failure set reachable**
+    /// (review probe-8). Every shipped entry points at a gitignored session save,
+    /// so the only arm a corpus-free cell can otherwise reach is `Missing` — and
+    /// a check no cell exercises is a check that can be DELETED with the suite
+    /// still green, which is exactly what probe 8 demonstrated about the
+    /// recorded-move arm. A test supplies a temp-dir anchor and owns the files
+    /// under it; nothing it writes goes near the workspace.
+    ///
+    /// `pub(crate)` deliberately: the anchor is a test affordance and never a
+    /// runner knob. A runner resolving registry paths against anything but
+    /// [`workspace_root`] would name a different file for the same entry name
+    /// depending on where it was launched, which is the CWD hazard that function
+    /// exists to close.
+    pub(crate) fn load_from(
+        &self,
+        root: &Path,
+        rules: &Rules,
+    ) -> Result<RootSource, RegistryError> {
+        let path = root.join(self.path);
         // `read_to_string` would report the absence too, but as one io error
         // among many — and THE absence is the expected outcome here, so it gets
-        // its own arm rather than a message a caller has to match on.
-        if !path.is_file() {
+        // its own arm rather than a message a caller has to match on. The test
+        // is `exists`, not `is_file`: something that IS at the path and cannot be
+        // read (a directory, a permission-denied file) is a real failure, and
+        // reporting it as the expected miss would let a runner walk past it.
+        if !path.exists() {
             return Err(RegistryError::Missing { name: self.name, path });
         }
         let text = std::fs::read_to_string(&path).map_err(|e| RegistryError::Read {
@@ -1747,6 +1784,33 @@ impl RegistryEntry {
             path,
             detail: e.to_string(),
         })?;
+
+        // STALENESS FIRST, before anything reads the log. An event index or a
+        // recorded move checked against a record produced under other semantics
+        // compares two different games, so a transcription refusal there would
+        // blame the ENTRY for the engine having moved — and a transcription
+        // refusal that does NOT fire would be worse, since the entry would go on
+        // to hand out a root whose comparability nothing checked.
+        //
+        // The check is NEUTRAL about absent provenance, matching `state_at`
+        // (record.rs: neither lenient nor strict — it prints no warning and
+        // refuses on neither key): it fires only where the record CARRIES a rev
+        // or a hash that DISAGREES. A record that says nothing — `semantics_rev`
+        // `None` (pre-Phase-2.9), or an empty `rules_hash` — passes through here
+        // and meets whatever verdict the caller's own replay renders, which is
+        // `replay_strict`'s business and not the registry's.
+        let running_hash = rules.content_hash();
+        let rev_disagrees = matches!(record.semantics_rev, Some(rev) if rev != SEMANTICS_REV);
+        let hash_disagrees = !record.rules_hash.is_empty() && record.rules_hash != running_hash;
+        if rev_disagrees || hash_disagrees {
+            return Err(RegistryError::Stale {
+                name: self.name,
+                record_rev: record.semantics_rev,
+                running_rev: SEMANTICS_REV,
+                record_hash: record.rules_hash,
+                running_hash,
+            });
+        }
 
         let events = record.events.len();
         if self.event_index >= events {
@@ -1782,6 +1846,22 @@ pub enum RegistryError {
     Read { name: &'static str, path: PathBuf, detail: String },
     /// The file is there and is not a `GameRecord`.
     Parse { name: &'static str, path: PathBuf, detail: String },
+    /// The record was produced under semantics or rules DATA this engine no
+    /// longer runs, so the root it names is not a root this engine can be asked
+    /// about.
+    ///
+    /// The comparability key, not a corruption report: the file may be perfectly
+    /// well formed. `record_rev` is `None` on a record that carries no
+    /// `semantics_rev` at all — which never fires this arm (see
+    /// [`RegistryEntry::load_from`]'s neutrality rule), and appears here only
+    /// when the HASH is what disagreed.
+    Stale {
+        name: &'static str,
+        record_rev: Option<u32>,
+        running_rev: u32,
+        record_hash: String,
+        running_hash: String,
+    },
     /// The record is shorter than the entry's event index.
     EventOutOfRange { name: &'static str, event_index: usize, events: usize },
     /// The record carries something else at that index — the entry and the file
@@ -1804,6 +1884,13 @@ impl std::fmt::Display for RegistryError {
             Self::Parse { name, path, detail } => {
                 write!(f, "{name}: {} is not a GameRecord: {detail}", path.display())
             }
+            Self::Stale { name, record_rev, running_rev, record_hash, running_hash } => write!(
+                f,
+                "{name}: the record was produced at semantics rev {} / rules {record_hash} and \
+                 this engine runs rev {running_rev} / rules {running_hash} — a root from another \
+                 rev is not this root",
+                record_rev.map_or_else(|| "unstamped".to_string(), |rev| rev.to_string()),
+            ),
             Self::EventOutOfRange { name, event_index, events } => write!(
                 f,
                 "{name}: event {event_index} is past the log ({events} events) — the entry and \
@@ -2519,6 +2606,21 @@ mod tests {
             .expect("the run that MAKES the fixture must complete");
         let terminal = played.final_state.clone();
         assert!(is_game_over(&terminal), "anti-vacuity: the root under test is not terminal");
+
+        // The root PREDICATE's `!is_game_over` conjunct, pinned at the one place
+        // a terminal state is already in hand (review N-4): the generated arm
+        // only ever sees positions that satisfy the whole predicate, so without
+        // this the conjunct is asserted nowhere and dropping it would be silent.
+        // The first line is the anti-vacuity — a state that never triggered the
+        // end game would be refused by the OTHER conjuncts and say nothing.
+        assert!(
+            terminal.end_game_triggered && terminal.final_round,
+            "anti-vacuity: this terminal state never reached the final round",
+        );
+        assert!(
+            !RootPredicate::FinalRoundAlreadyTriggered.holds(&terminal),
+            "a state that is OVER satisfied the root predicate — nobody decides there",
+        );
 
         let seats = [
             SeatSpec::Contestant(Contestant::GREEDY_V1_DEFAULT),
@@ -3422,6 +3524,25 @@ mod tests {
             assert!(json.contains(crate::game::record::OBSERVATION_VIEW), "{kind}: no label");
         }
 
+        // A KNOBLESS seat's descriptor reads back without a `params` key at all
+        // (review N-7) — `SeatProvenance::params`' own rule, carried here. The
+        // empty map is the commonest value this field takes, so a sidecar
+        // written without it must default rather than fail at parse.
+        let params_less = r#"{
+            "seat": 0,
+            "requested": "reply:family-weighted",
+            "echo": "family-weighted",
+            "controller": "family-weighted",
+            "version": 1,
+            "observation": "view",
+            "agent_seed": 7
+        }"#;
+        let knobless: SeatDescriptor =
+            serde_json::from_str(params_less).expect("a params-less seat descriptor parses");
+        assert!(knobless.params.is_empty(), "the absent knob map did not default to empty");
+        assert_eq!(knobless.seat, 0);
+        assert_eq!(knobless.agent_seed, 7);
+
         // The ecology is v1's, spelled once.
         assert_eq!(ecology.id, GENERATED_ECOLOGY_V1);
         assert_eq!(ecology.players, 2);
@@ -3490,6 +3611,14 @@ mod tests {
     /// must move it, and the predicate must actually HOLD at what comes back
     /// (a scan returning position 0 of game 0 would be perfectly deterministic
     /// and perfectly useless).
+    ///
+    /// **Plus the ANCHOR** (review probe-3): those three halves are all
+    /// RELATIVE, so an ordinal counter that started at the wrong hit satisfies
+    /// every one of them — it reproduces, it moves with the ordinal, it moves
+    /// with the master, and every position it returns satisfies the predicate.
+    /// What pins the ordinal ABSOLUTELY is an independent construction of where
+    /// ordinal 0 must be: the first predicate-satisfying position of the first
+    /// game of the schedule, rebuilt here without `generate_root`.
     #[test]
     fn the_generated_arm_finds_the_same_final_round_root_twice() {
         let rules = Rules::standard();
@@ -3511,14 +3640,54 @@ mod tests {
         assert!(check_invariants(&first, &rules).is_ok(), "the scan produced a corrupt root");
 
         match &descriptor.origin {
-            RootOrigin::Generated { predicate: p, master, ordinal, ecology, .. } => {
+            RootOrigin::Generated { predicate: p, master, ordinal, ecology, game_index } => {
                 assert_eq!(*p, predicate);
                 assert_eq!(*master, GEN_MASTER);
                 assert_eq!(*ordinal, 0);
                 assert_eq!(ecology, &GeneratingEcology::v1(), "the ecology is not v1's");
+                assert_eq!(*game_index, 0, "ordinal 0 came from a later game than the first");
             }
             other => panic!("expected a Generated origin, got {other:?}"),
         }
+
+        // THE ANCHOR. The first game of `GEN_MASTER`'s schedule, rebuilt from
+        // the ecology's own parts rather than through `generate_root`, folded
+        // one event at a time to its FIRST predicate-satisfying position: that
+        // position IS ordinal 0, by definition of the ordinal. An off-by-one
+        // counter — the scan serving hit n+1 for ordinal n — passes every other
+        // assertion in this cell and fails here.
+        let mut schedule = SeedSchedule::diagnostic(GEN_MASTER);
+        let first_world = schedule.next_world();
+        let mut make = |seat: PlayerId, _players: u8| -> Box<dyn ArenaAgent> {
+            GENERATED_SEAT.build(&rules, agent_stream_seed(first_world, seat, Slot(seat.0))).0
+        };
+        let first_game = run_arena_game(first_world, GENERATED_PLAYERS, &rules, &mut make, true)
+            .expect("the ecology's first game must complete");
+        let mut walk =
+            state_at(&first_game.record, 0, &rules).expect("position 0 of any record replays");
+        let mut anchor = None;
+        for position in 0..=first_game.record.events.len() {
+            if predicate.holds(&walk) {
+                anchor = Some((position, state_digest(&walk)));
+                break;
+            }
+            if let Some(event) = first_game.record.events.get(position) {
+                walk = replay_from(&walk, std::slice::from_ref(event), &rules)
+                    .expect("the generated game replays event by event");
+            }
+        }
+        let (anchor_position, anchor_digest) =
+            anchor.expect("anti-vacuity: the first generated game holds no final-round position");
+        assert_eq!(
+            descriptor.root_digest, anchor_digest,
+            "ordinal 0 is not the FIRST predicate-satisfying position of the FIRST game — the \
+             scan's counting starts somewhere else",
+        );
+        assert_eq!(
+            descriptor.event_index,
+            Some(anchor_position),
+            "ordinal 0's recorded position is not the anchor's",
+        );
 
         // The ordinal is READ.
         let (next, _) = RootSource::Generated { predicate, master: GEN_MASTER, ordinal: 1 }
@@ -3639,11 +3808,12 @@ mod tests {
     /// corpus-coupled as one that depended on their presence.
     #[test]
     fn an_absent_registry_file_is_a_typed_miss_naming_the_path() {
+        let rules = Rules::standard();
         let mut entry = registry().into_iter().next().expect("the registry is not empty");
         entry.path = "docs/temp/owner-games/__no-such-record__.json";
         assert!(!entry.resolved_path().exists(), "the fixture path must not exist");
 
-        let err = entry.load().expect_err("an absent record must be a miss, not a root");
+        let err = entry.load(&rules).expect_err("an absent record must be a miss, not a root");
         match err {
             RegistryError::Missing { name, ref path } => {
                 assert_eq!(name, entry.name);
@@ -3654,5 +3824,186 @@ mod tests {
         let rendered = err.to_string();
         assert!(rendered.contains("__no-such-record__.json"), "the miss hides its path: {rendered}");
         assert!(rendered.contains(entry.name), "the miss hides which entry: {rendered}");
+    }
+
+    /// EVERY OTHER ARM of the loader, on files this cell writes itself.
+    ///
+    /// **Why it exists** (review probe-8): every shipped entry points at a
+    /// gitignored save, so `Missing` was the only arm any cell could reach —
+    /// and a check nothing exercises is a check that can be DELETED with the
+    /// suite still green. Probe 8 removed the recorded-move comparison and
+    /// nothing went red. So the loader takes its anchor as an argument
+    /// ([`RegistryEntry::load_from`]) and this cell supplies a temp-dir one,
+    /// which keeps the suite CORPUS-FREE in the strong sense: it depends on no
+    /// file it did not create, and it removes what it created.
+    ///
+    /// Six readings off one fixture record: the matching entry LOADS, a wrong
+    /// recorded move is `MoveMismatch`, an index past the log is
+    /// `EventOutOfRange`, a file that is not a record is `Parse`, a DIRECTORY at
+    /// the path is `Read` (there, and unreadable — never the expected miss), and
+    /// a record stamped at another `semantics_rev` is `Stale` BEFORE either
+    /// transcription check gets to read the log.
+    #[test]
+    fn the_registry_loader_names_every_way_a_file_can_be_wrong() {
+        /// Removes the whole temp anchor when the cell leaves, pass or panic.
+        struct TempRoot(PathBuf);
+        impl Drop for TempRoot {
+            fn drop(&mut self) {
+                let _ = std::fs::remove_dir_all(&self.0);
+            }
+        }
+
+        let rules = Rules::standard();
+        let record = rung_game(&rules, world(47)).record;
+        assert!(record.events.len() > 3, "anti-vacuity: the fixture game recorded nothing");
+        assert_eq!(record.semantics_rev, Some(SEMANTICS_REV), "the fixture is not current");
+
+        // A name nothing else can collide with, under the OS temp dir and never
+        // under the workspace.
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |d| d.as_nanos());
+        let anchor = TempRoot(
+            std::env::temp_dir()
+                .join(format!("yokohama-driven-registry-{}-{nanos}", std::process::id())),
+        );
+        std::fs::create_dir_all(&anchor.0).expect("the temp anchor is creatable");
+
+        const GOOD: &str = "record.json";
+        const NOT_A_RECORD: &str = "not-a-record.json";
+        const STALE: &str = "stale.json";
+        const A_DIRECTORY: &str = "a-directory.json";
+
+        let write = |name: &str, text: &str| {
+            std::fs::write(anchor.0.join(name), text).expect("the fixture file is writable");
+        };
+        write(GOOD, &serde_json::to_string(&record).expect("the fixture record serializes"));
+        write(NOT_A_RECORD, r#"{"this":"is not a GameRecord"}"#);
+        let mut stale = record.clone();
+        stale.semantics_rev = Some(SEMANTICS_REV + 7);
+        write(STALE, &serde_json::to_string(&stale).expect("the stale record serializes"));
+        std::fs::create_dir_all(anchor.0.join(A_DIRECTORY)).expect("the directory is creatable");
+
+        let k = record
+            .events
+            .iter()
+            .position(|e| matches!(e, RecordedEvent::Move(_)))
+            .expect("the fixture game recorded a move");
+        let recorded = match &record.events[k] {
+            RecordedEvent::Move(mv) => mv.clone(),
+            other => panic!("event {k} is {other:?}, not a move"),
+        };
+        let entry = |path: &'static str, event_index: usize, recorded_move: Option<Move>| {
+            RegistryEntry {
+                name: "temp-fixture",
+                path,
+                event_index,
+                bot_seat: SESSION_BOT_SEAT,
+                decision_seed: DECISION_SEED,
+                recorded_move,
+                note: "a cell-owned fixture",
+            }
+        };
+
+        // (0) The MATCHING entry loads — the anti-vacuity every refusal below
+        // rests on, since a loader that refused everything would satisfy them
+        // all.
+        match entry(GOOD, k, Some(recorded.clone())).load_from(&anchor.0, &rules) {
+            Ok(RootSource::RecordPrefix { record: loaded, event_index }) => {
+                assert_eq!(event_index, k, "the source names another position");
+                assert_eq!(loaded, record, "the loader returned another document");
+            }
+            other => panic!("a matching entry must load a prefix source, got {other:?}"),
+        }
+
+        // (1) A recorded move the file does not carry there.
+        let wrong = Move::BuildShophouse { slot: 0 };
+        assert_ne!(wrong, recorded, "anti-vacuity: the mismatch fixture IS the recorded move");
+        let err = entry(GOOD, k, Some(wrong.clone()))
+            .load_from(&anchor.0, &rules)
+            .expect_err("a recorded move the record does not carry is a refusal");
+        match err {
+            RegistryError::MoveMismatch { name, event_index, ref expected, ref found } => {
+                assert_eq!(name, "temp-fixture");
+                assert_eq!(event_index, k);
+                assert_eq!(**expected, wrong, "the refusal misnames what was asked for");
+                assert!(
+                    found.contains(&format!("{recorded:?}")),
+                    "the refusal does not show what the file holds: {found}",
+                );
+            }
+            ref other => panic!("expected MoveMismatch, got {other:?}"),
+        }
+        let rendered = err.to_string();
+        assert!(rendered.contains("temp-fixture"), "the refusal hides the entry: {rendered}");
+
+        // (2) An index past the log.
+        let past = record.events.len() + 5;
+        let err = entry(GOOD, past, None)
+            .load_from(&anchor.0, &rules)
+            .expect_err("an index past the log is a refusal");
+        match err {
+            RegistryError::EventOutOfRange { event_index, events, .. } => {
+                assert_eq!((event_index, events), (past, record.events.len()));
+            }
+            ref other => panic!("expected EventOutOfRange, got {other:?}"),
+        }
+
+        // (3) A file that is not a record.
+        let err = entry(NOT_A_RECORD, 0, None)
+            .load_from(&anchor.0, &rules)
+            .expect_err("a non-record file is a refusal");
+        match err {
+            RegistryError::Parse { ref path, ref detail, .. } => {
+                assert_eq!(path, &anchor.0.join(NOT_A_RECORD));
+                assert!(!detail.is_empty(), "the parse refusal says nothing about why");
+            }
+            ref other => panic!("expected Parse, got {other:?}"),
+        }
+
+        // (4) A DIRECTORY at the path: THERE, and unreadable. The distinction
+        // this arm defends is against `Missing` — a runner told "no record at
+        // this path" walks past something that is actually broken.
+        let err = entry(A_DIRECTORY, 0, None)
+            .load_from(&anchor.0, &rules)
+            .expect_err("a directory at the path is a refusal");
+        match err {
+            RegistryError::Read { ref path, ref detail, .. } => {
+                assert_eq!(path, &anchor.0.join(A_DIRECTORY));
+                assert!(!detail.is_empty(), "the read refusal says nothing about why");
+            }
+            ref other => panic!("expected Read, got {other:?}"),
+        }
+
+        // (5) A record from another rev — and the ORDER: this entry's index is
+        // past the log too, so a staleness check running AFTER transcription
+        // would report `EventOutOfRange` and blame the entry for the engine
+        // having moved.
+        let err = entry(STALE, past, None)
+            .load_from(&anchor.0, &rules)
+            .expect_err("a record from another rev is a refusal");
+        match err {
+            RegistryError::Stale {
+                name,
+                record_rev,
+                running_rev,
+                ref record_hash,
+                ref running_hash,
+            } => {
+                assert_eq!(name, "temp-fixture");
+                assert_eq!(record_rev, Some(SEMANTICS_REV + 7));
+                assert_eq!(running_rev, SEMANTICS_REV);
+                assert_eq!(record_hash, &rules.content_hash(), "the rules DATA agrees");
+                assert_eq!(running_hash, &rules.content_hash());
+            }
+            ref other => panic!("expected Stale, got {other:?}"),
+        }
+        let rendered = err.to_string();
+        assert!(rendered.contains(&(SEMANTICS_REV + 7).to_string()), "no record rev: {rendered}");
+        assert!(rendered.contains(&SEMANTICS_REV.to_string()), "no running rev: {rendered}");
+        assert!(rendered.contains(&rules.content_hash()), "no rules hash: {rendered}");
+
+        // The cell owns every file it read; the anchor goes when it drops.
+        drop(anchor);
     }
 }

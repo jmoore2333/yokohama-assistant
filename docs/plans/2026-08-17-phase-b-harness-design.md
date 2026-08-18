@@ -124,7 +124,7 @@ a suite no gate line names is a suite that never runs — this design avoids cre
   root if the generating play ever changes (review S-5). **Never a `GameRecord`** — a rooted
   run is not a from-setup game and must not masquerade as one (no fake `new_game` seed, no
   replayable-from-setup claim).
-- **Registry** — `driven::registry()`: named fixtures. v1 entries: the five session roots as
+- **Registry** — `driven::registry()`: named fixtures. v1 entries: the six session roots as
   `RecordPrefix` entries on `docs/temp/owner-games/` paths (WORKSPACE-ROOT-relative, resolved
   against the crate's manifest dir so the miss never fires CWD-dependently — review N-5) —
   **runner/analysis material, absent-tolerant with a typed miss naming the path; the TEST SUITE
