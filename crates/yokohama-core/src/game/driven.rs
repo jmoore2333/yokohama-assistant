@@ -714,19 +714,19 @@ pub struct RootTable {
 impl RootTable {
     /// How many root candidates the contestant valued.
     pub fn candidates(&self) -> usize {
-        todo!("T2 GREEN: candidates")
+        self.ranked.len()
     }
 
     /// The best value on the table — `None` only for an empty ranking, which
     /// [`root_table`] refuses to produce.
     pub fn top_value(&self) -> Option<i64> {
-        todo!("T2 GREEN: top_value")
+        self.ranked.iter().map(|r| r.value).max()
     }
 
     /// Candidates tied AT the best value. 1 means the evaluator picked a
     /// strict argmax.
     pub fn tied_at_top(&self) -> usize {
-        todo!("T2 GREEN: tied_at_top")
+        self.band_within(0)
     }
 
     /// Candidates valued within `points` of the best — the top set INCLUDED, so
@@ -736,27 +736,37 @@ impl RootTable {
     /// sorted, and a count that depends on that is a count that breaks silently
     /// if a caller ever hands this type an unsorted ranking.
     pub fn band_within(&self, points: i64) -> usize {
-        todo!("T2 GREEN: band_within")
+        // Saturating because a floor below `i64::MIN` is not a smaller floor,
+        // it is a wrapped one — and a wrapped floor would count the whole table
+        // as "outside the band" on a ranking of very negative values.
+        let Some(floor) = self.top_value().map(|top| top.saturating_sub(points)) else {
+            return 0;
+        };
+        self.ranked.iter().filter(|r| r.value >= floor).count()
     }
 
     /// [`band_within`](Self::band_within) at [`TOP_BAND_POINTS`] — the e113
     /// number.
     pub fn top_band(&self) -> usize {
-        todo!("T2 GREEN: top_band")
+        self.band_within(TOP_BAND_POINTS)
     }
 
     /// How many DISTINCT values the ranking holds. The degeneracy read from the
     /// other side: a 139-candidate table with 4 distinct values separated almost
     /// nothing however its band reads.
     pub fn distinct_values(&self) -> usize {
-        todo!("T2 GREEN: distinct_values")
+        let mut seen: Vec<i64> = self.ranked.iter().map(|r| r.value).collect();
+        seen.sort_unstable();
+        seen.dedup();
+        seen.len()
     }
 
     /// Whether [`winner`](Self::winner) is one of the maximisers — a contract
     /// the agent owes and this type can check, since a winner outside the top
     /// set would mean the ranking and the pick came from different decisions.
     pub fn winner_is_a_maximiser(&self) -> bool {
-        todo!("T2 GREEN: winner_is_a_maximiser")
+        let Some(top) = self.top_value() else { return false };
+        self.ranked.iter().any(|r| r.mv == self.winner && r.value == top)
     }
 }
 
@@ -792,7 +802,13 @@ pub enum UnsupportedReason {
 impl UnsupportedReason {
     /// The sentence a report prints.
     pub fn as_str(self) -> &'static str {
-        todo!("T2 GREEN: UnsupportedReason::as_str")
+        match self {
+            Self::Sampled => "it samples its move from a distribution and values no candidate",
+            Self::Unranked => {
+                "a one-ply argmax reports no per-candidate vector and no search counters"
+            }
+            Self::Diagnostic => "no ranked-root surface is plumbed for this diagnostic arm in v1",
+        }
     }
 }
 
@@ -829,7 +845,26 @@ pub enum RootTableError {
 
 impl std::fmt::Display for RootTableError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        todo!("T2 GREEN: RootTableError::fmt")
+        match self {
+            Self::CorruptRoot(m) => write!(f, "corrupt root: {m}"),
+            Self::NotOnTheMove { seat, mover } => write!(
+                f,
+                "seat {} is not on the move at this root (seat {} is)",
+                seat.0, mover.0
+            ),
+            Self::Unobservable { seat, detail } => {
+                write!(f, "seat {} cannot observe the root: {detail}", seat.0)
+            }
+            Self::Unsupported { echo, reason } => {
+                write!(f, "{echo} has no root table: {}", reason.as_str())
+            }
+            Self::Agent { seat, detail } => {
+                write!(f, "seat {} produced no decision: {detail}", seat.0)
+            }
+            Self::Unaccounted { echo, missing } => {
+                write!(f, "{echo} decided without reporting {missing}")
+            }
+        }
     }
 }
 
@@ -867,7 +902,64 @@ pub fn root_table(
     rules: &Rules,
     decision_seed: u64,
 ) -> Result<RootTable, RootTableError> {
-    todo!("T2 GREEN: root_table")
+    // The ARM first: an unsupported contestant is a fact about the question, not
+    // about the position, so it is answered before the root is examined at all.
+    let mut agent = mirror_build(contestant, rules, decision_seed)?;
+    // Then the root, on `drive_to_terminal`'s posture: a table computed on a
+    // corrupt state is a wrong answer wearing the shape of a right one.
+    check_invariants(root, rules).map_err(RootTableError::CorruptRoot)?;
+    if root.current_player != seat {
+        return Err(RootTableError::NotOnTheMove { seat, mover: root.current_player });
+    }
+
+    let view = observe(root, seat)
+        .map_err(|e| RootTableError::Unobservable { seat, detail: e.to_string() })?;
+    // The agent's OWN honest chain, unchanged: it samples its world from the
+    // view and the seed it drew, and nothing here hands it anything else.
+    let report = agent
+        .choose(&view, rules)
+        .map_err(|detail| RootTableError::Agent { seat, detail })?;
+
+    let echo = contestant.echo();
+    let mut ranked = agent.last_roots().to_vec();
+    if ranked.is_empty() {
+        return Err(RootTableError::Unaccounted { echo, missing: "its root candidates" });
+    }
+    // Stable, so tied candidates keep the candidate scheme's own order —
+    // `suggest`'s and `bot::decide`'s rule adopted verbatim, so three readers of
+    // one decision cannot disagree about which tie is listed first.
+    ranked.sort_by_key(|r| Reverse(r.value));
+    let Some(stats) = agent.last_stats().copied() else {
+        return Err(RootTableError::Unaccounted { echo, missing: "its search counters" });
+    };
+    let Some(sampler_seed) = agent.last_sampler_seed() else {
+        return Err(RootTableError::Unaccounted { echo, missing: "its sampler seed" });
+    };
+
+    // The world identity. REBUILT from the seed the agent recorded rather than
+    // read out of it (the agent keeps no world), which is the same world by
+    // construction: `from_view` is deterministic in `(view, rules, seed)` and
+    // the first `sample()` off a fresh sampler is the first world the search
+    // ran in. A refusal here cannot happen after the agent's own sampler
+    // accepted the same view at the same seed — and if it somehow did, it is an
+    // accounting failure rather than an answer.
+    let digest = BeliefSampler::from_view(&view, rules, sampler_seed)
+        .map(|mut sampler| state_digest(&sampler.sample()))
+        .map_err(|_| RootTableError::Unaccounted {
+            echo: contestant.echo(),
+            missing: "a reproducible sampled world",
+        })?;
+
+    Ok(RootTable {
+        seat,
+        contestant,
+        echo,
+        decision_seed,
+        winner: report.mv,
+        ranked,
+        stats,
+        world: SampledWorld { sampler_seed, worlds: agent.worlds(), digest },
+    })
 }
 
 /// THE mirror of [`Contestant::build`]'s arms, and the ONE place a supported
@@ -881,7 +973,30 @@ fn mirror_build(
     rules: &Rules,
     decision_seed: u64,
 ) -> Result<LookaheadAgent, RootTableError> {
-    todo!("T2 GREEN: mirror_build")
+    let refuse = |reason| {
+        Err(RootTableError::Unsupported { echo: contestant.echo(), reason })
+    };
+    match contestant {
+        // `Contestant::build`'s `build_search` arm, verbatim: same constructor,
+        // same knob ORDER (worlds then retreat samples — adjacent `u8`s, so a
+        // transposition compiles clean and mislabels everything downstream),
+        // the same frozen `WeightTable::V2` named explicitly rather than taken
+        // from a `::new` default, and the same `with_cap` builder afterwards.
+        Contestant::LookaheadV1 { b, k, m, cap } => Ok(LookaheadAgent::with_knobs(
+            rules,
+            SearchScheme::TurnBoundary { beam: b },
+            k,
+            m,
+            WeightTable::V2,
+            decision_seed,
+        )
+        .with_cap(cap)),
+        Contestant::Policy(_) => refuse(UnsupportedReason::Sampled),
+        Contestant::GreedyV1 { .. } => refuse(UnsupportedReason::Unranked),
+        Contestant::MctsV1 { .. } | Contestant::AtomicDiag { .. } => {
+            refuse(UnsupportedReason::Diagnostic)
+        }
+    }
 }
 
 #[cfg(test)]
