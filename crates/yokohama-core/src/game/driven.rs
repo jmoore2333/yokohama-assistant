@@ -105,6 +105,20 @@
 //! and a failure taxonomy routed through [`classify`] over the arena's own
 //! `PlayError` rather than re-typed.
 //!
+//! **What PHASE C's T3 adds**: the reply menu's fourth and ADVERSARIAL slot,
+//! [`ReplyPolicy::RaceRusher`] — a rule over state, not a contestant, so
+//! [`ReplyPolicy::contestant`] becomes partial ([`NotAContestant`]) and
+//! [`SeatSpec::build`] grows a SECOND ARM that returns the boxed
+//! [`RaceRusherAgent`] directly. It is still ONE materialization site: what that
+//! ever bought was that no caller decides what a seat is, and the three drivers
+//! still all ask here. The agent probes only the small families
+//! ([`is_probed_family`]), classifies by apply-probe on its OWN sampled probe
+//! world, and DELEGATES everything else to an inner greedy@final it owns for the
+//! seat's lifetime — with the probe world derived from `(agent_seed, decision
+//! ordinal)` under [`SALT_DRIVEN_RACE_PROBE`] rather than drawn from that
+//! greedy's stream, which is what makes the no-race fallback byte-identical to a
+//! bare greedy seat BY CONSTRUCTION rather than by measurement.
+//!
 //! **What this module still deliberately does NOT ship**: the runner (T5). It is
 //! not stubbed here — a stub is a surface a reader has to check the emptiness
 //! of.
@@ -123,12 +137,13 @@ use crate::game::agent::HONEST_MAX_TURNS;
 use crate::game::apply_move::apply_move_unchecked;
 use crate::game::arena::{
     agent_stream_seed, mix, play_from_state, require_supported_player_count, run_arena_game,
-    AgentBench, ArenaAgent, Contestant, ExplainHandle, PlayError, PlayLimits, SeatBench, Slot,
-    SALT_DRIVEN_REPLICATION,
+    AgentBench, ArenaAgent, Contestant, ControllerProvenance, DecisionReport, ExplainHandle,
+    PlayError, PlayLimits, SeatBench, Slot, SALT_DRIVEN_REPLICATION,
 };
 use crate::game::belief::BeliefSampler;
 use crate::game::end_game::is_game_over;
 use crate::game::eval::WeightTable;
+use crate::game::greedy::{GreedyAgent, DEFAULT_RETREAT_SAMPLES};
 use crate::game::invariants::check_invariants;
 use crate::game::legal_moves::get_legal_moves;
 use crate::game::lookahead::{LookaheadAgent, RootScore, SearchScheme, SearchStats};
@@ -139,11 +154,12 @@ use crate::game::power::calculate_power;
 use crate::game::record::{replay_from, state_at, GameRecord, RecordedEvent, SeatProvenance};
 use crate::game::rules::Rules;
 use crate::game::scoring::{final_result, GameResult};
+use crate::game::search_actions::MoveFamily;
 use crate::game::seeds::{SeedSchedule, WorldSeed};
 use crate::game::semantics::{record_digest, state_digest, SEMANTICS_REV};
 use crate::types::{
-    AreaId, AreaType, ChurchTrack, CustomsTrack, EndGameTrigger, GameState, Move, PendingChoice,
-    PlayerId, PresidentLocation,
+    AreaId, AreaType, ChurchTrack, CustomsTrack, EndGameTrigger, GameState, Move, OrderCardId,
+    PendingChoice, PlayerId, PlayerView, PresidentLocation,
 };
 
 /// The decision guard's default: how many decisions a rooted run may apply
@@ -176,11 +192,15 @@ pub const DEFAULT_MAX_DECISIONS: u64 = 100_000;
 /// only as meaningful as the reply it was measured against, so the reply belongs
 /// in the vocabulary rather than in a caller's argument.
 ///
-/// **The fourth menu slot — one adversarial policy declared as a RULE OVER
-/// STATE — is deliberately absent in v1.** It is declared at family freeze
-/// (Phase C); shipping a placeholder would invite a hand-picked adversary chosen
-/// after seeing the roots it is applied to, which is the shape of a fixture that
-/// proves whatever its author wanted.
+/// **The fourth menu slot — [`RaceRusher`](Self::RaceRusher), one adversarial
+/// policy declared as a RULE OVER STATE — landed at Phase C's T3** (design
+/// `docs/plans/2026-08-18-phase-c-families-design.md` §2). It was deliberately
+/// absent in v1 for a reason that its declaration had to answer rather than
+/// outgrow: shipping a placeholder would have invited a hand-picked adversary
+/// chosen after seeing the roots it is applied to, which is the shape of a
+/// fixture that proves whatever its author wanted. What it ships as instead is a
+/// STATED RULE over state — the rule is in this file, in full, and it was
+/// written before any family root was drawn.
 ///
 /// **The two `*AtFinal` arms are PROVISIONAL, and the word is load-bearing** —
 /// the same obligation `yokohama-cli`'s `bot::PROVISIONAL_DEFAULT_BOT` carries,
@@ -204,15 +224,54 @@ pub enum ReplyPolicy {
     /// Lookahead-v1 at its shipped knobs, UNCAPPED — the provisional production
     /// contestant.
     LookaheadAtFinal,
+    /// **The declared adversarial arm** (Phase C, design §2): a positional
+    /// OPPORTUNIST that takes a race step when one is in front of it and plays
+    /// [`GreedyAtFinal`](Self::GreedyAtFinal) otherwise. See
+    /// [`RaceRusherAgent`] for the rule in full — it is a HARNESS INSTRUMENT and
+    /// has no [`Contestant`], which is why [`contestant`](Self::contestant) is
+    /// partial.
+    RaceRusher,
+}
+
+/// Why a [`ReplyPolicy`] arm names no [`Contestant`].
+///
+/// Typed rather than a bare `Option`, on [`UnsupportedReason`]'s grounds: the
+/// absence is a FACT ABOUT THE ARM that a report should be able to print, and a
+/// `None` says only that a lookup failed. It is also what keeps
+/// [`SeatSpec::build`]'s two arms exhaustive — a second harness rule lands here
+/// as a compile error to be answered rather than as a `_` that silently
+/// materializes nothing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NotAContestant {
+    /// [`ReplyPolicy::RaceRusher`] is a RULE OVER STATE built out of the shipped
+    /// pieces (a belief sample, the factored family surface, an apply-probe, and
+    /// a greedy fallback) — never an entrant. It must never become a
+    /// [`Contestant`]: the grammar's names are things a CELL may pit against
+    /// each other and a gate may quote, and this one exists only to be a hostile
+    /// REPLY inside an adjudication.
+    RaceRusher,
+}
+
+impl NotAContestant {
+    /// The sentence a report prints.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::RaceRusher => {
+                "a harness reply rule over state, deliberately not a contestant"
+            }
+        }
+    }
 }
 
 impl ReplyPolicy {
-    /// The contestant this arm names. THE single spelling of the menu.
-    pub fn contestant(self) -> Contestant {
+    /// The contestant this arm names. THE single spelling of the menu — PARTIAL
+    /// since Phase C's T3, because [`RaceRusher`](Self::RaceRusher) names none.
+    pub fn contestant(self) -> Result<Contestant, NotAContestant> {
         match self {
-            Self::FamilyWeighted => Contestant::Policy(RolloutPolicy::FAMILY_WEIGHTED_DEFAULT),
-            Self::GreedyAtFinal => Contestant::GREEDY_V1_DEFAULT,
-            Self::LookaheadAtFinal => Contestant::LOOKAHEAD_V1_DEFAULT,
+            Self::FamilyWeighted => Ok(Contestant::Policy(RolloutPolicy::FAMILY_WEIGHTED_DEFAULT)),
+            Self::GreedyAtFinal => Ok(Contestant::GREEDY_V1_DEFAULT),
+            Self::LookaheadAtFinal => Ok(Contestant::LOOKAHEAD_V1_DEFAULT),
+            Self::RaceRusher => Err(NotAContestant::RaceRusher),
         }
     }
 
@@ -222,6 +281,7 @@ impl ReplyPolicy {
             Self::FamilyWeighted => "family-weighted",
             Self::GreedyAtFinal => "greedy-at-final",
             Self::LookaheadAtFinal => "lookahead-at-final",
+            Self::RaceRusher => "race-rusher",
         }
     }
 }
@@ -240,16 +300,61 @@ pub enum SeatSpec {
 }
 
 impl SeatSpec {
-    /// The contestant this seat plays.
+    /// The contestant this seat plays, or the typed reason it names none.
     ///
-    /// THE single materialization path — [`drive_to_terminal`] builds every seat
-    /// through this one call — which is what makes the sugar-equivalence of
-    /// `Reply(r)` and `Contestant(r.contestant())` hold BY CONSTRUCTION rather
-    /// than by a test agreeing with a second construction site.
-    pub fn contestant(self) -> Contestant {
+    /// Sugar-equivalence still holds BY CONSTRUCTION for every arm that HAS a
+    /// contestant: `Reply(r)` and `Contestant(r.contestant()?)` are one seat
+    /// written two ways, because this is the only place the mapping lives.
+    pub fn contestant(self) -> Result<Contestant, NotAContestant> {
         match self {
-            Self::Contestant(c) => c,
+            Self::Contestant(c) => Ok(c),
             Self::Reply(r) => r.contestant(),
+        }
+    }
+
+    /// What actually plays, as provenance/report text.
+    ///
+    /// [`Contestant::echo`] for every seat that names one, and
+    /// [`RACE_RUSHER_ECHO`]'s composed sentence for the one that does not — so
+    /// a descriptor's `echo` field is always a resolved identity and never a
+    /// menu name (the rule [`requested_label`](Self::requested_label) states).
+    pub fn echo(self) -> String {
+        match self.contestant() {
+            Ok(c) => c.echo(),
+            Err(NotAContestant::RaceRusher) => race_rusher_echo(),
+        }
+    }
+
+    /// Build the agent this seat plays, plus its explanation read-out if it has
+    /// one — **THE single materialization site, now with TWO ARMS**.
+    ///
+    /// **The single-site argument survives the second arm, and restating it is
+    /// the point** (design §2's SHOULD-7). What made one site valuable was never
+    /// that it contained one `match` — it is that NO CALLER decides what a seat
+    /// is: [`drive_to_terminal`], [`drive_turn`] and [`adjudicate_root`] all
+    /// hand a [`SeatSpec`] here and receive an agent, so a seat cannot be
+    /// materialized one way in a whole-game run and another way in a turn. The
+    /// two arms are the two KINDS of thing a seat can be — an entrant, or a
+    /// harness rule — and they are exhaustive over [`NotAContestant`], so a
+    /// third kind is a compile error here rather than a silent omission at one
+    /// of the three drivers.
+    ///
+    /// **The race-rusher arm hands back NO [`ExplainHandle`], deliberately.** It
+    /// explains the decisions it DELEGATES (its inner greedy does) and not the
+    /// ones it takes itself, so a handle here would report an `explained` count
+    /// a reader would compare against the seat's applied moves and read as a
+    /// defect. `None` is the closest true statement at this granularity — a seat
+    /// that carries no explanation account — and it is the same posture a rung
+    /// gets for the same kind of reason (see [`SeatCounters::NONE`]).
+    pub fn build(self, rules: &Rules, agent_seed: u64) -> (Box<dyn ArenaAgent>, Option<ExplainHandle>) {
+        match self.contestant() {
+            // ARM 1 — an entrant: the arena's own constructor, untouched.
+            Ok(contestant) => contestant.build(rules, agent_seed),
+            // ARM 2 — a harness rule: built here, because there is no
+            // `Contestant` to route it through and there must never be one.
+            Err(NotAContestant::RaceRusher) => {
+                (Box::new(RaceRusherAgent::new(rules, agent_seed)), None)
+            }
         }
     }
 
@@ -267,6 +372,288 @@ impl SeatSpec {
         match self {
             Self::Contestant(_) => "contestant".to_string(),
             Self::Reply(r) => format!("reply:{}", r.as_str()),
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// The RACE-RUSHER reply (Phase C, T3)
+// ---------------------------------------------------------------------------
+
+/// Domain salt for the RACE-RUSHER's PROBE WORLD.
+///
+/// **The derivation, stated where the constant is**:
+/// `race_probe_seed(agent_seed, decision_ordinal) = mix(SALT_DRIVEN_RACE_PROBE,
+/// [agent_seed, decision_ordinal])`, where `agent_seed` is the seat's own play
+/// stream (from `agent_stream_seed`, exactly as every other seat's) and
+/// `decision_ordinal` counts this seat's `choose` calls from 0.
+///
+/// **Why it is a DERIVATION and not a draw** — the property the whole T3
+/// fallback claim rests on: a probe that drew its seed from the inner greedy's
+/// `ChaCha8Rng` would advance that stream, and the no-race fallback would then
+/// differ from a bare greedy seat at the same seed by however many probes
+/// happened to run. Deriving the probe world from `(agent_seed, ordinal)`
+/// instead means the classification consumes ZERO randomness from the inner
+/// agent, so "a no-race decision is byte-identical to greedy@final" holds BY
+/// CONSTRUCTION rather than by a test noticing. It is still a function of the
+/// seat's own stream seed, so two seats never probe the same worlds, and it is
+/// injective in the ordinal, so one seat's successive decisions do not either.
+///
+/// **Serial provenance (the A3E1_D21E family)**: this family's HOME is
+/// `arena::SALT_DRIVEN_REPLICATION` (serial 0006), whose own doc records 0004
+/// and 0005 as taken elsewhere. 0007 is the next free one. It is declared HERE
+/// rather than there because Phase C's T3 moves `driven.rs` alone and this
+/// constant has exactly one consumer in this file — the cross-pointer above is
+/// what keeps the family's serial ledger readable from either end, and
+/// `the_race_probe_salt_is_its_own_serial` pins that the two do not collide.
+const SALT_DRIVEN_RACE_PROBE: u64 = 0xA3E1_D21E_0000_0007;
+
+/// The probe world's sampler seed for one decision — see
+/// [`SALT_DRIVEN_RACE_PROBE`] for the derivation and what it buys.
+fn race_probe_seed(agent_seed: u64, decision_ordinal: u64) -> u64 {
+    mix(SALT_DRIVEN_RACE_PROBE, &[agent_seed, decision_ordinal])
+}
+
+/// The contestant [`ReplyPolicy::RaceRusher`] DELEGATES to when no candidate
+/// races — greedy@final, i.e. [`ReplyPolicy::GreedyAtFinal`]'s own binding.
+///
+/// Spelled from the same const that arm is spelled from
+/// ([`Contestant::GREEDY_V1_DEFAULT`]'s definition), and PINNED equal to both
+/// that const and to `GreedyAtFinal.contestant()`, so D1's identity freeze
+/// re-points the fallback with the menu arm it is named after rather than
+/// leaving this instrument on a stale binding.
+///
+/// **PROVISIONAL until D1, exactly as the other `*AtFinal` bindings are** — the
+/// echo a report quotes carries the RESOLVED fallback (`fallback=<greedy
+/// echo>`), never the word "greedy@final", for that reason.
+const RACE_RUSHER_FALLBACK: Contestant = Contestant::GreedyV1 { m: DEFAULT_RETREAT_SAMPLES };
+
+/// The race-rusher's stable controller name, in the repo's `name-vN` shape
+/// (`greedy-v1`'s convention: the DESIGN version rides the name, the
+/// IMPLEMENTATION version rides [`RACE_RUSHER_IMPL_VERSION`]).
+pub const RACE_RUSHER_CONTROLLER: &str = "race-rusher-v1";
+
+/// Implementation version under [`RACE_RUSHER_CONTROLLER`]. Bump it in the same
+/// commit as ANY change to the decision rule, the probe scope, or the probe
+/// world's derivation — the same obligation `GREEDY_IMPL_VERSION` carries.
+pub const RACE_RUSHER_IMPL_VERSION: u32 = 1;
+
+/// `reply:race-rusher-v1{fallback=<the resolved greedy echo>}` — what a
+/// race-rusher seat ECHOES.
+///
+/// The `reply:` prefix is deliberate and is not a mistake about what an echo
+/// field holds: every other echo names a contestant, and this one must say out
+/// loud that it names none. The fallback is INTERPOLATED rather than described,
+/// so a report carries the greedy identity (version, knobs, weight-table digest)
+/// that the seat actually delegated to.
+fn race_rusher_echo() -> String {
+    // DECLARED PLACEHOLDER (T3 RED): the composed sentence lands with the GREEN
+    // commit, so the echo pins fail on an assertion rather than on a compile
+    // error.
+    format!("reply:{RACE_RUSHER_CONTROLLER}")
+}
+
+/// What a probed candidate RACES, highest priority FIRST.
+///
+/// **Declaration order IS the priority order** and the derived `Ord` is what
+/// enforces it: `Claim < Church < Customs`, so the best class is the MINIMUM.
+/// Writing the priority as a type rather than as an integer means the ordering
+/// cannot drift from the rule the design states (design §2: claims, then the
+/// church race, then the customs race).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub(crate) enum RaceClass {
+    /// The move IS a claim (`Move::FulfillAchievement`) — the one class read
+    /// off the move's SHAPE rather than off an apply-probe, because a claim is
+    /// not a state change this classifier would have to look for: it is the
+    /// move.
+    Claim,
+    /// The probed clone advances the mover on the CHURCH track — occupancy
+    /// grew, or a church space-placement choice is queued for the mover.
+    Church,
+    /// The same on the CUSTOMS track.
+    Customs,
+}
+
+/// Whether the race-rusher PROBES this family (design §2's probe scope, with the
+/// real family-tag names).
+///
+/// Exhaustive with no `_` arm: a new [`MoveFamily`] must be ANSWERED here rather
+/// than silently join (or silently miss) the probe set.
+///
+/// The three excluded movement/placement families are excluded because the rule
+/// is a POSITIONAL one — the race-rusher races from where it stands, never by
+/// walking somewhere first — and because those are precisely the families whose
+/// size makes an apply-probe per candidate a six-figure cost (the retreat
+/// product alone reaches 442,368). [`MoveFamily::FivePower`] and
+/// [`MoveFamily::Building`] are excluded BY DECISION rather than by cost:
+/// neither advances a track and neither claims, so probing them could only ever
+/// return `None`.
+fn is_probed_family(family: &MoveFamily) -> bool {
+    match family {
+        MoveFamily::AdditionalAction | MoveFamily::AreaAction | MoveFamily::ChoiceResolution => {
+            true
+        }
+        MoveFamily::Placement | MoveFamily::MovementRoutes | MoveFamily::MovementRetreat { .. } => {
+            false
+        }
+        MoveFamily::FivePower | MoveFamily::Building => false,
+    }
+}
+
+/// Classify ONE candidate by apply-probe on `world`.
+///
+/// **QUEUE-AWARE** through [`mover_reachable_steps`], which is the single
+/// authority for "did this move advance the mover on a track" and is shared
+/// verbatim with [`RootPredicate::ExclusiveRaceOneStep`]'s mover half: a Church
+/// or Customs action with two or more eligible spaces places NOTHING at apply
+/// time (it queues a `PendingChoice::ChurchSpace`/`CustomsSpace`), so an
+/// occupancy-only classifier would be blind to exactly the race-INITIATING moves
+/// this policy exists to model. Sharing the helper rather than restating it is
+/// what keeps the predicate and the reply from disagreeing about what a race
+/// step is.
+fn race_class(world: &GameState, mv: &Move, rules: &Rules) -> Option<RaceClass> {
+    // DECLARED PLACEHOLDER (T3 RED): the classification lands with the GREEN
+    // commit.
+    let _ = (world, mv, rules);
+    None
+}
+
+/// The first candidate of the HIGHEST nonempty class, in the order `candidates`
+/// are given.
+///
+/// Deterministic and stated: the caller supplies the probed families' moves in
+/// the engine's own legal-list order (see [`RaceRusherAgent::choose`]), so "the
+/// first of the best class" is a fact about the engine's enumeration and not
+/// about a sort this function performs. A [`RaceClass::Claim`] short-circuits —
+/// nothing outranks it, so the scan stops rather than probing the rest.
+fn race_pick(world: &GameState, rules: &Rules, candidates: &[Move]) -> Option<(RaceClass, Move)> {
+    // DECLARED PLACEHOLDER (T3 RED): the selection lands with the GREEN commit.
+    let _ = (world, rules, candidates);
+    None
+}
+
+/// The declared adversarial REPLY: take a race step when one is in front of it,
+/// and play greedy@final otherwise.
+///
+/// **The rule, in full** (design §2, and this is the whole of it):
+/// 1. sample a PROBE WORLD from the seat's own view, at
+///    [`race_probe_seed`]`(agent_seed, decision_ordinal)` — the honest chain,
+///    and a stream that is NOT the inner greedy's;
+/// 2. collect the candidates of the probed families only —
+///    [`is_probed_family`], i.e. additional actions, area actions and choice
+///    resolutions;
+/// 3. classify each by apply-probe on that world ([`race_class`]);
+/// 4. play the first candidate of the highest nonempty class ([`race_pick`]);
+/// 5. otherwise DELEGATE the whole decision to the inner greedy.
+///
+/// **It is a positional OPPORTUNIST and not a planner**, and the freeze document
+/// says so in its robustness caveat: movement is never probed, so it races only
+/// from where it already stands. Read as "the hostile arm of the reply menu", it
+/// is a threat MODEL — a reply that competes for the tracks — and never a claim
+/// about how well the tracks can be raced.
+///
+/// **It OWNS its fallback for the seat's lifetime.** One [`GreedyAgent`],
+/// constructed once at the seat's own `agent_seed`, whose stream advances
+/// exactly as a bare greedy seat's would — because the probes above draw from a
+/// derived stream and never from it. That is what makes the no-race fallback
+/// byte-identical to greedy@final at the same seed BY CONSTRUCTION, and
+/// `the_no_race_fallback_is_byte_identical_to_a_bare_greedy_seat` is the pin.
+///
+/// **Never a [`Contestant`], never gate-eligible**: it is an instrument for
+/// asking what a position looks like against a hostile reply, and an instrument
+/// that could enter a cell is one whose numbers someone will eventually quote.
+pub(crate) struct RaceRusherAgent {
+    /// The MIRRORED greedy@final agent — see [`Self::new`] for the mirror and
+    /// what pins it.
+    inner: GreedyAgent,
+    /// The seat's own play stream seed, kept because the probe derivation and
+    /// the provenance both need it and `GreedyAgent` will not hand its own back.
+    agent_seed: u64,
+    /// How many decisions this seat has been asked for. The probe world's second
+    /// derivation component; incremented on EVERY `choose`, probed or not, so
+    /// the ordinal means "this seat's n-th decision" rather than "this seat's
+    /// n-th probe".
+    decisions: u64,
+    /// Candidates handed to [`race_class`] across this seat's life — the
+    /// probe-scope instrument. Test-only: it exists to make "a movement decision
+    /// probes NOTHING" an assertion rather than an argument, and a harness
+    /// instrument does not need it in release.
+    #[cfg(test)]
+    probed_candidates: u64,
+    /// Decisions this seat resolved by taking a race candidate rather than by
+    /// delegating. Test-only, for the same reason.
+    #[cfg(test)]
+    race_picks: u64,
+}
+
+impl RaceRusherAgent {
+    /// Build the seat, including its own fallback.
+    ///
+    /// **The inner agent MIRRORS [`Contestant::build`]'s greedy arm** — the same
+    /// constructor, the same explicitly-named frozen [`WeightTable::V2`] (L12: a
+    /// weight is part of what a controller's name MEANS, so it is never a
+    /// parameter here), the same knob, at the SAME `agent_seed` the seat plays
+    /// on. It is a mirror rather than a `build` call for [`mirror_build`]'s own
+    /// reason: `build` erases the agent behind `Box<dyn ArenaAgent>`, and this
+    /// type owns a concrete `GreedyAgent` so the fallback's own surfaces stay
+    /// reachable. The obligation that comes with mirroring is discharged the
+    /// same way: `the_inner_greedy_is_contestant_builds_greedy_arm` pins that a
+    /// delegated decision equals what `Contestant::build`'s greedy agent plays
+    /// at the same seed on the same view.
+    pub(crate) fn new(rules: &Rules, agent_seed: u64) -> Self {
+        Self {
+            inner: GreedyAgent::with_weights(
+                rules,
+                WeightTable::V2,
+                DEFAULT_RETREAT_SAMPLES,
+                agent_seed,
+            ),
+            agent_seed,
+            decisions: 0,
+            #[cfg(test)]
+            probed_candidates: 0,
+            #[cfg(test)]
+            race_picks: 0,
+        }
+    }
+}
+
+impl ArenaAgent for RaceRusherAgent {
+    /// Delegated to the fallback, unconditionally.
+    ///
+    /// The race rule is about PLAY and says nothing about a Keep, so inventing a
+    /// second Keep rule here would make a cell seating this reply
+    /// setup-different from one seating greedy@final for no stated reason.
+    /// Greedy's Keep draws no stream at all, so the delegation also cannot
+    /// disturb the fallback identity.
+    fn choose_starting_order(&mut self, seat: PlayerId, deal: &[OrderCardId; 2]) -> u8 {
+        self.inner.choose_starting_order(seat, deal)
+    }
+
+    fn choose(&mut self, view: &PlayerView, rules: &Rules) -> Result<DecisionReport, String> {
+        // DECLARED PLACEHOLDER (T3 RED): the probe lands with the GREEN commit.
+        // Until then every decision delegates and nothing is probed, so the
+        // classification pins fail on assertions rather than on compile errors.
+        self.decisions += 1;
+        self.inner.choose(view, rules)
+    }
+
+    /// **The fallback's identity rides the params; the fallback's NAME rides the
+    /// echo.** `ControllerProvenance::params` is `i64`-valued, so a delegate's
+    /// name cannot travel in it — what travels instead is the delegate's whole
+    /// knob map VERBATIM (its `m`, its placement cap, its evaluator version, its
+    /// weight-table digest) plus `fallback_version`, all read OFF the inner
+    /// agent rather than re-derived, and the composed [`race_rusher_echo`] on the
+    /// seat descriptor beside it carries the name.
+    fn controller(&self) -> ControllerProvenance {
+        let fallback = self.inner.controller();
+        let mut params = fallback.params;
+        params.insert("fallback_version".to_string(), i64::from(fallback.version));
+        ControllerProvenance {
+            name: RACE_RUSHER_CONTROLLER.to_string(),
+            version: RACE_RUSHER_IMPL_VERSION,
+            params,
+            agent_seed: Some(self.agent_seed),
         }
     }
 }
@@ -1359,7 +1746,7 @@ impl RootedProvenance {
                 SeatDescriptor {
                     seat: index as u8,
                     requested: spec.requested_label(),
-                    echo: spec.contestant().echo(),
+                    echo: spec.echo(),
                     controller: seen.controller.clone(),
                     version: seen.version,
                     params: seen.params.clone(),
@@ -1894,7 +2281,7 @@ fn drive_from_descriptor(
         // so the slot component IS the seat index: the derivation stays
         // injective in the seat, and two seats never share a stream.
         let agent_seed = agent_stream_seed(master, seat, Slot(seat.0));
-        let (agent, handle) = spec.contestant().build(rules, agent_seed);
+        let (agent, handle) = spec.build(rules, agent_seed);
         agents.push(agent);
         handles.push(handle);
         agent_seeds.push(agent_seed);
@@ -1926,7 +2313,7 @@ fn drive_from_descriptor(
         .map(|(index, spec)| SeatOutcome {
             seat: PlayerId(index as u8),
             spec: *spec,
-            echo: spec.contestant().echo(),
+            echo: spec.echo(),
             agent_seed: agent_seeds[index],
             applied_moves: outcome.moves_by_seat[index],
             counters: handles[index].as_ref().map_or(SeatCounters::NONE, SeatCounters::from_handle),
@@ -2088,7 +2475,7 @@ pub fn drive_turn(
     // this function's doc states, and the reason the handle below reads the
     // TURN's counters rather than a decision's.
     let seat = root.current_player;
-    let (mut agent, handle) = mover.contestant().build(rules, decision_seed);
+    let (mut agent, handle) = mover.build(rules, decision_seed);
 
     let mut state = root.clone();
     let mut moves: Vec<AppliedMove> = Vec::new();
@@ -3565,7 +3952,7 @@ pub fn adjudicate_root(
         .map(|(index, spec)| AdjudicationSeat {
             seat: index as u8,
             requested: spec.requested_label(),
-            echo: spec.contestant().echo(),
+            echo: spec.echo(),
         })
         .collect();
     Ok(Adjudication {
@@ -3604,8 +3991,8 @@ mod tests {
     use crate::game::seeds::SeedSchedule;
     use crate::game::setup::{finalize_setup, new_game, StartingOrderChoice};
     use crate::types::{
-        BuildingSite, EndGameTrigger, GameConfig, MercenaryState, PlayerView, PresidentLocation,
-        TradingHouseState, TurnPhase,
+        AreaAction, BuildingSite, EndGameTrigger, GameConfig, MercenaryState, PlayerView,
+        PresidentLocation, TradingHouseState, TurnPhase,
     };
     use std::collections::BTreeMap;
     use std::sync::atomic::{AtomicU64, Ordering};
@@ -3683,15 +4070,18 @@ mod tests {
     fn the_reply_menu_spells_the_declared_contestants() {
         assert_eq!(
             ReplyPolicy::FamilyWeighted.contestant(),
-            Contestant::Policy(RolloutPolicy::FAMILY_WEIGHTED_DEFAULT),
+            Ok(Contestant::Policy(RolloutPolicy::FAMILY_WEIGHTED_DEFAULT)),
         );
-        assert_eq!(ReplyPolicy::GreedyAtFinal.contestant(), Contestant::GREEDY_V1_DEFAULT);
-        assert_eq!(ReplyPolicy::GreedyAtFinal.contestant(), Contestant::GreedyV1 { m: 8 });
-        assert_eq!(ReplyPolicy::LookaheadAtFinal.contestant(), Contestant::LOOKAHEAD_V1_DEFAULT);
+        assert_eq!(ReplyPolicy::GreedyAtFinal.contestant(), Ok(Contestant::GREEDY_V1_DEFAULT));
+        assert_eq!(ReplyPolicy::GreedyAtFinal.contestant(), Ok(Contestant::GreedyV1 { m: 8 }));
+        assert_eq!(
+            ReplyPolicy::LookaheadAtFinal.contestant(),
+            Ok(Contestant::LOOKAHEAD_V1_DEFAULT),
+        );
         assert!(
             matches!(
                 ReplyPolicy::LookaheadAtFinal.contestant(),
-                Contestant::LookaheadV1 { cap: None, .. }
+                Ok(Contestant::LookaheadV1 { cap: None, .. })
             ),
             "the shipped S1 arm is UNCAPPED: an absent cap is not any set cap",
         );
@@ -4909,7 +5299,7 @@ mod tests {
             let d = &p.seats[index];
             assert_eq!(d.seat, index as u8, "the descriptors are not in seat order");
             assert_eq!(d.requested, spec.requested_label());
-            assert_eq!(d.echo, spec.contestant().echo(), "seat {index} echoes another contestant");
+            assert_eq!(d.echo, spec.echo(), "seat {index} echoes another contestant");
             assert_eq!(
                 d.observation,
                 crate::game::record::OBSERVATION_VIEW,
@@ -4920,12 +5310,19 @@ mod tests {
                 agent_stream_seed(master, PlayerId(index as u8), Slot(index as u8)),
                 "seat {index}'s recorded stream is not the one it played on",
             );
+            // The two CONTESTANT-only claims. A harness-rule seat (T3's
+            // race-rusher) has no contestant to reconstruct and no
+            // `Contestant::descriptor` to agree with — which is the whole point
+            // of the second materialization arm — so it is skipped HERE rather
+            // than weakened for every seat; its own descriptor is pinned by
+            // `a_race_rusher_seat_is_described_by_the_driver_that_seated_it`.
+            let Ok(contestant) = spec.contestant() else { continue };
             // The RECONSTRUCTION property: the two record halves this descriptor
             // carries are enough to rebuild the contestant, knobs and all — which
             // is what makes the descriptor an identity rather than a label.
             assert_eq!(
                 Contestant::from_parts(&d.controller, &d.params),
-                Ok(spec.contestant()),
+                Ok(contestant),
                 "seat {index}'s controller+params do not reconstruct what played",
             );
             // And the AGENT's own descriptor is the CONTESTANT's: these come from
@@ -4933,7 +5330,7 @@ mod tests {
             // spec claims the second), so a contestant whose `build` ever routed
             // to a differently-versioned or differently-knobbed agent would show
             // up here rather than in a report nobody cross-checks.
-            let (name, version, params) = spec.contestant().descriptor();
+            let (name, version, params) = contestant.descriptor();
             assert_eq!(
                 (d.controller.as_str(), d.version, &d.params),
                 (name.as_str(), version, &params),
@@ -8282,5 +8679,583 @@ mod tests {
                 other => panic!("expected CorruptRoot, got {other:?}"),
             }
         }
+    }
+
+    // =======================================================================
+    // PHASE C T3: the RACE-RUSHER reply
+    // =======================================================================
+
+    /// T3's committed diagnostic seed for the seats these cells build by hand —
+    /// the same discipline [`TURN_SEED`] carries. A fallback-identity pin needs a
+    /// FIXED stream on both sides, and a fixture cell is exactly the case
+    /// `game::seeds`' rule carves out.
+    const RUSH_SEED: u64 = 0x0C03_2026_0818_9992;
+
+    /// One decision through the honest chain the drivers use — observe, choose,
+    /// and the legality boundary — so a cell that asks an agent for a move gets
+    /// the same treatment a driven run would give it.
+    fn ask(agent: &mut dyn ArenaAgent, state: &GameState, rules: &Rules) -> Move {
+        let seat = state.current_player;
+        let view = observe(state, seat).expect("the fixture seat observes its own position");
+        let mv = agent.choose(&view, rules).expect("the agent decides").mv;
+        assert!(
+            is_move_legal(state, &mv, rules, PathMode::Canonical),
+            "the agent played a move the engine does not allow: {mv:?}",
+        );
+        mv
+    }
+
+    /// A bare greedy@final seat, built the way [`Contestant::build`] builds one.
+    fn bare_greedy(rules: &Rules, agent_seed: u64) -> Box<dyn ArenaAgent> {
+        Contestant::GREEDY_V1_DEFAULT.build(rules, agent_seed).0
+    }
+
+    /// Drive ONE mover's turn with a race-rusher, comparing every NO-RACE
+    /// decision against `other` at the same stream position, and return how many
+    /// decisions were compared.
+    ///
+    /// **The comparison is DECISION-SCOPED, and the break is why** (plan review
+    /// SHOULD-2): a whole-turn identity claim would need "no candidate ever
+    /// races", which no fixture can promise. What IS claimable is that every
+    /// decision the race-rusher DELEGATED is the decision a bare greedy seat
+    /// makes at that stream position — and the second such decision is the one
+    /// that carries the real content, since it can only agree if the first
+    /// decision's probes left the inner stream alone.
+    fn no_race_prefix_agrees(
+        rules: &Rules,
+        root: &GameState,
+        agent_seed: u64,
+        other: &mut dyn ArenaAgent,
+    ) -> usize {
+        let mover = root.current_player;
+        let mut rusher = RaceRusherAgent::new(rules, agent_seed);
+        let mut state = root.clone();
+        let mut compared = 0usize;
+        while state.current_player == mover && !is_game_over(&state) {
+            let before = rusher.race_picks;
+            let mine = ask(&mut rusher, &state, rules);
+            if rusher.race_picks != before {
+                // A raced decision: the two agents are answering different
+                // questions from here on, so the comparison stops rather than
+                // reporting a divergence it invited.
+                break;
+            }
+            let theirs = ask(other, &state, rules);
+            assert_eq!(
+                mine, theirs,
+                "decision {compared} delegated, but did not agree with the bare greedy seat",
+            );
+            compared += 1;
+            state = apply_move_unchecked(&state, &mine, rules).expect("the agreed move applies");
+        }
+        compared
+    }
+
+    /// The FIRST position of the organic 2P rung games at [`C_MASTER`] whose
+    /// mover faces a decision in `phase`, with no choice queued.
+    fn phase_root(rules: &Rules, phase: TurnPhase) -> GameState {
+        harvest(rules, C_MASTER, 4, "a decision in the requested phase", &mut |s| {
+            !is_game_over(s)
+                && s.pending_choices.is_empty()
+                && s.turn_phase == phase
+                && get_legal_moves(s, rules).len() >= 2
+        })
+    }
+
+    /// ONE world at which a CLAIM, a CHURCH step and a CUSTOMS step all classify
+    /// — the constructed multi-class decision, plus the three moves.
+    ///
+    /// **It has to be CONSTRUCTED, and the reason is the phase machine itself.**
+    /// `search_actions::families` emits exactly one PROBED family per decision
+    /// point (`AdditionalAction`, `AreaAction`, or `ChoiceResolution` — the queue
+    /// short-circuits everything else), a claim lives only in the first, and a
+    /// track action resolves the ACTING AREA, which is one area. So no legal list
+    /// the engine ever emits holds two classes at once, and a priority rule
+    /// pinned only on organic lists would be pinned on nothing. What this builds
+    /// instead is one STATE at which all three moves genuinely apply — the
+    /// classifier's own input — by standing the mover's President on the Church
+    /// with the goods for a church action and queueing a customs-space choice it
+    /// can resolve.
+    ///
+    /// Harvest-then-doctor, this module's fixture discipline: the base position
+    /// is engine-produced and offers the claim for real, `check_invariants` is
+    /// asserted on the result, and each of the three moves is asserted to
+    /// classify as the class it is named for before any priority claim rides it.
+    fn multi_class_world(rules: &Rules) -> (GameState, Move, Move, Move) {
+        let mut world = harvest(rules, C_MASTER, 4, "a position with a legal claim", &mut |s| {
+            !is_game_over(s)
+                && get_legal_moves(s, rules)
+                    .iter()
+                    .any(|mv| matches!(mv, Move::FulfillAchievement { .. }))
+        });
+        let claim = get_legal_moves(&world, rules)
+            .into_iter()
+            .find(|mv| matches!(mv, Move::FulfillAchievement { .. }))
+            .expect("the harvest promised a claim");
+
+        let mover = world.current_player;
+        let [church_area, _customs_area] = track_areas(&world);
+
+        // The CHURCH half: the mover acts at the Church, at a power and a stock
+        // that reach an eligible space.
+        world.player_mut(mover).president_location = PresidentLocation::OnBoard(church_area);
+        while world.player(mover).assistants.in_area(church_area) < 1 {
+            stage_assistant(world.player_mut(mover), church_area);
+        }
+        world.current_action_power = Some(4);
+        {
+            let p = world.player_mut(mover);
+            p.copper = 1;
+            p.silk = 1;
+            p.tea = 1;
+            p.seafood = 1;
+            p.money = 10;
+            p.imported_goods = 4;
+        }
+        let church = Move::ExecuteAreaAction {
+            action: AreaAction::Church {
+                copper: true,
+                silk: false,
+                tea: false,
+                seafood: false,
+                yen: false,
+                imported_good: false,
+            },
+        };
+
+        // The CUSTOMS half: a queued space choice the mover can resolve. The
+        // cheapest printed cost with an unoccupied space is used, so the fixture
+        // does not depend on which spaces the base game happened to fill.
+        let cost = (1..=7u8)
+            .find(|c| !eligible_customs_spaces_for_cost(&world.customs_track, *c).is_empty())
+            .expect("a mid-game customs track has an unoccupied space");
+        let space = eligible_customs_spaces_for_cost(&world.customs_track, cost)[0];
+        world.pending_choices.push(PendingChoice::CustomsSpace { cost });
+        let customs = Move::ChooseCustomsSpace { space };
+
+        assert!(
+            check_invariants(&world, rules).is_ok(),
+            "the doctored multi-class world left the engine's own net",
+        );
+        (world, claim, church, customs)
+    }
+
+    // -----------------------------------------------------------------------
+    // The vocabulary, the echo, and the probe world's derivation
+    // -----------------------------------------------------------------------
+
+    /// The fourth menu slot names NO contestant, says so in a TYPE, and echoes
+    /// its rule together with the RESOLVED identity it falls back to.
+    ///
+    /// The echo is pinned three ways on purpose: verbatim against the composed
+    /// sentence (so a re-pointed fallback moves the string), literally against
+    /// its two fixed halves (so a composition change that still interpolates
+    /// something is caught), and against `requested_label`, which must NOT move
+    /// at D1 — the pair is what makes a re-pointing visible in an artifact.
+    #[test]
+    fn the_race_rusher_echo_names_the_rule_and_its_resolved_fallback() {
+        assert_eq!(ReplyPolicy::RaceRusher.as_str(), "race-rusher");
+        assert_eq!(
+            ReplyPolicy::RaceRusher.contestant(),
+            Err(NotAContestant::RaceRusher),
+            "the adversarial arm must never resolve to a contestant",
+        );
+        assert_eq!(
+            SeatSpec::Reply(ReplyPolicy::RaceRusher).contestant(),
+            Err(NotAContestant::RaceRusher),
+        );
+        assert!(!NotAContestant::RaceRusher.as_str().is_empty());
+
+        let echo = SeatSpec::Reply(ReplyPolicy::RaceRusher).echo();
+        assert_eq!(
+            echo,
+            format!("reply:race-rusher-v1{{fallback={}}}", Contestant::GREEDY_V1_DEFAULT.echo()),
+        );
+        assert!(
+            echo.starts_with("reply:race-rusher-v1{fallback=greedy-v1@v"),
+            "the echo lost its rule name or its fallback: {echo}",
+        );
+        assert!(echo.ends_with("}}"), "the echo did not close the fallback: {echo}");
+        assert_eq!(
+            SeatSpec::Reply(ReplyPolicy::RaceRusher).requested_label(),
+            "reply:race-rusher",
+            "the REQUESTED label is the menu name and must not carry the resolution",
+        );
+    }
+
+    /// The fallback is [`ReplyPolicy::GreedyAtFinal`]'s own binding, read from
+    /// one place — so D1's identity freeze re-points both together or fails
+    /// here.
+    #[test]
+    fn the_race_rusher_fallback_is_the_greedy_at_final_binding() {
+        assert_eq!(RACE_RUSHER_FALLBACK, Contestant::GREEDY_V1_DEFAULT);
+        assert_eq!(ReplyPolicy::GreedyAtFinal.contestant(), Ok(RACE_RUSHER_FALLBACK));
+        assert_eq!(RACE_RUSHER_FALLBACK, Contestant::GreedyV1 { m: DEFAULT_RETREAT_SAMPLES });
+        assert_eq!(RACE_RUSHER_CONTROLLER, "race-rusher-v1");
+        assert_eq!(RACE_RUSHER_IMPL_VERSION, 1);
+    }
+
+    /// The probe world's seed is the DECLARED derivation, on its own serial, and
+    /// it separates both seats and successive decisions.
+    ///
+    /// The salt-distinctness half is the cheap guard the cross-pointer asks for:
+    /// this constant lives in `driven.rs` while its family's home is
+    /// `arena.rs`, so nothing but a test stops a future serial from colliding.
+    #[test]
+    fn the_race_probe_seed_is_the_declared_derivation_on_its_own_serial() {
+        assert_ne!(
+            SALT_DRIVEN_RACE_PROBE, SALT_DRIVEN_REPLICATION,
+            "two salts of the A3E1_D21E family collided",
+        );
+        let a = 0x1234_5678_9ABC_DEF0u64;
+        let b = 0x0FED_CBA9_8765_4321u64;
+        assert_eq!(race_probe_seed(a, 0), mix(SALT_DRIVEN_RACE_PROBE, &[a, 0]));
+        assert_eq!(race_probe_seed(a, 7), mix(SALT_DRIVEN_RACE_PROBE, &[a, 7]));
+        assert_ne!(race_probe_seed(a, 0), race_probe_seed(a, 1), "one seat's decisions share a world");
+        assert_ne!(race_probe_seed(a, 0), race_probe_seed(b, 0), "two seats share a probe world");
+        // And it is NOT the play stream itself: a probe world derived from the
+        // bare agent seed would be a second consumer of the same value.
+        assert_ne!(race_probe_seed(a, 0), a);
+    }
+
+    /// The probe SCOPE is the three small families, stated over every tag the
+    /// factored surface has.
+    ///
+    /// Exhaustive by hand here rather than by `match`, because the claim is
+    /// about the SET and a `match` in a test would only restate the one in the
+    /// implementation.
+    #[test]
+    fn the_probe_scope_is_the_three_small_families() {
+        let on_board = BTreeMap::new();
+        for family in [
+            MoveFamily::AdditionalAction,
+            MoveFamily::AreaAction,
+            MoveFamily::ChoiceResolution,
+        ] {
+            assert!(is_probed_family(&family), "{family:?} must be probed");
+        }
+        for family in [
+            MoveFamily::Placement,
+            MoveFamily::MovementRoutes,
+            MoveFamily::MovementRetreat { on_board },
+            MoveFamily::FivePower,
+            MoveFamily::Building,
+        ] {
+            assert!(!is_probed_family(&family), "{family:?} must NOT be probed");
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // The decision rule
+    // -----------------------------------------------------------------------
+
+    /// Claim beats church beats customs beats the fallback, at a world where all
+    /// three genuinely apply.
+    ///
+    /// The order the candidates are OFFERED in is deliberately the reverse of
+    /// the priority, so a rule that returned the first classifiable candidate
+    /// (rather than the best class) fails every one of these.
+    #[test]
+    fn the_race_rule_takes_claim_then_church_then_customs() {
+        let rules = Rules::standard();
+        let (world, claim, church, customs) = multi_class_world(&rules);
+
+        // The classifier first: every priority claim below is only worth as much
+        // as these three.
+        assert_eq!(race_class(&world, &claim, &rules), Some(RaceClass::Claim));
+        assert_eq!(race_class(&world, &church, &rules), Some(RaceClass::Church));
+        assert_eq!(race_class(&world, &customs, &rules), Some(RaceClass::Customs));
+        assert_eq!(
+            RaceClass::Claim.cmp(&RaceClass::Church),
+            std::cmp::Ordering::Less,
+            "the class type's own order is the priority order",
+        );
+        assert!(RaceClass::Church < RaceClass::Customs);
+
+        // All three, worst first.
+        assert_eq!(
+            race_pick(&world, &rules, &[customs.clone(), church.clone(), claim.clone()]),
+            Some((RaceClass::Claim, claim.clone())),
+        );
+        // Drop the claim: the church step wins.
+        assert_eq!(
+            race_pick(&world, &rules, &[customs.clone(), church.clone()]),
+            Some((RaceClass::Church, church.clone())),
+        );
+        // Drop it too: the customs step wins.
+        assert_eq!(
+            race_pick(&world, &rules, &[customs.clone()]),
+            Some((RaceClass::Customs, customs.clone())),
+        );
+
+        // FIRST of the best class, in the order given — two claims, and the
+        // earlier one is the answer.
+        assert_eq!(
+            race_pick(&world, &rules, &[claim.clone(), claim.clone()]),
+            Some((RaceClass::Claim, claim.clone())),
+        );
+
+        // And nothing to race is a fallback, not a pick.
+        let inert = Move::EndAdditionalPhase;
+        assert_eq!(race_class(&world, &inert, &rules), None);
+        assert_eq!(race_pick(&world, &rules, &[inert]), None);
+    }
+
+    /// **MUST-5, the load-bearing pin**: a track action with TWO OR MORE
+    /// eligible spaces places nothing at apply time — it queues the choice — and
+    /// the race-rusher must still classify it as race progress and TAKE it.
+    ///
+    /// An occupancy-only classifier passes every other cell in this file and
+    /// fails exactly here, which is the point: the queueing candidates are the
+    /// race-INITIATING moves this reply exists to model, and a classifier blind
+    /// to them would model only the already-narrowed singleton case.
+    #[test]
+    fn a_queued_track_choice_classifies_as_race_progress_and_is_taken() {
+        let rules = Rules::standard();
+        // A decision whose own legal list holds a candidate that QUEUES a
+        // track-space choice — the T1 harvest shape, re-taken here because this
+        // cell needs the DECISION and not merely the state.
+        let root = harvest(
+            &rules,
+            C_MASTER,
+            4,
+            "a decision offering a candidate that QUEUES a track-space choice",
+            &mut |s| {
+                if is_game_over(s) || !s.pending_choices.is_empty() {
+                    return false;
+                }
+                get_legal_moves(s, &rules).iter().any(|mv| {
+                    apply_move_unchecked(s, mv, &rules).is_ok_and(|next| {
+                        next.current_player == s.current_player
+                            && next.pending_choices.iter().any(|c| {
+                                matches!(
+                                    c,
+                                    PendingChoice::ChurchSpace { .. }
+                                        | PendingChoice::CustomsSpace { .. }
+                                )
+                            })
+                    })
+                })
+            },
+        );
+
+        let legal = get_legal_moves(&root, &rules);
+        let queueing = legal
+            .iter()
+            .find(|mv| {
+                apply_move_unchecked(&root, mv, &rules).is_ok_and(|next| {
+                    next.current_player == root.current_player
+                        && next.pending_choices.iter().any(|c| {
+                            matches!(
+                                c,
+                                PendingChoice::ChurchSpace { .. }
+                                    | PendingChoice::CustomsSpace { .. }
+                            )
+                        })
+                })
+            })
+            .expect("the harvest promised one")
+            .clone();
+
+        // The MUST-5 premise, asserted rather than assumed: this candidate places
+        // NOTHING, so occupancy cannot be what classifies it.
+        let after = apply_move_unchecked(&root, &queueing, &rules).expect("it applies");
+        assert_eq!(
+            (after.church_track.total_assistants(), after.customs_track.total_assistants()),
+            (root.church_track.total_assistants(), root.customs_track.total_assistants()),
+            "the fixture candidate placed a pawn, so nothing here is about a QUEUE",
+        );
+        assert!(
+            matches!(race_class(&root, &queueing, &rules), Some(RaceClass::Church | RaceClass::Customs)),
+            "a queueing track action classified as no race at all",
+        );
+
+        // And the AGENT takes it, through its own honest chain.
+        let mut rusher = RaceRusherAgent::new(&rules, RUSH_SEED);
+        let played = ask(&mut rusher, &root, &rules);
+        assert_eq!(rusher.race_picks, 1, "the decision was delegated, not raced");
+        assert!(
+            matches!(race_class(&root, &played, &rules), Some(RaceClass::Church | RaceClass::Customs)),
+            "the race-rusher raced with a move that races nothing: {played:?}",
+        );
+        assert!(rusher.probed_candidates > 0, "anti-vacuity: the decision probed nothing");
+    }
+
+    /// A movement decision probes NOTHING and delegates — with the
+    /// anti-vacuity half that a probed-family decision does probe.
+    ///
+    /// Both halves are needed: a counter that never moves would satisfy the
+    /// first assertion however broken the scope rule was.
+    #[test]
+    fn a_movement_decision_probes_nothing_and_delegates() {
+        let rules = Rules::standard();
+        let movement = phase_root(&rules, TurnPhase::Movement);
+        assert!(
+            crate::game::search_actions::families(&movement, &rules)
+                .iter()
+                .all(|f| !is_probed_family(f)),
+            "the movement fixture offers a probed family, so this cell tests nothing",
+        );
+
+        let mut rusher = RaceRusherAgent::new(&rules, RUSH_SEED);
+        let mut greedy = bare_greedy(&rules, RUSH_SEED);
+        let raced = ask(&mut rusher, &movement, &rules);
+        let plain = ask(greedy.as_mut(), &movement, &rules);
+        assert_eq!(rusher.probed_candidates, 0, "a movement decision probed a candidate");
+        assert_eq!(rusher.race_picks, 0);
+        assert_eq!(raced, plain, "a probe-free decision did not delegate");
+
+        // ANTI-VACUITY: the counter does move where the scope says it should.
+        let area = phase_root(&rules, TurnPhase::AreaAction);
+        let mut probing = RaceRusherAgent::new(&rules, RUSH_SEED);
+        let _ = ask(&mut probing, &area, &rules);
+        assert!(
+            probing.probed_candidates > 0,
+            "an area-action decision probed nothing, so the zero above says nothing",
+        );
+    }
+
+    /// The no-race fallback is byte-identical to a bare greedy seat at the same
+    /// seed — for at least TWO decisions, which is what proves the probes left
+    /// the inner stream alone.
+    ///
+    /// One decision would only show that the first delegation agrees. The second
+    /// is the content: the race-rusher's probes ran between them, and a probe
+    /// that had drawn from the greedy's own `ChaCha8Rng` would move it past the
+    /// value the bare seat is about to use.
+    #[test]
+    fn the_no_race_fallback_is_byte_identical_to_a_bare_greedy_seat() {
+        let rules = Rules::standard();
+        let root = turn_start_root(&rules, world(80), 200);
+        // The MIRROR itself on the other side — the construction `new` performs,
+        // written out, so this cell is about the STREAM rather than about the
+        // constructor.
+        let mut mirrored =
+            GreedyAgent::with_weights(&rules, WeightTable::V2, DEFAULT_RETREAT_SAMPLES, RUSH_SEED);
+        let compared = no_race_prefix_agrees(&rules, &root, RUSH_SEED, &mut mirrored);
+        assert!(
+            compared >= 2,
+            "anti-vacuity: only {compared} delegated decision(s) were compared, and the stream \
+             claim needs two",
+        );
+    }
+
+    /// The inner greedy IS [`Contestant::build`]'s greedy arm — the drift pin
+    /// the mirror owes.
+    ///
+    /// Compared by MOVE IDENTITY over a whole turn at the same seed rather than
+    /// by inspecting fields: a mirror that agreed on every field and differed in
+    /// construction ORDER would still diverge here, and a mirror that differed
+    /// in a field nobody thought to compare would not be caught by a field
+    /// check.
+    #[test]
+    fn the_inner_greedy_is_contestant_builds_greedy_arm() {
+        let rules = Rules::standard();
+        let root = turn_start_root(&rules, world(81), 240);
+        let mut built = bare_greedy(&rules, RUSH_SEED);
+        let compared = no_race_prefix_agrees(&rules, &root, RUSH_SEED, built.as_mut());
+        assert!(
+            compared >= 1,
+            "anti-vacuity: no delegated decision was compared against `Contestant::build`",
+        );
+    }
+
+    /// Same seed, same root → the same decisions twice; a different seed is the
+    /// anti-vacuity half.
+    #[test]
+    fn a_race_rusher_seat_is_deterministic_at_a_fixed_seed() {
+        let rules = Rules::standard();
+        let root = turn_start_root(&rules, world(82), 260);
+        let turn = |seed: u64| -> Vec<Move> {
+            let mut agent = RaceRusherAgent::new(&rules, seed);
+            let mover = root.current_player;
+            let mut state = root.clone();
+            let mut moves = Vec::new();
+            while state.current_player == mover && !is_game_over(&state) {
+                let mv = ask(&mut agent, &state, &rules);
+                state = apply_move_unchecked(&state, &mv, &rules).expect("the move applies");
+                moves.push(mv);
+            }
+            moves
+        };
+        let first = turn(RUSH_SEED);
+        assert!(first.len() >= 2, "anti-vacuity: the fixture turn is {} decision(s)", first.len());
+        assert_eq!(first, turn(RUSH_SEED), "the same seed produced two different turns");
+        assert_ne!(
+            RUSH_SEED,
+            RUSH_SEED ^ 1,
+            "the anti-vacuity seed must actually differ",
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // Through the drivers
+    // -----------------------------------------------------------------------
+
+    /// The seat materializes through BOTH drivers, and the whole-game one
+    /// records what it seated: the menu name asked for, the composed echo, the
+    /// agent's own controller descriptor, and the view label the bench
+    /// witnessed.
+    ///
+    /// Driven from a LATE root with a rung opponent, so the greedy fallback pays
+    /// for a tail rather than a whole game (design §6's wall discipline).
+    #[test]
+    fn a_race_rusher_seat_is_described_by_the_driver_that_seated_it() {
+        let rules = Rules::standard();
+        let seed = world(83);
+        let stats = rung_game(&rules, seed);
+        let events = stats.record.events.len();
+        let root = state_at(&stats.record, events.saturating_sub(24), &rules)
+            .expect("a late root replays");
+        assert!(!is_game_over(&root), "anti-vacuity: the chosen root is already terminal");
+
+        // The TURN driver accepts the seat, which is the cheaper half.
+        let turn = drive_turn(
+            &root,
+            SeatSpec::Reply(ReplyPolicy::RaceRusher),
+            &rules,
+            RUSH_SEED,
+            &DrivenOpts::default(),
+        )
+        .expect("a race-rusher turn drives");
+        assert!(!turn.moves.is_empty(), "anti-vacuity: the turn played nothing");
+        assert_eq!(
+            turn.counters,
+            SeatCounters::NONE,
+            "a race-rusher explains only what it delegates, so it must carry no account",
+        );
+
+        // And the WHOLE-GAME driver records the seat.
+        let seats =
+            [SeatSpec::Reply(ReplyPolicy::RaceRusher), SeatSpec::Reply(ReplyPolicy::FamilyWeighted)];
+        let master = world(84);
+        let outcome = drive_to_terminal(&root, &seats, &rules, master, DrivenOpts::default())
+            .expect("a rung-vs-race-rusher run completes");
+        assert_seats_describe(&seats, &outcome.provenance, master);
+
+        let d = &outcome.provenance.seats[0];
+        assert_eq!(d.requested, "reply:race-rusher");
+        assert_eq!(d.echo, SeatSpec::Reply(ReplyPolicy::RaceRusher).echo());
+        assert_eq!(d.controller, RACE_RUSHER_CONTROLLER);
+        assert_eq!(d.version, RACE_RUSHER_IMPL_VERSION);
+        assert_eq!(
+            d.params["fallback_version"],
+            i64::from(crate::game::greedy::GREEDY_IMPL_VERSION),
+            "the descriptor does not name the fallback's version",
+        );
+        assert_eq!(d.params["m"], i64::from(DEFAULT_RETREAT_SAMPLES));
+        assert!(d.params.contains_key("weights"), "the fallback's table identity is not recorded");
+        assert_eq!(d.observation, crate::game::record::OBSERVATION_VIEW);
+        let reconstructed = Contestant::from_parts(&d.controller, &d.params);
+        assert!(
+            reconstructed.is_err(),
+            "a harness rule reconstructed as the contestant {reconstructed:?}",
+        );
+        assert_eq!(
+            outcome.seats[0].counters,
+            SeatCounters::NONE,
+            "the race-rusher seat reported an explanation account it does not have",
+        );
+        assert!(outcome.seats[0].applied_moves > 0, "anti-vacuity: the seat never moved");
     }
 }
