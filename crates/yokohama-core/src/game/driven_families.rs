@@ -5159,4 +5159,167 @@ mod tests {
             gap.verdict,
         );
     }
+
+    /// **THE CANNOT-DEMONSTRATE ARM**, through the block: a rule every playout
+    /// satisfies has no FALSE group, so the root is recorded-excluded rather
+    /// than admitted on a comparison that does not exist.
+    ///
+    /// At these roots the trigger is already set, so `EndFired` holds at every
+    /// hand-off whatever the forced candidate was — which is exactly the
+    /// one-sided shape design §4 refuses to read.
+    #[test]
+    fn a_root_whose_playouts_all_agree_is_recorded_excluded_not_admitted() {
+        let rules = rules();
+        let subject = SeatSpec::Contestant(Contestant::LOOKAHEAD_V1_DEFAULT);
+        let decl = FamilyDecl {
+            rule: PassRule::Turn(TurnPredicate::EndFired),
+            ..smoke_decl(FamilyLabel::Confirmatory, 0)
+        };
+        let report = run_family_block_with(&decl, BlockKind::Pilot, Some(MASTER), subject, &rules,
+            smoke_opts(-1_000))
+            .expect("the block runs");
+        assert_eq!(report.admitted, 0, "a one-sided root demonstrates nothing");
+        for row in &report.roots {
+            assert_eq!(row.verdict, RootVerdict::Excluded(ExclusionReason::NotDemonstrated));
+            let admission = row.admission.as_ref().expect("a turn-grain root carries an admission");
+            assert!(
+                admission.policies.iter().all(|p| {
+                    p.verdict == AdmissionVerdict::Cannot(CannotDemonstrate::NoFalseGroup)
+                }),
+                "expected a NoFalseGroup refusal, got {:?}",
+                admission.policies,
+            );
+        }
+        // ANTI-VACUITY: the rider is a family-4 declaration and does NOT ride a
+        // family whose rule is something else.
+        assert!(report.roots.iter().all(|r| r.rider.is_none()));
+    }
+
+    /// **THE DECISION-GRAIN ARM**, through the block: family 1's shape — a
+    /// per-policy adjudication, the LIVE/DEAD split as admission, and the
+    /// three-way judgment wired to the read's picks.
+    ///
+    /// The three-way rule itself is pinned as arithmetic in
+    /// `the_three_way_judgment_reads_all_some_and_no_top_sets`; what this cell
+    /// adds is the WIRING — that `run_family_block` reaches
+    /// `PassRule::AdjudicatedBest`'s branch at all, fills `top_sets`, and judges
+    /// the read's picks against them rather than leaving the arm dead.
+    ///
+    /// **The same FIXTURE FACT the block smoke records, seen from the decision
+    /// grain**: the subject picks `EndAdditionalPhase` while the adjudicated top
+    /// set is the CLAIM, so the row FAILS. That disagreement is what makes the
+    /// cell non-vacuous — the judgment discriminated rather than admitting
+    /// everything — and it is a fact about two hand-built positions at K = 1,
+    /// not a family-1 reading.
+    #[test]
+    fn a_decision_grain_block_admits_on_the_live_dead_split_and_judges_the_picks() {
+        let rules = rules();
+        let subject = SeatSpec::Contestant(Contestant::LOOKAHEAD_V1_DEFAULT);
+        let decl = FamilyDecl {
+            rule: PassRule::AdjudicatedBest { epsilon: PROVISIONAL_EPSILON_VP },
+            replications: 1,
+            ..smoke_decl(FamilyLabel::Confirmatory, 0)
+        };
+        let report = run_family_block_with(&decl, BlockKind::Pilot, Some(MASTER), subject, &rules,
+            smoke_opts(PROVISIONAL_DELTA_VP))
+            .expect("the block runs");
+
+        assert_eq!(report.admitted, 2, "a live field is admitted: {:?}", report.roots);
+        for row in &report.roots {
+            assert!(row.admission.is_none(), "the decision grain admits on LIVE/DEAD, not δ");
+            assert_eq!(row.dead_by_policy.len(), 1, "one entry per declared policy");
+            assert!(!row.dead, "the fixture's field is LIVE");
+            assert_eq!(row.top_sets.len(), 1);
+            assert!(!row.top_sets[0].1.is_empty(), "a live field has a top set");
+            let read = row.read.as_ref().expect("an admitted root is read");
+            assert!(
+                read.replications.iter().all(|r| r.pick.is_some() && r.verdict.is_none()),
+                "a decision-grain read reports picks and no turn verdict",
+            );
+            // ANTI-VACUITY: the judgment DISCRIMINATED. The subject's pick is
+            // outside the adjudicated top set at this fixture, so the row fails
+            // — a judgment that admitted everything would read Pass here.
+            let pick = read.replications[0].pick.clone().expect("a pick");
+            assert!(!row.top_sets[0].1.contains(&pick), "the fixture does not separate the two");
+            assert_eq!(
+                row.verdict,
+                RootVerdict::Fail { misses: 1, allowance: 0 },
+                "a pick in NO top set is the fail arm",
+            );
+            assert_eq!(row.unresolved, 0, "a single-policy menu cannot disagree with itself");
+        }
+        // A one-policy menu makes `lookahead_sole_dissenter` unstatable, which
+        // is the accessor's own documented requirement — pinned so the flag is
+        // never read as "no suppression" at a menu that cannot show it.
+        assert!(report.sole_dissenters.is_empty());
+    }
+
+    /// Family 3's declared CONTROL and family 4's declared CORNER are reachable
+    /// as generators and BUILD — a declaration nothing can run is a declaration
+    /// that rots.
+    #[test]
+    fn the_declared_control_and_corner_generators_build_their_roots() {
+        let rules = rules();
+        for generator in [RACE_CONTROL_GENERATOR, PROXIMITY_CORNER_GENERATOR] {
+            let FamilyGenerator::Builder { build, name } = generator else {
+                panic!("{generator:?} is not a builder arm");
+            };
+            let built = build(0, &rules).unwrap_or_else(|e| panic!("{name}: {e}"));
+            crate::game::invariants::check_invariants(&built.state, &rules)
+                .unwrap_or_else(|e| panic!("{name}: not engine-valid: {e}"));
+            assert_eq!(generator.name(), name);
+        }
+        // The control declares a step (its rule is step-carrying); the corner
+        // does not (family 4's rule names none).
+        let FamilyGenerator::Builder { build: control, .. } = RACE_CONTROL_GENERATOR else {
+            unreachable!()
+        };
+        assert!(control(0, &rules).expect("builds").step.is_some());
+        let FamilyGenerator::Builder { build: corner, .. } = PROXIMITY_CORNER_GENERATOR else {
+            unreachable!()
+        };
+        assert!(corner(0, &rules).expect("builds").step.is_none());
+    }
+
+    /// A step-carrying rule is RE-POINTED at the root's own step, and a root
+    /// that declares none is a typed refusal — never a read against the
+    /// placeholder.
+    #[test]
+    fn a_step_carrying_rule_is_repointed_by_the_root_and_refuses_without_one() {
+        let declared = ContestedStep::CustomsSpace { space: 5 };
+        let taken = PassRule::Turn(TurnPredicate::ContestedStepTaken(DECLARED_BY_THE_ROOT));
+        let denial = PassRule::Turn(TurnPredicate::DenialNotTaken(DECLARED_BY_THE_ROOT));
+        assert!(taken.names_a_step() && denial.names_a_step());
+        assert_eq!(
+            taken.with_step(Some(declared)),
+            PassRule::Turn(TurnPredicate::ContestedStepTaken(declared)),
+        );
+        assert_eq!(
+            denial.with_step(Some(declared)),
+            PassRule::Turn(TurnPredicate::DenialNotTaken(declared)),
+        );
+        // A rule that names no step is untouched by either argument.
+        let claimed = PassRule::Turn(TurnPredicate::AchievementClaimed);
+        assert!(!claimed.names_a_step());
+        assert_eq!(claimed.with_step(Some(declared)), claimed);
+        assert_eq!(taken.with_step(None), taken, "with no step there is nothing to re-point");
+
+        // THE REFUSAL: a step-carrying rule over a generator whose roots declare
+        // none never reads against `DECLARED_BY_THE_ROOT`.
+        let rules = rules();
+        let decl = FamilyDecl { rule: taken, ..smoke_decl(FamilyLabel::Confirmatory, 0) };
+        let err = run_family_block_with(
+            &decl,
+            BlockKind::Pilot,
+            Some(MASTER),
+            SeatSpec::Contestant(Contestant::LOOKAHEAD_V1_DEFAULT),
+            &rules,
+            smoke_opts(-1_000),
+        )
+        .unwrap_err();
+        assert!(
+            matches!(err, FamilyRunError::StepNotDeclared { ordinal: 0 }),
+            "expected a step-not-declared refusal, got {err}",
+        );
+    }
 }
