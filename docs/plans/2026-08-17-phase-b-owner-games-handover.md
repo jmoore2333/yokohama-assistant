@@ -118,6 +118,18 @@ the game when you know you're going to lose on the next turn is a bad idea."**
 4. **Achievement proximity:** valuable and it works; good players build their arc around
    achievements; 2P C-achievements are rare.
 
+**The owner's closing verdict (added at his correction of the scribe's wrap-up, 2026-08-17):**
+"explained or an honest coin flip" is NOT a satisfactory account of the play — a coin flip
+*to the engine* is still a real deficiency at the table: pulling back a lone assistant while
+holding others (the g1 recall class), taking whichever technology card the draw hands it —
+those are deficiencies, not neutral facts, however honestly the instrument discloses them.
+The forward momentum is real and scores points (pushing orders, pushing the church — "not
+nothing"), but **playing to win requires the other awareness: not just the other player, but
+how to STACK these things looking forward more than a single turn.** This is the owner's
+summary of the controller's distance from the mission bar's own words ("provably plays to
+win"), and it binds F2 (opponent awareness) and F3/the horizon (multi-turn composition)
+together as the two halves of that distance.
+
 ## 3. Canon material (owner statements, pending the formal batch)
 
 - **Majority participation value**: a majority ≈ one good turn of value, AND participation
@@ -177,9 +189,11 @@ Read order: `CLAUDE.md` → guidingpath's 2026-08-17 row → the kickoff
 - **Exploratory probes** (item 2) and **the V2-play counters slice** (item 4) — unchanged,
   dispatchable.
 - **The canon batch** — assemble §3 into ruling form for the owner alongside analysis.
-- The bar for "coherent play" (D7's negative definition) took no hits on its mechanical half:
+- The bar for "coherent play" (D7's negative definition) took no hits on its MECHANICAL half:
   every flagged move was accounted for by `why`, zero mismatch refusals across ~25
-  reconstructions in two games plus post-game pulls — worth stating as a W5 field result.
+  reconstructions in two games plus post-game pulls — a W5 field result about the INSTRUMENT,
+  not the play. The judgment half records real deficiencies — read the owner's closing
+  verdict at the end of §2 before quoting this bullet anywhere.
 
 *Session hygiene: `.claude/settings.json` (chrome-devtools plugin registration) committed with
 owner approval beside this doc; all Forge terminals closed at session end (the owner concluded
