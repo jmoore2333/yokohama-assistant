@@ -662,7 +662,11 @@ fn default_contestant() -> Result<Contestant, String> {
 /// **The `gen:` prefix is read FIRST**, before the last-colon split: a generated
 /// spec carries three colons and a path may carry any number, so reading the
 /// prefix is the only rule under which the two grammars cannot shadow one
-/// another.
+/// another. The cost is one absurd collision, stated rather than left to be
+/// discovered: a record file literally NAMED `gen` is spelled `./gen:3`, since
+/// `gen:3` now reads as a malformed generated spec — and it refuses naming the
+/// generated form, which is the diagnosis a reader needs to reach for the
+/// `./`.
 pub fn parse_root_ref(raw: &str) -> Result<RootRef, String> {
     if let Some(rest) = raw.strip_prefix(GEN_PREFIX) {
         return parse_generated_root(raw, rest);
@@ -1771,6 +1775,12 @@ pub fn run_opening(
 /// The PUBLIC setup half: `new_game`, each seat's own
 /// [`ArenaAgent::choose_starting_order`] in SEAT ORDER, `finalize_setup`.
 ///
+/// **2P, and not a parameter.** Every question this phase asks is a 2P question
+/// — the subject is the retained 2P turn-boundary contestant, the v2 generating
+/// ecology is 2P, and the C-D opening question is about that seat's opening. A
+/// player-count flag would offer a population nothing downstream compares
+/// against.
+///
 /// The agents are built for ALL seats before any Keep is asked, exactly as
 /// `run_arena_game` builds them before its bench answers — that ordering is
 /// half of what makes the two bit-identical, and the streams
@@ -2338,7 +2348,9 @@ mod tests {
         for subcommand in SUBCOMMANDS {
             assert!(USAGE.contains(subcommand), "USAGE does not name `{subcommand}`");
         }
-        for flags in [LIST_FLAGS, TABLE_FLAGS, RUN_FLAGS, ADJUDICATE_FLAGS] {
+        for flags in
+            [LIST_FLAGS, TABLE_FLAGS, RUN_FLAGS, ADJUDICATE_FLAGS, FAMILY_FLAGS, OPENING_FLAGS]
+        {
             for flag in flags {
                 assert!(USAGE.contains(&format!("--{flag}")), "USAGE does not name `--{flag}`");
             }
@@ -3805,14 +3817,22 @@ mod tests {
                 "{} carries a frozen block already — this pin is the PRE-FREEZE state",
                 decl.id,
             );
-            let err =
-                run_with(&args(&["family", decl.id, "--block", "confirmatory"]), &[], Path::new("."))
-                    .expect_err("a confirmatory block must refuse before the freeze");
-            assert!(
-                err.contains(decl.id) && err.contains("FREEZE"),
-                "{}: the refusal does not name the family and the freeze: {err}",
-                decl.id,
-            );
+            // BOTH ARMS — which is also the only place `control_arm` runs
+            // INSIDE `run_with`: a control arm that panicked or lost its id on
+            // the way through would show up here rather than at T7.
+            for arm in ARM_NAMES {
+                let err = run_with(
+                    &args(&["family", decl.id, "--block", "confirmatory", "--arm", arm]),
+                    &[],
+                    Path::new("."),
+                )
+                .expect_err("a confirmatory block must refuse before the freeze");
+                assert!(
+                    err.contains(decl.id) && err.contains("FREEZE"),
+                    "{} --arm {arm}: the refusal does not name the family and the freeze: {err}",
+                    decl.id,
+                );
+            }
         }
     }
 
@@ -4040,6 +4060,15 @@ mod tests {
         assert_eq!(label, 1, "the LABEL is not the first content line:\n{rendered}");
         assert!(label < counter, "the counter check precedes the label:\n{rendered}");
         assert!(counter < admission, "the admission table precedes the counter check:\n{rendered}");
+        // The rest of the sequence, so a section reorder fails here rather than
+        // in a T7 triage note: roots, then exclusions, then the dissent block.
+        let roots = line_index(&rendered, "  roots:");
+        let exclusions = line_index(&rendered, "  exclusions (");
+        let dissent = line_index(&rendered, "  dissent ");
+        assert!(
+            admission < roots && roots < exclusions && exclusions < dissent,
+            "the section sequence moved:\n{rendered}",
+        );
         // The identity a reader needs beside the label.
         for needle in ["end-trigger", "pilot", "arm=positive", "end-firable-ahead-in-truth"] {
             assert!(rendered.contains(needle), "the header drops `{needle}`:\n{rendered}");
@@ -4212,6 +4241,92 @@ mod tests {
             "the existence arm does not say what it cannot support:\n{rendered}",
         );
         assert!(rendered.contains("GAP RECORDED"), "the per-root gap row is missing:\n{rendered}");
+    }
+
+    /// The DECISION-grain shape (family 1's), which the turn-grain cells above
+    /// never reach: no admission table at all, the LIVE/DEAD split and the
+    /// per-policy top sets printed per root instead, the subject's PICKS on the
+    /// replication lines, and a binomial line that says why there is none.
+    #[test]
+    fn the_decision_grain_report_prints_the_dead_split_the_top_sets_and_the_picks() {
+        let read = FamilyReadOutcome {
+            rule: PassRule::AdjudicatedBest { epsilon: 1 },
+            grain: ReadGrain::Decision,
+            master: 0x0A3E_0000_0000_0001,
+            root_word: 0x00FF_0000_0000_00AB,
+            root_digest: "00ff0000000000ab".to_string(),
+            subject_echo: Contestant::LOOKAHEAD_V1_DEFAULT.echo(),
+            replications: vec![ReplicationRead {
+                replication: 0,
+                decision_seed: 0x0DEC_0000_0000_0007,
+                root_word: 0x00FF_0000_0000_00AB,
+                verdict: None,
+                pick: Some(Move::SkipBuilding),
+                turn_moves: 0,
+                handoff_digest: None,
+                game_over: None,
+                counters: SeatCounters::NONE,
+            }],
+            counter_check: counter_check(1, 1, 3),
+            annotations: Vec::new(),
+        };
+        let mut row = family_row(0, RootVerdict::Pass, Some(read));
+        row.admission = None;
+        row.rule = PassRule::AdjudicatedBest { epsilon: 1 };
+        row.dead_by_policy =
+            vec![(ReplyPolicy::FamilyWeighted, false), (ReplyPolicy::GreedyAtFinal, true)];
+        row.top_sets = vec![
+            (ReplyPolicy::FamilyWeighted, vec![Move::SkipBuilding]),
+            (ReplyPolicy::GreedyAtFinal, vec![Move::SkipBuilding, Move::BuildTradingHouse]),
+        ];
+        let mut report = family_report(FamilyVerdict::Pass, vec![row]);
+        report.id = "final-round";
+        report.rule = PassRule::AdjudicatedBest { epsilon: 1 };
+        let rendered = render_family_block(&report, FamilyArm::Positive);
+
+        assert!(
+            rendered.contains("(none: this block reads at the DECISION grain"),
+            "the empty admission table does not say why it is empty:\n{rendered}",
+        );
+        assert!(rendered.contains("dead? family-weighted"), "no per-policy dead line:\n{rendered}");
+        assert!(rendered.contains("DEAD"), "no dead classification:\n{rendered}");
+        assert!(rendered.contains("live"), "no live classification:\n{rendered}");
+        assert!(rendered.contains("top set greedy-at-final"), "no top-set line:\n{rendered}");
+        assert!(rendered.contains("2 candidate(s)"), "the top-set size is missing:\n{rendered}");
+        assert!(rendered.contains("pick SkipBuilding"), "the pick is missing:\n{rendered}");
+        assert!(
+            rendered.contains("decision grain: a miss is a fact about a TOP SET"),
+            "the decision-grain binomial line does not say why there is none:\n{rendered}",
+        );
+        assert!(rendered.contains("grain=decision"), "the grain is not stated:\n{rendered}");
+    }
+
+    /// Family 4's RIDER prints beside its root, labelled RECORDED and never
+    /// gated — the STOP fence's own sentence, on the page rather than in a doc
+    /// nobody reads next to the number.
+    #[test]
+    fn a_family_four_row_prints_its_recorded_rider() {
+        let mut row = family_row(0, RootVerdict::Pass, Some(turn_read(0, 2)));
+        row.rule = PassRule::Turn(TurnPredicate::AchievementClaimed);
+        row.rider = Some(crate::game::driven_families::AchievementRider {
+            progress_sum: 17,
+            postclaim_sum: 11,
+            race_proximity: -3,
+        });
+        let mut report = family_report(FamilyVerdict::Pass, vec![row]);
+        report.id = "achievement";
+        report.rule = PassRule::Turn(TurnPredicate::AchievementClaimed);
+        let rendered = render_family_block(&report, FamilyArm::Positive);
+        assert!(
+            rendered.contains("progress_sum=17")
+                && rendered.contains("postclaim_sum=11")
+                && rendered.contains("race_proximity=-3"),
+            "the rider's three readings are not all printed:\n{rendered}",
+        );
+        assert!(
+            rendered.contains("RECORDED, never gated"),
+            "the rider does not say what it may not do:\n{rendered}",
+        );
     }
 
     /// Rendering is a pure function of the report plus the arm: the same pair
