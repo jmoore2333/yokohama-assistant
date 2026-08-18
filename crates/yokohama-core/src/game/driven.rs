@@ -147,6 +147,7 @@ use crate::game::greedy::{GreedyAgent, DEFAULT_RETREAT_SAMPLES};
 use crate::game::invariants::check_invariants;
 use crate::game::legal_moves::get_legal_moves;
 use crate::game::lookahead::{LookaheadAgent, RootScore, SearchScheme, SearchStats};
+use crate::game::metrics::decision_volume;
 use crate::game::move_legality::{is_move_legal, PathMode};
 use crate::game::observe::observe;
 use crate::game::policy::RolloutPolicy;
@@ -154,7 +155,7 @@ use crate::game::power::calculate_power;
 use crate::game::record::{replay_from, state_at, GameRecord, RecordedEvent, SeatProvenance};
 use crate::game::rules::Rules;
 use crate::game::scoring::{final_result, GameResult};
-use crate::game::search_actions::MoveFamily;
+use crate::game::search_actions::{DecisionHandle, MoveFamily};
 use crate::game::seeds::{SeedSchedule, WorldSeed};
 use crate::game::semantics::{record_digest, state_digest, SEMANTICS_REV};
 use crate::types::{
@@ -447,10 +448,7 @@ pub const RACE_RUSHER_IMPL_VERSION: u32 = 1;
 /// so a report carries the greedy identity (version, knobs, weight-table digest)
 /// that the seat actually delegated to.
 fn race_rusher_echo() -> String {
-    // DECLARED PLACEHOLDER (T3 RED): the composed sentence lands with the GREEN
-    // commit, so the echo pins fail on an assertion rather than on a compile
-    // error.
-    format!("reply:{RACE_RUSHER_CONTROLLER}")
+    format!("reply:{RACE_RUSHER_CONTROLLER}{{fallback={}}}", RACE_RUSHER_FALLBACK.echo())
 }
 
 /// What a probed candidate RACES, highest priority FIRST.
@@ -511,10 +509,26 @@ fn is_probed_family(family: &MoveFamily) -> bool {
 /// this policy exists to model. Sharing the helper rather than restating it is
 /// what keeps the predicate and the reply from disagreeing about what a race
 /// step is.
+///
+/// **Class 1 is read off the MOVE and costs no probe**, deliberately: a claim is
+/// not a state change this classifier has to go looking for, it is the move
+/// itself — and checking it first is what keeps the common case (a claim in the
+/// additional-action list) from paying for a clone.
+///
+/// A move that somehow reached BOTH tracks would classify CHURCH, on the
+/// declared priority. Nothing organic does that; the tie-break is stated so the
+/// function is total rather than lucky.
 fn race_class(world: &GameState, mv: &Move, rules: &Rules) -> Option<RaceClass> {
-    // DECLARED PLACEHOLDER (T3 RED): the classification lands with the GREEN
-    // commit.
-    let _ = (world, mv, rules);
+    if matches!(mv, Move::FulfillAchievement { .. }) {
+        return Some(RaceClass::Claim);
+    }
+    let steps = mover_reachable_steps(world, std::slice::from_ref(mv), rules);
+    if steps.iter().any(|s| matches!(s, RaceStep::Church(_))) {
+        return Some(RaceClass::Church);
+    }
+    if steps.iter().any(|s| matches!(s, RaceStep::Customs(_))) {
+        return Some(RaceClass::Customs);
+    }
     None
 }
 
@@ -527,9 +541,20 @@ fn race_class(world: &GameState, mv: &Move, rules: &Rules) -> Option<RaceClass> 
 /// about a sort this function performs. A [`RaceClass::Claim`] short-circuits —
 /// nothing outranks it, so the scan stops rather than probing the rest.
 fn race_pick(world: &GameState, rules: &Rules, candidates: &[Move]) -> Option<(RaceClass, Move)> {
-    // DECLARED PLACEHOLDER (T3 RED): the selection lands with the GREEN commit.
-    let _ = (world, rules, candidates);
-    None
+    let mut best: Option<(RaceClass, &Move)> = None;
+    for mv in candidates {
+        let Some(class) = race_class(world, mv, rules) else { continue };
+        // STRICTLY better replaces, so the FIRST candidate of each class is the
+        // one that survives its own class — "first of the best class", not "last
+        // of it".
+        if best.is_none_or(|(held, _)| class < held) {
+            best = Some((class, mv));
+        }
+        if class == RaceClass::Claim {
+            break;
+        }
+    }
+    best.map(|(class, mv)| (class, mv.clone()))
 }
 
 /// The declared adversarial REPLY: take a race step when one is in front of it,
@@ -630,11 +655,78 @@ impl ArenaAgent for RaceRusherAgent {
         self.inner.choose_starting_order(seat, deal)
     }
 
+    /// The rule, in the order [`RaceRusherAgent`]'s doc states it.
+    ///
+    /// **The ordinal advances on EVERY decision, probed or not.** It names "this
+    /// seat's n-th decision", so a turn whose first decision is a movement step
+    /// and whose second is an area action probes the second at ordinal 1 — which
+    /// keeps the probe stream a function of the seat's position in the game
+    /// rather than of how often the scope rule happened to fire.
+    ///
+    /// **A probe-sampler refusal is a HARD error and never a quiet delegation.**
+    /// The sampler refuses a VIEW, not a seed, so the inner greedy would refuse
+    /// the same view moments later; swallowing it here would turn a typed
+    /// honest-chain failure into a silently different policy. It names the probe
+    /// so the two refusals stay distinguishable in a report.
     fn choose(&mut self, view: &PlayerView, rules: &Rules) -> Result<DecisionReport, String> {
-        // DECLARED PLACEHOLDER (T3 RED): the probe lands with the GREEN commit.
-        // Until then every decision delegates and nothing is probed, so the
-        // classification pins fail on assertions rather than on compile errors.
+        let ordinal = self.decisions;
         self.decisions += 1;
+
+        // The PROBE WORLD — the agent's own, from its own view, on a stream that
+        // is not the inner greedy's (see `SALT_DRIVEN_RACE_PROBE`).
+        let probe_seed = race_probe_seed(self.agent_seed, ordinal);
+        let mut sampler = BeliefSampler::from_view(view, rules, probe_seed).map_err(|e| {
+            format!(
+                "{RACE_RUSHER_CONTROLLER}'s probe sampler refused seat {}'s view: {e}",
+                view.viewer.0,
+            )
+        })?;
+        let world = sampler.sample();
+
+        // ONE handle for the whole decision (L10): the family tags, the probed
+        // candidates and the volume observation all come off it, so a raced
+        // decision pays for one enumeration exactly as a rung's does.
+        let handle = DecisionHandle::new(&world, rules);
+        // The probed families in `families()`' own order, and within each the
+        // order `iter_family` yields — which IS the engine's legal-list order
+        // restricted to those families (`tests/action_source_equivalence.rs`
+        // pins the ordered union against `get_legal_moves`). So "the first
+        // candidate of the best class" is a fact about the engine's enumeration
+        // and not about any ordering this agent imposes.
+        let candidates: Vec<Move> = handle
+            .families()
+            .iter()
+            .filter(|family| is_probed_family(family))
+            .flat_map(|family| handle.iter(family))
+            .collect();
+        #[cfg(test)]
+        {
+            self.probed_candidates += candidates.len() as u64;
+        }
+
+        if let Some((_class, mv)) = race_pick(&world, rules, &candidates) {
+            // Unreachable in the same sense `root_table`'s accounting refusals
+            // are: a candidate was served, so this decision point HAS families
+            // and `decision_volume` answers. It is an error rather than a
+            // fallback because a report that silently degraded to greedy here
+            // would be a report about a different policy.
+            let volume = decision_volume(&handle).ok_or_else(|| {
+                format!(
+                    "{RACE_RUSHER_CONTROLLER} raced at a decision point reporting no volume, at \
+                     {:?} for seat {}",
+                    handle.turn_phase(),
+                    view.viewer.0,
+                )
+            })?;
+            #[cfg(test)]
+            {
+                self.race_picks += 1;
+            }
+            return Ok(DecisionReport { mv, volume });
+        }
+
+        // NOTHING RACES: the whole decision goes to the fallback, whose stream
+        // the probes above did not touch.
         self.inner.choose(view, rules)
     }
 
@@ -8984,7 +9076,7 @@ mod tests {
         );
         // Drop it too: the customs step wins.
         assert_eq!(
-            race_pick(&world, &rules, &[customs.clone()]),
+            race_pick(&world, &rules, std::slice::from_ref(&customs)),
             Some((RaceClass::Customs, customs.clone())),
         );
 
